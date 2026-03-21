@@ -127,6 +127,7 @@ func (db *DB) migrate() error {
 			allowed_principals TEXT,
 			allowed_cert_types TEXT,
 			force_key_id_email_reason ` + boolType + `,
+			require_reason ` + boolType + `,
 			allowed_extensions TEXT,
 			deny_extensions ` + boolType + `,
 			deny_critical_options ` + boolType + `,
@@ -204,6 +205,7 @@ func (db *DB) migrate() error {
 		db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN IF NOT EXISTS deny_extensions BOOLEAN NOT NULL DEFAULT FALSE")
 		db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN IF NOT EXISTS deny_critical_options BOOLEAN NOT NULL DEFAULT FALSE")
+		db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN IF NOT EXISTS require_reason BOOLEAN NOT NULL DEFAULT FALSE")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS certificate BYTEA")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS cert_hash TEXT")
 	} else {
@@ -211,6 +213,7 @@ func (db *DB) migrate() error {
 		db.conn.Exec("ALTER TABLE permissions ADD COLUMN restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN deny_extensions INTEGER NOT NULL DEFAULT 0")
 		db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN deny_critical_options INTEGER NOT NULL DEFAULT 0")
+		db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN require_reason INTEGER NOT NULL DEFAULT 0")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN certificate BLOB")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN cert_hash TEXT")
 	}
@@ -490,38 +493,40 @@ func (db *DB) GetEffectiveRestrictionSet(caID, userSub string, groupIDs []string
 
 // Restriction set operations
 
-func (db *DB) marshalRS(rs *models.RestrictionSet) (principals, certTypes, extensions string, forceEmail, denyExt, denyCrit int) {
+func (db *DB) marshalRS(rs *models.RestrictionSet) (principals, certTypes, extensions string, forceEmail, requireReason, denyExt, denyCrit int) {
 	p, _ := json.Marshal(rs.AllowedPrincipals)
 	c, _ := json.Marshal(rs.AllowedCertTypes)
 	e, _ := json.Marshal(rs.AllowedExtensions)
 	principals, certTypes, extensions = string(p), string(c), string(e)
-	if rs.ForceKeyIDEmailReason { forceEmail = 1 }
+	if rs.ForceKeyIDEmail { forceEmail = 1 }
+	if rs.RequireReason { requireReason = 1 }
 	if rs.DenyExtensions { denyExt = 1 }
 	if rs.DenyCriticalOptions { denyCrit = 1 }
 	return
 }
 
 func (db *DB) CreateRestrictionSet(rs *models.RestrictionSet) error {
-	principals, certTypes, extensions, forceEmail, denyExt, denyCrit := db.marshalRS(rs)
+	principals, certTypes, extensions, forceEmail, requireReason, denyExt, denyCrit := db.marshalRS(rs)
 	_, err := db.exec(
-		`INSERT INTO restriction_sets (id, ca_id, name, max_validity_secs, allowed_principals, allowed_cert_types, force_key_id_email_reason, allowed_extensions, deny_extensions, deny_critical_options, max_valid_after_offset)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		rs.ID, rs.CAID, rs.Name, rs.MaxValiditySecs, principals, certTypes, forceEmail, extensions, denyExt, denyCrit, rs.MaxValidAfterOffset,
+		`INSERT INTO restriction_sets (id, ca_id, name, max_validity_secs, allowed_principals, allowed_cert_types, force_key_id_email_reason, require_reason, allowed_extensions, deny_extensions, deny_critical_options, max_valid_after_offset)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rs.ID, rs.CAID, rs.Name, rs.MaxValiditySecs, principals, certTypes, forceEmail, requireReason, extensions, denyExt, denyCrit, rs.MaxValidAfterOffset,
 	)
 	return err
 }
 
 func (db *DB) UpdateRestrictionSet(rs *models.RestrictionSet) error {
-	principals, certTypes, extensions, forceEmail, denyExt, denyCrit := db.marshalRS(rs)
+	principals, certTypes, extensions, forceEmail, requireReason, denyExt, denyCrit := db.marshalRS(rs)
 	_, err := db.exec(
-		`UPDATE restriction_sets SET name=?, max_validity_secs=?, allowed_principals=?, allowed_cert_types=?, force_key_id_email_reason=?, allowed_extensions=?, deny_extensions=?, deny_critical_options=?, max_valid_after_offset=? WHERE id=?`,
-		rs.Name, rs.MaxValiditySecs, principals, certTypes, forceEmail, extensions, denyExt, denyCrit, rs.MaxValidAfterOffset, rs.ID,
+		`UPDATE restriction_sets SET name=?, max_validity_secs=?, allowed_principals=?, allowed_cert_types=?, force_key_id_email_reason=?, require_reason=?, allowed_extensions=?, deny_extensions=?, deny_critical_options=?, max_valid_after_offset=? WHERE id=?`,
+		rs.Name, rs.MaxValiditySecs, principals, certTypes, forceEmail, requireReason, extensions, denyExt, denyCrit, rs.MaxValidAfterOffset, rs.ID,
 	)
 	return err
 }
 
-func (db *DB) unmarshalRS(rs *models.RestrictionSet, principals, certTypes, extensions sql.NullString, forceEmail, denyExt, denyCrit int) {
-	rs.ForceKeyIDEmailReason = forceEmail != 0
+func (db *DB) unmarshalRS(rs *models.RestrictionSet, principals, certTypes, extensions sql.NullString, forceEmail, requireReason, denyExt, denyCrit int) {
+	rs.ForceKeyIDEmail = forceEmail != 0
+	rs.RequireReason = requireReason != 0
 	rs.DenyExtensions = denyExt != 0
 	rs.DenyCriticalOptions = denyCrit != 0
 	if principals.Valid { json.Unmarshal([]byte(principals.String), &rs.AllowedPrincipals) }
@@ -532,23 +537,23 @@ func (db *DB) unmarshalRS(rs *models.RestrictionSet, principals, certTypes, exte
 func (db *DB) GetRestrictionSet(id string) (*models.RestrictionSet, error) {
 	var rs models.RestrictionSet
 	var principals, certTypes, extensions sql.NullString
-	var forceEmail, denyExt, denyCrit int
+	var forceEmail, requireReason, denyExt, denyCrit int
 	err := db.queryRow(
-		`SELECT id, ca_id, name, max_validity_secs, allowed_principals, allowed_cert_types, force_key_id_email_reason, allowed_extensions, deny_extensions, deny_critical_options, max_valid_after_offset FROM restriction_sets WHERE id = ?`, id,
-	).Scan(&rs.ID, &rs.CAID, &rs.Name, &rs.MaxValiditySecs, &principals, &certTypes, &forceEmail, &extensions, &denyExt, &denyCrit, &rs.MaxValidAfterOffset)
+		`SELECT id, ca_id, name, max_validity_secs, allowed_principals, allowed_cert_types, force_key_id_email_reason, require_reason, allowed_extensions, deny_extensions, deny_critical_options, max_valid_after_offset FROM restriction_sets WHERE id = ?`, id,
+	).Scan(&rs.ID, &rs.CAID, &rs.Name, &rs.MaxValiditySecs, &principals, &certTypes, &forceEmail, &requireReason, &extensions, &denyExt, &denyCrit, &rs.MaxValidAfterOffset)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	db.unmarshalRS(&rs, principals, certTypes, extensions, forceEmail, denyExt, denyCrit)
+	db.unmarshalRS(&rs, principals, certTypes, extensions, forceEmail, requireReason, denyExt, denyCrit)
 	return &rs, nil
 }
 
 func (db *DB) ListRestrictionSets(caID string) ([]models.RestrictionSet, error) {
 	rows, err := db.query(
-		`SELECT id, ca_id, name, max_validity_secs, allowed_principals, allowed_cert_types, force_key_id_email_reason, allowed_extensions, deny_extensions, deny_critical_options, max_valid_after_offset FROM restriction_sets WHERE ca_id = ?`, caID,
+		`SELECT id, ca_id, name, max_validity_secs, allowed_principals, allowed_cert_types, force_key_id_email_reason, require_reason, allowed_extensions, deny_extensions, deny_critical_options, max_valid_after_offset FROM restriction_sets WHERE ca_id = ?`, caID,
 	)
 	if err != nil {
 		return nil, err
@@ -558,11 +563,11 @@ func (db *DB) ListRestrictionSets(caID string) ([]models.RestrictionSet, error) 
 	for rows.Next() {
 		var rs models.RestrictionSet
 		var principals, certTypes, extensions sql.NullString
-		var forceEmail, denyExt, denyCrit int
-		if err := rows.Scan(&rs.ID, &rs.CAID, &rs.Name, &rs.MaxValiditySecs, &principals, &certTypes, &forceEmail, &extensions, &denyExt, &denyCrit, &rs.MaxValidAfterOffset); err != nil {
+		var forceEmail, requireReason, denyExt, denyCrit int
+		if err := rows.Scan(&rs.ID, &rs.CAID, &rs.Name, &rs.MaxValiditySecs, &principals, &certTypes, &forceEmail, &requireReason, &extensions, &denyExt, &denyCrit, &rs.MaxValidAfterOffset); err != nil {
 			return nil, err
 		}
-		db.unmarshalRS(&rs, principals, certTypes, extensions, forceEmail, denyExt, denyCrit)
+		db.unmarshalRS(&rs, principals, certTypes, extensions, forceEmail, requireReason, denyExt, denyCrit)
 		sets = append(sets, rs)
 	}
 	return sets, rows.Err()

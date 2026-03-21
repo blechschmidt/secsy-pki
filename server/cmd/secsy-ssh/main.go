@@ -109,7 +109,7 @@ func main() {
 	// Check if the CA requires a reason (fetch restrictions)
 	if reason == "" {
 		rs, _ := getRestrictions(cfg, token, caID)
-		if rs != nil && rs.ForceKeyIDEmailReason {
+		if rs != nil && rs.RequireReason {
 			fmt.Fprint(os.Stderr, "secsy-ssh: this CA requires a reason. Enter reason: ")
 			scanner := bufio.NewScanner(os.Stdin)
 			if scanner.Scan() {
@@ -345,7 +345,8 @@ func findCA(cfg *Config, token, caName string) (string, error) {
 }
 
 type restrictionSet struct {
-	ForceKeyIDEmailReason bool `json:"force_key_id_email_reason"`
+	ForceKeyIDEmail bool `json:"force_key_id_email"`
+	RequireReason   bool `json:"require_reason"`
 }
 
 func getRestrictions(cfg *Config, token, caID string) (*restrictionSet, error) {

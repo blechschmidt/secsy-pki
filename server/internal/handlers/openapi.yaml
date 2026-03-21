@@ -344,8 +344,12 @@ paths:
                   type: array
                   items:
                     type: string
-                force_key_id_email_reason:
+                force_key_id_email:
                   type: boolean
+                  description: Force key ID to user email
+                require_reason:
+                  type: boolean
+                  description: Require a reason (appended to key ID in parentheses)
                 deny_extensions:
                   type: boolean
                 allowed_extensions:

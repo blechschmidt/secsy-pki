@@ -54,7 +54,8 @@ type RestrictionSet struct {
 	MaxValiditySecs       *int64   `json:"max_validity_secs,omitempty"`
 	AllowedPrincipals     []string `json:"allowed_principals,omitempty"`
 	AllowedCertTypes      []string `json:"allowed_cert_types,omitempty"`      // ["user"], ["host"], ["user","host"]
-	ForceKeyIDEmailReason bool     `json:"force_key_id_email_reason"`        // key_id = "{email}: {reason}"
+	ForceKeyIDEmail       bool     `json:"force_key_id_email"`               // key_id includes user email
+	RequireReason         bool     `json:"require_reason"`                   // user must provide a reason, appended to key_id
 	AllowedExtensions     []string `json:"allowed_extensions,omitempty"`      // if set, only these extensions allowed
 	DenyExtensions        bool     `json:"deny_extensions"`                   // if true, no custom extensions allowed
 	DenyCriticalOptions   bool     `json:"deny_critical_options"`             // if true, no critical options allowed

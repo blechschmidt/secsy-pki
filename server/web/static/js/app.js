@@ -494,11 +494,15 @@ function applySignRestrictions(rs) {
 
     if (!rs) return;
 
-    // Force email+reason key ID
-    if (rs.force_key_id_email_reason) {
+    // Force email key ID
+    if (rs.force_key_id_email) {
         keyIdField.disabled = true;
-        keyIdField.placeholder = 'auto: email + reason';
+        keyIdField.placeholder = 'auto: user email';
         keyIdField.value = '';
+    }
+
+    // Require reason
+    if (rs.require_reason) {
         reasonGroup.style.display = '';
         reasonField.required = true;
     } else {
@@ -1272,7 +1276,8 @@ async function loadRestrictionSets() {
                         <tr><th>Max Validity</th><td>${rs.max_validity_secs ? formatDuration(rs.max_validity_secs) : '<span class="text-muted">unlimited</span>'}</td></tr>
                         <tr><th>Allowed Principals</th><td>${rs.allowed_principals && rs.allowed_principals.length ? rs.allowed_principals.map(p => `<code>${esc(p)}</code>`).join(', ') : '<span class="text-muted">any</span>'}</td></tr>
                         <tr><th>Allowed Cert Types</th><td>${rs.allowed_cert_types && rs.allowed_cert_types.length ? rs.allowed_cert_types.join(', ') : '<span class="text-muted">any</span>'}</td></tr>
-                        <tr><th>Force Key ID (email+reason)</th><td>${rs.force_key_id_email_reason ? '<span class="badge bg-success">Yes</span>' : 'No'}</td></tr>
+                        <tr><th>Force Key ID (email)</th><td>${rs.force_key_id_email ? '<span class="badge bg-success">Yes</span>' : 'No'}</td></tr>
+                        <tr><th>Require Reason</th><td>${rs.require_reason ? '<span class="badge bg-success">Yes</span>' : 'No'}</td></tr>
                         <tr><th>Deny Extensions</th><td>${rs.deny_extensions ? '<span class="badge bg-danger">Denied</span>' : 'No'}</td></tr>
                         <tr><th>Allowed Extensions</th><td>${rs.deny_extensions ? '<span class="text-muted">n/a</span>' : (rs.allowed_extensions && rs.allowed_extensions.length ? rs.allowed_extensions.map(e => `<code>${esc(e)}</code>`).join(', ') : '<span class="text-muted">any</span>')}</td></tr>
                         <tr><th>Deny Critical Options</th><td>${rs.deny_critical_options ? '<span class="badge bg-danger">Denied</span>' : 'No'}</td></tr>
@@ -1342,7 +1347,8 @@ function showRSEditor(existing) {
         <div class="mb-3"><label class="form-label">Max Validity (seconds, e.g. 86400 for 1 day)</label><input type="number" class="form-control" id="rsEdMaxValidity" value="${existing?.max_validity_secs || ''}"></div>
         <div class="mb-3"><label class="form-label">Allowed Principals (comma-separated, * for any)</label><input type="text" class="form-control" id="rsEdPrincipals" value="${(existing?.allowed_principals || []).join(', ')}"></div>
         <div class="mb-3"><label class="form-label">Allowed Cert Types (comma-separated: user, host)</label><input type="text" class="form-control" id="rsEdCertTypes" value="${(existing?.allowed_cert_types || []).join(', ')}"></div>
-        <div class="mb-3 form-check"><input type="checkbox" class="form-check-input" id="rsEdForceEmail" ${existing?.force_key_id_email_reason ? 'checked' : ''}><label class="form-check-label" for="rsEdForceEmail">Force Key ID to email + reason</label></div>
+        <div class="mb-3 form-check"><input type="checkbox" class="form-check-input" id="rsEdForceEmail" ${existing?.force_key_id_email ? 'checked' : ''}><label class="form-check-label" for="rsEdForceEmail">Force Key ID to user email</label></div>
+        <div class="mb-3 form-check"><input type="checkbox" class="form-check-input" id="rsEdRequireReason" ${existing?.require_reason ? 'checked' : ''}><label class="form-check-label" for="rsEdRequireReason">Require reason (appended to key ID)</label></div>
         <div class="mb-3 form-check"><input type="checkbox" class="form-check-input" id="rsEdDenyExt" ${existing?.deny_extensions ? 'checked' : ''}><label class="form-check-label" for="rsEdDenyExt">Deny custom extensions</label></div>
         <div class="mb-3"><label class="form-label">Allowed Extensions (comma-separated, leave empty for any)</label><input type="text" class="form-control" id="rsEdExtensions" value="${(existing?.allowed_extensions || []).join(', ')}"></div>
         <div class="mb-3 form-check"><input type="checkbox" class="form-check-input" id="rsEdDenyCrit" ${existing?.deny_critical_options ? 'checked' : ''}><label class="form-check-label" for="rsEdDenyCrit">Deny critical options</label></div>
@@ -1366,7 +1372,8 @@ function showRSEditor(existing) {
             max_validity_secs: parseInt(document.getElementById('rsEdMaxValidity').value) || null,
             allowed_principals: splitTrim(document.getElementById('rsEdPrincipals').value),
             allowed_cert_types: splitTrim(document.getElementById('rsEdCertTypes').value),
-            force_key_id_email_reason: document.getElementById('rsEdForceEmail').checked,
+            force_key_id_email: document.getElementById('rsEdForceEmail').checked,
+            require_reason: document.getElementById('rsEdRequireReason').checked,
             deny_extensions: document.getElementById('rsEdDenyExt').checked,
             allowed_extensions: splitTrim(document.getElementById('rsEdExtensions').value),
             deny_critical_options: document.getElementById('rsEdDenyCrit').checked,

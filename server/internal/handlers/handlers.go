@@ -302,17 +302,16 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 		keyID = user.Subject
 	}
 
-	// Override key_id if restriction forces email+reason format
-	if rs != nil && rs.ForceKeyIDEmailReason {
+	// Override key_id based on restriction set
+	if rs != nil && rs.ForceKeyIDEmail {
 		email := user.Email
 		if email == "" {
 			email = user.Subject
 		}
-		reason := req.Reason
-		if reason == "" {
-			reason = "unspecified"
-		}
-		keyID = email + ": " + reason
+		keyID = email
+	}
+	if rs != nil && rs.RequireReason && req.Reason != "" {
+		keyID = keyID + " (" + req.Reason + ")"
 	}
 
 	validAfter, err := pki.ParseTime(req.ValidAfter, time.Now())
@@ -1160,12 +1159,9 @@ func enforceRestrictions(rs *models.RestrictionSet, req *models.SignRequest, use
 		return fmt.Errorf("critical options are not allowed by this restriction set")
 	}
 
-	// Check key_id: if force_key_id_email_reason, the user must provide a reason
-	if rs.ForceKeyIDEmailReason {
-		// key_id will be overridden in the handler; just ensure reason is present
-		if req.Reason == "" {
-			return fmt.Errorf("reason is required when key_id is restricted to email+reason format")
-		}
+	// Check reason requirement
+	if rs.RequireReason && req.Reason == "" {
+		return fmt.Errorf("reason is required by this restriction set")
 	}
 
 	return nil

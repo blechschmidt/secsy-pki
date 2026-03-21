@@ -376,7 +376,8 @@ Restriction sets enforce policies on certificate signing. Priority: user-specifi
 | `max_validity_secs` | Maximum certificate lifetime |
 | `allowed_principals` | Only these principals (`*` for any) |
 | `allowed_cert_types` | Only `user`, `host`, or both |
-| `force_key_id_email_reason` | Key ID forced to `{email}: {reason}` |
+| `force_key_id_email` | Key ID forced to user email |
+| `require_reason` | User must provide a reason (appended to key ID as `email (reason)`) |
 | `deny_extensions` | No custom extensions allowed |
 | `allowed_extensions` | Only these extensions (when not denied) |
 | `deny_critical_options` | No critical options allowed |
