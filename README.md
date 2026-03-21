@@ -349,10 +349,12 @@ All other arguments are passed directly to `ssh`.
 
 ### Key Discovery
 
-`secsy-ssh` searches `~/.ssh/` for the first available key in this order:
+`secsy-ssh` searches `~/.ssh/` for the first available key with a corresponding `.pub` file. Preferred order:
+
 1. `id_ed25519`
 2. `id_ecdsa`
 3. `id_rsa`
+4. Any other `id_*` file (e.g., `id_ed25519_work`, `id_ecdsa_deploy`)
 
 The corresponding `.pub` file is sent to the API for signing.
 
