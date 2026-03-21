@@ -255,6 +255,152 @@ export YUBIHSM_PKCS11_CONF=/path/to/yubihsm_pkcs11.conf  # if using YubiHSM
 
 Open https://localhost:8443 and log in as `root`.
 
+## secsy-ssh: SSH Client Wrapper
+
+`secsy-ssh` wraps the standard `ssh` command with automatic OIDC-based certificate authentication. It handles the entire flow: OIDC login via browser, certificate signing through the Secsy PKI API, and passing the certificate to `ssh` — all in a single command.
+
+### How It Works
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant secsy-ssh
+    participant Browser
+    participant OIDC as OIDC Provider
+    participant API as Secsy PKI API
+    participant HSM as YubiHSM
+    participant SSH as SSH Server
+
+    User->>secsy-ssh: secsy-ssh --ca "Root CA" user@host
+    secsy-ssh->>secsy-ssh: Find ~/.ssh/id_ed25519
+    secsy-ssh->>secsy-ssh: Check certificate cache
+    alt Cache hit (not expired)
+        secsy-ssh->>SSH: ssh -i key -o CertificateFile=cert user@host
+    else Cache miss
+        secsy-ssh->>API: GET /api/auth/config
+        API-->>secsy-ssh: OIDC issuer + client_id
+        secsy-ssh->>Browser: Open authorization URL
+        Browser->>OIDC: User logs in
+        OIDC->>secsy-ssh: Authorization code (localhost:18329/callback)
+        secsy-ssh->>OIDC: Exchange code for ID token (PKCE)
+        OIDC-->>secsy-ssh: ID token
+        secsy-ssh->>API: GET /api/cas/{id}/my-restrictions
+        API-->>secsy-ssh: Restriction set (require_reason, etc.)
+        opt Reason required
+            secsy-ssh->>User: Prompt for reason
+            User-->>secsy-ssh: "deployment"
+        end
+        secsy-ssh->>API: POST /api/cas/{id}/sign (pubkey, principal, reason)
+        API->>HSM: Sign certificate
+        HSM-->>API: Signed certificate
+        API-->>secsy-ssh: SSH certificate
+        secsy-ssh->>secsy-ssh: Cache certificate
+        secsy-ssh->>secsy-ssh: Write cert to memfd (in-memory only)
+        secsy-ssh->>SSH: ssh -i key -o CertificateFile=/proc/self/fd/3 user@host
+    end
+    SSH-->>User: Connected
+```
+
+### Install
+
+```bash
+cd server
+go build -o secsy-ssh ./cmd/secsy-ssh
+sudo cp secsy-ssh /usr/local/bin/
+```
+
+### Configure
+
+Create `~/.ssh/secsy.yaml`:
+
+```yaml
+api_url: "https://secsy-pki.example.com:8443"
+# insecure_skip_verify: true  # only for development with self-signed certs
+```
+
+### Usage
+
+```bash
+# Basic usage — opens browser for OIDC login, signs key, connects
+secsy-ssh --ca "Root CA" user@host
+
+# With a specific port
+secsy-ssh --ca "Root CA" user@host -p 2222
+
+# Provide a reason (if the CA requires it)
+secsy-ssh --ca "Root CA" --reason "deployment" user@host
+
+# Skip the certificate cache
+secsy-ssh --ca "Root CA" --nocache user@host
+
+# All standard ssh options work
+secsy-ssh --ca "Root CA" user@host -L 8080:localhost:80 -N
+```
+
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `--ca <name>` | CA to sign with (required, matched by label or ID) |
+| `--reason <text>` | Reason for the certificate (prompted interactively if CA requires it) |
+| `--nocache` | Skip the certificate cache, always request a new one |
+
+All other arguments are passed directly to `ssh`.
+
+### Key Discovery
+
+`secsy-ssh` searches `~/.ssh/` for the first available key in this order:
+1. `id_ed25519`
+2. `id_ecdsa`
+3. `id_rsa`
+
+The corresponding `.pub` file is sent to the API for signing.
+
+### Certificate Caching
+
+Signed certificates are cached in `$XDG_RUNTIME_DIR/secsy-ssh/` (or `/tmp/secsy-ssh-<uid>/` if `XDG_RUNTIME_DIR` is not set). The cache key is a SHA-256 hash of all CLI arguments.
+
+- Cached certificates are reused until they expire (checked by parsing the certificate's `ValidBefore` field)
+- Use `--nocache` to bypass the cache
+- Different arguments (host, port, CA, reason) produce different cache keys
+
+### Security Properties
+
+- **No disk writes**: The signed certificate is held in memory using `memfd_create(2)` and passed to `ssh` via `/proc/self/fd/3`. No certificate data touches the filesystem (except the cache, which uses `0600` permissions in the runtime directory).
+- **PKCE**: The OIDC flow uses Proof Key for Code Exchange (S256) with a local callback server on port 18329.
+- **Principal extraction**: The SSH username (from `user@host` or `-l user`) is automatically included as the certificate principal.
+- **Restriction enforcement**: If the CA has a restriction set with `require_reason`, the user is prompted interactively. If `force_key_id_email` is set, the key ID is automatically set to the user's email from the OIDC token.
+
+### OIDC Provider Setup
+
+The OIDC provider must be configured to allow the redirect URI `http://localhost:18329/*` for the `secsy-ssh` callback. For KeyCloak:
+
+```bash
+# Add redirect URI via admin API
+curl -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "http://keycloak:8080/admin/realms/secsy-pki/clients/$CLIENT_UUID" \
+  -H "Content-Type: application/json" \
+  -d '{"redirectUris": ["https://your-server:8443/*", "http://localhost:18329/*"]}'
+```
+
+### Example: Full Setup
+
+```bash
+# 1. Configure
+cat > ~/.ssh/secsy.yaml << 'EOF'
+api_url: "https://secsy-pki.example.com:8443"
+EOF
+
+# 2. Generate an SSH key (if you don't have one)
+ssh-keygen -t ed25519
+
+# 3. Connect — browser opens for login, cert is signed, SSH connects
+secsy-ssh --ca "Production CA" deploy@server.example.com
+
+# 4. Second connection — uses cached cert, no browser needed
+secsy-ssh --ca "Production CA" deploy@server.example.com
+```
+
 ## Terraform
 
 Provision the root CA key on a YubiHSM:
