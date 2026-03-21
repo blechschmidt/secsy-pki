@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
+	"golang.org/x/crypto/ssh"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
 
@@ -496,12 +498,14 @@ func (db *DB) CreateAuditLogEntry(e *models.AuditLogEntry) error {
 	extensions, _ := json.Marshal(e.Extensions)
 	critOpts, _ := json.Marshal(e.CriticalOptions)
 
-	// Compute SHA-256 hash of the certificate to enforce uniqueness per CA
+	// Compute SHA-256 hash of the raw certificate bytes to enforce uniqueness per CA
 	var certHash *string
 	if e.Certificate != "" {
-		h := sha256.Sum256([]byte(e.Certificate))
-		s := hex.EncodeToString(h[:])
-		certHash = &s
+		if pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(strings.TrimSpace(e.Certificate))); err == nil {
+			h := sha256.Sum256(pub.Marshal())
+			s := hex.EncodeToString(h[:])
+			certHash = &s
+		}
 	}
 
 	_, err := db.conn.Exec(
