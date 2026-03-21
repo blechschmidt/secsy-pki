@@ -113,7 +113,7 @@ var CryptoCommands = map[uint8]string{
 // AllCommands maps every known YubiHSM command code to its name.
 // The verifier must reject any entry with a command not in this map.
 var AllCommands = map[uint8]string{
-	0xff: "BOOT SENTINEL",
+	0xff: "INITIAL CHAIN ANCHOR", // 0x7f (ERROR) | 0x80 (RESP_FLAG) — seed entry for the hash chain after factory reset
 	0x00: "BOOT",
 	0x01: "ECHO",
 	0x03: "CREATE SESSION",
