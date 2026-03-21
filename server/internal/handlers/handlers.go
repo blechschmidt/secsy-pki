@@ -52,8 +52,6 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("POST /api/cas/{id}/sign", protected(http.HandlerFunc(a.SignCertificate)))
 	mux.Handle("GET /api/cas/{id}/my-restrictions", protected(http.HandlerFunc(a.GetMyRestrictions)))
 
-	mux.Handle("POST /api/keys/generate", protected(http.HandlerFunc(a.GenerateKey)))
-
 	mux.Handle("GET /api/groups", protected(http.HandlerFunc(a.ListGroups)))
 	mux.Handle("POST /api/groups", protected(http.HandlerFunc(a.CreateGroup)))
 	mux.Handle("DELETE /api/groups/{id}", protected(http.HandlerFunc(a.DeleteGroup)))
@@ -408,35 +406,6 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, models.SignResponse{
 		Certificate: string(certBytes),
 		KeyID:       keyID,
-	})
-}
-
-// Key generation
-
-func (a *API) GenerateKey(w http.ResponseWriter, r *http.Request) {
-	var req models.KeyGenRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
-		return
-	}
-
-	if req.KeyType == "" {
-		req.KeyType = "ed25519"
-	}
-
-	result, err := pki.GenerateKey(pki.KeyGenParams{
-		KeyType: req.KeyType,
-		Bits:    req.Bits,
-		Comment: req.Comment,
-	})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "%v", err)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, models.KeyGenResponse{
-		PrivateKey: result.PrivateKeyPEM,
-		PublicKey:  result.PublicKeySSH,
 	})
 }
 

@@ -210,25 +210,18 @@
             <!-- Key Gen Page -->
             <div id="keygenPage" class="page d-none">
                 <h3><i class="bi bi-gear"></i> Generate SSH Keys</h3>
+                <div class="alert alert-info">
+                    <i class="bi bi-shield-check"></i> Keys are generated <strong>entirely in your browser</strong> using the Web Crypto API. Private keys never leave your device and are not sent to the server.
+                </div>
                 <div class="row">
                     <div class="col-md-5">
                         <form id="keygenForm">
                             <div class="mb-3">
                                 <label class="form-label">Key Type</label>
                                 <select class="form-select" id="keygenType">
-                                    <option value="ed25519">Ed25519</option>
-                                    <option value="ecdsa">ECDSA</option>
-                                    <option value="rsa">RSA</option>
-                                </select>
-                            </div>
-                            <div class="mb-3" id="keygenBitsGroup">
-                                <label class="form-label">Key Size (bits)</label>
-                                <select class="form-select" id="keygenBits">
-                                    <option value="256">256 (ECDSA)</option>
-                                    <option value="384">384 (ECDSA)</option>
-                                    <option value="521">521 (ECDSA)</option>
-                                    <option value="2048">2048 (RSA)</option>
-                                    <option value="4096" selected>4096 (RSA)</option>
+                                    <option value="ed25519">Ed25519 (recommended)</option>
+                                    <option value="ecdsa-256">ECDSA P-256</option>
+                                    <option value="ecdsa-384">ECDSA P-384</option>
                                 </select>
                             </div>
                             <div class="mb-3">
@@ -248,14 +241,14 @@
                                 </button>
                             </div>
                             <div class="mb-3">
-                                <label class="form-label">Private Key</label>
+                                <label class="form-label">Private Key (OpenSSH format)</label>
                                 <textarea class="form-control font-monospace" id="keygenPriv" rows="8" readonly></textarea>
                                 <button class="btn btn-sm btn-outline-secondary mt-1" onclick="navigator.clipboard.writeText(document.getElementById('keygenPriv').value)">
                                     <i class="bi bi-clipboard"></i> Copy
                                 </button>
                             </div>
                             <div class="alert alert-warning">
-                                <i class="bi bi-exclamation-triangle"></i> Save your private key securely. It will not be stored on the server.
+                                <i class="bi bi-exclamation-triangle"></i> Save your private key securely. It was generated in your browser and is not stored anywhere else.
                             </div>
                         </div>
                     </div>

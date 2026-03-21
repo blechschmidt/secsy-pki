@@ -568,30 +568,163 @@ document.getElementById('signForm').addEventListener('submit', async e => {
     }
 });
 
-// Key Generation
-document.getElementById('keygenType').addEventListener('change', function () {
-    const bitsGroup = document.getElementById('keygenBitsGroup');
-    bitsGroup.style.display = this.value === 'ed25519' ? 'none' : 'block';
-});
-document.getElementById('keygenType').dispatchEvent(new Event('change'));
-
+// Key Generation (client-side using Web Crypto API)
 document.getElementById('keygenForm').addEventListener('submit', async e => {
     e.preventDefault();
     try {
         const keyType = document.getElementById('keygenType').value;
-        const result = await API.post('/api/keys/generate', {
-            key_type: keyType,
-            bits: keyType !== 'ed25519' ? parseInt(document.getElementById('keygenBits').value) : 0,
-            comment: document.getElementById('keygenComment').value,
-        });
-        document.getElementById('keygenPub').value = result.public_key;
-        document.getElementById('keygenPriv').value = result.private_key;
+        const comment = document.getElementById('keygenComment').value || '';
+        const result = await generateSSHKeyPair(keyType, comment);
+        document.getElementById('keygenPub').value = result.publicKey;
+        document.getElementById('keygenPriv').value = result.privateKey;
         document.getElementById('keygenResult').classList.remove('d-none');
-        showToast('Success', 'Key pair generated');
+        showToast('Success', 'Key pair generated in your browser');
     } catch (err) {
         showToast('Error', err.message, true);
     }
 });
+
+async function generateSSHKeyPair(keyType, comment) {
+    if (keyType === 'ed25519') {
+        const keyPair = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+        const privRaw = new Uint8Array(await crypto.subtle.exportKey('pkcs8', keyPair.privateKey));
+        const pubRaw = new Uint8Array(await crypto.subtle.exportKey('raw', keyPair.publicKey));
+        // Ed25519 raw public key is 32 bytes
+        const pubSSH = formatSSHEd25519PublicKey(pubRaw, comment);
+        // Extract the 32-byte seed from PKCS8 (last 32 bytes of the 48-byte structure)
+        const privSeed = privRaw.slice(privRaw.length - 32);
+        const privSSH = formatSSHEd25519PrivateKey(privSeed, pubRaw, comment);
+        return { publicKey: pubSSH, privateKey: privSSH };
+    } else {
+        // ECDSA
+        const namedCurve = keyType === 'ecdsa-384' ? 'P-384' : 'P-256';
+        const curveName = keyType === 'ecdsa-384' ? 'nistp384' : 'nistp256';
+        const keyPair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve }, true, ['sign', 'verify']);
+        const pubJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
+        const privJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey);
+
+        // Build uncompressed EC point: 0x04 || x || y
+        const x = base64urlDecode(pubJwk.x);
+        const y = base64urlDecode(pubJwk.y);
+        const ecPoint = new Uint8Array(1 + x.length + y.length);
+        ecPoint[0] = 0x04;
+        ecPoint.set(x, 1);
+        ecPoint.set(y, 1 + x.length);
+
+        const sshType = `ecdsa-sha2-${curveName}`;
+        const pubSSH = formatSSHECDSAPublicKey(sshType, curveName, ecPoint, comment);
+        const d = base64urlDecode(privJwk.d);
+        const privSSH = formatSSHECDSAPrivateKey(sshType, curveName, ecPoint, d, comment);
+        return { publicKey: pubSSH, privateKey: privSSH };
+    }
+}
+
+// SSH wire format helpers
+function sshString(s) {
+    const encoded = new TextEncoder().encode(s);
+    const buf = new Uint8Array(4 + encoded.length);
+    new DataView(buf.buffer).setUint32(0, encoded.length);
+    buf.set(encoded, 4);
+    return buf;
+}
+
+function sshBytes(data) {
+    const buf = new Uint8Array(4 + data.length);
+    new DataView(buf.buffer).setUint32(0, data.length);
+    buf.set(data, 4);
+    return buf;
+}
+
+function concatBytes(...arrays) {
+    const total = arrays.reduce((sum, a) => sum + a.length, 0);
+    const result = new Uint8Array(total);
+    let offset = 0;
+    for (const a of arrays) { result.set(a, offset); offset += a.length; }
+    return result;
+}
+
+function base64urlDecode(s) {
+    const b64 = s.replace(/-/g, '+').replace(/_/g, '/');
+    const bin = atob(b64);
+    return Uint8Array.from(bin, c => c.charCodeAt(0));
+}
+
+function formatSSHEd25519PublicKey(pubRaw, comment) {
+    const blob = concatBytes(sshString('ssh-ed25519'), sshBytes(pubRaw));
+    let line = 'ssh-ed25519 ' + btoa(String.fromCharCode(...blob));
+    if (comment) line += ' ' + comment;
+    return line;
+}
+
+function formatSSHEd25519PrivateKey(seed, pubRaw, comment) {
+    // OpenSSH private key format
+    const checkVal = crypto.getRandomValues(new Uint32Array(1))[0];
+    const checkBytes = new Uint8Array(4);
+    new DataView(checkBytes.buffer).setUint32(0, checkVal);
+    // Private key section: check || check || keytype || pubkey || privkey(seed||pub) || comment || padding
+    const privKeyData = concatBytes(seed, pubRaw); // Ed25519 private = seed(32) || pub(32)
+    let section = concatBytes(checkBytes, checkBytes, sshString('ssh-ed25519'), sshBytes(pubRaw), sshBytes(privKeyData), sshString(comment));
+    // Pad to block size (8 for none cipher)
+    const pad = 8 - (section.length % 8);
+    if (pad < 8) {
+        const padding = new Uint8Array(pad);
+        for (let i = 0; i < pad; i++) padding[i] = i + 1;
+        section = concatBytes(section, padding);
+    }
+    // Public key blob
+    const pubBlob = concatBytes(sshString('ssh-ed25519'), sshBytes(pubRaw));
+    // Full file
+    const body = concatBytes(
+        sshString('none'),     // cipher
+        sshString('none'),     // kdf
+        sshString(''),         // kdf options
+        new Uint8Array([0,0,0,1]), // number of keys
+        sshBytes(pubBlob),     // public key
+        sshBytes(section),     // private section
+    );
+    const header = 'openssh-key-v1\0';
+    const headerBytes = Uint8Array.from(header, c => c.charCodeAt(0));
+    const full = concatBytes(headerBytes, body);
+    const b64 = btoa(String.fromCharCode(...full));
+    const lines = ['-----BEGIN OPENSSH PRIVATE KEY-----'];
+    for (let i = 0; i < b64.length; i += 70) lines.push(b64.slice(i, i + 70));
+    lines.push('-----END OPENSSH PRIVATE KEY-----', '');
+    return lines.join('\n');
+}
+
+function formatSSHECDSAPublicKey(sshType, curveName, ecPoint, comment) {
+    const blob = concatBytes(sshString(sshType), sshString(curveName), sshBytes(ecPoint));
+    let line = sshType + ' ' + btoa(String.fromCharCode(...blob));
+    if (comment) line += ' ' + comment;
+    return line;
+}
+
+function formatSSHECDSAPrivateKey(sshType, curveName, ecPoint, d, comment) {
+    const checkVal = crypto.getRandomValues(new Uint32Array(1))[0];
+    const checkBytes = new Uint8Array(4);
+    new DataView(checkBytes.buffer).setUint32(0, checkVal);
+    let section = concatBytes(checkBytes, checkBytes, sshString(sshType), sshString(curveName), sshBytes(ecPoint), sshBytes(d), sshString(comment));
+    const pad = 8 - (section.length % 8);
+    if (pad < 8) {
+        const padding = new Uint8Array(pad);
+        for (let i = 0; i < pad; i++) padding[i] = i + 1;
+        section = concatBytes(section, padding);
+    }
+    const pubBlob = concatBytes(sshString(sshType), sshString(curveName), sshBytes(ecPoint));
+    const body = concatBytes(
+        sshString('none'), sshString('none'), sshString(''),
+        new Uint8Array([0,0,0,1]),
+        sshBytes(pubBlob), sshBytes(section),
+    );
+    const header = 'openssh-key-v1\0';
+    const headerBytes = Uint8Array.from(header, c => c.charCodeAt(0));
+    const full = concatBytes(headerBytes, body);
+    const b64 = btoa(String.fromCharCode(...full));
+    const lines = ['-----BEGIN OPENSSH PRIVATE KEY-----'];
+    for (let i = 0; i < b64.length; i += 70) lines.push(b64.slice(i, i + 70));
+    lines.push('-----END OPENSSH PRIVATE KEY-----', '');
+    return lines.join('\n');
+}
 
 // Groups
 let selectedGroupId = null;
