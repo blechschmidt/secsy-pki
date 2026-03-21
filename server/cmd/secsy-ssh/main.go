@@ -293,12 +293,13 @@ func oidcLogin(cfg *Config) (string, error) {
 	challengeHash := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64URLEncode(challengeHash[:])
 
-	// Start local callback server
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	// Start local callback server on a fixed port
+	const callbackPort = 18329
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", callbackPort))
 	if err != nil {
-		return "", fmt.Errorf("starting callback server: %w", err)
+		return "", fmt.Errorf("starting callback server on port %d: %w", callbackPort, err)
 	}
-	callbackURL := fmt.Sprintf("http://localhost:%d/callback", listener.Addr().(*net.TCPAddr).Port)
+	callbackURL := fmt.Sprintf("http://localhost:%d/callback", callbackPort)
 
 	codeChan := make(chan string, 1)
 	errChan := make(chan error, 1)
