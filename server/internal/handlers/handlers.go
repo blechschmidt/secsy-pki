@@ -272,16 +272,6 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if this public key was already signed by this CA — return existing cert
-	existing, err := a.db.FindExistingCertificate(caID, strings.TrimSpace(req.PublicKey))
-	if err == nil && existing != nil && existing.Certificate != "" {
-		writeJSON(w, http.StatusOK, models.SignResponse{
-			Certificate: existing.Certificate,
-			KeyID:       existing.KeyID,
-		})
-		return
-	}
-
 	// Look up effective restriction set for this user on this CA
 	var rs *models.RestrictionSet
 	if !user.IsRoot {
