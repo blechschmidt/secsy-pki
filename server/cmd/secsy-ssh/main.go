@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	sshPkg "golang.org/x/crypto/ssh"
 	"gopkg.in/yaml.v3"
 )
 
@@ -193,14 +194,25 @@ func loadCachedCert(key string) string {
 	if err != nil {
 		return ""
 	}
-	// Check if the cert is still valid (parse the validity from the cert)
-	// Simple approach: check file mtime is less than 23 hours old
-	info, err := os.Stat(path)
-	if err != nil || time.Since(info.ModTime()) > 23*time.Hour {
+	cert := strings.TrimSpace(string(data))
+
+	// Parse the certificate and check ValidBefore
+	pub, _, _, _, err := sshPkg.ParseAuthorizedKey([]byte(cert))
+	if err != nil {
 		os.Remove(path)
 		return ""
 	}
-	return strings.TrimSpace(string(data))
+	sshCert, ok := pub.(*sshPkg.Certificate)
+	if !ok {
+		os.Remove(path)
+		return ""
+	}
+	expiry := time.Unix(int64(sshCert.ValidBefore), 0)
+	if time.Now().After(expiry) {
+		os.Remove(path)
+		return ""
+	}
+	return cert
 }
 
 func cacheCert(key, cert string) {
