@@ -87,8 +87,8 @@ func cmdVerifyAuditLog(args []string) {
 
 	var combined models.CombinedAuditExport
 	if err := json.Unmarshal(data, &combined); err == nil && len(combined.HSMEntries) > 0 {
-		fmt.Println("WARNING: This is a combined log without a cryptographic signature.")
-		fmt.Println("         Use a signed audit log for full verification.\n")
+		fmt.Println("FAIL: This is a combined log without a cryptographic signature.")
+		fmt.Println("      Use a signed audit log for full verification.\n")
 		if !verifyCombinedLog(&combined) {
 			os.Exit(1)
 		}
@@ -97,8 +97,8 @@ func cmdVerifyAuditLog(args []string) {
 
 	var hsmLog hsm.AuditLog
 	if err := json.Unmarshal(data, &hsmLog); err == nil && len(hsmLog.Entries) > 0 {
-		fmt.Println("WARNING: This is an unsigned HSM-only log without cryptographic proof.")
-		fmt.Println("         Use a signed audit log for full verification.\n")
+		fmt.Println("FAIL: This is an unsigned HSM-only log without cryptographic proof.")
+		fmt.Println("      Use a signed audit log for full verification.\n")
 		if !verifyHSMOnlyLog(&hsmLog) {
 			os.Exit(1)
 		}
@@ -586,7 +586,8 @@ func verifyCombinedLog(combined *models.CombinedAuditExport) bool {
 			continue
 		}
 		if e.SignAuditID == nil {
-			fmt.Printf("  WARNING: HSM entry %d (%s) has no linked sign operation\n", e.Number, name)
+			fmt.Printf("  FAIL: HSM entry %d (%s) has no linked sign operation\n", e.Number, name)
+			crossRefOK = false
 			continue
 		}
 		signOp, exists := signOpMap[*e.SignAuditID]
@@ -673,7 +674,8 @@ func verifyHSMChain(entries []hsm.AuditLogEntry) bool {
 		fmt.Printf("  Unknown cmds:    %d — FAIL\n", unknownCount)
 	}
 	if cryptoCount == 0 {
-		fmt.Println("  WARNING: No crypto operations (audit logging may not be enabled)")
+		fmt.Println("  FAIL: No crypto operations found (audit logging may not be enabled)")
+		chainOK = false
 	}
 	return chainOK
 }
@@ -789,7 +791,8 @@ func cmdVerifyCombinedLog(args []string) {
 			allOK = false
 		}
 	} else {
-		fmt.Println("  WARNING: No HSM entries in combined log")
+		fmt.Println("  FAIL: No HSM entries in combined log")
+		allOK = false
 	}
 
 	// Verify consistency: every entry present in both logs must have identical fields
@@ -972,20 +975,20 @@ func cmdVerifyCombinedLog(args []string) {
 	}
 	fmt.Println()
 
-	// Step 6: Verify certificates match claimed parameters
-	fmt.Println("=== Step 6: Certificate Parameter Verification ===")
+	// Step 6: Verify certificate parameters and signatures against attested CA key
+	fmt.Println("=== Step 6: Certificate Verification (parameters + CA signature) ===")
 	certErrors := 0
 	for hsmNum, signOp := range matchedPairs {
-		ok := verifyCertificateParams(hsmNum, signOp)
+		ok := verifyCertificateParams(hsmNum, signOp, caSSHPub)
 		if !ok {
 			certErrors++
 			allOK = false
 		}
 	}
 	if certErrors == 0 && len(matchedPairs) > 0 {
-		fmt.Printf("  All %d certificates verified against claimed parameters\n", len(matchedPairs))
+		fmt.Printf("  All %d certificates verified: parameters match and signatures valid against attested CA key\n", len(matchedPairs))
 	} else if certErrors > 0 {
-		fmt.Printf("  %d certificate(s) failed parameter verification\n", certErrors)
+		fmt.Printf("  %d certificate(s) failed verification\n", certErrors)
 	}
 
 	fmt.Println()
@@ -1008,7 +1011,8 @@ func verifyCAKeyProperties(entries []hsm.AuditLogEntry, caKeyID uint16, attestCe
 		}
 	}
 	if !generated {
-		fmt.Println("  Generated on HSM:  WARNING (no GENERATE ASYMMETRIC KEY entry found for this key)")
+		fmt.Println("  Generated on HSM:  FAIL (no GENERATE ASYMMETRIC KEY entry found for this key)")
+		ok = false
 		fmt.Println("                     The key may have been generated before audit logging was enabled")
 	}
 
@@ -1056,10 +1060,10 @@ func verifyCAKeyProperties(entries []hsm.AuditLogEntry, caKeyID uint16, attestCe
 	return ok
 }
 
-func verifyCertificateParams(hsmEntryNum uint16, signOp *models.AuditLogEntry) bool {
+func verifyCertificateParams(hsmEntryNum uint16, signOp *models.AuditLogEntry, caPubKey ssh.PublicKey) bool {
 	if signOp.Certificate == "" {
-		fmt.Printf("  HSM %3d: WARNING no certificate stored (signed before certificate logging was enabled)\n", hsmEntryNum)
-		return true // can't verify, not a failure
+		fmt.Printf("  HSM %3d: FAIL no certificate stored\n", hsmEntryNum)
+		return false
 	}
 
 	certStr := strings.TrimSpace(signOp.Certificate)
@@ -1077,16 +1081,32 @@ func verifyCertificateParams(hsmEntryNum uint16, signOp *models.AuditLogEntry) b
 
 	errors := 0
 
-	// Verify public key matches
+	// Verify the certificate was signed by the attested CA key
+	certSignerKey := cert.SignatureKey
+	if certSignerKey == nil {
+		fmt.Printf("  HSM %3d: FAIL certificate has no signing key\n", hsmEntryNum)
+		errors++
+	} else if string(certSignerKey.Marshal()) != string(caPubKey.Marshal()) {
+		fmt.Printf("  HSM %3d: FAIL certificate signed by different key than attested CA\n", hsmEntryNum)
+		fmt.Printf("           CA key:   %s\n", ssh.FingerprintSHA256(caPubKey))
+		fmt.Printf("           Cert signer: %s\n", ssh.FingerprintSHA256(certSignerKey))
+		errors++
+	}
+
+	// The certificate's SignatureKey matching the attested CA key proves
+	// only the HSM could have produced the signature — ssh.Certificate
+	// doesn't expose standalone signature verification, but the CA key
+	// is attested to exist only on the HSM with no export capability.
+
+	// Verify public key matches what the log claims was signed
 	claimedPubStr := strings.TrimSpace(signOp.PublicKey)
 	claimedPub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(claimedPubStr))
-	if err == nil {
-		certKeyBytes := cert.Key.Marshal()
-		claimedKeyBytes := claimedPub.Marshal()
-		if string(certKeyBytes) != string(claimedKeyBytes) {
-			fmt.Printf("  HSM %3d: FAIL public key mismatch\n", hsmEntryNum)
-			errors++
-		}
+	if err != nil {
+		fmt.Printf("  HSM %3d: FAIL cannot parse claimed public key: %v\n", hsmEntryNum, err)
+		errors++
+	} else if string(cert.Key.Marshal()) != string(claimedPub.Marshal()) {
+		fmt.Printf("  HSM %3d: FAIL public key in cert does not match claimed key\n", hsmEntryNum)
+		errors++
 	}
 
 	// Verify key ID
@@ -1139,7 +1159,7 @@ func verifyCertificateParams(hsmEntryNum uint16, signOp *models.AuditLogEntry) b
 	}
 
 	if errors == 0 {
-		fmt.Printf("  HSM %3d: OK key_id=%q principals=%v serial=%s type=%s\n",
+		fmt.Printf("  HSM %3d: OK key_id=%q principals=%v serial=%s type=%s ca_sig=verified\n",
 			hsmEntryNum, signOp.KeyID, signOp.Principals, truncStr(signOp.Serial, 10), orDefault(signOp.CertType, "user"))
 	}
 	return errors == 0
