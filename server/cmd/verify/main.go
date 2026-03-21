@@ -404,19 +404,26 @@ func verifySignedLog(log *hsm.SignedAuditLog, caPath, intPath string) bool {
 	}
 	fmt.Println()
 
-	// 2. Log digest
-	fmt.Println("--- Log Digest ---")
-	computed := hsm.ComputeLogDigest(log.Entries)
-	if computed != log.LogDigest {
-		fmt.Printf("  Log digest:  FAIL (computed %s, expected %s)\n", computed[:16]+"...", log.LogDigest[:16]+"...")
+	// 2. Verify last_hash matches actual last entry
+	fmt.Println("--- Last Hash ---")
+	if len(log.Entries) == 0 {
+		fmt.Println("  No entries — cannot verify")
 		allOK = false
 	} else {
-		fmt.Printf("  Log digest:  PASS (%s...)\n", log.LogDigest[:32])
+		actualLastHash := log.Entries[len(log.Entries)-1].Hash
+		if log.LastHash != actualLastHash {
+			fmt.Printf("  FAIL: last_hash field (%s) does not match actual last entry hash (%s)\n",
+				log.LastHash, actualLastHash)
+			allOK = false
+		} else {
+			fmt.Printf("  Last hash:   PASS (%s)\n", log.LastHash)
+			fmt.Println("  This hash is the HSM's chain commitment — it depends on every previous entry")
+		}
 	}
 	fmt.Println()
 
-	// 3. Signature
-	fmt.Println("--- Signature ---")
+	// 3. Signature over the last hash
+	fmt.Println("--- Signature (over last hash) ---")
 	attestCert, err := parsePEMCert([]byte(log.AttestationCertPEM))
 	if err != nil {
 		fmt.Printf("  Attestation cert: FAIL (%v)\n", err)
@@ -430,16 +437,22 @@ func verifySignedLog(log *hsm.SignedAuditLog, caPath, intPath string) bool {
 			fmt.Println("  Signing key type: FAIL (expected Ed25519)")
 			allOK = false
 		} else {
-			digestBytes, _ := hex.DecodeString(log.LogDigest)
-			sigBytes, err := base64.StdEncoding.DecodeString(log.Signature)
+			// The signature must be over the raw last hash bytes (16 bytes)
+			hashBytes, err := hex.DecodeString(log.LastHash)
 			if err != nil {
-				fmt.Printf("  Signature decode: FAIL (%v)\n", err)
+				fmt.Printf("  Last hash decode: FAIL (%v)\n", err)
 				allOK = false
-			} else if ed25519.Verify(pubKey, digestBytes, sigBytes) {
-				fmt.Println("  Signature:        PASS (Ed25519)")
 			} else {
-				fmt.Println("  Signature:        FAIL")
-				allOK = false
+				sigBytes, err := base64.StdEncoding.DecodeString(log.Signature)
+				if err != nil {
+					fmt.Printf("  Signature decode: FAIL (%v)\n", err)
+					allOK = false
+				} else if ed25519.Verify(pubKey, hashBytes, sigBytes) {
+					fmt.Println("  Signature:        PASS (Ed25519 over HSM chain hash)")
+				} else {
+					fmt.Println("  Signature:        FAIL (Ed25519 verification failed)")
+					allOK = false
+				}
 			}
 		}
 	}
