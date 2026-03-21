@@ -135,16 +135,21 @@ func main() {
 }
 
 func runSSH(keyPath, certStr string, sshArgs []string) {
-	certFile, err := os.CreateTemp("", "secsy-ssh-cert-*.pub")
+	// Use memfd_create to hold the certificate in memory only — no disk writes
+	fd, err := memfdCreate("secsy-ssh-cert")
 	if err != nil {
-		fatal("Failed to create temp file: %v", err)
+		fatal("Failed to create memfd: %v", err)
 	}
-	certFile.Chmod(0600)
+	certFile := os.NewFile(fd, "secsy-ssh-cert")
 	certFile.WriteString(certStr)
-	certFile.Close()
-	defer os.Remove(certFile.Name())
+	// Seek back so ssh can read it, keep the fd open
+	certFile.Seek(0, 0)
 
-	fmt.Fprintf(os.Stderr, "secsy-ssh: certificate written to %s\n", certFile.Name())
+	// ExtraFiles makes the fd available to the child process as fd 3+index
+	// Index 0 in ExtraFiles = fd 3 in the child
+	childFd := 3 // stdin=0, stdout=1, stderr=2, first extra=3
+	certPath := fmt.Sprintf("/proc/self/fd/%d", childFd)
+	fmt.Fprintf(os.Stderr, "secsy-ssh: certificate in memory\n")
 
 	sshBin, err := exec.LookPath("ssh")
 	if err != nil {
@@ -153,11 +158,12 @@ func runSSH(keyPath, certStr string, sshArgs []string) {
 
 	fullArgs := []string{
 		"-i", keyPath,
-		"-o", "CertificateFile=" + certFile.Name(),
+		"-o", "CertificateFile=" + certPath,
 	}
 	fullArgs = append(fullArgs, sshArgs...)
 
 	cmd := exec.Command(sshBin, fullArgs...)
+	cmd.ExtraFiles = []*os.File{certFile}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
