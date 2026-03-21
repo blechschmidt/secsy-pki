@@ -457,10 +457,7 @@ func FetchAndConsumeAuditLog(cfg Config) ([]AuditLogEntry, error) {
 		return nil, err
 	}
 
-	entries, err := ParseAuditLogOutput(out)
-	if err != nil {
-		return nil, err
-	}
+	entries, _ := ParseAuditLogOutput(out)
 	if len(entries) == 0 {
 		return nil, nil
 	}

@@ -828,7 +828,6 @@ func (a *API) GetHSMAuditLog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"device_serial": serial,
 		"entries":       verified,
-		"exported_at":   auditLog.ExportedAt,
 	})
 }
 
