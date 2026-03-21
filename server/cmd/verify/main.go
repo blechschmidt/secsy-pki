@@ -693,10 +693,10 @@ func cmdVerifyCombinedLog(args []string) {
 		fmt.Fprintln(os.Stderr, "  [--yubico-ca <pem> --yubico-intermediate <pem>]")
 		fmt.Fprintln(os.Stderr, "\nVerifies that:")
 		fmt.Fprintln(os.Stderr, "  1. The signed HSM audit log is valid (hash chain, signature, cert chain)")
-		fmt.Fprintln(os.Stderr, "  2. The CA key was generated on the HSM, is unexportable, and has never been exported")
+		fmt.Fprintln(os.Stderr, "  2. The combined log's HSM entries have a valid hash chain and are consistent with the signed log")
 		fmt.Fprintln(os.Stderr, "  3. The CA key in the attestation cert matches the provided public key file")
-		fmt.Fprintln(os.Stderr, "  4. Every HSM sign operation on the CA key maps to a combined log entry")
-		fmt.Fprintln(os.Stderr, "  5. Every combined log entry maps to an HSM sign operation")
+		fmt.Fprintln(os.Stderr, "  4. The CA key was generated on the HSM, is unexportable, and has never been exported")
+		fmt.Fprintln(os.Stderr, "  5. Every HSM sign operation on the CA key maps 1:1 to a combined log entry")
 		fmt.Fprintln(os.Stderr, "  6. Each certificate contains the claimed public key and parameters")
 		os.Exit(1)
 	}
@@ -747,8 +747,61 @@ func cmdVerifyCombinedLog(args []string) {
 	}
 	fmt.Println()
 
-	// Step 2: Find the CA key's attestation cert and verify properties
-	fmt.Println("=== Step 2: CA Key Attestation ===")
+	// Step 2: Verify the combined log's HSM hash chain and consistency with the signed log
+	fmt.Println("=== Step 2: Combined Log Hash Chain & Consistency ===")
+
+	// Convert combined HSM entries
+	combinedHSMEntries := make([]hsm.AuditLogEntry, len(combined.HSMEntries))
+	for i, e := range combined.HSMEntries {
+		combinedHSMEntries[i] = hsm.AuditLogEntry{
+			Number: e.Number, Command: e.Command, Length: e.Length,
+			SessionKey: e.SessionKey, TargetKey: e.TargetKey, SecondKey: e.SecondKey,
+			Result: e.Result, Tick: e.Tick, Hash: e.Hash,
+		}
+	}
+
+	fmt.Printf("  Combined log HSM entries: %d\n", len(combinedHSMEntries))
+	if len(combinedHSMEntries) > 0 {
+		if !verifyHSMChain(combinedHSMEntries) {
+			allOK = false
+		}
+	} else {
+		fmt.Println("  WARNING: No HSM entries in combined log")
+	}
+
+	// Verify consistency: every entry present in both logs must have identical fields
+	fmt.Println("\n  --- Signed/Combined Consistency ---")
+	signedByNumber := make(map[uint16]hsm.AuditLogEntry)
+	for _, e := range signedLog.Entries {
+		signedByNumber[e.Number] = e
+	}
+
+	consistencyOK := true
+	overlapping := 0
+	for _, ce := range combinedHSMEntries {
+		se, inSigned := signedByNumber[ce.Number]
+		if !inSigned {
+			continue
+		}
+		overlapping++
+		if se.Command != ce.Command || se.Length != ce.Length ||
+			se.SessionKey != ce.SessionKey || se.TargetKey != ce.TargetKey ||
+			se.SecondKey != ce.SecondKey || se.Result != ce.Result ||
+			se.Tick != ce.Tick || se.Hash != ce.Hash {
+			fmt.Printf("  FAIL: Entry %d differs between signed and combined logs\n", ce.Number)
+			fmt.Printf("    Signed:   cmd=0x%02x target=0x%04x tick=%d hash=%s\n", se.Command, se.TargetKey, se.Tick, se.Hash)
+			fmt.Printf("    Combined: cmd=0x%02x target=0x%04x tick=%d hash=%s\n", ce.Command, ce.TargetKey, ce.Tick, ce.Hash)
+			consistencyOK = false
+			allOK = false
+		}
+	}
+	if consistencyOK {
+		fmt.Printf("  OK: %d overlapping entries are identical in both logs\n", overlapping)
+	}
+	fmt.Println()
+
+	// Step 3: Find the CA key's attestation cert and verify properties
+	fmt.Println("=== Step 3: CA Key Attestation ===")
 	fmt.Printf("  Provided CA key: %s\n", ssh.FingerprintSHA256(caSSHPub))
 
 	// Find matching attestation cert from the combined log
@@ -804,16 +857,17 @@ func cmdVerifyCombinedLog(args []string) {
 	}
 	fmt.Println()
 
-	fmt.Printf("=== Step 3: CA Key Properties (0x%04x) ===\n", caKeyID)
-	caKeyOK := verifyCAKeyProperties(signedLog.Entries, caKeyID, caAttestCert)
+	fmt.Printf("=== Step 4: CA Key Properties (0x%04x) ===\n", caKeyID)
+	// Use combined log entries (superset of signed log) for property checks
+	caKeyOK := verifyCAKeyProperties(combinedHSMEntries, caKeyID, caAttestCert)
 	if !caKeyOK {
 		allOK = false
 	}
 	_ = caKeyLabel
 	fmt.Println()
 
-	// Step 4: Cross-reference HSM sign ops with combined log
-	fmt.Printf("=== Step 4: Cross-Reference (CA key 0x%04x) ===\n", caKeyID)
+	// Step 5: Cross-reference HSM sign ops with combined log
+	fmt.Printf("=== Step 5: Cross-Reference (CA key 0x%04x) ===\n", caKeyID)
 
 	// Build a set of HSM entry numbers from the signed log (cryptographic proof)
 	signedHSMNumbers := make(map[uint16]bool)
@@ -895,8 +949,8 @@ func cmdVerifyCombinedLog(args []string) {
 	}
 	fmt.Println()
 
-	// Step 5: Verify certificates match claimed parameters
-	fmt.Println("=== Step 5: Certificate Parameter Verification ===")
+	// Step 6: Verify certificates match claimed parameters
+	fmt.Println("=== Step 6: Certificate Parameter Verification ===")
 	certErrors := 0
 	for hsmNum, signOp := range matchedPairs {
 		ok := verifyCertificateParams(hsmNum, signOp)
