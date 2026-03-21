@@ -78,6 +78,84 @@ func runShell(cfg Config, commands string) (string, error) {
 	return string(out), nil
 }
 
+// YubiHSM command codes for audit log entries
+const (
+	CmdPutOption              = 0x4f
+	CmdGenerateAsymmetricKey  = 0x46
+	CmdSignECDSA              = 0x56
+	CmdSignEdDSA              = 0x6a
+	CmdSignRSAPKCS1           = 0x47
+	CmdSignRSAPSS             = 0x55
+	CmdPutAuthKey             = 0x44
+	CmdChangeAuthKey          = 0x6c
+	CmdDeleteObject           = 0x58
+	CmdPutWrapKey             = 0x4c
+	CmdGenerateWrapKey        = 0x5b
+	CmdPutPubWrapKey          = 0x73
+	CmdExportRSAWrapped       = 0x74
+	CmdImportRSAWrapped       = 0x75
+	CmdExportRSAWrappedObj    = 0x76
+	CmdImportRSAWrappedObj    = 0x77
+	CmdExportWrapped          = 0x4a
+	CmdImportWrapped          = 0x4b
+)
+
+// CryptoCommands lists all commands that involve signing or key generation.
+var CryptoCommands = map[uint8]string{
+	CmdGenerateAsymmetricKey: "GENERATE ASYMMETRIC KEY",
+	CmdSignECDSA:             "SIGN ECDSA",
+	CmdSignEdDSA:             "SIGN EDDSA",
+	CmdSignRSAPKCS1:          "SIGN RSA PKCS1",
+	CmdSignRSAPSS:            "SIGN RSA PSS",
+}
+
+// ProvisionAuditLogging enables forced, irreversible audit logging for all
+// cryptographic operations on the YubiHSM. This follows the protocol described in:
+// https://gist.github.com/karalabe/fb7ac43f3899f511b5547279c036bf4e
+//
+// After provisioning:
+// - PUT OPTION itself is force-audited (irreversible)
+// - All sign commands (ECDSA, EdDSA, RSA) are force-audited
+// - Asymmetric key generation is force-audited
+// - Auth key operations are force-audited
+// - Force-audit mode prevents log overwrites (HSM refuses ops until logs are consumed)
+func ProvisionAuditLogging(cfg Config) (string, error) {
+	commands := strings.Join([]string{
+		// First enable PUT OPTION auditing (reversible), then force it (irreversible)
+		"put option 0 command-audit 4f01",
+		"put option 0 command-audit 4f02",
+		// Force audit consumption (irreversible) — HSM refuses ops when log is full
+		"put option 0 force-audit 02",
+		// Force-audit all signing commands
+		"put option 0 command-audit 5602", // SIGN ECDSA
+		"put option 0 command-audit 6a02", // SIGN EDDSA
+		"put option 0 command-audit 4702", // SIGN RSA PKCS1
+		"put option 0 command-audit 5502", // SIGN RSA PSS
+		// Force-audit key generation
+		"put option 0 command-audit 4602", // GENERATE ASYMMETRIC KEY
+		// Force-audit auth key operations
+		"put option 0 command-audit 4402", // PUT AUTH KEY
+		"put option 0 command-audit 6c02", // CHANGE AUTH KEY
+		"put option 0 command-audit 5802", // DELETE OBJECT
+		// Force-audit wrapping operations
+		"put option 0 command-audit 4c02", // PUT WRAP KEY
+		"put option 0 command-audit 5b02", // GENERATE WRAP KEY
+		"put option 0 command-audit 7302", // PUT PUBLIC WRAP KEY
+		"put option 0 command-audit 7402", // EXPORT RSA WRAPPED KEY
+		"put option 0 command-audit 7502", // IMPORT RSA WRAPPED KEY
+		"put option 0 command-audit 7602", // EXPORT RSA WRAPPED OBJECT
+		"put option 0 command-audit 7702", // IMPORT RSA WRAPPED OBJECT
+		"put option 0 command-audit 4a02", // EXPORT WRAPPED
+		"put option 0 command-audit 4b02", // IMPORT WRAPPED
+		// Retrieve the resulting audit log and options for verification
+		"get option 0 command-audit",
+		"get option 0 force-audit",
+		"audit get 0",
+	}, "\n")
+
+	return runShell(cfg, commands)
+}
+
 func GetDeviceAttestation(cfg Config) ([]byte, error) {
 	tmpFile, err := os.CreateTemp("", "yubihsm-cert-*.der")
 	if err != nil {

@@ -75,6 +75,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 
 	mux.Handle("GET /api/hsm/attestation", protected(http.HandlerFunc(a.GetHSMAttestation)))
 	mux.Handle("GET /api/hsm/audit-log", protected(http.HandlerFunc(a.GetHSMAuditLog)))
+	mux.Handle("POST /api/hsm/provision-audit", protected(http.HandlerFunc(a.ProvisionHSMAudit)))
 
 	mux.Handle("GET /api/me", protected(http.HandlerFunc(a.Me)))
 }
@@ -803,6 +804,25 @@ func (a *API) GetHSMAuditLog(w http.ResponseWriter, r *http.Request) {
 		"device_serial": auditLog.DeviceSerial,
 		"entries":       verified,
 		"exported_at":   auditLog.ExportedAt,
+	})
+}
+
+func (a *API) ProvisionHSMAudit(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserInfo(r.Context())
+	if !user.IsRoot {
+		writeError(w, http.StatusForbidden, "only root can provision HSM audit logging")
+		return
+	}
+
+	output, err := hsm.ProvisionAuditLogging(a.hsmCfg)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to provision HSM audit logging: %v", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status": "provisioned",
+		"output": output,
 	})
 }
 

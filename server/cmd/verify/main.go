@@ -119,6 +119,36 @@ func verifyDeviceCert(certPath, caPath, intPath string) bool {
 	return true
 }
 
+func cmdName(cmd uint8) string {
+	if name, ok := hsm.CryptoCommands[cmd]; ok {
+		return name
+	}
+	switch cmd {
+	case 0xff:
+		return "BOOT SENTINEL"
+	case 0x00:
+		return "BOOT"
+	case hsm.CmdPutOption:
+		return "PUT OPTION"
+	case hsm.CmdPutAuthKey:
+		return "PUT AUTH KEY"
+	case hsm.CmdChangeAuthKey:
+		return "CHANGE AUTH KEY"
+	case hsm.CmdDeleteObject:
+		return "DELETE OBJECT"
+	case hsm.CmdPutWrapKey:
+		return "PUT WRAP KEY"
+	case hsm.CmdGenerateWrapKey:
+		return "GENERATE WRAP KEY"
+	case hsm.CmdExportWrapped:
+		return "EXPORT WRAPPED"
+	case hsm.CmdImportWrapped:
+		return "IMPORT WRAPPED"
+	default:
+		return fmt.Sprintf("0x%02x", cmd)
+	}
+}
+
 func verifyAuditLog(path string) bool {
 	fmt.Println("=== Audit Log Hash Chain Verification ===")
 
@@ -130,7 +160,6 @@ func verifyAuditLog(path string) bool {
 
 	var log hsm.AuditLog
 	if err := json.Unmarshal(data, &log); err != nil {
-		// Try as bare array of entries
 		var entries []hsm.AuditLogEntry
 		if err2 := json.Unmarshal(data, &entries); err2 != nil {
 			fmt.Printf("Error parsing audit log JSON: %v\n", err)
@@ -145,7 +174,7 @@ func verifyAuditLog(path string) bool {
 	if !log.ExportedAt.IsZero() {
 		fmt.Printf("  Exported At:   %s\n", log.ExportedAt.Format("2006-01-02 15:04:05 UTC"))
 	}
-	fmt.Printf("  Entries:       %d\n", len(log.Entries))
+	fmt.Printf("  Entries:       %d\n\n", len(log.Entries))
 
 	if len(log.Entries) == 0 {
 		fmt.Println("  No entries to verify")
@@ -158,22 +187,64 @@ func verifyAuditLog(path string) bool {
 		return false
 	}
 
-	allOK := true
+	chainOK := true
+	cryptoCount := 0
+	cryptoFail := 0
+	var failures []string
+
 	for i, ok := range results {
 		e := log.Entries[i]
+		name := cmdName(e.Command)
+		isCrypto := false
+		if _, exists := hsm.CryptoCommands[e.Command]; exists {
+			isCrypto = true
+			cryptoCount++
+		}
+
 		status := "OK"
 		if !ok {
 			status = "FAIL"
-			allOK = false
+			chainOK = false
+			if isCrypto {
+				cryptoFail++
+				failures = append(failures, fmt.Sprintf(
+					"  FAIL entry %d: %s (cmd=0x%02x target=0x%04x tick=%d)",
+					e.Number, name, e.Command, e.TargetKey, e.Tick))
+			}
 		}
-		fmt.Printf("  Entry %3d: cmd=0x%02x target=0x%04x tick=%-10d hash=%s\n",
-			e.Number, e.Command, e.TargetKey, e.Tick, status)
+
+		marker := "  "
+		if isCrypto {
+			marker = "* "
+		}
+		fmt.Printf("%sEntry %3d: %-25s target=0x%04x tick=%-10d hash=%s\n",
+			marker, e.Number, name, e.TargetKey, e.Tick, status)
 	}
 
-	if allOK {
-		fmt.Println("  Chain integrity: PASS")
+	fmt.Println()
+	fmt.Printf("  Hash chain integrity:    %s\n", passOrFail(chainOK))
+	fmt.Printf("  Crypto operations found: %d\n", cryptoCount)
+
+	if cryptoCount > 0 {
+		allCryptoOK := cryptoFail == 0
+		fmt.Printf("  Crypto operations valid: %s\n", passOrFail(allCryptoOK))
+		if !allCryptoOK {
+			fmt.Printf("\n  %d crypto operation(s) with broken hash chain:\n", cryptoFail)
+			for _, f := range failures {
+				fmt.Println(f)
+			}
+			return false
+		}
 	} else {
-		fmt.Println("  Chain integrity: FAIL")
+		fmt.Println("  WARNING: No crypto operations in log (audit logging may not be enabled)")
 	}
-	return allOK
+
+	return chainOK
+}
+
+func passOrFail(ok bool) string {
+	if ok {
+		return "PASS"
+	}
+	return "FAIL"
 }

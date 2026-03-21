@@ -982,6 +982,20 @@ document.getElementById('downloadAttestBtn').addEventListener('click', () => {
     URL.revokeObjectURL(a.href);
 });
 
+document.getElementById('provisionAuditBtn').addEventListener('click', async () => {
+    if (!await modalConfirm('Provision HSM Audit Logging',
+        'This will IRREVERSIBLY enable forced audit logging for all cryptographic operations on the YubiHSM. ' +
+        'The HSM will refuse operations when the audit log is full until logs are consumed. ' +
+        'This cannot be undone without a factory reset. Continue?')) return;
+    try {
+        const result = await API.post('/api/hsm/provision-audit');
+        showToast('Success', 'HSM audit logging provisioned');
+        loadHSMPage();
+    } catch (err) {
+        showToast('Error', err.message, true);
+    }
+});
+
 document.getElementById('downloadHSMAuditBtn').addEventListener('click', () => {
     if (!hsmAuditData) return;
     const blob = new Blob([JSON.stringify(hsmAuditData, null, 2)], { type: 'application/json' });
