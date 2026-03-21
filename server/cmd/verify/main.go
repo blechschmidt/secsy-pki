@@ -678,36 +678,41 @@ func truncStr(s string, n int) string {
 
 func cmdVerifyCombinedLog(args []string) {
 	fs := flag.NewFlagSet("verify-combined-log", flag.ExitOnError)
-	signedLogPath := fs.String("signed-log", "", "Path to signed HSM audit log JSON (from verify-audit-log)")
+	signedLogPath := fs.String("signed-log", "", "Path to signed HSM audit log JSON")
 	combinedLogPath := fs.String("combined-log", "", "Path to combined crypto operations log JSON")
-	caKeyHex := fs.String("ca-key", "", "CA key ID on the HSM (hex, e.g. 0x50dd)")
+	caKeyPath := fs.String("ca-key", "", "Path to the CA public key file (SSH format)")
 	yubicoCAPath := fs.String("yubico-ca", "", "Path to Yubico root CA PEM")
 	yubicoIntPath := fs.String("yubico-intermediate", "", "Path to Yubico intermediate CA PEM")
 	fs.Parse(args)
 
-	if *signedLogPath == "" || *combinedLogPath == "" || *caKeyHex == "" {
+	if *signedLogPath == "" || *combinedLogPath == "" || *caKeyPath == "" {
 		fmt.Fprintln(os.Stderr, "Usage: secsy-verify verify-combined-log \\")
 		fmt.Fprintln(os.Stderr, "  --signed-log <signed-audit-log.json> \\")
 		fmt.Fprintln(os.Stderr, "  --combined-log <combined-audit-log.json> \\")
-		fmt.Fprintln(os.Stderr, "  --ca-key <hex-key-id> \\")
+		fmt.Fprintln(os.Stderr, "  --ca-key <ca-public-key.pub> \\")
 		fmt.Fprintln(os.Stderr, "  [--yubico-ca <pem> --yubico-intermediate <pem>]")
 		fmt.Fprintln(os.Stderr, "\nVerifies that:")
 		fmt.Fprintln(os.Stderr, "  1. The signed HSM audit log is valid (hash chain, signature, cert chain)")
-		fmt.Fprintln(os.Stderr, "  2. The CA key was generated on the HSM and is unexportable")
-		fmt.Fprintln(os.Stderr, "  3. Every HSM sign operation on the CA key maps to a combined log entry")
-		fmt.Fprintln(os.Stderr, "  4. Every combined log entry maps to an HSM sign operation")
-		fmt.Fprintln(os.Stderr, "  5. Each certificate contains the claimed public key and parameters")
+		fmt.Fprintln(os.Stderr, "  2. The CA key was generated on the HSM, is unexportable, and has never been exported")
+		fmt.Fprintln(os.Stderr, "  3. The CA key in the attestation cert matches the provided public key file")
+		fmt.Fprintln(os.Stderr, "  4. Every HSM sign operation on the CA key maps to a combined log entry")
+		fmt.Fprintln(os.Stderr, "  5. Every combined log entry maps to an HSM sign operation")
+		fmt.Fprintln(os.Stderr, "  6. Each certificate contains the claimed public key and parameters")
 		os.Exit(1)
 	}
 
-	// Parse CA key ID
-	keyStr := strings.TrimPrefix(*caKeyHex, "0x")
-	caKeyID64, err := hex.DecodeString(fmt.Sprintf("%04s", keyStr))
-	if err != nil || len(caKeyID64) < 2 {
-		fmt.Fprintf(os.Stderr, "Invalid CA key ID: %s\n", *caKeyHex)
+	// Load CA public key
+	caKeyData, err := os.ReadFile(*caKeyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading CA key: %v\n", err)
 		os.Exit(1)
 	}
-	caKeyID := uint16(caKeyID64[len(caKeyID64)-2])<<8 | uint16(caKeyID64[len(caKeyID64)-1])
+	caSSHPub, _, _, _, err := ssh.ParseAuthorizedKey(caKeyData)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing CA public key (expected SSH format): %v\n", err)
+		os.Exit(1)
+	}
+	caKeyBytes := caSSHPub.Marshal()
 
 	// Load signed log
 	signedData, err := os.ReadFile(*signedLogPath)
@@ -742,17 +747,73 @@ func cmdVerifyCombinedLog(args []string) {
 	}
 	fmt.Println()
 
-	// Step 2: Verify CA key properties from attestation
-	fmt.Printf("=== Step 2: CA Key Properties (0x%04x) ===\n", caKeyID)
-	attestCert, _ := parsePEMCert([]byte(signedLog.AttestationCertPEM))
-	caKeyOK := verifyCAKeyProperties(signedLog.Entries, caKeyID, attestCert)
-	if !caKeyOK {
+	// Step 2: Find the CA key's attestation cert and verify properties
+	fmt.Println("=== Step 2: CA Key Attestation ===")
+	fmt.Printf("  Provided CA key: %s\n", ssh.FingerprintSHA256(caSSHPub))
+
+	// Find matching attestation cert from the combined log
+	var caAttestCert *x509.Certificate
+	var caKeyID uint16
+	var caKeyLabel string
+
+	for label, certPEM := range combined.KeyAttestations {
+		cert, err := parsePEMCert([]byte(certPEM))
+		if err != nil {
+			continue
+		}
+		// Compare the public key in the attestation cert with the provided CA key
+		attestSSHPub, err := ssh.NewPublicKey(cert.PublicKey)
+		if err != nil {
+			continue
+		}
+		if string(attestSSHPub.Marshal()) == string(caKeyBytes) {
+			caAttestCert = cert
+			caKeyLabel = label
+			// Extract object ID from attestation cert OIDs
+			for _, ext := range cert.Extensions {
+				if ext.Id.Equal(oidObjectID) {
+					var n int
+					if _, err := asn1.Unmarshal(ext.Value, &n); err == nil {
+						caKeyID = uint16(n)
+					}
+				}
+			}
+			fmt.Printf("  Matched key:     %s (label=%q, id=0x%04x)\n", ssh.FingerprintSHA256(attestSSHPub), label, caKeyID)
+			break
+		}
+	}
+
+	if caAttestCert == nil {
+		fmt.Println("  FAIL: No attestation certificate found matching the provided CA key")
+		fmt.Println("        The CA key may not be on this HSM, or key_attestations is missing from the combined log")
 		allOK = false
+	} else {
+		// Verify the attestation cert against the device cert from the signed log
+		deviceCert, err := parsePEMCert([]byte(signedLog.DeviceCertPEM))
+		if err == nil {
+			if err := caAttestCert.CheckSignatureFrom(deviceCert); err != nil {
+				fmt.Printf("  Attestation <- Device: FAIL (%v)\n", err)
+				allOK = false
+			} else {
+				fmt.Println("  Attestation <- Device: PASS")
+			}
+		}
+
+		// Display attestation OIDs
+		printYubiHSMAttestationOIDs(caAttestCert, "  ")
 	}
 	fmt.Println()
 
-	// Step 3: Cross-reference HSM sign ops with combined log
-	fmt.Printf("=== Step 3: Cross-Reference (CA key 0x%04x) ===\n", caKeyID)
+	fmt.Printf("=== Step 3: CA Key Properties (0x%04x) ===\n", caKeyID)
+	caKeyOK := verifyCAKeyProperties(signedLog.Entries, caKeyID, caAttestCert)
+	if !caKeyOK {
+		allOK = false
+	}
+	_ = caKeyLabel
+	fmt.Println()
+
+	// Step 4: Cross-reference HSM sign ops with combined log
+	fmt.Printf("=== Step 4: Cross-Reference (CA key 0x%04x) ===\n", caKeyID)
 
 	// Build a set of HSM entry numbers from the signed log (cryptographic proof)
 	signedHSMNumbers := make(map[uint16]bool)
@@ -834,8 +895,8 @@ func cmdVerifyCombinedLog(args []string) {
 	}
 	fmt.Println()
 
-	// Step 4: Verify certificates match claimed parameters
-	fmt.Println("=== Step 4: Certificate Parameter Verification ===")
+	// Step 5: Verify certificates match claimed parameters
+	fmt.Println("=== Step 5: Certificate Parameter Verification ===")
 	certErrors := 0
 	for hsmNum, signOp := range matchedPairs {
 		ok := verifyCertificateParams(hsmNum, signOp)

@@ -877,6 +877,29 @@ func (a *API) ExportCombinedAuditLog(w http.ResponseWriter, r *http.Request) {
 	serial, _ := hsm.GetDeviceSerial(a.hsmCfg)
 	export.DeviceSerial = serial
 
+	// Add attestation certs for all CA keys referenced in sign operations
+	export.KeyAttestations = make(map[string]string)
+	caIDs := make(map[string]bool)
+	for _, op := range export.SignOps {
+		caIDs[op.CAID] = true
+	}
+	for caID := range caIDs {
+		ca, err := a.db.GetCA(caID)
+		if err != nil || ca == nil {
+			continue
+		}
+		keyLabel := extractKeyLabel(ca.PKCS11URI)
+		if keyLabel == "" {
+			continue
+		}
+		cert, err := hsm.GetKeyAttestationCert(a.hsmCfg, keyLabel)
+		if err != nil {
+			log.Printf("WARNING: could not get attestation cert for key %q: %v", keyLabel, err)
+			continue
+		}
+		export.KeyAttestations[keyLabel] = cert
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=combined-audit-log.json")
 	json.NewEncoder(w).Encode(export)

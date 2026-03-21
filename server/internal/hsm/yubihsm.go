@@ -307,6 +307,32 @@ func GetSignedAuditLog(cfg Config) (*SignedAuditLog, error) {
 	}, nil
 }
 
+// GetKeyAttestationCert gets an attestation certificate for a key by its label.
+func GetKeyAttestationCert(cfg Config, keyLabel string) (string, error) {
+	// First find the key's object ID
+	out, err := runShell(cfg, "list objects 0")
+	if err != nil {
+		return "", err
+	}
+	// Parse "id: 0x50dd, type: asymmetric-key, ..., label: ssh-pki-root-ca"
+	re := regexp.MustCompile(`id:\s+0x([0-9a-fA-F]+),\s+type:\s+asymmetric-key,.*label:\s+` + regexp.QuoteMeta(keyLabel))
+	m := re.FindStringSubmatch(out)
+	if len(m) < 2 {
+		return "", fmt.Errorf("key %q not found on HSM", keyLabel)
+	}
+	keyID := m[1]
+
+	attestOut, err := runShell(cfg, fmt.Sprintf("attest asymmetric 0 0x%s", keyID))
+	if err != nil {
+		return "", fmt.Errorf("attesting key 0x%s: %w", keyID, err)
+	}
+	cert := extractPEM(attestOut)
+	if cert == "" {
+		return "", fmt.Errorf("could not parse attestation cert for key 0x%s", keyID)
+	}
+	return cert, nil
+}
+
 // SignAuditEntries signs a set of audit log entries with the HSM's attestation key.
 // Unlike GetSignedAuditLog, this takes pre-collected entries (e.g., from a database).
 func SignAuditEntries(cfg Config, entries []AuditLogEntry) (*SignedAuditLog, error) {

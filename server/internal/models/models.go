@@ -134,9 +134,10 @@ type HSMAuditEntry struct {
 }
 
 type CombinedAuditExport struct {
-	DeviceSerial string          `json:"device_serial,omitempty"`
-	HSMEntries   []HSMAuditEntry  `json:"hsm_entries"`
-	SignOps      []AuditLogEntry  `json:"sign_operations"`
+	DeviceSerial      string            `json:"device_serial,omitempty"`
+	HSMEntries        []HSMAuditEntry   `json:"hsm_entries"`
+	SignOps           []AuditLogEntry   `json:"sign_operations"`
+	KeyAttestations   map[string]string `json:"key_attestations,omitempty"` // PKCS11 key label -> attestation cert PEM
 }
 
 type AccessLogEntry struct {
