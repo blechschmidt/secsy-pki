@@ -3,13 +3,18 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"flag"
 	"fmt"
+	"math/big"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
@@ -17,19 +22,45 @@ import (
 )
 
 func main() {
-	auditLogPath := flag.String("audit-log", "", "Path to exported audit log JSON (signed, combined, or HSM-only)")
-	yubicoCAPath := flag.String("yubico-ca", "", "Path to Yubico root CA PEM")
-	yubicoIntPath := flag.String("yubico-intermediate", "", "Path to Yubico intermediate CA PEM")
-	flag.Parse()
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
+	}
+
+	switch os.Args[1] {
+	case "verify-audit-log":
+		cmdVerifyAuditLog(os.Args[2:])
+	case "help", "-h", "--help":
+		printUsage()
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", os.Args[1])
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+func printUsage() {
+	fmt.Fprintln(os.Stderr, "Usage: secsy-verify <command> [options]")
+	fmt.Fprintln(os.Stderr, "\nCommands:")
+	fmt.Fprintln(os.Stderr, "  verify-audit-log  Verify an exported HSM audit log")
+	fmt.Fprintln(os.Stderr, "\nRun 'secsy-verify <command> --help' for command-specific help.")
+}
+
+func cmdVerifyAuditLog(args []string) {
+	fs := flag.NewFlagSet("verify-audit-log", flag.ExitOnError)
+	auditLogPath := fs.String("audit-log", "", "Path to exported audit log JSON (signed, combined, or HSM-only)")
+	yubicoCAPath := fs.String("yubico-ca", "", "Path to Yubico root CA PEM")
+	yubicoIntPath := fs.String("yubico-intermediate", "", "Path to Yubico intermediate CA PEM")
+	fs.Parse(args)
 
 	if *auditLogPath == "" {
-		fmt.Fprintln(os.Stderr, "Usage: secsy-verify --audit-log <file> [--yubico-ca <pem> --yubico-intermediate <pem>]")
+		fmt.Fprintln(os.Stderr, "Usage: secsy-verify verify-audit-log --audit-log <file> [--yubico-ca <pem> --yubico-intermediate <pem>]")
 		fmt.Fprintln(os.Stderr, "\nThe audit log can be:")
 		fmt.Fprintln(os.Stderr, "  - Signed:   includes HSM signature, attestation cert, and device cert")
 		fmt.Fprintln(os.Stderr, "  - Combined: HSM entries + sign operations (no cryptographic proof)")
 		fmt.Fprintln(os.Stderr, "  - HSM-only: just the hash chain entries")
-		fmt.Fprintln(os.Stderr, "\nFor signed logs, --yubico-ca and --yubico-intermediate verify the full chain:")
-		fmt.Fprintln(os.Stderr, "  Yubico Root CA -> Intermediate -> Device Cert -> Attestation Cert -> Signature")
+		fmt.Fprintln(os.Stderr, "\nFor signed logs, --yubico-ca and --yubico-intermediate verify the full")
+		fmt.Fprintln(os.Stderr, "chain: Yubico Root CA -> Intermediate -> Device Cert -> Attestation Cert -> Signature")
 		os.Exit(1)
 	}
 
@@ -46,34 +77,217 @@ func main() {
 		if !ok {
 			os.Exit(1)
 		}
-		os.Exit(0)
+		return
 	}
 
 	var combined models.CombinedAuditExport
 	if err := json.Unmarshal(data, &combined); err == nil && len(combined.HSMEntries) > 0 {
 		fmt.Println("WARNING: This is a combined log without a cryptographic signature.")
 		fmt.Println("         Use a signed audit log for full verification.\n")
-		ok := verifyCombinedLog(&combined)
-		if !ok {
+		if !verifyCombinedLog(&combined) {
 			os.Exit(1)
 		}
-		os.Exit(0)
+		return
 	}
 
 	var hsmLog hsm.AuditLog
 	if err := json.Unmarshal(data, &hsmLog); err == nil && len(hsmLog.Entries) > 0 {
 		fmt.Println("WARNING: This is an unsigned HSM-only log without cryptographic proof.")
 		fmt.Println("         Use a signed audit log for full verification.\n")
-		ok := verifyHSMOnlyLog(&hsmLog)
-		if !ok {
+		if !verifyHSMOnlyLog(&hsmLog) {
 			os.Exit(1)
 		}
-		os.Exit(0)
+		return
 	}
 
 	fmt.Fprintln(os.Stderr, "Error: could not parse audit log (unrecognized format)")
 	os.Exit(1)
 }
+
+// --- YubiHSM attestation OIDs ---
+
+var (
+	oidYubicoBase      = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 41482}
+	oidFirmwareVersion = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 41482, 4, 1}
+	oidSerialNumber    = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 41482, 4, 2}
+	oidOrigin          = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 41482, 4, 3}
+	oidDomains         = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 41482, 4, 4}
+	oidCapabilities    = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 41482, 4, 5}
+	oidObjectID        = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 41482, 4, 6}
+	oidLabel           = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 41482, 4, 9}
+	oidFIPS            = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 41482, 4, 10}
+	oidFIPSApproved    = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 41482, 4, 12}
+)
+
+var oidNames = map[string]string{
+	oidFirmwareVersion.String(): "Firmware Version",
+	oidSerialNumber.String():    "Serial Number",
+	oidOrigin.String():          "Origin",
+	oidDomains.String():         "Domains",
+	oidCapabilities.String():    "Capabilities",
+	oidObjectID.String():        "Object ID",
+	oidLabel.String():           "Label",
+	oidFIPS.String():            "FIPS",
+	oidFIPSApproved.String():    "FIPS Approved",
+}
+
+func printYubiHSMAttestationOIDs(cert *x509.Certificate, indent string) {
+	found := false
+	for _, ext := range cert.Extensions {
+		if !isYubicoOID(ext.Id) {
+			continue
+		}
+		if !found {
+			fmt.Printf("%sYubiHSM Attestation OIDs:\n", indent)
+			found = true
+		}
+
+		name := oidNames[ext.Id.String()]
+		if name == "" {
+			name = ext.Id.String()
+		}
+
+		value := parseYubiHSMExtension(ext)
+		fmt.Printf("%s  %-20s %s\n", indent, name+":", value)
+	}
+	if !found {
+		fmt.Printf("%sYubiHSM Attestation OIDs: none found\n", indent)
+	}
+}
+
+func isYubicoOID(oid asn1.ObjectIdentifier) bool {
+	if len(oid) < len(oidYubicoBase) {
+		return false
+	}
+	for i, v := range oidYubicoBase {
+		if oid[i] != v {
+			return false
+		}
+	}
+	return true
+}
+
+func parseYubiHSMExtension(ext pkix.Extension) string {
+	oid := ext.Id.String()
+	raw := ext.Value
+
+	switch oid {
+	case oidFirmwareVersion.String():
+		// Octet string containing version bytes
+		var bs []byte
+		if _, err := asn1.Unmarshal(raw, &bs); err == nil && len(bs) >= 3 {
+			return fmt.Sprintf("%d.%d.%d", bs[0], bs[1], bs[2])
+		}
+		if len(raw) >= 3 {
+			return fmt.Sprintf("%d.%d.%d", raw[0], raw[1], raw[2])
+		}
+		return hex.EncodeToString(raw)
+
+	case oidSerialNumber.String():
+		var n int
+		if _, err := asn1.Unmarshal(raw, &n); err == nil {
+			return fmt.Sprintf("%d", n)
+		}
+		// Try as big int
+		var bi *big.Int
+		if _, err := asn1.Unmarshal(raw, &bi); err == nil {
+			return bi.String()
+		}
+		return hex.EncodeToString(raw)
+
+	case oidObjectID.String():
+		var n int
+		if _, err := asn1.Unmarshal(raw, &n); err == nil {
+			return fmt.Sprintf("0x%04x", n)
+		}
+		return hex.EncodeToString(raw)
+
+	case oidOrigin.String():
+		var bs asn1.BitString
+		if _, err := asn1.Unmarshal(raw, &bs); err == nil {
+			origins := parseOrigin(bs.Bytes)
+			return strings.Join(origins, ", ")
+		}
+		return hex.EncodeToString(raw)
+
+	case oidDomains.String():
+		var bs asn1.BitString
+		if _, err := asn1.Unmarshal(raw, &bs); err == nil {
+			return parseDomains(bs.Bytes)
+		}
+		return hex.EncodeToString(raw)
+
+	case oidCapabilities.String():
+		var bs asn1.BitString
+		if _, err := asn1.Unmarshal(raw, &bs); err == nil {
+			return hex.EncodeToString(bs.Bytes)
+		}
+		return hex.EncodeToString(raw)
+
+	case oidLabel.String():
+		var s string
+		if _, err := asn1.Unmarshal(raw, &s); err == nil {
+			return fmt.Sprintf("%q", s)
+		}
+		return fmt.Sprintf("%q", string(raw))
+
+	case oidFIPS.String():
+		var n int
+		if _, err := asn1.Unmarshal(raw, &n); err == nil {
+			return fmt.Sprintf("%d", n)
+		}
+		return hex.EncodeToString(raw)
+
+	case oidFIPSApproved.String():
+		var b bool
+		if _, err := asn1.Unmarshal(raw, &b); err == nil {
+			return fmt.Sprintf("%v", b)
+		}
+		return hex.EncodeToString(raw)
+	}
+
+	return hex.EncodeToString(raw)
+}
+
+func parseOrigin(data []byte) []string {
+	if len(data) == 0 {
+		return []string{"unknown"}
+	}
+	var origins []string
+	b := data[0]
+	if b&0x01 != 0 {
+		origins = append(origins, "generated")
+	}
+	if b&0x02 != 0 {
+		origins = append(origins, "imported")
+	}
+	if b&0x04 != 0 {
+		origins = append(origins, "imported-wrapped")
+	}
+	if len(origins) == 0 {
+		return []string{fmt.Sprintf("0x%02x", b)}
+	}
+	return origins
+}
+
+func parseDomains(data []byte) string {
+	if len(data) < 2 {
+		return hex.EncodeToString(data)
+	}
+	mask := binary.BigEndian.Uint16(data[:2])
+	var domains []string
+	for i := 0; i < 16; i++ {
+		if mask&(1<<uint(15-i)) != 0 {
+			domains = append(domains, fmt.Sprintf("%d", i+1))
+		}
+	}
+	if len(domains) == 0 {
+		return "none"
+	}
+	return strings.Join(domains, ", ")
+}
+
+// --- Verification functions ---
 
 func verifySignedLog(log *hsm.SignedAuditLog, caPath, intPath string) bool {
 	fmt.Println("=== Signed Audit Log Verification ===")
@@ -84,32 +298,33 @@ func verifySignedLog(log *hsm.SignedAuditLog, caPath, intPath string) bool {
 
 	allOK := true
 
-	// 1. Verify the HSM hash chain
+	// 1. Hash chain
 	fmt.Println("--- Hash Chain ---")
 	if !verifyHSMChain(log.Entries) {
 		allOK = false
 	}
 	fmt.Println()
 
-	// 2. Verify the log digest matches the entries
+	// 2. Log digest
 	fmt.Println("--- Log Digest ---")
 	computed := hsm.ComputeLogDigest(log.Entries)
 	if computed != log.LogDigest {
 		fmt.Printf("  Log digest:  FAIL (computed %s, expected %s)\n", computed[:16]+"...", log.LogDigest[:16]+"...")
 		allOK = false
 	} else {
-		fmt.Printf("  Log digest:  PASS (%s)\n", log.LogDigest[:32]+"...")
+		fmt.Printf("  Log digest:  PASS (%s...)\n", log.LogDigest[:32])
 	}
 	fmt.Println()
 
-	// 3. Verify the signature on the digest
-	fmt.Println("--- Signature Verification ---")
+	// 3. Signature
+	fmt.Println("--- Signature ---")
 	attestCert, err := parsePEMCert([]byte(log.AttestationCertPEM))
 	if err != nil {
 		fmt.Printf("  Attestation cert: FAIL (%v)\n", err)
 		allOK = false
 	} else {
 		fmt.Printf("  Attestation cert: %s\n", attestCert.Subject.CommonName)
+		printYubiHSMAttestationOIDs(attestCert, "  ")
 
 		pubKey, ok := attestCert.PublicKey.(ed25519.PublicKey)
 		if !ok {
@@ -121,44 +336,43 @@ func verifySignedLog(log *hsm.SignedAuditLog, caPath, intPath string) bool {
 			if err != nil {
 				fmt.Printf("  Signature decode: FAIL (%v)\n", err)
 				allOK = false
+			} else if ed25519.Verify(pubKey, digestBytes, sigBytes) {
+				fmt.Println("  Signature:        PASS (Ed25519)")
 			} else {
-				if ed25519.Verify(pubKey, digestBytes, sigBytes) {
-					fmt.Println("  Signature:        PASS (Ed25519 verified)")
-				} else {
-					fmt.Println("  Signature:        FAIL (Ed25519 verification failed)")
-					allOK = false
-				}
+				fmt.Println("  Signature:        FAIL")
+				allOK = false
 			}
 		}
 	}
 	fmt.Println()
 
-	// 4. Verify certificate chain: Yubico Root -> Intermediate -> Device Cert -> Attestation Cert
+	// 4. Certificate chain
 	fmt.Println("--- Certificate Chain ---")
 	deviceCert, err := parsePEMCert([]byte(log.DeviceCertPEM))
 	if err != nil {
 		fmt.Printf("  Device cert: FAIL (%v)\n", err)
 		allOK = false
 	} else {
-		fmt.Printf("  Device cert: %s\n", deviceCert.Subject.CommonName)
+		fmt.Printf("  Device cert:              %s\n", deviceCert.Subject.CommonName)
+		printYubiHSMAttestationOIDs(deviceCert, "  ")
 
-		// Verify attestation cert was signed by device cert
-		if err := attestCert.CheckSignatureFrom(deviceCert); err != nil {
-			fmt.Printf("  Attestation signed by device: FAIL (%v)\n", err)
-			allOK = false
-		} else {
-			fmt.Println("  Attestation signed by device: PASS")
+		if attestCert != nil {
+			if err := attestCert.CheckSignatureFrom(deviceCert); err != nil {
+				fmt.Printf("  Attestation <- Device:    FAIL (%v)\n", err)
+				allOK = false
+			} else {
+				fmt.Println("  Attestation <- Device:    PASS")
+			}
 		}
 
-		// Verify device cert against Yubico CA chain
 		if caPath != "" && intPath != "" {
 			if verifyDeviceCertChain(deviceCert, caPath, intPath) {
-				fmt.Println("  Device cert chain:            PASS (Yubico Root -> Intermediate -> Device)")
+				fmt.Println("  Device <- Yubico CA:      PASS")
 			} else {
 				allOK = false
 			}
 		} else {
-			fmt.Println("  Device cert chain:            SKIPPED (provide --yubico-ca and --yubico-intermediate)")
+			fmt.Println("  Device <- Yubico CA:      SKIPPED (provide --yubico-ca and --yubico-intermediate)")
 		}
 	}
 
@@ -170,29 +384,29 @@ func verifySignedLog(log *hsm.SignedAuditLog, caPath, intPath string) bool {
 func verifyDeviceCertChain(cert *x509.Certificate, caPath, intPath string) bool {
 	caData, err := os.ReadFile(caPath)
 	if err != nil {
-		fmt.Printf("  Device cert chain:            FAIL (reading root CA: %v)\n", err)
+		fmt.Printf("  Device <- Yubico CA:      FAIL (reading root: %v)\n", err)
 		return false
 	}
 	rootPool := x509.NewCertPool()
 	if !rootPool.AppendCertsFromPEM(caData) {
-		fmt.Println("  Device cert chain:            FAIL (parsing root CA)")
+		fmt.Println("  Device <- Yubico CA:      FAIL (parsing root)")
 		return false
 	}
 
 	intData, err := os.ReadFile(intPath)
 	if err != nil {
-		fmt.Printf("  Device cert chain:            FAIL (reading intermediate: %v)\n", err)
+		fmt.Printf("  Device <- Yubico CA:      FAIL (reading intermediate: %v)\n", err)
 		return false
 	}
 	intPool := x509.NewCertPool()
 	if !intPool.AppendCertsFromPEM(intData) {
-		fmt.Println("  Device cert chain:            FAIL (parsing intermediate)")
+		fmt.Println("  Device <- Yubico CA:      FAIL (parsing intermediate)")
 		return false
 	}
 
 	_, err = cert.Verify(x509.VerifyOptions{Roots: rootPool, Intermediates: intPool})
 	if err != nil {
-		fmt.Printf("  Device cert chain:            FAIL (%v)\n", err)
+		fmt.Printf("  Device <- Yubico CA:      FAIL (%v)\n", err)
 		return false
 	}
 	return true
