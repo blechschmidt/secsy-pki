@@ -6,15 +6,18 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
+	_ "github.com/lib/pq"
 	_ "github.com/mattn/go-sqlite3"
 	"golang.org/x/crypto/ssh"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
 
 type DB struct {
-	conn *sql.DB
+	conn   *sql.DB
+	driver string
 }
 
 func New(driver, dsn string) (*DB, error) {
@@ -35,29 +38,79 @@ func New(driver, dsn string) (*DB, error) {
 			return nil, fmt.Errorf("enabling foreign keys: %w", err)
 		}
 	}
-	db := &DB{conn: conn}
+	db := &DB{conn: conn, driver: driver}
 	if err := db.migrate(); err != nil {
 		return nil, fmt.Errorf("migrating: %w", err)
 	}
 	return db, nil
 }
 
+func (db *DB) isPostgres() bool {
+	return db.driver == "postgres" || db.driver == "postgresql"
+}
+
+// ph converts ? placeholders to $1, $2, ... for PostgreSQL
+func (db *DB) ph(query string) string {
+	if !db.isPostgres() {
+		return query
+	}
+	n := 0
+	var result strings.Builder
+	for _, c := range query {
+		if c == '?' {
+			n++
+			result.WriteRune('$')
+			result.WriteString(strconv.Itoa(n))
+		} else {
+			result.WriteRune(c)
+		}
+	}
+	return result.String()
+}
+
 func (db *DB) Close() error {
 	return db.conn.Close()
 }
 
+func (db *DB) exec(query string, args ...interface{}) (sql.Result, error) {
+	return db.conn.Exec(db.ph(query), args...)
+}
+
+func (db *DB) queryRow(query string, args ...interface{}) *sql.Row {
+	return db.conn.QueryRow(db.ph(query), args...)
+}
+
+func (db *DB) query(query string, args ...interface{}) (*sql.Rows, error) {
+	return db.conn.Query(db.ph(query), args...)
+}
+
 func (db *DB) migrate() error {
+	blob := "BLOB"
+	autoIncPK := "INTEGER PRIMARY KEY AUTOINCREMENT"
+	boolType := "INTEGER NOT NULL DEFAULT 0"
+
+	if db.isPostgres() {
+		blob = "BYTEA"
+		autoIncPK = "SERIAL PRIMARY KEY"
+		boolType = "BOOLEAN NOT NULL DEFAULT FALSE"
+	}
+
+	currentTimestamp := "DATETIME DEFAULT CURRENT_TIMESTAMP"
+	if db.isPostgres() {
+		currentTimestamp = "TIMESTAMP DEFAULT NOW()"
+	}
+
 	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS cas (
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS cas (
 			id TEXT PRIMARY KEY,
 			parent_id TEXT REFERENCES cas(id),
 			label TEXT NOT NULL,
 			pkcs11_uri TEXT NOT NULL,
 			key_type TEXT NOT NULL,
-			public_key BLOB NOT NULL,
+			public_key %s NOT NULL,
 			default_restriction_set_id TEXT,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-		)`,
+			created_at %s
+		)`, blob, currentTimestamp),
 		`CREATE TABLE IF NOT EXISTS groups_ (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL UNIQUE
@@ -66,6 +119,19 @@ func (db *DB) migrate() error {
 			group_id TEXT NOT NULL REFERENCES groups_(id) ON DELETE CASCADE,
 			user_sub TEXT NOT NULL,
 			PRIMARY KEY (group_id, user_sub)
+		)`,
+		`CREATE TABLE IF NOT EXISTS restriction_sets (
+			id TEXT PRIMARY KEY,
+			ca_id TEXT NOT NULL REFERENCES cas(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			max_validity_secs INTEGER,
+			allowed_principals TEXT,
+			allowed_cert_types TEXT,
+			force_key_id_email_reason ` + boolType + `,
+			allowed_extensions TEXT,
+			deny_extensions ` + boolType + `,
+			deny_critical_options ` + boolType + `,
+			max_valid_after_offset INTEGER
 		)`,
 		`CREATE TABLE IF NOT EXISTS permissions (
 			id TEXT PRIMARY KEY,
@@ -76,22 +142,9 @@ func (db *DB) migrate() error {
 			restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL,
 			UNIQUE(ca_id, entity_type, entity_id, permission)
 		)`,
-		`CREATE TABLE IF NOT EXISTS restriction_sets (
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS audit_log (
 			id TEXT PRIMARY KEY,
-			ca_id TEXT NOT NULL REFERENCES cas(id) ON DELETE CASCADE,
-			name TEXT NOT NULL,
-			max_validity_secs INTEGER,
-			allowed_principals TEXT,
-			allowed_cert_types TEXT,
-			force_key_id_email_reason INTEGER NOT NULL DEFAULT 0,
-			allowed_extensions TEXT,
-			deny_extensions INTEGER NOT NULL DEFAULT 0,
-			deny_critical_options INTEGER NOT NULL DEFAULT 0,
-			max_valid_after_offset INTEGER
-		)`,
-		`CREATE TABLE IF NOT EXISTS audit_log (
-			id TEXT PRIMARY KEY,
-			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+			timestamp %s,
 			user_sub TEXT NOT NULL,
 			user_email TEXT,
 			user_name TEXT,
@@ -100,33 +153,33 @@ func (db *DB) migrate() error {
 			key_id TEXT NOT NULL,
 			cert_type TEXT NOT NULL,
 			principals TEXT,
-			valid_after DATETIME NOT NULL,
-			valid_before DATETIME NOT NULL,
+			valid_after TIMESTAMP NOT NULL,
+			valid_before TIMESTAMP NOT NULL,
 			extensions TEXT,
 			critical_options TEXT,
-			public_key BLOB NOT NULL,
-			certificate BLOB,
+			public_key %s NOT NULL,
+			certificate %s,
 			cert_hash TEXT,
 			restriction_set_id TEXT,
 			serial TEXT NOT NULL,
 			UNIQUE(ca_id, cert_hash)
-		)`,
+		)`, currentTimestamp, blob, blob),
 		`CREATE INDEX IF NOT EXISTS idx_audit_log_ca ON audit_log(ca_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_sub)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_log_time ON audit_log(timestamp)`,
-		`CREATE TABLE IF NOT EXISTS access_log (
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS access_log (
 			id TEXT PRIMARY KEY,
-			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+			timestamp %s,
 			user_sub TEXT NOT NULL,
 			method TEXT NOT NULL,
 			path TEXT NOT NULL,
 			status INTEGER NOT NULL,
 			ip TEXT NOT NULL
-		)`,
+		)`, currentTimestamp),
 		`CREATE INDEX IF NOT EXISTS idx_access_log_time ON access_log(timestamp)`,
-		`CREATE TABLE IF NOT EXISTS hsm_audit_entries (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS hsm_audit_entries (
+			id %s,
+			fetched_at %s,
 			number INTEGER NOT NULL,
 			command INTEGER NOT NULL,
 			length INTEGER NOT NULL,
@@ -137,29 +190,55 @@ func (db *DB) migrate() error {
 			tick INTEGER NOT NULL,
 			hash TEXT NOT NULL,
 			sign_audit_id TEXT REFERENCES audit_log(id)
-		)`,
+		)`, autoIncPK, currentTimestamp),
 		`CREATE INDEX IF NOT EXISTS idx_hsm_audit_number ON hsm_audit_entries(number)`,
 	}
 	for _, stmt := range stmts {
-		if _, err := db.conn.Exec(stmt); err != nil {
+		if _, err := db.exec(stmt); err != nil {
 			return fmt.Errorf("executing %q: %w", stmt[:40], err)
 		}
 	}
 	// Migration: add columns if they don't exist (for existing databases)
-	db.conn.Exec("ALTER TABLE cas ADD COLUMN default_restriction_set_id TEXT")
-	db.conn.Exec("ALTER TABLE permissions ADD COLUMN restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
-	db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN deny_extensions INTEGER NOT NULL DEFAULT 0")
-	db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN deny_critical_options INTEGER NOT NULL DEFAULT 0")
-	db.conn.Exec("ALTER TABLE audit_log ADD COLUMN certificate TEXT")
-	db.conn.Exec("ALTER TABLE audit_log ADD COLUMN cert_hash TEXT")
+	// These are idempotent — errors are ignored for columns that already exist
+	if db.isPostgres() {
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS default_restriction_set_id TEXT")
+		db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
+		db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN IF NOT EXISTS deny_extensions BOOLEAN NOT NULL DEFAULT FALSE")
+		db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN IF NOT EXISTS deny_critical_options BOOLEAN NOT NULL DEFAULT FALSE")
+		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS certificate BYTEA")
+		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS cert_hash TEXT")
+	} else {
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_restriction_set_id TEXT")
+		db.conn.Exec("ALTER TABLE permissions ADD COLUMN restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
+		db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN deny_extensions INTEGER NOT NULL DEFAULT 0")
+		db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN deny_critical_options INTEGER NOT NULL DEFAULT 0")
+		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN certificate BLOB")
+		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN cert_hash TEXT")
+	}
 	db.conn.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_log_cert_unique ON audit_log(ca_id, cert_hash)")
 	return nil
+}
+
+// insertOrIgnore returns the appropriate INSERT statement for the driver.
+func (db *DB) insertOrIgnore(table, columns, placeholders string) string {
+	if db.isPostgres() {
+		return db.ph(fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT DO NOTHING", table, columns, placeholders))
+	}
+	return fmt.Sprintf("INSERT OR IGNORE INTO %s (%s) VALUES (%s)", table, columns, placeholders)
+}
+
+// upsert returns an INSERT ... ON CONFLICT DO UPDATE for the driver.
+func (db *DB) upsert(table, columns, placeholders, conflictCols, updateSet string) string {
+	if db.isPostgres() {
+		return db.ph(fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT(%s) DO UPDATE SET %s", table, columns, placeholders, conflictCols, updateSet))
+	}
+	return fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT(%s) DO UPDATE SET %s", table, columns, placeholders, conflictCols, updateSet)
 }
 
 // CA operations
 
 func (db *DB) CreateCA(ca *models.CA) error {
-	_, err := db.conn.Exec(
+	_, err := db.exec(
 		`INSERT INTO cas (id, parent_id, label, pkcs11_uri, key_type, public_key, default_restriction_set_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		ca.ID, ca.ParentID, ca.Label, ca.PKCS11URI, ca.KeyType, pubKeyToBlob(ca.PublicKey), ca.DefaultRestrictionSetID,
 	)
@@ -169,7 +248,7 @@ func (db *DB) CreateCA(ca *models.CA) error {
 func (db *DB) GetCA(id string) (*models.CA, error) {
 	ca := &models.CA{}
 	var pubBlob []byte
-	err := db.conn.QueryRow(
+	err := db.queryRow(
 		`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_restriction_set_id, created_at FROM cas WHERE id = ?`, id,
 	).Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob, &ca.DefaultRestrictionSetID, &ca.CreatedAt)
 	ca.PublicKey = blobToAuthorizedKey(pubBlob)
@@ -180,7 +259,7 @@ func (db *DB) GetCA(id string) (*models.CA, error) {
 }
 
 func (db *DB) ListCAs() ([]models.CA, error) {
-	rows, err := db.conn.Query(`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_restriction_set_id, created_at FROM cas`)
+	rows, err := db.query(`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_restriction_set_id, created_at FROM cas`)
 	if err != nil {
 		return nil, err
 	}
@@ -199,17 +278,17 @@ func (db *DB) ListCAs() ([]models.CA, error) {
 }
 
 func (db *DB) DeleteCA(id string) error {
-	_, err := db.conn.Exec(`DELETE FROM cas WHERE id = ?`, id)
+	_, err := db.exec(`DELETE FROM cas WHERE id = ?`, id)
 	return err
 }
 
 func (db *DB) SetCADefaultRestrictionSet(caID string, rsID *string) error {
-	_, err := db.conn.Exec(`UPDATE cas SET default_restriction_set_id = ? WHERE id = ?`, rsID, caID)
+	_, err := db.exec(`UPDATE cas SET default_restriction_set_id = ? WHERE id = ?`, rsID, caID)
 	return err
 }
 
 func (db *DB) GetChildren(parentID string) ([]models.CA, error) {
-	rows, err := db.conn.Query(`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_restriction_set_id, created_at FROM cas WHERE parent_id = ?`, parentID)
+	rows, err := db.query(`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_restriction_set_id, created_at FROM cas WHERE parent_id = ?`, parentID)
 	if err != nil {
 		return nil, err
 	}
@@ -230,13 +309,13 @@ func (db *DB) GetChildren(parentID string) ([]models.CA, error) {
 // Group operations
 
 func (db *DB) CreateGroup(g *models.Group) error {
-	_, err := db.conn.Exec(`INSERT INTO groups_ (id, name) VALUES (?, ?)`, g.ID, g.Name)
+	_, err := db.exec(`INSERT INTO groups_ (id, name) VALUES (?, ?)`, g.ID, g.Name)
 	return err
 }
 
 func (db *DB) GetGroup(id string) (*models.Group, error) {
 	g := &models.Group{}
-	err := db.conn.QueryRow(`SELECT id, name FROM groups_ WHERE id = ?`, id).Scan(&g.ID, &g.Name)
+	err := db.queryRow(`SELECT id, name FROM groups_ WHERE id = ?`, id).Scan(&g.ID, &g.Name)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -244,7 +323,7 @@ func (db *DB) GetGroup(id string) (*models.Group, error) {
 }
 
 func (db *DB) ListGroups() ([]models.Group, error) {
-	rows, err := db.conn.Query(`SELECT id, name FROM groups_`)
+	rows, err := db.query(`SELECT id, name FROM groups_`)
 	if err != nil {
 		return nil, err
 	}
@@ -261,22 +340,22 @@ func (db *DB) ListGroups() ([]models.Group, error) {
 }
 
 func (db *DB) DeleteGroup(id string) error {
-	_, err := db.conn.Exec(`DELETE FROM groups_ WHERE id = ?`, id)
+	_, err := db.exec(`DELETE FROM groups_ WHERE id = ?`, id)
 	return err
 }
 
 func (db *DB) AddGroupMember(groupID, userSub string) error {
-	_, err := db.conn.Exec(`INSERT OR IGNORE INTO group_members (group_id, user_sub) VALUES (?, ?)`, groupID, userSub)
+	_, err := db.conn.Exec(db.insertOrIgnore("group_members", "group_id, user_sub", "?, ?"), groupID, userSub)
 	return err
 }
 
 func (db *DB) RemoveGroupMember(groupID, userSub string) error {
-	_, err := db.conn.Exec(`DELETE FROM group_members WHERE group_id = ? AND user_sub = ?`, groupID, userSub)
+	_, err := db.exec(`DELETE FROM group_members WHERE group_id = ? AND user_sub = ?`, groupID, userSub)
 	return err
 }
 
 func (db *DB) GetGroupMembers(groupID string) ([]string, error) {
-	rows, err := db.conn.Query(`SELECT user_sub FROM group_members WHERE group_id = ?`, groupID)
+	rows, err := db.query(`SELECT user_sub FROM group_members WHERE group_id = ?`, groupID)
 	if err != nil {
 		return nil, err
 	}
@@ -293,7 +372,7 @@ func (db *DB) GetGroupMembers(groupID string) ([]string, error) {
 }
 
 func (db *DB) GetUserGroups(userSub string) ([]string, error) {
-	rows, err := db.conn.Query(`SELECT group_id FROM group_members WHERE user_sub = ?`, userSub)
+	rows, err := db.query(`SELECT group_id FROM group_members WHERE user_sub = ?`, userSub)
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +391,7 @@ func (db *DB) GetUserGroups(userSub string) ([]string, error) {
 // Permission operations
 
 func (db *DB) GrantPermission(p *models.PermissionEntry) error {
-	_, err := db.conn.Exec(
+	_, err := db.exec(
 		`INSERT INTO permissions (id, ca_id, entity_type, entity_id, permission, restriction_set_id) VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(ca_id, entity_type, entity_id, permission) DO UPDATE SET restriction_set_id = excluded.restriction_set_id`,
 		p.ID, p.CAID, p.EntityType, p.EntityID, p.Permission, p.RestrictionSetID,
@@ -321,7 +400,7 @@ func (db *DB) GrantPermission(p *models.PermissionEntry) error {
 }
 
 func (db *DB) RevokePermission(caID, entityType, entityID string, perm models.Permission) error {
-	_, err := db.conn.Exec(
+	_, err := db.exec(
 		`DELETE FROM permissions WHERE ca_id = ? AND entity_type = ? AND entity_id = ? AND permission = ?`,
 		caID, entityType, entityID, perm,
 	)
@@ -329,7 +408,7 @@ func (db *DB) RevokePermission(caID, entityType, entityID string, perm models.Pe
 }
 
 func (db *DB) GetPermissions(caID string) ([]models.PermissionEntry, error) {
-	rows, err := db.conn.Query(
+	rows, err := db.query(
 		`SELECT id, ca_id, entity_type, entity_id, permission, restriction_set_id FROM permissions WHERE ca_id = ?`, caID,
 	)
 	if err != nil {
@@ -349,7 +428,7 @@ func (db *DB) GetPermissions(caID string) ([]models.PermissionEntry, error) {
 
 func (db *DB) HasPermission(caID, userSub string, perm models.Permission, groupIDs []string) (bool, error) {
 	var count int
-	err := db.conn.QueryRow(
+	err := db.queryRow(
 		`SELECT COUNT(*) FROM permissions WHERE ca_id = ? AND entity_type = 'user' AND entity_id = ? AND permission = ?`,
 		caID, userSub, perm,
 	).Scan(&count)
@@ -361,7 +440,7 @@ func (db *DB) HasPermission(caID, userSub string, perm models.Permission, groupI
 	}
 
 	for _, gid := range groupIDs {
-		err := db.conn.QueryRow(
+		err := db.queryRow(
 			`SELECT COUNT(*) FROM permissions WHERE ca_id = ? AND entity_type = 'group' AND entity_id = ? AND permission = ?`,
 			caID, gid, perm,
 		).Scan(&count)
@@ -381,7 +460,7 @@ func (db *DB) HasPermission(caID, userSub string, perm models.Permission, groupI
 func (db *DB) GetEffectiveRestrictionSet(caID, userSub string, groupIDs []string) (*models.RestrictionSet, error) {
 	// Check user-specific SIGN_CERTIFICATE permission with a restriction set
 	var rsID sql.NullString
-	err := db.conn.QueryRow(
+	err := db.queryRow(
 		`SELECT restriction_set_id FROM permissions WHERE ca_id = ? AND entity_type = 'user' AND entity_id = ? AND permission = 'SIGN_CERTIFICATE' AND restriction_set_id IS NOT NULL`,
 		caID, userSub,
 	).Scan(&rsID)
@@ -391,7 +470,7 @@ func (db *DB) GetEffectiveRestrictionSet(caID, userSub string, groupIDs []string
 
 	// Check group-specific
 	for _, gid := range groupIDs {
-		err := db.conn.QueryRow(
+		err := db.queryRow(
 			`SELECT restriction_set_id FROM permissions WHERE ca_id = ? AND entity_type = 'group' AND entity_id = ? AND permission = 'SIGN_CERTIFICATE' AND restriction_set_id IS NOT NULL`,
 			caID, gid,
 		).Scan(&rsID)
@@ -402,7 +481,7 @@ func (db *DB) GetEffectiveRestrictionSet(caID, userSub string, groupIDs []string
 
 	// Fall back to CA default
 	var defaultID sql.NullString
-	err = db.conn.QueryRow(`SELECT default_restriction_set_id FROM cas WHERE id = ?`, caID).Scan(&defaultID)
+	err = db.queryRow(`SELECT default_restriction_set_id FROM cas WHERE id = ?`, caID).Scan(&defaultID)
 	if err == nil && defaultID.Valid {
 		return db.GetRestrictionSet(defaultID.String)
 	}
@@ -425,7 +504,7 @@ func (db *DB) marshalRS(rs *models.RestrictionSet) (principals, certTypes, exten
 
 func (db *DB) CreateRestrictionSet(rs *models.RestrictionSet) error {
 	principals, certTypes, extensions, forceEmail, denyExt, denyCrit := db.marshalRS(rs)
-	_, err := db.conn.Exec(
+	_, err := db.exec(
 		`INSERT INTO restriction_sets (id, ca_id, name, max_validity_secs, allowed_principals, allowed_cert_types, force_key_id_email_reason, allowed_extensions, deny_extensions, deny_critical_options, max_valid_after_offset)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rs.ID, rs.CAID, rs.Name, rs.MaxValiditySecs, principals, certTypes, forceEmail, extensions, denyExt, denyCrit, rs.MaxValidAfterOffset,
@@ -435,7 +514,7 @@ func (db *DB) CreateRestrictionSet(rs *models.RestrictionSet) error {
 
 func (db *DB) UpdateRestrictionSet(rs *models.RestrictionSet) error {
 	principals, certTypes, extensions, forceEmail, denyExt, denyCrit := db.marshalRS(rs)
-	_, err := db.conn.Exec(
+	_, err := db.exec(
 		`UPDATE restriction_sets SET name=?, max_validity_secs=?, allowed_principals=?, allowed_cert_types=?, force_key_id_email_reason=?, allowed_extensions=?, deny_extensions=?, deny_critical_options=?, max_valid_after_offset=? WHERE id=?`,
 		rs.Name, rs.MaxValiditySecs, principals, certTypes, forceEmail, extensions, denyExt, denyCrit, rs.MaxValidAfterOffset, rs.ID,
 	)
@@ -455,7 +534,7 @@ func (db *DB) GetRestrictionSet(id string) (*models.RestrictionSet, error) {
 	var rs models.RestrictionSet
 	var principals, certTypes, extensions sql.NullString
 	var forceEmail, denyExt, denyCrit int
-	err := db.conn.QueryRow(
+	err := db.queryRow(
 		`SELECT id, ca_id, name, max_validity_secs, allowed_principals, allowed_cert_types, force_key_id_email_reason, allowed_extensions, deny_extensions, deny_critical_options, max_valid_after_offset FROM restriction_sets WHERE id = ?`, id,
 	).Scan(&rs.ID, &rs.CAID, &rs.Name, &rs.MaxValiditySecs, &principals, &certTypes, &forceEmail, &extensions, &denyExt, &denyCrit, &rs.MaxValidAfterOffset)
 	if err == sql.ErrNoRows {
@@ -469,7 +548,7 @@ func (db *DB) GetRestrictionSet(id string) (*models.RestrictionSet, error) {
 }
 
 func (db *DB) ListRestrictionSets(caID string) ([]models.RestrictionSet, error) {
-	rows, err := db.conn.Query(
+	rows, err := db.query(
 		`SELECT id, ca_id, name, max_validity_secs, allowed_principals, allowed_cert_types, force_key_id_email_reason, allowed_extensions, deny_extensions, deny_critical_options, max_valid_after_offset FROM restriction_sets WHERE ca_id = ?`, caID,
 	)
 	if err != nil {
@@ -492,8 +571,8 @@ func (db *DB) ListRestrictionSets(caID string) ([]models.RestrictionSet, error) 
 
 func (db *DB) DeleteRestrictionSet(id string) error {
 	// Clear references from CA defaults
-	db.conn.Exec(`UPDATE cas SET default_restriction_set_id = NULL WHERE default_restriction_set_id = ?`, id)
-	_, err := db.conn.Exec(`DELETE FROM restriction_sets WHERE id = ?`, id)
+	db.exec(`UPDATE cas SET default_restriction_set_id = NULL WHERE default_restriction_set_id = ?`, id)
+	_, err := db.exec(`DELETE FROM restriction_sets WHERE id = ?`, id)
 	return err
 }
 
@@ -554,7 +633,7 @@ func (db *DB) CreateAuditLogEntry(e *models.AuditLogEntry) error {
 		}
 	}
 
-	_, err := db.conn.Exec(
+	_, err := db.exec(
 		`INSERT INTO audit_log (id, user_sub, user_email, user_name, ca_id, ca_label, key_id, cert_type, principals, valid_after, valid_before, extensions, critical_options, public_key, certificate, cert_hash, restriction_set_id, serial)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.ID, e.UserSub, e.UserEmail, e.UserName, e.CAID, e.CALabel, e.KeyID, e.CertType,
@@ -568,7 +647,7 @@ func (db *DB) FindExistingCertificate(caID, publicKey string) (*models.AuditLogE
 	var e models.AuditLogEntry
 	var principals, extensions, critOpts sql.NullString
 	var pubBlob, certBlob []byte
-	err := db.conn.QueryRow(
+	err := db.queryRow(
 		`SELECT id, timestamp, user_sub, user_email, user_name, ca_id, ca_label, key_id, cert_type, principals, valid_after, valid_before, extensions, critical_options, public_key, certificate, restriction_set_id, serial
 		 FROM audit_log WHERE ca_id = ? AND public_key = ? AND certificate IS NOT NULL ORDER BY timestamp DESC LIMIT 1`,
 		caID, pubKeyToBlob(publicKey),
@@ -596,7 +675,7 @@ func (db *DB) ListAuditLog(caID string, limit, offset int) ([]models.AuditLogEnt
 		countQuery += ` WHERE ca_id = ?`
 		args = append(args, caID)
 	}
-	if err := db.conn.QueryRow(countQuery, args...).Scan(&total); err != nil {
+	if err := db.queryRow(countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -609,7 +688,7 @@ func (db *DB) ListAuditLog(caID string, limit, offset int) ([]models.AuditLogEnt
 	query += ` ORDER BY timestamp DESC LIMIT ? OFFSET ?`
 	queryArgs = append(queryArgs, limit, offset)
 
-	rows, err := db.conn.Query(query, queryArgs...)
+	rows, err := db.query(query, queryArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -636,7 +715,7 @@ func (db *DB) ListAuditLog(caID string, limit, offset int) ([]models.AuditLogEnt
 // Access log operations
 
 func (db *DB) CreateAccessLogEntry(e *models.AccessLogEntry) error {
-	_, err := db.conn.Exec(
+	_, err := db.exec(
 		`INSERT INTO access_log (id, user_sub, method, path, status, ip) VALUES (?, ?, ?, ?, ?, ?)`,
 		e.ID, e.UserSub, e.Method, e.Path, e.Status, e.IP,
 	)
@@ -645,11 +724,11 @@ func (db *DB) CreateAccessLogEntry(e *models.AccessLogEntry) error {
 
 func (db *DB) ListAccessLog(limit, offset int) ([]models.AccessLogEntry, int, error) {
 	var total int
-	if err := db.conn.QueryRow(`SELECT COUNT(*) FROM access_log`).Scan(&total); err != nil {
+	if err := db.queryRow(`SELECT COUNT(*) FROM access_log`).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	rows, err := db.conn.Query(
+	rows, err := db.query(
 		`SELECT id, timestamp, user_sub, method, path, status, ip FROM access_log ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
 		limit, offset,
 	)
@@ -679,8 +758,7 @@ func (db *DB) StoreHSMAuditEntries(entries []models.HSMAuditEntry) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT OR IGNORE INTO hsm_audit_entries (number, command, length, session_key, target_key, second_key, result, tick, hash, sign_audit_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		db.insertOrIgnore("hsm_audit_entries", "number, command, length, session_key, target_key, second_key, result, tick, hash, sign_audit_id", "?, ?, ?, ?, ?, ?, ?, ?, ?, ?"))
 	if err != nil {
 		return err
 	}
@@ -696,7 +774,7 @@ func (db *DB) StoreHSMAuditEntries(entries []models.HSMAuditEntry) error {
 }
 
 func (db *DB) LinkLatestHSMSignEntry(signAuditID string) error {
-	_, err := db.conn.Exec(
+	_, err := db.exec(
 		`UPDATE hsm_audit_entries SET sign_audit_id = ?
 		 WHERE id = (SELECT id FROM hsm_audit_entries WHERE sign_audit_id IS NULL AND command IN (?, ?, ?, ?, ?) ORDER BY number DESC LIMIT 1)`,
 		signAuditID, 0x56, 0x6a, 0x47, 0x55, 0x46,
@@ -705,7 +783,7 @@ func (db *DB) LinkLatestHSMSignEntry(signAuditID string) error {
 }
 
 func (db *DB) ExportCombinedAuditLog() (*models.CombinedAuditExport, error) {
-	rows, err := db.conn.Query(
+	rows, err := db.query(
 		`SELECT number, command, length, session_key, target_key, second_key, result, tick, hash, sign_audit_id FROM hsm_audit_entries ORDER BY number ASC`)
 	if err != nil {
 		return nil, err
