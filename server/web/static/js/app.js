@@ -1023,7 +1023,23 @@ document.getElementById('provisionAuditBtn').addEventListener('click', async () 
         showToast('Success', 'HSM audit logging provisioned');
         loadHSMPage();
     } catch (err) {
-        showToast('Error', err.message, true);
+        if (err.message && err.message.includes('boot sentinel')) {
+            if (await modalConfirm('Factory Reset Required',
+                'The HSM was not factory reset before provisioning. ' +
+                'A factory reset will ERASE ALL KEYS AND DATA on the device. ' +
+                'After reset, you can re-provision audit logging.\n\n' +
+                'Factory reset the YubiHSM now?')) {
+                try {
+                    await API.post('/api/hsm/factory-reset');
+                    showToast('Success', 'HSM factory reset complete. You can now provision audit logging.');
+                    loadHSMPage();
+                } catch (resetErr) {
+                    showToast('Error', 'Factory reset failed: ' + resetErr.message, true);
+                }
+            }
+        } else {
+            showToast('Error', err.message, true);
+        }
     }
 });
 

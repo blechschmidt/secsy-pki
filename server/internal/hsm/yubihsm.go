@@ -180,6 +180,15 @@ var AllCommands = map[uint8]string{
 	0x77: "IMPORT RSA WRAPPED",
 }
 
+// FactoryReset performs a factory reset of the YubiHSM, erasing all keys and logs.
+func FactoryReset(cfg Config) error {
+	out, err := runShell(cfg, "reset 0")
+	if err != nil {
+		return fmt.Errorf("factory reset failed: %w\n%s", err, out)
+	}
+	return nil
+}
+
 // IsBootSentinel returns true if the entry is a boot sentinel (first entry after factory reset).
 func IsBootSentinel(e AuditLogEntry) bool {
 	return e.Number == 1 && e.Command == 0xff && e.Length == 0xffff &&

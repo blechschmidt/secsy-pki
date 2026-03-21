@@ -76,6 +76,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/hsm/attestation", protected(http.HandlerFunc(a.GetHSMAttestation)))
 	mux.Handle("GET /api/hsm/audit-log", protected(http.HandlerFunc(a.GetHSMAuditLog)))
 	mux.Handle("POST /api/hsm/provision-audit", protected(http.HandlerFunc(a.ProvisionHSMAudit)))
+	mux.Handle("POST /api/hsm/factory-reset", protected(http.HandlerFunc(a.FactoryResetHSM)))
 	mux.Handle("GET /api/hsm/combined-audit-log", protected(http.HandlerFunc(a.ExportCombinedAuditLog)))
 	mux.Handle("GET /api/hsm/signed-audit-log", protected(http.HandlerFunc(a.GetSignedAuditLog)))
 
@@ -953,13 +954,30 @@ func (a *API) ProvisionHSMAudit(w http.ResponseWriter, r *http.Request) {
 
 	output, err := hsm.ProvisionAuditLogging(a.hsmCfg)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to provision HSM audit logging: %v", err)
+		writeError(w, http.StatusPreconditionFailed, "%v", err)
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status": "provisioned",
 		"output": output,
+	})
+}
+
+func (a *API) FactoryResetHSM(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserInfo(r.Context())
+	if !user.IsRoot {
+		writeError(w, http.StatusForbidden, "only root can factory reset the HSM")
+		return
+	}
+
+	if err := hsm.FactoryReset(a.hsmCfg); err != nil {
+		writeError(w, http.StatusInternalServerError, "factory reset failed: %v", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status": "factory reset complete — all keys and logs have been erased",
 	})
 }
 
