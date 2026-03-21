@@ -789,23 +789,33 @@ func (a *API) GetHSMAuditLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Consume pending entries to DB, then serve from DB
 	a.consumeHSMAuditLogs("")
-	auditLog, err := hsm.GetAuditLog(a.hsmCfg)
-	a.consumeHSMAuditLogs("")
+
+	export, err := a.db.ExportCombinedAuditLog()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to get HSM audit log: %v", err)
 		return
 	}
 
-	// Verify hash chain
-	results, _ := hsm.VerifyHashChain(auditLog.Entries)
+	// Convert to hsm.AuditLogEntry for hash chain verification
+	var entries []hsm.AuditLogEntry
+	for _, e := range export.HSMEntries {
+		entries = append(entries, hsm.AuditLogEntry{
+			Number: e.Number, Command: e.Command, Length: e.Length,
+			SessionKey: e.SessionKey, TargetKey: e.TargetKey, SecondKey: e.SecondKey,
+			Result: e.Result, Tick: e.Tick, Hash: e.Hash,
+		})
+	}
+
+	results, _ := hsm.VerifyHashChain(entries)
 
 	type entryWithVerify struct {
 		hsm.AuditLogEntry
 		HashValid bool `json:"hash_valid"`
 	}
 	var verified []entryWithVerify
-	for i, e := range auditLog.Entries {
+	for i, e := range entries {
 		valid := true
 		if results != nil && i < len(results) {
 			valid = results[i]
@@ -813,8 +823,10 @@ func (a *API) GetHSMAuditLog(w http.ResponseWriter, r *http.Request) {
 		verified = append(verified, entryWithVerify{e, valid})
 	}
 
+	serial, _ := hsm.GetDeviceSerial(a.hsmCfg)
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"device_serial": auditLog.DeviceSerial,
+		"device_serial": serial,
 		"entries":       verified,
 		"exported_at":   auditLog.ExportedAt,
 	})
