@@ -1,42 +1,174 @@
 # Secsy PKI
 
-HSM-backed SSH Certificate Authority with OIDC authentication and a web UI.
+HSM-backed SSH Certificate Authority with OIDC authentication, publicly auditable signing logs, and a web UI.
 
-Secsy PKI manages an SSH public key infrastructure where CA private keys are stored on hardware security modules (HSMs) via PKCS#11. Users authenticate through OpenID Connect and request SSH certificates signed by the HSM. Restriction sets allow CA administrators to enforce policies on certificate parameters.
+Secsy PKI manages an SSH public key infrastructure where CA private keys are stored on hardware security modules (HSMs) via PKCS#11. Users authenticate through OpenID Connect and request SSH certificates signed by the HSM. Every signing operation is recorded in a cryptographically verifiable audit log backed by the YubiHSM's hardware hash chain.
 
 ## Features
 
 - **HSM-backed signing** — CA private keys live on a YubiHSM (or any PKCS#11 device). Keys never leave the hardware.
 - **Ed25519 and ECDSA** — Generate and sign with Ed25519 (YubiHSM) or ECDSA P-256/P-384/P-521 (SoftHSM/YubiHSM).
-- **OIDC authentication** — Public client with PKCE. The issuer discovery URL is the root of trust; no client secret needed. Tokens are refreshed automatically before expiry.
-- **Root user** — Configurable admin with basic auth, exempt from OIDC. Full global permissions.
+- **Publicly auditable logs** — Every HSM signing operation is recorded in a hardware hash chain, signed by the device's attestation key, and cross-referenced with certificate parameters. An offline verifier (`secsy-verify`) proves the complete chain of trust.
+- **Certificate uniqueness** — Each certificate is stored as raw binary with a SHA-256 uniqueness constraint per CA. Duplicate signing of the same material returns the existing certificate without calling the HSM.
+- **OIDC authentication** — Public client with PKCE. The issuer discovery URL is the root of trust; no client secret needed.
+- **Root user** — Configurable admin with basic auth, exempt from OIDC.
 - **Permission matrix** — `SIGN_CERTIFICATE`, `MANAGE_PERMISSIONS`, and `CONFIGURE_CA` per CA node, assignable to users or groups.
-- **Restriction sets** — Enforce policies on signing: max validity duration, allowed principals, allowed cert types, forced email+reason key IDs, deny/allow extensions and critical options, and max valid-after offset. A default restriction set can be assigned to a CA, with per-user/group overrides.
-- **SSH certificate signing** — User and host certificates with configurable principals, validity, extensions, and critical options (subject to restriction sets).
-- **Key generation** — Generate ed25519, ECDSA, or RSA key pairs via the API.
-- **CA key generation on HSM** — Create new CA keys directly on the HSM from the UI (no PKCS#11 URI needed).
-- **Web UI** — Bootstrap 5 SPA with dark theme. CA management, certificate signing, key generation, groups, permissions, and restriction set configuration. The sign form dynamically disables restricted fields based on the user's effective restrictions.
-- **SQLite backend** — Stores CA hierarchy, groups, members, permission matrix, and restriction sets.
+- **Restriction sets** — Enforce policies on signing: max validity, allowed principals/cert types, forced email+reason key IDs, deny extensions/critical options.
+- **Client-side key generation** — SSH keys are generated in the browser using the Web Crypto API. Private keys never leave the user's device.
+- **HSM management** — Factory reset, audit provisioning, device info, and attestation certificate export from the UI.
+- **Web UI** — Bootstrap 5 SPA with dark theme and SRI-pinned CDN resources.
+- **SQLite backend** — Stores everything in canonical binary form (wire-format bytes for keys and certificates).
 - **Terraform provisioning** — Provision the root CA key on a YubiHSM using [terraform-provider-pkcs11](https://github.com/blechschmidt/terraform-provider-pkcs11).
 
 ## Architecture
 
+```mermaid
+graph TB
+    Browser["Browser (SPA)"]
+    Server["Go HTTP Server"]
+    SQLite["SQLite DB"]
+    HSM["YubiHSM (PKCS#11)"]
+    OIDC["OIDC Provider"]
+
+    Browser -->|"HTTPS + OIDC/Basic Auth"| Server
+    Server --> SQLite
+    Server -->|"PKCS#11 (yhusb://)"| HSM
+    Server -->|"ID token verification"| OIDC
+    HSM -->|"Ed25519/ECDSA signing"| Server
 ```
-Browser (SPA)
-    |
-    | HTTPS + Bearer token (OIDC) or Basic auth (root)
-    v
-Go HTTP Server
-    |
-    |--- SQLite (CAs, groups, permissions, restriction sets)
-    |
-    |--- PKCS#11 ---> YubiHSM (via yhusb:// or yubihsm-connector)
-    |                  └── Ed25519/ECDSA CA private keys
-    |
-    v
-OIDC Provider (e.g. KeyCloak)
-    └── User authentication, ID token verification
+
+## Audit Verification
+
+Secsy PKI provides cryptographic proof that a CA key has only signed the certificates listed in the audit log. The verification relies on three independent mechanisms that together form a complete chain of trust.
+
+### Chain of Trust
+
+```mermaid
+graph LR
+    YubicoRoot["Yubico Root CA"]
+    YubicoInt["Yubico Intermediate CA"]
+    DeviceCert["Device Certificate"]
+    AttestKey["Attestation Key (0x0001)"]
+    CAKey["CA Key (e.g. 0x50dd)"]
+    HashChain["HSM Hash Chain"]
+    Signature["Signature on last hash"]
+    Certs["Signed Certificates"]
+
+    YubicoRoot -->|"signs"| YubicoInt
+    YubicoInt -->|"signs"| DeviceCert
+    DeviceCert -->|"signs attestation cert for"| AttestKey
+    DeviceCert -->|"signs attestation cert for"| CAKey
+    AttestKey -->|"signs"| Signature
+    HashChain -->|"last hash"| Signature
+    CAKey -->|"signs"| Certs
 ```
+
+### Verification Steps (`secsy-verify verify-combined-log`)
+
+```mermaid
+graph TD
+    S1["Step 1: Verify Signed HSM Audit Log"]
+    S1a["Hash chain integrity"]
+    S1b["Signature on last hash (Ed25519)"]
+    S1c["Attestation cert ← Device cert ← Yubico CA"]
+
+    S2["Step 2: Combined Log Hash Chain"]
+    S2a["Independent hash chain verification"]
+    S2b["Consistency with signed log"]
+
+    S3["Step 3: CA Key Attestation"]
+    S3a["Match provided public key to attestation cert"]
+    S3b["Verify attestation cert signed by device"]
+
+    S4["Step 4: CA Key Properties"]
+    S4a["Generated on HSM (origin=generated)"]
+    S4b["Never exported"]
+    S4c["No exportable-under-wrap capability"]
+
+    S5["Step 5: Cross-Reference"]
+    S5a["Every HSM sign op → combined log entry"]
+    S5b["Every combined log entry → HSM sign op"]
+
+    S6["Step 6: Certificate Verification"]
+    S6a["Certificate signature matches attested CA key"]
+    S6b["Parameters match log (key_id, principals, validity)"]
+
+    S7["Step 7: Bijection"]
+    S7a["All certificates unique (no duplicate hashes/serials)"]
+    S7b["N HSM ops ↔ N unique verified certificates"]
+
+    S1 --> S1a & S1b & S1c
+    S2 --> S2a & S2b
+    S3 --> S3a & S3b
+    S4 --> S4a & S4b & S4c
+    S5 --> S5a & S5b
+    S6 --> S6a & S6b
+    S7 --> S7a & S7b
+
+    S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7
+```
+
+### Why This Works
+
+```mermaid
+graph LR
+    subgraph "HSM Hardware"
+        HC["Hash Chain<br/>(computed inside HSM)"]
+        Sign["Sign operations<br/>(recorded in chain)"]
+    end
+
+    subgraph "Attestation"
+        DC["Device Cert<br/>(Yubico CA chain)"]
+        AK["Attestation Key<br/>(signs last hash)"]
+        CK["CA Key Attestation<br/>(generated, unexportable)"]
+    end
+
+    subgraph "Bijection"
+        N_ops["N HSM sign ops"]
+        N_certs["N unique certificates"]
+        Verify["Each cert signed by<br/>attested CA key"]
+    end
+
+    HC --> AK
+    DC --> AK
+    DC --> CK
+    Sign --> N_ops
+    N_ops -->|"1:1 mapping"| N_certs
+    CK --> Verify
+    N_certs --> Verify
+```
+
+The device init entry (0xff, all fields maxed) at entry 1 proves a factory reset preceded all audited operations. Forced audit mode (irreversible) ensures the HSM refuses operations when the log is full, preventing unlogged signing. The server consumes HSM audit entries before and after every HSM operation to keep the log from filling up.
+
+### Usage
+
+Build the verifier:
+```bash
+cd server
+go build -o secsy-verify ./cmd/verify
+```
+
+Verify a signed audit log:
+```bash
+secsy-verify verify-audit-log \
+  --audit-log signed-audit-log.json \
+  --yubico-ca yubico-root.pem \
+  --yubico-intermediate yubico-intermediate.pem
+```
+
+Verify the complete chain including certificate parameters:
+```bash
+secsy-verify verify-combined-log \
+  --signed-log signed-audit-log.json \
+  --combined-log combined-audit-log.json \
+  --ca-key ca-public-key.pub \
+  --yubico-ca yubico-root.pem \
+  --yubico-intermediate yubico-intermediate.pem
+```
+
+The Yubico CA certificates can be downloaded from:
+- Root: https://developers.yubico.com/YubiHSM2/Concepts/yubihsm2-attest-ca-crt.pem
+- Intermediate: https://developers.yubico.com/YubiHSM2/Concepts/E45DA5F361B091B30D8F2C6FA040DB6FEF57918E.pem
 
 ## Quick Start
 
@@ -51,6 +183,7 @@ OIDC Provider (e.g. KeyCloak)
 ```bash
 cd server
 go build -o secsy-pki-server ./cmd/server
+go build -o secsy-verify ./cmd/verify
 ```
 
 ### 2. Generate TLS Certificates
@@ -89,6 +222,12 @@ pkcs11:
   module_path: "/usr/lib/pkcs11/yubihsm_pkcs11.so"
   pin: "0001password"
   token_label: "YubiHSM"
+
+yubihsm:
+  connector_url: "yhusb://"
+  auth_key_id: 1
+  password: "password"
+  suppress_audit_warning: false
 ```
 
 For SoftHSM development, use `module_path: "/usr/lib/pkcs11/libsofthsm2.so"`.
@@ -134,15 +273,14 @@ All endpoints under `/api/` require authentication (Bearer token or Basic auth f
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Health check |
-| GET | `/api/auth/config` | OIDC discovery config (issuer URL + client ID) |
+| GET | `/api/auth/config` | OIDC discovery config |
 | GET | `/api/me` | Current user info |
 | GET | `/api/cas` | List CAs |
 | POST | `/api/cas` | Create CA (omit `pkcs11_uri` to generate key on HSM) |
 | GET | `/api/cas/{id}` | Get CA |
 | DELETE | `/api/cas/{id}` | Delete CA |
-| POST | `/api/cas/{id}/sign` | Sign an SSH certificate |
+| POST | `/api/cas/{id}/sign` | Sign an SSH certificate (returns existing if already signed) |
 | GET | `/api/cas/{id}/my-restrictions` | Get effective restriction set for current user |
-| POST | `/api/keys/generate` | Generate an SSH key pair |
 | GET | `/api/groups` | List groups |
 | POST | `/api/groups` | Create group |
 | DELETE | `/api/groups/{id}` | Delete group |
@@ -157,6 +295,15 @@ All endpoints under `/api/` require authentication (Bearer token or Basic auth f
 | PUT | `/api/restriction-sets/{id}` | Update restriction set |
 | DELETE | `/api/restriction-sets/{id}` | Delete restriction set |
 | PUT | `/api/cas/{id}/default-restriction-set` | Set CA default restriction set |
+| GET | `/api/audit-log` | Sign operations audit log (filterable, paginated) |
+| GET | `/api/access-log` | API access log (paginated) |
+| GET | `/api/hsm/info` | HSM device info and audit status |
+| GET | `/api/hsm/attestation` | Export device attestation certificate (PEM) |
+| GET | `/api/hsm/audit-log` | HSM audit log entries from database |
+| GET | `/api/hsm/signed-audit-log` | Signed HSM audit log (signature over last hash) |
+| GET | `/api/hsm/combined-audit-log` | Combined log with sign operations and key attestations |
+| POST | `/api/hsm/provision-audit` | Enable forced audit logging (irreversible) |
+| POST | `/api/hsm/factory-reset` | Factory reset the YubiHSM |
 
 ### Sign a Certificate
 
@@ -173,6 +320,8 @@ curl -sk -u root:password -X POST https://localhost:8443/api/cas/{ca_id}/sign \
   }'
 ```
 
+If the same public key was already signed by this CA, the existing certificate is returned without calling the HSM.
+
 ## Integration Tests
 
 Run with Docker (KeyCloak + OpenSSH):
@@ -181,8 +330,6 @@ Run with Docker (KeyCloak + OpenSSH):
 cd server
 ./scripts/run-integration-tests.sh
 ```
-
-This starts KeyCloak, seeds a test realm, launches the server, and runs the full test suite including SSH certificate verification with OpenSSH.
 
 ## Test SSH Server
 
@@ -193,45 +340,33 @@ cd test-ssh
 docker build -t secsy-pki-test-sshd .
 docker run -d -p 2222:22 secsy-pki-test-sshd
 
-# Generate key + sign cert via the API, then:
 ssh -i id_test -o CertificateFile=id_test-cert.pub -p 2222 testuser@localhost
 ```
 
 ## Permissions
 
-Three permissions exist on each CA node:
-
 | Permission | Description |
 |------------|-------------|
-| `SIGN_CERTIFICATE` | User may sign certificates through this CA (subject to restriction sets) |
-| `MANAGE_PERMISSIONS` | User may grant/revoke permissions and assign restriction sets to users/groups |
-| `CONFIGURE_CA` | User may create/edit/delete restriction sets and set the CA default restriction set |
+| `SIGN_CERTIFICATE` | Sign certificates through this CA (subject to restriction sets) |
+| `MANAGE_PERMISSIONS` | Grant/revoke permissions and assign restriction sets |
+| `CONFIGURE_CA` | Create/edit/delete restriction sets and set the CA default |
 
 Permissions can be assigned to individual users (by OIDC subject) or to groups. The root user bypasses all permission checks.
 
 ## Restriction Sets
 
-Restriction sets enforce policies on certificate signing. They are created by users with `CONFIGURE_CA` permission and can be:
-
-- **CA default** — applies to all signers unless overridden
-- **Per-user/group override** — attached to a `SIGN_CERTIFICATE` permission grant via `MANAGE_PERMISSIONS`
-
-Priority: user-specific > group-specific > CA default.
-
-A restriction set can constrain:
+Restriction sets enforce policies on certificate signing. Priority: user-specific > group-specific > CA default.
 
 | Field | Effect |
 |-------|--------|
-| `max_validity_secs` | Maximum certificate lifetime in seconds |
-| `allowed_principals` | Only these principals can be specified (`*` for any) |
+| `max_validity_secs` | Maximum certificate lifetime |
+| `allowed_principals` | Only these principals (`*` for any) |
 | `allowed_cert_types` | Only `user`, `host`, or both |
-| `force_key_id_email_reason` | Key ID is forced to `{email}: {reason}` format |
+| `force_key_id_email_reason` | Key ID forced to `{email}: {reason}` |
 | `deny_extensions` | No custom extensions allowed |
-| `allowed_extensions` | Only these extensions allowed (when not denied) |
+| `allowed_extensions` | Only these extensions (when not denied) |
 | `deny_critical_options` | No critical options allowed |
-| `max_valid_after_offset` | Maximum seconds into the future for valid-after |
-
-The web UI dynamically reflects restrictions: when a user selects a CA in the sign form, restricted fields are hidden or disabled based on their effective restriction set.
+| `max_valid_after_offset` | Max seconds into the future for valid-after |
 
 ## License
 
