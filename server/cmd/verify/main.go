@@ -115,34 +115,9 @@ func verifyDeviceCert(certPath, caPath, intPath string) bool {
 	return true
 }
 
-func cmdName(cmd uint8) string {
-	if name, ok := hsm.CryptoCommands[cmd]; ok {
-		return name
-	}
-	switch cmd {
-	case 0xff:
-		return "BOOT SENTINEL"
-	case 0x00:
-		return "BOOT"
-	case hsm.CmdPutOption:
-		return "PUT OPTION"
-	case hsm.CmdPutAuthKey:
-		return "PUT AUTH KEY"
-	case hsm.CmdChangeAuthKey:
-		return "CHANGE AUTH KEY"
-	case hsm.CmdDeleteObject:
-		return "DELETE OBJECT"
-	case hsm.CmdPutWrapKey:
-		return "PUT WRAP KEY"
-	case hsm.CmdGenerateWrapKey:
-		return "GENERATE WRAP KEY"
-	case hsm.CmdExportWrapped:
-		return "EXPORT WRAPPED"
-	case hsm.CmdImportWrapped:
-		return "IMPORT WRAPPED"
-	default:
-		return fmt.Sprintf("0x%02x", cmd)
-	}
+func cmdName(cmd uint8) (string, bool) {
+	name, known := hsm.AllCommands[cmd]
+	return name, known
 }
 
 func verifyAuditLog(path string) bool {
@@ -219,6 +194,13 @@ func verifyCombinedLog(combined *models.CombinedAuditExport) bool {
 	crossRefOK := true
 
 	for _, e := range combined.HSMEntries {
+		name, known := cmdName(e.Command)
+		if !known {
+			fmt.Printf("  ERROR: HSM entry %d has unknown command 0x%02x — cannot verify\n", e.Number, e.Command)
+			crossRefOK = false
+			continue
+		}
+
 		_, isCrypto := hsm.CryptoCommands[e.Command]
 		if !isCrypto {
 			continue
@@ -226,7 +208,7 @@ func verifyCombinedLog(combined *models.CombinedAuditExport) bool {
 
 		if e.SignAuditID == nil {
 			fmt.Printf("  WARNING: HSM entry %d (%s) has no linked sign operation\n",
-				e.Number, cmdName(e.Command))
+				e.Number, name)
 			cryptoUnlinked++
 			continue
 		}
@@ -241,7 +223,7 @@ func verifyCombinedLog(combined *models.CombinedAuditExport) bool {
 
 		cryptoLinked++
 		fmt.Printf("  Entry %3d: %-25s -> key_id=%q principals=%v cert_type=%s valid=%s..%s pubkey=%s...\n",
-			e.Number, cmdName(e.Command),
+			e.Number, name,
 			signOp.KeyID,
 			signOp.Principals,
 			orDefault(signOp.CertType, "user"),
@@ -290,11 +272,19 @@ func verifyHSMChain(entries []hsm.AuditLogEntry) bool {
 	chainOK := true
 	cryptoCount := 0
 	cryptoFail := 0
+	unknownCount := 0
 	var failures []string
 
 	for i, ok := range results {
 		e := entries[i]
-		name := cmdName(e.Command)
+		name, known := cmdName(e.Command)
+		if !known {
+			fmt.Printf("  ERROR entry %3d: unknown command 0x%02x — cannot verify\n", e.Number, e.Command)
+			unknownCount++
+			chainOK = false
+			continue
+		}
+
 		isCrypto := false
 		if _, exists := hsm.CryptoCommands[e.Command]; exists {
 			isCrypto = true
@@ -336,6 +326,10 @@ func verifyHSMChain(entries []hsm.AuditLogEntry) bool {
 		}
 	} else {
 		fmt.Println("  WARNING: No crypto operations in log (audit logging may not be enabled)")
+	}
+
+	if unknownCount > 0 {
+		fmt.Printf("  Unknown commands:        %d — FAIL (verifier does not understand these entries)\n", unknownCount)
 	}
 
 	return chainOK
