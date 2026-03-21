@@ -982,6 +982,23 @@ document.getElementById('downloadAttestBtn').addEventListener('click', () => {
     URL.revokeObjectURL(a.href);
 });
 
+document.getElementById('exportSignedBtn').addEventListener('click', async () => {
+    try {
+        showToast('Info', 'Signing audit log with HSM attestation key...');
+        const res = await fetch('/api/hsm/signed-audit-log', { headers: { 'Authorization': API.authHeader } });
+        if (!res.ok) { const e = await res.json(); throw new Error(e.error); }
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'signed-audit-log.json';
+        a.click();
+        URL.revokeObjectURL(a.href);
+        showToast('Success', 'Signed audit log exported');
+    } catch (err) {
+        showToast('Error', err.message, true);
+    }
+});
+
 document.getElementById('exportCombinedBtn').addEventListener('click', async () => {
     try {
         const res = await fetch('/api/hsm/combined-audit-log', { headers: { 'Authorization': API.authHeader } });

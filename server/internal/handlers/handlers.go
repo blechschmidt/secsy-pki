@@ -77,6 +77,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/hsm/audit-log", protected(http.HandlerFunc(a.GetHSMAuditLog)))
 	mux.Handle("POST /api/hsm/provision-audit", protected(http.HandlerFunc(a.ProvisionHSMAudit)))
 	mux.Handle("GET /api/hsm/combined-audit-log", protected(http.HandlerFunc(a.ExportCombinedAuditLog)))
+	mux.Handle("GET /api/hsm/signed-audit-log", protected(http.HandlerFunc(a.GetSignedAuditLog)))
 
 	mux.Handle("GET /api/me", protected(http.HandlerFunc(a.Me)))
 }
@@ -871,6 +872,24 @@ func (a *API) ExportCombinedAuditLog(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=combined-audit-log.json")
 	json.NewEncoder(w).Encode(export)
+}
+
+func (a *API) GetSignedAuditLog(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserInfo(r.Context())
+	if !user.IsRoot {
+		writeError(w, http.StatusForbidden, "only root can export signed audit logs")
+		return
+	}
+
+	signedLog, err := hsm.GetSignedAuditLog(a.hsmCfg)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get signed audit log: %v", err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", "attachment; filename=signed-audit-log.json")
+	json.NewEncoder(w).Encode(signedLog)
 }
 
 func (a *API) ProvisionHSMAudit(w http.ResponseWriter, r *http.Request) {

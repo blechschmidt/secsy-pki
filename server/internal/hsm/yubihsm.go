@@ -2,6 +2,7 @@ package hsm
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -224,6 +225,146 @@ func ProvisionAuditLogging(cfg Config) (string, error) {
 	}, "\n")
 
 	return runShell(cfg, commands)
+}
+
+// SignedAuditLog is an audit log with a cryptographic signature from the HSM's
+// attestation key, along with the attestation certificate chain proving the key
+// belongs to a genuine Yubico HSM.
+type SignedAuditLog struct {
+	DeviceSerial       string          `json:"device_serial"`
+	Entries            []AuditLogEntry `json:"entries"`
+	LogDigest          string          `json:"log_digest"`           // hex SHA-256 of serialized entries
+	Signature          string          `json:"signature"`            // base64 Ed25519 signature of the digest
+	AttestationCertPEM string          `json:"attestation_cert_pem"` // X.509 cert for the signing key
+	DeviceCertPEM      string          `json:"device_cert_pem"`      // device attestation cert
+	ExportedAt         time.Time       `json:"exported_at"`
+}
+
+// GetSignedAuditLog fetches the audit log, signs its digest with the HSM's
+// attestation key (0x0001), and returns the log with signature and attestation chain.
+func GetSignedAuditLog(cfg Config) (*SignedAuditLog, error) {
+	// Get audit log entries
+	auditLog, err := GetAuditLog(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("getting audit log: %w", err)
+	}
+
+	// Serialize entries deterministically for signing
+	digest := ComputeLogDigest(auditLog.Entries)
+
+	// Write digest to temp file for signing
+	digestBytes, _ := hex.DecodeString(digest)
+	digestFile, err := os.CreateTemp("", "audit-digest-*.bin")
+	if err != nil {
+		return nil, err
+	}
+	digestFile.Write(digestBytes)
+	digestFile.Close()
+	defer os.Remove(digestFile.Name())
+
+	// Sign with attestation key (0x0001)
+	sigOut, err := runShell(cfg, fmt.Sprintf("sign eddsa 0 0x0001 ed25519 %s", digestFile.Name()))
+	if err != nil {
+		return nil, fmt.Errorf("signing audit log: %w", err)
+	}
+	// Parse signature from output (last non-empty line that looks like base64)
+	signature := ""
+	for _, line := range strings.Split(sigOut, "\n") {
+		line = strings.TrimSpace(line)
+		if len(line) > 40 && !strings.Contains(line, " ") {
+			signature = line
+		}
+	}
+	if signature == "" {
+		return nil, fmt.Errorf("could not parse signature from yubihsm-shell output: %s", sigOut)
+	}
+
+	// Get attestation certificate for key 0x0001
+	attestOut, err := runShell(cfg, "attest asymmetric 0 0x0001")
+	if err != nil {
+		return nil, fmt.Errorf("getting attestation cert: %w", err)
+	}
+	attestCert := extractPEM(attestOut)
+	if attestCert == "" {
+		return nil, fmt.Errorf("could not parse attestation cert from output")
+	}
+
+	// Get device certificate
+	derBytes, err := GetDeviceAttestation(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("getting device cert: %w", err)
+	}
+	deviceCertPEM := string(pemEncode("CERTIFICATE", derBytes))
+
+	return &SignedAuditLog{
+		DeviceSerial:       auditLog.DeviceSerial,
+		Entries:            auditLog.Entries,
+		LogDigest:          digest,
+		Signature:          signature,
+		AttestationCertPEM: attestCert,
+		DeviceCertPEM:      deviceCertPEM,
+		ExportedAt:         time.Now().UTC(),
+	}, nil
+}
+
+// ComputeLogDigest computes a SHA-256 digest of the serialized audit log entries.
+// The serialization is deterministic: entries are packed in order as big-endian structs.
+func ComputeLogDigest(entries []AuditLogEntry) string {
+	h := sha256.New()
+	for _, e := range entries {
+		buf := make([]byte, 32) // number(2) + cmd(1) + length(2) + session(2) + target(2) + second(2) + result(1) + tick(4) + hash(16) = 32
+		buf[0] = byte(e.Number >> 8)
+		buf[1] = byte(e.Number)
+		buf[2] = e.Command
+		buf[3] = byte(e.Length >> 8)
+		buf[4] = byte(e.Length)
+		buf[5] = byte(e.SessionKey >> 8)
+		buf[6] = byte(e.SessionKey)
+		buf[7] = byte(e.TargetKey >> 8)
+		buf[8] = byte(e.TargetKey)
+		buf[9] = byte(e.SecondKey >> 8)
+		buf[10] = byte(e.SecondKey)
+		buf[11] = e.Result
+		buf[12] = byte(e.Tick >> 24)
+		buf[13] = byte(e.Tick >> 16)
+		buf[14] = byte(e.Tick >> 8)
+		buf[15] = byte(e.Tick)
+		hashBytes, _ := hex.DecodeString(e.Hash)
+		copy(buf[16:], hashBytes)
+		h.Write(buf)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func extractPEM(output string) string {
+	start := strings.Index(output, "-----BEGIN CERTIFICATE-----")
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(output[start:], "-----END CERTIFICATE-----")
+	if end < 0 {
+		return ""
+	}
+	return output[start : start+end+len("-----END CERTIFICATE-----")]
+}
+
+func pemEncode(blockType string, data []byte) []byte {
+	return []byte("-----BEGIN " + blockType + "-----\n" +
+		base64Encode(data) +
+		"-----END " + blockType + "-----\n")
+}
+
+func base64Encode(data []byte) string {
+	encoded := base64.StdEncoding.EncodeToString(data)
+	var lines string
+	for i := 0; i < len(encoded); i += 76 {
+		end := i + 76
+		if end > len(encoded) {
+			end = len(encoded)
+		}
+		lines += encoded[i:end] + "\n"
+	}
+	return lines
 }
 
 // FetchAndConsumeAuditLog retrieves audit log entries and acknowledges them
