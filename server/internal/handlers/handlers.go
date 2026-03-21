@@ -1123,6 +1123,9 @@ func enforceRestrictions(rs *models.RestrictionSet, req *models.SignRequest, use
 
 	// Check principals
 	if len(rs.AllowedPrincipals) > 0 {
+		if len(req.Principals) == 0 {
+			return fmt.Errorf("at least one principal is required (allowed: %v)", rs.AllowedPrincipals)
+		}
 		for _, p := range req.Principals {
 			allowed := false
 			for _, ap := range rs.AllowedPrincipals {
