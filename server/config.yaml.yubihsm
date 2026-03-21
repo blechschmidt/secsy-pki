@@ -1,0 +1,26 @@
+server:
+  host: "0.0.0.0"
+  port: 8443
+  tls_cert: "certs/server.crt"
+  tls_key: "certs/server.key"
+
+database:
+  driver: "sqlite"
+  dsn: "ssh-pki.db"
+
+oidc:
+  issuer_url: "http://localhost:8080/realms/ssh-pki"
+  client_id: "ssh-pki"
+  client_secret: "change-me"
+  redirect_url: "https://localhost:8443/api/auth/callback"
+
+root_user:
+  username: "root"
+  password: "change-me-in-production"
+
+# YubiHSM2 via yubihsm-connector
+# Ensure YUBIHSM_PKCS11_CONF is set and yubihsm-connector is running
+pkcs11:
+  module_path: "/usr/lib/pkcs11/yubihsm_pkcs11.so"
+  pin: "0001password"
+  token_label: "YubiHSM"

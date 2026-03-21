@@ -1,0 +1,19 @@
+# Terraform
+terraform/.terraform/
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/terraform.tfvars
+terraform/.terraform.lock.hcl
+
+# Built provider
+terraform-provider-pkcs11/
+
+# Server
+server/ssh-pki.db
+server/ssh-pki.db-shm
+server/ssh-pki.db-wal
+server/ssh-pki-server
+server/certs/
+
+# Binaries
+*.exe

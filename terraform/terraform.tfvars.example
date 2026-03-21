@@ -1,0 +1,18 @@
+# For YubiHSM (Ed25519 support)
+# Prerequisites:
+#   1. Start yubihsm-connector: yubihsm-connector -d
+#   2. Set YUBIHSM_PKCS11_CONF to point to yubihsm_pkcs11.conf
+#      export YUBIHSM_PKCS11_CONF=/home/me/ssh-pki/terraform/yubihsm_pkcs11.conf
+# Default YubiHSM2 auth key password is "password" (auth key ID 1)
+pkcs11_module_path = "/usr/lib/pkcs11/yubihsm_pkcs11.so"
+pkcs11_pin         = "0001password"
+token_label        = "YubiHSM"
+ca_label           = "ssh-pki-root-ca"
+use_yubihsm        = true
+
+# For SoftHSM (development/testing, ECDSA P-384 fallback)
+# pkcs11_module_path = "/usr/lib/pkcs11/libsofthsm2.so"
+# pkcs11_pin         = "1234"
+# token_label        = "ssh-pki-root"
+# ca_label           = "ssh-pki-root-ca"
+# use_yubihsm        = false

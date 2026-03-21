@@ -1,0 +1,32 @@
+body {
+    min-height: 100vh;
+}
+
+.font-monospace {
+    font-size: 0.85rem;
+}
+
+.navbar-brand {
+    font-weight: 600;
+}
+
+.table td {
+    vertical-align: middle;
+}
+
+.card {
+    box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+}
+
+textarea.form-control[readonly] {
+    background-color: var(--bs-tertiary-bg);
+}
+
+.text-truncate-toggle {
+    cursor: pointer;
+    border-bottom: 1px dashed var(--bs-secondary);
+}
+
+.text-truncate-toggle:hover {
+    color: var(--bs-info) !important;
+}
