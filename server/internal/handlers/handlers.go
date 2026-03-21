@@ -73,15 +73,25 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/audit-log", protected(http.HandlerFunc(a.ListAuditLog)))
 	mux.Handle("GET /api/access-log", protected(http.HandlerFunc(a.ListAccessLog)))
 
-	mux.Handle("GET /api/hsm/info", protected(http.HandlerFunc(a.GetHSMInfo)))
-	mux.Handle("GET /api/hsm/attestation", protected(http.HandlerFunc(a.GetHSMAttestation)))
-	mux.Handle("GET /api/hsm/audit-log", protected(http.HandlerFunc(a.GetHSMAuditLog)))
-	mux.Handle("POST /api/hsm/provision-audit", protected(http.HandlerFunc(a.ProvisionHSMAudit)))
-	mux.Handle("POST /api/hsm/factory-reset", protected(http.HandlerFunc(a.FactoryResetHSM)))
-	mux.Handle("GET /api/hsm/combined-audit-log", protected(http.HandlerFunc(a.ExportCombinedAuditLog)))
-	mux.Handle("GET /api/hsm/signed-audit-log", protected(http.HandlerFunc(a.GetSignedAuditLog)))
+	if a.hsmEnabled() {
+		mux.Handle("GET /api/hsm/info", protected(http.HandlerFunc(a.GetHSMInfo)))
+		mux.Handle("GET /api/hsm/attestation", protected(http.HandlerFunc(a.GetHSMAttestation)))
+		mux.Handle("GET /api/hsm/audit-log", protected(http.HandlerFunc(a.GetHSMAuditLog)))
+		mux.Handle("POST /api/hsm/provision-audit", protected(http.HandlerFunc(a.ProvisionHSMAudit)))
+		mux.Handle("POST /api/hsm/factory-reset", protected(http.HandlerFunc(a.FactoryResetHSM)))
+		mux.Handle("GET /api/hsm/combined-audit-log", protected(http.HandlerFunc(a.ExportCombinedAuditLog)))
+		mux.Handle("GET /api/hsm/signed-audit-log", protected(http.HandlerFunc(a.GetSignedAuditLog)))
+	}
+
+	// OpenAPI docs
+	mux.HandleFunc("GET /api/docs", a.SwaggerUI)
+	mux.HandleFunc("GET /api/docs/openapi.yaml", a.OpenAPISpec)
 
 	mux.Handle("GET /api/me", protected(http.HandlerFunc(a.Me)))
+}
+
+func (a *API) hsmEnabled() bool {
+	return a.hsmCfg.ConnectorURL != "" || a.hsmCfg.AuthKeyID != 0
 }
 
 func (a *API) Health(w http.ResponseWriter, r *http.Request) {

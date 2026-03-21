@@ -1,0 +1,511 @@
+openapi: "3.0.3"
+info:
+  title: Secsy PKI
+  description: HSM-backed SSH Certificate Authority with OIDC authentication and publicly auditable signing logs.
+  version: "1.0.0"
+  license:
+    name: MIT
+
+servers:
+  - url: /api
+
+security:
+  - basicAuth: []
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: OK
+
+  /auth/config:
+    get:
+      summary: OIDC discovery config
+      security: []
+      responses:
+        "200":
+          description: OIDC configuration
+
+  /me:
+    get:
+      summary: Current user info
+      responses:
+        "200":
+          description: User info with subject, email, name, is_root
+
+  /cas:
+    get:
+      summary: List certificate authorities
+      responses:
+        "200":
+          description: Array of CAs
+    post:
+      summary: Create a CA (omit pkcs11_uri to generate key on HSM)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label, key_type]
+              properties:
+                label:
+                  type: string
+                parent_id:
+                  type: string
+                pkcs11_uri:
+                  type: string
+                  description: Leave empty to generate key on HSM
+                key_type:
+                  type: string
+                  enum: [ed25519, ecdsa-sha2-nistp256, ecdsa-sha2-nistp384, ecdsa-sha2-nistp521]
+                public_key:
+                  type: string
+      responses:
+        "201":
+          description: CA created
+
+  /cas/{id}:
+    get:
+      summary: Get a CA
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: CA details
+    delete:
+      summary: Delete a CA (root only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+
+  /cas/{id}/sign:
+    post:
+      summary: Sign an SSH certificate
+      description: Returns existing certificate if the same public key was already signed by this CA.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [public_key]
+              properties:
+                public_key:
+                  type: string
+                cert_type:
+                  type: string
+                  enum: [user, host]
+                  default: user
+                key_id:
+                  type: string
+                reason:
+                  type: string
+                principals:
+                  type: array
+                  items:
+                    type: string
+                valid_after:
+                  type: string
+                valid_before:
+                  type: string
+                extensions:
+                  type: object
+                  additionalProperties:
+                    type: string
+                critical_options:
+                  type: object
+                  additionalProperties:
+                    type: string
+      responses:
+        "200":
+          description: Signed certificate
+
+  /cas/{id}/my-restrictions:
+    get:
+      summary: Get effective restriction set for current user on a CA
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Restriction set or null
+
+  /groups:
+    get:
+      summary: List groups
+      responses:
+        "200":
+          description: Array of groups
+    post:
+      summary: Create a group (root only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        "201":
+          description: Group created
+
+  /groups/{id}:
+    delete:
+      summary: Delete a group (root only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+
+  /groups/{id}/members:
+    get:
+      summary: List group members
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Array of user subjects
+    post:
+      summary: Add group member (root only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_sub]
+              properties:
+                user_sub:
+                  type: string
+      responses:
+        "200":
+          description: Member added
+
+  /groups/{id}/members/{sub}:
+    delete:
+      summary: Remove group member (root only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: sub
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Member removed
+
+  /cas/{id}/permissions:
+    get:
+      summary: List permissions on a CA
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Array of permission entries
+    post:
+      summary: Grant permission
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entity_type, entity_id, permission]
+              properties:
+                entity_type:
+                  type: string
+                  enum: [user, group]
+                entity_id:
+                  type: string
+                permission:
+                  type: string
+                  enum: [SIGN_CERTIFICATE, MANAGE_PERMISSIONS, CONFIGURE_CA]
+                restriction_set_id:
+                  type: string
+      responses:
+        "200":
+          description: Permission granted
+    delete:
+      summary: Revoke permission
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Permission revoked
+
+  /cas/{id}/restriction-sets:
+    get:
+      summary: List restriction sets for a CA
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Array of restriction sets
+    post:
+      summary: Create restriction set (requires CONFIGURE_CA)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                max_validity_secs:
+                  type: integer
+                allowed_principals:
+                  type: array
+                  items:
+                    type: string
+                allowed_cert_types:
+                  type: array
+                  items:
+                    type: string
+                force_key_id_email_reason:
+                  type: boolean
+                deny_extensions:
+                  type: boolean
+                allowed_extensions:
+                  type: array
+                  items:
+                    type: string
+                deny_critical_options:
+                  type: boolean
+                max_valid_after_offset:
+                  type: integer
+      responses:
+        "201":
+          description: Restriction set created
+
+  /restriction-sets/{id}:
+    put:
+      summary: Update restriction set
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Updated
+    delete:
+      summary: Delete restriction set
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+
+  /cas/{id}/default-restriction-set:
+    put:
+      summary: Set CA default restriction set
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                restriction_set_id:
+                  type: string
+                  nullable: true
+      responses:
+        "200":
+          description: Updated
+
+  /audit-log:
+    get:
+      summary: Sign operations audit log
+      parameters:
+        - name: ca_id
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: export
+          in: query
+          schema:
+            type: string
+            enum: [json]
+      responses:
+        "200":
+          description: Paginated audit log entries
+
+  /access-log:
+    get:
+      summary: API access log
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+        - name: export
+          in: query
+          schema:
+            type: string
+            enum: [json]
+      responses:
+        "200":
+          description: Paginated access log entries
+
+  /hsm/info:
+    get:
+      summary: HSM device info and audit status
+      description: Only available when YubiHSM is configured.
+      responses:
+        "200":
+          description: Device info
+
+  /hsm/attestation:
+    get:
+      summary: Export device attestation certificate (PEM)
+      responses:
+        "200":
+          description: PEM certificate
+
+  /hsm/audit-log:
+    get:
+      summary: HSM audit log entries from database
+      responses:
+        "200":
+          description: HSM audit entries with hash chain verification
+
+  /hsm/signed-audit-log:
+    get:
+      summary: Signed HSM audit log
+      description: Signature over the last hash in the HSM's internal hash chain.
+      responses:
+        "200":
+          description: Signed audit log JSON
+
+  /hsm/combined-audit-log:
+    get:
+      summary: Combined log with sign operations and key attestations
+      responses:
+        "200":
+          description: Combined audit log JSON
+
+  /hsm/provision-audit:
+    post:
+      summary: Enable forced audit logging (irreversible)
+      description: Requires factory reset first (device init entry at position 1).
+      responses:
+        "200":
+          description: Provisioned
+        "412":
+          description: Device not factory reset
+
+  /hsm/factory-reset:
+    post:
+      summary: Factory reset the YubiHSM
+      description: Erases all keys and logs.
+      responses:
+        "200":
+          description: Reset complete

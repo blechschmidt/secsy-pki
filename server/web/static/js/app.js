@@ -288,8 +288,10 @@ function onLogin() {
 }
 
 async function checkHSMAuditStatus() {
+    const hsmNav = document.querySelector('[data-page="hsm"]');
     try {
         const info = await API.get('/api/hsm/info');
+        if (hsmNav) hsmNav.closest('.nav-item').classList.remove('d-none');
         const banner = document.getElementById('hsmAuditWarning');
         if (info.suppress_audit_warning) {
             banner.classList.add('d-none');
@@ -298,7 +300,11 @@ async function checkHSMAuditStatus() {
         } else {
             banner.classList.add('d-none');
         }
-    } catch (e) { /* HSM not configured */ }
+    } catch (e) {
+        // HSM not configured — hide HSM tab and warning
+        if (hsmNav) hsmNav.closest('.nav-item').classList.add('d-none');
+        document.getElementById('hsmAuditWarning').classList.add('d-none');
+    }
 }
 
 function showUserInfoModal() {

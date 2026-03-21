@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	_ "github.com/lib/pq"
-	_ "github.com/mattn/go-sqlite3"
 	"golang.org/x/crypto/ssh"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
