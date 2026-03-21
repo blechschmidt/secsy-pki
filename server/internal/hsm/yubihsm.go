@@ -180,17 +180,45 @@ var AllCommands = map[uint8]string{
 	0x77: "IMPORT RSA WRAPPED",
 }
 
+// IsBootSentinel returns true if the entry is a boot sentinel (first entry after factory reset).
+func IsBootSentinel(e AuditLogEntry) bool {
+	return e.Number == 1 && e.Command == 0xff && e.Length == 0xffff &&
+		e.SessionKey == 0xffff && e.TargetKey == 0xffff &&
+		e.SecondKey == 0xffff && e.Result == 0xff && e.Tick == 0xffffffff
+}
+
 // ProvisionAuditLogging enables forced, irreversible audit logging for all
-// cryptographic operations on the YubiHSM. This follows the protocol described in:
-// https://gist.github.com/karalabe/fb7ac43f3899f511b5547279c036bf4e
+// cryptographic operations on the YubiHSM. It first verifies the audit log
+// starts with a boot sentinel (entry 1, all 0xff fields), which proves the
+// device was factory reset before provisioning — no unaudited operations exist.
 //
-// After provisioning:
-// - PUT OPTION itself is force-audited (irreversible)
-// - All sign commands (ECDSA, EdDSA, RSA) are force-audited
-// - Asymmetric key generation is force-audited
-// - Auth key operations are force-audited
-// - Force-audit mode prevents log overwrites (HSM refuses ops until logs are consumed)
+// Returns an error if the boot sentinel is not present, instructing the user
+// to factory reset the device first.
 func ProvisionAuditLogging(cfg Config) (string, error) {
+	// First check the audit log starts from a factory reset
+	out, err := runShell(cfg, "audit get 0")
+	if err != nil {
+		return "", fmt.Errorf("failed to read audit log: %w", err)
+	}
+
+	entries, err := ParseAuditLogOutput(out)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse audit log: %w", err)
+	}
+
+	if len(entries) == 0 {
+		return "", fmt.Errorf("audit log is empty — cannot verify device state")
+	}
+
+	if !IsBootSentinel(entries[0]) {
+		return "", fmt.Errorf(
+			"audit log does not start with a boot sentinel (entry 1, all 0xff fields).\n" +
+				"The device was not factory reset before provisioning.\n" +
+				"There may be unaudited operations. Please factory reset the device first:\n" +
+				"  yubihsm-shell> reset 0\n" +
+				"Then re-run provisioning.")
+	}
+
 	commands := strings.Join([]string{
 		// First enable PUT OPTION auditing (reversible), then force it (irreversible)
 		"put option 0 command-audit 4f01",

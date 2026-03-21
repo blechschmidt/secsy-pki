@@ -608,6 +608,16 @@ func verifyCombinedLog(combined *models.CombinedAuditExport) bool {
 }
 
 func verifyHSMChain(entries []hsm.AuditLogEntry) bool {
+	// Check for boot sentinel if we have entry 1
+	if len(entries) > 0 && entries[0].Number == 1 {
+		if hsm.IsBootSentinel(entries[0]) {
+			fmt.Println("  Boot sentinel:   PASS (entry 1 confirms factory reset)")
+		} else {
+			fmt.Println("  Boot sentinel:   FAIL (entry 1 is not a valid boot sentinel)")
+			fmt.Println("                   Device may not have been factory reset before provisioning")
+		}
+	}
+
 	results, err := hsm.VerifyHashChain(entries)
 	if err != nil {
 		fmt.Printf("  Error: %v\n", err)
