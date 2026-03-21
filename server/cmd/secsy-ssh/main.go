@@ -69,14 +69,20 @@ func main() {
 		fatal("OIDC login failed: %v", err)
 	}
 
+	// Extract the SSH username from args (user@host or -l user)
+	sshUser := extractSSHUser(sshArgs)
+	if sshUser == "" {
+		sshUser = os.Getenv("USER")
+	}
+
 	// Find the CA by name
 	caID, err := findCA(cfg, token, caName)
 	if err != nil {
 		fatal("Failed to find CA %q: %v", caName, err)
 	}
 
-	// Sign the public key
-	certStr, err := signKey(cfg, token, caID, pubKey)
+	// Sign the public key with the SSH username as principal
+	certStr, err := signKey(cfg, token, caID, pubKey, sshUser)
 	if err != nil {
 		fatal("Failed to sign key: %v", err)
 	}
@@ -222,11 +228,29 @@ func findCA(cfg *Config, token, caName string) (string, error) {
 	return "", fmt.Errorf("CA %q not found (available: %s)", caName, strings.Join(available, ", "))
 }
 
-func signKey(cfg *Config, token, caID, pubKey string) (string, error) {
+func extractSSHUser(args []string) string {
+	for i, arg := range args {
+		// -l user
+		if arg == "-l" && i+1 < len(args) {
+			return args[i+1]
+		}
+		// user@host (not a flag)
+		if !strings.HasPrefix(arg, "-") && strings.Contains(arg, "@") {
+			return strings.SplitN(arg, "@", 2)[0]
+		}
+	}
+	return ""
+}
+
+func signKey(cfg *Config, token, caID, pubKey, principal string) (string, error) {
+	principals := []string{}
+	if principal != "" {
+		principals = []string{principal}
+	}
 	body, err := apiPost(cfg, token, "/api/cas/"+caID+"/sign", map[string]interface{}{
 		"public_key":   pubKey,
 		"cert_type":    "user",
-		"principals":   []string{},
+		"principals":   principals,
 		"valid_before": "+1d",
 	})
 	if err != nil {
