@@ -14,13 +14,13 @@ variable "pkcs11_pin" {
 variable "token_label" {
   description = "Label of the PKCS#11 token"
   type        = string
-  default     = "ssh-pki-root"
+  default     = "secsy-pki-root"
 }
 
 variable "ca_label" {
   description = "Label for the root CA key pair"
   type        = string
-  default     = "ssh-pki-root-ca"
+  default     = "secsy-pki-root-ca"
 }
 
 variable "use_yubihsm" {

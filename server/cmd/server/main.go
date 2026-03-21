@@ -8,12 +8,12 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/ssh-pki/server/internal/auth"
-	"github.com/ssh-pki/server/internal/config"
-	"github.com/ssh-pki/server/internal/database"
-	"github.com/ssh-pki/server/internal/handlers"
-	"github.com/ssh-pki/server/internal/middleware"
-	"github.com/ssh-pki/server/internal/pki"
+	"github.com/blechschmidt/secsy-pki/server/internal/auth"
+	"github.com/blechschmidt/secsy-pki/server/internal/config"
+	"github.com/blechschmidt/secsy-pki/server/internal/database"
+	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
+	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
+	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 )
 
 func main() {

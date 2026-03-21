@@ -6,11 +6,11 @@ server:
 
 database:
   driver: "sqlite"
-  dsn: "ssh-pki.db"
+  dsn: "secsy-pki.db"
 
 oidc:
-  issuer_url: "http://localhost:8080/realms/ssh-pki"
-  client_id: "ssh-pki"
+  issuer_url: "http://localhost:8080/realms/secsy-pki"
+  client_id: "secsy-pki"
 
 root_user:
   username: "root"

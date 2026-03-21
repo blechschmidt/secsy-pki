@@ -1,4 +1,4 @@
-module github.com/ssh-pki/server
+module github.com/blechschmidt/secsy-pki/server
 
 go 1.25.7
 

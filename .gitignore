@@ -9,11 +9,15 @@ terraform/.terraform.lock.hcl
 terraform-provider-pkcs11/
 
 # Server
-server/ssh-pki.db
-server/ssh-pki.db-shm
-server/ssh-pki.db-wal
-server/ssh-pki-server
+server/secsy-pki.db
+server/secsy-pki.db-shm
+server/secsy-pki.db-wal
+server/secsy-pki-server
 server/certs/
 
 # Binaries
 *.exe
+
+# Legacy names
+server/ssh-pki-server
+server/ssh-pki.db*

@@ -19,8 +19,8 @@ const (
 	keycloakURL    = "http://localhost:8080"
 	rootUser       = "root"
 	rootPass       = "integration-test-password"
-	keycloakRealm  = "ssh-pki"
-	keycloakClient = "ssh-pki"
+	keycloakRealm  = "secsy-pki"
+	keycloakClient = "secsy-pki"
 	keycloakSecret = "test-client-secret"
 	testUser       = "testuser"
 	testUserPass   = "testpassword"
@@ -166,7 +166,7 @@ func TestCALifecycle(t *testing.T) {
 	// Create CA
 	resp := rootRequest(t, "POST", "/api/cas", map[string]interface{}{
 		"label":      "test-ca",
-		"pkcs11_uri": "pkcs11:token=ssh-pki-root;object=ssh-pki-root-ca-priv;type=private",
+		"pkcs11_uri": "pkcs11:token=secsy-pki-root;object=secsy-pki-root-ca-priv;type=private",
 		"key_type":   "ecdsa-sha2-nistp384",
 		"public_key": "test-public-key",
 	})
@@ -337,7 +337,7 @@ func TestSignCertificateFlow(t *testing.T) {
 	// Create CA
 	resp := rootRequest(t, "POST", "/api/cas", map[string]interface{}{
 		"label":      "sign-test-ca",
-		"pkcs11_uri": "pkcs11:token=ssh-pki-root;object=ssh-pki-root-ca-priv;type=private",
+		"pkcs11_uri": "pkcs11:token=secsy-pki-root;object=secsy-pki-root-ca-priv;type=private",
 		"key_type":   "ecdsa-sha2-nistp384",
 		"public_key": "n/a",
 	})
@@ -428,7 +428,7 @@ func TestOIDCWithPermissionGrant(t *testing.T) {
 	// Create CA as root
 	resp = rootRequest(t, "POST", "/api/cas", map[string]interface{}{
 		"label":      "oidc-grant-test",
-		"pkcs11_uri": "pkcs11:token=ssh-pki-root;object=ssh-pki-root-ca-priv;type=private",
+		"pkcs11_uri": "pkcs11:token=secsy-pki-root;object=secsy-pki-root-ca-priv;type=private",
 		"key_type":   "ecdsa-sha2-nistp384",
 		"public_key": "n/a",
 	})
@@ -475,7 +475,7 @@ func TestSSHCertVerifyWithOpenSSH(t *testing.T) {
 	// Create CA
 	resp := rootRequest(t, "POST", "/api/cas", map[string]interface{}{
 		"label":      "openssh-test",
-		"pkcs11_uri": "pkcs11:token=ssh-pki-root;object=ssh-pki-root-ca-priv;type=private",
+		"pkcs11_uri": "pkcs11:token=secsy-pki-root;object=secsy-pki-root-ca-priv;type=private",
 		"key_type":   "ecdsa-sha2-nistp384",
 		"public_key": "n/a",
 	})

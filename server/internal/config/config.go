@@ -57,7 +57,7 @@ func Load(path string) (*Config, error) {
 		},
 		Database: DatabaseConfig{
 			Driver: "sqlite",
-			DSN:    "ssh-pki.db",
+			DSN:    "secsy-pki.db",
 		},
 		RootUser: RootUserConfig{
 			Username: "root",

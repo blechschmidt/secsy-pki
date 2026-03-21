@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/ssh-pki/server/internal/auth"
-	"github.com/ssh-pki/server/internal/models"
+	"github.com/blechschmidt/secsy-pki/server/internal/auth"
+	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
 
 type contextKey string

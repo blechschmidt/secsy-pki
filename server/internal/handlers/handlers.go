@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/ssh-pki/server/internal/database"
-	"github.com/ssh-pki/server/internal/middleware"
-	"github.com/ssh-pki/server/internal/models"
-	"github.com/ssh-pki/server/internal/auth"
-	"github.com/ssh-pki/server/internal/pki"
+	"github.com/blechschmidt/secsy-pki/server/internal/database"
+	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
+	"github.com/blechschmidt/secsy-pki/server/internal/models"
+	"github.com/blechschmidt/secsy-pki/server/internal/auth"
+	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 )
 
 type API struct {

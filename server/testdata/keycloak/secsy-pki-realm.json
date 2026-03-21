@@ -1,11 +1,11 @@
 {
-  "realm": "ssh-pki",
+  "realm": "secsy-pki",
   "enabled": true,
   "sslRequired": "none",
   "registrationAllowed": false,
   "clients": [
     {
-      "clientId": "ssh-pki",
+      "clientId": "secsy-pki",
       "enabled": true,
       "publicClient": true,
       "directAccessGrantsEnabled": true,

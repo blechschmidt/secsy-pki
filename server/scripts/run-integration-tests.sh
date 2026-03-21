@@ -10,7 +10,7 @@ docker compose -f docker-compose.test.yaml up -d
 
 echo "==> Waiting for KeyCloak to be ready..."
 for i in $(seq 1 60); do
-    if curl -sf http://localhost:8080/realms/ssh-pki/.well-known/openid-configuration > /dev/null 2>&1; then
+    if curl -sf http://localhost:8080/realms/secsy-pki/.well-known/openid-configuration > /dev/null 2>&1; then
         echo "    KeyCloak is ready."
         break
     fi
@@ -24,7 +24,7 @@ for i in $(seq 1 60); do
 done
 
 echo "==> Creating test config..."
-cat > /tmp/ssh-pki-test-config.yaml << EOF
+cat > /tmp/secsy-pki-test-config.yaml << EOF
 server:
   host: "0.0.0.0"
   port: 8443
@@ -33,11 +33,11 @@ server:
 
 database:
   driver: "sqlite"
-  dsn: "/tmp/ssh-pki-test.db"
+  dsn: "/tmp/secsy-pki-test.db"
 
 oidc:
-  issuer_url: "http://localhost:8080/realms/ssh-pki"
-  client_id: "ssh-pki"
+  issuer_url: "http://localhost:8080/realms/secsy-pki"
+  client_id: "secsy-pki"
   client_secret: "test-client-secret"
   redirect_url: "https://localhost:8443/api/auth/callback"
 
@@ -48,13 +48,13 @@ root_user:
 pkcs11:
   module_path: "/usr/lib/pkcs11/libsofthsm2.so"
   pin: "1234"
-  token_label: "ssh-pki-root"
+  token_label: "secsy-pki-root"
 EOF
 
-echo "==> Starting SSH PKI server..."
-rm -f /tmp/ssh-pki-test.db
-go build -o /tmp/ssh-pki-server ./cmd/server
-/tmp/ssh-pki-server -config /tmp/ssh-pki-test-config.yaml &
+echo "==> Starting Secsy PKI server..."
+rm -f /tmp/secsy-pki-test.db
+go build -o /tmp/secsy-pki-server ./cmd/server
+/tmp/secsy-pki-server -config /tmp/secsy-pki-test-config.yaml &
 SERVER_PID=$!
 
 # Wait for server to start
@@ -80,7 +80,7 @@ TEST_EXIT=$?
 echo "==> Cleaning up..."
 kill $SERVER_PID 2>/dev/null
 docker compose -f docker-compose.test.yaml down
-rm -f /tmp/ssh-pki-test.db /tmp/ssh-pki-test-config.yaml /tmp/ssh-pki-server
+rm -f /tmp/secsy-pki-test.db /tmp/secsy-pki-test-config.yaml /tmp/secsy-pki-server
 
 if [ $TEST_EXIT -eq 0 ]; then
     echo "==> All integration tests passed!"

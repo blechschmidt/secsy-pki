@@ -9,7 +9,7 @@ database:
   dsn: "ssh-pki.db"
 
 oidc:
-  issuer_url: "http://localhost:8080/realms/ssh-pki"
+  issuer_url: "http://localhost:8080/realms/secsy-pki"
   client_id: "ssh-pki"
   client_secret: "change-me"
   redirect_url: "https://localhost:8443/api/auth/callback"

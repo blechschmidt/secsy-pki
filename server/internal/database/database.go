@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/ssh-pki/server/internal/models"
+	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
 
 type DB struct {
