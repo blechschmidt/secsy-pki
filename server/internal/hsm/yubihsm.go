@@ -113,7 +113,7 @@ var CryptoCommands = map[uint8]string{
 // AllCommands maps every known YubiHSM command code to its name.
 // The verifier must reject any entry with a command not in this map.
 var AllCommands = map[uint8]string{
-	0xff: "INITIAL CHAIN ANCHOR", // 0x7f (ERROR) | 0x80 (RESP_FLAG) — seed entry for the hash chain after factory reset
+	0xff: "DEVICE INIT", // "When the device initializes after a reset, a log entry with all fields set to 0xff is logged." — https://docs.yubico.com/hardware/yubihsm-2/hsm-2-user-guide/hsm2-cmd-reference.html
 	0x00: "BOOT",
 	0x01: "ECHO",
 	0x03: "CREATE SESSION",

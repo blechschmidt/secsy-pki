@@ -611,9 +611,9 @@ func verifyHSMChain(entries []hsm.AuditLogEntry) bool {
 	// Check for boot sentinel if we have entry 1
 	if len(entries) > 0 && entries[0].Number == 1 {
 		if hsm.IsBootSentinel(entries[0]) {
-			fmt.Println("  Chain anchor:    PASS (entry 1 is the initial seed from factory reset)")
+			fmt.Println("  Device init:     PASS (entry 1 confirms device initialized after reset)")
 		} else {
-			fmt.Println("  Chain anchor:    FAIL (entry 1 is not the expected initial anchor)")
+			fmt.Println("  Device init:     FAIL (entry 1 is not a device init entry)")
 			fmt.Println("                   Device may not have been factory reset before provisioning")
 		}
 	}
