@@ -155,6 +155,7 @@ func (a *API) CreateCA(w http.ResponseWriter, r *http.Request) {
 
 	// If no PKCS#11 URI, generate a new key on the HSM
 	if req.PKCS11URI == "" {
+		a.consumeHSMAuditLogs("")
 		generated, err := pki.GenerateKeyOnHSM(a.p11cfg, req.Label, req.KeyType)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to generate key on HSM: %v", err)
