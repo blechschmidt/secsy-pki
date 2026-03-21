@@ -139,6 +139,7 @@ func runSSH(keyPath, certStr string, sshArgs []string) {
 	if err != nil {
 		fatal("Failed to create temp file: %v", err)
 	}
+	certFile.Chmod(0600)
 	certFile.WriteString(certStr)
 	certFile.Close()
 	defer os.Remove(certFile.Name())
