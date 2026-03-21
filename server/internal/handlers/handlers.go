@@ -330,6 +330,9 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Consume HSM audit logs before signing to free space (forced audit mode)
+	a.consumeHSMAuditLogs("")
+
 	// Get the key label from PKCS11 URI
 	keyLabel := extractKeyLabel(ca.PKCS11URI)
 
