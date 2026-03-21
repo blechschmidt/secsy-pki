@@ -105,7 +105,7 @@ func (db *DB) migrate() error {
 			extensions TEXT,
 			critical_options TEXT,
 			public_key TEXT NOT NULL,
-			certificate TEXT,
+			certificate BLOB,
 			cert_hash TEXT,
 			restriction_set_id TEXT,
 			serial TEXT NOT NULL,
@@ -491,6 +491,18 @@ func (db *DB) DeleteRestrictionSet(id string) error {
 	return err
 }
 
+// certBlobToAuthorizedKey converts raw SSH certificate bytes to an authorized_key string.
+func certBlobToAuthorizedKey(blob []byte) string {
+	if len(blob) == 0 {
+		return ""
+	}
+	pub, err := ssh.ParsePublicKey(blob)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub)))
+}
+
 // Audit log operations
 
 func (db *DB) CreateAuditLogEntry(e *models.AuditLogEntry) error {
@@ -498,11 +510,13 @@ func (db *DB) CreateAuditLogEntry(e *models.AuditLogEntry) error {
 	extensions, _ := json.Marshal(e.Extensions)
 	critOpts, _ := json.Marshal(e.CriticalOptions)
 
-	// Compute SHA-256 hash of the raw certificate bytes to enforce uniqueness per CA
+	// Parse certificate to raw bytes for binary storage and uniqueness hash
+	var certBlob []byte
 	var certHash *string
 	if e.Certificate != "" {
 		if pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(strings.TrimSpace(e.Certificate))); err == nil {
-			h := sha256.Sum256(pub.Marshal())
+			certBlob = pub.Marshal()
+			h := sha256.Sum256(certBlob)
 			s := hex.EncodeToString(h[:])
 			certHash = &s
 		}
@@ -513,7 +527,7 @@ func (db *DB) CreateAuditLogEntry(e *models.AuditLogEntry) error {
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.ID, e.UserSub, e.UserEmail, e.UserName, e.CAID, e.CALabel, e.KeyID, e.CertType,
 		string(principals), e.ValidAfter, e.ValidBefore, string(extensions), string(critOpts),
-		e.PublicKey, e.Certificate, certHash, e.RestrictionSetID, e.Serial,
+		e.PublicKey, certBlob, certHash, e.RestrictionSetID, e.Serial,
 	)
 	return err
 }
@@ -521,11 +535,13 @@ func (db *DB) CreateAuditLogEntry(e *models.AuditLogEntry) error {
 func (db *DB) FindExistingCertificate(caID, publicKey string) (*models.AuditLogEntry, error) {
 	var e models.AuditLogEntry
 	var principals, extensions, critOpts sql.NullString
+	var certBlob []byte
 	err := db.conn.QueryRow(
 		`SELECT id, timestamp, user_sub, user_email, user_name, ca_id, ca_label, key_id, cert_type, principals, valid_after, valid_before, extensions, critical_options, public_key, certificate, restriction_set_id, serial
 		 FROM audit_log WHERE ca_id = ? AND public_key = ? AND certificate IS NOT NULL ORDER BY timestamp DESC LIMIT 1`,
 		caID, publicKey,
-	).Scan(&e.ID, &e.Timestamp, &e.UserSub, &e.UserEmail, &e.UserName, &e.CAID, &e.CALabel, &e.KeyID, &e.CertType, &principals, &e.ValidAfter, &e.ValidBefore, &extensions, &critOpts, &e.PublicKey, &e.Certificate, &e.RestrictionSetID, &e.Serial)
+	).Scan(&e.ID, &e.Timestamp, &e.UserSub, &e.UserEmail, &e.UserName, &e.CAID, &e.CALabel, &e.KeyID, &e.CertType, &principals, &e.ValidAfter, &e.ValidBefore, &extensions, &critOpts, &e.PublicKey, &certBlob, &e.RestrictionSetID, &e.Serial)
+	e.Certificate = certBlobToAuthorizedKey(certBlob)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -570,9 +586,11 @@ func (db *DB) ListAuditLog(caID string, limit, offset int) ([]models.AuditLogEnt
 	for rows.Next() {
 		var e models.AuditLogEntry
 		var principals, extensions, critOpts sql.NullString
-		if err := rows.Scan(&e.ID, &e.Timestamp, &e.UserSub, &e.UserEmail, &e.UserName, &e.CAID, &e.CALabel, &e.KeyID, &e.CertType, &principals, &e.ValidAfter, &e.ValidBefore, &extensions, &critOpts, &e.PublicKey, &e.Certificate, &e.RestrictionSetID, &e.Serial); err != nil {
+		var certBlob []byte
+		if err := rows.Scan(&e.ID, &e.Timestamp, &e.UserSub, &e.UserEmail, &e.UserName, &e.CAID, &e.CALabel, &e.KeyID, &e.CertType, &principals, &e.ValidAfter, &e.ValidBefore, &extensions, &critOpts, &e.PublicKey, &certBlob, &e.RestrictionSetID, &e.Serial); err != nil {
 			return nil, 0, err
 		}
+		e.Certificate = certBlobToAuthorizedKey(certBlob)
 		if principals.Valid { json.Unmarshal([]byte(principals.String), &e.Principals) }
 		if extensions.Valid { json.Unmarshal([]byte(extensions.String), &e.Extensions) }
 		if critOpts.Valid { json.Unmarshal([]byte(critOpts.String), &e.CriticalOptions) }
