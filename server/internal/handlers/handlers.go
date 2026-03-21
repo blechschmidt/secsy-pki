@@ -157,6 +157,7 @@ func (a *API) CreateCA(w http.ResponseWriter, r *http.Request) {
 	if req.PKCS11URI == "" {
 		a.consumeHSMAuditLogs("")
 		generated, err := pki.GenerateKeyOnHSM(a.p11cfg, req.Label, req.KeyType)
+		a.consumeHSMAuditLogs("")
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to generate key on HSM: %v", err)
 			return
@@ -736,7 +737,9 @@ func (a *API) ListAccessLog(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) GetHSMInfo(w http.ResponseWriter, r *http.Request) {
+	a.consumeHSMAuditLogs("")
 	info, err := hsm.GetDeviceInfo(a.hsmCfg)
+	a.consumeHSMAuditLogs("")
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"available":              false,
@@ -764,13 +767,14 @@ func (a *API) GetHSMAttestation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.consumeHSMAuditLogs("")
 	derBytes, err := hsm.GetDeviceAttestation(a.hsmCfg)
+	a.consumeHSMAuditLogs("")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to get device attestation: %v", err)
 		return
 	}
 
-	// Convert DER to PEM
 	pemBlock := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
 
 	w.Header().Set("Content-Type", "application/x-pem-file")
@@ -785,7 +789,9 @@ func (a *API) GetHSMAuditLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.consumeHSMAuditLogs("")
 	auditLog, err := hsm.GetAuditLog(a.hsmCfg)
+	a.consumeHSMAuditLogs("")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to get HSM audit log: %v", err)
 		return
@@ -887,6 +893,7 @@ func (a *API) ExportCombinedAuditLog(w http.ResponseWriter, r *http.Request) {
 		if keyLabel == "" {
 			continue
 		}
+		a.consumeHSMAuditLogs("") // free space before attestation calls
 		cert, err := hsm.GetKeyAttestationCert(a.hsmCfg, keyLabel)
 		if err != nil {
 			log.Printf("WARNING: could not get attestation cert for key %q: %v", keyLabel, err)
@@ -894,6 +901,7 @@ func (a *API) ExportCombinedAuditLog(w http.ResponseWriter, r *http.Request) {
 		}
 		export.KeyAttestations[keyLabel] = cert
 	}
+	a.consumeHSMAuditLogs("") // consume entries from serial/attestation calls
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=combined-audit-log.json")
@@ -929,6 +937,7 @@ func (a *API) GetSignedAuditLog(w http.ResponseWriter, r *http.Request) {
 
 	// Sign the complete log (all entries from DB)
 	signedLog, err := hsm.SignAuditEntries(a.hsmCfg, allEntries)
+	a.consumeHSMAuditLogs("") // consume entries created by the signing/attestation operations
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to sign audit log: %v", err)
 		return
@@ -946,7 +955,9 @@ func (a *API) ProvisionHSMAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.consumeHSMAuditLogs("")
 	output, err := hsm.ProvisionAuditLogging(a.hsmCfg)
+	a.consumeHSMAuditLogs("")
 	if err != nil {
 		writeError(w, http.StatusPreconditionFailed, "%v", err)
 		return
