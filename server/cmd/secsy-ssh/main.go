@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -26,25 +27,38 @@ type Config struct {
 }
 
 func main() {
-	// Parse --ca flag and collect remaining args for ssh
-	var caName string
+	// Parse our flags and collect remaining args for ssh
+	var caName, reason string
+	var noCache bool
 	var sshArgs []string
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--ca" && i+1 < len(args) {
+		switch {
+		case args[i] == "--ca" && i+1 < len(args):
 			caName = args[i+1]
 			i++
-		} else if strings.HasPrefix(args[i], "--ca=") {
+		case strings.HasPrefix(args[i], "--ca="):
 			caName = strings.TrimPrefix(args[i], "--ca=")
-		} else {
+		case args[i] == "--reason" && i+1 < len(args):
+			reason = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--reason="):
+			reason = strings.TrimPrefix(args[i], "--reason=")
+		case args[i] == "--nocache":
+			noCache = true
+		default:
 			sshArgs = append(sshArgs, args[i])
 		}
 	}
 
 	if caName == "" {
-		fmt.Fprintln(os.Stderr, "Usage: secsy-ssh --ca <ca-name> [ssh arguments...]")
+		fmt.Fprintln(os.Stderr, "Usage: secsy-ssh --ca <ca-name> [--reason <reason>] [--nocache] [ssh arguments...]")
 		fmt.Fprintln(os.Stderr, "\nWraps ssh with automatic certificate generation via Secsy PKI.")
 		fmt.Fprintln(os.Stderr, "Authenticates via OIDC (opens browser), signs your SSH key, and connects.")
+		fmt.Fprintln(os.Stderr, "\nOptions:")
+		fmt.Fprintln(os.Stderr, "  --ca <name>      CA to sign with (required)")
+		fmt.Fprintln(os.Stderr, "  --reason <text>   Reason for the certificate (prompted if CA requires it)")
+		fmt.Fprintln(os.Stderr, "  --nocache         Skip certificate cache, always request a new one")
 		fmt.Fprintln(os.Stderr, "\nConfig: ~/.ssh/secsy.yaml")
 		fmt.Fprintln(os.Stderr, "  api_url: https://secsy-pki.example.com:8443")
 		os.Exit(1)
@@ -63,16 +77,26 @@ func main() {
 	}
 	fmt.Fprintf(os.Stderr, "secsy-ssh: using key %s\n", keyPath)
 
+	// Extract the SSH username
+	sshUser := extractSSHUser(sshArgs)
+	if sshUser == "" {
+		sshUser = os.Getenv("USER")
+	}
+
+	// Check cache first
+	cacheKey := computeCacheKey(os.Args[1:])
+	if !noCache {
+		if cached := loadCachedCert(cacheKey); cached != "" {
+			fmt.Fprintf(os.Stderr, "secsy-ssh: using cached certificate\n")
+			runSSH(keyPath, cached, sshArgs)
+			return
+		}
+	}
+
 	// Get OIDC token via browser flow
 	token, err := oidcLogin(cfg)
 	if err != nil {
 		fatal("OIDC login failed: %v", err)
-	}
-
-	// Extract the SSH username from args (user@host or -l user)
-	sshUser := extractSSHUser(sshArgs)
-	if sshUser == "" {
-		sshUser = os.Getenv("USER")
 	}
 
 	// Find the CA by name
@@ -81,13 +105,35 @@ func main() {
 		fatal("Failed to find CA %q: %v", caName, err)
 	}
 
-	// Sign the public key with the SSH username as principal
-	certStr, err := signKey(cfg, token, caID, pubKey, sshUser)
+	// Check if the CA requires a reason (fetch restrictions)
+	if reason == "" {
+		rs, _ := getRestrictions(cfg, token, caID)
+		if rs != nil && rs.ForceKeyIDEmailReason {
+			fmt.Fprint(os.Stderr, "secsy-ssh: this CA requires a reason. Enter reason: ")
+			scanner := bufio.NewScanner(os.Stdin)
+			if scanner.Scan() {
+				reason = strings.TrimSpace(scanner.Text())
+			}
+			if reason == "" {
+				fatal("Reason is required by this CA")
+			}
+		}
+	}
+
+	// Sign the public key
+	certStr, err := signKey(cfg, token, caID, pubKey, sshUser, reason)
 	if err != nil {
 		fatal("Failed to sign key: %v", err)
 	}
 
-	// Write the certificate to a temp file
+	// Cache the certificate
+	cacheCert(cacheKey, certStr)
+
+	// Run SSH
+	runSSH(keyPath, certStr, sshArgs)
+}
+
+func runSSH(keyPath, certStr string, sshArgs []string) {
 	certFile, err := os.CreateTemp("", "secsy-ssh-cert-*.pub")
 	if err != nil {
 		fatal("Failed to create temp file: %v", err)
@@ -98,7 +144,6 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "secsy-ssh: certificate written to %s\n", certFile.Name())
 
-	// Run ssh with the certificate
 	sshBin, err := exec.LookPath("ssh")
 	if err != nil {
 		fatal("ssh not found in PATH")
@@ -123,6 +168,48 @@ func main() {
 	}
 }
 
+// --- Cache ---
+
+func cacheDir() string {
+	// Use XDG_RUNTIME_DIR if available, otherwise /tmp/secsy-ssh-<uid>
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
+		d := filepath.Join(dir, "secsy-ssh")
+		os.MkdirAll(d, 0700)
+		return d
+	}
+	d := filepath.Join(os.TempDir(), fmt.Sprintf("secsy-ssh-%d", os.Getuid()))
+	os.MkdirAll(d, 0700)
+	return d
+}
+
+func computeCacheKey(args []string) string {
+	h := sha256.Sum256([]byte(strings.Join(args, "\x00")))
+	return fmt.Sprintf("%x", h[:16])
+}
+
+func loadCachedCert(key string) string {
+	path := filepath.Join(cacheDir(), key+".pub")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	// Check if the cert is still valid (parse the validity from the cert)
+	// Simple approach: check file mtime is less than 23 hours old
+	info, err := os.Stat(path)
+	if err != nil || time.Since(info.ModTime()) > 23*time.Hour {
+		os.Remove(path)
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func cacheCert(key, cert string) {
+	path := filepath.Join(cacheDir(), key+".pub")
+	os.WriteFile(path, []byte(cert), 0600)
+}
+
+// --- Config ---
+
 func loadConfig() (*Config, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -142,6 +229,8 @@ func loadConfig() (*Config, error) {
 	return &cfg, nil
 }
 
+// --- SSH key ---
+
 func findSSHKey() (keyPath string, pubKey string) {
 	home, _ := os.UserHomeDir()
 	sshDir := filepath.Join(home, ".ssh")
@@ -160,6 +249,20 @@ func findSSHKey() (keyPath string, pubKey string) {
 	}
 	return "", ""
 }
+
+func extractSSHUser(args []string) string {
+	for i, arg := range args {
+		if arg == "-l" && i+1 < len(args) {
+			return args[i+1]
+		}
+		if !strings.HasPrefix(arg, "-") && strings.Contains(arg, "@") {
+			return strings.SplitN(arg, "@", 2)[0]
+		}
+	}
+	return ""
+}
+
+// --- API ---
 
 func httpClient(cfg *Config) *http.Client {
 	return &http.Client{
@@ -228,31 +331,40 @@ func findCA(cfg *Config, token, caName string) (string, error) {
 	return "", fmt.Errorf("CA %q not found (available: %s)", caName, strings.Join(available, ", "))
 }
 
-func extractSSHUser(args []string) string {
-	for i, arg := range args {
-		// -l user
-		if arg == "-l" && i+1 < len(args) {
-			return args[i+1]
-		}
-		// user@host (not a flag)
-		if !strings.HasPrefix(arg, "-") && strings.Contains(arg, "@") {
-			return strings.SplitN(arg, "@", 2)[0]
-		}
-	}
-	return ""
+type restrictionSet struct {
+	ForceKeyIDEmailReason bool `json:"force_key_id_email_reason"`
 }
 
-func signKey(cfg *Config, token, caID, pubKey, principal string) (string, error) {
+func getRestrictions(cfg *Config, token, caID string) (*restrictionSet, error) {
+	body, err := apiGet(cfg, token, "/api/cas/"+caID+"/my-restrictions")
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(string(body)) == "null" {
+		return nil, nil
+	}
+	var rs restrictionSet
+	if err := json.Unmarshal(body, &rs); err != nil {
+		return nil, err
+	}
+	return &rs, nil
+}
+
+func signKey(cfg *Config, token, caID, pubKey, principal, reason string) (string, error) {
 	principals := []string{}
 	if principal != "" {
 		principals = []string{principal}
 	}
-	body, err := apiPost(cfg, token, "/api/cas/"+caID+"/sign", map[string]interface{}{
+	payload := map[string]interface{}{
 		"public_key":   pubKey,
 		"cert_type":    "user",
 		"principals":   principals,
 		"valid_before": "+1d",
-	})
+	}
+	if reason != "" {
+		payload["reason"] = reason
+	}
+	body, err := apiPost(cfg, token, "/api/cas/"+caID+"/sign", payload)
 	if err != nil {
 		return "", err
 	}
@@ -270,9 +382,9 @@ func signKey(cfg *Config, token, caID, pubKey, principal string) (string, error)
 	return resp.Certificate, nil
 }
 
-// OIDC login via browser with PKCE
+// --- OIDC ---
+
 func oidcLogin(cfg *Config) (string, error) {
-	// Get auth config from the server
 	resp, err := httpClient(cfg).Get(cfg.APIURL + "/api/auth/config")
 	if err != nil {
 		return "", fmt.Errorf("getting auth config: %w", err)
@@ -292,7 +404,6 @@ func oidcLogin(cfg *Config) (string, error) {
 		return "", fmt.Errorf("OIDC is not enabled on the server")
 	}
 
-	// Discover OIDC endpoints
 	discoResp, err := httpClient(cfg).Get(authCfg.IssuerURL + "/.well-known/openid-configuration")
 	if err != nil {
 		return "", fmt.Errorf("OIDC discovery: %w", err)
@@ -308,7 +419,6 @@ func oidcLogin(cfg *Config) (string, error) {
 		return "", fmt.Errorf("parsing discovery: %w", err)
 	}
 
-	// Generate PKCE code verifier and challenge
 	verifierBytes := make([]byte, 32)
 	if _, err := io.ReadFull(cryptoRandReader(), verifierBytes); err != nil {
 		return "", err
@@ -317,7 +427,6 @@ func oidcLogin(cfg *Config) (string, error) {
 	challengeHash := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64URLEncode(challengeHash[:])
 
-	// Start local callback server on a fixed port
 	const callbackPort = 18329
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", callbackPort))
 	if err != nil {
@@ -344,7 +453,6 @@ func oidcLogin(cfg *Config) (string, error) {
 	go srv.Serve(listener)
 	defer srv.Shutdown(context.Background())
 
-	// Build authorization URL
 	state := base64URLEncode(verifierBytes[:16])
 	authURL := disco.AuthEndpoint + "?" + url.Values{
 		"response_type":         {"code"},
@@ -356,13 +464,11 @@ func oidcLogin(cfg *Config) (string, error) {
 		"code_challenge_method": {"S256"},
 	}.Encode()
 
-	// Open browser
 	fmt.Fprintf(os.Stderr, "secsy-ssh: opening browser for login...\n")
 	if err := openBrowser(authURL); err != nil {
 		fmt.Fprintf(os.Stderr, "secsy-ssh: could not open browser, visit this URL:\n%s\n", authURL)
 	}
 
-	// Wait for the callback
 	var code string
 	select {
 	case code = <-codeChan:
@@ -372,7 +478,6 @@ func oidcLogin(cfg *Config) (string, error) {
 		return "", fmt.Errorf("login timed out after 2 minutes")
 	}
 
-	// Exchange code for tokens
 	tokenResp, err := http.PostForm(disco.TokenEndpoint, url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {authCfg.ClientID},
@@ -401,6 +506,8 @@ func oidcLogin(cfg *Config) (string, error) {
 	fmt.Fprintf(os.Stderr, "secsy-ssh: OIDC login successful\n")
 	return tokens.IDToken, nil
 }
+
+// --- Helpers ---
 
 func base64URLEncode(data []byte) string {
 	return base64.RawURLEncoding.EncodeToString(data)
