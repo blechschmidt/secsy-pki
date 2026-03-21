@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
+	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 )
 
@@ -21,10 +23,11 @@ type API struct {
 	db           *database.DB
 	p11cfg       pki.PKCS11Config
 	oidcProvider *auth.OIDCProvider
+	hsmCfg       hsm.Config
 }
 
-func NewAPI(db *database.DB, p11cfg pki.PKCS11Config, oidcProvider *auth.OIDCProvider) *API {
-	return &API{db: db, p11cfg: p11cfg, oidcProvider: oidcProvider}
+func NewAPI(db *database.DB, p11cfg pki.PKCS11Config, oidcProvider *auth.OIDCProvider, hsmCfg hsm.Config) *API {
+	return &API{db: db, p11cfg: p11cfg, oidcProvider: oidcProvider, hsmCfg: hsmCfg}
 }
 
 func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddleware) {
@@ -69,6 +72,9 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 
 	mux.Handle("GET /api/audit-log", protected(http.HandlerFunc(a.ListAuditLog)))
 	mux.Handle("GET /api/access-log", protected(http.HandlerFunc(a.ListAccessLog)))
+
+	mux.Handle("GET /api/hsm/attestation", protected(http.HandlerFunc(a.GetHSMAttestation)))
+	mux.Handle("GET /api/hsm/audit-log", protected(http.HandlerFunc(a.GetHSMAuditLog)))
 
 	mux.Handle("GET /api/me", protected(http.HandlerFunc(a.Me)))
 }
@@ -740,6 +746,63 @@ func (a *API) ListAccessLog(w http.ResponseWriter, r *http.Request) {
 		"total":   total,
 		"limit":   limit,
 		"offset":  offset,
+	})
+}
+
+func (a *API) GetHSMAttestation(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserInfo(r.Context())
+	if !user.IsRoot {
+		writeError(w, http.StatusForbidden, "only root can access HSM attestation")
+		return
+	}
+
+	derBytes, err := hsm.GetDeviceAttestation(a.hsmCfg)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get device attestation: %v", err)
+		return
+	}
+
+	// Convert DER to PEM
+	pemBlock := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
+
+	w.Header().Set("Content-Type", "application/x-pem-file")
+	w.Header().Set("Content-Disposition", "attachment; filename=device-attestation.pem")
+	w.Write(pemBlock)
+}
+
+func (a *API) GetHSMAuditLog(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserInfo(r.Context())
+	if !user.IsRoot {
+		writeError(w, http.StatusForbidden, "only root can access HSM audit log")
+		return
+	}
+
+	auditLog, err := hsm.GetAuditLog(a.hsmCfg)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get HSM audit log: %v", err)
+		return
+	}
+
+	// Verify hash chain
+	results, _ := hsm.VerifyHashChain(auditLog.Entries)
+
+	type entryWithVerify struct {
+		hsm.AuditLogEntry
+		HashValid bool `json:"hash_valid"`
+	}
+	var verified []entryWithVerify
+	for i, e := range auditLog.Entries {
+		valid := true
+		if results != nil && i < len(results) {
+			valid = results[i]
+		}
+		verified = append(verified, entryWithVerify{e, valid})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"device_serial": auditLog.DeviceSerial,
+		"entries":       verified,
+		"exported_at":   auditLog.ExportedAt,
 	})
 }
 

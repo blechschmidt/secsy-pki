@@ -12,6 +12,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
+	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 )
@@ -54,7 +55,13 @@ func main() {
 		TokenLabel: cfg.PKCS11.TokenLabel,
 	}
 
-	api := handlers.NewAPI(db, p11cfg, oidcProvider)
+	hsmCfg := hsm.Config{
+		ConnectorURL: cfg.YubiHSM.ConnectorURL,
+		AuthKeyID:    cfg.YubiHSM.AuthKeyID,
+		Password:     cfg.YubiHSM.Password,
+	}
+
+	api := handlers.NewAPI(db, p11cfg, oidcProvider, hsmCfg)
 
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, authMw)

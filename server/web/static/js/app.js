@@ -125,6 +125,7 @@ function showPage(name) {
     if (name === 'permissions') { loadCASelect('permCA').then(loadPermissions); }
     if (name === 'restrictions') { loadCASelect('rsCA').then(loadRestrictionSets); }
     if (name === 'audit') { loadCASelect('auditCA').then(loadAuditLog); }
+    if (name === 'hsm') { loadHSMPage(); }
 }
 
 // OIDC with PKCE (public client, no client_secret)
@@ -924,6 +925,71 @@ document.getElementById('auditExportBtn').addEventListener('click', async () => 
     } catch (err) {
         showToast('Error', err.message, true);
     }
+});
+
+// HSM Page
+let hsmAttestPEM = null;
+let hsmAuditData = null;
+
+async function loadHSMPage() {
+    // Load attestation
+    try {
+        const res = await fetch('/api/hsm/attestation', { headers: { 'Authorization': API.authHeader } });
+        if (res.ok) {
+            hsmAttestPEM = await res.text();
+            document.getElementById('hsmAttestCert').textContent = hsmAttestPEM;
+        } else {
+            const err = await res.json();
+            document.getElementById('hsmAttestCert').textContent = 'Error: ' + (err.error || res.statusText);
+        }
+    } catch (e) {
+        document.getElementById('hsmAttestCert').textContent = 'Error: ' + e.message;
+    }
+
+    // Load HSM audit log
+    try {
+        hsmAuditData = await API.get('/api/hsm/audit-log');
+        document.getElementById('hsmAuditInfo').innerHTML =
+            `Device: <strong>${esc(hsmAuditData.device_serial || 'unknown')}</strong> | Entries: <strong>${hsmAuditData.entries ? hsmAuditData.entries.length : 0}</strong>`;
+
+        const tbody = document.getElementById('hsmAuditBody');
+        if (!hsmAuditData.entries || hsmAuditData.entries.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-muted">No entries</td></tr>';
+        } else {
+            tbody.innerHTML = hsmAuditData.entries.map(e => {
+                const hashCls = e.hash_valid ? '' : 'text-danger fw-bold';
+                return `<tr>
+                    <td>${e.number}</td>
+                    <td><code>0x${e.command.toString(16).padStart(2,'0')}</code></td>
+                    <td><code>0x${e.target_key.toString(16).padStart(4,'0')}</code></td>
+                    <td>${e.tick}</td>
+                    <td class="${hashCls}">${truncated(e.hash, 12)}</td>
+                </tr>`;
+            }).join('');
+        }
+    } catch (e) {
+        document.getElementById('hsmAuditInfo').textContent = 'Error: ' + e.message;
+    }
+}
+
+document.getElementById('downloadAttestBtn').addEventListener('click', () => {
+    if (!hsmAttestPEM) return;
+    const blob = new Blob([hsmAttestPEM], { type: 'application/x-pem-file' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'device-attestation.pem';
+    a.click();
+    URL.revokeObjectURL(a.href);
+});
+
+document.getElementById('downloadHSMAuditBtn').addEventListener('click', () => {
+    if (!hsmAuditData) return;
+    const blob = new Blob([JSON.stringify(hsmAuditData, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'hsm-audit-log.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
 });
 
 // Restriction Sets

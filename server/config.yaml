@@ -20,3 +20,8 @@ pkcs11:
   module_path: "/usr/lib/pkcs11/yubihsm_pkcs11.so"
   pin: "0001password"
   token_label: "YubiHSM"
+
+yubihsm:
+  connector_url: "yhusb://"
+  auth_key_id: 1
+  password: "password"

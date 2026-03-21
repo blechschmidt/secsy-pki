@@ -13,6 +13,7 @@ type Config struct {
 	OIDC     OIDCConfig     `yaml:"oidc"`
 	RootUser RootUserConfig `yaml:"root_user"`
 	PKCS11   PKCS11Config   `yaml:"pkcs11"`
+	YubiHSM  YubiHSMConfig  `yaml:"yubihsm"`
 }
 
 type ServerConfig struct {
@@ -42,6 +43,12 @@ type PKCS11Config struct {
 	ModulePath string `yaml:"module_path"`
 	Pin        string `yaml:"pin"`
 	TokenLabel string `yaml:"token_label"`
+}
+
+type YubiHSMConfig struct {
+	ConnectorURL string `yaml:"connector_url"`
+	AuthKeyID    int    `yaml:"auth_key_id"`
+	Password     string `yaml:"password"`
 }
 
 func Load(path string) (*Config, error) {
