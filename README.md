@@ -83,7 +83,9 @@ graph TD
     S4["Step 4: CA Key Properties"]
     S4a["Generated on HSM (origin=generated)"]
     S4b["Never exported"]
-    S4c["No exportable-under-wrap capability"]
+    S4c["Sign-only capabilities (no decrypt/wrap/export)"]
+    S4d["Forced audit enabled before key generation"]
+    S4e["All sign commands force-audited before keygen"]
 
     S5["Step 5: Cross-Reference"]
     S5a["Every HSM sign op → combined log entry"]
@@ -100,7 +102,7 @@ graph TD
     S1 --> S1a & S1b & S1c
     S2 --> S2a & S2b
     S3 --> S3a & S3b
-    S4 --> S4a & S4b & S4c
+    S4 --> S4a & S4b & S4c & S4d & S4e
     S5 --> S5a & S5b
     S6 --> S6a & S6b
     S7 --> S7a & S7b
@@ -120,7 +122,11 @@ graph LR
     subgraph "Attestation"
         DC["Device Cert<br/>(Yubico CA chain)"]
         AK["Attestation Key<br/>(signs last hash)"]
-        CK["CA Key Attestation<br/>(generated, unexportable)"]
+        CK["CA Key Attestation<br/>(generated, sign-only,<br/>unexportable)"]
+    end
+
+    subgraph "Provisioning Order"
+        PO["Factory Reset → Audit Provisioning<br/>→ Key Generation"]
     end
 
     subgraph "Bijection"
@@ -132,13 +138,21 @@ graph LR
     HC --> AK
     DC --> AK
     DC --> CK
+    PO --> HC
     Sign --> N_ops
     N_ops -->|"1:1 mapping"| N_certs
     CK --> Verify
     N_certs --> Verify
 ```
 
-The device init entry (0xff, all fields maxed) at entry 1 proves a factory reset preceded all audited operations. Forced audit mode (irreversible) ensures the HSM refuses operations when the log is full, preventing unlogged signing. The server consumes HSM audit entries before and after every HSM operation to keep the log from filling up.
+The verification proves a strict provisioning order from the audit log:
+
+1. **Factory reset** — device init entry (0xff) at entry 1 proves a clean slate
+2. **Audit provisioning** — SET OPTION entries enable forced, irreversible logging for all sign commands, key generation, and wrapping operations
+3. **Key generation** — GENERATE ASYMMETRIC KEY entry appears AFTER all audit provisioning entries
+4. **Sign-only capabilities** — the CA key's attestation cert shows only signing capabilities (no decrypt, derive, wrap, or export)
+
+Forced audit mode (irreversible) ensures the HSM refuses operations when the 62-entry log is full, preventing unlogged signing. The server consumes HSM audit entries before and after every HSM operation to keep the log from filling up.
 
 ### Usage
 
