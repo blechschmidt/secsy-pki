@@ -254,19 +254,43 @@ func findSSHKey() (keyPath string, pubKey string) {
 	home, _ := os.UserHomeDir()
 	sshDir := filepath.Join(home, ".ssh")
 
-	for _, name := range []string{"id_ed25519", "id_ecdsa", "id_rsa"} {
-		privPath := filepath.Join(sshDir, name)
-		pubPath := privPath + ".pub"
-		if _, err := os.Stat(privPath); err != nil {
+	// Prefer well-known key types in order, then fall back to any id_* key
+	preferred := []string{"id_ed25519", "id_ecdsa", "id_rsa"}
+	for _, name := range preferred {
+		if kp, pk := tryKey(sshDir, name); kp != "" {
+			return kp, pk
+		}
+	}
+
+	// Scan for any id_* key not in the preferred list
+	entries, err := os.ReadDir(sshDir)
+	if err != nil {
+		return "", ""
+	}
+	seen := map[string]bool{"id_ed25519": true, "id_ecdsa": true, "id_rsa": true}
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, "id_") || strings.HasSuffix(name, ".pub") || seen[name] {
 			continue
 		}
-		pubData, err := os.ReadFile(pubPath)
-		if err != nil {
-			continue
+		if kp, pk := tryKey(sshDir, name); kp != "" {
+			return kp, pk
 		}
-		return privPath, strings.TrimSpace(string(pubData))
 	}
 	return "", ""
+}
+
+func tryKey(sshDir, name string) (string, string) {
+	privPath := filepath.Join(sshDir, name)
+	pubPath := privPath + ".pub"
+	if _, err := os.Stat(privPath); err != nil {
+		return "", ""
+	}
+	pubData, err := os.ReadFile(pubPath)
+	if err != nil {
+		return "", ""
+	}
+	return privPath, strings.TrimSpace(string(pubData))
 }
 
 func extractSSHUser(args []string) string {
