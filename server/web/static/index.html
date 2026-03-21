@@ -35,6 +35,9 @@
                     <li class="nav-item">
                         <a class="nav-link" href="#" data-page="restrictions"><i class="bi bi-funnel"></i> Restrictions</a>
                     </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="audit"><i class="bi bi-journal-text"></i> Audit Log</a>
+                    </li>
                 </ul>
                 <ul class="navbar-nav ms-auto">
                     <li class="nav-item" id="userInfo"></li>
@@ -318,6 +321,57 @@
                     </div>
                 </div>
                 <div id="rsListContainer"></div>
+            </div>
+
+            <!-- Audit Log Page -->
+            <div id="auditPage" class="page d-none">
+                <h3><i class="bi bi-journal-text"></i> Audit Log</h3>
+                <ul class="nav nav-tabs mb-3">
+                    <li class="nav-item">
+                        <button class="nav-link active" id="auditSignTab" onclick="switchAuditTab('sign')">Sign Operations</button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" id="auditAccessTab" onclick="switchAuditTab('access')">API Access</button>
+                    </li>
+                </ul>
+
+                <!-- Sign audit -->
+                <div id="auditSignPane">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div class="row g-2 align-items-end">
+                            <div class="col-auto">
+                                <label class="form-label">Filter by CA</label>
+                                <select class="form-select form-select-sm" id="auditCA"><option value="">All CAs</option></select>
+                            </div>
+                        </div>
+                        <button class="btn btn-outline-secondary btn-sm" id="auditExportBtn"><i class="bi bi-download"></i> Export JSON</button>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover table-sm">
+                            <thead>
+                                <tr><th>Time</th><th>User</th><th>CA</th><th>Key ID</th><th>Type</th><th>Principals</th><th>Valid Until</th><th>Details</th></tr>
+                            </thead>
+                            <tbody id="auditTableBody"></tbody>
+                        </table>
+                    </div>
+                    <nav><ul class="pagination" id="auditPagination"></ul></nav>
+                </div>
+
+                <!-- Access log -->
+                <div id="auditAccessPane" style="display:none">
+                    <div class="d-flex justify-content-end mb-3">
+                        <button class="btn btn-outline-secondary btn-sm" id="accessExportBtn"><i class="bi bi-download"></i> Export JSON</button>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover table-sm">
+                            <thead>
+                                <tr><th>Time</th><th>User</th><th>Method</th><th>Path</th><th>Status</th><th>IP</th></tr>
+                            </thead>
+                            <tbody id="accessTableBody"></tbody>
+                        </table>
+                    </div>
+                    <nav><ul class="pagination" id="accessPagination"></ul></nav>
+                </div>
             </div>
         </div>
     </div>

@@ -124,6 +124,7 @@ function showPage(name) {
     if (name === 'groups') loadGroups();
     if (name === 'permissions') { loadCASelect('permCA').then(loadPermissions); }
     if (name === 'restrictions') { loadCASelect('rsCA').then(loadRestrictionSets); }
+    if (name === 'audit') { loadCASelect('auditCA').then(loadAuditLog); }
 }
 
 // OIDC with PKCE (public client, no client_secret)
@@ -743,6 +744,187 @@ async function revokePermission(caId, entityType, entityId, permission) {
         showToast('Error', err.message, true);
     }
 }
+
+// Audit Log
+let auditOffset = 0;
+const auditLimit = 25;
+
+document.getElementById('auditCA').addEventListener('change', () => { auditOffset = 0; loadAuditLog(); });
+
+async function loadAuditLog() {
+    try {
+        const caId = document.getElementById('auditCA').value;
+        let url = `/api/audit-log?limit=${auditLimit}&offset=${auditOffset}`;
+        if (caId) url += `&ca_id=${encodeURIComponent(caId)}`;
+        const data = await API.get(url);
+        const tbody = document.getElementById('auditTableBody');
+        if (data.entries.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="text-muted text-center">No audit log entries</td></tr>';
+        } else {
+            tbody.innerHTML = data.entries.map(e => `
+                <tr>
+                    <td class="text-nowrap small">${new Date(e.timestamp).toLocaleString()}</td>
+                    <td>${truncated(e.user_email || e.user_sub, 20)}</td>
+                    <td><strong>${esc(e.ca_label)}</strong></td>
+                    <td>${truncated(e.key_id, 25)}</td>
+                    <td><span class="badge bg-secondary">${esc(e.cert_type || 'user')}</span></td>
+                    <td>${(e.principals || []).map(p => `<code>${esc(p)}</code>`).join(', ')}</td>
+                    <td class="small">${new Date(e.valid_before).toLocaleString()}</td>
+                    <td><button class="btn btn-sm btn-outline-info" onclick="showAuditDetail('${e.id}')"><i class="bi bi-info-circle"></i></button></td>
+                </tr>
+            `).join('');
+        }
+
+        // Pagination
+        const totalPages = Math.ceil(data.total / auditLimit);
+        const currentPage = Math.floor(auditOffset / auditLimit);
+        const pag = document.getElementById('auditPagination');
+        if (totalPages <= 1) { pag.innerHTML = ''; return; }
+        let pagHtml = '';
+        pagHtml += `<li class="page-item ${currentPage === 0 ? 'disabled' : ''}"><a class="page-link" href="#" onclick="auditGoPage(${currentPage - 1}); return false;">Prev</a></li>`;
+        for (let i = 0; i < totalPages && i < 10; i++) {
+            pagHtml += `<li class="page-item ${i === currentPage ? 'active' : ''}"><a class="page-link" href="#" onclick="auditGoPage(${i}); return false;">${i + 1}</a></li>`;
+        }
+        pagHtml += `<li class="page-item ${currentPage >= totalPages - 1 ? 'disabled' : ''}"><a class="page-link" href="#" onclick="auditGoPage(${currentPage + 1}); return false;">Next</a></li>`;
+        pag.innerHTML = pagHtml;
+    } catch (err) {
+        showToast('Error', err.message, true);
+    }
+}
+
+function auditGoPage(page) {
+    auditOffset = page * auditLimit;
+    loadAuditLog();
+}
+
+// Store entries for detail view
+let auditEntries = {};
+const origLoadAuditLog = loadAuditLog;
+
+async function showAuditDetail(id) {
+    // Fetch all entries from current view to find the one we need
+    const caId = document.getElementById('auditCA').value;
+    let url = `/api/audit-log?limit=500&offset=0`;
+    if (caId) url += `&ca_id=${encodeURIComponent(caId)}`;
+    try {
+        const data = await API.get(url);
+        const entry = data.entries.find(e => e.id === id);
+        if (!entry) { showToast('Error', 'Entry not found', true); return; }
+
+        const body = document.getElementById('userInfoModalBody');
+        const fields = [
+            ['Timestamp', new Date(entry.timestamp).toLocaleString()],
+            ['User', entry.user_email || entry.user_sub],
+            ['User Name', entry.user_name],
+            ['User Subject', entry.user_sub],
+            ['CA', entry.ca_label],
+            ['CA ID', entry.ca_id],
+            ['Key ID', entry.key_id],
+            ['Serial', entry.serial],
+            ['Cert Type', entry.cert_type || 'user'],
+            ['Principals', (entry.principals || []).join(', ')],
+            ['Valid After', new Date(entry.valid_after).toLocaleString()],
+            ['Valid Before', new Date(entry.valid_before).toLocaleString()],
+            ['Extensions', entry.extensions ? JSON.stringify(entry.extensions, null, 2) : 'default'],
+            ['Critical Options', entry.critical_options ? JSON.stringify(entry.critical_options, null, 2) : 'none'],
+            ['Public Key', entry.public_key],
+            ['Restriction Set ID', entry.restriction_set_id || 'none'],
+        ];
+        let html = '<table class="table table-sm mb-0">';
+        for (const [label, value] of fields) {
+            if (value) html += `<tr><th class="text-nowrap">${esc(label)}</th><td style="word-break:break-all"><code>${esc(String(value))}</code></td></tr>`;
+        }
+        html += '</table>';
+        body.innerHTML = html;
+        document.querySelector('#userInfoModal .modal-title').innerHTML = '<i class="bi bi-journal-text"></i> Audit Log Entry';
+        new bootstrap.Modal(document.getElementById('userInfoModal')).show();
+    } catch (err) {
+        showToast('Error', err.message, true);
+    }
+}
+
+function switchAuditTab(tab) {
+    document.getElementById('auditSignTab').classList.toggle('active', tab === 'sign');
+    document.getElementById('auditAccessTab').classList.toggle('active', tab === 'access');
+    document.getElementById('auditSignPane').style.display = tab === 'sign' ? '' : 'none';
+    document.getElementById('auditAccessPane').style.display = tab === 'access' ? '' : 'none';
+    if (tab === 'access') loadAccessLog();
+}
+
+// Access Log
+let accessOffset = 0;
+const accessLimit = 50;
+
+async function loadAccessLog() {
+    try {
+        const data = await API.get(`/api/access-log?limit=${accessLimit}&offset=${accessOffset}`);
+        const tbody = document.getElementById('accessTableBody');
+        if (data.entries.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-muted text-center">No access log entries</td></tr>';
+        } else {
+            tbody.innerHTML = data.entries.map(e => {
+                const statusCls = e.status >= 400 ? 'text-danger' : (e.status >= 300 ? 'text-warning' : '');
+                return `<tr>
+                    <td class="text-nowrap small">${new Date(e.timestamp).toLocaleString()}</td>
+                    <td><code>${esc(e.user_sub)}</code></td>
+                    <td><span class="badge bg-secondary">${esc(e.method)}</span></td>
+                    <td><code>${esc(e.path)}</code></td>
+                    <td class="${statusCls}">${e.status}</td>
+                    <td class="small">${esc(e.ip)}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        const totalPages = Math.ceil(data.total / accessLimit);
+        const currentPage = Math.floor(accessOffset / accessLimit);
+        const pag = document.getElementById('accessPagination');
+        if (totalPages <= 1) { pag.innerHTML = ''; return; }
+        let html = `<li class="page-item ${currentPage === 0 ? 'disabled' : ''}"><a class="page-link" href="#" onclick="accessGoPage(${currentPage - 1}); return false;">Prev</a></li>`;
+        for (let i = Math.max(0, currentPage - 4); i < Math.min(totalPages, currentPage + 5); i++) {
+            html += `<li class="page-item ${i === currentPage ? 'active' : ''}"><a class="page-link" href="#" onclick="accessGoPage(${i}); return false;">${i + 1}</a></li>`;
+        }
+        html += `<li class="page-item ${currentPage >= totalPages - 1 ? 'disabled' : ''}"><a class="page-link" href="#" onclick="accessGoPage(${currentPage + 1}); return false;">Next</a></li>`;
+        pag.innerHTML = html;
+    } catch (err) {
+        showToast('Error', err.message, true);
+    }
+}
+
+function accessGoPage(page) {
+    accessOffset = page * accessLimit;
+    loadAccessLog();
+}
+
+document.getElementById('accessExportBtn').addEventListener('click', async () => {
+    try {
+        const res = await fetch('/api/access-log?export=json', { headers: { 'Authorization': API.authHeader } });
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'access-log.json';
+        a.click();
+        URL.revokeObjectURL(a.href);
+    } catch (err) {
+        showToast('Error', err.message, true);
+    }
+});
+
+document.getElementById('auditExportBtn').addEventListener('click', async () => {
+    const caId = document.getElementById('auditCA').value;
+    let url = `/api/audit-log?export=json`;
+    if (caId) url += `&ca_id=${encodeURIComponent(caId)}`;
+    try {
+        const res = await fetch(url, { headers: { 'Authorization': API.authHeader } });
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'audit-log.json';
+        a.click();
+        URL.revokeObjectURL(a.href);
+    } catch (err) {
+        showToast('Error', err.message, true);
+    }
+});
 
 // Restriction Sets
 document.getElementById('rsCA').addEventListener('change', loadRestrictionSets);

@@ -99,6 +99,36 @@ type PermissionGrant struct {
 	RestrictionSetID *string    `json:"restriction_set_id,omitempty"`
 }
 
+type AuditLogEntry struct {
+	ID               string            `json:"id"`
+	Timestamp        time.Time         `json:"timestamp"`
+	UserSub          string            `json:"user_sub"`
+	UserEmail        string            `json:"user_email,omitempty"`
+	UserName         string            `json:"user_name,omitempty"`
+	CAID             string            `json:"ca_id"`
+	CALabel          string            `json:"ca_label"`
+	KeyID            string            `json:"key_id"`
+	CertType         string            `json:"cert_type"`
+	Principals       []string          `json:"principals"`
+	ValidAfter       time.Time         `json:"valid_after"`
+	ValidBefore      time.Time         `json:"valid_before"`
+	Extensions       map[string]string `json:"extensions,omitempty"`
+	CriticalOptions  map[string]string `json:"critical_options,omitempty"`
+	PublicKey        string            `json:"public_key"`
+	RestrictionSetID *string           `json:"restriction_set_id,omitempty"`
+	Serial           string            `json:"serial"`
+}
+
+type AccessLogEntry struct {
+	ID        string    `json:"id"`
+	Timestamp time.Time `json:"timestamp"`
+	UserSub   string    `json:"user_sub"`
+	Method    string    `json:"method"`
+	Path      string    `json:"path"`
+	Status    int       `json:"status"`
+	IP        string    `json:"ip"`
+}
+
 type UserInfo struct {
 	Subject string `json:"sub"`
 	Email   string `json:"email,omitempty"`

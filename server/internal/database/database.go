@@ -85,6 +85,38 @@ func (db *DB) migrate() error {
 			deny_critical_options INTEGER NOT NULL DEFAULT 0,
 			max_valid_after_offset INTEGER
 		)`,
+		`CREATE TABLE IF NOT EXISTS audit_log (
+			id TEXT PRIMARY KEY,
+			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+			user_sub TEXT NOT NULL,
+			user_email TEXT,
+			user_name TEXT,
+			ca_id TEXT NOT NULL,
+			ca_label TEXT NOT NULL,
+			key_id TEXT NOT NULL,
+			cert_type TEXT NOT NULL,
+			principals TEXT,
+			valid_after DATETIME NOT NULL,
+			valid_before DATETIME NOT NULL,
+			extensions TEXT,
+			critical_options TEXT,
+			public_key TEXT NOT NULL,
+			restriction_set_id TEXT,
+			serial TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_log_ca ON audit_log(ca_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_sub)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_log_time ON audit_log(timestamp)`,
+		`CREATE TABLE IF NOT EXISTS access_log (
+			id TEXT PRIMARY KEY,
+			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+			user_sub TEXT NOT NULL,
+			method TEXT NOT NULL,
+			path TEXT NOT NULL,
+			status INTEGER NOT NULL,
+			ip TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_access_log_time ON access_log(timestamp)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.conn.Exec(stmt); err != nil {
@@ -432,4 +464,99 @@ func (db *DB) DeleteRestrictionSet(id string) error {
 	db.conn.Exec(`UPDATE cas SET default_restriction_set_id = NULL WHERE default_restriction_set_id = ?`, id)
 	_, err := db.conn.Exec(`DELETE FROM restriction_sets WHERE id = ?`, id)
 	return err
+}
+
+// Audit log operations
+
+func (db *DB) CreateAuditLogEntry(e *models.AuditLogEntry) error {
+	principals, _ := json.Marshal(e.Principals)
+	extensions, _ := json.Marshal(e.Extensions)
+	critOpts, _ := json.Marshal(e.CriticalOptions)
+	_, err := db.conn.Exec(
+		`INSERT INTO audit_log (id, user_sub, user_email, user_name, ca_id, ca_label, key_id, cert_type, principals, valid_after, valid_before, extensions, critical_options, public_key, restriction_set_id, serial)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.ID, e.UserSub, e.UserEmail, e.UserName, e.CAID, e.CALabel, e.KeyID, e.CertType,
+		string(principals), e.ValidAfter, e.ValidBefore, string(extensions), string(critOpts),
+		e.PublicKey, e.RestrictionSetID, e.Serial,
+	)
+	return err
+}
+
+func (db *DB) ListAuditLog(caID string, limit, offset int) ([]models.AuditLogEntry, int, error) {
+	// Count total
+	var total int
+	countQuery := `SELECT COUNT(*) FROM audit_log`
+	args := []interface{}{}
+	if caID != "" {
+		countQuery += ` WHERE ca_id = ?`
+		args = append(args, caID)
+	}
+	if err := db.conn.QueryRow(countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	query := `SELECT id, timestamp, user_sub, user_email, user_name, ca_id, ca_label, key_id, cert_type, principals, valid_after, valid_before, extensions, critical_options, public_key, restriction_set_id, serial FROM audit_log`
+	queryArgs := []interface{}{}
+	if caID != "" {
+		query += ` WHERE ca_id = ?`
+		queryArgs = append(queryArgs, caID)
+	}
+	query += ` ORDER BY timestamp DESC LIMIT ? OFFSET ?`
+	queryArgs = append(queryArgs, limit, offset)
+
+	rows, err := db.conn.Query(query, queryArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var entries []models.AuditLogEntry
+	for rows.Next() {
+		var e models.AuditLogEntry
+		var principals, extensions, critOpts sql.NullString
+		if err := rows.Scan(&e.ID, &e.Timestamp, &e.UserSub, &e.UserEmail, &e.UserName, &e.CAID, &e.CALabel, &e.KeyID, &e.CertType, &principals, &e.ValidAfter, &e.ValidBefore, &extensions, &critOpts, &e.PublicKey, &e.RestrictionSetID, &e.Serial); err != nil {
+			return nil, 0, err
+		}
+		if principals.Valid { json.Unmarshal([]byte(principals.String), &e.Principals) }
+		if extensions.Valid { json.Unmarshal([]byte(extensions.String), &e.Extensions) }
+		if critOpts.Valid { json.Unmarshal([]byte(critOpts.String), &e.CriticalOptions) }
+		entries = append(entries, e)
+	}
+	return entries, total, rows.Err()
+}
+
+// Access log operations
+
+func (db *DB) CreateAccessLogEntry(e *models.AccessLogEntry) error {
+	_, err := db.conn.Exec(
+		`INSERT INTO access_log (id, user_sub, method, path, status, ip) VALUES (?, ?, ?, ?, ?, ?)`,
+		e.ID, e.UserSub, e.Method, e.Path, e.Status, e.IP,
+	)
+	return err
+}
+
+func (db *DB) ListAccessLog(limit, offset int) ([]models.AccessLogEntry, int, error) {
+	var total int
+	if err := db.conn.QueryRow(`SELECT COUNT(*) FROM access_log`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	rows, err := db.conn.Query(
+		`SELECT id, timestamp, user_sub, method, path, status, ip FROM access_log ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+		limit, offset,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var entries []models.AccessLogEntry
+	for rows.Next() {
+		var e models.AccessLogEntry
+		if err := rows.Scan(&e.ID, &e.Timestamp, &e.UserSub, &e.Method, &e.Path, &e.Status, &e.IP); err != nil {
+			return nil, 0, err
+		}
+		entries = append(entries, e)
+	}
+	return entries, total, rows.Err()
 }

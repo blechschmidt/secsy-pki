@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/crypto/ssh"
+	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
-	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 )
 
@@ -30,8 +32,12 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.HandleFunc("GET /api/health", a.Health)
 	mux.HandleFunc("GET /api/auth/config", a.AuthConfig)
 
-	// Protected routes
-	protected := authMw.Authenticate
+	// Protected routes: auth + access audit logging
+	auditMw := middleware.AuditLog(a.db)
+	protect := func(h http.Handler) http.Handler {
+		return authMw.Authenticate(auditMw(h))
+	}
+	protected := protect
 
 	mux.Handle("GET /api/cas", protected(http.HandlerFunc(a.ListCAs)))
 	mux.Handle("POST /api/cas", protected(http.HandlerFunc(a.CreateCA)))
@@ -60,6 +66,9 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("PUT /api/restriction-sets/{id}", protected(http.HandlerFunc(a.UpdateRestrictionSet)))
 	mux.Handle("DELETE /api/restriction-sets/{id}", protected(http.HandlerFunc(a.DeleteRestrictionSet)))
 	mux.Handle("PUT /api/cas/{id}/default-restriction-set", protected(http.HandlerFunc(a.SetDefaultRestrictionSet)))
+
+	mux.Handle("GET /api/audit-log", protected(http.HandlerFunc(a.ListAuditLog)))
+	mux.Handle("GET /api/access-log", protected(http.HandlerFunc(a.ListAccessLog)))
 
 	mux.Handle("GET /api/me", protected(http.HandlerFunc(a.Me)))
 }
@@ -339,6 +348,41 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Parse serial from the signed certificate
+	serial := ""
+	if pubKey, _, _, _, err := ssh.ParseAuthorizedKey(certBytes); err == nil {
+		if cert, ok := pubKey.(*ssh.Certificate); ok {
+			serial = fmt.Sprintf("%d", cert.Serial)
+		}
+	}
+
+	// Audit log
+	var rsID *string
+	if rs != nil {
+		rsID = &rs.ID
+	}
+	auditEntry := &models.AuditLogEntry{
+		ID:               uuid.New().String(),
+		UserSub:          user.Subject,
+		UserEmail:        user.Email,
+		UserName:         user.Name,
+		CAID:             caID,
+		CALabel:          ca.Label,
+		KeyID:            keyID,
+		CertType:         req.CertType,
+		Principals:       req.Principals,
+		ValidAfter:       validAfter,
+		ValidBefore:      validBefore,
+		Extensions:       req.Extensions,
+		CriticalOptions:  req.CriticalOptions,
+		PublicKey:        req.PublicKey,
+		RestrictionSetID: rsID,
+		Serial:           serial,
+	}
+	if err := a.db.CreateAuditLogEntry(auditEntry); err != nil {
+		log.Printf("WARNING: failed to write audit log: %v", err)
+	}
+
 	writeJSON(w, http.StatusOK, models.SignResponse{
 		Certificate: string(certBytes),
 		KeyID:       keyID,
@@ -594,6 +638,109 @@ func (a *API) RevokePermission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+}
+
+func (a *API) ListAuditLog(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserInfo(r.Context())
+	if !user.IsRoot {
+		writeError(w, http.StatusForbidden, "only root can view audit logs")
+		return
+	}
+
+	caID := r.URL.Query().Get("ca_id")
+	limit := 50
+	offset := 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	// JSON export mode
+	export := r.URL.Query().Get("export") == "json"
+
+	if export {
+		entries, _, err := a.db.ListAuditLog(caID, 100000, 0)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to query audit log: %v", err)
+			return
+		}
+		if entries == nil {
+			entries = []models.AuditLogEntry{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Disposition", "attachment; filename=audit-log.json")
+		json.NewEncoder(w).Encode(entries)
+		return
+	}
+
+	entries, total, err := a.db.ListAuditLog(caID, limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to query audit log: %v", err)
+		return
+	}
+	if entries == nil {
+		entries = []models.AuditLogEntry{}
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"entries": entries,
+		"total":   total,
+		"limit":   limit,
+		"offset":  offset,
+	})
+}
+
+func (a *API) ListAccessLog(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserInfo(r.Context())
+	if !user.IsRoot {
+		writeError(w, http.StatusForbidden, "only root can view access logs")
+		return
+	}
+
+	limit := 50
+	offset := 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	export := r.URL.Query().Get("export") == "json"
+	if export {
+		entries, _, err := a.db.ListAccessLog(100000, 0)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to query access log: %v", err)
+			return
+		}
+		if entries == nil { entries = []models.AccessLogEntry{} }
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Disposition", "attachment; filename=access-log.json")
+		json.NewEncoder(w).Encode(entries)
+		return
+	}
+
+	entries, total, err := a.db.ListAccessLog(limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to query access log: %v", err)
+		return
+	}
+	if entries == nil { entries = []models.AccessLogEntry{} }
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"entries": entries,
+		"total":   total,
+		"limit":   limit,
+		"offset":  offset,
+	})
 }
 
 func (a *API) GetMyRestrictions(w http.ResponseWriter, r *http.Request) {
