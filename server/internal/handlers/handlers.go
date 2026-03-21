@@ -331,7 +331,7 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Consume HSM audit logs before signing to free space (forced audit mode)
+	// Consume pending HSM logs to free space before signing
 	a.consumeHSMAuditLogs("")
 
 	// Get the key label from PKCS11 URI
@@ -388,6 +388,7 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 		Extensions:       req.Extensions,
 		CriticalOptions:  req.CriticalOptions,
 		PublicKey:        req.PublicKey,
+		Certificate:      string(certBytes),
 		RestrictionSetID: rsID,
 		Serial:           serial,
 	}
@@ -395,7 +396,10 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 		log.Printf("WARNING: failed to write audit log: %v", err)
 	}
 
-	// Consume HSM audit logs and link the sign entry
+	// Close the PKCS#11 session before consuming HSM logs so the sign entry is visible
+	signer.Close()
+
+	// Consume HSM audit logs — the sign entry should now be in the buffer
 	a.consumeHSMAuditLogs(auditEntry.ID)
 
 	writeJSON(w, http.StatusOK, models.SignResponse{
@@ -825,10 +829,13 @@ func (a *API) consumeHSMAuditLogs(signAuditID string) {
 		return
 	}
 
-	// Convert to models
+	// Convert to models, linking sign commands to the signAuditID if provided
 	var dbEntries []models.HSMAuditEntry
-	for _, e := range entries {
-		dbEntries = append(dbEntries, models.HSMAuditEntry{
+	linked := false
+	// Walk backwards to find the latest sign command for linking
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		entry := models.HSMAuditEntry{
 			Number:     e.Number,
 			Command:    e.Command,
 			Length:     e.Length,
@@ -838,17 +845,18 @@ func (a *API) consumeHSMAuditLogs(signAuditID string) {
 			Result:     e.Result,
 			Tick:       e.Tick,
 			Hash:       e.Hash,
-		})
+		}
+		if !linked && signAuditID != "" {
+			if _, isSign := hsm.SignCommands[e.Command]; isSign {
+				entry.SignAuditID = &signAuditID
+				linked = true
+			}
+		}
+		dbEntries = append([]models.HSMAuditEntry{entry}, dbEntries...)
 	}
 
 	if err := a.db.StoreHSMAuditEntries(dbEntries); err != nil {
 		log.Printf("WARNING: failed to store HSM audit entries: %v", err)
-		return
-	}
-
-	// Link the most recent sign command to the sign audit entry
-	if err := a.db.LinkLatestHSMSignEntry(signAuditID); err != nil {
-		log.Printf("WARNING: failed to link HSM sign entry: %v", err)
 	}
 }
 
@@ -881,9 +889,30 @@ func (a *API) GetSignedAuditLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	signedLog, err := hsm.GetSignedAuditLog(a.hsmCfg)
+	// First consume any pending HSM entries to the DB
+	a.consumeHSMAuditLogs("")
+
+	// Get all DB-stored HSM entries
+	export, err := a.db.ExportCombinedAuditLog()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get signed audit log: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to export DB entries: %v", err)
+		return
+	}
+
+	// Convert DB entries to hsm.AuditLogEntry for signing
+	var allEntries []hsm.AuditLogEntry
+	for _, e := range export.HSMEntries {
+		allEntries = append(allEntries, hsm.AuditLogEntry{
+			Number: e.Number, Command: e.Command, Length: e.Length,
+			SessionKey: e.SessionKey, TargetKey: e.TargetKey, SecondKey: e.SecondKey,
+			Result: e.Result, Tick: e.Tick, Hash: e.Hash,
+		})
+	}
+
+	// Sign the complete log (all entries from DB)
+	signedLog, err := hsm.SignAuditEntries(a.hsmCfg, allEntries)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to sign audit log: %v", err)
 		return
 	}
 

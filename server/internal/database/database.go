@@ -101,6 +101,7 @@ func (db *DB) migrate() error {
 			extensions TEXT,
 			critical_options TEXT,
 			public_key TEXT NOT NULL,
+			certificate TEXT,
 			restriction_set_id TEXT,
 			serial TEXT NOT NULL
 		)`,
@@ -143,6 +144,7 @@ func (db *DB) migrate() error {
 	db.conn.Exec("ALTER TABLE permissions ADD COLUMN restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 	db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN deny_extensions INTEGER NOT NULL DEFAULT 0")
 	db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN deny_critical_options INTEGER NOT NULL DEFAULT 0")
+	db.conn.Exec("ALTER TABLE audit_log ADD COLUMN certificate TEXT")
 	return nil
 }
 
@@ -488,11 +490,11 @@ func (db *DB) CreateAuditLogEntry(e *models.AuditLogEntry) error {
 	extensions, _ := json.Marshal(e.Extensions)
 	critOpts, _ := json.Marshal(e.CriticalOptions)
 	_, err := db.conn.Exec(
-		`INSERT INTO audit_log (id, user_sub, user_email, user_name, ca_id, ca_label, key_id, cert_type, principals, valid_after, valid_before, extensions, critical_options, public_key, restriction_set_id, serial)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO audit_log (id, user_sub, user_email, user_name, ca_id, ca_label, key_id, cert_type, principals, valid_after, valid_before, extensions, critical_options, public_key, certificate, restriction_set_id, serial)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.ID, e.UserSub, e.UserEmail, e.UserName, e.CAID, e.CALabel, e.KeyID, e.CertType,
 		string(principals), e.ValidAfter, e.ValidBefore, string(extensions), string(critOpts),
-		e.PublicKey, e.RestrictionSetID, e.Serial,
+		e.PublicKey, e.Certificate, e.RestrictionSetID, e.Serial,
 	)
 	return err
 }
@@ -510,7 +512,7 @@ func (db *DB) ListAuditLog(caID string, limit, offset int) ([]models.AuditLogEnt
 		return nil, 0, err
 	}
 
-	query := `SELECT id, timestamp, user_sub, user_email, user_name, ca_id, ca_label, key_id, cert_type, principals, valid_after, valid_before, extensions, critical_options, public_key, restriction_set_id, serial FROM audit_log`
+	query := `SELECT id, timestamp, user_sub, user_email, user_name, ca_id, ca_label, key_id, cert_type, principals, valid_after, valid_before, extensions, critical_options, public_key, certificate, restriction_set_id, serial FROM audit_log`
 	queryArgs := []interface{}{}
 	if caID != "" {
 		query += ` WHERE ca_id = ?`
@@ -529,7 +531,7 @@ func (db *DB) ListAuditLog(caID string, limit, offset int) ([]models.AuditLogEnt
 	for rows.Next() {
 		var e models.AuditLogEntry
 		var principals, extensions, critOpts sql.NullString
-		if err := rows.Scan(&e.ID, &e.Timestamp, &e.UserSub, &e.UserEmail, &e.UserName, &e.CAID, &e.CALabel, &e.KeyID, &e.CertType, &principals, &e.ValidAfter, &e.ValidBefore, &extensions, &critOpts, &e.PublicKey, &e.RestrictionSetID, &e.Serial); err != nil {
+		if err := rows.Scan(&e.ID, &e.Timestamp, &e.UserSub, &e.UserEmail, &e.UserName, &e.CAID, &e.CALabel, &e.KeyID, &e.CertType, &principals, &e.ValidAfter, &e.ValidBefore, &extensions, &critOpts, &e.PublicKey, &e.Certificate, &e.RestrictionSetID, &e.Serial); err != nil {
 			return nil, 0, err
 		}
 		if principals.Valid { json.Unmarshal([]byte(principals.String), &e.Principals) }

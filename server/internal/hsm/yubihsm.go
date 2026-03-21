@@ -307,6 +307,62 @@ func GetSignedAuditLog(cfg Config) (*SignedAuditLog, error) {
 	}, nil
 }
 
+// SignAuditEntries signs a set of audit log entries with the HSM's attestation key.
+// Unlike GetSignedAuditLog, this takes pre-collected entries (e.g., from a database).
+func SignAuditEntries(cfg Config, entries []AuditLogEntry) (*SignedAuditLog, error) {
+	serial, _ := GetDeviceSerial(cfg)
+	digest := ComputeLogDigest(entries)
+
+	digestBytes, _ := hex.DecodeString(digest)
+	digestFile, err := os.CreateTemp("", "audit-digest-*.bin")
+	if err != nil {
+		return nil, err
+	}
+	digestFile.Write(digestBytes)
+	digestFile.Close()
+	defer os.Remove(digestFile.Name())
+
+	sigOut, err := runShell(cfg, fmt.Sprintf("sign eddsa 0 0x0001 ed25519 %s", digestFile.Name()))
+	if err != nil {
+		return nil, fmt.Errorf("signing audit log: %w", err)
+	}
+	signature := ""
+	for _, line := range strings.Split(sigOut, "\n") {
+		line = strings.TrimSpace(line)
+		if len(line) > 40 && !strings.Contains(line, " ") {
+			signature = line
+		}
+	}
+	if signature == "" {
+		return nil, fmt.Errorf("could not parse signature from output: %s", sigOut)
+	}
+
+	attestOut, err := runShell(cfg, "attest asymmetric 0 0x0001")
+	if err != nil {
+		return nil, fmt.Errorf("getting attestation cert: %w", err)
+	}
+	attestCert := extractPEM(attestOut)
+	if attestCert == "" {
+		return nil, fmt.Errorf("could not parse attestation cert")
+	}
+
+	derBytes, err := GetDeviceAttestation(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("getting device cert: %w", err)
+	}
+	deviceCertPEM := string(pemEncode("CERTIFICATE", derBytes))
+
+	return &SignedAuditLog{
+		DeviceSerial:       serial,
+		Entries:            entries,
+		LogDigest:          digest,
+		Signature:          signature,
+		AttestationCertPEM: attestCert,
+		DeviceCertPEM:      deviceCertPEM,
+		ExportedAt:         time.Now().UTC(),
+	}, nil
+}
+
 // ComputeLogDigest computes a SHA-256 digest of the serialized audit log entries.
 // The serialization is deterministic: entries are packed in order as big-endian structs.
 func ComputeLogDigest(entries []AuditLogEntry) string {
@@ -365,6 +421,14 @@ func base64Encode(data []byte) string {
 		lines += encoded[i:end] + "\n"
 	}
 	return lines
+}
+
+// SignCommands is the subset of CryptoCommands that are signing operations (not keygen).
+var SignCommands = map[uint8]string{
+	CmdSignECDSA:    "SIGN ECDSA",
+	CmdSignEdDSA:    "SIGN EDDSA",
+	CmdSignRSAPKCS1: "SIGN RSA PKCS1",
+	CmdSignRSAPSS:   "SIGN RSA PSS",
 }
 
 // FetchAndConsumeAuditLog retrieves audit log entries and acknowledges them

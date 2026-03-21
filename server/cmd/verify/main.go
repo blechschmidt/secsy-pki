@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
@@ -30,6 +32,8 @@ func main() {
 	switch os.Args[1] {
 	case "verify-audit-log":
 		cmdVerifyAuditLog(os.Args[2:])
+	case "verify-combined-log":
+		cmdVerifyCombinedLog(os.Args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -42,7 +46,8 @@ func main() {
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: secsy-verify <command> [options]")
 	fmt.Fprintln(os.Stderr, "\nCommands:")
-	fmt.Fprintln(os.Stderr, "  verify-audit-log  Verify an exported HSM audit log")
+	fmt.Fprintln(os.Stderr, "  verify-audit-log    Verify an exported signed HSM audit log")
+	fmt.Fprintln(os.Stderr, "  verify-combined-log Verify a combined log against a signed HSM audit log")
 	fmt.Fprintln(os.Stderr, "\nRun 'secsy-verify <command> --help' for command-specific help.")
 }
 
@@ -669,4 +674,343 @@ func truncStr(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+func cmdVerifyCombinedLog(args []string) {
+	fs := flag.NewFlagSet("verify-combined-log", flag.ExitOnError)
+	signedLogPath := fs.String("signed-log", "", "Path to signed HSM audit log JSON (from verify-audit-log)")
+	combinedLogPath := fs.String("combined-log", "", "Path to combined crypto operations log JSON")
+	caKeyHex := fs.String("ca-key", "", "CA key ID on the HSM (hex, e.g. 0x50dd)")
+	yubicoCAPath := fs.String("yubico-ca", "", "Path to Yubico root CA PEM")
+	yubicoIntPath := fs.String("yubico-intermediate", "", "Path to Yubico intermediate CA PEM")
+	fs.Parse(args)
+
+	if *signedLogPath == "" || *combinedLogPath == "" || *caKeyHex == "" {
+		fmt.Fprintln(os.Stderr, "Usage: secsy-verify verify-combined-log \\")
+		fmt.Fprintln(os.Stderr, "  --signed-log <signed-audit-log.json> \\")
+		fmt.Fprintln(os.Stderr, "  --combined-log <combined-audit-log.json> \\")
+		fmt.Fprintln(os.Stderr, "  --ca-key <hex-key-id> \\")
+		fmt.Fprintln(os.Stderr, "  [--yubico-ca <pem> --yubico-intermediate <pem>]")
+		fmt.Fprintln(os.Stderr, "\nVerifies that:")
+		fmt.Fprintln(os.Stderr, "  1. The signed HSM audit log is valid (hash chain, signature, cert chain)")
+		fmt.Fprintln(os.Stderr, "  2. The CA key was generated on the HSM and is unexportable")
+		fmt.Fprintln(os.Stderr, "  3. Every HSM sign operation on the CA key maps to a combined log entry")
+		fmt.Fprintln(os.Stderr, "  4. Every combined log entry maps to an HSM sign operation")
+		fmt.Fprintln(os.Stderr, "  5. Each certificate contains the claimed public key and parameters")
+		os.Exit(1)
+	}
+
+	// Parse CA key ID
+	keyStr := strings.TrimPrefix(*caKeyHex, "0x")
+	caKeyID64, err := hex.DecodeString(fmt.Sprintf("%04s", keyStr))
+	if err != nil || len(caKeyID64) < 2 {
+		fmt.Fprintf(os.Stderr, "Invalid CA key ID: %s\n", *caKeyHex)
+		os.Exit(1)
+	}
+	caKeyID := uint16(caKeyID64[len(caKeyID64)-2])<<8 | uint16(caKeyID64[len(caKeyID64)-1])
+
+	// Load signed log
+	signedData, err := os.ReadFile(*signedLogPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading signed log: %v\n", err)
+		os.Exit(1)
+	}
+	var signedLog hsm.SignedAuditLog
+	if err := json.Unmarshal(signedData, &signedLog); err != nil || signedLog.Signature == "" {
+		fmt.Fprintln(os.Stderr, "Error: --signed-log must be a signed audit log (with signature)")
+		os.Exit(1)
+	}
+
+	// Load combined log
+	combinedData, err := os.ReadFile(*combinedLogPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading combined log: %v\n", err)
+		os.Exit(1)
+	}
+	var combined models.CombinedAuditExport
+	if err := json.Unmarshal(combinedData, &combined); err != nil {
+		fmt.Fprintf(os.Stderr, "Error parsing combined log: %v\n", err)
+		os.Exit(1)
+	}
+
+	allOK := true
+
+	// Step 1: Verify signed audit log
+	fmt.Println("=== Step 1: Verify Signed HSM Audit Log ===")
+	if !verifySignedLog(&signedLog, *yubicoCAPath, *yubicoIntPath) {
+		allOK = false
+	}
+	fmt.Println()
+
+	// Step 2: Verify CA key properties from attestation
+	fmt.Printf("=== Step 2: CA Key Properties (0x%04x) ===\n", caKeyID)
+	attestCert, _ := parsePEMCert([]byte(signedLog.AttestationCertPEM))
+	caKeyOK := verifyCAKeyProperties(signedLog.Entries, caKeyID, attestCert)
+	if !caKeyOK {
+		allOK = false
+	}
+	fmt.Println()
+
+	// Step 3: Cross-reference HSM sign ops with combined log
+	fmt.Printf("=== Step 3: Cross-Reference (CA key 0x%04x) ===\n", caKeyID)
+
+	// Build a set of HSM entry numbers from the signed log (cryptographic proof)
+	signedHSMNumbers := make(map[uint16]bool)
+	var hsmSignOps []hsm.AuditLogEntry
+	for _, e := range signedLog.Entries {
+		signedHSMNumbers[e.Number] = true
+		if _, isSign := hsm.SignCommands[e.Command]; isSign && e.TargetKey == caKeyID {
+			hsmSignOps = append(hsmSignOps, e)
+		}
+	}
+	fmt.Printf("  HSM sign operations on key 0x%04x: %d\n", caKeyID, len(hsmSignOps))
+
+	// Build linkage from the combined log (which has sign_audit_id associations)
+	signOpMap := make(map[string]*models.AuditLogEntry)
+	for i := range combined.SignOps {
+		signOpMap[combined.SignOps[i].ID] = &combined.SignOps[i]
+	}
+
+	hsmToSignMap := make(map[uint16]string) // hsm number -> sign_audit_id
+	for _, e := range combined.HSMEntries {
+		if e.SignAuditID != nil && e.TargetKey == caKeyID {
+			if _, isSign := hsm.SignCommands[e.Command]; isSign {
+				hsmToSignMap[e.Number] = *e.SignAuditID
+			}
+		}
+	}
+
+	// Check 3a: Every HSM sign op on the CA key (from signed log) must have a link in the combined log
+	fmt.Println("\n  --- HSM -> Combined Log ---")
+	unmatchedHSM := 0
+	matchedPairs := make(map[uint16]*models.AuditLogEntry)
+	for _, hsmEntry := range hsmSignOps {
+		signID, linked := hsmToSignMap[hsmEntry.Number]
+		if !linked {
+			fmt.Printf("  FAIL: HSM entry %d (%s tick=%d) has no linked sign operation in combined log\n",
+				hsmEntry.Number, mustCmdName(hsmEntry.Command), hsmEntry.Tick)
+			unmatchedHSM++
+			allOK = false
+			continue
+		}
+		signOp, exists := signOpMap[signID]
+		if !exists {
+			fmt.Printf("  FAIL: HSM entry %d links to sign op %s which doesn't exist in combined log\n",
+				hsmEntry.Number, signID)
+			allOK = false
+			continue
+		}
+		matchedPairs[hsmEntry.Number] = signOp
+		fmt.Printf("  OK:   HSM entry %3d -> sign op key_id=%q serial=%s\n",
+			hsmEntry.Number, signOp.KeyID, truncStr(signOp.Serial, 10))
+	}
+	if unmatchedHSM > 0 {
+		fmt.Printf("  %d HSM sign operation(s) without matching combined log entries\n", unmatchedHSM)
+	}
+
+	// Check 3b: Every combined log sign op must map to an HSM entry in the signed log
+	fmt.Println("\n  --- Combined Log -> HSM ---")
+	orphanOps := 0
+	for _, op := range combined.SignOps {
+		// Find the HSM entry number for this sign op
+		found := false
+		for num, signID := range hsmToSignMap {
+			if signID == op.ID {
+				if signedHSMNumbers[num] {
+					found = true
+				}
+				break
+			}
+		}
+		if !found {
+			fmt.Printf("  FAIL: Sign op %s (key_id=%q serial=%s) has no matching entry in signed HSM log\n",
+				op.ID[:8], op.KeyID, truncStr(op.Serial, 10))
+			orphanOps++
+			allOK = false
+		}
+	}
+	if orphanOps == 0 && len(combined.SignOps) > 0 {
+		fmt.Printf("  OK:   All %d sign operations have matching signed HSM entries\n", len(combined.SignOps))
+	}
+	fmt.Println()
+
+	// Step 4: Verify certificates match claimed parameters
+	fmt.Println("=== Step 4: Certificate Parameter Verification ===")
+	certErrors := 0
+	for hsmNum, signOp := range matchedPairs {
+		ok := verifyCertificateParams(hsmNum, signOp)
+		if !ok {
+			certErrors++
+			allOK = false
+		}
+	}
+	if certErrors == 0 && len(matchedPairs) > 0 {
+		fmt.Printf("  All %d certificates verified against claimed parameters\n", len(matchedPairs))
+	} else if certErrors > 0 {
+		fmt.Printf("  %d certificate(s) failed parameter verification\n", certErrors)
+	}
+
+	fmt.Println()
+	fmt.Printf("=== Overall: %s ===\n", passOrFail(allOK))
+	if !allOK {
+		os.Exit(1)
+	}
+}
+
+func verifyCAKeyProperties(entries []hsm.AuditLogEntry, caKeyID uint16, attestCert *x509.Certificate) bool {
+	ok := true
+
+	// Check that the key was generated on the HSM (GENERATE ASYMMETRIC KEY with target = caKeyID)
+	generated := false
+	for _, e := range entries {
+		if e.Command == hsm.CmdGenerateAsymmetricKey && e.TargetKey == caKeyID {
+			generated = true
+			fmt.Printf("  Generated on HSM:  PASS (entry %d, tick %d)\n", e.Number, e.Tick)
+			break
+		}
+	}
+	if !generated {
+		fmt.Println("  Generated on HSM:  WARNING (no GENERATE ASYMMETRIC KEY entry found for this key)")
+		fmt.Println("                     The key may have been generated before audit logging was enabled")
+	}
+
+	// Check that the key was never exported (no EXPORT_WRAPPED, EXPORT_RSA_WRAPPED targeting this key)
+	exportCmds := map[uint8]string{
+		hsm.CmdExportWrapped:    "EXPORT WRAPPED",
+		hsm.CmdExportRSAWrapped: "EXPORT RSA WRAPPED",
+		hsm.CmdExportRSAWrappedObj: "EXPORT RSA WRAPPED OBJ",
+	}
+	for _, e := range entries {
+		if name, isExport := exportCmds[e.Command]; isExport {
+			if e.TargetKey == caKeyID || e.SecondKey == caKeyID {
+				fmt.Printf("  Never exported:    FAIL (entry %d: %s)\n", e.Number, name)
+				ok = false
+			}
+		}
+	}
+	if ok {
+		fmt.Println("  Never exported:    PASS (no export operations found for this key)")
+	}
+
+	// Check attestation cert OIDs if available
+	if attestCert != nil {
+		for _, ext := range attestCert.Extensions {
+			if ext.Id.Equal(oidOrigin) {
+				val := parseYubiHSMExtension(ext)
+				isGenerated := strings.Contains(val, "generated")
+				fmt.Printf("  Attestation origin: %s (%s)\n", passOrFail(isGenerated), val)
+				if !isGenerated {
+					ok = false
+				}
+			}
+			if ext.Id.Equal(oidCapabilities) {
+				val := parseYubiHSMExtension(ext)
+				// Check the key doesn't have exportable-under-wrap capability
+				hasExportable := strings.Contains(val, "exportable-under-wrap")
+				fmt.Printf("  Unexportable:      %s (capabilities: %s)\n", passOrFail(!hasExportable), val)
+				if hasExportable {
+					ok = false
+				}
+			}
+		}
+	}
+
+	return ok
+}
+
+func verifyCertificateParams(hsmEntryNum uint16, signOp *models.AuditLogEntry) bool {
+	if signOp.Certificate == "" {
+		fmt.Printf("  HSM %3d: WARNING no certificate stored (signed before certificate logging was enabled)\n", hsmEntryNum)
+		return true // can't verify, not a failure
+	}
+
+	certStr := strings.TrimSpace(signOp.Certificate)
+	pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(certStr))
+	if err != nil {
+		fmt.Printf("  HSM %3d: FAIL parsing certificate: %v\n", hsmEntryNum, err)
+		return false
+	}
+
+	cert, ok := pubKey.(*ssh.Certificate)
+	if !ok {
+		fmt.Printf("  HSM %3d: FAIL not an SSH certificate\n", hsmEntryNum)
+		return false
+	}
+
+	errors := 0
+
+	// Verify public key matches
+	claimedPubStr := strings.TrimSpace(signOp.PublicKey)
+	claimedPub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(claimedPubStr))
+	if err == nil {
+		certKeyBytes := cert.Key.Marshal()
+		claimedKeyBytes := claimedPub.Marshal()
+		if string(certKeyBytes) != string(claimedKeyBytes) {
+			fmt.Printf("  HSM %3d: FAIL public key mismatch\n", hsmEntryNum)
+			errors++
+		}
+	}
+
+	// Verify key ID
+	if cert.KeyId != signOp.KeyID {
+		fmt.Printf("  HSM %3d: FAIL key_id mismatch (cert=%q, log=%q)\n", hsmEntryNum, cert.KeyId, signOp.KeyID)
+		errors++
+	}
+
+	// Verify cert type
+	expectedType := ssh.UserCert
+	if signOp.CertType == "host" {
+		expectedType = ssh.HostCert
+	}
+	if cert.CertType != uint32(expectedType) {
+		fmt.Printf("  HSM %3d: FAIL cert_type mismatch (cert=%d, log=%s)\n", hsmEntryNum, cert.CertType, signOp.CertType)
+		errors++
+	}
+
+	// Verify principals
+	if len(cert.ValidPrincipals) != len(signOp.Principals) {
+		fmt.Printf("  HSM %3d: FAIL principals count mismatch (cert=%d, log=%d)\n",
+			hsmEntryNum, len(cert.ValidPrincipals), len(signOp.Principals))
+		errors++
+	} else {
+		for i, p := range cert.ValidPrincipals {
+			if i < len(signOp.Principals) && p != signOp.Principals[i] {
+				fmt.Printf("  HSM %3d: FAIL principal[%d] mismatch (cert=%q, log=%q)\n", hsmEntryNum, i, p, signOp.Principals[i])
+				errors++
+			}
+		}
+	}
+
+	// Verify serial
+	certSerial := fmt.Sprintf("%d", cert.Serial)
+	if certSerial != signOp.Serial {
+		fmt.Printf("  HSM %3d: FAIL serial mismatch (cert=%s, log=%s)\n", hsmEntryNum, certSerial, signOp.Serial)
+		errors++
+	}
+
+	// Verify validity
+	certValidAfter := time.Unix(int64(cert.ValidAfter), 0)
+	certValidBefore := time.Unix(int64(cert.ValidBefore), 0)
+	if certValidAfter.Unix() != signOp.ValidAfter.Unix() {
+		fmt.Printf("  HSM %3d: FAIL valid_after mismatch\n", hsmEntryNum)
+		errors++
+	}
+	if certValidBefore.Unix() != signOp.ValidBefore.Unix() {
+		fmt.Printf("  HSM %3d: FAIL valid_before mismatch\n", hsmEntryNum)
+		errors++
+	}
+
+	if errors == 0 {
+		fmt.Printf("  HSM %3d: OK key_id=%q principals=%v serial=%s type=%s\n",
+			hsmEntryNum, signOp.KeyID, signOp.Principals, truncStr(signOp.Serial, 10), orDefault(signOp.CertType, "user"))
+	}
+	return errors == 0
+}
+
+func mustCmdName(cmd uint8) string {
+	name, ok := cmdName(cmd)
+	if !ok {
+		return fmt.Sprintf("0x%02x", cmd)
+	}
+	return name
 }

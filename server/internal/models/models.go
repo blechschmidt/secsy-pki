@@ -115,6 +115,7 @@ type AuditLogEntry struct {
 	Extensions       map[string]string `json:"extensions,omitempty"`
 	CriticalOptions  map[string]string `json:"critical_options,omitempty"`
 	PublicKey        string            `json:"public_key"`
+	Certificate      string            `json:"certificate,omitempty"`
 	RestrictionSetID *string           `json:"restriction_set_id,omitempty"`
 	Serial           string            `json:"serial"`
 }
