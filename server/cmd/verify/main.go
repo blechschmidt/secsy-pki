@@ -220,7 +220,7 @@ func parseYubiHSMExtension(ext pkix.Extension) string {
 	case oidCapabilities.String():
 		var bs asn1.BitString
 		if _, err := asn1.Unmarshal(raw, &bs); err == nil {
-			return hex.EncodeToString(bs.Bytes)
+			return formatCapabilities(bs.Bytes)
 		}
 		return hex.EncodeToString(raw)
 
@@ -285,6 +285,100 @@ func parseDomains(data []byte) string {
 		return "none"
 	}
 	return strings.Join(domains, ", ")
+}
+
+// capabilityNames maps bit position (0-based from MSB of the 8-byte field) to capability name.
+// From the YubiHSM2 SDK: capabilities is a 64-bit bitmask stored big-endian.
+var capabilityNames = map[int]string{
+	0x00: "get-opaque",
+	0x01: "put-opaque",
+	0x02: "put-authentication-key",
+	0x03: "put-asymmetric-key",
+	0x04: "generate-asymmetric-key",
+	0x05: "sign-pkcs",
+	0x06: "sign-pss",
+	0x07: "sign-ecdsa",
+	0x08: "sign-eddsa",
+	0x09: "decrypt-pkcs",
+	0x0a: "decrypt-oaep",
+	0x0b: "derive-ecdh",
+	0x0c: "export-wrapped",
+	0x0d: "import-wrapped",
+	0x0e: "put-wrap-key",
+	0x0f: "generate-wrap-key",
+	0x10: "exportable-under-wrap",
+	0x11: "set-option",
+	0x12: "get-option",
+	0x13: "get-pseudo-random",
+	0x14: "put-hmac-key",
+	0x15: "generate-hmac-key",
+	0x16: "sign-hmac",
+	0x17: "verify-hmac",
+	0x18: "get-log-entries",
+	0x19: "sign-ssh-certificate",
+	0x1a: "get-template",
+	0x1b: "put-template",
+	0x1c: "reset-device",
+	0x1d: "decrypt-otp",
+	0x1e: "create-otp-aead",
+	0x1f: "randomize-otp-aead",
+	0x20: "rewrap-from-otp-aead-key",
+	0x21: "rewrap-to-otp-aead-key",
+	0x22: "sign-attestation-certificate",
+	0x23: "put-otp-aead-key",
+	0x24: "generate-otp-aead-key",
+	0x25: "wrap-data",
+	0x26: "unwrap-data",
+	0x27: "delete-opaque",
+	0x28: "delete-authentication-key",
+	0x29: "delete-asymmetric-key",
+	0x2a: "delete-wrap-key",
+	0x2b: "delete-hmac-key",
+	0x2c: "delete-template",
+	0x2d: "delete-otp-aead-key",
+	0x2e: "change-authentication-key",
+	0x2f: "put-symmetric-key",
+	0x30: "generate-symmetric-key",
+	0x31: "delete-symmetric-key",
+	0x32: "decrypt-ecb",
+	0x33: "encrypt-ecb",
+	0x34: "decrypt-cbc",
+	0x35: "encrypt-cbc",
+	0x54: "put-public-wrap-key",
+	0x55: "delete-public-wrap-key",
+}
+
+func formatCapabilities(data []byte) string {
+	// Pad to 8 bytes (big-endian)
+	padded := make([]byte, 8)
+	copy(padded[8-len(data):], data)
+
+	// Capabilities is a 64-bit bitmask, big-endian.
+	// Bit 0 is the LSB (rightmost bit of byte[7]).
+	var caps []string
+	for bit, name := range capabilityNames {
+		byteIdx := 7 - (bit / 8) // count from the end
+		bitIdx := bit % 8
+		if byteIdx >= 0 && byteIdx < 8 && padded[byteIdx]&(1<<uint(bitIdx)) != 0 {
+			caps = append(caps, name)
+		}
+	}
+
+	if len(caps) == 0 {
+		return "none"
+	}
+
+	// Sort for consistent output
+	sortStrings(caps)
+	return strings.Join(caps, ", ")
+}
+
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j] < s[j-1]; j-- {
+			s[j], s[j-1] = s[j-1], s[j]
+		}
+	}
 }
 
 // --- Verification functions ---
