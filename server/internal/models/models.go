@@ -119,6 +119,25 @@ type AuditLogEntry struct {
 	Serial           string            `json:"serial"`
 }
 
+type HSMAuditEntry struct {
+	Number     uint16  `json:"number"`
+	Command    uint8   `json:"command"`
+	Length     uint16  `json:"length"`
+	SessionKey uint16  `json:"session_key"`
+	TargetKey  uint16  `json:"target_key"`
+	SecondKey  uint16  `json:"second_key"`
+	Result     uint8   `json:"result"`
+	Tick       uint32  `json:"tick"`
+	Hash       string  `json:"hash"`
+	SignAuditID *string `json:"sign_audit_id,omitempty"`
+}
+
+type CombinedAuditExport struct {
+	DeviceSerial string          `json:"device_serial,omitempty"`
+	HSMEntries   []HSMAuditEntry  `json:"hsm_entries"`
+	SignOps      []AuditLogEntry  `json:"sign_operations"`
+}
+
 type AccessLogEntry struct {
 	ID        string    `json:"id"`
 	Timestamp time.Time `json:"timestamp"`

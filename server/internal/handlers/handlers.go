@@ -76,6 +76,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/hsm/attestation", protected(http.HandlerFunc(a.GetHSMAttestation)))
 	mux.Handle("GET /api/hsm/audit-log", protected(http.HandlerFunc(a.GetHSMAuditLog)))
 	mux.Handle("POST /api/hsm/provision-audit", protected(http.HandlerFunc(a.ProvisionHSMAudit)))
+	mux.Handle("GET /api/hsm/combined-audit-log", protected(http.HandlerFunc(a.ExportCombinedAuditLog)))
 
 	mux.Handle("GET /api/me", protected(http.HandlerFunc(a.Me)))
 }
@@ -389,6 +390,9 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 	if err := a.db.CreateAuditLogEntry(auditEntry); err != nil {
 		log.Printf("WARNING: failed to write audit log: %v", err)
 	}
+
+	// Consume HSM audit logs and link the sign entry
+	a.consumeHSMAuditLogs(auditEntry.ID)
 
 	writeJSON(w, http.StatusOK, models.SignResponse{
 		Certificate: string(certBytes),
@@ -805,6 +809,65 @@ func (a *API) GetHSMAuditLog(w http.ResponseWriter, r *http.Request) {
 		"entries":       verified,
 		"exported_at":   auditLog.ExportedAt,
 	})
+}
+
+func (a *API) consumeHSMAuditLogs(signAuditID string) {
+	entries, err := hsm.FetchAndConsumeAuditLog(a.hsmCfg)
+	if err != nil {
+		log.Printf("WARNING: failed to fetch HSM audit log: %v", err)
+		return
+	}
+	if len(entries) == 0 {
+		return
+	}
+
+	// Convert to models
+	var dbEntries []models.HSMAuditEntry
+	for _, e := range entries {
+		dbEntries = append(dbEntries, models.HSMAuditEntry{
+			Number:     e.Number,
+			Command:    e.Command,
+			Length:     e.Length,
+			SessionKey: e.SessionKey,
+			TargetKey:  e.TargetKey,
+			SecondKey:  e.SecondKey,
+			Result:     e.Result,
+			Tick:       e.Tick,
+			Hash:       e.Hash,
+		})
+	}
+
+	if err := a.db.StoreHSMAuditEntries(dbEntries); err != nil {
+		log.Printf("WARNING: failed to store HSM audit entries: %v", err)
+		return
+	}
+
+	// Link the most recent sign command to the sign audit entry
+	if err := a.db.LinkLatestHSMSignEntry(signAuditID); err != nil {
+		log.Printf("WARNING: failed to link HSM sign entry: %v", err)
+	}
+}
+
+func (a *API) ExportCombinedAuditLog(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserInfo(r.Context())
+	if !user.IsRoot {
+		writeError(w, http.StatusForbidden, "only root can export combined audit logs")
+		return
+	}
+
+	export, err := a.db.ExportCombinedAuditLog()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to export: %v", err)
+		return
+	}
+
+	// Add device serial
+	serial, _ := hsm.GetDeviceSerial(a.hsmCfg)
+	export.DeviceSerial = serial
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", "attachment; filename=combined-audit-log.json")
+	json.NewEncoder(w).Encode(export)
 }
 
 func (a *API) ProvisionHSMAudit(w http.ResponseWriter, r *http.Request) {

@@ -156,6 +156,32 @@ func ProvisionAuditLogging(cfg Config) (string, error) {
 	return runShell(cfg, commands)
 }
 
+// FetchAndConsumeAuditLog retrieves audit log entries and acknowledges them
+// so the HSM can reuse the log slots. Returns only new entries.
+func FetchAndConsumeAuditLog(cfg Config) ([]AuditLogEntry, error) {
+	out, err := runShell(cfg, "audit get 0")
+	if err != nil {
+		return nil, err
+	}
+
+	entries, err := ParseAuditLogOutput(out)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	// Acknowledge up to the last entry so the HSM frees log slots
+	lastNum := entries[len(entries)-1].Number
+	_, err = runShell(cfg, fmt.Sprintf("audit set 0 %d", lastNum))
+	if err != nil {
+		return entries, fmt.Errorf("fetched %d entries but failed to consume: %w", len(entries), err)
+	}
+
+	return entries, nil
+}
+
 func GetDeviceAttestation(cfg Config) ([]byte, error) {
 	tmpFile, err := os.CreateTemp("", "yubihsm-cert-*.der")
 	if err != nil {

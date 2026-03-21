@@ -117,6 +117,21 @@ func (db *DB) migrate() error {
 			ip TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_access_log_time ON access_log(timestamp)`,
+		`CREATE TABLE IF NOT EXISTS hsm_audit_entries (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			number INTEGER NOT NULL,
+			command INTEGER NOT NULL,
+			length INTEGER NOT NULL,
+			session_key INTEGER NOT NULL,
+			target_key INTEGER NOT NULL,
+			second_key INTEGER NOT NULL,
+			result INTEGER NOT NULL,
+			tick INTEGER NOT NULL,
+			hash TEXT NOT NULL,
+			sign_audit_id TEXT REFERENCES audit_log(id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_hsm_audit_number ON hsm_audit_entries(number)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.conn.Exec(stmt); err != nil {
@@ -559,4 +574,70 @@ func (db *DB) ListAccessLog(limit, offset int) ([]models.AccessLogEntry, int, er
 		entries = append(entries, e)
 	}
 	return entries, total, rows.Err()
+}
+
+// HSM audit entry operations
+
+func (db *DB) StoreHSMAuditEntries(entries []models.HSMAuditEntry) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(
+		`INSERT OR IGNORE INTO hsm_audit_entries (number, command, length, session_key, target_key, second_key, result, tick, hash, sign_audit_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, e := range entries {
+		_, err := stmt.Exec(e.Number, e.Command, e.Length, e.SessionKey, e.TargetKey, e.SecondKey, e.Result, e.Tick, e.Hash, e.SignAuditID)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (db *DB) LinkLatestHSMSignEntry(signAuditID string) error {
+	_, err := db.conn.Exec(
+		`UPDATE hsm_audit_entries SET sign_audit_id = ?
+		 WHERE id = (SELECT id FROM hsm_audit_entries WHERE sign_audit_id IS NULL AND command IN (?, ?, ?, ?, ?) ORDER BY number DESC LIMIT 1)`,
+		signAuditID, 0x56, 0x6a, 0x47, 0x55, 0x46,
+	)
+	return err
+}
+
+func (db *DB) ExportCombinedAuditLog() (*models.CombinedAuditExport, error) {
+	rows, err := db.conn.Query(
+		`SELECT number, command, length, session_key, target_key, second_key, result, tick, hash, sign_audit_id FROM hsm_audit_entries ORDER BY number ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var hsmEntries []models.HSMAuditEntry
+	for rows.Next() {
+		var e models.HSMAuditEntry
+		if err := rows.Scan(&e.Number, &e.Command, &e.Length, &e.SessionKey, &e.TargetKey, &e.SecondKey, &e.Result, &e.Tick, &e.Hash, &e.SignAuditID); err != nil {
+			return nil, err
+		}
+		hsmEntries = append(hsmEntries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	signOps, _, err := db.ListAuditLog("", 100000, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	return &models.CombinedAuditExport{
+		HSMEntries: hsmEntries,
+		SignOps:    signOps,
+	}, nil
 }

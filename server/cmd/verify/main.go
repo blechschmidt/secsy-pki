@@ -7,12 +7,14 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
+	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
 
 func main() {
-	auditLogPath := flag.String("audit-log", "", "Path to exported HSM audit log JSON")
+	auditLogPath := flag.String("audit-log", "", "Path to exported audit log JSON (HSM-only or combined)")
 	deviceCertPath := flag.String("device-cert", "", "Path to device attestation certificate (DER or PEM)")
 	yubicoCAPath := flag.String("yubico-ca", "", "Path to Yubico root CA PEM")
 	yubicoIntPath := flag.String("yubico-intermediate", "", "Path to Yubico intermediate CA PEM")
@@ -20,7 +22,9 @@ func main() {
 
 	if *auditLogPath == "" && *deviceCertPath == "" {
 		fmt.Fprintln(os.Stderr, "Usage: secsy-verify --audit-log <file> [--device-cert <file> --yubico-ca <file> --yubico-intermediate <file>]")
-		fmt.Fprintln(os.Stderr, "  At least --audit-log or --device-cert must be provided.")
+		fmt.Fprintln(os.Stderr, "\n  The audit log can be:")
+		fmt.Fprintln(os.Stderr, "    - HSM-only:  {device_serial, entries: [{number, command, ...}]}")
+		fmt.Fprintln(os.Stderr, "    - Combined:  {hsm_entries: [...], sign_operations: [...]}")
 		os.Exit(1)
 	}
 
@@ -55,7 +59,6 @@ func verifyDeviceCert(certPath, caPath, intPath string) bool {
 		return false
 	}
 
-	// Try PEM first, fall back to DER
 	var cert *x509.Certificate
 	if block, _ := pem.Decode(certData); block != nil {
 		cert, err = x509.ParseCertificate(block.Bytes)
@@ -72,7 +75,6 @@ func verifyDeviceCert(certPath, caPath, intPath string) bool {
 	fmt.Printf("  Serial:     %s\n", cert.SerialNumber)
 	fmt.Printf("  Valid:      %s to %s\n", cert.NotBefore.Format("2006-01-02"), cert.NotAfter.Format("2006-01-02"))
 
-	// Load root CA
 	caData, err := os.ReadFile(caPath)
 	if err != nil {
 		fmt.Printf("Error reading root CA: %v\n", err)
@@ -84,7 +86,6 @@ func verifyDeviceCert(certPath, caPath, intPath string) bool {
 		return false
 	}
 
-	// Load intermediate CA
 	intData, err := os.ReadFile(intPath)
 	if err != nil {
 		fmt.Printf("Error reading intermediate CA: %v\n", err)
@@ -96,12 +97,7 @@ func verifyDeviceCert(certPath, caPath, intPath string) bool {
 		return false
 	}
 
-	opts := x509.VerifyOptions{
-		Roots:         rootPool,
-		Intermediates: intPool,
-	}
-
-	chains, err := cert.Verify(opts)
+	chains, err := cert.Verify(x509.VerifyOptions{Roots: rootPool, Intermediates: intPool})
 	if err != nil {
 		fmt.Printf("  Verification: FAIL (%v)\n", err)
 		return false
@@ -150,38 +146,142 @@ func cmdName(cmd uint8) string {
 }
 
 func verifyAuditLog(path string) bool {
-	fmt.Println("=== Audit Log Hash Chain Verification ===")
-
 	data, err := os.ReadFile(path)
 	if err != nil {
 		fmt.Printf("Error reading audit log: %v\n", err)
 		return false
 	}
 
-	var log hsm.AuditLog
-	if err := json.Unmarshal(data, &log); err != nil {
-		var entries []hsm.AuditLogEntry
-		if err2 := json.Unmarshal(data, &entries); err2 != nil {
-			fmt.Printf("Error parsing audit log JSON: %v\n", err)
-			return false
-		}
-		log.Entries = entries
+	// Try combined format first
+	var combined models.CombinedAuditExport
+	if err := json.Unmarshal(data, &combined); err == nil && len(combined.HSMEntries) > 0 {
+		return verifyCombinedLog(&combined)
 	}
+
+	// Try HSM-only format
+	var hsmLog hsm.AuditLog
+	if err := json.Unmarshal(data, &hsmLog); err == nil && len(hsmLog.Entries) > 0 {
+		return verifyHSMOnlyLog(&hsmLog)
+	}
+
+	// Try bare array
+	var entries []hsm.AuditLogEntry
+	if err := json.Unmarshal(data, &entries); err == nil && len(entries) > 0 {
+		return verifyHSMOnlyLog(&hsm.AuditLog{Entries: entries})
+	}
+
+	fmt.Println("Error: could not parse audit log (no entries found)")
+	return false
+}
+
+func verifyHSMOnlyLog(log *hsm.AuditLog) bool {
+	fmt.Println("=== Audit Log Hash Chain Verification ===")
 
 	if log.DeviceSerial != "" {
 		fmt.Printf("  Device Serial: %s\n", log.DeviceSerial)
 	}
-	if !log.ExportedAt.IsZero() {
-		fmt.Printf("  Exported At:   %s\n", log.ExportedAt.Format("2006-01-02 15:04:05 UTC"))
-	}
 	fmt.Printf("  Entries:       %d\n\n", len(log.Entries))
 
-	if len(log.Entries) == 0 {
-		fmt.Println("  No entries to verify")
-		return true
+	return verifyHSMChain(log.Entries)
+}
+
+func verifyCombinedLog(combined *models.CombinedAuditExport) bool {
+	fmt.Println("=== Combined Audit Log Verification ===")
+
+	if combined.DeviceSerial != "" {
+		fmt.Printf("  Device Serial:    %s\n", combined.DeviceSerial)
+	}
+	fmt.Printf("  HSM entries:      %d\n", len(combined.HSMEntries))
+	fmt.Printf("  Sign operations:  %d\n\n", len(combined.SignOps))
+
+	// Convert HSM entries for chain verification
+	hsmEntries := make([]hsm.AuditLogEntry, len(combined.HSMEntries))
+	for i, e := range combined.HSMEntries {
+		hsmEntries[i] = hsm.AuditLogEntry{
+			Number: e.Number, Command: e.Command, Length: e.Length,
+			SessionKey: e.SessionKey, TargetKey: e.TargetKey, SecondKey: e.SecondKey,
+			Result: e.Result, Tick: e.Tick, Hash: e.Hash,
+		}
 	}
 
-	results, err := hsm.VerifyHashChain(log.Entries)
+	chainOK := verifyHSMChain(hsmEntries)
+
+	// Cross-reference: for each crypto HSM entry with a sign_audit_id, verify it has a matching sign op
+	fmt.Println("\n=== Sign Operation Cross-Reference ===")
+
+	signOpMap := make(map[string]*models.AuditLogEntry)
+	for i := range combined.SignOps {
+		signOpMap[combined.SignOps[i].ID] = &combined.SignOps[i]
+	}
+
+	cryptoLinked := 0
+	cryptoUnlinked := 0
+	crossRefOK := true
+
+	for _, e := range combined.HSMEntries {
+		_, isCrypto := hsm.CryptoCommands[e.Command]
+		if !isCrypto {
+			continue
+		}
+
+		if e.SignAuditID == nil {
+			fmt.Printf("  WARNING: HSM entry %d (%s) has no linked sign operation\n",
+				e.Number, cmdName(e.Command))
+			cryptoUnlinked++
+			continue
+		}
+
+		signOp, exists := signOpMap[*e.SignAuditID]
+		if !exists {
+			fmt.Printf("  FAIL: HSM entry %d links to sign op %s which doesn't exist\n",
+				e.Number, *e.SignAuditID)
+			crossRefOK = false
+			continue
+		}
+
+		cryptoLinked++
+		fmt.Printf("  Entry %3d: %-25s -> key_id=%q principals=%v cert_type=%s valid=%s..%s pubkey=%s...\n",
+			e.Number, cmdName(e.Command),
+			signOp.KeyID,
+			signOp.Principals,
+			orDefault(signOp.CertType, "user"),
+			signOp.ValidAfter.Format(time.DateOnly),
+			signOp.ValidBefore.Format(time.DateOnly),
+			truncStr(signOp.PublicKey, 40),
+		)
+	}
+
+	fmt.Printf("\n  Linked crypto operations:   %d\n", cryptoLinked)
+	if cryptoUnlinked > 0 {
+		fmt.Printf("  Unlinked crypto operations: %d (provisioning/test ops before sign tracking)\n", cryptoUnlinked)
+	}
+	fmt.Printf("  Cross-reference:            %s\n", passOrFail(crossRefOK))
+
+	// Check no sign ops are missing from HSM log
+	linkedIDs := make(map[string]bool)
+	for _, e := range combined.HSMEntries {
+		if e.SignAuditID != nil {
+			linkedIDs[*e.SignAuditID] = true
+		}
+	}
+
+	orphanOps := 0
+	for _, op := range combined.SignOps {
+		if !linkedIDs[op.ID] {
+			fmt.Printf("  WARNING: Sign op %s (key_id=%q) has no HSM entry (signing may predate audit provisioning)\n",
+				op.ID[:8], op.KeyID)
+			orphanOps++
+		}
+	}
+	if orphanOps > 0 {
+		fmt.Printf("  Unmatched sign operations:  %d\n", orphanOps)
+	}
+
+	return chainOK && crossRefOK
+}
+
+func verifyHSMChain(entries []hsm.AuditLogEntry) bool {
+	results, err := hsm.VerifyHashChain(entries)
 	if err != nil {
 		fmt.Printf("  Error: %v\n", err)
 		return false
@@ -193,7 +293,7 @@ func verifyAuditLog(path string) bool {
 	var failures []string
 
 	for i, ok := range results {
-		e := log.Entries[i]
+		e := entries[i]
 		name := cmdName(e.Command)
 		isCrypto := false
 		if _, exists := hsm.CryptoCommands[e.Command]; exists {
@@ -233,7 +333,6 @@ func verifyAuditLog(path string) bool {
 			for _, f := range failures {
 				fmt.Println(f)
 			}
-			return false
 		}
 	} else {
 		fmt.Println("  WARNING: No crypto operations in log (audit logging may not be enabled)")
@@ -247,4 +346,18 @@ func passOrFail(ok bool) string {
 		return "PASS"
 	}
 	return "FAIL"
+}
+
+func orDefault(s, d string) string {
+	if s == "" {
+		return d
+	}
+	return s
+}
+
+func truncStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }

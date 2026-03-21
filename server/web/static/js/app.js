@@ -982,6 +982,20 @@ document.getElementById('downloadAttestBtn').addEventListener('click', () => {
     URL.revokeObjectURL(a.href);
 });
 
+document.getElementById('exportCombinedBtn').addEventListener('click', async () => {
+    try {
+        const res = await fetch('/api/hsm/combined-audit-log', { headers: { 'Authorization': API.authHeader } });
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'combined-audit-log.json';
+        a.click();
+        URL.revokeObjectURL(a.href);
+    } catch (err) {
+        showToast('Error', err.message, true);
+    }
+});
+
 document.getElementById('provisionAuditBtn').addEventListener('click', async () => {
     if (!await modalConfirm('Provision HSM Audit Logging',
         'This will IRREVERSIBLY enable forced audit logging for all cryptographic operations on the YubiHSM. ' +
