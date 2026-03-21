@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -989,6 +990,37 @@ func cmdVerifyCombinedLog(args []string) {
 		fmt.Printf("  All %d certificates verified: parameters match and signatures valid against attested CA key\n", len(matchedPairs))
 	} else if certErrors > 0 {
 		fmt.Printf("  %d certificate(s) failed verification\n", certErrors)
+	}
+	fmt.Println()
+
+	// Step 7: Verify all certificates are unique (bijection)
+	fmt.Println("=== Step 7: Certificate Uniqueness (bijection) ===")
+	seenCerts := make(map[string]uint16)  // cert hash -> first HSM entry number
+	seenSerials := make(map[string]uint16) // serial -> first HSM entry number
+	dupes := 0
+	for hsmNum, signOp := range matchedPairs {
+		if signOp.Certificate == "" {
+			continue
+		}
+		certHash := fmt.Sprintf("%x", sha256.Sum256([]byte(signOp.Certificate)))
+		if firstNum, exists := seenCerts[certHash]; exists {
+			fmt.Printf("  FAIL: HSM entry %d has duplicate certificate (same as entry %d)\n", hsmNum, firstNum)
+			dupes++
+			allOK = false
+		} else {
+			seenCerts[certHash] = hsmNum
+		}
+		if firstNum, exists := seenSerials[signOp.Serial]; exists {
+			fmt.Printf("  FAIL: HSM entry %d has duplicate serial %s (same as entry %d)\n", hsmNum, signOp.Serial, firstNum)
+			dupes++
+			allOK = false
+		} else {
+			seenSerials[signOp.Serial] = hsmNum
+		}
+	}
+	if dupes == 0 && len(matchedPairs) > 0 {
+		fmt.Printf("  All %d certificates are unique (no duplicate certs or serials)\n", len(matchedPairs))
+		fmt.Println("  Bijection: N HSM sign operations <-> N unique verified certificates")
 	}
 
 	fmt.Println()

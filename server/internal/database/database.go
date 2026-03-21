@@ -1,7 +1,9 @@
 package database
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -102,8 +104,10 @@ func (db *DB) migrate() error {
 			critical_options TEXT,
 			public_key TEXT NOT NULL,
 			certificate TEXT,
+			cert_hash TEXT,
 			restriction_set_id TEXT,
-			serial TEXT NOT NULL
+			serial TEXT NOT NULL,
+			UNIQUE(ca_id, cert_hash)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_log_ca ON audit_log(ca_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_sub)`,
@@ -145,6 +149,8 @@ func (db *DB) migrate() error {
 	db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN deny_extensions INTEGER NOT NULL DEFAULT 0")
 	db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN deny_critical_options INTEGER NOT NULL DEFAULT 0")
 	db.conn.Exec("ALTER TABLE audit_log ADD COLUMN certificate TEXT")
+	db.conn.Exec("ALTER TABLE audit_log ADD COLUMN cert_hash TEXT")
+	db.conn.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_log_cert_unique ON audit_log(ca_id, cert_hash)")
 	return nil
 }
 
@@ -489,14 +495,43 @@ func (db *DB) CreateAuditLogEntry(e *models.AuditLogEntry) error {
 	principals, _ := json.Marshal(e.Principals)
 	extensions, _ := json.Marshal(e.Extensions)
 	critOpts, _ := json.Marshal(e.CriticalOptions)
+
+	// Compute SHA-256 hash of the certificate to enforce uniqueness per CA
+	var certHash *string
+	if e.Certificate != "" {
+		h := sha256.Sum256([]byte(e.Certificate))
+		s := hex.EncodeToString(h[:])
+		certHash = &s
+	}
+
 	_, err := db.conn.Exec(
-		`INSERT INTO audit_log (id, user_sub, user_email, user_name, ca_id, ca_label, key_id, cert_type, principals, valid_after, valid_before, extensions, critical_options, public_key, certificate, restriction_set_id, serial)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO audit_log (id, user_sub, user_email, user_name, ca_id, ca_label, key_id, cert_type, principals, valid_after, valid_before, extensions, critical_options, public_key, certificate, cert_hash, restriction_set_id, serial)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.ID, e.UserSub, e.UserEmail, e.UserName, e.CAID, e.CALabel, e.KeyID, e.CertType,
 		string(principals), e.ValidAfter, e.ValidBefore, string(extensions), string(critOpts),
-		e.PublicKey, e.Certificate, e.RestrictionSetID, e.Serial,
+		e.PublicKey, e.Certificate, certHash, e.RestrictionSetID, e.Serial,
 	)
 	return err
+}
+
+func (db *DB) FindExistingCertificate(caID, publicKey string) (*models.AuditLogEntry, error) {
+	var e models.AuditLogEntry
+	var principals, extensions, critOpts sql.NullString
+	err := db.conn.QueryRow(
+		`SELECT id, timestamp, user_sub, user_email, user_name, ca_id, ca_label, key_id, cert_type, principals, valid_after, valid_before, extensions, critical_options, public_key, certificate, restriction_set_id, serial
+		 FROM audit_log WHERE ca_id = ? AND public_key = ? AND certificate IS NOT NULL ORDER BY timestamp DESC LIMIT 1`,
+		caID, publicKey,
+	).Scan(&e.ID, &e.Timestamp, &e.UserSub, &e.UserEmail, &e.UserName, &e.CAID, &e.CALabel, &e.KeyID, &e.CertType, &principals, &e.ValidAfter, &e.ValidBefore, &extensions, &critOpts, &e.PublicKey, &e.Certificate, &e.RestrictionSetID, &e.Serial)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if principals.Valid { json.Unmarshal([]byte(principals.String), &e.Principals) }
+	if extensions.Valid { json.Unmarshal([]byte(extensions.String), &e.Extensions) }
+	if critOpts.Valid { json.Unmarshal([]byte(critOpts.String), &e.CriticalOptions) }
+	return &e, nil
 }
 
 func (db *DB) ListAuditLog(caID string, limit, offset int) ([]models.AuditLogEntry, int, error) {

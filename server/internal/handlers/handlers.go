@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -258,6 +259,16 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 
 	if req.PublicKey == "" {
 		writeError(w, http.StatusBadRequest, "public_key is required")
+		return
+	}
+
+	// Check if this public key was already signed by this CA — return existing cert
+	existing, err := a.db.FindExistingCertificate(caID, strings.TrimSpace(req.PublicKey))
+	if err == nil && existing != nil && existing.Certificate != "" {
+		writeJSON(w, http.StatusOK, models.SignResponse{
+			Certificate: existing.Certificate,
+			KeyID:       existing.KeyID,
+		})
 		return
 	}
 
