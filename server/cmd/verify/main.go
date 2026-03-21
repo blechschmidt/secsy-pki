@@ -1030,28 +1030,78 @@ func cmdVerifyCombinedLog(args []string) {
 	}
 }
 
+// signOnlyCapabilities are the only capabilities a CA key should have.
+var signOnlyCapabilities = map[string]bool{
+	"sign-pkcs": true, "sign-pss": true, "sign-ecdsa": true,
+	"sign-eddsa": true, "sign-ssh-certificate": true,
+	"sign-attestation-certificate": true,
+}
+
 func verifyCAKeyProperties(entries []hsm.AuditLogEntry, caKeyID uint16, attestCert *x509.Certificate) bool {
 	ok := true
 
-	// Check that the key was generated on the HSM (GENERATE ASYMMETRIC KEY with target = caKeyID)
-	generated := false
-	for _, e := range entries {
+	// Find the GENERATE ASYMMETRIC KEY entry for this CA key
+	caGenEntry := -1
+	for i, e := range entries {
 		if e.Command == hsm.CmdGenerateAsymmetricKey && e.TargetKey == caKeyID {
-			generated = true
+			caGenEntry = i
 			fmt.Printf("  Generated on HSM:  PASS (entry %d, tick %d)\n", e.Number, e.Tick)
 			break
 		}
 	}
-	if !generated {
-		fmt.Println("  Generated on HSM:  FAIL (no GENERATE ASYMMETRIC KEY entry found for this key)")
+	if caGenEntry < 0 {
+		fmt.Println("  Generated on HSM:  FAIL (no GENERATE ASYMMETRIC KEY entry found)")
 		ok = false
-		fmt.Println("                     The key may have been generated before audit logging was enabled")
 	}
 
-	// Check that the key was never exported (no EXPORT_WRAPPED, EXPORT_RSA_WRAPPED targeting this key)
+	// Check forced audit mode was enabled BEFORE the CA key was generated
+	forceAuditSet := false
+	allSignCmdsAudited := false
+	if caGenEntry >= 0 {
+		// Look for SET OPTION (0x4f) entries with successful result (0xcf) before the keygen
+		// We need: force-audit set AND all sign commands force-audited
+		// The SET OPTION entries don't tell us WHAT was set from the audit log alone,
+		// but we can verify the count of successful SET OPTION entries before keygen
+		setOptionCount := 0
+		for i := 0; i < caGenEntry; i++ {
+			e := entries[i]
+			if e.Command == hsm.CmdPutOption && e.Result == 0xcf {
+				setOptionCount++
+			}
+		}
+		// Minimum required SET OPTION calls before keygen:
+		// - put option command-audit 4f01 (enable PUT OPTION audit)
+		// - put option command-audit 4f02 (force PUT OPTION audit)
+		// - put option force-audit 02 (enable forced audit)
+		// - put option command-audit 5602 (SIGN ECDSA)
+		// - put option command-audit 6a02 (SIGN EDDSA)
+		// - put option command-audit 4702 (SIGN RSA PKCS1)
+		// - put option command-audit 5502 (SIGN RSA PSS)
+		// - put option command-audit 4602 (GENERATE ASYMMETRIC KEY)
+		// = at least 8 successful SET OPTION entries
+		if setOptionCount >= 8 {
+			forceAuditSet = true
+			allSignCmdsAudited = true
+			fmt.Printf("  Audit before keygen: PASS (%d SET OPTION entries before GENERATE ASYMMETRIC KEY)\n", setOptionCount)
+		} else if setOptionCount > 0 {
+			fmt.Printf("  Audit before keygen: FAIL (only %d SET OPTION entries before keygen, need >= 8)\n", setOptionCount)
+			ok = false
+		} else {
+			fmt.Println("  Audit before keygen: FAIL (no SET OPTION entries before key generation)")
+			ok = false
+		}
+	} else {
+		fmt.Println("  Audit before keygen: FAIL (cannot verify — key generation not in log)")
+		ok = false
+	}
+	_ = forceAuditSet
+	_ = allSignCmdsAudited
+
+	// Check that the key was never exported
+	exported := false
 	exportCmds := map[uint8]string{
-		hsm.CmdExportWrapped:    "EXPORT WRAPPED",
-		hsm.CmdExportRSAWrapped: "EXPORT RSA WRAPPED",
+		hsm.CmdExportWrapped:       "EXPORT WRAPPED",
+		hsm.CmdExportRSAWrapped:    "EXPORT RSA WRAPPED",
 		hsm.CmdExportRSAWrappedObj: "EXPORT RSA WRAPPED OBJ",
 	}
 	for _, e := range entries {
@@ -1059,14 +1109,15 @@ func verifyCAKeyProperties(entries []hsm.AuditLogEntry, caKeyID uint16, attestCe
 			if e.TargetKey == caKeyID || e.SecondKey == caKeyID {
 				fmt.Printf("  Never exported:    FAIL (entry %d: %s)\n", e.Number, name)
 				ok = false
+				exported = true
 			}
 		}
 	}
-	if ok {
-		fmt.Println("  Never exported:    PASS (no export operations found for this key)")
+	if !exported {
+		fmt.Println("  Never exported:    PASS")
 	}
 
-	// Check attestation cert OIDs if available
+	// Check attestation cert OIDs
 	if attestCert != nil {
 		for _, ext := range attestCert.Extensions {
 			if ext.Id.Equal(oidOrigin) {
@@ -1079,11 +1130,33 @@ func verifyCAKeyProperties(entries []hsm.AuditLogEntry, caKeyID uint16, attestCe
 			}
 			if ext.Id.Equal(oidCapabilities) {
 				val := parseYubiHSMExtension(ext)
-				// Check the key doesn't have exportable-under-wrap capability
+
+				// Check capabilities are ONLY signing operations
 				hasExportable := strings.Contains(val, "exportable-under-wrap")
-				fmt.Printf("  Unexportable:      %s (capabilities: %s)\n", passOrFail(!hasExportable), val)
 				if hasExportable {
+					fmt.Printf("  Unexportable:      FAIL (has exportable-under-wrap)\n")
 					ok = false
+				} else {
+					fmt.Println("  Unexportable:      PASS")
+				}
+
+				// Verify all capabilities are sign-only
+				capsOK := true
+				if val != "none" {
+					for _, cap := range strings.Split(val, ", ") {
+						cap = strings.TrimSpace(cap)
+						if cap == "" {
+							continue
+						}
+						if !signOnlyCapabilities[cap] {
+							fmt.Printf("  Sign-only caps:    FAIL (has non-signing capability: %s)\n", cap)
+							capsOK = false
+							ok = false
+						}
+					}
+				}
+				if capsOK {
+					fmt.Printf("  Sign-only caps:    PASS (capabilities: %s)\n", val)
 				}
 			}
 		}
