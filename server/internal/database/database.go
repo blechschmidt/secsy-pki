@@ -54,7 +54,7 @@ func (db *DB) migrate() error {
 			label TEXT NOT NULL,
 			pkcs11_uri TEXT NOT NULL,
 			key_type TEXT NOT NULL,
-			public_key TEXT NOT NULL,
+			public_key BLOB NOT NULL,
 			default_restriction_set_id TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
@@ -104,7 +104,7 @@ func (db *DB) migrate() error {
 			valid_before DATETIME NOT NULL,
 			extensions TEXT,
 			critical_options TEXT,
-			public_key TEXT NOT NULL,
+			public_key BLOB NOT NULL,
 			certificate BLOB,
 			cert_hash TEXT,
 			restriction_set_id TEXT,
@@ -161,16 +161,18 @@ func (db *DB) migrate() error {
 func (db *DB) CreateCA(ca *models.CA) error {
 	_, err := db.conn.Exec(
 		`INSERT INTO cas (id, parent_id, label, pkcs11_uri, key_type, public_key, default_restriction_set_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		ca.ID, ca.ParentID, ca.Label, ca.PKCS11URI, ca.KeyType, ca.PublicKey, ca.DefaultRestrictionSetID,
+		ca.ID, ca.ParentID, ca.Label, ca.PKCS11URI, ca.KeyType, pubKeyToBlob(ca.PublicKey), ca.DefaultRestrictionSetID,
 	)
 	return err
 }
 
 func (db *DB) GetCA(id string) (*models.CA, error) {
 	ca := &models.CA{}
+	var pubBlob []byte
 	err := db.conn.QueryRow(
 		`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_restriction_set_id, created_at FROM cas WHERE id = ?`, id,
-	).Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &ca.PublicKey, &ca.DefaultRestrictionSetID, &ca.CreatedAt)
+	).Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob, &ca.DefaultRestrictionSetID, &ca.CreatedAt)
+	ca.PublicKey = blobToAuthorizedKey(pubBlob)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -186,9 +188,11 @@ func (db *DB) ListCAs() ([]models.CA, error) {
 	var cas []models.CA
 	for rows.Next() {
 		var ca models.CA
-		if err := rows.Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &ca.PublicKey, &ca.DefaultRestrictionSetID, &ca.CreatedAt); err != nil {
+		var pubBlob []byte
+		if err := rows.Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob, &ca.DefaultRestrictionSetID, &ca.CreatedAt); err != nil {
 			return nil, err
 		}
+		ca.PublicKey = blobToAuthorizedKey(pubBlob)
 		cas = append(cas, ca)
 	}
 	return cas, rows.Err()
@@ -213,9 +217,11 @@ func (db *DB) GetChildren(parentID string) ([]models.CA, error) {
 	var cas []models.CA
 	for rows.Next() {
 		var ca models.CA
-		if err := rows.Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &ca.PublicKey, &ca.DefaultRestrictionSetID, &ca.CreatedAt); err != nil {
+		var pubBlob []byte
+		if err := rows.Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob, &ca.DefaultRestrictionSetID, &ca.CreatedAt); err != nil {
 			return nil, err
 		}
+		ca.PublicKey = blobToAuthorizedKey(pubBlob)
 		cas = append(cas, ca)
 	}
 	return cas, rows.Err()
@@ -491,6 +497,30 @@ func (db *DB) DeleteRestrictionSet(id string) error {
 	return err
 }
 
+// pubKeyToBlob converts an SSH authorized_key string to raw wire-format bytes.
+func pubKeyToBlob(authorizedKey string) []byte {
+	if authorizedKey == "" {
+		return nil
+	}
+	pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(strings.TrimSpace(authorizedKey)))
+	if err != nil {
+		return []byte(authorizedKey) // fallback: store as-is if not parseable
+	}
+	return pub.Marshal()
+}
+
+// blobToAuthorizedKey converts raw SSH public key bytes to an authorized_key string.
+func blobToAuthorizedKey(blob []byte) string {
+	if len(blob) == 0 {
+		return ""
+	}
+	pub, err := ssh.ParsePublicKey(blob)
+	if err != nil {
+		return string(blob) // fallback: return as-is if not parseable
+	}
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub)))
+}
+
 // certBlobToAuthorizedKey converts raw SSH certificate bytes to an authorized_key string.
 func certBlobToAuthorizedKey(blob []byte) string {
 	if len(blob) == 0 {
@@ -510,7 +540,9 @@ func (db *DB) CreateAuditLogEntry(e *models.AuditLogEntry) error {
 	extensions, _ := json.Marshal(e.Extensions)
 	critOpts, _ := json.Marshal(e.CriticalOptions)
 
-	// Parse certificate to raw bytes for binary storage and uniqueness hash
+	// Convert public key and certificate to raw wire-format bytes
+	pubKeyBlob := pubKeyToBlob(e.PublicKey)
+
 	var certBlob []byte
 	var certHash *string
 	if e.Certificate != "" {
@@ -527,7 +559,7 @@ func (db *DB) CreateAuditLogEntry(e *models.AuditLogEntry) error {
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.ID, e.UserSub, e.UserEmail, e.UserName, e.CAID, e.CALabel, e.KeyID, e.CertType,
 		string(principals), e.ValidAfter, e.ValidBefore, string(extensions), string(critOpts),
-		e.PublicKey, certBlob, certHash, e.RestrictionSetID, e.Serial,
+		pubKeyBlob, certBlob, certHash, e.RestrictionSetID, e.Serial,
 	)
 	return err
 }
@@ -535,12 +567,13 @@ func (db *DB) CreateAuditLogEntry(e *models.AuditLogEntry) error {
 func (db *DB) FindExistingCertificate(caID, publicKey string) (*models.AuditLogEntry, error) {
 	var e models.AuditLogEntry
 	var principals, extensions, critOpts sql.NullString
-	var certBlob []byte
+	var pubBlob, certBlob []byte
 	err := db.conn.QueryRow(
 		`SELECT id, timestamp, user_sub, user_email, user_name, ca_id, ca_label, key_id, cert_type, principals, valid_after, valid_before, extensions, critical_options, public_key, certificate, restriction_set_id, serial
 		 FROM audit_log WHERE ca_id = ? AND public_key = ? AND certificate IS NOT NULL ORDER BY timestamp DESC LIMIT 1`,
-		caID, publicKey,
-	).Scan(&e.ID, &e.Timestamp, &e.UserSub, &e.UserEmail, &e.UserName, &e.CAID, &e.CALabel, &e.KeyID, &e.CertType, &principals, &e.ValidAfter, &e.ValidBefore, &extensions, &critOpts, &e.PublicKey, &certBlob, &e.RestrictionSetID, &e.Serial)
+		caID, pubKeyToBlob(publicKey),
+	).Scan(&e.ID, &e.Timestamp, &e.UserSub, &e.UserEmail, &e.UserName, &e.CAID, &e.CALabel, &e.KeyID, &e.CertType, &principals, &e.ValidAfter, &e.ValidBefore, &extensions, &critOpts, &pubBlob, &certBlob, &e.RestrictionSetID, &e.Serial)
+	e.PublicKey = blobToAuthorizedKey(pubBlob)
 	e.Certificate = certBlobToAuthorizedKey(certBlob)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -586,10 +619,11 @@ func (db *DB) ListAuditLog(caID string, limit, offset int) ([]models.AuditLogEnt
 	for rows.Next() {
 		var e models.AuditLogEntry
 		var principals, extensions, critOpts sql.NullString
-		var certBlob []byte
-		if err := rows.Scan(&e.ID, &e.Timestamp, &e.UserSub, &e.UserEmail, &e.UserName, &e.CAID, &e.CALabel, &e.KeyID, &e.CertType, &principals, &e.ValidAfter, &e.ValidBefore, &extensions, &critOpts, &e.PublicKey, &certBlob, &e.RestrictionSetID, &e.Serial); err != nil {
+		var pubBlob, certBlob []byte
+		if err := rows.Scan(&e.ID, &e.Timestamp, &e.UserSub, &e.UserEmail, &e.UserName, &e.CAID, &e.CALabel, &e.KeyID, &e.CertType, &principals, &e.ValidAfter, &e.ValidBefore, &extensions, &critOpts, &pubBlob, &certBlob, &e.RestrictionSetID, &e.Serial); err != nil {
 			return nil, 0, err
 		}
+		e.PublicKey = blobToAuthorizedKey(pubBlob)
 		e.Certificate = certBlobToAuthorizedKey(certBlob)
 		if principals.Valid { json.Unmarshal([]byte(principals.String), &e.Principals) }
 		if extensions.Valid { json.Unmarshal([]byte(extensions.String), &e.Extensions) }
