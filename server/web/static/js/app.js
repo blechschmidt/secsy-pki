@@ -283,7 +283,22 @@ function onLogin() {
         showUserInfoModal();
     });
     tokenManager.scheduleRefresh();
+    checkHSMAuditStatus();
     showPage('cas');
+}
+
+async function checkHSMAuditStatus() {
+    try {
+        const info = await API.get('/api/hsm/info');
+        const banner = document.getElementById('hsmAuditWarning');
+        if (info.suppress_audit_warning) {
+            banner.classList.add('d-none');
+        } else if (!info.available || !info.audit_provisioned || !info.force_audit) {
+            banner.classList.remove('d-none');
+        } else {
+            banner.classList.add('d-none');
+        }
+    } catch (e) { /* HSM not configured */ }
 }
 
 function showUserInfoModal() {
@@ -348,6 +363,7 @@ function logout() {
     document.getElementById('loginError').classList.add('d-none');
     document.getElementById('loginPass').value = '';
     document.getElementById('oidcToken').value = '';
+    document.getElementById('hsmAuditWarning').classList.add('d-none');
 }
 
 document.getElementById('logoutBtn').addEventListener('click', e => {
@@ -932,6 +948,28 @@ let hsmAttestPEM = null;
 let hsmAuditData = null;
 
 async function loadHSMPage() {
+    // Load HSM info
+    try {
+        const info = await API.get('/api/hsm/info');
+        const el = document.getElementById('hsmInfoContent');
+        if (!info.available) {
+            el.innerHTML = `<div class="col"><span class="text-danger"><i class="bi bi-exclamation-circle"></i> HSM not available: ${esc(info.error || 'unknown error')}</span></div>`;
+        } else {
+            const auditBadge = info.audit_provisioned && info.force_audit
+                ? '<span class="badge bg-success">Provisioned</span>'
+                : '<span class="badge bg-warning text-dark">Not provisioned</span>';
+            el.innerHTML = `
+                <div class="col-auto"><strong>Serial:</strong> ${esc(info.serial)}</div>
+                <div class="col-auto"><strong>Firmware:</strong> ${esc(info.version)}</div>
+                <div class="col-auto"><strong>Part:</strong> ${esc(info.part_number)}</div>
+                <div class="col-auto"><strong>Log:</strong> ${esc(info.log_used)}</div>
+                <div class="col-auto"><strong>Audit:</strong> ${auditBadge}</div>
+            `;
+        }
+    } catch (e) {
+        document.getElementById('hsmInfoContent').innerHTML = `<div class="col text-danger">${esc(e.message)}</div>`;
+    }
+
     // Load attestation
     try {
         const res = await fetch('/api/hsm/attestation', { headers: { 'Authorization': API.authHeader } });

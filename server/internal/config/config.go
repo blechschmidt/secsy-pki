@@ -46,9 +46,10 @@ type PKCS11Config struct {
 }
 
 type YubiHSMConfig struct {
-	ConnectorURL string `yaml:"connector_url"`
-	AuthKeyID    int    `yaml:"auth_key_id"`
-	Password     string `yaml:"password"`
+	ConnectorURL       string `yaml:"connector_url"`
+	AuthKeyID          int    `yaml:"auth_key_id"`
+	Password           string `yaml:"password"`
+	SuppressAuditWarning bool `yaml:"suppress_audit_warning"`
 }
 
 func Load(path string) (*Config, error) {

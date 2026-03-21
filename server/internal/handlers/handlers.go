@@ -20,14 +20,15 @@ import (
 )
 
 type API struct {
-	db           *database.DB
-	p11cfg       pki.PKCS11Config
-	oidcProvider *auth.OIDCProvider
-	hsmCfg       hsm.Config
+	db                   *database.DB
+	p11cfg               pki.PKCS11Config
+	oidcProvider         *auth.OIDCProvider
+	hsmCfg               hsm.Config
+	suppressAuditWarning bool
 }
 
-func NewAPI(db *database.DB, p11cfg pki.PKCS11Config, oidcProvider *auth.OIDCProvider, hsmCfg hsm.Config) *API {
-	return &API{db: db, p11cfg: p11cfg, oidcProvider: oidcProvider, hsmCfg: hsmCfg}
+func NewAPI(db *database.DB, p11cfg pki.PKCS11Config, oidcProvider *auth.OIDCProvider, hsmCfg hsm.Config, suppressAuditWarning bool) *API {
+	return &API{db: db, p11cfg: p11cfg, oidcProvider: oidcProvider, hsmCfg: hsmCfg, suppressAuditWarning: suppressAuditWarning}
 }
 
 func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddleware) {
@@ -73,6 +74,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/audit-log", protected(http.HandlerFunc(a.ListAuditLog)))
 	mux.Handle("GET /api/access-log", protected(http.HandlerFunc(a.ListAccessLog)))
 
+	mux.Handle("GET /api/hsm/info", protected(http.HandlerFunc(a.GetHSMInfo)))
 	mux.Handle("GET /api/hsm/attestation", protected(http.HandlerFunc(a.GetHSMAttestation)))
 	mux.Handle("GET /api/hsm/audit-log", protected(http.HandlerFunc(a.GetHSMAuditLog)))
 	mux.Handle("POST /api/hsm/provision-audit", protected(http.HandlerFunc(a.ProvisionHSMAudit)))
@@ -760,6 +762,28 @@ func (a *API) ListAccessLog(w http.ResponseWriter, r *http.Request) {
 		"total":   total,
 		"limit":   limit,
 		"offset":  offset,
+	})
+}
+
+func (a *API) GetHSMInfo(w http.ResponseWriter, r *http.Request) {
+	info, err := hsm.GetDeviceInfo(a.hsmCfg)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"available":              false,
+			"error":                  err.Error(),
+			"suppress_audit_warning": a.suppressAuditWarning,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"available":              true,
+		"version":                info.Version,
+		"serial":                 info.Serial,
+		"part_number":            info.PartNumber,
+		"log_used":               info.LogUsed,
+		"force_audit":            info.ForceAudit,
+		"audit_provisioned":      info.AuditProvisioned,
+		"suppress_audit_warning": a.suppressAuditWarning,
 	})
 }
 

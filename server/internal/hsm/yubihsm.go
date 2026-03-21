@@ -491,6 +491,82 @@ func GetDeviceAttestation(cfg Config) ([]byte, error) {
 	return os.ReadFile(tmpPath)
 }
 
+type DeviceInfo struct {
+	Version        string `json:"version"`
+	Serial         string `json:"serial"`
+	PartNumber     string `json:"part_number"`
+	LogUsed        string `json:"log_used"`
+	ForceAudit     bool   `json:"force_audit"`
+	AuditProvisioned bool `json:"audit_provisioned"` // all sign commands are force-audited
+}
+
+func GetDeviceInfo(cfg Config) (*DeviceInfo, error) {
+	out, err := runShell(cfg, "get deviceinfo\nget option 0 force-audit\nget option 0 command-audit")
+	if err != nil {
+		return nil, err
+	}
+
+	info := &DeviceInfo{}
+
+	if m := regexp.MustCompile(`Version number:\s+(.+)`).FindStringSubmatch(out); len(m) > 1 {
+		info.Version = strings.TrimSpace(m[1])
+	}
+	if m := regexp.MustCompile(`Serial number:\s+(\d+)`).FindStringSubmatch(out); len(m) > 1 {
+		info.Serial = m[1]
+	}
+	if m := regexp.MustCompile(`Part number:\s+(.+)`).FindStringSubmatch(out); len(m) > 1 {
+		info.PartNumber = strings.TrimSpace(m[1])
+	}
+	if m := regexp.MustCompile(`Log used:\s+(.+)`).FindStringSubmatch(out); len(m) > 1 {
+		info.LogUsed = strings.TrimSpace(m[1])
+	}
+
+	// Parse force-audit and command-audit options
+	// They appear as "Option value is: XX" lines in order
+	optionValues := regexp.MustCompile(`Option value is:\s+([0-9a-fA-F]+)`).FindAllStringSubmatch(out, -1)
+	if len(optionValues) >= 1 {
+		info.ForceAudit = optionValues[0][1] == "02"
+	}
+	if len(optionValues) >= 2 {
+		info.AuditProvisioned = checkSignCommandsAudited(optionValues[1][1])
+	}
+
+	return info, nil
+}
+
+// checkSignCommandsAudited parses the command-audit hex string and verifies
+// all sign commands are set to 0x02 (force-audited, irreversible).
+func checkSignCommandsAudited(hexStr string) bool {
+	// The hex string is pairs of (command_byte, audit_level) concatenated
+	data, err := hex.DecodeString(hexStr)
+	if err != nil || len(data)%2 != 0 {
+		return false
+	}
+
+	required := map[byte]bool{
+		CmdSignECDSA:             false,
+		CmdSignEdDSA:             false,
+		CmdSignRSAPKCS1:          false,
+		CmdSignRSAPSS:            false,
+		CmdGenerateAsymmetricKey: false,
+	}
+
+	for i := 0; i < len(data)-1; i += 2 {
+		cmd := data[i]
+		level := data[i+1]
+		if _, need := required[cmd]; need {
+			required[cmd] = (level == 0x02)
+		}
+	}
+
+	for _, ok := range required {
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func GetDeviceSerial(cfg Config) (string, error) {
 	out, err := runShell(cfg, "get deviceinfo")
 	if err != nil {

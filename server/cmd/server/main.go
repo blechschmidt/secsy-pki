@@ -61,7 +61,7 @@ func main() {
 		Password:     cfg.YubiHSM.Password,
 	}
 
-	api := handlers.NewAPI(db, p11cfg, oidcProvider, hsmCfg)
+	api := handlers.NewAPI(db, p11cfg, oidcProvider, hsmCfg, cfg.YubiHSM.SuppressAuditWarning)
 
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, authMw)

@@ -53,6 +53,14 @@
     </nav>
 
     <div class="container-fluid mt-3">
+        <!-- HSM Audit Warning Banner -->
+        <div id="hsmAuditWarning" class="alert alert-warning d-none mb-3">
+            <i class="bi bi-exclamation-triangle"></i>
+            <strong>HSM audit logging is not fully provisioned.</strong>
+            Sign operations may not be recorded in the hardware audit log.
+            Go to the <a href="#" data-page="hsm" class="alert-link">HSM page</a> to provision forced audit logging.
+        </div>
+
         <!-- Login -->
         <div id="loginPage" class="row justify-content-center">
             <div class="col-md-4">
@@ -336,6 +344,12 @@
                         <button class="btn btn-warning" id="provisionAuditBtn"><i class="bi bi-shield-check"></i> Provision Forced Audit Logging</button>
                     </div>
                 </div>
+                <div id="hsmInfoCard" class="card mb-3">
+                    <div class="card-body">
+                        <div class="row" id="hsmInfoContent"><div class="text-muted">Loading HSM info...</div></div>
+                    </div>
+                </div>
+
                 <div class="row">
                     <div class="col-md-6 mb-3">
                         <div class="card">
