@@ -2,6 +2,7 @@ package database
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -50,6 +51,7 @@ func (db *DB) migrate() error {
 			pkcs11_uri TEXT NOT NULL,
 			key_type TEXT NOT NULL,
 			public_key TEXT NOT NULL,
+			default_restriction_set_id TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS groups_ (
@@ -66,8 +68,22 @@ func (db *DB) migrate() error {
 			ca_id TEXT NOT NULL REFERENCES cas(id) ON DELETE CASCADE,
 			entity_type TEXT NOT NULL CHECK(entity_type IN ('user', 'group')),
 			entity_id TEXT NOT NULL,
-			permission TEXT NOT NULL CHECK(permission IN ('SIGN_CERTIFICATE', 'MANAGE_PERMISSIONS')),
+			permission TEXT NOT NULL CHECK(permission IN ('SIGN_CERTIFICATE', 'MANAGE_PERMISSIONS', 'CONFIGURE_CA')),
+			restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL,
 			UNIQUE(ca_id, entity_type, entity_id, permission)
+		)`,
+		`CREATE TABLE IF NOT EXISTS restriction_sets (
+			id TEXT PRIMARY KEY,
+			ca_id TEXT NOT NULL REFERENCES cas(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			max_validity_secs INTEGER,
+			allowed_principals TEXT,
+			allowed_cert_types TEXT,
+			force_key_id_email_reason INTEGER NOT NULL DEFAULT 0,
+			allowed_extensions TEXT,
+			deny_extensions INTEGER NOT NULL DEFAULT 0,
+			deny_critical_options INTEGER NOT NULL DEFAULT 0,
+			max_valid_after_offset INTEGER
 		)`,
 	}
 	for _, stmt := range stmts {
@@ -75,6 +91,11 @@ func (db *DB) migrate() error {
 			return fmt.Errorf("executing %q: %w", stmt[:40], err)
 		}
 	}
+	// Migration: add columns if they don't exist (for existing databases)
+	db.conn.Exec("ALTER TABLE cas ADD COLUMN default_restriction_set_id TEXT")
+	db.conn.Exec("ALTER TABLE permissions ADD COLUMN restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
+	db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN deny_extensions INTEGER NOT NULL DEFAULT 0")
+	db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN deny_critical_options INTEGER NOT NULL DEFAULT 0")
 	return nil
 }
 
@@ -82,8 +103,8 @@ func (db *DB) migrate() error {
 
 func (db *DB) CreateCA(ca *models.CA) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO cas (id, parent_id, label, pkcs11_uri, key_type, public_key) VALUES (?, ?, ?, ?, ?, ?)`,
-		ca.ID, ca.ParentID, ca.Label, ca.PKCS11URI, ca.KeyType, ca.PublicKey,
+		`INSERT INTO cas (id, parent_id, label, pkcs11_uri, key_type, public_key, default_restriction_set_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		ca.ID, ca.ParentID, ca.Label, ca.PKCS11URI, ca.KeyType, ca.PublicKey, ca.DefaultRestrictionSetID,
 	)
 	return err
 }
@@ -91,8 +112,8 @@ func (db *DB) CreateCA(ca *models.CA) error {
 func (db *DB) GetCA(id string) (*models.CA, error) {
 	ca := &models.CA{}
 	err := db.conn.QueryRow(
-		`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, created_at FROM cas WHERE id = ?`, id,
-	).Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &ca.PublicKey, &ca.CreatedAt)
+		`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_restriction_set_id, created_at FROM cas WHERE id = ?`, id,
+	).Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &ca.PublicKey, &ca.DefaultRestrictionSetID, &ca.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -100,7 +121,7 @@ func (db *DB) GetCA(id string) (*models.CA, error) {
 }
 
 func (db *DB) ListCAs() ([]models.CA, error) {
-	rows, err := db.conn.Query(`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, created_at FROM cas`)
+	rows, err := db.conn.Query(`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_restriction_set_id, created_at FROM cas`)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +129,7 @@ func (db *DB) ListCAs() ([]models.CA, error) {
 	var cas []models.CA
 	for rows.Next() {
 		var ca models.CA
-		if err := rows.Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &ca.PublicKey, &ca.CreatedAt); err != nil {
+		if err := rows.Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &ca.PublicKey, &ca.DefaultRestrictionSetID, &ca.CreatedAt); err != nil {
 			return nil, err
 		}
 		cas = append(cas, ca)
@@ -121,8 +142,13 @@ func (db *DB) DeleteCA(id string) error {
 	return err
 }
 
+func (db *DB) SetCADefaultRestrictionSet(caID string, rsID *string) error {
+	_, err := db.conn.Exec(`UPDATE cas SET default_restriction_set_id = ? WHERE id = ?`, rsID, caID)
+	return err
+}
+
 func (db *DB) GetChildren(parentID string) ([]models.CA, error) {
-	rows, err := db.conn.Query(`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, created_at FROM cas WHERE parent_id = ?`, parentID)
+	rows, err := db.conn.Query(`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_restriction_set_id, created_at FROM cas WHERE parent_id = ?`, parentID)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +156,7 @@ func (db *DB) GetChildren(parentID string) ([]models.CA, error) {
 	var cas []models.CA
 	for rows.Next() {
 		var ca models.CA
-		if err := rows.Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &ca.PublicKey, &ca.CreatedAt); err != nil {
+		if err := rows.Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &ca.PublicKey, &ca.DefaultRestrictionSetID, &ca.CreatedAt); err != nil {
 			return nil, err
 		}
 		cas = append(cas, ca)
@@ -224,8 +250,9 @@ func (db *DB) GetUserGroups(userSub string) ([]string, error) {
 
 func (db *DB) GrantPermission(p *models.PermissionEntry) error {
 	_, err := db.conn.Exec(
-		`INSERT OR IGNORE INTO permissions (id, ca_id, entity_type, entity_id, permission) VALUES (?, ?, ?, ?, ?)`,
-		p.ID, p.CAID, p.EntityType, p.EntityID, p.Permission,
+		`INSERT INTO permissions (id, ca_id, entity_type, entity_id, permission, restriction_set_id) VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(ca_id, entity_type, entity_id, permission) DO UPDATE SET restriction_set_id = excluded.restriction_set_id`,
+		p.ID, p.CAID, p.EntityType, p.EntityID, p.Permission, p.RestrictionSetID,
 	)
 	return err
 }
@@ -240,7 +267,7 @@ func (db *DB) RevokePermission(caID, entityType, entityID string, perm models.Pe
 
 func (db *DB) GetPermissions(caID string) ([]models.PermissionEntry, error) {
 	rows, err := db.conn.Query(
-		`SELECT id, ca_id, entity_type, entity_id, permission FROM permissions WHERE ca_id = ?`, caID,
+		`SELECT id, ca_id, entity_type, entity_id, permission, restriction_set_id FROM permissions WHERE ca_id = ?`, caID,
 	)
 	if err != nil {
 		return nil, err
@@ -249,7 +276,7 @@ func (db *DB) GetPermissions(caID string) ([]models.PermissionEntry, error) {
 	var perms []models.PermissionEntry
 	for rows.Next() {
 		var p models.PermissionEntry
-		if err := rows.Scan(&p.ID, &p.CAID, &p.EntityType, &p.EntityID, &p.Permission); err != nil {
+		if err := rows.Scan(&p.ID, &p.CAID, &p.EntityType, &p.EntityID, &p.Permission, &p.RestrictionSetID); err != nil {
 			return nil, err
 		}
 		perms = append(perms, p)
@@ -258,7 +285,6 @@ func (db *DB) GetPermissions(caID string) ([]models.PermissionEntry, error) {
 }
 
 func (db *DB) HasPermission(caID, userSub string, perm models.Permission, groupIDs []string) (bool, error) {
-	// Check direct user permission
 	var count int
 	err := db.conn.QueryRow(
 		`SELECT COUNT(*) FROM permissions WHERE ca_id = ? AND entity_type = 'user' AND entity_id = ? AND permission = ?`,
@@ -271,7 +297,6 @@ func (db *DB) HasPermission(caID, userSub string, perm models.Permission, groupI
 		return true, nil
 	}
 
-	// Check group permissions
 	for _, gid := range groupIDs {
 		err := db.conn.QueryRow(
 			`SELECT COUNT(*) FROM permissions WHERE ca_id = ? AND entity_type = 'group' AND entity_id = ? AND permission = ?`,
@@ -286,4 +311,125 @@ func (db *DB) HasPermission(caID, userSub string, perm models.Permission, groupI
 	}
 
 	return false, nil
+}
+
+// GetEffectiveRestrictionSet returns the restriction set that applies to this user for SIGN_CERTIFICATE on a CA.
+// Priority: user-specific > group-specific > CA default. Returns nil if no restriction set applies.
+func (db *DB) GetEffectiveRestrictionSet(caID, userSub string, groupIDs []string) (*models.RestrictionSet, error) {
+	// Check user-specific SIGN_CERTIFICATE permission with a restriction set
+	var rsID sql.NullString
+	err := db.conn.QueryRow(
+		`SELECT restriction_set_id FROM permissions WHERE ca_id = ? AND entity_type = 'user' AND entity_id = ? AND permission = 'SIGN_CERTIFICATE' AND restriction_set_id IS NOT NULL`,
+		caID, userSub,
+	).Scan(&rsID)
+	if err == nil && rsID.Valid {
+		return db.GetRestrictionSet(rsID.String)
+	}
+
+	// Check group-specific
+	for _, gid := range groupIDs {
+		err := db.conn.QueryRow(
+			`SELECT restriction_set_id FROM permissions WHERE ca_id = ? AND entity_type = 'group' AND entity_id = ? AND permission = 'SIGN_CERTIFICATE' AND restriction_set_id IS NOT NULL`,
+			caID, gid,
+		).Scan(&rsID)
+		if err == nil && rsID.Valid {
+			return db.GetRestrictionSet(rsID.String)
+		}
+	}
+
+	// Fall back to CA default
+	var defaultID sql.NullString
+	err = db.conn.QueryRow(`SELECT default_restriction_set_id FROM cas WHERE id = ?`, caID).Scan(&defaultID)
+	if err == nil && defaultID.Valid {
+		return db.GetRestrictionSet(defaultID.String)
+	}
+
+	return nil, nil
+}
+
+// Restriction set operations
+
+func (db *DB) marshalRS(rs *models.RestrictionSet) (principals, certTypes, extensions string, forceEmail, denyExt, denyCrit int) {
+	p, _ := json.Marshal(rs.AllowedPrincipals)
+	c, _ := json.Marshal(rs.AllowedCertTypes)
+	e, _ := json.Marshal(rs.AllowedExtensions)
+	principals, certTypes, extensions = string(p), string(c), string(e)
+	if rs.ForceKeyIDEmailReason { forceEmail = 1 }
+	if rs.DenyExtensions { denyExt = 1 }
+	if rs.DenyCriticalOptions { denyCrit = 1 }
+	return
+}
+
+func (db *DB) CreateRestrictionSet(rs *models.RestrictionSet) error {
+	principals, certTypes, extensions, forceEmail, denyExt, denyCrit := db.marshalRS(rs)
+	_, err := db.conn.Exec(
+		`INSERT INTO restriction_sets (id, ca_id, name, max_validity_secs, allowed_principals, allowed_cert_types, force_key_id_email_reason, allowed_extensions, deny_extensions, deny_critical_options, max_valid_after_offset)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		rs.ID, rs.CAID, rs.Name, rs.MaxValiditySecs, principals, certTypes, forceEmail, extensions, denyExt, denyCrit, rs.MaxValidAfterOffset,
+	)
+	return err
+}
+
+func (db *DB) UpdateRestrictionSet(rs *models.RestrictionSet) error {
+	principals, certTypes, extensions, forceEmail, denyExt, denyCrit := db.marshalRS(rs)
+	_, err := db.conn.Exec(
+		`UPDATE restriction_sets SET name=?, max_validity_secs=?, allowed_principals=?, allowed_cert_types=?, force_key_id_email_reason=?, allowed_extensions=?, deny_extensions=?, deny_critical_options=?, max_valid_after_offset=? WHERE id=?`,
+		rs.Name, rs.MaxValiditySecs, principals, certTypes, forceEmail, extensions, denyExt, denyCrit, rs.MaxValidAfterOffset, rs.ID,
+	)
+	return err
+}
+
+func (db *DB) unmarshalRS(rs *models.RestrictionSet, principals, certTypes, extensions sql.NullString, forceEmail, denyExt, denyCrit int) {
+	rs.ForceKeyIDEmailReason = forceEmail != 0
+	rs.DenyExtensions = denyExt != 0
+	rs.DenyCriticalOptions = denyCrit != 0
+	if principals.Valid { json.Unmarshal([]byte(principals.String), &rs.AllowedPrincipals) }
+	if certTypes.Valid { json.Unmarshal([]byte(certTypes.String), &rs.AllowedCertTypes) }
+	if extensions.Valid { json.Unmarshal([]byte(extensions.String), &rs.AllowedExtensions) }
+}
+
+func (db *DB) GetRestrictionSet(id string) (*models.RestrictionSet, error) {
+	var rs models.RestrictionSet
+	var principals, certTypes, extensions sql.NullString
+	var forceEmail, denyExt, denyCrit int
+	err := db.conn.QueryRow(
+		`SELECT id, ca_id, name, max_validity_secs, allowed_principals, allowed_cert_types, force_key_id_email_reason, allowed_extensions, deny_extensions, deny_critical_options, max_valid_after_offset FROM restriction_sets WHERE id = ?`, id,
+	).Scan(&rs.ID, &rs.CAID, &rs.Name, &rs.MaxValiditySecs, &principals, &certTypes, &forceEmail, &extensions, &denyExt, &denyCrit, &rs.MaxValidAfterOffset)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	db.unmarshalRS(&rs, principals, certTypes, extensions, forceEmail, denyExt, denyCrit)
+	return &rs, nil
+}
+
+func (db *DB) ListRestrictionSets(caID string) ([]models.RestrictionSet, error) {
+	rows, err := db.conn.Query(
+		`SELECT id, ca_id, name, max_validity_secs, allowed_principals, allowed_cert_types, force_key_id_email_reason, allowed_extensions, deny_extensions, deny_critical_options, max_valid_after_offset FROM restriction_sets WHERE ca_id = ?`, caID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sets []models.RestrictionSet
+	for rows.Next() {
+		var rs models.RestrictionSet
+		var principals, certTypes, extensions sql.NullString
+		var forceEmail, denyExt, denyCrit int
+		if err := rows.Scan(&rs.ID, &rs.CAID, &rs.Name, &rs.MaxValiditySecs, &principals, &certTypes, &forceEmail, &extensions, &denyExt, &denyCrit, &rs.MaxValidAfterOffset); err != nil {
+			return nil, err
+		}
+		db.unmarshalRS(&rs, principals, certTypes, extensions, forceEmail, denyExt, denyCrit)
+		sets = append(sets, rs)
+	}
+	return sets, rows.Err()
+}
+
+func (db *DB) DeleteRestrictionSet(id string) error {
+	// Clear references from CA defaults
+	db.conn.Exec(`UPDATE cas SET default_restriction_set_id = NULL WHERE default_restriction_set_id = ?`, id)
+	_, err := db.conn.Exec(`DELETE FROM restriction_sets WHERE id = ?`, id)
+	return err
 }

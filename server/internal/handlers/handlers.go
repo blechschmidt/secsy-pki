@@ -40,6 +40,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/cas/{id}/children", protected(http.HandlerFunc(a.GetCAChildren)))
 
 	mux.Handle("POST /api/cas/{id}/sign", protected(http.HandlerFunc(a.SignCertificate)))
+	mux.Handle("GET /api/cas/{id}/my-restrictions", protected(http.HandlerFunc(a.GetMyRestrictions)))
 
 	mux.Handle("POST /api/keys/generate", protected(http.HandlerFunc(a.GenerateKey)))
 
@@ -53,6 +54,12 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/cas/{id}/permissions", protected(http.HandlerFunc(a.GetPermissions)))
 	mux.Handle("POST /api/cas/{id}/permissions", protected(http.HandlerFunc(a.GrantPermission)))
 	mux.Handle("DELETE /api/cas/{id}/permissions", protected(http.HandlerFunc(a.RevokePermission)))
+
+	mux.Handle("GET /api/cas/{id}/restriction-sets", protected(http.HandlerFunc(a.ListRestrictionSets)))
+	mux.Handle("POST /api/cas/{id}/restriction-sets", protected(http.HandlerFunc(a.CreateRestrictionSet)))
+	mux.Handle("PUT /api/restriction-sets/{id}", protected(http.HandlerFunc(a.UpdateRestrictionSet)))
+	mux.Handle("DELETE /api/restriction-sets/{id}", protected(http.HandlerFunc(a.DeleteRestrictionSet)))
+	mux.Handle("PUT /api/cas/{id}/default-restriction-set", protected(http.HandlerFunc(a.SetDefaultRestrictionSet)))
 
 	mux.Handle("GET /api/me", protected(http.HandlerFunc(a.Me)))
 }
@@ -233,6 +240,25 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Look up effective restriction set for this user on this CA
+	var rs *models.RestrictionSet
+	if !user.IsRoot {
+		groupIDs, _ := a.db.GetUserGroups(user.Subject)
+		rs, err = a.db.GetEffectiveRestrictionSet(caID, user.Subject, groupIDs)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "restriction set lookup failed: %v", err)
+			return
+		}
+	}
+
+	// Enforce restriction set
+	if rs != nil {
+		if err := enforceRestrictions(rs, &req, user); err != nil {
+			writeError(w, http.StatusForbidden, "%v", err)
+			return
+		}
+	}
+
 	certType, err := pki.ParseCertType(req.CertType)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "%v", err)
@@ -242,6 +268,19 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 	keyID := req.KeyID
 	if keyID == "" {
 		keyID = user.Subject
+	}
+
+	// Override key_id if restriction forces email+reason format
+	if rs != nil && rs.ForceKeyIDEmailReason {
+		email := user.Email
+		if email == "" {
+			email = user.Subject
+		}
+		reason := req.Reason
+		if reason == "" {
+			reason = "unspecified"
+		}
+		keyID = email + ": " + reason
 	}
 
 	validAfter, err := pki.ParseTime(req.ValidAfter, time.Now())
@@ -254,6 +293,24 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid valid_before: %v", err)
 		return
+	}
+
+	// Enforce max validity
+	if rs != nil && rs.MaxValiditySecs != nil {
+		maxDuration := time.Duration(*rs.MaxValiditySecs) * time.Second
+		if validBefore.Sub(validAfter) > maxDuration {
+			validBefore = validAfter.Add(maxDuration)
+		}
+	}
+
+	// Enforce max valid_after offset
+	if rs != nil && rs.MaxValidAfterOffset != nil {
+		maxOffset := time.Duration(*rs.MaxValidAfterOffset) * time.Second
+		latest := time.Now().Add(maxOffset)
+		if validAfter.After(latest) {
+			writeError(w, http.StatusForbidden, "valid_after is too far in the future (max offset: %v)", maxOffset)
+			return
+		}
 	}
 
 	// Get the key label from PKCS11 URI
@@ -480,17 +537,27 @@ func (a *API) GrantPermission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Permission != models.PermSignCertificate && req.Permission != models.PermManagePermissions {
-		writeError(w, http.StatusBadRequest, "permission must be SIGN_CERTIFICATE or MANAGE_PERMISSIONS")
+	if req.Permission != models.PermSignCertificate && req.Permission != models.PermManagePermissions && req.Permission != models.PermConfigureCA {
+		writeError(w, http.StatusBadRequest, "permission must be SIGN_CERTIFICATE, MANAGE_PERMISSIONS, or CONFIGURE_CA")
 		return
 	}
 
+	// Only root or CONFIGURE_CA holders can grant CONFIGURE_CA
+	if req.Permission == models.PermConfigureCA && !user.IsRoot {
+		hasAccess, err := a.checkPermission(user, caID, models.PermConfigureCA)
+		if err != nil || !hasAccess {
+			writeError(w, http.StatusForbidden, "need CONFIGURE_CA permission to grant CONFIGURE_CA")
+			return
+		}
+	}
+
 	entry := &models.PermissionEntry{
-		ID:         uuid.New().String(),
-		CAID:       caID,
-		EntityType: req.EntityType,
-		EntityID:   req.EntityID,
-		Permission: req.Permission,
+		ID:               uuid.New().String(),
+		CAID:             caID,
+		EntityType:       req.EntityType,
+		EntityID:         req.EntityID,
+		Permission:       req.Permission,
+		RestrictionSetID: req.RestrictionSetID,
 	}
 
 	if err := a.db.GrantPermission(entry); err != nil {
@@ -527,6 +594,24 @@ func (a *API) RevokePermission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+}
+
+func (a *API) GetMyRestrictions(w http.ResponseWriter, r *http.Request) {
+	caID := r.PathValue("id")
+	user := middleware.GetUserInfo(r.Context())
+
+	if user.IsRoot {
+		writeJSON(w, http.StatusOK, nil)
+		return
+	}
+
+	groupIDs, _ := a.db.GetUserGroups(user.Subject)
+	rs, err := a.db.GetEffectiveRestrictionSet(caID, user.Subject, groupIDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to get restrictions: %v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rs)
 }
 
 // Helpers
@@ -584,4 +669,205 @@ func writeError(w http.ResponseWriter, status int, format string, args ...interf
 	msg := fmt.Sprintf(format, args...)
 	log.Printf("API error (%d): %s", status, msg)
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// enforceRestrictions validates a sign request against a restriction set.
+func enforceRestrictions(rs *models.RestrictionSet, req *models.SignRequest, user *models.UserInfo) error {
+	// Check cert type
+	if len(rs.AllowedCertTypes) > 0 {
+		ct := req.CertType
+		if ct == "" {
+			ct = "user"
+		}
+		allowed := false
+		for _, t := range rs.AllowedCertTypes {
+			if t == ct {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("cert type %q not allowed (allowed: %v)", ct, rs.AllowedCertTypes)
+		}
+	}
+
+	// Check principals
+	if len(rs.AllowedPrincipals) > 0 {
+		for _, p := range req.Principals {
+			allowed := false
+			for _, ap := range rs.AllowedPrincipals {
+				if ap == p || ap == "*" {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				return fmt.Errorf("principal %q not allowed (allowed: %v)", p, rs.AllowedPrincipals)
+			}
+		}
+	}
+
+	// Check extensions
+	if rs.DenyExtensions && len(req.Extensions) > 0 {
+		return fmt.Errorf("custom extensions are not allowed by this restriction set")
+	}
+	if !rs.DenyExtensions && len(rs.AllowedExtensions) > 0 && req.Extensions != nil {
+		allowedSet := make(map[string]bool)
+		for _, e := range rs.AllowedExtensions {
+			allowedSet[e] = true
+		}
+		for ext := range req.Extensions {
+			if !allowedSet[ext] {
+				return fmt.Errorf("extension %q not allowed", ext)
+			}
+		}
+	}
+
+	// Check critical options
+	if rs.DenyCriticalOptions && len(req.CriticalOptions) > 0 {
+		return fmt.Errorf("critical options are not allowed by this restriction set")
+	}
+
+	// Check key_id: if force_key_id_email_reason, the user must provide a reason
+	if rs.ForceKeyIDEmailReason {
+		// key_id will be overridden in the handler; just ensure reason is present
+		if req.Reason == "" {
+			return fmt.Errorf("reason is required when key_id is restricted to email+reason format")
+		}
+	}
+
+	return nil
+}
+
+// Restriction Set handlers
+
+func (a *API) ListRestrictionSets(w http.ResponseWriter, r *http.Request) {
+	caID := r.PathValue("id")
+	sets, err := a.db.ListRestrictionSets(caID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list restriction sets: %v", err)
+		return
+	}
+	if sets == nil {
+		sets = []models.RestrictionSet{}
+	}
+	writeJSON(w, http.StatusOK, sets)
+}
+
+func (a *API) CreateRestrictionSet(w http.ResponseWriter, r *http.Request) {
+	caID := r.PathValue("id")
+	user := middleware.GetUserInfo(r.Context())
+
+	if !user.IsRoot {
+		hasAccess, err := a.checkPermission(user, caID, models.PermConfigureCA)
+		if err != nil || !hasAccess {
+			writeError(w, http.StatusForbidden, "need CONFIGURE_CA permission")
+			return
+		}
+	}
+
+	var rs models.RestrictionSet
+	if err := json.NewDecoder(r.Body).Decode(&rs); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+
+	rs.ID = uuid.New().String()
+	rs.CAID = caID
+
+	if rs.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	if err := a.db.CreateRestrictionSet(&rs); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create restriction set: %v", err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, rs)
+}
+
+func (a *API) UpdateRestrictionSet(w http.ResponseWriter, r *http.Request) {
+	rsID := r.PathValue("id")
+	user := middleware.GetUserInfo(r.Context())
+
+	existing, err := a.db.GetRestrictionSet(rsID)
+	if err != nil || existing == nil {
+		writeError(w, http.StatusNotFound, "restriction set not found")
+		return
+	}
+
+	if !user.IsRoot {
+		hasAccess, err := a.checkPermission(user, existing.CAID, models.PermConfigureCA)
+		if err != nil || !hasAccess {
+			writeError(w, http.StatusForbidden, "need CONFIGURE_CA permission")
+			return
+		}
+	}
+
+	var rs models.RestrictionSet
+	if err := json.NewDecoder(r.Body).Decode(&rs); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+	rs.ID = rsID
+	rs.CAID = existing.CAID
+
+	if err := a.db.UpdateRestrictionSet(&rs); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update restriction set: %v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rs)
+}
+
+func (a *API) DeleteRestrictionSet(w http.ResponseWriter, r *http.Request) {
+	rsID := r.PathValue("id")
+	user := middleware.GetUserInfo(r.Context())
+
+	existing, err := a.db.GetRestrictionSet(rsID)
+	if err != nil || existing == nil {
+		writeError(w, http.StatusNotFound, "restriction set not found")
+		return
+	}
+
+	if !user.IsRoot {
+		hasAccess, err := a.checkPermission(user, existing.CAID, models.PermConfigureCA)
+		if err != nil || !hasAccess {
+			writeError(w, http.StatusForbidden, "need CONFIGURE_CA permission")
+			return
+		}
+	}
+
+	if err := a.db.DeleteRestrictionSet(rsID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete restriction set: %v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (a *API) SetDefaultRestrictionSet(w http.ResponseWriter, r *http.Request) {
+	caID := r.PathValue("id")
+	user := middleware.GetUserInfo(r.Context())
+
+	if !user.IsRoot {
+		hasAccess, err := a.checkPermission(user, caID, models.PermConfigureCA)
+		if err != nil || !hasAccess {
+			writeError(w, http.StatusForbidden, "need CONFIGURE_CA permission")
+			return
+		}
+	}
+
+	var req struct {
+		RestrictionSetID *string `json:"restriction_set_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+
+	if err := a.db.SetCADefaultRestrictionSet(caID, req.RestrictionSetID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to set default restriction set: %v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }

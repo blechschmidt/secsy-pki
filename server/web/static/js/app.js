@@ -122,7 +122,8 @@ function showPage(name) {
     if (name === 'cas') loadCAs();
     if (name === 'sign') loadCASelect('signCA');
     if (name === 'groups') loadGroups();
-    if (name === 'permissions') { loadCASelect('permCA'); loadPermissions(); }
+    if (name === 'permissions') { loadCASelect('permCA').then(loadPermissions); }
+    if (name === 'restrictions') { loadCASelect('rsCA').then(loadRestrictionSets); }
 }
 
 // OIDC with PKCE (public client, no client_secret)
@@ -425,7 +426,99 @@ async function loadCASelect(selectId) {
     } catch (err) { /* ignore */ }
 }
 
-// Sign Certificate
+// Sign Certificate — restriction-aware UI
+let activeRestrictions = null;
+
+document.getElementById('signCA').addEventListener('change', async () => {
+    const caId = document.getElementById('signCA').value;
+    activeRestrictions = null;
+    applySignRestrictions(null);
+    if (!caId) return;
+    try {
+        activeRestrictions = await API.get(`/api/cas/${caId}/my-restrictions`);
+        applySignRestrictions(activeRestrictions);
+    } catch (e) { /* ignore */ }
+});
+
+function applySignRestrictions(rs) {
+    const keyIdField = document.getElementById('signKeyID');
+    const reasonField = document.getElementById('signReason');
+    const reasonGroup = reasonField.closest('.mb-3');
+    const extField = document.getElementById('signExtensions');
+    const extGroup = extField.closest('.mb-3');
+    const critField = document.getElementById('signCriticalOpts');
+    const critGroup = critField.closest('.mb-3');
+    const certTypeField = document.getElementById('signCertType');
+    const principalsField = document.getElementById('signPrincipals');
+    const validBeforeField = document.getElementById('signValidBefore');
+
+    // Reset all fields to unrestricted
+    keyIdField.disabled = false;
+    keyIdField.placeholder = 'auto (user subject)';
+    reasonGroup.style.display = '';
+    reasonField.required = false;
+    extGroup.style.display = '';
+    extField.disabled = false;
+    critGroup.style.display = '';
+    critField.disabled = false;
+    certTypeField.disabled = false;
+    for (const opt of certTypeField.options) opt.disabled = false;
+    principalsField.placeholder = 'user1,user2';
+    principalsField.title = '';
+    validBeforeField.placeholder = '+52w, +1d, RFC3339...';
+    validBeforeField.title = '';
+
+    if (!rs) return;
+
+    // Force email+reason key ID
+    if (rs.force_key_id_email_reason) {
+        keyIdField.disabled = true;
+        keyIdField.placeholder = 'auto: email + reason';
+        keyIdField.value = '';
+        reasonGroup.style.display = '';
+        reasonField.required = true;
+    } else {
+        reasonGroup.style.display = 'none';
+        reasonField.value = '';
+    }
+
+    // Deny extensions
+    if (rs.deny_extensions) {
+        extGroup.style.display = 'none';
+        extField.value = '';
+    } else if (rs.allowed_extensions && rs.allowed_extensions.length) {
+        extField.placeholder = 'Allowed: ' + rs.allowed_extensions.join(', ');
+    }
+
+    // Deny critical options
+    if (rs.deny_critical_options) {
+        critGroup.style.display = 'none';
+        critField.value = '';
+    }
+
+    // Restrict cert types
+    if (rs.allowed_cert_types && rs.allowed_cert_types.length) {
+        for (const opt of certTypeField.options) {
+            opt.disabled = !rs.allowed_cert_types.includes(opt.value);
+        }
+        if (!rs.allowed_cert_types.includes(certTypeField.value)) {
+            certTypeField.value = rs.allowed_cert_types[0];
+        }
+    }
+
+    // Show allowed principals hint
+    if (rs.allowed_principals && rs.allowed_principals.length) {
+        principalsField.placeholder = 'Allowed: ' + rs.allowed_principals.join(', ');
+        principalsField.title = 'Restricted to: ' + rs.allowed_principals.join(', ');
+    }
+
+    // Show max validity hint
+    if (rs.max_validity_secs) {
+        validBeforeField.placeholder = 'max: ' + formatDuration(rs.max_validity_secs);
+        validBeforeField.title = 'Maximum validity: ' + formatDuration(rs.max_validity_secs);
+    }
+}
+
 document.getElementById('signForm').addEventListener('submit', async e => {
     e.preventDefault();
     try {
@@ -441,6 +534,7 @@ document.getElementById('signForm').addEventListener('submit', async e => {
             public_key: document.getElementById('signPubKey').value,
             cert_type: document.getElementById('signCertType').value,
             key_id: document.getElementById('signKeyID').value || undefined,
+            reason: document.getElementById('signReason').value || undefined,
             principals: principals ? principals.split(',').map(s => s.trim()) : [],
             valid_after: document.getElementById('signValidAfter').value || undefined,
             valid_before: document.getElementById('signValidBefore').value || undefined,
@@ -574,13 +668,20 @@ async function loadPermissions() {
     const caId = document.getElementById('permCA').value;
     if (!caId) return;
     try {
-        const perms = await API.get(`/api/cas/${caId}/permissions`);
+        const [perms, rsList] = await Promise.all([
+            API.get(`/api/cas/${caId}/permissions`),
+            API.get(`/api/cas/${caId}/restriction-sets`),
+        ]);
+        const rsMap = {};
+        rsList.forEach(rs => rsMap[rs.id] = rs.name);
+
         const tbody = document.getElementById('permTableBody');
         tbody.innerHTML = perms.map(p => `
             <tr>
                 <td><span class="badge ${p.entity_type === 'user' ? 'bg-info' : 'bg-warning'}">${esc(p.entity_type)}</span></td>
                 <td>${truncated(p.entity_id, 20)}</td>
                 <td><span class="badge bg-primary">${esc(p.permission)}</span></td>
+                <td>${p.restriction_set_id ? `<span class="badge bg-secondary">${esc(rsMap[p.restriction_set_id] || p.restriction_set_id)}</span>` : '<span class="text-muted">default</span>'}</td>
                 <td>
                     <button class="btn btn-sm btn-outline-danger" onclick="revokePermission('${caId}', '${p.entity_type}', '${p.entity_id}', '${p.permission}')"><i class="bi bi-x-lg"></i></button>
                 </td>
@@ -591,7 +692,21 @@ async function loadPermissions() {
     }
 }
 
-document.getElementById('grantPermBtn').addEventListener('click', () => {
+document.getElementById('grantPermBtn').addEventListener('click', async () => {
+    const caId = document.getElementById('permCA').value;
+    if (!caId) { showToast('Error', 'Select a CA first', true); return; }
+    // Load restriction sets for the select
+    try {
+        const rsList = await API.get(`/api/cas/${caId}/restriction-sets`);
+        const sel = document.getElementById('permRestrictionSet');
+        sel.innerHTML = '<option value="">None (use CA default)</option>';
+        rsList.forEach(rs => {
+            const opt = document.createElement('option');
+            opt.value = rs.id;
+            opt.textContent = rs.name;
+            sel.appendChild(opt);
+        });
+    } catch (e) {}
     new bootstrap.Modal(document.getElementById('grantPermModal')).show();
 });
 
@@ -599,10 +714,12 @@ document.getElementById('savePermBtn').addEventListener('click', async () => {
     const caId = document.getElementById('permCA').value;
     if (!caId) { showToast('Error', 'Select a CA first', true); return; }
     try {
+        const rsVal = document.getElementById('permRestrictionSet').value;
         await API.post(`/api/cas/${caId}/permissions`, {
             entity_type: document.getElementById('permEntityType').value,
             entity_id: document.getElementById('permEntityID').value,
             permission: document.getElementById('permPermission').value,
+            restriction_set_id: rsVal || undefined,
         });
         bootstrap.Modal.getInstance(document.getElementById('grantPermModal')).hide();
         showToast('Success', 'Permission granted');
@@ -625,6 +742,185 @@ async function revokePermission(caId, entityType, entityId, permission) {
     } catch (err) {
         showToast('Error', err.message, true);
     }
+}
+
+// Restriction Sets
+document.getElementById('rsCA').addEventListener('change', loadRestrictionSets);
+
+async function loadRestrictionSets() {
+    const caId = document.getElementById('rsCA').value;
+    if (!caId) return;
+    try {
+        const [sets, ca] = await Promise.all([
+            API.get(`/api/cas/${caId}/restriction-sets`),
+            API.get(`/api/cas/${caId}`),
+        ]);
+        // Populate default select
+        const defSel = document.getElementById('rsDefault');
+        defSel.innerHTML = '<option value="">None</option>';
+        sets.forEach(rs => {
+            const opt = document.createElement('option');
+            opt.value = rs.id;
+            opt.textContent = rs.name;
+            if (ca.default_restriction_set_id === rs.id) opt.selected = true;
+            defSel.appendChild(opt);
+        });
+
+        // Render cards
+        const container = document.getElementById('rsListContainer');
+        if (sets.length === 0) {
+            container.innerHTML = '<p class="text-muted">No restriction sets configured for this CA.</p>';
+            return;
+        }
+        container.innerHTML = sets.map(rs => `
+            <div class="card mb-3">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <strong>${esc(rs.name)}</strong>
+                    <div>
+                        <button class="btn btn-sm btn-outline-primary me-1" onclick="editRestrictionSet('${rs.id}')"><i class="bi bi-pencil"></i></button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="deleteRestrictionSet('${rs.id}')"><i class="bi bi-trash"></i></button>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <table class="table table-sm mb-0">
+                        <tr><th>Max Validity</th><td>${rs.max_validity_secs ? formatDuration(rs.max_validity_secs) : '<span class="text-muted">unlimited</span>'}</td></tr>
+                        <tr><th>Allowed Principals</th><td>${rs.allowed_principals && rs.allowed_principals.length ? rs.allowed_principals.map(p => `<code>${esc(p)}</code>`).join(', ') : '<span class="text-muted">any</span>'}</td></tr>
+                        <tr><th>Allowed Cert Types</th><td>${rs.allowed_cert_types && rs.allowed_cert_types.length ? rs.allowed_cert_types.join(', ') : '<span class="text-muted">any</span>'}</td></tr>
+                        <tr><th>Force Key ID (email+reason)</th><td>${rs.force_key_id_email_reason ? '<span class="badge bg-success">Yes</span>' : 'No'}</td></tr>
+                        <tr><th>Deny Extensions</th><td>${rs.deny_extensions ? '<span class="badge bg-danger">Denied</span>' : 'No'}</td></tr>
+                        <tr><th>Allowed Extensions</th><td>${rs.deny_extensions ? '<span class="text-muted">n/a</span>' : (rs.allowed_extensions && rs.allowed_extensions.length ? rs.allowed_extensions.map(e => `<code>${esc(e)}</code>`).join(', ') : '<span class="text-muted">any</span>')}</td></tr>
+                        <tr><th>Deny Critical Options</th><td>${rs.deny_critical_options ? '<span class="badge bg-danger">Denied</span>' : 'No'}</td></tr>
+                        <tr><th>Max Valid-After Offset</th><td>${rs.max_valid_after_offset ? formatDuration(rs.max_valid_after_offset) : '<span class="text-muted">unlimited</span>'}</td></tr>
+                    </table>
+                </div>
+            </div>
+        `).join('');
+    } catch (err) {
+        showToast('Error', err.message, true);
+    }
+}
+
+function formatDuration(secs) {
+    if (secs >= 86400 && secs % 86400 === 0) return (secs / 86400) + 'd';
+    if (secs >= 3600 && secs % 3600 === 0) return (secs / 3600) + 'h';
+    if (secs >= 60 && secs % 60 === 0) return (secs / 60) + 'm';
+    return secs + 's';
+}
+
+document.getElementById('saveDefaultRSBtn').addEventListener('click', async () => {
+    const caId = document.getElementById('rsCA').value;
+    if (!caId) { showToast('Error', 'Select a CA first', true); return; }
+    const rsId = document.getElementById('rsDefault').value;
+    try {
+        await API.request('PUT', `/api/cas/${caId}/default-restriction-set`, {
+            restriction_set_id: rsId || null,
+        });
+        showToast('Success', 'Default restriction set updated');
+    } catch (err) {
+        showToast('Error', err.message, true);
+    }
+});
+
+document.getElementById('addRSBtn').addEventListener('click', () => {
+    const caId = document.getElementById('rsCA').value;
+    if (!caId) { showToast('Error', 'Select a CA first', true); return; }
+    showRSEditor(null);
+});
+
+async function editRestrictionSet(id) {
+    try {
+        const caId = document.getElementById('rsCA').value;
+        const sets = await API.get(`/api/cas/${caId}/restriction-sets`);
+        const rs = sets.find(s => s.id === id);
+        if (rs) showRSEditor(rs);
+    } catch (err) {
+        showToast('Error', err.message, true);
+    }
+}
+
+async function deleteRestrictionSet(id) {
+    if (!await modalConfirm('Delete Restriction Set', 'Delete this restriction set? Permissions referencing it will fall back to the CA default.')) return;
+    try {
+        await API.del(`/api/restriction-sets/${id}`);
+        showToast('Success', 'Restriction set deleted');
+        loadRestrictionSets();
+    } catch (err) {
+        showToast('Error', err.message, true);
+    }
+}
+
+function showRSEditor(existing) {
+    const isEdit = !!existing;
+    const html = `
+        <div class="mb-3"><label class="form-label">Name</label><input type="text" class="form-control" id="rsEdName" value="${esc(existing?.name || '')}"></div>
+        <div class="mb-3"><label class="form-label">Max Validity (seconds, e.g. 86400 for 1 day)</label><input type="number" class="form-control" id="rsEdMaxValidity" value="${existing?.max_validity_secs || ''}"></div>
+        <div class="mb-3"><label class="form-label">Allowed Principals (comma-separated, * for any)</label><input type="text" class="form-control" id="rsEdPrincipals" value="${(existing?.allowed_principals || []).join(', ')}"></div>
+        <div class="mb-3"><label class="form-label">Allowed Cert Types (comma-separated: user, host)</label><input type="text" class="form-control" id="rsEdCertTypes" value="${(existing?.allowed_cert_types || []).join(', ')}"></div>
+        <div class="mb-3 form-check"><input type="checkbox" class="form-check-input" id="rsEdForceEmail" ${existing?.force_key_id_email_reason ? 'checked' : ''}><label class="form-check-label" for="rsEdForceEmail">Force Key ID to email + reason</label></div>
+        <div class="mb-3 form-check"><input type="checkbox" class="form-check-input" id="rsEdDenyExt" ${existing?.deny_extensions ? 'checked' : ''}><label class="form-check-label" for="rsEdDenyExt">Deny custom extensions</label></div>
+        <div class="mb-3"><label class="form-label">Allowed Extensions (comma-separated, leave empty for any)</label><input type="text" class="form-control" id="rsEdExtensions" value="${(existing?.allowed_extensions || []).join(', ')}"></div>
+        <div class="mb-3 form-check"><input type="checkbox" class="form-check-input" id="rsEdDenyCrit" ${existing?.deny_critical_options ? 'checked' : ''}><label class="form-check-label" for="rsEdDenyCrit">Deny critical options</label></div>
+        <div class="mb-3"><label class="form-label">Max Valid-After Offset (seconds into the future)</label><input type="number" class="form-control" id="rsEdMaxOffset" value="${existing?.max_valid_after_offset || ''}"></div>
+    `;
+
+    document.getElementById('inputModalTitle').textContent = isEdit ? 'Edit Restriction Set' : 'Create Restriction Set';
+    document.getElementById('inputModalLabel').textContent = '';
+    document.getElementById('inputModalValue').style.display = 'none';
+    // Repurpose the modal body
+    const body = document.getElementById('inputModal').querySelector('.modal-body');
+    body.innerHTML = html;
+    const modal = new bootstrap.Modal(document.getElementById('inputModal'));
+
+    const okBtn = document.getElementById('inputModalOk');
+    const handler = async () => {
+        okBtn.removeEventListener('click', handler);
+        const caId = document.getElementById('rsCA').value;
+        const data = {
+            name: document.getElementById('rsEdName').value,
+            max_validity_secs: parseInt(document.getElementById('rsEdMaxValidity').value) || null,
+            allowed_principals: splitTrim(document.getElementById('rsEdPrincipals').value),
+            allowed_cert_types: splitTrim(document.getElementById('rsEdCertTypes').value),
+            force_key_id_email_reason: document.getElementById('rsEdForceEmail').checked,
+            deny_extensions: document.getElementById('rsEdDenyExt').checked,
+            allowed_extensions: splitTrim(document.getElementById('rsEdExtensions').value),
+            deny_critical_options: document.getElementById('rsEdDenyCrit').checked,
+            max_valid_after_offset: parseInt(document.getElementById('rsEdMaxOffset').value) || null,
+        };
+        try {
+            if (isEdit) {
+                await API.request('PUT', `/api/restriction-sets/${existing.id}`, data);
+            } else {
+                await API.post(`/api/cas/${caId}/restriction-sets`, data);
+            }
+            modal.hide();
+            showToast('Success', isEdit ? 'Restriction set updated' : 'Restriction set created');
+            loadRestrictionSets();
+        } catch (err) {
+            showToast('Error', err.message, true);
+        }
+        // Restore modal
+        restoreInputModal();
+    };
+    okBtn.addEventListener('click', handler);
+    document.getElementById('inputModal').addEventListener('hidden.bs.modal', () => {
+        okBtn.removeEventListener('click', handler);
+        restoreInputModal();
+    }, { once: true });
+    modal.show();
+}
+
+function restoreInputModal() {
+    const body = document.getElementById('inputModal').querySelector('.modal-body');
+    body.innerHTML = `
+        <label class="form-label" id="inputModalLabel"></label>
+        <input type="text" class="form-control" id="inputModalValue">
+    `;
+    document.getElementById('inputModalValue').style.display = '';
+}
+
+function splitTrim(s) {
+    if (!s || !s.trim()) return [];
+    return s.split(',').map(x => x.trim()).filter(x => x);
 }
 
 // Utility

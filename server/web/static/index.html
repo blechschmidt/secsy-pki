@@ -32,6 +32,9 @@
                     <li class="nav-item">
                         <a class="nav-link" href="#" data-page="permissions"><i class="bi bi-shield-lock"></i> Permissions</a>
                     </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="#" data-page="restrictions"><i class="bi bi-funnel"></i> Restrictions</a>
+                    </li>
                 </ul>
                 <ul class="navbar-nav ms-auto">
                     <li class="nav-item" id="userInfo"></li>
@@ -141,6 +144,10 @@
                                     <label class="form-label">Key ID</label>
                                     <input type="text" class="form-control" id="signKeyID" placeholder="auto (user subject)">
                                 </div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">Reason <span class="text-secondary fw-normal">(required when restriction enforces email+reason key ID)</span></label>
+                                <input type="text" class="form-control" id="signReason" placeholder="e.g. deployment, debugging">
                             </div>
                             <div class="mb-3">
                                 <label class="form-label">Principals (comma-separated)</label>
@@ -286,11 +293,31 @@
                 <div class="table-responsive">
                     <table class="table table-striped table-hover">
                         <thead>
-                            <tr><th>Entity Type</th><th>Entity ID</th><th>Permission</th><th>Actions</th></tr>
+                            <tr><th>Entity Type</th><th>Entity ID</th><th>Permission</th><th>Restriction Set</th><th>Actions</th></tr>
                         </thead>
                         <tbody id="permTableBody"></tbody>
                     </table>
                 </div>
+            </div>
+
+            <!-- Restrictions Page -->
+            <div id="restrictionsPage" class="page d-none">
+                <h3><i class="bi bi-funnel"></i> Restriction Sets</h3>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label">Certificate Authority</label>
+                        <select class="form-select" id="rsCA"></select>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label">Default Restriction Set</label>
+                        <select class="form-select" id="rsDefault"><option value="">None</option></select>
+                    </div>
+                    <div class="col-md-4 mb-3 d-flex align-items-end">
+                        <button class="btn btn-primary me-2" id="saveDefaultRSBtn">Save Default</button>
+                        <button class="btn btn-success" id="addRSBtn"><i class="bi bi-plus-lg"></i> New Restriction Set</button>
+                    </div>
+                </div>
+                <div id="rsListContainer"></div>
             </div>
         </div>
     </div>
@@ -358,7 +385,12 @@
                         <select class="form-select" id="permPermission">
                             <option value="SIGN_CERTIFICATE">SIGN_CERTIFICATE</option>
                             <option value="MANAGE_PERMISSIONS">MANAGE_PERMISSIONS</option>
+                            <option value="CONFIGURE_CA">CONFIGURE_CA</option>
                         </select>
+                    </div>
+                    <div class="mb-3" id="permRSGroup">
+                        <label class="form-label">Restriction Set <span class="text-secondary fw-normal">(for SIGN_CERTIFICATE only)</span></label>
+                        <select class="form-select" id="permRestrictionSet"><option value="">None (use CA default)</option></select>
                     </div>
                 </div>
                 <div class="modal-footer">
