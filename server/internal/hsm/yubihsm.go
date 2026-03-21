@@ -196,38 +196,33 @@ func IsBootSentinel(e AuditLogEntry) bool {
 		e.SecondKey == 0xffff && e.Result == 0xff && e.Tick == 0xffffffff
 }
 
-// ProvisionAuditLogging enables forced, irreversible audit logging for all
-// cryptographic operations on the YubiHSM. It first verifies the audit log
-// starts with a boot sentinel (entry 1, all 0xff fields), which proves the
-// device was factory reset before provisioning — no unaudited operations exist.
-//
-// Returns an error if the boot sentinel is not present, instructing the user
-// to factory reset the device first.
-func ProvisionAuditLogging(cfg Config) (string, error) {
-	// First check the audit log starts from a factory reset
-	out, err := runShell(cfg, "audit get 0")
-	if err != nil {
-		return "", fmt.Errorf("failed to read audit log: %w", err)
-	}
-
-	entries, err := ParseAuditLogOutput(out)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse audit log: %w", err)
-	}
-
+// CheckDeviceInitEntry checks if the given entries start with a device init entry,
+// proving the device was factory reset. Pass entries from the DB or HSM.
+func CheckDeviceInitEntry(entries []AuditLogEntry) error {
 	if len(entries) == 0 {
-		return "", fmt.Errorf("audit log is empty — cannot verify device state")
+		return fmt.Errorf(
+			"no audit log entries found — cannot verify device state.\n" +
+				"Please factory reset the device first:\n" +
+				"  yubihsm-shell> reset 0\n" +
+				"Then re-run provisioning.")
 	}
-
 	if !IsBootSentinel(entries[0]) {
-		return "", fmt.Errorf(
-			"audit log does not start with a boot sentinel (entry 1, all 0xff fields).\n" +
+		return fmt.Errorf(
+			"audit log does not start with a device init entry (entry 1, all 0xff fields).\n" +
 				"The device was not factory reset before provisioning.\n" +
 				"There may be unaudited operations. Please factory reset the device first:\n" +
 				"  yubihsm-shell> reset 0\n" +
 				"Then re-run provisioning.")
 	}
+	return nil
+}
 
+// ProvisionAuditLogging enables forced, irreversible audit logging for all
+// cryptographic operations on the YubiHSM.
+//
+// The caller must verify the device init entry (CheckDeviceInitEntry) before
+// calling this function.
+func ProvisionAuditLogging(cfg Config) (string, error) {
 	commands := strings.Join([]string{
 		// First enable PUT OPTION auditing (reversible), then force it (irreversible)
 		"put option 0 command-audit 4f01",

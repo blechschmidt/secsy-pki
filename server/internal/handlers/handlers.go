@@ -966,11 +966,31 @@ func (a *API) ProvisionHSMAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Consume pending entries to DB, then check for device init entry in DB
 	a.consumeHSMAuditLogs("")
+
+	export, err := a.db.ExportCombinedAuditLog()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read audit log: %v", err)
+		return
+	}
+	var dbEntries []hsm.AuditLogEntry
+	for _, e := range export.HSMEntries {
+		dbEntries = append(dbEntries, hsm.AuditLogEntry{
+			Number: e.Number, Command: e.Command, Length: e.Length,
+			SessionKey: e.SessionKey, TargetKey: e.TargetKey, SecondKey: e.SecondKey,
+			Result: e.Result, Tick: e.Tick, Hash: e.Hash,
+		})
+	}
+	if err := hsm.CheckDeviceInitEntry(dbEntries); err != nil {
+		writeError(w, http.StatusPreconditionFailed, "%v", err)
+		return
+	}
+
 	output, err := hsm.ProvisionAuditLogging(a.hsmCfg)
 	a.consumeHSMAuditLogs("")
 	if err != nil {
-		writeError(w, http.StatusPreconditionFailed, "%v", err)
+		writeError(w, http.StatusInternalServerError, "failed to provision: %v", err)
 		return
 	}
 
