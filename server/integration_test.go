@@ -21,7 +21,6 @@ const (
 	rootPass       = "integration-test-password"
 	keycloakRealm  = "secsy-pki"
 	keycloakClient = "secsy-pki"
-	keycloakSecret = "test-client-secret"
 	testUser       = "testuser"
 	testUserPass   = "testpassword"
 )
@@ -98,8 +97,8 @@ func parseJSON(t *testing.T, resp *http.Response, v interface{}) {
 func getKeycloakToken(t *testing.T) string {
 	t.Helper()
 	data := fmt.Sprintf(
-		"grant_type=password&client_id=%s&client_secret=%s&username=%s&password=%s",
-		keycloakClient, keycloakSecret, testUser, testUserPass,
+		"grant_type=password&client_id=%s&username=%s&password=%s",
+		keycloakClient, testUser, testUserPass,
 	)
 	resp, err := http.Post(
 		keycloakURL+"/realms/"+keycloakRealm+"/protocol/openid-connect/token",

@@ -89,7 +89,7 @@ func cmdVerifyAuditLog(args []string) {
 	var combined models.CombinedAuditExport
 	if err := json.Unmarshal(data, &combined); err == nil && len(combined.HSMEntries) > 0 {
 		fmt.Println("FAIL: This is a combined log without a cryptographic signature.")
-		fmt.Println("      Use a signed audit log for full verification.\n")
+		fmt.Println("      Use a signed audit log for full verification.")
 		if !verifyCombinedLog(&combined) {
 			os.Exit(1)
 		}
@@ -99,7 +99,7 @@ func cmdVerifyAuditLog(args []string) {
 	var hsmLog hsm.AuditLog
 	if err := json.Unmarshal(data, &hsmLog); err == nil && len(hsmLog.Entries) > 0 {
 		fmt.Println("FAIL: This is an unsigned HSM-only log without cryptographic proof.")
-		fmt.Println("      Use a signed audit log for full verification.\n")
+		fmt.Println("      Use a signed audit log for full verification.")
 		if !verifyHSMOnlyLog(&hsmLog) {
 			os.Exit(1)
 		}
