@@ -9,6 +9,22 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      keycloak:
+        image: quay.io/keycloak/keycloak:26.0
+        env:
+          KC_BOOTSTRAP_ADMIN_USERNAME: admin
+          KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+        ports:
+          - 8080:8080
+        options: >-
+          --health-cmd "exec 3<>/dev/tcp/localhost/8080"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+
     steps:
       - uses: actions/checkout@v4
 
@@ -17,13 +33,79 @@ jobs:
           go-version: '1.25'
           cache-dependency-path: server/go.sum
 
-      - name: Install Dagger
-        run: curl -fsSL https://dl.dagger.io/dagger/install.sh | BIN_DIR=/usr/local/bin sh
+      - name: Install SoftHSM
+        run: sudo apt-get install -y softhsm2 opensc
 
-      - name: Run tests
+      - name: Setup SoftHSM
+        run: |
+          softhsm2-util --init-token --slot 0 --label "secsy-test" --pin 1234 --so-pin 5678
+          pkcs11-tool --module /usr/lib/softhsm/libsofthsm2.so --login --pin 1234 \
+            --keypairgen --key-type EC:prime256v1 --label "test-ca" --id 01
+
+      - name: Import KeyCloak realm
+        run: |
+          # Wait for KeyCloak
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:8080/health/ready > /dev/null 2>&1 && break
+            sleep 2
+          done
+          # Import realm via admin API
+          ADMIN_TOKEN=$(curl -s -X POST http://localhost:8080/realms/master/protocol/openid-connect/token \
+            -d "grant_type=password&client_id=admin-cli&username=admin&password=admin" | jq -r '.access_token')
+          curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+            "http://localhost:8080/admin/realms" -d @server/testdata/keycloak/secsy-pki-realm.json
+
+      - name: Run unit tests
         working-directory: server
-        run: dagger --progress plain call -m ci test --source .
+        run: go test -tags sqlite -coverprofile=coverage.out -count=1 -v ./internal/...
+
+      - name: Generate TLS certs
+        working-directory: server
+        run: |
+          mkdir -p certs
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+            -keyout certs/server.key -out certs/server.crt -days 1 -nodes \
+            -subj "/CN=localhost" 2>/dev/null
+
+      - name: Run integration tests
+        working-directory: server
+        run: |
+          cat > /tmp/test-config.yaml << 'EOF'
+          server:
+            host: "0.0.0.0"
+            port: 8443
+            tls_cert: "certs/server.crt"
+            tls_key: "certs/server.key"
+          database:
+            driver: "sqlite"
+            dsn: "/tmp/test.db"
+          oidc:
+            issuer_url: "http://localhost:8080/realms/secsy-pki"
+            client_id: "secsy-pki"
+          root_user:
+            username: "root"
+            password: "integration-test-password"
+          pkcs11:
+            module_path: "/usr/lib/softhsm/libsofthsm2.so"
+            pin: "1234"
+            token_label: "secsy-test"
+          EOF
+
+          go build -tags sqlite -o /tmp/secsy-server ./cmd/server
+          /tmp/secsy-server -config /tmp/test-config.yaml &
+          sleep 3
+
+          for i in $(seq 1 15); do
+            curl -sfk https://localhost:8443/api/health > /dev/null 2>&1 && break
+            sleep 1
+          done
+
+          INTEGRATION_TEST=1 go test -tags sqlite -count=1 -v -timeout 120s ./...
 
       - name: Build all targets
         working-directory: server
-        run: dagger --progress plain call -m ci build --source .
+        run: |
+          go build -tags sqlite -o /dev/null ./cmd/server
+          go build -o /dev/null ./cmd/server
+          go build -o /dev/null ./cmd/verify
+          go build -o /dev/null ./cmd/secsy-ssh
