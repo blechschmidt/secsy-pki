@@ -9,15 +9,28 @@
       "enabled": true,
       "publicClient": true,
       "directAccessGrantsEnabled": true,
-      "redirectUris": ["https://localhost:8443/*"],
-      "webOrigins": ["https://localhost:8443"],
+      "redirectUris": ["https://localhost:8443/*", "http://localhost:18329/*"],
+      "webOrigins": ["https://localhost:8443", "http://localhost:18329"],
       "protocol": "openid-connect",
       "standardFlowEnabled": true,
       "serviceAccountsEnabled": false,
       "authorizationServicesEnabled": false,
       "attributes": {
         "pkce.code.challenge.method": "S256"
-      }
+      },
+      "protocolMappers": [
+        {
+          "name": "audience-mapper",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "secsy-pki",
+            "id.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "users": [
