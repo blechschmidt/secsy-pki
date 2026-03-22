@@ -146,6 +146,7 @@ type AuditLogEntry struct {
 	UserName         string            `json:"user_name,omitempty"`
 	CAID             string            `json:"ca_id"`
 	CALabel          string            `json:"ca_label"`
+	CertFormat       string            `json:"cert_format"`       // "ssh" or "x509"
 	KeyID            string            `json:"key_id"`
 	CertType         string            `json:"cert_type"`
 	Principals       []string          `json:"principals"`

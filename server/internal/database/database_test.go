@@ -260,6 +260,93 @@ func TestRestrictionSetLifecycle(t *testing.T) {
 	}
 }
 
+func TestRestrictionSetX509(t *testing.T) {
+	db := testDB(t)
+	db.CreateCA(&models.CA{ID: "ca-1", Label: "CA", PKCS11URI: "p", KeyType: "ed25519", PublicKey: "k"})
+
+	maxVal := int64(86400)
+	pathLen := 0
+	rs := &models.RestrictionSet{
+		ID: "rs-x509", CAID: "ca-1", Name: "X509 Policy",
+		Type:                models.RestrictionSetX509,
+		MaxValiditySecs:     &maxVal,
+		AllowedKeyUsages:    []string{"digitalSignature", "keyEncipherment"},
+		AllowedExtKeyUsages: []string{"serverAuth", "clientAuth"},
+		AllowedSANTypes:     []string{"dns", "ip"},
+		AllowedSANPatterns:  []string{"*.example.com", "10.0.0.0/8"},
+		AllowedSubjectFields: []string{"CN", "O"},
+		MaxPathLength:       &pathLen,
+		DenyCA:              true,
+		RequireReason:       true,
+	}
+	if err := db.CreateRestrictionSet(rs); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := db.GetRestrictionSet("rs-x509")
+	if err != nil || got == nil {
+		t.Fatal("GetRestrictionSet failed")
+	}
+	if got.Type != models.RestrictionSetX509 {
+		t.Errorf("type = %q, want x509", got.Type)
+	}
+	if !got.DenyCA {
+		t.Error("deny_ca should be true")
+	}
+	if len(got.AllowedKeyUsages) != 2 {
+		t.Errorf("key_usages = %v", got.AllowedKeyUsages)
+	}
+	if len(got.AllowedExtKeyUsages) != 2 {
+		t.Errorf("ext_key_usages = %v", got.AllowedExtKeyUsages)
+	}
+	if len(got.AllowedSANTypes) != 2 {
+		t.Errorf("san_types = %v", got.AllowedSANTypes)
+	}
+	if len(got.AllowedSANPatterns) != 2 {
+		t.Errorf("san_patterns = %v", got.AllowedSANPatterns)
+	}
+	if len(got.AllowedSubjectFields) != 2 {
+		t.Errorf("subject_fields = %v", got.AllowedSubjectFields)
+	}
+	if got.MaxPathLength == nil || *got.MaxPathLength != 0 {
+		t.Errorf("max_path_length = %v", got.MaxPathLength)
+	}
+	if !got.RequireReason {
+		t.Error("require_reason should be true")
+	}
+
+	// List should show type
+	sets, _ := db.ListRestrictionSets("ca-1")
+	if len(sets) != 1 || sets[0].Type != models.RestrictionSetX509 {
+		t.Errorf("list type = %v", sets)
+	}
+
+	// Update
+	got.AllowedKeyUsages = []string{"digitalSignature"}
+	got.DenyCA = false
+	db.UpdateRestrictionSet(got)
+	got, _ = db.GetRestrictionSet("rs-x509")
+	if len(got.AllowedKeyUsages) != 1 || got.DenyCA {
+		t.Errorf("after update: %+v", got)
+	}
+
+	db.DeleteRestrictionSet("rs-x509")
+}
+
+func TestRestrictionSetDefaultType(t *testing.T) {
+	db := testDB(t)
+	db.CreateCA(&models.CA{ID: "ca-1", Label: "CA", PKCS11URI: "p", KeyType: "ed25519", PublicKey: "k"})
+
+	// Create without explicit type — should default to "ssh"
+	rs := &models.RestrictionSet{ID: "rs-default", CAID: "ca-1", Name: "Default"}
+	db.CreateRestrictionSet(rs)
+
+	got, _ := db.GetRestrictionSet("rs-default")
+	if got.Type != models.RestrictionSetSSH {
+		t.Errorf("default type = %q, want ssh", got.Type)
+	}
+}
+
 func TestEffectiveRestrictionSet(t *testing.T) {
 	db := testDB(t)
 	db.CreateCA(&models.CA{ID: "ca-1", Label: "CA", PKCS11URI: "p", KeyType: "ed25519", PublicKey: "k"})

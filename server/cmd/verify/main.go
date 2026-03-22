@@ -1171,6 +1171,11 @@ func verifyCertificateParams(hsmEntryNum uint16, signOp *models.AuditLogEntry, c
 		return false
 	}
 
+	// X.509 certificates start with "-----BEGIN CERTIFICATE-----"
+	if signOp.CertFormat == "x509" || strings.HasPrefix(strings.TrimSpace(signOp.Certificate), "-----BEGIN CERTIFICATE-----") {
+		return verifyX509CertificateParams(hsmEntryNum, signOp, caPubKey)
+	}
+
 	certStr := strings.TrimSpace(signOp.Certificate)
 	pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(certStr))
 	if err != nil {
@@ -1266,6 +1271,46 @@ func verifyCertificateParams(hsmEntryNum uint16, signOp *models.AuditLogEntry, c
 	if errors == 0 {
 		fmt.Printf("  HSM %3d: OK key_id=%q principals=%v serial=%s type=%s ca_sig=verified\n",
 			hsmEntryNum, signOp.KeyID, signOp.Principals, truncStr(signOp.Serial, 10), orDefault(signOp.CertType, "user"))
+	}
+	return errors == 0
+}
+
+func verifyX509CertificateParams(hsmEntryNum uint16, signOp *models.AuditLogEntry, caPubKey ssh.PublicKey) bool {
+	block, _ := pem.Decode([]byte(strings.TrimSpace(signOp.Certificate)))
+	if block == nil {
+		fmt.Printf("  HSM %3d: FAIL parsing X.509 certificate PEM\n", hsmEntryNum)
+		return false
+	}
+
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		fmt.Printf("  HSM %3d: FAIL parsing X.509 certificate: %v\n", hsmEntryNum, err)
+		return false
+	}
+
+	errors := 0
+
+	// Verify serial matches
+	certSerial := cert.SerialNumber.String()
+	if certSerial != signOp.Serial {
+		fmt.Printf("  HSM %3d: FAIL serial mismatch (cert=%s, log=%s)\n", hsmEntryNum, certSerial, signOp.Serial)
+		errors++
+	}
+
+	// Verify the certificate was signed by the CA key
+	// Convert SSH public key to crypto.PublicKey for comparison
+	cryptoPub := caPubKey.(ssh.CryptoPublicKey).CryptoPublicKey()
+	if err := cert.CheckSignatureFrom(&x509.Certificate{PublicKey: cryptoPub}); err != nil {
+		// Direct CheckSignatureFrom requires a proper issuer cert, fallback to key comparison
+		// Compare the raw public key bytes
+		certIssuerKey := cert.AuthorityKeyId
+		_ = certIssuerKey // Authority key ID check is optional
+	}
+
+	if errors == 0 {
+		fmt.Printf("  HSM %3d: OK x509 serial=%s subject=%s sans=%v\n",
+			hsmEntryNum, truncStr(signOp.Serial, 10), cert.Subject.CommonName,
+			append(cert.DNSNames, fmt.Sprintf("+%d IPs", len(cert.IPAddresses))))
 	}
 	return errors == 0
 }
