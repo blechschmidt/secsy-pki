@@ -11,20 +11,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
-    services:
-      keycloak:
-        image: quay.io/keycloak/keycloak:26.0
-        env:
-          KC_BOOTSTRAP_ADMIN_USERNAME: admin
-          KC_BOOTSTRAP_ADMIN_PASSWORD: admin
-        ports:
-          - 8080:8080
-        options: >-
-          --health-cmd "exec 3<>/dev/tcp/localhost/8080"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 30
-
     steps:
       - uses: actions/checkout@v4
 
@@ -42,22 +28,23 @@ jobs:
           pkcs11-tool --module /usr/lib/softhsm/libsofthsm2.so --login --pin 1234 \
             --keypairgen --key-type EC:prime256v1 --label "test-ca" --id 01
 
-      - name: Import KeyCloak realm
+      - name: Start KeyCloak
         run: |
+          docker run -d --name keycloak -p 8080:8080 \
+            -e KC_BOOTSTRAP_ADMIN_USERNAME=admin \
+            -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+            -v ${{ github.workspace }}/server/testdata/keycloak:/opt/keycloak/data/import \
+            quay.io/keycloak/keycloak:26.0 start-dev --import-realm
           # Wait for KeyCloak
-          for i in $(seq 1 60); do
-            curl -sf http://localhost:8080/health/ready > /dev/null 2>&1 && break
+          for i in $(seq 1 90); do
+            curl -sf http://localhost:8080/realms/secsy-pki/.well-known/openid-configuration > /dev/null 2>&1 && break
             sleep 2
           done
-          # Import realm via admin API
-          ADMIN_TOKEN=$(curl -s -X POST http://localhost:8080/realms/master/protocol/openid-connect/token \
-            -d "grant_type=password&client_id=admin-cli&username=admin&password=admin" | jq -r '.access_token')
-          curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
-            "http://localhost:8080/admin/realms" -d @server/testdata/keycloak/secsy-pki-realm.json
+          echo "KeyCloak ready"
 
       - name: Run unit tests
         working-directory: server
-        run: go test -tags sqlite -coverprofile=coverage.out -count=1 -v ./internal/...
+        run: go test -tags sqlite -coverprofile=coverage.out -count=1 ./internal/...
 
       - name: Generate TLS certs
         working-directory: server
