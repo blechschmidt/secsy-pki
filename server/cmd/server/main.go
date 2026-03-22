@@ -60,9 +60,11 @@ func main() {
 	}
 
 	p11cfg := pki.PKCS11Config{
-		ModulePath: cfg.PKCS11.ModulePath,
-		Pin:        cfg.PKCS11.Pin,
-		TokenLabel: cfg.PKCS11.TokenLabel,
+		ModulePath:        cfg.PKCS11.ModulePath,
+		Pin:               cfg.PKCS11.Pin,
+		TokenLabel:        cfg.PKCS11.TokenLabel,
+		TokenSerial:       cfg.PKCS11.TokenSerial,
+		TokenManufacturer: cfg.PKCS11.TokenManufacturer,
 	}
 
 	hsmCfg := hsm.Config{

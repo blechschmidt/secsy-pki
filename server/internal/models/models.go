@@ -23,7 +23,8 @@ type CA struct {
 	PKCS11URI               string    `json:"pkcs11_uri" db:"pkcs11_uri"`
 	KeyType                 string    `json:"key_type" db:"key_type"`
 	PublicKey               string    `json:"public_key" db:"public_key"`
-	DefaultRestrictionSetID *string   `json:"default_restriction_set_id,omitempty" db:"default_restriction_set_id"`
+	DefaultSSHRestrictionSetID  *string `json:"default_ssh_restriction_set_id,omitempty" db:"default_ssh_restriction_set_id"`
+	DefaultX509RestrictionSetID *string `json:"default_x509_restriction_set_id,omitempty" db:"default_x509_restriction_set_id"`
 	CreatedAt               time.Time `json:"created_at" db:"created_at"`
 }
 
@@ -38,12 +39,13 @@ type GroupMember struct {
 }
 
 type PermissionEntry struct {
-	ID               string     `json:"id" db:"id"`
-	CAID             string     `json:"ca_id" db:"ca_id"`
-	EntityType       string     `json:"entity_type" db:"entity_type"` // "user" or "group"
-	EntityID         string     `json:"entity_id" db:"entity_id"`
-	Permission       Permission `json:"permission" db:"permission"`
-	RestrictionSetID *string    `json:"restriction_set_id,omitempty" db:"restriction_set_id"`
+	ID                      string     `json:"id" db:"id"`
+	CAID                    string     `json:"ca_id" db:"ca_id"`
+	EntityType              string     `json:"entity_type" db:"entity_type"` // "user" or "group"
+	EntityID                string     `json:"entity_id" db:"entity_id"`
+	Permission              Permission `json:"permission" db:"permission"`
+	SSHRestrictionSetID     *string    `json:"ssh_restriction_set_id,omitempty" db:"ssh_restriction_set_id"`
+	X509RestrictionSetID    *string    `json:"x509_restriction_set_id,omitempty" db:"x509_restriction_set_id"`
 }
 
 // RestrictionSetType distinguishes between SSH and X.509 restriction sets.
@@ -57,10 +59,12 @@ const (
 // RestrictionSet defines constraints on certificate signing parameters.
 type RestrictionSet struct {
 	ID                    string             `json:"id"`
-	CAID                  string             `json:"ca_id"`
+	CAID                  string             `json:"ca_id,omitempty"`
 	Name                  string             `json:"name"`
 	Type                  RestrictionSetType `json:"type"`                           // "ssh" or "x509"
 	MaxValiditySecs       *int64             `json:"max_validity_secs,omitempty"`
+
+	DenyAll               bool     `json:"deny_all"`
 
 	// SSH-specific restrictions
 	AllowedPrincipals     []string `json:"allowed_principals,omitempty"`
@@ -128,11 +132,12 @@ type KeyGenResponse struct {
 }
 
 type PermissionGrant struct {
-	CAID             string     `json:"ca_id"`
-	EntityType       string     `json:"entity_type"` // "user" or "group"
-	EntityID         string     `json:"entity_id"`
-	Permission       Permission `json:"permission"`
-	RestrictionSetID *string    `json:"restriction_set_id,omitempty"`
+	CAID                 string     `json:"ca_id"`
+	EntityType           string     `json:"entity_type"` // "user" or "group"
+	EntityID             string     `json:"entity_id"`
+	Permission           Permission `json:"permission"`
+	SSHRestrictionSetID  *string    `json:"ssh_restriction_set_id,omitempty"`
+	X509RestrictionSetID *string    `json:"x509_restriction_set_id,omitempty"`
 }
 
 type AuditLogEntry struct {

@@ -23,13 +23,18 @@ func GetUserInfo(ctx context.Context) *models.UserInfo {
 	return nil
 }
 
+// TokenVerifier is an interface for verifying OIDC tokens.
+type TokenVerifier interface {
+	VerifyToken(ctx context.Context, rawToken string) (*auth.Claims, error)
+}
+
 type AuthMiddleware struct {
-	oidcProvider *auth.OIDCProvider
+	oidcProvider TokenVerifier
 	rootUsername string
 	rootPassword string
 }
 
-func NewAuthMiddleware(oidcProvider *auth.OIDCProvider, rootUsername, rootPassword string) *AuthMiddleware {
+func NewAuthMiddleware(oidcProvider TokenVerifier, rootUsername, rootPassword string) *AuthMiddleware {
 	return &AuthMiddleware{
 		oidcProvider: oidcProvider,
 		rootUsername: rootUsername,

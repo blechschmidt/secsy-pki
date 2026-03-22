@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/rsa"
 	"encoding/asn1"
 	"fmt"
 	"io"
@@ -28,9 +29,51 @@ type PKCS11Signer struct {
 }
 
 type PKCS11Config struct {
-	ModulePath string
-	Pin        string
-	TokenLabel string
+	ModulePath        string
+	Pin               string
+	TokenLabel        string
+	TokenSerial       string
+	TokenManufacturer string
+}
+
+// findToken locates the PKCS#11 slot matching the config's token attributes.
+func findToken(ctx *pkcs11.Ctx, slots []uint, cfg PKCS11Config) (uint, error) {
+	for _, s := range slots {
+		info, err := ctx.GetTokenInfo(s)
+		if err != nil {
+			continue
+		}
+		label := strings.TrimRight(info.Label, " ")
+		serial := strings.TrimRight(info.SerialNumber, " ")
+		mfr := strings.TrimRight(info.ManufacturerID, " ")
+		if cfg.TokenLabel != "" && label != cfg.TokenLabel {
+			continue
+		}
+		if cfg.TokenSerial != "" && serial != cfg.TokenSerial {
+			continue
+		}
+		if cfg.TokenManufacturer != "" && mfr != cfg.TokenManufacturer {
+			continue
+		}
+		return s, nil
+	}
+	return 0, fmt.Errorf("no token found matching label=%q serial=%q manufacturer=%q", cfg.TokenLabel, cfg.TokenSerial, cfg.TokenManufacturer)
+}
+
+// BuildPKCS11URI constructs a PKCS#11 URI from the config and key label.
+func BuildPKCS11URI(cfg PKCS11Config, keyLabel string) string {
+	parts := []string{}
+	if cfg.TokenLabel != "" {
+		parts = append(parts, "token="+cfg.TokenLabel)
+	}
+	if cfg.TokenSerial != "" {
+		parts = append(parts, "serial="+cfg.TokenSerial)
+	}
+	if cfg.TokenManufacturer != "" {
+		parts = append(parts, "manufacturer="+cfg.TokenManufacturer)
+	}
+	parts = append(parts, "object="+keyLabel, "type=private")
+	return "pkcs11:" + strings.Join(parts, ";")
 }
 
 func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {
@@ -49,21 +92,9 @@ func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {
 		return nil, fmt.Errorf("getting slots: %w", err)
 	}
 
-	var slotID uint
-	found := false
-	for _, s := range slots {
-		info, err := ctx.GetTokenInfo(s)
-		if err != nil {
-			continue
-		}
-		if strings.TrimRight(info.Label, " ") == cfg.TokenLabel {
-			slotID = s
-			found = true
-			break
-		}
-	}
-	if !found {
-		return nil, fmt.Errorf("token with label %q not found", cfg.TokenLabel)
+	slotID, err := findToken(ctx, slots, cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	session, err := ctx.OpenSession(slotID, pkcs11.CKF_SERIAL_SESSION)
@@ -113,12 +144,23 @@ func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {
 	}
 
 	if len(pubObjs) > 0 {
+		// Try EC attributes first
 		attrs, err := ctx.GetAttributeValue(session, pubObjs[0], []*pkcs11.Attribute{
 			pkcs11.NewAttribute(pkcs11.CKA_EC_PARAMS, nil),
 			pkcs11.NewAttribute(pkcs11.CKA_EC_POINT, nil),
 		})
 		if err == nil {
 			signer.parsePublicKey(attrs)
+		}
+		// If no key found, try RSA attributes
+		if signer.pubKey == nil {
+			attrs, err = ctx.GetAttributeValue(session, pubObjs[0], []*pkcs11.Attribute{
+				pkcs11.NewAttribute(pkcs11.CKA_MODULUS, nil),
+				pkcs11.NewAttribute(pkcs11.CKA_PUBLIC_EXPONENT, nil),
+			})
+			if err == nil {
+				signer.parseRSAPublicKey(attrs)
+			}
 		}
 	}
 
@@ -180,6 +222,25 @@ func (s *PKCS11Signer) parsePublicKey(attrs []*pkcs11.Attribute) {
 	s.pubKey = &ecdsa.PublicKey{Curve: curve, X: x, Y: y}
 }
 
+func (s *PKCS11Signer) parseRSAPublicKey(attrs []*pkcs11.Attribute) {
+	var modulus, exponent []byte
+	for _, a := range attrs {
+		switch a.Type {
+		case pkcs11.CKA_MODULUS:
+			modulus = a.Value
+		case pkcs11.CKA_PUBLIC_EXPONENT:
+			exponent = a.Value
+		}
+	}
+	if len(modulus) == 0 || len(exponent) == 0 {
+		return
+	}
+	n := new(big.Int).SetBytes(modulus)
+	e := new(big.Int).SetBytes(exponent)
+	s.pubKey = &rsa.PublicKey{N: n, E: int(e.Int64())}
+	s.keyType = "ssh-rsa"
+}
+
 // isEdwards25519 checks if ec_params represents Ed25519.
 // YubiHSM returns ASN.1 PrintableString "edwards25519".
 // Standard PKCS#11 v3.0 returns OID 1.3.101.112.
@@ -213,6 +274,9 @@ func (s *PKCS11Signer) Public() crypto.PublicKey {
 func (s *PKCS11Signer) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
 	if s.isEdDSA {
 		return s.signEdDSA(digest)
+	}
+	if _, ok := s.pubKey.(*rsa.PublicKey); ok {
+		return s.signRSA(digest, opts)
 	}
 	return s.signECDSA(digest)
 }
@@ -259,6 +323,34 @@ func (s *PKCS11Signer) signECDSA(digest []byte) ([]byte, error) {
 		return nil, fmt.Errorf("marshal ECDSA signature: %w", err)
 	}
 	return derSig, nil
+}
+
+func (s *PKCS11Signer) signRSA(digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	mechanism := []*pkcs11.Mechanism{pkcs11.NewMechanism(pkcs11.CKM_RSA_PKCS, nil)}
+
+	// PKCS#1 v1.5: prepend DigestInfo ASN.1 structure
+	hash := opts.HashFunc()
+	var prefix []byte
+	switch hash {
+	case crypto.SHA256:
+		prefix = []byte{0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20}
+	case crypto.SHA512:
+		prefix = []byte{0x30, 0x51, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03, 0x05, 0x00, 0x04, 0x40}
+	case crypto.SHA1:
+		prefix = []byte{0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14}
+	default:
+		return nil, fmt.Errorf("unsupported hash for RSA signing: %v", hash)
+	}
+	data := append(prefix, digest...)
+
+	if err := s.ctx.SignInit(s.session, mechanism, s.privHandle); err != nil {
+		return nil, fmt.Errorf("RSA sign init: %w", err)
+	}
+	sig, err := s.ctx.Sign(s.session, data)
+	if err != nil {
+		return nil, fmt.Errorf("RSA sign: %w", err)
+	}
+	return sig, nil
 }
 
 func (s *PKCS11Signer) KeyType() string {
@@ -314,21 +406,9 @@ func GenerateKeyOnHSM(cfg PKCS11Config, label string, keyType string) (*Generate
 		return nil, fmt.Errorf("getting slots: %w", err)
 	}
 
-	var slotID uint
-	found := false
-	for _, s := range slots {
-		info, err := ctx.GetTokenInfo(s)
-		if err != nil {
-			continue
-		}
-		if strings.TrimRight(info.Label, " ") == cfg.TokenLabel {
-			slotID = s
-			found = true
-			break
-		}
-	}
-	if !found {
-		return nil, fmt.Errorf("token with label %q not found", cfg.TokenLabel)
+	slotID, err := findToken(ctx, slots, cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	session, err := ctx.OpenSession(slotID, pkcs11.CKF_SERIAL_SESSION|pkcs11.CKF_RW_SESSION)
@@ -407,6 +487,25 @@ func GenerateKeyOnHSM(cfg PKCS11Config, label string, keyType string) (*Generate
 			pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, true),
 			pkcs11.NewAttribute(pkcs11.CKA_LABEL, label),
 		}
+	case "rsa-2048", "rsa-4096":
+		bits := 2048
+		if keyType == "rsa-4096" {
+			bits = 4096
+		}
+		mechanism = []*pkcs11.Mechanism{pkcs11.NewMechanism(pkcs11.CKM_RSA_PKCS_KEY_PAIR_GEN, nil)}
+		pubAttrs = []*pkcs11.Attribute{
+			pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
+			pkcs11.NewAttribute(pkcs11.CKA_VERIFY, true),
+			pkcs11.NewAttribute(pkcs11.CKA_LABEL, label),
+			pkcs11.NewAttribute(pkcs11.CKA_MODULUS_BITS, bits),
+			pkcs11.NewAttribute(pkcs11.CKA_PUBLIC_EXPONENT, []byte{1, 0, 1}), // 65537
+		}
+		privAttrs = []*pkcs11.Attribute{
+			pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
+			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
+			pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, true),
+			pkcs11.NewAttribute(pkcs11.CKA_LABEL, label),
+		}
 	default:
 		return nil, fmt.Errorf("unsupported key type for HSM generation: %s", keyType)
 	}
@@ -417,10 +516,18 @@ func GenerateKeyOnHSM(cfg PKCS11Config, label string, keyType string) (*Generate
 	}
 
 	// Read back the public key
-	readAttrs, err := ctx.GetAttributeValue(session, pubHandle, []*pkcs11.Attribute{
-		pkcs11.NewAttribute(pkcs11.CKA_EC_PARAMS, nil),
-		pkcs11.NewAttribute(pkcs11.CKA_EC_POINT, nil),
-	})
+	var readAttrs []*pkcs11.Attribute
+	if keyType == "rsa-2048" || keyType == "rsa-4096" {
+		readAttrs, err = ctx.GetAttributeValue(session, pubHandle, []*pkcs11.Attribute{
+			pkcs11.NewAttribute(pkcs11.CKA_MODULUS, nil),
+			pkcs11.NewAttribute(pkcs11.CKA_PUBLIC_EXPONENT, nil),
+		})
+	} else {
+		readAttrs, err = ctx.GetAttributeValue(session, pubHandle, []*pkcs11.Attribute{
+			pkcs11.NewAttribute(pkcs11.CKA_EC_PARAMS, nil),
+			pkcs11.NewAttribute(pkcs11.CKA_EC_POINT, nil),
+		})
+	}
 	if err != nil {
 		return nil, fmt.Errorf("reading public key from HSM: %w", err)
 	}
@@ -431,7 +538,7 @@ func GenerateKeyOnHSM(cfg PKCS11Config, label string, keyType string) (*Generate
 		return nil, fmt.Errorf("converting HSM public key to SSH format: %w", err)
 	}
 
-	uri := fmt.Sprintf("pkcs11:token=%s;object=%s;type=private", cfg.TokenLabel, label)
+	uri := BuildPKCS11URI(cfg, label)
 
 	return &GeneratedHSMKey{
 		PKCS11URI:    uri,
@@ -441,6 +548,30 @@ func GenerateKeyOnHSM(cfg PKCS11Config, label string, keyType string) (*Generate
 }
 
 func hsmPubKeyToSSH(attrs []*pkcs11.Attribute, keyType string) (string, error) {
+	// RSA keys
+	if keyType == "rsa-2048" || keyType == "rsa-4096" {
+		var modulus, exponent []byte
+		for _, a := range attrs {
+			switch a.Type {
+			case pkcs11.CKA_MODULUS:
+				modulus = a.Value
+			case pkcs11.CKA_PUBLIC_EXPONENT:
+				exponent = a.Value
+			}
+		}
+		if len(modulus) == 0 || len(exponent) == 0 {
+			return "", fmt.Errorf("RSA key missing modulus or exponent")
+		}
+		n := new(big.Int).SetBytes(modulus)
+		e := new(big.Int).SetBytes(exponent)
+		rsaPub := &rsa.PublicKey{N: n, E: int(e.Int64())}
+		sshPub, err := ssh.NewPublicKey(rsaPub)
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub))), nil
+	}
+
 	var ecParams, ecPoint []byte
 	for _, a := range attrs {
 		switch a.Type {

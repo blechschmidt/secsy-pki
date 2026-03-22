@@ -123,7 +123,7 @@ function showPage(name) {
     if (name === 'sign') { loadCASelect('signCA'); loadCASelect('signx509CA'); }
     if (name === 'groups') loadGroups();
     if (name === 'permissions') { loadCASelect('permCA').then(loadPermissions); }
-    if (name === 'restrictions') { loadCASelect('rsCA').then(loadRestrictionSets); }
+    if (name === 'restrictions') { loadRestrictionsMatrix(); }
     if (name === 'audit') { loadCASelect('auditCA').then(loadAuditLog); }
     if (name === 'hsm') { loadHSMPage(); }
 }
@@ -380,7 +380,7 @@ document.getElementById('logoutBtn').addEventListener('click', e => {
 // CAs
 async function loadCAs() {
     try {
-        const cas = await API.get('/api/cas');
+        const cas = await API.get('/api/keys');
         const tbody = document.getElementById('casTableBody');
         tbody.innerHTML = cas.map(ca => `
             <tr>
@@ -390,7 +390,7 @@ async function loadCAs() {
                 <td><span class="badge bg-secondary">${esc(ca.key_type)}</span></td>
                 <td>${truncated(ca.pkcs11_uri, 40)}</td>
                 <td class="text-nowrap">
-                    ${ca.public_key ? `<button class="btn btn-sm btn-outline-info me-1" title="Copy public key" data-copy="${esc(ca.public_key)}" data-copy-msg="Public key copied"><i class="bi bi-clipboard"></i></button>` : ''}
+                    ${ca.public_key ? `<div class="btn-group me-1"><button class="btn btn-sm btn-outline-info dropdown-toggle" data-bs-toggle="dropdown" data-bs-display="static" title="Copy public key"><i class="bi bi-clipboard"></i></button><ul class="dropdown-menu dropdown-menu-end"><li><a class="dropdown-item" href="#" onclick="copyPubKey('${ca.id}','pem');return false"><i class="bi bi-file-earmark-lock me-1"></i>PEM format</a></li><li><a class="dropdown-item" href="#" onclick="copyPubKey('${ca.id}','ssh');return false"><i class="bi bi-terminal me-1"></i>OpenSSH format</a></li></ul></div>` : ''}
                     <button class="btn btn-sm btn-outline-danger" onclick="deleteCA('${ca.id}')"><i class="bi bi-trash"></i></button>
                 </td>
             </tr>
@@ -408,7 +408,7 @@ document.getElementById('addCABtn').addEventListener('click', async () => {
 document.getElementById('saveCABtn').addEventListener('click', async () => {
     try {
         const parentVal = document.getElementById('caParent').value;
-        await API.post('/api/cas', {
+        await API.post('/api/keys', {
             label: document.getElementById('caLabel').value,
             parent_id: parentVal || undefined,
             pkcs11_uri: document.getElementById('caPKCS11URI').value,
@@ -426,7 +426,7 @@ document.getElementById('saveCABtn').addEventListener('click', async () => {
 async function deleteCA(id) {
     if (!await modalConfirm('Delete CA', 'Delete this CA? All associated permissions will be removed.')) return;
     try {
-        await API.del(`/api/cas/${id}`);
+        await API.del(`/api/keys/${id}`);
         showToast('Success', 'CA deleted');
         loadCAs();
     } catch (err) {
@@ -434,9 +434,23 @@ async function deleteCA(id) {
     }
 }
 
+async function copyPubKey(id, format) {
+    try {
+        await tokenManager.refreshIfNeeded();
+        const headers = {};
+        if (API.authHeader) headers['Authorization'] = API.authHeader;
+        const resp = await fetch(`/api/keys/${id}/public-key?format=${format}`, { headers });
+        if (!resp.ok) throw new Error('Failed to fetch public key');
+        const text = await resp.text();
+        copyToClipboard(text.trim(), `Public key copied (${format === 'pem' ? 'PEM' : 'OpenSSH'})`);
+    } catch (err) {
+        showToast('Error', err.message, true);
+    }
+}
+
 async function loadCASelect(selectId) {
     try {
-        const cas = await API.get('/api/cas');
+        const cas = await API.get('/api/keys');
         const sel = document.getElementById(selectId);
         const firstOpt = sel.querySelector('option');
         sel.innerHTML = '';
@@ -459,7 +473,7 @@ document.getElementById('signCA').addEventListener('change', async () => {
     applySignRestrictions(null);
     if (!caId) return;
     try {
-        activeRestrictions = await API.get(`/api/cas/${caId}/my-restrictions`);
+        activeRestrictions = await API.get(`/api/keys/${caId}/my-restrictions`);
         applySignRestrictions(activeRestrictions);
     } catch (e) { /* ignore */ }
 });
@@ -558,7 +572,7 @@ document.getElementById('signForm').addEventListener('submit', async e => {
         const critStr = document.getElementById('signCriticalOpts').value.trim();
         if (critStr) critOpts = JSON.parse(critStr);
 
-        const result = await API.post(`/api/cas/${document.getElementById('signCA').value}/sign`, {
+        const result = await API.post(`/api/keys/${document.getElementById('signCA').value}/sign`, {
             public_key: document.getElementById('signPubKey').value,
             cert_type: document.getElementById('signCertType').value,
             key_id: document.getElementById('signKeyID').value || undefined,
@@ -622,7 +636,7 @@ async function parseAndDisplayCSR() {
 document.getElementById('signx509Form').addEventListener('submit', async e => {
     e.preventDefault();
     try {
-        const result = await API.post(`/api/cas/${document.getElementById('signx509CA').value}/sign-x509`, {
+        const result = await API.post(`/api/keys/${document.getElementById('signx509CA').value}/sign-x509`, {
             csr: document.getElementById('signx509CSR').value,
             valid_before: document.getElementById('signx509ValidBefore').value || '+365d',
         });
@@ -730,8 +744,8 @@ async function loadPermissions() {
     if (!caId) return;
     try {
         const [perms, rsList] = await Promise.all([
-            API.get(`/api/cas/${caId}/permissions`),
-            API.get(`/api/cas/${caId}/restriction-sets`),
+            API.get(`/api/keys/${caId}/permissions`),
+            API.get(`/api/keys/${caId}/restriction-sets`),
         ]);
         const rsMap = {};
         rsList.forEach(rs => rsMap[rs.id] = rs.name);
@@ -742,7 +756,8 @@ async function loadPermissions() {
                 <td><span class="badge ${p.entity_type === 'user' ? 'bg-info' : 'bg-warning'}">${esc(p.entity_type)}</span></td>
                 <td>${truncated(p.entity_id, 20)}</td>
                 <td><span class="badge bg-primary">${esc(p.permission)}</span></td>
-                <td>${p.restriction_set_id ? `<span class="badge bg-secondary">${esc(rsMap[p.restriction_set_id] || p.restriction_set_id)}</span>` : '<span class="text-muted">default</span>'}</td>
+                <td>${p.ssh_restriction_set_id ? `<span class="badge bg-secondary">${esc(rsMap[p.ssh_restriction_set_id] || p.ssh_restriction_set_id)}</span>` : '<span class="text-muted">default</span>'}</td>
+                <td>${p.x509_restriction_set_id ? `<span class="badge bg-secondary">${esc(rsMap[p.x509_restriction_set_id] || p.x509_restriction_set_id)}</span>` : '<span class="text-muted">default</span>'}</td>
                 <td>
                     <button class="btn btn-sm btn-outline-danger" onclick="revokePermission('${caId}', '${p.entity_type}', '${p.entity_id}', '${p.permission}')"><i class="bi bi-x-lg"></i></button>
                 </td>
@@ -756,16 +771,21 @@ async function loadPermissions() {
 document.getElementById('grantPermBtn').addEventListener('click', async () => {
     const caId = document.getElementById('permCA').value;
     if (!caId) { showToast('Error', 'Select a CA first', true); return; }
-    // Load restriction sets for the select
     try {
-        const rsList = await API.get(`/api/cas/${caId}/restriction-sets`);
-        const sel = document.getElementById('permRestrictionSet');
-        sel.innerHTML = '<option value="">None (use CA default)</option>';
+        const rsList = await API.get(`/api/keys/${caId}/restriction-sets`);
+        const sshSel = document.getElementById('permSSHRestrictionSet');
+        const x509Sel = document.getElementById('permX509RestrictionSet');
+        sshSel.innerHTML = '<option value="">None (use key default)</option>';
+        x509Sel.innerHTML = '<option value="">None (use key default)</option>';
         rsList.forEach(rs => {
             const opt = document.createElement('option');
             opt.value = rs.id;
-            opt.textContent = rs.name;
-            sel.appendChild(opt);
+            opt.textContent = rs.name + (rs.ca_id ? '' : ' (global)');
+            if (rs.type === 'x509') {
+                x509Sel.appendChild(opt);
+            } else {
+                sshSel.appendChild(opt);
+            }
         });
     } catch (e) {}
     new bootstrap.Modal(document.getElementById('grantPermModal')).show();
@@ -775,12 +795,14 @@ document.getElementById('savePermBtn').addEventListener('click', async () => {
     const caId = document.getElementById('permCA').value;
     if (!caId) { showToast('Error', 'Select a CA first', true); return; }
     try {
-        const rsVal = document.getElementById('permRestrictionSet').value;
-        await API.post(`/api/cas/${caId}/permissions`, {
+        const sshRS = document.getElementById('permSSHRestrictionSet').value;
+        const x509RS = document.getElementById('permX509RestrictionSet').value;
+        await API.post(`/api/keys/${caId}/permissions`, {
             entity_type: document.getElementById('permEntityType').value,
             entity_id: document.getElementById('permEntityID').value,
             permission: document.getElementById('permPermission').value,
-            restriction_set_id: rsVal || undefined,
+            ssh_restriction_set_id: sshRS || undefined,
+            x509_restriction_set_id: x509RS || undefined,
         });
         bootstrap.Modal.getInstance(document.getElementById('grantPermModal')).hide();
         showToast('Success', 'Permission granted');
@@ -793,7 +815,7 @@ document.getElementById('savePermBtn').addEventListener('click', async () => {
 async function revokePermission(caId, entityType, entityId, permission) {
     if (!await modalConfirm('Revoke Permission', 'Revoke this permission?')) return;
     try {
-        await API.del(`/api/cas/${caId}/permissions`, {
+        await API.del(`/api/keys/${caId}/permissions`, {
             entity_type: entityType,
             entity_id: entityId,
             permission: permission,
@@ -1134,77 +1156,125 @@ document.getElementById('downloadHSMAuditBtn').addEventListener('click', () => {
     URL.revokeObjectURL(a.href);
 });
 
-// Restriction Sets
-document.getElementById('rsCA').addEventListener('change', loadRestrictionSets);
+// Restriction Sets — matrix view
 
-async function loadRestrictionSets() {
-    const caId = document.getElementById('rsCA').value;
-    if (!caId) return;
+var rsAllSets = {}; // caId -> sets array, cached for edit lookups
+
+async function loadRestrictionsMatrix() {
+    const container = document.getElementById('rsMatrixContainer');
     try {
-        const [sets, ca] = await Promise.all([
-            API.get(`/api/cas/${caId}/restriction-sets`),
-            API.get(`/api/cas/${caId}`),
+        const [cas, allSets] = await Promise.all([
+            API.get('/api/keys'),
+            API.get('/api/restriction-sets'),
         ]);
-        // Populate default select
-        const defSel = document.getElementById('rsDefault');
-        defSel.innerHTML = '<option value="">None</option>';
-        sets.forEach(rs => {
-            const opt = document.createElement('option');
-            opt.value = rs.id;
-            opt.textContent = rs.name;
-            if (ca.default_restriction_set_id === rs.id) opt.selected = true;
-            defSel.appendChild(opt);
-        });
 
-        // Render cards
-        const container = document.getElementById('rsListContainer');
-        if (sets.length === 0) {
-            container.innerHTML = '<p class="text-muted">No restriction sets configured for this CA.</p>';
-            return;
+        // Build CA label map and cache sets
+        const caMap = {};
+        for (const ca of cas) caMap[ca.id] = ca;
+        for (const rs of allSets) {
+            rs._caLabel = rs.ca_id && caMap[rs.ca_id] ? caMap[rs.ca_id].label : '';
         }
-        container.innerHTML = sets.map(rs => {
-            const typeBadge = rs.type === 'x509'
-                ? '<span class="badge bg-info ms-2">X.509</span>'
-                : '<span class="badge bg-primary ms-2">SSH</span>';
-            const any = '<span class="text-muted">any</span>';
-            const unlimited = '<span class="text-muted">unlimited</span>';
-            const listOrAny = (arr) => arr && arr.length ? arr.map(v => `<code>${esc(v)}</code>`).join(', ') : any;
-            let rows = `<tr><th>Max Validity</th><td>${rs.max_validity_secs ? formatDuration(rs.max_validity_secs) : unlimited}</td></tr>`;
-            if (rs.type === 'x509') {
-                rows += `<tr><th>Allowed Key Usages</th><td>${listOrAny(rs.allowed_key_usages)}</td></tr>`;
-                rows += `<tr><th>Allowed Ext Key Usages</th><td>${listOrAny(rs.allowed_ext_key_usages)}</td></tr>`;
-                rows += `<tr><th>Allowed SAN Types</th><td>${listOrAny(rs.allowed_san_types)}</td></tr>`;
-                rows += `<tr><th>Allowed SAN Patterns</th><td>${listOrAny(rs.allowed_san_patterns)}</td></tr>`;
-                rows += `<tr><th>Allowed Subject Fields</th><td>${listOrAny(rs.allowed_subject_fields)}</td></tr>`;
-                rows += `<tr><th>Max Path Length</th><td>${rs.max_path_length != null ? rs.max_path_length : unlimited}</td></tr>`;
-                rows += `<tr><th>Deny CA</th><td>${rs.deny_ca ? '<span class="badge bg-danger">Yes</span>' : 'No'}</td></tr>`;
-            } else {
-                rows += `<tr><th>Allowed Principals</th><td>${listOrAny(rs.allowed_principals)}</td></tr>`;
-                rows += `<tr><th>Allowed Cert Types</th><td>${listOrAny(rs.allowed_cert_types)}</td></tr>`;
-                rows += `<tr><th>Force Key ID (email)</th><td>${rs.force_key_id_email ? '<span class="badge bg-success">Yes</span>' : 'No'}</td></tr>`;
-                rows += `<tr><th>Require Reason</th><td>${rs.require_reason ? '<span class="badge bg-success">Yes</span>' : 'No'}</td></tr>`;
-                rows += `<tr><th>Deny Extensions</th><td>${rs.deny_extensions ? '<span class="badge bg-danger">Denied</span>' : 'No'}</td></tr>`;
-                rows += `<tr><th>Allowed Extensions</th><td>${rs.deny_extensions ? '<span class="text-muted">n/a</span>' : listOrAny(rs.allowed_extensions)}</td></tr>`;
-                rows += `<tr><th>Deny Critical Options</th><td>${rs.deny_critical_options ? '<span class="badge bg-danger">Denied</span>' : 'No'}</td></tr>`;
-                rows += `<tr><th>Max Valid-After Offset</th><td>${rs.max_valid_after_offset ? formatDuration(rs.max_valid_after_offset) : unlimited}</td></tr>`;
+
+        const allSSH = allSets.filter(rs => rs.type !== 'x509');
+        const allX509 = allSets.filter(rs => rs.type === 'x509');
+
+        // --- Section 1: Defaults per CA ---
+        let defaultsHTML = '';
+        if (cas.length) {
+            const sshOpts = allSSH.map(rs =>
+                `<option value="${rs.id}">\${sel_${rs.id}} ${esc(rs.name)}${rs._caLabel ? ' (' + esc(rs._caLabel) + ')' : ''}</option>`
+            ).join('');
+            const x509Opts = allX509.map(rs =>
+                `<option value="${rs.id}">\${sel_${rs.id}} ${esc(rs.name)}${rs._caLabel ? ' (' + esc(rs._caLabel) + ')' : ''}</option>`
+            ).join('');
+
+            defaultsHTML = `
+            <h5 class="mb-3">Defaults per Key</h5>
+            <div class="table-responsive mb-4">
+                <table class="table table-striped table-bordered align-middle mb-0">
+                    <thead><tr><th>Key</th><th>Default SSH Restriction Set</th><th>Default X.509 Restriction Set</th></tr></thead>
+                    <tbody>`;
+            for (const ca of cas) {
+                const sshOptsFinal = allSSH.map(rs =>
+                    `<option value="${rs.id}" ${ca.default_ssh_restriction_set_id === rs.id ? 'selected' : ''}>${esc(rs.name)}${rs._caLabel ? ' (' + esc(rs._caLabel) + ')' : ''}</option>`
+                ).join('');
+                const x509OptsFinal = allX509.map(rs =>
+                    `<option value="${rs.id}" ${ca.default_x509_restriction_set_id === rs.id ? 'selected' : ''}>${esc(rs.name)}${rs._caLabel ? ' (' + esc(rs._caLabel) + ')' : ''}</option>`
+                ).join('');
+                defaultsHTML += `<tr>
+                    <td><strong>${esc(ca.label)}</strong></td>
+                    <td><select class="form-select form-select-sm" onchange="setDefaultRS('${ca.id}','ssh',this.value)">${sshOptsFinal}</select></td>
+                    <td><select class="form-select form-select-sm" onchange="setDefaultRS('${ca.id}','x509',this.value)">${x509OptsFinal}</select></td>
+                </tr>`;
             }
-            return `
-            <div class="card mb-3">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <span><strong>${esc(rs.name)}</strong>${typeBadge}</span>
-                    <div>
-                        <button class="btn btn-sm btn-outline-primary me-1" onclick="editRestrictionSet('${rs.id}')"><i class="bi bi-pencil"></i></button>
-                        <button class="btn btn-sm btn-outline-danger" onclick="deleteRestrictionSet('${rs.id}')"><i class="bi bi-trash"></i></button>
-                    </div>
-                </div>
-                <div class="card-body">
-                    <table class="table table-sm mb-0">${rows}</table>
-                </div>
-            </div>`;
-        }).join('');
+            defaultsHTML += '</tbody></table></div>';
+        }
+
+        // --- Section 2: Restriction Sets with SSH/X.509 tabs ---
+        let setsHTML = `
+        <h5 class="mb-3">Restriction Sets</h5>
+        <ul class="nav nav-tabs mb-3" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#rsGlobalSSH" type="button" role="tab">SSH</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#rsGlobalX509" type="button" role="tab">X.509</button>
+            </li>
+        </ul>
+        <div class="tab-content">
+            <div class="tab-pane fade show active" id="rsGlobalSSH" role="tabpanel">
+                <div class="mb-3"><button class="btn btn-sm btn-success" onclick="addRestrictionSet('','ssh')"><i class="bi bi-plus-lg"></i> New SSH Restriction Set</button></div>
+                ${allSSH.length ? allSSH.map(renderRSCard).join('') : '<p class="text-muted">No SSH restriction sets.</p>'}
+            </div>
+            <div class="tab-pane fade" id="rsGlobalX509" role="tabpanel">
+                <div class="mb-3"><button class="btn btn-sm btn-success" onclick="addRestrictionSet('','x509')"><i class="bi bi-plus-lg"></i> New X.509 Restriction Set</button></div>
+                ${allX509.length ? allX509.map(renderRSCard).join('') : '<p class="text-muted">No X.509 restriction sets.</p>'}
+            </div>
+        </div>`;
+
+        container.innerHTML = defaultsHTML + setsHTML;
     } catch (err) {
         showToast('Error', err.message, true);
     }
+}
+
+function renderRSCard(rs) {
+    const any = '<span class="text-muted">any</span>';
+    const unlimited = '<span class="text-muted">unlimited</span>';
+    const listOrAny = (arr) => arr && arr.length ? arr.map(v => `<code>${esc(v)}</code>`).join(', ') : any;
+    let rows = `<tr><th>Max Validity</th><td>${rs.max_validity_secs ? formatDuration(rs.max_validity_secs) : unlimited}</td></tr>`;
+    if (rs.type === 'x509') {
+        rows += `<tr><th>Allowed Key Usages</th><td>${listOrAny(rs.allowed_key_usages)}</td></tr>`;
+        rows += `<tr><th>Allowed Ext Key Usages</th><td>${listOrAny(rs.allowed_ext_key_usages)}</td></tr>`;
+        rows += `<tr><th>Allowed SAN Types</th><td>${listOrAny(rs.allowed_san_types)}</td></tr>`;
+        rows += `<tr><th>Allowed SAN Patterns</th><td>${listOrAny(rs.allowed_san_patterns)}</td></tr>`;
+        rows += `<tr><th>Allowed Subject Fields</th><td>${listOrAny(rs.allowed_subject_fields)}</td></tr>`;
+        rows += `<tr><th>Max Path Length</th><td>${rs.max_path_length != null ? rs.max_path_length : unlimited}</td></tr>`;
+        rows += `<tr><th>Deny CA</th><td>${rs.deny_ca ? '<span class="badge bg-danger">Yes</span>' : 'No'}</td></tr>`;
+    } else {
+        rows += `<tr><th>Allowed Principals</th><td>${listOrAny(rs.allowed_principals)}</td></tr>`;
+        rows += `<tr><th>Allowed Cert Types</th><td>${listOrAny(rs.allowed_cert_types)}</td></tr>`;
+        rows += `<tr><th>Force Key ID (email)</th><td>${rs.force_key_id_email ? '<span class="badge bg-success">Yes</span>' : 'No'}</td></tr>`;
+        rows += `<tr><th>Require Reason</th><td>${rs.require_reason ? '<span class="badge bg-success">Yes</span>' : 'No'}</td></tr>`;
+        rows += `<tr><th>Deny Extensions</th><td>${rs.deny_extensions ? '<span class="badge bg-danger">Denied</span>' : 'No'}</td></tr>`;
+        rows += `<tr><th>Allowed Extensions</th><td>${rs.deny_extensions ? '<span class="text-muted">n/a</span>' : listOrAny(rs.allowed_extensions)}</td></tr>`;
+        rows += `<tr><th>Deny Critical Options</th><td>${rs.deny_critical_options ? '<span class="badge bg-danger">Denied</span>' : 'No'}</td></tr>`;
+        rows += `<tr><th>Max Valid-After Offset</th><td>${rs.max_valid_after_offset ? formatDuration(rs.max_valid_after_offset) : unlimited}</td></tr>`;
+    }
+    const caLabel = rs._caLabel ? `<span class="badge bg-secondary ms-2">${esc(rs._caLabel)}</span>` : '';
+    return `
+    <div class="card mb-2">
+        <div class="card-header py-2 d-flex justify-content-between align-items-center">
+            <span><strong class="small">${esc(rs.name)}</strong>${caLabel}</span>
+            <div>
+                <button class="btn btn-sm btn-outline-primary me-1" onclick="editRestrictionSet('${rs.ca_id}','${rs.id}')"><i class="bi bi-pencil"></i></button>
+                <button class="btn btn-sm btn-outline-danger" onclick="deleteRestrictionSet('${rs.id}')"><i class="bi bi-trash"></i></button>
+            </div>
+        </div>
+        <div class="card-body py-2">
+            <table class="table table-sm mb-0">${rows}</table>
+        </div>
+    </div>`;
 }
 
 function formatDuration(secs) {
@@ -1214,32 +1284,27 @@ function formatDuration(secs) {
     return secs + 's';
 }
 
-document.getElementById('saveDefaultRSBtn').addEventListener('click', async () => {
-    const caId = document.getElementById('rsCA').value;
-    if (!caId) { showToast('Error', 'Select a CA first', true); return; }
-    const rsId = document.getElementById('rsDefault').value;
+async function setDefaultRS(caId, rsType, rsId) {
     try {
-        await API.request('PUT', `/api/cas/${caId}/default-restriction-set`, {
+        await API.request('PUT', `/api/keys/${caId}/default-restriction-set`, {
             restriction_set_id: rsId || null,
+            type: rsType,
         });
         showToast('Success', 'Default restriction set updated');
     } catch (err) {
         showToast('Error', err.message, true);
     }
-});
+}
 
-document.getElementById('addRSBtn').addEventListener('click', () => {
-    const caId = document.getElementById('rsCA').value;
-    if (!caId) { showToast('Error', 'Select a CA first', true); return; }
-    showRSEditor(null);
-});
+function addRestrictionSet(caId, type) {
+    showRSEditor(null, type, caId);
+}
 
-async function editRestrictionSet(id) {
+async function editRestrictionSet(caId, id) {
     try {
-        const caId = document.getElementById('rsCA').value;
-        const sets = await API.get(`/api/cas/${caId}/restriction-sets`);
+        const sets = rsAllSets[caId] || await API.get(`/api/keys/${caId}/restriction-sets`);
         const rs = sets.find(s => s.id === id);
-        if (rs) showRSEditor(rs);
+        if (rs) showRSEditor(rs, null, caId);
     } catch (err) {
         showToast('Error', err.message, true);
     }
@@ -1250,23 +1315,17 @@ async function deleteRestrictionSet(id) {
     try {
         await API.del(`/api/restriction-sets/${id}`);
         showToast('Success', 'Restriction set deleted');
-        loadRestrictionSets();
+        loadRestrictionsMatrix();
     } catch (err) {
         showToast('Error', err.message, true);
     }
 }
 
-function showRSEditor(existing) {
+function showRSEditor(existing, defaultType, caId) {
     const isEdit = !!existing;
-    const rsType = existing?.type || 'ssh';
+    const rsType = existing?.type || defaultType || 'ssh';
     const html = `
-        <div class="mb-3">
-            <label class="form-label">Type</label>
-            <select class="form-select" id="rsEdType" ${isEdit ? 'disabled' : ''}>
-                <option value="ssh" ${rsType === 'ssh' ? 'selected' : ''}>SSH</option>
-                <option value="x509" ${rsType === 'x509' ? 'selected' : ''}>X.509</option>
-            </select>
-        </div>
+        <input type="hidden" id="rsEdType" value="${rsType}">
         <div class="mb-3"><label class="form-label">Name</label><input type="text" class="form-control" id="rsEdName" value="${esc(existing?.name || '')}"></div>
         <div class="mb-3"><label class="form-label">Max Validity (seconds, e.g. 86400 for 1 day)</label><input type="number" class="form-control" id="rsEdMaxValidity" value="${existing?.max_validity_secs || ''}"></div>
         <div id="rsEdSSHFields" style="display:${rsType === 'ssh' ? '' : 'none'}">
@@ -1290,26 +1349,18 @@ function showRSEditor(existing) {
         </div>
     `;
 
-    document.getElementById('inputModalTitle').textContent = isEdit ? 'Edit Restriction Set' : 'Create Restriction Set';
+    document.getElementById('inputModalTitle').textContent = (isEdit ? 'Edit ' : 'New ') + (rsType === 'x509' ? 'X.509' : 'SSH') + ' Restriction Set';
     document.getElementById('inputModalLabel').textContent = '';
     document.getElementById('inputModalValue').style.display = 'none';
-    // Repurpose the modal body
     const body = document.getElementById('inputModal').querySelector('.modal-body');
     body.innerHTML = html;
-
-    // Toggle fields on type change
-    document.getElementById('rsEdType').addEventListener('change', () => {
-        const t = document.getElementById('rsEdType').value;
-        document.getElementById('rsEdSSHFields').style.display = t === 'ssh' ? '' : 'none';
-        document.getElementById('rsEdX509Fields').style.display = t === 'x509' ? '' : 'none';
-    });
 
     const modal = new bootstrap.Modal(document.getElementById('inputModal'));
 
     const okBtn = document.getElementById('inputModalOk');
     const handler = async () => {
         okBtn.removeEventListener('click', handler);
-        const caId = document.getElementById('rsCA').value;
+        const edCaId = '';
         const selectedType = document.getElementById('rsEdType').value;
         const data = {
             name: document.getElementById('rsEdName').value,
@@ -1338,16 +1389,17 @@ function showRSEditor(existing) {
         try {
             if (isEdit) {
                 await API.request('PUT', `/api/restriction-sets/${existing.id}`, data);
+            } else if (edCaId) {
+                await API.post(`/api/keys/${edCaId}/restriction-sets`, data);
             } else {
-                await API.post(`/api/cas/${caId}/restriction-sets`, data);
+                await API.post('/api/restriction-sets', data);
             }
             modal.hide();
             showToast('Success', isEdit ? 'Restriction set updated' : 'Restriction set created');
-            loadRestrictionSets();
+            loadRestrictionsMatrix();
         } catch (err) {
             showToast('Error', err.message, true);
         }
-        // Restore modal
         restoreInputModal();
     };
     okBtn.addEventListener('click', handler);

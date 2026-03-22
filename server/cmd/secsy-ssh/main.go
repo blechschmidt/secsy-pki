@@ -351,7 +351,7 @@ func apiPost(cfg *Config, token, path string, payload interface{}) ([]byte, erro
 }
 
 func findCA(cfg *Config, token, caName string) (string, error) {
-	body, err := apiGet(cfg, token, "/api/cas")
+	body, err := apiGet(cfg, token, "/api/keys")
 	if err != nil {
 		return "", err
 	}
@@ -380,7 +380,7 @@ type restrictionSet struct {
 }
 
 func getRestrictions(cfg *Config, token, caID string) (*restrictionSet, error) {
-	body, err := apiGet(cfg, token, "/api/cas/"+caID+"/my-restrictions")
+	body, err := apiGet(cfg, token, "/api/keys/"+caID+"/my-restrictions")
 	if err != nil {
 		return nil, err
 	}
@@ -408,7 +408,7 @@ func signKey(cfg *Config, token, caID, pubKey, principal, reason string) (string
 	if reason != "" {
 		payload["reason"] = reason
 	}
-	body, err := apiPost(cfg, token, "/api/cas/"+caID+"/sign", payload)
+	body, err := apiPost(cfg, token, "/api/keys/"+caID+"/sign", payload)
 	if err != nil {
 		return "", err
 	}

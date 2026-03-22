@@ -163,7 +163,7 @@ func TestInvalidAuth(t *testing.T) {
 
 func TestCALifecycle(t *testing.T) {
 	// Create CA
-	resp := rootRequest(t, "POST", "/api/cas", map[string]interface{}{
+	resp := rootRequest(t, "POST", "/api/keys", map[string]interface{}{
 		"label":      "test-ca",
 		"pkcs11_uri": "pkcs11:token=secsy-pki-root;object=secsy-pki-root-ca-priv;type=private",
 		"key_type":   "ecdsa-sha2-nistp384",
@@ -178,7 +178,7 @@ func TestCALifecycle(t *testing.T) {
 	caID := ca["id"].(string)
 
 	// List CAs
-	resp = rootRequest(t, "GET", "/api/cas", nil)
+	resp = rootRequest(t, "GET", "/api/keys", nil)
 	var cas []map[string]interface{}
 	parseJSON(t, resp, &cas)
 	if len(cas) == 0 {
@@ -186,13 +186,13 @@ func TestCALifecycle(t *testing.T) {
 	}
 
 	// Get CA
-	resp = rootRequest(t, "GET", "/api/cas/"+caID, nil)
+	resp = rootRequest(t, "GET", "/api/keys/"+caID, nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("Expected 200, got %d", resp.StatusCode)
 	}
 
 	// Delete CA
-	resp = rootRequest(t, "DELETE", "/api/cas/"+caID, nil)
+	resp = rootRequest(t, "DELETE", "/api/keys/"+caID, nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("Expected 200, got %d", resp.StatusCode)
 	}
@@ -238,7 +238,7 @@ func TestGroupLifecycle(t *testing.T) {
 
 func TestPermissionMatrix(t *testing.T) {
 	// Create CA
-	resp := rootRequest(t, "POST", "/api/cas", map[string]interface{}{
+	resp := rootRequest(t, "POST", "/api/keys", map[string]interface{}{
 		"label":      "perm-test-ca",
 		"pkcs11_uri": "pkcs11:token=test;object=test;type=private",
 		"key_type":   "ed25519",
@@ -255,7 +255,7 @@ func TestPermissionMatrix(t *testing.T) {
 	groupID := group["id"].(string)
 
 	// Grant user permission
-	resp = rootRequest(t, "POST", "/api/cas/"+caID+"/permissions", map[string]interface{}{
+	resp = rootRequest(t, "POST", "/api/keys/"+caID+"/permissions", map[string]interface{}{
 		"entity_type": "user",
 		"entity_id":   "user-456",
 		"permission":  "SIGN_CERTIFICATE",
@@ -266,7 +266,7 @@ func TestPermissionMatrix(t *testing.T) {
 	}
 
 	// Grant group permission
-	resp = rootRequest(t, "POST", "/api/cas/"+caID+"/permissions", map[string]interface{}{
+	resp = rootRequest(t, "POST", "/api/keys/"+caID+"/permissions", map[string]interface{}{
 		"entity_type": "group",
 		"entity_id":   groupID,
 		"permission":  "MANAGE_PERMISSIONS",
@@ -276,7 +276,7 @@ func TestPermissionMatrix(t *testing.T) {
 	}
 
 	// Get permissions
-	resp = rootRequest(t, "GET", "/api/cas/"+caID+"/permissions", nil)
+	resp = rootRequest(t, "GET", "/api/keys/"+caID+"/permissions", nil)
 	var perms []map[string]interface{}
 	parseJSON(t, resp, &perms)
 	if len(perms) != 2 {
@@ -284,7 +284,7 @@ func TestPermissionMatrix(t *testing.T) {
 	}
 
 	// Revoke permission
-	resp = rootRequest(t, "DELETE", "/api/cas/"+caID+"/permissions", map[string]interface{}{
+	resp = rootRequest(t, "DELETE", "/api/keys/"+caID+"/permissions", map[string]interface{}{
 		"entity_type": "user",
 		"entity_id":   "user-456",
 		"permission":  "SIGN_CERTIFICATE",
@@ -294,7 +294,7 @@ func TestPermissionMatrix(t *testing.T) {
 	}
 
 	// Cleanup
-	rootRequest(t, "DELETE", "/api/cas/"+caID, nil)
+	rootRequest(t, "DELETE", "/api/keys/"+caID, nil)
 	rootRequest(t, "DELETE", "/api/groups/"+groupID, nil)
 }
 
@@ -316,7 +316,7 @@ func generateTestKey(t *testing.T) string {
 
 func TestSignCertificateFlow(t *testing.T) {
 	// Create CA
-	resp := rootRequest(t, "POST", "/api/cas", map[string]interface{}{
+	resp := rootRequest(t, "POST", "/api/keys", map[string]interface{}{
 		"label":      "sign-test-ca",
 		"pkcs11_uri": "pkcs11:token=secsy-pki-root;object=secsy-pki-root-ca-priv;type=private",
 		"key_type":   "ecdsa-sha2-nistp384",
@@ -325,13 +325,13 @@ func TestSignCertificateFlow(t *testing.T) {
 	var ca map[string]interface{}
 	parseJSON(t, resp, &ca)
 	caID := ca["id"].(string)
-	defer rootRequest(t, "DELETE", "/api/cas/"+caID, nil)
+	defer rootRequest(t, "DELETE", "/api/keys/"+caID, nil)
 
 	// Generate a key pair locally
 	pubKey := generateTestKey(t)
 
 	// Sign the public key
-	resp = rootRequest(t, "POST", "/api/cas/"+caID+"/sign", map[string]interface{}{
+	resp = rootRequest(t, "POST", "/api/keys/"+caID+"/sign", map[string]interface{}{
 		"public_key":   pubKey,
 		"cert_type":    "user",
 		"principals":   []string{"testuser"},
@@ -371,7 +371,7 @@ func TestOIDCPermissionDenied(t *testing.T) {
 	token := getKeycloakToken(t)
 
 	// Create CA as root
-	resp := rootRequest(t, "POST", "/api/cas", map[string]interface{}{
+	resp := rootRequest(t, "POST", "/api/keys", map[string]interface{}{
 		"label":      "oidc-perm-test",
 		"pkcs11_uri": "pkcs11:token=test;object=test;type=private",
 		"key_type":   "ed25519",
@@ -380,10 +380,10 @@ func TestOIDCPermissionDenied(t *testing.T) {
 	var ca map[string]interface{}
 	parseJSON(t, resp, &ca)
 	caID := ca["id"].(string)
-	defer rootRequest(t, "DELETE", "/api/cas/"+caID, nil)
+	defer rootRequest(t, "DELETE", "/api/keys/"+caID, nil)
 
 	// OIDC user should be denied signing without permission
-	resp = oidcRequest(t, token, "POST", "/api/cas/"+caID+"/sign", map[string]interface{}{
+	resp = oidcRequest(t, token, "POST", "/api/keys/"+caID+"/sign", map[string]interface{}{
 		"public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest test",
 	})
 	if resp.StatusCode != 403 {
@@ -402,7 +402,7 @@ func TestOIDCWithPermissionGrant(t *testing.T) {
 	userSub := user["sub"].(string)
 
 	// Create CA as root
-	resp = rootRequest(t, "POST", "/api/cas", map[string]interface{}{
+	resp = rootRequest(t, "POST", "/api/keys", map[string]interface{}{
 		"label":      "oidc-grant-test",
 		"pkcs11_uri": "pkcs11:token=secsy-pki-root;object=secsy-pki-root-ca-priv;type=private",
 		"key_type":   "ecdsa-sha2-nistp384",
@@ -411,10 +411,10 @@ func TestOIDCWithPermissionGrant(t *testing.T) {
 	var ca map[string]interface{}
 	parseJSON(t, resp, &ca)
 	caID := ca["id"].(string)
-	defer rootRequest(t, "DELETE", "/api/cas/"+caID, nil)
+	defer rootRequest(t, "DELETE", "/api/keys/"+caID, nil)
 
 	// Grant SIGN_CERTIFICATE to OIDC user
-	resp = rootRequest(t, "POST", "/api/cas/"+caID+"/permissions", map[string]interface{}{
+	resp = rootRequest(t, "POST", "/api/keys/"+caID+"/permissions", map[string]interface{}{
 		"entity_type": "user",
 		"entity_id":   userSub,
 		"permission":  "SIGN_CERTIFICATE",
@@ -428,7 +428,7 @@ func TestOIDCWithPermissionGrant(t *testing.T) {
 	pubKey := generateTestKey(t)
 
 	// Now OIDC user should be able to sign
-	resp = oidcRequest(t, token, "POST", "/api/cas/"+caID+"/sign", map[string]interface{}{
+	resp = oidcRequest(t, token, "POST", "/api/keys/"+caID+"/sign", map[string]interface{}{
 		"public_key":   pubKey,
 		"cert_type":    "user",
 		"principals":   []string{"testuser"},
@@ -445,7 +445,7 @@ func TestSSHCertVerifyWithOpenSSH(t *testing.T) {
 	// by running ssh-keygen -L against it
 
 	// Create CA
-	resp := rootRequest(t, "POST", "/api/cas", map[string]interface{}{
+	resp := rootRequest(t, "POST", "/api/keys", map[string]interface{}{
 		"label":      "openssh-test",
 		"pkcs11_uri": "pkcs11:token=secsy-pki-root;object=secsy-pki-root-ca-priv;type=private",
 		"key_type":   "ecdsa-sha2-nistp384",
@@ -454,13 +454,13 @@ func TestSSHCertVerifyWithOpenSSH(t *testing.T) {
 	var ca map[string]interface{}
 	parseJSON(t, resp, &ca)
 	caID := ca["id"].(string)
-	defer rootRequest(t, "DELETE", "/api/cas/"+caID, nil)
+	defer rootRequest(t, "DELETE", "/api/keys/"+caID, nil)
 
 	// Generate key
 	pubKey := generateTestKey(t)
 
 	// Sign
-	resp = rootRequest(t, "POST", "/api/cas/"+caID+"/sign", map[string]interface{}{
+	resp = rootRequest(t, "POST", "/api/keys/"+caID+"/sign", map[string]interface{}{
 		"public_key":   pubKey,
 		"cert_type":    "user",
 		"principals":   []string{"testuser"},

@@ -40,9 +40,11 @@ type RootUserConfig struct {
 }
 
 type PKCS11Config struct {
-	ModulePath string `yaml:"module_path"`
-	Pin        string `yaml:"pin"`
-	TokenLabel string `yaml:"token_label"`
+	ModulePath        string `yaml:"module_path"`
+	Pin               string `yaml:"pin"`
+	TokenLabel        string `yaml:"token_label"`
+	TokenSerial       string `yaml:"token_serial"`
+	TokenManufacturer string `yaml:"token_manufacturer"`
 }
 
 type YubiHSMConfig struct {

@@ -44,16 +44,17 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	}
 	protected := protect
 
-	mux.Handle("GET /api/cas", protected(http.HandlerFunc(a.ListCAs)))
-	mux.Handle("POST /api/cas", protected(http.HandlerFunc(a.CreateCA)))
-	mux.Handle("GET /api/cas/{id}", protected(http.HandlerFunc(a.GetCA)))
-	mux.Handle("DELETE /api/cas/{id}", protected(http.HandlerFunc(a.DeleteCA)))
-	mux.Handle("GET /api/cas/{id}/children", protected(http.HandlerFunc(a.GetCAChildren)))
+	mux.Handle("GET /api/keys", protected(http.HandlerFunc(a.ListCAs)))
+	mux.Handle("POST /api/keys", protected(http.HandlerFunc(a.CreateCA)))
+	mux.Handle("GET /api/keys/{id}", protected(http.HandlerFunc(a.GetCA)))
+	mux.Handle("DELETE /api/keys/{id}", protected(http.HandlerFunc(a.DeleteCA)))
+	mux.Handle("GET /api/keys/{id}/children", protected(http.HandlerFunc(a.GetCAChildren)))
+	mux.Handle("GET /api/keys/{id}/public-key", protected(http.HandlerFunc(a.GetPublicKey)))
 
-	mux.Handle("POST /api/cas/{id}/sign", protected(http.HandlerFunc(a.SignCertificate)))
-	mux.Handle("POST /api/cas/{id}/sign-x509", protected(http.HandlerFunc(a.SignX509Certificate)))
+	mux.Handle("POST /api/keys/{id}/sign", protected(http.HandlerFunc(a.SignCertificate)))
+	mux.Handle("POST /api/keys/{id}/sign-x509", protected(http.HandlerFunc(a.SignX509Certificate)))
 	mux.Handle("POST /api/parse-csr", protected(http.HandlerFunc(a.ParseCSR)))
-	mux.Handle("GET /api/cas/{id}/my-restrictions", protected(http.HandlerFunc(a.GetMyRestrictions)))
+	mux.Handle("GET /api/keys/{id}/my-restrictions", protected(http.HandlerFunc(a.GetMyRestrictions)))
 
 	mux.Handle("GET /api/groups", protected(http.HandlerFunc(a.ListGroups)))
 	mux.Handle("POST /api/groups", protected(http.HandlerFunc(a.CreateGroup)))
@@ -62,15 +63,17 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("POST /api/groups/{id}/members", protected(http.HandlerFunc(a.AddGroupMember)))
 	mux.Handle("DELETE /api/groups/{id}/members/{sub}", protected(http.HandlerFunc(a.RemoveGroupMember)))
 
-	mux.Handle("GET /api/cas/{id}/permissions", protected(http.HandlerFunc(a.GetPermissions)))
-	mux.Handle("POST /api/cas/{id}/permissions", protected(http.HandlerFunc(a.GrantPermission)))
-	mux.Handle("DELETE /api/cas/{id}/permissions", protected(http.HandlerFunc(a.RevokePermission)))
+	mux.Handle("GET /api/keys/{id}/permissions", protected(http.HandlerFunc(a.GetPermissions)))
+	mux.Handle("POST /api/keys/{id}/permissions", protected(http.HandlerFunc(a.GrantPermission)))
+	mux.Handle("DELETE /api/keys/{id}/permissions", protected(http.HandlerFunc(a.RevokePermission)))
 
-	mux.Handle("GET /api/cas/{id}/restriction-sets", protected(http.HandlerFunc(a.ListRestrictionSets)))
-	mux.Handle("POST /api/cas/{id}/restriction-sets", protected(http.HandlerFunc(a.CreateRestrictionSet)))
+	mux.Handle("GET /api/restriction-sets", protected(http.HandlerFunc(a.ListAllRestrictionSets)))
+	mux.Handle("POST /api/restriction-sets", protected(http.HandlerFunc(a.CreateRestrictionSetGlobal)))
+	mux.Handle("GET /api/keys/{id}/restriction-sets", protected(http.HandlerFunc(a.ListRestrictionSets)))
+	mux.Handle("POST /api/keys/{id}/restriction-sets", protected(http.HandlerFunc(a.CreateRestrictionSet)))
 	mux.Handle("PUT /api/restriction-sets/{id}", protected(http.HandlerFunc(a.UpdateRestrictionSet)))
 	mux.Handle("DELETE /api/restriction-sets/{id}", protected(http.HandlerFunc(a.DeleteRestrictionSet)))
-	mux.Handle("PUT /api/cas/{id}/default-restriction-set", protected(http.HandlerFunc(a.SetDefaultRestrictionSet)))
+	mux.Handle("PUT /api/keys/{id}/default-restriction-set", protected(http.HandlerFunc(a.SetDefaultRestrictionSet)))
 
 	mux.Handle("GET /api/audit-log", protected(http.HandlerFunc(a.ListAuditLog)))
 	mux.Handle("GET /api/access-log", protected(http.HandlerFunc(a.ListAccessLog)))
@@ -179,13 +182,17 @@ func (a *API) CreateCA(w http.ResponseWriter, r *http.Request) {
 		req.PublicKey = generated.SSHPublicKey
 	}
 
+	denySSH := database.BuiltinDenyAllSSH
+	denyX509 := database.BuiltinDenyAllX509
 	ca := &models.CA{
-		ID:        uuid.New().String(),
-		ParentID:  req.ParentID,
-		Label:     req.Label,
-		PKCS11URI: req.PKCS11URI,
-		KeyType:   req.KeyType,
-		PublicKey:  req.PublicKey,
+		ID:                          uuid.New().String(),
+		ParentID:                    req.ParentID,
+		Label:                       req.Label,
+		PKCS11URI:                   req.PKCS11URI,
+		KeyType:                     req.KeyType,
+		PublicKey:                   req.PublicKey,
+		DefaultSSHRestrictionSetID:  &denySSH,
+		DefaultX509RestrictionSetID: &denyX509,
 	}
 
 	if err := a.db.CreateCA(ca); err != nil {
@@ -208,6 +215,42 @@ func (a *API) GetCA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ca)
+}
+
+func (a *API) GetPublicKey(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ca, err := a.db.GetCA(id)
+	if err != nil || ca == nil {
+		writeError(w, http.StatusNotFound, "key not found")
+		return
+	}
+
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = "pem"
+	}
+	if format == "pem" {
+		// Convert SSH public key to PEM (PKIX) format
+		sshPub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(ca.PublicKey))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to parse public key: %v", err)
+			return
+		}
+		cryptoPub := sshPub.(ssh.CryptoPublicKey).CryptoPublicKey()
+		derBytes, err := x509.MarshalPKIXPublicKey(cryptoPub)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to marshal public key: %v", err)
+			return
+		}
+		pemBlock := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: derBytes})
+		w.Header().Set("Content-Type", "application/x-pem-file")
+		w.Write(pemBlock)
+		return
+	}
+
+	// Default: OpenSSH format
+	w.Header().Set("Content-Type", "text/plain")
+	w.Write([]byte(ca.PublicKey + "\n"))
 }
 
 func (a *API) DeleteCA(w http.ResponseWriter, r *http.Request) {
@@ -278,7 +321,7 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 	var rs *models.RestrictionSet
 	if !user.IsRoot {
 		groupIDs, _ := a.db.GetUserGroups(user.Subject)
-		rs, err = a.db.GetEffectiveRestrictionSet(caID, user.Subject, groupIDs)
+		rs, err = a.db.GetEffectiveRestrictionSet(caID, user.Subject, groupIDs, "ssh")
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "restriction set lookup failed: %v", err)
 			return
@@ -742,12 +785,13 @@ func (a *API) GrantPermission(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entry := &models.PermissionEntry{
-		ID:               uuid.New().String(),
-		CAID:             caID,
-		EntityType:       req.EntityType,
-		EntityID:         req.EntityID,
-		Permission:       req.Permission,
-		RestrictionSetID: req.RestrictionSetID,
+		ID:                   uuid.New().String(),
+		CAID:                 caID,
+		EntityType:           req.EntityType,
+		EntityID:             req.EntityID,
+		Permission:           req.Permission,
+		SSHRestrictionSetID:  req.SSHRestrictionSetID,
+		X509RestrictionSetID: req.X509RestrictionSetID,
 	}
 
 	if err := a.db.GrantPermission(entry); err != nil {
@@ -1179,8 +1223,12 @@ func (a *API) GetMyRestrictions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	certFormat := r.URL.Query().Get("format")
+	if certFormat == "" {
+		certFormat = "ssh"
+	}
 	groupIDs, _ := a.db.GetUserGroups(user.Subject)
-	rs, err := a.db.GetEffectiveRestrictionSet(caID, user.Subject, groupIDs)
+	rs, err := a.db.GetEffectiveRestrictionSet(caID, user.Subject, groupIDs, certFormat)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to get restrictions: %v", err)
 		return
@@ -1247,6 +1295,10 @@ func writeError(w http.ResponseWriter, status int, format string, args ...interf
 
 // enforceRestrictions validates a sign request against a restriction set.
 func enforceRestrictions(rs *models.RestrictionSet, req *models.SignRequest, user *models.UserInfo) error {
+	if rs.DenyAll {
+		return fmt.Errorf("signing is denied by restriction set %q", rs.Name)
+	}
+
 	// Check cert type
 	if len(rs.AllowedCertTypes) > 0 {
 		ct := req.CertType
@@ -1314,6 +1366,42 @@ func enforceRestrictions(rs *models.RestrictionSet, req *models.SignRequest, use
 }
 
 // Restriction Set handlers
+
+func (a *API) ListAllRestrictionSets(w http.ResponseWriter, r *http.Request) {
+	sets, err := a.db.ListAllRestrictionSets()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list restriction sets: %v", err)
+		return
+	}
+	if sets == nil {
+		sets = []models.RestrictionSet{}
+	}
+	writeJSON(w, http.StatusOK, sets)
+}
+
+func (a *API) CreateRestrictionSetGlobal(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserInfo(r.Context())
+	if !user.IsRoot {
+		writeError(w, http.StatusForbidden, "only root can create global restriction sets")
+		return
+	}
+
+	var rs models.RestrictionSet
+	if err := json.NewDecoder(r.Body).Decode(&rs); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+	rs.ID = uuid.New().String()
+	if rs.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if err := a.db.CreateRestrictionSet(&rs); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create restriction set: %v", err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, rs)
+}
 
 func (a *API) ListRestrictionSets(w http.ResponseWriter, r *http.Request) {
 	caID := r.PathValue("id")
@@ -1433,13 +1521,17 @@ func (a *API) SetDefaultRestrictionSet(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		RestrictionSetID *string `json:"restriction_set_id"`
+		Type             string  `json:"type"` // "ssh" or "x509"
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
 		return
 	}
+	if req.Type == "" {
+		req.Type = "ssh"
+	}
 
-	if err := a.db.SetCADefaultRestrictionSet(caID, req.RestrictionSetID); err != nil {
+	if err := a.db.SetCADefaultRestrictionSet(caID, req.Type, req.RestrictionSetID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to set default restriction set: %v", err)
 		return
 	}

@@ -1,23 +1,24 @@
 # Secsy PKI
 
-HSM-backed SSH Certificate Authority with OIDC authentication, publicly auditable signing logs, and a web UI.
+HSM-backed SSH and X.509 Certificate Authority with OIDC authentication, publicly auditable signing logs, and a web UI.
 
-Secsy PKI manages an SSH public key infrastructure where CA private keys are stored on hardware security modules (HSMs) via PKCS#11. Users authenticate through OpenID Connect and request SSH certificates signed by the HSM. Every signing operation is recorded in a cryptographically verifiable audit log backed by the YubiHSM's hardware hash chain.
+Secsy PKI manages a public key infrastructure where CA private keys are stored on hardware security modules (HSMs) via PKCS#11. Users authenticate through OpenID Connect and request SSH or X.509 certificates signed by the HSM. Every signing operation is recorded in a cryptographically verifiable audit log backed by the YubiHSM's hardware hash chain.
 
 ## Features
 
 - **HSM-backed signing** — CA private keys live on a YubiHSM (or any PKCS#11 device). Keys never leave the hardware.
-- **Ed25519 and ECDSA** — Generate and sign with Ed25519 (YubiHSM) or ECDSA P-256/P-384/P-521 (SoftHSM/YubiHSM).
+- **SSH and X.509 certificates** — Sign both OpenSSH certificates and X.509 certificates from CSRs using the same CA keys.
+- **Ed25519, ECDSA, and RSA** — Generate and sign with Ed25519, ECDSA P-256/P-384/P-521, or RSA 2048/4096.
 - **Publicly auditable logs** — Every HSM signing operation is recorded in a hardware hash chain, signed by the device's attestation key, and cross-referenced with certificate parameters. An offline verifier (`secsy-verify`) proves the complete chain of trust.
 - **Certificate uniqueness** — Each certificate is stored as raw binary with a SHA-256 uniqueness constraint per CA. Duplicate signing of the same material returns the existing certificate without calling the HSM.
 - **OIDC authentication** — Public client with PKCE. The issuer discovery URL is the root of trust; no client secret needed.
 - **Root user** — Configurable admin with basic auth, exempt from OIDC.
-- **Permission matrix** — `SIGN_CERTIFICATE`, `MANAGE_PERMISSIONS`, and `CONFIGURE_CA` per CA node, assignable to users or groups.
-- **Restriction sets** — Enforce policies on signing: max validity, allowed principals/cert types, forced email+reason key IDs, deny extensions/critical options.
-- **Client-side key generation** — SSH keys are generated in the browser using the Web Crypto API. Private keys never leave the user's device.
+- **Permission matrix** — `SIGN_CERTIFICATE`, `MANAGE_PERMISSIONS`, and `CONFIGURE_CA` per key, assignable to users or groups with separate SSH and X.509 restriction set overrides.
+- **Restriction sets** — Separate SSH and X.509 restriction sets enforce policies on signing. SSH: max validity, allowed principals/cert types, forced email+reason key IDs, deny extensions/critical options. X.509: allowed key usages, ext key usages, SAN types/patterns, subject fields, deny CA. Built-in "Permit all" and "Disallow all" defaults for both types.
+- **Public key export** — Export CA public keys in PEM (PKIX) or OpenSSH format via API and UI.
 - **HSM management** — Factory reset, audit provisioning, device info, and attestation certificate export from the UI.
 - **Web UI** — Bootstrap 5 SPA with dark theme and SRI-pinned CDN resources.
-- **SQLite backend** — Stores everything in canonical binary form (wire-format bytes for keys and certificates).
+- **SQLite and PostgreSQL** — Dual database support. SQLite for development, PostgreSQL for production.
 - **Terraform provisioning** — Provision the root CA key on a YubiHSM using [terraform-provider-pkcs11](https://github.com/blechschmidt/terraform-provider-pkcs11).
 
 ## Architecture
@@ -34,7 +35,7 @@ graph TB
     Server --> SQLite
     Server -->|"PKCS#11 (yhusb://)"| HSM
     Server -->|"ID token verification"| OIDC
-    HSM -->|"Ed25519/ECDSA signing"| Server
+    HSM -->|"Ed25519/ECDSA/RSA signing"| Server
 ```
 
 ## Audit Verification
@@ -188,7 +189,7 @@ The Yubico CA certificates can be downloaded from:
 
 ### Prerequisites
 
-- Go 1.21+
+- Go 1.25+
 - A PKCS#11 device (YubiHSM2 recommended) or SoftHSM for development
 - Docker (for KeyCloak and integration tests)
 
@@ -196,8 +197,16 @@ The Yubico CA certificates can be downloaded from:
 
 ```bash
 cd server
+
+# With SQLite support
+go build -tags sqlite -o secsy-pki-server ./cmd/server
+
+# Without SQLite (PostgreSQL only)
 go build -o secsy-pki-server ./cmd/server
+
+# Tools
 go build -o secsy-verify ./cmd/verify
+go build -o secsy-ssh ./cmd/secsy-ssh
 ```
 
 ### 2. Generate TLS Certificates
@@ -236,6 +245,8 @@ pkcs11:
   module_path: "/usr/lib/pkcs11/yubihsm_pkcs11.so"
   pin: "0001password"
   token_label: "YubiHSM"
+  token_serial: ""       # optional: match by serial number
+  token_manufacturer: "" # optional: match by manufacturer
 
 yubihsm:
   connector_url: "yhusb://"
@@ -244,14 +255,22 @@ yubihsm:
   suppress_audit_warning: false
 ```
 
-For SoftHSM development, use `module_path: "/usr/lib/pkcs11/libsofthsm2.so"`.
+For SoftHSM development, use `module_path: "/usr/lib/softhsm/libsofthsm2.so"`.
+
+For PostgreSQL, change the database section:
+```yaml
+database:
+  driver: "postgres"
+  dsn: "host=localhost user=secsy password=secret dbname=secsypki sslmode=disable"
+```
 
 ### 4. Run
 
 ```bash
-export YUBIHSM_PKCS11_CONF=/path/to/yubihsm_pkcs11.conf  # if using YubiHSM
 ./secsy-pki-server -config config.yaml
 ```
+
+The server auto-generates `yubihsm_pkcs11.conf` from the `yubihsm.connector_url` config setting. You can also set `YUBIHSM_PKCS11_CONF` manually if needed.
 
 Open https://localhost:8443 and log in as `root`.
 
@@ -284,13 +303,13 @@ sequenceDiagram
         OIDC->>secsy-ssh: Authorization code (localhost:18329/callback)
         secsy-ssh->>OIDC: Exchange code for ID token (PKCE)
         OIDC-->>secsy-ssh: ID token
-        secsy-ssh->>API: GET /api/cas/{id}/my-restrictions
+        secsy-ssh->>API: GET /api/keys/{id}/my-restrictions
         API-->>secsy-ssh: Restriction set (require_reason, etc.)
         opt Reason required
             secsy-ssh->>User: Prompt for reason
             User-->>secsy-ssh: "deployment"
         end
-        secsy-ssh->>API: POST /api/cas/{id}/sign (pubkey, principal, reason)
+        secsy-ssh->>API: POST /api/keys/{id}/sign (pubkey, principal, reason)
         API->>HSM: Sign certificate
         HSM-->>API: Signed certificate
         API-->>secsy-ssh: SSH certificate
@@ -437,26 +456,31 @@ All endpoints under `/api/` require authentication (Bearer token or Basic auth f
 | GET | `/api/health` | Health check |
 | GET | `/api/auth/config` | OIDC discovery config |
 | GET | `/api/me` | Current user info |
-| GET | `/api/cas` | List CAs |
-| POST | `/api/cas` | Create CA (omit `pkcs11_uri` to generate key on HSM) |
-| GET | `/api/cas/{id}` | Get CA |
-| DELETE | `/api/cas/{id}` | Delete CA |
-| POST | `/api/cas/{id}/sign` | Sign an SSH certificate (returns existing if already signed) |
-| GET | `/api/cas/{id}/my-restrictions` | Get effective restriction set for current user |
+| GET | `/api/keys` | List keys |
+| POST | `/api/keys` | Create key (omit `pkcs11_uri` to generate on HSM) |
+| GET | `/api/keys/{id}` | Get key |
+| DELETE | `/api/keys/{id}` | Delete key |
+| GET | `/api/keys/{id}/public-key` | Export public key (`?format=pem` default, `?format=ssh`) |
+| POST | `/api/keys/{id}/sign` | Sign an SSH certificate |
+| POST | `/api/keys/{id}/sign-x509` | Sign an X.509 certificate from CSR |
+| POST | `/api/parse-csr` | Parse and display CSR contents |
+| GET | `/api/keys/{id}/my-restrictions` | Get effective restriction set (`?format=ssh\|x509`) |
 | GET | `/api/groups` | List groups |
 | POST | `/api/groups` | Create group |
 | DELETE | `/api/groups/{id}` | Delete group |
 | GET | `/api/groups/{id}/members` | List group members |
 | POST | `/api/groups/{id}/members` | Add member |
 | DELETE | `/api/groups/{id}/members/{sub}` | Remove member |
-| GET | `/api/cas/{id}/permissions` | List permissions |
-| POST | `/api/cas/{id}/permissions` | Grant permission (with optional restriction set) |
-| DELETE | `/api/cas/{id}/permissions` | Revoke permission |
-| GET | `/api/cas/{id}/restriction-sets` | List restriction sets for a CA |
-| POST | `/api/cas/{id}/restriction-sets` | Create restriction set (requires CONFIGURE_CA) |
+| GET | `/api/keys/{id}/permissions` | List permissions |
+| POST | `/api/keys/{id}/permissions` | Grant permission (with SSH/X.509 restriction sets) |
+| DELETE | `/api/keys/{id}/permissions` | Revoke permission |
+| GET | `/api/restriction-sets` | List all restriction sets |
+| POST | `/api/restriction-sets` | Create global restriction set |
+| GET | `/api/keys/{id}/restriction-sets` | List restriction sets for a key (includes global) |
+| POST | `/api/keys/{id}/restriction-sets` | Create key-specific restriction set |
 | PUT | `/api/restriction-sets/{id}` | Update restriction set |
 | DELETE | `/api/restriction-sets/{id}` | Delete restriction set |
-| PUT | `/api/cas/{id}/default-restriction-set` | Set CA default restriction set |
+| PUT | `/api/keys/{id}/default-restriction-set` | Set key default (`type`: `ssh`\|`x509`) |
 | GET | `/api/audit-log` | Sign operations audit log (filterable, paginated) |
 | GET | `/api/access-log` | API access log (paginated) |
 | GET | `/api/hsm/info` | HSM device info and audit status |
@@ -467,10 +491,10 @@ All endpoints under `/api/` require authentication (Bearer token or Basic auth f
 | POST | `/api/hsm/provision-audit` | Enable forced audit logging (irreversible) |
 | POST | `/api/hsm/factory-reset` | Factory reset the YubiHSM |
 
-### Sign a Certificate
+### Sign an SSH Certificate
 
 ```bash
-curl -sk -u root:password -X POST https://localhost:8443/api/cas/{ca_id}/sign \
+curl -sk -u root:password -X POST https://localhost:8443/api/keys/{key_id}/sign \
   -H 'Content-Type: application/json' \
   -d '{
     "public_key": "ssh-ed25519 AAAA... user@host",
@@ -482,9 +506,39 @@ curl -sk -u root:password -X POST https://localhost:8443/api/cas/{ca_id}/sign \
   }'
 ```
 
-If the same public key was already signed by this CA, the existing certificate is returned without calling the HSM.
+### Sign an X.509 Certificate
 
-## Integration Tests
+```bash
+curl -sk -u root:password -X POST https://localhost:8443/api/keys/{key_id}/sign-x509 \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "csr": "-----BEGIN CERTIFICATE REQUEST-----\n...\n-----END CERTIFICATE REQUEST-----",
+    "valid_before": "+365d"
+  }'
+```
+
+All certificate parameters (subject, SANs, extensions) are taken from the CSR.
+
+## Testing
+
+### Unit Tests
+
+```bash
+cd server
+go test -tags sqlite ./internal/...
+```
+
+### Unit Tests with YubiHSM Hardware
+
+When a YubiHSM is connected, additional tests cover PKCS#11 signing and HSM operations:
+
+```bash
+go test -tags "sqlite yubihsm" ./internal/...
+```
+
+These tests are automatically skipped in CI (which uses SoftHSM instead).
+
+### Integration Tests
 
 Run with Docker (KeyCloak + OpenSSH):
 
@@ -517,11 +571,20 @@ Permissions can be assigned to individual users (by OIDC subject) or to groups. 
 
 ## Restriction Sets
 
-Restriction sets enforce policies on certificate signing. Priority: user-specific > group-specific > CA default.
+Restriction sets enforce policies on certificate signing. SSH and X.509 restriction sets are separate types stored in dedicated database tables. Priority: user-specific > group-specific > key default.
+
+Each key has separate default SSH and X.509 restriction sets. New keys default to "Disallow all signatures" for both types. Built-in restriction sets:
+- **Permit all signatures** — no restrictions
+- **Disallow all signatures** — blocks all signing (`deny_all: true`)
+
+Restriction sets can be global (not associated with any key) or key-specific.
+
+### SSH Restriction Set Fields
 
 | Field | Effect |
 |-------|--------|
 | `max_validity_secs` | Maximum certificate lifetime |
+| `deny_all` | Block all SSH signing |
 | `allowed_principals` | Only these principals (`*` for any) |
 | `allowed_cert_types` | Only `user`, `host`, or both |
 | `force_key_id_email` | Key ID forced to user email |
@@ -530,6 +593,20 @@ Restriction sets enforce policies on certificate signing. Priority: user-specifi
 | `allowed_extensions` | Only these extensions (when not denied) |
 | `deny_critical_options` | No critical options allowed |
 | `max_valid_after_offset` | Max seconds into the future for valid-after |
+
+### X.509 Restriction Set Fields
+
+| Field | Effect |
+|-------|--------|
+| `max_validity_secs` | Maximum certificate lifetime |
+| `deny_all` | Block all X.509 signing |
+| `allowed_key_usages` | Only these key usages (e.g. `digitalSignature`, `keyEncipherment`) |
+| `allowed_ext_key_usages` | Only these extended key usages (e.g. `serverAuth`, `clientAuth`) |
+| `allowed_san_types` | Only these SAN types (`dns`, `ip`, `email`) |
+| `allowed_san_patterns` | Only SANs matching these patterns (e.g. `*.example.com`, `10.0.0.0/8`) |
+| `allowed_subject_fields` | Only these subject fields (`CN`, `O`, `OU`, `C`, `ST`, `L`) |
+| `max_path_length` | Maximum CA path length (`-1` = no CA certs) |
+| `deny_ca` | Cannot issue CA certificates |
 
 ## License
 

@@ -107,7 +107,8 @@ func (db *DB) migrate() error {
 			pkcs11_uri TEXT NOT NULL,
 			key_type TEXT NOT NULL,
 			public_key %s NOT NULL,
-			default_restriction_set_id TEXT,
+			default_ssh_restriction_set_id TEXT,
+			default_x509_restriction_set_id TEXT,
 			created_at %s
 		)`, blob, currentTimestamp),
 		`CREATE TABLE IF NOT EXISTS groups_ (
@@ -121,10 +122,11 @@ func (db *DB) migrate() error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS restriction_sets (
 			id TEXT PRIMARY KEY,
-			ca_id TEXT NOT NULL REFERENCES cas(id) ON DELETE CASCADE,
+			ca_id TEXT REFERENCES cas(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
 			type TEXT NOT NULL DEFAULT 'ssh',
-			max_validity_secs INTEGER
+			max_validity_secs INTEGER,
+			deny_all ` + boolType + `
 		)`,
 		`CREATE TABLE IF NOT EXISTS ssh_restriction_details (
 			restriction_set_id TEXT PRIMARY KEY REFERENCES restriction_sets(id) ON DELETE CASCADE,
@@ -153,7 +155,8 @@ func (db *DB) migrate() error {
 			entity_type TEXT NOT NULL CHECK(entity_type IN ('user', 'group')),
 			entity_id TEXT NOT NULL,
 			permission TEXT NOT NULL CHECK(permission IN ('SIGN_CERTIFICATE', 'MANAGE_PERMISSIONS', 'CONFIGURE_CA')),
-			restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL,
+			ssh_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL,
+			x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL,
 			UNIQUE(ca_id, entity_type, entity_id, permission)
 		)`,
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS audit_log (
@@ -215,13 +218,17 @@ func (db *DB) migrate() error {
 	// Migration: add columns if they don't exist (for existing databases)
 	// These are idempotent — errors are ignored for columns that already exist
 	if db.isPostgres() {
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS default_restriction_set_id TEXT")
-		db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS default_ssh_restriction_set_id TEXT")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS default_x509_restriction_set_id TEXT")
+		db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS ssh_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
+		db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS certificate BYTEA")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS cert_hash TEXT")
 	} else {
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_restriction_set_id TEXT")
-		db.conn.Exec("ALTER TABLE permissions ADD COLUMN restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_ssh_restriction_set_id TEXT")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_x509_restriction_set_id TEXT")
+		db.conn.Exec("ALTER TABLE permissions ADD COLUMN ssh_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
+		db.conn.Exec("ALTER TABLE permissions ADD COLUMN x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN certificate BLOB")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN cert_hash TEXT")
 	}
@@ -229,8 +236,26 @@ func (db *DB) migrate() error {
 	// Migrate old mixed restriction_sets table to split tables (if old columns exist)
 	db.migrateRestrictionSets()
 	db.conn.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_log_cert_unique ON audit_log(ca_id, cert_hash)")
+
+	// Create built-in restriction sets
+	db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
+		BuiltinPermitAllSSH, "Permit all signatures", "ssh", 0)
+	db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
+		BuiltinDenyAllSSH, "Disallow all signatures", "ssh", 1)
+	db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
+		BuiltinPermitAllX509, "Permit all signatures", "x509", 0)
+	db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
+		BuiltinDenyAllX509, "Disallow all signatures", "x509", 1)
+
 	return nil
 }
+
+const (
+	BuiltinPermitAllSSH  = "builtin-permit-all-ssh"
+	BuiltinDenyAllSSH    = "builtin-deny-all-ssh"
+	BuiltinPermitAllX509 = "builtin-permit-all-x509"
+	BuiltinDenyAllX509   = "builtin-deny-all-x509"
+)
 
 // migrateRestrictionSets migrates data from old mixed restriction_sets table
 // (which had SSH and X.509 columns together) to the new split detail tables.
@@ -270,8 +295,8 @@ func (db *DB) upsert(table, columns, placeholders, conflictCols, updateSet strin
 
 func (db *DB) CreateCA(ca *models.CA) error {
 	_, err := db.exec(
-		`INSERT INTO cas (id, parent_id, label, pkcs11_uri, key_type, public_key, default_restriction_set_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		ca.ID, ca.ParentID, ca.Label, ca.PKCS11URI, ca.KeyType, pubKeyToBlob(ca.PublicKey), ca.DefaultRestrictionSetID,
+		`INSERT INTO cas (id, parent_id, label, pkcs11_uri, key_type, public_key, default_ssh_restriction_set_id, default_x509_restriction_set_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		ca.ID, ca.ParentID, ca.Label, ca.PKCS11URI, ca.KeyType, pubKeyToBlob(ca.PublicKey), ca.DefaultSSHRestrictionSetID, ca.DefaultX509RestrictionSetID,
 	)
 	return err
 }
@@ -280,8 +305,8 @@ func (db *DB) GetCA(id string) (*models.CA, error) {
 	ca := &models.CA{}
 	var pubBlob []byte
 	err := db.queryRow(
-		`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_restriction_set_id, created_at FROM cas WHERE id = ?`, id,
-	).Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob, &ca.DefaultRestrictionSetID, &ca.CreatedAt)
+		`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_ssh_restriction_set_id, default_x509_restriction_set_id, created_at FROM cas WHERE id = ?`, id,
+	).Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob, &ca.DefaultSSHRestrictionSetID, &ca.DefaultX509RestrictionSetID, &ca.CreatedAt)
 	ca.PublicKey = blobToAuthorizedKey(pubBlob)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -290,7 +315,7 @@ func (db *DB) GetCA(id string) (*models.CA, error) {
 }
 
 func (db *DB) ListCAs() ([]models.CA, error) {
-	rows, err := db.query(`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_restriction_set_id, created_at FROM cas`)
+	rows, err := db.query(`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_ssh_restriction_set_id, default_x509_restriction_set_id, created_at FROM cas`)
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +324,7 @@ func (db *DB) ListCAs() ([]models.CA, error) {
 	for rows.Next() {
 		var ca models.CA
 		var pubBlob []byte
-		if err := rows.Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob, &ca.DefaultRestrictionSetID, &ca.CreatedAt); err != nil {
+		if err := rows.Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob, &ca.DefaultSSHRestrictionSetID, &ca.DefaultX509RestrictionSetID, &ca.CreatedAt); err != nil {
 			return nil, err
 		}
 		ca.PublicKey = blobToAuthorizedKey(pubBlob)
@@ -313,13 +338,17 @@ func (db *DB) DeleteCA(id string) error {
 	return err
 }
 
-func (db *DB) SetCADefaultRestrictionSet(caID string, rsID *string) error {
-	_, err := db.exec(`UPDATE cas SET default_restriction_set_id = ? WHERE id = ?`, rsID, caID)
+func (db *DB) SetCADefaultRestrictionSet(caID string, rsType string, rsID *string) error {
+	col := "default_ssh_restriction_set_id"
+	if rsType == "x509" {
+		col = "default_x509_restriction_set_id"
+	}
+	_, err := db.exec(fmt.Sprintf(`UPDATE cas SET %s = ? WHERE id = ?`, col), rsID, caID)
 	return err
 }
 
 func (db *DB) GetChildren(parentID string) ([]models.CA, error) {
-	rows, err := db.query(`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_restriction_set_id, created_at FROM cas WHERE parent_id = ?`, parentID)
+	rows, err := db.query(`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_ssh_restriction_set_id, default_x509_restriction_set_id, created_at FROM cas WHERE parent_id = ?`, parentID)
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +357,7 @@ func (db *DB) GetChildren(parentID string) ([]models.CA, error) {
 	for rows.Next() {
 		var ca models.CA
 		var pubBlob []byte
-		if err := rows.Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob, &ca.DefaultRestrictionSetID, &ca.CreatedAt); err != nil {
+		if err := rows.Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob, &ca.DefaultSSHRestrictionSetID, &ca.DefaultX509RestrictionSetID, &ca.CreatedAt); err != nil {
 			return nil, err
 		}
 		ca.PublicKey = blobToAuthorizedKey(pubBlob)
@@ -423,9 +452,9 @@ func (db *DB) GetUserGroups(userSub string) ([]string, error) {
 
 func (db *DB) GrantPermission(p *models.PermissionEntry) error {
 	_, err := db.exec(
-		`INSERT INTO permissions (id, ca_id, entity_type, entity_id, permission, restriction_set_id) VALUES (?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(ca_id, entity_type, entity_id, permission) DO UPDATE SET restriction_set_id = excluded.restriction_set_id`,
-		p.ID, p.CAID, p.EntityType, p.EntityID, p.Permission, p.RestrictionSetID,
+		`INSERT INTO permissions (id, ca_id, entity_type, entity_id, permission, ssh_restriction_set_id, x509_restriction_set_id) VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(ca_id, entity_type, entity_id, permission) DO UPDATE SET ssh_restriction_set_id = excluded.ssh_restriction_set_id, x509_restriction_set_id = excluded.x509_restriction_set_id`,
+		p.ID, p.CAID, p.EntityType, p.EntityID, p.Permission, p.SSHRestrictionSetID, p.X509RestrictionSetID,
 	)
 	return err
 }
@@ -440,7 +469,7 @@ func (db *DB) RevokePermission(caID, entityType, entityID string, perm models.Pe
 
 func (db *DB) GetPermissions(caID string) ([]models.PermissionEntry, error) {
 	rows, err := db.query(
-		`SELECT id, ca_id, entity_type, entity_id, permission, restriction_set_id FROM permissions WHERE ca_id = ?`, caID,
+		`SELECT id, ca_id, entity_type, entity_id, permission, ssh_restriction_set_id, x509_restriction_set_id FROM permissions WHERE ca_id = ?`, caID,
 	)
 	if err != nil {
 		return nil, err
@@ -449,7 +478,7 @@ func (db *DB) GetPermissions(caID string) ([]models.PermissionEntry, error) {
 	var perms []models.PermissionEntry
 	for rows.Next() {
 		var p models.PermissionEntry
-		if err := rows.Scan(&p.ID, &p.CAID, &p.EntityType, &p.EntityID, &p.Permission, &p.RestrictionSetID); err != nil {
+		if err := rows.Scan(&p.ID, &p.CAID, &p.EntityType, &p.EntityID, &p.Permission, &p.SSHRestrictionSetID, &p.X509RestrictionSetID); err != nil {
 			return nil, err
 		}
 		perms = append(perms, p)
@@ -487,12 +516,19 @@ func (db *DB) HasPermission(caID, userSub string, perm models.Permission, groupI
 }
 
 // GetEffectiveRestrictionSet returns the restriction set that applies to this user for SIGN_CERTIFICATE on a CA.
-// Priority: user-specific > group-specific > CA default. Returns nil if no restriction set applies.
-func (db *DB) GetEffectiveRestrictionSet(caID, userSub string, groupIDs []string) (*models.RestrictionSet, error) {
-	// Check user-specific SIGN_CERTIFICATE permission with a restriction set
+// certFormat is "ssh" or "x509". Priority: user-specific > group-specific > CA default.
+func (db *DB) GetEffectiveRestrictionSet(caID, userSub string, groupIDs []string, certFormat string) (*models.RestrictionSet, error) {
+	col := "ssh_restriction_set_id"
+	defaultCol := "default_ssh_restriction_set_id"
+	if certFormat == "x509" {
+		col = "x509_restriction_set_id"
+		defaultCol = "default_x509_restriction_set_id"
+	}
+
+	// Check user-specific SIGN_CERTIFICATE permission
 	var rsID sql.NullString
 	err := db.queryRow(
-		`SELECT restriction_set_id FROM permissions WHERE ca_id = ? AND entity_type = 'user' AND entity_id = ? AND permission = 'SIGN_CERTIFICATE' AND restriction_set_id IS NOT NULL`,
+		fmt.Sprintf(`SELECT %s FROM permissions WHERE ca_id = ? AND entity_type = 'user' AND entity_id = ? AND permission = 'SIGN_CERTIFICATE' AND %s IS NOT NULL`, col, col),
 		caID, userSub,
 	).Scan(&rsID)
 	if err == nil && rsID.Valid {
@@ -502,7 +538,7 @@ func (db *DB) GetEffectiveRestrictionSet(caID, userSub string, groupIDs []string
 	// Check group-specific
 	for _, gid := range groupIDs {
 		err := db.queryRow(
-			`SELECT restriction_set_id FROM permissions WHERE ca_id = ? AND entity_type = 'group' AND entity_id = ? AND permission = 'SIGN_CERTIFICATE' AND restriction_set_id IS NOT NULL`,
+			fmt.Sprintf(`SELECT %s FROM permissions WHERE ca_id = ? AND entity_type = 'group' AND entity_id = ? AND permission = 'SIGN_CERTIFICATE' AND %s IS NOT NULL`, col, col),
 			caID, gid,
 		).Scan(&rsID)
 		if err == nil && rsID.Valid {
@@ -512,7 +548,7 @@ func (db *DB) GetEffectiveRestrictionSet(caID, userSub string, groupIDs []string
 
 	// Fall back to CA default
 	var defaultID sql.NullString
-	err = db.queryRow(`SELECT default_restriction_set_id FROM cas WHERE id = ?`, caID).Scan(&defaultID)
+	err = db.queryRow(fmt.Sprintf(`SELECT %s FROM cas WHERE id = ?`, defaultCol), caID).Scan(&defaultID)
 	if err == nil && defaultID.Valid {
 		return db.GetRestrictionSet(defaultID.String)
 	}
@@ -553,9 +589,13 @@ func (db *DB) CreateRestrictionSet(rs *models.RestrictionSet) error {
 	if rs.Type == "" {
 		rs.Type = models.RestrictionSetSSH
 	}
+	var caID interface{} = rs.CAID
+	if rs.CAID == "" { caID = nil }
+	denyAll := 0
+	if rs.DenyAll { denyAll = 1 }
 	_, err := db.exec(
-		`INSERT INTO restriction_sets (id, ca_id, name, type, max_validity_secs) VALUES (?, ?, ?, ?, ?)`,
-		rs.ID, rs.CAID, rs.Name, rs.Type, rs.MaxValiditySecs,
+		`INSERT INTO restriction_sets (id, ca_id, name, type, max_validity_secs, deny_all) VALUES (?, ?, ?, ?, ?, ?)`,
+		rs.ID, caID, rs.Name, rs.Type, rs.MaxValiditySecs, denyAll,
 	)
 	if err != nil {
 		return err
@@ -564,9 +604,11 @@ func (db *DB) CreateRestrictionSet(rs *models.RestrictionSet) error {
 }
 
 func (db *DB) UpdateRestrictionSet(rs *models.RestrictionSet) error {
+	denyAll := 0
+	if rs.DenyAll { denyAll = 1 }
 	_, err := db.exec(
-		`UPDATE restriction_sets SET name=?, type=?, max_validity_secs=? WHERE id=?`,
-		rs.Name, rs.Type, rs.MaxValiditySecs, rs.ID,
+		`UPDATE restriction_sets SET name=?, type=?, max_validity_secs=?, deny_all=? WHERE id=?`,
+		rs.Name, rs.Type, rs.MaxValiditySecs, denyAll, rs.ID,
 	)
 	if err != nil {
 		return err
@@ -632,9 +674,13 @@ func (db *DB) loadX509Details(rs *models.RestrictionSet) {
 
 func (db *DB) GetRestrictionSet(id string) (*models.RestrictionSet, error) {
 	var rs models.RestrictionSet
+	var caID sql.NullString
+	var denyAll int
 	err := db.queryRow(
-		`SELECT id, ca_id, name, type, max_validity_secs FROM restriction_sets WHERE id = ?`, id,
-	).Scan(&rs.ID, &rs.CAID, &rs.Name, &rs.Type, &rs.MaxValiditySecs)
+		`SELECT id, ca_id, name, type, max_validity_secs, deny_all FROM restriction_sets WHERE id = ?`, id,
+	).Scan(&rs.ID, &caID, &rs.Name, &rs.Type, &rs.MaxValiditySecs, &denyAll)
+	if caID.Valid { rs.CAID = caID.String }
+	rs.DenyAll = denyAll != 0
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -652,10 +698,17 @@ func (db *DB) GetRestrictionSet(id string) (*models.RestrictionSet, error) {
 	return &rs, nil
 }
 
+func (db *DB) ListAllRestrictionSets() ([]models.RestrictionSet, error) {
+	return db.scanRestrictionSets(db.query(`SELECT id, ca_id, name, type, max_validity_secs, deny_all FROM restriction_sets`))
+}
+
 func (db *DB) ListRestrictionSets(caID string) ([]models.RestrictionSet, error) {
-	rows, err := db.query(
-		`SELECT id, ca_id, name, type, max_validity_secs FROM restriction_sets WHERE ca_id = ?`, caID,
-	)
+	return db.scanRestrictionSets(db.query(
+		`SELECT id, ca_id, name, type, max_validity_secs, deny_all FROM restriction_sets WHERE ca_id = ? OR ca_id IS NULL`, caID,
+	))
+}
+
+func (db *DB) scanRestrictionSets(rows *sql.Rows, err error) ([]models.RestrictionSet, error) {
 	if err != nil {
 		return nil, err
 	}
@@ -663,9 +716,13 @@ func (db *DB) ListRestrictionSets(caID string) ([]models.RestrictionSet, error) 
 	var sets []models.RestrictionSet
 	for rows.Next() {
 		var rs models.RestrictionSet
-		if err := rows.Scan(&rs.ID, &rs.CAID, &rs.Name, &rs.Type, &rs.MaxValiditySecs); err != nil {
+		var caID sql.NullString
+		var denyAll int
+		if err := rows.Scan(&rs.ID, &caID, &rs.Name, &rs.Type, &rs.MaxValiditySecs, &denyAll); err != nil {
 			return nil, err
 		}
+		if caID.Valid { rs.CAID = caID.String }
+		rs.DenyAll = denyAll != 0
 		if rs.Type == "" {
 			rs.Type = models.RestrictionSetSSH
 		}
@@ -687,7 +744,8 @@ func (db *DB) ListRestrictionSets(caID string) ([]models.RestrictionSet, error) 
 
 func (db *DB) DeleteRestrictionSet(id string) error {
 	// Clear references from CA defaults
-	db.exec(`UPDATE cas SET default_restriction_set_id = NULL WHERE default_restriction_set_id = ?`, id)
+	db.exec(`UPDATE cas SET default_ssh_restriction_set_id = NULL WHERE default_ssh_restriction_set_id = ?`, id)
+	db.exec(`UPDATE cas SET default_x509_restriction_set_id = NULL WHERE default_x509_restriction_set_id = ?`, id)
 	_, err := db.exec(`DELETE FROM restriction_sets WHERE id = ?`, id)
 	return err
 }

@@ -2,6 +2,7 @@ package hsm
 
 import (
 	"encoding/hex"
+	"os"
 	"testing"
 )
 
@@ -206,6 +207,15 @@ func TestConnectorArg(t *testing.T) {
 	if got := connectorArg(cfg); got != "http://test:12345" {
 		t.Errorf("connectorArg = %q", got)
 	}
+	// Temporarily unset the env var so the default fallback is tested correctly
+	// (TestMain in the yubihsm-tagged file may have set it).
+	prev, hadPrev := os.LookupEnv("YUBIHSM_PKCS11_CONF")
+	os.Unsetenv("YUBIHSM_PKCS11_CONF")
+	defer func() {
+		if hadPrev {
+			os.Setenv("YUBIHSM_PKCS11_CONF", prev)
+		}
+	}()
 	if got := connectorArg(Config{}); got != "http://localhost:12345" {
 		t.Errorf("default connectorArg = %q", got)
 	}

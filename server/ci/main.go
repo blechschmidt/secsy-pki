@@ -94,7 +94,7 @@ YAML`}).
 			done
 
 			# Seed a CA
-			curl -sk -u root:test-password -X POST https://localhost:8443/api/cas \
+			curl -sk -u root:test-password -X POST https://localhost:8443/api/keys \
 			  -H 'Content-Type: application/json' \
 			  -d '{"label":"Test CA","pkcs11_uri":"pkcs11:token=secsy-test;object=test-ca;type=private","key_type":"ecdsa-sha2-nistp256","public_key":"n/a"}'
 

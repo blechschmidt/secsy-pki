@@ -1,6 +1,7 @@
 package pki
 
 import (
+	"crypto"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -37,7 +38,7 @@ var X509ExtKeyUsageFromString = map[string]x509.ExtKeyUsage{
 
 // SignX509Certificate signs a CSR with the CA's private key via PKCS#11.
 // All certificate parameters (subject, SANs, extensions) are taken from the CSR.
-func SignX509Certificate(signer *PKCS11Signer, csrPEM []byte, validBefore time.Time) ([]byte, string, error) {
+func SignX509Certificate(signer crypto.Signer, csrPEM []byte, validBefore time.Time) ([]byte, string, error) {
 	block, _ := pem.Decode(csrPEM)
 	if block == nil || block.Type != "CERTIFICATE REQUEST" {
 		return nil, "", fmt.Errorf("invalid PEM: expected CERTIFICATE REQUEST")

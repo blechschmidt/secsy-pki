@@ -1,6 +1,7 @@
 package pki
 
 import (
+	"crypto"
 	"crypto/rand"
 	"fmt"
 	"math/big"
@@ -9,7 +10,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-func SignSSHCertificate(signer *PKCS11Signer, pubKeyData []byte, certType uint32, keyID string, principals []string, validAfter, validBefore time.Time, extensions, criticalOptions map[string]string) ([]byte, error) {
+func SignSSHCertificate(signer crypto.Signer, pubKeyData []byte, certType uint32, keyID string, principals []string, validAfter, validBefore time.Time, extensions, criticalOptions map[string]string) ([]byte, error) {
 	pubKey, _, _, _, err := ssh.ParseAuthorizedKey(pubKeyData)
 	if err != nil {
 		return nil, fmt.Errorf("parsing public key: %w", err)
