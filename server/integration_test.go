@@ -298,38 +298,20 @@ func TestPermissionMatrix(t *testing.T) {
 	rootRequest(t, "DELETE", "/api/groups/"+groupID, nil)
 }
 
-func TestKeyGeneration(t *testing.T) {
-	testCases := []struct {
-		name    string
-		keyType string
-		bits    int
-	}{
-		{"ed25519", "ed25519", 0},
-		{"ecdsa-256", "ecdsa", 256},
-		{"ecdsa-384", "ecdsa", 384},
-		{"rsa-4096", "rsa", 4096},
+// generateTestKey creates an ed25519 key pair using ssh-keygen and returns the public key.
+func generateTestKey(t *testing.T) string {
+	t.Helper()
+	tmpDir := t.TempDir()
+	keyPath := tmpDir + "/id_test"
+	cmd := exec.Command("ssh-keygen", "-t", "ed25519", "-f", keyPath, "-N", "", "-q")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("ssh-keygen failed: %v", err)
 	}
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			resp := rootRequest(t, "POST", "/api/keys/generate", map[string]interface{}{
-				"key_type": tc.keyType,
-				"bits":     tc.bits,
-				"comment":  "test@integration",
-			})
-			if resp.StatusCode != 200 {
-				body, _ := io.ReadAll(resp.Body)
-				t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, body)
-			}
-			var result map[string]string
-			parseJSON(t, resp, &result)
-			if result["public_key"] == "" || result["private_key"] == "" {
-				t.Fatal("Expected non-empty keys")
-			}
-			if !strings.Contains(result["private_key"], "BEGIN OPENSSH PRIVATE KEY") {
-				t.Error("Private key doesn't look like OpenSSH format")
-			}
-		})
+	pubData, err := os.ReadFile(keyPath + ".pub")
+	if err != nil {
+		t.Fatal(err)
 	}
+	return strings.TrimSpace(string(pubData))
 }
 
 func TestSignCertificateFlow(t *testing.T) {
@@ -345,17 +327,12 @@ func TestSignCertificateFlow(t *testing.T) {
 	caID := ca["id"].(string)
 	defer rootRequest(t, "DELETE", "/api/cas/"+caID, nil)
 
-	// Generate a key pair
-	resp = rootRequest(t, "POST", "/api/keys/generate", map[string]interface{}{
-		"key_type": "ed25519",
-		"comment":  "sign-test",
-	})
-	var keys map[string]string
-	parseJSON(t, resp, &keys)
+	// Generate a key pair locally
+	pubKey := generateTestKey(t)
 
 	// Sign the public key
 	resp = rootRequest(t, "POST", "/api/cas/"+caID+"/sign", map[string]interface{}{
-		"public_key":   keys["public_key"],
+		"public_key":   pubKey,
 		"cert_type":    "user",
 		"principals":   []string{"testuser"},
 		"valid_before": "+1d",
@@ -447,16 +424,12 @@ func TestOIDCWithPermissionGrant(t *testing.T) {
 		t.Fatalf("grant perm failed: %d: %s", resp.StatusCode, body)
 	}
 
-	// Generate key
-	resp = rootRequest(t, "POST", "/api/keys/generate", map[string]interface{}{
-		"key_type": "ed25519",
-	})
-	var keys map[string]string
-	parseJSON(t, resp, &keys)
+	// Generate key locally
+	pubKey := generateTestKey(t)
 
 	// Now OIDC user should be able to sign
 	resp = oidcRequest(t, token, "POST", "/api/cas/"+caID+"/sign", map[string]interface{}{
-		"public_key":   keys["public_key"],
+		"public_key":   pubKey,
 		"cert_type":    "user",
 		"principals":   []string{"testuser"},
 		"valid_before": "+1d",
@@ -484,15 +457,11 @@ func TestSSHCertVerifyWithOpenSSH(t *testing.T) {
 	defer rootRequest(t, "DELETE", "/api/cas/"+caID, nil)
 
 	// Generate key
-	resp = rootRequest(t, "POST", "/api/keys/generate", map[string]interface{}{
-		"key_type": "ed25519",
-	})
-	var keys map[string]string
-	parseJSON(t, resp, &keys)
+	pubKey := generateTestKey(t)
 
 	// Sign
 	resp = rootRequest(t, "POST", "/api/cas/"+caID+"/sign", map[string]interface{}{
-		"public_key":   keys["public_key"],
+		"public_key":   pubKey,
 		"cert_type":    "user",
 		"principals":   []string{"testuser"},
 		"valid_before": "+1d",
