@@ -121,6 +121,7 @@ function showPage(name) {
     });
     if (name === 'cas') loadCAs();
     if (name === 'sign') loadCASelect('signCA');
+    if (name === 'signx509') loadCASelect('signx509CA');
     if (name === 'groups') loadGroups();
     if (name === 'permissions') { loadCASelect('permCA').then(loadPermissions); }
     if (name === 'restrictions') { loadCASelect('rsCA').then(loadRestrictionSets); }
@@ -573,6 +574,35 @@ document.getElementById('signForm').addEventListener('submit', async e => {
         document.getElementById('resultCert').value = result.certificate;
         document.getElementById('signResult').classList.remove('d-none');
         showToast('Success', 'Certificate signed');
+    } catch (err) {
+        showToast('Error', err.message, true);
+    }
+});
+
+// X.509 Certificate Signing
+document.getElementById('signx509Form').addEventListener('submit', async e => {
+    e.preventDefault();
+    try {
+        const keyUsages = [];
+        for (const [id, name] of [['ku-digitalSignature','digitalSignature'],['ku-keyEncipherment','keyEncipherment'],['ku-dataEncipherment','dataEncipherment'],['ku-keyAgreement','keyAgreement'],['ku-certSign','certSign'],['ku-crlSign','crlSign']]) {
+            if (document.getElementById(id).checked) keyUsages.push(name);
+        }
+        const extKeyUsages = [];
+        for (const [id, name] of [['eku-serverAuth','serverAuth'],['eku-clientAuth','clientAuth'],['eku-codeSigning','codeSigning'],['eku-emailProtection','emailProtection']]) {
+            if (document.getElementById(id).checked) extKeyUsages.push(name);
+        }
+
+        const result = await API.post(`/api/cas/${document.getElementById('signx509CA').value}/sign-x509`, {
+            csr: document.getElementById('signx509CSR').value,
+            valid_before: document.getElementById('signx509ValidBefore').value || '+365d',
+            key_usages: keyUsages,
+            ext_key_usages: extKeyUsages,
+            is_ca: document.getElementById('signx509IsCA').value === 'true',
+        });
+        document.getElementById('x509ResultSerial').value = result.serial;
+        document.getElementById('x509ResultCert').value = result.certificate;
+        document.getElementById('signx509Result').classList.remove('d-none');
+        showToast('Success', 'X.509 certificate signed');
     } catch (err) {
         showToast('Error', err.message, true);
     }
