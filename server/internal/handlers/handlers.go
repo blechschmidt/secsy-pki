@@ -50,6 +50,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/cas/{id}/children", protected(http.HandlerFunc(a.GetCAChildren)))
 
 	mux.Handle("POST /api/cas/{id}/sign", protected(http.HandlerFunc(a.SignCertificate)))
+	mux.Handle("POST /api/cas/{id}/sign-x509", protected(http.HandlerFunc(a.SignX509Certificate)))
 	mux.Handle("GET /api/cas/{id}/my-restrictions", protected(http.HandlerFunc(a.GetMyRestrictions)))
 
 	mux.Handle("GET /api/groups", protected(http.HandlerFunc(a.ListGroups)))
@@ -417,6 +418,76 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, models.SignResponse{
 		Certificate: string(certBytes),
 		KeyID:       keyID,
+	})
+}
+
+// X.509 certificate signing
+
+func (a *API) SignX509Certificate(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserInfo(r.Context())
+	caID := r.PathValue("id")
+
+	if !user.IsRoot {
+		hasAccess, err := a.checkPermission(user, caID, models.PermSignCertificate)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
+			return
+		}
+		if !hasAccess {
+			writeError(w, http.StatusForbidden, "no SIGN_CERTIFICATE permission on this CA")
+			return
+		}
+	}
+
+	ca, err := a.db.GetCA(caID)
+	if err != nil || ca == nil {
+		writeError(w, http.StatusNotFound, "CA not found")
+		return
+	}
+
+	var req models.X509SignRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+
+	if req.CSR == "" {
+		writeError(w, http.StatusBadRequest, "csr is required")
+		return
+	}
+
+	validBefore, err := pki.ParseTime(req.ValidBefore, time.Now().Add(365*24*time.Hour))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid valid_before: %v", err)
+		return
+	}
+
+	// Consume HSM audit logs before signing
+	a.consumeHSMAuditLogs("")
+
+	keyLabel := extractKeyLabel(ca.PKCS11URI)
+	signer, err := pki.NewPKCS11Signer(a.p11cfg, keyLabel)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to open PKCS#11 signer: %v", err)
+		return
+	}
+
+	certPEM, serial, err := pki.SignX509Certificate(
+		signer, []byte(req.CSR), validBefore,
+		req.KeyUsages, req.ExtKeyUsages, req.IsCA, req.PathLength,
+	)
+
+	signer.Close()
+	a.consumeHSMAuditLogs("")
+
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to sign X.509 certificate: %v", err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, models.X509SignResponse{
+		Certificate: string(certPEM),
+		Serial:      serial,
 	})
 }
 

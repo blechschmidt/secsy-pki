@@ -46,20 +46,58 @@ type PermissionEntry struct {
 	RestrictionSetID *string    `json:"restriction_set_id,omitempty" db:"restriction_set_id"`
 }
 
+// RestrictionSetType distinguishes between SSH and X.509 restriction sets.
+type RestrictionSetType string
+
+const (
+	RestrictionSetSSH  RestrictionSetType = "ssh"
+	RestrictionSetX509 RestrictionSetType = "x509"
+)
+
 // RestrictionSet defines constraints on certificate signing parameters.
 type RestrictionSet struct {
-	ID                    string   `json:"id"`
-	CAID                  string   `json:"ca_id"`
-	Name                  string   `json:"name"`
-	MaxValiditySecs       *int64   `json:"max_validity_secs,omitempty"`
+	ID                    string             `json:"id"`
+	CAID                  string             `json:"ca_id"`
+	Name                  string             `json:"name"`
+	Type                  RestrictionSetType `json:"type"`                           // "ssh" or "x509"
+	MaxValiditySecs       *int64             `json:"max_validity_secs,omitempty"`
+
+	// SSH-specific restrictions
 	AllowedPrincipals     []string `json:"allowed_principals,omitempty"`
 	AllowedCertTypes      []string `json:"allowed_cert_types,omitempty"`      // ["user"], ["host"], ["user","host"]
-	ForceKeyIDEmail       bool     `json:"force_key_id_email"`               // key_id includes user email
-	RequireReason         bool     `json:"require_reason"`                   // user must provide a reason, appended to key_id
-	AllowedExtensions     []string `json:"allowed_extensions,omitempty"`      // if set, only these extensions allowed
-	DenyExtensions        bool     `json:"deny_extensions"`                   // if true, no custom extensions allowed
-	DenyCriticalOptions   bool     `json:"deny_critical_options"`             // if true, no critical options allowed
-	MaxValidAfterOffset   *int64   `json:"max_valid_after_offset,omitempty"`  // max seconds into the future for valid_after
+	ForceKeyIDEmail       bool     `json:"force_key_id_email"`
+	RequireReason         bool     `json:"require_reason"`
+	AllowedExtensions     []string `json:"allowed_extensions,omitempty"`
+	DenyExtensions        bool     `json:"deny_extensions"`
+	DenyCriticalOptions   bool     `json:"deny_critical_options"`
+	MaxValidAfterOffset   *int64   `json:"max_valid_after_offset,omitempty"`
+
+	// X.509-specific restrictions
+	AllowedKeyUsages      []string `json:"allowed_key_usages,omitempty"`        // e.g. ["digitalSignature", "keyEncipherment"]
+	AllowedExtKeyUsages   []string `json:"allowed_ext_key_usages,omitempty"`    // e.g. ["serverAuth", "clientAuth"]
+	AllowedSANTypes       []string `json:"allowed_san_types,omitempty"`         // e.g. ["dns", "ip", "email"]
+	AllowedSANPatterns    []string `json:"allowed_san_patterns,omitempty"`      // e.g. ["*.example.com", "10.0.0.0/8"]
+	AllowedSubjectFields  []string `json:"allowed_subject_fields,omitempty"`    // e.g. ["CN", "O", "OU"]
+	MaxPathLength         *int     `json:"max_path_length,omitempty"`           // -1 = no CA, 0+ = CA with path length
+	DenyCA                bool     `json:"deny_ca"`                             // if true, cannot issue CA certificates
+}
+
+// X509SignRequest is the request to sign an X.509 certificate.
+type X509SignRequest struct {
+	CAID               string            `json:"ca_id"`
+	CSR                string            `json:"csr"`                          // PEM-encoded PKCS#10 CSR
+	ValidBefore        string            `json:"valid_before,omitempty"`
+	Reason             string            `json:"reason,omitempty"`
+	KeyUsages          []string          `json:"key_usages,omitempty"`         // digitalSignature, keyEncipherment, etc.
+	ExtKeyUsages       []string          `json:"ext_key_usages,omitempty"`     // serverAuth, clientAuth, etc.
+	IsCA               bool              `json:"is_ca"`
+	PathLength         *int              `json:"path_length,omitempty"`
+}
+
+// X509SignResponse is the response containing the signed X.509 certificate.
+type X509SignResponse struct {
+	Certificate string `json:"certificate"` // PEM-encoded X.509 certificate
+	Serial      string `json:"serial"`
 }
 
 type SignRequest struct {
