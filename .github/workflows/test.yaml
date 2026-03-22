@@ -28,9 +28,9 @@ jobs:
           echo "directories.tokendir = /tmp/softhsm/tokens" > /tmp/softhsm2.conf
           export SOFTHSM2_CONF=/tmp/softhsm2.conf
           echo "SOFTHSM2_CONF=/tmp/softhsm2.conf" >> $GITHUB_ENV
-          softhsm2-util --init-token --slot 0 --label "secsy-test" --pin 1234 --so-pin 5678
+          softhsm2-util --init-token --slot 0 --label "secsy-pki-root" --pin 1234 --so-pin 5678
           pkcs11-tool --module /usr/lib/softhsm/libsofthsm2.so --login --pin 1234 \
-            --keypairgen --key-type EC:prime256v1 --label "test-ca" --id 01
+            --keypairgen --key-type EC:prime256v1 --label "secsy-pki-root-ca-priv" --id 01
 
       - name: Start KeyCloak
         run: |
@@ -79,7 +79,7 @@ jobs:
           pkcs11:
             module_path: "/usr/lib/softhsm/libsofthsm2.so"
             pin: "1234"
-            token_label: "secsy-test"
+            token_label: "secsy-pki-root"
           EOF
 
           go build -tags sqlite -o /tmp/secsy-server ./cmd/server
