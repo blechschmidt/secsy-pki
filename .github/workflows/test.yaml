@@ -24,6 +24,10 @@ jobs:
 
       - name: Setup SoftHSM
         run: |
+          mkdir -p /tmp/softhsm/tokens
+          echo "directories.tokendir = /tmp/softhsm/tokens" > /tmp/softhsm2.conf
+          export SOFTHSM2_CONF=/tmp/softhsm2.conf
+          echo "SOFTHSM2_CONF=/tmp/softhsm2.conf" >> $GITHUB_ENV
           softhsm2-util --init-token --slot 0 --label "secsy-test" --pin 1234 --so-pin 5678
           pkcs11-tool --module /usr/lib/softhsm/libsofthsm2.so --login --pin 1234 \
             --keypairgen --key-type EC:prime256v1 --label "test-ca" --id 01
