@@ -450,14 +450,6 @@ async function loadCASelect(selectId) {
     } catch (err) { /* ignore */ }
 }
 
-// Sign tab switching
-function switchSignTab(tab) {
-    document.getElementById('signSSHTab').classList.toggle('active', tab === 'ssh');
-    document.getElementById('signX509Tab').classList.toggle('active', tab === 'x509');
-    document.getElementById('signSSHPane').style.display = tab === 'ssh' ? '' : 'none';
-    document.getElementById('signX509Pane').style.display = tab === 'x509' ? '' : 'none';
-}
-
 // Sign Certificate — restriction-aware UI
 let activeRestrictions = null;
 
@@ -586,25 +578,53 @@ document.getElementById('signForm').addEventListener('submit', async e => {
     }
 });
 
-// X.509 Certificate Signing
+// X.509 Certificate Signing — parse CSR on input
+let csrParseTimer = null;
+document.getElementById('signx509CSR').addEventListener('input', () => {
+    clearTimeout(csrParseTimer);
+    csrParseTimer = setTimeout(parseAndDisplayCSR, 400);
+});
+
+async function parseAndDisplayCSR() {
+    const csrText = document.getElementById('signx509CSR').value.trim();
+    const infoDiv = document.getElementById('csrInfo');
+    const tbody = document.getElementById('csrInfoBody');
+    if (!csrText || !csrText.includes('BEGIN CERTIFICATE REQUEST')) {
+        infoDiv.classList.add('d-none');
+        return;
+    }
+    try {
+        const info = await API.post('/api/parse-csr', { csr: csrText });
+        tbody.innerHTML = '';
+        const addRow = (label, value) => {
+            if (!value) return;
+            tbody.innerHTML += `<tr><td class="fw-bold text-nowrap" style="width:1%">${esc(label)}</td><td class="font-monospace">${esc(value)}</td></tr>`;
+        };
+        addRow('Algorithm', info.public_key_algorithm);
+        const subj = info.subject || {};
+        if (subj.CN) addRow('Common Name', subj.CN);
+        if (subj.O) addRow('Organization', subj.O);
+        if (subj.OU) addRow('Org Unit', subj.OU);
+        if (subj.C) addRow('Country', subj.C);
+        if (subj.ST) addRow('State', subj.ST);
+        if (subj.L) addRow('Locality', subj.L);
+        const sans = info.sans || {};
+        if (sans.dns) addRow('DNS SANs', sans.dns.join(', '));
+        if (sans.ip) addRow('IP SANs', sans.ip.join(', '));
+        if (sans.email) addRow('Email SANs', sans.email.join(', '));
+        infoDiv.classList.remove('d-none');
+    } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="2" class="text-danger">${esc(err.message)}</td></tr>`;
+        infoDiv.classList.remove('d-none');
+    }
+}
+
 document.getElementById('signx509Form').addEventListener('submit', async e => {
     e.preventDefault();
     try {
-        const keyUsages = [];
-        for (const [id, name] of [['ku-digitalSignature','digitalSignature'],['ku-keyEncipherment','keyEncipherment'],['ku-dataEncipherment','dataEncipherment'],['ku-keyAgreement','keyAgreement'],['ku-certSign','certSign'],['ku-crlSign','crlSign']]) {
-            if (document.getElementById(id).checked) keyUsages.push(name);
-        }
-        const extKeyUsages = [];
-        for (const [id, name] of [['eku-serverAuth','serverAuth'],['eku-clientAuth','clientAuth'],['eku-codeSigning','codeSigning'],['eku-emailProtection','emailProtection']]) {
-            if (document.getElementById(id).checked) extKeyUsages.push(name);
-        }
-
         const result = await API.post(`/api/cas/${document.getElementById('signx509CA').value}/sign-x509`, {
             csr: document.getElementById('signx509CSR').value,
             valid_before: document.getElementById('signx509ValidBefore').value || '+365d',
-            key_usages: keyUsages,
-            ext_key_usages: extKeyUsages,
-            is_ca: document.getElementById('signx509IsCA').value === 'true',
         });
         document.getElementById('x509ResultSerial').value = result.serial;
         document.getElementById('x509ResultCert').value = result.certificate;
@@ -615,163 +635,6 @@ document.getElementById('signx509Form').addEventListener('submit', async e => {
     }
 });
 
-// Key Generation (client-side using Web Crypto API)
-document.getElementById('keygenForm').addEventListener('submit', async e => {
-    e.preventDefault();
-    try {
-        const keyType = document.getElementById('keygenType').value;
-        const comment = document.getElementById('keygenComment').value || '';
-        const result = await generateSSHKeyPair(keyType, comment);
-        document.getElementById('keygenPub').value = result.publicKey;
-        document.getElementById('keygenPriv').value = result.privateKey;
-        document.getElementById('keygenResult').classList.remove('d-none');
-        showToast('Success', 'Key pair generated in your browser');
-    } catch (err) {
-        showToast('Error', err.message, true);
-    }
-});
-
-async function generateSSHKeyPair(keyType, comment) {
-    if (keyType === 'ed25519') {
-        const keyPair = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
-        const privRaw = new Uint8Array(await crypto.subtle.exportKey('pkcs8', keyPair.privateKey));
-        const pubRaw = new Uint8Array(await crypto.subtle.exportKey('raw', keyPair.publicKey));
-        // Ed25519 raw public key is 32 bytes
-        const pubSSH = formatSSHEd25519PublicKey(pubRaw, comment);
-        // Extract the 32-byte seed from PKCS8 (last 32 bytes of the 48-byte structure)
-        const privSeed = privRaw.slice(privRaw.length - 32);
-        const privSSH = formatSSHEd25519PrivateKey(privSeed, pubRaw, comment);
-        return { publicKey: pubSSH, privateKey: privSSH };
-    } else {
-        // ECDSA
-        const namedCurve = keyType === 'ecdsa-384' ? 'P-384' : 'P-256';
-        const curveName = keyType === 'ecdsa-384' ? 'nistp384' : 'nistp256';
-        const keyPair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve }, true, ['sign', 'verify']);
-        const pubJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
-        const privJwk = await crypto.subtle.exportKey('jwk', keyPair.privateKey);
-
-        // Build uncompressed EC point: 0x04 || x || y
-        const x = base64urlDecode(pubJwk.x);
-        const y = base64urlDecode(pubJwk.y);
-        const ecPoint = new Uint8Array(1 + x.length + y.length);
-        ecPoint[0] = 0x04;
-        ecPoint.set(x, 1);
-        ecPoint.set(y, 1 + x.length);
-
-        const sshType = `ecdsa-sha2-${curveName}`;
-        const pubSSH = formatSSHECDSAPublicKey(sshType, curveName, ecPoint, comment);
-        const d = base64urlDecode(privJwk.d);
-        const privSSH = formatSSHECDSAPrivateKey(sshType, curveName, ecPoint, d, comment);
-        return { publicKey: pubSSH, privateKey: privSSH };
-    }
-}
-
-// SSH wire format helpers
-function sshString(s) {
-    const encoded = new TextEncoder().encode(s);
-    const buf = new Uint8Array(4 + encoded.length);
-    new DataView(buf.buffer).setUint32(0, encoded.length);
-    buf.set(encoded, 4);
-    return buf;
-}
-
-function sshBytes(data) {
-    const buf = new Uint8Array(4 + data.length);
-    new DataView(buf.buffer).setUint32(0, data.length);
-    buf.set(data, 4);
-    return buf;
-}
-
-function concatBytes(...arrays) {
-    const total = arrays.reduce((sum, a) => sum + a.length, 0);
-    const result = new Uint8Array(total);
-    let offset = 0;
-    for (const a of arrays) { result.set(a, offset); offset += a.length; }
-    return result;
-}
-
-function base64urlDecode(s) {
-    const b64 = s.replace(/-/g, '+').replace(/_/g, '/');
-    const bin = atob(b64);
-    return Uint8Array.from(bin, c => c.charCodeAt(0));
-}
-
-function formatSSHEd25519PublicKey(pubRaw, comment) {
-    const blob = concatBytes(sshString('ssh-ed25519'), sshBytes(pubRaw));
-    let line = 'ssh-ed25519 ' + btoa(String.fromCharCode(...blob));
-    if (comment) line += ' ' + comment;
-    return line;
-}
-
-function formatSSHEd25519PrivateKey(seed, pubRaw, comment) {
-    // OpenSSH private key format
-    const checkVal = crypto.getRandomValues(new Uint32Array(1))[0];
-    const checkBytes = new Uint8Array(4);
-    new DataView(checkBytes.buffer).setUint32(0, checkVal);
-    // Private key section: check || check || keytype || pubkey || privkey(seed||pub) || comment || padding
-    const privKeyData = concatBytes(seed, pubRaw); // Ed25519 private = seed(32) || pub(32)
-    let section = concatBytes(checkBytes, checkBytes, sshString('ssh-ed25519'), sshBytes(pubRaw), sshBytes(privKeyData), sshString(comment));
-    // Pad to block size (8 for none cipher)
-    const pad = 8 - (section.length % 8);
-    if (pad < 8) {
-        const padding = new Uint8Array(pad);
-        for (let i = 0; i < pad; i++) padding[i] = i + 1;
-        section = concatBytes(section, padding);
-    }
-    // Public key blob
-    const pubBlob = concatBytes(sshString('ssh-ed25519'), sshBytes(pubRaw));
-    // Full file
-    const body = concatBytes(
-        sshString('none'),     // cipher
-        sshString('none'),     // kdf
-        sshString(''),         // kdf options
-        new Uint8Array([0,0,0,1]), // number of keys
-        sshBytes(pubBlob),     // public key
-        sshBytes(section),     // private section
-    );
-    const header = 'openssh-key-v1\0';
-    const headerBytes = Uint8Array.from(header, c => c.charCodeAt(0));
-    const full = concatBytes(headerBytes, body);
-    const b64 = btoa(String.fromCharCode(...full));
-    const lines = ['-----BEGIN OPENSSH PRIVATE KEY-----'];
-    for (let i = 0; i < b64.length; i += 70) lines.push(b64.slice(i, i + 70));
-    lines.push('-----END OPENSSH PRIVATE KEY-----', '');
-    return lines.join('\n');
-}
-
-function formatSSHECDSAPublicKey(sshType, curveName, ecPoint, comment) {
-    const blob = concatBytes(sshString(sshType), sshString(curveName), sshBytes(ecPoint));
-    let line = sshType + ' ' + btoa(String.fromCharCode(...blob));
-    if (comment) line += ' ' + comment;
-    return line;
-}
-
-function formatSSHECDSAPrivateKey(sshType, curveName, ecPoint, d, comment) {
-    const checkVal = crypto.getRandomValues(new Uint32Array(1))[0];
-    const checkBytes = new Uint8Array(4);
-    new DataView(checkBytes.buffer).setUint32(0, checkVal);
-    let section = concatBytes(checkBytes, checkBytes, sshString(sshType), sshString(curveName), sshBytes(ecPoint), sshBytes(d), sshString(comment));
-    const pad = 8 - (section.length % 8);
-    if (pad < 8) {
-        const padding = new Uint8Array(pad);
-        for (let i = 0; i < pad; i++) padding[i] = i + 1;
-        section = concatBytes(section, padding);
-    }
-    const pubBlob = concatBytes(sshString(sshType), sshString(curveName), sshBytes(ecPoint));
-    const body = concatBytes(
-        sshString('none'), sshString('none'), sshString(''),
-        new Uint8Array([0,0,0,1]),
-        sshBytes(pubBlob), sshBytes(section),
-    );
-    const header = 'openssh-key-v1\0';
-    const headerBytes = Uint8Array.from(header, c => c.charCodeAt(0));
-    const full = concatBytes(headerBytes, body);
-    const b64 = btoa(String.fromCharCode(...full));
-    const lines = ['-----BEGIN OPENSSH PRIVATE KEY-----'];
-    for (let i = 0; i < b64.length; i += 70) lines.push(b64.slice(i, i + 70));
-    lines.push('-----END OPENSSH PRIVATE KEY-----', '');
-    return lines.join('\n');
-}
 
 // Groups
 let selectedGroupId = null;
@@ -943,8 +806,8 @@ async function revokePermission(caId, entityType, entityId, permission) {
 }
 
 // Audit Log
-let auditOffset = 0;
-const auditLimit = 25;
+var auditOffset = 0;
+var auditLimit = 25;
 
 document.getElementById('auditCA').addEventListener('change', () => { auditOffset = 0; loadAuditLog(); });
 
@@ -1049,8 +912,8 @@ function switchAuditTab(tab) {
 }
 
 // Access Log
-let accessOffset = 0;
-const accessLimit = 50;
+var accessOffset = 0;
+var accessLimit = 50;
 
 async function loadAccessLog() {
     try {
@@ -1299,30 +1162,46 @@ async function loadRestrictionSets() {
             container.innerHTML = '<p class="text-muted">No restriction sets configured for this CA.</p>';
             return;
         }
-        container.innerHTML = sets.map(rs => `
+        container.innerHTML = sets.map(rs => {
+            const typeBadge = rs.type === 'x509'
+                ? '<span class="badge bg-info ms-2">X.509</span>'
+                : '<span class="badge bg-primary ms-2">SSH</span>';
+            const any = '<span class="text-muted">any</span>';
+            const unlimited = '<span class="text-muted">unlimited</span>';
+            const listOrAny = (arr) => arr && arr.length ? arr.map(v => `<code>${esc(v)}</code>`).join(', ') : any;
+            let rows = `<tr><th>Max Validity</th><td>${rs.max_validity_secs ? formatDuration(rs.max_validity_secs) : unlimited}</td></tr>`;
+            if (rs.type === 'x509') {
+                rows += `<tr><th>Allowed Key Usages</th><td>${listOrAny(rs.allowed_key_usages)}</td></tr>`;
+                rows += `<tr><th>Allowed Ext Key Usages</th><td>${listOrAny(rs.allowed_ext_key_usages)}</td></tr>`;
+                rows += `<tr><th>Allowed SAN Types</th><td>${listOrAny(rs.allowed_san_types)}</td></tr>`;
+                rows += `<tr><th>Allowed SAN Patterns</th><td>${listOrAny(rs.allowed_san_patterns)}</td></tr>`;
+                rows += `<tr><th>Allowed Subject Fields</th><td>${listOrAny(rs.allowed_subject_fields)}</td></tr>`;
+                rows += `<tr><th>Max Path Length</th><td>${rs.max_path_length != null ? rs.max_path_length : unlimited}</td></tr>`;
+                rows += `<tr><th>Deny CA</th><td>${rs.deny_ca ? '<span class="badge bg-danger">Yes</span>' : 'No'}</td></tr>`;
+            } else {
+                rows += `<tr><th>Allowed Principals</th><td>${listOrAny(rs.allowed_principals)}</td></tr>`;
+                rows += `<tr><th>Allowed Cert Types</th><td>${listOrAny(rs.allowed_cert_types)}</td></tr>`;
+                rows += `<tr><th>Force Key ID (email)</th><td>${rs.force_key_id_email ? '<span class="badge bg-success">Yes</span>' : 'No'}</td></tr>`;
+                rows += `<tr><th>Require Reason</th><td>${rs.require_reason ? '<span class="badge bg-success">Yes</span>' : 'No'}</td></tr>`;
+                rows += `<tr><th>Deny Extensions</th><td>${rs.deny_extensions ? '<span class="badge bg-danger">Denied</span>' : 'No'}</td></tr>`;
+                rows += `<tr><th>Allowed Extensions</th><td>${rs.deny_extensions ? '<span class="text-muted">n/a</span>' : listOrAny(rs.allowed_extensions)}</td></tr>`;
+                rows += `<tr><th>Deny Critical Options</th><td>${rs.deny_critical_options ? '<span class="badge bg-danger">Denied</span>' : 'No'}</td></tr>`;
+                rows += `<tr><th>Max Valid-After Offset</th><td>${rs.max_valid_after_offset ? formatDuration(rs.max_valid_after_offset) : unlimited}</td></tr>`;
+            }
+            return `
             <div class="card mb-3">
                 <div class="card-header d-flex justify-content-between align-items-center">
-                    <strong>${esc(rs.name)}</strong>
+                    <span><strong>${esc(rs.name)}</strong>${typeBadge}</span>
                     <div>
                         <button class="btn btn-sm btn-outline-primary me-1" onclick="editRestrictionSet('${rs.id}')"><i class="bi bi-pencil"></i></button>
                         <button class="btn btn-sm btn-outline-danger" onclick="deleteRestrictionSet('${rs.id}')"><i class="bi bi-trash"></i></button>
                     </div>
                 </div>
                 <div class="card-body">
-                    <table class="table table-sm mb-0">
-                        <tr><th>Max Validity</th><td>${rs.max_validity_secs ? formatDuration(rs.max_validity_secs) : '<span class="text-muted">unlimited</span>'}</td></tr>
-                        <tr><th>Allowed Principals</th><td>${rs.allowed_principals && rs.allowed_principals.length ? rs.allowed_principals.map(p => `<code>${esc(p)}</code>`).join(', ') : '<span class="text-muted">any</span>'}</td></tr>
-                        <tr><th>Allowed Cert Types</th><td>${rs.allowed_cert_types && rs.allowed_cert_types.length ? rs.allowed_cert_types.join(', ') : '<span class="text-muted">any</span>'}</td></tr>
-                        <tr><th>Force Key ID (email)</th><td>${rs.force_key_id_email ? '<span class="badge bg-success">Yes</span>' : 'No'}</td></tr>
-                        <tr><th>Require Reason</th><td>${rs.require_reason ? '<span class="badge bg-success">Yes</span>' : 'No'}</td></tr>
-                        <tr><th>Deny Extensions</th><td>${rs.deny_extensions ? '<span class="badge bg-danger">Denied</span>' : 'No'}</td></tr>
-                        <tr><th>Allowed Extensions</th><td>${rs.deny_extensions ? '<span class="text-muted">n/a</span>' : (rs.allowed_extensions && rs.allowed_extensions.length ? rs.allowed_extensions.map(e => `<code>${esc(e)}</code>`).join(', ') : '<span class="text-muted">any</span>')}</td></tr>
-                        <tr><th>Deny Critical Options</th><td>${rs.deny_critical_options ? '<span class="badge bg-danger">Denied</span>' : 'No'}</td></tr>
-                        <tr><th>Max Valid-After Offset</th><td>${rs.max_valid_after_offset ? formatDuration(rs.max_valid_after_offset) : '<span class="text-muted">unlimited</span>'}</td></tr>
-                    </table>
+                    <table class="table table-sm mb-0">${rows}</table>
                 </div>
-            </div>
-        `).join('');
+            </div>`;
+        }).join('');
     } catch (err) {
         showToast('Error', err.message, true);
     }
@@ -1379,17 +1258,36 @@ async function deleteRestrictionSet(id) {
 
 function showRSEditor(existing) {
     const isEdit = !!existing;
+    const rsType = existing?.type || 'ssh';
     const html = `
+        <div class="mb-3">
+            <label class="form-label">Type</label>
+            <select class="form-select" id="rsEdType" ${isEdit ? 'disabled' : ''}>
+                <option value="ssh" ${rsType === 'ssh' ? 'selected' : ''}>SSH</option>
+                <option value="x509" ${rsType === 'x509' ? 'selected' : ''}>X.509</option>
+            </select>
+        </div>
         <div class="mb-3"><label class="form-label">Name</label><input type="text" class="form-control" id="rsEdName" value="${esc(existing?.name || '')}"></div>
         <div class="mb-3"><label class="form-label">Max Validity (seconds, e.g. 86400 for 1 day)</label><input type="number" class="form-control" id="rsEdMaxValidity" value="${existing?.max_validity_secs || ''}"></div>
-        <div class="mb-3"><label class="form-label">Allowed Principals (comma-separated, * for any)</label><input type="text" class="form-control" id="rsEdPrincipals" value="${(existing?.allowed_principals || []).join(', ')}"></div>
-        <div class="mb-3"><label class="form-label">Allowed Cert Types (comma-separated: user, host)</label><input type="text" class="form-control" id="rsEdCertTypes" value="${(existing?.allowed_cert_types || []).join(', ')}"></div>
-        <div class="mb-3 form-check"><input type="checkbox" class="form-check-input" id="rsEdForceEmail" ${existing?.force_key_id_email ? 'checked' : ''}><label class="form-check-label" for="rsEdForceEmail">Force Key ID to user email</label></div>
-        <div class="mb-3 form-check"><input type="checkbox" class="form-check-input" id="rsEdRequireReason" ${existing?.require_reason ? 'checked' : ''}><label class="form-check-label" for="rsEdRequireReason">Require reason (appended to key ID)</label></div>
-        <div class="mb-3 form-check"><input type="checkbox" class="form-check-input" id="rsEdDenyExt" ${existing?.deny_extensions ? 'checked' : ''}><label class="form-check-label" for="rsEdDenyExt">Deny custom extensions</label></div>
-        <div class="mb-3"><label class="form-label">Allowed Extensions (comma-separated, leave empty for any)</label><input type="text" class="form-control" id="rsEdExtensions" value="${(existing?.allowed_extensions || []).join(', ')}"></div>
-        <div class="mb-3 form-check"><input type="checkbox" class="form-check-input" id="rsEdDenyCrit" ${existing?.deny_critical_options ? 'checked' : ''}><label class="form-check-label" for="rsEdDenyCrit">Deny critical options</label></div>
-        <div class="mb-3"><label class="form-label">Max Valid-After Offset (seconds into the future)</label><input type="number" class="form-control" id="rsEdMaxOffset" value="${existing?.max_valid_after_offset || ''}"></div>
+        <div id="rsEdSSHFields" style="display:${rsType === 'ssh' ? '' : 'none'}">
+            <div class="mb-3"><label class="form-label">Allowed Principals (comma-separated, * for any)</label><input type="text" class="form-control" id="rsEdPrincipals" value="${(existing?.allowed_principals || []).join(', ')}"></div>
+            <div class="mb-3"><label class="form-label">Allowed Cert Types (comma-separated: user, host)</label><input type="text" class="form-control" id="rsEdCertTypes" value="${(existing?.allowed_cert_types || []).join(', ')}"></div>
+            <div class="mb-3 form-check"><input type="checkbox" class="form-check-input" id="rsEdForceEmail" ${existing?.force_key_id_email ? 'checked' : ''}><label class="form-check-label" for="rsEdForceEmail">Force Key ID to user email</label></div>
+            <div class="mb-3 form-check"><input type="checkbox" class="form-check-input" id="rsEdRequireReason" ${existing?.require_reason ? 'checked' : ''}><label class="form-check-label" for="rsEdRequireReason">Require reason (appended to key ID)</label></div>
+            <div class="mb-3 form-check"><input type="checkbox" class="form-check-input" id="rsEdDenyExt" ${existing?.deny_extensions ? 'checked' : ''}><label class="form-check-label" for="rsEdDenyExt">Deny custom extensions</label></div>
+            <div class="mb-3"><label class="form-label">Allowed Extensions (comma-separated, leave empty for any)</label><input type="text" class="form-control" id="rsEdExtensions" value="${(existing?.allowed_extensions || []).join(', ')}"></div>
+            <div class="mb-3 form-check"><input type="checkbox" class="form-check-input" id="rsEdDenyCrit" ${existing?.deny_critical_options ? 'checked' : ''}><label class="form-check-label" for="rsEdDenyCrit">Deny critical options</label></div>
+            <div class="mb-3"><label class="form-label">Max Valid-After Offset (seconds into the future)</label><input type="number" class="form-control" id="rsEdMaxOffset" value="${existing?.max_valid_after_offset || ''}"></div>
+        </div>
+        <div id="rsEdX509Fields" style="display:${rsType === 'x509' ? '' : 'none'}">
+            <div class="mb-3"><label class="form-label">Allowed Key Usages (comma-separated, e.g. digitalSignature, keyEncipherment)</label><input type="text" class="form-control" id="rsEdKeyUsages" value="${(existing?.allowed_key_usages || []).join(', ')}"></div>
+            <div class="mb-3"><label class="form-label">Allowed Ext Key Usages (comma-separated, e.g. serverAuth, clientAuth)</label><input type="text" class="form-control" id="rsEdExtKeyUsages" value="${(existing?.allowed_ext_key_usages || []).join(', ')}"></div>
+            <div class="mb-3"><label class="form-label">Allowed SAN Types (comma-separated: dns, ip, email)</label><input type="text" class="form-control" id="rsEdSANTypes" value="${(existing?.allowed_san_types || []).join(', ')}"></div>
+            <div class="mb-3"><label class="form-label">Allowed SAN Patterns (comma-separated, e.g. *.example.com, 10.0.0.0/8)</label><input type="text" class="form-control" id="rsEdSANPatterns" value="${(existing?.allowed_san_patterns || []).join(', ')}"></div>
+            <div class="mb-3"><label class="form-label">Allowed Subject Fields (comma-separated: CN, O, OU, C, ST, L)</label><input type="text" class="form-control" id="rsEdSubjectFields" value="${(existing?.allowed_subject_fields || []).join(', ')}"></div>
+            <div class="mb-3"><label class="form-label">Max Path Length (-1 = no CA certs)</label><input type="number" class="form-control" id="rsEdMaxPathLen" value="${existing?.max_path_length != null ? existing.max_path_length : ''}"></div>
+            <div class="mb-3 form-check"><input type="checkbox" class="form-check-input" id="rsEdDenyCA" ${existing?.deny_ca ? 'checked' : ''}><label class="form-check-label" for="rsEdDenyCA">Deny CA certificates</label></div>
+        </div>
     `;
 
     document.getElementById('inputModalTitle').textContent = isEdit ? 'Edit Restriction Set' : 'Create Restriction Set';
@@ -1398,24 +1296,45 @@ function showRSEditor(existing) {
     // Repurpose the modal body
     const body = document.getElementById('inputModal').querySelector('.modal-body');
     body.innerHTML = html;
+
+    // Toggle fields on type change
+    document.getElementById('rsEdType').addEventListener('change', () => {
+        const t = document.getElementById('rsEdType').value;
+        document.getElementById('rsEdSSHFields').style.display = t === 'ssh' ? '' : 'none';
+        document.getElementById('rsEdX509Fields').style.display = t === 'x509' ? '' : 'none';
+    });
+
     const modal = new bootstrap.Modal(document.getElementById('inputModal'));
 
     const okBtn = document.getElementById('inputModalOk');
     const handler = async () => {
         okBtn.removeEventListener('click', handler);
         const caId = document.getElementById('rsCA').value;
+        const selectedType = document.getElementById('rsEdType').value;
         const data = {
             name: document.getElementById('rsEdName').value,
+            type: selectedType,
             max_validity_secs: parseInt(document.getElementById('rsEdMaxValidity').value) || null,
-            allowed_principals: splitTrim(document.getElementById('rsEdPrincipals').value),
-            allowed_cert_types: splitTrim(document.getElementById('rsEdCertTypes').value),
-            force_key_id_email: document.getElementById('rsEdForceEmail').checked,
-            require_reason: document.getElementById('rsEdRequireReason').checked,
-            deny_extensions: document.getElementById('rsEdDenyExt').checked,
-            allowed_extensions: splitTrim(document.getElementById('rsEdExtensions').value),
-            deny_critical_options: document.getElementById('rsEdDenyCrit').checked,
-            max_valid_after_offset: parseInt(document.getElementById('rsEdMaxOffset').value) || null,
         };
+        if (selectedType === 'ssh') {
+            data.allowed_principals = splitTrim(document.getElementById('rsEdPrincipals').value);
+            data.allowed_cert_types = splitTrim(document.getElementById('rsEdCertTypes').value);
+            data.force_key_id_email = document.getElementById('rsEdForceEmail').checked;
+            data.require_reason = document.getElementById('rsEdRequireReason').checked;
+            data.deny_extensions = document.getElementById('rsEdDenyExt').checked;
+            data.allowed_extensions = splitTrim(document.getElementById('rsEdExtensions').value);
+            data.deny_critical_options = document.getElementById('rsEdDenyCrit').checked;
+            data.max_valid_after_offset = parseInt(document.getElementById('rsEdMaxOffset').value) || null;
+        } else {
+            data.allowed_key_usages = splitTrim(document.getElementById('rsEdKeyUsages').value);
+            data.allowed_ext_key_usages = splitTrim(document.getElementById('rsEdExtKeyUsages').value);
+            data.allowed_san_types = splitTrim(document.getElementById('rsEdSANTypes').value);
+            data.allowed_san_patterns = splitTrim(document.getElementById('rsEdSANPatterns').value);
+            data.allowed_subject_fields = splitTrim(document.getElementById('rsEdSubjectFields').value);
+            const mpl = document.getElementById('rsEdMaxPathLen').value;
+            data.max_path_length = mpl !== '' ? parseInt(mpl) : null;
+            data.deny_ca = document.getElementById('rsEdDenyCA').checked;
+        }
         try {
             if (isEdit) {
                 await API.request('PUT', `/api/restriction-sets/${existing.id}`, data);

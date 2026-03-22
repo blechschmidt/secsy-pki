@@ -95,14 +95,14 @@ func TestX509ExtKeyUsageFromString(t *testing.T) {
 
 func TestCSRParseInvalid(t *testing.T) {
 	// Not a CSR
-	_, _, err := SignX509Certificate(nil, []byte("not a pem"), time.Time{}, nil, nil, false, nil)
+	_, _, err := SignX509Certificate(nil, []byte("not a pem"), time.Time{})
 	if err == nil {
 		t.Fatal("expected error for invalid PEM")
 	}
 
 	// Wrong PEM type
 	wrongPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte{1, 2, 3}})
-	_, _, err = SignX509Certificate(nil, wrongPEM, time.Time{}, nil, nil, false, nil)
+	_, _, err = SignX509Certificate(nil, wrongPEM, time.Time{})
 	if err == nil {
 		t.Fatal("expected error for wrong PEM type")
 	}

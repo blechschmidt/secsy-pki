@@ -83,15 +83,12 @@ type RestrictionSet struct {
 }
 
 // X509SignRequest is the request to sign an X.509 certificate.
+// All certificate parameters are taken from the CSR; only validity can be overridden.
 type X509SignRequest struct {
 	CAID               string            `json:"ca_id"`
 	CSR                string            `json:"csr"`                          // PEM-encoded PKCS#10 CSR
 	ValidBefore        string            `json:"valid_before,omitempty"`
 	Reason             string            `json:"reason,omitempty"`
-	KeyUsages          []string          `json:"key_usages,omitempty"`         // digitalSignature, keyEncipherment, etc.
-	ExtKeyUsages       []string          `json:"ext_key_usages,omitempty"`     // serverAuth, clientAuth, etc.
-	IsCA               bool              `json:"is_ca"`
-	PathLength         *int              `json:"path_length,omitempty"`
 }
 
 // X509SignResponse is the response containing the signed X.509 certificate.

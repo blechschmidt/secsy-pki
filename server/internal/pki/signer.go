@@ -39,7 +39,9 @@ func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {
 		return nil, fmt.Errorf("failed to load PKCS#11 module: %s", cfg.ModulePath)
 	}
 	if err := ctx.Initialize(); err != nil {
-		return nil, fmt.Errorf("initializing PKCS#11: %w", err)
+		if e, ok := err.(pkcs11.Error); !ok || e != pkcs11.CKR_CRYPTOKI_ALREADY_INITIALIZED {
+			return nil, fmt.Errorf("initializing PKCS#11: %w", err)
+		}
 	}
 
 	slots, err := ctx.GetSlotList(true)
@@ -298,7 +300,9 @@ func GenerateKeyOnHSM(cfg PKCS11Config, label string, keyType string) (*Generate
 		return nil, fmt.Errorf("failed to load PKCS#11 module: %s", cfg.ModulePath)
 	}
 	if err := ctx.Initialize(); err != nil {
-		return nil, fmt.Errorf("initializing PKCS#11: %w", err)
+		if e, ok := err.(pkcs11.Error); !ok || e != pkcs11.CKR_CRYPTOKI_ALREADY_INITIALIZED {
+			return nil, fmt.Errorf("initializing PKCS#11: %w", err)
+		}
 	}
 	defer func() {
 		ctx.Finalize()

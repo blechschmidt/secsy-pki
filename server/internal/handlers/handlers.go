@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -51,6 +52,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 
 	mux.Handle("POST /api/cas/{id}/sign", protected(http.HandlerFunc(a.SignCertificate)))
 	mux.Handle("POST /api/cas/{id}/sign-x509", protected(http.HandlerFunc(a.SignX509Certificate)))
+	mux.Handle("POST /api/parse-csr", protected(http.HandlerFunc(a.ParseCSR)))
 	mux.Handle("GET /api/cas/{id}/my-restrictions", protected(http.HandlerFunc(a.GetMyRestrictions)))
 
 	mux.Handle("GET /api/groups", protected(http.HandlerFunc(a.ListGroups)))
@@ -474,7 +476,6 @@ func (a *API) SignX509Certificate(w http.ResponseWriter, r *http.Request) {
 
 	certPEM, serial, err := pki.SignX509Certificate(
 		signer, []byte(req.CSR), validBefore,
-		req.KeyUsages, req.ExtKeyUsages, req.IsCA, req.PathLength,
 	)
 
 	signer.Close()
@@ -488,6 +489,78 @@ func (a *API) SignX509Certificate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, models.X509SignResponse{
 		Certificate: string(certPEM),
 		Serial:      serial,
+	})
+}
+
+func (a *API) ParseCSR(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		CSR string `json:"csr"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+
+	block, _ := pem.Decode([]byte(req.CSR))
+	if block == nil || block.Type != "CERTIFICATE REQUEST" {
+		writeError(w, http.StatusBadRequest, "invalid PEM: expected CERTIFICATE REQUEST")
+		return
+	}
+
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to parse CSR: %v", err)
+		return
+	}
+	if err := csr.CheckSignature(); err != nil {
+		writeError(w, http.StatusBadRequest, "CSR signature invalid: %v", err)
+		return
+	}
+
+	// Build subject fields
+	subject := map[string]string{}
+	if csr.Subject.CommonName != "" {
+		subject["CN"] = csr.Subject.CommonName
+	}
+	if len(csr.Subject.Organization) > 0 {
+		subject["O"] = csr.Subject.Organization[0]
+	}
+	if len(csr.Subject.OrganizationalUnit) > 0 {
+		subject["OU"] = csr.Subject.OrganizationalUnit[0]
+	}
+	if len(csr.Subject.Country) > 0 {
+		subject["C"] = csr.Subject.Country[0]
+	}
+	if len(csr.Subject.Province) > 0 {
+		subject["ST"] = csr.Subject.Province[0]
+	}
+	if len(csr.Subject.Locality) > 0 {
+		subject["L"] = csr.Subject.Locality[0]
+	}
+
+	// SANs
+	sans := map[string][]string{}
+	if len(csr.DNSNames) > 0 {
+		sans["dns"] = csr.DNSNames
+	}
+	ipStrs := make([]string, len(csr.IPAddresses))
+	for i, ip := range csr.IPAddresses {
+		ipStrs[i] = ip.String()
+	}
+	if len(ipStrs) > 0 {
+		sans["ip"] = ipStrs
+	}
+	if len(csr.EmailAddresses) > 0 {
+		sans["email"] = csr.EmailAddresses
+	}
+
+	// Public key info
+	pubKeyAlgo := csr.PublicKeyAlgorithm.String()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"subject":          subject,
+		"sans":             sans,
+		"public_key_algorithm": pubKeyAlgo,
 	})
 }
 

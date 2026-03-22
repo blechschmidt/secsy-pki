@@ -24,9 +24,6 @@
                         <a class="nav-link" href="#" data-page="sign"><i class="bi bi-pen"></i> Sign Certificate</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="#" data-page="keygen"><i class="bi bi-gear"></i> Generate Keys</a>
-                    </li>
-                    <li class="nav-item">
                         <a class="nav-link" href="#" data-page="groups"><i class="bi bi-people"></i> Groups</a>
                     </li>
                     <li class="nav-item">
@@ -135,16 +132,17 @@
             <!-- Sign Page -->
             <div id="signPage" class="page d-none">
                 <h3><i class="bi bi-pen"></i> Sign Certificate</h3>
-                <ul class="nav nav-tabs mb-3">
-                    <li class="nav-item">
-                        <button class="nav-link active" id="signSSHTab" onclick="switchSignTab('ssh')">SSH Certificate</button>
+                <ul class="nav nav-tabs mb-3" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="signSSHTab" data-bs-toggle="tab" data-bs-target="#signSSHPane" type="button" role="tab">SSH Certificate</button>
                     </li>
-                    <li class="nav-item">
-                        <button class="nav-link" id="signX509Tab" onclick="switchSignTab('x509')">X.509 Certificate</button>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="signX509Tab" data-bs-toggle="tab" data-bs-target="#signX509Pane" type="button" role="tab">X.509 Certificate</button>
                     </li>
                 </ul>
 
-                <div id="signSSHPane">
+                <div class="tab-content">
+                <div class="tab-pane fade show active" id="signSSHPane" role="tabpanel">
                 <div class="row">
                     <div class="col-md-6">
                         <form id="signForm">
@@ -216,8 +214,9 @@
                     </div>
                 </div>
                 </div>
+                </div>
 
-                <div id="signX509Pane" style="display:none">
+                <div class="tab-pane fade" id="signX509Pane" role="tabpanel">
                 <div class="row">
                     <div class="col-md-6">
                         <form id="signx509Form">
@@ -229,46 +228,15 @@
                                 <label class="form-label">Certificate Signing Request (CSR)</label>
                                 <textarea class="form-control font-monospace" id="signx509CSR" rows="8" placeholder="-----BEGIN CERTIFICATE REQUEST-----&#10;...&#10;-----END CERTIFICATE REQUEST-----" required></textarea>
                             </div>
-                            <div class="row">
-                                <div class="col-md-6 mb-3">
-                                    <label class="form-label">Valid Until</label>
-                                    <input type="text" class="form-control" id="signx509ValidBefore" placeholder="+365d (default)">
-                                </div>
-                                <div class="col-md-6 mb-3">
-                                    <label class="form-label">Is CA</label>
-                                    <select class="form-select" id="signx509IsCA">
-                                        <option value="false" selected>No (end-entity)</option>
-                                        <option value="true">Yes (intermediate CA)</option>
-                                    </select>
-                                </div>
-                            </div>
                             <div class="mb-3">
-                                <label class="form-label">Key Usages</label>
-                                <div class="row">
-                                    <div class="col-6">
-                                        <div class="form-check"><input class="form-check-input" type="checkbox" id="ku-digitalSignature" checked><label class="form-check-label" for="ku-digitalSignature">Digital Signature</label></div>
-                                        <div class="form-check"><input class="form-check-input" type="checkbox" id="ku-keyEncipherment"><label class="form-check-label" for="ku-keyEncipherment">Key Encipherment</label></div>
-                                        <div class="form-check"><input class="form-check-input" type="checkbox" id="ku-dataEncipherment"><label class="form-check-label" for="ku-dataEncipherment">Data Encipherment</label></div>
-                                    </div>
-                                    <div class="col-6">
-                                        <div class="form-check"><input class="form-check-input" type="checkbox" id="ku-keyAgreement"><label class="form-check-label" for="ku-keyAgreement">Key Agreement</label></div>
-                                        <div class="form-check"><input class="form-check-input" type="checkbox" id="ku-certSign"><label class="form-check-label" for="ku-certSign">Certificate Sign</label></div>
-                                        <div class="form-check"><input class="form-check-input" type="checkbox" id="ku-crlSign"><label class="form-check-label" for="ku-crlSign">CRL Sign</label></div>
-                                    </div>
-                                </div>
+                                <label class="form-label">Valid Until</label>
+                                <input type="text" class="form-control" id="signx509ValidBefore" placeholder="+365d (default)">
                             </div>
-                            <div class="mb-3">
-                                <label class="form-label">Extended Key Usages</label>
-                                <div class="row">
-                                    <div class="col-6">
-                                        <div class="form-check"><input class="form-check-input" type="checkbox" id="eku-serverAuth"><label class="form-check-label" for="eku-serverAuth">Server Auth (TLS)</label></div>
-                                        <div class="form-check"><input class="form-check-input" type="checkbox" id="eku-clientAuth"><label class="form-check-label" for="eku-clientAuth">Client Auth</label></div>
-                                    </div>
-                                    <div class="col-6">
-                                        <div class="form-check"><input class="form-check-input" type="checkbox" id="eku-codeSigning"><label class="form-check-label" for="eku-codeSigning">Code Signing</label></div>
-                                        <div class="form-check"><input class="form-check-input" type="checkbox" id="eku-emailProtection"><label class="form-check-label" for="eku-emailProtection">Email Protection</label></div>
-                                    </div>
-                                </div>
+                            <div id="csrInfo" class="d-none">
+                                <h6 class="text-muted mb-2"><i class="bi bi-info-circle"></i> CSR Contents</h6>
+                                <table class="table table-sm table-bordered mb-3">
+                                    <tbody id="csrInfoBody"></tbody>
+                                </table>
                             </div>
                             <button type="submit" class="btn btn-primary"><i class="bi bi-file-earmark-lock"></i> Sign X.509 Certificate</button>
                         </form>
@@ -291,53 +259,6 @@
                     </div>
                 </div>
                 </div>
-            </div>
-
-            <!-- Key Gen Page -->
-            <div id="keygenPage" class="page d-none">
-                <h3><i class="bi bi-gear"></i> Generate SSH Keys</h3>
-                <div class="alert alert-info">
-                    <i class="bi bi-shield-check"></i> Keys are generated <strong>entirely in your browser</strong> using the Web Crypto API. Private keys never leave your device and are not sent to the server.
-                </div>
-                <div class="row">
-                    <div class="col-md-5">
-                        <form id="keygenForm">
-                            <div class="mb-3">
-                                <label class="form-label">Key Type</label>
-                                <select class="form-select" id="keygenType">
-                                    <option value="ed25519">Ed25519 (recommended)</option>
-                                    <option value="ecdsa-256">ECDSA P-256</option>
-                                    <option value="ecdsa-384">ECDSA P-384</option>
-                                </select>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">Comment</label>
-                                <input type="text" class="form-control" id="keygenComment" placeholder="user@host">
-                            </div>
-                            <button type="submit" class="btn btn-primary"><i class="bi bi-gear"></i> Generate</button>
-                        </form>
-                    </div>
-                    <div class="col-md-7">
-                        <div id="keygenResult" class="d-none">
-                            <div class="mb-3">
-                                <label class="form-label">Public Key</label>
-                                <textarea class="form-control font-monospace" id="keygenPub" rows="3" readonly></textarea>
-                                <button class="btn btn-sm btn-outline-secondary mt-1" onclick="navigator.clipboard.writeText(document.getElementById('keygenPub').value)">
-                                    <i class="bi bi-clipboard"></i> Copy
-                                </button>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">Private Key (OpenSSH format)</label>
-                                <textarea class="form-control font-monospace" id="keygenPriv" rows="8" readonly></textarea>
-                                <button class="btn btn-sm btn-outline-secondary mt-1" onclick="navigator.clipboard.writeText(document.getElementById('keygenPriv').value)">
-                                    <i class="bi bi-clipboard"></i> Copy
-                                </button>
-                            </div>
-                            <div class="alert alert-warning">
-                                <i class="bi bi-exclamation-triangle"></i> Save your private key securely. It was generated in your browser and is not stored anywhere else.
-                            </div>
-                        </div>
-                    </div>
                 </div>
             </div>
 

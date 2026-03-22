@@ -49,6 +49,16 @@ func main() {
 
 	authMw := middleware.NewAuthMiddleware(oidcProvider, cfg.RootUser.Username, cfg.RootUser.Password)
 
+	// Ensure YUBIHSM_PKCS11_CONF is set so the YubiHSM PKCS#11 module knows the connector URL
+	if cfg.YubiHSM.ConnectorURL != "" && os.Getenv("YUBIHSM_PKCS11_CONF") == "" {
+		confPath := "yubihsm_pkcs11.conf"
+		if err := os.WriteFile(confPath, []byte("connector = "+cfg.YubiHSM.ConnectorURL+"\n"), 0600); err != nil {
+			log.Printf("WARNING: failed to write %s: %v", confPath, err)
+		} else {
+			os.Setenv("YUBIHSM_PKCS11_CONF", confPath)
+		}
+	}
+
 	p11cfg := pki.PKCS11Config{
 		ModulePath: cfg.PKCS11.ModulePath,
 		Pin:        cfg.PKCS11.Pin,

@@ -36,7 +36,8 @@ var X509ExtKeyUsageFromString = map[string]x509.ExtKeyUsage{
 }
 
 // SignX509Certificate signs a CSR with the CA's private key via PKCS#11.
-func SignX509Certificate(signer *PKCS11Signer, csrPEM []byte, validBefore time.Time, keyUsages []string, extKeyUsages []string, isCA bool, pathLength *int) ([]byte, string, error) {
+// All certificate parameters (subject, SANs, extensions) are taken from the CSR.
+func SignX509Certificate(signer *PKCS11Signer, csrPEM []byte, validBefore time.Time) ([]byte, string, error) {
 	block, _ := pem.Decode(csrPEM)
 	if block == nil || block.Type != "CERTIFICATE REQUEST" {
 		return nil, "", fmt.Errorf("invalid PEM: expected CERTIFICATE REQUEST")
@@ -55,51 +56,18 @@ func SignX509Certificate(signer *PKCS11Signer, csrPEM []byte, validBefore time.T
 		return nil, "", fmt.Errorf("generating serial: %w", err)
 	}
 
-	// Build key usage
-	var ku x509.KeyUsage
-	for _, name := range keyUsages {
-		if v, ok := X509KeyUsageFromString[name]; ok {
-			ku |= v
-		}
-	}
-	if ku == 0 {
-		ku = x509.KeyUsageDigitalSignature
-	}
-
-	// Build ext key usage
-	var eku []x509.ExtKeyUsage
-	for _, name := range extKeyUsages {
-		if v, ok := X509ExtKeyUsageFromString[name]; ok {
-			eku = append(eku, v)
-		}
-	}
-
 	now := time.Now()
 	template := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               csr.Subject,
 		NotBefore:             now,
 		NotAfter:              validBefore,
-		KeyUsage:              ku,
-		ExtKeyUsage:           eku,
+		KeyUsage:              x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
-		IsCA:                  isCA,
-	}
-
-	if isCA && pathLength != nil {
-		template.MaxPathLen = *pathLength
-		template.MaxPathLenZero = *pathLength == 0
-	}
-
-	// Copy SANs from CSR
-	for _, name := range csr.DNSNames {
-		template.DNSNames = append(template.DNSNames, name)
-	}
-	for _, ip := range csr.IPAddresses {
-		template.IPAddresses = append(template.IPAddresses, ip)
-	}
-	for _, email := range csr.EmailAddresses {
-		template.EmailAddresses = append(template.EmailAddresses, email)
+		DNSNames:              csr.DNSNames,
+		IPAddresses:           csr.IPAddresses,
+		EmailAddresses:        csr.EmailAddresses,
+		ExtraExtensions:       csr.Extensions,
 	}
 
 	// Create CA certificate template for the issuer

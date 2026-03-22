@@ -277,7 +277,6 @@ func TestRestrictionSetX509(t *testing.T) {
 		AllowedSubjectFields: []string{"CN", "O"},
 		MaxPathLength:       &pathLen,
 		DenyCA:              true,
-		RequireReason:       true,
 	}
 	if err := db.CreateRestrictionSet(rs); err != nil {
 		t.Fatal(err)
@@ -310,9 +309,6 @@ func TestRestrictionSetX509(t *testing.T) {
 	}
 	if got.MaxPathLength == nil || *got.MaxPathLength != 0 {
 		t.Errorf("max_path_length = %v", got.MaxPathLength)
-	}
-	if !got.RequireReason {
-		t.Error("require_reason should be true")
 	}
 
 	// List should show type
