@@ -15,7 +15,9 @@ type Ci struct{}
 func (m *Ci) Test(ctx context.Context, source *dagger.Directory) (string, error) {
 	keycloak := dag.Container().
 		From("quay.io/keycloak/keycloak:26.0").
-		WithExposedPort(8080).
+		WithExposedPort(8080, dagger.ContainerWithExposedPortOpts{
+			ExperimentalSkipHealthcheck: true,
+		}).
 		WithEnvVariable("KC_BOOTSTRAP_ADMIN_USERNAME", "admin").
 		WithEnvVariable("KC_BOOTSTRAP_ADMIN_PASSWORD", "admin").
 		WithEnvVariable("KC_HEALTH_ENABLED", "true").
@@ -23,9 +25,7 @@ func (m *Ci) Test(ctx context.Context, source *dagger.Directory) (string, error)
 		WithExec([]string{"start-dev", "--import-realm"}, dagger.ContainerWithExecOpts{
 			UseEntrypoint: true,
 		}).
-		AsService(dagger.ContainerAsServiceOpts{
-			UseEntrypoint: true,
-		})
+		AsService()
 
 	return dag.Container().
 		From("golang:1.25-bookworm").
