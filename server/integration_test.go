@@ -136,6 +136,18 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
+func permitSigning(t *testing.T, caID string) {
+	t.Helper()
+	rootRequest(t, "PUT", "/api/keys/"+caID+"/default-restriction-set", map[string]interface{}{
+		"type":               "ssh",
+		"restriction_set_id": "builtin-permit-all-ssh",
+	})
+	rootRequest(t, "PUT", "/api/keys/"+caID+"/default-restriction-set", map[string]interface{}{
+		"type":               "x509",
+		"restriction_set_id": "builtin-permit-all-x509",
+	})
+}
+
 func TestRootAuth(t *testing.T) {
 	resp := rootRequest(t, "GET", "/api/me", nil)
 	var user map[string]interface{}
@@ -326,6 +338,7 @@ func TestSignCertificateFlow(t *testing.T) {
 	parseJSON(t, resp, &ca)
 	caID := ca["id"].(string)
 	defer rootRequest(t, "DELETE", "/api/keys/"+caID, nil)
+	permitSigning(t, caID)
 
 	// Generate a key pair locally
 	pubKey := generateTestKey(t)
@@ -412,6 +425,7 @@ func TestOIDCWithPermissionGrant(t *testing.T) {
 	parseJSON(t, resp, &ca)
 	caID := ca["id"].(string)
 	defer rootRequest(t, "DELETE", "/api/keys/"+caID, nil)
+	permitSigning(t, caID)
 
 	// Grant SIGN_CERTIFICATE to OIDC user
 	resp = rootRequest(t, "POST", "/api/keys/"+caID+"/permissions", map[string]interface{}{
@@ -455,6 +469,7 @@ func TestSSHCertVerifyWithOpenSSH(t *testing.T) {
 	parseJSON(t, resp, &ca)
 	caID := ca["id"].(string)
 	defer rootRequest(t, "DELETE", "/api/keys/"+caID, nil)
+	permitSigning(t, caID)
 
 	// Generate key
 	pubKey := generateTestKey(t)

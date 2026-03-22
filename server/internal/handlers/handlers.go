@@ -318,14 +318,11 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Look up effective restriction set for this user on this CA
-	var rs *models.RestrictionSet
-	if !user.IsRoot {
-		groupIDs, _ := a.db.GetUserGroups(user.Subject)
-		rs, err = a.db.GetEffectiveRestrictionSet(caID, user.Subject, groupIDs, "ssh")
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "restriction set lookup failed: %v", err)
-			return
-		}
+	groupIDs, _ := a.db.GetUserGroups(user.Subject)
+	rs, err := a.db.GetEffectiveRestrictionSet(caID, user.Subject, groupIDs, "ssh")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "restriction set lookup failed: %v", err)
+		return
 	}
 
 	// Enforce restriction set
@@ -1217,11 +1214,6 @@ func (a *API) FactoryResetHSM(w http.ResponseWriter, r *http.Request) {
 func (a *API) GetMyRestrictions(w http.ResponseWriter, r *http.Request) {
 	caID := r.PathValue("id")
 	user := middleware.GetUserInfo(r.Context())
-
-	if user.IsRoot {
-		writeJSON(w, http.StatusOK, nil)
-		return
-	}
 
 	certFormat := r.URL.Query().Get("format")
 	if certFormat == "" {
