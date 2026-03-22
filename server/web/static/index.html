@@ -21,10 +21,7 @@
                         <a class="nav-link active" href="#" data-page="cas"><i class="bi bi-diagram-3"></i> CA Keys</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="#" data-page="sign"><i class="bi bi-pen"></i> Sign SSH Certificate</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="#" data-page="signx509"><i class="bi bi-file-earmark-lock"></i> Sign X.509 Certificate</a>
+                        <a class="nav-link" href="#" data-page="sign"><i class="bi bi-pen"></i> Sign Certificate</a>
                     </li>
                     <li class="nav-item">
                         <a class="nav-link" href="#" data-page="keygen"><i class="bi bi-gear"></i> Generate Keys</a>
@@ -137,7 +134,17 @@
 
             <!-- Sign Page -->
             <div id="signPage" class="page d-none">
-                <h3><i class="bi bi-pen"></i> Sign SSH Certificate</h3>
+                <h3><i class="bi bi-pen"></i> Sign Certificate</h3>
+                <ul class="nav nav-tabs mb-3">
+                    <li class="nav-item">
+                        <button class="nav-link active" id="signSSHTab" onclick="switchSignTab('ssh')">SSH Certificate</button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" id="signX509Tab" onclick="switchSignTab('x509')">X.509 Certificate</button>
+                    </li>
+                </ul>
+
+                <div id="signSSHPane">
                 <div class="row">
                     <div class="col-md-6">
                         <form id="signForm">
@@ -208,11 +215,9 @@
                         </div>
                     </div>
                 </div>
-            </div>
+                </div>
 
-            <!-- X.509 Sign Page -->
-            <div id="signx509Page" class="page d-none">
-                <h3><i class="bi bi-file-earmark-lock"></i> Sign X.509 Certificate</h3>
+                <div id="signX509Pane" style="display:none">
                 <div class="row">
                     <div class="col-md-6">
                         <form id="signx509Form">
@@ -284,6 +289,7 @@
                             </button>
                         </div>
                     </div>
+                </div>
                 </div>
             </div>
 

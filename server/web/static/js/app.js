@@ -120,8 +120,7 @@ function showPage(name) {
         l.classList.toggle('active', l.dataset.page === name);
     });
     if (name === 'cas') loadCAs();
-    if (name === 'sign') loadCASelect('signCA');
-    if (name === 'signx509') loadCASelect('signx509CA');
+    if (name === 'sign') { loadCASelect('signCA'); loadCASelect('signx509CA'); }
     if (name === 'groups') loadGroups();
     if (name === 'permissions') { loadCASelect('permCA').then(loadPermissions); }
     if (name === 'restrictions') { loadCASelect('rsCA').then(loadRestrictionSets); }
@@ -449,6 +448,14 @@ async function loadCASelect(selectId) {
             sel.appendChild(opt);
         });
     } catch (err) { /* ignore */ }
+}
+
+// Sign tab switching
+function switchSignTab(tab) {
+    document.getElementById('signSSHTab').classList.toggle('active', tab === 'ssh');
+    document.getElementById('signX509Tab').classList.toggle('active', tab === 'x509');
+    document.getElementById('signSSHPane').style.display = tab === 'ssh' ? '' : 'none';
+    document.getElementById('signX509Pane').style.display = tab === 'x509' ? '' : 'none';
 }
 
 // Sign Certificate — restriction-aware UI
