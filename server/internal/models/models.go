@@ -307,6 +307,10 @@ type AccessLogEntry struct {
 	Path      string    `json:"path"`
 	Status    int       `json:"status"`
 	IP        string    `json:"ip"`
+	// RequestID correlates this access-log row with the structured request log
+	// line and the tamper-evident audit event(s) emitted while serving the same
+	// HTTP request.
+	RequestID string `json:"request_id,omitempty"`
 }
 
 type UserInfo struct {

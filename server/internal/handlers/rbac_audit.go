@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
+	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
@@ -30,6 +31,15 @@ func userRoles(user *models.UserInfo) []rbac.Role {
 // consulted. Note this is the ORG-WIDE layer: fine-grained, per-CA permission
 // checks (checkPermission) still apply independently where relevant.
 func (a *API) can(user *models.UserInfo, action rbac.Action) bool {
+	allowed := a.decide(user, action)
+	metrics.RecordAuthz(string(action), allowed)
+	return allowed
+}
+
+// decide is the pure authorization decision, split out from can so the metric
+// is recorded exactly once around the real decision (and can be reused without
+// double-counting).
+func (a *API) decide(user *models.UserInfo, action rbac.Action) bool {
 	if user == nil {
 		return false
 	}
@@ -84,6 +94,7 @@ func (a *API) recordEvent(r *http.Request, action, target, targetName, result, d
 		Result:     result,
 		Detail:     detail,
 		IP:         clientIP(r),
+		RequestID:  middleware.RequestID(r.Context()),
 	}
 	if user != nil {
 		e.Actor = user.Subject

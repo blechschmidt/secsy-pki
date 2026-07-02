@@ -457,6 +457,25 @@ func TestAccessLog(t *testing.T) {
 	}
 }
 
+// TestAccessLogRequestID verifies the correlation request ID round-trips
+// through the access log.
+func TestAccessLogRequestID(t *testing.T) {
+	db := testDB(t)
+
+	db.CreateAccessLogEntry(&models.AccessLogEntry{
+		ID: "al-req", UserSub: "user-1", Method: "GET", Path: "/api/keys",
+		Status: 200, IP: "127.0.0.1", RequestID: "req-abc-123",
+	})
+
+	entries, _, err := db.ListAccessLog(10, 0)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("access log: %d %v", len(entries), err)
+	}
+	if entries[0].RequestID != "req-abc-123" {
+		t.Errorf("RequestID = %q, want req-abc-123", entries[0].RequestID)
+	}
+}
+
 func TestHSMAuditEntries(t *testing.T) {
 	db := testDB(t)
 

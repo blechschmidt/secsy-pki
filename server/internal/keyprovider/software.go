@@ -51,6 +51,20 @@ func (p *SoftwareProvider) Name() string { return string(ProviderSoftware) }
 
 func (p *SoftwareProvider) Close() error { return nil }
 
+// Ping verifies the keystore directory is present and accessible. It satisfies
+// the Prober interface for readiness probing. The software backend has no remote
+// dependency, so a readable keystore directory means it is ready.
+func (p *SoftwareProvider) Ping(_ context.Context) error {
+	info, err := os.Stat(p.dir)
+	if err != nil {
+		return fmt.Errorf("keyprovider: keystore directory %q not accessible: %w", p.dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("keyprovider: keystore path %q is not a directory", p.dir)
+	}
+	return nil
+}
+
 // keyPath returns the on-disk path for a key label, guarding against path
 // traversal from an attacker-influenced label.
 func (p *SoftwareProvider) keyPath(label string) (string, error) {

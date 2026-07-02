@@ -1,6 +1,7 @@
 package database
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -75,6 +76,13 @@ func (db *DB) ph(query string) string {
 
 func (db *DB) Close() error {
 	return db.conn.Close()
+}
+
+// Ping verifies the database connection is alive, for readiness checks. It uses
+// PingContext so a hung backend cannot block the probe past the caller's
+// deadline.
+func (db *DB) Ping(ctx context.Context) error {
+	return db.conn.PingContext(ctx)
 }
 
 func (db *DB) exec(query string, args ...interface{}) (sql.Result, error) {
@@ -248,7 +256,8 @@ func (db *DB) migrate() error {
 			method TEXT NOT NULL,
 			path TEXT NOT NULL,
 			status INTEGER NOT NULL,
-			ip TEXT NOT NULL
+			ip TEXT NOT NULL,
+			request_id TEXT
 		)`, currentTimestamp),
 		`CREATE INDEX IF NOT EXISTS idx_access_log_time ON access_log(timestamp)`,
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS hsm_audit_entries (
@@ -283,6 +292,7 @@ func (db *DB) migrate() error {
 			result TEXT NOT NULL,
 			detail TEXT,
 			ip TEXT,
+			request_id TEXT,
 			prev_hash TEXT NOT NULL,
 			hash TEXT NOT NULL
 		)`, currentTimestamp),
@@ -310,6 +320,9 @@ func (db *DB) migrate() error {
 		db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS certificate BYTEA")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS cert_hash TEXT")
+		// Observability: correlate access/audit rows with the request log.
+		db.conn.Exec("ALTER TABLE access_log ADD COLUMN IF NOT EXISTS request_id TEXT")
+		db.conn.Exec("ALTER TABLE event_log ADD COLUMN IF NOT EXISTS request_id TEXT")
 	} else {
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_ssh_restriction_set_id TEXT")
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_x509_restriction_set_id TEXT")
@@ -323,6 +336,9 @@ func (db *DB) migrate() error {
 		db.conn.Exec("ALTER TABLE permissions ADD COLUMN x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN certificate BLOB")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN cert_hash TEXT")
+		// Observability: correlate access/audit rows with the request log.
+		db.conn.Exec("ALTER TABLE access_log ADD COLUMN request_id TEXT")
+		db.conn.Exec("ALTER TABLE event_log ADD COLUMN request_id TEXT")
 	}
 
 	// ACME (RFC 8555) server tables.
@@ -1157,8 +1173,8 @@ func (db *DB) ListAuditLog(caID string, limit, offset int) ([]models.AuditLogEnt
 
 func (db *DB) CreateAccessLogEntry(e *models.AccessLogEntry) error {
 	_, err := db.exec(
-		`INSERT INTO access_log (id, user_sub, method, path, status, ip) VALUES (?, ?, ?, ?, ?, ?)`,
-		e.ID, e.UserSub, e.Method, e.Path, e.Status, e.IP,
+		`INSERT INTO access_log (id, user_sub, method, path, status, ip, request_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		e.ID, e.UserSub, e.Method, e.Path, e.Status, e.IP, nullString(e.RequestID),
 	)
 	return err
 }
@@ -1170,7 +1186,7 @@ func (db *DB) ListAccessLog(limit, offset int) ([]models.AccessLogEntry, int, er
 	}
 
 	rows, err := db.query(
-		`SELECT id, timestamp, user_sub, method, path, status, ip FROM access_log ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+		`SELECT id, timestamp, user_sub, method, path, status, ip, request_id FROM access_log ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
 		limit, offset,
 	)
 	if err != nil {
@@ -1181,9 +1197,11 @@ func (db *DB) ListAccessLog(limit, offset int) ([]models.AccessLogEntry, int, er
 	var entries []models.AccessLogEntry
 	for rows.Next() {
 		var e models.AccessLogEntry
-		if err := rows.Scan(&e.ID, &e.Timestamp, &e.UserSub, &e.Method, &e.Path, &e.Status, &e.IP); err != nil {
+		var requestID sql.NullString
+		if err := rows.Scan(&e.ID, &e.Timestamp, &e.UserSub, &e.Method, &e.Path, &e.Status, &e.IP, &requestID); err != nil {
 			return nil, 0, err
 		}
+		e.RequestID = requestID.String
 		entries = append(entries, e)
 	}
 	return entries, total, rows.Err()

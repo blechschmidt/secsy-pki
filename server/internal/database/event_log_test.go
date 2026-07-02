@@ -20,6 +20,43 @@ func eventTestDB(t *testing.T) *DB {
 	return db
 }
 
+// TestAppendEventRequestID verifies the correlation request ID round-trips
+// through the event log and that, because it is excluded from the hash
+// canonicalization, it does not affect chain integrity.
+func TestAppendEventRequestID(t *testing.T) {
+	db := eventTestDB(t)
+
+	e := &audit.Event{
+		ID:        "evt-req",
+		Actor:     "alice",
+		Action:    audit.ActionCertIssue,
+		Target:    "42",
+		Result:    audit.ResultSuccess,
+		RequestID: "req-xyz-789",
+	}
+	if err := db.AppendEvent(e); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+
+	entries, _, err := db.ListEvents("", "", 10, 0)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("ListEvents: %d %v", len(entries), err)
+	}
+	if entries[0].RequestID != "req-xyz-789" {
+		t.Errorf("RequestID = %q, want req-xyz-789", entries[0].RequestID)
+	}
+
+	// The chain must still verify: request_id is not part of the hash, so its
+	// presence does not perturb the stored hash relative to the recomputed one.
+	res, err := db.VerifyEventChain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Valid {
+		t.Errorf("chain invalid with request_id present: %+v", res)
+	}
+}
+
 func TestAppendEventChains(t *testing.T) {
 	db := eventTestDB(t)
 

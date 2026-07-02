@@ -7,6 +7,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
+	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
@@ -60,6 +61,7 @@ type encryptResponse struct {
 // EncryptSecret seals a caller-supplied plaintext into a versioned envelope.
 func (a *API) EncryptSecret(w http.ResponseWriter, r *http.Request) {
 	if !a.can(middleware.GetUserInfo(r.Context()), rbac.ActionEncrypt) {
+		metrics.Envelope.Inc("encrypt", metrics.ResultDenied)
 		a.recordEvent(r, audit.ActionSecretEncrypt, a.secretKEKLabel, "", audit.ResultDenied, "secret:encrypt capability required")
 		writeError(w, http.StatusForbidden, "secret:encrypt capability required (admin or issuer role)")
 		return
@@ -103,6 +105,7 @@ func (a *API) EncryptSecret(w http.ResponseWriter, r *http.Request) {
 	a.consumeHSMAuditLogs("")
 	blob, err := svc.EncryptToJSON(plaintext, context)
 	a.consumeHSMAuditLogs("")
+	metrics.RecordEnvelope("encrypt", err)
 	if err != nil {
 		a.recordEvent(r, audit.ActionSecretEncrypt, a.secretKEKLabel, "", audit.ResultError, err.Error())
 		writeError(w, http.StatusInternalServerError, "encryption failed: %v", err)
@@ -127,6 +130,7 @@ type decryptResponse struct {
 // unwrap; a failure returns a generic 400 to avoid acting as an oracle.
 func (a *API) DecryptSecret(w http.ResponseWriter, r *http.Request) {
 	if !a.can(middleware.GetUserInfo(r.Context()), rbac.ActionDecrypt) {
+		metrics.Envelope.Inc("decrypt", metrics.ResultDenied)
 		a.recordEvent(r, audit.ActionSecretDecrypt, a.secretKEKLabel, "", audit.ResultDenied, "secret:decrypt capability required")
 		writeError(w, http.StatusForbidden, "secret:decrypt capability required (admin or issuer role)")
 		return
@@ -159,6 +163,7 @@ func (a *API) DecryptSecret(w http.ResponseWriter, r *http.Request) {
 	a.consumeHSMAuditLogs("")
 	plaintext, err := svc.DecryptJSON(req.Envelope, context)
 	a.consumeHSMAuditLogs("")
+	metrics.RecordEnvelope("decrypt", err)
 	if err != nil {
 		// Generic client error with NO underlying detail: wrong key/context or a
 		// corrupted/invalid envelope must be indistinguishable so the endpoint

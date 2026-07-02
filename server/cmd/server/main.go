@@ -127,6 +127,11 @@ func main() {
 	defer provider.Close()
 	log.Printf("Key provider: %s", provider.Name())
 
+	// Wrap the provider so every key operation (sign, decrypt, generate, find,
+	// public-key export, connectivity probe) records latency and error metrics.
+	// The wrapper is transparent and preserves the Decrypter/Prober capabilities.
+	provider = keyprovider.Instrument(provider)
+
 	hsmCfg := hsm.Config{
 		ConnectorURL: cfg.YubiHSM.ConnectorURL,
 		AuthKeyID:    cfg.YubiHSM.AuthKeyID,
@@ -144,6 +149,11 @@ func main() {
 
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, authMw)
+
+	// Operational endpoints: Prometheus /metrics, /healthz (liveness), /readyz
+	// (readiness incl. HSM/DB probes). Unauthenticated by design — restrict at
+	// the network layer if needed.
+	api.RegisterObservability(mux)
 
 	// ACME (RFC 8555) automated-issuance server. Its endpoints authenticate
 	// clients via JWS account keys (not OIDC/basic auth) and are therefore
@@ -166,6 +176,13 @@ func main() {
 	// Cap every request body to guard against memory-exhaustion DoS from an
 	// (authenticated) client. Individual handlers may impose tighter limits.
 	handler := limitRequestBody(mux, maxRequestBodyBytes)
+
+	// Outermost middleware: assign a correlation ID to every request, record HTTP
+	// metrics, and emit one structured (JSON) log line per request. Wrapping the
+	// whole tree means it also covers ACME, static assets, and the health/metrics
+	// endpoints, and makes the request ID visible to the access and audit logs.
+	obs := middleware.NewObservability(os.Stdout)
+	handler = obs.Handler(handler)
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 

@@ -79,8 +79,15 @@ type Event struct {
 	Result     string    `json:"result"`                // ResultSuccess | ResultDenied | ResultError
 	Detail     string    `json:"detail,omitempty"`
 	IP         string    `json:"ip,omitempty"`
-	PrevHash   string    `json:"prev_hash"`
-	Hash       string    `json:"hash"`
+	// RequestID correlates this event with the structured request log line for
+	// the HTTP request that produced it. It is contextual metadata and is
+	// deliberately NOT part of the hash-chain canonicalization (see
+	// canonicalBytes): it does not affect tamper-evidence, and excluding it keeps
+	// the chain hashing rule stable and backward-compatible with logs written
+	// before this field existed.
+	RequestID string `json:"request_id,omitempty"`
+	PrevHash  string `json:"prev_hash"`
+	Hash      string `json:"hash"`
 }
 
 // canonicalBytes produces a deterministic, unambiguous serialization of the

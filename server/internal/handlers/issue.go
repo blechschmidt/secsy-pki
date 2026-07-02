@@ -9,6 +9,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
@@ -34,6 +35,7 @@ func (a *API) IssueCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
+		metrics.Certificates.Inc("issue", metrics.ResultDenied)
 		a.recordEvent(r, audit.ActionCertIssue, caID, "", audit.ResultDenied, "no SIGN_CERTIFICATE permission on this CA")
 		writeError(w, http.StatusForbidden, "no SIGN_CERTIFICATE permission on this CA")
 		return
@@ -60,6 +62,7 @@ func (a *API) IssueCertificate(w http.ResponseWriter, r *http.Request) {
 		RequestedBy: user.Subject,
 	})
 	a.consumeHSMAuditLogs("")
+	metrics.RecordCertificate("issue", err)
 	if err != nil {
 		a.recordEvent(r, audit.ActionCertIssue, caID, "", audit.ResultError, err.Error())
 		writeError(w, http.StatusBadRequest, "failed to issue certificate: %v", err)
@@ -82,6 +85,7 @@ func (a *API) RenewCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
+		metrics.Certificates.Inc("renew", metrics.ResultDenied)
 		a.recordEvent(r, audit.ActionCertRenew, caID, "", audit.ResultDenied, "no SIGN_CERTIFICATE permission on this CA")
 		writeError(w, http.StatusForbidden, "no SIGN_CERTIFICATE permission on this CA")
 		return
@@ -108,6 +112,7 @@ func (a *API) RenewCertificate(w http.ResponseWriter, r *http.Request) {
 		RequestedBy: user.Subject,
 	})
 	a.consumeHSMAuditLogs("")
+	metrics.RecordCertificate("renew", err)
 	if err != nil {
 		a.recordEvent(r, audit.ActionCertRenew, caID, req.Serial, audit.ResultError, err.Error())
 		writeError(w, http.StatusBadRequest, "failed to renew certificate: %v", err)
@@ -129,6 +134,7 @@ func (a *API) RevokeCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
+		metrics.Certificates.Inc("revoke", metrics.ResultDenied)
 		a.recordEvent(r, audit.ActionCertRevoke, caID, "", audit.ResultDenied, "no SIGN_CERTIFICATE permission on this CA")
 		writeError(w, http.StatusForbidden, "no SIGN_CERTIFICATE permission on this CA")
 		return
@@ -146,6 +152,7 @@ func (a *API) RevokeCertificate(w http.ResponseWriter, r *http.Request) {
 
 	mgr := ca.NewManager(a.db, a.keyProvider)
 	applied, err := mgr.RevokeCertificate(r.Context(), caID, req.Serial, req.Reason)
+	metrics.RecordCertificate("revoke", err)
 	if err != nil {
 		a.recordEvent(r, audit.ActionCertRevoke, caID, req.Serial, audit.ResultError, err.Error())
 		writeError(w, http.StatusBadRequest, "failed to revoke certificate: %v", err)
@@ -212,9 +219,11 @@ func (a *API) GetCRL(w http.ResponseWriter, r *http.Request) {
 	der, err := mgr.GenerateCRL(r.Context(), caID)
 	a.consumeHSMAuditLogs("")
 	if err != nil {
+		metrics.CRLRequests.Inc(metrics.ResultError)
 		writeError(w, http.StatusInternalServerError, "failed to generate CRL: %v", err)
 		return
 	}
+	metrics.CRLRequests.Inc(metrics.ResultSuccess)
 
 	if r.URL.Query().Get("format") == "pem" {
 		w.Header().Set("Content-Type", "application/x-pem-file")
@@ -268,11 +277,13 @@ func (a *API) OCSPResponder(w http.ResponseWriter, r *http.Request) {
 	a.consumeHSMAuditLogs("")
 	if err != nil {
 		// Signing/lookup failure — return the standard internal-error response.
+		metrics.OCSPRequests.Inc(metrics.ResultError)
 		w.Header().Set("Content-Type", "application/ocsp-response")
 		w.Write(pki.OCSPInternalErrorResponse)
 		return
 	}
 
+	metrics.OCSPRequests.Inc(metrics.ResultSuccess)
 	w.Header().Set("Content-Type", "application/ocsp-response")
 	w.Write(respDER)
 }
@@ -300,6 +311,7 @@ func issueResponse(result *ca.IssueResult) models.IssueCertResponse {
 
 // writeOCSPMalformed emits the standard OCSP "malformed request" response.
 func writeOCSPMalformed(w http.ResponseWriter) {
+	metrics.OCSPRequests.Inc("malformed")
 	w.Header().Set("Content-Type", "application/ocsp-response")
 	w.Write(pki.OCSPMalformedResponse)
 }

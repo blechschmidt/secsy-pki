@@ -335,7 +335,7 @@ func TestFullFlow(t *testing.T) {
 
 		secrets := [][]byte{
 			[]byte("correct horse battery staple"),
-			[]byte(""), // empty plaintext is a legitimate edge case
+			[]byte(""),                                       // empty plaintext is a legitimate edge case
 			bytes.Repeat([]byte{0x00, 0x01, 0xff, 0x7f}, 64), // binary, larger than one block
 		}
 		for i, plaintext := range secrets {

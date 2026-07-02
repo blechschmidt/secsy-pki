@@ -133,6 +133,39 @@ func TestPKCS11FindNotFound(t *testing.T) {
 	}
 }
 
+// TestPKCS11Ping verifies the readiness connectivity probe succeeds against a
+// reachable token, and that a wrong PIN is reported as an error (unready)
+// without requiring any key to exist. It also confirms the probe survives the
+// instrumented wrapper used in production.
+func TestPKCS11Ping(t *testing.T) {
+	ctx := context.Background()
+	p := pkcs11TestProvider(t)
+
+	if err := p.Ping(ctx); err != nil {
+		t.Fatalf("Ping against reachable token failed: %v", err)
+	}
+
+	// The instrumented wrapper must forward the probe.
+	if prober, ok := Instrument(p).(Prober); !ok {
+		t.Fatal("instrumented pkcs11 provider does not expose Prober")
+	} else if err := prober.Ping(ctx); err != nil {
+		t.Fatalf("instrumented Ping failed: %v", err)
+	}
+
+	// A bad PIN must surface as a probe failure, not a success.
+	bad, err := NewPKCS11Provider(PKCS11Settings{
+		ModulePath: p.cfg.ModulePath,
+		Pin:        "0000wrong",
+		TokenLabel: p.cfg.TokenLabel,
+	})
+	if err != nil {
+		t.Fatalf("NewPKCS11Provider: %v", err)
+	}
+	if err := bad.Ping(ctx); err == nil {
+		t.Error("Ping with wrong PIN unexpectedly succeeded")
+	}
+}
+
 // TestPKCS11GenerateDuplicateLabelRejected verifies the Provider contract that
 // generating a second key with an existing label fails, rather than leaving the
 // token with ambiguous duplicate-labeled objects (whose private/public halves

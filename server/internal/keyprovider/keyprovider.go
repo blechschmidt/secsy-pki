@@ -140,6 +140,17 @@ type Provider interface {
 	Close() error
 }
 
+// Prober is an optional capability implemented by providers that can perform a
+// lightweight connectivity/health check without requiring a specific key to
+// exist. Both the software and PKCS#11 backends implement it. The readiness
+// endpoint type-asserts a Provider to this interface to probe the HSM.
+type Prober interface {
+	// Ping reports whether the backend is reachable and ready to service key
+	// operations. It returns nil when healthy and a descriptive error otherwise.
+	// Implementations must not create, mutate, or require any particular key.
+	Ping(ctx context.Context) error
+}
+
 // Decrypter is a crypto.Decrypter bound to a specific provider key, plus a
 // Close that releases backend resources (a PKCS#11 session, etc.). It is used
 // to unwrap data-encryption keys during envelope decryption.
@@ -163,6 +174,11 @@ type DecrypterProvider interface {
 // ErrKeyNotFound is returned (wrapped) by FindKey / Signer / PublicKey when no
 // key matches the supplied reference.
 var ErrKeyNotFound = fmt.Errorf("keyprovider: key not found")
+
+// ErrProbeUnsupported is returned by a wrapper's Ping when the wrapped provider
+// does not implement Prober. Readiness checks treat it as "cannot probe" rather
+// than "unhealthy".
+var ErrProbeUnsupported = fmt.Errorf("keyprovider: connectivity probe not supported by this provider")
 
 // PKCS11Settings configures the PKCS#11 backend. It mirrors the fields of
 // pki.PKCS11Config; New maps it across so callers of this package need not

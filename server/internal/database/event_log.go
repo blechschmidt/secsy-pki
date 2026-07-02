@@ -49,11 +49,11 @@ func (db *DB) AppendEvent(e *audit.Event) error {
 	audit.Seal(e, nextSeq, prevHash)
 
 	if _, err := tx.Exec(db.ph(
-		`INSERT INTO event_log (seq, id, timestamp, actor, actor_name, actor_roles, action, target, target_name, result, detail, ip, prev_hash, hash)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		`INSERT INTO event_log (seq, id, timestamp, actor, actor_name, actor_roles, action, target, target_name, result, detail, ip, request_id, prev_hash, hash)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		e.Seq, e.ID, e.Timestamp.UTC(), e.Actor, nullString(e.ActorName), nullString(e.ActorRoles),
 		e.Action, nullString(e.Target), nullString(e.TargetName), e.Result, nullString(e.Detail),
-		nullString(e.IP), e.PrevHash, e.Hash,
+		nullString(e.IP), nullString(e.RequestID), e.PrevHash, e.Hash,
 	); err != nil {
 		return err
 	}
@@ -63,10 +63,10 @@ func (db *DB) AppendEvent(e *audit.Event) error {
 // scanEvent reads one event_log row selected with eventColumns.
 func scanEvent(s caScanner) (audit.Event, error) {
 	var e audit.Event
-	var actorName, actorRoles, target, targetName, detail, ip sql.NullString
+	var actorName, actorRoles, target, targetName, detail, ip, requestID sql.NullString
 	if err := s.Scan(
 		&e.Seq, &e.ID, &e.Timestamp, &e.Actor, &actorName, &actorRoles,
-		&e.Action, &target, &targetName, &e.Result, &detail, &ip, &e.PrevHash, &e.Hash,
+		&e.Action, &target, &targetName, &e.Result, &detail, &ip, &requestID, &e.PrevHash, &e.Hash,
 	); err != nil {
 		return audit.Event{}, err
 	}
@@ -76,10 +76,11 @@ func scanEvent(s caScanner) (audit.Event, error) {
 	e.TargetName = targetName.String
 	e.Detail = detail.String
 	e.IP = ip.String
+	e.RequestID = requestID.String
 	return e, nil
 }
 
-const eventColumns = `seq, id, timestamp, actor, actor_name, actor_roles, action, target, target_name, result, detail, ip, prev_hash, hash`
+const eventColumns = `seq, id, timestamp, actor, actor_name, actor_roles, action, target, target_name, result, detail, ip, request_id, prev_hash, hash`
 
 // ListEvents returns a page of events in reverse-chronological order (newest
 // first) for display, along with the total count. Use ListAllEventsAsc for

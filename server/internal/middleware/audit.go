@@ -37,12 +37,13 @@ func AuditLog(db *database.DB) func(http.Handler) http.Handler {
 			}
 
 			entry := &models.AccessLogEntry{
-				ID:      uuid.New().String(),
-				UserSub: user.Subject,
-				Method:  r.Method,
-				Path:    r.URL.Path,
-				Status:  sw.status,
-				IP:      ip,
+				ID:        uuid.New().String(),
+				UserSub:   user.Subject,
+				Method:    r.Method,
+				Path:      r.URL.Path,
+				Status:    sw.status,
+				IP:        ip,
+				RequestID: RequestID(r.Context()),
 			}
 			if err := db.CreateAccessLogEntry(entry); err != nil {
 				log.Printf("WARNING: failed to write access log: %v", err)

@@ -50,6 +50,13 @@ func (p *PKCS11Provider) Name() string { return string(ProviderPKCS11) }
 
 func (p *PKCS11Provider) Close() error { return nil }
 
+// Ping verifies the token is reachable and the PIN is accepted, without
+// requiring any key to exist. It satisfies the Prober interface for readiness
+// probing.
+func (p *PKCS11Provider) Ping(_ context.Context) error {
+	return pki.Probe(p.cfg)
+}
+
 func (p *PKCS11Provider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInfo, error) {
 	if spec.Label == "" {
 		return nil, fmt.Errorf("keyprovider: key label is required")
