@@ -199,36 +199,10 @@ func (db *DB) ListRevokedCertificates(caID string) ([]models.RevokedCertificate,
 // counter. It tolerates CAs created before the counter table existed by seeding
 // a counter on first use.
 func (db *DB) NextCRLNumber(caID string) (int64, error) {
-	tx, err := db.conn.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-
-	var next int64
-	err = tx.QueryRow(db.ph(`SELECT next_number FROM ca_crl_counters WHERE ca_id = ?`+db.forUpdate()), caID).Scan(&next)
-	if err == sql.ErrNoRows {
-		next = 1
-		if _, err := tx.Exec(db.ph(
-			`INSERT INTO ca_crl_counters (ca_id, next_number) VALUES (?, ?)`), caID, next+1); err != nil {
-			return 0, err
-		}
-		if err := tx.Commit(); err != nil {
-			return 0, err
-		}
-		return next, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(db.ph(
-		`UPDATE ca_crl_counters SET next_number = ? WHERE ca_id = ?`), next+1, caID); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return next, nil
+	// Shares the conflict-tolerant lazy-counter path with NextScopedCRLNumber so
+	// a CA whose full-scope counter has not been seeded yet cannot lose the
+	// first-insert race under concurrent CRL generation on PostgreSQL.
+	return db.nextLazyCounter("ca_crl_counters", []string{"ca_id"}, []any{caID})
 }
 
 // MarkExpiredCertificates flips still-"valid" issued certificates whose

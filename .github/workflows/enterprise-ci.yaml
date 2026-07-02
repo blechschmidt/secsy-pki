@@ -226,3 +226,70 @@ jobs:
       - name: Check spec and generated client are in sync
         working-directory: server
         run: ./scripts/openapi-check.sh
+
+  chaos-resilience:
+    name: Chaos / fault-injection resilience suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # Non-required (advisory) gate. The chaos suite deliberately degrades the
+    # HSM (Task 44 failover / Task 20 session pool), the persistence backend
+    # (Task 38 serial/CRL contention + audit-chain continuity under connection
+    # drops), and the rate-limit / HSM concurrency guard (Task 25), asserting
+    # fail-closed and graceful-degradation invariants. It exercises real
+    # dependencies (SoftHSM + an ephemeral PostgreSQL) and some scenarios inject
+    # timing-sensitive faults, so it is marked continue-on-error: a red run is a
+    # signal to investigate, not a merge blocker. Promote it to required once it
+    # has proven stable on the runners.
+    continue-on-error: true
+
+    env:
+      SOFTHSM2_CONF: /tmp/softhsm2.conf
+      SOFTHSM_TOKEN_DIR: /tmp/softhsm/tokens
+      GOTOOLCHAIN: auto
+      # Point the connection-drop scenario at the Postgres service; without it
+      # those subtests skip and only the SoftHSM/in-memory scenarios run.
+      SECSY_TEST_PG_DSN: postgres://secsy:secsy@localhost:5432/secsy_pki?sslmode=disable
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: secsy
+          POSTGRES_PASSWORD: secsy
+          POSTGRES_DB: secsy_pki
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U secsy -d secsy_pki"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Install SoftHSM and OpenSC
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends softhsm2 opensc
+
+      - name: Download Go modules
+        working-directory: server
+        run: go mod download
+
+      # The runner drives the same one-command script developers use locally.
+      # SECSY_TEST_PG_DSN is already set to the service, so the script reuses it
+      # instead of starting its own container. Any invariant violation fails the
+      # job (which is advisory via continue-on-error).
+      - name: Run chaos / fault-injection resilience suite
+        env:
+          SOFTHSM_REINIT: "1"
+        run: ./scripts/chaos-test.sh -v

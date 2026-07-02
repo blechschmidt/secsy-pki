@@ -586,3 +586,42 @@ var (
 	_ Signer            = (*haSigner)(nil)
 	_ Decrypter         = (*haDecrypter)(nil)
 )
+
+// --- resilience-test support -----------------------------------------------
+//
+// The in-package SoftHSM failover test drives the members[i].unreachable seam
+// directly. The out-of-package resilience suite (internal/chaos) cannot reach
+// that unexported field, so these thin, clearly-named accessors expose exactly
+// the same seam. They are test affordances only — production code observes token
+// health through the secsy_hsm_token_up metric and never faults a token by hand.
+
+// NumTokens returns the number of member tokens in the HA set.
+func (p *PKCS11HAProvider) NumTokens() int { return len(p.members) }
+
+// TokenName returns the configured name of member token i (empty if out of range).
+func (p *PKCS11HAProvider) TokenName(i int) string {
+	if i < 0 || i >= len(p.members) {
+		return ""
+	}
+	return p.members[i].name
+}
+
+// TokenHealthy reports whether member token i is currently in rotation.
+func (p *PKCS11HAProvider) TokenHealthy(i int) bool {
+	if i < 0 || i >= len(p.members) {
+		return false
+	}
+	return p.members[i].isHealthy()
+}
+
+// FailTokenForTest sets or clears the synthetic "unreachable" fault on member
+// token i, exactly as the in-package failover test does via the unreachable
+// seam. It lets the resilience suite pull a token out mid-load and return it to
+// rotation deterministically. It is a no-op for an out-of-range index and must
+// never be called by production code.
+func (p *PKCS11HAProvider) FailTokenForTest(i int, fail bool) {
+	if i < 0 || i >= len(p.members) {
+		return
+	}
+	p.members[i].unreachable.Store(fail)
+}

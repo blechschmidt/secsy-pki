@@ -2,7 +2,11 @@ package database
 
 import (
 	"database/sql"
+	"errors"
+	"strings"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // PublishedCRL is a persisted base or delta CRL for a single (CA, scope) pair.
@@ -33,6 +37,47 @@ type PublishedCRL struct {
 // scope uses NextCRLNumber. Base and delta CRLs for the same scope draw from this
 // one sequence so their numbers stay strictly monotonic (RFC 5280 §5.2.3).
 func (db *DB) NextScopedCRLNumber(caID, scope string) (int64, error) {
+	return db.nextLazyCounter("ca_scoped_crl_counters",
+		[]string{"ca_id", "scope"}, []any{caID, scope})
+}
+
+// nextLazyCounter atomically allocates and returns the next value of a monotonic
+// counter stored in table.next_number, keyed by keyCols=keyVals, creating the
+// row on first use. Concurrent callers race on that first insert: a `SELECT ...
+// FOR UPDATE` cannot lock a row that does not exist yet, so two transactions can
+// both take the no-row branch and try to INSERT — the loser hits the primary-key
+// unique constraint. This helper tolerates that by retrying: the losing
+// transaction rolls back and, on the next attempt, finds the now-present row and
+// takes the locked update path. On SQLite (pinned to one connection) the race
+// cannot occur and the first attempt always wins.
+func (db *DB) nextLazyCounter(table string, keyCols []string, keyVals []any) (int64, error) {
+	where := make([]string, len(keyCols))
+	for i, c := range keyCols {
+		where[i] = c + " = ?"
+	}
+	whereClause := strings.Join(where, " AND ")
+	selQ := "SELECT next_number FROM " + table + " WHERE " + whereClause
+	updQ := "UPDATE " + table + " SET next_number = ? WHERE " + whereClause
+	insCols := append(append([]string{}, keyCols...), "next_number")
+	insPlace := strings.TrimSuffix(strings.Repeat("?, ", len(insCols)), ", ")
+	insQ := "INSERT INTO " + table + " (" + strings.Join(insCols, ", ") + ") VALUES (" + insPlace + ")"
+
+	const maxAttempts = 5
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		next, err := db.tryNextCounter(selQ, updQ, insQ, keyVals)
+		if err == errCounterConflict {
+			continue // row was created concurrently; retry into the update path
+		}
+		return next, err
+	}
+	return 0, errors.New("counter " + table + ": exceeded retry attempts under contention")
+}
+
+// errCounterConflict signals that nextLazyCounter's INSERT lost the first-insert
+// race and the operation should be retried.
+var errCounterConflict = errors.New("counter row inserted concurrently")
+
+func (db *DB) tryNextCounter(selQ, updQ, insQ string, keyVals []any) (int64, error) {
 	tx, err := db.conn.Begin()
 	if err != nil {
 		return 0, err
@@ -40,29 +85,51 @@ func (db *DB) NextScopedCRLNumber(caID, scope string) (int64, error) {
 	defer tx.Rollback()
 
 	var next int64
-	err = tx.QueryRow(db.ph(`SELECT next_number FROM ca_scoped_crl_counters WHERE ca_id = ? AND scope = ?`+db.forUpdate()), caID, scope).Scan(&next)
-	if err == sql.ErrNoRows {
-		next = 1
-		if _, err := tx.Exec(db.ph(
-			`INSERT INTO ca_scoped_crl_counters (ca_id, scope, next_number) VALUES (?, ?, ?)`), caID, scope, next+1); err != nil {
-			return 0, err
+	err = tx.QueryRow(db.ph(selQ+db.forUpdate()), keyVals...).Scan(&next)
+	switch {
+	case err == sql.ErrNoRows:
+		// First use: seed the row (allocating number 1, storing 2 as the next).
+		args := append(append([]any{}, keyVals...), int64(2))
+		if _, ierr := tx.Exec(db.ph(insQ), args...); ierr != nil {
+			if isUniqueViolation(ierr) {
+				return 0, errCounterConflict
+			}
+			return 0, ierr
 		}
-		if err := tx.Commit(); err != nil {
-			return 0, err
+		if cerr := tx.Commit(); cerr != nil {
+			if isUniqueViolation(cerr) {
+				return 0, errCounterConflict
+			}
+			return 0, cerr
+		}
+		return 1, nil
+	case err != nil:
+		return 0, err
+	default:
+		updArgs := append([]any{next + 1}, keyVals...)
+		if _, uerr := tx.Exec(db.ph(updQ), updArgs...); uerr != nil {
+			return 0, uerr
+		}
+		if cerr := tx.Commit(); cerr != nil {
+			return 0, cerr
 		}
 		return next, nil
 	}
-	if err != nil {
-		return 0, err
+}
+
+// isUniqueViolation reports whether err is a duplicate-key / unique-constraint
+// violation from PostgreSQL (SQLSTATE 23505) or SQLite.
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
 	}
-	if _, err := tx.Exec(db.ph(
-		`UPDATE ca_scoped_crl_counters SET next_number = ? WHERE ca_id = ? AND scope = ?`), next+1, caID, scope); err != nil {
-		return 0, err
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		return pqErr.Code == "23505"
 	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return next, nil
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint failed") ||
+		strings.Contains(msg, "duplicate key value")
 }
 
 // GetPublishedCRL returns the stored CRL for (CA, scope, kind), or nil if none
