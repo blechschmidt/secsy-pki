@@ -28,6 +28,7 @@ Comprehensive deployment and operations guides live in [`docs/`](docs/README.md)
 | [Password / secret encryption](docs/password-encryption.md) | HSM-backed envelope encryption |
 | [RBAC, audit logging & config](docs/rbac-and-audit.md) | Roles, event log, centralized policy |
 | [Observability](docs/observability.md) | Prometheus `/metrics`, health/readiness probes, structured logs |
+| [Rate limiting & abuse protection](docs/rate-limiting.md) | Tiered rate limits + HSM concurrency guard for public ACME/OCSP/CRL/SCEP/EST endpoints |
 | [Kubernetes deployment](docs/kubernetes.md) | Container image, Helm chart, cert-manager ACME issuer, kind/SoftHSM smoke test |
 | [Production HSM migration](docs/hsm-migration.md) | SoftHSM → real HSM cutover |
 

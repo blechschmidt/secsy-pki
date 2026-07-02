@@ -23,6 +23,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/monitor"
+	"github.com/blechschmidt/secsy-pki/server/internal/ratelimit"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 	"github.com/blechschmidt/secsy-pki/server/internal/scep"
 	"github.com/blechschmidt/secsy-pki/server/internal/siem"
@@ -252,6 +253,16 @@ func main() {
 	// Cap every request body to guard against memory-exhaustion DoS from an
 	// (authenticated) client. Individual handlers may impose tighter limits.
 	handler := limitRequestBody(mux, maxRequestBodyBytes)
+
+	// Rate limiting, per-account/IP/global quotas, and a bounded in-flight
+	// concurrency guard protecting the HSM on the public endpoints (ACME, OCSP,
+	// CRL, SCEP/EST). Sits inside the observability layer so shed requests are
+	// still logged and metered, and outside the body cap so it runs before any
+	// per-handler work. No-op when rate_limit.enabled is false.
+	if rlmw := buildRateLimit(cfg); rlmw != nil && rlmw.Active() {
+		handler = rlmw.Handler(handler)
+		log.Printf("Rate limiting enabled for public endpoints (ACME/OCSP/CRL/SCEP/EST)")
+	}
 
 	// Outermost middleware: assign a correlation ID to every request, record HTTP
 	// metrics, and emit one structured (JSON) log line per request. Wrapping the
@@ -536,4 +547,73 @@ func dedupRoles(roles []rbac.Role) []string {
 		}
 	}
 	return out
+}
+
+// buildRateLimit constructs the public-endpoint rate-limit middleware from the
+// configuration, or returns nil when rate limiting is disabled. Unset knobs
+// fall back to safe defaults, and the concurrency guard's ceiling defaults to
+// the PKCS#11 session pool size so it tracks the backend it protects.
+func buildRateLimit(cfg *config.Config) *ratelimit.Middleware {
+	rl := cfg.RateLimit
+	if !rl.Enabled {
+		return nil
+	}
+
+	limiter := ratelimit.NewTieredLimiter(ratelimit.LimiterConfig{
+		Global:     ratelimit.Rate{Rate: rl.Global.Rate, Burst: rl.Global.Burst},
+		PerIP:      ratelimit.Rate{Rate: rl.PerIP.Rate, Burst: rl.PerIP.Burst},
+		PerAccount: ratelimit.Rate{Rate: rl.PerAccount.Rate, Burst: rl.PerAccount.Burst},
+		MaxKeys:    rl.MaxKeys,
+		IdleTTL:    time.Duration(rl.IdleTTLSeconds) * time.Second,
+	})
+
+	var guard *ratelimit.Guard
+	if rl.Concurrency.GuardEnabled(true) {
+		maxInFlight := rl.Concurrency.MaxInFlight
+		if maxInFlight <= 0 {
+			// Track the session pool: bounding in-flight requests to the number of
+			// concurrent HSM sessions keeps the pool busy without letting excess
+			// requests pile up behind its borrow() backpressure.
+			maxInFlight = cfg.PKCS11.SessionPoolSize
+			if maxInFlight <= 0 {
+				maxInFlight = keyprovider.DefaultSessionPoolSize
+			}
+		}
+		maxQueue := rl.Concurrency.MaxQueue
+		if maxQueue == 0 {
+			maxQueue = 64
+		}
+		timeout := time.Duration(rl.Concurrency.AcquireTimeoutMs) * time.Millisecond
+		if rl.Concurrency.AcquireTimeoutMs == 0 {
+			timeout = 5 * time.Second
+		}
+		guard = ratelimit.NewGuard(ratelimit.GuardConfig{
+			MaxInFlight:    maxInFlight,
+			MaxQueue:       maxQueue,
+			AcquireTimeout: timeout,
+		})
+	}
+
+	// Only meter a protocol's paths when its server is actually mounted; OCSP and
+	// CRL live under the always-present CA API and are matched unconditionally.
+	pref := ratelimit.Prefixes{}
+	if cfg.ACME.Enabled {
+		pref.ACME = orDefaultPath(cfg.ACME.DirectoryPath, "/acme")
+	}
+	if cfg.EST.Enabled {
+		pref.EST = orDefaultPath(cfg.EST.BasePath, "/.well-known/est")
+	}
+	if cfg.SCEP.Enabled {
+		pref.SCEP = orDefaultPath(cfg.SCEP.DirectoryPath, "/scep")
+	}
+
+	return ratelimit.New(ratelimit.Options{Limiter: limiter, Guard: guard, Prefixes: pref})
+}
+
+// orDefaultPath returns p when non-empty (after trimming), else the default.
+func orDefaultPath(p, def string) string {
+	if strings.TrimSpace(p) == "" {
+		return def
+	}
+	return p
 }

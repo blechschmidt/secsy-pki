@@ -130,3 +130,31 @@ audit:
     #     url: https://collector.example.com/ingest
     #     headers:
     #       Authorization: "Bearer <token>"
+
+# rate_limit protects the public-facing endpoints (ACME newOrder/newAccount,
+# OCSP, CRL, and SCEP/EST enrollment) from issuance abuse and HSM overload.
+# Disabled by default; see docs/rate-limiting.md. When enabled, a token-bucket
+# limiter meters requests across three independent tiers and a bounded in-flight
+# guard caps how many signing/enrollment requests hit the HSM at once. Rejected
+# requests get a 429 (or 503 when the HSM is saturated) with a Retry-After hint,
+# so compliant ACME clients back off and recover gracefully.
+rate_limit:
+  enabled: false
+  # Each tier is a token bucket: rate = sustained requests/second, burst = the
+  # bucket capacity (short spikes allowed). A tier with rate/burst <= 0 is off.
+  global:                        # aggregate cap across all clients
+    rate: 200
+    burst: 400
+  per_ip:                        # per source IP (honors X-Forwarded-For)
+    rate: 20
+    burst: 40
+  per_account:                   # per ACME account / EST user
+    rate: 50
+    burst: 100
+  # max_keys: 100000             # bound on distinct per-IP/per-account buckets
+  # idle_ttl_seconds: 600        # idle bucket eviction window
+  concurrency:                   # in-flight guard in front of the HSM session pool
+    # enabled: true              # defaults on when rate_limit.enabled is true
+    # max_in_flight: 0           # 0 => derived from pkcs11.session_pool_size
+    max_queue: 64                # requests allowed to wait before shedding (503)
+    acquire_timeout_ms: 5000     # max wait for a slot before shedding

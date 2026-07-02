@@ -23,6 +23,7 @@ CA, secret-encryption, and governance features.
 | [RBAC, audit logging & config](rbac-and-audit.md) | Organization-wide roles, per-CA permissions, the hash-chained event log, and centralized policy/profiles |
 | [Audit log export to SIEM](audit-siem-export.md) | Streaming the audit event log to syslog (TCP/TLS)/CEF/webhook with at-least-once delivery & a durable cursor, plus `secsy-ca audit verify` (tamper detection) and `audit export` (offline batch) |
 | [Observability](observability.md) | Prometheus `/metrics`, `/healthz` & `/readyz` (with HSM probe), structured JSON request logging, and a Prometheus/Grafana setup |
+| [Rate limiting & abuse protection](rate-limiting.md) | Tiered token-bucket rate limiting (global / per-IP / per-account) and a bounded in-flight HSM concurrency guard for the public ACME/OCSP/CRL/SCEP/EST endpoints, with `429`/`503` + `Retry-After` and Prometheus throttle/queue metrics |
 | [Kubernetes deployment](kubernetes.md) | Multi-stage container image, Helm chart (HSM/PKCS#11 module mount, PIN via Secret, TLS, RBAC/policy config, `/healthz`+`/readyz` probes), cert-manager ACME issuer for HSM-backed workload certs, and a kind/SoftHSM smoke test |
 | [Production HSM migration](hsm-migration.md) | Moving from SoftHSM to a real HSM (YubiHSM / network HSM) for production |
 | [Security review & hardening](security-review.md) | The security review of the enterprise branch: findings, fixes, residual risks, and how to re-verify |

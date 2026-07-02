@@ -73,6 +73,34 @@ var (
 		"RBAC authorization decisions, partitioned by action and decision.",
 		"action", "decision")
 
+	// Rate limiting for the public endpoints. Throttled counts requests rejected
+	// by a token-bucket tier, partitioned by endpoint class (acme_new_order,
+	// ocsp, enroll, ...) and the tier that rejected it (global|per_ip|
+	// per_account). Admitted counts requests that passed all tiers, by endpoint.
+	RateLimitThrottled = NewCounter(Default,
+		"secsy_ratelimit_throttled_total",
+		"Public-endpoint requests rejected by a rate-limit tier, by endpoint class and tier.",
+		"endpoint", "tier")
+	RateLimitAdmitted = NewCounter(Default,
+		"secsy_ratelimit_admitted_total",
+		"Public-endpoint requests admitted by the rate limiter (passed all tiers), by endpoint class.",
+		"endpoint")
+
+	// HSM in-flight concurrency guard. Rejected counts requests shed before
+	// reaching the session pool, by endpoint and reason (queue_full|timeout|
+	// canceled). InFlight and QueueDepth expose live saturation so operators can
+	// alert before requests are shed.
+	HSMGuardRejected = NewCounter(Default,
+		"secsy_hsm_guard_rejected_total",
+		"Requests rejected by the HSM in-flight concurrency guard, by endpoint and reason.",
+		"endpoint", "reason")
+	HSMGuardInFlight = NewGauge(Default,
+		"secsy_hsm_guard_in_flight",
+		"HSM-bound requests currently holding a concurrency-guard slot.")
+	HSMGuardQueueDepth = NewGauge(Default,
+		"secsy_hsm_guard_queue_depth",
+		"HSM-bound requests currently waiting for a concurrency-guard slot.")
+
 	// Readiness. 1 = the dependency is healthy, 0 = unhealthy.
 	Up = NewGauge(Default,
 		"secsy_component_up",

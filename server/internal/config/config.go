@@ -38,6 +38,69 @@ type Config struct {
 	// external SIEM systems (syslog/CEF/webhook). Disabled unless
 	// audit.export.enabled is true.
 	Audit AuditConfig `yaml:"audit"`
+	// RateLimit configures request rate limiting, per-account/IP/global quotas,
+	// and the bounded in-flight concurrency guard protecting the HSM on the
+	// public endpoints (ACME, OCSP, CRL, SCEP/EST). Disabled unless
+	// rate_limit.enabled is true.
+	RateLimit RateLimitConfig `yaml:"rate_limit"`
+}
+
+// RateLimitConfig configures abuse protection for the public-facing endpoints.
+// When enabled, a token-bucket limiter meters requests across three independent
+// tiers (global, per-IP, per-account) and a concurrency guard bounds how many
+// signing/enrollment requests may hit the HSM session pool at once. Tiers with
+// a non-positive rate or burst are inert.
+type RateLimitConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Global caps the aggregate request rate across all clients. PerIP and
+	// PerAccount cap a single source IP and a single authenticated account
+	// (ACME account, EST user) respectively.
+	Global     RateConfig `yaml:"global"`
+	PerIP      RateConfig `yaml:"per_ip"`
+	PerAccount RateConfig `yaml:"per_account"`
+	// MaxKeys bounds the number of distinct per-IP / per-account buckets held in
+	// memory before idle eviction. Defaults to 100000.
+	MaxKeys int `yaml:"max_keys"`
+	// IdleTTLSeconds is how long a fully-replenished bucket may sit unused before
+	// eviction. Defaults to 600.
+	IdleTTLSeconds int `yaml:"idle_ttl_seconds"`
+	// Concurrency configures the in-flight guard in front of the HSM.
+	Concurrency ConcurrencyConfig `yaml:"concurrency"`
+}
+
+// RateConfig is a single token-bucket tier: a sustained rate in requests per
+// second and a burst (bucket capacity). A non-positive Rate disables the tier.
+type RateConfig struct {
+	Rate  float64 `yaml:"rate"`
+	Burst float64 `yaml:"burst"`
+}
+
+// ConcurrencyConfig configures the bounded in-flight guard that caps how many
+// HSM-bound (signing/enrollment) requests run concurrently against the PKCS#11
+// session pool, shedding excess load fast under overload.
+type ConcurrencyConfig struct {
+	// Enabled turns the guard on. When rate_limit.enabled is true it defaults to
+	// on; set to false to disable the guard while keeping rate limiting.
+	Enabled *bool `yaml:"enabled"`
+	// MaxInFlight is the concurrent HSM-bound request ceiling. When <= 0 it is
+	// derived from the PKCS#11 session pool size (pkcs11.session_pool_size), so
+	// the guard tracks the backend it protects.
+	MaxInFlight int `yaml:"max_in_flight"`
+	// MaxQueue bounds how many requests may wait for a slot before excess is
+	// shed with 503. Defaults to 64.
+	MaxQueue int `yaml:"max_queue"`
+	// AcquireTimeoutMs bounds how long a queued request waits for a slot.
+	// Defaults to 5000. Zero means wait until the request context is canceled.
+	AcquireTimeoutMs int `yaml:"acquire_timeout_ms"`
+}
+
+// GuardEnabled reports whether the concurrency guard should run given the parent
+// rate-limit enablement. It defaults to on when rate limiting is enabled.
+func (c ConcurrencyConfig) GuardEnabled(parentEnabled bool) bool {
+	if c.Enabled != nil {
+		return *c.Enabled
+	}
+	return parentEnabled
 }
 
 // AuditConfig groups audit-log settings; currently the SIEM export pipeline.
@@ -428,8 +491,57 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateRateLimit(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
 }
+
+// validateRateLimit sanity-checks the rate-limit configuration when enabled so
+// a misconfiguration (e.g. a positive rate with a zero burst that can never
+// admit a request) fails loudly at startup rather than silently blackholing
+// legitimate traffic.
+func (c *Config) validateRateLimit() error {
+	rl := &c.RateLimit
+	if !rl.Enabled {
+		return nil
+	}
+	tiers := []struct {
+		name string
+		r    RateConfig
+	}{
+		{"global", rl.Global},
+		{"per_ip", rl.PerIP},
+		{"per_account", rl.PerAccount},
+	}
+	anyTier := false
+	for _, t := range tiers {
+		if t.r.Rate < 0 || t.r.Burst < 0 {
+			return fmt.Errorf("rate_limit.%s: rate and burst must be non-negative", t.name)
+		}
+		if t.r.Rate > 0 && t.r.Burst <= 0 {
+			return fmt.Errorf("rate_limit.%s: burst must be positive when rate is set (a zero-burst bucket never admits)", t.name)
+		}
+		if t.r.enabled() {
+			anyTier = true
+		}
+	}
+	guardOn := rl.Concurrency.GuardEnabled(true)
+	if !anyTier && !guardOn {
+		return fmt.Errorf("rate_limit.enabled is true but no tier has a positive rate/burst and the concurrency guard is disabled")
+	}
+	if rl.MaxKeys < 0 || rl.IdleTTLSeconds < 0 {
+		return fmt.Errorf("rate_limit: max_keys and idle_ttl_seconds must be non-negative")
+	}
+	if rl.Concurrency.MaxQueue < 0 || rl.Concurrency.AcquireTimeoutMs < 0 {
+		return fmt.Errorf("rate_limit.concurrency: max_queue and acquire_timeout_ms must be non-negative")
+	}
+	return nil
+}
+
+// enabled reports whether a tier is effective (positive rate and burst).
+func (r RateConfig) enabled() bool { return r.Rate > 0 && r.Burst > 0 }
 
 // validateAuditExport sanity-checks the SIEM export configuration when it is
 // enabled, so a misconfiguration fails loudly at startup rather than silently
