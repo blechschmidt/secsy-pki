@@ -153,6 +153,18 @@ cd server
 ./scripts/run-integration-tests.sh
 ```
 
+Disaster-recovery drill (isolated SoftHSM sandbox; exercises the full key
+ceremony → backup → simulated loss → restore → re-issuance lifecycle and asserts
+key non-extractability):
+
+```bash
+./scripts/dr-drill.sh            # run the drill (cleans up on success)
+DR_KEEP=1 ./scripts/dr-drill.sh  # keep the workspace to inspect artifacts
+```
+
+See [Key ceremony, backup & DR](docs/key-ceremony.md) for the ceremony checklist
+and recovery runbook.
+
 ## CI
 
 The GitHub Actions workflow (`.github/workflows/test.yaml`) installs

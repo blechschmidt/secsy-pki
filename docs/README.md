@@ -14,6 +14,7 @@ CA, secret-encryption, and governance features.
 |-------|--------|
 | [HSM / PKCS#11 configuration](hsm-configuration.md) | The key-provider abstraction, configuring a PKCS#11 HSM or the software backend, and SoftHSM for dev/CI |
 | [Certificate authority](certificate-authority.md) | Initializing root & intermediate CAs, profiles, issuing / renewing / revoking certificates, and serving CRL & OCSP |
+| [Key ceremony, backup & DR](key-ceremony.md) | M-of-N key ceremony (`secsy-ca ceremony`), key inventory, CA-metadata backup/restore, HSM token backup, and the disaster-recovery runbook & drill |
 | [ACME server (RFC 8555)](acme.md) | Automated certificate issuance for certbot/lego/acme.sh: enabling ACME, ACME-enabled profiles, http-01 & dns-01, and External Account Binding |
 | [Expiry monitoring & auto-renewal](expiry-monitoring.md) | The background expiry monitor, `secsy-ca expiring`/`monitor-run`, `/api/monitor/*`, notification sinks (log/webhook), auto-renewal, metrics & runbook |
 | [Password / secret encryption](password-encryption.md) | HSM-backed envelope encryption for passwords and small secrets (`secsy-secret`, `/api/secret/*`) |
@@ -33,6 +34,7 @@ Related top-level docs: [architecture](../ARCHITECTURE.md) ·
    [RBAC & audit](rbac-and-audit.md).
 2. **Adding secret encryption** → [Password / secret encryption](password-encryption.md).
 3. **Going to production** → [Production HSM migration](hsm-migration.md) →
+   [Key ceremony, backup & DR](key-ceremony.md) →
    [Observability](observability.md).
 
 ## The tools at a glance

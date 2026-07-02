@@ -183,6 +183,52 @@ func TestPKCS11GenerateDuplicateLabelRejected(t *testing.T) {
 	}
 }
 
+// TestPKCS11ListKeys verifies the KeyLister inventory: a freshly generated key
+// appears in the listing with its label and canonical key type, and — crucially
+// for the key non-extractability invariant — is reported as sensitive and
+// non-extractable by the token. It also confirms the capability survives the
+// instrumented wrapper used in production.
+func TestPKCS11ListKeys(t *testing.T) {
+	ctx := context.Background()
+	p := pkcs11TestProvider(t)
+
+	label := uniqueLabel(t, "inv")
+	if _, err := p.GenerateKey(ctx, KeySpec{Label: label, KeyType: KeyTypeECDSAP256}); err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	keys, err := p.ListKeys(ctx)
+	if err != nil {
+		t.Fatalf("ListKeys: %v", err)
+	}
+
+	var found *KeyDescriptor
+	for i := range keys {
+		if keys[i].Label == label {
+			found = &keys[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("generated key %q not present in inventory of %d key(s)", label, len(keys))
+	}
+	if found.KeyType != KeyTypeECDSAP256 {
+		t.Errorf("KeyType = %q, want %q", found.KeyType, KeyTypeECDSAP256)
+	}
+	if found.Extractable {
+		t.Error("CA/KEK key must be non-extractable, but token reports it extractable")
+	}
+	if !found.Sensitive {
+		t.Error("expected token to report the private key as sensitive")
+	}
+
+	if lister, ok := Instrument(p).(KeyLister); !ok {
+		t.Fatal("instrumented pkcs11 provider does not expose KeyLister")
+	} else if _, err := lister.ListKeys(ctx); err != nil {
+		t.Fatalf("instrumented ListKeys: %v", err)
+	}
+}
+
 // TestPKCS11RawSignVerify exercises the raw crypto.Signer contract against the
 // HSM for a non-Ed25519 key (digest signing), independent of the SSH layer.
 func TestPKCS11RawSignVerify(t *testing.T) {

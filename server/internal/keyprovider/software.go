@@ -201,6 +201,37 @@ func (p *SoftwareProvider) Decrypter(_ context.Context, ref KeyRef) (Decrypter, 
 	return &softwareDecrypter{Decrypter: dec}, nil
 }
 
+// ListKeys enumerates the keys in the keystore directory, returning
+// non-sensitive metadata for each. It satisfies the KeyLister interface. The
+// software backend stores keys as on-disk files, so every key is reported as
+// Extractable=true and Sensitive=false — a deliberately honest contrast with a
+// hardware token, and the reason production CA/KEK keys belong on an HSM.
+func (p *SoftwareProvider) ListKeys(_ context.Context) ([]KeyDescriptor, error) {
+	entries, err := os.ReadDir(p.dir)
+	if err != nil {
+		return nil, fmt.Errorf("keyprovider: reading keystore directory %q: %w", p.dir, err)
+	}
+	var out []KeyDescriptor
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), keyFileExt) {
+			continue
+		}
+		label := strings.TrimSuffix(e.Name(), keyFileExt)
+		desc := KeyDescriptor{
+			Label:       label,
+			URI:         "software:" + label,
+			Extractable: true,
+			Sensitive:   false,
+		}
+		// Best-effort key-type resolution; a load failure still lists the key.
+		if _, keyType, lerr := p.load(label); lerr == nil {
+			desc.KeyType = keyType
+		}
+		out = append(out, desc)
+	}
+	return out, nil
+}
+
 // load reads and parses the private key stored under label. All keys written by
 // this provider are asymmetric signing keys, so the result is a crypto.Signer.
 func (p *SoftwareProvider) load(label string) (crypto.Signer, string, error) {
@@ -321,3 +352,4 @@ var _ Provider = (*SoftwareProvider)(nil)
 var _ Signer = (*softwareSigner)(nil)
 var _ DecrypterProvider = (*SoftwareProvider)(nil)
 var _ Decrypter = (*softwareDecrypter)(nil)
+var _ KeyLister = (*SoftwareProvider)(nil)

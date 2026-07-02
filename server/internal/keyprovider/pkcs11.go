@@ -216,6 +216,29 @@ func (s *pkcs11Signer) Close() error {
 	return nil
 }
 
+// ListKeys enumerates the private-key objects on the token, returning only
+// non-sensitive metadata (label, id, key type, and the extractability /
+// sensitivity policy flags). Private key material is never read. It satisfies
+// the KeyLister interface for inventory and DR verification.
+func (p *PKCS11Provider) ListKeys(_ context.Context) ([]KeyDescriptor, error) {
+	hsmKeys, err := pki.ListKeys(p.cfg)
+	if err != nil {
+		return nil, fmt.Errorf("keyprovider: listing keys on token: %w", err)
+	}
+	out := make([]KeyDescriptor, 0, len(hsmKeys))
+	for _, k := range hsmKeys {
+		out = append(out, KeyDescriptor{
+			Label:       k.Label,
+			ID:          k.ID,
+			KeyType:     k.KeyType,
+			URI:         pki.BuildPKCS11URI(p.cfg, k.Label),
+			Extractable: k.Extractable,
+			Sensitive:   k.Sensitive,
+		})
+	}
+	return out, nil
+}
+
 // Decrypter returns a Decrypter for the referenced RSA KEK. The private key
 // never leaves the token; unwrapping happens on the device via C_Decrypt.
 func (p *PKCS11Provider) Decrypter(_ context.Context, ref KeyRef) (Decrypter, error) {
@@ -274,3 +297,4 @@ var _ Provider = (*PKCS11Provider)(nil)
 var _ Signer = (*pkcs11Signer)(nil)
 var _ DecrypterProvider = (*PKCS11Provider)(nil)
 var _ Decrypter = (*pkcs11Decrypter)(nil)
+var _ KeyLister = (*PKCS11Provider)(nil)

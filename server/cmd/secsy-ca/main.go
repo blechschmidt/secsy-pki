@@ -94,6 +94,14 @@ func run(args []string) error {
 		return cmdMonitorRun(db, mgr, cfg, cmdArgs)
 	case "profiles":
 		return cmdProfiles()
+	case "inventory":
+		return cmdInventory(db, provider, cmdArgs)
+	case "ceremony":
+		return cmdCeremony(db, mgr, provider, cmdArgs)
+	case "backup":
+		return cmdBackup(db, cfg, provider, cmdArgs)
+	case "restore":
+		return cmdRestore(db, cfg, provider, cmdArgs)
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -121,6 +129,10 @@ Commands:
   expiring            List certificates by remaining validity (expiry monitor)
   monitor-run         Run one expiry-monitor scan (optionally auto-renewing)
   profiles            List the available certificate profiles
+  inventory           List keys held by the key provider (HSM/software)
+  ceremony            Run an M-of-N confirmed root/intermediate key ceremony
+  backup              Export CA metadata + a DR manifest (no private keys)
+  restore             Restore/verify CA metadata against the key provider
 
 Run "secsy-ca <command> -h" for command-specific flags.
 `)

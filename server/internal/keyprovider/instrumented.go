@@ -3,6 +3,7 @@ package keyprovider
 import (
 	"context"
 	"crypto"
+	"fmt"
 	"io"
 	"time"
 
@@ -47,6 +48,22 @@ func (p *instrumentedProvider) Ping(ctx context.Context) error {
 	err := pr.Ping(ctx)
 	metrics.ObserveHSM("ping", start, err)
 	return err
+}
+
+// ListKeys forwards to the wrapped provider's KeyLister implementation so the
+// inventory capability survives the instrumented wrapper (the embedded Provider
+// interface does not surface ListKeys). Returns ErrProbeUnsupported's sibling
+// behavior — a nil list and no error would hide a missing capability, so we
+// surface an explicit error instead.
+func (p *instrumentedProvider) ListKeys(ctx context.Context) ([]KeyDescriptor, error) {
+	kl, ok := p.Provider.(KeyLister)
+	if !ok {
+		return nil, fmt.Errorf("keyprovider: provider does not support key listing")
+	}
+	start := time.Now()
+	keys, err := kl.ListKeys(ctx)
+	metrics.ObserveHSM("list", start, err)
+	return keys, err
 }
 
 func (p *instrumentedProvider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInfo, error) {

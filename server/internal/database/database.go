@@ -55,6 +55,30 @@ func (db *DB) isPostgres() bool {
 	return db.driver == "postgres" || db.driver == "postgresql"
 }
 
+// Driver returns the configured database driver name ("sqlite", "postgres").
+func (db *DB) Driver() string { return db.driver }
+
+// SnapshotSQLite writes a consistent, self-contained copy of a SQLite database
+// to destPath using "VACUUM INTO", which is safe to run online (it takes a read
+// lock and produces a defragmented copy). It is used by the CA-metadata backup
+// procedure to capture the authoritative store without stopping the service.
+//
+// It returns an error for non-SQLite drivers, where an operator should use the
+// engine's native tooling (e.g. pg_dump) instead — see the DR runbook.
+func (db *DB) SnapshotSQLite(destPath string) error {
+	if db.driver != "sqlite" && db.driver != "sqlite3" {
+		return fmt.Errorf("SnapshotSQLite: unsupported driver %q; use the engine's native backup (e.g. pg_dump)", db.driver)
+	}
+	// VACUUM INTO does not accept a bound parameter for the destination, so the
+	// path is inlined as a single-quoted SQL string literal with embedded quotes
+	// escaped. destPath originates from a trusted operator CLI flag.
+	escaped := strings.ReplaceAll(destPath, "'", "''")
+	if _, err := db.conn.Exec("VACUUM INTO '" + escaped + "'"); err != nil {
+		return fmt.Errorf("SnapshotSQLite: %w", err)
+	}
+	return nil
+}
+
 // ph converts ? placeholders to $1, $2, ... for PostgreSQL
 func (db *DB) ph(query string) string {
 	if !db.isPostgres() {

@@ -129,6 +129,41 @@ func TestSoftwareFindAndPublicKey(t *testing.T) {
 	}
 }
 
+func TestSoftwareListKeys(t *testing.T) {
+	ctx := context.Background()
+	p := newTestSoftwareProvider(t)
+
+	if keys, err := p.ListKeys(ctx); err != nil {
+		t.Fatalf("ListKeys on empty keystore: %v", err)
+	} else if len(keys) != 0 {
+		t.Fatalf("expected empty inventory, got %d", len(keys))
+	}
+
+	for _, lbl := range []string{"alpha", "beta"} {
+		if _, err := p.GenerateKey(ctx, KeySpec{Label: lbl, KeyType: KeyTypeECDSAP256}); err != nil {
+			t.Fatalf("GenerateKey %q: %v", lbl, err)
+		}
+	}
+
+	keys, err := p.ListKeys(ctx)
+	if err != nil {
+		t.Fatalf("ListKeys: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("expected 2 keys, got %d", len(keys))
+	}
+	for _, k := range keys {
+		if k.KeyType != KeyTypeECDSAP256 {
+			t.Errorf("key %q type = %q, want %q", k.Label, k.KeyType, KeyTypeECDSAP256)
+		}
+		// The software backend stores keys as files — it must honestly report
+		// them as extractable, which is why it is unfit for production CA keys.
+		if !k.Extractable {
+			t.Errorf("software key %q should report Extractable=true", k.Label)
+		}
+	}
+}
+
 func TestSoftwareFindNotFound(t *testing.T) {
 	ctx := context.Background()
 	p := newTestSoftwareProvider(t)

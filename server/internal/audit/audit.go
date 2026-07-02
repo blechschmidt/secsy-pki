@@ -47,17 +47,28 @@ const (
 	// expiry monitor (actor "monitor"), ahead of its expiry.
 	ActionCertAutoRenew = "cert.auto_renew"
 	// ActionCertExpiryScan records a completed expiry-monitor scan cycle.
-	ActionCertExpiryScan = "cert.expiry_scan"
-	ActionCertSignSSH         = "cert.sign_ssh"
-	ActionCertSignX509        = "cert.sign_x509"
-	ActionSecretEncrypt       = "secret.encrypt"
-	ActionSecretDecrypt       = "secret.decrypt"
-	ActionPermissionGrant     = "permission.grant"
-	ActionPermissionRevoke    = "permission.revoke"
-	ActionGroupCreate         = "group.create"
-	ActionGroupDelete         = "group.delete"
-	ActionHSMProvisionAudit   = "hsm.provision_audit"
-	ActionHSMFactoryReset     = "hsm.factory_reset"
+	ActionCertExpiryScan    = "cert.expiry_scan"
+	ActionCertSignSSH       = "cert.sign_ssh"
+	ActionCertSignX509      = "cert.sign_x509"
+	ActionSecretEncrypt     = "secret.encrypt"
+	ActionSecretDecrypt     = "secret.decrypt"
+	ActionPermissionGrant   = "permission.grant"
+	ActionPermissionRevoke  = "permission.revoke"
+	ActionGroupCreate       = "group.create"
+	ActionGroupDelete       = "group.delete"
+	ActionHSMProvisionAudit = "hsm.provision_audit"
+	ActionHSMFactoryReset   = "hsm.factory_reset"
+	// Key-ceremony, backup, and disaster-recovery lifecycle operations. A
+	// ceremony records its start, each operator's M-of-N confirmation, and its
+	// completion (or abort) alongside the underlying ca.init_root /
+	// ca.issue_intermediate events. Backup/restore record DR bundle creation and
+	// verification. None of these ever handle private key material.
+	ActionCeremonyStart           = "ceremony.start"
+	ActionCeremonyOperatorConfirm = "ceremony.operator_confirm"
+	ActionCeremonyComplete        = "ceremony.complete"
+	ActionCeremonyAbort           = "ceremony.abort"
+	ActionHSMBackup               = "hsm.backup"
+	ActionHSMRestore              = "hsm.restore"
 	// ACME (RFC 8555) protocol operations. The actor for these is the ACME
 	// account ("acme:<account-id>") rather than an OIDC/root principal, since
 	// ACME clients authenticate with their own account keys.

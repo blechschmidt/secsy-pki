@@ -151,6 +151,38 @@ type Prober interface {
 	Ping(ctx context.Context) error
 }
 
+// KeyDescriptor is the non-sensitive inventory record for one key held by a
+// provider. It deliberately carries no private key material — only the
+// identifiers, type, and (for hardware tokens) the extractability/sensitivity
+// policy flags that let an operator audit the key non-extractability invariant.
+type KeyDescriptor struct {
+	// Label is the identifier the key is stored under.
+	Label string `json:"label"`
+	// ID is the secondary identifier (hex CKA_ID for PKCS#11), if any.
+	ID string `json:"id,omitempty"`
+	// KeyType is a canonical key-type string where derivable.
+	KeyType string `json:"key_type"`
+	// URI is the provider-specific reference (pkcs11: or software: URI).
+	URI string `json:"uri"`
+	// Extractable reports whether the private key may be read off the backend.
+	// For an HSM-backed CA/KEK key this must be false. The software backend
+	// always reports true, since keys live as on-disk files.
+	Extractable bool `json:"extractable"`
+	// Sensitive reports whether the backend refuses to expose the private value
+	// via attribute reads. Hardware tokens report true for protected keys.
+	Sensitive bool `json:"sensitive"`
+}
+
+// KeyLister is an optional capability implemented by providers that can
+// enumerate the keys they hold, for inventory and disaster-recovery
+// verification. Both the software and PKCS#11 backends implement it. Callers
+// type-assert a Provider to this interface.
+type KeyLister interface {
+	// ListKeys returns a descriptor for every key the provider holds. It reports
+	// only non-sensitive metadata and never private key material.
+	ListKeys(ctx context.Context) ([]KeyDescriptor, error)
+}
+
 // Decrypter is a crypto.Decrypter bound to a specific provider key, plus a
 // Close that releases backend resources (a PKCS#11 session, etc.). It is used
 // to unwrap data-encryption keys during envelope decryption.
