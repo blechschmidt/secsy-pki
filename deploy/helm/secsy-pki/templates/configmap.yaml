@@ -92,3 +92,17 @@ data:
         {{- toYaml $c.acme.challengeTypes | nindent 8 }}
       http01_port: {{ int $c.acme.http01Port }}
       require_eab: {{ $c.acme.requireEAB }}
+
+    {{- with $c.tracing }}
+    tracing:
+      enabled: {{ .enabled }}
+      endpoint: {{ .endpoint | quote }}
+      protocol: {{ .protocol | quote }}
+      insecure: {{ .insecure }}
+      sample_ratio: {{ .sampleRatio }}
+      service_name: {{ .serviceName | quote }}
+      service_version: {{ .serviceVersion | quote }}
+      timeout_seconds: {{ int .timeoutSeconds }}
+      headers:
+        {{- toYaml .headers | nindent 8 }}
+    {{- end }}

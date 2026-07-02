@@ -20,8 +20,8 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/acme"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
-	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/caa"
+	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/cmp"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/ct"
@@ -41,6 +41,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
 	"github.com/blechschmidt/secsy-pki/server/internal/siem"
 	"github.com/blechschmidt/secsy-pki/server/internal/spiffe"
+	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
 	"github.com/blechschmidt/secsy-pki/server/internal/tsa"
 )
 
@@ -51,6 +52,27 @@ func main() {
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// OpenTelemetry distributed tracing. Installs the global TracerProvider and
+	// W3C propagator so the request middleware and the CA/HSM/store hot paths emit
+	// spans. Disabled by default: with tracing.enabled=false this installs a no-op
+	// tracer and starts no exporter. The Shutdown flushes buffered spans on a
+	// graceful exit.
+	traceProvider, err := tracing.Init(context.Background(), tracingConfig(cfg))
+	if err != nil {
+		log.Fatalf("Failed to initialize tracing: %v", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := traceProvider.Shutdown(shutdownCtx); err != nil {
+			log.Printf("WARNING: tracing shutdown: %v", err)
+		}
+	}()
+	if cfg.Tracing.Enabled {
+		log.Printf("OpenTelemetry tracing enabled (endpoint=%s protocol=%s sample_ratio=%v)",
+			cfg.Tracing.Endpoint, cfg.Tracing.Protocol, cfg.Tracing.SampleRatio)
 	}
 
 	db, err := database.NewWithOptions(cfg.Database.Driver, cfg.Database.DSN, database.PoolOptions{
@@ -546,6 +568,23 @@ func main() {
 		if err := http.ListenAndServe(addr, handler); err != nil {
 			log.Fatalf("Server failed: %v", err)
 		}
+	}
+}
+
+// tracingConfig maps the server's tracing config block onto the internal
+// tracing package's Config, translating the seconds-based timeout knob.
+func tracingConfig(cfg *config.Config) tracing.Config {
+	t := cfg.Tracing
+	return tracing.Config{
+		Enabled:        t.Enabled,
+		Endpoint:       t.Endpoint,
+		Protocol:       t.Protocol,
+		Insecure:       t.Insecure,
+		SampleRatio:    t.SampleRatio,
+		ServiceName:    t.ServiceName,
+		ServiceVersion: t.ServiceVersion,
+		Headers:        t.Headers,
+		Timeout:        time.Duration(t.TimeoutSeconds) * time.Second,
 	}
 }
 

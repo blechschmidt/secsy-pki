@@ -1,0 +1,47 @@
+# OpenTelemetry Collector configuration for receiving secsy-pki traces.
+#
+# secsy-pki exports OTLP spans (see the `tracing` config block in
+# docs/tracing.md). This collector accepts them over OTLP gRPC (:4317) and OTLP
+# HTTP (:4318), batches them, and fans them out to a tracing backend. The
+# debug exporter is enabled so you can watch spans arrive in `docker compose
+# logs otel-collector`; add/replace the `otlp/tempo` (or jaeger/datadog/...)
+# exporter for a real backend.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Bound memory so a trace spike cannot OOM the collector.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+exporters:
+  # Prints received spans to the collector log — handy for local verification.
+  debug:
+    verbosity: normal
+  # Example: forward to Grafana Tempo. Uncomment and set the endpoint, then add
+  # `otlp/tempo` to the traces pipeline's exporters below.
+  # otlp/tempo:
+  #   endpoint: tempo:4317
+  #   tls:
+  #     insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+  telemetry:
+    logs:
+      level: info

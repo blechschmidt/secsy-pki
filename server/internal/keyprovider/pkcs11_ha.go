@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
+	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // This file implements high availability for the PKCS#11 backend: a set of
@@ -267,7 +269,7 @@ func (p *PKCS11HAProvider) route() []*haMember {
 // success. A health-affecting failure (anything other than a logical
 // key-not-found) charges the member's health and, if another candidate remains,
 // counts a failover. It returns the last error when every candidate fails.
-func (p *PKCS11HAProvider) withFailover(fn func(m *haMember) error) error {
+func (p *PKCS11HAProvider) withFailover(ctx context.Context, op string, fn func(m *haMember) error) error {
 	members := p.route()
 	if len(members) == 0 {
 		return fmt.Errorf("keyprovider: no PKCS#11 tokens configured")
@@ -282,14 +284,34 @@ func (p *PKCS11HAProvider) withFailover(fn func(m *haMember) error) error {
 		}
 		if err == nil {
 			m.recordSuccess()
+			// Record which token ultimately served the operation, and — when it was
+			// not the first candidate — that a failover carried it. This makes the
+			// mid-load token loss the Task 44 test drives visible in the trace.
+			if i > 0 {
+				tracing.AddEvent(ctx, "hsm.failover.served",
+					attribute.String("hsm.token", m.name),
+					attribute.String("hsm.operation", op),
+					attribute.Int("hsm.failover.attempt", i))
+			}
 			return nil
 		}
 		lastErr = err
 		if healthAffecting(err) {
 			metrics.RecordHSMTokenError(m.name)
 			m.recordFailure(p.threshold)
+			// Surface the per-token error on the trace so an operator can see exactly
+			// which replica erred and why, alongside the secsy_hsm_token_errors_total
+			// metric.
+			tracing.AddEvent(ctx, "hsm.token.error",
+				attribute.String("hsm.token", m.name),
+				attribute.String("hsm.operation", op),
+				attribute.String("error", err.Error()))
 			if i+1 < len(members) {
 				metrics.RecordHSMTokenFailover(m.name)
+				tracing.AddEvent(ctx, "hsm.failover",
+					attribute.String("hsm.token.from", m.name),
+					attribute.String("hsm.token.to", members[i+1].name),
+					attribute.String("hsm.operation", op))
 			}
 		}
 	}
@@ -340,7 +362,7 @@ func (p *PKCS11HAProvider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyI
 // FindKey locates the key on any healthy token holding a replica.
 func (p *PKCS11HAProvider) FindKey(ctx context.Context, ref KeyRef) (*KeyInfo, error) {
 	var info *KeyInfo
-	err := p.withFailover(func(m *haMember) error {
+	err := p.withFailover(ctx, "find", func(m *haMember) error {
 		got, e := m.provider.FindKey(ctx, ref)
 		if e != nil {
 			return e
@@ -378,7 +400,7 @@ func (p *PKCS11HAProvider) Signer(ctx context.Context, ref KeyRef) (Signer, erro
 // signWithFailover signs digest for label, retrying across tokens on failure.
 func (p *PKCS11HAProvider) signWithFailover(ctx context.Context, label string, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
 	var sig []byte
-	err := p.withFailover(func(m *haMember) error {
+	err := p.withFailover(ctx, "sign", func(m *haMember) error {
 		var e error
 		sig, e = m.provider.signOp(ctx, label, digest, opts)
 		return e
@@ -390,7 +412,7 @@ func (p *PKCS11HAProvider) signWithFailover(ctx context.Context, label string, d
 // tokens on failure.
 func (p *PKCS11HAProvider) decryptWithFailover(ctx context.Context, label string, ciphertext []byte, opts crypto.DecrypterOpts) ([]byte, error) {
 	var pt []byte
-	err := p.withFailover(func(m *haMember) error {
+	err := p.withFailover(ctx, "decrypt", func(m *haMember) error {
 		var e error
 		pt, e = m.provider.decryptOp(ctx, label, ciphertext, opts)
 		return e
@@ -417,7 +439,7 @@ func (p *PKCS11HAProvider) Decrypter(ctx context.Context, ref KeyRef) (Decrypter
 // ListKeys enumerates keys from any healthy token (the tokens are replicas).
 func (p *PKCS11HAProvider) ListKeys(ctx context.Context) ([]KeyDescriptor, error) {
 	var keys []KeyDescriptor
-	err := p.withFailover(func(m *haMember) error {
+	err := p.withFailover(ctx, "list", func(m *haMember) error {
 		got, e := m.provider.ListKeys(ctx)
 		if e != nil {
 			return e

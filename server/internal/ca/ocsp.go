@@ -12,6 +12,8 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
+	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // OCSP responder error sentinels. They let the HTTP layer map a failure to the
@@ -56,7 +58,10 @@ func (m *Manager) OCSPRespond(ctx context.Context, caID string, reqDER []byte) (
 // OCSPRespondWithOptions answers an OCSP request with control over the nonce,
 // delegated responder, and validity window. The response is signed on the
 // provider (HSM). The returned bytes are a DER-encoded OCSP response.
-func (m *Manager) OCSPRespondWithOptions(ctx context.Context, caID string, reqDER []byte, opts OCSPRespondOptions) ([]byte, error) {
+func (m *Manager) OCSPRespondWithOptions(ctx context.Context, caID string, reqDER []byte, opts OCSPRespondOptions) (_ []byte, err error) {
+	ctx, span := tracing.Start(ctx, "ca.ocsp_respond", attribute.String("ca.id", caID))
+	defer func() { tracing.End(span, err) }()
+
 	issuerCA, issuerCert, err := m.loadIssuer(caID)
 	if err != nil {
 		// An unknown or non-X.509 CA is not something we can attest to.

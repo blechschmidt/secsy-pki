@@ -16,6 +16,8 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
+	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // defaultCRLValidity is how long a generated CRL is valid before a fresh one
@@ -205,7 +207,12 @@ type leafParts struct {
 // embedding), and records a copy for renewal/revocation. Both CSR-based and
 // template-based issuance funnel through it so the security-sensitive logic
 // lives in one place.
-func (m *Manager) issueLeaf(ctx context.Context, issuerCA *models.CA, issuerCert *x509.Certificate, profile Profile, parts leafParts, validityOverride time.Duration, requestedBy string) (*IssueResult, error) {
+func (m *Manager) issueLeaf(ctx context.Context, issuerCA *models.CA, issuerCert *x509.Certificate, profile Profile, parts leafParts, validityOverride time.Duration, requestedBy string) (_ *IssueResult, err error) {
+	ctx, span := tracing.Start(ctx, "ca.issue_leaf",
+		attribute.String("ca.id", issuerCA.ID),
+		attribute.String("ca.profile", profile.Name))
+	defer func() { tracing.End(span, err) }()
+
 	keyUsage, err := profile.keyUsage()
 	if err != nil {
 		return nil, err
@@ -278,7 +285,10 @@ func (m *Manager) issueLeaf(ctx context.Context, issuerCA *models.CA, issuerCert
 		RequestedBy: requestedBy,
 	}
 	applyCTToRecord(record, ctStatus)
-	if err := m.db.RecordIssuedCertificate(record); err != nil {
+	span.SetAttributes(attribute.String("cert.serial", serial.String()))
+	if err := traceStore(ctx, "store.record_issued_certificate", func() error {
+		return m.db.RecordIssuedCertificate(record)
+	}); err != nil {
 		return nil, fmt.Errorf("recording issued certificate: %w", err)
 	}
 
@@ -479,7 +489,10 @@ func (m *Manager) RevokeCertificate(ctx context.Context, caID, serial, reasonNam
 // GenerateCRL builds and signs a fresh CRL for the CA covering all recorded
 // revocations. The CRL is signed on the provider (HSM). The returned bytes are
 // DER-encoded.
-func (m *Manager) GenerateCRL(ctx context.Context, caID string) ([]byte, error) {
+func (m *Manager) GenerateCRL(ctx context.Context, caID string) (_ []byte, err error) {
+	ctx, span := tracing.Start(ctx, "ca.generate_crl", attribute.String("ca.id", caID))
+	defer func() { tracing.End(span, err) }()
+
 	issuerCA, issuerCert, err := m.loadIssuer(caID)
 	if err != nil {
 		return nil, err
@@ -513,6 +526,7 @@ func (m *Manager) GenerateCRL(ctx context.Context, caID string) ([]byte, error) 
 	}
 	defer signer.Close()
 
+	span.SetAttributes(attribute.Int("crl.revoked_count", len(entries)))
 	now := time.Now()
 	der, err := pki.CreateCRL(signer, issuerCert, pki.CRLRequest{
 		Number:     big.NewInt(number),
@@ -524,6 +538,20 @@ func (m *Manager) GenerateCRL(ctx context.Context, caID string) ([]byte, error) 
 		return nil, fmt.Errorf("creating CRL: %w", err)
 	}
 	return der, nil
+}
+
+// traceStore runs a persistence-store call inside a span so Postgres/SQLite
+// queries on the issuance path are visible in the trace and their latency is
+// attributable. It records a store error on the span. The DB methods do not take
+// a context, so the span parent is threaded from the caller's issuance context.
+func traceStore(ctx context.Context, name string, fn func() error) error {
+	_, span := tracing.Start(ctx, name, attribute.String("db.operation", name))
+	defer span.End()
+	err := fn()
+	if err != nil {
+		span.RecordError(err)
+	}
+	return err
 }
 
 // loadIssuer fetches a CA and its parsed certificate, ensuring it is a usable

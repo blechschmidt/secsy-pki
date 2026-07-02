@@ -1,6 +1,7 @@
 package keyprovider
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -135,7 +136,7 @@ func TestWithFailoverRetriesAndMarksHealth(t *testing.T) {
 
 	var tried []string
 	transportErr := errors.New("pkcs11: session handle invalid")
-	err := p.withFailover(func(m *haMember) error {
+	err := p.withFailover(context.Background(), "sign", func(m *haMember) error {
 		tried = append(tried, m.name)
 		if m.name == "hafo-a" {
 			return transportErr // health-affecting: token A "fails"
@@ -161,7 +162,7 @@ func TestWithFailoverNotFoundDoesNotAffectHealth(t *testing.T) {
 
 	// A logical not-found is a property of the request, not the token: it must not
 	// mark a token unhealthy, though the next member is still tried.
-	err := p.withFailover(func(m *haMember) error {
+	err := p.withFailover(context.Background(), "find", func(m *haMember) error {
 		return fmt.Errorf("looking up: %w", ErrKeyNotFound)
 	})
 	if !errors.Is(err, ErrKeyNotFound) {
@@ -175,7 +176,7 @@ func TestWithFailoverNotFoundDoesNotAffectHealth(t *testing.T) {
 func TestWithFailoverAllFailReturnsLastError(t *testing.T) {
 	p := newBareHA(PolicyPrimaryBackup, 1, "haaf-a", "haaf-b")
 	sentinel := errors.New("boom-b")
-	err := p.withFailover(func(m *haMember) error {
+	err := p.withFailover(context.Background(), "sign", func(m *haMember) error {
 		if m.name == "haaf-b" {
 			return sentinel
 		}

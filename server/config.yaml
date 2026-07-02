@@ -370,6 +370,25 @@ rate_limit:
     max_queue: 64                # requests allowed to wait before shedding (503)
     acquire_timeout_ms: 5000     # max wait for a slot before shedding
 
+# --- OpenTelemetry distributed tracing (OTLP) --------------------------------
+# Emit end-to-end spans across the request middleware and the CA/HSM/store hot
+# paths (issuance, HSM sign/session-pool wait, failover events, CRL/OCSP,
+# pre-issuance lint/CAA/name-constraint gates, store writes), correlated with the
+# structured request log via trace/span IDs. Complements the Prometheus metrics.
+# Disabled by default: a no-op tracer, no exporter. See docs/tracing.md and the
+# collector snippet in deploy/observability/tracing/. W3C traceparent is honored.
+tracing:
+  enabled: false
+  endpoint: "otel-collector:4317"  # OTLP receiver host:port (grpc :4317 / http :4318)
+  protocol: grpc                   # grpc | http
+  insecure: true                   # disable transport TLS (in-cluster/trusted network)
+  sample_ratio: 0.1                # head-based [0,1]; parent-sampled traces always kept
+  service_name: secsy-pki          # service.name resource attribute
+  # service_version: "1.0.0"
+  timeout_seconds: 10              # per-export attempt timeout
+  # headers:                       # optional static export headers (auth token, etc.)
+  #   authorization: "Bearer ..."
+
 # --- HSM-backed secret encryption (envelope encryption) -----------------------
 # Encrypt passwords and small secrets under a KEK held in the HSM. See
 # docs/password-encryption.md. When secret.kek_label is unset, the /api/secret/*

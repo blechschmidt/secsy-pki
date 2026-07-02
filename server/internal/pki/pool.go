@@ -6,8 +6,11 @@ import (
 	"crypto/rsa"
 	"fmt"
 	"sync"
+	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
 	"github.com/miekg/pkcs11"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // This file introduces a bounded PKCS#11 session pool. It is the performance
@@ -219,14 +222,26 @@ func (p *SessionPool) borrow(ctx context.Context) (*pooledSession, func(), error
 	if closed {
 		return nil, nil, fmt.Errorf("pkcs11 session pool: closed")
 	}
+	// Record the time spent waiting for a free session as an event on the current
+	// span. Under HSM concurrency pressure (Task 20) this wait is a primary
+	// latency source, so surfacing it in the trace tells operators when the pool —
+	// not the on-device crypto — is the bottleneck. The event is a no-op when
+	// tracing is disabled.
+	waitStart := time.Now()
 	select {
 	case s := <-p.free:
 		var once sync.Once
 		release := func() {
 			once.Do(func() { p.free <- s })
 		}
+		tracing.AddEvent(ctx, "hsm.session.acquired",
+			attribute.Float64("hsm.session.wait_ms", float64(time.Since(waitStart).Microseconds())/1000.0),
+			attribute.Int("hsm.pool.size", p.size))
 		return s, release, nil
 	case <-ctx.Done():
+		tracing.AddEvent(ctx, "hsm.session.acquire_failed",
+			attribute.Float64("hsm.session.wait_ms", float64(time.Since(waitStart).Microseconds())/1000.0),
+			attribute.String("error", ctx.Err().Error()))
 		return nil, nil, ctx.Err()
 	}
 }

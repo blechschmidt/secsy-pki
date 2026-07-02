@@ -157,6 +157,30 @@ config:
     http01Port: 0
     requireEAB: false
 
+  # OpenTelemetry (OTLP) distributed tracing. Complements the Prometheus metrics
+  # and the structured request log with end-to-end spans across the request
+  # middleware and the CA/HSM/store hot paths. Disabled by default (a no-op
+  # tracer, no exporter). Point `endpoint` at an OTel collector's OTLP receiver
+  # (e.g. the OpenTelemetry Collector, Tempo, or Jaeger). See docs/tracing.md.
+  tracing:
+    enabled: false
+    # OTLP collector endpoint in host:port form (no scheme).
+    #   grpc receiver → :4317   http receiver → :4318
+    endpoint: "otel-collector:4317"
+    # "grpc" (OTLP/gRPC) or "http" (OTLP/HTTP-protobuf).
+    protocol: grpc
+    # Disable transport TLS for an in-cluster collector on a trusted network.
+    insecure: true
+    # Head-based, parent-respecting sample probability in [0,1]. Dial down in
+    # production (e.g. 0.05). 0 or unset with tracing enabled samples everything.
+    sampleRatio: 0.1
+    serviceName: secsy-pki
+    serviceVersion: ""
+    timeoutSeconds: 10
+    # Optional static headers sent to the collector (e.g. an auth token for a
+    # managed OTLP endpoint): { authorization: "Bearer ..." }.
+    headers: {}
+
 # --- HSM / PKCS#11 -----------------------------------------------------------
 hsm:
   # module.mode selects where the PKCS#11 shared object comes from:

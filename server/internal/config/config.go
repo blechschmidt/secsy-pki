@@ -75,6 +75,43 @@ type Config struct {
 	// profile and default CA, aggressive short-TTL auto-renewal, and the trust
 	// bundle's refresh hint. Disabled unless spiffe.enabled is true.
 	SPIFFE SPIFFEConfig `yaml:"spiffe"`
+	// Tracing configures OpenTelemetry (OTLP) distributed tracing, complementing
+	// the Prometheus metrics and structured request log. Disabled unless
+	// tracing.enabled is true; when disabled a no-op tracer is installed and the
+	// instrumentation throughout the codebase costs effectively nothing.
+	Tracing TracingConfig `yaml:"tracing"`
+}
+
+// TracingConfig configures OpenTelemetry distributed tracing over the OTLP
+// exporter. It maps onto tracing.Config in the internal/tracing package. Tracing
+// is off by default: with Enabled=false the server installs a no-op tracer and
+// starts no exporter.
+type TracingConfig struct {
+	// Enabled turns tracing on. Required to be true for any span to be exported.
+	Enabled bool `yaml:"enabled"`
+	// Endpoint is the OTLP collector endpoint in host:port form (no scheme), e.g.
+	// "otel-collector:4317" for gRPC or "otel-collector:4318" for HTTP. Required
+	// when enabled.
+	Endpoint string `yaml:"endpoint"`
+	// Protocol selects the OTLP transport: "grpc" (default) or "http".
+	Protocol string `yaml:"protocol"`
+	// Insecure disables transport TLS to the collector (plaintext gRPC / http://),
+	// for an in-cluster collector reached over a trusted network.
+	Insecure bool `yaml:"insecure"`
+	// SampleRatio is the head-based, parent-respecting sample probability in
+	// [0,1]. 0 (or unset) with tracing enabled samples everything; dial it down in
+	// production. A sampled parent trace is always continued regardless.
+	SampleRatio float64 `yaml:"sample_ratio"`
+	// ServiceName is the service.name resource attribute (default "secsy-pki").
+	ServiceName string `yaml:"service_name"`
+	// ServiceVersion is the optional service.version resource attribute.
+	ServiceVersion string `yaml:"service_version"`
+	// Headers are optional static headers sent to the collector (e.g. an auth
+	// token for a managed OTLP endpoint).
+	Headers map[string]string `yaml:"headers"`
+	// TimeoutSeconds bounds a single export attempt (default 10s). Non-positive
+	// uses the default.
+	TimeoutSeconds int `yaml:"timeout_seconds"`
 }
 
 // SPIFFEConfig configures SPIFFE X.509-SVID issuance and the trust-bundle
@@ -974,7 +1011,34 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateTracing(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// validateTracing sanity-checks the OpenTelemetry tracing configuration when it
+// is enabled: an endpoint is required, the protocol (if given) must be known,
+// and the sample ratio must be a probability. Fail loudly at load so a
+// misconfiguration does not silently disable tracing an operator turned on.
+func (c *Config) validateTracing() error {
+	t := &c.Tracing
+	if !t.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(t.Endpoint) == "" {
+		return fmt.Errorf("tracing.endpoint is required when tracing.enabled is true (e.g. otel-collector:4317)")
+	}
+	switch strings.ToLower(strings.TrimSpace(t.Protocol)) {
+	case "", "grpc", "http":
+	default:
+		return fmt.Errorf("tracing.protocol %q is invalid (want grpc or http)", t.Protocol)
+	}
+	if t.SampleRatio < 0 || t.SampleRatio > 1 {
+		return fmt.Errorf("tracing.sample_ratio must be in [0,1], got %v", t.SampleRatio)
+	}
+	return nil
 }
 
 // validateSPIFFE sanity-checks the SPIFFE SVID configuration when enabled: the

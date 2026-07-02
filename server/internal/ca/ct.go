@@ -11,6 +11,8 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/ct"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
+	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // CTConfig is a profile's Certificate Transparency policy. When Enabled and a
@@ -124,11 +126,19 @@ func (s *CTStatus) succeededLogNames() []string {
 // min-SCT / fail-open policy, and (4) HSM-signs the final certificate with the
 // SCT list extension in place of the poison.
 func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA *models.CA, issuerCert *x509.Certificate, base pki.LeafCertRequest, profile Profile, requestedBy string) ([]byte, *CTStatus, error) {
+	ctx, span := tracing.Start(ctx, "ca.build_leaf",
+		attribute.String("ca.id", issuerCA.ID),
+		attribute.String("ca.profile", profile.Name))
+	defer span.End()
+
 	// Fail-closed pre-issuance lint gate: run CA/Browser-Forum Baseline
 	// Requirements checks on the to-be-signed template BEFORE any HSM signature.
 	// A violating template is rejected here — neither the precertificate nor the
-	// final certificate is ever signed.
-	if err := m.lintLeaf(base, profile, issuerCA, requestedBy); err != nil {
+	// final certificate is ever signed. Each pre-issuance gate is its own span so
+	// a rejection (and its latency) is attributable in the trace.
+	if err := traceGate(ctx, "ca.gate.lint", func() error {
+		return m.lintLeaf(base, profile, issuerCA, requestedBy)
+	}); err != nil {
 		return nil, nil, err
 	}
 
@@ -136,14 +146,18 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 	// Certification Authority Authorization RRset for the certificate's DNS names.
 	// Under enforce mode a CAA set that does not authorize this CA rejects the
 	// request here, before any HSM signature.
-	if err := m.checkCAA(ctx, base, profile, issuerCA, requestedBy); err != nil {
+	if err := traceGate(ctx, "ca.gate.caa", func() error {
+		return m.checkCAA(ctx, base, profile, issuerCA, requestedBy)
+	}); err != nil {
 		return nil, nil, err
 	}
 
 	// Fail-closed pre-issuance Name Constraints gate (RFC 5280 §4.2.1.10): a leaf
 	// whose subject or SAN falls outside the issuing CA's permitted subtrees (or
 	// inside an excluded subtree) is rejected here, before any HSM signature.
-	if err := m.checkNameConstraints(base, profile, issuerCA, issuerCert, requestedBy); err != nil {
+	if err := traceGate(ctx, "ca.gate.name_constraints", func() error {
+		return m.checkNameConstraints(base, profile, issuerCA, issuerCert, requestedBy)
+	}); err != nil {
 		return nil, nil, err
 	}
 
@@ -160,7 +174,7 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 
 	cfg := profile.CT
 	if cfg == nil || !cfg.Enabled || ctSubmitter == nil {
-		der, err := pki.CreateLeafCertificate(signer, issuerCert, base)
+		der, err := m.signLeaf(ctx, signer, issuerCert, base, "final")
 		if err != nil {
 			return nil, nil, err
 		}
@@ -172,7 +186,7 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 	// (1) Precertificate: template + critical poison extension, HSM-signed.
 	precertReq := base
 	precertReq.ExtraExtensions = appendExt(base.ExtraExtensions, ct.PoisonExtension())
-	precertDER, err := pki.CreateLeafCertificate(signer, issuerCert, precertReq)
+	precertDER, err := m.signLeaf(ctx, signer, issuerCert, precertReq, "precert")
 	if err != nil {
 		return nil, nil, fmt.Errorf("building precertificate: %w", err)
 	}
@@ -182,7 +196,9 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 	if err != nil {
 		return nil, nil, fmt.Errorf("assembling issuer chain for CT: %w", err)
 	}
-	sub, err := ctSubmitter.Submit(ctx, ct.SubmitRequest{
+	submitCtx, ctSpan := tracing.Start(ctx, "ca.ct.submit",
+		attribute.Int("ca.ct.log_count", len(cfg.Logs)))
+	sub, err := ctSubmitter.Submit(submitCtx, ct.SubmitRequest{
 		Logs:           cfg.Logs,
 		PrecertDER:     precertDER,
 		Issuer:         issuerCert,
@@ -191,10 +207,14 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 		Retries:        cfg.Retries,
 	})
 	if err != nil {
+		tracing.RecordError(submitCtx, err)
+		ctSpan.End()
 		// A misconfigured submission (e.g. unknown log name) is always fatal:
 		// fail-open covers log unavailability, not operator misconfiguration.
 		return nil, nil, fmt.Errorf("certificate transparency submission: %w", err)
 	}
+	ctSpan.SetAttributes(attribute.Int("ca.ct.sct_count", len(sub.SCTs)))
+	ctSpan.End()
 	status.Logs = sub.Results
 	status.SCTCount = len(sub.SCTs)
 
@@ -218,11 +238,38 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 		finalReq.ExtraExtensions = appendExt(base.ExtraExtensions, ext)
 		status.Embedded = true
 	}
-	der, err := pki.CreateLeafCertificate(signer, issuerCert, finalReq)
+	der, err := m.signLeaf(ctx, signer, issuerCert, finalReq, "final")
 	if err != nil {
 		return nil, nil, fmt.Errorf("building final certificate: %w", err)
 	}
 	return der, status, nil
+}
+
+// signLeaf wraps pki.CreateLeafCertificate in a span so the HSM-signed
+// certificate construction (precertificate or final certificate) is a
+// first-class, timed step in the issuance trace. The child HSM-signing span
+// (hsm.sign) nests under it, and the "kind" attribute distinguishes the
+// precertificate from the final certificate on a CT-enabled profile.
+func (m *Manager) signLeaf(ctx context.Context, signer crypto.Signer, issuerCert *x509.Certificate, req pki.LeafCertRequest, kind string) ([]byte, error) {
+	ctx, span := tracing.Start(ctx, "ca.sign_certificate",
+		attribute.String("ca.cert.kind", kind))
+	defer span.End()
+	der, err := pki.CreateLeafCertificate(signer, issuerCert, req)
+	tracing.RecordError(ctx, err)
+	return der, err
+}
+
+// traceGate runs a fail-closed pre-issuance gate (lint/CAA/name-constraints)
+// inside its own span, recording a rejection as a span error so the reason a
+// request was refused is visible in the trace.
+func traceGate(ctx context.Context, name string, fn func() error) error {
+	_, span := tracing.Start(ctx, name)
+	defer span.End()
+	err := fn()
+	if err != nil {
+		span.RecordError(err)
+	}
+	return err
 }
 
 // issuerChainDER returns the issuer certificate chain in DER, issuer first up to

@@ -12,7 +12,13 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
+	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
 )
 
 // RequestIDHeader is the HTTP header used to receive and echo a request's
@@ -82,6 +88,11 @@ type requestLog struct {
 	BytesOut   int     `json:"bytes_out"`
 	RemoteIP   string  `json:"remote_ip,omitempty"`
 	UserAgent  string  `json:"user_agent,omitempty"`
+	// TraceID and SpanID tie this log line to the distributed trace for the same
+	// request, so an operator can pivot from a log entry to its trace (and back).
+	// They are populated only when tracing is enabled and the request is sampled.
+	TraceID string `json:"trace_id,omitempty"`
+	SpanID  string `json:"span_id,omitempty"`
 }
 
 // Handler wraps next with request-ID assignment, metrics, and structured
@@ -98,6 +109,20 @@ func (o *Observability) Handler(next http.Handler) http.Handler {
 		// to ours, and stash it in the context for the audit/access layers.
 		w.Header().Set(RequestIDHeader, id)
 		ctx := context.WithValue(r.Context(), requestIDKey, id)
+
+		// Distributed tracing: continue any upstream trace carried in the request's
+		// W3C traceparent header, then start the per-request root span. The span is
+		// a no-op (and this is nearly free) when tracing is disabled. The route
+		// pattern is not known until the mux has routed the request, so the span is
+		// started under the method and renamed once the route is known.
+		ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(r.Header))
+		ctx, span := tracing.Start(ctx, "HTTP "+r.Method,
+			semconv.HTTPRequestMethodKey.String(r.Method),
+			semconv.URLPath(r.URL.Path),
+			attribute.String("request_id", id),
+		)
+		defer span.End()
+
 		r = r.WithContext(ctx)
 
 		rw := &responseRecorder{ResponseWriter: w, status: http.StatusOK}
@@ -118,6 +143,25 @@ func (o *Observability) Handler(next http.Handler) http.Handler {
 		metrics.HTTPRequests.Inc(r.Method, route, status)
 		metrics.HTTPDuration.Observe(dur.Seconds(), r.Method, route)
 
+		// Finalize the span: rename it to the low-cardinality route, record the
+		// outcome, and mark server errors as span failures for trace-level alerting.
+		span.SetName(route)
+		span.SetAttributes(
+			semconv.HTTPRoute(route),
+			semconv.HTTPResponseStatusCode(rw.status),
+		)
+		if rw.status >= 500 {
+			span.SetStatus(codes.Error, http.StatusText(rw.status))
+		}
+
+		// Correlate the log line with the trace: emit the trace/span IDs when the
+		// request was sampled and recorded.
+		var traceID, spanID string
+		if sc := span.SpanContext(); sc.IsValid() {
+			traceID = sc.TraceID().String()
+			spanID = sc.SpanID().String()
+		}
+
 		o.write(requestLog{
 			Time:       o.now().UTC().Format(time.RFC3339Nano),
 			Level:      "info",
@@ -131,6 +175,8 @@ func (o *Observability) Handler(next http.Handler) http.Handler {
 			BytesOut:   rw.bytes,
 			RemoteIP:   clientIP(r),
 			UserAgent:  r.UserAgent(),
+			TraceID:    traceID,
+			SpanID:     spanID,
 		})
 	})
 }

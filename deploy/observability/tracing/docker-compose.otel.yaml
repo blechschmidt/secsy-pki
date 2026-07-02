@@ -1,0 +1,43 @@
+# Local OpenTelemetry tracing backend for secsy-pki.
+#
+# Brings up an OpenTelemetry Collector (OTLP gRPC :4317, OTLP HTTP :4318) that
+# receives the traces secsy-pki emits when tracing is enabled, plus an optional
+# Jaeger all-in-one UI to browse them. Point the server at the collector:
+#
+#   # server config.yaml
+#   tracing:
+#     enabled: true
+#     endpoint: "otel-collector:4317"   # or localhost:4317 if the server runs on the host
+#     protocol: grpc
+#     insecure: true
+#     sample_ratio: 1.0
+#
+# Then:  docker compose -f deploy/observability/tracing/docker-compose.otel.yaml up
+# Watch spans arrive:  docker compose -f .../docker-compose.otel.yaml logs -f otel-collector
+# Browse traces in Jaeger:  http://localhost:16686
+#
+# To forward spans into Jaeger, uncomment the `otlp/jaeger` exporter block in
+# otel-collector-config.yaml (endpoint jaeger:4317) and add it to the traces
+# pipeline. The debug exporter is on by default so you can verify end-to-end
+# without any backend.
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.109.0
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    restart: unless-stopped
+
+  # Optional trace UI. Jaeger all-in-one also speaks OTLP directly, so the
+  # collector can forward to it (see otel-collector-config.yaml).
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # Jaeger UI
+    restart: unless-stopped

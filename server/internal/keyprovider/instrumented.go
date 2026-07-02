@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
+	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Instrument wraps a Provider so every key operation records latency and
@@ -67,46 +69,88 @@ func (p *instrumentedProvider) ListKeys(ctx context.Context) ([]KeyDescriptor, e
 }
 
 func (p *instrumentedProvider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInfo, error) {
+	ctx, span := tracing.Start(ctx, "hsm.generate_key",
+		attribute.String("hsm.operation", "generate"),
+		attribute.String("hsm.key.label", spec.Label),
+		attribute.String("hsm.provider", p.Provider.Name()))
+	defer span.End()
 	start := time.Now()
 	info, err := p.Provider.GenerateKey(ctx, spec)
 	metrics.ObserveHSM("generate", start, err)
+	tracing.RecordError(ctx, err)
 	return info, err
 }
 
 func (p *instrumentedProvider) FindKey(ctx context.Context, ref KeyRef) (*KeyInfo, error) {
+	ctx, span := tracing.Start(ctx, "hsm.find_key",
+		attribute.String("hsm.operation", "find"),
+		attribute.String("hsm.key.label", ref.Label),
+		attribute.String("hsm.provider", p.Provider.Name()))
+	defer span.End()
 	start := time.Now()
 	info, err := p.Provider.FindKey(ctx, ref)
 	metrics.ObserveHSM("find", start, err)
+	tracing.RecordError(ctx, err)
 	return info, err
 }
 
 func (p *instrumentedProvider) PublicKey(ctx context.Context, ref KeyRef) (crypto.PublicKey, error) {
+	ctx, span := tracing.Start(ctx, "hsm.public_key",
+		attribute.String("hsm.operation", "public_key"),
+		attribute.String("hsm.key.label", ref.Label),
+		attribute.String("hsm.provider", p.Provider.Name()))
+	defer span.End()
 	start := time.Now()
 	pub, err := p.Provider.PublicKey(ctx, ref)
 	metrics.ObserveHSM("public_key", start, err)
+	tracing.RecordError(ctx, err)
 	return pub, err
 }
 
 func (p *instrumentedProvider) Signer(ctx context.Context, ref KeyRef) (Signer, error) {
+	spanCtx, span := tracing.Start(ctx, "hsm.signer",
+		attribute.String("hsm.operation", "signer"),
+		attribute.String("hsm.key.label", ref.Label),
+		attribute.String("hsm.provider", p.Provider.Name()))
+	defer span.End()
 	start := time.Now()
-	s, err := p.Provider.Signer(ctx, ref)
+	s, err := p.Provider.Signer(spanCtx, ref)
 	metrics.ObserveHSM("signer", start, err)
+	tracing.RecordError(spanCtx, err)
 	if err != nil {
 		return nil, err
 	}
-	return &instrumentedSigner{Signer: s}, nil
+	// Capture the caller's context (not the ended signer-acquisition span's
+	// context) so each Sign attaches its span to the live request trace. The
+	// crypto.Signer interface carries no context, so this is the only channel.
+	return &instrumentedSigner{Signer: s, ctx: ctx, label: ref.Label, provider: p.Provider.Name()}, nil
 }
 
 // instrumentedSigner times the actual signing operation (the on-device C_Sign
-// for a PKCS#11 key), which is the latency that matters most for an HSM.
+// for a PKCS#11 key), which is the latency that matters most for an HSM. It
+// carries the context captured when the signer was obtained so each Sign can
+// open a child span on the originating request's trace.
 type instrumentedSigner struct {
 	Signer
+	ctx      context.Context
+	label    string
+	provider string
 }
 
 func (s *instrumentedSigner) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	ctx := s.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, span := tracing.Start(ctx, "hsm.sign",
+		attribute.String("hsm.operation", "sign"),
+		attribute.String("hsm.key.label", s.label),
+		attribute.String("hsm.provider", s.provider))
+	defer span.End()
 	start := time.Now()
 	sig, err := s.Signer.Sign(rand, digest, opts)
 	metrics.ObserveHSM("sign", start, err)
+	tracing.RecordError(ctx, err)
 	return sig, err
 }
 
@@ -124,16 +168,29 @@ func (p *instrumentedDecrypterProvider) Decrypter(ctx context.Context, ref KeyRe
 		metrics.HSMOperations.Inc("decrypt", metrics.ResultError)
 		return nil, err
 	}
-	return &instrumentedDecrypter{Decrypter: d}, nil
+	return &instrumentedDecrypter{Decrypter: d, ctx: ctx, label: ref.Label, provider: p.Provider.Name()}, nil
 }
 
 type instrumentedDecrypter struct {
 	Decrypter
+	ctx      context.Context
+	label    string
+	provider string
 }
 
 func (d *instrumentedDecrypter) Decrypt(rand io.Reader, msg []byte, opts crypto.DecrypterOpts) ([]byte, error) {
+	ctx := d.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, span := tracing.Start(ctx, "hsm.decrypt",
+		attribute.String("hsm.operation", "decrypt"),
+		attribute.String("hsm.key.label", d.label),
+		attribute.String("hsm.provider", d.provider))
+	defer span.End()
 	start := time.Now()
 	pt, err := d.Decrypter.Decrypt(rand, msg, opts)
 	metrics.ObserveHSM("decrypt", start, err)
+	tracing.RecordError(ctx, err)
 	return pt, err
 }

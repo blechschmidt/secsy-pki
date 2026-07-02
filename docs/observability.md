@@ -14,6 +14,11 @@ Three things are provided:
 
 All three are always on — there is nothing to enable in `config.yaml`.
 
+For **OpenTelemetry distributed tracing** (OTLP spans across the request,
+CA signing, HSM, CRL/OCSP, pre-issuance gates, and store paths, correlated with
+the request log via `trace_id`/`span_id`), see [docs/tracing.md](tracing.md). It
+is opt-in and off by default.
+
 ---
 
 ## Endpoints
