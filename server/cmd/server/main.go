@@ -39,6 +39,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/scep"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
 	"github.com/blechschmidt/secsy-pki/server/internal/siem"
+	"github.com/blechschmidt/secsy-pki/server/internal/spiffe"
 	"github.com/blechschmidt/secsy-pki/server/internal/tsa"
 )
 
@@ -261,6 +262,13 @@ func main() {
 	monitorOpts := monitor.OptionsFromDays(
 		cfg.Monitor.WarningDays, cfg.Monitor.CriticalDays,
 		cfg.Monitor.RenewBeforeDays, cfg.Monitor.RenewProfiles)
+	// When SPIFFE is enabled, teach the monitor which profile mints SVIDs so it
+	// renews them aggressively on a fraction of their (short) lifetime rather than
+	// the absolute, day-scale renew-before window.
+	if cfg.SPIFFE.Enabled {
+		monitorOpts.SVIDProfiles = []string{cfg.SPIFFE.SVIDProfileName()}
+		monitorOpts.SVIDRenewFraction = cfg.SPIFFE.RenewFraction
+	}
 	api.SetMonitorOptions(monitorOpts)
 	// OCSP response cache TTL: 0 keeps the server default, a negative value
 	// disables caching, and a positive value sets an explicit TTL.
@@ -310,6 +318,22 @@ func main() {
 		}
 		api.SetEscrow(cfg.Secret.Escrow.Threshold, specs)
 		log.Printf("Key escrow enabled (%d-of-%d recovery agents)", cfg.Secret.Escrow.Threshold, len(specs))
+	}
+
+	// SPIFFE X.509-SVID issuance: install the trust-domain allowlist and enable
+	// the /api/ca/{id}/svid + /svid/bundle endpoints. The allowlist is the RBAC
+	// layer specific to SVIDs — only permitted (subject, trust-domain) pairs may
+	// mint an SVID, on top of the CA's ordinary issue capability.
+	if cfg.SPIFFE.Enabled {
+		policy := spiffe.NewPolicy(spiffe.PolicyConfig{
+			TrustDomains:        cfg.SPIFFE.TrustDomains,
+			SubjectTrustDomains: cfg.SPIFFE.SubjectTrustDomains,
+			RefreshHint:         cfg.SPIFFE.RefreshHint(),
+			DefaultCAID:         cfg.SPIFFE.DefaultCAID,
+		})
+		api.SetSPIFFE(policy, cfg.SPIFFE.SVIDProfileName())
+		log.Printf("SPIFFE X.509-SVID issuance enabled (profile %q, trust domains %v)",
+			cfg.SPIFFE.SVIDProfileName(), policy.AllowedTrustDomains())
 	}
 
 	mux := http.NewServeMux()

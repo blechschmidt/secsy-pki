@@ -193,6 +193,40 @@ type CTLogOutcome struct {
 	Error string `json:"error,omitempty"`
 }
 
+// IssueSVIDRequest asks a CA to mint a SPIFFE X.509-SVID. The workload supplies
+// a CSR for its freshly generated key; only the public key is used. The identity
+// is the SPIFFE ID, given either as a full spiffe:// URI (SpiffeID) or as a
+// trust domain plus workload path — never derived from the CSR's own subject or
+// SANs. The trust domain must be permitted by the SVID trust-domain allowlist.
+type IssueSVIDRequest struct {
+	CSR string `json:"csr"` // PEM-encoded PKCS#10 CSR (public key source)
+	// SpiffeID is the full spiffe:// URI. When set it takes precedence over
+	// TrustDomain/Path.
+	SpiffeID string `json:"spiffe_id,omitempty"`
+	// TrustDomain and Path build the SPIFFE ID when SpiffeID is not given.
+	TrustDomain string `json:"trust_domain,omitempty"`
+	Path        string `json:"path,omitempty"`
+	// Profile overrides the default SVID profile (empty = server default).
+	Profile string `json:"profile,omitempty"`
+	// TTLSeconds overrides the profile's default validity (clamped to its max).
+	TTLSeconds int `json:"ttl_seconds,omitempty"`
+	// DNSNames are optional additional SANs (discouraged by the SVID spec).
+	DNSNames []string `json:"dns_names,omitempty"`
+}
+
+// IssueSVIDResponse returns a freshly minted SPIFFE X.509-SVID.
+type IssueSVIDResponse struct {
+	SpiffeID    string `json:"spiffe_id"`
+	TrustDomain string `json:"trust_domain"`
+	Certificate string `json:"certificate"`     // PEM leaf SVID
+	Chain       string `json:"chain,omitempty"` // leaf + issuer chain (PEM)
+	Bundle      string `json:"bundle,omitempty"`
+	Serial      string `json:"serial"`
+	Profile     string `json:"profile"`
+	NotBefore   string `json:"not_before"`
+	NotAfter    string `json:"not_after"`
+}
+
 // RenewCertRequest renews a previously issued certificate identified by serial
 // (or by supplying a fresh CSR for the same subject). A new serial and validity
 // window are produced; the original is left untouched (and may be revoked

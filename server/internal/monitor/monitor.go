@@ -88,7 +88,21 @@ type Options struct {
 	// RenewProfiles optionally restricts auto-renewal to these profile names.
 	// Nil/empty means every profile is eligible.
 	RenewProfiles []string
+	// SVIDProfiles names the profiles whose certificates are SPIFFE X.509-SVIDs.
+	// They are renewed aggressively on a fraction of their (short) lifetime rather
+	// than the absolute, day-scale RenewBefore window, and their identity for
+	// supersession is keyed on the spiffe:// URI SAN rather than the (empty)
+	// subject — so every workload rotates independently.
+	SVIDProfiles []string
+	// SVIDRenewFraction is the fraction of an SVID's total lifetime that must
+	// remain for it to still be considered fresh; at or below it, the SVID is
+	// auto-renewed. E.g. 0.5 renews at the halfway point of a 1h SVID (~30m left).
+	// Values outside (0,1) fall back to the default (0.5).
+	SVIDRenewFraction float64
 }
+
+// defaultSVIDRenewFraction renews an SVID once half its lifetime has elapsed.
+const defaultSVIDRenewFraction = 0.5
 
 // Monitor scans issued certificates for upcoming expirations and can auto-renew
 // eligible ones. It is safe for concurrent use.
@@ -100,6 +114,8 @@ type Monitor struct {
 	logger  *log.Logger
 
 	renewAllowed map[string]bool // resolved from Options.RenewProfiles (nil = all)
+	svidProfiles map[string]bool // resolved from Options.SVIDProfiles
+	svidFraction float64         // resolved from Options.SVIDRenewFraction
 }
 
 // New builds a Monitor. renewer and audit may be nil when auto-renewal is not
@@ -119,7 +135,44 @@ func New(store CertLister, renewer Renewer, audit AuditSink, opts Options) *Moni
 			m.renewAllowed[p] = true
 		}
 	}
+	if len(opts.SVIDProfiles) > 0 {
+		m.svidProfiles = make(map[string]bool, len(opts.SVIDProfiles))
+		for _, p := range opts.SVIDProfiles {
+			m.svidProfiles[p] = true
+		}
+	}
+	m.svidFraction = opts.SVIDRenewFraction
+	if m.svidFraction <= 0 || m.svidFraction >= 1 {
+		m.svidFraction = defaultSVIDRenewFraction
+	}
 	return m
+}
+
+// isSVID reports whether a certificate was minted under a SPIFFE SVID profile.
+func (m *Monitor) isSVID(cert models.IssuedCertificate) bool {
+	return m.svidProfiles != nil && m.svidProfiles[cert.Profile]
+}
+
+// identityKey groups a certificate with earlier issuances of the same logical
+// credential so a newer reissue supersedes an older one. Ordinary certificates
+// are keyed on their subject; SPIFFE SVIDs carry an empty subject, so they are
+// keyed on their SANs (the spiffe:// URI), letting each workload rotate
+// independently.
+func (m *Monitor) identityKey(cert models.IssuedCertificate) string {
+	if m.isSVID(cert) {
+		return identityKey(cert.CAID, "svid:"+sanSignature(cert.SANs), cert.Profile)
+	}
+	return identityKey(cert.CAID, cert.Subject, cert.Profile)
+}
+
+// sanSignature renders a certificate's SANs as a stable, order-independent key.
+func sanSignature(sans []string) string {
+	if len(sans) == 0 {
+		return ""
+	}
+	sorted := append([]string(nil), sans...)
+	sort.Strings(sorted)
+	return strings.Join(sorted, "\x00")
 }
 
 // SetLogger overrides the logger used for auto-renewal diagnostics.
@@ -251,7 +304,7 @@ func (m *Monitor) Scan(ctx context.Context, req ScanRequest) (*Report, error) {
 				continue
 			}
 			entries = append(entries, entry{cert: cert})
-			key := identityKey(cert.CAID, cert.Subject, cert.Profile)
+			key := m.identityKey(cert)
 			if cur, ok := latestByIdentity[key]; !ok || cert.NotAfter.After(cur) {
 				latestByIdentity[key] = cert.NotAfter
 			}
@@ -271,7 +324,7 @@ func (m *Monitor) Scan(ctx context.Context, req ScanRequest) (*Report, error) {
 		remaining := cert.NotAfter.Sub(now)
 		sev := m.classify(remaining)
 
-		key := identityKey(cert.CAID, cert.Subject, cert.Profile)
+		key := m.identityKey(cert)
 		superseded := latestByIdentity[key].After(cert.NotAfter)
 
 		item := CertItem{
@@ -333,17 +386,25 @@ func (m *Monitor) classify(remaining time.Duration) Severity {
 	}
 }
 
-// eligibleForRenewal reports whether a certificate should be auto-renewed: it is
-// within the renew-before window and its profile is allowed. Revocation and
-// supersession are checked by the caller.
+// eligibleForRenewal reports whether a certificate should be auto-renewed.
+// Ordinary certificates renew once inside the absolute RenewBefore window.
+// SPIFFE SVIDs are short-lived, so an absolute day-scale window would either
+// never fire (window shorter than the whole lifetime) or fire continuously
+// (window longer than the lifetime); they instead renew once a fixed fraction of
+// their own lifetime has elapsed. Revocation and supersession are checked by the
+// caller.
 func (m *Monitor) eligibleForRenewal(cert models.IssuedCertificate, remaining time.Duration) bool {
-	if remaining > m.opts.RenewBefore {
-		return false
-	}
 	if m.renewAllowed != nil && !m.renewAllowed[cert.Profile] {
 		return false
 	}
-	return true
+	if m.isSVID(cert) {
+		lifetime := cert.NotAfter.Sub(cert.NotBefore)
+		if lifetime <= 0 {
+			return remaining <= 0
+		}
+		return remaining <= time.Duration(float64(lifetime)*m.svidFraction)
+	}
+	return remaining <= m.opts.RenewBefore
 }
 
 // autoRenew reissues one certificate through the HSM-backed path and records the

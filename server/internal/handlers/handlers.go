@@ -24,6 +24,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
+	"github.com/blechschmidt/secsy-pki/server/internal/spiffe"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 )
@@ -56,6 +57,11 @@ type API struct {
 	// delegatedResponders manages per-CA short-lived delegated OCSP-signing
 	// certificates; non-nil only when delegated signing is enabled.
 	delegatedResponders *ca.DelegatedResponderCache
+	// spiffePolicy is the SPIFFE trust-domain allowlist enforced before an SVID is
+	// minted; non-nil only when SPIFFE issuance is enabled. spiffeProfile is the
+	// issuance profile used for SVIDs.
+	spiffePolicy  *spiffe.Policy
+	spiffeProfile string
 }
 
 // OCSPPolicy holds the responder-hardening settings applied to the public OCSP
@@ -159,6 +165,17 @@ func (a *API) SetOCSPCacheTTL(ttl time.Duration) { a.ocspCache = ca.NewOCSPCache
 // /api/monitor endpoints so ad-hoc scans match the background monitor.
 func (a *API) SetMonitorOptions(o monitor.Options) { a.monitorOpts = o }
 
+// SetSPIFFE installs the SPIFFE X.509-SVID trust-domain allowlist and issuance
+// profile, enabling the SVID and trust-bundle endpoints. Passing a nil policy
+// leaves SVID issuance disabled. Intended to be called once at startup.
+func (a *API) SetSPIFFE(policy *spiffe.Policy, profile string) {
+	a.spiffePolicy = policy
+	a.spiffeProfile = profile
+}
+
+// spiffeEnabled reports whether SPIFFE SVID issuance is configured.
+func (a *API) spiffeEnabled() bool { return a.spiffePolicy != nil }
+
 // capValidityDays clamps a requested validity (in days) to the global policy
 // maximum, if one is configured. A non-positive request is left untouched so
 // the downstream profile default still applies.
@@ -197,6 +214,15 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("POST /api/ca/{id}/revoke", protected(http.HandlerFunc(a.RevokeCertificate)))
 	mux.Handle("GET /api/ca/{id}/certificates", protected(http.HandlerFunc(a.ListIssuedCertificates)))
 	mux.Handle("GET /api/ca/{id}/revoked", protected(http.HandlerFunc(a.ListRevokedCertificates)))
+
+	// SPIFFE X.509-SVID workload identity. Minting an SVID is an issuing operation
+	// (gated by the CA's issue capability plus the trust-domain allowlist); the
+	// trust bundle is public so relying workloads can fetch the trust anchors
+	// without authenticating, like the CRL/OCSP/chain endpoints.
+	if a.spiffeEnabled() {
+		mux.Handle("POST /api/ca/{id}/svid", protected(http.HandlerFunc(a.IssueSVID)))
+		mux.HandleFunc("GET /api/ca/{id}/svid/bundle", a.GetSVIDBundle)
+	}
 
 	// Certificate-expiry monitoring: list certificates by remaining validity,
 	// and trigger an on-demand scan (optionally auto-renewing eligible leaves).

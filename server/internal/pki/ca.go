@@ -102,3 +102,29 @@ func ParseCertificatePEM(pemBytes []byte) (*x509.Certificate, error) {
 	}
 	return cert, nil
 }
+
+// ParseCertificateChainPEM decodes every CERTIFICATE block in a PEM bundle, in
+// order. Non-CERTIFICATE blocks are ignored so a bundle with interleaved
+// comments or keys still parses. It errors only when a CERTIFICATE block fails
+// to decode as DER (a malformed chain), returning an empty slice for input with
+// no certificates.
+func ParseCertificateChainPEM(pemBytes []byte) ([]*x509.Certificate, error) {
+	var out []*x509.Certificate
+	rest := pemBytes
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parsing certificate in chain: %w", err)
+		}
+		out = append(out, cert)
+	}
+	return out, nil
+}

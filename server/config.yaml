@@ -167,6 +167,23 @@ crl:
   delta_interval_minutes: 60   # how long a delta CRL is served before re-signing
   base_validity_hours: 168     # base CRL validity window (default 7 days)
 
+# spiffe enables SPIFFE X.509-SVID workload-identity issuance. When enabled, the
+# POST /api/ca/{id}/svid endpoint mints short-lived SVIDs (a single spiffe:// URI
+# SAN as the sole identity, CA:false, digitalSignature) restricted to the
+# trust-domain allowlist below, and GET /api/ca/{id}/svid/bundle serves the CA's
+# X.509 authorities as a JWKS-style SPIFFE trust bundle. See docs/spiffe.md.
+# spiffe:
+#   enabled: true
+#   trust_domains:               # global allowlist (fail-closed: empty = none)
+#     - example.org
+#     - prod.example.org
+#   # subject_trust_domains:     # optional per-subject grants (RBAC-keyed)
+#   #   "oidc-subject-or-verified-email": [team.example.net]
+#   profile: spiffe-svid         # SVID issuance profile (built-in default)
+#   default_ca_id: ""            # CA used when a request omits one
+#   refresh_hint_seconds: 300    # advertised in the trust bundle (spiffe_refresh_hint)
+#   renew_fraction: 0.5          # monitor auto-renews an SVID at 50% of its lifetime
+
 # certificate_transparency registers the RFC 6962 CT logs available to issuance
 # profiles (referenced by name from a profile's `ct.logs`). Supplying a log's
 # public_key (PEM SubjectPublicKeyInfo) enables cryptographic verification of the

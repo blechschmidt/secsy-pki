@@ -137,6 +137,19 @@ var builtinProfiles = map[string]Profile{
 		Algorithm:       AlgPQC,
 		PQCKeyType:      "ml-dsa-65",
 	},
+	// spiffe-svid mints SPIFFE X.509-SVID workload identities: a single spiffe://
+	// URI SAN as the sole identity (no CN reliance, no DNS/IP SAN by default),
+	// CA:false, key usage digitalSignature, and serverAuth+clientAuth EKUs for
+	// mutual TLS. SVIDs are deliberately short-lived and auto-renewed aggressively
+	// by the expiry monitor; see internal/spiffe and docs/spiffe.md.
+	"spiffe-svid": {
+		Name:            "spiffe-svid",
+		Description:     "SPIFFE X.509-SVID workload identity (spiffe:// URI SAN, short-lived)",
+		KeyUsages:       []string{"digitalSignature"},
+		ExtKeyUsages:    []string{"serverAuth", "clientAuth"},
+		DefaultValidity: time.Hour,
+		MaxValidity:     24 * time.Hour,
+	},
 	"hybrid-server": {
 		Name:            "hybrid-server",
 		Description:     "Hybrid TLS server certificate (classical primary + ML-DSA alternative signature)",

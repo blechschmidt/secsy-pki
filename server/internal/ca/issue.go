@@ -550,8 +550,12 @@ func (m *Manager) loadIssuer(caID string) (*models.CA, *x509.Certificate, error)
 	return issuerCA, issuerCert, nil
 }
 
-// parseAndVerifyCSR decodes a PEM CSR and verifies its self-signature.
-func parseAndVerifyCSR(csrPEM []byte) (*x509.CertificateRequest, error) {
+// decodeAndVerifyCSR decodes a PEM CSR and verifies its self-signature, without
+// requiring it to carry any subject or SAN. It is the shared front half of
+// parseAndVerifyCSR, used directly by SVID issuance where the identity comes from
+// the request (the spiffe:// URI) rather than the CSR — so a bare public-key CSR
+// is valid.
+func decodeAndVerifyCSR(csrPEM []byte) (*x509.CertificateRequest, error) {
 	block, _ := pem.Decode(csrPEM)
 	if block == nil || block.Type != "CERTIFICATE REQUEST" {
 		return nil, fmt.Errorf("invalid PEM: expected CERTIFICATE REQUEST block")
@@ -562,6 +566,17 @@ func parseAndVerifyCSR(csrPEM []byte) (*x509.CertificateRequest, error) {
 	}
 	if err := csr.CheckSignature(); err != nil {
 		return nil, fmt.Errorf("CSR signature verification failed: %w", err)
+	}
+	return csr, nil
+}
+
+// parseAndVerifyCSR decodes a PEM CSR, verifies its self-signature, and requires
+// it to carry a subject common name or at least one SAN (so the issued
+// certificate has an identity). SVID issuance uses decodeAndVerifyCSR instead.
+func parseAndVerifyCSR(csrPEM []byte) (*x509.CertificateRequest, error) {
+	csr, err := decodeAndVerifyCSR(csrPEM)
+	if err != nil {
+		return nil, err
 	}
 	if csr.Subject.CommonName == "" && len(csr.DNSNames) == 0 &&
 		len(csr.IPAddresses) == 0 && len(csr.EmailAddresses) == 0 && len(csr.URIs) == 0 {

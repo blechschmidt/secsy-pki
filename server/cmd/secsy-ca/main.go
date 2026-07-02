@@ -129,6 +129,10 @@ func run(args []string) error {
 		return cmdMonitorRun(db, mgr, cfg, cmdArgs)
 	case "profiles":
 		return cmdProfiles()
+	case "svid":
+		return cmdSVID(db, mgr, cmdArgs)
+	case "svid-bundle":
+		return cmdSVIDBundle(db, mgr, cfg, cmdArgs)
 	case "inventory":
 		return cmdInventory(db, provider, cmdArgs)
 	case "ceremony":
@@ -178,6 +182,8 @@ Commands:
   expiring            List certificates by remaining validity (expiry monitor)
   monitor-run         Run one expiry-monitor scan (optionally auto-renewing)
   profiles            List the available certificate profiles
+  svid                Mint a SPIFFE X.509-SVID (spiffe:// URI SAN, short-lived)
+  svid-bundle         Emit a CA's SPIFFE trust bundle (JWKS) of X.509 authorities
   lint                Lint a certificate against a profile's policy (CA/B BR)
   cmp                 CMP (RFC 9483) client: enroll (ir) against a /cmp endpoint
   inventory           List keys held by the key provider (HSM/software)

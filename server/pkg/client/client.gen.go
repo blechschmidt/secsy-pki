@@ -672,6 +672,48 @@ type RevokedCertificate struct {
 	Serial    *string    `json:"serial,omitempty"`
 }
 
+// SVIDRequest A SPIFFE X.509-SVID request. Provide the identity either as a full spiffe_id or as trust_domain + path. Only the CSR's public key is used; its subject and SANs are ignored.
+type SVIDRequest struct {
+	// Csr PEM PKCS#10 CSR (public-key source)
+	Csr string `json:"csr"`
+
+	// DnsNames optional additional SANs (discouraged by the SVID spec)
+	DnsNames *[]string `json:"dns_names,omitempty"`
+
+	// Path workload path, e.g. /ns/prod/sa/web
+	Path *string `json:"path,omitempty"`
+
+	// Profile SVID profile (default: spiffe-svid)
+	Profile *string `json:"profile,omitempty"`
+
+	// SpiffeId full spiffe:// URI (overrides trust_domain/path)
+	SpiffeId *string `json:"spiffe_id,omitempty"`
+
+	// TrustDomain SPIFFE trust domain, e.g. example.org
+	TrustDomain *string `json:"trust_domain,omitempty"`
+
+	// TtlSeconds validity override in seconds (clamped to profile max)
+	TtlSeconds *int `json:"ttl_seconds,omitempty"`
+}
+
+// SVIDResponse defines model for SVIDResponse.
+type SVIDResponse struct {
+	// Bundle SPIFFE trust bundle (JWKS JSON)
+	Bundle *string `json:"bundle,omitempty"`
+
+	// Certificate PEM leaf SVID
+	Certificate *string `json:"certificate,omitempty"`
+
+	// Chain leaf + issuer chain (PEM)
+	Chain       *string `json:"chain,omitempty"`
+	NotAfter    *string `json:"not_after,omitempty"`
+	NotBefore   *string `json:"not_before,omitempty"`
+	Profile     *string `json:"profile,omitempty"`
+	Serial      *string `json:"serial,omitempty"`
+	SpiffeId    *string `json:"spiffe_id,omitempty"`
+	TrustDomain *string `json:"trust_domain,omitempty"`
+}
+
 // ScanReport defines model for ScanReport.
 type ScanReport struct {
 	Certificates *[]CertItem     `json:"certificates,omitempty"`
@@ -907,6 +949,9 @@ type RenewCertificateJSONRequestBody = RenewCertRequest
 // RevokeCertificateJSONRequestBody defines body for RevokeCertificate for application/json ContentType.
 type RevokeCertificateJSONRequestBody = RevokeCertRequest
 
+// IssueSVIDJSONRequestBody defines body for IssueSVID for application/json ContentType.
+type IssueSVIDJSONRequestBody = SVIDRequest
+
 // CreateGroupJSONRequestBody defines body for CreateGroup for application/json ContentType.
 type CreateGroupJSONRequestBody = CreateGroupRequest
 
@@ -1097,6 +1142,14 @@ type ClientInterface interface {
 
 	// ListRevokedCertificates request
 	ListRevokedCertificates(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// IssueSVIDWithBody request with any body
+	IssueSVIDWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	IssueSVID(ctx context.Context, id CAId, body IssueSVIDJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetSVIDBundle request
+	GetSVIDBundle(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListEventLog request
 	ListEventLog(ctx context.Context, params *ListEventLogParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1575,6 +1628,42 @@ func (c *Client) RevokeCertificate(ctx context.Context, id CAId, body RevokeCert
 
 func (c *Client) ListRevokedCertificates(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListRevokedCertificatesRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) IssueSVIDWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewIssueSVIDRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) IssueSVID(ctx context.Context, id CAId, body IssueSVIDJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewIssueSVIDRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetSVIDBundle(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSVIDBundleRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -3358,6 +3447,87 @@ func NewListRevokedCertificatesRequest(server string, id CAId) (*http.Request, e
 	}
 
 	operationPath := fmt.Sprintf("/api/ca/%s/revoked", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewIssueSVIDRequest calls the generic IssueSVID builder with application/json body
+func NewIssueSVIDRequest(server string, id CAId, body IssueSVIDJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewIssueSVIDRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewIssueSVIDRequestWithBody generates requests for IssueSVID with any type of body
+func NewIssueSVIDRequestWithBody(server string, id CAId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/svid", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGetSVIDBundleRequest generates requests for GetSVIDBundle
+func NewGetSVIDBundleRequest(server string, id CAId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/svid/bundle", pathParam0)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -5306,6 +5476,14 @@ type ClientWithResponsesInterface interface {
 	// ListRevokedCertificatesWithResponse request
 	ListRevokedCertificatesWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*ListRevokedCertificatesResponse, error)
 
+	// IssueSVIDWithBodyWithResponse request with any body
+	IssueSVIDWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*IssueSVIDResponse, error)
+
+	IssueSVIDWithResponse(ctx context.Context, id CAId, body IssueSVIDJSONRequestBody, reqEditors ...RequestEditorFn) (*IssueSVIDResponse, error)
+
+	// GetSVIDBundleWithResponse request
+	GetSVIDBundleWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetSVIDBundleResponse, error)
+
 	// ListEventLogWithResponse request
 	ListEventLogWithResponse(ctx context.Context, params *ListEventLogParams, reqEditors ...RequestEditorFn) (*ListEventLogResponse, error)
 
@@ -5939,6 +6117,52 @@ func (r ListRevokedCertificatesResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r ListRevokedCertificatesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type IssueSVIDResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *SVIDResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r IssueSVIDResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r IssueSVIDResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetSVIDBundleResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *map[string]interface{}
+}
+
+// Status returns HTTPResponse.Status
+func (r GetSVIDBundleResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetSVIDBundleResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -7259,6 +7483,32 @@ func (c *ClientWithResponses) ListRevokedCertificatesWithResponse(ctx context.Co
 	return ParseListRevokedCertificatesResponse(rsp)
 }
 
+// IssueSVIDWithBodyWithResponse request with arbitrary body returning *IssueSVIDResponse
+func (c *ClientWithResponses) IssueSVIDWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*IssueSVIDResponse, error) {
+	rsp, err := c.IssueSVIDWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseIssueSVIDResponse(rsp)
+}
+
+func (c *ClientWithResponses) IssueSVIDWithResponse(ctx context.Context, id CAId, body IssueSVIDJSONRequestBody, reqEditors ...RequestEditorFn) (*IssueSVIDResponse, error) {
+	rsp, err := c.IssueSVID(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseIssueSVIDResponse(rsp)
+}
+
+// GetSVIDBundleWithResponse request returning *GetSVIDBundleResponse
+func (c *ClientWithResponses) GetSVIDBundleWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetSVIDBundleResponse, error) {
+	rsp, err := c.GetSVIDBundle(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetSVIDBundleResponse(rsp)
+}
+
 // ListEventLogWithResponse request returning *ListEventLogResponse
 func (c *ClientWithResponses) ListEventLogWithResponse(ctx context.Context, params *ListEventLogParams, reqEditors ...RequestEditorFn) (*ListEventLogResponse, error) {
 	rsp, err := c.ListEventLog(ctx, params, reqEditors...)
@@ -8337,6 +8587,72 @@ func ParseListRevokedCertificatesResponse(rsp *http.Response) (*ListRevokedCerti
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
 		var dest []RevokedCertificate
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseIssueSVIDResponse parses an HTTP response from a IssueSVIDWithResponse call
+func ParseIssueSVIDResponse(rsp *http.Response) (*IssueSVIDResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &IssueSVIDResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest SVIDResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetSVIDBundleResponse parses an HTTP response from a GetSVIDBundleWithResponse call
+func ParseGetSVIDBundleResponse(rsp *http.Response) (*GetSVIDBundleResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetSVIDBundleResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest map[string]interface{}
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}

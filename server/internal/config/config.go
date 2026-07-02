@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -64,6 +65,61 @@ type Config struct {
 	// regeneration interval, and the base URL used to build the distribution-point
 	// URLs stamped into issued certificates and CRL extensions.
 	CRL CRLConfig `yaml:"crl"`
+	// SPIFFE configures SPIFFE X.509-SVID workload-identity issuance: the
+	// trust-domain allowlist enforced before an SVID is minted, the issuance
+	// profile and default CA, aggressive short-TTL auto-renewal, and the trust
+	// bundle's refresh hint. Disabled unless spiffe.enabled is true.
+	SPIFFE SPIFFEConfig `yaml:"spiffe"`
+}
+
+// SPIFFEConfig configures SPIFFE X.509-SVID issuance and the trust-bundle
+// endpoint. When enabled, the /api/ca/{id}/svid endpoint mints short-lived
+// X.509-SVIDs whose sole identity is a spiffe:// URI SAN, restricted to the
+// configured trust-domain allowlist, and /api/ca/{id}/svid/bundle serves the
+// trust domain's CA authorities as a JWKS-style SPIFFE trust bundle.
+type SPIFFEConfig struct {
+	// Enabled turns on the SVID endpoints and their monitor auto-renewal wiring.
+	Enabled bool `yaml:"enabled"`
+	// TrustDomains is the global allowlist of trust domains an authorized issuer
+	// may mint SVIDs for. An SVID whose trust domain is not listed here (nor
+	// granted to the requester via SubjectTrustDomains) is refused. Empty with no
+	// per-subject grants means no SVID may be issued (fail-closed).
+	TrustDomains []string `yaml:"trust_domains"`
+	// SubjectTrustDomains grants additional trust domains to specific authenticated
+	// subjects (OIDC subject or verified email), beyond the global allowlist.
+	SubjectTrustDomains map[string][]string `yaml:"subject_trust_domains"`
+	// Profile is the issuance profile used for SVIDs. Defaults to the built-in
+	// "spiffe-svid". A custom profile may override validity/EKUs but must remain a
+	// short-lived leaf profile (CA:false, digitalSignature) or the lint gate
+	// rejects it.
+	Profile string `yaml:"profile"`
+	// DefaultCAID is the CA used when an SVID request or bundle fetch omits one.
+	DefaultCAID string `yaml:"default_ca_id"`
+	// RefreshHintSeconds is advertised in the trust bundle (spiffe_refresh_hint)
+	// so consumers know how often to re-fetch it. Defaults to 300s when unset.
+	RefreshHintSeconds int `yaml:"refresh_hint_seconds"`
+	// RenewFraction is the fraction of an SVID's lifetime that must remain for the
+	// expiry monitor to still consider it fresh; at or below it the SVID is
+	// auto-renewed. Defaults to 0.5 (renew at the halfway point). Ignored unless
+	// monitor.auto_renew is on.
+	RenewFraction float64 `yaml:"renew_fraction"`
+}
+
+// SVIDProfileName returns the effective SVID issuance profile name.
+func (c SPIFFEConfig) SVIDProfileName() string {
+	if strings.TrimSpace(c.Profile) != "" {
+		return c.Profile
+	}
+	return "spiffe-svid"
+}
+
+// RefreshHint returns the configured bundle refresh hint as a duration,
+// defaulting to 5 minutes when unset.
+func (c SPIFFEConfig) RefreshHint() time.Duration {
+	if c.RefreshHintSeconds > 0 {
+		return time.Duration(c.RefreshHintSeconds) * time.Second
+	}
+	return 5 * time.Minute
 }
 
 // CRLConfig configures delta CRL generation and CRL partitioning/sharding (RFC
@@ -790,7 +846,49 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateSPIFFE(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// validateSPIFFE sanity-checks the SPIFFE SVID configuration when enabled: the
+// renew fraction must be a sensible fraction, and each configured trust domain
+// must be syntactically valid so a typo cannot silently widen (or dead-end) the
+// allowlist. It never mutates cross-package state; canonicalization happens in
+// spiffe.NewPolicy.
+func (c *Config) validateSPIFFE() error {
+	s := &c.SPIFFE
+	if !s.Enabled {
+		return nil
+	}
+	if s.RenewFraction != 0 && (s.RenewFraction <= 0 || s.RenewFraction >= 1) {
+		return fmt.Errorf("spiffe.renew_fraction must be in (0,1), got %v", s.RenewFraction)
+	}
+	check := func(td string) error {
+		td = strings.ToLower(strings.TrimSpace(td))
+		if td == "" {
+			return fmt.Errorf("spiffe: empty trust domain in allowlist")
+		}
+		if strings.Contains(td, "/") || strings.Contains(td, "spiffe:") {
+			return fmt.Errorf("spiffe: trust domain %q must be a bare domain (no scheme or path)", td)
+		}
+		return nil
+	}
+	for _, td := range s.TrustDomains {
+		if err := check(td); err != nil {
+			return err
+		}
+	}
+	for subject, tds := range s.SubjectTrustDomains {
+		for _, td := range tds {
+			if err := check(td); err != nil {
+				return fmt.Errorf("spiffe.subject_trust_domains[%q]: %w", subject, err)
+			}
+		}
+	}
+	return nil
 }
 
 // validateRateLimit sanity-checks the rate-limit configuration when enabled so

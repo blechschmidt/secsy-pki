@@ -90,13 +90,24 @@ func (r *fakeRenewer) RenewCertificate(_ context.Context, spec ca.RenewSpec) (*c
 		return nil, fmt.Errorf("no cert with serial %s", spec.Serial)
 	}
 	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	notAfter := r.now.Add(r.validity)
+	// A validity override (as SVID renewal omits) falls back to the prior cert's
+	// own lifetime, mirroring the real path where Validity 0 uses the profile
+	// default. This keeps renewed SVIDs short-lived instead of long-lived.
+	validity := r.validity
+	if spec.Validity > 0 {
+		validity = spec.Validity
+	} else if r.validity == 0 && !prior.NotBefore.IsZero() {
+		validity = prior.NotAfter.Sub(prior.NotBefore)
+	}
+	notAfter := r.now.Add(validity)
 	newCert := models.IssuedCertificate{
 		CAID:       prior.CAID,
 		Serial:     serial.String(),
 		Subject:    prior.Subject,
 		CommonName: prior.CommonName,
+		SANs:       prior.SANs,
 		Profile:    prior.Profile,
+		NotBefore:  r.now,
 		NotAfter:   notAfter,
 		Status:     models.CertStatusValid,
 	}

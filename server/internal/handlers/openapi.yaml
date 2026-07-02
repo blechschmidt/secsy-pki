@@ -575,6 +575,56 @@ paths:
             application/x-pem-file:
               schema: { type: string }
 
+  # ---------------------------------------------------------------------------
+  # SPIFFE X.509-SVID workload identity
+  # ---------------------------------------------------------------------------
+  /api/ca/{id}/svid:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: issueSVID
+      tags: [Certificate Lifecycle]
+      summary: Mint a SPIFFE X.509-SVID
+      description: >
+        Issues a short-lived SPIFFE X.509-SVID whose sole identity is a spiffe://
+        URI SAN (no CN reliance, no DNS/IP SAN by default), CA:false, key usage
+        digitalSignature. The workload supplies a CSR for its freshly generated
+        key; only the public key is used. The requested trust domain must be
+        permitted by the SVID trust-domain allowlist (on top of the CA's issue
+        capability). Available only when SPIFFE issuance is enabled.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SVIDRequest" }
+      responses:
+        "201":
+          description: The issued SVID, its chain, and the trust bundle.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SVIDResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ca/{id}/svid/bundle:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    get:
+      operationId: getSVIDBundle
+      tags: [Certificate Lifecycle]
+      summary: Download a CA's SPIFFE trust bundle (JWKS)
+      description: >
+        Returns the trust domain's X.509 authorities (the CA's combined overlap
+        chain) as a JWKS-style SPIFFE trust bundle, consumable directly by SPIRE
+        and go-spiffe clients. Public, like the CRL/OCSP/chain endpoints.
+      security: []
+      responses:
+        "200":
+          description: The SPIFFE trust bundle.
+          content:
+            application/json:
+              schema: { type: object }
+
   /api/ca/{id}/ocsp:
     parameters:
       - $ref: "#/components/parameters/CAId"
@@ -1495,6 +1545,38 @@ components:
           description: >-
             Certificate Transparency (RFC 6962) handling for this issuance.
             Present only when the profile requested CT.
+
+    SVIDRequest:
+      type: object
+      required: [csr]
+      description: >
+        A SPIFFE X.509-SVID request. Provide the identity either as a full
+        spiffe_id or as trust_domain + path. Only the CSR's public key is used;
+        its subject and SANs are ignored.
+      properties:
+        csr: { type: string, description: PEM PKCS#10 CSR (public-key source) }
+        spiffe_id: { type: string, description: "full spiffe:// URI (overrides trust_domain/path)" }
+        trust_domain: { type: string, description: "SPIFFE trust domain, e.g. example.org" }
+        path: { type: string, description: "workload path, e.g. /ns/prod/sa/web" }
+        profile: { type: string, description: "SVID profile (default: spiffe-svid)" }
+        ttl_seconds: { type: integer, description: "validity override in seconds (clamped to profile max)" }
+        dns_names:
+          type: array
+          items: { type: string }
+          description: optional additional SANs (discouraged by the SVID spec)
+
+    SVIDResponse:
+      type: object
+      properties:
+        spiffe_id: { type: string }
+        trust_domain: { type: string }
+        certificate: { type: string, description: PEM leaf SVID }
+        chain: { type: string, description: leaf + issuer chain (PEM) }
+        bundle: { type: string, description: SPIFFE trust bundle (JWKS JSON) }
+        serial: { type: string }
+        profile: { type: string }
+        not_before: { type: string }
+        not_after: { type: string }
 
     CTResponse:
       type: object
