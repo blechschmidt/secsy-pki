@@ -21,3 +21,6 @@ server/certs/
 # Legacy names
 server/ssh-pki-server
 server/ssh-pki.db*
+
+# Orchestration / local state
+.cloop/
