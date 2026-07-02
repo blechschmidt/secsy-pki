@@ -1,0 +1,237 @@
+name: Release (signed image + SBOM + SLSA provenance)
+
+# Supply-chain-hardened release pipeline (Task 48). On a version tag (v*), this:
+#
+#   1. Runs govulncheck as a gating scan of the Go dependency tree (no publish
+#      happens if a called vulnerability is present).
+#   2. Builds and pushes the multi-stage container image (Task 19) to GHCR,
+#      pinned by its immutable digest for every downstream step.
+#   3. Generates CycloneDX SBOMs for the Go modules and the built image.
+#   4. Signs the image with cosign (keyless / Fulcio-OIDC by default, or a
+#      configurable key via the COSIGN_PRIVATE_KEY secret) and attaches the
+#      image SBOM as a cosign attestation.
+#   5. Emits a SLSA build-provenance attestation attached to the image using
+#      the official slsa-github-generator (SLSA Build L3).
+#   6. Verifies signature, SBOM attestation and provenance before the release
+#      is considered good, and uploads the SBOMs + provenance as release assets.
+#
+# CI reuses the repo Makefile targets (make sbom / make sign / make verify) so
+# the pipeline and what operators run locally cannot drift.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing image tag to (re)sign, e.g. v1.2.3"
+        required: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: auto
+  REGISTRY: ghcr.io
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Gating vulnerability scan. Nothing is published if this fails.
+  # -------------------------------------------------------------------------
+  govulncheck:
+    name: govulncheck (gating)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Vulnerability scan
+        run: make govulncheck
+
+  # -------------------------------------------------------------------------
+  # Build, push, SBOM, sign, attest SBOM. Emits the image digest + name for
+  # the provenance and verify jobs.
+  # -------------------------------------------------------------------------
+  build-sign:
+    name: Build, SBOM & sign
+    needs: [govulncheck]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # attach SBOMs/provenance to the GitHub Release
+      packages: write # push image + cosign artifacts to GHCR
+      id-token: write # keyless cosign (Fulcio OIDC)
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      # Lowercase image name (GHCR requires lowercase) + resolved version.
+      - name: Compute image coordinates
+        id: meta
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          image="${REGISTRY}/${owner}/secsy-pki"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
+            version="${{ inputs.tag }}"
+          else
+            version="${GITHUB_REF_NAME}"
+          fi
+          echo "image=${image}"     >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "owner=${owner}"     >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # provenance/sbom off here: the slsa-github-generator produces provenance
+      # and we produce the SBOM explicitly, keeping a single clean manifest that
+      # the generator can reference by digest.
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.image }}:latest
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          provenance: false
+          sbom: false
+
+      # Generate SBOMs + sign + attest SBOM, all via the Makefile so local and
+      # CI stay identical. Keyless by default; if the COSIGN_PRIVATE_KEY secret
+      # is set, sign with that key instead (COSIGN_KEY switches the targets).
+      - name: SBOM, sign & attest
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          args=(IMAGE='${{ steps.meta.outputs.image }}'
+                VERSION='${{ steps.meta.outputs.version }}'
+                IMAGE_DIGEST='${{ steps.build.outputs.digest }}'
+                OWNER='${{ steps.meta.outputs.owner }}')
+          if [ -n "${COSIGN_PRIVATE_KEY:-}" ]; then
+            printf '%s' "$COSIGN_PRIVATE_KEY" > /tmp/cosign.key
+            args+=(COSIGN_KEY=/tmp/cosign.key)
+            echo "::notice::Signing with configured COSIGN_PRIVATE_KEY"
+          else
+            echo "::notice::Signing keyless (Fulcio/Rekor OIDC)"
+          fi
+          make sbom "${args[@]}"
+          make sign "${args[@]}"
+          rm -f /tmp/cosign.key
+
+      - name: Upload SBOMs (workflow artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sboms
+          path: dist/*.cdx.json
+          if-no-files-found: error
+
+      - name: Attach SBOMs to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.cdx.json
+
+  # -------------------------------------------------------------------------
+  # SLSA Build L3 provenance, generated + attached to the image by the
+  # official generator (its own signed keyless attestation).
+  # -------------------------------------------------------------------------
+  provenance:
+    name: SLSA provenance
+    needs: [build-sign]
+    permissions:
+      actions: read # detect the builder for provenance
+      id-token: write # keyless signing of the provenance
+      packages: write # push the attestation to GHCR
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.0.0
+    with:
+      image: ${{ needs.build-sign.outputs.image }}
+      digest: ${{ needs.build-sign.outputs.digest }}
+      registry-username: ${{ github.actor }}
+    secrets:
+      registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+  # -------------------------------------------------------------------------
+  # Post-publish self-verification: the exact commands a consumer runs.
+  # -------------------------------------------------------------------------
+  verify:
+    name: Verify signature, SBOM & provenance
+    needs: [build-sign, provenance]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      packages: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install slsa-verifier
+        uses: slsa-framework/slsa-verifier/actions/installer@v2.6.0
+
+      - name: Verify image signature and SBOM attestation
+        env:
+          IMAGE: ${{ needs.build-sign.outputs.image }}
+          DIGEST: ${{ needs.build-sign.outputs.digest }}
+          OWNER: ${{ github.repository_owner }}
+          # Non-empty only when key-based signing is configured.
+          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${COSIGN_PUBLIC_KEY:-}" ]; then
+            # Key-based: verify against the configured public key.
+            printf '%s' "$COSIGN_PUBLIC_KEY" > /tmp/cosign.pub
+            make verify-image verify-sbom IMAGE="$IMAGE" IMAGE_DIGEST="$DIGEST" \
+              COSIGN_VERIFY_FLAGS="--key /tmp/cosign.pub"
+            rm -f /tmp/cosign.pub
+          else
+            # Keyless: pin the certificate identity to this repo's workflows.
+            make verify-image verify-sbom IMAGE="$IMAGE" IMAGE_DIGEST="$DIGEST" \
+              OWNER="${OWNER,,}"
+          fi
+
+      - name: Verify SLSA provenance
+        env:
+          IMAGE: ${{ needs.build-sign.outputs.image }}
+          DIGEST: ${{ needs.build-sign.outputs.digest }}
+        run: |
+          set -euo pipefail
+          slsa-verifier verify-image "${IMAGE}@${DIGEST}" \
+            --source-uri "github.com/${GITHUB_REPOSITORY}" \
+            --print-provenance > /dev/null
+          echo "SLSA provenance verified"

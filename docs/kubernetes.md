@@ -282,3 +282,32 @@ REUSE_IMAGE=1 IMAGE=secsy-pki:ci scripts/k8s-smoke-test.sh
 
 It self-skips (exit 0) if `docker`, `kind`, `kubectl`, `helm`, or `curl` are
 missing, so it is safe to wire into CI conditionally.
+
+---
+
+## 6. Verifying the image before you run it
+
+Released images are signed with cosign, ship a CycloneDX SBOM attestation, and
+carry a SLSA Build L3 provenance attestation. **Verify before deploying** — pin
+both the signer identity and the OIDC issuer:
+
+```bash
+IMAGE=ghcr.io/<owner>/secsy-pki:v1.2.3
+
+cosign verify \
+  --certificate-identity-regexp "^https://github.com/<owner>/secsy-pki/" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  "$IMAGE"
+
+cosign verify-attestation --type cyclonedx \
+  --certificate-identity-regexp "^https://github.com/<owner>/secsy-pki/" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  "$IMAGE"
+
+slsa-verifier verify-image "$IMAGE" --source-uri github.com/<owner>/secsy-pki
+```
+
+To **enforce** this at admission (reject unsigned images cluster-wide) and for
+the full producer/consumer workflow — SBOMs, keyless vs. key-based signing, the
+`make sbom`/`make sign`/`make verify` targets, and the `govulncheck` gate — see
+[Supply-chain security](supply-chain.md).

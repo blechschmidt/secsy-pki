@@ -21,7 +21,8 @@ The design decisions behind these procedures are recorded in
 6. [CA key rotation and retirement](#ca-key-rotation-and-retirement)
 7. [Disaster-recovery drill](#disaster-recovery-drill)
 8. [Observability: dashboards & alerts](#observability-dashboards--alerts)
-9. [First-response quick reference](#first-response-quick-reference)
+9. [Supply-chain / image verification failure](#supply-chain--image-verification-failure)
+10. [First-response quick reference](#first-response-quick-reference)
 
 ---
 
@@ -574,6 +575,43 @@ the exporter cursor; see [audit-siem-export.md](audit-siem-export.md).
 
 ---
 
+## Supply-chain / image verification failure
+
+Symptom: `cosign verify`, `cosign verify-attestation`, `slsa-verifier`, or an
+admission controller (Kyverno / policy-controller) **rejects** a secsy-pki image
+that you expect to be legitimate, or a deploy is blocked by policy. Treat a hard
+verification failure as a potential tampering event until proven otherwise —
+**do not bypass the check to unblock a deploy.**
+
+1. **Confirm you are verifying by digest, with the right identity.** Resolve the
+   tag to a digest and pin both the signer identity and the OIDC issuer:
+   ```bash
+   cosign verify \
+     --certificate-identity-regexp "^https://github.com/<owner>/secsy-pki/" \
+     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+     ghcr.io/<owner>/secsy-pki@sha256:<digest>
+   ```
+   A mismatch on identity/issuer (not signature) usually means a stale policy
+   after the repo/owner moved — update the pinned identity, don't disable it.
+2. **Distinguish "unsigned" from "bad signature".** No signature found on a
+   *release* tag means the `release.yaml` pipeline didn't complete its sign step
+   — check the workflow run. A signature that fails to verify against a valid
+   identity is a genuine red flag: stop, and escalate as a suspected
+   [supply-chain compromise](#suspected-ca-key-compromise) (same containment
+   posture — halt rollout, preserve the artifact).
+3. **govulncheck gate is failing the build.** The pipeline refuses to publish
+   when a reachable CVE is present. For a stdlib CVE, bump the `toolchain`
+   directive in `server/go.mod` to the fixed patch release; for a module CVE,
+   `go get` the fixed version. Re-run `make govulncheck` locally to confirm
+   before re-tagging.
+4. **Provenance mismatch.** `slsa-verifier` failing on `--source-uri`/`--source-tag`
+   means the image wasn't built from the expected repo/tag — do not deploy it.
+
+Full producer/consumer reference (SBOMs, keyless vs. key signing, admission
+enforcement, the `make` targets): [supply-chain.md](supply-chain.md).
+
+---
+
 ## First-response quick reference
 
 | Situation | First command / check |
@@ -588,6 +626,8 @@ the exporter cursor; see [audit-siem-export.md](audit-siem-export.md).
 | CT log down, issuance stopped | Per-profile `logs`/`min_scts`/`fail_open` (see [CT outage](#ct-log-outage)) |
 | Rotate an intermediate | `rotate-intermediate` → `publish-chain` → (drain) → `retire-intermediate` |
 | Rehearse DR | `./scripts/dr-drill.sh` |
+| Image signature/policy rejected | Verify by digest with pinned identity; treat a bad signature as tampering ([supply-chain](#supply-chain--image-verification-failure)) |
+| Build blocked by govulncheck | Bump `toolchain` in `server/go.mod` (stdlib) or `go get` fixed dep; re-run `make govulncheck` |
 
 See also: [observability](observability.md) for the metrics/alerts to wire up,
 [security review](security-review.md) for the hardening baseline, and the

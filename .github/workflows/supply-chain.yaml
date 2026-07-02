@@ -1,0 +1,64 @@
+name: Supply chain (govulncheck + SBOM)
+
+# Continuous supply-chain hygiene (Task 48), separate from the tag-triggered
+# release pipeline (.github/workflows/release.yaml):
+#
+#   - govulncheck: a GATING vulnerability scan of the Go dependency tree
+#     (source/call-graph mode). Any reachable vulnerability fails the build, so
+#     regressions are caught on every change rather than only at release time.
+#   - sbom: generates the CycloneDX Go-module SBOM on every change and uploads
+#     it as an artifact, so the `make sbom` path is exercised continuously and
+#     an SBOM is available for any commit.
+#
+# Both jobs reuse the repo Makefile targets to stay in lock-step with release
+# and local runs.
+
+on:
+  push:
+    branches: [enterprise]
+  pull_request:
+    branches: [enterprise]
+  workflow_dispatch:
+
+concurrency:
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: auto
+
+jobs:
+  govulncheck:
+    name: govulncheck (gating)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Gating vulnerability scan
+        run: make govulncheck
+
+  sbom:
+    name: Go-module SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Generate CycloneDX Go-module SBOM
+        run: make sbom-gomod
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-gomod
+          path: dist/sbom-gomod.cdx.json
+          if-no-files-found: error
