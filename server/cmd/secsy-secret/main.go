@@ -27,6 +27,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
@@ -279,6 +280,25 @@ func printKEK(info secret.KEKInfo) {
 	}
 }
 
+// pkcs11TokenSettings maps the config's multi-token HA list onto keyprovider
+// token settings, returning nil for the single-token case.
+func pkcs11TokenSettings(tokens []config.PKCS11TokenConfig) []keyprovider.TokenSettings {
+	if len(tokens) == 0 {
+		return nil
+	}
+	out := make([]keyprovider.TokenSettings, 0, len(tokens))
+	for _, t := range tokens {
+		out = append(out, keyprovider.TokenSettings{
+			Name:              t.Name,
+			TokenLabel:        t.TokenLabel,
+			TokenSerial:       t.TokenSerial,
+			TokenManufacturer: t.TokenManufacturer,
+			Pin:               t.Pin,
+		})
+	}
+	return out
+}
+
 // buildProvider constructs the configured key provider, mirroring secsy-ca.
 func buildProvider(cfg *config.Config) (keyprovider.Provider, error) {
 	if cfg.YubiHSM.ConnectorURL != "" && os.Getenv("YUBIHSM_PKCS11_CONF") == "" {
@@ -295,6 +315,11 @@ func buildProvider(cfg *config.Config) (keyprovider.Provider, error) {
 			TokenLabel:        cfg.PKCS11.TokenLabel,
 			TokenSerial:       cfg.PKCS11.TokenSerial,
 			TokenManufacturer: cfg.PKCS11.TokenManufacturer,
+			SessionPoolSize:   cfg.PKCS11.SessionPoolSize,
+			Tokens:            pkcs11TokenSettings(cfg.PKCS11.Tokens),
+			SelectionPolicy:   cfg.PKCS11.SelectionPolicy,
+			FailureThreshold:  cfg.PKCS11.FailureThreshold,
+			ProbeInterval:     time.Duration(cfg.PKCS11.ProbeIntervalSeconds) * time.Second,
 		},
 		Software: keyprovider.SoftwareSettings{
 			KeystoreDir: cfg.KeyProvider.Software.KeystoreDir,

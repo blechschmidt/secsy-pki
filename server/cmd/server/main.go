@@ -1127,6 +1127,26 @@ func buildRoleProvider(cfg *config.Config, role string) (keyprovider.Provider, e
 	return keyprovider.Instrument(p), nil
 }
 
+// pkcs11TokenSettings maps the config's optional multi-token HA list onto the
+// keyprovider token-settings type. It returns nil for the single-token case so
+// keyprovider.New selects the direct pooled provider.
+func pkcs11TokenSettings(tokens []config.PKCS11TokenConfig) []keyprovider.TokenSettings {
+	if len(tokens) == 0 {
+		return nil
+	}
+	out := make([]keyprovider.TokenSettings, 0, len(tokens))
+	for _, t := range tokens {
+		out = append(out, keyprovider.TokenSettings{
+			Name:              t.Name,
+			TokenLabel:        t.TokenLabel,
+			TokenSerial:       t.TokenSerial,
+			TokenManufacturer: t.TokenManufacturer,
+			Pin:               t.Pin,
+		})
+	}
+	return out
+}
+
 // keyProviderConfigForRole assembles the keyprovider.Config for a role, resolving
 // the backend type via the config's per-role override. It is shared by the server
 // and (in cmd/secsy-ca) the CLI so both wire identical settings.
@@ -1140,6 +1160,10 @@ func keyProviderConfigForRole(cfg *config.Config, role string) keyprovider.Confi
 			TokenSerial:       cfg.PKCS11.TokenSerial,
 			TokenManufacturer: cfg.PKCS11.TokenManufacturer,
 			SessionPoolSize:   cfg.PKCS11.SessionPoolSize,
+			Tokens:            pkcs11TokenSettings(cfg.PKCS11.Tokens),
+			SelectionPolicy:   cfg.PKCS11.SelectionPolicy,
+			FailureThreshold:  cfg.PKCS11.FailureThreshold,
+			ProbeInterval:     time.Duration(cfg.PKCS11.ProbeIntervalSeconds) * time.Second,
 		},
 		Software: keyprovider.SoftwareSettings{
 			KeystoreDir: cfg.KeyProvider.Software.KeystoreDir,

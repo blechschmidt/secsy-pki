@@ -84,6 +84,27 @@ pkcs11:
   # docs/benchmarks.md for tuning guidance.
   session_pool_size: 8
 
+  # High availability: multiple tokens with health-tracked failover (Task 44).
+  # When `tokens` is set the pkcs11 backend spans them, each holding a replica of
+  # the signing key(s) under the SAME CKA_LABEL. Signing is routed to a healthy
+  # token and fails over on error; a token is marked unhealthy after
+  # `failure_threshold` consecutive failures (or failed probes) and is returned to
+  # rotation by the background prober once it recovers. Per-token health and
+  # failover metrics are exported (secsy_hsm_token_up / _failovers_total /
+  # _errors_total). Replicating the (non-extractable) key onto each token is an
+  # operator key-ceremony step; see docs/hsm-ha.md. Leave `tokens` empty for the
+  # ordinary single-token setup above.
+  #
+  # selection_policy: "primary-backup"   # or "round-robin"; default primary-backup
+  # failure_threshold: 3                 # consecutive failures before out of rotation
+  # probe_interval_seconds: 15           # background recovery-probe cadence
+  # tokens:
+  #   - name: "hsm-a"                    # stable name used in metrics/logs
+  #     token_label: "secsy-ca-a"
+  #     # pin: "..."                     # optional; falls back to pkcs11.pin
+  #   - name: "hsm-b"
+  #     token_label: "secsy-ca-b"
+
 yubihsm:
   connector_url: "yhusb://"
   auth_key_id: 1

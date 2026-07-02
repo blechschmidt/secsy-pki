@@ -70,6 +70,15 @@ generating a second key with an existing label. Choose one label per CA / KEK
 and keep it stable — it is also how the CA is referenced everywhere else in the
 system.
 
+### High availability across multiple tokens
+
+To make HSM access resilient, the PKCS#11 backend can span several tokens/slots
+behind health-tracked failover: signing is routed to a healthy token and fails
+over on error, with per-token health and failover metrics. Replicas of a key are
+placed on each token under the *same* label (that is how failover finds the same
+key), while the within-token uniqueness rule above still holds. See
+[HSM high availability (multi-token failover)](hsm-ha.md).
+
 ### YubiHSM specifics
 
 When the YubiHSM PKCS#11 module is used, the server also reads a `yubihsm:`

@@ -243,6 +243,30 @@ func (p *PKCS11Provider) Signer(ctx context.Context, ref KeyRef) (Signer, error)
 	return &pkcs11Signer{pool: pool, ctx: ctx, label: label, pub: pub, keyType: keyType}, nil
 }
 
+// signOp performs a signing operation for the labeled key on this token's
+// session pool. It is the per-token signing core the HA provider
+// (PKCS11HAProvider) composes with failover; the public pooled Signer path
+// reaches the same pool.Sign, so single-token and multi-token deployments sign
+// identically.
+func (p *PKCS11Provider) signOp(ctx context.Context, label string, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	pool, err := p.getPool(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return pool.Sign(ctx, label, digest, opts)
+}
+
+// decryptOp performs an on-device unwrap for the labeled KEK on this token's
+// session pool. Like signOp it is the per-token core the HA provider composes
+// with failover.
+func (p *PKCS11Provider) decryptOp(ctx context.Context, label string, ciphertext []byte, opts crypto.DecrypterOpts) ([]byte, error) {
+	pool, err := p.getPool(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return pool.Decrypt(ctx, label, ciphertext, opts)
+}
+
 // wrapNotFound maps a "not found" error from the pki layer onto ErrKeyNotFound
 // while preserving the original message for other failures.
 func wrapNotFound(label string, err error) error {

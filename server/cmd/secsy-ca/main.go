@@ -780,6 +780,25 @@ func writeOutput(path string, data []byte) error {
 // or "tsa"), mirroring the server. The role selects the backend via the per-role
 // override (key_provider.roles), falling back to the global key_provider.type, so
 // a CA on a PKCS#11 HSM and a TSA in cloud KMS can coexist.
+// pkcs11TokenSettings maps the config's multi-token HA list onto keyprovider
+// token settings, returning nil for the single-token case.
+func pkcs11TokenSettings(tokens []config.PKCS11TokenConfig) []keyprovider.TokenSettings {
+	if len(tokens) == 0 {
+		return nil
+	}
+	out := make([]keyprovider.TokenSettings, 0, len(tokens))
+	for _, t := range tokens {
+		out = append(out, keyprovider.TokenSettings{
+			Name:              t.Name,
+			TokenLabel:        t.TokenLabel,
+			TokenSerial:       t.TokenSerial,
+			TokenManufacturer: t.TokenManufacturer,
+			Pin:               t.Pin,
+		})
+	}
+	return out
+}
+
 func buildProvider(cfg *config.Config, role string) (keyprovider.Provider, error) {
 	// Ensure the YubiHSM PKCS#11 module can find its connector, matching the
 	// server's behavior.
@@ -797,6 +816,11 @@ func buildProvider(cfg *config.Config, role string) (keyprovider.Provider, error
 			TokenLabel:        cfg.PKCS11.TokenLabel,
 			TokenSerial:       cfg.PKCS11.TokenSerial,
 			TokenManufacturer: cfg.PKCS11.TokenManufacturer,
+			SessionPoolSize:   cfg.PKCS11.SessionPoolSize,
+			Tokens:            pkcs11TokenSettings(cfg.PKCS11.Tokens),
+			SelectionPolicy:   cfg.PKCS11.SelectionPolicy,
+			FailureThreshold:  cfg.PKCS11.FailureThreshold,
+			ProbeInterval:     time.Duration(cfg.PKCS11.ProbeIntervalSeconds) * time.Second,
 		},
 		Software: keyprovider.SoftwareSettings{
 			KeystoreDir: cfg.KeyProvider.Software.KeystoreDir,

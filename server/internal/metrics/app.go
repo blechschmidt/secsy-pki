@@ -141,6 +141,29 @@ var (
 		"Key-provider operation latency in seconds, partitioned by operation.",
 		DefBuckets, "operation")
 
+	// Multi-token HSM high availability (Task 44). When several PKCS#11 tokens
+	// stand behind one provider, these expose per-token health and failover
+	// activity so operators can alert when a token drops out and confirm the
+	// backup is carrying the load.
+	//
+	// HSMTokenUp is each token's live health: 1 = healthy and in rotation, 0 =
+	// marked unhealthy and failed over away from. HSMTokenFailovers counts
+	// operations that erred on a token and were retried on another, labelled by
+	// the token that was failed away from. HSMTokenErrors counts operation errors
+	// charged to a token's health (logical key-not-found is excluded), by token.
+	HSMTokenUp = NewGauge(Default,
+		"secsy_hsm_token_up",
+		"Per-token HSM health for multi-token failover (1 = healthy/in rotation, 0 = unhealthy).",
+		"token")
+	HSMTokenFailovers = NewCounter(Default,
+		"secsy_hsm_token_failovers_total",
+		"Key-provider operations that failed on a token and were retried on another, by the token failed away from.",
+		"token")
+	HSMTokenErrors = NewCounter(Default,
+		"secsy_hsm_token_errors_total",
+		"Key-provider operation errors charged to a token's health (excludes key-not-found), by token.",
+		"token")
+
 	// Envelope encryption for the secret feature. "operation" is encrypt|decrypt.
 	Envelope = NewCounter(Default,
 		"secsy_envelope_operations_total",
@@ -311,6 +334,22 @@ func ObserveHSM(operation string, start time.Time, err error) {
 		HSMOperations.Inc(operation, ResultSuccess)
 	}
 }
+
+// SetHSMTokenUp records a token's HA health (true = healthy and in rotation).
+func SetHSMTokenUp(token string, up bool) {
+	v := 0.0
+	if up {
+		v = 1
+	}
+	HSMTokenUp.Set(v, token)
+}
+
+// RecordHSMTokenFailover records that an operation failed on token and was
+// retried on another token in the HA set.
+func RecordHSMTokenFailover(token string) { HSMTokenFailovers.Inc(token) }
+
+// RecordHSMTokenError records an operation error charged to a token's health.
+func RecordHSMTokenError(token string) { HSMTokenErrors.Inc(token) }
 
 // RecordAuthz records an RBAC decision.
 func RecordAuthz(action string, allowed bool) {

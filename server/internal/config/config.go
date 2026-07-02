@@ -851,6 +851,40 @@ type PKCS11Config struct {
 	// When <= 0 the provider uses keyprovider.DefaultSessionPoolSize. This is the
 	// primary HSM throughput tuning knob; see docs/benchmarks.md.
 	SessionPoolSize int `yaml:"session_pool_size"`
+
+	// Tokens, when non-empty, enables multi-token high availability: the pkcs11
+	// backend spans these tokens/slots (each holding a replica of the signing
+	// key(s) under the same label) behind health-tracked failover. When empty the
+	// backend addresses the single token named by token_label/token_serial above.
+	// See docs/hsm-ha.md.
+	Tokens []PKCS11TokenConfig `yaml:"tokens"`
+	// SelectionPolicy chooses how a healthy token is picked: "primary-backup"
+	// (default) prefers the first healthy token, using backups only on failover;
+	// "round-robin" spreads load across healthy tokens. Ignored unless tokens set.
+	SelectionPolicy string `yaml:"selection_policy"`
+	// FailureThreshold is the number of consecutive failures on a token before it
+	// is marked unhealthy and taken out of rotation. <= 0 uses the provider
+	// default. Ignored unless tokens set.
+	FailureThreshold int `yaml:"failure_threshold"`
+	// ProbeIntervalSeconds is how often the background prober re-checks tokens so a
+	// recovered token returns to rotation. <= 0 uses the provider default. Ignored
+	// unless tokens set.
+	ProbeIntervalSeconds int `yaml:"probe_interval_seconds"`
+}
+
+// PKCS11TokenConfig identifies one token/slot within a high-availability set. All
+// tokens share the module path and session-pool size from the enclosing
+// PKCS11Config; each addresses a distinct token and may carry its own PIN.
+type PKCS11TokenConfig struct {
+	// Name is a stable identifier used in per-token health and failover metrics
+	// and in logs. Defaults to token_label when empty.
+	Name string `yaml:"name"`
+	// TokenLabel / TokenSerial / TokenManufacturer address the token.
+	TokenLabel        string `yaml:"token_label"`
+	TokenSerial       string `yaml:"token_serial"`
+	TokenManufacturer string `yaml:"token_manufacturer"`
+	// Pin is this token's user PIN; when empty the shared pkcs11.pin is used.
+	Pin string `yaml:"pin"`
 }
 
 type YubiHSMConfig struct {
@@ -1402,6 +1436,17 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.PKCS11.SessionPoolSize = n
 		}
 	}
+	// Multi-token HA tuning. The token list itself is file-only (it is a list),
+	// but the selection policy and failover threshold are overridable so operators
+	// can retune per environment without re-rendering the token block.
+	if v := os.Getenv("SECSY_PKCS11_SELECTION_POLICY"); v != "" {
+		cfg.PKCS11.SelectionPolicy = v
+	}
+	if v := os.Getenv("SECSY_PKCS11_FAILURE_THRESHOLD"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.PKCS11.FailureThreshold = n
+		}
+	}
 	if v := os.Getenv("SECSY_SOFTWARE_KEYSTORE_DIR"); v != "" {
 		cfg.KeyProvider.Software.KeystoreDir = v
 	}
@@ -1486,6 +1531,9 @@ func (c *Config) validateProviderType(providerType, field string) error {
 		if c.PKCS11.ModulePath == "" {
 			return fmt.Errorf("pkcs11.module_path is required for the pkcs11 provider")
 		}
+		if err := c.validatePKCS11HA(); err != nil {
+			return err
+		}
 	case "kms":
 		switch c.KeyProvider.KMS.Backend {
 		case "aws", "fake":
@@ -1501,6 +1549,38 @@ func (c *Config) validateProviderType(providerType, field string) error {
 		}
 	default:
 		return fmt.Errorf("%s %q is invalid (must be \"pkcs11\", \"software\", or \"kms\")", field, providerType)
+	}
+	return nil
+}
+
+// validatePKCS11HA checks the optional multi-token high-availability settings.
+// It is a no-op when no tokens are configured (single-token mode).
+func (c *Config) validatePKCS11HA() error {
+	if len(c.PKCS11.Tokens) == 0 {
+		return nil
+	}
+	switch c.PKCS11.SelectionPolicy {
+	case "", "primary-backup", "round-robin":
+		// ok
+	default:
+		return fmt.Errorf("pkcs11.selection_policy %q is invalid (must be \"primary-backup\" or \"round-robin\")",
+			c.PKCS11.SelectionPolicy)
+	}
+	names := make(map[string]bool, len(c.PKCS11.Tokens))
+	for i, tok := range c.PKCS11.Tokens {
+		if tok.TokenLabel == "" && tok.TokenSerial == "" {
+			return fmt.Errorf("pkcs11.tokens[%d] requires a token_label or token_serial", i)
+		}
+		name := tok.Name
+		if name == "" {
+			name = tok.TokenLabel
+		}
+		if name != "" {
+			if names[name] {
+				return fmt.Errorf("pkcs11.tokens has a duplicate token name %q", name)
+			}
+			names[name] = true
+		}
 	}
 	return nil
 }

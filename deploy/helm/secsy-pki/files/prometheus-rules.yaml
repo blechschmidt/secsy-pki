@@ -71,6 +71,33 @@ groups:
           description: "p99 HSM sign latency has exceeded 2s for >10m. Expect issuance/CRL/OCSP slowdowns. Check HSM health, network to a network-HSM, and session-pool sizing."
           runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#hsm-pool-exhaustion"
 
+      - alert: SecsyPKIHSMTokenDown
+        # A token in a multi-token HA set is unhealthy and has been failed over
+        # away from. Signing continues on the remaining replicas, but redundancy
+        # is reduced — page-worthy only if it persists.
+        expr: max by (job, token) (secsy_hsm_token_up) == 0
+        for: 5m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "HSM token {{ $labels.token }} down ({{ $labels.job }})"
+          description: "secsy_hsm_token_up{token={{ $labels.token }}}=0 for >5m. This HSM token has been taken out of rotation; the set is running on fewer replicas. Check the device/partition and see docs/hsm-ha.md."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#hsm-probe-down"
+
+      - alert: SecsyPKIHSMTokenFlapping
+        # A token is repeatedly failing over — a flaky device/network to a network
+        # HSM. Sustained failover activity means requests keep hitting a bad token.
+        expr: sum by (job, token) (rate(secsy_hsm_token_failovers_total[5m])) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "HSM token {{ $labels.token }} flapping ({{ $labels.job }})"
+          description: "Token {{ $labels.token }} has been failing over at >0.1/s for >15m. The device or its network path is unstable. Investigate the HSM; consider raising pkcs11.failure_threshold. See docs/hsm-ha.md."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#hsm-probe-down"
+
   # --- Issuance SLO ----------------------------------------------------------
   - name: secsy-pki.issuance
     rules:

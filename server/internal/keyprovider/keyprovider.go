@@ -20,6 +20,7 @@ import (
 	"crypto"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/pqc"
 )
@@ -236,6 +237,46 @@ type PKCS11Settings struct {
 	// provider uses DefaultSessionPoolSize. It is the primary HSM throughput
 	// tuning knob; see docs/benchmarks.md.
 	SessionPoolSize int
+
+	// Tokens, when non-empty, turns the PKCS#11 backend into a high-availability
+	// set spanning multiple tokens/slots behind health-tracked failover (see
+	// PKCS11HAProvider and docs/hsm-ha.md). Each token holds a replica of the
+	// signing key(s) under the same CKA_LABEL; operations are routed to a healthy
+	// token and fail over on error. When empty, the backend is the single-token
+	// PKCS11Provider addressed by TokenLabel/TokenSerial above.
+	Tokens []TokenSettings
+	// SelectionPolicy chooses how a healthy token is picked for each operation:
+	// "primary-backup" (the default) always prefers the first healthy token in
+	// configured order, using backups only on failover; "round-robin" spreads
+	// operations across all healthy tokens. Ignored unless Tokens is set.
+	SelectionPolicy string
+	// FailureThreshold is the number of consecutive operation/probe failures on a
+	// token before it is marked unhealthy and taken out of rotation. When <= 0 the
+	// provider uses DefaultFailureThreshold. Ignored unless Tokens is set.
+	FailureThreshold int
+	// ProbeInterval is how often the background health prober re-checks tokens so
+	// an unhealthy token is returned to rotation once it recovers. When <= 0 the
+	// provider uses DefaultProbeInterval. Ignored unless Tokens is set.
+	ProbeInterval time.Duration
+}
+
+// TokenSettings identifies one PKCS#11 token/slot within a high-availability
+// set. All tokens in a set share the module path and session-pool size from the
+// enclosing PKCS11Settings; each addresses a distinct token by label/serial and
+// may carry its own PIN.
+type TokenSettings struct {
+	// Name is a stable logical identifier used in per-token health and failover
+	// metrics and in logs. When empty it defaults to TokenLabel (then to a
+	// positional token-N name).
+	Name string
+	// TokenLabel / TokenSerial / TokenManufacturer address the token, exactly as
+	// on the single-token PKCS11Settings.
+	TokenLabel        string
+	TokenSerial       string
+	TokenManufacturer string
+	// Pin is the user PIN for this token. When empty the shared PKCS11Settings.Pin
+	// is used (common when every token shares a PIN policy).
+	Pin string
 }
 
 // SoftwareSettings configures the software backend.
@@ -259,6 +300,11 @@ func New(cfg Config) (Provider, error) {
 	case ProviderSoftware:
 		return NewSoftwareProvider(cfg.Software)
 	case ProviderPKCS11:
+		// Multiple tokens select the high-availability provider (health-tracked
+		// failover across tokens); a single token uses the direct pooled provider.
+		if len(cfg.PKCS11.Tokens) > 0 {
+			return NewPKCS11HAProvider(cfg.PKCS11)
+		}
 		return NewPKCS11Provider(cfg.PKCS11)
 	case ProviderKMS:
 		return NewKMSProvider(cfg.KMS)
