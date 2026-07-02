@@ -122,6 +122,24 @@ profiles: []
 #                              # no internal names / reserved IPs, 398-day TLS cap
 #       overrides:             # per-check mode overrides, keyed by check code
 #         cn_in_san: warn
+#     # caa configures the DNS Certification Authority Authorization gate (RFC
+#     # 8659). It resolves the CAA RRset for every DNS-name SAN before the HSM
+#     # signs and, under enforce mode, blocks issuance when the RRset does not
+#     # authorize this CA (fail-closed). IP-only certificates skip the check.
+#     caa:
+#       mode: enforce          # off (default) | permissive (audit only) | enforce
+#       identifier: pki.example.com  # overrides the top-level caa.identifier
+#       timeout_seconds: 5     # bounds all DNS lookups for one certificate
+
+# caa holds the deployment-wide CAA settings. Enforcement is opt-in per profile
+# (see a profile's `caa` block above); this section supplies the CA identifier a
+# profile inherits when it does not set its own, plus the DNS-answer cache TTL.
+caa:
+  # identifier is this CA's CAA domain identifier — the value a domain owner
+  # publishes in `issue "pki.example.com"` to authorize this CA. Required for any
+  # profile running caa.mode: enforce.
+  identifier: ""
+  cache_ttl_seconds: 300   # how long resolved CAA/CNAME answers are reused (0 = 300)
 
 # certificate_transparency registers the RFC 6962 CT logs available to issuance
 # profiles (referenced by name from a profile's `ct.logs`). Supplying a log's

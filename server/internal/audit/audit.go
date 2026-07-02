@@ -47,6 +47,11 @@ const (
 	// produces findings: ResultError when an enforce-mode check blocked signing
 	// (fail-closed), ResultSuccess when only warnings were emitted.
 	ActionCertLint = "cert.lint"
+	// ActionCertCAA records the outcome of the pre-issuance CAA gate (RFC 8659)
+	// when it produces findings: ResultError when an enforce-mode check blocked
+	// issuance (fail-closed), ResultSuccess when a permissive-mode check reported
+	// a forbidding record without blocking.
+	ActionCertCAA = "cert.caa"
 	// ActionCertAutoRenew records a certificate reissued automatically by the
 	// expiry monitor (actor "monitor"), ahead of its expiry.
 	ActionCertAutoRenew = "cert.auto_renew"

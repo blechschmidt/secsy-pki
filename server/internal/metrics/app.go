@@ -54,6 +54,21 @@ var (
 		"Pre-issuance certificate lint findings, partitioned by check code and mode.",
 		"code", "mode")
 
+	// Pre-issuance CAA checking (RFC 8659 Certification Authority Authorization
+	// gate). CertificateCAAChecks counts every check run by outcome: "result" is
+	// pass|fail|skip|error (fail = a forbidding CAA set blocked signing under
+	// enforce mode, skip = the certificate had no DNS-name SANs, error = a lookup
+	// or configuration failure). CertificateCAAFindings counts individual
+	// forbidding names by "reason" (forbidden|critical_unknown|lookup_error).
+	CertificateCAAChecks = NewCounter(Default,
+		"secsy_certificate_caa_checks_total",
+		"Pre-issuance CAA checks, partitioned by outcome (pass|fail|skip|error).",
+		"result")
+	CertificateCAAFindings = NewCounter(Default,
+		"secsy_certificate_caa_findings_total",
+		"Pre-issuance CAA findings that forbid issuance, partitioned by reason.",
+		"reason")
+
 	// Revocation-data serving.
 	OCSPRequests = NewCounter(Default,
 		"secsy_ocsp_requests_total",

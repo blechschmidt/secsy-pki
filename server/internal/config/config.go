@@ -52,6 +52,25 @@ type Config struct {
 	// issuance profiles. Profiles opt in per-profile via their `ct` block; a log
 	// referenced by a profile must be registered here.
 	CertificateTransparency CTConfig `yaml:"certificate_transparency"`
+	// CAA configures DNS Certification Authority Authorization checking (RFC
+	// 8659). It supplies this CA's own identifier and the DNS-answer cache TTL;
+	// profiles opt in per-profile via their `caa` block.
+	CAA CAAGlobalConfig `yaml:"caa"`
+}
+
+// CAAGlobalConfig holds the deployment-wide settings for the CAA pre-issuance
+// gate. Enforcement is turned on per issuance profile (ProfileCAAConfig); this
+// block supplies the shared CA identifier a profile inherits and the cache TTL.
+type CAAGlobalConfig struct {
+	// Identifier is this CA's CAA domain identifier — the value a domain owner
+	// publishes in an `issue "ca.example.com"` record to authorize this CA to
+	// issue for their names (RFC 8659 §4.2). It is the default for every profile
+	// whose caa block does not set its own identifier; required for any profile
+	// running in enforce mode.
+	Identifier string `yaml:"identifier"`
+	// CacheTTLSeconds bounds how long a resolved CAA/CNAME answer is reused across
+	// requests. Zero uses the package default (5 minutes).
+	CacheTTLSeconds int `yaml:"cache_ttl_seconds"`
 }
 
 // CTConfig registers the Certificate Transparency logs that issuance profiles
@@ -465,6 +484,27 @@ type ProfileConfig struct {
 	// Lint is the profile's pre-issuance lint policy (CA/Browser Forum Baseline
 	// Requirements gate). Linting is on by default; see ProfileLintConfig.
 	Lint ProfileLintConfig `yaml:"lint"`
+	// CAA is the profile's DNS Certification Authority Authorization policy (RFC
+	// 8659). Disabled unless caa.mode is "enforce" or "permissive"; see
+	// ProfileCAAConfig.
+	CAA ProfileCAAConfig `yaml:"caa"`
+}
+
+// ProfileCAAConfig is a profile's pre-issuance CAA policy (RFC 8659). When
+// enabled, the CA resolves the Certification Authority Authorization RRset for
+// each DNS-name SAN before signing and, under enforce mode, blocks issuance when
+// the RRset does not authorize this CA (fail-closed).
+type ProfileCAAConfig struct {
+	// Mode is "off" (default, gate disabled), "permissive" (evaluate and audit but
+	// never block), or "enforce" (block on a forbidding CAA set or an undetermined
+	// lookup).
+	Mode string `yaml:"mode"`
+	// Identifier overrides the top-level caa.identifier for this profile. Empty
+	// falls back to the global CA identifier.
+	Identifier string `yaml:"identifier"`
+	// TimeoutSeconds bounds all DNS lookups for one certificate's names (0 =
+	// resolver default).
+	TimeoutSeconds int `yaml:"timeout_seconds"`
 }
 
 // ProfileLintConfig is a profile's pre-issuance certificate-linting policy. The

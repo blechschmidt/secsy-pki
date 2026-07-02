@@ -19,6 +19,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/acme"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/caa"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/ct"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
@@ -141,12 +142,53 @@ func main() {
 				Public:    p.Lint.Public,
 				Overrides: p.Lint.Overrides,
 			}
+			if mode := strings.ToLower(strings.TrimSpace(p.CAA.Mode)); mode != "" && mode != "off" {
+				identifier := p.CAA.Identifier
+				if identifier == "" {
+					identifier = cfg.CAA.Identifier
+				}
+				if mode == "enforce" && identifier == "" {
+					log.Fatalf("Profile %q enables CAA enforcement but no CA identifier is configured (set caa.identifier)", p.Name)
+				}
+				prof.CAA = &ca.CAAConfig{
+					Mode:           mode,
+					Identifier:     identifier,
+					TimeoutSeconds: p.CAA.TimeoutSeconds,
+				}
+			}
 			profiles = append(profiles, prof)
 		}
 		if err := ca.SetCustomProfiles(profiles); err != nil {
 			log.Fatalf("Invalid custom certificate profile: %v", err)
 		}
 		log.Printf("Loaded %d custom certificate profile(s)", len(profiles))
+	}
+
+	// Install the DNS resolver backing the CAA pre-issuance gate when any profile
+	// enables it. The resolver is wrapped in a TTL cache shared across requests. A
+	// profile enforcing CAA cannot run without a resolver, so a resolver-build
+	// failure is fatal only then; otherwise it is a warning.
+	caaUsed, caaEnforced := false, false
+	for _, p := range cfg.Profiles {
+		if mode := strings.ToLower(strings.TrimSpace(p.CAA.Mode)); mode != "" && mode != "off" {
+			caaUsed = true
+			if mode == "enforce" {
+				caaEnforced = true
+			}
+		}
+	}
+	if caaUsed {
+		sysResolver, err := caa.NewSystemResolver()
+		if err != nil {
+			if caaEnforced {
+				log.Fatalf("CAA enforcement is enabled but no DNS resolver is available: %v", err)
+			}
+			log.Printf("WARNING: CAA is configured (permissive) but no DNS resolver is available: %v", err)
+		} else {
+			ttl := time.Duration(cfg.CAA.CacheTTLSeconds) * time.Second
+			ca.SetCAAResolver(caa.NewCachingResolver(sysResolver, ttl))
+			log.Printf("CAA pre-issuance gate enabled (enforce=%v)", caaEnforced)
+		}
 	}
 
 	// Ensure YUBIHSM_PKCS11_CONF is set so the YubiHSM PKCS#11 module knows the connector URL

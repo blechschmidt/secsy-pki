@@ -38,6 +38,9 @@ type Profile struct {
 	// Lint is the profile's pre-issuance lint policy. Nil applies the default
 	// gate (enforce mode, internal-name rules); see LintConfig.
 	Lint *LintConfig `json:"lint,omitempty"`
+	// CAA is the profile's DNS Certification Authority Authorization policy (RFC
+	// 8659). Nil (or mode "off") disables the CAA pre-issuance gate; see CAAConfig.
+	CAA *CAAConfig `json:"caa,omitempty"`
 
 	// Algorithm selects the signature scheme family for certificates issued under
 	// this profile: classical (default), pure post-quantum ML-DSA, or hybrid

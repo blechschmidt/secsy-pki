@@ -132,6 +132,14 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 		return nil, nil, err
 	}
 
+	// Fail-closed pre-issuance CAA gate (RFC 8659): resolve and evaluate the
+	// Certification Authority Authorization RRset for the certificate's DNS names.
+	// Under enforce mode a CAA set that does not authorize this CA rejects the
+	// request here, before any HSM signature.
+	if err := m.checkCAA(ctx, base, profile, issuerCA, requestedBy); err != nil {
+		return nil, nil, err
+	}
+
 	cfg := profile.CT
 	if cfg == nil || !cfg.Enabled || ctSubmitter == nil {
 		der, err := pki.CreateLeafCertificate(signer, issuerCert, base)

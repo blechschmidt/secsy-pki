@@ -646,7 +646,7 @@ func installConfigProfiles(cfg *config.Config) error {
 	}
 	profiles := make([]ca.Profile, 0, len(cfg.Profiles))
 	for _, p := range cfg.Profiles {
-		profiles = append(profiles, ca.Profile{
+		prof := ca.Profile{
 			Name:                p.Name,
 			Description:         p.Description,
 			KeyUsages:           p.KeyUsages,
@@ -659,7 +659,19 @@ func installConfigProfiles(cfg *config.Config) error {
 				Public:    p.Lint.Public,
 				Overrides: p.Lint.Overrides,
 			},
-		})
+		}
+		if mode := strings.ToLower(strings.TrimSpace(p.CAA.Mode)); mode != "" && mode != "off" {
+			identifier := p.CAA.Identifier
+			if identifier == "" {
+				identifier = cfg.CAA.Identifier
+			}
+			prof.CAA = &ca.CAAConfig{
+				Mode:           mode,
+				Identifier:     identifier,
+				TimeoutSeconds: p.CAA.TimeoutSeconds,
+			}
+		}
+		profiles = append(profiles, prof)
 	}
 	return ca.SetCustomProfiles(profiles)
 }
