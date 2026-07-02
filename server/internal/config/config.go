@@ -98,6 +98,42 @@ type Config struct {
 	// stored to the inventory and alerted through the expiry-monitor sinks. Inert
 	// unless discovery.enabled is set; the `secsy-ca discover` CLI works regardless.
 	Discovery DiscoveryConfig `yaml:"discovery"`
+	// GRPC configures the gRPC API surface (Task 56), which exposes the core
+	// issuance/revocation/status operations alongside the REST API. Disabled
+	// unless grpc.enabled is true. It reuses the server's TLS certificate and, when
+	// mTLS operator-auth is configured, the same client-CA pool.
+	GRPC GRPCConfig `yaml:"grpc"`
+}
+
+// GRPCConfig configures the gRPC listener (Task 56). When enabled, the server
+// exposes PKIService (issue/renew/revoke/status + CRL/OCSP metadata) over gRPC
+// on a dedicated port, enforcing the same operator authentication, RBAC, tenant
+// scoping, and audit as the REST API. Server reflection and a gRPC health
+// service are always registered when enabled.
+type GRPCConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Address is the listen address (host:port). Defaults to ":9443" when unset.
+	// The server binds a separate port from the REST/HTTP listener.
+	Address string `yaml:"address"`
+	// TLSCert / TLSKey override the certificate served on the gRPC listener. When
+	// empty they fall back to the server.tls_cert / server.tls_key used by the
+	// REST listener, so a single certificate covers both protocols.
+	TLSCert string `yaml:"tls_cert"`
+	TLSKey  string `yaml:"tls_key"`
+	// MTLS requests a client certificate on the gRPC listener and binds a
+	// presented, trusted certificate to an operator principal, exactly as the REST
+	// listener does. It requires auth.mtls to be configured (that supplies the
+	// client-CA pool and the cert->principal bindings). A presented cert is
+	// verified-if-given, so Bearer/Basic callers still connect.
+	MTLS bool `yaml:"mtls"`
+}
+
+// GRPCAddress returns the configured gRPC listen address, defaulting to ":9443".
+func (c GRPCConfig) GRPCAddress() string {
+	if c.Address == "" {
+		return ":9443"
+	}
+	return c.Address
 }
 
 // DiscoveryConfig configures the external certificate discovery scanner. When

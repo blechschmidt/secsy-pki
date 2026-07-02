@@ -56,6 +56,9 @@ resources:
 service:
   type: ClusterIP
   port: 8443
+  # grpcPort exposes the gRPC API surface (Task 56) when config.grpc.enabled is
+  # true. Reach it from outside the cluster via a gRPC-aware ingress/gateway.
+  grpcPort: 9443
   annotations: {}
 
 ingress:
@@ -80,6 +83,18 @@ config:
   server:
     host: "0.0.0.0"
     port: 8443
+
+  # gRPC API surface (Task 56): exposes the core PKIService (issue/renew/revoke/
+  # status + CRL/OCSP metadata) over gRPC alongside the REST API, enforcing the
+  # same operator authentication, RBAC, tenant scoping, and audit. Disabled by
+  # default. When enabled it listens on `port` (also exposed via
+  # service.grpcPort) using the server's TLS certificate; set mtls: true to also
+  # bind mutual-TLS client certificates (requires config.auth.mtls). Server
+  # reflection and a gRPC health service are registered automatically.
+  grpc:
+    enabled: false
+    port: 9443
+    mtls: false
 
   database:
     driver: sqlite

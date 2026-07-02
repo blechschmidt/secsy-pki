@@ -15,5 +15,14 @@ spec:
       port: {{ .Values.service.port }}
       targetPort: http
       protocol: TCP
+    {{- if .Values.config.grpc.enabled }}
+    # gRPC API surface (Task 56). Exposed on a dedicated port; reach it from
+    # outside the cluster with a gRPC-aware ingress/gateway (HTTP/2, TLS
+    # passthrough or re-encryption).
+    - name: grpc
+      port: {{ .Values.service.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+    {{- end }}
   selector:
     {{- include "secsy-pki.selectorLabels" . | nindent 4 }}

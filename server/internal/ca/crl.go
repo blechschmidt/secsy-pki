@@ -128,6 +128,26 @@ func crlURL(caID string, shard int) string {
 	return fmt.Sprintf("%s/api/ca/%s/crl/partition/%d", crlConfig.BaseURL, caID, shard)
 }
 
+// PublicCRLURL returns the public base-CRL URL for a CA scope (FullScope or a
+// partition index), or "" when no distribution base URL is configured. It
+// exposes crlURL for transport layers (e.g. the gRPC metadata RPCs) that report
+// distribution points without re-deriving the URL scheme.
+func PublicCRLURL(caID string, shard int) string { return crlURL(caID, shard) }
+
+// PublicDeltaCRLURL returns the public delta-CRL URL for a CA scope, or "" when
+// no distribution base URL is configured.
+func PublicDeltaCRLURL(caID string, shard int) string { return deltaURL(caID, shard) }
+
+// PublicOCSPURL returns the public OCSP responder URL for a CA, built from the
+// same distribution base URL as the CRL endpoints. Empty when no base URL is
+// configured.
+func PublicOCSPURL(caID string) string {
+	if crlConfig.BaseURL == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/api/ca/%s/ocsp", crlConfig.BaseURL, caID)
+}
+
 // deltaURL builds the public delta-CRL URL for a scope. Empty when no BaseURL is
 // configured.
 func deltaURL(caID string, shard int) string {

@@ -17,6 +17,11 @@ data:
       tls_key: /etc/secsy/tls/tls.key
     {{- end }}
 
+    grpc:
+      enabled: {{ $c.grpc.enabled }}
+      address: {{ printf "%s:%d" $c.server.host (int $c.grpc.port) | quote }}
+      mtls: {{ $c.grpc.mtls }}
+
     database:
       driver: {{ $c.database.driver | quote }}
       dsn: {{ $c.database.dsn | quote }}

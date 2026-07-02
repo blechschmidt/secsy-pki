@@ -86,6 +86,14 @@ spec:
               containerPort: {{ int .Values.config.acme.http01Port }}
               protocol: TCP
             {{- end }}
+            {{- if .Values.config.grpc.enabled }}
+            # gRPC API surface (Task 56): the PKIService (issue/renew/revoke/
+            # status + CRL/OCSP metadata) served over its own port with the same
+            # TLS certificate and operator authentication as the REST listener.
+            - name: grpc
+              containerPort: {{ int .Values.config.grpc.port }}
+              protocol: TCP
+            {{- end }}
           env:
             - name: SECSY_USER_PIN
               valueFrom:

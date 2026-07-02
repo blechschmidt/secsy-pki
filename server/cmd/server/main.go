@@ -29,6 +29,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/discovery"
 	"github.com/blechschmidt/secsy-pki/server/internal/est"
+	"github.com/blechschmidt/secsy-pki/server/internal/grpcapi"
 	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
@@ -413,6 +414,42 @@ func main() {
 	// (readiness incl. HSM/DB probes). Unauthenticated by design — restrict at
 	// the network layer if needed.
 	api.RegisterObservability(mux)
+
+	// gRPC API surface (Task 56): expose the core issuance/revocation/status
+	// operations over gRPC alongside REST, reusing the same handlers.API and auth
+	// middleware so authorization, tenant scoping, and audit behave identically.
+	// It listens on its own port with the same TLS certificate (and, when mTLS is
+	// enabled, the same operator client-CA pool) as the REST listener.
+	if cfg.GRPC.Enabled {
+		grpcTLSCert, grpcTLSKey := cfg.GRPC.TLSCert, cfg.GRPC.TLSKey
+		if grpcTLSCert == "" && grpcTLSKey == "" {
+			grpcTLSCert, grpcTLSKey = cfg.Server.TLSCert, cfg.Server.TLSKey
+		}
+		var grpcClientCAs *x509.CertPool
+		if cfg.GRPC.MTLS {
+			if mtlsClientCAs == nil {
+				log.Fatalf("grpc.mtls is enabled but no mutual-TLS client CA is configured (set auth.mtls)")
+			}
+			grpcClientCAs = mtlsClientCAs
+		}
+		grpcInsecure := grpcTLSCert == "" && grpcTLSKey == "" && insecureHTTPAllowed()
+		grpcSrv, err := grpcapi.New(grpcapi.Config{
+			Address:   cfg.GRPC.GRPCAddress(),
+			TLSCert:   grpcTLSCert,
+			TLSKey:    grpcTLSKey,
+			ClientCAs: grpcClientCAs,
+			Insecure:  grpcInsecure,
+		}, api, authMw)
+		if err != nil {
+			log.Fatalf("gRPC server setup failed: %v", err)
+		}
+		log.Printf("Starting gRPC server on %s (reflection + health enabled, mTLS=%v)", grpcSrv.Addr(), cfg.GRPC.MTLS)
+		go func() {
+			if err := grpcSrv.Serve(); err != nil {
+				log.Fatalf("gRPC server failed: %v", err)
+			}
+		}()
+	}
 
 	// Certificate-expiry monitor: a background goroutine that periodically scans
 	// issued certificates, reports upcoming expirations through the configured

@@ -3,7 +3,10 @@ package middleware
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -13,6 +16,16 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
+
+// ErrNoCredentials is returned by AuthenticateRPC when a call carries no
+// recognizable credential (no Authorization header and no bound client
+// certificate). Callers map it to an "unauthenticated" transport status.
+var ErrNoCredentials = errors.New("authorization required")
+
+// ErrInvalidCredentials is returned by AuthenticateRPC when a presented
+// credential is malformed or rejected (bad basic-auth password, invalid bearer
+// token, or an unbindable client certificate).
+var ErrInvalidCredentials = errors.New("invalid credentials")
 
 type contextKey string
 
@@ -287,6 +300,92 @@ func (am *AuthMiddleware) StepUpGate(operation string) func(http.Handler) http.H
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// AuthenticateRPC resolves a principal for a non-HTTP (gRPC) call from the same
+// credential set the HTTP middleware accepts: an Authorization header value
+// (Basic root credentials or a Bearer OIDC access/ID token) and/or a verified
+// mutual-TLS client-certificate chain. It returns the resolved principal with
+// its platform and per-tenant RBAC roles populated, exactly as the HTTP path
+// would. The browser session-cookie path has no gRPC analogue and is omitted.
+//
+// It returns ErrNoCredentials when nothing was presented and ErrInvalidCredentials
+// when a presented credential is malformed or rejected, so the gRPC interceptor
+// can map them to Unauthenticated without leaking detail.
+func (am *AuthMiddleware) AuthenticateRPC(ctx context.Context, authorization string, peerCerts []*x509.Certificate) (*models.UserInfo, error) {
+	authorization = strings.TrimSpace(authorization)
+
+	// Basic auth (built-in root user), mirroring r.BasicAuth() semantics.
+	if user, pass, ok := parseBasicAuth(authorization); ok {
+		if !am.rootEnabled {
+			return nil, ErrInvalidCredentials
+		}
+		if subtle.ConstantTimeCompare([]byte(user), []byte(am.rootUsername)) == 1 &&
+			subtle.ConstantTimeCompare([]byte(pass), []byte(am.rootPassword)) == 1 {
+			return &models.UserInfo{Subject: "root", Name: "Root User", IsRoot: true}, nil
+		}
+		return nil, ErrInvalidCredentials
+	}
+
+	// Bearer token (OIDC access/ID token for machine/API callers).
+	if strings.HasPrefix(authorization, "Bearer ") {
+		token := strings.TrimPrefix(authorization, "Bearer ")
+		if am.oidcProvider == nil {
+			return nil, errors.New("OIDC not configured")
+		}
+		claims, err := am.oidcProvider.VerifyToken(ctx, token)
+		if err != nil {
+			return nil, ErrInvalidCredentials
+		}
+		info := &models.UserInfo{
+			Subject:       claims.Subject,
+			Email:         claims.Email,
+			EmailVerified: claims.EmailVerified,
+			Name:          claims.Name,
+		}
+		if am.roleResolver != nil {
+			info.Roles = am.roleResolver(info)
+		}
+		if am.tenantRoleResolver != nil {
+			info.TenantRoles = am.tenantRoleResolver(info)
+		}
+		return info, nil
+	}
+
+	if authorization != "" {
+		// A header was presented but not in a form we accept.
+		return nil, ErrInvalidCredentials
+	}
+
+	// Mutual-TLS client certificate (machine/API callers). The binder verifies
+	// the presented chain against the operator client-CA pool and resolves it to
+	// a principal; an unbound certificate is treated as no credential.
+	if am.binder != nil && len(peerCerts) > 0 {
+		if info, ok := am.binder.Authenticate(peerCerts); ok {
+			return info, nil
+		}
+	}
+
+	return nil, ErrNoCredentials
+}
+
+// parseBasicAuth decodes a "Basic base64(user:pass)" Authorization value. It
+// mirrors net/http's BasicAuth parsing so the gRPC and HTTP paths accept
+// identical credentials.
+func parseBasicAuth(authorization string) (user, pass string, ok bool) {
+	const prefix = "Basic "
+	if len(authorization) < len(prefix) || !strings.EqualFold(authorization[:len(prefix)], prefix) {
+		return "", "", false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(authorization[len(prefix):])
+	if err != nil {
+		return "", "", false
+	}
+	user, pass, found := strings.Cut(string(decoded), ":")
+	if !found {
+		return "", "", false
+	}
+	return user, pass, true
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

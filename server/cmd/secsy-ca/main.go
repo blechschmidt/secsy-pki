@@ -71,6 +71,13 @@ func run(args []string) error {
 		return cmdCMP(cmdArgs)
 	}
 
+	// The gRPC client (Task 56) is a self-contained gRPC client that talks to a
+	// running server's PKIService endpoint. Like the CMP client it needs neither
+	// the database nor the key provider, so dispatch it before opening either.
+	if command == "grpc" {
+		return cmdGRPC(cmdArgs)
+	}
+
 	// Store administration (migrate a file/SQLite store into PostgreSQL) opens its
 	// own source and destination databases from explicit flags, and needs no key
 	// provider. Dispatch it before the config-driven database is opened so it does
@@ -225,6 +232,7 @@ Commands:
   svid-bundle         Emit a CA's SPIFFE trust bundle (JWKS) of X.509 authorities
   lint                Lint a certificate against a profile's policy (CA/B BR)
   cmp                 CMP (RFC 9483) client: enroll (ir) against a /cmp endpoint
+  grpc                gRPC client: issue/renew/revoke/status over the PKIService API
   inventory           List keys held by the key provider (HSM/software)
   ceremony            Run an M-of-N confirmed root/intermediate key ceremony
   rotate-intermediate Rotate an intermediate CA signing key (dual-chain overlap)

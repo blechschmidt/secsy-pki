@@ -1,0 +1,224 @@
+// secsy-pki gRPC API surface (Task 56).
+//
+// This service exposes the core PKI operations — issue, renew, revoke, and
+// status/metadata lookups — alongside the existing REST API. It is a thin
+// transport over the same ca.Manager / RBAC / audit / rate-limit / tracing
+// plumbing that backs REST, so both protocols enforce identical authorization,
+// tenant scoping, and audit semantics.
+//
+// Authentication mirrors REST: an `authorization` request-metadata header
+// (Basic root credentials or a Bearer OIDC token) and/or a mutual-TLS client
+// certificate bound to an operator principal. Errors map to canonical gRPC
+// status codes (see the service comments). Request IDs and W3C trace context
+// propagate through call metadata.
+syntax = "proto3";
+
+package secsy.pki.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/blechschmidt/secsy-pki/server/internal/grpcapi/pkiv1;pkiv1";
+
+// PKIService is the certificate-lifecycle gRPC surface. Every RPC authorizes the
+// caller against the acting CA's tenant using the same RBAC checks as REST and
+// appends a tamper-evident audit event for state-changing operations.
+service PKIService {
+  // IssueCertificate signs a PKCS#10 CSR into an end-entity certificate under a
+  // CA and profile using the CA's HSM-held key. Requires the issue capability on
+  // the CA's tenant (or a per-CA SIGN_CERTIFICATE grant).
+  //
+  // Errors: PERMISSION_DENIED (no issue capability), INVALID_ARGUMENT (missing
+  // or malformed CSR / bad profile), NOT_FOUND (unknown CA), INTERNAL (signing
+  // failure).
+  rpc IssueCertificate(IssueCertificateRequest) returns (CertificateResponse);
+
+  // RenewCertificate reissues a previously issued certificate with a fresh
+  // serial and validity window, optionally rekeying from a supplied CSR.
+  rpc RenewCertificate(RenewCertificateRequest) returns (CertificateResponse);
+
+  // RevokeCertificate records a revocation for a serial and invalidates any
+  // cached OCSP "good" response so the new status is served immediately.
+  rpc RevokeCertificate(RevokeCertificateRequest) returns (RevokeCertificateResponse);
+
+  // GetCertificate returns the authority's stored copy of a certificate it
+  // issued, including its current status. Requires read standing in the CA's
+  // tenant.
+  rpc GetCertificate(GetCertificateRequest) returns (GetCertificateResponse);
+
+  // GetCertificateStatus returns only the lightweight status (valid / expired /
+  // revoked / unknown) for a serial.
+  rpc GetCertificateStatus(GetCertificateStatusRequest) returns (GetCertificateStatusResponse);
+
+  // ListCertificates lists the certificates a CA has issued.
+  rpc ListCertificates(ListCertificatesRequest) returns (ListCertificatesResponse);
+
+  // GetCRLMetadata returns distribution metadata for a CA's CRL (number, this/
+  // next update, and the public base/delta URLs). It regenerates the CRL on the
+  // HSM only when the published copy is stale.
+  rpc GetCRLMetadata(GetCRLMetadataRequest) returns (GetCRLMetadataResponse);
+
+  // GetOCSPMetadata returns the OCSP responder endpoint(s) for a CA plus the
+  // responder-hardening options in effect (nonce echoing, delegated signer).
+  rpc GetOCSPMetadata(GetOCSPMetadataRequest) returns (GetOCSPMetadataResponse);
+}
+
+// CertificateStatus is the coarse lifecycle state of an issued certificate.
+enum CertificateStatus {
+  CERTIFICATE_STATUS_UNSPECIFIED = 0;
+  CERTIFICATE_STATUS_VALID = 1;
+  CERTIFICATE_STATUS_EXPIRED = 2;
+  CERTIFICATE_STATUS_REVOKED = 3;
+  // The authority has no record of this serial under the named CA.
+  CERTIFICATE_STATUS_UNKNOWN = 4;
+}
+
+// CTLogOutcome reports the per-log result of a Certificate Transparency
+// submission for an issuance.
+message CTLogOutcome {
+  string log = 1;
+  bool ok = 2;
+  string error = 3;
+}
+
+// CTInfo summarizes Certificate Transparency handling for an issuance. Present
+// only when the profile requested CT.
+message CTInfo {
+  bool enabled = 1;
+  bool embedded = 2;
+  int32 sct_count = 3;
+  string status = 4;
+  repeated CTLogOutcome logs = 5;
+}
+
+message IssueCertificateRequest {
+  // ca_id identifies the issuing CA. It must be an X.509 issuer.
+  string ca_id = 1;
+  // csr_pem is a PEM-encoded PKCS#10 certificate signing request.
+  string csr_pem = 2;
+  // profile is the certificate profile name; empty selects the default profile.
+  string profile = 3;
+  // validity_days overrides the profile default. Non-positive uses the default;
+  // it is always clamped to the profile maximum, the CA expiry, and any global
+  // policy cap.
+  int32 validity_days = 4;
+}
+
+message RenewCertificateRequest {
+  string ca_id = 1;
+  // serial is the decimal serial of the certificate to renew.
+  string serial = 2;
+  // csr_pem optionally rekeys the certificate; empty reuses the original key.
+  string csr_pem = 3;
+  int32 validity_days = 4;
+}
+
+// CertificateResponse is a freshly issued or renewed end-entity certificate.
+message CertificateResponse {
+  string certificate_pem = 1;
+  string chain_pem = 2;
+  string serial = 3;
+  string profile = 4;
+  google.protobuf.Timestamp not_before = 5;
+  google.protobuf.Timestamp not_after = 6;
+  CTInfo ct = 7;
+}
+
+message RevokeCertificateRequest {
+  string ca_id = 1;
+  string serial = 2;
+  // reason is an RFC 5280 CRL reason name (e.g. "keyCompromise",
+  // "cessationOfOperation"); empty defaults to "unspecified".
+  string reason = 3;
+}
+
+message RevokeCertificateResponse {
+  string serial = 1;
+  // status is "revoked" for a newly applied revocation or "already-revoked"
+  // when the serial was already revoked (idempotent).
+  string status = 2;
+}
+
+// CertificateInfo is the authority's stored view of a certificate it issued.
+message CertificateInfo {
+  string ca_id = 1;
+  string serial = 2;
+  string subject = 3;
+  string common_name = 4;
+  repeated string sans = 5;
+  string profile = 6;
+  string certificate_pem = 7;
+  google.protobuf.Timestamp not_before = 8;
+  google.protobuf.Timestamp not_after = 9;
+  CertificateStatus status = 10;
+  google.protobuf.Timestamp revoked_at = 11;
+  int32 revocation_reason = 12;
+  string requested_by = 13;
+  google.protobuf.Timestamp created_at = 14;
+}
+
+message GetCertificateRequest {
+  string ca_id = 1;
+  string serial = 2;
+}
+
+message GetCertificateResponse {
+  CertificateInfo certificate = 1;
+}
+
+message GetCertificateStatusRequest {
+  string ca_id = 1;
+  string serial = 2;
+}
+
+message GetCertificateStatusResponse {
+  CertificateStatus status = 1;
+  google.protobuf.Timestamp revoked_at = 2;
+  int32 revocation_reason = 3;
+}
+
+message ListCertificatesRequest {
+  string ca_id = 1;
+}
+
+message ListCertificatesResponse {
+  repeated CertificateInfo certificates = 1;
+}
+
+message GetCRLMetadataRequest {
+  string ca_id = 1;
+  // shard, when set, selects a CRL partition (0..shard_count-1). When unset the
+  // full (unsharded) CRL is described. Sharding must be enabled to name a shard.
+  optional int32 shard = 2;
+}
+
+message GetCRLMetadataResponse {
+  // scope is "full" for the unsharded CRL or "partition:N" for a shard.
+  string scope = 1;
+  int64 crl_number = 2;
+  google.protobuf.Timestamp this_update = 3;
+  google.protobuf.Timestamp next_update = 4;
+  string crl_url = 5;
+  string delta_crl_url = 6;
+  // delta_available is true when a delta CRL has been published for this scope.
+  bool delta_available = 7;
+  int64 delta_crl_number = 8;
+  google.protobuf.Timestamp delta_this_update = 9;
+  google.protobuf.Timestamp delta_next_update = 10;
+  // shard_count is the configured number of CRL partitions (0/1 = unsharded).
+  int32 shard_count = 11;
+}
+
+message GetOCSPMetadataRequest {
+  string ca_id = 1;
+}
+
+message GetOCSPMetadataResponse {
+  // ocsp_urls are the responder endpoint(s) for this CA. Empty when no public
+  // base URL is configured (crl.base_url / acme.base_url).
+  repeated string ocsp_urls = 1;
+  // nonce_supported reports whether the responder echoes RFC 8954 nonces.
+  bool nonce_supported = 2;
+  // delegated_responder reports whether responses are signed by a short-lived
+  // delegated OCSP-signing certificate rather than the CA key.
+  bool delegated_responder = 3;
+}

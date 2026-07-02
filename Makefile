@@ -102,6 +102,14 @@ govulncheck: ## Gating vulnerability scan of the Go dependency tree
 	cd server && GOTOOLCHAIN=auto $(GOVULNCHECK) -tags sqlite ./...
 
 # ---------------------------------------------------------------------------
+# gRPC / protobuf code generation (Task 56)
+# ---------------------------------------------------------------------------
+.PHONY: proto
+proto: ## Regenerate gRPC/protobuf Go code from proto/pki/v1/pki.proto
+	@echo "==> generating gRPC/protobuf Go code"
+	scripts/gen-proto.sh
+
+# ---------------------------------------------------------------------------
 # SBOM generation (CycloneDX)
 # ---------------------------------------------------------------------------
 .PHONY: sbom

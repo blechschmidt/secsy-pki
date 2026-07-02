@@ -39,6 +39,14 @@ func RequestID(ctx context.Context) string {
 	return ""
 }
 
+// WithRequestID returns ctx carrying id as the request correlation ID so the
+// audit and access layers (RequestID) can read it. Non-HTTP entry points such as
+// the gRPC server, which assign their own correlation IDs, use this to reuse the
+// same plumbing as the HTTP observability middleware.
+func WithRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, requestIDKey, id)
+}
+
 // maxRequestIDLen bounds an inbound X-Request-ID we are willing to trust and
 // echo, preventing header/log injection and unbounded log lines.
 const maxRequestIDLen = 128

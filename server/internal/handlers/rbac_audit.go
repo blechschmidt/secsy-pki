@@ -177,17 +177,26 @@ func clientIP(r *http.Request) string {
 // because the log write failed would be worse than a best-effort append, and
 // the chain's integrity is independent of any single missing external effect.
 func (a *API) recordEvent(r *http.Request, action, target, targetName, result, detail string) {
-	user := middleware.GetUserInfo(r.Context())
+	a.recordEventCtx(r.Context(), clientIP(r), action, target, targetName, result, detail)
+}
+
+// recordEventCtx is the context-based core of recordEvent. It reads the actor,
+// tenant, and correlation ID from ctx (populated identically by the HTTP auth
+// middleware and the gRPC interceptor) and appends a sealed audit entry with an
+// explicit client IP. The HTTP path derives the IP from the request; the gRPC
+// path derives it from the peer address.
+func (a *API) recordEventCtx(ctx context.Context, ip, action, target, targetName, result, detail string) {
+	user := middleware.GetUserInfo(ctx)
 	e := &audit.Event{
 		ID:         uuid.New().String(),
 		Action:     action,
-		Tenant:     middleware.GetTenant(r.Context()),
+		Tenant:     middleware.GetTenant(ctx),
 		Target:     target,
 		TargetName: targetName,
 		Result:     result,
 		Detail:     detail,
-		IP:         clientIP(r),
-		RequestID:  middleware.RequestID(r.Context()),
+		IP:         ip,
+		RequestID:  middleware.RequestID(ctx),
 	}
 	if user != nil {
 		e.Actor = user.Subject

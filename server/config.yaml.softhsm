@@ -13,6 +13,15 @@ server:
   port: 8443
   # Omit tls_cert/tls_key to serve plain HTTP for local development.
 
+# gRPC API surface (Task 56): expose the core issuance/revocation/status
+# operations over gRPC alongside REST. Disabled by default. It reuses
+# server.tls_cert/tls_key unless grpc.tls_cert/tls_key are set, and requires TLS
+# unless SECSY_ALLOW_INSECURE_HTTP=1. See docs/grpc-api.md.
+grpc:
+  enabled: false
+  address: ":9443"
+  # mtls: true   # request + bind mutual-TLS client certs (requires auth.mtls)
+
 database:
   driver: "sqlite"
   dsn: "secsy-pki.db"

@@ -1,0 +1,434 @@
+// Package grpcapi exposes the core PKI operations over gRPC alongside the
+// existing REST surface (Task 56). It is a thin transport: every RPC delegates
+// to the same ca.Manager issuance/revocation logic and the same
+// handlers.API authorization, tenant-scoping, audit, HSM-audit, and OCSP-cache
+// plumbing that backs the REST handlers, so both protocols enforce identical
+// semantics with no duplicated business logic.
+package grpcapi
+
+import (
+	"context"
+	"errors"
+	"strconv"
+	"strings"
+	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/audit"
+	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/grpcapi/pkiv1"
+	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
+	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
+	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
+	"github.com/blechschmidt/secsy-pki/server/internal/models"
+)
+
+// service implements pkiv1.PKIServiceServer by delegating to the shared API.
+type service struct {
+	pkiv1.UnimplementedPKIServiceServer
+	api *handlers.API
+}
+
+// newManager builds a per-call ca.Manager from the shared DB + key provider,
+// mirroring how the REST handlers construct one per request.
+func (s *service) newManager() *ca.Manager {
+	return ca.NewManager(s.api.DB(), s.api.KeyProvider())
+}
+
+// IssueCertificate signs a CSR into an end-entity certificate. It reuses the
+// REST authorization (AuthorizeIssueOn), HSM-audit bracketing, metrics, and
+// audit-event recording so the two transports are behaviorally identical.
+func (s *service) IssueCertificate(ctx context.Context, req *pkiv1.IssueCertificateRequest) (*pkiv1.CertificateResponse, error) {
+	user := middleware.GetUserInfo(ctx)
+	caID := req.GetCaId()
+
+	ok, err := s.api.AuthorizeIssueOn(ctx, user, caID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "permission check failed: %v", err)
+	}
+	if !ok {
+		metrics.Certificates.Inc("issue", metrics.ResultDenied)
+		s.audit(ctx, audit.ActionCertIssue, caID, "", audit.ResultDenied, "no SIGN_CERTIFICATE permission on this CA")
+		return nil, status.Error(codes.PermissionDenied, "no SIGN_CERTIFICATE permission on this CA")
+	}
+	if strings.TrimSpace(req.GetCsrPem()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "csr_pem is required")
+	}
+	if err := s.requireCA(caID); err != nil {
+		return nil, err
+	}
+
+	mgr := s.newManager()
+	s.api.ConsumeHSMAuditLogs("")
+	result, err := mgr.IssueCertificate(ctx, ca.IssueSpec{
+		CAID:        caID,
+		CSRPEM:      []byte(req.GetCsrPem()),
+		Profile:     req.GetProfile(),
+		Validity:    daysToDuration(s.api.CapValidityDays(int(req.GetValidityDays()))),
+		RequestedBy: user.Subject,
+	})
+	s.api.ConsumeHSMAuditLogs("")
+	metrics.RecordCertificate("issue", err)
+	if err != nil {
+		s.audit(ctx, audit.ActionCertIssue, caID, "", audit.ResultError, err.Error())
+		return nil, mapIssueError(err)
+	}
+
+	s.audit(ctx, audit.ActionCertIssue, caID, result.Serial.String(), audit.ResultSuccess,
+		"profile="+result.Profile+" "+result.CT.Summary())
+	return certificateResponse(result), nil
+}
+
+// RenewCertificate reissues a certificate with a fresh serial and validity.
+func (s *service) RenewCertificate(ctx context.Context, req *pkiv1.RenewCertificateRequest) (*pkiv1.CertificateResponse, error) {
+	user := middleware.GetUserInfo(ctx)
+	caID := req.GetCaId()
+
+	ok, err := s.api.AuthorizeIssueOn(ctx, user, caID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "permission check failed: %v", err)
+	}
+	if !ok {
+		metrics.Certificates.Inc("renew", metrics.ResultDenied)
+		s.audit(ctx, audit.ActionCertRenew, caID, "", audit.ResultDenied, "no SIGN_CERTIFICATE permission on this CA")
+		return nil, status.Error(codes.PermissionDenied, "no SIGN_CERTIFICATE permission on this CA")
+	}
+	if strings.TrimSpace(req.GetSerial()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "serial is required")
+	}
+	if err := s.requireCA(caID); err != nil {
+		return nil, err
+	}
+
+	mgr := s.newManager()
+	s.api.ConsumeHSMAuditLogs("")
+	result, err := mgr.RenewCertificate(ctx, ca.RenewSpec{
+		CAID:        caID,
+		Serial:      req.GetSerial(),
+		CSRPEM:      []byte(req.GetCsrPem()),
+		Validity:    daysToDuration(s.api.CapValidityDays(int(req.GetValidityDays()))),
+		RequestedBy: user.Subject,
+	})
+	s.api.ConsumeHSMAuditLogs("")
+	metrics.RecordCertificate("renew", err)
+	if err != nil {
+		s.audit(ctx, audit.ActionCertRenew, caID, req.GetSerial(), audit.ResultError, err.Error())
+		return nil, mapIssueError(err)
+	}
+
+	s.audit(ctx, audit.ActionCertRenew, caID, result.Serial.String(), audit.ResultSuccess,
+		"renewed_from="+req.GetSerial()+" "+result.CT.Summary())
+	return certificateResponse(result), nil
+}
+
+// RevokeCertificate records a revocation and invalidates any cached OCSP
+// response for the serial.
+func (s *service) RevokeCertificate(ctx context.Context, req *pkiv1.RevokeCertificateRequest) (*pkiv1.RevokeCertificateResponse, error) {
+	user := middleware.GetUserInfo(ctx)
+	caID := req.GetCaId()
+
+	ok, err := s.api.AuthorizeIssueOn(ctx, user, caID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "permission check failed: %v", err)
+	}
+	if !ok {
+		metrics.Certificates.Inc("revoke", metrics.ResultDenied)
+		s.audit(ctx, audit.ActionCertRevoke, caID, "", audit.ResultDenied, "no SIGN_CERTIFICATE permission on this CA")
+		return nil, status.Error(codes.PermissionDenied, "no SIGN_CERTIFICATE permission on this CA")
+	}
+	if strings.TrimSpace(req.GetSerial()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "serial is required")
+	}
+	if err := s.requireCA(caID); err != nil {
+		return nil, err
+	}
+
+	mgr := s.newManager()
+	applied, err := mgr.RevokeCertificate(ctx, caID, req.GetSerial(), req.GetReason())
+	metrics.RecordCertificate("revoke", err)
+	if err != nil {
+		s.audit(ctx, audit.ActionCertRevoke, caID, req.GetSerial(), audit.ResultError, err.Error())
+		return nil, mapIssueError(err)
+	}
+
+	// Serve the new revoked status immediately rather than after the cache TTL.
+	s.api.InvalidateOCSPCache(caID, req.GetSerial())
+
+	statusStr := "revoked"
+	if !applied {
+		statusStr = "already-revoked"
+	}
+	s.audit(ctx, audit.ActionCertRevoke, caID, req.GetSerial(), audit.ResultSuccess,
+		"reason="+req.GetReason()+" status="+statusStr)
+	return &pkiv1.RevokeCertificateResponse{Serial: req.GetSerial(), Status: statusStr}, nil
+}
+
+// GetCertificate returns the authority's stored copy of a certificate, gated by
+// tenant-scoped read authorization.
+func (s *service) GetCertificate(ctx context.Context, req *pkiv1.GetCertificateRequest) (*pkiv1.GetCertificateResponse, error) {
+	user := middleware.GetUserInfo(ctx)
+	if _, err := s.api.AuthorizeCARead(ctx, user, req.GetCaId()); err != nil {
+		return nil, mapAuthzError(err)
+	}
+	if strings.TrimSpace(req.GetSerial()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "serial is required")
+	}
+	// Reflect expiry lazily so the returned status is accurate.
+	s.api.DB().MarkExpiredCertificates(req.GetCaId(), time.Now())
+	cert, err := s.api.DB().GetIssuedCertificate(req.GetCaId(), req.GetSerial())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to load certificate: %v", err)
+	}
+	if cert == nil {
+		return nil, status.Error(codes.NotFound, "certificate not found")
+	}
+	return &pkiv1.GetCertificateResponse{Certificate: certificateInfo(cert)}, nil
+}
+
+// GetCertificateStatus returns only the coarse lifecycle status for a serial.
+func (s *service) GetCertificateStatus(ctx context.Context, req *pkiv1.GetCertificateStatusRequest) (*pkiv1.GetCertificateStatusResponse, error) {
+	user := middleware.GetUserInfo(ctx)
+	if _, err := s.api.AuthorizeCARead(ctx, user, req.GetCaId()); err != nil {
+		return nil, mapAuthzError(err)
+	}
+	if strings.TrimSpace(req.GetSerial()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "serial is required")
+	}
+	s.api.DB().MarkExpiredCertificates(req.GetCaId(), time.Now())
+	cert, err := s.api.DB().GetIssuedCertificate(req.GetCaId(), req.GetSerial())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to load certificate: %v", err)
+	}
+	if cert == nil {
+		// A serial the authority never issued: report UNKNOWN rather than an error,
+		// so callers can distinguish "no record" from "denied".
+		return &pkiv1.GetCertificateStatusResponse{Status: pkiv1.CertificateStatus_CERTIFICATE_STATUS_UNKNOWN}, nil
+	}
+	resp := &pkiv1.GetCertificateStatusResponse{
+		Status:           certStatus(cert.Status),
+		RevocationReason: int32(cert.RevocationReason),
+	}
+	if cert.RevokedAt != nil {
+		resp.RevokedAt = timestamppb.New(*cert.RevokedAt)
+	}
+	return resp, nil
+}
+
+// ListCertificates lists the certificates a CA has issued.
+func (s *service) ListCertificates(ctx context.Context, req *pkiv1.ListCertificatesRequest) (*pkiv1.ListCertificatesResponse, error) {
+	user := middleware.GetUserInfo(ctx)
+	if _, err := s.api.AuthorizeCARead(ctx, user, req.GetCaId()); err != nil {
+		return nil, mapAuthzError(err)
+	}
+	s.api.DB().MarkExpiredCertificates(req.GetCaId(), time.Now())
+	certs, err := s.api.DB().ListIssuedCertificates(req.GetCaId())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to list certificates: %v", err)
+	}
+	out := &pkiv1.ListCertificatesResponse{Certificates: make([]*pkiv1.CertificateInfo, 0, len(certs))}
+	for i := range certs {
+		out.Certificates = append(out.Certificates, certificateInfo(&certs[i]))
+	}
+	return out, nil
+}
+
+// GetCRLMetadata returns distribution metadata for a CA's CRL. It regenerates
+// the CRL on the HSM only when the published copy is stale, then reports the
+// stored base (and delta, if any) numbers, update windows, and public URLs.
+func (s *service) GetCRLMetadata(ctx context.Context, req *pkiv1.GetCRLMetadataRequest) (*pkiv1.GetCRLMetadataResponse, error) {
+	user := middleware.GetUserInfo(ctx)
+	if _, err := s.api.AuthorizeCARead(ctx, user, req.GetCaId()); err != nil {
+		return nil, mapAuthzError(err)
+	}
+
+	shard := ca.FullScope
+	if req.Shard != nil {
+		shard = int(req.GetShard())
+	}
+
+	mgr := s.newManager()
+	s.api.ConsumeHSMAuditLogs("")
+	if _, err := mgr.GetBaseCRL(ctx, req.GetCaId(), shard); err != nil {
+		s.api.ConsumeHSMAuditLogs("")
+		return nil, status.Errorf(codes.Internal, "failed to build CRL: %v", err)
+	}
+	s.api.ConsumeHSMAuditLogs("")
+
+	scope := scopeName(shard)
+	base, err := s.api.DB().GetPublishedCRL(req.GetCaId(), scope, "base")
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to read CRL metadata: %v", err)
+	}
+	if base == nil {
+		return nil, status.Error(codes.NotFound, "no CRL published for this scope")
+	}
+
+	resp := &pkiv1.GetCRLMetadataResponse{
+		Scope:       scope,
+		CrlNumber:   base.Number,
+		ThisUpdate:  timestamppb.New(base.ThisUpdate),
+		NextUpdate:  timestamppb.New(base.NextUpdate),
+		CrlUrl:      ca.PublicCRLURL(req.GetCaId(), shard),
+		DeltaCrlUrl: ca.PublicDeltaCRLURL(req.GetCaId(), shard),
+		ShardCount:  int32(ca.CRLShardCount()),
+	}
+	// Report delta metadata only when a delta has actually been published.
+	if delta, err := s.api.DB().GetPublishedCRL(req.GetCaId(), scope, "delta"); err == nil && delta != nil {
+		resp.DeltaAvailable = true
+		resp.DeltaCrlNumber = delta.Number
+		resp.DeltaThisUpdate = timestamppb.New(delta.ThisUpdate)
+		resp.DeltaNextUpdate = timestamppb.New(delta.NextUpdate)
+	}
+	return resp, nil
+}
+
+// GetOCSPMetadata returns the OCSP responder endpoint(s) and hardening options.
+func (s *service) GetOCSPMetadata(ctx context.Context, req *pkiv1.GetOCSPMetadataRequest) (*pkiv1.GetOCSPMetadataResponse, error) {
+	user := middleware.GetUserInfo(ctx)
+	if _, err := s.api.AuthorizeCARead(ctx, user, req.GetCaId()); err != nil {
+		return nil, mapAuthzError(err)
+	}
+	nonce, delegated := s.api.OCSPResponderInfo()
+	resp := &pkiv1.GetOCSPMetadataResponse{
+		NonceSupported:     nonce,
+		DelegatedResponder: delegated,
+	}
+	if u := ca.PublicOCSPURL(req.GetCaId()); u != "" {
+		resp.OcspUrls = []string{u}
+	}
+	return resp, nil
+}
+
+// audit appends a tamper-evident audit event, deriving the client IP from the
+// gRPC peer address carried on ctx.
+func (s *service) audit(ctx context.Context, action, target, targetName, result, detail string) {
+	s.api.RecordAuditEvent(ctx, peerIP(ctx), action, target, targetName, result, detail)
+}
+
+// requireCA maps an unknown CA to a clean NotFound before invoking the manager,
+// so callers get NOT_FOUND rather than an INVALID_ARGUMENT wrapping an internal
+// "CA not found" string.
+func (s *service) requireCA(caID string) error {
+	caModel, err := s.api.DB().GetCA(caID)
+	if err != nil {
+		return status.Errorf(codes.Internal, "database error: %v", err)
+	}
+	if caModel == nil {
+		return status.Errorf(codes.NotFound, "CA %q not found", caID)
+	}
+	return nil
+}
+
+// --- conversion + error-mapping helpers ---
+
+// daysToDuration converts a validity-in-days value to a Duration. Non-positive
+// values yield zero, which downstream treats as "use the profile default".
+func daysToDuration(days int) time.Duration {
+	if days <= 0 {
+		return 0
+	}
+	return time.Duration(days) * 24 * time.Hour
+}
+
+// scopeName maps a shard index to its persisted scope string ("full" or
+// "partition:N").
+func scopeName(shard int) string {
+	if shard < 0 {
+		return "full"
+	}
+	return "partition:" + strconv.Itoa(shard)
+}
+
+// certificateResponse renders an issuance result as the gRPC response.
+func certificateResponse(result *ca.IssueResult) *pkiv1.CertificateResponse {
+	resp := &pkiv1.CertificateResponse{
+		CertificatePem: string(result.PEM),
+		ChainPem:       string(result.ChainPEM),
+		Serial:         result.Serial.String(),
+		Profile:        result.Profile,
+		NotBefore:      timestamppb.New(result.Certificate.NotBefore),
+		NotAfter:       timestamppb.New(result.Certificate.NotAfter),
+	}
+	if ct := result.CT; ct != nil && ct.Enabled {
+		info := &pkiv1.CTInfo{
+			Enabled:  true,
+			Embedded: ct.Embedded,
+			SctCount: int32(ct.SCTCount),
+		}
+		if result.Record != nil {
+			info.Status = string(result.Record.CTStatus)
+		}
+		for _, r := range ct.Logs {
+			info.Logs = append(info.Logs, &pkiv1.CTLogOutcome{Log: r.Log, Ok: r.OK, Error: r.Error})
+		}
+		resp.Ct = info
+	}
+	return resp
+}
+
+// certificateInfo renders a stored certificate record as the gRPC message.
+func certificateInfo(c *models.IssuedCertificate) *pkiv1.CertificateInfo {
+	info := &pkiv1.CertificateInfo{
+		CaId:             c.CAID,
+		Serial:           c.Serial,
+		Subject:          c.Subject,
+		CommonName:       c.CommonName,
+		Sans:             c.SANs,
+		Profile:          c.Profile,
+		CertificatePem:   c.Certificate,
+		NotBefore:        timestamppb.New(c.NotBefore),
+		NotAfter:         timestamppb.New(c.NotAfter),
+		Status:           certStatus(c.Status),
+		RevocationReason: int32(c.RevocationReason),
+		RequestedBy:      c.RequestedBy,
+		CreatedAt:        timestamppb.New(c.CreatedAt),
+	}
+	if c.RevokedAt != nil {
+		info.RevokedAt = timestamppb.New(*c.RevokedAt)
+	}
+	return info
+}
+
+// certStatus maps the stored certificate status to the protobuf enum.
+func certStatus(s models.CertStatus) pkiv1.CertificateStatus {
+	switch s {
+	case models.CertStatusValid:
+		return pkiv1.CertificateStatus_CERTIFICATE_STATUS_VALID
+	case models.CertStatusRevoked:
+		return pkiv1.CertificateStatus_CERTIFICATE_STATUS_REVOKED
+	case models.CertStatusExpired:
+		return pkiv1.CertificateStatus_CERTIFICATE_STATUS_EXPIRED
+	default:
+		return pkiv1.CertificateStatus_CERTIFICATE_STATUS_UNSPECIFIED
+	}
+}
+
+// mapAuthzError maps the handlers authorization sentinels to gRPC status codes.
+func mapAuthzError(err error) error {
+	switch {
+	case errors.Is(err, handlers.ErrForbidden):
+		return status.Error(codes.PermissionDenied, "read access requires a role (admin, issuer, or auditor)")
+	case errors.Is(err, handlers.ErrNotFound):
+		return status.Error(codes.NotFound, "CA not found")
+	default:
+		return status.Errorf(codes.Internal, "authorization failed: %v", err)
+	}
+}
+
+// mapIssueError maps a manager issuance/renewal/revocation error to a gRPC
+// status. The REST handlers return HTTP 400 for these; the closest gRPC code is
+// InvalidArgument for client-caused failures (bad CSR, profile, policy/lint/CAA
+// rejection), with a context cancellation surfaced faithfully.
+func mapIssueError(err error) error {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return status.Error(codes.Canceled, err.Error())
+	case errors.Is(err, context.DeadlineExceeded):
+		return status.Error(codes.DeadlineExceeded, err.Error())
+	default:
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+}

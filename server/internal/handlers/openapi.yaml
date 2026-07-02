@@ -9,6 +9,14 @@ info:
     administration, ACME (RFC 8555) directory, and operational endpoints. Every
     private-key operation runs inside the configured key provider (PKCS#11 HSM /
     YubiHSM); key material never leaves the token.
+
+
+    Protocol parity: the core certificate-lifecycle operations documented here —
+    issue (from CSR/template), renew, revoke, get certificate/status, list, and
+    CRL/OCSP metadata — are additionally exposed over a gRPC API (PKIService,
+    proto/pki/v1/pki.proto) with server reflection, enforcing the same operator
+    authentication (Bearer OIDC / Basic root / mutual-TLS), RBAC, tenant scoping,
+    and tamper-evident audit as these REST endpoints. See docs/grpc-api.md.
   version: "2.0.0"
   license:
     name: MIT

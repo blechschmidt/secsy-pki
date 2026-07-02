@@ -179,6 +179,33 @@ metadata, public certificates, and audit records live in the database.
 With the Prometheus operator, set `serviceMonitor.enabled=true` to scrape
 `/metrics`. See [Observability](observability.md).
 
+### gRPC API
+
+The chart can expose the [gRPC API](grpc-api.md) — the core issuance/revocation/
+status operations over gRPC alongside REST — on a dedicated port:
+
+```yaml
+config:
+  grpc:
+    enabled: true
+    port: 9443
+    mtls: false          # set true to bind mutual-TLS client certs (needs auth.mtls)
+service:
+  grpcPort: 9443
+```
+
+When enabled, the Deployment adds a `grpc` container port and the Service adds a
+`grpc` port (`service.grpcPort`). The listener reuses the pod's TLS certificate
+(the same one the REST/HTTPS listener serves) and enforces the same operator
+authentication, RBAC, tenant scoping, and audit. Server reflection and a
+`grpc.health.v1.Health` service are registered automatically — the latter suits a
+Kubernetes gRPC startup/readiness probe.
+
+To reach the gRPC port from outside the cluster, use a gRPC-aware (HTTP/2)
+ingress or gateway with TLS passthrough or re-encryption; a plain HTTP/1.1
+ingress will not proxy gRPC. Within the cluster, address it at
+`<release>-secsy-pki:9443`.
+
 ---
 
 ## 3. cert-manager: HSM-backed certs for workloads
