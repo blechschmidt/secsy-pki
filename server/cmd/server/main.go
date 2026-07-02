@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/acme"
@@ -28,6 +29,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
+	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/monitor"
@@ -248,6 +250,31 @@ func main() {
 	if cfg.Server.OCSPCacheTTLSeconds != 0 {
 		api.SetOCSPCacheTTL(time.Duration(cfg.Server.OCSPCacheTTLSeconds) * time.Second)
 	}
+	// OCSP responder hardening: nonce echoing (RFC 8954), delegated responder
+	// certificate, and validity bounds.
+	{
+		oc := cfg.Server.OCSP
+		nonceEnabled := true // default on
+		if oc.NonceEnabled != nil {
+			nonceEnabled = *oc.NonceEnabled
+		}
+		nonceMaxAge := 60 * time.Second
+		if oc.NonceMaxAgeSeconds > 0 {
+			nonceMaxAge = time.Duration(oc.NonceMaxAgeSeconds) * time.Second
+		}
+		delegatedValidity := time.Duration(oc.DelegatedValidityHours) * time.Hour
+		api.SetOCSPPolicy(handlers.OCSPPolicy{
+			NonceEnabled: nonceEnabled,
+			NonceMaxAge:  nonceMaxAge,
+			Delegated:    oc.Delegated,
+		}, delegatedValidity, oc.DelegatedKeyType)
+		if oc.Delegated {
+			log.Printf("OCSP delegated responder enabled (short-lived id-kp-OCSPSigning certificate)")
+		}
+		if nonceEnabled {
+			log.Printf("OCSP nonce echoing enabled (RFC 8954, max-age %s)", nonceMaxAge)
+		}
+	}
 	if cfg.Secret.KEKLabel != "" {
 		log.Printf("Secret encryption enabled (KEK label: %s)", cfg.Secret.KEKLabel)
 	}
@@ -408,6 +435,18 @@ func main() {
 	if cfg.Server.TLSCert != "" && cfg.Server.TLSKey != "" {
 		tlsCfg := &tls.Config{
 			MinVersion: tls.VersionTLS12,
+		}
+		// TLS OCSP stapling: when the operator names the CA that issued the
+		// server's own certificate, produce and periodically refresh an
+		// HSM-signed OCSP staple and serve it in the handshake so clients get
+		// revocation status without a separate responder round-trip.
+		if caID := cfg.Server.OCSP.StapleCAID; caID != "" {
+			sc, err := newStapledCertificate(cfg.Server.TLSCert, cfg.Server.TLSKey, caID, db, provider)
+			if err != nil {
+				log.Fatalf("configuring OCSP stapling: %v", err)
+			}
+			tlsCfg.GetCertificate = sc.getCertificate
+			log.Printf("TLS OCSP stapling enabled for the server certificate (CA %s)", caID)
 		}
 		server := &http.Server{
 			Addr:      addr,
@@ -948,4 +987,77 @@ func buildCTSubmitter(cfg config.CTConfig) (*ct.Submitter, error) {
 	// timeouts are applied by the submitter from each profile's policy.
 	client := &http.Client{Timeout: 30 * time.Second}
 	return ct.NewSubmitter(logs, client)
+}
+
+// stapledCertificate holds the server's TLS certificate together with a
+// periodically refreshed OCSP staple. GetCertificate returns it for every TLS
+// handshake so clients receive the certificate_status (OCSP staple) without
+// contacting the responder themselves (RFC 6066).
+type stapledCertificate struct {
+	mu   sync.RWMutex
+	cert *tls.Certificate
+}
+
+func (s *stapledCertificate) getCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cert, nil
+}
+
+func (s *stapledCertificate) setStaple(staple []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := *s.cert
+	c.OCSPStaple = staple
+	s.cert = &c
+}
+
+// newStapledCertificate loads the server's TLS key pair, produces an initial
+// OCSP staple signed under caID, and launches a background refresher. Stapling
+// is best-effort: a failure to obtain a staple is logged but does not prevent
+// the server from serving (the certificate is served without a staple).
+func newStapledCertificate(certFile, keyFile, caID string, db *database.DB, provider keyprovider.Provider) (*stapledCertificate, error) {
+	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("loading TLS key pair: %w", err)
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		return nil, fmt.Errorf("parsing TLS certificate: %w", err)
+	}
+	pair.Leaf = leaf
+	sc := &stapledCertificate{cert: &pair}
+
+	refresh := func() time.Time {
+		mgr := ca.NewManager(db, provider)
+		// Bound each attempt so a hung HSM call cannot wedge the refresher.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		staple, err := mgr.OCSPStapleForCertificate(ctx, caID, leaf, ca.OCSPRespondOptions{})
+		if err != nil {
+			metrics.OCSPStaples.Inc(metrics.ResultError)
+			log.Printf("OCSP stapling: failed to refresh staple: %v", err)
+			return time.Now().Add(5 * time.Minute) // retry soon
+		}
+		sc.setStaple(staple)
+		metrics.OCSPStaples.Inc(metrics.ResultSuccess)
+		// Re-staple at half the response validity to always serve a fresh staple.
+		if nextUpdate, ok := pki.OCSPResponseNextUpdate(staple); ok {
+			half := time.Until(nextUpdate) / 2
+			if half < time.Minute {
+				half = time.Minute
+			}
+			return time.Now().Add(half)
+		}
+		return time.Now().Add(time.Hour)
+	}
+
+	next := refresh() // initial staple, best-effort
+	go func() {
+		for {
+			time.Sleep(time.Until(next))
+			next = refresh()
+		}
+	}()
+	return sc, nil
 }

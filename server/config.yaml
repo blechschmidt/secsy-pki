@@ -8,6 +8,21 @@ server:
   # default (1h); a negative value disables caching. Revocations invalidate the
   # affected entry immediately. See docs/benchmarks.md.
   ocsp_cache_ttl_seconds: 3600
+  # OCSP responder hardening (RFC 6960 / RFC 8954). All fields are optional.
+  ocsp:
+    # Echo the request nonce in the signed response (bypasses the cache for
+    # nonce-bearing requests). Defaults to true when omitted.
+    nonce_enabled: true
+    # Validity window for a nonce-bearing (freshly signed) response, in seconds.
+    nonce_max_age_seconds: 60
+    # Sign responses with a short-lived HSM-backed delegated OCSP-signing
+    # certificate (id-kp-OCSPSigning + ocsp-nocheck) instead of the CA key.
+    delegated: false
+    delegated_validity_hours: 168          # 7 days
+    delegated_key_type: "ecdsa-sha2-nistp256"
+    # CA that issued this server's own TLS certificate; when set, the server
+    # staples a fresh OCSP response to its TLS handshake (RFC 6066).
+    staple_ca_id: ""
 
 database:
   driver: "sqlite"

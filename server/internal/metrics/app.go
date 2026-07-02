@@ -74,6 +74,28 @@ var (
 		"secsy_ocsp_requests_total",
 		"OCSP responder requests, partitioned by result.",
 		"result")
+	// OCSPNonce counts OCSP requests by how their nonce was handled: "echoed"
+	// (a valid nonce was reflected in the signed response), "absent" (no nonce
+	// present), or "rejected" (a nonce violated the RFC 8954 length bounds and
+	// the request was answered malformed). A nonce-bearing request bypasses the
+	// response cache, so this also tracks cache-bypass demand.
+	OCSPNonce = NewCounter(Default,
+		"secsy_ocsp_nonce_total",
+		"OCSP requests partitioned by nonce handling (echoed|absent|rejected).",
+		"handling")
+	// OCSPSigner counts signed OCSP responses by which key signed them: the CA
+	// key directly ("ca") or a short-lived delegated OCSP-signing certificate
+	// ("delegated").
+	OCSPSigner = NewCounter(Default,
+		"secsy_ocsp_signer_total",
+		"Signed OCSP responses partitioned by signing key (ca|delegated).",
+		"signer")
+	// OCSPStaples counts TLS OCSP staples produced for the server's own
+	// certificate(s), by result.
+	OCSPStaples = NewCounter(Default,
+		"secsy_ocsp_staples_total",
+		"TLS OCSP staples generated for the server's own certificate, by result.",
+		"result")
 	CRLRequests = NewCounter(Default,
 		"secsy_crl_requests_total",
 		"CRL distribution requests, partitioned by result.",

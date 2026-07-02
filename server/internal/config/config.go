@@ -620,6 +620,36 @@ type ServerConfig struct {
 	// invalidate the affected entry immediately regardless of this value. See
 	// docs/benchmarks.md.
 	OCSPCacheTTLSeconds int `yaml:"ocsp_cache_ttl_seconds"`
+	// OCSP holds responder-hardening options (nonce, delegated responder,
+	// stapling). Zero-valued fields fall back to safe defaults.
+	OCSP OCSPConfig `yaml:"ocsp"`
+}
+
+// OCSPConfig configures the hardened OCSP responder (RFC 6960 / RFC 8954).
+type OCSPConfig struct {
+	// NonceEnabled turns on echoing of the id-pkix-ocsp-nonce extension. A
+	// nonce-bearing request always bypasses the response cache and is signed
+	// freshly. When nil, nonce echoing defaults to enabled.
+	NonceEnabled *bool `yaml:"nonce_enabled"`
+	// NonceMaxAgeSeconds bounds the NextUpdate window of a nonce-bearing
+	// response. Because such responses are freshly signed and not cached, this
+	// is kept short (default 60s). Non-positive uses the default.
+	NonceMaxAgeSeconds int `yaml:"nonce_max_age_seconds"`
+	// Delegated enables signing responses with a short-lived, HSM-backed
+	// delegated OCSP-signing certificate (id-kp-OCSPSigning + ocsp-nocheck)
+	// rather than with the CA key directly.
+	Delegated bool `yaml:"delegated"`
+	// DelegatedValidityHours is the lifetime of the delegated responder
+	// certificate (default 168h = 7 days). Non-positive uses the default.
+	DelegatedValidityHours int `yaml:"delegated_validity_hours"`
+	// DelegatedKeyType is the key type for the delegated responder key
+	// (default ecdsa P-256). Must be an RSA or ECDSA type; OCSP does not
+	// support Ed25519.
+	DelegatedKeyType string `yaml:"delegated_key_type"`
+	// StapleCAID, when set, is the CA that issued the server's own TLS
+	// certificate. The server periodically produces an OCSP staple for its TLS
+	// certificate under this CA and serves it in the TLS handshake.
+	StapleCAID string `yaml:"staple_ca_id"`
 }
 
 type DatabaseConfig struct {

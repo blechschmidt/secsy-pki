@@ -236,7 +236,51 @@ openssl ocsp -issuer issuing-ca.crt -cert tls.crt \
 ```
 
 Responses are `good`, `revoked` (with reason and time), or `unknown` for serials
-this CA never issued, and are cacheable for up to 24 h.
+this CA never issued, and are cacheable for up to 24 h. Non-signable requests are
+answered with the correct RFC 6960 status: `malformed` (unparseable request),
+`unauthorized` (unknown CA / not authoritative), or `tryLater` (the signing
+backend is transiently unavailable).
+
+#### Nonce (RFC 8954)
+
+When a request carries an `id-pkix-ocsp-nonce` extension, the responder echoes it
+in the signed response's `responseExtensions`, binding the response to that
+request and defeating replay of a pre-captured response. Nonce-bearing requests
+**bypass the response cache** and are signed freshly. Nonces must be 1–32 octets;
+an out-of-range nonce is answered `malformed`. Nonce echoing is on by default
+(`server.ocsp.nonce_enabled`), with a short validity window
+(`server.ocsp.nonce_max_age_seconds`, default 60 s).
+
+#### Delegated responder certificate
+
+Instead of signing OCSP responses with the CA key directly, the responder can use
+a short-lived, HSM-backed **delegated OCSP-signing certificate** carrying the
+`id-kp-OCSPSigning` EKU and the `id-pkix-ocsp-nocheck` extension (RFC 6960
+§4.2.2.2). The delegated key is generated once per CA on the provider and reused;
+the certificate is re-issued by the CA key as it nears expiry and is embedded in
+each response so relying parties can build the `issuer → responder → response`
+chain. Enable with `server.ocsp.delegated: true`
+(`delegated_validity_hours`, `delegated_key_type`).
+
+```yaml
+server:
+  ocsp:
+    nonce_enabled: true
+    nonce_max_age_seconds: 60
+    delegated: true
+    delegated_validity_hours: 168   # 7 days
+    delegated_key_type: ecdsa-sha2-nistp256
+    staple_ca_id: ""                # CA that issued the server's own TLS cert
+```
+
+#### TLS OCSP stapling
+
+When `server.ocsp.staple_ca_id` names the CA that issued the server's own TLS
+certificate, the server produces an HSM-signed OCSP staple for that certificate
+and serves it in the TLS handshake (RFC 6066 `certificate_status`), refreshing it
+at half the response validity. Clients then get revocation status without a
+separate responder round-trip. `Manager.OCSPStapleForCertificate` is also
+callable directly for custom TLS listeners.
 
 ### Pointing relying parties at these endpoints
 

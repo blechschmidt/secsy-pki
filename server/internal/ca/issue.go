@@ -524,59 +524,6 @@ func (m *Manager) GenerateCRL(ctx context.Context, caID string) ([]byte, error) 
 	return der, nil
 }
 
-// OCSPRespond answers an OCSP request (DER) about a certificate issued by the
-// given CA. The response is signed on the provider (HSM). The returned bytes are
-// a DER-encoded OCSP response.
-func (m *Manager) OCSPRespond(ctx context.Context, caID string, reqDER []byte) ([]byte, error) {
-	issuerCA, issuerCert, err := m.loadIssuer(caID)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := pki.ParseOCSPRequest(reqDER)
-	if err != nil {
-		return nil, fmt.Errorf("parsing OCSP request: %w", err)
-	}
-
-	spec := pki.OCSPResponseSpec{
-		Serial:     req.SerialNumber,
-		ThisUpdate: time.Now().Add(-clockSkew),
-		NextUpdate: time.Now().Add(defaultOCSPValidity),
-	}
-
-	serialStr := req.SerialNumber.String()
-	revoked, err := m.db.GetRevokedCertificate(caID, serialStr)
-	if err != nil {
-		return nil, fmt.Errorf("looking up revocation: %w", err)
-	}
-	switch {
-	case revoked != nil:
-		spec.Status = pki.OCSPRevoked
-		spec.RevokedAt = revoked.RevokedAt
-		spec.RevocationReason = revoked.Reason
-	default:
-		// Distinguish a certificate we know we issued (Good) from one we have no
-		// record of (Unknown).
-		issued, err := m.db.GetIssuedCertificate(caID, serialStr)
-		if err != nil {
-			return nil, fmt.Errorf("looking up issued certificate: %w", err)
-		}
-		if issued == nil {
-			spec.Status = pki.OCSPUnknown
-		} else {
-			spec.Status = pki.OCSPGood
-		}
-	}
-
-	signer, err := m.provider.Signer(ctx, keyRefForCA(issuerCA))
-	if err != nil {
-		return nil, fmt.Errorf("opening issuer signer: %w", err)
-	}
-	defer signer.Close()
-
-	return pki.CreateOCSPResponse(signer, issuerCert, spec)
-}
-
 // loadIssuer fetches a CA and its parsed certificate, ensuring it is a usable
 // X.509 issuer (has a certificate and is not path-length-0 for leaf issuance is
 // not enforced here — leaves are always allowed by any CA).

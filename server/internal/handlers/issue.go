@@ -3,12 +3,14 @@ package handlers
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -294,13 +296,41 @@ func (a *API) OCSPResponder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Extract the request nonce (RFC 8954). A nonce that violates the length
+	// bounds is a malformed request. A valid nonce is echoed in the signed
+	// response and forces a fresh signature (the cache is bypassed) so an
+	// attacker cannot replay a previously captured response.
+	var nonce []byte
+	if a.ocspPolicy.NonceEnabled {
+		n, err := pki.ExtractOCSPNonce(reqDER)
+		if err != nil {
+			if errors.Is(err, pki.ErrNonceTooLong) || errors.Is(err, pki.ErrNonceTooShort) {
+				metrics.OCSPNonce.Inc("rejected")
+				writeOCSPMalformed(w)
+				return
+			}
+			// A nonce-parse failure that is not a length violation means the
+			// request itself is malformed.
+			metrics.OCSPNonce.Inc("rejected")
+			writeOCSPMalformed(w)
+			return
+		}
+		nonce = n
+		if len(nonce) > 0 {
+			metrics.OCSPNonce.Inc("echoed")
+		} else {
+			metrics.OCSPNonce.Inc("absent")
+		}
+	}
+
 	// Serve from the response cache when possible: an OCSP response is a signed
 	// object valid until its NextUpdate, so a fresh HSM signature is not needed
 	// for every request. The cache is keyed by (CA, serial) and invalidated on
-	// revocation. Parsing the request to recover the serial is cheap relative to
-	// an on-HSM signing round-trip.
+	// revocation. It is bypassed for nonce-bearing requests, whose whole point
+	// is a fresh, request-bound signature. Parsing the request to recover the
+	// serial is cheap relative to an on-HSM signing round-trip.
 	var cacheSerial string
-	if a.ocspCache.Enabled() {
+	if len(nonce) == 0 && a.ocspCache.Enabled() {
 		if serial, ok := pki.OCSPRequestSerial(reqDER); ok {
 			cacheSerial = serial
 			if cached, hit := a.ocspCache.Get(caID, cacheSerial); hit {
@@ -313,17 +343,36 @@ func (a *API) OCSPResponder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mgr := ca.NewManager(a.db, a.keyProvider)
+
+	opts := ca.OCSPRespondOptions{Nonce: nonce}
+	if len(nonce) > 0 && a.ocspPolicy.NonceMaxAge > 0 {
+		opts.Validity = a.ocspPolicy.NonceMaxAge
+	}
+	// Sign with a short-lived delegated OCSP-signing certificate when enabled,
+	// falling back to the CA key if the delegated responder cannot be produced.
+	signerLabel := "ca"
+	if a.ocspPolicy.Delegated && a.delegatedResponders != nil {
+		a.consumeHSMAuditLogs("")
+		cert, ref, derr := a.delegatedResponders.Responder(r.Context(), mgr, caID)
+		a.consumeHSMAuditLogs("")
+		if derr == nil {
+			opts.Responder = cert
+			opts.ResponderKeyRef = &keyprovider.KeyRef{Label: ref.Label, ID: ref.ID}
+			signerLabel = "delegated"
+		}
+		// On failure we intentionally continue with CA-key signing so revocation
+		// data keeps flowing; the CA signer is always available.
+	}
+
 	a.consumeHSMAuditLogs("")
-	respDER, err := mgr.OCSPRespond(r.Context(), caID, reqDER)
+	respDER, err := mgr.OCSPRespondWithOptions(r.Context(), caID, reqDER, opts)
 	a.consumeHSMAuditLogs("")
 	if err != nil {
-		// Signing/lookup failure — return the standard internal-error response.
-		metrics.OCSPRequests.Inc(metrics.ResultError)
-		w.Header().Set("Content-Type", "application/ocsp-response")
-		w.Write(pki.OCSPInternalErrorResponse)
+		writeOCSPError(w, err)
 		return
 	}
 
+	metrics.OCSPSigner.Inc(signerLabel)
 	if cacheSerial != "" {
 		a.ocspCache.Put(caID, cacheSerial, respDER)
 	}
@@ -331,6 +380,26 @@ func (a *API) OCSPResponder(w http.ResponseWriter, r *http.Request) {
 	metrics.OCSPRequests.Inc(metrics.ResultSuccess)
 	w.Header().Set("Content-Type", "application/ocsp-response")
 	w.Write(respDER)
+}
+
+// writeOCSPError maps a responder error to the correct RFC 6960 §4.2.1 status
+// response and records the outcome.
+func writeOCSPError(w http.ResponseWriter, err error) {
+	w.Header().Set("Content-Type", "application/ocsp-response")
+	switch {
+	case errors.Is(err, ca.ErrOCSPMalformed):
+		metrics.OCSPRequests.Inc("malformed")
+		w.Write(pki.OCSPMalformedResponse)
+	case errors.Is(err, ca.ErrOCSPUnauthorized):
+		metrics.OCSPRequests.Inc("unauthorized")
+		w.Write(pki.OCSPUnauthorizedResponse)
+	case errors.Is(err, ca.ErrOCSPTryLater):
+		metrics.OCSPRequests.Inc("try_later")
+		w.Write(pki.OCSPTryLaterResponse)
+	default:
+		metrics.OCSPRequests.Inc(metrics.ResultError)
+		w.Write(pki.OCSPInternalErrorResponse)
+	}
 }
 
 // daysToDuration converts a validity-in-days value to a Duration. Non-positive

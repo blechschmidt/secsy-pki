@@ -51,6 +51,36 @@ type API struct {
 	// Manager). It avoids an on-HSM signature per OCSP request; see
 	// ca.OCSPCache and docs/benchmarks.md. Never nil.
 	ocspCache *ca.OCSPCache
+	// ocspPolicy tunes responder hardening (nonce echoing, delegated signer).
+	ocspPolicy OCSPPolicy
+	// delegatedResponders manages per-CA short-lived delegated OCSP-signing
+	// certificates; non-nil only when delegated signing is enabled.
+	delegatedResponders *ca.DelegatedResponderCache
+}
+
+// OCSPPolicy holds the responder-hardening settings applied to the public OCSP
+// endpoint.
+type OCSPPolicy struct {
+	// NonceEnabled echoes a request's id-pkix-ocsp-nonce in the signed response
+	// (RFC 8954) and bypasses the response cache for nonce-bearing requests.
+	NonceEnabled bool
+	// NonceMaxAge bounds the validity window of a nonce-bearing response.
+	NonceMaxAge time.Duration
+	// Delegated signs responses with a short-lived delegated OCSP-signing
+	// certificate instead of the CA key.
+	Delegated bool
+}
+
+// SetOCSPPolicy installs the responder-hardening policy and, when delegated
+// signing is enabled, the delegated-responder certificate cache. Intended to be
+// called once at startup from configuration.
+func (a *API) SetOCSPPolicy(p OCSPPolicy, delegatedValidity time.Duration, delegatedKeyType string) {
+	a.ocspPolicy = p
+	if p.Delegated {
+		a.delegatedResponders = ca.NewDelegatedResponderCache(delegatedValidity, delegatedKeyType)
+	} else {
+		a.delegatedResponders = nil
+	}
 }
 
 // Policy holds centrally-configured issuance guardrails enforced by the API
