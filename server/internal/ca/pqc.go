@@ -86,6 +86,7 @@ func caTemplateFromRequest(req pki.CACertRequest) *x509.Certificate {
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
+		ExtraExtensions:       req.ExtraExtensions,
 	}
 	if req.MaxPathLen != nil {
 		t.MaxPathLen = *req.MaxPathLen

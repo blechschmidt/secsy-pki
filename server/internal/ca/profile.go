@@ -2,10 +2,12 @@ package ca
 
 import (
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"fmt"
 	"sort"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 )
 
@@ -41,6 +43,10 @@ type Profile struct {
 	// CAA is the profile's DNS Certification Authority Authorization policy (RFC
 	// 8659). Nil (or mode "off") disables the CAA pre-issuance gate; see CAAConfig.
 	CAA *CAAConfig `json:"caa,omitempty"`
+	// Policies assigns RFC 5280 certificate-policy OIDs (2.5.29.32) to every leaf
+	// issued under this profile, optionally with a CPS-URI qualifier and policy
+	// mappings. Empty emits no certificatePolicies extension. See certpolicy.
+	Policies *certpolicy.PolicyConfig `json:"policies,omitempty"`
 
 	// Algorithm selects the signature scheme family for certificates issued under
 	// this profile: classical (default), pure post-quantum ML-DSA, or hybrid
@@ -296,6 +302,24 @@ func (p Profile) extKeyUsage() ([]x509.ExtKeyUsage, error) {
 		out = append(out, v)
 	}
 	return out, nil
+}
+
+// policyExtensions builds the certificate-policy extensions (certificatePolicies,
+// and any configured policy mappings/constraints) a leaf issued under this
+// profile should carry. It returns nil when the profile assigns no policies.
+func (p Profile) policyExtensions() ([]pkix.Extension, error) {
+	if p.Policies == nil || p.Policies.IsZero() {
+		return nil, nil
+	}
+	built, err := p.Policies.Build()
+	if err != nil {
+		return nil, fmt.Errorf("profile %q certificate policies: %w", p.Name, err)
+	}
+	exts, err := built.Extensions()
+	if err != nil {
+		return nil, fmt.Errorf("profile %q certificate policies: %w", p.Name, err)
+	}
+	return exts, nil
 }
 
 // resolveValidity clamps a requested validity to the profile's bounds. A

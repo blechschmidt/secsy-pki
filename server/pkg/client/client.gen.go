@@ -280,10 +280,16 @@ type CA struct {
 // CAInitRootRequest defines model for CAInitRootRequest.
 type CAInitRootRequest struct {
 	// KeyType e.g. ecdsa-p256, rsa-3072, ed25519
-	KeyType    string    `json:"key_type"`
-	Label      string    `json:"label"`
-	MaxPathLen *int      `json:"max_path_len,omitempty"`
-	Subject    CASubject `json:"subject"`
+	KeyType    string `json:"key_type"`
+	Label      string `json:"label"`
+	MaxPathLen *int   `json:"max_path_len,omitempty"`
+
+	// NameConstraints RFC 5280 Name Constraints (2.5.29.30) applied to a CA certificate, bounding the identities certificates below it may assert. Enforced as a fail-closed pre-issuance gate and by conforming path validators.
+	NameConstraints *NameConstraintsConfig `json:"name_constraints,omitempty"`
+
+	// Policies RFC 5280 certificate-policy family (2.5.29.32/.33/.36) for a CA certificate.
+	Policies *CertPolicyConfig `json:"policies,omitempty"`
+	Subject  CASubject         `json:"subject"`
 
 	// TenantId Owning tenant for the root and its entire subtree (default: the built-in default tenant).
 	TenantId     *string `json:"tenant_id,omitempty"`
@@ -292,12 +298,18 @@ type CAInitRootRequest struct {
 
 // CAIssueIntermediateRequest defines model for CAIssueIntermediateRequest.
 type CAIssueIntermediateRequest struct {
-	KeyType      string    `json:"key_type"`
-	Label        string    `json:"label"`
-	MaxPathLen   *int      `json:"max_path_len,omitempty"`
-	ParentId     *string   `json:"parent_id,omitempty"`
-	Subject      CASubject `json:"subject"`
-	ValidityDays *int      `json:"validity_days,omitempty"`
+	KeyType    string `json:"key_type"`
+	Label      string `json:"label"`
+	MaxPathLen *int   `json:"max_path_len,omitempty"`
+
+	// NameConstraints RFC 5280 Name Constraints (2.5.29.30) applied to a CA certificate, bounding the identities certificates below it may assert. Enforced as a fail-closed pre-issuance gate and by conforming path validators.
+	NameConstraints *NameConstraintsConfig `json:"name_constraints,omitempty"`
+	ParentId        *string                `json:"parent_id,omitempty"`
+
+	// Policies RFC 5280 certificate-policy family (2.5.29.32/.33/.36) for a CA certificate.
+	Policies     *CertPolicyConfig `json:"policies,omitempty"`
+	Subject      CASubject         `json:"subject"`
+	ValidityDays *int              `json:"validity_days,omitempty"`
 }
 
 // CASubject defines model for CASubject.
@@ -359,6 +371,27 @@ type CertItem struct {
 
 // CertItemSeverity defines model for CertItem.Severity.
 type CertItemSeverity string
+
+// CertPolicyConfig RFC 5280 certificate-policy family (2.5.29.32/.33/.36) for a CA certificate.
+type CertPolicyConfig struct {
+	// Cps CPS URI qualifier applied to every listed policy.
+	Cps *string `json:"cps,omitempty"`
+
+	// Critical Mark certificatePolicies critical (rarely needed).
+	Critical *bool `json:"critical,omitempty"`
+
+	// InhibitPolicyMapping policyConstraints inhibitPolicyMapping skipCerts.
+	InhibitPolicyMapping *int `json:"inhibit_policy_mapping,omitempty"`
+
+	// Mappings Policy mappings as issuerOID:subjectOID.
+	Mappings *[]string `json:"mappings,omitempty"`
+
+	// Oids Policy OIDs (dotted, or 'anyPolicy').
+	Oids *[]string `json:"oids,omitempty"`
+
+	// RequireExplicitPolicy policyConstraints requireExplicitPolicy skipCerts.
+	RequireExplicitPolicy *int `json:"require_explicit_policy,omitempty"`
+}
 
 // CombinedAuditExport defines model for CombinedAuditExport.
 type CombinedAuditExport struct {
@@ -572,6 +605,36 @@ type IssuedCertificateCtStatus string
 
 // IssuedCertificateStatus defines model for IssuedCertificate.Status.
 type IssuedCertificateStatus string
+
+// NameConstraintsConfig RFC 5280 Name Constraints (2.5.29.30) applied to a CA certificate, bounding the identities certificates below it may assert. Enforced as a fail-closed pre-issuance gate and by conforming path validators.
+type NameConstraintsConfig struct {
+	// Critical Extension criticality (default true, as RFC 5280 requires).
+	Critical *bool `json:"critical,omitempty"`
+
+	// Excluded One polarity (permitted or excluded) of RFC 5280 name-constraint subtrees.
+	Excluded *NameConstraintsSubtrees `json:"excluded,omitempty"`
+
+	// Permitted One polarity (permitted or excluded) of RFC 5280 name-constraint subtrees.
+	Permitted *NameConstraintsSubtrees `json:"permitted,omitempty"`
+}
+
+// NameConstraintsSubtrees One polarity (permitted or excluded) of RFC 5280 name-constraint subtrees.
+type NameConstraintsSubtrees struct {
+	// DirNames directoryName subtrees as RFC 4514 DNs, e.g. O=Acme,C=US.
+	DirNames *[]string `json:"dir_names,omitempty"`
+
+	// Dns DNS subtrees, e.g. internal.example.com (matches subdomains).
+	Dns *[]string `json:"dns,omitempty"`
+
+	// Email rfc822 subtrees: a host, a .domain, or a full mailbox.
+	Email *[]string `json:"email,omitempty"`
+
+	// Ip IP subtrees in CIDR, e.g. 10.0.0.0/8.
+	Ip *[]string `json:"ip,omitempty"`
+
+	// Uri URI host subtrees (domain rules as DNS).
+	Uri *[]string `json:"uri,omitempty"`
+}
 
 // ParseCSRRequest defines model for ParseCSRRequest.
 type ParseCSRRequest struct {

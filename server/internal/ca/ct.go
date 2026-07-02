@@ -140,6 +140,24 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 		return nil, nil, err
 	}
 
+	// Fail-closed pre-issuance Name Constraints gate (RFC 5280 §4.2.1.10): a leaf
+	// whose subject or SAN falls outside the issuing CA's permitted subtrees (or
+	// inside an excluded subtree) is rejected here, before any HSM signature.
+	if err := m.checkNameConstraints(base, profile, issuerCA, issuerCert, requestedBy); err != nil {
+		return nil, nil, err
+	}
+
+	// Assign the profile's certificate-policy OIDs to the leaf. These are appended
+	// to the base template so they participate identically in the precertificate
+	// and the final certificate (keeping the TBSCertificate aligned for SCT).
+	policyExts, err := profile.policyExtensions()
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(policyExts) > 0 {
+		base.ExtraExtensions = appendExts(base.ExtraExtensions, policyExts)
+	}
+
 	cfg := profile.CT
 	if cfg == nil || !cfg.Enabled || ctSubmitter == nil {
 		der, err := pki.CreateLeafCertificate(signer, issuerCert, base)
@@ -237,6 +255,14 @@ func appendExt(base []pkix.Extension, ext pkix.Extension) []pkix.Extension {
 	out := make([]pkix.Extension, 0, len(base)+1)
 	out = append(out, base...)
 	out = append(out, ext)
+	return out
+}
+
+// appendExts returns a fresh slice with exts appended, never mutating base.
+func appendExts(base []pkix.Extension, exts []pkix.Extension) []pkix.Extension {
+	out := make([]pkix.Extension, 0, len(base)+len(exts))
+	out = append(out, base...)
+	out = append(out, exts...)
 	return out
 }
 

@@ -19,9 +19,11 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
+	"github.com/blechschmidt/secsy-pki/server/internal/nameconstraints"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/pqc"
 )
@@ -63,6 +65,13 @@ type RootSpec struct {
 	// AltKeyType is the ML-DSA parameter set for a hybrid CA's alternative key
 	// (empty defaults to ml-dsa-65). Ignored for non-hybrid CAs.
 	AltKeyType string
+	// NameConstraints, when non-empty, emits an RFC 5280 Name Constraints
+	// extension (2.5.29.30) restricting the identities certificates below this CA
+	// may assert. Typically set on intermediates rather than a root.
+	NameConstraints nameconstraints.Constraints
+	// Policies, when non-empty, emits the certificate-policy family of extensions
+	// (certificatePolicies / policyMappings / policyConstraints) on the CA cert.
+	Policies certpolicy.Policies
 }
 
 // IntermediateSpec describes an intermediate CA to issue under an existing CA.
@@ -77,6 +86,12 @@ type IntermediateSpec struct {
 	// RootSpec. A pqc/hybrid intermediate must be issued under a matching parent.
 	Algorithm  CertAlgorithm
 	AltKeyType string
+	// NameConstraints and Policies configure the intermediate's RFC 5280 Name
+	// Constraints and certificate-policy extensions, as in RootSpec. Constraining
+	// an intermediate is the common enterprise pattern (delegating a scoped subtree
+	// to a subordinate CA).
+	NameConstraints nameconstraints.Constraints
+	Policies        certpolicy.Policies
 }
 
 // PKIXName converts an API/CLI subject into a pkix.Name.
@@ -107,13 +122,19 @@ func (m *Manager) InitRoot(ctx context.Context, spec RootSpec) (*models.CA, erro
 		return nil, err
 	}
 
+	extraExts, err := caPolicyExtensions(spec.NameConstraints, spec.Policies)
+	if err != nil {
+		return nil, err
+	}
+
 	now := time.Now()
 	req := pki.CACertRequest{
-		Subject:    spec.Subject,
-		Serial:     big.NewInt(1), // a root's self-signed certificate is serial 1
-		NotBefore:  now.Add(-clockSkew),
-		NotAfter:   now.Add(spec.Validity),
-		MaxPathLen: spec.MaxPathLen,
+		Subject:         spec.Subject,
+		Serial:          big.NewInt(1), // a root's self-signed certificate is serial 1
+		NotBefore:       now.Add(-clockSkew),
+		NotAfter:        now.Add(spec.Validity),
+		MaxPathLen:      spec.MaxPathLen,
+		ExtraExtensions: extraExts,
 	}
 	keyInfo, der, err := m.buildAndSignCACert(ctx, spec.Algorithm, spec.Label, spec.KeyType, spec.AltKeyType, req, nil, nil)
 	if err != nil {
@@ -168,12 +189,17 @@ func (m *Manager) IssueIntermediate(ctx context.Context, spec IntermediateSpec) 
 	if notAfter.After(parentCert.NotAfter) {
 		notAfter = parentCert.NotAfter
 	}
+	extraExts, err := caPolicyExtensions(spec.NameConstraints, spec.Policies)
+	if err != nil {
+		return nil, err
+	}
 	req := pki.CACertRequest{
-		Subject:    spec.Subject,
-		Serial:     big.NewInt(serial),
-		NotBefore:  now.Add(-clockSkew),
-		NotAfter:   notAfter,
-		MaxPathLen: spec.MaxPathLen,
+		Subject:         spec.Subject,
+		Serial:          big.NewInt(serial),
+		NotBefore:       now.Add(-clockSkew),
+		NotAfter:        notAfter,
+		MaxPathLen:      spec.MaxPathLen,
+		ExtraExtensions: extraExts,
 	}
 	keyInfo, der, err := m.buildAndSignCACert(ctx, spec.Algorithm, spec.Label, spec.KeyType, spec.AltKeyType, req, parent, parentCert)
 	if err != nil {

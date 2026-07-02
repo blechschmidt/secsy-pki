@@ -69,6 +69,21 @@ var (
 		"Pre-issuance CAA findings that forbid issuance, partitioned by reason.",
 		"reason")
 
+	// Pre-issuance Name Constraints checking (RFC 5280 §4.2.1.10 gate).
+	// CertificateNameConstraintChecks counts every run by outcome: "result" is
+	// pass|fail|error (fail = the issuing CA's constraints rejected the leaf,
+	// error = the CA's own extension could not be parsed — fail-closed).
+	// CertificateNameConstraintViolations counts individual forbidding names by
+	// "kind" ("<type>:<reason>", e.g. "dns:not-permitted", "ip:excluded").
+	CertificateNameConstraintChecks = NewCounter(Default,
+		"secsy_certificate_name_constraint_checks_total",
+		"Pre-issuance name-constraint checks, partitioned by outcome (pass|fail|error).",
+		"result")
+	CertificateNameConstraintViolations = NewCounter(Default,
+		"secsy_certificate_name_constraint_violations_total",
+		"Pre-issuance name-constraint violations that forbid issuance, partitioned by kind.",
+		"kind")
+
 	// Revocation-data serving.
 	OCSPRequests = NewCounter(Default,
 		"secsy_ocsp_requests_total",

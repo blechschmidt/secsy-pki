@@ -64,6 +64,10 @@ const (
 	// issuance (fail-closed), ResultSuccess when a permissive-mode check reported
 	// a forbidding record without blocking.
 	ActionCertCAA = "cert.caa"
+	// ActionCertNameConstraint records the pre-issuance Name Constraints gate (RFC
+	// 5280 §4.2.1.10) blocking a leaf whose subject or SAN falls outside the
+	// issuing CA's permitted subtrees or inside an excluded subtree (fail-closed).
+	ActionCertNameConstraint = "cert.nameconstraint"
 	// ActionCertAutoRenew records a certificate reissued automatically by the
 	// expiry monitor (actor "monitor"), ahead of its expiry.
 	ActionCertAutoRenew = "cert.auto_renew"

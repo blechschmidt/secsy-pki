@@ -1,6 +1,11 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
+	"github.com/blechschmidt/secsy-pki/server/internal/nameconstraints"
+)
 
 // DefaultTenantID is the reserved identifier of the built-in tenant. Every
 // deployment always has this tenant; single-organization installs use it
@@ -123,6 +128,13 @@ type CAInitRootRequest struct {
 	Subject      CASubject `json:"subject"`
 	ValidityDays int       `json:"validity_days"`
 	MaxPathLen   *int      `json:"max_path_len,omitempty"` // nil = unconstrained
+	// NameConstraints, when set, emits an RFC 5280 Name Constraints extension
+	// (2.5.29.30) on the root. Roots are usually left unconstrained; scoping is
+	// normally applied to intermediates.
+	NameConstraints *nameconstraints.Config `json:"name_constraints,omitempty"`
+	// Policies, when set, emits the certificate-policy family of extensions on the
+	// root certificate.
+	Policies *certpolicy.PolicyConfig `json:"policies,omitempty"`
 }
 
 // CAIssueIntermediateRequest issues an intermediate CA certificate signed by an
@@ -134,6 +146,12 @@ type CAIssueIntermediateRequest struct {
 	Subject      CASubject `json:"subject"`
 	ValidityDays int       `json:"validity_days"`
 	MaxPathLen   *int      `json:"max_path_len,omitempty"` // nil = unconstrained
+	// NameConstraints scopes the identities certificates below this intermediate
+	// may assert (permitted/excluded DNS, IP, email, URI, and dirName subtrees).
+	NameConstraints *nameconstraints.Config `json:"name_constraints,omitempty"`
+	// Policies emits certificatePolicies / policyMappings / policyConstraints on
+	// the intermediate certificate.
+	Policies *certpolicy.PolicyConfig `json:"policies,omitempty"`
 }
 
 // CertStatus is the lifecycle status of an issued end-entity certificate.

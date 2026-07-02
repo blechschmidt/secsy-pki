@@ -172,6 +172,9 @@ func (m *Manager) RotateIntermediate(ctx context.Context, spec RotateSpec) (*Rot
 		NotBefore:  now.Add(-clockSkew),
 		NotAfter:   notAfter,
 		MaxPathLen: old.MaxPathLen,
+		// Carry the Name Constraints and certificate-policy extensions forward
+		// verbatim so the rotated key remains a drop-in issuer for the same scope.
+		ExtraExtensions: preservedCAExtensions(oldCert),
 	}
 	der, err := pki.CreateCACertificate(parentSigner, parentCert, req)
 	if err != nil {

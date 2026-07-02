@@ -291,6 +291,7 @@ func cmdInitRoot(db *database.DB, mgr *ca.Manager, args []string) error {
 	algorithm := fs.String("algorithm", "classical", "signature scheme: classical | pqc (ML-DSA) | hybrid (classical + ML-DSA); pqc/hybrid require the software key provider")
 	altKeyType := fs.String("alt-key-type", "ml-dsa-65", "ML-DSA parameter set for a hybrid CA's alternative key")
 	subj := addSubjectFlags(fs)
+	cons := addConstraintFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -304,15 +305,22 @@ func cmdInitRoot(db *database.DB, mgr *ca.Manager, args []string) error {
 		return err
 	}
 
+	nc, pol, err := cons.build()
+	if err != nil {
+		return err
+	}
+
 	result, err := mgr.InitRoot(context.Background(), ca.RootSpec{
-		TenantID:   tenantID,
-		Label:      *label,
-		KeyType:    *keyType,
-		Subject:    ca.PKIXName(subj.subject()),
-		Validity:   time.Duration(*validityDays) * 24 * time.Hour,
-		MaxPathLen: pathLenValue(*pathLen),
-		Algorithm:  ca.CertAlgorithm(normalizeAlgorithm(*algorithm)),
-		AltKeyType: *altKeyType,
+		TenantID:        tenantID,
+		Label:           *label,
+		KeyType:         *keyType,
+		Subject:         ca.PKIXName(subj.subject()),
+		Validity:        time.Duration(*validityDays) * 24 * time.Hour,
+		MaxPathLen:      pathLenValue(*pathLen),
+		Algorithm:       ca.CertAlgorithm(normalizeAlgorithm(*algorithm)),
+		AltKeyType:      *altKeyType,
+		NameConstraints: nc,
+		Policies:        pol,
 	})
 	if err != nil {
 		return err
@@ -331,6 +339,7 @@ func cmdIssueIntermediate(db *database.DB, mgr *ca.Manager, args []string) error
 	algorithm := fs.String("algorithm", "classical", "signature scheme: classical | pqc (ML-DSA) | hybrid; must match the parent CA")
 	altKeyType := fs.String("alt-key-type", "ml-dsa-65", "ML-DSA parameter set for a hybrid intermediate's alternative key")
 	subj := addSubjectFlags(fs)
+	cons := addConstraintFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -344,15 +353,22 @@ func cmdIssueIntermediate(db *database.DB, mgr *ca.Manager, args []string) error
 		return err
 	}
 
+	nc, pol, err := cons.build()
+	if err != nil {
+		return err
+	}
+
 	result, err := mgr.IssueIntermediate(context.Background(), ca.IntermediateSpec{
-		ParentID:   parentID,
-		Label:      *label,
-		KeyType:    *keyType,
-		Subject:    ca.PKIXName(subj.subject()),
-		Validity:   time.Duration(*validityDays) * 24 * time.Hour,
-		MaxPathLen: pathLenValue(*pathLen),
-		Algorithm:  ca.CertAlgorithm(normalizeAlgorithm(*algorithm)),
-		AltKeyType: *altKeyType,
+		ParentID:        parentID,
+		Label:           *label,
+		KeyType:         *keyType,
+		Subject:         ca.PKIXName(subj.subject()),
+		Validity:        time.Duration(*validityDays) * 24 * time.Hour,
+		MaxPathLen:      pathLenValue(*pathLen),
+		Algorithm:       ca.CertAlgorithm(normalizeAlgorithm(*algorithm)),
+		AltKeyType:      *altKeyType,
+		NameConstraints: nc,
+		Policies:        pol,
 	})
 	if err != nil {
 		return err

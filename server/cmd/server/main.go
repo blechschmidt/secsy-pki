@@ -20,6 +20,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/acme"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/caa"
 	"github.com/blechschmidt/secsy-pki/server/internal/cmp"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
@@ -185,6 +186,14 @@ func main() {
 					Mode:           mode,
 					Identifier:     identifier,
 					TimeoutSeconds: p.CAA.TimeoutSeconds,
+				}
+			}
+			if len(p.Policies.OIDs) > 0 || len(p.Policies.Mappings) > 0 {
+				prof.Policies = &certpolicy.PolicyConfig{
+					OIDs:     p.Policies.OIDs,
+					CPS:      p.Policies.CPS,
+					Critical: p.Policies.Critical,
+					Mappings: p.Policies.Mappings,
 				}
 			}
 			profiles = append(profiles, prof)

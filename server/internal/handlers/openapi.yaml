@@ -1576,6 +1576,38 @@ components:
         st: { type: string }
         l: { type: string }
 
+    NameConstraintsSubtrees:
+      type: object
+      description: One polarity (permitted or excluded) of RFC 5280 name-constraint subtrees.
+      properties:
+        dns: { type: array, items: { type: string }, description: "DNS subtrees, e.g. internal.example.com (matches subdomains)." }
+        ip: { type: array, items: { type: string }, description: "IP subtrees in CIDR, e.g. 10.0.0.0/8." }
+        email: { type: array, items: { type: string }, description: "rfc822 subtrees: a host, a .domain, or a full mailbox." }
+        uri: { type: array, items: { type: string }, description: "URI host subtrees (domain rules as DNS)." }
+        dir_names: { type: array, items: { type: string }, description: "directoryName subtrees as RFC 4514 DNs, e.g. O=Acme,C=US." }
+
+    NameConstraintsConfig:
+      type: object
+      description: >
+        RFC 5280 Name Constraints (2.5.29.30) applied to a CA certificate,
+        bounding the identities certificates below it may assert. Enforced as a
+        fail-closed pre-issuance gate and by conforming path validators.
+      properties:
+        permitted: { $ref: "#/components/schemas/NameConstraintsSubtrees" }
+        excluded: { $ref: "#/components/schemas/NameConstraintsSubtrees" }
+        critical: { type: boolean, description: "Extension criticality (default true, as RFC 5280 requires)." }
+
+    CertPolicyConfig:
+      type: object
+      description: RFC 5280 certificate-policy family (2.5.29.32/.33/.36) for a CA certificate.
+      properties:
+        oids: { type: array, items: { type: string }, description: "Policy OIDs (dotted, or 'anyPolicy')." }
+        cps: { type: string, description: "CPS URI qualifier applied to every listed policy." }
+        critical: { type: boolean, description: "Mark certificatePolicies critical (rarely needed)." }
+        mappings: { type: array, items: { type: string }, description: "Policy mappings as issuerOID:subjectOID." }
+        require_explicit_policy: { type: integer, description: "policyConstraints requireExplicitPolicy skipCerts." }
+        inhibit_policy_mapping: { type: integer, description: "policyConstraints inhibitPolicyMapping skipCerts." }
+
     CA:
       type: object
       properties:
@@ -1617,6 +1649,8 @@ components:
         subject: { $ref: "#/components/schemas/CASubject" }
         validity_days: { type: integer }
         max_path_len: { type: integer }
+        name_constraints: { $ref: "#/components/schemas/NameConstraintsConfig" }
+        policies: { $ref: "#/components/schemas/CertPolicyConfig" }
 
     Tenant:
       type: object
@@ -1652,6 +1686,8 @@ components:
         subject: { $ref: "#/components/schemas/CASubject" }
         validity_days: { type: integer }
         max_path_len: { type: integer }
+        name_constraints: { $ref: "#/components/schemas/NameConstraintsConfig" }
+        policies: { $ref: "#/components/schemas/CertPolicyConfig" }
 
     Profile:
       type: object

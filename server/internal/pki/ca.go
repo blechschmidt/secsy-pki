@@ -30,6 +30,12 @@ type CACertRequest struct {
 	// this one. A nil value leaves the path length unconstrained. A value of 0
 	// means this CA may only issue end-entity certificates.
 	MaxPathLen *int
+
+	// ExtraExtensions are appended verbatim after the built-in CA extensions. The
+	// CA layer uses this to carry Name Constraints (2.5.29.30), Certificate
+	// Policies (2.5.29.32), Policy Mappings (2.5.29.33), and Policy Constraints
+	// (2.5.29.36) that crypto/x509 cannot emit natively.
+	ExtraExtensions []pkix.Extension
 }
 
 // CreateCACertificate builds and signs an X.509 CA certificate.
@@ -63,6 +69,7 @@ func CreateCACertificate(signer crypto.Signer, parent *x509.Certificate, req CAC
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
+		ExtraExtensions:       req.ExtraExtensions,
 	}
 
 	if req.MaxPathLen != nil {

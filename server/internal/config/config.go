@@ -640,6 +640,23 @@ type ProfileConfig struct {
 	// 8659). Disabled unless caa.mode is "enforce" or "permissive"; see
 	// ProfileCAAConfig.
 	CAA ProfileCAAConfig `yaml:"caa"`
+	// Policies assigns RFC 5280 certificate-policy OIDs (2.5.29.32) to leaves
+	// issued under the profile, optionally with a CPS URI and policy mappings.
+	Policies ProfilePolicyConfig `yaml:"policies"`
+}
+
+// ProfilePolicyConfig is a profile's certificate-policy assignment. When oids is
+// non-empty, every leaf issued under the profile carries a certificatePolicies
+// extension listing those OIDs (each with the optional CPS URI qualifier).
+type ProfilePolicyConfig struct {
+	// OIDs are dotted policy identifiers (or the literal "anyPolicy").
+	OIDs []string `yaml:"oids"`
+	// CPS is an optional CPS-URI qualifier applied to every listed policy.
+	CPS string `yaml:"cps"`
+	// Critical marks the certificatePolicies extension critical (rarely needed).
+	Critical bool `yaml:"critical"`
+	// Mappings are "issuerOID:subjectOID" policy-mapping pairs.
+	Mappings []string `yaml:"mappings"`
 }
 
 // ProfileCAAConfig is a profile's pre-issuance CAA policy (RFC 8659). When

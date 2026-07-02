@@ -7,10 +7,34 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
+	"github.com/blechschmidt/secsy-pki/server/internal/nameconstraints"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 )
+
+// buildCAConstraints translates the optional Name Constraints and
+// certificate-policy request payloads into the built types the CA manager
+// consumes. A nil payload yields a zero-value (empty) result, so callers can pass
+// the result unconditionally.
+func buildCAConstraints(ncCfg *nameconstraints.Config, polCfg *certpolicy.PolicyConfig) (nameconstraints.Constraints, certpolicy.Policies, error) {
+	var nc nameconstraints.Constraints
+	var pol certpolicy.Policies
+	if ncCfg != nil {
+		var err error
+		if nc, err = ncCfg.Build(); err != nil {
+			return nc, pol, err
+		}
+	}
+	if polCfg != nil {
+		var err error
+		if pol, err = polCfg.Build(); err != nil {
+			return nc, pol, err
+		}
+	}
+	return nc, pol, nil
+}
 
 // Default certificate lifetimes when a request omits validity_days.
 const (
@@ -58,14 +82,23 @@ func (a *API) InitRootCA(w http.ResponseWriter, r *http.Request) {
 
 	// Consume pending HSM audit logs to free device buffer space around the
 	// key-generation and signing operations, mirroring the sign paths.
+	nc, pol, err := buildCAConstraints(req.NameConstraints, req.Policies)
+	if err != nil {
+		a.recordEvent(r, audit.ActionCAInitRoot, "", req.Label, audit.ResultError, err.Error())
+		writeError(w, http.StatusBadRequest, "invalid CA constraints/policies: %v", err)
+		return
+	}
+
 	a.consumeHSMAuditLogs("")
 	result, err := mgr.InitRoot(r.Context(), ca.RootSpec{
-		TenantID:   tenantID,
-		Label:      req.Label,
-		KeyType:    req.KeyType,
-		Subject:    ca.PKIXName(req.Subject),
-		Validity:   time.Duration(validityDays) * 24 * time.Hour,
-		MaxPathLen: req.MaxPathLen,
+		TenantID:        tenantID,
+		Label:           req.Label,
+		KeyType:         req.KeyType,
+		Subject:         ca.PKIXName(req.Subject),
+		Validity:        time.Duration(validityDays) * 24 * time.Hour,
+		MaxPathLen:      req.MaxPathLen,
+		NameConstraints: nc,
+		Policies:        pol,
 	})
 	a.consumeHSMAuditLogs("")
 	if err != nil {
@@ -115,14 +148,23 @@ func (a *API) IssueIntermediateCA(w http.ResponseWriter, r *http.Request) {
 
 	mgr := ca.NewManager(a.db, a.keyProvider)
 
+	nc, pol, err := buildCAConstraints(req.NameConstraints, req.Policies)
+	if err != nil {
+		a.recordEvent(r, audit.ActionCAIssueIntermediate, parentID, req.Label, audit.ResultError, err.Error())
+		writeError(w, http.StatusBadRequest, "invalid CA constraints/policies: %v", err)
+		return
+	}
+
 	a.consumeHSMAuditLogs("")
 	result, err := mgr.IssueIntermediate(r.Context(), ca.IntermediateSpec{
-		ParentID:   parentID,
-		Label:      req.Label,
-		KeyType:    req.KeyType,
-		Subject:    ca.PKIXName(req.Subject),
-		Validity:   time.Duration(validityDays) * 24 * time.Hour,
-		MaxPathLen: req.MaxPathLen,
+		ParentID:        parentID,
+		Label:           req.Label,
+		KeyType:         req.KeyType,
+		Subject:         ca.PKIXName(req.Subject),
+		Validity:        time.Duration(validityDays) * 24 * time.Hour,
+		MaxPathLen:      req.MaxPathLen,
+		NameConstraints: nc,
+		Policies:        pol,
 	})
 	a.consumeHSMAuditLogs("")
 	if err != nil {
