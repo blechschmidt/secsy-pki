@@ -122,6 +122,8 @@ func run(args []string) error {
 		return cmdRetireIntermediate(db, mgr, cmdArgs)
 	case "publish-chain":
 		return cmdPublishChain(db, mgr, cmdArgs)
+	case "tsa-key":
+		return cmdTSAKey(db, mgr, provider, cmdArgs)
 	case "backup":
 		return cmdBackup(db, cfg, provider, cmdArgs)
 	case "restore":
@@ -163,6 +165,7 @@ Commands:
   list-rotations      List CAs currently in a key-rotation lineage
   retire-intermediate Retire a superseded intermediate key after the overlap
   publish-chain       Emit the combined overlap chain (AIA/bundle) for a CA
+  tsa-key             Provision an RFC 3161 TSA signing key + certificate
   backup              Export CA metadata + a DR manifest (no private keys)
   restore             Restore/verify CA metadata against the key provider
   audit               Verify the audit hash-chain, or export it for SIEM

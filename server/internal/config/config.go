@@ -1,9 +1,11 @@
 package config
 
 import (
+	"encoding/asn1"
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -31,6 +33,9 @@ type Config struct {
 	// Disabled unless their .enabled is true.
 	SCEP SCEPConfig `yaml:"scep"`
 	EST  ESTConfig  `yaml:"est"`
+	// TSA configures the RFC 3161 Time-Stamp Authority. Disabled unless
+	// tsa.enabled is true.
+	TSA TSAConfig `yaml:"tsa"`
 	// Monitor configures the background certificate-expiry monitor and optional
 	// auto-renewal workflow. Disabled unless monitor.enabled is true.
 	Monitor MonitorConfig `yaml:"monitor"`
@@ -363,6 +368,43 @@ type ESTUserConfig struct {
 	Profile  string `yaml:"profile"`
 }
 
+// TSAConfig configures the RFC 3161 Time-Stamp Authority. When enabled a public
+// /tsa endpoint issues signed time-stamp tokens. The signing key and certificate
+// are provisioned offline with `secsy-ca tsa-key`; the key MUST be RSA.
+type TSAConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Path is the URL the TSA mounts under (default /tsa).
+	Path string `yaml:"path"`
+	// KeyLabel is the provider label of the (RSA) TSA signing key.
+	KeyLabel string `yaml:"key_label"`
+	// CertificateFile is the PEM file holding the TSA signing certificate written
+	// by `secsy-ca tsa-key`. When it contains multiple certificates, the first is
+	// the TSA certificate and the rest form the issuer chain embedded on certReq.
+	CertificateFile string `yaml:"certificate_file"`
+	// CAID / CALabel identify the CA that issued the TSA certificate; its chain is
+	// appended after the TSA certificate when a request sets certReq. Optional when
+	// CertificateFile already carries the full chain.
+	CAID    string `yaml:"ca_id"`
+	CALabel string `yaml:"ca_label"`
+	// PolicyOID is the dotted-decimal TSA policy OID asserted in every token.
+	// Defaults to the built-in example policy when unset.
+	PolicyOID string `yaml:"policy_oid"`
+	// AccuracySeconds / AccuracyMillis / AccuracyMicros bound genTime's deviation
+	// from real time. All zero (the default) omits the accuracy field.
+	AccuracySeconds int `yaml:"accuracy_seconds"`
+	AccuracyMillis  int `yaml:"accuracy_millis"`
+	AccuracyMicros  int `yaml:"accuracy_micros"`
+	// Ordering asserts strict time ordering of tokens sharing this policy.
+	Ordering bool `yaml:"ordering"`
+	// SignatureDigest is the CMS signature hash (sha256|sha384|sha512; default sha256).
+	SignatureDigest string `yaml:"signature_digest"`
+	// AcceptedHashes restricts message-imprint hash algorithms (default
+	// sha256,sha384,sha512). SHA-1 must be listed explicitly to be accepted.
+	AcceptedHashes []string `yaml:"accepted_hashes"`
+	// IncludeTSAName embeds the signing certificate subject as the tsa GeneralName.
+	IncludeTSAName bool `yaml:"include_tsa_name"`
+}
+
 // RBACConfig maps OIDC subjects and group IDs to role names. Recognized roles
 // are "admin", "issuer", and "auditor"; unknown names are rejected at load so a
 // typo cannot silently grant or deny access.
@@ -692,7 +734,49 @@ func (c *Config) validateEnrollment() error {
 			return fmt.Errorf("est.enabled is true but no est.users and no est.allow_tls_client_reenroll are configured")
 		}
 	}
+	if c.TSA.Enabled {
+		if c.TSA.KeyLabel == "" {
+			return fmt.Errorf("tsa.enabled is true but tsa.key_label is not set")
+		}
+		if c.TSA.CertificateFile == "" {
+			return fmt.Errorf("tsa.enabled is true but tsa.certificate_file is not set (run: secsy-ca tsa-key)")
+		}
+		if c.TSA.PolicyOID != "" {
+			if _, err := parseOID(c.TSA.PolicyOID); err != nil {
+				return fmt.Errorf("tsa.policy_oid %q: %w", c.TSA.PolicyOID, err)
+			}
+		}
+		switch c.TSA.SignatureDigest {
+		case "", "sha256", "sha384", "sha512":
+		default:
+			return fmt.Errorf("tsa.signature_digest %q is invalid (want sha256, sha384, or sha512)", c.TSA.SignatureDigest)
+		}
+		for _, h := range c.TSA.AcceptedHashes {
+			switch h {
+			case "sha1", "sha256", "sha384", "sha512":
+			default:
+				return fmt.Errorf("tsa.accepted_hashes: %q is invalid (want sha1, sha256, sha384, or sha512)", h)
+			}
+		}
+	}
 	return nil
+}
+
+// parseOID parses a dotted-decimal OID string into an asn1.ObjectIdentifier.
+func parseOID(s string) (asn1.ObjectIdentifier, error) {
+	parts := strings.Split(s, ".")
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("an OID needs at least two arcs")
+	}
+	oid := make(asn1.ObjectIdentifier, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("invalid arc %q", p)
+		}
+		oid = append(oid, n)
+	}
+	return oid, nil
 }
 
 // validateMonitor applies defaults and sanity-checks the expiry-monitor config

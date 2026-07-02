@@ -2,12 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/asn1"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,10 +29,12 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/monitor"
+	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/ratelimit"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 	"github.com/blechschmidt/secsy-pki/server/internal/scep"
 	"github.com/blechschmidt/secsy-pki/server/internal/siem"
+	"github.com/blechschmidt/secsy-pki/server/internal/tsa"
 )
 
 func main() {
@@ -274,6 +281,21 @@ func main() {
 		est.New(db, provider, estCfg).Register(mux)
 	}
 
+	// RFC 3161 Time-Stamp Authority. The /tsa endpoint is anonymous and public
+	// (like OCSP/CRL), so it mounts outside the OIDC middleware and is metered by
+	// the rate-limit + HSM-concurrency guard below.
+	if cfg.TSA.Enabled {
+		tsaCfg, err := buildTSAConfig(db, cfg)
+		if err != nil {
+			log.Fatalf("TSA configuration error: %v", err)
+		}
+		authority, err := tsa.New(db, provider, tsaCfg)
+		if err != nil {
+			log.Fatalf("TSA configuration error: %v", err)
+		}
+		authority.Register(mux)
+	}
+
 	// Serve the legacy disk-based SPA from web/static when present. The Task 21
 	// operator console is served separately from an embedded (go:embed) bundle
 	// under /console/ by RegisterRoutes, so it ships in the binary regardless.
@@ -493,6 +515,141 @@ func buildESTConfig(db *database.DB, cfg *config.Config) (est.Config, error) {
 	}, nil
 }
 
+// buildTSAConfig assembles the tsa.Config from the application config. It loads
+// the TSA signing certificate (and any inline chain) from the configured PEM
+// file, appending the issuing CA's chain from the database when a CA is named
+// and the file carries only the leaf. It parses the policy OID, signature
+// digest, and accepted message-imprint hashes.
+func buildTSAConfig(db *database.DB, cfg *config.Config) (tsa.Config, error) {
+	certPEM, err := os.ReadFile(cfg.TSA.CertificateFile)
+	if err != nil {
+		return tsa.Config{}, fmt.Errorf("reading tsa.certificate_file %q: %w", cfg.TSA.CertificateFile, err)
+	}
+	chain, err := parseCertChainPEM(certPEM)
+	if err != nil {
+		return tsa.Config{}, fmt.Errorf("parsing tsa.certificate_file: %w", err)
+	}
+	if len(chain) == 0 {
+		return tsa.Config{}, fmt.Errorf("tsa.certificate_file %q contains no certificates", cfg.TSA.CertificateFile)
+	}
+
+	// If the file holds only the TSA leaf, append the issuing CA's chain from the
+	// database so certReq responses carry a verifiable path.
+	if len(chain) == 1 && (cfg.TSA.CAID != "" || cfg.TSA.CALabel != "") {
+		caID, err := resolveCAID(db, cfg.TSA.CAID, cfg.TSA.CALabel, "tsa")
+		if err != nil {
+			return tsa.Config{}, err
+		}
+		issuers, err := loadCAChain(db, caID)
+		if err != nil {
+			return tsa.Config{}, err
+		}
+		chain = append(chain, issuers...)
+	}
+
+	tc := tsa.Config{
+		Path:            cfg.TSA.Path,
+		KeyLabel:        cfg.TSA.KeyLabel,
+		Certificate:     chain[0],
+		Chain:           chain,
+		Accuracy:        tsa.Accuracy{Seconds: cfg.TSA.AccuracySeconds, Millis: cfg.TSA.AccuracyMillis, Micros: cfg.TSA.AccuracyMicros},
+		Ordering:        cfg.TSA.Ordering,
+		SignatureDigest: hashFromName(cfg.TSA.SignatureDigest),
+		IncludeTSAName:  cfg.TSA.IncludeTSAName,
+	}
+	if cfg.TSA.PolicyOID != "" {
+		oid, err := parseDottedOID(cfg.TSA.PolicyOID)
+		if err != nil {
+			return tsa.Config{}, fmt.Errorf("tsa.policy_oid: %w", err)
+		}
+		tc.PolicyOID = oid
+	}
+	for _, name := range cfg.TSA.AcceptedHashes {
+		if h := hashFromName(name); h != 0 {
+			tc.AcceptedHashes = append(tc.AcceptedHashes, h)
+		}
+	}
+	return tc, nil
+}
+
+// loadCAChain returns the certificate chain for caID: the CA certificate
+// followed by its parents up to the root.
+func loadCAChain(db *database.DB, caID string) ([]*x509.Certificate, error) {
+	var chain []*x509.Certificate
+	id := caID
+	for id != "" {
+		m, err := db.GetCA(id)
+		if err != nil {
+			return nil, fmt.Errorf("loading CA %q: %w", id, err)
+		}
+		if m == nil || m.Certificate == "" {
+			break
+		}
+		cert, err := pki.ParseCertificatePEM([]byte(m.Certificate))
+		if err != nil {
+			return nil, fmt.Errorf("parsing CA %q certificate: %w", id, err)
+		}
+		chain = append(chain, cert)
+		if m.ParentID == nil {
+			break
+		}
+		id = *m.ParentID
+	}
+	return chain, nil
+}
+
+// parseCertChainPEM parses one or more concatenated PEM CERTIFICATE blocks.
+func parseCertChainPEM(pemBytes []byte) ([]*x509.Certificate, error) {
+	var certs []*x509.Certificate
+	rest := pemBytes
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		certs = append(certs, cert)
+	}
+	return certs, nil
+}
+
+// hashFromName maps a config hash name to a crypto.Hash (0 when empty/unknown).
+func hashFromName(name string) crypto.Hash {
+	switch name {
+	case "sha1":
+		return crypto.SHA1
+	case "sha256":
+		return crypto.SHA256
+	case "sha384":
+		return crypto.SHA384
+	case "sha512":
+		return crypto.SHA512
+	default:
+		return 0
+	}
+}
+
+// parseDottedOID parses a dotted-decimal OID into an asn1.ObjectIdentifier.
+func parseDottedOID(s string) (asn1.ObjectIdentifier, error) {
+	parts := strings.Split(s, ".")
+	oid := make(asn1.ObjectIdentifier, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("invalid arc %q", p)
+		}
+		oid = append(oid, n)
+	}
+	return oid, nil
+}
+
 // buildAuditExporter translates the audit-export config into a siem.Exporter
 // bound to the database (as both the event source and the durable cursor store).
 func buildAuditExporter(db *database.DB, cfg *config.Config) (*siem.Exporter, error) {
@@ -643,6 +800,9 @@ func buildRateLimit(cfg *config.Config) *ratelimit.Middleware {
 	}
 	if cfg.SCEP.Enabled {
 		pref.SCEP = orDefaultPath(cfg.SCEP.DirectoryPath, "/scep")
+	}
+	if cfg.TSA.Enabled {
+		pref.TSA = orDefaultPath(cfg.TSA.Path, "/tsa")
 	}
 
 	return ratelimit.New(ratelimit.Options{Limiter: limiter, Guard: guard, Prefixes: pref})

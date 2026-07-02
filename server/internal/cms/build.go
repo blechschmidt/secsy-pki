@@ -55,8 +55,13 @@ type SignedDataOpts struct {
 	// Digest selects the message-digest / signature hash (default: SHA-256).
 	Digest crypto.Hash
 	// Certificates are embedded in the message (should include SignerCert and any
-	// chain the recipient needs). When empty, SignerCert alone is embedded.
+	// chain the recipient needs). When empty, SignerCert alone is embedded unless
+	// OmitCertificates is set.
 	Certificates []*x509.Certificate
+	// OmitCertificates suppresses the embedded CertificateSet entirely, even the
+	// signer certificate. RFC 3161 §2.4.1 requires this when a TimeStampReq did
+	// not request the TSA certificate (certReq = FALSE).
+	OmitCertificates bool
 	// ExtraAttrs are additional authenticated attributes (e.g. the SCEP
 	// transaction attributes) added alongside the mandatory contentType and
 	// messageDigest.
@@ -122,7 +127,7 @@ func BuildSignedData(opts SignedDataOpts) ([]byte, error) {
 	}
 
 	certs := opts.Certificates
-	if len(certs) == 0 {
+	if len(certs) == 0 && !opts.OmitCertificates {
 		certs = []*x509.Certificate{opts.SignerCert}
 	}
 
@@ -228,8 +233,13 @@ func wrapContentInfo(contentType asn1.ObjectIdentifier, inner interface{}) ([]by
 }
 
 // marshalCerts concatenates certificate DER and wraps it in the [0] IMPLICIT
-// CertificateSet used by SignedData.
+// CertificateSet used by SignedData. With no certificates it returns the zero
+// RawValue so the optional field is omitted entirely (an empty [0] set would
+// otherwise be transmitted, which RFC 3161 forbids for a certReq=FALSE token).
 func marshalCerts(certs []*x509.Certificate) asn1.RawValue {
+	if len(certs) == 0 {
+		return asn1.RawValue{}
+	}
 	var buf []byte
 	for _, c := range certs {
 		buf = append(buf, c.Raw...)

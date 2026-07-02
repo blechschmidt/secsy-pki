@@ -99,6 +99,11 @@ const (
 	ActionESTEnroll       = "est.simpleenroll"
 	ActionESTReenroll     = "est.simplereenroll"
 	ActionESTServerKeyGen = "est.serverkeygen"
+
+	// RFC 3161 Time-Stamp Authority. A timestamp is issued anonymously (the
+	// public /tsa endpoint), so the actor is a fixed pseudo-principal and the
+	// target is the issued token serial.
+	ActionTSATimestamp = "tsa.timestamp"
 )
 
 // Event is a single entry in the tamper-evident audit log. Seq is a

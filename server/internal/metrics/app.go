@@ -63,6 +63,13 @@ var (
 		"CRL distribution requests, partitioned by result.",
 		"result")
 
+	// RFC 3161 time-stamping. "result" is granted|rejected|error; the token is
+	// signed on the HSM, so this tracks TSA demand and rejection rates.
+	TimestampRequests = NewCounter(Default,
+		"secsy_timestamp_requests_total",
+		"RFC 3161 time-stamp requests, partitioned by result (granted|rejected|error).",
+		"result")
+
 	// HSM / key-provider operations. The "operation" label is sign|decrypt|
 	// generate|find|public_key; "result" is success|error.
 	HSMOperations = NewCounter(Default,
