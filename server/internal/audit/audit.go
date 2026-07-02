@@ -110,6 +110,11 @@ const (
 	// overlap drains. No private key material is ever handled.
 	ActionCARotate = "ca.rotate"
 	ActionCARetire = "ca.retire"
+	// ActionCACrossSign records an issuer CA cross-signing a subject public key
+	// (Task 47): a second certificate for the same subordinate key, enabling
+	// bridge-CA and root-transition alternate chains. No private key material is
+	// handled; the subject key is certified, not imported.
+	ActionCACrossSign = "ca.cross_sign"
 	// ACME (RFC 8555) protocol operations. The actor for these is the ACME
 	// account ("acme:<account-id>") rather than an OIDC/root principal, since
 	// ACME clients authenticate with their own account keys.

@@ -163,6 +163,88 @@ const (
 	CertStatusExpired CertStatus = "expired"
 )
 
+// Cross-sign lifecycle states.
+const (
+	// CrossSignStatusActive means the cross-signed certificate is published and
+	// its alternate chain may be served.
+	CrossSignStatusActive = "active"
+	// CrossSignStatusRevoked means the cross-signed certificate has been revoked
+	// under its issuer; its alternate chain should no longer be served.
+	CrossSignStatusRevoked = "revoked"
+)
+
+// Cross-sign subject sources.
+const (
+	// CrossSignSourceLocalCA cross-signs a CA that already exists in this
+	// deployment, identified by its CA id/label.
+	CrossSignSourceLocalCA = "local-ca"
+	// CrossSignSourceCertificate cross-signs an externally supplied certificate
+	// (its subject DN and public key are reproduced).
+	CrossSignSourceCertificate = "certificate"
+	// CrossSignSourceCSR cross-signs an externally supplied certificate signing
+	// request.
+	CrossSignSourceCSR = "csr"
+)
+
+// CrossSign records that an issuer CA (using its HSM-backed signing key) has
+// signed a certificate for a subject public key that is (or may be) also
+// certified by a different issuer. Cross-signing enables bridge-CA topologies
+// and root-transition trust: the same subordinate key holds multiple issued
+// certificates, so a relying party can be served whichever alternate chain it
+// trusts. Cross-sign records are tenant-scoped through their issuer CA.
+type CrossSign struct {
+	ID string `json:"id" db:"id"`
+	// TenantID is the owning tenant, inherited from the issuer CA. A cross-sign
+	// never crosses the tenant isolation boundary.
+	TenantID string `json:"tenant_id" db:"tenant_id"`
+	// IssuerCAID is the local CA whose HSM-backed key signed the cross-certificate.
+	IssuerCAID string `json:"issuer_ca_id" db:"issuer_ca_id"`
+	// SubjectCAID is the local CA that was cross-signed, when the subject key
+	// belongs to a CA in this deployment. It is nil for externally imported
+	// subjects (a foreign certificate or CSR).
+	SubjectCAID *string `json:"subject_ca_id,omitempty" db:"subject_ca_id"`
+	// SubjectKeyID is the hex-encoded Subject Key Identifier of the cross-signed
+	// public key. It groups every certificate — native and cross-signed — that
+	// certifies the same subject key, and is the join key for alternate-chain
+	// selection.
+	SubjectKeyID string `json:"subject_key_id" db:"subject_key_id"`
+	// Subject is the cross-signed certificate's subject DN (string form).
+	Subject string `json:"subject" db:"subject"`
+	// Serial is the cross-signed certificate's serial in the issuer's namespace
+	// (decimal string).
+	Serial string `json:"serial" db:"serial"`
+	// Certificate is the PEM-encoded cross-signed certificate.
+	Certificate string    `json:"certificate" db:"certificate"`
+	NotBefore   time.Time `json:"not_before" db:"not_before"`
+	NotAfter    time.Time `json:"not_after" db:"not_after"`
+	// Source records how the subject was supplied (see CrossSignSource*).
+	Source string `json:"source" db:"source"`
+	// Status is the cross-sign lifecycle state (see CrossSignStatus*).
+	Status      string    `json:"status" db:"status"`
+	RequestedBy string    `json:"requested_by,omitempty" db:"requested_by"`
+	CreatedAt   time.Time `json:"created_at" db:"created_at"`
+}
+
+// CACrossSignRequest asks an issuer CA to cross-sign a subject public key. Exactly
+// one of SubjectCAID, CertificatePEM, or CSRPEM must be provided. The issuer CA is
+// identified by the request path ({id}); its HSM-backed key performs the signing.
+type CACrossSignRequest struct {
+	// SubjectCAID cross-signs a CA that exists in this deployment (by id or label).
+	SubjectCAID string `json:"subject_ca_id,omitempty"`
+	// CertificatePEM cross-signs an externally supplied certificate (PEM).
+	CertificatePEM string `json:"certificate_pem,omitempty"`
+	// CSRPEM cross-signs an externally supplied CSR (PEM).
+	CSRPEM string `json:"csr_pem,omitempty"`
+	// ValidityDays bounds the cross-signed certificate's lifetime. When omitted for
+	// a certificate/local-CA subject the subject's own validity span is reused;
+	// for a CSR subject it is required. The lifetime is always clamped to the
+	// issuer's own expiry.
+	ValidityDays int `json:"validity_days,omitempty"`
+	// MaxPathLen overrides the cross-signed certificate's path-length constraint.
+	// When omitted the subject certificate's constraint is preserved.
+	MaxPathLen *int `json:"max_path_len,omitempty"`
+}
+
 // CTStatus is the Certificate Transparency outcome recorded for an issued
 // certificate.
 type CTStatus string

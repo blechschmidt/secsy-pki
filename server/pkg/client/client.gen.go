@@ -51,6 +51,19 @@ const (
 	CertItemSeverityWarning  CertItemSeverity = "warning"
 )
 
+// Defines values for CrossSignSource.
+const (
+	Certificate CrossSignSource = "certificate"
+	Csr         CrossSignSource = "csr"
+	LocalCa     CrossSignSource = "local-ca"
+)
+
+// Defines values for CrossSignStatus.
+const (
+	CrossSignStatusActive  CrossSignStatus = "active"
+	CrossSignStatusRevoked CrossSignStatus = "revoked"
+)
+
 // Defines values for EventResult.
 const (
 	EventResultDenied  EventResult = "denied"
@@ -112,8 +125,8 @@ const (
 
 // Defines values for RevokeResultStatus.
 const (
-	AlreadyRevoked RevokeResultStatus = "already-revoked"
-	Revoked        RevokeResultStatus = "revoked"
+	RevokeResultStatusAlreadyRevoked RevokeResultStatus = "already-revoked"
+	RevokeResultStatusRevoked        RevokeResultStatus = "revoked"
 )
 
 // Defines values for SetDefaultRestrictionSetRequestType.
@@ -213,6 +226,20 @@ type AddGroupMemberRequest struct {
 	UserSub string `json:"user_sub"`
 }
 
+// AlternateChain One publishable trust path for a subject CA.
+type AlternateChain struct {
+	// CrossSignId Empty for the native (parent-lineage) chain.
+	CrossSignId *string `json:"cross_sign_id,omitempty"`
+	IssuerCaId  *string `json:"issuer_ca_id,omitempty"`
+	IssuerLabel *string `json:"issuer_label,omitempty"`
+
+	// Native Whether this is the subject's own parent-lineage chain.
+	Native *bool `json:"native,omitempty"`
+
+	// Pem PEM chain bundle
+	Pem *string `json:"pem,omitempty"`
+}
+
 // AuditLogEntry defines model for AuditLogEntry.
 type AuditLogEntry struct {
 	CaId             *string                  `json:"ca_id,omitempty"`
@@ -275,6 +302,24 @@ type CA struct {
 
 	// TenantId Owning tenant (isolation boundary).
 	TenantId *string `json:"tenant_id,omitempty"`
+}
+
+// CACrossSignRequest A cross-sign request. Provide exactly one subject source: subject_ca_id (a CA in this deployment), certificate_pem (an external certificate), or csr_pem (an external CSR).
+type CACrossSignRequest struct {
+	// CertificatePem PEM certificate to cross-sign (external subject).
+	CertificatePem *string `json:"certificate_pem,omitempty"`
+
+	// CsrPem PEM CSR to cross-sign (external subject).
+	CsrPem *string `json:"csr_pem,omitempty"`
+
+	// MaxPathLen Path-length override; omitted preserves the subject's constraint.
+	MaxPathLen *int `json:"max_path_len,omitempty"`
+
+	// SubjectCaId Local CA id (or label) to cross-sign.
+	SubjectCaId *string `json:"subject_ca_id,omitempty"`
+
+	// ValidityDays Cross-signed certificate validity. Omitted reuses a certificate/local subject's own span (required for a CSR subject). Always clamped to the issuer's expiry.
+	ValidityDays *int `json:"validity_days,omitempty"`
 }
 
 // CAInitRootRequest defines model for CAInitRootRequest.
@@ -425,6 +470,45 @@ type CreateTenantRequest struct {
 
 	// Slug URL/CLI-friendly unique identifier ([a-z0-9-]).
 	Slug string `json:"slug"`
+}
+
+// CrossSign A persisted cross-signing relationship.
+type CrossSign struct {
+	// Certificate PEM cross-signed certificate
+	Certificate *string          `json:"certificate,omitempty"`
+	CreatedAt   *string          `json:"created_at,omitempty"`
+	Id          *string          `json:"id,omitempty"`
+	IssuerCaId  *string          `json:"issuer_ca_id,omitempty"`
+	NotAfter    *string          `json:"not_after,omitempty"`
+	NotBefore   *string          `json:"not_before,omitempty"`
+	RequestedBy *string          `json:"requested_by,omitempty"`
+	Serial      *string          `json:"serial,omitempty"`
+	Source      *CrossSignSource `json:"source,omitempty"`
+	Status      *CrossSignStatus `json:"status,omitempty"`
+	Subject     *string          `json:"subject,omitempty"`
+	SubjectCaId *string          `json:"subject_ca_id"`
+
+	// SubjectKeyId Hex Subject Key Identifier grouping every certificate for this subject key.
+	SubjectKeyId *string `json:"subject_key_id,omitempty"`
+	TenantId     *string `json:"tenant_id,omitempty"`
+}
+
+// CrossSignSource defines model for CrossSign.Source.
+type CrossSignSource string
+
+// CrossSignStatus defines model for CrossSign.Status.
+type CrossSignStatus string
+
+// CrossSignResult defines model for CrossSignResult.
+type CrossSignResult struct {
+	// CertificatePem PEM cross-signed certificate
+	CertificatePem *string `json:"certificate_pem,omitempty"`
+
+	// ChainPem Alternate chain (cross-certificate + issuer chain to its anchor).
+	ChainPem *string `json:"chain_pem,omitempty"`
+
+	// CrossSign A persisted cross-signing relationship.
+	CrossSign *CrossSign `json:"cross_sign,omitempty"`
 }
 
 // DecryptRequest defines model for DecryptRequest.
@@ -1073,6 +1157,9 @@ type EncryptSecretParams struct {
 // InitRootCAJSONRequestBody defines body for InitRootCA for application/json ContentType.
 type InitRootCAJSONRequestBody = CAInitRootRequest
 
+// CreateCrossSignJSONRequestBody defines body for CreateCrossSign for application/json ContentType.
+type CreateCrossSignJSONRequestBody = CACrossSignRequest
+
 // IssueCertificateJSONRequestBody defines body for IssueCertificate for application/json ContentType.
 type IssueCertificateJSONRequestBody = IssueCertRequest
 
@@ -1244,6 +1331,9 @@ type ClientInterface interface {
 	// GetChain request
 	GetChain(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetAlternateChains request
+	GetAlternateChains(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetCRL request
 	GetCRL(ctx context.Context, id CAId, params *GetCRLParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -1255,6 +1345,17 @@ type ClientInterface interface {
 
 	// GetShardDeltaCRL request
 	GetShardDeltaCRL(ctx context.Context, id CAId, shard int, params *GetShardDeltaCRLParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListCrossSigns request
+	ListCrossSigns(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateCrossSignWithBody request with any body
+	CreateCrossSignWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreateCrossSign(ctx context.Context, id CAId, body CreateCrossSignJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetCrossSignChain request
+	GetCrossSignChain(ctx context.Context, id CAId, csid string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// IssueCertificateWithBody request with any body
 	IssueCertificateWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1619,6 +1720,18 @@ func (c *Client) GetChain(ctx context.Context, id CAId, reqEditors ...RequestEdi
 	return c.Client.Do(req)
 }
 
+func (c *Client) GetAlternateChains(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetAlternateChainsRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) GetCRL(ctx context.Context, id CAId, params *GetCRLParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetCRLRequest(c.Server, id, params)
 	if err != nil {
@@ -1657,6 +1770,54 @@ func (c *Client) GetShardCRL(ctx context.Context, id CAId, shard int, params *Ge
 
 func (c *Client) GetShardDeltaCRL(ctx context.Context, id CAId, shard int, params *GetShardDeltaCRLParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetShardDeltaCRLRequest(c.Server, id, shard, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListCrossSigns(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListCrossSignsRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateCrossSignWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateCrossSignRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateCrossSign(ctx context.Context, id CAId, body CreateCrossSignJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateCrossSignRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetCrossSignChain(ctx context.Context, id CAId, csid string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetCrossSignChainRequest(c.Server, id, csid)
 	if err != nil {
 		return nil, err
 	}
@@ -3172,6 +3333,40 @@ func NewGetChainRequest(server string, id CAId) (*http.Request, error) {
 	return req, nil
 }
 
+// NewGetAlternateChainsRequest generates requests for GetAlternateChains
+func NewGetAlternateChainsRequest(server string, id CAId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/chains", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewGetCRLRequest generates requests for GetCRL
 func NewGetCRLRequest(server string, id CAId, params *GetCRLParams) (*http.Request, error) {
 	var err error
@@ -3400,6 +3595,128 @@ func NewGetShardDeltaCRLRequest(server string, id CAId, shard int, params *GetSh
 		}
 
 		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewListCrossSignsRequest generates requests for ListCrossSigns
+func NewListCrossSignsRequest(server string, id CAId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/cross-signs", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewCreateCrossSignRequest calls the generic CreateCrossSign builder with application/json body
+func NewCreateCrossSignRequest(server string, id CAId, body CreateCrossSignJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateCrossSignRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewCreateCrossSignRequestWithBody generates requests for CreateCrossSign with any type of body
+func NewCreateCrossSignRequestWithBody(server string, id CAId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/cross-signs", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGetCrossSignChainRequest generates requests for GetCrossSignChain
+func NewGetCrossSignChainRequest(server string, id CAId, csid string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "csid", runtime.ParamLocationPath, csid)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/cross-signs/%s/chain", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
 	}
 
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
@@ -5908,6 +6225,9 @@ type ClientWithResponsesInterface interface {
 	// GetChainWithResponse request
 	GetChainWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetChainResponse, error)
 
+	// GetAlternateChainsWithResponse request
+	GetAlternateChainsWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetAlternateChainsResponse, error)
+
 	// GetCRLWithResponse request
 	GetCRLWithResponse(ctx context.Context, id CAId, params *GetCRLParams, reqEditors ...RequestEditorFn) (*GetCRLResponse, error)
 
@@ -5919,6 +6239,17 @@ type ClientWithResponsesInterface interface {
 
 	// GetShardDeltaCRLWithResponse request
 	GetShardDeltaCRLWithResponse(ctx context.Context, id CAId, shard int, params *GetShardDeltaCRLParams, reqEditors ...RequestEditorFn) (*GetShardDeltaCRLResponse, error)
+
+	// ListCrossSignsWithResponse request
+	ListCrossSignsWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*ListCrossSignsResponse, error)
+
+	// CreateCrossSignWithBodyWithResponse request with any body
+	CreateCrossSignWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateCrossSignResponse, error)
+
+	CreateCrossSignWithResponse(ctx context.Context, id CAId, body CreateCrossSignJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateCrossSignResponse, error)
+
+	// GetCrossSignChainWithResponse request
+	GetCrossSignChainWithResponse(ctx context.Context, id CAId, csid string, reqEditors ...RequestEditorFn) (*GetCrossSignChainResponse, error)
 
 	// IssueCertificateWithBodyWithResponse request with any body
 	IssueCertificateWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*IssueCertificateResponse, error)
@@ -6371,6 +6702,30 @@ func (r GetChainResponse) StatusCode() int {
 	return 0
 }
 
+type GetAlternateChainsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *struct {
+		Chains *[]AlternateChain `json:"chains,omitempty"`
+	}
+}
+
+// Status returns HTTPResponse.Status
+func (r GetAlternateChainsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetAlternateChainsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type GetCRLResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -6449,6 +6804,77 @@ func (r GetShardDeltaCRLResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetShardDeltaCRLResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListCrossSignsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *struct {
+		CrossSigns *[]CrossSign `json:"cross_signs,omitempty"`
+	}
+	JSON403 *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListCrossSignsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListCrossSignsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type CreateCrossSignResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *CrossSignResult
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateCrossSignResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateCrossSignResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetCrossSignChainResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetCrossSignChainResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetCrossSignChainResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -7965,6 +8391,15 @@ func (c *ClientWithResponses) GetChainWithResponse(ctx context.Context, id CAId,
 	return ParseGetChainResponse(rsp)
 }
 
+// GetAlternateChainsWithResponse request returning *GetAlternateChainsResponse
+func (c *ClientWithResponses) GetAlternateChainsWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetAlternateChainsResponse, error) {
+	rsp, err := c.GetAlternateChains(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetAlternateChainsResponse(rsp)
+}
+
 // GetCRLWithResponse request returning *GetCRLResponse
 func (c *ClientWithResponses) GetCRLWithResponse(ctx context.Context, id CAId, params *GetCRLParams, reqEditors ...RequestEditorFn) (*GetCRLResponse, error) {
 	rsp, err := c.GetCRL(ctx, id, params, reqEditors...)
@@ -7999,6 +8434,41 @@ func (c *ClientWithResponses) GetShardDeltaCRLWithResponse(ctx context.Context, 
 		return nil, err
 	}
 	return ParseGetShardDeltaCRLResponse(rsp)
+}
+
+// ListCrossSignsWithResponse request returning *ListCrossSignsResponse
+func (c *ClientWithResponses) ListCrossSignsWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*ListCrossSignsResponse, error) {
+	rsp, err := c.ListCrossSigns(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListCrossSignsResponse(rsp)
+}
+
+// CreateCrossSignWithBodyWithResponse request with arbitrary body returning *CreateCrossSignResponse
+func (c *ClientWithResponses) CreateCrossSignWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateCrossSignResponse, error) {
+	rsp, err := c.CreateCrossSignWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateCrossSignResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreateCrossSignWithResponse(ctx context.Context, id CAId, body CreateCrossSignJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateCrossSignResponse, error) {
+	rsp, err := c.CreateCrossSign(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateCrossSignResponse(rsp)
+}
+
+// GetCrossSignChainWithResponse request returning *GetCrossSignChainResponse
+func (c *ClientWithResponses) GetCrossSignChainWithResponse(ctx context.Context, id CAId, csid string, reqEditors ...RequestEditorFn) (*GetCrossSignChainResponse, error) {
+	rsp, err := c.GetCrossSignChain(ctx, id, csid, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetCrossSignChainResponse(rsp)
 }
 
 // IssueCertificateWithBodyWithResponse request with arbitrary body returning *IssueCertificateResponse
@@ -8989,6 +9459,34 @@ func ParseGetChainResponse(rsp *http.Response) (*GetChainResponse, error) {
 	return response, nil
 }
 
+// ParseGetAlternateChainsResponse parses an HTTP response from a GetAlternateChainsWithResponse call
+func ParseGetAlternateChainsResponse(rsp *http.Response) (*GetAlternateChainsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetAlternateChainsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest struct {
+			Chains *[]AlternateChain `json:"chains,omitempty"`
+		}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseGetCRLResponse parses an HTTP response from a GetCRLWithResponse call
 func ParseGetCRLResponse(rsp *http.Response) (*GetCRLResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -9048,6 +9546,107 @@ func ParseGetShardDeltaCRLResponse(rsp *http.Response) (*GetShardDeltaCRLRespons
 	response := &GetShardDeltaCRLResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParseListCrossSignsResponse parses an HTTP response from a ListCrossSignsWithResponse call
+func ParseListCrossSignsResponse(rsp *http.Response) (*ListCrossSignsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListCrossSignsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest struct {
+			CrossSigns *[]CrossSign `json:"cross_signs,omitempty"`
+		}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateCrossSignResponse parses an HTTP response from a CreateCrossSignWithResponse call
+func ParseCreateCrossSignResponse(rsp *http.Response) (*CreateCrossSignResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateCrossSignResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest CrossSignResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetCrossSignChainResponse parses an HTTP response from a GetCrossSignChainWithResponse call
+func ParseGetCrossSignChainResponse(rsp *http.Response) (*GetCrossSignChainResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetCrossSignChainResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
 	}
 
 	return response, nil

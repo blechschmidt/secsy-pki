@@ -318,6 +318,32 @@ func (db *DB) migrate() error {
 			der %s NOT NULL,
 			PRIMARY KEY (ca_id, scope, kind)
 		)`, blob),
+		// Cross-signing relationships (Task 47): a certificate an issuer CA has
+		// signed for a subject public key that another issuer may also certify.
+		// subject_ca_id is set only for locally held subjects; subject_key_id (the
+		// hex SKI) groups every certificate for the same subject key and is the join
+		// for alternate-chain selection. The record is tenant-scoped through its
+		// issuer CA; deleting either the issuer or a local subject CA cascades.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS cross_signs (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'default' REFERENCES tenants(id),
+			issuer_ca_id TEXT NOT NULL REFERENCES cas(id) ON DELETE CASCADE,
+			subject_ca_id TEXT REFERENCES cas(id) ON DELETE CASCADE,
+			subject_key_id TEXT NOT NULL,
+			subject TEXT NOT NULL,
+			serial TEXT NOT NULL,
+			certificate TEXT NOT NULL,
+			not_before TIMESTAMP NOT NULL,
+			not_after TIMESTAMP NOT NULL,
+			source TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			requested_by TEXT,
+			created_at %s,
+			UNIQUE(issuer_ca_id, serial)
+		)`, currentTimestamp),
+		`CREATE INDEX IF NOT EXISTS idx_cross_signs_subject_key ON cross_signs(subject_key_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_cross_signs_subject_ca ON cross_signs(subject_ca_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_cross_signs_issuer ON cross_signs(issuer_ca_id)`,
 		`CREATE TABLE IF NOT EXISTS groups_ (
 			id TEXT PRIMARY KEY,
 			tenant_id TEXT NOT NULL DEFAULT 'default',
@@ -903,6 +929,110 @@ func (db *DB) GetChildren(parentID string) ([]models.CA, error) {
 		cas = append(cas, *ca)
 	}
 	return cas, rows.Err()
+}
+
+// Cross-sign operations (Task 47)
+
+// crossSignColumns is the canonical column list for cross-sign reads. Keep it in
+// sync with scanCrossSign.
+const crossSignColumns = `id, tenant_id, issuer_ca_id, subject_ca_id, subject_key_id,
+	subject, serial, certificate, not_before, not_after, source, status,
+	requested_by, created_at`
+
+// scanCrossSign reads a single cross_signs row selected with crossSignColumns.
+func scanCrossSign(s caScanner) (*models.CrossSign, error) {
+	var cs models.CrossSign
+	var tenantID, subjectCAID, requestedBy sql.NullString
+	if err := s.Scan(
+		&cs.ID, &tenantID, &cs.IssuerCAID, &subjectCAID, &cs.SubjectKeyID,
+		&cs.Subject, &cs.Serial, &cs.Certificate, &cs.NotBefore, &cs.NotAfter,
+		&cs.Source, &cs.Status, &requestedBy, &cs.CreatedAt,
+	); err != nil {
+		return nil, err
+	}
+	if tenantID.Valid && tenantID.String != "" {
+		cs.TenantID = tenantID.String
+	} else {
+		cs.TenantID = models.DefaultTenantID
+	}
+	if subjectCAID.Valid && subjectCAID.String != "" {
+		v := subjectCAID.String
+		cs.SubjectCAID = &v
+	}
+	if requestedBy.Valid {
+		cs.RequestedBy = requestedBy.String
+	}
+	if cs.Status == "" {
+		cs.Status = models.CrossSignStatusActive
+	}
+	return &cs, nil
+}
+
+// CreateCrossSign persists a new cross-signing relationship.
+func (db *DB) CreateCrossSign(cs *models.CrossSign) error {
+	tenantID := cs.TenantID
+	if tenantID == "" {
+		tenantID = models.DefaultTenantID
+	}
+	status := cs.Status
+	if status == "" {
+		status = models.CrossSignStatusActive
+	}
+	_, err := db.exec(db.ph(
+		`INSERT INTO cross_signs (id, tenant_id, issuer_ca_id, subject_ca_id, subject_key_id,
+			subject, serial, certificate, not_before, not_after, source, status, requested_by)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		cs.ID, tenantID, cs.IssuerCAID, cs.SubjectCAID, cs.SubjectKeyID,
+		cs.Subject, cs.Serial, cs.Certificate, cs.NotBefore, cs.NotAfter,
+		cs.Source, status, nullString(cs.RequestedBy))
+	return err
+}
+
+// GetCrossSign resolves a cross-sign by id. Returns (nil, nil) if none matches.
+func (db *DB) GetCrossSign(id string) (*models.CrossSign, error) {
+	cs, err := scanCrossSign(db.queryRow(`SELECT `+crossSignColumns+` FROM cross_signs WHERE id = ?`, id))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return cs, err
+}
+
+func (db *DB) listCrossSigns(where string, arg string) ([]models.CrossSign, error) {
+	rows, err := db.query(`SELECT `+crossSignColumns+` FROM cross_signs WHERE `+where+` ORDER BY created_at`, arg)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.CrossSign
+	for rows.Next() {
+		cs, err := scanCrossSign(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *cs)
+	}
+	return out, rows.Err()
+}
+
+// ListCrossSignsForSubjectKey returns every cross-sign certifying the given SKI.
+func (db *DB) ListCrossSignsForSubjectKey(subjectKeyID string) ([]models.CrossSign, error) {
+	return db.listCrossSigns("subject_key_id = ?", subjectKeyID)
+}
+
+// ListCrossSignsBySubjectCA returns cross-signs whose subject is the given CA.
+func (db *DB) ListCrossSignsBySubjectCA(subjectCAID string) ([]models.CrossSign, error) {
+	return db.listCrossSigns("subject_ca_id = ?", subjectCAID)
+}
+
+// ListCrossSignsByIssuer returns cross-signs an issuer CA has produced.
+func (db *DB) ListCrossSignsByIssuer(issuerCAID string) ([]models.CrossSign, error) {
+	return db.listCrossSigns("issuer_ca_id = ?", issuerCAID)
+}
+
+// SetCrossSignStatus updates a cross-sign's lifecycle status.
+func (db *DB) SetCrossSignStatus(id, status string) error {
+	_, err := db.exec(`UPDATE cross_signs SET status = ? WHERE id = ?`, status, id)
+	return err
 }
 
 // Group operations

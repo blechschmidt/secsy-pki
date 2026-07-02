@@ -215,6 +215,15 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("POST /api/ca/init-root", protected(http.HandlerFunc(a.InitRootCA)))
 	mux.Handle("POST /api/ca/{id}/issue-intermediate", protected(http.HandlerFunc(a.IssueIntermediateCA)))
 
+	// Cross-signing and bridge-CA support (Task 47). Creating a cross-sign and
+	// listing relationships are management operations (ca:manage); the alternate
+	// chains a cross-sign publishes are public, like the overlap chain, so relying
+	// parties can fetch whichever trust path they need.
+	mux.Handle("POST /api/ca/{id}/cross-signs", protected(http.HandlerFunc(a.CreateCrossSign)))
+	mux.Handle("GET /api/ca/{id}/cross-signs", protected(http.HandlerFunc(a.ListCrossSigns)))
+	mux.HandleFunc("GET /api/ca/{id}/chains", a.GetAlternateChains)
+	mux.HandleFunc("GET /api/ca/{id}/cross-signs/{csid}/chain", a.GetCrossSignChain)
+
 	// Certificate issuance, renewal, and revocation (X.509 end-entity certs).
 	mux.Handle("GET /api/profiles", protected(http.HandlerFunc(a.ListProfiles)))
 	mux.Handle("POST /api/ca/{id}/issue", protected(http.HandlerFunc(a.IssueCertificate)))

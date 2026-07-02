@@ -162,6 +162,10 @@ func run(args []string) error {
 		return cmdRetireIntermediate(db, mgr, cmdArgs)
 	case "publish-chain":
 		return cmdPublishChain(db, mgr, cmdArgs)
+	case "cross-sign":
+		return cmdCrossSign(db, mgr, cmdArgs)
+	case "list-cross-signs":
+		return cmdListCrossSigns(db, mgr, cmdArgs)
 	case "tsa-key":
 		// The TSA signing key lives on the TSA-role backend, which may differ from
 		// the CA. Build a dedicated provider when the roles resolve differently;
@@ -220,6 +224,8 @@ Commands:
   list-rotations      List CAs currently in a key-rotation lineage
   retire-intermediate Retire a superseded intermediate key after the overlap
   publish-chain       Emit the combined overlap chain (AIA/bundle) for a CA
+  cross-sign          Cross-sign a subject key under an issuer CA (bridge/root-transition)
+  list-cross-signs    List a CA's cross-sign relationships or alternate chains
   tsa-key             Provision an RFC 3161 TSA signing key + certificate
   backup              Export CA metadata + a DR manifest (no private keys)
   restore             Restore/verify CA metadata against the key provider

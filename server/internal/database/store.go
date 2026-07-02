@@ -29,6 +29,7 @@ type Store interface {
 	Lifecycle
 	TenantStore
 	CAStore
+	CrossSignStore
 	InventoryStore
 	RevocationStore
 	CRLStore
@@ -79,6 +80,24 @@ type CAStore interface {
 	// AllocateSerial atomically returns the next unused serial for a CA; the
 	// increment is transactional so concurrent issuance never reuses a serial.
 	AllocateSerial(caID string) (int64, error)
+}
+
+// CrossSignStore persists cross-signing relationships: certificates an issuer CA
+// has signed for a subject public key that is (or may be) certified by another
+// issuer as well. These records drive alternate-chain selection for bridge-CA and
+// root-transition topologies. Every record is tenant-scoped through its issuer CA.
+type CrossSignStore interface {
+	CreateCrossSign(cs *models.CrossSign) error
+	GetCrossSign(id string) (*models.CrossSign, error)
+	// ListCrossSignsForSubjectKey returns every cross-sign certifying the given
+	// Subject Key Identifier (hex), the join used to build alternate chains.
+	ListCrossSignsForSubjectKey(subjectKeyID string) ([]models.CrossSign, error)
+	// ListCrossSignsBySubjectCA returns cross-signs whose subject is the given
+	// local CA.
+	ListCrossSignsBySubjectCA(subjectCAID string) ([]models.CrossSign, error)
+	// ListCrossSignsByIssuer returns cross-signs an issuer CA has produced.
+	ListCrossSignsByIssuer(issuerCAID string) ([]models.CrossSign, error)
+	SetCrossSignStatus(id, status string) error
 }
 
 // InventoryStore persists the authoritative record of every issued leaf

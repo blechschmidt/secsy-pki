@@ -18,6 +18,17 @@ import (
 type CACertRequest struct {
 	// Subject is the distinguished name of the CA being created.
 	Subject pkix.Name
+	// RawSubject, when non-nil, is the exact DER encoding of the subject
+	// distinguished name to embed, overriding Subject. Cross-signing uses it to
+	// reproduce an existing CA's subject byte-for-byte (a re-encoded pkix.Name can
+	// differ from the original when the DN carries attributes crypto/x509 does not
+	// model), so the cross-signed certificate is a true drop-in issuer.
+	RawSubject []byte
+	// SubjectKeyID, when non-nil, sets the Subject Key Identifier explicitly rather
+	// than letting crypto/x509 derive it from the public key. Cross-signing sets it
+	// to the original certificate's SKI so subordinate certificates whose Authority
+	// Key Identifier references that SKI continue to chain through the cross-sign.
+	SubjectKeyID []byte
 	// PublicKey is the public key of the CA being created (the subject key).
 	PublicKey crypto.PublicKey
 	// Serial is the certificate serial number. It must be positive and unique
@@ -70,6 +81,15 @@ func CreateCACertificate(signer crypto.Signer, parent *x509.Certificate, req CAC
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 		ExtraExtensions:       req.ExtraExtensions,
+	}
+
+	// A cross-signed certificate must carry the subject CA's exact DN and Subject
+	// Key Identifier so it is interchangeable with the natively issued one.
+	if len(req.RawSubject) > 0 {
+		template.RawSubject = req.RawSubject
+	}
+	if len(req.SubjectKeyID) > 0 {
+		template.SubjectKeyId = req.SubjectKeyID
 	}
 
 	if req.MaxPathLen != nil {

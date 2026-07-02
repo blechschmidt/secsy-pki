@@ -341,6 +341,102 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/ca/{id}/cross-signs:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: createCrossSign
+      tags: [Certificate Authorities]
+      summary: Cross-sign a subject key under this CA
+      description: >
+        Uses the issuer CA identified by the path to cross-sign a subject public
+        key: the issuer's HSM-backed key signs a CA certificate carrying the
+        subject's exact distinguished name and public key, producing an alternate
+        trust chain for bridge-CA and root-transition topologies. The subject may
+        be another CA in this deployment (subject_ca_id), an externally supplied
+        certificate (certificate_pem), or a CSR (csr_pem) — exactly one. The
+        subject's private key is never involved.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CACrossSignRequest" }
+      responses:
+        "201":
+          description: The cross-sign relationship, cross-certificate, and alternate chain.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CrossSignResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    get:
+      operationId: listCrossSigns
+      tags: [Certificate Authorities]
+      summary: List a CA's cross-sign relationships
+      description: Returns the cross-signs a CA has issued and those certifying its key.
+      responses:
+        "200":
+          description: Cross-sign relationships related to the CA.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cross_signs:
+                    type: array
+                    items: { $ref: "#/components/schemas/CrossSign" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ca/{id}/chains:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    get:
+      operationId: getAlternateChains
+      tags: [Certificate Authorities]
+      summary: List a subject CA's publishable alternate chains
+      description: >
+        Returns every publishable trust path for a subject CA: its native
+        parent-lineage chain plus one chain per active cross-sign of its key. A
+        relying party can select whichever chain terminates at a trust anchor it
+        holds. Public, like the combined issuer chain endpoint.
+      security: []
+      responses:
+        "200":
+          description: The alternate chains available for the CA.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  chains:
+                    type: array
+                    items: { $ref: "#/components/schemas/AlternateChain" }
+
+  /api/ca/{id}/cross-signs/{csid}/chain:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+      - name: csid
+        in: path
+        required: true
+        description: Cross-sign relationship id.
+        schema: { type: string }
+    get:
+      operationId: getCrossSignChain
+      tags: [Certificate Authorities]
+      summary: Download a cross-sign's alternate chain (PEM)
+      description: >
+        Returns the alternate chain for a single cross-sign as a PEM bundle: the
+        cross-certificate followed by the issuer's chain to its trust anchor.
+        Public, like the CRL/OCSP/chain endpoints.
+      security: []
+      responses:
+        "200":
+          description: PEM bundle of the cross-sign's alternate chain.
+          content:
+            application/x-pem-file:
+              schema: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   # ---------------------------------------------------------------------------
   # Certificate Lifecycle
   # ---------------------------------------------------------------------------
@@ -1688,6 +1784,80 @@ components:
         max_path_len: { type: integer }
         name_constraints: { $ref: "#/components/schemas/NameConstraintsConfig" }
         policies: { $ref: "#/components/schemas/CertPolicyConfig" }
+
+    CACrossSignRequest:
+      type: object
+      description: >
+        A cross-sign request. Provide exactly one subject source: subject_ca_id
+        (a CA in this deployment), certificate_pem (an external certificate), or
+        csr_pem (an external CSR).
+      properties:
+        subject_ca_id:
+          type: string
+          description: Local CA id (or label) to cross-sign.
+        certificate_pem:
+          type: string
+          description: PEM certificate to cross-sign (external subject).
+        csr_pem:
+          type: string
+          description: PEM CSR to cross-sign (external subject).
+        validity_days:
+          type: integer
+          description: >
+            Cross-signed certificate validity. Omitted reuses a certificate/local
+            subject's own span (required for a CSR subject). Always clamped to the
+            issuer's expiry.
+        max_path_len:
+          type: integer
+          description: Path-length override; omitted preserves the subject's constraint.
+
+    CrossSign:
+      type: object
+      description: A persisted cross-signing relationship.
+      properties:
+        id: { type: string }
+        tenant_id: { type: string }
+        issuer_ca_id: { type: string }
+        subject_ca_id: { type: string, nullable: true }
+        subject_key_id:
+          type: string
+          description: Hex Subject Key Identifier grouping every certificate for this subject key.
+        subject: { type: string }
+        serial: { type: string }
+        certificate: { type: string, description: PEM cross-signed certificate }
+        not_before: { type: string }
+        not_after: { type: string }
+        source:
+          type: string
+          enum: [local-ca, certificate, csr]
+        status:
+          type: string
+          enum: [active, revoked]
+        requested_by: { type: string }
+        created_at: { type: string }
+
+    CrossSignResult:
+      type: object
+      properties:
+        cross_sign: { $ref: "#/components/schemas/CrossSign" }
+        certificate_pem: { type: string, description: PEM cross-signed certificate }
+        chain_pem:
+          type: string
+          description: Alternate chain (cross-certificate + issuer chain to its anchor).
+
+    AlternateChain:
+      type: object
+      description: One publishable trust path for a subject CA.
+      properties:
+        cross_sign_id:
+          type: string
+          description: Empty for the native (parent-lineage) chain.
+        issuer_ca_id: { type: string }
+        issuer_label: { type: string }
+        native:
+          type: boolean
+          description: Whether this is the subject's own parent-lineage chain.
+        pem: { type: string, description: PEM chain bundle }
 
     Profile:
       type: object
