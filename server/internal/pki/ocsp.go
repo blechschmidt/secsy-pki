@@ -31,6 +31,25 @@ func ParseOCSPRequest(der []byte) (*ocsp.Request, error) {
 	return ocsp.ParseRequest(der)
 }
 
+// BuildOCSPRequest constructs a DER-encoded OCSP request asking about cert,
+// issued by issuer. It is a thin wrapper over the ocsp package used by tests and
+// benchmarks (and available to clients) so they need not import ocsp directly.
+func BuildOCSPRequest(cert, issuer *x509.Certificate) ([]byte, error) {
+	return ocsp.CreateRequest(cert, issuer, nil)
+}
+
+// OCSPRequestSerial extracts the requested certificate serial (base-10) from a
+// DER-encoded OCSP request, for use as a response-cache key. It reports false if
+// the request cannot be parsed, so callers fall back to signing freshly rather
+// than caching under a wrong or empty key.
+func OCSPRequestSerial(der []byte) (string, bool) {
+	req, err := ocsp.ParseRequest(der)
+	if err != nil || req.SerialNumber == nil {
+		return "", false
+	}
+	return req.SerialNumber.String(), true
+}
+
 // OCSPResponseSpec describes the status of a single certificate to attest to in
 // an OCSP response.
 type OCSPResponseSpec struct {

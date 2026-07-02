@@ -134,21 +134,55 @@ func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {
 	}
 	loggedIn = true
 
+	ko, err := findKeyObjects(ctx, session, keyLabel)
+	if err != nil {
+		return nil, err
+	}
+
+	signer := &PKCS11Signer{
+		ctx:        ctx,
+		session:    session,
+		privHandle: ko.priv,
+		pubKey:     ko.pubKey,
+		keyType:    ko.keyType,
+		isEdDSA:    ko.isEdDSA,
+	}
+
+	succeeded = true
+	return signer, nil
+}
+
+// keyObjects holds the token handles and parsed public key for one key pair,
+// resolved on a specific session. Object handles are only valid within the
+// session they were obtained on, so callers must keep a keyObjects value paired
+// with the session that produced it (the session pool caches them per session).
+type keyObjects struct {
+	priv    pkcs11.ObjectHandle
+	pubKey  crypto.PublicKey
+	keyType string
+	isEdDSA bool
+}
+
+// findKeyObjects locates the private/public key objects labeled keyLabel on the
+// given (already logged-in) session and parses the public key. It is the shared
+// lookup used by both the one-shot NewPKCS11Signer and the pooled signer, so
+// that both resolve keys identically. The session must already be authenticated.
+func findKeyObjects(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, keyLabel string) (keyObjects, error) {
 	// Find private key
 	tmpl := []*pkcs11.Attribute{
 		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PRIVATE_KEY),
 		pkcs11.NewAttribute(pkcs11.CKA_LABEL, keyLabel),
 	}
 	if err := ctx.FindObjectsInit(session, tmpl); err != nil {
-		return nil, fmt.Errorf("find init: %w", err)
+		return keyObjects{}, fmt.Errorf("find init: %w", err)
 	}
 	objs, _, err := ctx.FindObjects(session, 1)
 	if err != nil {
-		return nil, fmt.Errorf("find objects: %w", err)
+		return keyObjects{}, fmt.Errorf("find objects: %w", err)
 	}
 	ctx.FindObjectsFinal(session)
 	if len(objs) == 0 {
-		return nil, fmt.Errorf("private key %q not found", keyLabel)
+		return keyObjects{}, fmt.Errorf("private key %q not found", keyLabel)
 	}
 
 	// Find public key
@@ -157,19 +191,15 @@ func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {
 		pkcs11.NewAttribute(pkcs11.CKA_LABEL, keyLabel),
 	}
 	if err := ctx.FindObjectsInit(session, pubTmpl); err != nil {
-		return nil, fmt.Errorf("find pub init: %w", err)
+		return keyObjects{}, fmt.Errorf("find pub init: %w", err)
 	}
 	pubObjs, _, err := ctx.FindObjects(session, 1)
 	if err != nil {
-		return nil, fmt.Errorf("find pub objects: %w", err)
+		return keyObjects{}, fmt.Errorf("find pub objects: %w", err)
 	}
 	ctx.FindObjectsFinal(session)
 
-	signer := &PKCS11Signer{
-		ctx:        ctx,
-		session:    session,
-		privHandle: objs[0],
-	}
+	ko := keyObjects{priv: objs[0]}
 
 	if len(pubObjs) > 0 {
 		// Try EC attributes first
@@ -178,25 +208,45 @@ func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {
 			pkcs11.NewAttribute(pkcs11.CKA_EC_POINT, nil),
 		})
 		if err == nil {
-			signer.parsePublicKey(attrs)
+			ko.pubKey, ko.keyType, ko.isEdDSA = parseECPublicKeyAttrs(attrs)
 		}
 		// If no key found, try RSA attributes
-		if signer.pubKey == nil {
+		if ko.pubKey == nil {
 			attrs, err = ctx.GetAttributeValue(session, pubObjs[0], []*pkcs11.Attribute{
 				pkcs11.NewAttribute(pkcs11.CKA_MODULUS, nil),
 				pkcs11.NewAttribute(pkcs11.CKA_PUBLIC_EXPONENT, nil),
 			})
 			if err == nil {
-				signer.parseRSAPublicKey(attrs)
+				ko.pubKey, ko.keyType = parseRSAPublicKeyAttrs(attrs)
 			}
 		}
 	}
 
-	succeeded = true
-	return signer, nil
+	return ko, nil
 }
 
+// parsePublicKey sets the signer's public key from EC/Ed25519 attribute values.
+// It is a thin wrapper over parseECPublicKeyAttrs retained for the signer's own
+// construction path and unit tests.
 func (s *PKCS11Signer) parsePublicKey(attrs []*pkcs11.Attribute) {
+	pub, keyType, isEdDSA := parseECPublicKeyAttrs(attrs)
+	if pub != nil {
+		s.pubKey, s.keyType, s.isEdDSA = pub, keyType, isEdDSA
+	}
+}
+
+// parseRSAPublicKey sets the signer's public key from RSA attribute values.
+func (s *PKCS11Signer) parseRSAPublicKey(attrs []*pkcs11.Attribute) {
+	pub, keyType := parseRSAPublicKeyAttrs(attrs)
+	if pub != nil {
+		s.pubKey, s.keyType = pub, keyType
+	}
+}
+
+// parseECPublicKeyAttrs parses CKA_EC_PARAMS / CKA_EC_POINT attribute values
+// into a crypto.PublicKey, returning the SSH key-type name and whether the key
+// is Ed25519. It returns a nil key on unrecognized parameters.
+func parseECPublicKeyAttrs(attrs []*pkcs11.Attribute) (pub crypto.PublicKey, keyType string, isEdDSA bool) {
 	var ecParams, ecPoint []byte
 	for _, a := range attrs {
 		switch a.Type {
@@ -207,7 +257,7 @@ func (s *PKCS11Signer) parsePublicKey(attrs []*pkcs11.Attribute) {
 		}
 	}
 	if ecParams == nil || ecPoint == nil {
-		return
+		return nil, "", false
 	}
 
 	// Check for Ed25519: YubiHSM uses PrintableString "edwards25519",
@@ -215,43 +265,42 @@ func (s *PKCS11Signer) parsePublicKey(attrs []*pkcs11.Attribute) {
 	if isEdwards25519(ecParams) {
 		raw := extractECPoint(ecPoint)
 		if len(raw) == 32 {
-			s.pubKey = ed25519.PublicKey(raw)
-			s.keyType = "ssh-ed25519"
-			s.isEdDSA = true
-			return
+			return ed25519.PublicKey(raw), "ssh-ed25519", true
 		}
 	}
 
 	// Try standard EC curves via OID
 	var oid asn1.ObjectIdentifier
 	if _, err := asn1.Unmarshal(ecParams, &oid); err != nil {
-		return
+		return nil, "", false
 	}
 
 	var curve elliptic.Curve
 	switch {
 	case oid.Equal(asn1.ObjectIdentifier{1, 2, 840, 10045, 3, 1, 7}):
 		curve = elliptic.P256()
-		s.keyType = "ecdsa-sha2-nistp256"
+		keyType = "ecdsa-sha2-nistp256"
 	case oid.Equal(asn1.ObjectIdentifier{1, 3, 132, 0, 34}):
 		curve = elliptic.P384()
-		s.keyType = "ecdsa-sha2-nistp384"
+		keyType = "ecdsa-sha2-nistp384"
 	case oid.Equal(asn1.ObjectIdentifier{1, 3, 132, 0, 35}):
 		curve = elliptic.P521()
-		s.keyType = "ecdsa-sha2-nistp521"
+		keyType = "ecdsa-sha2-nistp521"
 	default:
-		return
+		return nil, "", false
 	}
 
 	pointBytes := extractECPoint(ecPoint)
 	x, y := elliptic.Unmarshal(curve, pointBytes)
 	if x == nil {
-		return
+		return nil, "", false
 	}
-	s.pubKey = &ecdsa.PublicKey{Curve: curve, X: x, Y: y}
+	return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, keyType, false
 }
 
-func (s *PKCS11Signer) parseRSAPublicKey(attrs []*pkcs11.Attribute) {
+// parseRSAPublicKeyAttrs parses CKA_MODULUS / CKA_PUBLIC_EXPONENT attribute
+// values into an *rsa.PublicKey. It returns a nil key on missing attributes.
+func parseRSAPublicKeyAttrs(attrs []*pkcs11.Attribute) (pub crypto.PublicKey, keyType string) {
 	var modulus, exponent []byte
 	for _, a := range attrs {
 		switch a.Type {
@@ -262,12 +311,11 @@ func (s *PKCS11Signer) parseRSAPublicKey(attrs []*pkcs11.Attribute) {
 		}
 	}
 	if len(modulus) == 0 || len(exponent) == 0 {
-		return
+		return nil, ""
 	}
 	n := new(big.Int).SetBytes(modulus)
 	e := new(big.Int).SetBytes(exponent)
-	s.pubKey = &rsa.PublicKey{N: n, E: int(e.Int64())}
-	s.keyType = "ssh-rsa"
+	return &rsa.PublicKey{N: n, E: int(e.Int64())}, "ssh-rsa"
 }
 
 // isEdwards25519 checks if ec_params represents Ed25519.
@@ -301,24 +349,33 @@ func (s *PKCS11Signer) Public() crypto.PublicKey {
 }
 
 func (s *PKCS11Signer) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
-	if s.isEdDSA {
-		return s.signEdDSA(digest)
-	}
-	if _, ok := s.pubKey.(*rsa.PublicKey); ok {
-		return s.signRSA(digest, opts)
-	}
-	return s.signECDSA(digest)
+	return signOnSession(s.ctx, s.session, s.privHandle, s.pubKey, s.isEdDSA, digest, opts)
 }
 
-func (s *PKCS11Signer) signEdDSA(data []byte) ([]byte, error) {
+// signOnSession performs a signing operation for a key resolved on the given
+// session, dispatching on key type. It is the shared signing core used by both
+// the one-shot PKCS11Signer and the pooled signer, so both apply identical
+// mechanism selection and signature encoding. The session must already be
+// authenticated and must be the one the priv handle was resolved on.
+func signOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, priv pkcs11.ObjectHandle, pub crypto.PublicKey, isEdDSA bool, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	if isEdDSA {
+		return signEdDSAOnSession(ctx, session, priv, digest)
+	}
+	if _, ok := pub.(*rsa.PublicKey); ok {
+		return signRSAOnSession(ctx, session, priv, digest, opts)
+	}
+	return signECDSAOnSession(ctx, session, priv, digest)
+}
+
+func signEdDSAOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, priv pkcs11.ObjectHandle, data []byte) ([]byte, error) {
 	mechanism := []*pkcs11.Mechanism{pkcs11.NewMechanism(CKM_EDDSA, nil)}
 
-	if err := s.ctx.SignInit(s.session, mechanism, s.privHandle); err != nil {
+	if err := ctx.SignInit(session, mechanism, priv); err != nil {
 		return nil, fmt.Errorf("EdDSA sign init: %w", err)
 	}
 
 	// EdDSA signs the raw message, not a digest
-	sig, err := s.ctx.Sign(s.session, data)
+	sig, err := ctx.Sign(session, data)
 	if err != nil {
 		return nil, fmt.Errorf("EdDSA sign: %w", err)
 	}
@@ -327,14 +384,14 @@ func (s *PKCS11Signer) signEdDSA(data []byte) ([]byte, error) {
 	return sig, nil
 }
 
-func (s *PKCS11Signer) signECDSA(digest []byte) ([]byte, error) {
+func signECDSAOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, priv pkcs11.ObjectHandle, digest []byte) ([]byte, error) {
 	mechanism := []*pkcs11.Mechanism{pkcs11.NewMechanism(pkcs11.CKM_ECDSA, nil)}
 
-	if err := s.ctx.SignInit(s.session, mechanism, s.privHandle); err != nil {
+	if err := ctx.SignInit(session, mechanism, priv); err != nil {
 		return nil, fmt.Errorf("ECDSA sign init: %w", err)
 	}
 
-	sig, err := s.ctx.Sign(s.session, digest)
+	sig, err := ctx.Sign(session, digest)
 	if err != nil {
 		return nil, fmt.Errorf("ECDSA sign: %w", err)
 	}
@@ -354,7 +411,7 @@ func (s *PKCS11Signer) signECDSA(digest []byte) ([]byte, error) {
 	return derSig, nil
 }
 
-func (s *PKCS11Signer) signRSA(digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+func signRSAOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, priv pkcs11.ObjectHandle, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
 	mechanism := []*pkcs11.Mechanism{pkcs11.NewMechanism(pkcs11.CKM_RSA_PKCS, nil)}
 
 	// PKCS#1 v1.5: prepend DigestInfo ASN.1 structure
@@ -372,10 +429,10 @@ func (s *PKCS11Signer) signRSA(digest []byte, opts crypto.SignerOpts) ([]byte, e
 	}
 	data := append(prefix, digest...)
 
-	if err := s.ctx.SignInit(s.session, mechanism, s.privHandle); err != nil {
+	if err := ctx.SignInit(session, mechanism, priv); err != nil {
 		return nil, fmt.Errorf("RSA sign init: %w", err)
 	}
-	sig, err := s.ctx.Sign(s.session, data)
+	sig, err := ctx.Sign(session, data)
 	if err != nil {
 		return nil, fmt.Errorf("RSA sign: %w", err)
 	}
@@ -451,6 +508,15 @@ func GenerateKeyOnHSM(cfg PKCS11Config, label string, keyType string) (*Generate
 	}
 	defer ctx.Logout(session)
 
+	return generateKeyPairOnSession(ctx, session, cfg, label, keyType)
+}
+
+// generateKeyPairOnSession creates a signing key pair on an already
+// authenticated R/W session. It is the shared generation core used by both the
+// one-shot GenerateKeyOnHSM and the pooled provider, so both apply identical
+// least-privilege usage attributes (CKA_SENSITIVE, CKA_EXTRACTABLE=false,
+// sign-only) that enforce the key non-extractability invariant.
+func generateKeyPairOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, cfg PKCS11Config, label, keyType string) (*GeneratedHSMKey, error) {
 	var mechanism []*pkcs11.Mechanism
 	var pubAttrs, privAttrs []*pkcs11.Attribute
 

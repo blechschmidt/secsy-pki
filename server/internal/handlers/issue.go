@@ -159,6 +159,10 @@ func (a *API) RevokeCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Drop any cached "good" OCSP response so the certificate's new revoked
+	// status is served immediately rather than after the cache TTL elapses.
+	a.ocspCache.Invalidate(caID, req.Serial)
+
 	status := "revoked"
 	if !applied {
 		status = "already-revoked"
@@ -271,6 +275,24 @@ func (a *API) OCSPResponder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Serve from the response cache when possible: an OCSP response is a signed
+	// object valid until its NextUpdate, so a fresh HSM signature is not needed
+	// for every request. The cache is keyed by (CA, serial) and invalidated on
+	// revocation. Parsing the request to recover the serial is cheap relative to
+	// an on-HSM signing round-trip.
+	var cacheSerial string
+	if a.ocspCache.Enabled() {
+		if serial, ok := pki.OCSPRequestSerial(reqDER); ok {
+			cacheSerial = serial
+			if cached, hit := a.ocspCache.Get(caID, cacheSerial); hit {
+				metrics.OCSPRequests.Inc(metrics.ResultSuccess)
+				w.Header().Set("Content-Type", "application/ocsp-response")
+				w.Write(cached)
+				return
+			}
+		}
+	}
+
 	mgr := ca.NewManager(a.db, a.keyProvider)
 	a.consumeHSMAuditLogs("")
 	respDER, err := mgr.OCSPRespond(r.Context(), caID, reqDER)
@@ -281,6 +303,10 @@ func (a *API) OCSPResponder(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/ocsp-response")
 		w.Write(pki.OCSPInternalErrorResponse)
 		return
+	}
+
+	if cacheSerial != "" {
+		a.ocspCache.Put(caID, cacheSerial, respDER)
 	}
 
 	metrics.OCSPRequests.Inc(metrics.ResultSuccess)

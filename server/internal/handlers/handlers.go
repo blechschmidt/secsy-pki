@@ -12,6 +12,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
+	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
@@ -33,6 +34,11 @@ type API struct {
 	secretKEKLabel       string
 	policy               Policy
 	monitorOpts          monitor.Options
+	// ocspCache is a long-lived, TTL-bounded cache of signed OCSP responses,
+	// shared across requests (handlers otherwise build a fresh per-request CA
+	// Manager). It avoids an on-HSM signature per OCSP request; see
+	// ca.OCSPCache and docs/benchmarks.md. Never nil.
+	ocspCache *ca.OCSPCache
 }
 
 // Policy holds centrally-configured issuance guardrails enforced by the API
@@ -44,12 +50,30 @@ type Policy struct {
 	MaxCertValidityDays int
 }
 
+// DefaultOCSPCacheTTL is the OCSP response cache TTL used when none is
+// configured. It is well under defaultOCSPValidity (the responses' NextUpdate),
+// so cached responses are always served within their validity window.
+const DefaultOCSPCacheTTL = time.Hour
+
 func NewAPI(db *database.DB, keyProvider keyprovider.Provider, oidcProvider *auth.OIDCProvider, hsmCfg hsm.Config, suppressAuditWarning bool, secretKEKLabel string) *API {
-	return &API{db: db, keyProvider: keyProvider, oidcProvider: oidcProvider, hsmCfg: hsmCfg, suppressAuditWarning: suppressAuditWarning, secretKEKLabel: secretKEKLabel}
+	return &API{
+		db:                   db,
+		keyProvider:          keyProvider,
+		oidcProvider:         oidcProvider,
+		hsmCfg:               hsmCfg,
+		suppressAuditWarning: suppressAuditWarning,
+		secretKEKLabel:       secretKEKLabel,
+		ocspCache:            ca.NewOCSPCache(DefaultOCSPCacheTTL),
+	}
 }
 
 // SetPolicy installs the centrally-configured issuance policy.
 func (a *API) SetPolicy(p Policy) { a.policy = p }
+
+// SetOCSPCacheTTL configures the OCSP response cache TTL. A non-positive
+// duration disables caching (every request is answered freshly on the HSM). It
+// is intended to be called once at startup from configuration.
+func (a *API) SetOCSPCacheTTL(ttl time.Duration) { a.ocspCache = ca.NewOCSPCache(ttl) }
 
 // SetMonitorOptions installs the expiry-monitor thresholds used by the
 // /api/monitor endpoints so ad-hoc scans match the background monitor.

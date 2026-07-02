@@ -3,6 +3,11 @@ server:
   port: 8443
   tls_cert: "certs/server.crt"
   tls_key: "certs/server.key"
+  # ocsp_cache_ttl_seconds bounds how long a signed OCSP response is reused from
+  # the in-memory cache before being re-signed on the HSM. 0 uses the server
+  # default (1h); a negative value disables caching. Revocations invalidate the
+  # affected entry immediately. See docs/benchmarks.md.
+  ocsp_cache_ttl_seconds: 3600
 
 database:
   driver: "sqlite"
@@ -31,6 +36,11 @@ pkcs11:
   module_path: "/usr/lib/pkcs11/yubihsm_pkcs11.so"
   pin: "0001password"
   token_label: "YubiHSM"
+  # session_pool_size bounds concurrent PKCS#11 sessions (and thus concurrent
+  # on-device operations); requests beyond it queue. 0/omitted uses the default
+  # (8). Size it toward the HSM's supported concurrent-session limit. See
+  # docs/benchmarks.md for tuning guidance.
+  session_pool_size: 8
 
 yubihsm:
   connector_url: "yhusb://"

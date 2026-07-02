@@ -82,6 +82,14 @@ func ListKeys(cfg PKCS11Config) (keys []HSMKeyInfo, err error) {
 	}
 	loggedIn = true
 
+	return listKeysOnSession(ctx, session)
+}
+
+// listKeysOnSession enumerates the private-key objects on an already
+// authenticated session, returning non-sensitive metadata for each. It is the
+// shared enumeration core used by both the one-shot ListKeys and the pooled
+// provider. It never reads private key material.
+func listKeysOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle) (keys []HSMKeyInfo, err error) {
 	// Enumerate every private-key object on the token.
 	if err := ctx.FindObjectsInit(session, []*pkcs11.Attribute{
 		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PRIVATE_KEY),

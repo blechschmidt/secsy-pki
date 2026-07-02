@@ -35,6 +35,15 @@ func (s *PKCS11Signer) Decrypt(_ io.Reader, ciphertext []byte, opts crypto.Decry
 	if _, ok := s.pubKey.(*rsa.PublicKey); !ok {
 		return nil, fmt.Errorf("pkcs11 decrypt: key is not RSA (type %T)", s.pubKey)
 	}
+	return decryptOAEPOnSession(s.ctx, s.session, s.privHandle, ciphertext, opts)
+}
+
+// decryptOAEPOnSession performs an RSA-OAEP unwrap for a key resolved on the
+// given session. It is the shared decryption core used by both the one-shot
+// PKCS11Signer.Decrypt and the pooled decrypter. The caller is responsible for
+// verifying the key is RSA before calling. The session must already be
+// authenticated and must be the one the priv handle was resolved on.
+func decryptOAEPOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, priv pkcs11.ObjectHandle, ciphertext []byte, opts crypto.DecrypterOpts) ([]byte, error) {
 	hashAlg, mgf, err := oaepMechParams(opts)
 	if err != nil {
 		return nil, err
@@ -46,10 +55,10 @@ func (s *PKCS11Signer) Decrypt(_ io.Reader, ciphertext []byte, opts crypto.Decry
 	params := pkcs11.NewOAEPParams(hashAlg, mgf, pkcs11.CKZ_DATA_SPECIFIED, nil)
 	mech := []*pkcs11.Mechanism{pkcs11.NewMechanism(pkcs11.CKM_RSA_PKCS_OAEP, params)}
 
-	if err := s.ctx.DecryptInit(s.session, mech, s.privHandle); err != nil {
+	if err := ctx.DecryptInit(session, mech, priv); err != nil {
 		return nil, fmt.Errorf("pkcs11 decrypt init: %w", err)
 	}
-	plaintext, err := s.ctx.Decrypt(s.session, ciphertext)
+	plaintext, err := ctx.Decrypt(session, ciphertext)
 	if err != nil {
 		// Do not surface the low-level error verbatim to callers that might act
 		// as a padding oracle; the wrapper in internal/secret returns a generic
@@ -135,6 +144,14 @@ func GenerateRSAKEKOnHSM(cfg PKCS11Config, label string, bits int) (*GeneratedHS
 	}
 	defer ctx.Logout(session)
 
+	return generateRSAKEKOnSession(ctx, session, cfg, label, bits)
+}
+
+// generateRSAKEKOnSession creates an RSA key-encryption key pair on an already
+// authenticated R/W session, with least-privilege usage (decrypt/unwrap only,
+// sensitive and non-extractable). It is the shared generation core used by both
+// the one-shot GenerateRSAKEKOnHSM and the pooled provider.
+func generateRSAKEKOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, cfg PKCS11Config, label string, bits int) (*GeneratedHSMKey, error) {
 	mechanism := []*pkcs11.Mechanism{pkcs11.NewMechanism(pkcs11.CKM_RSA_PKCS_KEY_PAIR_GEN, nil)}
 	pubAttrs := []*pkcs11.Attribute{
 		pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),

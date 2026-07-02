@@ -165,6 +165,13 @@ type ServerConfig struct {
 	Port    int    `yaml:"port"`
 	TLSCert string `yaml:"tls_cert"`
 	TLSKey  string `yaml:"tls_key"`
+	// OCSPCacheTTLSeconds bounds how long a signed OCSP response is reused from
+	// the in-memory cache before being re-signed on the HSM. It must be well
+	// under the response NextUpdate window. A negative value disables caching; 0
+	// means "use the server default" (handlers.DefaultOCSPCacheTTL). Revocations
+	// invalidate the affected entry immediately regardless of this value. See
+	// docs/benchmarks.md.
+	OCSPCacheTTLSeconds int `yaml:"ocsp_cache_ttl_seconds"`
 }
 
 type DatabaseConfig struct {
@@ -201,6 +208,12 @@ type PKCS11Config struct {
 	TokenLabel        string `yaml:"token_label"`
 	TokenSerial       string `yaml:"token_serial"`
 	TokenManufacturer string `yaml:"token_manufacturer"`
+	// SessionPoolSize bounds the number of concurrent PKCS#11 sessions the key
+	// provider keeps open, and therefore how many signing/decryption operations
+	// may hit the token at once. Requests beyond it queue (bounded backpressure).
+	// When <= 0 the provider uses keyprovider.DefaultSessionPoolSize. This is the
+	// primary HSM throughput tuning knob; see docs/benchmarks.md.
+	SessionPoolSize int `yaml:"session_pool_size"`
 }
 
 type YubiHSMConfig struct {
@@ -374,6 +387,11 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("SECSY_TOKEN_SERIAL"); v != "" {
 		cfg.PKCS11.TokenSerial = v
+	}
+	if v := os.Getenv("SECSY_PKCS11_SESSION_POOL_SIZE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.PKCS11.SessionPoolSize = n
+		}
 	}
 	if v := os.Getenv("SECSY_SOFTWARE_KEYSTORE_DIR"); v != "" {
 		cfg.KeyProvider.Software.KeystoreDir = v

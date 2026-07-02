@@ -118,6 +118,7 @@ func main() {
 			TokenLabel:        cfg.PKCS11.TokenLabel,
 			TokenSerial:       cfg.PKCS11.TokenSerial,
 			TokenManufacturer: cfg.PKCS11.TokenManufacturer,
+			SessionPoolSize:   cfg.PKCS11.SessionPoolSize,
 		},
 		Software: keyprovider.SoftwareSettings{
 			KeystoreDir: cfg.KeyProvider.Software.KeystoreDir,
@@ -149,6 +150,11 @@ func main() {
 		cfg.Monitor.WarningDays, cfg.Monitor.CriticalDays,
 		cfg.Monitor.RenewBeforeDays, cfg.Monitor.RenewProfiles)
 	api.SetMonitorOptions(monitorOpts)
+	// OCSP response cache TTL: 0 keeps the server default, a negative value
+	// disables caching, and a positive value sets an explicit TTL.
+	if cfg.Server.OCSPCacheTTLSeconds != 0 {
+		api.SetOCSPCacheTTL(time.Duration(cfg.Server.OCSPCacheTTLSeconds) * time.Second)
+	}
 	if cfg.Secret.KEKLabel != "" {
 		log.Printf("Secret encryption enabled (KEK label: %s)", cfg.Secret.KEKLabel)
 	}

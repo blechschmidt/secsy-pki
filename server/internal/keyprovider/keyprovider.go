@@ -221,6 +221,11 @@ type PKCS11Settings struct {
 	TokenLabel        string
 	TokenSerial       string
 	TokenManufacturer string
+	// SessionPoolSize bounds the number of concurrent PKCS#11 sessions (and thus
+	// concurrent on-device operations) the provider keeps open. When <= 0 the
+	// provider uses DefaultSessionPoolSize. It is the primary HSM throughput
+	// tuning knob; see docs/benchmarks.md.
+	SessionPoolSize int
 }
 
 // SoftwareSettings configures the software backend.

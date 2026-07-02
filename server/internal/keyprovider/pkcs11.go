@@ -8,11 +8,18 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/ssh"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 )
+
+// DefaultSessionPoolSize is the number of concurrent PKCS#11 sessions the
+// provider maintains when no size is configured. It bounds how many signing /
+// decryption operations may hit the token at once; requests beyond it queue.
+// See docs/benchmarks.md for tuning guidance.
+const DefaultSessionPoolSize = 8
 
 // PKCS11Provider generates and uses keys on a PKCS#11 token (HSM). It delegates
 // the low-level Cryptoki interaction to the pki package, which is already
@@ -20,12 +27,23 @@ import (
 // which is also encoded as the object= attribute of the pkcs11: URI stored with
 // each CA.
 //
-// A fresh module session is opened per operation (generate / sign) and torn
-// down afterwards. This keeps the provider stateless and safe for concurrent
-// use, at the cost of a login round-trip per request — acceptable for a CA that
-// signs interactively rather than in a hot loop.
+// The provider keeps a bounded pool of long-lived, already-logged-in sessions
+// (see pki.SessionPool). Operations borrow a session, use it, and return it, so
+// there is no per-operation module load, login, or finalize. This is both
+// faster than the historical open-per-operation design and safe under
+// concurrency on tokens (SoftHSM included) whose login/finalize state is
+// per-application rather than per-session. Pool size is the primary throughput
+// tuning knob.
+//
+// The pool is built lazily on first use so the server can start even when the
+// HSM is momentarily unreachable; a construction failure is not memoized, so a
+// later request retries once the token is back.
 type PKCS11Provider struct {
-	cfg pki.PKCS11Config
+	cfg      pki.PKCS11Config
+	poolSize int
+
+	mu   sync.Mutex
+	pool *pki.SessionPool
 }
 
 // NewPKCS11Provider constructs a PKCS#11-backed provider. It validates that a
@@ -35,7 +53,12 @@ func NewPKCS11Provider(s PKCS11Settings) (*PKCS11Provider, error) {
 	if s.ModulePath == "" {
 		return nil, fmt.Errorf("keyprovider: pkcs11 module_path is required")
 	}
+	size := s.SessionPoolSize
+	if size <= 0 {
+		size = DefaultSessionPoolSize
+	}
 	return &PKCS11Provider{
+		poolSize: size,
 		cfg: pki.PKCS11Config{
 			ModulePath:        s.ModulePath,
 			Pin:               s.Pin,
@@ -48,13 +71,48 @@ func NewPKCS11Provider(s PKCS11Settings) (*PKCS11Provider, error) {
 
 func (p *PKCS11Provider) Name() string { return string(ProviderPKCS11) }
 
-func (p *PKCS11Provider) Close() error { return nil }
+// getPool returns the shared session pool, building it lazily on first use.
+// Construction (which logs in) is retried on a later call if it fails, so a
+// transient HSM outage or a not-yet-present token does not permanently wedge the
+// provider.
+func (p *PKCS11Provider) getPool(_ context.Context) (*pki.SessionPool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pool != nil {
+		return p.pool, nil
+	}
+	pool, err := pki.NewSessionPool(p.cfg, p.poolSize)
+	if err != nil {
+		return nil, err
+	}
+	p.pool = pool
+	return pool, nil
+}
+
+// Close releases the session pool (closing every session, logging out, and
+// releasing the module reference). It is safe to call on a provider whose pool
+// was never built.
+func (p *PKCS11Provider) Close() error {
+	p.mu.Lock()
+	pool := p.pool
+	p.pool = nil
+	p.mu.Unlock()
+	if pool != nil {
+		return pool.Close()
+	}
+	return nil
+}
 
 // Ping verifies the token is reachable and the PIN is accepted, without
 // requiring any key to exist. It satisfies the Prober interface for readiness
-// probing.
-func (p *PKCS11Provider) Ping(_ context.Context) error {
-	return pki.Probe(p.cfg)
+// probing. Building the pool performs the login round-trip; once built, a probe
+// simply confirms a pooled session is still live.
+func (p *PKCS11Provider) Ping(ctx context.Context) error {
+	pool, err := p.getPool(ctx)
+	if err != nil {
+		return err
+	}
+	return pool.Ping(ctx)
 }
 
 func (p *PKCS11Provider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInfo, error) {
@@ -79,16 +137,21 @@ func (p *PKCS11Provider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInf
 		return nil, fmt.Errorf("keyprovider: checking for existing key %q: %w", spec.Label, err)
 	}
 
+	pool, err := p.getPool(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	var generated *pki.GeneratedHSMKey
 	switch spec.Usage {
 	case "", KeyUsageSign:
-		generated, err = pki.GenerateKeyOnHSM(p.cfg, spec.Label, keyType)
+		generated, err = pool.GenerateSignKey(ctx, spec.Label, keyType)
 	case KeyUsageDecrypt:
 		bits, bitErr := rsaBits(keyType)
 		if bitErr != nil {
 			return nil, bitErr
 		}
-		generated, err = pki.GenerateRSAKEKOnHSM(p.cfg, spec.Label, bits)
+		generated, err = pool.GenerateRSAKEK(ctx, spec.Label, bits)
 	default:
 		return nil, fmt.Errorf("keyprovider: unsupported key usage %q", spec.Usage)
 	}
@@ -111,25 +174,24 @@ func (p *PKCS11Provider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInf
 	}, nil
 }
 
-func (p *PKCS11Provider) FindKey(_ context.Context, ref KeyRef) (*KeyInfo, error) {
+func (p *PKCS11Provider) FindKey(ctx context.Context, ref KeyRef) (*KeyInfo, error) {
 	label, err := ref.resolve()
 	if err != nil {
 		return nil, err
 	}
-	// Opening a signer performs the object lookup and public-key parse. We
-	// immediately close it — this is a read-only existence/metadata probe.
-	signer, err := pki.NewPKCS11Signer(p.cfg, label)
+	pool, err := p.getPool(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pub, _, _, err := pool.PublicKey(ctx, label)
 	if err != nil {
 		return nil, wrapNotFound(label, err)
 	}
-	defer signer.Close()
-
-	pub := signer.Public()
 	keyType, err := keyTypeOf(pub)
 	if err != nil {
 		return nil, fmt.Errorf("keyprovider: key %q: %w", label, err)
 	}
-	sshPub, err := signer.SSHPublicKey()
+	sshPub, err := ssh.NewPublicKey(pub)
 	if err != nil {
 		return nil, fmt.Errorf("keyprovider: key %q: %w", label, err)
 	}
@@ -152,21 +214,24 @@ func (p *PKCS11Provider) PublicKey(ctx context.Context, ref KeyRef) (crypto.Publ
 	return info.PublicKey, nil
 }
 
-func (p *PKCS11Provider) Signer(_ context.Context, ref KeyRef) (Signer, error) {
+func (p *PKCS11Provider) Signer(ctx context.Context, ref KeyRef) (Signer, error) {
 	label, err := ref.resolve()
 	if err != nil {
 		return nil, err
 	}
-	signer, err := pki.NewPKCS11Signer(p.cfg, label)
+	pool, err := p.getPool(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pub, _, _, err := pool.PublicKey(ctx, label)
 	if err != nil {
 		return nil, wrapNotFound(label, err)
 	}
-	keyType, err := keyTypeOf(signer.Public())
+	keyType, err := keyTypeOf(pub)
 	if err != nil {
-		signer.Close()
 		return nil, fmt.Errorf("keyprovider: key %q: %w", label, err)
 	}
-	return &pkcs11Signer{inner: signer, keyType: keyType}, nil
+	return &pkcs11Signer{pool: pool, ctx: ctx, label: label, pub: pub, keyType: keyType}, nil
 }
 
 // wrapNotFound maps a "not found" error from the pki layer onto ErrKeyNotFound
@@ -191,28 +256,32 @@ func publicKeyFromSSH(authorizedKey string) (crypto.PublicKey, error) {
 	return cryptoPub.CryptoPublicKey(), nil
 }
 
-// pkcs11Signer adapts *pki.PKCS11Signer (whose Close returns nothing) to the
-// keyprovider.Signer interface. Close is idempotent.
+// pkcs11Signer is a keyprovider.Signer bound to a pooled session backend. It
+// holds no session of its own: each Sign borrows a session from the pool for the
+// duration of the on-device operation and returns it. Close is therefore a
+// bookkeeping no-op (there is nothing per-signer to release) and is idempotent.
 type pkcs11Signer struct {
-	inner   *pki.PKCS11Signer
+	pool    *pki.SessionPool
+	ctx     context.Context
+	label   string
+	pub     crypto.PublicKey
 	keyType string
 	closed  bool
 }
 
-func (s *pkcs11Signer) Public() crypto.PublicKey { return s.inner.Public() }
+func (s *pkcs11Signer) Public() crypto.PublicKey { return s.pub }
 
-func (s *pkcs11Signer) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
-	return s.inner.Sign(rand, digest, opts)
+func (s *pkcs11Signer) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	if s.closed {
+		return nil, fmt.Errorf("keyprovider: signer is closed")
+	}
+	return s.pool.Sign(s.ctx, s.label, digest, opts)
 }
 
 func (s *pkcs11Signer) KeyType() string { return s.keyType }
 
 func (s *pkcs11Signer) Close() error {
-	if s.closed {
-		return nil
-	}
 	s.closed = true
-	s.inner.Close()
 	return nil
 }
 
@@ -220,8 +289,12 @@ func (s *pkcs11Signer) Close() error {
 // non-sensitive metadata (label, id, key type, and the extractability /
 // sensitivity policy flags). Private key material is never read. It satisfies
 // the KeyLister interface for inventory and DR verification.
-func (p *PKCS11Provider) ListKeys(_ context.Context) ([]KeyDescriptor, error) {
-	hsmKeys, err := pki.ListKeys(p.cfg)
+func (p *PKCS11Provider) ListKeys(ctx context.Context) ([]KeyDescriptor, error) {
+	pool, err := p.getPool(ctx)
+	if err != nil {
+		return nil, err
+	}
+	hsmKeys, err := pool.ListKeys(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("keyprovider: listing keys on token: %w", err)
 	}
@@ -241,42 +314,47 @@ func (p *PKCS11Provider) ListKeys(_ context.Context) ([]KeyDescriptor, error) {
 
 // Decrypter returns a Decrypter for the referenced RSA KEK. The private key
 // never leaves the token; unwrapping happens on the device via C_Decrypt.
-func (p *PKCS11Provider) Decrypter(_ context.Context, ref KeyRef) (Decrypter, error) {
+func (p *PKCS11Provider) Decrypter(ctx context.Context, ref KeyRef) (Decrypter, error) {
 	label, err := ref.resolve()
 	if err != nil {
 		return nil, err
 	}
-	signer, err := pki.NewPKCS11Signer(p.cfg, label)
+	pool, err := p.getPool(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pub, _, _, err := pool.PublicKey(ctx, label)
 	if err != nil {
 		return nil, wrapNotFound(label, err)
 	}
-	if _, ok := signer.Public().(*rsa.PublicKey); !ok {
-		signer.Close()
+	if _, ok := pub.(*rsa.PublicKey); !ok {
 		return nil, fmt.Errorf("keyprovider: key %q is not an RSA key and cannot be used for decryption", label)
 	}
-	return &pkcs11Decrypter{inner: signer}, nil
+	return &pkcs11Decrypter{pool: pool, ctx: ctx, label: label, pub: pub}, nil
 }
 
-// pkcs11Decrypter adapts *pki.PKCS11Signer (which also implements C_Decrypt via
-// its Decrypt method) to the keyprovider.Decrypter interface. Close is
-// idempotent.
+// pkcs11Decrypter is a keyprovider.Decrypter bound to a pooled session backend.
+// Like pkcs11Signer it holds no session of its own; each Decrypt borrows one for
+// the duration of the on-device unwrap. Close is an idempotent no-op.
 type pkcs11Decrypter struct {
-	inner  *pki.PKCS11Signer
+	pool   *pki.SessionPool
+	ctx    context.Context
+	label  string
+	pub    crypto.PublicKey
 	closed bool
 }
 
-func (d *pkcs11Decrypter) Public() crypto.PublicKey { return d.inner.Public() }
+func (d *pkcs11Decrypter) Public() crypto.PublicKey { return d.pub }
 
-func (d *pkcs11Decrypter) Decrypt(rand io.Reader, ciphertext []byte, opts crypto.DecrypterOpts) ([]byte, error) {
-	return d.inner.Decrypt(rand, ciphertext, opts)
+func (d *pkcs11Decrypter) Decrypt(_ io.Reader, ciphertext []byte, opts crypto.DecrypterOpts) ([]byte, error) {
+	if d.closed {
+		return nil, fmt.Errorf("keyprovider: decrypter is closed")
+	}
+	return d.pool.Decrypt(d.ctx, d.label, ciphertext, opts)
 }
 
 func (d *pkcs11Decrypter) Close() error {
-	if d.closed {
-		return nil
-	}
 	d.closed = true
-	d.inner.Close()
 	return nil
 }
 

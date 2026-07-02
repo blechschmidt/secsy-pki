@@ -3,9 +3,12 @@ package keyprovider
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -125,6 +128,64 @@ func TestPKCS11GenerateFindSign(t *testing.T) {
 	}
 }
 
+var errConcurrentVerify = errors.New("HSM signature failed verification")
+
+// TestPKCS11ConcurrentSign exercises the session pool under concurrency: many
+// goroutines sign through a single shared provider at once and every signature
+// must verify against the key's public half. This is the regression guard for
+// the pooled architecture — the previous open-per-operation design was unsafe
+// under concurrency on SoftHSM (a per-application C_Logout/C_Finalize during one
+// request's teardown corrupted another's in-flight session). Run under -race to
+// also catch data races in the pool bookkeeping.
+func TestPKCS11ConcurrentSign(t *testing.T) {
+	ctx := context.Background()
+	p := pkcs11TestProvider(t)
+
+	label := uniqueLabel(t, "concurrent")
+	gen, err := p.GenerateKey(ctx, KeySpec{Label: label, KeyType: KeyTypeECDSAP256})
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	pub, ok := gen.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		t.Fatalf("public key is %T, want *ecdsa.PublicKey", gen.PublicKey)
+	}
+
+	const goroutines = 32
+	const perGoroutine = 25
+	var wg sync.WaitGroup
+	errs := make(chan error, goroutines)
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(seed byte) {
+			defer wg.Done()
+			signer, err := p.Signer(ctx, KeyRef{Label: label})
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer signer.Close()
+			for i := 0; i < perGoroutine; i++ {
+				digest := sha256.Sum256([]byte{seed, byte(i)})
+				sig, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+				if err != nil {
+					errs <- err
+					return
+				}
+				if !ecdsa.VerifyASN1(pub, digest[:], sig) {
+					errs <- errConcurrentVerify
+					return
+				}
+			}
+		}(byte(g))
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent signing failed: %v", err)
+	}
+}
+
 func TestPKCS11FindNotFound(t *testing.T) {
 	ctx := context.Background()
 	p := pkcs11TestProvider(t)
@@ -152,7 +213,17 @@ func TestPKCS11Ping(t *testing.T) {
 		t.Fatalf("instrumented Ping failed: %v", err)
 	}
 
-	// A bad PIN must surface as a probe failure, not a success.
+	// A bad PIN must surface as a probe failure, not a success. The pooled
+	// provider validates the PIN when it builds its session pool (the login
+	// round-trip). On SoftHSM the C_Login state is per-application, not
+	// per-session: once any pool in the process is authenticated, a second
+	// Login returns CKR_USER_ALREADY_LOGGED_IN regardless of the PIN supplied.
+	// So we release the good provider's login first; otherwise the wrong PIN
+	// would never reach a real login attempt. In production there is exactly
+	// one provider per process, so its first login validates the PIN.
+	if err := p.Close(); err != nil {
+		t.Fatalf("closing good provider: %v", err)
+	}
 	bad, err := NewPKCS11Provider(PKCS11Settings{
 		ModulePath: p.cfg.ModulePath,
 		Pin:        "0000wrong",
