@@ -239,17 +239,18 @@ func (m *Manager) issueLeaf(ctx context.Context, issuerCA *models.CA, issuerCert
 	defer signer.Close()
 
 	der, ctStatus, err := m.buildLeaf(ctx, signer, issuerCA, issuerCert, pki.LeafCertRequest{
-		Subject:        parts.Subject,
-		PublicKey:      parts.PublicKey,
-		Serial:         serial,
-		NotBefore:      notBefore,
-		NotAfter:       notAfter,
-		KeyUsage:       keyUsage,
-		ExtKeyUsage:    extKeyUsage,
-		DNSNames:       parts.DNSNames,
-		IPAddresses:    parts.IPAddresses,
-		EmailAddresses: parts.EmailAddresses,
-		URIs:           parts.URIs,
+		Subject:               parts.Subject,
+		PublicKey:             parts.PublicKey,
+		Serial:                serial,
+		NotBefore:             notBefore,
+		NotAfter:              notAfter,
+		KeyUsage:              keyUsage,
+		ExtKeyUsage:           extKeyUsage,
+		DNSNames:              parts.DNSNames,
+		IPAddresses:           parts.IPAddresses,
+		EmailAddresses:        parts.EmailAddresses,
+		URIs:                  parts.URIs,
+		CRLDistributionPoints: leafCRLDistributionPoints(issuerCA.ID, serial),
 	}, profile, requestedBy)
 	if err != nil {
 		return nil, fmt.Errorf("creating certificate: %w", err)
@@ -404,17 +405,18 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (*IssueR
 	defer signer.Close()
 
 	der, ctStatus, err := m.buildLeaf(ctx, signer, issuerCA, issuerCert, pki.LeafCertRequest{
-		Subject:        subject,
-		PublicKey:      publicKey,
-		Serial:         serial,
-		NotBefore:      now.Add(-clockSkew),
-		NotAfter:       notAfter,
-		KeyUsage:       keyUsage,
-		ExtKeyUsage:    extKeyUsage,
-		DNSNames:       dnsNames,
-		IPAddresses:    ipAddresses,
-		EmailAddresses: emails,
-		URIs:           uris,
+		Subject:               subject,
+		PublicKey:             publicKey,
+		Serial:                serial,
+		NotBefore:             now.Add(-clockSkew),
+		NotAfter:              notAfter,
+		KeyUsage:              keyUsage,
+		ExtKeyUsage:           extKeyUsage,
+		DNSNames:              dnsNames,
+		IPAddresses:           ipAddresses,
+		EmailAddresses:        emails,
+		URIs:                  uris,
+		CRLDistributionPoints: leafCRLDistributionPoints(issuerCA.ID, serial),
 	}, profile, spec.RequestedBy)
 	if err != nil {
 		return nil, fmt.Errorf("creating renewed certificate: %w", err)

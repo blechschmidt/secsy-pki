@@ -4,8 +4,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
@@ -214,15 +216,66 @@ func (a *API) ListRevokedCertificates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, revoked)
 }
 
-// GetCRL generates and returns a fresh CRL for a CA. It is a public endpoint so
-// relying parties can fetch revocation data without authenticating. The default
-// content type is DER (application/pkix-crl); ?format=pem returns PEM.
+// GetCRL returns the complete (base) CRL for a CA. It is a public endpoint so
+// relying parties can fetch revocation data without authenticating. The CRL is
+// served from the published store and re-signed on the HSM only when stale, so a
+// base CRL and the delta CRLs that reference it stay a consistent pair. The
+// default content type is DER (application/pkix-crl); ?format=pem returns PEM.
 func (a *API) GetCRL(w http.ResponseWriter, r *http.Request) {
+	a.serveCRL(w, r, ca.FullScope, false, "crl.der")
+}
+
+// GetDeltaCRL returns the delta CRL for a CA's complete scope, relative to the
+// current base CRL served by GetCRL.
+func (a *API) GetDeltaCRL(w http.ResponseWriter, r *http.Request) {
+	a.serveCRL(w, r, ca.FullScope, true, "crl-delta.der")
+}
+
+// GetShardCRL returns the base CRL for a single CRL partition (shard). The shard
+// index is taken from the path and must be within the configured shard count.
+func (a *API) GetShardCRL(w http.ResponseWriter, r *http.Request) {
+	shard, ok := parseShard(w, r)
+	if !ok {
+		return
+	}
+	a.serveCRL(w, r, shard, false, fmt.Sprintf("crl-%d.der", shard))
+}
+
+// GetShardDeltaCRL returns the delta CRL for a single CRL partition (shard).
+func (a *API) GetShardDeltaCRL(w http.ResponseWriter, r *http.Request) {
+	shard, ok := parseShard(w, r)
+	if !ok {
+		return
+	}
+	a.serveCRL(w, r, shard, true, fmt.Sprintf("crl-%d-delta.der", shard))
+}
+
+// parseShard extracts and validates the {shard} path value.
+func parseShard(w http.ResponseWriter, r *http.Request) (int, bool) {
+	raw := r.PathValue("shard")
+	shard, err := strconv.Atoi(raw)
+	if err != nil || shard < 0 {
+		writeError(w, http.StatusBadRequest, "invalid shard %q", raw)
+		return 0, false
+	}
+	return shard, true
+}
+
+// serveCRL is the shared body for the base/delta and full/shard CRL endpoints.
+func (a *API) serveCRL(w http.ResponseWriter, r *http.Request, shard int, delta bool, filename string) {
 	caID := r.PathValue("id")
 
 	mgr := ca.NewManager(a.db, a.keyProvider)
 	a.consumeHSMAuditLogs("")
-	der, err := mgr.GenerateCRL(r.Context(), caID)
+	var (
+		der []byte
+		err error
+	)
+	if delta {
+		der, err = mgr.GetDeltaCRL(r.Context(), caID, shard)
+	} else {
+		der, err = mgr.GetBaseCRL(r.Context(), caID, shard)
+	}
 	a.consumeHSMAuditLogs("")
 	if err != nil {
 		metrics.CRLRequests.Inc(metrics.ResultError)
@@ -237,7 +290,7 @@ func (a *API) GetCRL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/pkix-crl")
-	w.Header().Set("Content-Disposition", "attachment; filename=crl.der")
+	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
 	w.Write(der)
 }
 

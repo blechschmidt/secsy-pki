@@ -156,6 +156,17 @@ caa:
   identifier: ""
   cache_ttl_seconds: 300   # how long resolved CAA/CNAME answers are reused (0 = 300)
 
+# crl configures delta CRLs and CRL partitioning/sharding (RFC 5280). Defaults
+# keep the pre-existing behavior: a single complete CRL, no stamped CDP URLs.
+# See docs/certificate-authority.md.
+crl:
+  shards: 0                    # 0/1 = single complete CRL; N>=2 = N partitions
+  base_url: ""                 # origin for CDP/IDP/Freshest-CRL URLs; falls back
+                               # to acme.base_url when empty. No CDP is stamped
+                               # into leaves if neither is set.
+  delta_interval_minutes: 60   # how long a delta CRL is served before re-signing
+  base_validity_hours: 168     # base CRL validity window (default 7 days)
+
 # certificate_transparency registers the RFC 6962 CT logs available to issuance
 # profiles (referenced by name from a profile's `ct.logs`). Supplying a log's
 # public_key (PEM SubjectPublicKeyInfo) enables cryptographic verification of the

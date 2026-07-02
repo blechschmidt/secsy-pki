@@ -448,11 +448,106 @@ paths:
     get:
       operationId: getCRL
       tags: [Revocation]
-      summary: Download a CA's CRL
+      summary: Download a CA's complete (base) CRL
+      description: >
+        The complete CRL covering all of the CA's certificates. It is served from
+        the published store and re-signed on the HSM only when stale, so it stays
+        a consistent pair with the delta CRL that references it (RFC 5280).
       security: []
       responses:
         "200":
           description: The CRL.
+          content:
+            application/pkix-crl:
+              schema: { type: string, format: binary }
+            application/x-pem-file:
+              schema: { type: string }
+
+  /api/ca/{id}/crl/delta:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+      - name: format
+        in: query
+        schema:
+          type: string
+          enum: [der, pem]
+          default: der
+    get:
+      operationId: getDeltaCRL
+      tags: [Revocation]
+      summary: Download a CA's delta CRL
+      description: >
+        The delta CRL for the complete scope, carrying the Delta CRL Indicator
+        (2.5.29.27) referencing the base CRL at /api/ca/{id}/crl and listing only
+        the certificates revoked since that base was cut (RFC 5280 §5.2.4).
+      security: []
+      responses:
+        "200":
+          description: The delta CRL.
+          content:
+            application/pkix-crl:
+              schema: { type: string, format: binary }
+            application/x-pem-file:
+              schema: { type: string }
+
+  /api/ca/{id}/crl/partition/{shard}:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+      - name: shard
+        in: path
+        required: true
+        description: CRL partition index (0-based, less than the configured shard count).
+        schema: { type: integer, minimum: 0 }
+      - name: format
+        in: query
+        schema:
+          type: string
+          enum: [der, pem]
+          default: der
+    get:
+      operationId: getShardCRL
+      tags: [Revocation]
+      summary: Download a partition's base CRL
+      description: >
+        The base CRL for one CRL partition (shard). It carries an Issuing
+        Distribution Point (2.5.29.28) matching the CRLDistributionPoints stamped
+        into the certificates whose serials hash to this shard. Available only
+        when CRL partitioning is enabled (crl.shards >= 2).
+      security: []
+      responses:
+        "200":
+          description: The partition base CRL.
+          content:
+            application/pkix-crl:
+              schema: { type: string, format: binary }
+            application/x-pem-file:
+              schema: { type: string }
+
+  /api/ca/{id}/crl/partition/{shard}/delta:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+      - name: shard
+        in: path
+        required: true
+        description: CRL partition index (0-based, less than the configured shard count).
+        schema: { type: integer, minimum: 0 }
+      - name: format
+        in: query
+        schema:
+          type: string
+          enum: [der, pem]
+          default: der
+    get:
+      operationId: getShardDeltaCRL
+      tags: [Revocation]
+      summary: Download a partition's delta CRL
+      description: >
+        The delta CRL for one CRL partition (shard), relative to that partition's
+        base CRL. Available only when CRL partitioning is enabled.
+      security: []
+      responses:
+        "200":
+          description: The partition delta CRL.
           content:
             application/pkix-crl:
               schema: { type: string, format: binary }

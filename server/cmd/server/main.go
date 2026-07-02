@@ -195,6 +195,23 @@ func main() {
 		}
 	}
 
+	// Install the CRL distribution policy (delta CRLs + partitioning, RFC 5280).
+	// The base URL for CDP/IDP/Freshest-CRL links falls back to the ACME base URL
+	// when unset, since both name the same externally reachable origin.
+	crlBaseURL := cfg.CRL.BaseURL
+	if crlBaseURL == "" {
+		crlBaseURL = cfg.ACME.BaseURL
+	}
+	ca.SetCRLConfig(ca.CRLDistConfig{
+		Shards:        cfg.CRL.Shards,
+		BaseURL:       crlBaseURL,
+		BaseValidity:  time.Duration(cfg.CRL.BaseValidityHours) * time.Hour,
+		DeltaValidity: time.Duration(cfg.CRL.DeltaIntervalMinutes) * time.Minute,
+	})
+	if cfg.CRL.Shards >= 2 {
+		log.Printf("CRL partitioning enabled: %d shards (base URL %q)", cfg.CRL.Shards, crlBaseURL)
+	}
+
 	// Ensure YUBIHSM_PKCS11_CONF is set so the YubiHSM PKCS#11 module knows the connector URL
 	if cfg.YubiHSM.ConnectorURL != "" && os.Getenv("YUBIHSM_PKCS11_CONF") == "" {
 		confPath := "yubihsm_pkcs11.conf"

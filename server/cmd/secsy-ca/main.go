@@ -92,6 +92,20 @@ func run(args []string) error {
 
 	mgr := ca.NewManager(db, provider)
 
+	// Install the CRL distribution policy so gen-crl (and any CDP stamping) sees
+	// the configured shard count, base URL, and validity windows. Mirrors the
+	// server's wiring, including the ACME base-URL fallback.
+	crlBaseURL := cfg.CRL.BaseURL
+	if crlBaseURL == "" {
+		crlBaseURL = cfg.ACME.BaseURL
+	}
+	ca.SetCRLConfig(ca.CRLDistConfig{
+		Shards:        cfg.CRL.Shards,
+		BaseURL:       crlBaseURL,
+		BaseValidity:  time.Duration(cfg.CRL.BaseValidityHours) * time.Hour,
+		DeltaValidity: time.Duration(cfg.CRL.DeltaIntervalMinutes) * time.Minute,
+	})
+
 	switch command {
 	case "init-root":
 		return cmdInitRoot(mgr, cmdArgs)
@@ -498,6 +512,8 @@ func cmdGenCRL(db *database.DB, mgr *ca.Manager, args []string) error {
 	caRef := fs.String("ca", "", "issuing CA id or label (required)")
 	out := fs.String("out", "", "write the CRL here (default: stdout)")
 	der := fs.Bool("der", false, "emit DER instead of PEM")
+	delta := fs.Bool("delta", false, "generate a delta CRL relative to the current base CRL")
+	shard := fs.Int("shard", ca.FullScope, "CRL partition index (default: the complete, unsharded CRL)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -510,7 +526,17 @@ func cmdGenCRL(db *database.DB, mgr *ca.Manager, args []string) error {
 		return err
 	}
 
-	derBytes, err := mgr.GenerateCRL(context.Background(), caID)
+	ctx := context.Background()
+	var derBytes []byte
+	if *delta {
+		derBytes, err = mgr.GetDeltaCRL(ctx, caID, *shard)
+	} else if *shard != ca.FullScope {
+		derBytes, err = mgr.GetBaseCRL(ctx, caID, *shard)
+	} else {
+		// Backward-compatible: the unsharded, non-delta case emits a fresh
+		// ad-hoc complete CRL for export.
+		derBytes, err = mgr.GenerateCRL(ctx, caID)
+	}
 	if err != nil {
 		return err
 	}

@@ -197,11 +197,12 @@ secsy-ca -config config.yaml gen-crl -ca "Issuing CA" -out issuing.crl.pem
 secsy-ca -config config.yaml gen-crl -ca "Issuing CA" -der -out issuing.crl
 ```
 
-A **public, unauthenticated** endpoint serves the CRL freshly for relying
-parties:
+A **public, unauthenticated** endpoint serves the CRL for relying parties. The
+complete CRL is served from a published store and re-signed on the HSM only when
+stale, so it stays a consistent pair with the delta CRL that references it:
 
 ```
-GET /api/ca/{id}/crl        # DER-encoded CRL
+GET /api/ca/{id}/crl        # complete (base) CRL, DER-encoded
 ```
 
 ```bash
@@ -215,6 +216,55 @@ Verify a certificate against a CRL:
 cat tls.crt issuing-ca.crt > chain.pem
 openssl verify -crl_check -CRLfile issuing.crl.pem -CAfile chain.pem tls.crt
 ```
+
+### Delta CRLs and CRL partitioning (RFC 5280)
+
+For high-volume CAs, secsy-pki supports **delta CRLs** (small, frequently
+refreshed CRLs listing only recent changes) and **partitioned/sharded CRLs**
+(splitting revocations across N smaller CRLs). Both are configured under `crl:`
+and served from public endpoints, all HSM-signed:
+
+```yaml
+crl:
+  shards: 4                    # 0/1 = a single complete CRL; N>=2 = N partitions
+  base_url: "https://pki.example.com"  # origin for CDP/IDP/Freshest-CRL URLs
+                               # (falls back to acme.base_url when unset)
+  delta_interval_minutes: 60   # how long a delta CRL is served before re-signing
+  base_validity_hours: 168     # base CRL validity window (default 7 days)
+```
+
+**Endpoints** (all public, `?format=pem` for PEM):
+
+```
+GET /api/ca/{id}/crl                          # complete base CRL
+GET /api/ca/{id}/crl/delta                    # delta for the complete scope
+GET /api/ca/{id}/crl/partition/{shard}        # a partition's base CRL
+GET /api/ca/{id}/crl/partition/{shard}/delta  # a partition's delta CRL
+```
+
+- **Delta CRLs** carry the critical **Delta CRL Indicator** (2.5.29.27)
+  referencing the base CRL's number and list only certificates revoked since that
+  base was cut. The base CRL advertises where to fetch its delta via the
+  non-critical **Freshest CRL** extension (2.5.29.46). A relying party unions
+  base + delta:
+
+  ```bash
+  cat base.crl.pem delta.crl.pem > crls.pem
+  openssl verify -crl_check -use_deltas -extended_crl \
+    -CRLfile crls.pem -CAfile chain.pem tls.crt
+  ```
+
+- **Partitioning** deterministically maps each certificate to a shard by hashing
+  its serial (`sha256(serial) mod shards`). When `shards >= 2` and a `base_url`
+  is set, each issued certificate is stamped with the **CRLDistributionPoints**
+  URL of *its* shard, and that shard's CRL carries a matching **Issuing
+  Distribution Point** (2.5.29.28), so a verifier fetches only the one small CRL
+  relevant to the certificate in hand. A revoked serial always appears in exactly
+  one shard.
+
+Each scope keeps its own monotonic CRL-number sequence shared by its base and
+delta CRLs (RFC 5280 §5.2.3). The `gen-crl` CLI mirrors the endpoints with
+`-delta` and `-shard N` flags.
 
 ### OCSP
 
@@ -284,17 +334,26 @@ callable directly for custom TLS listeners.
 
 ### Pointing relying parties at these endpoints
 
-The issuance layer does **not** currently embed AIA / CRL-distribution-point
-URLs into leaf certificates, so clients won't discover these endpoints
-automatically. Configure verifiers explicitly — the CRL distribution URL
-(`/api/ca/{id}/crl`) and OCSP responder URL (`/api/ca/{id}/ocsp`) — in your TLS
-terminator, browser policy, or `openssl` invocation as shown above.
+When a `crl.base_url` (or `acme.base_url`) is configured, issued leaf
+certificates are stamped with a **CRLDistributionPoints** URL — the per-shard CRL
+when partitioning is enabled, otherwise the complete-CRL URL — so verifiers can
+discover the CRL automatically. The issuance layer does not currently embed AIA
+(OCSP) URLs, so configure the OCSP responder URL (`/api/ca/{id}/ocsp`) explicitly
+in your TLS terminator, browser policy, or `openssl` invocation as shown above.
+With no base URL configured, no CDP is stamped and both URLs must be configured
+explicitly.
 
 ## Operational notes
 
-- **Regenerate CRLs on a schedule.** A generated CRL is valid for ~7 days; run
-  `gen-crl` (or fetch the public endpoint, which regenerates on demand) well
-  before expiry. Always revoke *and* refresh the CRL.
+- **Regenerate CRLs on a schedule.** A base CRL is valid for ~7 days and a delta
+  for ~1 hour; the public endpoints re-sign on demand once the served copy nears
+  expiry, so simply polling them keeps CRLs fresh. For offline distribution run
+  `gen-crl` (add `-delta` / `-shard N`) well before expiry. Always revoke *and*
+  refresh the CRL.
+- **Deltas reference the published base.** A delta CRL's Delta CRL Indicator
+  points at the base CRL served by the endpoints, not at ad-hoc `gen-crl` output.
+  Publish the endpoint base CRL (or its stored copy) to the distribution point so
+  relying parties can reconstruct base + delta.
 - **Serials are per-issuer and gap-free**, allocated atomically; serial 1 is
   reserved for a root's self-signed certificate.
 - **Everything is audited.** Issue, renew, and revoke append to the

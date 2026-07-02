@@ -840,6 +840,21 @@ type GetCRLParams struct {
 	Format *string `form:"format,omitempty" json:"format,omitempty"`
 }
 
+// GetDeltaCRLParams defines parameters for GetDeltaCRL.
+type GetDeltaCRLParams struct {
+	Format *string `form:"format,omitempty" json:"format,omitempty"`
+}
+
+// GetShardCRLParams defines parameters for GetShardCRL.
+type GetShardCRLParams struct {
+	Format *string `form:"format,omitempty" json:"format,omitempty"`
+}
+
+// GetShardDeltaCRLParams defines parameters for GetShardDeltaCRL.
+type GetShardDeltaCRLParams struct {
+	Format *string `form:"format,omitempty" json:"format,omitempty"`
+}
+
 // ListEventLogParams defines parameters for ListEventLog.
 type ListEventLogParams struct {
 	Action *string `form:"action,omitempty" json:"action,omitempty"`
@@ -1044,6 +1059,15 @@ type ClientInterface interface {
 
 	// GetCRL request
 	GetCRL(ctx context.Context, id CAId, params *GetCRLParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetDeltaCRL request
+	GetDeltaCRL(ctx context.Context, id CAId, params *GetDeltaCRLParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetShardCRL request
+	GetShardCRL(ctx context.Context, id CAId, shard int, params *GetShardCRLParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetShardDeltaCRL request
+	GetShardDeltaCRL(ctx context.Context, id CAId, shard int, params *GetShardDeltaCRLParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// IssueCertificateWithBody request with any body
 	IssueCertificateWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1383,6 +1407,42 @@ func (c *Client) GetChain(ctx context.Context, id CAId, reqEditors ...RequestEdi
 
 func (c *Client) GetCRL(ctx context.Context, id CAId, params *GetCRLParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetCRLRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetDeltaCRL(ctx context.Context, id CAId, params *GetDeltaCRLParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetDeltaCRLRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetShardCRL(ctx context.Context, id CAId, shard int, params *GetShardCRLParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetShardCRLRequest(c.Server, id, shard, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetShardDeltaCRL(ctx context.Context, id CAId, shard int, params *GetShardDeltaCRLParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetShardDeltaCRLRequest(c.Server, id, shard, params)
 	if err != nil {
 		return nil, err
 	}
@@ -2795,6 +2855,188 @@ func NewGetCRLRequest(server string, id CAId, params *GetCRLParams) (*http.Reque
 	}
 
 	operationPath := fmt.Sprintf("/api/ca/%s/crl", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Format != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "format", runtime.ParamLocationQuery, *params.Format); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetDeltaCRLRequest generates requests for GetDeltaCRL
+func NewGetDeltaCRLRequest(server string, id CAId, params *GetDeltaCRLParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/crl/delta", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Format != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "format", runtime.ParamLocationQuery, *params.Format); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetShardCRLRequest generates requests for GetShardCRL
+func NewGetShardCRLRequest(server string, id CAId, shard int, params *GetShardCRLParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "shard", runtime.ParamLocationPath, shard)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/crl/partition/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Format != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "format", runtime.ParamLocationQuery, *params.Format); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetShardDeltaCRLRequest generates requests for GetShardDeltaCRL
+func NewGetShardDeltaCRLRequest(server string, id CAId, shard int, params *GetShardDeltaCRLParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "shard", runtime.ParamLocationPath, shard)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/crl/partition/%s/delta", pathParam0, pathParam1)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -5026,6 +5268,15 @@ type ClientWithResponsesInterface interface {
 	// GetCRLWithResponse request
 	GetCRLWithResponse(ctx context.Context, id CAId, params *GetCRLParams, reqEditors ...RequestEditorFn) (*GetCRLResponse, error)
 
+	// GetDeltaCRLWithResponse request
+	GetDeltaCRLWithResponse(ctx context.Context, id CAId, params *GetDeltaCRLParams, reqEditors ...RequestEditorFn) (*GetDeltaCRLResponse, error)
+
+	// GetShardCRLWithResponse request
+	GetShardCRLWithResponse(ctx context.Context, id CAId, shard int, params *GetShardCRLParams, reqEditors ...RequestEditorFn) (*GetShardCRLResponse, error)
+
+	// GetShardDeltaCRLWithResponse request
+	GetShardDeltaCRLWithResponse(ctx context.Context, id CAId, shard int, params *GetShardDeltaCRLParams, reqEditors ...RequestEditorFn) (*GetShardDeltaCRLResponse, error)
+
 	// IssueCertificateWithBodyWithResponse request with any body
 	IssueCertificateWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*IssueCertificateResponse, error)
 
@@ -5465,6 +5716,69 @@ func (r GetCRLResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetCRLResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetDeltaCRLResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+}
+
+// Status returns HTTPResponse.Status
+func (r GetDeltaCRLResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetDeltaCRLResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetShardCRLResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+}
+
+// Status returns HTTPResponse.Status
+func (r GetShardCRLResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetShardCRLResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetShardDeltaCRLResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+}
+
+// Status returns HTTPResponse.Status
+func (r GetShardDeltaCRLResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetShardDeltaCRLResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -6823,6 +7137,33 @@ func (c *ClientWithResponses) GetCRLWithResponse(ctx context.Context, id CAId, p
 	return ParseGetCRLResponse(rsp)
 }
 
+// GetDeltaCRLWithResponse request returning *GetDeltaCRLResponse
+func (c *ClientWithResponses) GetDeltaCRLWithResponse(ctx context.Context, id CAId, params *GetDeltaCRLParams, reqEditors ...RequestEditorFn) (*GetDeltaCRLResponse, error) {
+	rsp, err := c.GetDeltaCRL(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetDeltaCRLResponse(rsp)
+}
+
+// GetShardCRLWithResponse request returning *GetShardCRLResponse
+func (c *ClientWithResponses) GetShardCRLWithResponse(ctx context.Context, id CAId, shard int, params *GetShardCRLParams, reqEditors ...RequestEditorFn) (*GetShardCRLResponse, error) {
+	rsp, err := c.GetShardCRL(ctx, id, shard, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetShardCRLResponse(rsp)
+}
+
+// GetShardDeltaCRLWithResponse request returning *GetShardDeltaCRLResponse
+func (c *ClientWithResponses) GetShardDeltaCRLWithResponse(ctx context.Context, id CAId, shard int, params *GetShardDeltaCRLParams, reqEditors ...RequestEditorFn) (*GetShardDeltaCRLResponse, error) {
+	rsp, err := c.GetShardDeltaCRL(ctx, id, shard, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetShardDeltaCRLResponse(rsp)
+}
+
 // IssueCertificateWithBodyWithResponse request with arbitrary body returning *IssueCertificateResponse
 func (c *ClientWithResponses) IssueCertificateWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*IssueCertificateResponse, error) {
 	rsp, err := c.IssueCertificateWithBody(ctx, id, contentType, body, reqEditors...)
@@ -7733,6 +8074,54 @@ func ParseGetCRLResponse(rsp *http.Response) (*GetCRLResponse, error) {
 	}
 
 	response := &GetCRLResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParseGetDeltaCRLResponse parses an HTTP response from a GetDeltaCRLWithResponse call
+func ParseGetDeltaCRLResponse(rsp *http.Response) (*GetDeltaCRLResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetDeltaCRLResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParseGetShardCRLResponse parses an HTTP response from a GetShardCRLWithResponse call
+func ParseGetShardCRLResponse(rsp *http.Response) (*GetShardCRLResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetShardCRLResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParseGetShardDeltaCRLResponse parses an HTTP response from a GetShardDeltaCRLWithResponse call
+func ParseGetShardDeltaCRLResponse(rsp *http.Response) (*GetShardDeltaCRLResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetShardDeltaCRLResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
 	}

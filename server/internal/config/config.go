@@ -59,6 +59,36 @@ type Config struct {
 	// 8659). It supplies this CA's own identifier and the DNS-answer cache TTL;
 	// profiles opt in per-profile via their `caa` block.
 	CAA CAAGlobalConfig `yaml:"caa"`
+	// CRL configures delta CRLs and CRL partitioning/sharding (RFC 5280). It
+	// controls how many shards a CA's revocation data is split across, the delta
+	// regeneration interval, and the base URL used to build the distribution-point
+	// URLs stamped into issued certificates and CRL extensions.
+	CRL CRLConfig `yaml:"crl"`
+}
+
+// CRLConfig configures delta CRL generation and CRL partitioning/sharding (RFC
+// 5280). Zero-valued fields fall back to safe defaults: unsharded (a single
+// complete CRL), a 7-day base validity, and a 1-hour delta validity — matching
+// the pre-Task-36 behavior.
+type CRLConfig struct {
+	// Shards is the number of CRL partitions. 0 or 1 keeps a single complete CRL;
+	// N >= 2 deterministically splits revocations across N shard CRLs (by hashing
+	// the certificate serial) and stamps each issued certificate with the
+	// CRLDistributionPoints URL of its shard.
+	Shards int `yaml:"shards"`
+	// BaseURL is the externally reachable origin (e.g. https://pki.example.com)
+	// used to build absolute CRLDistributionPoints / IssuingDistributionPoint /
+	// Freshest CRL URLs. When empty it falls back to acme.base_url; if neither is
+	// set, certificates carry no CDP and CRLs carry no distribution-point
+	// extensions (numbering and delta reconstruction still work).
+	BaseURL string `yaml:"base_url"`
+	// DeltaIntervalMinutes bounds how long a delta CRL is served before a fresh
+	// one is signed (its NextUpdate window). Defaults to 60. Non-positive uses the
+	// default.
+	DeltaIntervalMinutes int `yaml:"delta_interval_minutes"`
+	// BaseValidityHours bounds a base CRL's validity window. Defaults to 168 (7
+	// days). Non-positive uses the default.
+	BaseValidityHours int `yaml:"base_validity_hours"`
 }
 
 // CAAGlobalConfig holds the deployment-wide settings for the CAA pre-issuance

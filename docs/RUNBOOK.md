@@ -129,7 +129,10 @@ OCSP/CRL outage can look like a widespread certificate failure. Move fast.
 |---------|--------|------|
 | OCSP (binary GET) | GET | `/api/ca/{id}/ocsp/{base64-request}` |
 | OCSP (POST) | POST | `/api/ca/{id}/ocsp` |
-| CRL | GET | `/api/ca/{id}/crl` |
+| CRL (complete/base) | GET | `/api/ca/{id}/crl` |
+| Delta CRL | GET | `/api/ca/{id}/crl/delta` |
+| Partition (shard) CRL | GET | `/api/ca/{id}/crl/partition/{shard}` |
+| Partition delta CRL | GET | `/api/ca/{id}/crl/partition/{shard}/delta` |
 | CA chain (rollover-aware) | GET | `/api/ca/{id}/chain` |
 
 ### Diagnose
@@ -163,7 +166,18 @@ not an OCSP-code problem.
   ```bash
   secsy-ca -config config.yaml gen-crl -ca <id> -out crl.der -der
   ```
-  Automate CRL refresh ahead of `Next Update`; a lapsed CRL is an outage.
+  Automate CRL refresh ahead of `Next Update`; a lapsed CRL is an outage. The
+  public endpoints re-sign automatically as the served copy nears expiry, so
+  polling them (or fronting them with a cache) keeps CRLs fresh without cron.
+- **Delta CRL not reflecting a recent revocation.** Deltas are served for up to
+  `crl.delta_interval_minutes` (default 60) before re-signing; a client will see
+  the revocation once the served delta refreshes, or immediately via OCSP. The
+  delta references the *published* base CRL — if you republish a base from ad-hoc
+  `gen-crl` output the numbers won't line up; publish the endpoint's base CRL.
+- **Partitioned CRL 400 / wrong shard.** `/crl/partition/{shard}` requires
+  `crl.shards >= 2` and `shard` in `0..shards-1`. A certificate's shard is
+  `sha256(serial) mod shards`; verify with the CDP stamped in the certificate
+  (`openssl x509 -in leaf.pem -noout -text | grep -A1 'CRL Distribution'`).
 - **Nonce responses not cached.** By design — RFC 8954 nonce-bearing requests
   (`ocsp.nonce_enabled`) bypass the cache and are freshly signed, so a flood of
   nonce requests hits the HSM directly. If a client is hammering with nonces and

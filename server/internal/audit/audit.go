@@ -43,6 +43,10 @@ const (
 	ActionCertIssue           = "cert.issue"
 	ActionCertRenew           = "cert.renew"
 	ActionCertRevoke          = "cert.revoke"
+	// ActionCRLPublish records the HSM-signed generation of a base or delta CRL
+	// for a CA scope (full or a partition shard). The detail carries the scope,
+	// kind, CRL number, and entry count.
+	ActionCRLPublish = "crl.publish"
 	// ActionCertLint records the outcome of the pre-issuance lint gate when it
 	// produces findings: ResultError when an enforce-mode check blocked signing
 	// (fail-closed), ResultSuccess when only warnings were emitted.

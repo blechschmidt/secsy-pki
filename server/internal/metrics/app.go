@@ -100,6 +100,13 @@ var (
 		"secsy_crl_requests_total",
 		"CRL distribution requests, partitioned by result.",
 		"result")
+	// CRLGenerated counts freshly HSM-signed CRLs by "kind" (base|delta) and
+	// "scope" (full|partition). Because base/delta CRLs are cached and re-served
+	// between regenerations, this tracks HSM signing load, not request volume.
+	CRLGenerated = NewCounter(Default,
+		"secsy_crl_generated_total",
+		"CRLs freshly signed on the HSM, by kind (base|delta) and scope (full|partition).",
+		"kind", "scope")
 
 	// RFC 3161 time-stamping. "result" is granted|rejected|error; the token is
 	// signed on the HSM, so this tracks TSA demand and rejection rates.

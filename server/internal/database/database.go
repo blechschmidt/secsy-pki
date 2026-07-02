@@ -207,6 +207,32 @@ func (db *DB) migrate() error {
 			reason INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (ca_id, serial)
 		)`,
+		// Per-CA-and-scope monotonic CRL number counter for partitioned CRLs. The
+		// unsharded ("full") scope keeps using ca_crl_counters for backward
+		// compatibility; each partition ("partition:N") gets its own independent
+		// monotonic sequence shared by its base and delta CRLs (RFC 5280 §5.2.3).
+		`CREATE TABLE IF NOT EXISTS ca_scoped_crl_counters (
+			ca_id TEXT NOT NULL REFERENCES cas(id) ON DELETE CASCADE,
+			scope TEXT NOT NULL,
+			next_number INTEGER NOT NULL,
+			PRIMARY KEY (ca_id, scope)
+		)`,
+		// The last published base/delta CRL per (CA, scope, kind). Persisting the
+		// artifact keeps a base CRL and the delta CRLs that reference it a
+		// consistent pair: a delta's Delta CRL Indicator points at the stored
+		// base's CRLNumber, and both are served byte-for-byte until regenerated.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS ca_published_crls (
+			ca_id TEXT NOT NULL REFERENCES cas(id) ON DELETE CASCADE,
+			scope TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			crl_number INTEGER NOT NULL,
+			base_number INTEGER NOT NULL DEFAULT 0,
+			this_update TIMESTAMP NOT NULL,
+			next_update TIMESTAMP NOT NULL,
+			generated_at TIMESTAMP NOT NULL,
+			der %s NOT NULL,
+			PRIMARY KEY (ca_id, scope, kind)
+		)`, blob),
 		`CREATE TABLE IF NOT EXISTS groups_ (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL UNIQUE

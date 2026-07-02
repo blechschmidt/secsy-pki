@@ -204,7 +204,12 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("POST /api/monitor/scan", protected(http.HandlerFunc(a.RunExpiryScan)))
 
 	// Public revocation endpoints — relying parties fetch these without auth.
+	// The complete/base CRL, its delta, and — when partitioning is enabled — the
+	// per-shard base and delta CRLs (RFC 5280 delta CRLs + sharding).
 	mux.HandleFunc("GET /api/ca/{id}/crl", a.GetCRL)
+	mux.HandleFunc("GET /api/ca/{id}/crl/delta", a.GetDeltaCRL)
+	mux.HandleFunc("GET /api/ca/{id}/crl/partition/{shard}", a.GetShardCRL)
+	mux.HandleFunc("GET /api/ca/{id}/crl/partition/{shard}/delta", a.GetShardDeltaCRL)
 	// Combined overlap chain (AIA/bundle) for a CA, covering key-rollover overlap.
 	mux.HandleFunc("GET /api/ca/{id}/chain", a.GetChain)
 	mux.HandleFunc("POST /api/ca/{id}/ocsp", a.OCSPResponder)
