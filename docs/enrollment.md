@@ -1,21 +1,25 @@
-# SCEP & EST: device / MDM certificate enrollment
+# SCEP, EST & CMP: device / MDM certificate enrollment
 
-secsy-pki includes **SCEP** ([RFC 8894](https://www.rfc-editor.org/rfc/rfc8894))
-and **EST** ([RFC 7030](https://www.rfc-editor.org/rfc/rfc7030)) enrollment
-servers so network devices, MDM platforms (Jamf, Intune/NDES clients, Kandji,
-…), routers/firewalls, and IoT fleets can auto-enroll for certificates. Like the
-[ACME server](acme.md), every certificate is signed by an **HSM-backed CA**
-through the same [`ca.Manager`](certificate-authority.md) used by the REST API
-and CLI, reuses the shared **certificate profiles** and **revocation store**, and
-writes every enrollment to the [tamper-evident audit log](rbac-and-audit.md).
+secsy-pki includes **SCEP** ([RFC 8894](https://www.rfc-editor.org/rfc/rfc8894)),
+**EST** ([RFC 7030](https://www.rfc-editor.org/rfc/rfc7030)), and
+**Lightweight CMP** ([RFC 9483](https://www.rfc-editor.org/rfc/rfc9483),
+profiling RFC 4210/4211) enrollment servers so network devices, MDM platforms
+(Jamf, Intune/NDES clients, Kandji, …), routers/firewalls, industrial and IoT
+fleets can auto-enroll for certificates. Like the [ACME server](acme.md), every
+certificate is signed by an **HSM-backed CA** through the same
+[`ca.Manager`](certificate-authority.md) used by the REST API and CLI, reuses the
+shared **certificate profiles** and **revocation store**, and writes every
+enrollment to the [tamper-evident audit log](rbac-and-audit.md).
 
-Both protocols authenticate clients with their own schemes (a SCEP challenge
-password, or EST HTTP Basic / TLS client certificate) rather than OIDC, so they
-mount **outside** the OIDC auth middleware — exactly like ACME.
+All three protocols authenticate clients with their own schemes (a SCEP challenge
+password; EST HTTP Basic / TLS client certificate; CMP shared-secret MAC or a
+signature from a previously-issued certificate) rather than OIDC, so they mount
+**outside** the OIDC auth middleware — exactly like ACME.
 
 - [1. When to use SCEP vs EST](#1-when-to-use-scep-vs-est)
 - [2. SCEP (RFC 8894)](#2-scep-rfc-8894)
 - [3. EST (RFC 7030)](#3-est-rfc-7030)
+- [3.5. CMP (RFC 9483)](#35-cmp-rfc-9483)
 - [4. Auditing](#4-auditing)
 - [5. Security notes](#5-security-notes)
 - [6. Endpoint reference](#6-endpoint-reference)
@@ -158,6 +162,67 @@ curl -s -u device01:a-long-shared-secret \
   base64 -d | openssl pkcs7 -inform DER -print_certs
 ```
 
+## 3.5. CMP (RFC 9483)
+
+**Lightweight CMP** serves enterprise clients and infrastructure that speak the
+Certificate Management Protocol rather than ACME/EST. A single `POST /cmp`
+endpoint (media type `application/pkixcmp`) handles the core PKIMessage flows:
+
+| Flow | Body | Purpose | Client auth |
+|---|---|---|---|
+| **ir** | initialization request | first certificate for a device | shared-secret MAC (PBM) |
+| **cr** | certification request | additional certificate | shared-secret MAC (PBM) |
+| **kur** | key update request | rekey / renew an existing certificate | **signature** by the certificate being updated |
+| **rr** | revocation request | revoke a certificate | signature (self-revocation) or operator MAC |
+
+**Message protection.** Every request and response is integrity-protected. Two
+schemes are supported:
+
+- **PasswordBasedMac (PBM, RFC 4210 §5.1.3.1)** — a shared secret keyed by a
+  *reference value* (the `senderKID`). Configure secrets under `cmp.secrets`; the
+  MAC-protected response mirrors the same secret. Used for `ir`/`cr`.
+- **Signature-based** — the message is signed by a certificate this CA
+  previously issued (verified as currently-valid and non-revoked). Used for
+  `kur` and self-service `rr`; the CA signs the response with its HSM key and
+  returns its chain in `extraCerts`.
+
+Each `ir`/`cr`/`kur` request also carries a **proof of possession**: a signature
+over the CRMF `CertRequest` with the requested private key, which the server
+verifies before issuing.
+
+Enable it in `config.yaml`:
+
+```yaml
+cmp:
+  enabled: true
+  ca_label: "Secsy Issuing CA"
+  profile: client
+  allow_signature_protection: true    # kur + signature-based rr
+  secrets:
+    - reference: device-fleet-1
+      secret: "long-random-shared-secret"
+      profile: client
+```
+
+### Client example (`secsy-ca cmp`)
+
+The bundled client performs an `ir` enrollment end-to-end (generate key → build
+MAC-protected request → POST → parse the issued certificate):
+
+```bash
+secsy-ca cmp \
+  -url https://pki.example.com:8443/cmp \
+  -reference device-fleet-1 \
+  -secret 'long-random-shared-secret' \
+  -cn device-01.example.com \
+  -dns device-01.example.com \
+  -cert-out device-01.crt -key-out device-01.key
+```
+
+`-operation cr` sends a certification request instead; `-insecure` skips TLS
+verification for lab testing. Any standards-compliant CMP client (e.g. OpenSSL
+`openssl cmp`, `libcmp`) interoperates with the same endpoint.
+
 ## 4. Auditing
 
 Every enrollment appends an entry to the hash-chained
@@ -170,6 +235,9 @@ Every enrollment appends an entry to the hash-chained
 | `est.cacerts` | EST cacerts |
 | `est.simpleenroll` / `est.simplereenroll` | EST enrollment / renewal |
 | `est.serverkeygen` | EST server-side key generation |
+| `cmp.ir` / `cmp.cr` | CMP initialization / certification request |
+| `cmp.kur` | CMP key-update (rekey) request |
+| `cmp.rr` | CMP revocation request |
 
 Denied enrollments are recorded with result `denied`; issuance failures with
 `error`.
@@ -187,9 +255,15 @@ Denied enrollments are recorded with result `denied`; issuance failures with
   repeatedly transmitted.
 - **Serve over TLS.** EST requires it; run SCEP behind TLS too (the server
   refuses cleartext unless `SECSY_ALLOW_INSECURE_HTTP=1`).
-- **Profiles constrain issuance.** Both protocols issue only under the
+- **Profiles constrain issuance.** All three protocols issue only under the
   configured profile(s), so a compromised enrollment credential cannot mint, for
   example, a CA or code-signing certificate.
+- **CMP protection is verified fail-closed.** A PBM MAC is checked in constant
+  time and a signature-protected `kur`/`rr` is accepted only from a currently
+  valid, non-revoked certificate this CA issued; any protection or
+  proof-of-possession failure is reported as a CMP error (`badMessageCheck` /
+  `badPOP`) and never issues. Signature-based self-revocation may revoke only the
+  signer's own certificate.
 
 ## 6. Endpoint reference
 
@@ -202,3 +276,4 @@ Denied enrollments are recorded with result `denied`; issuance failures with
 | POST | `/.well-known/est/simpleenroll` | Basic / client cert | Initial enrollment |
 | POST | `/.well-known/est/simplereenroll` | Basic / client cert | Renewal |
 | POST | `/.well-known/est/serverkeygen` | Basic / client cert | Server-side key generation |
+| POST | `/cmp` | shared-secret MAC / signature | CMP ir / cr / kur / rr (`application/pkixcmp`) |

@@ -36,6 +36,9 @@ type Config struct {
 	// TSA configures the RFC 3161 Time-Stamp Authority. Disabled unless
 	// tsa.enabled is true.
 	TSA TSAConfig `yaml:"tsa"`
+	// CMP configures the Lightweight CMP (RFC 9483) certificate-management server.
+	// Disabled unless cmp.enabled is true.
+	CMP CMPConfig `yaml:"cmp"`
 	// Monitor configures the background certificate-expiry monitor and optional
 	// auto-renewal workflow. Disabled unless monitor.enabled is true.
 	Monitor MonitorConfig `yaml:"monitor"`
@@ -400,6 +403,42 @@ type ESTConfig struct {
 type ESTUserConfig struct {
 	Password string `yaml:"password"`
 	Profile  string `yaml:"profile"`
+}
+
+// CMPConfig configures the Lightweight CMP (RFC 9483) server. When enabled a
+// /cmp endpoint accepts PKIMessage flows (ir/cr/kur/rr) with shared-secret
+// (PasswordBasedMac) or signature-based message protection.
+type CMPConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Path is the URL the endpoint mounts under (default /cmp).
+	Path string `yaml:"path"`
+	// CAID / CALabel select the issuing CA. Exactly one should be set.
+	CAID    string `yaml:"ca_id"`
+	CALabel string `yaml:"ca_label"`
+	// Profile is the default certificate profile (default "client").
+	Profile string `yaml:"profile"`
+	// Secrets are the shared secrets for MAC-protected requests, each identified
+	// by a reference value the client presents as the senderKID.
+	Secrets []CMPSecretConfig `yaml:"secrets"`
+	// AllowSignatureProtection enables signature-protected flows (kur, and rr by a
+	// certificate this CA previously issued). Defaults to true.
+	AllowSignatureProtection *bool `yaml:"allow_signature_protection"`
+}
+
+// SignatureProtectionEnabled reports whether signature-protected flows are
+// permitted. It defaults to true.
+func (c CMPConfig) SignatureProtectionEnabled() bool {
+	return c.AllowSignatureProtection == nil || *c.AllowSignatureProtection
+}
+
+// CMPSecretConfig is one shared-secret enrollment credential for CMP PBM.
+type CMPSecretConfig struct {
+	// Reference is the senderKID (reference value) identifying this secret.
+	Reference string `yaml:"reference"`
+	// Secret is the shared secret value used to key the PasswordBasedMac.
+	Secret string `yaml:"secret"`
+	// Profile constrains what this credential may enroll (empty = server default).
+	Profile string `yaml:"profile"`
 }
 
 // TSAConfig configures the RFC 3161 Time-Stamp Authority. When enabled a public
@@ -811,6 +850,24 @@ func (c *Config) validateEnrollment() error {
 			case "sha1", "sha256", "sha384", "sha512":
 			default:
 				return fmt.Errorf("tsa.accepted_hashes: %q is invalid (want sha1, sha256, sha384, or sha512)", h)
+			}
+		}
+	}
+	if c.CMP.Enabled {
+		if c.CMP.CAID == "" && c.CMP.CALabel == "" {
+			return fmt.Errorf("cmp.enabled is true but neither cmp.ca_id nor cmp.ca_label is set")
+		}
+		// At least one authentication method must be usable: a shared secret for
+		// MAC-protected ir/cr, or signature-based protection for kur/rr.
+		if len(c.CMP.Secrets) == 0 && !c.CMP.SignatureProtectionEnabled() {
+			return fmt.Errorf("cmp.enabled is true but no cmp.secrets are configured and cmp.allow_signature_protection is false")
+		}
+		for i, s := range c.CMP.Secrets {
+			if s.Reference == "" {
+				return fmt.Errorf("cmp.secrets[%d]: reference must not be empty", i)
+			}
+			if s.Secret == "" {
+				return fmt.Errorf("cmp.secrets[%d]: secret must not be empty", i)
 			}
 		}
 	}

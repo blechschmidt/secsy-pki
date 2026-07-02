@@ -25,6 +25,7 @@ type Prefixes struct {
 	EST  string // e.g. "/.well-known/est"
 	SCEP string // e.g. "/scep"
 	TSA  string // e.g. "/tsa"
+	CMP  string // e.g. "/cmp"
 }
 
 // Options configures the rate-limit middleware.
@@ -54,6 +55,7 @@ func New(opts Options) *Middleware {
 			EST:  normalizePrefix(opts.Prefixes.EST),
 			SCEP: normalizePrefix(opts.Prefixes.SCEP),
 			TSA:  normalizePrefix(opts.Prefixes.TSA),
+			CMP:  normalizePrefix(opts.Prefixes.CMP),
 		},
 	}
 }
@@ -178,6 +180,12 @@ func (m *Middleware) classify(r *http.Request) *class {
 	// guard like the other signing endpoints.
 	if p := m.prefixes.TSA; p != "" && path == p {
 		return &class{name: "tsa", hsmBound: true}
+	}
+
+	// Lightweight CMP (RFC 9483) issues/revokes on the HSM, so gate it behind the
+	// concurrency guard like the other signing endpoints.
+	if p := m.prefixes.CMP; p != "" && path == p {
+		return &class{name: "cmp", hsmBound: true}
 	}
 
 	return nil

@@ -114,6 +114,15 @@ const (
 	// public /tsa endpoint), so the actor is a fixed pseudo-principal and the
 	// target is the issued token serial.
 	ActionTSATimestamp = "tsa.timestamp"
+
+	// Lightweight CMP (RFC 9483) certificate-management actions. The actor is the
+	// shared-secret reference value (PBM) or the subject of the signing
+	// certificate, since CMP authenticates with its own message protection rather
+	// than an OIDC subject.
+	ActionCMPInitialization = "cmp.ir"
+	ActionCMPCertification  = "cmp.cr"
+	ActionCMPKeyUpdate      = "cmp.kur"
+	ActionCMPRevocation     = "cmp.rr"
 )
 
 // Event is a single entry in the tamper-evident audit log. Seq is a

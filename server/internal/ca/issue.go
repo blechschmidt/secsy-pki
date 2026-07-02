@@ -2,11 +2,14 @@ package ca
 
 import (
 	"context"
+	"crypto"
 	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net"
 	"time"
 
 	"github.com/google/uuid"
@@ -108,6 +111,101 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 		return nil, err
 	}
 
+	uris := make([]string, len(csr.URIs))
+	for i, u := range csr.URIs {
+		uris[i] = u.String()
+	}
+
+	return m.issueLeaf(ctx, issuerCA, issuerCert, profile, leafParts{
+		Subject:        csr.Subject,
+		PublicKey:      csr.PublicKey,
+		DNSNames:       csr.DNSNames,
+		IPAddresses:    csr.IPAddresses,
+		EmailAddresses: csr.EmailAddresses,
+		URIs:           uris,
+	}, spec.Validity, spec.RequestedBy)
+}
+
+// TemplateIssueSpec describes an end-entity certificate to issue from a parsed
+// subject/public-key template rather than a PKCS#10 CSR. It is used by the CMP
+// (RFC 9483) endpoint, whose CertTemplate is not a self-signed CSR; proof of
+// possession is verified by the protocol layer before this is called.
+type TemplateIssueSpec struct {
+	// CAID identifies the issuing CA. It must be an X.509 CA (have a cert).
+	CAID string
+	// Subject, PublicKey and the SAN fields are taken from the CMP CertTemplate.
+	Subject        pkix.Name
+	PublicKey      crypto.PublicKey
+	DNSNames       []string
+	IPAddresses    []net.IP
+	EmailAddresses []string
+	URIs           []string
+	// Profile is the certificate profile name (empty = default profile).
+	Profile string
+	// Validity overrides the profile default; clamped as in CSR issuance.
+	Validity time.Duration
+	// RequestedBy records who requested the certificate (for audit).
+	RequestedBy string
+}
+
+// IssueCertificateFromTemplate signs a subject/public-key template into an
+// end-entity certificate. It shares the full HSM-backed issuance path with
+// IssueCertificate (serial allocation, pre-issuance lint/CAA gates, CT, and the
+// recorded copy for renewal/revocation); only the front end differs. Post-
+// quantum and hybrid profiles are rejected here, since their public keys arrive
+// via dedicated CSR-based paths.
+func (m *Manager) IssueCertificateFromTemplate(ctx context.Context, spec TemplateIssueSpec) (*IssueResult, error) {
+	activeID, err := m.ActiveIssuerID(spec.CAID)
+	if err != nil {
+		return nil, err
+	}
+	issuerCA, issuerCert, err := m.loadIssuer(activeID)
+	if err != nil {
+		return nil, err
+	}
+	profile, err := LookupProfile(spec.Profile)
+	if err != nil {
+		return nil, err
+	}
+	if profile.Algorithm != AlgClassical {
+		return nil, fmt.Errorf("profile %q is %s; template-based issuance supports classical algorithms only", profile.Name, profile.Algorithm)
+	}
+	if spec.PublicKey == nil {
+		return nil, fmt.Errorf("certificate template has no public key")
+	}
+	if spec.Subject.CommonName == "" && len(spec.DNSNames) == 0 &&
+		len(spec.IPAddresses) == 0 && len(spec.EmailAddresses) == 0 && len(spec.URIs) == 0 {
+		return nil, fmt.Errorf("certificate template must contain a subject common name or at least one SAN")
+	}
+	return m.issueLeaf(ctx, issuerCA, issuerCert, profile, leafParts{
+		Subject:        spec.Subject,
+		PublicKey:      spec.PublicKey,
+		DNSNames:       spec.DNSNames,
+		IPAddresses:    spec.IPAddresses,
+		EmailAddresses: spec.EmailAddresses,
+		URIs:           spec.URIs,
+	}, spec.Validity, spec.RequestedBy)
+}
+
+// leafParts carries the subject, public key, and SANs of a leaf certificate,
+// abstracting over whether they were sourced from a PKCS#10 CSR or a CMP
+// CertTemplate so both share one issuance path.
+type leafParts struct {
+	Subject        pkix.Name
+	PublicKey      crypto.PublicKey
+	DNSNames       []string
+	IPAddresses    []net.IP
+	EmailAddresses []string
+	URIs           []string
+}
+
+// issueLeaf is the shared classical end-entity issuance path: it resolves the
+// validity window, allocates a random serial, signs the leaf on the provider
+// (HSM) through buildLeaf (which applies the pre-issuance lint/CAA gates and CT
+// embedding), and records a copy for renewal/revocation. Both CSR-based and
+// template-based issuance funnel through it so the security-sensitive logic
+// lives in one place.
+func (m *Manager) issueLeaf(ctx context.Context, issuerCA *models.CA, issuerCert *x509.Certificate, profile Profile, parts leafParts, validityOverride time.Duration, requestedBy string) (*IssueResult, error) {
 	keyUsage, err := profile.keyUsage()
 	if err != nil {
 		return nil, err
@@ -118,7 +216,7 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 	}
 
 	now := time.Now()
-	validity := profile.resolveValidity(spec.Validity)
+	validity := profile.resolveValidity(validityOverride)
 	notBefore := now.Add(-clockSkew)
 	notAfter := now.Add(validity)
 	if notAfter.After(issuerCert.NotAfter) {
@@ -140,24 +238,19 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 	}
 	defer signer.Close()
 
-	uris := make([]string, len(csr.URIs))
-	for i, u := range csr.URIs {
-		uris[i] = u.String()
-	}
-
 	der, ctStatus, err := m.buildLeaf(ctx, signer, issuerCA, issuerCert, pki.LeafCertRequest{
-		Subject:        csr.Subject,
-		PublicKey:      csr.PublicKey,
+		Subject:        parts.Subject,
+		PublicKey:      parts.PublicKey,
 		Serial:         serial,
 		NotBefore:      notBefore,
 		NotAfter:       notAfter,
 		KeyUsage:       keyUsage,
 		ExtKeyUsage:    extKeyUsage,
-		DNSNames:       csr.DNSNames,
-		IPAddresses:    csr.IPAddresses,
-		EmailAddresses: csr.EmailAddresses,
-		URIs:           uris,
-	}, profile, spec.RequestedBy)
+		DNSNames:       parts.DNSNames,
+		IPAddresses:    parts.IPAddresses,
+		EmailAddresses: parts.EmailAddresses,
+		URIs:           parts.URIs,
+	}, profile, requestedBy)
 	if err != nil {
 		return nil, fmt.Errorf("creating certificate: %w", err)
 	}
@@ -181,7 +274,7 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 		NotBefore:   cert.NotBefore,
 		NotAfter:    cert.NotAfter,
 		Status:      models.CertStatusValid,
-		RequestedBy: spec.RequestedBy,
+		RequestedBy: requestedBy,
 	}
 	applyCTToRecord(record, ctStatus)
 	if err := m.db.RecordIssuedCertificate(record); err != nil {

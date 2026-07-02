@@ -20,6 +20,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/caa"
+	"github.com/blechschmidt/secsy-pki/server/internal/cmp"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/ct"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
@@ -338,6 +339,18 @@ func main() {
 		authority.Register(mux)
 	}
 
+	// Lightweight CMP (RFC 9483) certificate-management server. Like the other
+	// enrollment protocols it authenticates with its own message protection
+	// (shared-secret PBM or a signature from a certificate this CA issued), so it
+	// mounts outside the OIDC middleware and is metered by the rate-limit guard.
+	if cfg.CMP.Enabled {
+		cmpCfg, err := buildCMPConfig(db, cfg)
+		if err != nil {
+			log.Fatalf("CMP configuration error: %v", err)
+		}
+		cmp.New(db, provider, cmpCfg).Register(mux)
+	}
+
 	// Serve the legacy disk-based SPA from web/static when present. The Task 21
 	// operator console is served separately from an embedded (go:embed) bundle
 	// under /console/ by RegisterRoutes, so it ships in the binary regardless.
@@ -568,6 +581,25 @@ func buildESTConfig(db *database.DB, cfg *config.Config) (est.Config, error) {
 		AllowTLSClientReenroll: cfg.EST.AllowTLSClientReenroll,
 		EnableServerKeygen:     cfg.EST.EnableServerKeygen,
 		ServerKeygenKeyType:    cfg.EST.ServerKeygenKeyType,
+	}, nil
+}
+
+// buildCMPConfig assembles the cmp.Config from the application config.
+func buildCMPConfig(db *database.DB, cfg *config.Config) (cmp.Config, error) {
+	caID, err := resolveCAID(db, cfg.CMP.CAID, cfg.CMP.CALabel, "cmp")
+	if err != nil {
+		return cmp.Config{}, err
+	}
+	secrets := make([]cmp.Secret, 0, len(cfg.CMP.Secrets))
+	for _, s := range cfg.CMP.Secrets {
+		secrets = append(secrets, cmp.Secret{Reference: s.Reference, Secret: s.Secret, Profile: s.Profile})
+	}
+	return cmp.Config{
+		Path:                     cfg.CMP.Path,
+		CAID:                     caID,
+		Profile:                  cfg.CMP.Profile,
+		Secrets:                  secrets,
+		AllowSignatureProtection: cfg.CMP.AllowSignatureProtection,
 	}, nil
 }
 
@@ -859,6 +891,9 @@ func buildRateLimit(cfg *config.Config) *ratelimit.Middleware {
 	}
 	if cfg.TSA.Enabled {
 		pref.TSA = orDefaultPath(cfg.TSA.Path, "/tsa")
+	}
+	if cfg.CMP.Enabled {
+		pref.CMP = orDefaultPath(cfg.CMP.Path, "/cmp")
 	}
 
 	return ratelimit.New(ratelimit.Options{Limiter: limiter, Guard: guard, Prefixes: pref})

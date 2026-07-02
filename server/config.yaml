@@ -191,6 +191,22 @@ tsa:
   # accepted_hashes: [sha256, sha384, sha512]  # message-imprint algs (sha1 opt-in)
   # include_tsa_name: false                 # embed signer subject as tsa GeneralName
 
+# cmp enables the Lightweight CMP (RFC 9483) certificate-management endpoint for
+# enterprise clients that speak CMP rather than ACME/EST. It handles the ir/cr/
+# kur/rr PKIMessage flows with shared-secret (PasswordBasedMac) or signature-based
+# message protection; every leaf is signed through the shared HSM-backed CA.
+# Disabled by default; see docs/enrollment.md.
+cmp:
+  enabled: false
+  # path: /cmp                              # URL the endpoint mounts under
+  # ca_label: "Secsy Issuing CA"            # or ca_id; the issuing CA
+  # profile: client                         # default certificate profile
+  # allow_signature_protection: true        # enable kur & signature-based rr
+  # secrets:                                # shared secrets for MAC-protected ir/cr
+  #   - reference: device-fleet-1           # the senderKID a client presents
+  #     secret: "change-me-shared-secret"   # the PBM shared secret
+  #     profile: client                     # optional per-secret profile override
+
 # audit.export streams the tamper-evident event log to external SIEM systems.
 # Disabled by default; see docs/audit-siem-export.md. Each sink has its own
 # durable cursor, so delivery is at-least-once and lossless across restarts.

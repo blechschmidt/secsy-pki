@@ -64,6 +64,13 @@ func run(args []string) error {
 		return cmdLint(cfg, cmdArgs)
 	}
 
+	// The CMP client is a self-contained HTTP client (it generates its own key and
+	// talks to a running /cmp endpoint), so it needs neither the database nor the
+	// key provider. Dispatch it before opening either.
+	if command == "cmp" {
+		return cmdCMP(cmdArgs)
+	}
+
 	db, err := database.New(cfg.Database.Driver, cfg.Database.DSN)
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
@@ -158,6 +165,7 @@ Commands:
   monitor-run         Run one expiry-monitor scan (optionally auto-renewing)
   profiles            List the available certificate profiles
   lint                Lint a certificate against a profile's policy (CA/B BR)
+  cmp                 CMP (RFC 9483) client: enroll (ir) against a /cmp endpoint
   inventory           List keys held by the key provider (HSM/software)
   ceremony            Run an M-of-N confirmed root/intermediate key ceremony
   rotate-intermediate Rotate an intermediate CA signing key (dual-chain overlap)
