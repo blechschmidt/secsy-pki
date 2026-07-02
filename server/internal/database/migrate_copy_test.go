@@ -39,11 +39,18 @@ func freshPostgres(t *testing.T) *DB {
 func truncateAll(t *testing.T, db *DB) {
 	t.Helper()
 	// RESTART IDENTITY resets SERIAL sequences; CASCADE follows FKs so order does
-	// not matter. This leaves the schema in the same state as a fresh migrate().
+	// not matter.
 	for _, table := range migrationTables {
 		if _, err := db.conn.Exec("TRUNCATE TABLE " + table + " RESTART IDENTITY CASCADE"); err != nil {
 			t.Fatalf("truncating %s: %v", table, err)
 		}
+	}
+	// The CASCADE also removes the built-in default tenant, which cas/groups
+	// reference via a FK. Re-seed it so the store is back in the same state a
+	// fresh migrate() leaves it — otherwise any CreateCA hits cas_tenant_id_fkey.
+	if _, err := db.exec(db.insertOrIgnore("tenants", "id, slug, name, status", "?, ?, ?, ?"),
+		models.DefaultTenantID, models.DefaultTenantID, "Default Tenant", models.TenantStatusActive); err != nil {
+		t.Fatalf("re-seeding default tenant: %v", err)
 	}
 }
 

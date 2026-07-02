@@ -73,6 +73,27 @@ PostgreSQL, and are covered by the cross-backend integration tests:
   allocation are transactional counter increments, so no certificate serial or
   CRL number is ever reused — the property that makes a multi-writer CA safe.
 
+## Verifying store integrity
+
+`secsy-ca db verify` checks these invariants against a live or restored store,
+independent of the HSM. It is the post-restore gate in the disaster-recovery
+drill and the cheapest way to confirm a backup is usable:
+
+```bash
+secsy-ca -config config.yaml db verify         # human-readable; non-zero exit on failure
+secsy-ca -config config.yaml db verify -json    # includes a continuity fingerprint
+secsy-ca db verify -driver postgres -dsn '…'    # check an arbitrary (e.g. just-restored) DB
+```
+
+It asserts the audit chain verifies end-to-end, every serial/CRL counter is
+strictly ahead of the artifacts it has already produced, and the certificate
+inventory and revocation store agree. The `-json` fingerprint (audit head hash +
+monotonic counter sums + row counts) is meant to be captured before a backup and
+compared after a restore to prove nothing was lost or rewound. See the
+[operator runbook DR section](RUNBOOK.md#full-stack-drill-hsm--postgresql-store)
+and `scripts/dr-drill-full.sh` for the full backup → restore → verify rehearsal,
+including PostgreSQL point-in-time recovery and RPO/RTO guidance.
+
 ## Migrating an existing SQLite store into PostgreSQL
 
 Use `secsy-ca db migrate` to lift a single-node file store into a shared

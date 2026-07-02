@@ -35,6 +35,9 @@ var migrationTables = []string{
 	"ca_published_crls",
 	"issued_certificates",
 	"revoked_certificates",
+	// Cross-signing relationships reference tenants and cas (issuer/subject), so
+	// they are copied after both.
+	"cross_signs",
 	// Audit and export state.
 	"audit_log",
 	"access_log",
@@ -46,6 +49,8 @@ var migrationTables = []string{
 	"acme_orders",
 	"acme_authorizations",
 	"acme_challenges",
+	// Operator WebAuthn credentials (standalone; no foreign keys).
+	"webauthn_credentials",
 }
 
 // tableCopyOrder pins the read order for tables whose rows have intra-table

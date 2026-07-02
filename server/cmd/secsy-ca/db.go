@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -22,6 +23,8 @@ func cmdDB(cfg *config.Config, args []string) error {
 	switch sub {
 	case "migrate":
 		return cmdDBMigrate(cfg, rest)
+	case "verify":
+		return cmdDBVerify(cfg, rest)
 	case "help", "-h", "--help":
 		dbUsage()
 		return nil
@@ -38,9 +41,95 @@ Usage: secsy-ca db <subcommand> [flags]
 
 Subcommands:
   migrate   Copy an existing store into another backend (e.g. SQLite file → PostgreSQL)
+  verify    Check store integrity (audit chain, serial/CRL monotonicity, revocation
+            consistency) and print a continuity fingerprint. HSM-independent.
 
 Run "secsy-ca db migrate -h" for migration flags.
 `)
+}
+
+// cmdDBVerify runs the HSM-independent store-integrity checks and prints a
+// continuity fingerprint. It is the disaster-recovery post-restore gate: it
+// confirms the hash-chained audit log is intact, the per-CA serial and CRL
+// counters have not been rewound behind already-issued artifacts, and the
+// inventory and revocation store agree. The fingerprint (in -json mode) is meant
+// to be captured before a backup and compared after a point-in-time restore to
+// prove no committed state was lost or rewound.
+//
+// It exits non-zero if any invariant fails, so a DR drill or CI job can trip on
+// it. It reads the store configured for the current node; use -driver/-dsn to
+// point it at a restored database instead.
+func cmdDBVerify(cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("db verify", flag.ContinueOnError)
+	driver := fs.String("driver", "", "database driver to check (default: the configured database)")
+	dsn := fs.String("dsn", "", "database DSN to check (default: the configured database)")
+	asJSON := fs.Bool("json", false, "emit the full result (including the fingerprint) as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	drv := *driver
+	src := *dsn
+	if drv == "" {
+		drv = cfg.Database.Driver
+	}
+	if src == "" && (drv == cfg.Database.Driver || (drv == "sqlite" && cfg.Database.Driver == "sqlite3")) {
+		src = cfg.Database.DSN
+	}
+	if src == "" {
+		return fmt.Errorf("db verify: -dsn is required (no matching configured database to default from)")
+	}
+
+	db, err := database.New(drv, src)
+	if err != nil {
+		return fmt.Errorf("opening %s store: %w", drv, err)
+	}
+	defer db.Close()
+
+	res, err := db.VerifyStoreIntegrity()
+	if err != nil {
+		return err
+	}
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(res); err != nil {
+			return err
+		}
+	} else {
+		for _, c := range res.Checks {
+			mark := "✓"
+			if !c.OK {
+				mark = "✗"
+			}
+			fmt.Printf("  %s %-24s %s\n", mark, c.Name, c.Detail)
+		}
+		fp := res.Fingerprint
+		fmt.Printf("\nfingerprint: events=%d issued=%d revoked=%d sum_next_serial=%d sum_next_crl=%d head=%s\n",
+			fp.AuditEventCount, fp.IssuedCerts, fp.RevokedCerts, fp.SumNextSerial, fp.SumNextCRLNumber, shortHash(fp.AuditHeadHash))
+		if res.OK {
+			fmt.Println("\nstore integrity OK")
+		} else {
+			fmt.Println("\nstore integrity FAILED")
+		}
+	}
+
+	if !res.OK {
+		return fmt.Errorf("store integrity verification failed")
+	}
+	return nil
+}
+
+// shortHash abbreviates a hex hash for human-readable output.
+func shortHash(h string) string {
+	if len(h) > 12 {
+		return h[:12] + "…"
+	}
+	if h == "" {
+		return "(empty log)"
+	}
+	return h
 }
 
 // cmdDBMigrate copies a file-backed SQLite store into a target database

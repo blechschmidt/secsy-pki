@@ -477,6 +477,108 @@ If the token is unrecoverable, there is no way to recover the key — you fall
 back to a fresh [key ceremony](key-ceremony.md) and re-issue the hierarchy, as
 in the [root-compromise path](#suspected-ca-key-compromise).
 
+### Full-stack drill (HSM + PostgreSQL store)
+
+`scripts/dr-drill.sh` covers the HSM half. When the deployment uses the
+PostgreSQL persistence backend ([persistence.md](persistence.md)), the database
+carries the state a restore must not lose or rewind: the tamper-evident audit
+chain, the per-CA serial and CRL-number counters, the issued-cert inventory, and
+the revocation store. `scripts/dr-drill-full.sh` extends the drill to that half
+and rehearses **both** database recovery strategies in one command against an
+ephemeral Postgres container:
+
+```bash
+./scripts/dr-drill-full.sh            # full drill, cleans up on success
+DR_KEEP=1 ./scripts/dr-drill-full.sh  # keep the workspace + containers to inspect
+```
+
+It:
+
+1. Provisions an ephemeral PostgreSQL primary (WAL archiving on) + a SoftHSM token.
+2. Runs the key ceremony, issues/revokes certs, and cuts CRLs — building real
+   audit-chain, counter, inventory, and revocation state.
+3. Captures a **pre-disaster integrity fingerprint** (`secsy-ca db verify -json`).
+4. **Logical path** — `pg_dump` → destroy the primary → restore into a fresh
+   container → gate on `secsy-ca db verify` → re-issue and re-validate a
+   certificate end-to-end against the restored DB + HSM.
+5. **Physical PITR path** — `pg_basebackup` + archived-WAL replay to a recovery
+   target time → gate on `secsy-ca db verify` → confirm the recovery landed on
+   exactly the target (work committed before it survives; work after it is
+   correctly excluded; the audit head hash matches the pre-disaster fingerprint).
+
+The post-restore gate, `secsy-ca db verify`, is HSM-independent and asserts the
+four invariants a restore must preserve. Run it by hand against any restored
+database before returning it to service:
+
+```bash
+secsy-ca -config config.yaml db verify            # human-readable, non-zero exit on failure
+secsy-ca -config config.yaml db verify -json      # includes the continuity fingerprint
+# Point it at a specific restored DB instead of the configured one:
+secsy-ca db verify -driver postgres -dsn 'postgres://…/secsy_pki?sslmode=disable'
+```
+
+| Check | What it proves |
+| --- | --- |
+| `audit_chain` | the hash-chained `event_log` verifies end-to-end from genesis (no truncation or rewrite) |
+| `serial_monotonicity` | every CA's serial counter is strictly ahead of every serial it has issued (no duplicate-serial hazard) |
+| `crl_continuity` | every CA/scope CRL-number counter is strictly ahead of every published CRL (RFC 5280 §5.2.3) |
+| `revocation_consistency` | the inventory's revoked set and the revocation store agree both ways (nothing served as "good" that is revoked) |
+
+The `-json` fingerprint (`audit_head_hash` + the monotonic counter sums + row
+counts) is the **continuity check**: capture it before a backup and compare it
+after a restore. The audit head hash must match a faithful restore exactly; the
+counter sums must never be smaller after a restore than before (a smaller value
+means the counters were rewound behind already-issued artifacts — a split-brain
+hazard that would re-issue duplicate serials or stale CRL numbers).
+
+### Choosing a database backup strategy
+
+- **Logical (`pg_dump`)** — simplest; a consistent snapshot restorable into any
+  compatible Postgres. Coarser RPO (you lose everything since the last dump).
+  Good for a scheduled belt-and-suspenders export.
+- **Physical + WAL archiving (`pg_basebackup` + continuous archiving)** — enables
+  point-in-time recovery and a tight RPO. This is the recommended production
+  posture. Archive WAL continuously to durable, off-host storage; take periodic
+  base backups so replay time (and thus RTO) stays bounded.
+
+### RPO / RTO expectations
+
+Recovery objectives are dominated by the **database** — the HSM token is a small,
+rarely-changing artifact restored in minutes, and the CA private keys are never
+in the database. Set and monitor objectives against the persistence backend.
+
+| Backup strategy | RPO (data loss window) | RTO (time to service) |
+| --- | --- | --- |
+| Logical `pg_dump`, hourly | up to the dump interval (≈ 1h) | minutes: restore dump + `db verify` + reattach HSM |
+| Physical base backup + **continuous WAL archiving** | seconds — bounded by `archive_timeout` and WAL shipping latency (typically < 1 min) | minutes-to-tens-of-minutes: restore base backup + replay WAL to target + `db verify`; grows with WAL volume since the last base backup |
+| HSM token restore (either strategy) | n/a (keys are static between ceremonies/rotations) | minutes (vendor restore, or SoftHSM token-dir copy) |
+
+**Targets to hold in production:** RPO ≤ 5 minutes and RTO ≤ 30 minutes for the
+issuing tier, achieved with continuous WAL archiving, a daily base backup, and
+off-host, access-controlled backup storage. Rehearse quarterly with
+`dr-drill-full.sh` and after any schema-affecting upgrade; a green run is the
+evidence the objectives are actually met. The non-HSM subset of this drill runs
+on every push (the *DR store integrity* CI job) so schema/migration regressions
+that would break a restore are caught before release, not during an incident.
+
+### Real database recovery (production)
+
+1. **Stop issuance** so no new work races the restore (rate-limit to zero or take
+   the node offline).
+2. Recover the database:
+   - *Logical:* create an empty database and `psql -f dump.sql`.
+   - *PITR:* restore the base backup's data directory, set `restore_command`,
+     `recovery_target_time` (or `_lsn`/`_name`), and `recovery_target_action =
+     promote`, drop a `recovery.signal`, and start Postgres; wait for it to
+     promote out of recovery.
+3. **Gate on integrity:** `secsy-ca db verify` (and `secsy-ca audit verify`) —
+   do not return the node to service on a failed check.
+4. Restore/attach the HSM token (see [Real recovery](#real-recovery-production)
+   above) and reattach the CA metadata now in the recovered DB.
+5. Regenerate and publish fresh CRLs (`secsy-ca gen-crl`) and chains
+   (`secsy-ca publish-chain`); confirm OCSP and `/readyz` are green; then lift the
+   issuance stop.
+
 ---
 
 ## Observability: dashboards & alerts

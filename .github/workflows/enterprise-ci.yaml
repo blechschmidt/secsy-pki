@@ -130,6 +130,72 @@ jobs:
         working-directory: server
         run: ./scripts/fuzz.sh
 
+  dr-store-integrity:
+    name: DR store integrity (Postgres, no HSM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # The non-HSM subset of the full-stack disaster-recovery drill
+    # (scripts/dr-drill-full.sh). It exercises the pluggable persistence backend
+    # end-to-end against a real PostgreSQL service — schema creation/migration,
+    # the cross-backend `db migrate` copier, and the post-restore integrity
+    # invariants (audit-chain continuity, serial/CRL monotonicity, revocation
+    # consistency) that gate every restore in the drill — all in software so it
+    # needs no SoftHSM. Its purpose is to catch schema/migration regressions and
+    # integrity-check regressions on every push, without the cost of the full
+    # HSM + container drill.
+    env:
+      GOTOOLCHAIN: auto
+      # Point the database tests at the Postgres service so both the SQLite and
+      # PostgreSQL backend paths run (they skip Postgres when this is unset).
+      SECSY_TEST_PG_DSN: postgres://secsy:secsy@localhost:5432/secsy_pki?sslmode=disable
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: secsy
+          POSTGRES_PASSWORD: secsy
+          POSTGRES_DB: secsy_pki
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U secsy -d secsy_pki"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Download Go modules
+        working-directory: server
+        run: go mod download
+
+      # The whole database package against both backends: store-integrity checks
+      # (integrity_test.go), the migration copier (migrate_copy_test.go), and the
+      # concurrent counter-monotonicity invariants. -p 1 keeps the shared Postgres
+      # database from being raced across packages. The sqlite build tag pulls in
+      # the SQLite driver so the SQLite path runs alongside Postgres.
+      - name: Run store-integrity & migration tests (SQLite + Postgres)
+        working-directory: server
+        run: go test -tags sqlite -p 1 -count=1 ./internal/database/...
+
+      # Static-check the DR drill script so a syntax error can't ship unnoticed.
+      - name: Shellcheck the DR drill scripts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+          shellcheck -S warning scripts/dr-drill-full.sh scripts/dr-drill.sh || true
+          bash -n scripts/dr-drill-full.sh
+
   openapi:
     name: OpenAPI spec & generated client SDK
     runs-on: ubuntu-latest
