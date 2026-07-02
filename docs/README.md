@@ -8,10 +8,18 @@ Start with the [project README](../README.md) for what secsy-pki is, how to
 build it, and the SSH certificate workflow. The guides here cover the enterprise
 CA, secret-encryption, and governance features.
 
+**Operating a live deployment?** Jump to the
+[operator runbook](RUNBOOK.md) for day-2 procedures (incident response, outage
+handling, tuning, rotation, DR), and the
+[Architecture Decision Records](adr/README.md) for the reasoning behind the
+design.
+
 ## Guides
 
 | Guide | Covers |
 |-------|--------|
+| [**Operator runbook**](RUNBOOK.md) | **Day-2 operations:** CA-key-compromise incident response, OCSP/CRL outage handling, ACME/SCEP/EST/TSA/CMP endpoint troubleshooting, rate-limit & HSM-concurrency tuning, CT log outage behavior, CA key rotation/retirement, and the disaster-recovery drill |
+| [**Architecture Decision Records**](adr/README.md) | The load-bearing design decisions: key-provider abstraction, HSM non-extractability invariants, fail-closed security gates, dual-chain rotation overlap, and the PQC/hybrid algorithm choice |
 | [HSM / PKCS#11 configuration](hsm-configuration.md) | The key-provider abstraction, configuring a PKCS#11 HSM or the software backend, and SoftHSM for dev/CI |
 | [Certificate authority](certificate-authority.md) | Initializing root & intermediate CAs, profiles, issuing / renewing / revoking certificates, and serving CRL & OCSP |
 | [Key ceremony, backup & DR](key-ceremony.md) | M-of-N key ceremony (`secsy-ca ceremony`), key inventory, CA-metadata backup/restore, HSM token backup, and the disaster-recovery runbook & drill |
@@ -35,7 +43,8 @@ CA, secret-encryption, and governance features.
 | [Performance & load benchmarking](benchmarks.md) | Benchmark/load-test suite for the HSM hot paths (signing/issuance, OCSP/CRL, secret encrypt/decrypt), the bounded PKCS#11 session pool, baseline SoftHSM numbers, and the tuning knobs (session pool size, OCSP cache TTL) |
 
 Related top-level docs: [architecture](../ARCHITECTURE.md) ·
-[testing](../TESTING.md).
+[testing](../TESTING.md) · [operator runbook](RUNBOOK.md) ·
+[decision records](adr/README.md).
 
 ## Suggested reading order
 
@@ -49,6 +58,8 @@ Related top-level docs: [architecture](../ARCHITECTURE.md) ·
    [Observability](observability.md).
 4. **Deploying on Kubernetes** → [Kubernetes deployment](kubernetes.md)
    (container image, Helm chart, cert-manager issuer).
+5. **Running it day to day** → [Operator runbook](RUNBOOK.md) (keep it bookmarked
+   for incidents) → [Architecture Decision Records](adr/README.md) (the "why").
 
 ## The tools at a glance
 
