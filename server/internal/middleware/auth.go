@@ -110,10 +110,11 @@ func (am *AuthMiddleware) Authenticate(next http.Handler) http.Handler {
 		}
 
 		info := &models.UserInfo{
-			Subject: claims.Subject,
-			Email:   claims.Email,
-			Name:    claims.Name,
-			IsRoot:  false,
+			Subject:       claims.Subject,
+			Email:         claims.Email,
+			EmailVerified: claims.EmailVerified,
+			Name:          claims.Name,
+			IsRoot:        false,
 		}
 		if am.roleResolver != nil {
 			info.Roles = am.roleResolver(info)

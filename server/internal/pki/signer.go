@@ -467,8 +467,19 @@ func GenerateKeyOnHSM(cfg PKCS11Config, label string, keyType string) (*Generate
 		}
 		privAttrs = []*pkcs11.Attribute{
 			pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
-			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
+			// The CA signing private key must never leave the HSM. CKA_SENSITIVE
+			// makes its value unreadable and CKA_EXTRACTABLE=false forbids
+			// wrapping/exporting it off the device — without the latter many
+			// tokens (SoftHSM included) default to extractable. CKA_PRIVATE=true
+			// requires an authenticated session even to enumerate the object.
+			pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
 			pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, true),
+			pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, false),
+			// Least privilege: a CA key signs only. Assert it is never usable to
+			// decrypt or unwrap rather than relying on token defaults.
+			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
+			pkcs11.NewAttribute(pkcs11.CKA_DECRYPT, false),
+			pkcs11.NewAttribute(pkcs11.CKA_UNWRAP, false),
 			pkcs11.NewAttribute(pkcs11.CKA_LABEL, label),
 		}
 	case "ecdsa-sha2-nistp256":
@@ -482,8 +493,19 @@ func GenerateKeyOnHSM(cfg PKCS11Config, label string, keyType string) (*Generate
 		}
 		privAttrs = []*pkcs11.Attribute{
 			pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
-			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
+			// The CA signing private key must never leave the HSM. CKA_SENSITIVE
+			// makes its value unreadable and CKA_EXTRACTABLE=false forbids
+			// wrapping/exporting it off the device — without the latter many
+			// tokens (SoftHSM included) default to extractable. CKA_PRIVATE=true
+			// requires an authenticated session even to enumerate the object.
+			pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
 			pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, true),
+			pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, false),
+			// Least privilege: a CA key signs only. Assert it is never usable to
+			// decrypt or unwrap rather than relying on token defaults.
+			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
+			pkcs11.NewAttribute(pkcs11.CKA_DECRYPT, false),
+			pkcs11.NewAttribute(pkcs11.CKA_UNWRAP, false),
 			pkcs11.NewAttribute(pkcs11.CKA_LABEL, label),
 		}
 	case "ecdsa-sha2-nistp384":
@@ -497,8 +519,19 @@ func GenerateKeyOnHSM(cfg PKCS11Config, label string, keyType string) (*Generate
 		}
 		privAttrs = []*pkcs11.Attribute{
 			pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
-			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
+			// The CA signing private key must never leave the HSM. CKA_SENSITIVE
+			// makes its value unreadable and CKA_EXTRACTABLE=false forbids
+			// wrapping/exporting it off the device — without the latter many
+			// tokens (SoftHSM included) default to extractable. CKA_PRIVATE=true
+			// requires an authenticated session even to enumerate the object.
+			pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
 			pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, true),
+			pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, false),
+			// Least privilege: a CA key signs only. Assert it is never usable to
+			// decrypt or unwrap rather than relying on token defaults.
+			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
+			pkcs11.NewAttribute(pkcs11.CKA_DECRYPT, false),
+			pkcs11.NewAttribute(pkcs11.CKA_UNWRAP, false),
 			pkcs11.NewAttribute(pkcs11.CKA_LABEL, label),
 		}
 	case "ecdsa-sha2-nistp521":
@@ -512,8 +545,19 @@ func GenerateKeyOnHSM(cfg PKCS11Config, label string, keyType string) (*Generate
 		}
 		privAttrs = []*pkcs11.Attribute{
 			pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
-			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
+			// The CA signing private key must never leave the HSM. CKA_SENSITIVE
+			// makes its value unreadable and CKA_EXTRACTABLE=false forbids
+			// wrapping/exporting it off the device — without the latter many
+			// tokens (SoftHSM included) default to extractable. CKA_PRIVATE=true
+			// requires an authenticated session even to enumerate the object.
+			pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
 			pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, true),
+			pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, false),
+			// Least privilege: a CA key signs only. Assert it is never usable to
+			// decrypt or unwrap rather than relying on token defaults.
+			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
+			pkcs11.NewAttribute(pkcs11.CKA_DECRYPT, false),
+			pkcs11.NewAttribute(pkcs11.CKA_UNWRAP, false),
 			pkcs11.NewAttribute(pkcs11.CKA_LABEL, label),
 		}
 	case "rsa-2048", "rsa-4096":
@@ -531,8 +575,19 @@ func GenerateKeyOnHSM(cfg PKCS11Config, label string, keyType string) (*Generate
 		}
 		privAttrs = []*pkcs11.Attribute{
 			pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
-			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
+			// The CA signing private key must never leave the HSM. CKA_SENSITIVE
+			// makes its value unreadable and CKA_EXTRACTABLE=false forbids
+			// wrapping/exporting it off the device — without the latter many
+			// tokens (SoftHSM included) default to extractable. CKA_PRIVATE=true
+			// requires an authenticated session even to enumerate the object.
+			pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
 			pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, true),
+			pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, false),
+			// Least privilege: a CA key signs only. Assert it is never usable to
+			// decrypt or unwrap rather than relying on token defaults.
+			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
+			pkcs11.NewAttribute(pkcs11.CKA_DECRYPT, false),
+			pkcs11.NewAttribute(pkcs11.CKA_UNWRAP, false),
 			pkcs11.NewAttribute(pkcs11.CKA_LABEL, label),
 		}
 	default:

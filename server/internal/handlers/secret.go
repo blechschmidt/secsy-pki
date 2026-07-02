@@ -160,9 +160,12 @@ func (a *API) DecryptSecret(w http.ResponseWriter, r *http.Request) {
 	plaintext, err := svc.DecryptJSON(req.Envelope, context)
 	a.consumeHSMAuditLogs("")
 	if err != nil {
-		// Generic client error: wrong key/context or corrupted/invalid envelope.
+		// Generic client error with NO underlying detail: wrong key/context or a
+		// corrupted/invalid envelope must be indistinguishable so the endpoint
+		// cannot be used as a padding/decryption oracle. The detail stays
+		// server-side only (not even in the audit detail).
 		a.recordEvent(r, audit.ActionSecretDecrypt, a.secretKEKLabel, "", audit.ResultError, "decryption failed")
-		writeError(w, http.StatusBadRequest, "decryption failed: %v", err)
+		writeError(w, http.StatusBadRequest, "decryption failed")
 		return
 	}
 	defer zeroBytes(plaintext)

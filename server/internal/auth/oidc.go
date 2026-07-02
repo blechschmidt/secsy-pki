@@ -36,7 +36,12 @@ func NewOIDCProvider(issuerURL, clientID string) (*OIDCProvider, error) {
 type Claims struct {
 	Subject string `json:"sub"`
 	Email   string `json:"email"`
-	Name    string `json:"name"`
+	// EmailVerified reports whether the IdP has verified the email address.
+	// RBAC role assignments keyed by email are only honored when this is true,
+	// so an unverified (or user-settable) email cannot be used to claim another
+	// principal's roles.
+	EmailVerified bool   `json:"email_verified"`
+	Name          string `json:"name"`
 }
 
 func (o *OIDCProvider) VerifyToken(ctx context.Context, rawToken string) (*Claims, error) {

@@ -58,17 +58,24 @@ func SignX509Certificate(signer crypto.Signer, csrPEM []byte, validBefore time.T
 	}
 
 	now := time.Now()
+	// SECURITY: only the subject and the *parsed* SAN fields are taken from the
+	// CSR. The raw csr.Extensions are deliberately NOT copied — copying them
+	// verbatim would let a caller smuggle in a BasicConstraints CA:TRUE
+	// extension (or keyCertSign usage, arbitrary EKUs, extra SANs) and mint a
+	// subordinate CA under the trust anchor. IsCA is left false and
+	// BasicConstraintsValid is set so the issued certificate carries an explicit
+	// cA=FALSE basic-constraints extension.
 	template := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               csr.Subject,
 		NotBefore:             now,
 		NotAfter:              validBefore,
 		KeyUsage:              x509.KeyUsageDigitalSignature,
+		IsCA:                  false,
 		BasicConstraintsValid: true,
 		DNSNames:              csr.DNSNames,
 		IPAddresses:           csr.IPAddresses,
 		EmailAddresses:        csr.EmailAddresses,
-		ExtraExtensions:       csr.Extensions,
 	}
 
 	// Create CA certificate template for the issuer

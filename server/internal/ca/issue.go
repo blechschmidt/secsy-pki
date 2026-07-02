@@ -2,6 +2,7 @@ package ca
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -84,13 +85,14 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 		notAfter = issuerCert.NotAfter
 	}
 
-	// Allocate the serial only once all validation has passed, so a failed
-	// request does not burn a serial number.
-	serialN, err := m.db.AllocateSerial(issuerCA.ID)
+	// Generate an unpredictable serial with 128 bits of entropy (RFC 5280 /
+	// CA-Browser-Forum Baseline Requirements: >= 64 bits of entropy so serials
+	// cannot be predicted and to add defense-in-depth against hash-collision
+	// forgery). Uniqueness per CA is assured in practice by the entropy.
+	serial, err := newSerial()
 	if err != nil {
-		return nil, fmt.Errorf("allocating serial: %w", err)
+		return nil, err
 	}
-	serial := big.NewInt(serialN)
 
 	signer, err := m.provider.Signer(ctx, keyRefForCA(issuerCA))
 	if err != nil {
@@ -188,6 +190,16 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (*IssueR
 	if prior == nil {
 		return nil, fmt.Errorf("no certificate with serial %q issued by this CA", spec.Serial)
 	}
+	// SECURITY: never renew a revoked certificate. Renewal reuses the prior
+	// subject, SANs, and (absent a rekey CSR) public key, so renewing a
+	// revoked cert would silently resurrect a credential that was withdrawn —
+	// e.g. after key compromise. The revocation store is authoritative; the
+	// cached status field is checked too as defense-in-depth.
+	if revoked, err := m.db.GetRevokedCertificate(issuerCA.ID, spec.Serial); err != nil {
+		return nil, fmt.Errorf("checking revocation status: %w", err)
+	} else if revoked != nil || prior.Status == models.CertStatusRevoked {
+		return nil, fmt.Errorf("certificate with serial %q is revoked and cannot be renewed; issue a new certificate instead", spec.Serial)
+	}
 	priorCert, err := pki.ParseCertificatePEM([]byte(prior.Certificate))
 	if err != nil {
 		return nil, fmt.Errorf("parsing prior certificate: %w", err)
@@ -239,11 +251,10 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (*IssueR
 		notAfter = issuerCert.NotAfter
 	}
 
-	serialN, err := m.db.AllocateSerial(issuerCA.ID)
+	serial, err := newSerial()
 	if err != nil {
-		return nil, fmt.Errorf("allocating serial: %w", err)
+		return nil, err
 	}
-	serial := big.NewInt(serialN)
 
 	signer, err := m.provider.Signer(ctx, keyRefForCA(issuerCA))
 	if err != nil {
@@ -465,6 +476,24 @@ func parseAndVerifyCSR(csrPEM []byte) (*x509.CertificateRequest, error) {
 		return nil, fmt.Errorf("CSR must contain a subject common name or at least one SAN")
 	}
 	return csr, nil
+}
+
+// newSerial returns a cryptographically random, positive certificate serial
+// number carrying 128 bits of entropy. Random serials are unpredictable and
+// effectively unique per CA, satisfying RFC 5280 §4.1.2.2 and CA/Browser Forum
+// guidance (>= 64 bits of entropy) and providing defense-in-depth against
+// chosen-prefix hash-collision certificate forgery.
+func newSerial() (*big.Int, error) {
+	limit := new(big.Int).Lsh(big.NewInt(1), 128)
+	for {
+		n, err := rand.Int(rand.Reader, limit)
+		if err != nil {
+			return nil, fmt.Errorf("generating serial: %w", err)
+		}
+		if n.Sign() > 0 { // reject the astronomically unlikely zero serial
+			return n, nil
+		}
+	}
 }
 
 // sanStrings renders a certificate's subject alternative names as a flat list of

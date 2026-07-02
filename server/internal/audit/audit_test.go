@@ -25,6 +25,30 @@ func sampleEvents() []Event {
 	}
 }
 
+// TestVerifyFullChainDetectsHeadDeletion locks in the Task 12 hardening:
+// verifying a COMPLETE log must reject one whose genesis (seq 1) entry was
+// removed, even though the remaining tail is internally self-consistent (which
+// plain VerifyChain, tolerant of tail slices, would still accept).
+func TestVerifyFullChainDetectsHeadDeletion(t *testing.T) {
+	chain := buildChain(sampleEvents())
+
+	// The full, intact log verifies under both functions.
+	if res := VerifyFullChain(chain); !res.Valid {
+		t.Fatalf("intact full chain should verify: %s", res.Reason)
+	}
+
+	// Drop the genesis entry: the remaining tail (seq 2..n) is still internally
+	// contiguous and correctly linked, so VerifyChain accepts it...
+	tail := chain[1:]
+	if res := VerifyChain(tail); !res.Valid {
+		t.Fatalf("tail slice is internally consistent; VerifyChain should accept it: %s", res.Reason)
+	}
+	// ...but VerifyFullChain must reject it because it no longer starts at genesis.
+	if res := VerifyFullChain(tail); res.Valid {
+		t.Fatal("VerifyFullChain must reject a log with its genesis entry deleted")
+	}
+}
+
 func TestSealAndVerifyValidChain(t *testing.T) {
 	chain := buildChain(sampleEvents())
 

@@ -312,8 +312,11 @@ type AccessLogEntry struct {
 type UserInfo struct {
 	Subject string `json:"sub"`
 	Email   string `json:"email,omitempty"`
-	Name    string `json:"name,omitempty"`
-	IsRoot  bool   `json:"is_root"`
+	// EmailVerified is the IdP's email_verified claim. RBAC assignments keyed by
+	// email are only applied when this is true.
+	EmailVerified bool   `json:"email_verified,omitempty"`
+	Name          string `json:"name,omitempty"`
+	IsRoot        bool   `json:"is_root"`
 	// Roles are the organization-wide RBAC roles (admin/issuer/auditor) the
 	// authenticated subject holds, resolved at authentication time from central
 	// configuration plus group membership. The built-in root user carries no

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
@@ -59,7 +60,11 @@ func main() {
 	authMw.SetRoleResolver(func(u *models.UserInfo) []string {
 		groupIDs, _ := db.GetUserGroups(u.Subject)
 		roles := rbacAssignments.RolesFor(u.Subject, groupIDs)
-		if u.Email != "" {
+		// Email-keyed assignments are only honored for a verified email. An
+		// unverified or user-settable email must not let a subject claim roles
+		// assigned to someone else's address. The immutable subject and group
+		// memberships are always trusted.
+		if u.Email != "" && u.EmailVerified {
 			roles = append(roles, rbacAssignments.RolesFor(u.Email, nil)...)
 		}
 		return dedupRoles(roles)
@@ -144,6 +149,10 @@ func main() {
 		mux.Handle("GET /", http.FileServer(http.Dir(webDir)))
 	}
 
+	// Cap every request body to guard against memory-exhaustion DoS from an
+	// (authenticated) client. Individual handlers may impose tighter limits.
+	handler := limitRequestBody(mux, maxRequestBodyBytes)
+
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 
 	if cfg.Server.TLSCert != "" && cfg.Server.TLSKey != "" {
@@ -152,7 +161,7 @@ func main() {
 		}
 		server := &http.Server{
 			Addr:      addr,
-			Handler:   mux,
+			Handler:   handler,
 			TLSConfig: tlsCfg,
 		}
 		log.Printf("Starting HTTPS server on %s", addr)
@@ -160,11 +169,45 @@ func main() {
 			log.Fatalf("Server failed: %v", err)
 		}
 	} else {
-		log.Printf("WARNING: No TLS configured, starting HTTP server on %s", addr)
-		if err := http.ListenAndServe(addr, mux); err != nil {
+		// Fail closed: an enterprise PKI serving bearer tokens, basic-auth root
+		// credentials, secret encrypt/decrypt, and CA operations must not run in
+		// cleartext by accident. Refuse to start without TLS unless the operator
+		// explicitly opts in (e.g. when TLS is terminated at a trusted proxy).
+		if !insecureHTTPAllowed() {
+			log.Fatalf("Refusing to start: no TLS configured (set server.tls_cert/tls_key). " +
+				"To run plain HTTP behind a trusted TLS-terminating proxy, set SECSY_ALLOW_INSECURE_HTTP=1.")
+		}
+		log.Printf("WARNING: SECSY_ALLOW_INSECURE_HTTP is set — starting cleartext HTTP server on %s. "+
+			"Only do this behind a trusted TLS-terminating proxy.", addr)
+		if err := http.ListenAndServe(addr, handler); err != nil {
 			log.Fatalf("Server failed: %v", err)
 		}
 	}
+}
+
+// maxRequestBodyBytes bounds any single request body (8 MiB) — comfortably
+// larger than any legitimate CSR/JSON payload while preventing unbounded
+// allocation.
+const maxRequestBodyBytes = 8 << 20
+
+// limitRequestBody wraps h so every request body is capped at n bytes.
+func limitRequestBody(h http.Handler, n int64) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, n)
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
+// insecureHTTPAllowed reports whether the operator explicitly opted in to
+// serving plain HTTP via the SECSY_ALLOW_INSECURE_HTTP environment variable.
+func insecureHTTPAllowed() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("SECSY_ALLOW_INSECURE_HTTP"))) {
+	case "1", "true", "yes":
+		return true
+	}
+	return false
 }
 
 // toRoleMap converts a config string->[]string role map into the typed form the

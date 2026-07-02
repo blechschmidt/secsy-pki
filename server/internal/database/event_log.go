@@ -153,5 +153,7 @@ func (db *DB) VerifyEventChain() (audit.VerifyResult, error) {
 	if err != nil {
 		return audit.VerifyResult{}, fmt.Errorf("loading event log: %w", err)
 	}
-	return audit.VerifyChain(events), nil
+	// This is the complete log, so require it to start at the genesis entry —
+	// this also detects head deletion and whole-log re-genesis.
+	return audit.VerifyFullChain(events), nil
 }

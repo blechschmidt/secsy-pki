@@ -185,6 +185,10 @@ func (a *API) Me(w http.ResponseWriter, r *http.Request) {
 // CA handlers
 
 func (a *API) ListCAs(w http.ResponseWriter, r *http.Request) {
+	if !a.canRead(middleware.GetUserInfo(r.Context())) {
+		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+		return
+	}
 	cas, err := a.db.ListCAs()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list CAs: %v", err)
@@ -270,6 +274,10 @@ func (a *API) CreateCA(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) GetCA(w http.ResponseWriter, r *http.Request) {
+	if !a.canRead(middleware.GetUserInfo(r.Context())) {
+		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+		return
+	}
 	id := r.PathValue("id")
 	ca, err := a.db.GetCA(id)
 	if err != nil {
@@ -284,6 +292,10 @@ func (a *API) GetCA(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) GetPublicKey(w http.ResponseWriter, r *http.Request) {
+	if !a.canRead(middleware.GetUserInfo(r.Context())) {
+		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+		return
+	}
 	id := r.PathValue("id")
 	ca, err := a.db.GetCA(id)
 	if err != nil || ca == nil {
@@ -338,6 +350,10 @@ func (a *API) DeleteCA(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) GetCAChildren(w http.ResponseWriter, r *http.Request) {
+	if !a.canRead(middleware.GetUserInfo(r.Context())) {
+		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+		return
+	}
 	id := r.PathValue("id")
 	children, err := a.db.GetChildren(id)
 	if err != nil {
@@ -611,6 +627,10 @@ func (a *API) SignX509Certificate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) ParseCSR(w http.ResponseWriter, r *http.Request) {
+	if !a.canRead(middleware.GetUserInfo(r.Context())) {
+		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+		return
+	}
 	var req struct {
 		CSR string `json:"csr"`
 	}
@@ -685,6 +705,10 @@ func (a *API) ParseCSR(w http.ResponseWriter, r *http.Request) {
 // Group handlers
 
 func (a *API) ListGroups(w http.ResponseWriter, r *http.Request) {
+	if !a.canRead(middleware.GetUserInfo(r.Context())) {
+		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+		return
+	}
 	groups, err := a.db.ListGroups()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list groups: %v", err)
@@ -738,6 +762,10 @@ func (a *API) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) GetGroupMembers(w http.ResponseWriter, r *http.Request) {
+	if !a.canRead(middleware.GetUserInfo(r.Context())) {
+		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+		return
+	}
 	id := r.PathValue("id")
 	members, err := a.db.GetGroupMembers(id)
 	if err != nil {
@@ -1434,6 +1462,10 @@ func enforceRestrictions(rs *models.RestrictionSet, req *models.SignRequest, use
 // Restriction Set handlers
 
 func (a *API) ListAllRestrictionSets(w http.ResponseWriter, r *http.Request) {
+	if !a.canRead(middleware.GetUserInfo(r.Context())) {
+		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+		return
+	}
 	sets, err := a.db.ListAllRestrictionSets()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list restriction sets: %v", err)
@@ -1470,6 +1502,10 @@ func (a *API) CreateRestrictionSetGlobal(w http.ResponseWriter, r *http.Request)
 }
 
 func (a *API) ListRestrictionSets(w http.ResponseWriter, r *http.Request) {
+	if !a.canRead(middleware.GetUserInfo(r.Context())) {
+		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+		return
+	}
 	caID := r.PathValue("id")
 	sets, err := a.db.ListRestrictionSets(caID)
 	if err != nil {

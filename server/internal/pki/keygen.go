@@ -41,8 +41,10 @@ func generateRSA(params KeyGenParams) (*GeneratedKey, error) {
 	if bits == 0 {
 		bits = 4096
 	}
-	if bits < 1024 {
-		return nil, fmt.Errorf("RSA key size must be at least 1024 bits")
+	// 2048 bits is the current minimum for RSA (NIST SP 800-57 / CA-Browser
+	// Forum); 1024-bit keys are deprecated and rejected.
+	if bits < 2048 {
+		return nil, fmt.Errorf("RSA key size must be at least 2048 bits")
 	}
 
 	key, err := rsa.GenerateKey(rand.Reader, bits)

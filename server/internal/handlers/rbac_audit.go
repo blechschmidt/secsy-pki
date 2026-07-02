@@ -39,6 +39,16 @@ func (a *API) can(user *models.UserInfo, action rbac.Action) bool {
 	return rbac.Can(userRoles(user), action)
 }
 
+// canRead gates read-only inventory/listing endpoints (CA inventory, issued and
+// revoked certificates, groups and their members, restriction-set policy). Any
+// assigned role — admin, issuer, or auditor — may read; an authenticated
+// principal holding NO role is denied (deny-by-default). All three roles carry
+// the audit:read capability, so it is the natural gate for read visibility.
+// Mutating endpoints remain gated by their specific capability.
+func (a *API) canRead(user *models.UserInfo) bool {
+	return a.can(user, rbac.ActionReadAudit)
+}
+
 // canIssueOn reports whether the user may perform issuing/signing operations on
 // a specific CA. This is satisfied by the org-wide issue capability (admin or
 // issuer role) OR a per-CA SIGN_CERTIFICATE grant. Restriction sets are still

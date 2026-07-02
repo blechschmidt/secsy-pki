@@ -165,6 +165,10 @@ func (a *API) RevokeCertificate(w http.ResponseWriter, r *http.Request) {
 
 // ListIssuedCertificates returns the certificates a CA has issued.
 func (a *API) ListIssuedCertificates(w http.ResponseWriter, r *http.Request) {
+	if !a.canRead(middleware.GetUserInfo(r.Context())) {
+		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+		return
+	}
 	caID := r.PathValue("id")
 	// Reflect expiry lazily so listings show accurate status.
 	a.db.MarkExpiredCertificates(caID, time.Now())
@@ -181,6 +185,10 @@ func (a *API) ListIssuedCertificates(w http.ResponseWriter, r *http.Request) {
 
 // ListRevokedCertificates returns a CA's revocation records.
 func (a *API) ListRevokedCertificates(w http.ResponseWriter, r *http.Request) {
+	if !a.canRead(middleware.GetUserInfo(r.Context())) {
+		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+		return
+	}
 	caID := r.PathValue("id")
 	revoked, err := a.db.ListRevokedCertificates(caID)
 	if err != nil {

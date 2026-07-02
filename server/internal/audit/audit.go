@@ -134,6 +134,28 @@ type VerifyResult struct {
 	Reason      string `json:"reason,omitempty"`
 }
 
+// VerifyFullChain verifies a COMPLETE log (from the genesis entry onward). In
+// addition to the checks in VerifyChain it requires the first entry to be the
+// genesis (Seq == 1 with PrevHash == GenesisHash). This additionally detects
+// head deletion and whole-log re-genesis, which VerifyChain (which tolerates a
+// tail slice starting at an arbitrary Seq) cannot. Callers verifying the entire
+// stored log should use this.
+//
+// Note: neither function can detect truncation of the newest entries without an
+// externally anchored head checkpoint. Deployments needing that guarantee
+// should periodically anchor the current (seq, hash) out-of-band — the
+// HSM-signed audit log provides exactly such an Ed25519-signed anchor.
+func VerifyFullChain(events []Event) VerifyResult {
+	if len(events) > 0 {
+		first := events[0]
+		if first.Seq != 1 || !strings.EqualFold(first.PrevHash, GenesisHash) {
+			return VerifyResult{Valid: false, Count: len(events), BrokenAtSeq: first.Seq,
+				Reason: "log does not start at the genesis entry (seq 1); head entries may have been deleted"}
+		}
+	}
+	return VerifyChain(events)
+}
+
 // VerifyChain recomputes the hash chain over events (which must be ordered by
 // ascending Seq) and reports the first inconsistency, if any. It detects
 // content tampering, hash forgery, broken back-links, and reordering/deletion
