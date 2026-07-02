@@ -99,6 +99,10 @@ embedded IDs/serials).
 | `secsy_envelope_operations_total` | counter | `operation` (`encrypt`/`decrypt`), `result` | HSM-backed envelope encryption operations |
 | `secsy_authz_decisions_total` | counter | `action`, `decision` (`allow`/`deny`) | RBAC authorization decisions |
 | `secsy_component_up` | gauge | `component` (`database`/`hsm`) | Last readiness-probe result (1 = up) |
+| `secsy_certificates_expiring` | gauge | `severity` (`warning`/`critical`/`expired`) | Certs in each expiry window as of the last monitor scan |
+| `secsy_certificate_auto_renewals_total` | counter | `result` (`success`/`error`) | Certificates auto-renewed by the expiry monitor |
+| `secsy_certificate_monitor_scans_total` | counter | `result` | Expiry-monitor scan cycles |
+| `secsy_certificate_monitor_last_scan_timestamp_seconds` | gauge | — | Unix time of the last completed monitor scan |
 
 Histogram buckets are in seconds and span the sub-millisecond to multi-second
 range suited to HSM and HTTP operations.

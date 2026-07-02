@@ -43,6 +43,11 @@ const (
 	ActionCertIssue           = "cert.issue"
 	ActionCertRenew           = "cert.renew"
 	ActionCertRevoke          = "cert.revoke"
+	// ActionCertAutoRenew records a certificate reissued automatically by the
+	// expiry monitor (actor "monitor"), ahead of its expiry.
+	ActionCertAutoRenew = "cert.auto_renew"
+	// ActionCertExpiryScan records a completed expiry-monitor scan cycle.
+	ActionCertExpiryScan = "cert.expiry_scan"
 	ActionCertSignSSH         = "cert.sign_ssh"
 	ActionCertSignX509        = "cert.sign_x509"
 	ActionSecretEncrypt       = "secret.encrypt"

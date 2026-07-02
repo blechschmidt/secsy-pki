@@ -78,6 +78,31 @@ var (
 		"secsy_component_up",
 		"Health of a subsystem probed by the readiness check (1 = up, 0 = down).",
 		"component")
+
+	// Certificate expiry monitoring. CertsExpiring is refreshed on every monitor
+	// scan and reports how many unexpired certificates fall into each severity
+	// window (warning|critical) plus how many have already expired. It lets
+	// dashboards alert on an approaching expiry cliff.
+	CertsExpiring = NewGauge(Default,
+		"secsy_certificates_expiring",
+		"Certificates within a monitored expiry window as of the last scan, by severity (warning|critical|expired).",
+		"severity")
+	// AutoRenewals counts certificates the monitor reissued ahead of expiry,
+	// partitioned by outcome (success|error).
+	AutoRenewals = NewCounter(Default,
+		"secsy_certificate_auto_renewals_total",
+		"Certificates auto-renewed by the expiry monitor, by result.",
+		"result")
+	// MonitorScans counts monitor scan cycles, partitioned by outcome.
+	MonitorScans = NewCounter(Default,
+		"secsy_certificate_monitor_scans_total",
+		"Certificate-expiry monitor scan cycles, by result.",
+		"result")
+	// MonitorLastScan records the wall-clock time of the last completed scan so
+	// operators can alert if the monitor stops running.
+	MonitorLastScan = NewGauge(Default,
+		"secsy_certificate_monitor_last_scan_timestamp_seconds",
+		"Unix timestamp (seconds) of the last completed certificate-expiry monitor scan.")
 )
 
 // Decision label values for AuthzDecisions.
@@ -123,4 +148,9 @@ func RecordCertificate(operation string, err error) {
 // RecordEnvelope records an envelope encrypt/decrypt outcome.
 func RecordEnvelope(operation string, err error) {
 	Envelope.Inc(operation, resultLabel(err))
+}
+
+// RecordAutoRenew records the outcome of an auto-renewal attempt.
+func RecordAutoRenew(err error) {
+	AutoRenewals.Inc(resultLabel(err))
 }

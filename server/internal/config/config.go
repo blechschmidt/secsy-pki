@@ -27,6 +27,54 @@ type Config struct {
 	// ACME configures the RFC 8555 automated-issuance server. Disabled unless
 	// acme.enabled is true.
 	ACME ACMEConfig `yaml:"acme"`
+	// Monitor configures the background certificate-expiry monitor and optional
+	// auto-renewal workflow. Disabled unless monitor.enabled is true.
+	Monitor MonitorConfig `yaml:"monitor"`
+}
+
+// MonitorConfig configures the certificate-expiry monitor. When enabled, a
+// background goroutine periodically scans issued certificates, reports upcoming
+// expirations through the configured notification sinks, and (optionally)
+// auto-renews eligible leaf certificates ahead of expiry through the same
+// HSM-backed issuance path used by the API and CLI.
+type MonitorConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// IntervalHours is how often the background scan runs. Defaults to 12 hours
+	// when unset. Ignored for one-shot CLI/API scans.
+	IntervalHours int `yaml:"interval_hours"`
+	// WarningDays / CriticalDays classify a certificate's remaining validity.
+	// A cert with <= CriticalDays left is "critical"; <= WarningDays is
+	// "warning". Defaults: warning=30, critical=7. CriticalDays must be <=
+	// WarningDays.
+	WarningDays  int `yaml:"warning_days"`
+	CriticalDays int `yaml:"critical_days"`
+	// AutoRenew enables reissuing eligible leaf certificates before expiry.
+	AutoRenew bool `yaml:"auto_renew"`
+	// RenewBeforeDays is the remaining-validity threshold at or below which an
+	// eligible certificate is auto-renewed. Defaults to CriticalDays when unset.
+	RenewBeforeDays int `yaml:"renew_before_days"`
+	// RenewProfiles optionally restricts auto-renewal to certificates issued
+	// under these profile names. Empty means every profile is eligible.
+	RenewProfiles []string `yaml:"renew_profiles"`
+	// Notifications lists the sinks expiry warnings are dispatched to.
+	Notifications []NotificationConfig `yaml:"notifications"`
+}
+
+// NotificationConfig configures a single notification sink for expiry warnings.
+type NotificationConfig struct {
+	// Type selects the sink implementation: "log" or "webhook".
+	Type string `yaml:"type"`
+	// MinSeverity filters which certificates trigger a notification on this sink:
+	// "warning" (default) sends warning + critical + expired; "critical" sends
+	// only critical + expired; "expired" sends only already-expired certs.
+	MinSeverity string `yaml:"min_severity"`
+	// URL is the webhook endpoint (required for type=webhook).
+	URL string `yaml:"url"`
+	// Headers are extra HTTP headers sent with each webhook POST (e.g. an
+	// Authorization token). Optional.
+	Headers map[string]string `yaml:"headers"`
+	// TimeoutSeconds bounds each webhook request. Defaults to 10 when unset.
+	TimeoutSeconds int `yaml:"timeout_seconds"`
 }
 
 // ACMEConfig configures the ACME (RFC 8555) server. When enabled, an ACME
@@ -205,7 +253,58 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateMonitor(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// validateMonitor applies defaults and sanity-checks the expiry-monitor config
+// when it is enabled, so a misconfiguration fails loudly at startup.
+func (c *Config) validateMonitor() error {
+	m := &c.Monitor
+	if m.WarningDays == 0 {
+		m.WarningDays = 30
+	}
+	if m.CriticalDays == 0 {
+		m.CriticalDays = 7
+	}
+	if m.IntervalHours == 0 {
+		m.IntervalHours = 12
+	}
+	if m.RenewBeforeDays == 0 {
+		m.RenewBeforeDays = m.CriticalDays
+	}
+	if !m.Enabled {
+		return nil
+	}
+	if m.WarningDays < 0 || m.CriticalDays < 0 || m.RenewBeforeDays < 0 {
+		return fmt.Errorf("monitor: day thresholds must be non-negative")
+	}
+	if m.CriticalDays > m.WarningDays {
+		return fmt.Errorf("monitor.critical_days (%d) must not exceed monitor.warning_days (%d)", m.CriticalDays, m.WarningDays)
+	}
+	if m.IntervalHours <= 0 {
+		return fmt.Errorf("monitor.interval_hours must be positive")
+	}
+	for i, n := range m.Notifications {
+		switch n.Type {
+		case "log":
+		case "webhook":
+			if n.URL == "" {
+				return fmt.Errorf("monitor.notifications[%d]: webhook sink requires a url", i)
+			}
+		default:
+			return fmt.Errorf("monitor.notifications[%d]: unknown type %q (valid: log, webhook)", i, n.Type)
+		}
+		switch n.MinSeverity {
+		case "", "warning", "critical", "expired":
+		default:
+			return fmt.Errorf("monitor.notifications[%d]: invalid min_severity %q (valid: warning, critical, expired)", i, n.MinSeverity)
+		}
+	}
+	return nil
 }
 
 // validateACME sanity-checks the ACME configuration when it is enabled.
@@ -288,6 +387,14 @@ func applyEnvOverrides(cfg *Config) {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.ACME.HTTP01Port = n
 		}
+	}
+	// Monitor overrides — let the SoftHSM integration harness enable the
+	// expiry monitor and auto-renewal without editing YAML.
+	if v := os.Getenv("SECSY_MONITOR_ENABLED"); v == "1" || v == "true" {
+		cfg.Monitor.Enabled = true
+	}
+	if v := os.Getenv("SECSY_MONITOR_AUTO_RENEW"); v == "1" || v == "true" {
+		cfg.Monitor.AutoRenew = true
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
+	"github.com/blechschmidt/secsy-pki/server/internal/monitor"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 )
 
@@ -143,6 +145,10 @@ func main() {
 		RequireReason:       cfg.Policy.RequireReason,
 		MaxCertValidityDays: cfg.Policy.MaxCertValidityDays,
 	})
+	monitorOpts := monitor.OptionsFromDays(
+		cfg.Monitor.WarningDays, cfg.Monitor.CriticalDays,
+		cfg.Monitor.RenewBeforeDays, cfg.Monitor.RenewProfiles)
+	api.SetMonitorOptions(monitorOpts)
 	if cfg.Secret.KEKLabel != "" {
 		log.Printf("Secret encryption enabled (KEK label: %s)", cfg.Secret.KEKLabel)
 	}
@@ -154,6 +160,19 @@ func main() {
 	// (readiness incl. HSM/DB probes). Unauthenticated by design — restrict at
 	// the network layer if needed.
 	api.RegisterObservability(mux)
+
+	// Certificate-expiry monitor: a background goroutine that periodically scans
+	// issued certificates, reports upcoming expirations through the configured
+	// notification sinks, and (when enabled) auto-renews eligible leaves via the
+	// same HSM-backed issuance path. Runs for the process lifetime.
+	if cfg.Monitor.Enabled {
+		mon := monitor.New(db, ca.NewManager(db, provider), db, monitorOpts)
+		runner, err := monitor.NewRunner(mon, cfg.Monitor, log.Default())
+		if err != nil {
+			log.Fatalf("Certificate-expiry monitor configuration error: %v", err)
+		}
+		go runner.Run(context.Background())
+	}
 
 	// ACME (RFC 8555) automated-issuance server. Its endpoints authenticate
 	// clients via JWS account keys (not OIDC/basic auth) and are therefore

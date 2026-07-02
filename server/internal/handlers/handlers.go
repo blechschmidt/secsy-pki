@@ -17,6 +17,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
+	"github.com/blechschmidt/secsy-pki/server/internal/monitor"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 	"github.com/google/uuid"
@@ -31,6 +32,7 @@ type API struct {
 	suppressAuditWarning bool
 	secretKEKLabel       string
 	policy               Policy
+	monitorOpts          monitor.Options
 }
 
 // Policy holds centrally-configured issuance guardrails enforced by the API
@@ -48,6 +50,10 @@ func NewAPI(db *database.DB, keyProvider keyprovider.Provider, oidcProvider *aut
 
 // SetPolicy installs the centrally-configured issuance policy.
 func (a *API) SetPolicy(p Policy) { a.policy = p }
+
+// SetMonitorOptions installs the expiry-monitor thresholds used by the
+// /api/monitor endpoints so ad-hoc scans match the background monitor.
+func (a *API) SetMonitorOptions(o monitor.Options) { a.monitorOpts = o }
 
 // capValidityDays clamps a requested validity (in days) to the global policy
 // maximum, if one is configured. A non-positive request is left untouched so
@@ -87,6 +93,11 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("POST /api/ca/{id}/revoke", protected(http.HandlerFunc(a.RevokeCertificate)))
 	mux.Handle("GET /api/ca/{id}/certificates", protected(http.HandlerFunc(a.ListIssuedCertificates)))
 	mux.Handle("GET /api/ca/{id}/revoked", protected(http.HandlerFunc(a.ListRevokedCertificates)))
+
+	// Certificate-expiry monitoring: list certificates by remaining validity,
+	// and trigger an on-demand scan (optionally auto-renewing eligible leaves).
+	mux.Handle("GET /api/monitor/expiring", protected(http.HandlerFunc(a.ListExpiringCertificates)))
+	mux.Handle("POST /api/monitor/scan", protected(http.HandlerFunc(a.RunExpiryScan)))
 
 	// Public revocation endpoints — relying parties fetch these without auth.
 	mux.HandleFunc("GET /api/ca/{id}/crl", a.GetCRL)

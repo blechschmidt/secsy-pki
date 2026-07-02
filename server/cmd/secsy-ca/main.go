@@ -88,6 +88,10 @@ func run(args []string) error {
 		return cmdGenCRL(db, mgr, cmdArgs)
 	case "list-certs":
 		return cmdListCerts(db, cmdArgs)
+	case "expiring":
+		return cmdExpiring(db, cfg, cmdArgs)
+	case "monitor-run":
+		return cmdMonitorRun(db, mgr, cfg, cmdArgs)
 	case "profiles":
 		return cmdProfiles()
 	case "help", "-h", "--help":
@@ -114,6 +118,8 @@ Commands:
   revoke              Revoke a certificate by serial
   gen-crl             Generate a signed CRL for a CA
   list-certs          List certificates issued by a CA
+  expiring            List certificates by remaining validity (expiry monitor)
+  monitor-run         Run one expiry-monitor scan (optionally auto-renewing)
   profiles            List the available certificate profiles
 
 Run "secsy-ca <command> -h" for command-specific flags.
