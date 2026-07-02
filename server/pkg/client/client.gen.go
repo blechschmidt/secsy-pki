@@ -980,6 +980,9 @@ type ClientInterface interface {
 	// ListIssuedCertificates request
 	ListIssuedCertificates(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetChain request
+	GetChain(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetCRL request
 	GetCRL(ctx context.Context, id CAId, params *GetCRLParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -1297,6 +1300,18 @@ func (c *Client) InitRootCA(ctx context.Context, body InitRootCAJSONRequestBody,
 
 func (c *Client) ListIssuedCertificates(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListIssuedCertificatesRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetChain(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetChainRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -2653,6 +2668,40 @@ func NewListIssuedCertificatesRequest(server string, id CAId) (*http.Request, er
 	}
 
 	operationPath := fmt.Sprintf("/api/ca/%s/certificates", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetChainRequest generates requests for GetChain
+func NewGetChainRequest(server string, id CAId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/chain", pathParam0)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -4912,6 +4961,9 @@ type ClientWithResponsesInterface interface {
 	// ListIssuedCertificatesWithResponse request
 	ListIssuedCertificatesWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*ListIssuedCertificatesResponse, error)
 
+	// GetChainWithResponse request
+	GetChainWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetChainResponse, error)
+
 	// GetCRLWithResponse request
 	GetCRLWithResponse(ctx context.Context, id CAId, params *GetCRLParams, reqEditors ...RequestEditorFn) (*GetCRLResponse, error)
 
@@ -5312,6 +5364,27 @@ func (r ListIssuedCertificatesResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r ListIssuedCertificatesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetChainResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+}
+
+// Status returns HTTPResponse.Status
+func (r GetChainResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetChainResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -6673,6 +6746,15 @@ func (c *ClientWithResponses) ListIssuedCertificatesWithResponse(ctx context.Con
 	return ParseListIssuedCertificatesResponse(rsp)
 }
 
+// GetChainWithResponse request returning *GetChainResponse
+func (c *ClientWithResponses) GetChainWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetChainResponse, error) {
+	rsp, err := c.GetChain(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetChainResponse(rsp)
+}
+
 // GetCRLWithResponse request returning *GetCRLResponse
 func (c *ClientWithResponses) GetCRLWithResponse(ctx context.Context, id CAId, params *GetCRLParams, reqEditors ...RequestEditorFn) (*GetCRLResponse, error) {
 	rsp, err := c.GetCRL(ctx, id, params, reqEditors...)
@@ -7562,6 +7644,22 @@ func ParseListIssuedCertificatesResponse(rsp *http.Response) (*ListIssuedCertifi
 		}
 		response.JSON200 = &dest
 
+	}
+
+	return response, nil
+}
+
+// ParseGetChainResponse parses an HTTP response from a GetChainWithResponse call
+func ParseGetChainResponse(rsp *http.Response) (*GetChainResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetChainResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
 	}
 
 	return response, nil

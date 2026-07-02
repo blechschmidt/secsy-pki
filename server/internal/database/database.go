@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	_ "github.com/lib/pq"
@@ -153,6 +154,10 @@ func (db *DB) migrate() error {
 			not_before TIMESTAMP,
 			not_after TIMESTAMP,
 			max_path_len INTEGER,
+			status TEXT NOT NULL DEFAULT 'active',
+			successor_id TEXT,
+			predecessor_id TEXT,
+			retire_after TIMESTAMP,
 			created_at %s
 		)`, blob, currentTimestamp),
 		// Per-CA monotonic serial counter used to allocate unique certificate
@@ -350,6 +355,11 @@ func (db *DB) migrate() error {
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS not_before TIMESTAMP")
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS not_after TIMESTAMP")
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS max_path_len INTEGER")
+		// Key-rotation / rollover state (Task 24).
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS successor_id TEXT")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS predecessor_id TEXT")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS retire_after TIMESTAMP")
 		db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS ssh_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS certificate BYTEA")
@@ -366,6 +376,11 @@ func (db *DB) migrate() error {
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN not_before TIMESTAMP")
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN not_after TIMESTAMP")
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN max_path_len INTEGER")
+		// Key-rotation / rollover state (Task 24).
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN successor_id TEXT")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN predecessor_id TEXT")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN retire_after TIMESTAMP")
 		db.conn.Exec("ALTER TABLE permissions ADD COLUMN ssh_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE permissions ADD COLUMN x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN certificate BLOB")
@@ -444,7 +459,8 @@ func (db *DB) upsert(table, columns, placeholders, conflictCols, updateSet strin
 // scanCA.
 const caColumns = `id, parent_id, label, pkcs11_uri, key_type, public_key,
 	default_ssh_restriction_set_id, default_x509_restriction_set_id,
-	certificate, subject, serial, not_before, not_after, max_path_len, created_at`
+	certificate, subject, serial, not_before, not_after, max_path_len,
+	status, successor_id, predecessor_id, retire_after, created_at`
 
 // caScanner is the minimal surface shared by *sql.Row and *sql.Rows.
 type caScanner interface {
@@ -455,13 +471,15 @@ type caScanner interface {
 func scanCA(s caScanner) (*models.CA, error) {
 	var ca models.CA
 	var pubBlob []byte
-	var cert, subject, serial sql.NullString
-	var notBefore, notAfter sql.NullTime
+	var cert, subject, serial, status sql.NullString
+	var successorID, predecessorID sql.NullString
+	var notBefore, notAfter, retireAfter sql.NullTime
 	var maxPathLen sql.NullInt64
 	if err := s.Scan(
 		&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob,
 		&ca.DefaultSSHRestrictionSetID, &ca.DefaultX509RestrictionSetID,
-		&cert, &subject, &serial, &notBefore, &notAfter, &maxPathLen, &ca.CreatedAt,
+		&cert, &subject, &serial, &notBefore, &notAfter, &maxPathLen,
+		&status, &successorID, &predecessorID, &retireAfter, &ca.CreatedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -486,6 +504,23 @@ func scanCA(s caScanner) (*models.CA, error) {
 	if maxPathLen.Valid {
 		v := int(maxPathLen.Int64)
 		ca.MaxPathLen = &v
+	}
+	if status.Valid && status.String != "" {
+		ca.Status = status.String
+	} else {
+		ca.Status = models.CAStatusActive
+	}
+	if successorID.Valid && successorID.String != "" {
+		v := successorID.String
+		ca.SuccessorID = &v
+	}
+	if predecessorID.Valid && predecessorID.String != "" {
+		v := predecessorID.String
+		ca.PredecessorID = &v
+	}
+	if retireAfter.Valid {
+		t := retireAfter.Time
+		ca.RetireAfter = &t
 	}
 	return &ca, nil
 }
@@ -518,16 +553,26 @@ func (db *DB) CreateCA(ca *models.CA) error {
 	if ca.MaxPathLen != nil {
 		maxPathLen = *ca.MaxPathLen
 	}
+	var retireAfter interface{}
+	if ca.RetireAfter != nil {
+		retireAfter = *ca.RetireAfter
+	}
+	status := ca.Status
+	if status == "" {
+		status = models.CAStatusActive
+	}
 
 	if _, err := tx.Exec(db.ph(
 		`INSERT INTO cas (id, parent_id, label, pkcs11_uri, key_type, public_key,
 			default_ssh_restriction_set_id, default_x509_restriction_set_id,
-			certificate, subject, serial, not_before, not_after, max_path_len)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			certificate, subject, serial, not_before, not_after, max_path_len,
+			status, successor_id, predecessor_id, retire_after)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		ca.ID, ca.ParentID, ca.Label, ca.PKCS11URI, ca.KeyType, pubKeyToBlob(ca.PublicKey),
 		ca.DefaultSSHRestrictionSetID, ca.DefaultX509RestrictionSetID,
 		nullString(ca.Certificate), nullString(ca.Subject), nullString(ca.Serial),
 		notBefore, notAfter, maxPathLen,
+		status, ca.SuccessorID, ca.PredecessorID, retireAfter,
 	); err != nil {
 		return err
 	}
@@ -606,6 +651,39 @@ func (db *DB) ListCAs() ([]models.CA, error) {
 
 func (db *DB) DeleteCA(id string) error {
 	_, err := db.exec(`DELETE FROM cas WHERE id = ?`, id)
+	return err
+}
+
+// MarkCARotated records a completed intermediate-CA key rollover atomically: the
+// old CA is marked superseded and pointed at its successor with a retire-after
+// deadline, and the new CA is pointed back at its predecessor. Both rows are
+// updated in one transaction so a rollover never leaves a half-linked pair.
+func (db *DB) MarkCARotated(oldID, newID string, retireAfter *time.Time) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var retire interface{}
+	if retireAfter != nil {
+		retire = *retireAfter
+	}
+	if _, err := tx.Exec(db.ph(
+		`UPDATE cas SET status = ?, successor_id = ?, retire_after = ? WHERE id = ?`),
+		models.CAStatusSuperseded, newID, retire, oldID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(db.ph(
+		`UPDATE cas SET predecessor_id = ? WHERE id = ?`), oldID, newID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SetCAStatus updates a CA's rollover lifecycle status (see models.CAStatus*).
+func (db *DB) SetCAStatus(id, status string) error {
+	_, err := db.exec(`UPDATE cas SET status = ? WHERE id = ?`, status, id)
 	return err
 }
 

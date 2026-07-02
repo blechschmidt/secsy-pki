@@ -126,6 +126,8 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 
 	// Public revocation endpoints — relying parties fetch these without auth.
 	mux.HandleFunc("GET /api/ca/{id}/crl", a.GetCRL)
+	// Combined overlap chain (AIA/bundle) for a CA, covering key-rollover overlap.
+	mux.HandleFunc("GET /api/ca/{id}/chain", a.GetChain)
 	mux.HandleFunc("POST /api/ca/{id}/ocsp", a.OCSPResponder)
 	mux.HandleFunc("GET /api/ca/{id}/ocsp/{req}", a.OCSPResponder)
 

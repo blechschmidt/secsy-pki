@@ -36,7 +36,30 @@ type CA struct {
 	NotBefore   *time.Time `json:"not_before,omitempty" db:"not_before"`
 	NotAfter    *time.Time `json:"not_after,omitempty" db:"not_after"`
 	MaxPathLen  *int       `json:"max_path_len,omitempty" db:"max_path_len"` // nil = unconstrained
+
+	// Key-rotation / rollover state. These track an intermediate CA's position in
+	// a signing-key rollover (see the ca package's rotation support). A freshly
+	// created CA is CAStatusActive with no predecessor or successor.
+	Status        string     `json:"status,omitempty" db:"status"`                 // active | superseded | retired
+	SuccessorID   *string    `json:"successor_id,omitempty" db:"successor_id"`     // CA that replaced this one (set on the old CA when rotated out)
+	PredecessorID *string    `json:"predecessor_id,omitempty" db:"predecessor_id"` // CA this one replaced (set on the new CA)
+	RetireAfter   *time.Time `json:"retire_after,omitempty" db:"retire_after"`     // earliest time the superseded key can be safely retired (max NotAfter of outstanding leaves at rotation time)
 }
+
+// CA rollover lifecycle states.
+const (
+	// CAStatusActive is the default state: the CA is the current signing key for
+	// its subject and new certificates are issued under it.
+	CAStatusActive = "active"
+	// CAStatusSuperseded means a newer key has been rotated in for the same
+	// subject. The superseded CA still validates its previously issued
+	// certificates during the overlap window but no longer issues new leaves.
+	CAStatusSuperseded = "superseded"
+	// CAStatusRetired means the superseded key has been decommissioned: its
+	// certificate has been revoked under the parent and it neither issues nor is
+	// expected to validate new chains.
+	CAStatusRetired = "retired"
+)
 
 // CASubject describes the distinguished-name fields for a CA certificate in API
 // and CLI requests.

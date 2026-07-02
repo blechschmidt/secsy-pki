@@ -105,6 +105,16 @@ func run(args []string) error {
 		return cmdInventory(db, provider, cmdArgs)
 	case "ceremony":
 		return cmdCeremony(db, mgr, provider, cmdArgs)
+	case "rotate-intermediate":
+		return cmdRotateIntermediate(db, mgr, cmdArgs)
+	case "rotation-status":
+		return cmdRotationStatus(db, mgr, cmdArgs)
+	case "list-rotations":
+		return cmdListRotations(db, mgr, cmdArgs)
+	case "retire-intermediate":
+		return cmdRetireIntermediate(db, mgr, cmdArgs)
+	case "publish-chain":
+		return cmdPublishChain(db, mgr, cmdArgs)
 	case "backup":
 		return cmdBackup(db, cfg, provider, cmdArgs)
 	case "restore":
@@ -140,6 +150,11 @@ Commands:
   profiles            List the available certificate profiles
   inventory           List keys held by the key provider (HSM/software)
   ceremony            Run an M-of-N confirmed root/intermediate key ceremony
+  rotate-intermediate Rotate an intermediate CA signing key (dual-chain overlap)
+  rotation-status     Show an intermediate CA's key-rollover / overlap state
+  list-rotations      List CAs currently in a key-rotation lineage
+  retire-intermediate Retire a superseded intermediate key after the overlap
+  publish-chain       Emit the combined overlap chain (AIA/bundle) for a CA
   backup              Export CA metadata + a DR manifest (no private keys)
   restore             Restore/verify CA metadata against the key provider
   audit               Verify the audit hash-chain, or export it for SIEM

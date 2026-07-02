@@ -39,6 +39,12 @@ func NewManager(db *database.DB, provider keyprovider.Provider) *Manager {
 	return &Manager{db: db, provider: provider}
 }
 
+// ProviderName returns the human-readable name of the underlying key provider
+// (e.g. "pkcs11" or "software"), for transcripts and diagnostics.
+func (m *Manager) ProviderName() string {
+	return m.provider.Name()
+}
+
 // RootSpec describes a root CA to initialize.
 type RootSpec struct {
 	Label      string
@@ -247,6 +253,7 @@ func (m *Manager) persistCA(parentID *string, label string, keyInfo *keyprovider
 		NotBefore:                   &notBefore,
 		NotAfter:                    &notAfter,
 		MaxPathLen:                  req.MaxPathLen,
+		Status:                      models.CAStatusActive,
 	}
 	if err := m.db.CreateCA(ca); err != nil {
 		return nil, fmt.Errorf("persisting CA: %w", err)

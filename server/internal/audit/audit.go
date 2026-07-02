@@ -69,6 +69,12 @@ const (
 	ActionCeremonyAbort           = "ceremony.abort"
 	ActionHSMBackup               = "hsm.backup"
 	ActionHSMRestore              = "hsm.restore"
+	// Intermediate-CA key rotation / rollover (Task 24). Rotate records a new key
+	// being cross-signed under the parent and the old key entering the overlap
+	// window; Retire records the old key being revoked under its parent after the
+	// overlap drains. No private key material is ever handled.
+	ActionCARotate = "ca.rotate"
+	ActionCARetire = "ca.retire"
 	// ACME (RFC 8555) protocol operations. The actor for these is the ACME
 	// account ("acme:<account-id>") rather than an OIDC/root principal, since
 	// ACME clients authenticate with their own account keys.
@@ -82,12 +88,12 @@ const (
 	// the enrollment grant / authenticated principal rather than an OIDC subject,
 	// since these protocols authenticate with a challenge password, HTTP Basic, or
 	// a TLS client certificate.
-	ActionSCEPGetCACert  = "scep.get_ca_cert"
-	ActionSCEPEnroll     = "scep.enroll"
-	ActionSCEPRenew      = "scep.renew"
-	ActionESTCACerts     = "est.cacerts"
-	ActionESTEnroll      = "est.simpleenroll"
-	ActionESTReenroll    = "est.simplereenroll"
+	ActionSCEPGetCACert   = "scep.get_ca_cert"
+	ActionSCEPEnroll      = "scep.enroll"
+	ActionSCEPRenew       = "scep.renew"
+	ActionESTCACerts      = "est.cacerts"
+	ActionESTEnroll       = "est.simpleenroll"
+	ActionESTReenroll     = "est.simplereenroll"
 	ActionESTServerKeyGen = "est.serverkeygen"
 )
 

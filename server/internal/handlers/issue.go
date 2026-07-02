@@ -239,6 +239,25 @@ func (a *API) GetCRL(w http.ResponseWriter, r *http.Request) {
 	w.Write(der)
 }
 
+// GetChain returns the combined overlap chain (AIA/bundle) for a CA: the active
+// intermediate, any overlapping superseded siblings still in their rollover
+// window, and the parent chain up to the root — as a single PEM bundle. It is a
+// public endpoint so relying parties can fetch the issuer bundle needed to
+// validate leaves signed by either key during a key rollover.
+func (a *API) GetChain(w http.ResponseWriter, r *http.Request) {
+	caID := r.PathValue("id")
+
+	mgr := ca.NewManager(a.db, a.keyProvider)
+	chain, err := mgr.CombinedChainPEM(caID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "failed to build chain: %v", err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-pem-file")
+	w.Header().Set("Content-Disposition", "attachment; filename=chain.pem")
+	w.Write(chain)
+}
+
 // OCSPResponder answers OCSP requests for a CA. It supports both the POST form
 // (request body is the DER OCSP request) and the GET form (base64-encoded
 // request in the path), per RFC 6960. It is a public endpoint.

@@ -175,11 +175,16 @@ func main() {
 	// notification sinks, and (when enabled) auto-renews eligible leaves via the
 	// same HSM-backed issuance path. Runs for the process lifetime.
 	if cfg.Monitor.Enabled {
-		mon := monitor.New(db, ca.NewManager(db, provider), db, monitorOpts)
+		caMgr := ca.NewManager(db, provider)
+		mon := monitor.New(db, caMgr, db, monitorOpts)
 		runner, err := monitor.NewRunner(mon, cfg.Monitor, log.Default())
 		if err != nil {
 			log.Fatalf("Certificate-expiry monitor configuration error: %v", err)
 		}
+		// Enable HSM-backed intermediate-CA key rotation when configured: the same
+		// manager cross-signs a fresh key under the parent and opens a dual-chain
+		// overlap window as intermediates near expiry.
+		runner.WithRotation(caMgr, db)
 		go runner.Run(context.Background())
 	}
 

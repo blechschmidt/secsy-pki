@@ -53,7 +53,14 @@ type IssueResult struct {
 // concurrent issuance), the leaf is signed on the provider (HSM), and a copy is
 // recorded for renewal and revocation.
 func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueResult, error) {
-	issuerCA, issuerCert, err := m.loadIssuer(spec.CAID)
+	// Follow any key-rotation lineage so new certificates are always minted under
+	// the current (newest) signing key. Issuing against a superseded CA id/label
+	// transparently uses its active successor; an un-rotated CA resolves to itself.
+	activeID, err := m.ActiveIssuerID(spec.CAID)
+	if err != nil {
+		return nil, err
+	}
+	issuerCA, issuerCert, err := m.loadIssuer(activeID)
 	if err != nil {
 		return nil, err
 	}

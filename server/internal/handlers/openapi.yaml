@@ -459,6 +459,27 @@ paths:
             application/x-pem-file:
               schema: { type: string }
 
+  /api/ca/{id}/chain:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    get:
+      operationId: getChain
+      tags: [Revocation]
+      summary: Download a CA's combined issuer chain (AIA/bundle)
+      description: >
+        Returns the combined issuer bundle for a CA as a single PEM: the active
+        intermediate, any overlapping superseded siblings still within their
+        key-rotation overlap window, and the parent chain up to the root. During
+        an intermediate-key rollover this bundle lets relying parties validate
+        leaves signed by either the old or the new key.
+      security: []
+      responses:
+        "200":
+          description: PEM bundle of the CA's issuer chain.
+          content:
+            application/x-pem-file:
+              schema: { type: string }
+
   /api/ca/{id}/ocsp:
     parameters:
       - $ref: "#/components/parameters/CAId"

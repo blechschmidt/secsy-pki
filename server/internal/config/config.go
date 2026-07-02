@@ -130,6 +130,15 @@ type MonitorConfig struct {
 	// RenewProfiles optionally restricts auto-renewal to certificates issued
 	// under these profile names. Empty means every profile is eligible.
 	RenewProfiles []string `yaml:"renew_profiles"`
+	// RotateIntermediates enables automatic HSM-backed key rotation of
+	// intermediate CAs whose own certificate is nearing expiry. When enabled the
+	// monitor generates a fresh keypair, cross-signs a new intermediate under the
+	// parent, and enters a dual-chain overlap window (see the ca rotation
+	// support). Retirement of the old key remains a manual, ceremony-style step.
+	RotateIntermediates bool `yaml:"rotate_intermediates"`
+	// RotateBeforeDays is the remaining-validity threshold at or below which an
+	// active intermediate CA is auto-rotated. Defaults to WarningDays when unset.
+	RotateBeforeDays int `yaml:"rotate_before_days"`
 	// Notifications lists the sinks expiry warnings are dispatched to.
 	Notifications []NotificationConfig `yaml:"notifications"`
 }
@@ -529,10 +538,15 @@ func (c *Config) validateMonitor() error {
 	if m.RenewBeforeDays == 0 {
 		m.RenewBeforeDays = m.CriticalDays
 	}
+	if m.RotateBeforeDays == 0 {
+		// Intermediate keys are long-lived; rotate well ahead of expiry, defaulting
+		// to the (typically larger) warning window rather than the leaf threshold.
+		m.RotateBeforeDays = m.WarningDays
+	}
 	if !m.Enabled {
 		return nil
 	}
-	if m.WarningDays < 0 || m.CriticalDays < 0 || m.RenewBeforeDays < 0 {
+	if m.WarningDays < 0 || m.CriticalDays < 0 || m.RenewBeforeDays < 0 || m.RotateBeforeDays < 0 {
 		return fmt.Errorf("monitor: day thresholds must be non-negative")
 	}
 	if m.CriticalDays > m.WarningDays {
@@ -662,6 +676,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("SECSY_MONITOR_AUTO_RENEW"); v == "1" || v == "true" {
 		cfg.Monitor.AutoRenew = true
+	}
+	if v := os.Getenv("SECSY_MONITOR_ROTATE_INTERMEDIATES"); v == "1" || v == "true" {
+		cfg.Monitor.RotateIntermediates = true
 	}
 }
 
