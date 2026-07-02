@@ -1,0 +1,26 @@
+{{- if .Values.prometheusRule.enabled }}
+# Prometheus Operator alerting rules for secsy-pki. The rule bodies live in
+# files/prometheus-rules.yaml (the single source of truth, also usable as a
+# standalone Prometheus rule_files entry). They are embedded verbatim here so
+# there is no drift between the Helm and non-Helm deployments.
+#
+# For the operator to load these, the labels below must match the Prometheus
+# resource's ruleSelector (commonly `release: <kube-prometheus-stack release>`).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "secsy-pki.fullname" . }}
+  {{- with .Values.prometheusRule.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "secsy-pki.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+{{ .Files.Get "files/prometheus-rules.yaml" | indent 2 }}
+{{- with .Values.prometheusRule.additionalGroups }}
+{{- toYaml . | nindent 4 }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,472 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "HSM-backed enterprise PKI: issuance, HSM session-pool saturation, OCSP/CRL, rate limiting, expiry-monitor and audit health. Built on the secsy_* Prometheus metrics (Tasks 14/20/25).",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "liveNow": false,
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["secsy-pki", "pki", "hsm"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Data source",
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "type": "datasource"
+      },
+      {
+        "current": { "text": "All", "value": "$__all" },
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "definition": "label_values(secsy_component_up, job)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Job",
+        "multi": true,
+        "name": "job",
+        "options": [],
+        "query": { "query": "label_values(secsy_component_up, job)", "refId": "job" },
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "secsy-pki — PKI & HSM overview",
+  "uid": "secsy-pki-overview",
+  "version": 1,
+  "weekStart": "",
+  "panels": [
+    {
+      "type": "row",
+      "title": "Overview",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "HSM probe up",
+      "description": "1 = HSM/key-provider readiness probe healthy. Feeds the SecsyPKIHSMProbeDown alert.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "id": 1,
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] }
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "min(secsy_component_up{job=~\"$job\", component=\"hsm\"})", "refId": "A" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Subsystems up",
+      "description": "Readiness probes per subsystem (hsm, database, ...).",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 6, "x": 4, "y": 1 },
+      "id": 2,
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [ { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } } ],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] }
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "secsy_component_up{job=~\"$job\"}", "legendFormat": "{{component}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Issuance success ratio (5m)",
+      "description": "Successful issue/renew/revoke over all outcomes. Below the SLO drives SecsyPKIIssuanceErrorBudgetBurn.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 5, "x": 10, "y": 1 },
+      "id": 3,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 0.98 }, { "color": "green", "value": 0.995 } ] }
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum(rate(secsy_certificates_total{job=~\"$job\", result=\"success\"}[5m])) / clamp_min(sum(rate(secsy_certificates_total{job=~\"$job\"}[5m])), 1e-9)", "refId": "A" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "HSM in-flight / queued",
+      "description": "Concurrency-guard slots in use and requests waiting for a slot (session-pool saturation).",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 5, "x": 15, "y": 1 },
+      "id": 4,
+      "fieldConfig": {
+        "defaults": { "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 } ] } }
+      },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum(secsy_hsm_guard_in_flight{job=~\"$job\"})", "legendFormat": "in-flight", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum(secsy_hsm_guard_queue_depth{job=~\"$job\"})", "legendFormat": "queued", "refId": "B" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Minutes since last monitor scan",
+      "description": "Age of the last completed expiry-monitor scan. Drives SecsyPKIMonitorStalled.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "id": 5,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "m",
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 720 }, { "color": "red", "value": 1500 } ] }
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "(time() - max(secsy_certificate_monitor_last_scan_timestamp_seconds{job=~\"$job\"})) / 60", "refId": "A" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Certificate issuance",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 101,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Certificate operations / sec",
+      "description": "rate of issue/renew/revoke by outcome.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "id": 10,
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10, "stacking": { "mode": "none" } } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum by (operation, result) (rate(secsy_certificates_total{job=~\"$job\"}[5m]))", "legendFormat": "{{operation}} / {{result}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Issuance error ratio",
+      "description": "Errored certificate operations as a fraction of all operations.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "id": 11,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 15 },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 0.02 }, { "color": "red", "value": 0.05 } ] }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum(rate(secsy_certificates_total{job=~\"$job\", result=\"error\"}[5m])) / clamp_min(sum(rate(secsy_certificates_total{job=~\"$job\"}[5m])), 1e-9)", "legendFormat": "error ratio", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP request latency (p50/p95/p99)",
+      "description": "End-to-end request handling latency across all routes.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "id": 12,
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 0 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "histogram_quantile(0.50, sum by (le) (rate(secsy_http_request_duration_seconds_bucket{job=~\"$job\"}[5m])))", "legendFormat": "p50", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "histogram_quantile(0.95, sum by (le) (rate(secsy_http_request_duration_seconds_bucket{job=~\"$job\"}[5m])))", "legendFormat": "p95", "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "histogram_quantile(0.99, sum by (le) (rate(secsy_http_request_duration_seconds_bucket{job=~\"$job\"}[5m])))", "legendFormat": "p99", "refId": "C" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP requests / sec by status",
+      "description": "Request throughput partitioned by HTTP status class.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "id": 13,
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 20, "stacking": { "mode": "normal" } } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum by (status) (rate(secsy_http_requests_total{job=~\"$job\"}[5m]))", "legendFormat": "{{status}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "HSM / key-provider & session pool",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 22 },
+      "id": 102,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "HSM operations / sec",
+      "description": "Key-provider operations (sign/decrypt/generate/find/public_key) by outcome.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "id": 20,
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum by (operation, result) (rate(secsy_hsm_operations_total{job=~\"$job\"}[5m]))", "legendFormat": "{{operation}} / {{result}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HSM operation latency p99 by operation",
+      "description": "99th-percentile HSM latency; sign latency dominates issuance throughput.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "id": 21,
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 0 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["max", "lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "histogram_quantile(0.99, sum by (le, operation) (rate(secsy_hsm_operation_duration_seconds_bucket{job=~\"$job\"}[5m])))", "legendFormat": "{{operation}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Session-pool saturation (in-flight & queue depth)",
+      "description": "HSM concurrency-guard slots held vs requests waiting. Sustained queue depth > 0 means the pool is the bottleneck (proxy for wait time).",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 31 },
+      "id": 22,
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 20 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum(secsy_hsm_guard_in_flight{job=~\"$job\"})", "legendFormat": "in-flight", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum(secsy_hsm_guard_queue_depth{job=~\"$job\"})", "legendFormat": "queued (waiting)", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HSM guard rejections / sec (503 load-shedding)",
+      "description": "Requests shed before reaching the session pool, by reason (queue_full|timeout|canceled).",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 31 },
+      "id": 23,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 25, "stacking": { "mode": "normal" } },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 0.1 } ] }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum", "lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum by (endpoint, reason) (rate(secsy_hsm_guard_rejected_total{job=~\"$job\"}[5m]))", "legendFormat": "{{endpoint}} / {{reason}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Revocation — OCSP & CRL",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 39 },
+      "id": 103,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "OCSP requests / sec by result",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 40 },
+      "id": 30,
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum by (result) (rate(secsy_ocsp_requests_total{job=~\"$job\"}[5m]))", "legendFormat": "{{result}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "CRL requests / sec by result",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 40 },
+      "id": 31,
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum by (result) (rate(secsy_crl_requests_total{job=~\"$job\"}[5m]))", "legendFormat": "{{result}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache hit ratio (OCSP & CRL)",
+      "description": "Derived: a signed/generated response only happens on a cache miss, so hit_ratio = 1 - signed_rate / served_rate. Low ratios mean cache churn and extra HSM load.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 40 },
+      "id": 32,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "min": 0, "max": 1,
+          "custom": { "drawStyle": "line", "fillOpacity": 10 },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 0.5 }, { "color": "green", "value": 0.8 } ] }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "1 - (sum(rate(secsy_ocsp_signer_total{job=~\"$job\"}[5m])) / clamp_min(sum(rate(secsy_ocsp_requests_total{job=~\"$job\", result=\"success\"}[5m])), 1e-9))", "legendFormat": "OCSP", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "1 - (sum(rate(secsy_crl_generated_total{job=~\"$job\"}[5m])) / clamp_min(sum(rate(secsy_crl_requests_total{job=~\"$job\", result=\"success\"}[5m])), 1e-9))", "legendFormat": "CRL", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "CRLs signed on HSM / sec by kind & scope",
+      "description": "Fresh HSM CRL signings (base|delta, full|partition). Zero base signings over a long window can indicate CRL staleness.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 48 },
+      "id": 33,
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 15 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum by (kind, scope) (rate(secsy_crl_generated_total{job=~\"$job\"}[15m]))", "legendFormat": "{{kind}} / {{scope}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "OCSP nonce handling / sec",
+      "description": "echoed = signed nonce reflected (cache bypass); absent = no nonce; rejected = out-of-bounds nonce answered malformed.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 48 },
+      "id": 34,
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 15 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum by (handling) (rate(secsy_ocsp_nonce_total{job=~\"$job\"}[5m]))", "legendFormat": "{{handling}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Rate limiting & abuse protection",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 56 },
+      "id": 104,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Rate-limit throttles / sec (429) by endpoint & tier",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 57 },
+      "id": 40,
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 25, "stacking": { "mode": "normal" } } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["sum", "lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum by (endpoint, tier) (rate(secsy_ratelimit_throttled_total{job=~\"$job\"}[5m]))", "legendFormat": "{{endpoint}} / {{tier}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Admitted vs throttled ratio",
+      "description": "Fraction of public-endpoint requests rejected by the rate limiter.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 57 },
+      "id": 41,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "min": 0,
+          "custom": { "drawStyle": "line", "fillOpacity": 15 },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 0.1 }, { "color": "red", "value": 0.3 } ] }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum(rate(secsy_ratelimit_throttled_total{job=~\"$job\"}[5m])) / clamp_min(sum(rate(secsy_ratelimit_throttled_total{job=~\"$job\"}[5m])) + sum(rate(secsy_ratelimit_admitted_total{job=~\"$job\"}[5m])), 1e-9)", "legendFormat": "throttled fraction", "refId": "A" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Expiry monitor, auto-renewal & audit health",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 65 },
+      "id": 105,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Certificates in expiry window by severity",
+      "description": "As of the last monitor scan: warning|critical|expired counts. A rising 'expired' or 'critical' line is an issuance/renewal backlog.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 66 },
+      "id": 50,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "fillOpacity": 15 },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] }
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "max by (severity) (secsy_certificates_expiring{job=~\"$job\"})", "legendFormat": "{{severity}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Auto-renewals / sec by result",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 66 },
+      "id": 51,
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 15 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum by (result) (rate(secsy_certificate_auto_renewals_total{job=~\"$job\"}[15m]))", "legendFormat": "{{result}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Audit export lag by sink",
+      "description": "Sealed audit events not yet delivered to each SIEM sink. Sustained growth means a sink is down or backpressured.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 66 },
+      "id": 52,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "fillOpacity": 10 },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 500 }, { "color": "red", "value": 5000 } ] }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "max by (sink) (secsy_audit_export_lag_events{job=~\"$job\"})", "legendFormat": "{{sink}}", "refId": "A" }
+      ]
+    }
+  ]
+}

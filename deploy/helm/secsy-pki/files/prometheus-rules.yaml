@@ -1,0 +1,274 @@
+groups:
+  # --- Scrape / availability -------------------------------------------------
+  - name: secsy-pki.availability
+    rules:
+      - alert: SecsyPKITargetDown
+        # The Prometheus scrape target is unreachable. This is the umbrella
+        # signal — most other alerts go stale when the target is down, so page
+        # on this rather than on the derived ones.
+        expr: up{job=~".*secsy.*"} == 0
+        for: 3m
+        labels:
+          severity: critical
+          service: secsy-pki
+        annotations:
+          summary: "secsy-pki target down ({{ $labels.instance }})"
+          description: "Prometheus has failed to scrape {{ $labels.job }}/{{ $labels.instance }} for >3m. Check the pod/readiness probe."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#observability-alert-response"
+
+  # --- HSM / key provider ----------------------------------------------------
+  - name: secsy-pki.hsm
+    rules:
+      - alert: SecsyPKIHSMProbeDown
+        # The readiness probe cannot reach the HSM/key provider. All signing is
+        # blocked; the server will fail /readyz and be pulled from the Service.
+        expr: min by (job, instance) (secsy_component_up{component="hsm"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: secsy-pki
+        annotations:
+          summary: "HSM/key-provider probe down ({{ $labels.instance }})"
+          description: "secsy_component_up{component=hsm}=0 for >2m. The HSM/PKCS#11 token is unreachable — no certificates, CRLs, OCSP, or TSA tokens can be signed."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#hsm-probe-down"
+
+      - alert: SecsyPKIHSMPoolExhausted
+        # Requests are waiting for an HSM concurrency-guard slot: the session
+        # pool is the bottleneck. Sustained queueing precedes 503 shedding.
+        expr: sum by (job, instance) (secsy_hsm_guard_queue_depth) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "HSM session pool saturated ({{ $labels.instance }})"
+          description: "Requests have been queued for an HSM slot for >10m (queue_depth>0). Raise rateLimit.hsmConcurrency / session-pool size, or investigate slow signing. See docs/rate-limiting.md and docs/benchmarks.md."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#hsm-pool-exhaustion"
+
+      - alert: SecsyPKIHSMGuardShedding
+        # The guard is actively rejecting HSM-bound requests (HTTP 503). This is
+        # load-shedding — clients are being turned away before the pool.
+        expr: sum by (job, instance) (rate(secsy_hsm_guard_rejected_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+          service: secsy-pki
+        annotations:
+          summary: "HSM guard shedding load ({{ $labels.instance }})"
+          description: "The HSM concurrency guard is rejecting >0.1 req/s (503) over 5m. The pool is saturated and clients are being shed. Scale replicas or the pool; check for a stalled HSM."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#hsm-pool-exhaustion"
+
+      - alert: SecsyPKIHSMSignLatencyHigh
+        # p99 HSM sign latency is elevated — throughput ceiling and a leading
+        # indicator of pool saturation.
+        expr: histogram_quantile(0.99, sum by (le, job) (rate(secsy_hsm_operation_duration_seconds_bucket{operation="sign"}[5m]))) > 2
+        for: 10m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "HSM sign latency p99 high ({{ $labels.job }})"
+          description: "p99 HSM sign latency has exceeded 2s for >10m. Expect issuance/CRL/OCSP slowdowns. Check HSM health, network to a network-HSM, and session-pool sizing."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#hsm-pool-exhaustion"
+
+  # --- Issuance SLO ----------------------------------------------------------
+  - name: secsy-pki.issuance
+    rules:
+      - alert: SecsyPKIIssuanceErrorBudgetBurnFast
+        # Multi-window burn-rate: a 14.4x burn on a 99.5% SLO over 1h AND 5m.
+        # This exhausts a month's error budget in ~2 days — page.
+        expr: |
+          (
+            sum by (job) (rate(secsy_certificates_total{result="error"}[1h]))
+              / clamp_min(sum by (job) (rate(secsy_certificates_total[1h])), 1e-9) > (14.4 * 0.005)
+          )
+          and
+          (
+            sum by (job) (rate(secsy_certificates_total{result="error"}[5m]))
+              / clamp_min(sum by (job) (rate(secsy_certificates_total[5m])), 1e-9) > (14.4 * 0.005)
+          )
+        for: 2m
+        labels:
+          severity: critical
+          service: secsy-pki
+        annotations:
+          summary: "Issuance error-budget burning fast ({{ $labels.job }})"
+          description: "Certificate-operation error ratio is burning the 99.5% SLO budget at >14.4x over 1h and 5m windows. Investigate signing failures, CAA/lint rejections, or store errors."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#issuance-error-rate-slo-burn"
+
+      - alert: SecsyPKIIssuanceErrorBudgetBurnSlow
+        # 6x burn over 6h AND 30m — a slower leak that still warrants a ticket.
+        expr: |
+          (
+            sum by (job) (rate(secsy_certificates_total{result="error"}[6h]))
+              / clamp_min(sum by (job) (rate(secsy_certificates_total[6h])), 1e-9) > (6 * 0.005)
+          )
+          and
+          (
+            sum by (job) (rate(secsy_certificates_total{result="error"}[30m]))
+              / clamp_min(sum by (job) (rate(secsy_certificates_total[30m])), 1e-9) > (6 * 0.005)
+          )
+        for: 15m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "Issuance error-budget burning ({{ $labels.job }})"
+          description: "Certificate-operation error ratio is burning the 99.5% SLO budget at >6x over 6h and 30m windows."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#issuance-error-rate-slo-burn"
+
+  # --- Certificate expiry / renewal ------------------------------------------
+  - name: secsy-pki.expiry
+    rules:
+      - alert: SecsyPKICertificatesExpired
+        # Monitored certificates have already passed their notAfter and were not
+        # renewed. Any nonzero value is an outage waiting to happen.
+        expr: max by (job) (secsy_certificates_expiring{severity="expired"}) > 0
+        for: 15m
+        labels:
+          severity: critical
+          service: secsy-pki
+        annotations:
+          summary: "Expired certificates present ({{ $labels.job }})"
+          description: "{{ $value }} monitored certificate(s) are expired as of the last scan. Auto-renewal did not keep up — check the monitor and renewal profiles."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#certificate-expiry-backlog"
+
+      - alert: SecsyPKIExpiryBacklog
+        # A growing count of certificates in the critical window signals the
+        # renewal pipeline is falling behind.
+        expr: max by (job) (secsy_certificates_expiring{severity="critical"}) > 25
+        for: 1h
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "Certificate expiry backlog ({{ $labels.job }})"
+          description: "{{ $value }} certificate(s) are in the critical expiry window (default <7d). Verify auto-renewal is enabled and succeeding, or renew manually. Tune the threshold to your fleet size."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#certificate-expiry-backlog"
+
+      - alert: SecsyPKIMonitorStalled
+        # The expiry monitor has not completed a scan in far longer than its
+        # interval, so expiry gauges are stale and auto-renew is not running.
+        expr: (time() - max by (job) (secsy_certificate_monitor_last_scan_timestamp_seconds)) > 129600
+        for: 15m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "Expiry monitor stalled ({{ $labels.job }})"
+          description: "No completed monitor scan in >36h (2.5x the 12h default interval). Expiry metrics and auto-renewal are not updating. Adjust the threshold if monitor.intervalHours differs."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#monitor-and-audit-health"
+
+      - alert: SecsyPKIAutoRenewFailing
+        # Auto-renewal attempts are erroring — the safety net is broken even if
+        # nothing has expired yet.
+        expr: sum by (job) (rate(secsy_certificate_auto_renewals_total{result="error"}[30m])) > 0
+        for: 30m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "Auto-renewal failing ({{ $labels.job }})"
+          description: "The expiry monitor's auto-renewal has been erroring for >30m. Certificates will expire if not renewed manually. Check signing, profiles, and RBAC."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#certificate-expiry-backlog"
+
+  # --- Revocation (OCSP / CRL) -----------------------------------------------
+  - name: secsy-pki.revocation
+    rules:
+      - alert: SecsyPKIOCSPErrorRateHigh
+        # The OCSP responder is returning errors to relying parties.
+        expr: |
+          sum by (job) (rate(secsy_ocsp_requests_total{result="error"}[5m]))
+            / clamp_min(sum by (job) (rate(secsy_ocsp_requests_total[5m])), 1e-9) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "OCSP error rate high ({{ $labels.job }})"
+          description: ">5% of OCSP responses are errors over 10m. Relying parties may fail validation. Check HSM signing and the responder. See RUNBOOK 'OCSP / CRL outage'."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#ocsp--crl-outage"
+
+      - alert: SecsyPKICRLServingErrors
+        # CRL distribution is erroring, so clients cannot fetch fresh revocation.
+        expr: sum by (job) (rate(secsy_crl_requests_total{result="error"}[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "CRL serving errors ({{ $labels.job }})"
+          description: "The CRL endpoint has been returning errors for >10m. Clients may fall back to a stale/cached CRL. Check signing and the store. See RUNBOOK 'OCSP / CRL outage'."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#ocsp--crl-outage"
+
+      - alert: SecsyPKICRLNotRegenerating
+        # Best-effort CRL/delta staleness: no fresh CRL has been signed on the
+        # HSM within a full base-CRL lifetime while CRLs are actively served.
+        # A base CRL is re-signed each interval; a long gap means regeneration
+        # has stalled and served CRLs are approaching nextUpdate. For an
+        # authoritative freshness check, additionally blackbox-probe the CDP and
+        # alert on the CRL's nextUpdate (see RUNBOOK).
+        expr: |
+          (sum by (job) (increase(secsy_crl_generated_total{kind="base"}[25h])) == 0)
+          and
+          (sum by (job) (rate(secsy_crl_requests_total[1h])) > 0)
+        for: 30m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "CRL not regenerating ({{ $labels.job }})"
+          description: "No base CRL has been signed on the HSM in >25h while CRLs are still being requested. Served CRLs may go stale past nextUpdate. Tune the window to your crl.baseValidityHours; verify HSM signing and the CRL scheduler."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#crldelta-staleness"
+
+  # --- Rate limiting ---------------------------------------------------------
+  - name: secsy-pki.ratelimit
+    rules:
+      - alert: SecsyPKIRateLimitThrottleSpike
+        # A large fraction of public-endpoint traffic is being rejected (429):
+        # either an abuse event or an over-tight limit blocking legitimate load.
+        expr: |
+          sum by (job) (rate(secsy_ratelimit_throttled_total[5m]))
+            / clamp_min(
+                sum by (job) (rate(secsy_ratelimit_throttled_total[5m]))
+                + sum by (job) (rate(secsy_ratelimit_admitted_total[5m])),
+                1e-9) > 0.3
+        for: 10m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "Rate-limit rejections spiking ({{ $labels.job }})"
+          description: ">30% of public-endpoint requests have been throttled (429) over 10m. Investigate a possible abuse source, or relax the tier in rate_limit config. See docs/rate-limiting.md."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#rate-limit-guard-rejections-spiking"
+
+  # --- Audit-log SIEM export health ------------------------------------------
+  - name: secsy-pki.audit
+    rules:
+      - alert: SecsyPKIAuditExportLagHigh
+        # Sealed audit events are piling up undelivered — a sink is down or
+        # backpressured, risking a compliance gap.
+        expr: max by (job, sink) (secsy_audit_export_lag_events) > 5000
+        for: 15m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "Audit export lagging (sink {{ $labels.sink }})"
+          description: "{{ $value }} audit events are undelivered to SIEM sink '{{ $labels.sink }}' for >15m. Check the sink's reachability. See docs/audit-siem-export.md."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#monitor-and-audit-health"
+
+      - alert: SecsyPKIAuditExportStalled
+        # The sink has a backlog but has not acknowledged a batch in a while:
+        # delivery is stuck (distinct from merely lagging behind a burst).
+        expr: |
+          (time() - max by (job, sink) (secsy_audit_export_last_success_timestamp_seconds) > 1800)
+          and (max by (job, sink) (secsy_audit_export_lag_events) > 0)
+        for: 10m
+        labels:
+          severity: critical
+          service: secsy-pki
+        annotations:
+          summary: "Audit export stalled (sink {{ $labels.sink }})"
+          description: "SIEM sink '{{ $labels.sink }}' has a backlog but has not acknowledged a batch in >30m. Delivery is stuck — audit events are not reaching the SIEM. See docs/audit-siem-export.md."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#monitor-and-audit-health"

@@ -154,10 +154,92 @@ metadata:
 
 ---
 
+## Packaged dashboard & alerting rules
+
+Ready-to-use observability assets ship in the repo (single source of truth in
+the Helm chart, with convenience symlinks under `deploy/observability/`):
+
+| Asset | Path |
+|-------|------|
+| Grafana dashboard JSON | `deploy/helm/secsy-pki/files/grafana-dashboard.json` (also `deploy/observability/grafana/secsy-pki-dashboard.json`) |
+| Prometheus alerting rules | `deploy/helm/secsy-pki/files/prometheus-rules.yaml` (also `deploy/observability/prometheus/secsy-pki-rules.yaml`) |
+
+The dashboard (`uid: secsy-pki-overview`) covers issuance rate/latency, HSM
+session-pool saturation and queueing, OCSP/CRL request rates and derived cache
+hit ratio, rate-limit 429/503 counts, and expiry-monitor + audit-export health.
+It uses two template variables: a Prometheus **datasource** and a multi-select
+**job** filter.
+
+### Import — standalone Prometheus + Grafana
+
+- **Grafana:** *Dashboards → New → Import → Upload JSON file* and select the
+  dashboard JSON, then pick your Prometheus datasource. (Or provision it via a
+  file-provider entry.)
+- **Prometheus:** add the rules file to `rule_files:` and reload:
+
+  ```yaml
+  rule_files:
+    - /etc/prometheus/secsy-pki-rules.yaml
+  ```
+
+  Validate before shipping: `promtool check rules deploy/observability/prometheus/secsy-pki-rules.yaml`.
+
+### Deploy — Helm (Prometheus Operator / kube-prometheus-stack)
+
+The chart renders an optional `PrometheusRule` and a Grafana-sidecar dashboard
+`ConfigMap`, both **off by default**:
+
+```yaml
+# values.yaml
+serviceMonitor:
+  enabled: true                 # scrape /metrics (Task 19)
+prometheusRule:
+  enabled: true
+  labels:
+    release: kube-prometheus-stack   # MUST match your Prometheus ruleSelector
+grafanaDashboard:
+  enabled: true
+  sidecarLabel: grafana_dashboard    # whatever your Grafana sidecar watches
+```
+
+The rule bodies are embedded verbatim from `files/prometheus-rules.yaml`, so the
+Helm and standalone deployments never drift. Add site-specific rules via
+`prometheusRule.additionalGroups` without editing the shipped file.
+
+### Recommended alert thresholds
+
+The shipped rules default to the values below. Tune them to your fleet size and
+CRL/monitor cadence; the rationale and response steps live in the
+[operator runbook](RUNBOOK.md#observability-dashboards--alerts).
+
+| Alert | Condition (default) | Severity | Tune when |
+|-------|---------------------|----------|-----------|
+| `SecsyPKITargetDown` | scrape `up == 0` for 3m | critical | — |
+| `SecsyPKIHSMProbeDown` | `secsy_component_up{component="hsm"}==0` for 2m | critical | — |
+| `SecsyPKIHSMPoolExhausted` | `secsy_hsm_guard_queue_depth > 0` for 10m | warning | expected bursty queueing |
+| `SecsyPKIHSMGuardShedding` | guard-reject rate `> 0.1/s` for 5m | critical | — |
+| `SecsyPKIHSMSignLatencyHigh` | p99 sign latency `> 2s` for 10m | warning | slow network-HSM baseline |
+| `SecsyPKIIssuanceErrorBudgetBurn{Fast,Slow}` | 14.4x/1h+5m, 6x/6h+30m on a 99.5% SLO | crit/warn | change SLO target |
+| `SecsyPKICertificatesExpired` | `secsy_certificates_expiring{severity="expired"} > 0` for 15m | critical | — |
+| `SecsyPKIExpiryBacklog` | `…{severity="critical"} > 25` for 1h | warning | scale to fleet size |
+| `SecsyPKIMonitorStalled` | last scan older than 36h | warning | match `monitor.intervalHours` |
+| `SecsyPKIAutoRenewFailing` | auto-renew error rate `> 0` for 30m | warning | — |
+| `SecsyPKIOCSPErrorRateHigh` | OCSP error ratio `> 5%` for 10m | warning | — |
+| `SecsyPKICRLServingErrors` | CRL error rate `> 0` for 10m | warning | — |
+| `SecsyPKICRLNotRegenerating` | no base-CRL signing in 25h while served | warning | match `crl.baseValidityHours` |
+| `SecsyPKIRateLimitThrottleSpike` | throttled fraction `> 30%` for 10m | warning | expected abuse baseline |
+| `SecsyPKIAuditExportLagHigh` | lag `> 5000` events for 15m | warning | sink throughput |
+| `SecsyPKIAuditExportStalled` | backlog + no ack in 30m | critical | — |
+
+> **CRL/delta staleness caveat:** `SecsyPKICRLNotRegenerating` is a best-effort
+> cadence check — the metrics expose no CRL `nextUpdate` timestamp. For an
+> authoritative freshness SLO, additionally blackbox-probe the CDP URL and alert
+> on the CRL's `nextUpdate` (see the runbook).
+
 ## Grafana dashboard notes
 
-There is no packaged dashboard JSON; the metrics are standard Prometheus types,
-so build panels from these queries. Suggested panels:
+Prefer the packaged dashboard above. To build custom panels, the metrics are
+standard Prometheus types — start from these queries:
 
 **Issuance overview**
 

@@ -306,6 +306,39 @@ serviceMonitor:
   labels: {}
   # /metrics is served on the same port; scheme follows TLS settings.
 
+# --- Prometheus alerting rules (optional) ------------------------------------
+# Renders a PrometheusRule (monitoring.coreos.com/v1) from
+# files/prometheus-rules.yaml: HSM probe down, HSM pool exhaustion, issuance
+# error-budget burn, expiry backlog, OCSP/CRL errors + staleness, rate-limit
+# spikes, and audit-export health. See docs/observability.md and docs/RUNBOOK.md
+# for the full list and recommended thresholds. Requires the Prometheus Operator
+# CRDs. The `labels` below MUST match your Prometheus resource's ruleSelector
+# (kube-prometheus-stack default: `release: <your-release-name>`).
+prometheusRule:
+  enabled: false
+  # namespace: ""   # defaults to the release namespace
+  labels: {}
+  #  release: kube-prometheus-stack
+  # Extra rule groups appended to the shipped ones (same schema as a
+  # PrometheusRule spec.groups entry).
+  additionalGroups: []
+
+# --- Grafana dashboard (optional) --------------------------------------------
+# Renders the secsy-pki overview dashboard (files/grafana-dashboard.json) as a
+# ConfigMap for the Grafana sidecar to auto-import. Set sidecarLabel to whatever
+# your Grafana sidecar watches (kube-prometheus-stack default: grafana_dashboard).
+grafanaDashboard:
+  enabled: false
+  # namespace: ""   # defaults to the release namespace; must be where the sidecar looks
+  sidecarLabel: grafana_dashboard
+  sidecarLabelValue: "1"
+  labels: {}
+  # Optionally place the dashboard in a Grafana folder via the sidecar's
+  # folder annotation (e.g. name: grafana_folder, value: "secsy-pki").
+  folderAnnotation: {}
+  #  name: grafana_folder
+  #  value: PKI
+
 # --- cert-manager integration -------------------------------------------------
 # When acme.enabled and certManager.clusterIssuer.enabled are both true, the
 # chart renders a cert-manager ACME ClusterIssuer pointing at this server's ACME

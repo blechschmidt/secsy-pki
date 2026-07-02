@@ -34,6 +34,8 @@ For a fully automated kind + SoftHSM end-to-end check, run
 | PersistentVolumeClaim | `persistence.enabled=true` and no `existingClaim` |
 | Ingress | `ingress.enabled=true` |
 | ServiceMonitor | `serviceMonitor.enabled=true` |
+| PrometheusRule (alerting rules) | `prometheusRule.enabled=true` |
+| Grafana dashboard ConfigMap | `grafanaDashboard.enabled=true` |
 | cert-manager `Certificate` (server TLS) | `tls.certManager.enabled=true` |
 | cert-manager `ClusterIssuer` (ACME) | `certManager.clusterIssuer.enabled=true` |
 

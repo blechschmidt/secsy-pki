@@ -1,0 +1,27 @@
+{{- if .Values.grafanaDashboard.enabled }}
+# Grafana dashboard shipped as a ConfigMap for the Grafana sidecar to auto-import
+# (kube-prometheus-stack's `grafana.sidecar.dashboards`). The sidecar discovers
+# ConfigMaps carrying the `grafana_dashboard` label and loads every JSON value.
+# The dashboard JSON lives in files/grafana-dashboard.json (single source of
+# truth, also importable by hand via Grafana's "Import" UI).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "secsy-pki.fullname" . }}-dashboard
+  {{- with .Values.grafanaDashboard.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "secsy-pki.labels" . | nindent 4 }}
+    {{ .Values.grafanaDashboard.sidecarLabel }}: {{ .Values.grafanaDashboard.sidecarLabelValue | quote }}
+    {{- with .Values.grafanaDashboard.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.grafanaDashboard.folderAnnotation }}
+  annotations:
+    {{ .name }}: {{ .value | quote }}
+  {{- end }}
+data:
+  secsy-pki-overview.json: |-
+{{ .Files.Get "files/grafana-dashboard.json" | indent 4 }}
+{{- end }}

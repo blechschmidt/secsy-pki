@@ -20,7 +20,8 @@ The design decisions behind these procedures are recorded in
 5. [CT log outage](#ct-log-outage)
 6. [CA key rotation and retirement](#ca-key-rotation-and-retirement)
 7. [Disaster-recovery drill](#disaster-recovery-drill)
-8. [First-response quick reference](#first-response-quick-reference)
+8. [Observability: dashboards & alerts](#observability-dashboards--alerts)
+9. [First-response quick reference](#first-response-quick-reference)
 
 ---
 
@@ -474,6 +475,102 @@ The drill exercises the real recovery path:
 If the token is unrecoverable, there is no way to recover the key — you fall
 back to a fresh [key ceremony](key-ceremony.md) and re-issue the hierarchy, as
 in the [root-compromise path](#suspected-ca-key-compromise).
+
+---
+
+## Observability: dashboards & alerts
+
+The Grafana dashboard and Prometheus alerting rules ship in the repo and Helm
+chart. See [observability.md](observability.md#packaged-dashboard--alerting-rules)
+for import/deploy steps and the full threshold table. Each shipped alert carries
+a `runbook_url` pointing back to the matching subsection below.
+
+- Dashboard JSON: `deploy/helm/secsy-pki/files/grafana-dashboard.json`
+- Alert rules: `deploy/helm/secsy-pki/files/prometheus-rules.yaml`
+- Helm gates: `serviceMonitor.enabled`, `prometheusRule.enabled`,
+  `grafanaDashboard.enabled` (all default off).
+
+### Observability alert response
+
+General triage for any secsy-pki page (and for `SecsyPKITargetDown`):
+
+1. `GET /healthz` (process) and `GET /readyz` (DB + HSM). A `503` from `/readyz`
+   names the failing component.
+2. Open the **secsy-pki — PKI & HSM overview** dashboard, scope the `job`
+   variable to the affected instance, and read top-to-bottom (Overview →
+   HSM/pool → Revocation → Rate limiting → Monitor/Audit).
+3. If the scrape target itself is down, check pod status/logs and the readiness
+   probe before trusting derived alerts — most go stale when the target is down.
+
+### HSM probe down
+
+`SecsyPKIHSMProbeDown` — `secsy_component_up{component="hsm"}=0`. All signing is
+blocked. Follow [OCSP / CRL outage](#ocsp--crl-outage) diagnosis for the HSM leg:
+verify the PKCS#11 module/token is reachable, the PIN secret is mounted, and the
+network-HSM (if any) is up. The instance fails `/readyz` and is pulled from the
+Service until the probe recovers.
+
+### HSM pool exhaustion
+
+`SecsyPKIHSMPoolExhausted` (queueing), `SecsyPKIHSMGuardShedding` (503s), and
+`SecsyPKIHSMSignLatencyHigh` all point at the HSM being the bottleneck. Use the
+dashboard's *Session-pool saturation* and *HSM latency* panels, then apply the
+levers in [Rate-limit and HSM-concurrency tuning](#rate-limit-and-hsm-concurrency-tuning):
+raise `pkcs11.session_pool_size` and `rate_limit.concurrency.max_in_flight`,
+scale replicas, or offload OCSP with a longer `ocsp_cache_ttl_seconds`. Rising
+sign latency with a healthy HSM usually means the pool is too small for the
+offered concurrency.
+
+### Issuance error-rate SLO burn
+
+`SecsyPKIIssuanceErrorBudgetBurn{Fast,Slow}` — multi-window burn on the 99.5%
+issuance SLO. Slice `secsy_certificates_total{result="error"}` by `operation`,
+then check whether failures are signing (HSM), policy (CAA/lint rejections —
+`secsy_certificate_caa_checks_total`, `secsy_certificate_lints_total`), or store
+errors. The fast burn (14.4x) pages; the slow burn (6x) is a ticket. Adjust the
+`0.005` budget in the rules if your SLO target differs.
+
+### Certificate expiry backlog
+
+`SecsyPKICertificatesExpired` (already past `notAfter`),
+`SecsyPKIExpiryBacklog` (critical window filling), and `SecsyPKIAutoRenewFailing`
+mean the renewal pipeline is behind. Confirm the monitor is enabled and
+auto-renew is on (`monitor.enabled`, `monitor.autoRenew`), check
+`secsy_certificate_auto_renewals_total{result="error"}` for the cause (signing,
+profile, RBAC), and renew manually if expiry is imminent. Tune
+`SecsyPKIExpiryBacklog`'s `> 25` threshold to your fleet size.
+
+### CRL/delta staleness
+
+`SecsyPKICRLNotRegenerating` — no base CRL signed on the HSM within a full base
+lifetime while CRLs are still served, so served CRLs risk passing `nextUpdate`.
+Set the rule's `25h` window to just over your `crl.baseValidityHours`, verify HSM
+signing and the CRL scheduler, and force-regenerate with
+`secsy-ca gen-crl -ca <id> -out crl.der -der`. Because the metrics expose no CRL
+`nextUpdate`, add a blackbox-exporter probe of the CDP URL and alert on the
+parsed `nextUpdate` for an authoritative freshness SLO. Serving errors are
+covered by `SecsyPKICRLServingErrors`/`SecsyPKIOCSPErrorRateHigh` — see
+[OCSP / CRL outage](#ocsp--crl-outage).
+
+### Rate-limit guard rejections spiking
+
+`SecsyPKIRateLimitThrottleSpike` — a large fraction of public traffic is 429'd.
+Distinguish abuse from an over-tight limit using the dashboard's *throttles by
+endpoint & tier* panel: a single IP/account tier dominating suggests abuse (let
+the limiter shed it); broad throttling across tiers suggests the limit is too low
+for legitimate load — relax `rate_limit.{global,per_ip,per_account}` per
+[Rate-limit and HSM-concurrency tuning](#rate-limit-and-hsm-concurrency-tuning).
+Note 429 (rate limit) and 503 (HSM guard) are different levers.
+
+### Monitor and audit health
+
+`SecsyPKIMonitorStalled` — the expiry monitor has not completed a scan in >36h,
+so expiry gauges are stale and auto-renew is not running; match the rule window
+to `monitor.intervalHours` and check the monitor loop/logs.
+`SecsyPKIAuditExportLagHigh` / `SecsyPKIAuditExportStalled` — audit events are
+piling up undelivered to a SIEM sink (lag high) or delivery is stuck (backlog +
+no ack in 30m), risking a compliance gap. Check the named sink's reachability and
+the exporter cursor; see [audit-siem-export.md](audit-siem-export.md).
 
 ---
 
