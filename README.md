@@ -4,6 +4,32 @@ HSM-backed SSH and X.509 Certificate Authority with OIDC authentication, publicl
 
 Secsy PKI manages a public key infrastructure where CA private keys are stored on hardware security modules (HSMs) via PKCS#11. Users authenticate through OpenID Connect and request SSH or X.509 certificates signed by the HSM. Every signing operation is recorded in a cryptographically verifiable audit log backed by the YubiHSM's hardware hash chain.
 
+## Enterprise Edition
+
+The **enterprise edition** (this branch) extends the base CA into a full HSM-backed enterprise PKI and secret-management platform. On top of per-key SSH/X.509 signing it adds:
+
+- **Backend-agnostic key provider** — one abstraction (`internal/keyprovider`) routes every key operation to a PKCS#11 HSM (YubiHSM, network HSM), SoftHSM for dev/CI, or an on-disk software keystore. Keys are generated on the device and never exported.
+- **X.509 CA lifecycle** — bootstrap root and intermediate CAs, then issue, renew, and revoke end-entity certificates from CSRs using named profiles. All signing (leaves, CRLs, OCSP) happens on the HSM.
+- **Revocation services** — signed CRLs (RFC 5280 CRL numbers) and a public OCSP responder.
+- **HSM-backed secret encryption** — envelope-encrypt passwords and small secrets under an RSA KEK whose private half stays on the HSM.
+- **RBAC** — organization-wide roles (`admin`, `issuer`, `auditor`) layered over the existing per-CA permission matrix.
+- **Tamper-evident audit log** — an append-only, hash-chained event log recording who did what, when, and with what result — including denied attempts.
+- **Centralized configuration** — RBAC assignments, issuance policy guardrails, and custom certificate profiles in one YAML file.
+
+### Enterprise documentation
+
+Comprehensive deployment and operations guides live in [`docs/`](docs/README.md):
+
+| Guide | Topic |
+|-------|-------|
+| [HSM / PKCS#11 configuration](docs/hsm-configuration.md) | Key provider, HSM & SoftHSM setup |
+| [Certificate authority](docs/certificate-authority.md) | CA setup, issuance, renewal, revocation, CRL & OCSP |
+| [Password / secret encryption](docs/password-encryption.md) | HSM-backed envelope encryption |
+| [RBAC, audit logging & config](docs/rbac-and-audit.md) | Roles, event log, centralized policy |
+| [Production HSM migration](docs/hsm-migration.md) | SoftHSM → real HSM cutover |
+
+The `secsy-ca` and `secsy-secret` CLIs drive the CA and secret features; see the guides above. The sections below document the base server, SSH workflow, and per-key signing API.
+
 ## Features
 
 - **HSM-backed signing** — CA private keys live on a YubiHSM (or any PKCS#11 device). Keys never leave the hardware.
@@ -255,7 +281,9 @@ yubihsm:
   suppress_audit_warning: false
 ```
 
-For SoftHSM development, use `module_path: "/usr/lib/softhsm/libsofthsm2.so"`.
+For SoftHSM development, use `module_path: "/usr/lib/softhsm/libsofthsm2.so"`. Run `./scripts/setup-softhsm.sh` to initialize a token, and `eval "$(./scripts/setup-softhsm.sh --export-env)"` to wire the `SECSY_*` environment variables. See [HSM / PKCS#11 configuration](docs/hsm-configuration.md).
+
+The enterprise blocks — `key_provider`, `rbac`, `policy`, `profiles`, and `secret` — are documented in [`docs/`](docs/README.md) and shown fully commented in [`server/config.yaml`](server/config.yaml).
 
 For PostgreSQL, change the database section:
 ```yaml

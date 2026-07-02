@@ -146,4 +146,5 @@ not bulk data.
 
 Unit tests (`internal/secret`) run with no HSM using the software backend.
 HSM-gated tests (`*_softhsm_test.go`) run against SoftHSM when
-`SECSY_PKCS11_MODULE` / `SECSY_TOKEN_LABEL` are set. See `TESTING.md`.
+`SECSY_PKCS11_MODULE` / `SECSY_TOKEN_LABEL` are set. See [`../TESTING.md`](../TESTING.md)
+and [HSM configuration](hsm-configuration.md).
