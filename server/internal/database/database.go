@@ -323,6 +323,16 @@ func (db *DB) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_event_log_actor ON event_log(actor)`,
 		`CREATE INDEX IF NOT EXISTS idx_event_log_action ON event_log(action)`,
 		`CREATE INDEX IF NOT EXISTS idx_event_log_time ON event_log(timestamp)`,
+		// Durable per-sink export cursor for the SIEM streaming exporter. Each row
+		// records the highest event_log.seq a given sink has durably acknowledged.
+		// The exporter only advances a cursor after a successful delivery, so on
+		// restart it resumes from here — giving at-least-once delivery with no lost
+		// events (a crash between delivery and cursor commit redelivers the batch).
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS siem_export_cursor (
+			sink TEXT PRIMARY KEY,
+			last_seq INTEGER NOT NULL,
+			updated_at %s
+		)`, currentTimestamp),
 	}
 	for _, stmt := range stmts {
 		if _, err := db.exec(stmt); err != nil {

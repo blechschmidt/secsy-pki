@@ -72,6 +72,16 @@ data:
       notifications:
         {{- toYaml $c.monitor.notifications | nindent 8 }}
 
+    audit:
+      export:
+        enabled: {{ $c.audit.export.enabled }}
+        poll_interval_seconds: {{ int $c.audit.export.pollIntervalSeconds }}
+        batch_size: {{ int $c.audit.export.batchSize }}
+        retry_backoff_seconds: {{ int $c.audit.export.retryBackoffSeconds }}
+        max_backoff_seconds: {{ int $c.audit.export.maxBackoffSeconds }}
+        sinks:
+          {{- toYaml $c.audit.export.sinks | nindent 10 }}
+
     acme:
       enabled: {{ $c.acme.enabled }}
       base_url: {{ $c.acme.baseURL | quote }}

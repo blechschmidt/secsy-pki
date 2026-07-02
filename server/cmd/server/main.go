@@ -25,6 +25,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/monitor"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 	"github.com/blechschmidt/secsy-pki/server/internal/scep"
+	"github.com/blechschmidt/secsy-pki/server/internal/siem"
 )
 
 func main() {
@@ -180,6 +181,19 @@ func main() {
 			log.Fatalf("Certificate-expiry monitor configuration error: %v", err)
 		}
 		go runner.Run(context.Background())
+	}
+
+	// Audit-log SIEM export: a background worker per sink streams the
+	// tamper-evident event log to external syslog/CEF/webhook collectors from a
+	// durable per-sink cursor. At-least-once, backpressured, and lossless across
+	// restarts. Runs for the process lifetime.
+	if cfg.Audit.Export.Enabled {
+		exporter, err := buildAuditExporter(db, cfg)
+		if err != nil {
+			log.Fatalf("Audit SIEM export configuration error: %v", err)
+		}
+		log.Printf("Audit SIEM export enabled (%d sink(s))", len(cfg.Audit.Export.Sinks))
+		go exporter.Run(context.Background())
 	}
 
 	// ACME (RFC 8555) automated-issuance server. Its endpoints authenticate
@@ -423,6 +437,70 @@ func buildESTConfig(db *database.DB, cfg *config.Config) (est.Config, error) {
 		EnableServerKeygen:     cfg.EST.EnableServerKeygen,
 		ServerKeygenKeyType:    cfg.EST.ServerKeygenKeyType,
 	}, nil
+}
+
+// buildAuditExporter translates the audit-export config into a siem.Exporter
+// bound to the database (as both the event source and the durable cursor store).
+func buildAuditExporter(db *database.DB, cfg *config.Config) (*siem.Exporter, error) {
+	ec := cfg.Audit.Export
+	specs := make([]siem.SinkSpec, 0, len(ec.Sinks))
+	for _, s := range ec.Sinks {
+		format := siem.Format(s.Format)
+		if format == "" {
+			// A syslog collector expects syslog; a webhook expects NDJSON.
+			if s.Type == "webhook" {
+				format = siem.FormatJSON
+			} else {
+				format = siem.FormatRFC5424
+			}
+		}
+		spec := siem.SinkSpec{
+			Name:    s.Name,
+			Type:    s.Type,
+			Format:  format,
+			Network: s.Network,
+			Address: s.Address,
+			Framing: siem.SyslogFraming(s.Framing),
+			TLS: siem.SyslogTLSConfig{
+				CAFile:             s.TLS.CAFile,
+				ServerName:         s.TLS.ServerName,
+				ClientCertFile:     s.TLS.ClientCertFile,
+				ClientKeyFile:      s.TLS.ClientKeyFile,
+				InsecureSkipVerify: s.TLS.InsecureSkipVerify,
+			},
+			URL:     s.URL,
+			Headers: s.Headers,
+			Formatter: siem.FormatterOptions{
+				Hostname:     s.Hostname,
+				AppName:      s.AppName,
+				EnterpriseID: s.EnterpriseID,
+				Facility:     s.Facility,
+				CEFVendor:    s.CEFVendor,
+				CEFProduct:   s.CEFProduct,
+				CEFVersion:   s.CEFVersion,
+			},
+		}
+		if s.TimeoutSeconds > 0 {
+			spec.Timeout = time.Duration(s.TimeoutSeconds) * time.Second
+		}
+		if s.Network == "tls" && s.TLS.InsecureSkipVerify {
+			log.Printf("WARNING: audit export sink %q has TLS verification disabled (insecure_skip_verify)", s.Name)
+		}
+		specs = append(specs, spec)
+	}
+
+	sinks, err := siem.BuildSinks(specs)
+	if err != nil {
+		return nil, err
+	}
+	opts := siem.Options{
+		PollInterval: time.Duration(ec.PollIntervalSeconds) * time.Second,
+		BatchSize:    ec.BatchSize,
+		RetryBackoff: time.Duration(ec.RetryBackoffSeconds) * time.Second,
+		MaxBackoff:   time.Duration(ec.MaxBackoffSeconds) * time.Second,
+		Logger:       log.Default(),
+	}
+	return siem.NewExporter(db, db, sinks, opts), nil
 }
 
 // toRoleMap converts a config string->[]string role map into the typed form the

@@ -103,3 +103,30 @@ acme:
   # require_eab: true                     # restrict who may register (RBAC-like)
   # eab_hmac_keys:
   #   team-web: "base64url-or-base64-hmac-key"
+
+# audit.export streams the tamper-evident event log to external SIEM systems.
+# Disabled by default; see docs/audit-siem-export.md. Each sink has its own
+# durable cursor, so delivery is at-least-once and lossless across restarts.
+audit:
+  export:
+    enabled: false
+    # poll_interval_seconds: 5   # how often a caught-up worker checks for events
+    # batch_size: 256            # max events per delivery (backpressure knob)
+    # retry_backoff_seconds: 1   # initial retry delay after a failed delivery
+    # max_backoff_seconds: 30    # cap on the (doubling) retry delay
+    sinks: []
+    #   - name: soc-syslog                 # unique; keys the cursor & metrics
+    #     type: syslog                      # syslog | webhook
+    #     format: rfc5424                   # rfc5424 | cef  (json for webhook)
+    #     network: tls                      # tcp | tls
+    #     address: siem.example.com:6514
+    #     framing: octet-counting           # octet-counting | lf
+    #     tls:
+    #       ca_file: /etc/secsy/siem-ca.pem
+    #       # client_cert_file / client_key_file: mutual TLS
+    #   - name: soc-webhook
+    #     type: webhook
+    #     format: json                      # newline-delimited JSON
+    #     url: https://collector.example.com/ingest
+    #     headers:
+    #       Authorization: "Bearer <token>"

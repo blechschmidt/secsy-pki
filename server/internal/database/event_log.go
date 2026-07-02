@@ -147,6 +147,115 @@ func (db *DB) ListAllEventsAsc() ([]audit.Event, error) {
 	return events, rows.Err()
 }
 
+// ListEventsSince returns up to limit events with seq strictly greater than
+// afterSeq, ordered by ascending sequence number. It is the read path for the
+// SIEM exporter, which streams the log forward from its durable cursor. A limit
+// <= 0 is treated as no limit (used by offline batch export).
+func (db *DB) ListEventsSince(afterSeq int64, limit int) ([]audit.Event, error) {
+	q := `SELECT ` + eventColumns + ` FROM event_log WHERE seq > ? ORDER BY seq ASC`
+	var rows *sql.Rows
+	var err error
+	if limit > 0 {
+		rows, err = db.query(q+` LIMIT ?`, afterSeq, limit)
+	} else {
+		rows, err = db.query(q, afterSeq)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []audit.Event
+	for rows.Next() {
+		e, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// ListEventsByTimeRange returns every event whose timestamp is in [from, to),
+// ordered by ascending sequence number, for offline batch export. A zero from
+// or to bound is treated as open-ended.
+func (db *DB) ListEventsByTimeRange(from, to time.Time) ([]audit.Event, error) {
+	q := `SELECT ` + eventColumns + ` FROM event_log`
+	var args []interface{}
+	where := ""
+	add := func(clause string, v interface{}) {
+		if where == "" {
+			where = " WHERE "
+		} else {
+			where += " AND "
+		}
+		where += clause
+		args = append(args, v)
+	}
+	if !from.IsZero() {
+		add("timestamp >= ?", from.UTC())
+	}
+	if !to.IsZero() {
+		add("timestamp < ?", to.UTC())
+	}
+	rows, err := db.query(q+where+` ORDER BY seq ASC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []audit.Event
+	for rows.Next() {
+		e, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// MaxEventSeq returns the highest sequence number in the event log (the head of
+// the chain), or 0 when the log is empty. The SIEM exporter uses it to compute
+// per-sink export lag.
+func (db *DB) MaxEventSeq() (int64, error) {
+	var maxSeq sql.NullInt64
+	if err := db.queryRow(`SELECT MAX(seq) FROM event_log`).Scan(&maxSeq); err != nil {
+		return 0, err
+	}
+	if !maxSeq.Valid {
+		return 0, nil
+	}
+	return maxSeq.Int64, nil
+}
+
+// GetSIEMCursor returns the highest event sequence number durably delivered to
+// the named sink, or 0 if the sink has never delivered (start from the genesis).
+func (db *DB) GetSIEMCursor(sink string) (int64, error) {
+	var seq int64
+	err := db.queryRow(`SELECT last_seq FROM siem_export_cursor WHERE sink = ?`, sink).Scan(&seq)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return seq, nil
+}
+
+// SetSIEMCursor durably advances the named sink's cursor to seq. It is called
+// only after a successful delivery, so the persisted value is always a
+// high-water mark of acknowledged events. The upsert is portable across SQLite
+// and PostgreSQL.
+func (db *DB) SetSIEMCursor(sink string, seq int64) error {
+	_, err := db.exec(
+		`INSERT INTO siem_export_cursor (sink, last_seq, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(sink) DO UPDATE SET last_seq = excluded.last_seq, updated_at = excluded.updated_at`,
+		sink, seq, time.Now().UTC(),
+	)
+	return err
+}
+
 // VerifyEventChain loads the full event log and verifies its hash-chain
 // integrity, returning the verification result and total entry count.
 func (db *DB) VerifyEventChain() (audit.VerifyResult, error) {

@@ -63,6 +63,13 @@ func run(args []string) error {
 	}
 	defer db.Close()
 
+	// Audit-log administration (chain verification, offline export) never touches
+	// key material, so dispatch it before constructing the key provider. This lets
+	// an auditor run "audit verify" without the HSM being present or unlocked.
+	if command == "audit" {
+		return cmdAudit(db, cmdArgs)
+	}
+
 	provider, err := buildProvider(cfg)
 	if err != nil {
 		return fmt.Errorf("initializing key provider: %w", err)
@@ -102,6 +109,8 @@ func run(args []string) error {
 		return cmdBackup(db, cfg, provider, cmdArgs)
 	case "restore":
 		return cmdRestore(db, cfg, provider, cmdArgs)
+	// "audit" is dispatched earlier (before provider construction); this case is
+	// unreachable but kept so the switch documents the full command set.
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -133,6 +142,7 @@ Commands:
   ceremony            Run an M-of-N confirmed root/intermediate key ceremony
   backup              Export CA metadata + a DR manifest (no private keys)
   restore             Restore/verify CA metadata against the key provider
+  audit               Verify the audit hash-chain, or export it for SIEM
 
 Run "secsy-ca <command> -h" for command-specific flags.
 `)

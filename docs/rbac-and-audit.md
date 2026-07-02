@@ -88,6 +88,12 @@ inconsistency.
 | `GET /api/audit-log` | Legacy per-signature certificate audit log |
 | `GET /api/access-log` | HTTP access log |
 
+### Exporting the log to a SIEM
+
+The event log can be streamed to external syslog/CEF/webhook collectors and
+verified or exported from the CLI (`secsy-ca audit verify` / `audit export`).
+See [Audit log export to SIEM](audit-siem-export.md).
+
 ## 3. Centralized configuration
 
 All governance lives in one YAML file (`config.yaml`) alongside the existing

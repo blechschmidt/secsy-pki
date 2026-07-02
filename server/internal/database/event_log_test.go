@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 )
@@ -205,6 +206,101 @@ func TestConcurrentAppendsProduceGapFreeChain(t *testing.T) {
 			t.Fatalf("entry %d has Seq %d, want %d (gap or duplicate)", i, e.Seq, i+1)
 		}
 	}
+}
+
+// TestListEventsSinceAndCursor exercises the SIEM exporter's read path: forward
+// streaming from a cursor with a bounded batch, the head sequence, and durable
+// per-sink cursor persistence.
+func TestListEventsSinceAndCursor(t *testing.T) {
+	db := eventTestDB(t)
+	for i := 0; i < 6; i++ {
+		if err := db.AppendEvent(&audit.Event{
+			ID: fmt.Sprintf("s%d", i), Actor: "alice", Action: audit.ActionCertIssue, Result: audit.ResultSuccess,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	head, err := db.MaxEventSeq()
+	if err != nil || head != 6 {
+		t.Fatalf("MaxEventSeq = %d (%v), want 6", head, err)
+	}
+
+	// Bounded batch from the genesis.
+	batch, err := db.ListEventsSince(0, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch) != 4 || batch[0].Seq != 1 || batch[3].Seq != 4 {
+		t.Fatalf("ListEventsSince(0,4) = %d events starting %d", len(batch), batch[0].Seq)
+	}
+
+	// Resume after seq 4.
+	rest, err := db.ListEventsSince(4, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rest) != 2 || rest[0].Seq != 5 || rest[1].Seq != 6 {
+		t.Fatalf("ListEventsSince(4,0) = %+v", rest)
+	}
+
+	// Cursor round-trips and defaults to 0 for an unknown sink.
+	if c, err := db.GetSIEMCursor("splunk"); err != nil || c != 0 {
+		t.Fatalf("initial cursor = %d (%v), want 0", c, err)
+	}
+	if err := db.SetSIEMCursor("splunk", 4); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := db.GetSIEMCursor("splunk"); c != 4 {
+		t.Errorf("cursor after set = %d, want 4", c)
+	}
+	// Upsert advances the same row.
+	if err := db.SetSIEMCursor("splunk", 6); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := db.GetSIEMCursor("splunk"); c != 6 {
+		t.Errorf("cursor after second set = %d, want 6", c)
+	}
+	// A second sink keeps an independent cursor.
+	if c, _ := db.GetSIEMCursor("elastic"); c != 0 {
+		t.Errorf("independent sink cursor = %d, want 0", c)
+	}
+}
+
+func TestListEventsByTimeRange(t *testing.T) {
+	db := eventTestDB(t)
+	base := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		if err := db.AppendEvent(&audit.Event{
+			ID: fmt.Sprintf("t%d", i), Timestamp: base.Add(time.Duration(i) * time.Hour),
+			Actor: "alice", Action: audit.ActionCertIssue, Result: audit.ResultSuccess,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// [base+1h, base+4h) selects events at +1h,+2h,+3h -> seqs 2,3,4.
+	got, err := db.ListEventsByTimeRange(base.Add(time.Hour), base.Add(4*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].Seq != 2 || got[2].Seq != 4 {
+		t.Fatalf("time-range query = %d events %+v", len(got), seqs(got))
+	}
+
+	// Open-ended bounds select everything.
+	all, err := db.ListEventsByTimeRange(time.Time{}, time.Time{})
+	if err != nil || len(all) != 5 {
+		t.Fatalf("open range = %d events (%v), want 5", len(all), err)
+	}
+}
+
+func seqs(events []audit.Event) []int64 {
+	out := make([]int64, len(events))
+	for i, e := range events {
+		out[i] = e.Seq
+	}
+	return out
 }
 
 func TestListEventsFilterAndPaging(t *testing.T) {

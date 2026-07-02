@@ -34,6 +34,76 @@ type Config struct {
 	// Monitor configures the background certificate-expiry monitor and optional
 	// auto-renewal workflow. Disabled unless monitor.enabled is true.
 	Monitor MonitorConfig `yaml:"monitor"`
+	// Audit configures streaming export of the tamper-evident audit event log to
+	// external SIEM systems (syslog/CEF/webhook). Disabled unless
+	// audit.export.enabled is true.
+	Audit AuditConfig `yaml:"audit"`
+}
+
+// AuditConfig groups audit-log settings; currently the SIEM export pipeline.
+type AuditConfig struct {
+	Export ExportConfig `yaml:"export"`
+}
+
+// ExportConfig configures the audit-log SIEM exporter. When enabled, a
+// background worker per sink streams sealed audit events forward from a durable
+// per-sink cursor with at-least-once delivery and bounded backpressure.
+type ExportConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// PollIntervalSeconds is how often a caught-up worker re-checks for new
+	// events. Defaults to 5 when unset.
+	PollIntervalSeconds int `yaml:"poll_interval_seconds"`
+	// BatchSize bounds how many events each worker reads and delivers per
+	// iteration — the primary backpressure knob. Defaults to 256 when unset.
+	BatchSize int `yaml:"batch_size"`
+	// RetryBackoffSeconds is the initial retry delay after a failed delivery; it
+	// doubles up to MaxBackoffSeconds. Defaults to 1 / 30.
+	RetryBackoffSeconds int `yaml:"retry_backoff_seconds"`
+	MaxBackoffSeconds   int `yaml:"max_backoff_seconds"`
+	// Sinks lists the export destinations. Each has its own cursor.
+	Sinks []ExportSinkConfig `yaml:"sinks"`
+}
+
+// ExportSinkConfig configures a single SIEM export sink.
+type ExportSinkConfig struct {
+	// Name uniquely identifies the sink; it keys the durable cursor and metrics,
+	// so it must be stable across restarts and unique among configured sinks.
+	Name string `yaml:"name"`
+	// Type is "syslog" or "webhook".
+	Type string `yaml:"type"`
+	// Format is "rfc5424", "cef", or "json". Defaults to rfc5424 for syslog and
+	// json for webhook.
+	Format string `yaml:"format"`
+	// TimeoutSeconds bounds each delivery attempt. Defaults per sink type.
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+
+	// Syslog transport (type == "syslog").
+	Network string              `yaml:"network"` // "tcp" or "tls"
+	Address string              `yaml:"address"` // host:port
+	Framing string              `yaml:"framing"` // "octet-counting" (default) or "lf"
+	TLS     ExportSinkTLSConfig `yaml:"tls"`
+
+	// Webhook transport (type == "webhook").
+	URL     string            `yaml:"url"`
+	Headers map[string]string `yaml:"headers"`
+
+	// Formatter metadata (optional overrides).
+	Hostname     string `yaml:"hostname"`
+	AppName      string `yaml:"app_name"`
+	EnterpriseID string `yaml:"enterprise_id"`
+	Facility     int    `yaml:"facility"`
+	CEFVendor    string `yaml:"cef_vendor"`
+	CEFProduct   string `yaml:"cef_product"`
+	CEFVersion   string `yaml:"cef_version"`
+}
+
+// ExportSinkTLSConfig configures TLS for a syslog sink.
+type ExportSinkTLSConfig struct {
+	CAFile             string `yaml:"ca_file"`
+	ServerName         string `yaml:"server_name"`
+	ClientCertFile     string `yaml:"client_cert_file"`
+	ClientKeyFile      string `yaml:"client_key_file"`
+	InsecureSkipVerify bool   `yaml:"insecure_skip_verify"`
 }
 
 // MonitorConfig configures the certificate-expiry monitor. When enabled, a
@@ -345,7 +415,76 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateAuditExport(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// validateAuditExport sanity-checks the SIEM export configuration when it is
+// enabled, so a misconfiguration fails loudly at startup rather than silently
+// dropping audit events downstream.
+func (c *Config) validateAuditExport() error {
+	e := &c.Audit.Export
+	if !e.Enabled {
+		return nil
+	}
+	if len(e.Sinks) == 0 {
+		return fmt.Errorf("audit.export.enabled is true but no audit.export.sinks are configured")
+	}
+	if e.PollIntervalSeconds < 0 || e.RetryBackoffSeconds < 0 || e.MaxBackoffSeconds < 0 {
+		return fmt.Errorf("audit.export: interval/backoff seconds must be non-negative")
+	}
+	if e.BatchSize < 0 {
+		return fmt.Errorf("audit.export.batch_size must be non-negative")
+	}
+	names := make(map[string]bool, len(e.Sinks))
+	for i, s := range e.Sinks {
+		if s.Name == "" {
+			return fmt.Errorf("audit.export.sinks[%d]: name is required", i)
+		}
+		if names[s.Name] {
+			return fmt.Errorf("audit.export.sinks[%d]: duplicate sink name %q", i, s.Name)
+		}
+		names[s.Name] = true
+
+		switch s.Format {
+		case "", "rfc5424", "cef", "json":
+		default:
+			return fmt.Errorf("audit.export.sinks[%q]: unknown format %q (valid: rfc5424, cef, json)", s.Name, s.Format)
+		}
+
+		switch s.Type {
+		case "syslog":
+			if s.Address == "" {
+				return fmt.Errorf("audit.export.sinks[%q]: syslog sink requires an address", s.Name)
+			}
+			switch s.Network {
+			case "", "tcp", "tls":
+			default:
+				return fmt.Errorf("audit.export.sinks[%q]: unknown network %q (valid: tcp, tls)", s.Name, s.Network)
+			}
+			switch s.Framing {
+			case "", "octet-counting", "lf":
+			default:
+				return fmt.Errorf("audit.export.sinks[%q]: unknown framing %q (valid: octet-counting, lf)", s.Name, s.Framing)
+			}
+			if (s.TLS.ClientCertFile == "") != (s.TLS.ClientKeyFile == "") {
+				return fmt.Errorf("audit.export.sinks[%q]: tls.client_cert_file and tls.client_key_file must both be set for mutual TLS", s.Name)
+			}
+			if s.Format == "json" {
+				return fmt.Errorf("audit.export.sinks[%q]: format json is not valid for a syslog sink (use rfc5424 or cef)", s.Name)
+			}
+		case "webhook":
+			if s.URL == "" {
+				return fmt.Errorf("audit.export.sinks[%q]: webhook sink requires a url", s.Name)
+			}
+		default:
+			return fmt.Errorf("audit.export.sinks[%q]: unknown type %q (valid: syslog, webhook)", s.Name, s.Type)
+		}
+	}
+	return nil
 }
 
 // validateEnrollment sanity-checks the SCEP and EST configuration when enabled.

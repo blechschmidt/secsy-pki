@@ -132,6 +132,19 @@ config:
     renewProfiles: []
     notifications: []
 
+  # Audit-log SIEM export: stream the tamper-evident event log to external
+  # syslog/CEF/webhook collectors. Disabled by default. See
+  # docs/audit-siem-export.md. Each entry of `sinks` mirrors the config schema
+  # (name/type/format/network/address/tls/url/headers/...).
+  audit:
+    export:
+      enabled: false
+      pollIntervalSeconds: 0
+      batchSize: 0
+      retryBackoffSeconds: 0
+      maxBackoffSeconds: 0
+      sinks: []
+
   # ACME (RFC 8555) server. Enable this to let cert-manager (or certbot/lego)
   # request HSM-backed certificates. See certManager.* below and docs/acme.md.
   acme:

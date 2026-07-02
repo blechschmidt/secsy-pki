@@ -103,7 +103,87 @@ var (
 	MonitorLastScan = NewGauge(Default,
 		"secsy_certificate_monitor_last_scan_timestamp_seconds",
 		"Unix timestamp (seconds) of the last completed certificate-expiry monitor scan.")
+
+	// Audit-log SIEM export. Each series is partitioned by the sink name so an
+	// operator can tell which downstream (syslog/CEF/webhook) is falling behind.
+	//
+	// AuditExportLag is the number of sealed audit events not yet acknowledged by
+	// the sink (head sequence minus the durable cursor). It is the primary alert
+	// signal: a steadily climbing lag means a sink is down or backpressured.
+	AuditExportLag = NewGauge(Default,
+		"secsy_audit_export_lag_events",
+		"Audit events sealed but not yet delivered to a SIEM sink (head seq minus cursor), by sink.",
+		"sink")
+	// AuditExportCursor exposes the durable cursor (last successfully delivered
+	// sequence number) so restarts and redelivery windows are observable.
+	AuditExportCursor = NewGauge(Default,
+		"secsy_audit_export_cursor_seq",
+		"Highest audit event sequence number durably delivered to a SIEM sink, by sink.",
+		"sink")
+	// AuditExportEvents counts individual audit events handed to a sink, by
+	// outcome. delivered = acknowledged (cursor advanced); failed = a delivery
+	// attempt errored and will be retried (at-least-once).
+	AuditExportEvents = NewCounter(Default,
+		"secsy_audit_export_events_total",
+		"Audit events processed by the SIEM exporter, by sink and result (delivered|failed).",
+		"sink", "result")
+	// AuditExportBatchFailures counts failed delivery attempts (batches), by sink.
+	// Distinct from AuditExportEvents{result=failed}, which counts events.
+	AuditExportBatchFailures = NewCounter(Default,
+		"secsy_audit_export_batch_failures_total",
+		"Failed SIEM export delivery attempts (batches) that will be retried, by sink.",
+		"sink")
+	// AuditExportLastSuccess records when a sink last acknowledged a batch, so an
+	// operator can alert on a stalled exporter even when lag is briefly zero.
+	AuditExportLastSuccess = NewGauge(Default,
+		"secsy_audit_export_last_success_timestamp_seconds",
+		"Unix timestamp (seconds) of the last acknowledged SIEM export batch, by sink.",
+		"sink")
 )
+
+// Export result label values for AuditExportEvents.
+const (
+	ExportDelivered = "delivered"
+	ExportFailed    = "failed"
+)
+
+// RecordAuditExportSuccess records a batch acknowledged by a sink: it advances
+// the observable cursor, resets lag, bumps the delivered counter, and stamps the
+// last-success time. head is the current tail sequence of the log.
+func RecordAuditExportSuccess(sink string, cursor, head int64, delivered int, at time.Time) {
+	if delivered > 0 {
+		AuditExportEvents.Add(uint64(delivered), sink, ExportDelivered)
+	}
+	AuditExportCursor.Set(float64(cursor), sink)
+	lag := head - cursor
+	if lag < 0 {
+		lag = 0
+	}
+	AuditExportLag.Set(float64(lag), sink)
+	AuditExportLastSuccess.Set(float64(at.Unix()), sink)
+}
+
+// RecordAuditExportFailure records a failed delivery attempt for a sink over the
+// given number of pending events, so both batch- and event-level failure rates
+// are visible.
+func RecordAuditExportFailure(sink string, pending int) {
+	AuditExportBatchFailures.Inc(sink)
+	if pending > 0 {
+		AuditExportEvents.Add(uint64(pending), sink, ExportFailed)
+	}
+}
+
+// RecordAuditExportLag refreshes the lag gauge for a sink without a delivery
+// (e.g. after an idle poll finds the sink caught up, or before the first
+// delivery). head is the tail sequence; cursor is the durable position.
+func RecordAuditExportLag(sink string, cursor, head int64) {
+	AuditExportCursor.Set(float64(cursor), sink)
+	lag := head - cursor
+	if lag < 0 {
+		lag = 0
+	}
+	AuditExportLag.Set(float64(lag), sink)
+}
 
 // Decision label values for AuthzDecisions.
 const (

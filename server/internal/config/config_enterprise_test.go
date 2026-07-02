@@ -87,3 +87,94 @@ rbac:
 		t.Fatal("expected error for unknown group role name")
 	}
 }
+
+func TestLoadAuditExport(t *testing.T) {
+	clearProviderEnv(t)
+	cfg := writeAndLoad(t, `
+root_user:
+  password: secret
+audit:
+  export:
+    enabled: true
+    poll_interval_seconds: 10
+    batch_size: 128
+    sinks:
+      - name: splunk-syslog
+        type: syslog
+        format: rfc5424
+        network: tls
+        address: siem.example.com:6514
+        tls:
+          ca_file: /etc/secsy/siem-ca.pem
+      - name: soc-webhook
+        type: webhook
+        url: https://soc.example.com/ingest
+        headers:
+          Authorization: "Bearer xyz"
+`)
+	e := cfg.Audit.Export
+	if !e.Enabled || e.PollIntervalSeconds != 10 || e.BatchSize != 128 {
+		t.Fatalf("export config = %+v", e)
+	}
+	if len(e.Sinks) != 2 {
+		t.Fatalf("sinks = %d, want 2", len(e.Sinks))
+	}
+	if e.Sinks[0].Network != "tls" || e.Sinks[0].TLS.CAFile == "" {
+		t.Errorf("syslog sink = %+v", e.Sinks[0])
+	}
+	if e.Sinks[1].Type != "webhook" || e.Sinks[1].Headers["Authorization"] != "Bearer xyz" {
+		t.Errorf("webhook sink = %+v", e.Sinks[1])
+	}
+}
+
+func TestAuditExportRejectsBadConfig(t *testing.T) {
+	cases := map[string]string{
+		"no sinks": `
+root_user: {password: secret}
+audit: {export: {enabled: true}}`,
+		"unknown type": `
+root_user: {password: secret}
+audit:
+  export:
+    enabled: true
+    sinks:
+      - {name: s, type: kafka, address: "x:1"}`,
+		"syslog without address": `
+root_user: {password: secret}
+audit:
+  export:
+    enabled: true
+    sinks:
+      - {name: s, type: syslog}`,
+		"webhook without url": `
+root_user: {password: secret}
+audit:
+  export:
+    enabled: true
+    sinks:
+      - {name: s, type: webhook}`,
+		"duplicate names": `
+root_user: {password: secret}
+audit:
+  export:
+    enabled: true
+    sinks:
+      - {name: dup, type: webhook, url: "https://a"}
+      - {name: dup, type: webhook, url: "https://b"}`,
+		"json over syslog": `
+root_user: {password: secret}
+audit:
+  export:
+    enabled: true
+    sinks:
+      - {name: s, type: syslog, format: json, address: "x:1"}`,
+	}
+	for name, content := range cases {
+		t.Run(name, func(t *testing.T) {
+			clearProviderEnv(t)
+			if _, err := loadContent(t, content); err == nil {
+				t.Fatalf("expected error for %s", name)
+			}
+		})
+	}
+}
