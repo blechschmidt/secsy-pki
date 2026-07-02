@@ -147,6 +147,10 @@ func (m *Middleware) classify(r *http.Request) *class {
 			return &class{name: "acme_new_order", acme: true, account: acmeAccount}
 		case strings.HasSuffix(path, "/finalize"):
 			return &class{name: "acme_finalize", hsmBound: true, acme: true, account: acmeAccount}
+		case strings.Contains(path, "/renewal-info"):
+			// ARI (draft-ietf-acme-ari): an unauthenticated GET carrying no JWS, so
+			// it is metered by the global and per-IP tiers only (no account key).
+			return &class{name: "acme_renewal_info", acme: true}
 		default:
 			return &class{name: "acme_other", acme: true, account: acmeAccount}
 		}

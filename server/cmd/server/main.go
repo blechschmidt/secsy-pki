@@ -435,6 +435,20 @@ func buildACMEConfig(db *database.DB, cfg *config.Config) (acme.Config, error) {
 	if cfg.ACME.AuthzValidityHours > 0 {
 		ac.AuthzValidity = time.Duration(cfg.ACME.AuthzValidityHours) * time.Hour
 	}
+
+	// ACME Renewal Information (ARI). The suggested-renewal window mirrors the
+	// expiry monitor's renew-before threshold so ARI hints and the server's own
+	// auto-renewal agree on when a certificate should be replaced.
+	day := 24 * time.Hour
+	ac.RenewBefore = time.Duration(cfg.ACME.RenewalWindowDays) * day
+	if ac.RenewBefore == 0 && cfg.Monitor.RenewBeforeDays > 0 {
+		ac.RenewBefore = time.Duration(cfg.Monitor.RenewBeforeDays) * day
+	}
+	ac.RenewalWindowWidth = time.Duration(cfg.ACME.RenewalWindowWidthHours) * time.Hour
+	if cfg.ACME.RenewalPollHours > 0 {
+		ac.RenewalPollInterval = time.Duration(cfg.ACME.RenewalPollHours) * time.Hour
+	}
+	ac.ExplanationURL = cfg.ACME.RenewalExplanationURL
 	return ac, nil
 }
 

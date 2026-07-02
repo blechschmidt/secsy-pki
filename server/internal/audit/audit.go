@@ -87,6 +87,11 @@ const (
 	ActionACMEOrderFinalize = "acme.order.finalize"
 	ActionACMEChallenge     = "acme.challenge"
 	ActionACMECertRevoke    = "acme.cert.revoke"
+	// ActionACMERenewalInfo records a served ARI (draft-ietf-acme-ari) renewal-info
+	// lookup, and ActionACMEOrderReplaces records a newOrder that linked to a
+	// predecessor certificate via the "replaces" field.
+	ActionACMERenewalInfo   = "acme.renewal_info"
+	ActionACMEOrderReplaces = "acme.order.replaces"
 
 	// SCEP (RFC 8894) and EST (RFC 7030) device-enrollment actions. The actor is
 	// the enrollment grant / authenticated principal rather than an OIDC subject,

@@ -47,6 +47,7 @@ func (db *DB) migrateACME() error {
 			serial TEXT,
 			certificate TEXT,
 			finalized_at TIMESTAMP,
+			replaces TEXT,
 			created_at %s
 		)`, currentTimestamp),
 		`CREATE INDEX IF NOT EXISTS idx_acme_orders_account ON acme_orders(account_id)`,
@@ -79,6 +80,16 @@ func (db *DB) migrateACME() error {
 			return fmt.Errorf("acme migrate %q: %w", stmt[:40], err)
 		}
 	}
+	// Additive migration for existing databases: the ARI "replaces" linkage
+	// (draft-ietf-acme-ari) records which certificate a renewal order supersedes.
+	// Errors are ignored — the column already exists on a fresh CREATE TABLE above
+	// and on a second startup.
+	if db.isPostgres() {
+		db.conn.Exec(`ALTER TABLE acme_orders ADD COLUMN IF NOT EXISTS replaces TEXT`)
+	} else {
+		db.conn.Exec(`ALTER TABLE acme_orders ADD COLUMN replaces TEXT`)
+	}
+	db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_acme_orders_serial ON acme_orders(serial)`)
 	return nil
 }
 
@@ -181,25 +192,26 @@ func (db *DB) CreateACMEOrder(o *models.ACMEOrder) error {
 		status = models.ACMEOrderStatusPending
 	}
 	_, err := db.exec(
-		`INSERT INTO acme_orders (id, account_id, status, identifiers, not_before, not_after, expires)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		o.ID, o.AccountID, status, string(ids), nullTime(o.NotBefore), nullTime(o.NotAfter), o.Expires.UTC(),
+		`INSERT INTO acme_orders (id, account_id, status, identifiers, not_before, not_after, expires, replaces)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		o.ID, o.AccountID, status, string(ids), nullTime(o.NotBefore), nullTime(o.NotAfter), o.Expires.UTC(), nullString(o.Replaces),
 	)
 	return err
 }
 
 const acmeOrderColumns = `id, account_id, status, identifiers, not_before, not_after,
-	expires, error, ca_id, serial, certificate, finalized_at, created_at`
+	expires, error, ca_id, serial, certificate, finalized_at, replaces, created_at`
 
 func scanACMEOrder(s caScanner) (*models.ACMEOrder, error) {
 	var o models.ACMEOrder
 	var ids string
 	var notBefore, notAfter, finalizedAt sql.NullTime
-	var errStr, caID, serial, cert sql.NullString
+	var errStr, caID, serial, cert, replaces sql.NullString
 	if err := s.Scan(&o.ID, &o.AccountID, &o.Status, &ids, &notBefore, &notAfter,
-		&o.Expires, &errStr, &caID, &serial, &cert, &finalizedAt, &o.CreatedAt); err != nil {
+		&o.Expires, &errStr, &caID, &serial, &cert, &finalizedAt, &replaces, &o.CreatedAt); err != nil {
 		return nil, err
 	}
+	o.Replaces = replaces.String
 	json.Unmarshal([]byte(ids), &o.Identifiers)
 	if notBefore.Valid {
 		t := notBefore.Time
@@ -263,6 +275,35 @@ func (db *DB) ListACMEOrders(limit, offset int) ([]models.ACMEOrder, error) {
 		out = append(out, *o)
 	}
 	return out, rows.Err()
+}
+
+// GetACMEOrderByCertificate returns the valid order that issued the certificate
+// with the given (CA, serial), or (nil, nil) if none matches. It backs ARI
+// renewal-info lookups and the newOrder "replaces" authorization check.
+func (db *DB) GetACMEOrderByCertificate(caID, serial string) (*models.ACMEOrder, error) {
+	o, err := scanACMEOrder(db.queryRow(
+		`SELECT `+acmeOrderColumns+` FROM acme_orders WHERE ca_id = ? AND serial = ? ORDER BY created_at DESC`,
+		caID, serial))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return o, err
+}
+
+// CountACMEOrdersReplacing returns how many orders name the given ARI CertID in
+// their "replaces" field. A nonzero count means the predecessor certificate has
+// already been superseded by a renewal order (draft-ietf-acme-ari §5).
+func (db *DB) CountACMEOrdersReplacing(certID string) (int, error) {
+	var n int
+	// An "invalid" order that named this predecessor failed, so it does not count
+	// as having replaced the certificate — the client may retry the renewal.
+	err := db.queryRow(
+		`SELECT COUNT(*) FROM acme_orders WHERE replaces = ? AND status != ?`,
+		certID, models.ACMEOrderStatusInvalid).Scan(&n)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return n, err
 }
 
 // UpdateACMEOrderStatus sets an order's status and (optionally) its error.

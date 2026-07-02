@@ -33,7 +33,10 @@ import (
 
 type testEnv struct {
 	db       *database.DB
+	srv      *Server
+	caID     string
 	dirURL   string
+	baseURL  string
 	roots    *x509.CertPool
 	inters   *x509.CertPool
 	resolver *fakeResolver
@@ -142,6 +145,9 @@ func newTestEnv(t *testing.T) *testEnv {
 	srv.Register(mux)
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
+	env.srv = srv
+	env.caID = inter.ID
+	env.baseURL = ts.URL
 	env.dirURL = ts.URL + "/acme/directory"
 	return env
 }

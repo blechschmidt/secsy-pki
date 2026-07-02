@@ -132,3 +132,42 @@ func FuzzACMEPayloads(f *testing.F) {
 		}
 	})
 }
+
+// FuzzParseCertID drives the ARI CertID parser (draft-ietf-acme-ari §4.1). The
+// CertID arrives in the unauthenticated renewalInfo URL path and in the
+// account-authored newOrder "replaces" field, so it must survive arbitrary input
+// without panicking or mis-decoding. Well-formed CertIDs are additionally
+// checked to round-trip.
+func FuzzParseCertID(f *testing.F) {
+	f.Add("aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE")
+	f.Add("AAAA.AAAA")
+	f.Add("")
+	f.Add(".")
+	f.Add("a.b.c")
+	f.Add("!!!.@@@")
+	f.Add("onlyAKI.")
+	f.Add(".onlySerial")
+
+	f.Fuzz(func(t *testing.T, s string) {
+		id, err := parseCertID(s)
+		if err != nil {
+			return
+		}
+		if id == nil || len(id.AKI) == 0 || id.Serial == nil {
+			t.Fatalf("parseCertID(%q) returned a nil/empty result with no error", s)
+		}
+		// A successfully parsed CertID must re-encode to a value that parses back to
+		// the same AKI and serial (canonical, stable round-trip).
+		reencoded, err := certIDForCertificate(id.AKI, id.Serial)
+		if err != nil {
+			t.Fatalf("certIDForCertificate on parsed CertID %q failed: %v", s, err)
+		}
+		again, err := parseCertID(reencoded)
+		if err != nil {
+			t.Fatalf("re-encoded CertID %q does not parse: %v", reencoded, err)
+		}
+		if !bytesEqual(again.AKI, id.AKI) || again.Serial.Cmp(id.Serial) != 0 {
+			t.Fatalf("CertID round-trip mismatch for %q", s)
+		}
+	})
+}

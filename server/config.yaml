@@ -151,6 +151,11 @@ acme:
   # require_eab: true                     # restrict who may register (RBAC-like)
   # eab_hmac_keys:
   #   team-web: "base64url-or-base64-hmac-key"
+  # ACME Renewal Information (ARI, draft-ietf-acme-ari): advertised automatically.
+  # renewal_window_days: 30               # when the suggested window opens (0 = derive)
+  # renewal_window_width_hours: 360       # window width (0 = half the renew-before span)
+  # renewal_poll_hours: 6                 # advertised Retry-After cadence
+  # renewal_explanation_url: "https://pki.example.com/notices/mass-renewal"
 
 # tsa exposes an RFC 3161 Time-Stamp Authority at /tsa (application/timestamp-
 # query). Disabled by default; see docs/timestamping.md. Provision the signing

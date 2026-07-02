@@ -299,6 +299,21 @@ type ACMEConfig struct {
 	// authorizations remain pending (default 168h / 7 days).
 	OrderValidityHours int `yaml:"order_validity_hours"`
 	AuthzValidityHours int `yaml:"authz_validity_hours"`
+
+	// ---- ACME Renewal Information (ARI, draft-ietf-acme-ari) ----
+	// RenewalWindowDays sets how many days before expiry the ARI suggested renewal
+	// window begins. Zero falls back to the monitor's renew-before threshold, then
+	// to a third of each certificate's lifetime.
+	RenewalWindowDays int `yaml:"renewal_window_days"`
+	// RenewalWindowWidthHours is the width of the ARI suggested window. Zero
+	// derives it as half of the renewal-window span.
+	RenewalWindowWidthHours int `yaml:"renewal_window_width_hours"`
+	// RenewalPollHours is advertised in the renewalInfo Retry-After header
+	// (default 6h).
+	RenewalPollHours int `yaml:"renewal_poll_hours"`
+	// RenewalExplanationURL is returned in every renewalInfo response, pointing at
+	// a page explaining an active mass-renewal event.
+	RenewalExplanationURL string `yaml:"renewal_explanation_url"`
 }
 
 // SCEPConfig configures the SCEP (RFC 8894) enrollment server. When enabled, a

@@ -59,6 +59,7 @@ $ curl -s https://pki.example.com/acme/directory | jq
   "newOrder":   "https://pki.example.com/acme/new-order",
   "revokeCert": "https://pki.example.com/acme/revoke-cert",
   "keyChange":  "https://pki.example.com/acme/key-change",
+  "renewalInfo": "https://pki.example.com/acme/renewal-info",
   "meta": { "termsOfService": "https://pki.example.com/tos" }
 }
 ```
@@ -199,6 +200,8 @@ Every ACME operation appends an entry to the [hash-chained event log](rbac-and-a
 | `acme.challenge` | A challenge is validated or fails |
 | `acme.order.finalize` | A certificate is issued (records the serial and profile) |
 | `acme.cert.revoke` | A certificate is revoked via ACME |
+| `acme.renewal_info` | A renewal-info (ARI) window is served (records whether the window is normal/revoked/rotating) |
+| `acme.order.replaces` | A new order links to the certificate it renews via `replaces` |
 
 The actor is `acme:<account-id>`. These events are covered by the same
 tamper-evidence and `GET /api/events/verify` integrity check as the rest of the
@@ -234,8 +237,67 @@ reads), per RFC 8555.
 | POST | `/acme/acct/{id}/orders` | List an account's orders |
 | POST | `/acme/revoke-cert` | Revoke a certificate |
 | POST | `/acme/key-change` | Rotate the account key |
+| GET | `/acme/renewal-info/{certID}` | Renewal Information (ARI) — suggested renewal window |
 
-## 8. Operational notes
+## 8. Renewal Information (ARI)
+
+The server implements [ACME Renewal Information](https://datatracker.ietf.org/doc/draft-ietf-acme-ari/)
+(`draft-ietf-acme-ari`) so clients schedule renewals against the server's advice
+instead of a fixed timer, and react promptly when a certificate must be replaced.
+
+**Advertisement.** The directory carries a `renewalInfo` field (the base URL of
+the resource). ARI-aware clients (recent certbot, lego, Caddy, …) pick it up
+automatically.
+
+**Looking up a window.** A client requests
+`GET /acme/renewal-info/<certID>`, where `certID` is
+`base64url(AuthorityKeyIdentifier) || "." || base64url(SerialNumber)` (ARI §4.1).
+The response is an unauthenticated JSON body plus a `Retry-After` header:
+
+```console
+$ curl -s https://pki.example.com/acme/renewal-info/aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE
+{
+  "suggestedWindow": {
+    "start": "2026-09-01T00:00:00Z",
+    "end":   "2026-09-16T00:00:00Z"
+  },
+  "explanationURL": "https://pki.example.com/notices/mass-renewal"
+}
+```
+
+The client picks a uniformly random time within `[start, end)` and renews then,
+which spreads renewal load across the fleet.
+
+**Window policy.**
+
+- *Normal:* the window begins `acme.renewal_window_days` before expiry (falling
+  back to the [expiry monitor's](expiry-monitoring.md) `renew_before_days`, then
+  to the final third of the certificate's lifetime) and spans
+  `acme.renewal_window_width_hours` (default: half the renew-before span).
+- *Forced (immediate):* when the certificate has been **revoked**, or its issuing
+  CA key is being **rotated** (the key is `superseded` mid-[rollover](ca-rotation.md)),
+  the window ends at *now* so the client renews right away and migrates onto the
+  new key.
+
+**Renewal linkage (`replaces`).** A `newOrder` request may carry a `replaces`
+field naming the CertID of the certificate it renews. The server verifies the
+predecessor was issued to the same account and has not already been replaced
+(returning `urn:ietf:params:acme:error:alreadyReplaced` otherwise), records the
+linkage on the order, and audits it (`acme.order.replaces`).
+
+**Configuration.**
+
+```yaml
+acme:
+  renewal_window_days: 30          # when the suggested window opens (0 = derive)
+  renewal_window_width_hours: 360  # window width (0 = half the renew-before span)
+  renewal_poll_hours: 6            # advertised Retry-After cadence
+  renewal_explanation_url: "https://pki.example.com/notices/mass-renewal"
+```
+
+To compute a CertID from a certificate you hold, use `acme.CertID(*x509.Certificate)`.
+
+## 9. Operational notes
 
 - **TLS.** Real ACME clients require the directory to be served over HTTPS.
   Configure `server.tls_cert`/`tls_key`, or terminate TLS at a trusted proxy and
@@ -250,9 +312,10 @@ reads), per RFC 8555.
   the certificate's own key pair, and flows through the standard revocation store
   → it appears in the CA's CRL and OCSP responses.
 - **Testing.** `server/internal/e2e/acme_test.go` (build tag `sqlite`, gated on
-  the `SECSY_*` SoftHSM env) runs the full http-01 and dns-01 flows plus
-  revocation against a real token; `server/internal/acme/server_test.go` runs the
-  same flows against the software provider (no HSM needed).
+  the `SECSY_*` SoftHSM env) runs the full http-01 and dns-01 flows, revocation,
+  and the ARI renewal-hint flow against a real token; `server/internal/acme/server_test.go`
+  and `renewalinfo_http_test.go` run the same flows against the software provider
+  (no HSM needed).
 
 ## See also
 

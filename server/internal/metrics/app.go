@@ -9,9 +9,10 @@ var Default = NewRegistry()
 // Result label values shared across counters so dashboards can slice by outcome
 // consistently.
 const (
-	ResultSuccess = "success"
-	ResultError   = "error"
-	ResultDenied  = "denied"
+	ResultSuccess  = "success"
+	ResultError    = "error"
+	ResultDenied   = "denied"
+	ResultNotFound = "not_found"
 )
 
 // The application metrics. They are package-level so any layer (handlers, CA
@@ -68,6 +69,21 @@ var (
 	TimestampRequests = NewCounter(Default,
 		"secsy_timestamp_requests_total",
 		"RFC 3161 time-stamp requests, partitioned by result (granted|rejected|error).",
+		"result")
+
+	// ACME Renewal Information (ARI, draft-ietf-acme-ari). ACMERenewalInfo counts
+	// renewalInfo lookups by "result": hit (window served), not_found (unknown
+	// certificate), or error. The "window" label distinguishes a normal suggested
+	// window from a shortened one (normal|revoked|rotating) so operators can see
+	// forced-renewal signals. ACMEReplaces counts newOrder requests that carried a
+	// "replaces" ARI CertID, by "result" (linked|rejected).
+	ACMERenewalInfo = NewCounter(Default,
+		"secsy_acme_renewal_info_total",
+		"ACME Renewal Information (ARI) lookups served, by result and suggested-window kind.",
+		"result", "window")
+	ACMEReplaces = NewCounter(Default,
+		"secsy_acme_order_replaces_total",
+		"ACME newOrder requests carrying an ARI \"replaces\" CertID, by result (linked|rejected).",
 		"result")
 
 	// HSM / key-provider operations. The "operation" label is sign|decrypt|

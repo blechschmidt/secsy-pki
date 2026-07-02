@@ -34,6 +34,9 @@ const (
 	probExternalBinding    = "urn:ietf:params:acme:error:externalAccountRequired"
 	probUserActionReq      = "urn:ietf:params:acme:error:userActionRequired"
 	probAlreadyRevoked     = "urn:ietf:params:acme:error:alreadyRevoked"
+	// probAlreadyReplaced signals that the certificate named in a newOrder
+	// "replaces" field has already been replaced by another order (ARI §5).
+	probAlreadyReplaced = "urn:ietf:params:acme:error:alreadyReplaced"
 )
 
 // Problem is an RFC 7807 / RFC 8555 problem document.
@@ -80,12 +83,16 @@ type wireIdentifier struct {
 
 // wireDirectory is the response for the newNonce-anchoring directory resource.
 type wireDirectory struct {
-	NewNonce   string        `json:"newNonce"`
-	NewAccount string        `json:"newAccount"`
-	NewOrder   string        `json:"newOrder"`
-	RevokeCert string        `json:"revokeCert"`
-	KeyChange  string        `json:"keyChange"`
-	Meta       directoryMeta `json:"meta"`
+	NewNonce   string `json:"newNonce"`
+	NewAccount string `json:"newAccount"`
+	NewOrder   string `json:"newOrder"`
+	RevokeCert string `json:"revokeCert"`
+	KeyChange  string `json:"keyChange"`
+	// RenewalInfo advertises the ACME Renewal Information (ARI) resource
+	// (draft-ietf-acme-ari §4.1). Clients GET "<renewalInfo>/<certID>" to learn a
+	// suggested renewal window for a certificate.
+	RenewalInfo string        `json:"renewalInfo,omitempty"`
+	Meta        directoryMeta `json:"meta"`
 }
 
 type directoryMeta struct {
@@ -119,6 +126,23 @@ type newOrderRequest struct {
 	Identifiers []wireIdentifier `json:"identifiers"`
 	NotBefore   string           `json:"notBefore,omitempty"`
 	NotAfter    string           `json:"notAfter,omitempty"`
+	// Replaces, when set, is the ARI CertID (draft-ietf-acme-ari §5) of the
+	// certificate this order renews, linking the renewal to its predecessor.
+	Replaces string `json:"replaces,omitempty"`
+}
+
+// wireRenewalInfo is the ACME Renewal Information response body
+// (draft-ietf-acme-ari §4.2).
+type wireRenewalInfo struct {
+	SuggestedWindow suggestedWindow `json:"suggestedWindow"`
+	ExplanationURL  string          `json:"explanationURL,omitempty"`
+}
+
+// suggestedWindow is the [start, end) interval within which the client should
+// pick a renewal time (draft-ietf-acme-ari §4.2).
+type suggestedWindow struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
 }
 
 // wireOrder is the order object returned to clients (RFC 8555 §7.1.3).

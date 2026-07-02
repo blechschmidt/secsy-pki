@@ -56,6 +56,20 @@ type Config struct {
 	// remain pending before expiring.
 	OrderValidity time.Duration
 	AuthzValidity time.Duration
+
+	// ---- ACME Renewal Information (ARI, draft-ietf-acme-ari) ----
+	// RenewBefore is how long before expiry the suggested renewal window begins.
+	// Zero derives it per certificate as a third of the certificate's lifetime.
+	RenewBefore time.Duration
+	// RenewalWindowWidth is the width of the suggested renewal window. Zero derives
+	// it as half of RenewBefore, giving clients a band over which to spread load.
+	RenewalWindowWidth time.Duration
+	// RenewalPollInterval is advertised in the renewalInfo Retry-After header
+	// (default 6h). A forced-renewal signal shortens it so clients re-poll sooner.
+	RenewalPollInterval time.Duration
+	// ExplanationURL, if set, is returned in every renewalInfo response and points
+	// operators/clients at a page explaining an active mass-renewal event.
+	ExplanationURL string
 }
 
 // withDefaults returns a copy of the config with zero-valued fields filled in.
@@ -78,6 +92,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.AuthzValidity == 0 {
 		c.AuthzValidity = 7 * 24 * time.Hour
+	}
+	if c.RenewalPollInterval == 0 {
+		c.RenewalPollInterval = 6 * time.Hour
 	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 	return c
@@ -143,6 +160,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+p+"/acct/{id}/orders", s.handleAccountOrders)
 	mux.HandleFunc("POST "+p+"/revoke-cert", s.handleRevokeCert)
 	mux.HandleFunc("POST "+p+"/key-change", s.handleKeyChange)
+	// ACME Renewal Information (ARI, draft-ietf-acme-ari): an unauthenticated GET
+	// keyed by the certificate's CertID (AKI+serial).
+	mux.HandleFunc("GET "+p+"/renewal-info/{certid}", s.handleRenewalInfo)
 	log.Printf("ACME server enabled at %s/directory (CA=%s profile=%s)", p, s.cfg.CAID, s.cfg.Profile)
 }
 
@@ -184,6 +204,10 @@ func (s *Server) authzURL(r *http.Request, id string) string   { return s.link(r
 func (s *Server) challURL(r *http.Request, id string) string   { return s.link(r, "/chall/"+id) }
 func (s *Server) certURL(r *http.Request, id string) string    { return s.link(r, "/cert/"+id) }
 
+// renewalInfoURL returns the base URL of the ARI renewalInfo resource. Clients
+// append "/<certID>" to it.
+func (s *Server) renewalInfoURL(r *http.Request) string { return s.link(r, "/renewal-info") }
+
 // ---- Response helpers -----------------------------------------------------
 
 // addNonce attaches a fresh Replay-Nonce header. Every ACME response should
@@ -218,15 +242,37 @@ func (s *Server) writeProblem(w http.ResponseWriter, p *Problem) {
 	json.NewEncoder(w).Encode(p)
 }
 
+// writeProblemNoNonce writes a problem document without issuing a Replay-Nonce.
+// It is used by the unauthenticated ARI renewalInfo GET, which is not part of
+// the nonce-anchored POST flow.
+func (s *Server) writeProblemNoNonce(w http.ResponseWriter, p *Problem) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(p.httpStatus())
+	json.NewEncoder(w).Encode(p)
+}
+
+// writeJSONBody writes a JSON body with an explicit status and no nonce. Callers
+// that need a Replay-Nonce use writeJSON instead.
+func writeJSONBody(w http.ResponseWriter, status int, v interface{}) {
+	w.WriteHeader(status)
+	if v != nil {
+		if err := json.NewEncoder(w).Encode(v); err != nil {
+			log.Printf("acme: encoding response: %v", err)
+		}
+	}
+}
+
 // ---- Directory & nonce ----------------------------------------------------
 
 func (s *Server) handleDirectory(w http.ResponseWriter, r *http.Request) {
 	dir := wireDirectory{
-		NewNonce:   s.link(r, "/new-nonce"),
-		NewAccount: s.link(r, "/new-account"),
-		NewOrder:   s.link(r, "/new-order"),
-		RevokeCert: s.link(r, "/revoke-cert"),
-		KeyChange:  s.link(r, "/key-change"),
+		NewNonce:    s.link(r, "/new-nonce"),
+		NewAccount:  s.link(r, "/new-account"),
+		NewOrder:    s.link(r, "/new-order"),
+		RevokeCert:  s.link(r, "/revoke-cert"),
+		KeyChange:   s.link(r, "/key-change"),
+		RenewalInfo: s.renewalInfoURL(r),
 		Meta: directoryMeta{
 			TermsOfService:          s.cfg.TermsOfService,
 			ExternalAccountRequired: s.cfg.RequireEAB,

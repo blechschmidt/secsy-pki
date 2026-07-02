@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
+	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
 
@@ -43,6 +44,16 @@ func (s *Server) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 		wildcard = append(wildcard, isWild)
 	}
 
+	// ARI renewal linkage (draft-ietf-acme-ari §5): a "replaces" CertID ties this
+	// order to the certificate it renews. Validate and record it before creating
+	// the order so a rejected replacement never produces a half-linked order.
+	replaces, prob := s.resolveReplaces(r, acct, req.Replaces)
+	if prob != nil {
+		metrics.ACMEReplaces.Inc("rejected")
+		s.writeProblem(w, prob)
+		return
+	}
+
 	now := s.now().UTC()
 	order := &models.ACMEOrder{
 		ID:          newUUID(),
@@ -50,6 +61,7 @@ func (s *Server) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 		Status:      models.ACMEOrderStatusPending,
 		Identifiers: ids,
 		Expires:     now.Add(s.cfg.OrderValidity),
+		Replaces:    replaces,
 	}
 	if err := s.db.CreateACMEOrder(order); err != nil {
 		s.writeProblem(w, newProblem(probServerInternal, http.StatusInternalServerError, "creating order"))
@@ -89,6 +101,11 @@ func (s *Server) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 
 	s.recordEvent(r, acct.rec.ID, audit.ActionACMEOrderNew, order.ID, audit.ResultSuccess,
 		"identifiers="+identifierSummary(ids))
+	if replaces != "" {
+		metrics.ACMEReplaces.Inc("linked")
+		s.recordEvent(r, acct.rec.ID, audit.ActionACMEOrderReplaces, order.ID, audit.ResultSuccess,
+			"replaces="+replaces)
+	}
 
 	w.Header().Set("Location", s.orderURL(r, order.ID))
 	wo, prob := s.wireOrder(r, order)
@@ -321,6 +338,55 @@ func (s *Server) expireAuthzIfNeeded(authz *models.ACMEAuthorization) {
 		_ = s.db.UpdateACMEAuthorizationStatus(authz.ID, models.ACMEAuthzStatusExpired)
 		authz.Status = models.ACMEAuthzStatusExpired
 	}
+}
+
+// resolveReplaces validates a newOrder "replaces" ARI CertID (draft-ietf-acme-ari
+// §5) and returns the canonical CertID to record on the order, or a Problem if
+// the replacement is not permitted. An empty input returns ("", nil) — the field
+// is optional.
+func (s *Server) resolveReplaces(r *http.Request, acct *acmeAccount, replaces string) (string, *Problem) {
+	if replaces == "" {
+		return "", nil
+	}
+	id, err := parseCertID(replaces)
+	if err != nil {
+		return "", newProblem(probMalformed, http.StatusBadRequest, "invalid \"replaces\" CertID: "+err.Error())
+	}
+	cert, caID, prob := s.resolveCertByCertID(id)
+	if prob != nil {
+		return "", prob
+	}
+	if cert == nil {
+		return "", newProblem(probMalformed, http.StatusBadRequest, "\"replaces\" names an unknown certificate")
+	}
+
+	// The predecessor must have been issued to this same account, so a client
+	// cannot claim a renewal linkage for a certificate it does not control.
+	predOrder, err := s.db.GetACMEOrderByCertificate(caID, cert.Serial)
+	if err != nil {
+		return "", newProblem(probServerInternal, http.StatusInternalServerError, "\"replaces\" lookup failed")
+	}
+	if predOrder == nil || predOrder.AccountID != acct.rec.ID {
+		return "", newProblem(probUnauthorized, http.StatusForbidden, "the account is not authorized to replace this certificate")
+	}
+
+	// Normalize to the CertID recomputed from the decoded fields, so the recorded
+	// value is encoding-stable regardless of how the client formatted the input.
+	canonical, err := certIDForCertificate(id.AKI, id.Serial)
+	if err != nil {
+		return "", newProblem(probMalformed, http.StatusBadRequest, "invalid \"replaces\" CertID")
+	}
+
+	// A certificate may be replaced only once (ARI §5): reject a second order that
+	// names the same predecessor while an earlier replacement is still live.
+	count, err := s.db.CountACMEOrdersReplacing(canonical)
+	if err != nil {
+		return "", newProblem(probServerInternal, http.StatusInternalServerError, "\"replaces\" lookup failed")
+	}
+	if count > 0 {
+		return "", newProblem(probAlreadyReplaced, http.StatusConflict, "this certificate has already been replaced by another order")
+	}
+	return canonical, nil
 }
 
 // ---- identifier / challenge helpers ---------------------------------------

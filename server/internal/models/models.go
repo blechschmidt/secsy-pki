@@ -474,7 +474,11 @@ type ACMEOrder struct {
 	// Certificate is the issued PEM chain (leaf first), populated on finalize.
 	Certificate string     `json:"-"`
 	FinalizedAt *time.Time `json:"-"`
-	CreatedAt   time.Time  `json:"created_at"`
+	// Replaces is the ARI CertID (draft-ietf-acme-ari §5) of the certificate this
+	// order renews, when the client set the newOrder "replaces" field. It links a
+	// renewal order back to its predecessor for renewal accounting.
+	Replaces  string    `json:"replaces,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // ACMEAuthorization is the authorization for a single identifier within an order.

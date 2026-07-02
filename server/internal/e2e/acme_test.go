@@ -22,9 +22,11 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -391,4 +393,107 @@ func TestACMEFullFlow(t *testing.T) {
 			t.Errorf("expected >=3 ACME accounts recorded, got %d", len(accounts))
 		}
 	})
+}
+
+// TestACMERenewalInfo drives the ACME Renewal Information (ARI,
+// draft-ietf-acme-ari) flow against the HSM-backed CA: it advertises the
+// resource in the directory, serves a suggested renewal window keyed by the
+// certificate's HSM-signed AKI+serial CertID, and shortens the window to force
+// immediate renewal once the certificate is revoked on the token.
+func TestACMERenewalInfo(t *testing.T) {
+	env := setupACME(t)
+	ctx := context.Background()
+
+	// (1) The directory must advertise the renewalInfo resource.
+	dirResp, err := http.Get(env.dirURL)
+	if err != nil {
+		t.Fatalf("GET directory: %v", err)
+	}
+	var dir map[string]any
+	if err := json.NewDecoder(dirResp.Body).Decode(&dir); err != nil {
+		t.Fatalf("decode directory: %v", err)
+	}
+	dirResp.Body.Close()
+	renewalInfoBase, _ := dir["renewalInfo"].(string)
+	if renewalInfoBase == "" {
+		t.Fatal("ACME directory does not advertise renewalInfo (ARI)")
+	}
+
+	// (2) Issue an HSM-signed certificate and address it by its CertID.
+	client := env.newClient(t)
+	domain := "ari.acme.example.test"
+	der := env.runOrder(t, client, domain, "http-01")
+	leaf := env.verifyIssued(t, der, domain)
+
+	certID, err := acmesrv.CertID(leaf)
+	if err != nil {
+		t.Fatalf("CertID: %v", err)
+	}
+
+	riResp, err := http.Get(renewalInfoBase + "/" + certID)
+	if err != nil {
+		t.Fatalf("GET renewal-info: %v", err)
+	}
+	if riResp.StatusCode != http.StatusOK {
+		t.Fatalf("renewal-info status = %d, want 200", riResp.StatusCode)
+	}
+	if ra := riResp.Header.Get("Retry-After"); ra == "" {
+		t.Error("renewal-info missing Retry-After header")
+	} else if n, _ := strconv.Atoi(ra); n <= 0 {
+		t.Errorf("Retry-After = %q, want positive seconds", ra)
+	}
+	var normal struct {
+		SuggestedWindow struct{ Start, End string } `json:"suggestedWindow"`
+	}
+	if err := json.NewDecoder(riResp.Body).Decode(&normal); err != nil {
+		t.Fatalf("decode renewal-info: %v", err)
+	}
+	riResp.Body.Close()
+	start, err := time.Parse(time.RFC3339, normal.SuggestedWindow.Start)
+	if err != nil {
+		t.Fatalf("parse window start: %v", err)
+	}
+	end, err := time.Parse(time.RFC3339, normal.SuggestedWindow.End)
+	if err != nil {
+		t.Fatalf("parse window end: %v", err)
+	}
+	if !end.After(start) || end.After(leaf.NotAfter) {
+		t.Errorf("suggested window [%s,%s) is not a valid sub-interval of validity (notAfter %s)", start, end, leaf.NotAfter)
+	}
+
+	// (3) Revoke the certificate on the HSM-backed CA; ARI must now signal an
+	// immediate renewal (window ending at ~now).
+	if err := client.RevokeCert(ctx, nil, der[0], xacme.CRLReasonSuperseded); err != nil {
+		t.Fatalf("RevokeCert: %v", err)
+	}
+	riResp2, err := http.Get(renewalInfoBase + "/" + certID)
+	if err != nil {
+		t.Fatalf("GET renewal-info (revoked): %v", err)
+	}
+	var revoked struct {
+		SuggestedWindow struct{ Start, End string } `json:"suggestedWindow"`
+	}
+	if err := json.NewDecoder(riResp2.Body).Decode(&revoked); err != nil {
+		t.Fatalf("decode renewal-info (revoked): %v", err)
+	}
+	riResp2.Body.Close()
+	revEnd, _ := time.Parse(time.RFC3339, revoked.SuggestedWindow.End)
+	if revEnd.After(time.Now().Add(time.Minute)) {
+		t.Errorf("revoked certificate window end %s should be ~now, not in the future", revEnd)
+	}
+
+	// (4) The forced-renewal (revoked) lookup is audited on the tamper-evident
+	// chain; routine "normal" polls are intentionally not audited.
+	events, _, err := env.db.ListEvents("acme.renewal_info", "", 50, 0)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if len(events) < 1 {
+		t.Errorf("expected >=1 acme.renewal_info audit event for the revoked lookup, got %d", len(events))
+	}
+	if res, err := env.db.VerifyEventChain(); err != nil {
+		t.Fatalf("VerifyEventChain: %v", err)
+	} else if !res.Valid {
+		t.Errorf("event chain invalid after ARI operations: %s", res.Reason)
+	}
 }
