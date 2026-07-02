@@ -22,6 +22,30 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+  schemas:
+    CASubject:
+      type: object
+      required: [cn]
+      description: Distinguished-name fields for a CA certificate
+      properties:
+        cn:
+          type: string
+          description: Common name (required)
+        o:
+          type: string
+          description: Organization
+        ou:
+          type: string
+          description: Organizational unit
+        c:
+          type: string
+          description: Country
+        st:
+          type: string
+          description: State / province
+        l:
+          type: string
+          description: Locality
 
 paths:
   /health:
@@ -78,6 +102,82 @@ paths:
       responses:
         "201":
           description: CA created
+
+  /ca/init-root:
+    post:
+      summary: Initialize a self-signed root CA (root only)
+      description: >
+        Generates a CA private key inside the configured key provider (HSM via
+        PKCS#11, or the software keystore) and creates a self-signed root CA
+        certificate whose signing operation is performed by the provider. The
+        certificate and metadata (serial, subject, validity) are persisted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label, key_type, subject]
+              properties:
+                label:
+                  type: string
+                  description: Key label / CA name (must be unique)
+                key_type:
+                  type: string
+                  enum: [ed25519, ecdsa-sha2-nistp256, ecdsa-sha2-nistp384, ecdsa-sha2-nistp521, rsa-2048, rsa-4096]
+                subject:
+                  $ref: "#/components/schemas/CASubject"
+                validity_days:
+                  type: integer
+                  description: Certificate lifetime in days (default 3650)
+                max_path_len:
+                  type: integer
+                  description: Max intermediate CAs below this one (omit for unconstrained, 0 = leaf-only)
+      responses:
+        "201":
+          description: Root CA created
+        "400":
+          description: Invalid request or duplicate label
+
+  /ca/{id}/issue-intermediate:
+    post:
+      summary: Issue an intermediate CA under an existing CA (root only)
+      description: >
+        Generates an intermediate CA key inside the key provider and issues an
+        intermediate certificate signed by the parent CA on the device. The
+        intermediate's validity is clamped to the parent's expiry.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Parent CA id
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label, key_type, subject]
+              properties:
+                label:
+                  type: string
+                key_type:
+                  type: string
+                  enum: [ed25519, ecdsa-sha2-nistp256, ecdsa-sha2-nistp384, ecdsa-sha2-nistp521, rsa-2048, rsa-4096]
+                subject:
+                  $ref: "#/components/schemas/CASubject"
+                validity_days:
+                  type: integer
+                  description: Certificate lifetime in days (default 1825)
+                max_path_len:
+                  type: integer
+      responses:
+        "201":
+          description: Intermediate CA created
+        "400":
+          description: Invalid request, unknown parent, or path-length violation
 
   /cas/{id}:
     get:

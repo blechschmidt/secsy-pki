@@ -47,6 +47,11 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 
 	mux.Handle("GET /api/keys", protected(http.HandlerFunc(a.ListCAs)))
 	mux.Handle("POST /api/keys", protected(http.HandlerFunc(a.CreateCA)))
+
+	// HSM-backed X.509 certificate-authority setup
+	mux.Handle("POST /api/ca/init-root", protected(http.HandlerFunc(a.InitRootCA)))
+	mux.Handle("POST /api/ca/{id}/issue-intermediate", protected(http.HandlerFunc(a.IssueIntermediateCA)))
+
 	mux.Handle("GET /api/keys/{id}", protected(http.HandlerFunc(a.GetCA)))
 	mux.Handle("DELETE /api/keys/{id}", protected(http.HandlerFunc(a.DeleteCA)))
 	mux.Handle("GET /api/keys/{id}/children", protected(http.HandlerFunc(a.GetCAChildren)))
@@ -1098,7 +1103,7 @@ func (a *API) ExportCombinedAuditLog(w http.ResponseWriter, r *http.Request) {
 		if err != nil || ca == nil {
 			continue
 		}
-		keyLabel := extractKeyLabel(ca.PKCS11URI)
+		keyLabel := pki.ExtractKeyLabel(ca.PKCS11URI)
 		if keyLabel == "" {
 			continue
 		}
@@ -1250,43 +1255,11 @@ func (a *API) checkPermission(user *models.UserInfo, caID string, perm models.Pe
 // CA label when an operator imported a pre-existing key); otherwise — e.g. for
 // software: URIs — the CA label is the key label.
 func keyRefForCA(ca *models.CA) keyprovider.KeyRef {
-	label := extractKeyLabel(ca.PKCS11URI)
+	label := pki.ExtractKeyLabel(ca.PKCS11URI)
 	if label == "" {
 		label = ca.Label
 	}
 	return keyprovider.KeyRef{Label: label}
-}
-
-func extractKeyLabel(pkcs11URI string) string {
-	// Parse "pkcs11:token=...;object=LABEL;type=private"
-	// Simple parser for the object field
-	for _, part := range splitURI(pkcs11URI) {
-		if len(part) > 7 && part[:7] == "object=" {
-			return part[7:]
-		}
-	}
-	return ""
-}
-
-func splitURI(uri string) []string {
-	// Strip "pkcs11:" prefix
-	if len(uri) > 7 && uri[:7] == "pkcs11:" {
-		uri = uri[7:]
-	}
-	var parts []string
-	current := ""
-	for _, c := range uri {
-		if c == ';' {
-			parts = append(parts, current)
-			current = ""
-		} else {
-			current += string(c)
-		}
-	}
-	if current != "" {
-		parts = append(parts, current)
-	}
-	return parts
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

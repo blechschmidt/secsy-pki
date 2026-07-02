@@ -3,6 +3,7 @@ package keyprovider
 import (
 	"context"
 	"crypto"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -48,13 +49,26 @@ func (p *PKCS11Provider) Name() string { return string(ProviderPKCS11) }
 
 func (p *PKCS11Provider) Close() error { return nil }
 
-func (p *PKCS11Provider) GenerateKey(_ context.Context, spec KeySpec) (*KeyInfo, error) {
+func (p *PKCS11Provider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInfo, error) {
 	if spec.Label == "" {
 		return nil, fmt.Errorf("keyprovider: key label is required")
 	}
 	keyType, err := NormalizeKeyType(spec.KeyType)
 	if err != nil {
 		return nil, err
+	}
+
+	// Enforce the Provider contract that GenerateKey fails if a key with the
+	// same label already exists. On a PKCS#11 token, generating a second key
+	// with a duplicate CKA_LABEL is permitted by Cryptoki but leaves the token
+	// in a state where object lookups by label are ambiguous — the private and
+	// public halves resolved for a signer can come from different key pairs,
+	// yielding signatures that fail verification. Refuse up front instead.
+	if existing, err := p.FindKey(ctx, KeyRef{Label: spec.Label}); err == nil {
+		_ = existing
+		return nil, fmt.Errorf("keyprovider: a key labeled %q already exists on the token", spec.Label)
+	} else if !errors.Is(err, ErrKeyNotFound) {
+		return nil, fmt.Errorf("keyprovider: checking for existing key %q: %w", spec.Label, err)
 	}
 
 	generated, err := pki.GenerateKeyOnHSM(p.cfg, spec.Label, keyType)

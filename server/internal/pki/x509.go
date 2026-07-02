@@ -91,6 +91,22 @@ func SignX509Certificate(signer crypto.Signer, csrPEM []byte, validBefore time.T
 	return certPEM, serial.String(), nil
 }
 
+// ExtractKeyLabel returns the object= label from a PKCS#11 URI (RFC 7512), or
+// the empty string if the URI has no object attribute. It also accepts the
+// software provider's "software:<label>" URIs.
+func ExtractKeyLabel(uri string) string {
+	if strings.HasPrefix(uri, "software:") {
+		return strings.TrimPrefix(uri, "software:")
+	}
+	uri = strings.TrimPrefix(uri, "pkcs11:")
+	for _, part := range strings.Split(uri, ";") {
+		if strings.HasPrefix(part, "object=") {
+			return strings.TrimPrefix(part, "object=")
+		}
+	}
+	return ""
+}
+
 // ParseSANs extracts DNS names, IPs, and emails from a comma-separated list.
 func ParseSANs(sans string) (dnsNames []string, ips []net.IP, emails []string) {
 	for _, san := range strings.Split(sans, ",") {

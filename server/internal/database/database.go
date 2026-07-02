@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/ssh"
-	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
 
 type DB struct {
@@ -109,8 +109,20 @@ func (db *DB) migrate() error {
 			public_key %s NOT NULL,
 			default_ssh_restriction_set_id TEXT,
 			default_x509_restriction_set_id TEXT,
+			certificate TEXT,
+			subject TEXT,
+			serial TEXT,
+			not_before TIMESTAMP,
+			not_after TIMESTAMP,
+			max_path_len INTEGER,
 			created_at %s
 		)`, blob, currentTimestamp),
+		// Per-CA monotonic serial counter used to allocate unique certificate
+		// serial numbers for the subordinate certificates a CA issues.
+		`CREATE TABLE IF NOT EXISTS ca_serial_counters (
+			ca_id TEXT PRIMARY KEY REFERENCES cas(id) ON DELETE CASCADE,
+			next_serial INTEGER NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS groups_ (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL UNIQUE
@@ -220,6 +232,12 @@ func (db *DB) migrate() error {
 	if db.isPostgres() {
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS default_ssh_restriction_set_id TEXT")
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS default_x509_restriction_set_id TEXT")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS certificate TEXT")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS subject TEXT")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS serial TEXT")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS not_before TIMESTAMP")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS not_after TIMESTAMP")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS max_path_len INTEGER")
 		db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS ssh_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS certificate BYTEA")
@@ -227,6 +245,12 @@ func (db *DB) migrate() error {
 	} else {
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_ssh_restriction_set_id TEXT")
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_x509_restriction_set_id TEXT")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN certificate TEXT")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN subject TEXT")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN serial TEXT")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN not_before TIMESTAMP")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN not_after TIMESTAMP")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN max_path_len INTEGER")
 		db.conn.Exec("ALTER TABLE permissions ADD COLUMN ssh_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE permissions ADD COLUMN x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN certificate BLOB")
@@ -293,21 +317,143 @@ func (db *DB) upsert(table, columns, placeholders, conflictCols, updateSet strin
 
 // CA operations
 
+// caColumns is the canonical column list for CA reads. Keep it in sync with
+// scanCA.
+const caColumns = `id, parent_id, label, pkcs11_uri, key_type, public_key,
+	default_ssh_restriction_set_id, default_x509_restriction_set_id,
+	certificate, subject, serial, not_before, not_after, max_path_len, created_at`
+
+// caScanner is the minimal surface shared by *sql.Row and *sql.Rows.
+type caScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+// scanCA reads a single CA row selected with caColumns.
+func scanCA(s caScanner) (*models.CA, error) {
+	var ca models.CA
+	var pubBlob []byte
+	var cert, subject, serial sql.NullString
+	var notBefore, notAfter sql.NullTime
+	var maxPathLen sql.NullInt64
+	if err := s.Scan(
+		&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob,
+		&ca.DefaultSSHRestrictionSetID, &ca.DefaultX509RestrictionSetID,
+		&cert, &subject, &serial, &notBefore, &notAfter, &maxPathLen, &ca.CreatedAt,
+	); err != nil {
+		return nil, err
+	}
+	ca.PublicKey = blobToAuthorizedKey(pubBlob)
+	if cert.Valid {
+		ca.Certificate = cert.String
+	}
+	if subject.Valid {
+		ca.Subject = subject.String
+	}
+	if serial.Valid {
+		ca.Serial = serial.String
+	}
+	if notBefore.Valid {
+		t := notBefore.Time
+		ca.NotBefore = &t
+	}
+	if notAfter.Valid {
+		t := notAfter.Time
+		ca.NotAfter = &t
+	}
+	if maxPathLen.Valid {
+		v := int(maxPathLen.Int64)
+		ca.MaxPathLen = &v
+	}
+	return &ca, nil
+}
+
+// nullString returns a NULL-able string, treating "" as NULL.
+func nullString(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+// CreateCA inserts a CA and initializes its serial counter atomically. The
+// counter starts at 2, reserving serial 1 for a CA's own self-issued material.
 func (db *DB) CreateCA(ca *models.CA) error {
-	_, err := db.exec(
-		`INSERT INTO cas (id, parent_id, label, pkcs11_uri, key_type, public_key, default_ssh_restriction_set_id, default_x509_restriction_set_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		ca.ID, ca.ParentID, ca.Label, ca.PKCS11URI, ca.KeyType, pubKeyToBlob(ca.PublicKey), ca.DefaultSSHRestrictionSetID, ca.DefaultX509RestrictionSetID,
-	)
-	return err
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var notBefore, notAfter interface{}
+	if ca.NotBefore != nil {
+		notBefore = *ca.NotBefore
+	}
+	if ca.NotAfter != nil {
+		notAfter = *ca.NotAfter
+	}
+	var maxPathLen interface{}
+	if ca.MaxPathLen != nil {
+		maxPathLen = *ca.MaxPathLen
+	}
+
+	if _, err := tx.Exec(db.ph(
+		`INSERT INTO cas (id, parent_id, label, pkcs11_uri, key_type, public_key,
+			default_ssh_restriction_set_id, default_x509_restriction_set_id,
+			certificate, subject, serial, not_before, not_after, max_path_len)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		ca.ID, ca.ParentID, ca.Label, ca.PKCS11URI, ca.KeyType, pubKeyToBlob(ca.PublicKey),
+		ca.DefaultSSHRestrictionSetID, ca.DefaultX509RestrictionSetID,
+		nullString(ca.Certificate), nullString(ca.Subject), nullString(ca.Serial),
+		notBefore, notAfter, maxPathLen,
+	); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(db.ph(
+		`INSERT INTO ca_serial_counters (ca_id, next_serial) VALUES (?, ?)`), ca.ID, 2); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// AllocateSerial atomically returns the next unused certificate serial number
+// for certificates issued by the given CA and advances the counter. Serials are
+// unique per issuing CA.
+func (db *DB) AllocateSerial(caID string) (int64, error) {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var next int64
+	err = tx.QueryRow(db.ph(`SELECT next_serial FROM ca_serial_counters WHERE ca_id = ?`), caID).Scan(&next)
+	if err == sql.ErrNoRows {
+		return 0, fmt.Errorf("no serial counter for CA %q", caID)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(db.ph(`UPDATE ca_serial_counters SET next_serial = ? WHERE ca_id = ?`), next+1, caID); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return next, nil
 }
 
 func (db *DB) GetCA(id string) (*models.CA, error) {
-	ca := &models.CA{}
-	var pubBlob []byte
-	err := db.queryRow(
-		`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_ssh_restriction_set_id, default_x509_restriction_set_id, created_at FROM cas WHERE id = ?`, id,
-	).Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob, &ca.DefaultSSHRestrictionSetID, &ca.DefaultX509RestrictionSetID, &ca.CreatedAt)
-	ca.PublicKey = blobToAuthorizedKey(pubBlob)
+	ca, err := scanCA(db.queryRow(`SELECT `+caColumns+` FROM cas WHERE id = ?`, id))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return ca, err
+}
+
+// GetCAByLabel resolves a CA by its label. Returns (nil, nil) if none matches.
+func (db *DB) GetCAByLabel(label string) (*models.CA, error) {
+	ca, err := scanCA(db.queryRow(`SELECT `+caColumns+` FROM cas WHERE label = ?`, label))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -315,20 +461,18 @@ func (db *DB) GetCA(id string) (*models.CA, error) {
 }
 
 func (db *DB) ListCAs() ([]models.CA, error) {
-	rows, err := db.query(`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_ssh_restriction_set_id, default_x509_restriction_set_id, created_at FROM cas`)
+	rows, err := db.query(`SELECT ` + caColumns + ` FROM cas`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var cas []models.CA
 	for rows.Next() {
-		var ca models.CA
-		var pubBlob []byte
-		if err := rows.Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob, &ca.DefaultSSHRestrictionSetID, &ca.DefaultX509RestrictionSetID, &ca.CreatedAt); err != nil {
+		ca, err := scanCA(rows)
+		if err != nil {
 			return nil, err
 		}
-		ca.PublicKey = blobToAuthorizedKey(pubBlob)
-		cas = append(cas, ca)
+		cas = append(cas, *ca)
 	}
 	return cas, rows.Err()
 }
@@ -348,20 +492,18 @@ func (db *DB) SetCADefaultRestrictionSet(caID string, rsType string, rsID *strin
 }
 
 func (db *DB) GetChildren(parentID string) ([]models.CA, error) {
-	rows, err := db.query(`SELECT id, parent_id, label, pkcs11_uri, key_type, public_key, default_ssh_restriction_set_id, default_x509_restriction_set_id, created_at FROM cas WHERE parent_id = ?`, parentID)
+	rows, err := db.query(`SELECT `+caColumns+` FROM cas WHERE parent_id = ?`, parentID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var cas []models.CA
 	for rows.Next() {
-		var ca models.CA
-		var pubBlob []byte
-		if err := rows.Scan(&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob, &ca.DefaultSSHRestrictionSetID, &ca.DefaultX509RestrictionSetID, &ca.CreatedAt); err != nil {
+		ca, err := scanCA(rows)
+		if err != nil {
 			return nil, err
 		}
-		ca.PublicKey = blobToAuthorizedKey(pubBlob)
-		cas = append(cas, ca)
+		cas = append(cas, *ca)
 	}
 	return cas, rows.Err()
 }
@@ -559,8 +701,8 @@ func (db *DB) GetEffectiveRestrictionSet(caID, userSub string, groupIDs []string
 // Restriction set operations
 
 type marshaledRS struct {
-	principals, certTypes, extensions                           string
-	forceEmail, requireReason, denyExt, denyCrit, denyCa        int
+	principals, certTypes, extensions                             string
+	forceEmail, requireReason, denyExt, denyCrit, denyCa          int
 	keyUsages, extKeyUsages, sanTypes, sanPatterns, subjectFields string
 }
 
@@ -570,11 +712,21 @@ func (db *DB) marshalRS(rs *models.RestrictionSet) marshaledRS {
 	c, _ := json.Marshal(rs.AllowedCertTypes)
 	e, _ := json.Marshal(rs.AllowedExtensions)
 	m.principals, m.certTypes, m.extensions = string(p), string(c), string(e)
-	if rs.ForceKeyIDEmail { m.forceEmail = 1 }
-	if rs.RequireReason { m.requireReason = 1 }
-	if rs.DenyExtensions { m.denyExt = 1 }
-	if rs.DenyCriticalOptions { m.denyCrit = 1 }
-	if rs.DenyCA { m.denyCa = 1 }
+	if rs.ForceKeyIDEmail {
+		m.forceEmail = 1
+	}
+	if rs.RequireReason {
+		m.requireReason = 1
+	}
+	if rs.DenyExtensions {
+		m.denyExt = 1
+	}
+	if rs.DenyCriticalOptions {
+		m.denyCrit = 1
+	}
+	if rs.DenyCA {
+		m.denyCa = 1
+	}
 
 	ku, _ := json.Marshal(rs.AllowedKeyUsages)
 	eku, _ := json.Marshal(rs.AllowedExtKeyUsages)
@@ -590,9 +742,13 @@ func (db *DB) CreateRestrictionSet(rs *models.RestrictionSet) error {
 		rs.Type = models.RestrictionSetSSH
 	}
 	var caID interface{} = rs.CAID
-	if rs.CAID == "" { caID = nil }
+	if rs.CAID == "" {
+		caID = nil
+	}
 	denyAll := 0
-	if rs.DenyAll { denyAll = 1 }
+	if rs.DenyAll {
+		denyAll = 1
+	}
 	_, err := db.exec(
 		`INSERT INTO restriction_sets (id, ca_id, name, type, max_validity_secs, deny_all) VALUES (?, ?, ?, ?, ?, ?)`,
 		rs.ID, caID, rs.Name, rs.Type, rs.MaxValiditySecs, denyAll,
@@ -605,7 +761,9 @@ func (db *DB) CreateRestrictionSet(rs *models.RestrictionSet) error {
 
 func (db *DB) UpdateRestrictionSet(rs *models.RestrictionSet) error {
 	denyAll := 0
-	if rs.DenyAll { denyAll = 1 }
+	if rs.DenyAll {
+		denyAll = 1
+	}
 	_, err := db.exec(
 		`UPDATE restriction_sets SET name=?, type=?, max_validity_secs=?, deny_all=? WHERE id=?`,
 		rs.Name, rs.Type, rs.MaxValiditySecs, denyAll, rs.ID,
@@ -650,9 +808,15 @@ func (db *DB) loadSSHDetails(rs *models.RestrictionSet) {
 	rs.RequireReason = requireReason != 0
 	rs.DenyExtensions = denyExt != 0
 	rs.DenyCriticalOptions = denyCrit != 0
-	if principals.Valid { json.Unmarshal([]byte(principals.String), &rs.AllowedPrincipals) }
-	if certTypes.Valid { json.Unmarshal([]byte(certTypes.String), &rs.AllowedCertTypes) }
-	if extensions.Valid { json.Unmarshal([]byte(extensions.String), &rs.AllowedExtensions) }
+	if principals.Valid {
+		json.Unmarshal([]byte(principals.String), &rs.AllowedPrincipals)
+	}
+	if certTypes.Valid {
+		json.Unmarshal([]byte(certTypes.String), &rs.AllowedCertTypes)
+	}
+	if extensions.Valid {
+		json.Unmarshal([]byte(extensions.String), &rs.AllowedExtensions)
+	}
 }
 
 func (db *DB) loadX509Details(rs *models.RestrictionSet) {
@@ -665,11 +829,21 @@ func (db *DB) loadX509Details(rs *models.RestrictionSet) {
 		return
 	}
 	rs.DenyCA = denyCa != 0
-	if keyUsages.Valid { json.Unmarshal([]byte(keyUsages.String), &rs.AllowedKeyUsages) }
-	if extKeyUsages.Valid { json.Unmarshal([]byte(extKeyUsages.String), &rs.AllowedExtKeyUsages) }
-	if sanTypes.Valid { json.Unmarshal([]byte(sanTypes.String), &rs.AllowedSANTypes) }
-	if sanPatterns.Valid { json.Unmarshal([]byte(sanPatterns.String), &rs.AllowedSANPatterns) }
-	if subjectFields.Valid { json.Unmarshal([]byte(subjectFields.String), &rs.AllowedSubjectFields) }
+	if keyUsages.Valid {
+		json.Unmarshal([]byte(keyUsages.String), &rs.AllowedKeyUsages)
+	}
+	if extKeyUsages.Valid {
+		json.Unmarshal([]byte(extKeyUsages.String), &rs.AllowedExtKeyUsages)
+	}
+	if sanTypes.Valid {
+		json.Unmarshal([]byte(sanTypes.String), &rs.AllowedSANTypes)
+	}
+	if sanPatterns.Valid {
+		json.Unmarshal([]byte(sanPatterns.String), &rs.AllowedSANPatterns)
+	}
+	if subjectFields.Valid {
+		json.Unmarshal([]byte(subjectFields.String), &rs.AllowedSubjectFields)
+	}
 }
 
 func (db *DB) GetRestrictionSet(id string) (*models.RestrictionSet, error) {
@@ -679,7 +853,9 @@ func (db *DB) GetRestrictionSet(id string) (*models.RestrictionSet, error) {
 	err := db.queryRow(
 		`SELECT id, ca_id, name, type, max_validity_secs, deny_all FROM restriction_sets WHERE id = ?`, id,
 	).Scan(&rs.ID, &caID, &rs.Name, &rs.Type, &rs.MaxValiditySecs, &denyAll)
-	if caID.Valid { rs.CAID = caID.String }
+	if caID.Valid {
+		rs.CAID = caID.String
+	}
 	rs.DenyAll = denyAll != 0
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -721,7 +897,9 @@ func (db *DB) scanRestrictionSets(rows *sql.Rows, err error) ([]models.Restricti
 		if err := rows.Scan(&rs.ID, &caID, &rs.Name, &rs.Type, &rs.MaxValiditySecs, &denyAll); err != nil {
 			return nil, err
 		}
-		if caID.Valid { rs.CAID = caID.String }
+		if caID.Valid {
+			rs.CAID = caID.String
+		}
 		rs.DenyAll = denyAll != 0
 		if rs.Type == "" {
 			rs.Type = models.RestrictionSetSSH
@@ -834,9 +1012,15 @@ func (db *DB) FindExistingCertificate(caID, publicKey string) (*models.AuditLogE
 	if err != nil {
 		return nil, err
 	}
-	if principals.Valid { json.Unmarshal([]byte(principals.String), &e.Principals) }
-	if extensions.Valid { json.Unmarshal([]byte(extensions.String), &e.Extensions) }
-	if critOpts.Valid { json.Unmarshal([]byte(critOpts.String), &e.CriticalOptions) }
+	if principals.Valid {
+		json.Unmarshal([]byte(principals.String), &e.Principals)
+	}
+	if extensions.Valid {
+		json.Unmarshal([]byte(extensions.String), &e.Extensions)
+	}
+	if critOpts.Valid {
+		json.Unmarshal([]byte(critOpts.String), &e.CriticalOptions)
+	}
 	return &e, nil
 }
 
@@ -878,9 +1062,15 @@ func (db *DB) ListAuditLog(caID string, limit, offset int) ([]models.AuditLogEnt
 		}
 		e.PublicKey = blobToAuthorizedKey(pubBlob)
 		e.Certificate = certBlobToAuthorizedKey(certBlob)
-		if principals.Valid { json.Unmarshal([]byte(principals.String), &e.Principals) }
-		if extensions.Valid { json.Unmarshal([]byte(extensions.String), &e.Extensions) }
-		if critOpts.Valid { json.Unmarshal([]byte(critOpts.String), &e.CriticalOptions) }
+		if principals.Valid {
+			json.Unmarshal([]byte(principals.String), &e.Principals)
+		}
+		if extensions.Valid {
+			json.Unmarshal([]byte(extensions.String), &e.Extensions)
+		}
+		if critOpts.Valid {
+			json.Unmarshal([]byte(critOpts.String), &e.CriticalOptions)
+		}
 		entries = append(entries, e)
 	}
 	return entries, total, rows.Err()

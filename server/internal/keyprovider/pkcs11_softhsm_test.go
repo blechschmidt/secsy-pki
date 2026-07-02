@@ -133,6 +133,23 @@ func TestPKCS11FindNotFound(t *testing.T) {
 	}
 }
 
+// TestPKCS11GenerateDuplicateLabelRejected verifies the Provider contract that
+// generating a second key with an existing label fails, rather than leaving the
+// token with ambiguous duplicate-labeled objects (whose private/public halves
+// can resolve to different key pairs and produce unverifiable signatures).
+func TestPKCS11GenerateDuplicateLabelRejected(t *testing.T) {
+	ctx := context.Background()
+	p := pkcs11TestProvider(t)
+
+	label := uniqueLabel(t, "dup")
+	if _, err := p.GenerateKey(ctx, KeySpec{Label: label, KeyType: KeyTypeECDSAP256}); err != nil {
+		t.Fatalf("first GenerateKey: %v", err)
+	}
+	if _, err := p.GenerateKey(ctx, KeySpec{Label: label, KeyType: KeyTypeECDSAP256}); err == nil {
+		t.Fatal("expected duplicate-label GenerateKey to fail, got nil error")
+	}
+}
+
 // TestPKCS11RawSignVerify exercises the raw crypto.Signer contract against the
 // HSM for a non-Ed25519 key (digest signing), independent of the SSH layer.
 func TestPKCS11RawSignVerify(t *testing.T) {
