@@ -123,7 +123,15 @@ func (s *CTStatus) succeededLogNames() []string {
 // poison extension, (2) submits it to the configured logs, (3) enforces the
 // min-SCT / fail-open policy, and (4) HSM-signs the final certificate with the
 // SCT list extension in place of the poison.
-func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA *models.CA, issuerCert *x509.Certificate, base pki.LeafCertRequest, profile Profile) ([]byte, *CTStatus, error) {
+func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA *models.CA, issuerCert *x509.Certificate, base pki.LeafCertRequest, profile Profile, requestedBy string) ([]byte, *CTStatus, error) {
+	// Fail-closed pre-issuance lint gate: run CA/Browser-Forum Baseline
+	// Requirements checks on the to-be-signed template BEFORE any HSM signature.
+	// A violating template is rejected here — neither the precertificate nor the
+	// final certificate is ever signed.
+	if err := m.lintLeaf(base, profile, issuerCA, requestedBy); err != nil {
+		return nil, nil, err
+	}
+
 	cfg := profile.CT
 	if cfg == nil || !cfg.Enabled || ctSubmitter == nil {
 		der, err := pki.CreateLeafCertificate(signer, issuerCert, base)

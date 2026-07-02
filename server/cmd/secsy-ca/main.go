@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/certlint"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
@@ -55,6 +56,12 @@ func run(args []string) error {
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
+	}
+
+	// Certificate linting is fully offline (no database or key provider): dispatch
+	// it before opening either, so an operator can lint a certificate anywhere.
+	if command == "lint" {
+		return cmdLint(cfg, cmdArgs)
 	}
 
 	db, err := database.New(cfg.Database.Driver, cfg.Database.DSN)
@@ -148,6 +155,7 @@ Commands:
   expiring            List certificates by remaining validity (expiry monitor)
   monitor-run         Run one expiry-monitor scan (optionally auto-renewing)
   profiles            List the available certificate profiles
+  lint                Lint a certificate against a profile's policy (CA/B BR)
   inventory           List keys held by the key provider (HSM/software)
   ceremony            Run an M-of-N confirmed root/intermediate key ceremony
   rotate-intermediate Rotate an intermediate CA signing key (dual-chain overlap)
@@ -519,6 +527,115 @@ func cmdProfiles() error {
 			strings.Join(p.KeyUsages, "+"), strings.Join(p.ExtKeyUsages, "+"), p.Description)
 	}
 	return tw.Flush()
+}
+
+// cmdLint runs the pre-issuance lint checks against an existing certificate for
+// ad-hoc checking. It parses a PEM certificate (from a file or stdin), resolves
+// the lint policy from an optional named profile plus flag overrides, prints the
+// findings, and exits non-zero when an enforce-mode check fails.
+func cmdLint(cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("lint", flag.ContinueOnError)
+	profileName := fs.String("profile", "", "apply the named profile's lint policy (default: baseline)")
+	public := fs.Bool("public", false, "apply CA/Browser-Forum public-trust rules (overrides profile)")
+	mode := fs.String("mode", "", "override the enforcement mode for all checks: enforce|warn")
+	maxDays := fs.Int("max-validity-days", 0, "cap the validity period in days (0 = from profile)")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: secsy-ca lint [flags] <cert.pem>   (use - to read from stdin)")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	path := fs.Arg(0)
+	if path == "" {
+		fs.Usage()
+		return fmt.Errorf("a certificate path is required (use - for stdin)")
+	}
+
+	certPEM, err := readInput(path)
+	if err != nil {
+		return fmt.Errorf("reading certificate: %w", err)
+	}
+	cert, err := pki.ParseCertificatePEM(certPEM)
+	if err != nil {
+		return fmt.Errorf("parsing certificate: %w", err)
+	}
+
+	// Resolve the policy: start from the named profile (honoring operator-defined
+	// profiles from config), then apply flag overrides.
+	var policy certlint.Policy
+	if *profileName != "" {
+		if err := installConfigProfiles(cfg); err != nil {
+			return fmt.Errorf("loading custom profiles: %w", err)
+		}
+		prof, err := ca.LookupProfile(*profileName)
+		if err != nil {
+			return err
+		}
+		policy = prof.LintPolicy()
+	}
+	if *public {
+		policy.Public = true
+	}
+	if *mode != "" {
+		if *mode != string(certlint.ModeEnforce) && *mode != string(certlint.ModeWarn) {
+			return fmt.Errorf("invalid -mode %q (want enforce or warn)", *mode)
+		}
+		policy.Mode = certlint.Mode(*mode)
+	}
+	if *maxDays > 0 {
+		policy.MaxValidity = time.Duration(*maxDays) * 24 * time.Hour
+	}
+
+	res := certlint.Lint(cert, policy)
+
+	effMode := policy.Mode
+	if effMode == "" {
+		effMode = certlint.ModeEnforce
+	}
+	fmt.Printf("Certificate: subject=%q serial=%s not_after=%s\n",
+		cert.Subject.String(), cert.SerialNumber, cert.NotAfter.UTC().Format(time.RFC3339))
+	fmt.Printf("Policy: mode=%s public=%t max_validity=%s\n", effMode, policy.Public, policy.MaxValidity)
+	if res.OK() {
+		fmt.Println("Result: PASS (no findings)")
+		return nil
+	}
+	for _, f := range res.Findings {
+		fmt.Printf("  [%s] %s: %s\n", strings.ToUpper(string(f.Mode)), f.Code, f.Description)
+	}
+	fmt.Printf("Result: %s\n", res.Summary())
+	if res.HasErrors() {
+		return fmt.Errorf("lint failed: %d enforce-mode finding(s)", len(res.Errors()))
+	}
+	return nil
+}
+
+// installConfigProfiles registers the operator-defined certificate profiles from
+// config so their lint policies are available offline. Certificate Transparency
+// is intentionally ignored here (it needs a submitter and is irrelevant to
+// linting).
+func installConfigProfiles(cfg *config.Config) error {
+	if len(cfg.Profiles) == 0 {
+		return nil
+	}
+	profiles := make([]ca.Profile, 0, len(cfg.Profiles))
+	for _, p := range cfg.Profiles {
+		profiles = append(profiles, ca.Profile{
+			Name:                p.Name,
+			Description:         p.Description,
+			KeyUsages:           p.KeyUsages,
+			ExtKeyUsages:        p.ExtKeyUsages,
+			DefaultValidityDays: p.DefaultValidityDays,
+			MaxValidityDays:     p.MaxValidityDays,
+			Lint: &ca.LintConfig{
+				Disabled:  p.Lint.Disabled,
+				Mode:      p.Lint.Mode,
+				Public:    p.Lint.Public,
+				Overrides: p.Lint.Overrides,
+			},
+		})
+	}
+	return ca.SetCustomProfiles(profiles)
 }
 
 // daysToDuration converts validity-in-days to a Duration (0 = profile default).

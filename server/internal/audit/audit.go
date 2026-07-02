@@ -43,6 +43,10 @@ const (
 	ActionCertIssue           = "cert.issue"
 	ActionCertRenew           = "cert.renew"
 	ActionCertRevoke          = "cert.revoke"
+	// ActionCertLint records the outcome of the pre-issuance lint gate when it
+	// produces findings: ResultError when an enforce-mode check blocked signing
+	// (fail-closed), ResultSuccess when only warnings were emitted.
+	ActionCertLint = "cert.lint"
 	// ActionCertAutoRenew records a certificate reissued automatically by the
 	// expiry monitor (actor "monitor"), ahead of its expiry.
 	ActionCertAutoRenew = "cert.auto_renew"

@@ -405,6 +405,25 @@ type ProfileConfig struct {
 	// CT is the profile's Certificate Transparency policy (disabled unless
 	// ct.enabled is true).
 	CT ProfileCTConfig `yaml:"ct"`
+	// Lint is the profile's pre-issuance lint policy (CA/Browser Forum Baseline
+	// Requirements gate). Linting is on by default; see ProfileLintConfig.
+	Lint ProfileLintConfig `yaml:"lint"`
+}
+
+// ProfileLintConfig is a profile's pre-issuance certificate-linting policy. The
+// linter runs CA/Browser-Forum structural and policy checks on every
+// to-be-signed certificate before it is signed and blocks issuance on an
+// enforce-mode violation (fail-closed).
+type ProfileLintConfig struct {
+	// Disabled turns the lint gate off for the profile (discouraged).
+	Disabled bool `yaml:"disabled"`
+	// Mode is the default enforcement mode: "enforce" (default) or "warn".
+	Mode string `yaml:"mode"`
+	// Public applies public-trust rules (SAN required, CN in SAN, no internal
+	// names / reserved IPs, 398-day TLS cap).
+	Public bool `yaml:"public"`
+	// Overrides sets the mode ("enforce"|"warn") for individual checks by code.
+	Overrides map[string]string `yaml:"overrides"`
 }
 
 // SecretConfig configures the HSM-backed envelope-encryption feature. KEKLabel

@@ -39,6 +39,20 @@ var (
 		"Certificate lifecycle operations, partitioned by operation and result.",
 		"operation", "result")
 
+	// Pre-issuance certificate linting (CA/Browser Forum Baseline Requirements
+	// gate). CertificateLints counts every lint run by outcome: "result" is
+	// pass|warn|fail (fail = an enforce-mode check blocked signing).
+	// CertificateLintFindings counts individual findings by check "code" and
+	// "mode" (enforce|warn) for fine-grained alerting on policy violations.
+	CertificateLints = NewCounter(Default,
+		"secsy_certificate_lints_total",
+		"Pre-issuance certificate lint runs, partitioned by outcome (pass|warn|fail).",
+		"result")
+	CertificateLintFindings = NewCounter(Default,
+		"secsy_certificate_lint_findings_total",
+		"Pre-issuance certificate lint findings, partitioned by check code and mode.",
+		"code", "mode")
+
 	// Revocation-data serving.
 	OCSPRequests = NewCounter(Default,
 		"secsy_ocsp_requests_total",

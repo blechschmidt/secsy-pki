@@ -128,6 +128,12 @@ func main() {
 					Retries:        p.CT.Retries,
 				}
 			}
+			prof.Lint = &ca.LintConfig{
+				Disabled:  p.Lint.Disabled,
+				Mode:      p.Lint.Mode,
+				Public:    p.Lint.Public,
+				Overrides: p.Lint.Overrides,
+			}
 			profiles = append(profiles, prof)
 		}
 		if err := ca.SetCustomProfiles(profiles); err != nil {

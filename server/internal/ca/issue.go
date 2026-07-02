@@ -145,7 +145,7 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 		IPAddresses:    csr.IPAddresses,
 		EmailAddresses: csr.EmailAddresses,
 		URIs:           uris,
-	}, profile)
+	}, profile, spec.RequestedBy)
 	if err != nil {
 		return nil, fmt.Errorf("creating certificate: %w", err)
 	}
@@ -304,7 +304,7 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (*IssueR
 		IPAddresses:    ipAddresses,
 		EmailAddresses: emails,
 		URIs:           uris,
-	}, profile)
+	}, profile, spec.RequestedBy)
 	if err != nil {
 		return nil, fmt.Errorf("creating renewed certificate: %w", err)
 	}

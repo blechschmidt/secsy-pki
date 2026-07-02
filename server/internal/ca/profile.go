@@ -35,6 +35,9 @@ type Profile struct {
 	// CT is the profile's Certificate Transparency policy. Nil (or disabled)
 	// means precertificate submission and SCT embedding are skipped.
 	CT *CTConfig `json:"ct,omitempty"`
+	// Lint is the profile's pre-issuance lint policy. Nil applies the default
+	// gate (enforce mode, internal-name rules); see LintConfig.
+	Lint *LintConfig `json:"lint,omitempty"`
 }
 
 // day is a convenience unit for profile validity periods.

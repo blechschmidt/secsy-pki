@@ -105,6 +105,23 @@ profiles: []
 #                             # true = issue anyway with whatever SCTs were obtained
 #       timeout_seconds: 5    # per-log attempt timeout
 #       retries: 2            # extra attempts per log after the first
+#   - name: public-tls
+#     description: "Publicly-trusted TLS server certificate (CA/B BR enforced)"
+#     key_usages: [digitalSignature, keyEncipherment]
+#     ext_key_usages: [serverAuth]
+#     default_validity_days: 90
+#     max_validity_days: 397
+#     # lint configures the pre-issuance lint gate (CA/Browser Forum Baseline
+#     # Requirements). It runs on every to-be-signed certificate BEFORE the HSM
+#     # signs it and is fail-closed by default: an enforce-mode violation aborts
+#     # issuance. Linting is on for every profile; the block below is optional.
+#     lint:
+#       disabled: false        # true turns the gate off for this profile (discouraged)
+#       mode: enforce          # default mode for all checks: enforce | warn
+#       public: true           # apply public-trust rules: SAN required, CN in SAN,
+#                              # no internal names / reserved IPs, 398-day TLS cap
+#       overrides:             # per-check mode overrides, keyed by check code
+#         cn_in_san: warn
 
 # certificate_transparency registers the RFC 6962 CT logs available to issuance
 # profiles (referenced by name from a profile's `ct.logs`). Supplying a log's
