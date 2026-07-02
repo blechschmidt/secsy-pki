@@ -86,3 +86,46 @@ jobs:
       # token is not safe for concurrent access). Non-zero exit fails the build.
       - name: Run integration test suite
         run: ./scripts/integration-test.sh
+
+  fuzz-smoke:
+    name: Fuzz smoke (parsers & crypto boundaries)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # The fuzz targets exercise untrusted-input parsing surfaces (CSR/DER,
+    # ACME JOSE/JWS, the secret envelope decrypt/unwrap path, and OCSP/cert
+    # parsing). Every target runs entirely in software — the secret decrypt
+    # path uses an in-memory RSA wrapper — so this job needs no SoftHSM and
+    # runs independently of the integration suite.
+    env:
+      GOTOOLCHAIN: auto
+      # Bounded per-target budget for CI. This is a smoke run to catch panics,
+      # unbounded allocations, and nil-derefs on the seed corpora and quick
+      # mutations — not an exhaustive campaign. Run longer locally with
+      # `FUZZTIME=10m server/scripts/fuzz.sh`.
+      FUZZTIME: 20s
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Download Go modules
+        working-directory: server
+        run: go mod download
+
+      # First run the fuzz seed corpora as ordinary unit tests (no -fuzz): fast,
+      # deterministic, and it fails the build if any committed regression seed
+      # reproduces. Then run each target's bounded mutation smoke pass.
+      - name: Run fuzz seed corpora
+        working-directory: server
+        run: go test ./internal/pki/ ./internal/ca/ ./internal/acme/ ./internal/secret/
+
+      - name: Fuzz smoke run
+        working-directory: server
+        run: ./scripts/fuzz.sh

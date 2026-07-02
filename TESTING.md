@@ -165,12 +165,39 @@ DR_KEEP=1 ./scripts/dr-drill.sh  # keep the workspace to inspect artifacts
 See [Key ceremony, backup & DR](docs/key-ceremony.md) for the ceremony checklist
 and recovery runbook.
 
+Fuzz tests (native `go test -fuzz` over the untrusted-input parsing surfaces —
+CSR/DER decoding, ACME JOSE/JWS parsing, the secret envelope decrypt/unwrap
+path, and OCSP/certificate parsing). One target runs per invocation, so a helper
+enumerates them all:
+
+```bash
+cd server
+./scripts/fuzz.sh                 # 30s per target (local default)
+FUZZTIME=10m ./scripts/fuzz.sh    # long local campaign
+./scripts/fuzz.sh ./internal/secret/ FuzzEnvelopeOpen   # a single target
+```
+
+Replaying just the seed corpora (fast, deterministic, reproduces committed
+crashers) is a plain test run:
+
+```bash
+go test ./internal/pki/ ./internal/ca/ ./internal/acme/ ./internal/secret/
+```
+
+See [Fuzz & property testing](docs/fuzzing.md) for the full target inventory and
+the workflow for handling a discovered crash.
+
 ## CI
 
 The GitHub Actions workflow (`.github/workflows/test.yaml`) installs
 `softhsm2` and `opensc`, initializes the same `secsy-pki-root` token, runs unit
 and integration tests, and builds all binaries. Keeping local defaults aligned
 with CI means "works on my machine" and "works in CI" stay in sync.
+
+The enterprise workflow (`.github/workflows/enterprise-ci.yaml`) additionally
+runs a `fuzz-smoke` job: it replays the fuzz seed corpora as unit tests and then
+runs each fuzz target for a bounded `FUZZTIME`. It needs no SoftHSM (all targets
+run in software). See [Fuzz & property testing](docs/fuzzing.md).
 
 ## Troubleshooting
 
