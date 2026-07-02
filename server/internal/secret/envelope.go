@@ -92,6 +92,12 @@ type Envelope struct {
 	// into the AAD at encryption time and must be supplied again to decrypt.
 	// The context itself is deliberately not stored.
 	ContextBound bool `json:"context_bound,omitempty"`
+	// Escrow, when present, carries an M-of-N key-escrow block: the DEK split
+	// across recovery-agent-wrapped Shamir shares, so a quorum of recovery agents
+	// can reconstruct it under dual control (see escrow.go). It is bound into the
+	// GCM AAD so it cannot be tampered with or substituted. It is optional;
+	// envelopes without escrow are unaffected.
+	Escrow *EscrowBlock `json:"escrow,omitempty"`
 }
 
 // wrapper is the minimal DEK wrap/unwrap capability the envelope layer needs.
@@ -113,8 +119,11 @@ type wrapper interface {
 
 // seal performs the envelope encryption given a wrapper. context is optional
 // additional-authenticated-data supplied by the caller (an "encryption
-// context"); when non-empty it must be supplied identically to open.
-func seal(w wrapper, plaintext, context []byte) (*Envelope, error) {
+// context"); when non-empty it must be supplied identically to open. escrow is
+// an optional M-of-N key-escrow policy; when non-nil the DEK is additionally
+// split across recovery-agent-wrapped Shamir shares and the resulting escrow
+// block is bound into the AAD.
+func seal(w wrapper, plaintext, context []byte, escrow *EscrowPolicy) (*Envelope, error) {
 	dek := make([]byte, dekSize)
 	if _, err := io.ReadFull(rand.Reader, dek); err != nil {
 		return nil, fmt.Errorf("secret: generating data key: %w", err)
@@ -158,6 +167,16 @@ func seal(w wrapper, plaintext, context []byte) (*Envelope, error) {
 		ContextBound: len(context) > 0,
 	}
 
+	// Produce the escrow block (if configured) from the same DEK before sealing,
+	// so it is finalized and can be bound into the authenticated data.
+	if escrow != nil {
+		escrowBlock, err := escrow.sealEscrow(dek)
+		if err != nil {
+			return nil, err
+		}
+		env.Escrow = escrowBlock
+	}
+
 	aad := env.aad(context)
 	env.Ciphertext = gcm.Seal(nil, nonce, plaintext, aad)
 
@@ -182,10 +201,17 @@ func open(w wrapper, env *Envelope, context []byte) ([]byte, error) {
 		return nil, fmt.Errorf("secret: unwrapping data key failed")
 	}
 	defer zero(dek)
-	if len(dek) != dekSize {
-		return nil, fmt.Errorf("secret: unwrapped data key has wrong length")
-	}
+	return openWithDEK(env, dek, context)
+}
 
+// openWithDEK performs the AES-GCM decryption of an envelope given an
+// already-recovered DEK. It is shared by the normal KEK-unwrap path (open) and
+// the escrow-recovery path (RecoveryService.Recover), so both enforce the same
+// DEK-length, nonce, and AAD checks. The DEK is the caller's to zeroize.
+func openWithDEK(env *Envelope, dek, context []byte) ([]byte, error) {
+	if len(dek) != dekSize {
+		return nil, fmt.Errorf("secret: data key has wrong length")
+	}
 	block, err := aes.NewCipher(dek)
 	if err != nil {
 		return nil, fmt.Errorf("secret: init cipher: %w", err)
@@ -225,6 +251,11 @@ func (e *Envelope) validate() error {
 	if len(e.WrappedDEK) == 0 || len(e.Nonce) == 0 || len(e.Ciphertext) == 0 {
 		return fmt.Errorf("secret: envelope is missing ciphertext material")
 	}
+	if e.Escrow != nil {
+		if err := e.Escrow.validate(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -249,6 +280,13 @@ func (e *Envelope) aad(context []byte) []byte {
 	writeLP([]byte(e.DataAlg))
 	writeLP([]byte(e.KEKLabel))
 	writeLP(context)
+	// Bind the escrow block (if any) so recovery agents and shares cannot be
+	// tampered with, substituted, or stripped without invalidating the GCM tag.
+	// Envelopes without escrow append nothing, so the AAD of pre-escrow
+	// ciphertext is byte-for-byte unchanged and remains decryptable.
+	if e.Escrow != nil {
+		writeLP(e.Escrow.digest())
+	}
 	return buf.Bytes()
 }
 

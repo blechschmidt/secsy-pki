@@ -61,6 +61,16 @@ const (
 	ActionCertSignX509      = "cert.sign_x509"
 	ActionSecretEncrypt     = "secret.encrypt"
 	ActionSecretDecrypt     = "secret.decrypt"
+	// ActionSecretEscrow records that a secret was sealed with an M-of-N key
+	// escrow (the DEK Shamir-split across recovery agents). The target is the KEK
+	// label; the detail records the threshold, agent count, and agent IDs.
+	ActionSecretEscrow = "secret.escrow"
+	// ActionSecretRecover records an escrow recovery ceremony: reconstructing a
+	// data key from a quorum of recovery agents and decrypting the secret. The
+	// detail records the participating agent IDs and the threshold met. Recovery
+	// is a privileged, dual-control break-glass operation, logged distinctly from
+	// routine secret.decrypt so it stands out in the audit trail.
+	ActionSecretRecover = "secret.recover"
 	ActionPermissionGrant   = "permission.grant"
 	ActionPermissionRevoke  = "permission.revoke"
 	ActionGroupCreate       = "group.create"

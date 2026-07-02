@@ -10,18 +10,21 @@ func TestRoleCapabilities(t *testing.T) {
 	}{
 		{
 			role:   RoleAdmin,
-			can:    []Action{ActionIssue, ActionReadAudit, ActionManageCA, ActionManageRBAC, ActionManageHSM, ActionEncrypt, ActionDecrypt, ActionConfigureCA},
+			can:    []Action{ActionIssue, ActionReadAudit, ActionManageCA, ActionManageRBAC, ActionManageHSM, ActionEncrypt, ActionDecrypt, ActionConfigureCA, ActionManageEscrow, ActionRecover},
 			cannot: nil,
 		},
 		{
-			role:   RoleIssuer,
-			can:    []Action{ActionIssue, ActionReadAudit, ActionEncrypt, ActionDecrypt},
-			cannot: []Action{ActionManageCA, ActionManageRBAC, ActionManageHSM, ActionConfigureCA},
+			role: RoleIssuer,
+			can:  []Action{ActionIssue, ActionReadAudit, ActionEncrypt, ActionDecrypt},
+			// Escrow administration and break-glass recovery are admin-only: an
+			// issuer must not by itself be able to configure escrow or perform a
+			// recovery ceremony.
+			cannot: []Action{ActionManageCA, ActionManageRBAC, ActionManageHSM, ActionConfigureCA, ActionManageEscrow, ActionRecover},
 		},
 		{
 			role:   RoleAuditor,
 			can:    []Action{ActionReadAudit},
-			cannot: []Action{ActionIssue, ActionManageCA, ActionManageRBAC, ActionManageHSM, ActionEncrypt, ActionDecrypt},
+			cannot: []Action{ActionIssue, ActionManageCA, ActionManageRBAC, ActionManageHSM, ActionEncrypt, ActionDecrypt, ActionManageEscrow, ActionRecover},
 		},
 	}
 	for _, tc := range cases {

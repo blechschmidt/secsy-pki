@@ -261,3 +261,24 @@ rate_limit:
     # max_in_flight: 0           # 0 => derived from pkcs11.session_pool_size
     max_queue: 64                # requests allowed to wait before shedding (503)
     acquire_timeout_ms: 5000     # max wait for a slot before shedding
+
+# --- HSM-backed secret encryption (envelope encryption) -----------------------
+# Encrypt passwords and small secrets under a KEK held in the HSM. See
+# docs/password-encryption.md. When secret.kek_label is unset, the /api/secret/*
+# endpoints are disabled.
+# secret:
+#   kek_label: "secsy-kek"       # RSA KEK label (create with `secsy-secret init-kek`)
+#   # Optional M-of-N key escrow: recover a data key under dual control if the
+#   # original requester loses access. The DEK is Shamir-split across the
+#   # recovery agents; any `threshold` of them can reconstruct it, fewer cannot.
+#   escrow:
+#     enabled: true
+#     threshold: 2               # quorum M (>= 2 for dual control, <= number of agents)
+#     agents:                    # N recovery agents
+#       - id: "alice"
+#         key_label: "agent-alice"        # RSA key in the provider/HSM
+#       - id: "bob"
+#         key_label: "agent-bob"
+#       - id: "carol"
+#         # public_key_file: "carol.pub"  # or an externally-held public key (wrap-only)
+#         key_label: "agent-carol"

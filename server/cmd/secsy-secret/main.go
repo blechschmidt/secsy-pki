@@ -26,7 +26,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
@@ -55,6 +57,15 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+
+	// The audit subcommand only reads the tamper-evident event log; it never
+	// touches key material, so dispatch it before constructing the key provider.
+	// This lets an auditor inspect or verify escrow/recovery events without the
+	// HSM being present or unlocked.
+	if command == "audit" {
+		return cmdSecretAudit(cfg, cmdArgs)
+	}
+
 	provider, err := buildProvider(cfg)
 	if err != nil {
 		return fmt.Errorf("initializing key provider: %w", err)
@@ -70,6 +81,12 @@ func run(args []string) error {
 		return cmdDecrypt(cfg, provider, cmdArgs)
 	case "kek-info":
 		return cmdKEKInfo(cfg, provider, cmdArgs)
+	case "escrow-config":
+		return cmdEscrowConfig(cfg, provider, cmdArgs)
+	case "escrow-init-agent":
+		return cmdEscrowInitAgent(cfg, provider, cmdArgs)
+	case "recover":
+		return cmdRecover(cfg, provider, cmdArgs)
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -86,10 +103,15 @@ Usage:
   secsy-secret [-config config.yaml] <command> [flags]
 
 Commands:
-  init-kek   Generate the RSA key-encryption key (KEK) on the configured provider
-  encrypt    Encrypt stdin or a file into a ciphertext envelope (JSON)
-  decrypt    Decrypt a ciphertext envelope back to plaintext
-  kek-info   Show metadata about the configured KEK
+  init-kek           Generate the RSA key-encryption key (KEK) on the provider
+  encrypt            Encrypt stdin or a file into a ciphertext envelope (JSON)
+                     (add -escrow to also wrap the data key to recovery agents)
+  decrypt            Decrypt a ciphertext envelope back to plaintext
+  kek-info           Show metadata about the configured KEK
+  escrow-config      Show/verify the M-of-N key-escrow configuration
+  escrow-init-agent  Generate an RSA recovery-agent key on the provider
+  recover            Recover plaintext under a quorum of recovery agents
+  audit              Show/verify escrow and recovery audit-log events
 
 Run "secsy-secret <command> -h" for command-specific flags.
 `)
@@ -154,6 +176,8 @@ func cmdEncrypt(cfg *config.Config, provider keyprovider.Provider, args []string
 	in := fs.String("in", "-", "input plaintext file, or '-' for stdin")
 	out := fs.String("out", "-", "output envelope file, or '-' for stdout")
 	context_ := fs.String("context", "", "optional encryption context bound to the ciphertext (required verbatim to decrypt)")
+	escrow := fs.Bool("escrow", false, "additionally escrow the data key to the configured M-of-N recovery agents")
+	operator := fs.String("operator", "", "operator identity recorded in the escrow audit event (default: OS user)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -172,11 +196,47 @@ func cmdEncrypt(cfg *config.Config, provider keyprovider.Provider, args []string
 	}
 	defer zero(plaintext)
 
-	blob, err := svc.EncryptToJSON(plaintext, []byte(*context_))
+	if !*escrow {
+		blob, err := svc.EncryptToJSON(plaintext, []byte(*context_))
+		if err != nil {
+			return err
+		}
+		return writeOutput(*out, append(blob, '\n'))
+	}
+
+	// Escrow path: build the M-of-N policy, seal with recovery shares, and record
+	// the escrow to the tamper-evident audit log.
+	policy, err := escrowPolicyFromConfig(context.Background(), cfg, provider)
 	if err != nil {
 		return err
 	}
+	db, err := openAuditDB(cfg)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	blob, err := svc.EncryptWithEscrowToJSON(plaintext, []byte(*context_), policy)
+	if err != nil {
+		return err
+	}
+	detail := fmt.Sprintf("threshold=%d agents=[%s]", policy.Threshold(), agentIDsCSV(policy))
+	if err := recordEscrowEvent(db, operatorActor(*operator), audit.ActionSecretEscrow, kek, audit.ResultSuccess, detail); err != nil {
+		return fmt.Errorf("secret was escrow-encrypted but recording the audit event failed: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "Escrowed to %d recovery agent(s), %d-of-%d quorum required for recovery.\n",
+		len(policy.Agents()), policy.Threshold(), len(policy.Agents()))
 	return writeOutput(*out, append(blob, '\n'))
+}
+
+// agentIDsCSV renders a policy's recovery-agent IDs as a comma-separated string
+// for the audit detail.
+func agentIDsCSV(policy *secret.EscrowPolicy) string {
+	ids := make([]string, 0, len(policy.Agents()))
+	for _, a := range policy.Agents() {
+		ids = append(ids, a.ID)
+	}
+	return strings.Join(ids, ",")
 }
 
 func cmdDecrypt(cfg *config.Config, provider keyprovider.Provider, args []string) error {

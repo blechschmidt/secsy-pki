@@ -568,6 +568,44 @@ type ProfileLintConfig struct {
 // When empty, the secret encrypt/decrypt API endpoints are disabled.
 type SecretConfig struct {
 	KEKLabel string `yaml:"kek_label"`
+	// Escrow optionally configures M-of-N key escrow so data keys can be
+	// recovered under dual control when the original requester loses access.
+	Escrow EscrowConfig `yaml:"escrow"`
+}
+
+// EscrowConfig configures optional M-of-N key escrow for the envelope layer. At
+// encryption time (when Enabled and the operator opts in) each data key is
+// Shamir-split across the recovery agents so that any Threshold of them can
+// reconstruct it during a dual-control recovery ceremony, while fewer than
+// Threshold learn nothing.
+type EscrowConfig struct {
+	// Enabled turns the escrow feature on. When false the escrow policy is
+	// ignored and no recovery shares are produced.
+	Enabled bool `yaml:"enabled"`
+	// Threshold is the quorum M of recovery agents required to reconstruct a data
+	// key. It must be at least 2 (dual control) and at most len(Agents).
+	Threshold int `yaml:"threshold"`
+	// Agents is the set of N recovery agents. Each must resolve to an RSA public
+	// key, either from the key provider (KeyLabel) or an inline/file PEM.
+	Agents []RecoveryAgentConfig `yaml:"agents"`
+}
+
+// RecoveryAgentConfig describes one escrow recovery agent. Provide a KeyLabel to
+// use an RSA key held by the key provider (recommended: its private half stays
+// in the HSM and participates in recovery on-device), and/or a PublicKey /
+// PublicKeyFile to wrap to an externally-held key.
+type RecoveryAgentConfig struct {
+	// ID is the stable, human-meaningful identifier of the recovery agent.
+	ID string `yaml:"id"`
+	// KeyLabel is the agent's key label in the key provider, required for the
+	// agent to participate in a recovery ceremony through this provider.
+	KeyLabel string `yaml:"key_label"`
+	// PublicKey is an inline PEM-encoded RSA public key (SPKI or PKCS#1). When
+	// set it overrides the provider lookup for the wrap step.
+	PublicKey string `yaml:"public_key"`
+	// PublicKeyFile is a path to a PEM-encoded RSA public key, an alternative to
+	// PublicKey.
+	PublicKeyFile string `yaml:"public_key_file"`
 }
 
 type ServerConfig struct {
@@ -869,6 +907,46 @@ func (c *Config) validateEnrollment() error {
 			if s.Secret == "" {
 				return fmt.Errorf("cmp.secrets[%d]: secret must not be empty", i)
 			}
+		}
+	}
+	if err := c.Secret.Escrow.validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validate checks an escrow configuration for internal consistency. It enforces
+// dual control (threshold >= 2), a threshold no greater than the number of
+// agents, unique agent IDs and key labels, and that every agent resolves to a
+// public-key source.
+func (e *EscrowConfig) validate() error {
+	if !e.Enabled {
+		return nil
+	}
+	if e.Threshold < 2 {
+		return fmt.Errorf("secret.escrow.threshold must be at least 2 for dual control (got %d)", e.Threshold)
+	}
+	if len(e.Agents) < e.Threshold {
+		return fmt.Errorf("secret.escrow: %d recovery agent(s) configured but threshold is %d", len(e.Agents), e.Threshold)
+	}
+	seenID := make(map[string]bool, len(e.Agents))
+	seenLabel := make(map[string]bool, len(e.Agents))
+	for i, a := range e.Agents {
+		if a.ID == "" {
+			return fmt.Errorf("secret.escrow.agents[%d]: id must not be empty", i)
+		}
+		if seenID[a.ID] {
+			return fmt.Errorf("secret.escrow.agents: duplicate id %q", a.ID)
+		}
+		seenID[a.ID] = true
+		if a.KeyLabel == "" && a.PublicKey == "" && a.PublicKeyFile == "" {
+			return fmt.Errorf("secret.escrow.agents[%q]: set key_label, public_key, or public_key_file", a.ID)
+		}
+		if a.KeyLabel != "" {
+			if seenLabel[a.KeyLabel] {
+				return fmt.Errorf("secret.escrow.agents: duplicate key_label %q", a.KeyLabel)
+			}
+			seenLabel[a.KeyLabel] = true
 		}
 	}
 	return nil

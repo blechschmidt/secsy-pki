@@ -142,6 +142,116 @@ configured.
 Plaintext is capped at 64 KiB — this feature is for passwords and small secrets,
 not bulk data.
 
+## Key escrow and recovery (M-of-N, dual control)
+
+Optionally, each secret can be escrowed so its data key can be recovered under
+**dual control** if the original requester loses access — a break-glass path that
+does not weaken day-to-day security.
+
+### How escrow works
+
+At encryption time, in addition to wrapping the DEK to the primary KEK, the DEK
+is split with **Shamir's Secret Sharing** over GF(2⁸) into *N* shares under a
+reconstruction threshold *M*. Each share is then **RSA-OAEP wrapped to one
+recovery agent's public key**. The wrapped shares travel with the envelope in an
+`escrow` block:
+
+```
+   DEK ──Shamir split (M-of-N)──► share₁ … shareₙ
+ shareᵢ ──RSA-OAEP(agentᵢ_pub)──► wrapped_shareᵢ   (unwrap runs on the agent's HSM)
+```
+
+- Any **M** recovery agents can reconstruct the DEK; any **M-1** learn *nothing*
+  about it (Shamir's information-theoretic guarantee). No sub-quorum can recover.
+- The whole escrow block is bound into the envelope's AES-GCM authenticated data,
+  so an attacker cannot substitute their own recovery agents, tamper with a
+  wrapped share, or strip the escrow block without invalidating the ciphertext.
+- Recovery-agent private keys stay in the HSM: each agent unwraps its share via
+  `C_Decrypt` on the token, exactly like the primary KEK.
+
+Escrow is **optional per secret** and does not change the primary decrypt path:
+the KEK owner can still decrypt an escrowed envelope normally.
+
+### Configuration
+
+```yaml
+secret:
+  kek_label: "secsy-kek"
+  escrow:
+    enabled: true
+    threshold: 2          # M — quorum required to recover (>= 2, dual control)
+    agents:               # N recovery agents
+      - id: "alice"
+        key_label: "agent-alice"     # RSA key held by the provider/HSM
+      - id: "bob"
+        key_label: "agent-bob"
+      - id: "carol"
+        public_key_file: "carol.pub" # or an externally-held public key (wrap-only)
+```
+
+`threshold` must be at least 2 (dual control) and at most the number of agents.
+Each agent needs a `key_label` to participate in recovery through this provider;
+an agent given only a `public_key`/`public_key_file` can be wrapped to but must
+recover on its own device.
+
+### CLI
+
+```sh
+# Provision a recovery-agent RSA key on the HSM (repeat per agent)
+$ secsy-secret escrow-init-agent -label agent-alice
+
+# Show / validate the escrow policy (resolves every agent key with -verify)
+$ secsy-secret escrow-config -verify
+
+# Encrypt WITH escrow (records a secret.escrow audit event)
+$ printf 'master-password' | secsy-secret encrypt -escrow -out secret.json
+
+# Recover under a quorum (records a secret.recover audit event)
+$ secsy-secret recover -in secret.json -agent alice -agent bob -out plain.txt
+
+# Review escrow / recovery events and verify the audit chain
+$ secsy-secret audit
+$ secsy-secret audit -verify
+```
+
+A `recover` invocation **fails closed** if fewer than `threshold` distinct
+agents are supplied, if a named agent is not a recovery agent of that envelope,
+or if the envelope carries no escrow — and each of those outcomes is logged.
+
+Over the HTTP API, add `"escrow": true` to a `POST /api/secret/encrypt` request
+to escrow the data key using the configured policy (gated on the same
+`secret:encrypt` capability). **Recovery is intentionally CLI-only**: exposing a
+one-call recovery endpoint would let a single administrator obtain plaintext,
+defeating dual control. Recovery is meant to be run as a deliberate, audited
+ceremony (ideally on an isolated host with the required agents present).
+
+### The recovery ceremony (runbook)
+
+1. **Authorize.** Recovery is an admin-only, break-glass operation
+   (`secret:recover`). Convene the required quorum of recovery agents per policy.
+2. **Stage the envelope** to a host with access to the recovery agents' HSM keys.
+3. **Run recovery**, naming each participating agent:
+   `secsy-secret recover -in secret.json -agent <id> -agent <id> …`.
+   The tool enforces the M-of-N quorum, unwraps each share on the token, and
+   reconstructs the DEK only if the quorum is met.
+4. **Record.** Every attempt — success, sub-quorum denial, or error — appends a
+   distinct `secret.recover` event (with the participating agent IDs) to the
+   tamper-evident audit log. Verify the chain afterward with
+   `secsy-secret audit -verify`.
+5. **Rotate.** Treat a recovered secret as exposed: rotate it and re-encrypt.
+
+### RBAC and audit
+
+| Capability        | Role   | Covers                                  |
+| ----------------- | ------ | --------------------------------------- |
+| `secret:encrypt`  | admin, issuer | encrypt, including escrow-on-encrypt |
+| `secret:escrow`   | admin  | administering the escrow configuration  |
+| `secret:recover`  | admin  | performing a recovery ceremony          |
+
+Escrow and recovery are logged with their own event types — `secret.escrow` and
+`secret.recover` — separate from routine `secret.encrypt` / `secret.decrypt`, so
+break-glass activity stands out in the audit trail and in SIEM export.
+
 ## Testing
 
 Unit tests (`internal/secret`) run with no HSM using the software backend.

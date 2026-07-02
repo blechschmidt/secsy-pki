@@ -61,6 +61,17 @@ const (
 	// ActionEncrypt / ActionDecrypt cover the secret envelope endpoints.
 	ActionEncrypt Action = "secret:encrypt"
 	ActionDecrypt Action = "secret:decrypt"
+	// ActionManageEscrow covers administering the key-escrow configuration
+	// (inspecting recovery agents, provisioning agent keys). It is an
+	// administrative capability held by admins only.
+	ActionManageEscrow Action = "secret:escrow"
+	// ActionRecover covers performing an escrow recovery ceremony — the
+	// break-glass path that reconstructs a data key from a quorum of recovery
+	// agents. It is deliberately admin-only and separate from secret:decrypt: the
+	// day-to-day decrypt capability must not by itself authorize break-glass
+	// recovery. The cryptographic M-of-N quorum enforces dual control on top of
+	// this capability.
+	ActionRecover Action = "secret:recover"
 )
 
 // roleActions is the static capability grant per role. admin is handled

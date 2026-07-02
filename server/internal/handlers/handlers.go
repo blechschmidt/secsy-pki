@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
@@ -22,6 +23,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/monitor"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
+	"github.com/blechschmidt/secsy-pki/server/internal/secret"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 )
@@ -35,6 +37,15 @@ type API struct {
 	secretKEKLabel       string
 	policy               Policy
 	monitorOpts          monitor.Options
+	// Escrow configuration for the secret layer. escrowSpecs/escrowThreshold are
+	// installed from config; escrowPolicy is the lazily-built, cached policy (its
+	// construction self-tests the agent keys on the HSM, so it is deferred to the
+	// first escrow request rather than paid at startup). escrowMu guards the
+	// cached policy.
+	escrowThreshold int
+	escrowSpecs     []secret.AgentSpec
+	escrowMu        sync.Mutex
+	escrowPolicy    *secret.EscrowPolicy
 	// ocspCache is a long-lived, TTL-bounded cache of signed OCSP responses,
 	// shared across requests (handlers otherwise build a fresh per-request CA
 	// Manager). It avoids an on-HSM signature per OCSP request; see
@@ -70,6 +81,44 @@ func NewAPI(db *database.DB, keyProvider keyprovider.Provider, oidcProvider *aut
 
 // SetPolicy installs the centrally-configured issuance policy.
 func (a *API) SetPolicy(p Policy) { a.policy = p }
+
+// SetEscrow installs the M-of-N key-escrow configuration for the secret layer.
+// The recovery-agent policy is built lazily on first use (its construction
+// self-tests each agent key on the token). Passing an empty spec set disables
+// escrow-on-encrypt via the API.
+func (a *API) SetEscrow(threshold int, specs []secret.AgentSpec) {
+	a.escrowMu.Lock()
+	defer a.escrowMu.Unlock()
+	a.escrowThreshold = threshold
+	a.escrowSpecs = specs
+	a.escrowPolicy = nil
+}
+
+// escrowConfigured reports whether API-driven escrow-on-encrypt is available.
+func (a *API) escrowConfigured() bool {
+	a.escrowMu.Lock()
+	defer a.escrowMu.Unlock()
+	return len(a.escrowSpecs) > 0
+}
+
+// escrowPolicyFor returns the cached escrow policy, building and caching it on
+// first use. It is safe for concurrent callers.
+func (a *API) escrowPolicyFor(r *http.Request) (*secret.EscrowPolicy, error) {
+	a.escrowMu.Lock()
+	defer a.escrowMu.Unlock()
+	if a.escrowPolicy != nil {
+		return a.escrowPolicy, nil
+	}
+	if len(a.escrowSpecs) == 0 {
+		return nil, fmt.Errorf("key escrow is not configured")
+	}
+	p, err := secret.NewEscrowPolicy(r.Context(), a.keyProvider, a.escrowThreshold, a.escrowSpecs)
+	if err != nil {
+		return nil, err
+	}
+	a.escrowPolicy = p
+	return p, nil
+}
 
 // SetOCSPCacheTTL configures the OCSP response cache TTL. A non-positive
 // duration disables caching (every request is answered freshly on the HSM). It

@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
@@ -52,6 +53,10 @@ func (a *API) SecretInfo(w http.ResponseWriter, r *http.Request) {
 type encryptRequest struct {
 	Plaintext string `json:"plaintext"`         // base64
 	Context   string `json:"context,omitempty"` // base64, optional
+	// Escrow, when true, additionally wraps the data key to the configured M-of-N
+	// recovery agents so it can be recovered under dual control. It requires
+	// secret.escrow to be configured; otherwise the request is rejected.
+	Escrow bool `json:"escrow,omitempty"`
 }
 
 type encryptResponse struct {
@@ -101,9 +106,25 @@ func (a *API) EncryptSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	defer zeroBytes(plaintext)
 
+	// Resolve the escrow policy up front when requested, so a misconfiguration is
+	// reported before any encryption happens.
+	var escrowPolicy *secret.EscrowPolicy
+	if req.Escrow {
+		if !a.escrowConfigured() {
+			writeError(w, http.StatusBadRequest, "key escrow requested but secret.escrow is not configured")
+			return
+		}
+		escrowPolicy, err = a.escrowPolicyFor(r)
+		if err != nil {
+			a.recordEvent(r, audit.ActionSecretEscrow, a.secretKEKLabel, "", audit.ResultError, err.Error())
+			writeError(w, http.StatusInternalServerError, "escrow policy unavailable: %v", err)
+			return
+		}
+	}
+
 	// Consume pending HSM audit logs to free space, mirroring the signing path.
 	a.consumeHSMAuditLogs("")
-	blob, err := svc.EncryptToJSON(plaintext, context)
+	blob, err := svc.EncryptWithEscrowToJSON(plaintext, context, escrowPolicy)
 	a.consumeHSMAuditLogs("")
 	metrics.RecordEnvelope("encrypt", err)
 	if err != nil {
@@ -113,6 +134,12 @@ func (a *API) EncryptSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.recordEvent(r, audit.ActionSecretEncrypt, a.secretKEKLabel, "", audit.ResultSuccess, "")
+	if escrowPolicy != nil {
+		// Record the escrow with its own distinct event type so break-glass
+		// wrapping is independently visible in the audit trail.
+		detail := fmt.Sprintf("threshold=%d agents=%d", escrowPolicy.Threshold(), len(escrowPolicy.Agents()))
+		a.recordEvent(r, audit.ActionSecretEscrow, a.secretKEKLabel, "", audit.ResultSuccess, detail)
+	}
 	writeJSON(w, http.StatusOK, encryptResponse{Envelope: json.RawMessage(blob)})
 }
 

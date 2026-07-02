@@ -382,6 +382,9 @@ type EncryptRequest struct {
 	// Context base64-encoded optional AAD
 	Context *string `json:"context,omitempty"`
 
+	// Escrow Additionally escrow the data key to the configured M-of-N recovery agents so it can be recovered under dual control. Requires secret.escrow to be configured; recovery itself is a CLI-only ceremony (secsy-secret recover).
+	Escrow *bool `json:"escrow,omitempty"`
+
 	// Plaintext base64-encoded plaintext
 	Plaintext string `json:"plaintext"`
 }

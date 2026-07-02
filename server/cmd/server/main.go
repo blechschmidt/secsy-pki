@@ -35,6 +35,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/ratelimit"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 	"github.com/blechschmidt/secsy-pki/server/internal/scep"
+	"github.com/blechschmidt/secsy-pki/server/internal/secret"
 	"github.com/blechschmidt/secsy-pki/server/internal/siem"
 	"github.com/blechschmidt/secsy-pki/server/internal/tsa"
 )
@@ -249,6 +250,22 @@ func main() {
 	}
 	if cfg.Secret.KEKLabel != "" {
 		log.Printf("Secret encryption enabled (KEK label: %s)", cfg.Secret.KEKLabel)
+	}
+	if cfg.Secret.Escrow.Enabled {
+		specs := make([]secret.AgentSpec, 0, len(cfg.Secret.Escrow.Agents))
+		for _, ag := range cfg.Secret.Escrow.Agents {
+			pemVal := ag.PublicKey
+			if pemVal == "" && ag.PublicKeyFile != "" {
+				b, err := os.ReadFile(ag.PublicKeyFile)
+				if err != nil {
+					log.Fatalf("reading escrow agent %q public_key_file: %v", ag.ID, err)
+				}
+				pemVal = string(b)
+			}
+			specs = append(specs, secret.AgentSpec{ID: ag.ID, KeyLabel: ag.KeyLabel, PublicKeyPEM: pemVal})
+		}
+		api.SetEscrow(cfg.Secret.Escrow.Threshold, specs)
+		log.Printf("Key escrow enabled (%d-of-%d recovery agents)", cfg.Secret.Escrow.Threshold, len(specs))
 	}
 
 	mux := http.NewServeMux()

@@ -54,7 +54,7 @@ func newFuzzWrapper(tb testing.TB) *fuzzWrapper {
 // self-consistent).
 func FuzzEnvelopeUnmarshal(f *testing.F) {
 	w := newFuzzWrapper(f)
-	if env, err := seal(w, []byte("hello world"), nil); err == nil {
+	if env, err := seal(w, []byte("hello world"), nil, nil); err == nil {
 		if b, err := env.Marshal(); err == nil {
 			f.Add(b)
 		}
@@ -95,7 +95,7 @@ func FuzzEnvelopeOpen(f *testing.F) {
 
 	// A genuine envelope's parts make a high-value seed (they steer the fuzzer
 	// past validate() and OAEP unwrap into the GCM open).
-	if env, err := seal(w, []byte("secret-data"), []byte("ctx")); err == nil {
+	if env, err := seal(w, []byte("secret-data"), []byte("ctx"), nil); err == nil {
 		f.Add(env.WrappedDEK, env.Nonce, env.Ciphertext, []byte("ctx"), true)
 	}
 	f.Add([]byte("short-wrap"), []byte("123456789012"), []byte("abc"), []byte(nil), false)
