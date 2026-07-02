@@ -38,8 +38,11 @@
       <span class="brand">Secsy <span class="dot">PKI</span></span>
       <nav>
         <button data-view="certs" class="active">Certificates</button>
+        <button data-view="inventory">Inventory</button>
         <button data-view="monitor">Expiry Monitor</button>
         <button data-view="issue">Issue</button>
+        <button data-view="compliance">Compliance</button>
+        <button data-view="bundle">Trust Bundle</button>
         <button data-view="secrets">Secrets</button>
       </nav>
       <span class="user" id="userBox"></span>
@@ -63,12 +66,53 @@
           </label>
           <div class="spacer"></div>
           <a class="btn ghost sm" id="crlLink" target="_blank" style="margin-top:16px">Download CRL (PEM)</a>
+          <a class="btn ghost sm hidden" id="crlDeltaLink" target="_blank" style="margin-top:16px">Delta CRL</a>
           <button class="btn ghost sm" id="refreshCerts" style="margin-top:16px">Refresh</button>
         </div>
+        <div id="crlStatus" class="crl-status muted"></div>
         <div class="panel">
           <table>
             <thead><tr><th>Serial</th><th>Common name</th><th>Profile</th><th>Not after</th><th>Status</th><th>CT</th><th></th></tr></thead>
             <tbody id="certRows"><tr><td colspan="7" class="muted">Select a CA…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Certificate inventory -->
+      <section class="view" id="view-inventory">
+        <h2>Certificate inventory</h2>
+        <p class="sub">Every issued certificate across all CAs, with its status, revocation reason, CT/SCT presence, and the pre-issuance lint verdict. Search, filter, and export to CSV.</p>
+        <div class="toolbar">
+          <div class="field" style="margin:0">
+            <label for="invCA">Certificate authority</label>
+            <select id="invCA"><option value="">all CAs</option></select>
+          </div>
+          <div class="field" style="margin:0">
+            <label for="invProfile">Profile</label>
+            <input id="invProfile" placeholder="any" style="width:140px">
+          </div>
+          <div class="field" style="margin:0">
+            <label for="invSearch">Search</label>
+            <input id="invSearch" placeholder="serial, CN, SAN…" style="width:200px">
+          </div>
+          <div class="field" style="margin:0">
+            <label for="invStatus">Status</label>
+            <select id="invStatus">
+              <option value="">all</option>
+              <option value="valid">valid</option>
+              <option value="revoked">revoked</option>
+              <option value="expired">expired</option>
+            </select>
+          </div>
+          <div class="spacer"></div>
+          <button class="btn ghost sm" id="invRefresh" style="margin-top:16px">Refresh</button>
+          <button class="btn sm" id="invCSV" style="margin-top:16px">Export CSV</button>
+        </div>
+        <div id="invCounts" class="muted" style="margin-bottom:12px"></div>
+        <div class="panel">
+          <table>
+            <thead><tr><th>Serial</th><th>Common name</th><th>Profile</th><th>CA</th><th>Not after</th><th>Status</th><th>CT</th><th>Lint</th></tr></thead>
+            <tbody id="invRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
           </table>
         </div>
       </section>
@@ -134,6 +178,73 @@
         </div>
       </section>
 
+      <!-- Compliance dashboard -->
+      <section class="view" id="view-compliance">
+        <h2>Compliance &amp; lint summary</h2>
+        <p class="sub">CA/Browser-Forum conformance evidence: the pre-issuance lint verdict split, blocked non-conformant issuance, per-CA metadata, and the tamper-evident audit-chain status.</p>
+        <div class="toolbar">
+          <div class="field" style="margin:0">
+            <label for="compCA">Certificate authority</label>
+            <select id="compCA"><option value="">all CAs</option></select>
+          </div>
+          <div class="spacer"></div>
+          <button class="btn ghost sm" id="compRefresh" style="margin-top:16px">Refresh</button>
+        </div>
+        <div id="compRoll" class="notice hidden" style="margin-bottom:12px"></div>
+        <div class="stat-grid" id="compStats"></div>
+        <div class="row" style="align-items:stretch">
+          <div class="panel" style="flex:1;min-width:300px">
+            <h2 style="font-size:15px">Certificate authorities</h2>
+            <table>
+              <thead><tr><th>Label</th><th>Subject</th><th>Key</th><th>HSM</th><th>Issued</th></tr></thead>
+              <tbody id="compCARows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+            </table>
+          </div>
+          <div class="panel" style="flex:1;min-width:300px">
+            <h2 style="font-size:15px">Top lint findings</h2>
+            <table>
+              <thead><tr><th>Check code</th><th>Kind</th><th>Count</th></tr></thead>
+              <tbody id="compRuleRows"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <h2 style="font-size:15px">Profile breakdown</h2>
+          <table>
+            <thead><tr><th>Profile</th><th>Certificates issued</th></tr></thead>
+            <tbody id="compProfileRows"><tr><td colspan="2" class="muted">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Trust bundle / chain -->
+      <section class="view" id="view-bundle">
+        <h2>Trust bundle &amp; chain</h2>
+        <p class="sub">Download the issuer chain (AIA bundle, covering key-rollover overlap) a relying party needs to validate this CA's leaves, and — when SPIFFE is enabled — the SPIFFE trust bundle (JWKS).</p>
+        <div class="toolbar">
+          <div class="field" style="margin:0">
+            <label for="bundleCA">Certificate authority</label>
+            <select id="bundleCA"></select>
+          </div>
+          <div class="spacer"></div>
+          <a class="btn ghost sm" id="chainDownload" download="chain.pem" style="margin-top:16px">Download chain (PEM)</a>
+          <button class="btn ghost sm" id="bundleRefresh" style="margin-top:16px">Refresh</button>
+        </div>
+        <div id="bundleMsg" class="notice hidden" style="margin-bottom:12px"></div>
+        <div class="panel">
+          <div class="field">
+            <label>Issuer chain (PEM)</label>
+            <textarea id="chainPEM" readonly style="min-height:200px"></textarea>
+          </div>
+        </div>
+        <div class="panel hidden" id="svidPanel">
+          <div class="field">
+            <label>SPIFFE trust bundle (JWKS)</label>
+            <textarea id="svidBundle" readonly style="min-height:160px"></textarea>
+          </div>
+        </div>
+      </section>
+
       <!-- Secrets -->
       <section class="view" id="view-secrets">
         <h2>Secret envelopes</h2>
@@ -168,6 +279,33 @@
         </div>
       </section>
     </main>
+  </div>
+
+  <!-- Revocation modal -->
+  <div id="revokeModal" class="modal hidden">
+    <div class="card">
+      <h2 style="font-size:16px;margin-top:0">Revoke certificate</h2>
+      <p class="sub" id="revokeSubject"></p>
+      <div id="revokeError" class="notice err hidden"></div>
+      <div class="field">
+        <label for="revokeReason">Revocation reason (RFC 5280)</label>
+        <select id="revokeReason">
+          <option value="unspecified">unspecified</option>
+          <option value="keyCompromise">keyCompromise</option>
+          <option value="cACompromise">cACompromise</option>
+          <option value="affiliationChanged">affiliationChanged</option>
+          <option value="superseded">superseded</option>
+          <option value="cessationOfOperation">cessationOfOperation</option>
+          <option value="certificateHold">certificateHold</option>
+          <option value="privilegeWithdrawn">privilegeWithdrawn</option>
+          <option value="aACompromise">aACompromise</option>
+        </select>
+      </div>
+      <div class="row" style="justify-content:flex-end;gap:8px;margin-top:8px">
+        <button class="btn ghost sm" id="revokeCancel">Cancel</button>
+        <button class="btn danger sm" id="revokeConfirm">Revoke</button>
+      </div>
+    </div>
   </div>
 
   <script src="app.js"></script>

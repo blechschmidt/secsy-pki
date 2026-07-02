@@ -319,7 +319,160 @@ func TestConsoleFlow(t *testing.T) {
 		}
 	})
 
-	// --- 9. Secret envelope seal + recover (Secrets view). ---
+	// --- 9. Certificate inventory (Inventory view): JSON + CSV export. ---
+	t.Run("Inventory", func(t *testing.T) {
+		if serial == "" {
+			t.Skip("no leaf issued")
+		}
+		status, body := env.req(t, "GET", "/api/report/inventory", nil)
+		if status != http.StatusOK {
+			t.Fatalf("inventory = %d: %s", status, body)
+		}
+		var inv struct {
+			Total        int `json:"total"`
+			Certificates []struct {
+				Serial         string `json:"serial"`
+				Status         string `json:"status"`
+				CAID           string `json:"ca_id"`
+				RevocationText string `json:"revocation_reason_text"`
+				LintVerdict    string `json:"lint_verdict"`
+			} `json:"certificates"`
+		}
+		if err := json.Unmarshal(body, &inv); err != nil {
+			t.Fatalf("decode inventory: %v", err)
+		}
+		var rec *struct {
+			Serial         string `json:"serial"`
+			Status         string `json:"status"`
+			CAID           string `json:"ca_id"`
+			RevocationText string `json:"revocation_reason_text"`
+			LintVerdict    string `json:"lint_verdict"`
+		}
+		for i := range inv.Certificates {
+			if inv.Certificates[i].Serial == serial {
+				rec = &inv.Certificates[i]
+			}
+		}
+		if rec == nil {
+			t.Fatalf("issued serial %s not in inventory: %s", serial, body)
+		}
+		// The leaf was revoked (step 7) with reason "superseded", so the inventory
+		// must reflect that.
+		if rec.Status != "revoked" {
+			t.Errorf("inventory status = %q, want revoked", rec.Status)
+		}
+		if rec.RevocationText != "superseded" {
+			t.Errorf("inventory revocation reason = %q, want superseded", rec.RevocationText)
+		}
+
+		// CSV export carries a spreadsheet content-type, the header row, and the row.
+		resp, err := http.NewRequest("GET", env.srv.URL+"/api/report/inventory?format=csv", nil)
+		if err != nil {
+			t.Fatalf("csv request: %v", err)
+		}
+		resp.SetBasicAuth(consoleRootUser, consoleRootPass)
+		r, err := http.DefaultClient.Do(resp)
+		if err != nil {
+			t.Fatalf("csv fetch: %v", err)
+		}
+		defer r.Body.Close()
+		csv, _ := io.ReadAll(r.Body)
+		if r.StatusCode != http.StatusOK {
+			t.Fatalf("csv = %d: %s", r.StatusCode, csv)
+		}
+		if ct := r.Header.Get("Content-Type"); !strings.Contains(ct, "csv") {
+			t.Errorf("csv content-type = %q, want csv", ct)
+		}
+		if !bytes.Contains(csv, []byte("serial,common_name")) {
+			t.Errorf("csv missing header row: %s", csv)
+		}
+		if !bytes.Contains(csv, []byte(serial)) {
+			t.Errorf("csv missing issued serial %s", serial)
+		}
+	})
+
+	// --- 10. Compliance / lint summary dashboard (Compliance view). ---
+	t.Run("Compliance", func(t *testing.T) {
+		status, body := env.req(t, "GET", "/api/report/compliance", nil)
+		if status != http.StatusOK {
+			t.Fatalf("compliance = %d: %s", status, body)
+		}
+		var rep struct {
+			Conformant bool `json:"conformant"`
+			CAs        []struct {
+				Label     string `json:"label"`
+				HSMBacked bool   `json:"hsm_backed"`
+			} `json:"cas"`
+			Lint struct {
+				IssuedTotal int `json:"issued_total"`
+				Pass        int `json:"pass"`
+			} `json:"lint"`
+			AuditChain struct {
+				Valid bool `json:"valid"`
+			} `json:"audit_chain"`
+		}
+		if err := json.Unmarshal(body, &rep); err != nil {
+			t.Fatalf("decode compliance: %v", err)
+		}
+		if !rep.AuditChain.Valid {
+			t.Errorf("audit chain reported invalid: %s", body)
+		}
+		if !rep.Conformant {
+			t.Errorf("expected conformant report: %s", body)
+		}
+		if rep.Lint.IssuedTotal < 1 {
+			t.Errorf("compliance issued_total = %d, want >= 1", rep.Lint.IssuedTotal)
+		}
+		if len(rep.CAs) == 0 {
+			t.Error("compliance report has no CAs")
+		}
+	})
+
+	// --- 11. CRL/delta-CRL status view (Certificates view strip). ---
+	t.Run("CRLStatus", func(t *testing.T) {
+		if serial == "" {
+			t.Skip("no leaf issued")
+		}
+		status, body := env.req(t, "GET", "/api/ca/"+env.interID+"/crl/status", nil)
+		if status != http.StatusOK {
+			t.Fatalf("crl status = %d: %s", status, body)
+		}
+		var st struct {
+			Base struct {
+				Available    bool   `json:"available"`
+				Number       string `json:"number"`
+				RevokedCount int    `json:"revoked_count"`
+			} `json:"base"`
+		}
+		if err := json.Unmarshal(body, &st); err != nil {
+			t.Fatalf("decode crl status: %v", err)
+		}
+		if !st.Base.Available {
+			t.Fatalf("base CRL not available: %s", body)
+		}
+		if st.Base.Number == "" {
+			t.Errorf("base CRL has no number: %s", body)
+		}
+		// The revoked leaf must be counted on the base CRL.
+		if st.Base.RevokedCount < 1 {
+			t.Errorf("base CRL revoked_count = %d, want >= 1", st.Base.RevokedCount)
+		}
+	})
+
+	// --- 12. Trust-bundle / chain download (Trust Bundle view). ---
+	t.Run("ChainDownload", func(t *testing.T) {
+		// The chain is a public endpoint (relying parties fetch it unauthenticated).
+		st, ctype, chain := env.getPublic(t, "/api/ca/"+env.interID+"/chain")
+		if st != http.StatusOK {
+			t.Fatalf("chain = %d", st)
+		}
+		_ = ctype
+		if !bytes.Contains(chain, []byte("BEGIN CERTIFICATE")) {
+			t.Errorf("chain is not a PEM bundle: %s", chain)
+		}
+	})
+
+	// --- 13. Secret envelope seal + recover (Secrets view). ---
 	t.Run("SecretRoundTrip", func(t *testing.T) {
 		status, body := env.req(t, "GET", "/api/secret/info", nil)
 		if status != http.StatusOK {
