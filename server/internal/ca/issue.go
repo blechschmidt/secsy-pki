@@ -91,6 +91,18 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 		return nil, err
 	}
 
+	// Post-quantum and hybrid profiles take dedicated issuance paths: their CSRs
+	// carry ML-DSA keys crypto/x509 cannot parse, and their certificates are
+	// signed (wholly, or in addition to the classical signature) with ML-DSA.
+	switch profile.Algorithm {
+	case AlgPQC:
+		spec.CAID = activeID
+		return m.issuePQCLeaf(ctx, spec, issuerCA, issuerCert, profile)
+	case AlgHybrid:
+		spec.CAID = activeID
+		return m.issueHybridLeaf(ctx, spec, issuerCA, issuerCert, profile)
+	}
+
 	csr, err := parseAndVerifyCSR(spec.CSRPEM)
 	if err != nil {
 		return nil, err
@@ -238,6 +250,12 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (*IssueR
 	profile, err := LookupProfile(prior.Profile)
 	if err != nil {
 		return nil, err
+	}
+	// Renewal reuses the prior certificate's parsed public key, which crypto/x509
+	// cannot recover for ML-DSA subjects. Post-quantum and hybrid certificates are
+	// therefore re-issued from a fresh CSR rather than renewed in place.
+	if profile.Algorithm != AlgClassical {
+		return nil, fmt.Errorf("profile %q is %s; renew-in-place is not supported for post-quantum/hybrid certificates — issue a new certificate from a fresh CSR instead", profile.Name, profile.Algorithm)
 	}
 	keyUsage, err := profile.keyUsage()
 	if err != nil {

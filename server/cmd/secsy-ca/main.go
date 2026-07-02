@@ -210,12 +210,29 @@ func pathLenValue(v int) *int {
 	return &v
 }
 
+// normalizeAlgorithm maps the CLI -algorithm value to the ca.CertAlgorithm
+// string. "classical" (and the empty string) map to the classical zero value.
+func normalizeAlgorithm(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "classical", "rsa", "ecdsa", "ed25519":
+		return string(ca.AlgClassical)
+	case "pqc", "ml-dsa", "mldsa", "post-quantum":
+		return string(ca.AlgPQC)
+	case "hybrid", "catalyst", "composite":
+		return string(ca.AlgHybrid)
+	default:
+		return s // let the ca layer reject an unknown value with a clear error
+	}
+}
+
 func cmdInitRoot(mgr *ca.Manager, args []string) error {
 	fs := flag.NewFlagSet("init-root", flag.ContinueOnError)
 	label := fs.String("label", "", "key label / CA name (required)")
-	keyType := fs.String("key-type", "ecdsa-p384", "key type (ed25519, ecdsa-p256/p384/p521, rsa-2048, rsa-4096)")
+	keyType := fs.String("key-type", "ecdsa-p384", "key type (ed25519, ecdsa-p256/p384/p521, rsa-2048, rsa-4096, ml-dsa-44/65/87)")
 	validityDays := fs.Int("validity-days", 3650, "certificate validity in days")
 	pathLen := fs.Int("path-len", -1, "max path length (-1 = unconstrained, 0 = may only issue leaf certs)")
+	algorithm := fs.String("algorithm", "classical", "signature scheme: classical | pqc (ML-DSA) | hybrid (classical + ML-DSA); pqc/hybrid require the software key provider")
+	altKeyType := fs.String("alt-key-type", "ml-dsa-65", "ML-DSA parameter set for a hybrid CA's alternative key")
 	subj := addSubjectFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -231,6 +248,8 @@ func cmdInitRoot(mgr *ca.Manager, args []string) error {
 		Subject:    ca.PKIXName(subj.subject()),
 		Validity:   time.Duration(*validityDays) * 24 * time.Hour,
 		MaxPathLen: pathLenValue(*pathLen),
+		Algorithm:  ca.CertAlgorithm(normalizeAlgorithm(*algorithm)),
+		AltKeyType: *altKeyType,
 	})
 	if err != nil {
 		return err
@@ -243,9 +262,11 @@ func cmdIssueIntermediate(db *database.DB, mgr *ca.Manager, args []string) error
 	fs := flag.NewFlagSet("issue-intermediate", flag.ContinueOnError)
 	parent := fs.String("parent", "", "parent CA id or label (required)")
 	label := fs.String("label", "", "key label / CA name (required)")
-	keyType := fs.String("key-type", "ecdsa-p256", "key type (ed25519, ecdsa-p256/p384/p521, rsa-2048, rsa-4096)")
+	keyType := fs.String("key-type", "ecdsa-p256", "key type (ed25519, ecdsa-p256/p384/p521, rsa-2048, rsa-4096, ml-dsa-44/65/87)")
 	validityDays := fs.Int("validity-days", 1825, "certificate validity in days")
 	pathLen := fs.Int("path-len", -1, "max path length (-1 = unconstrained, 0 = may only issue leaf certs)")
+	algorithm := fs.String("algorithm", "classical", "signature scheme: classical | pqc (ML-DSA) | hybrid; must match the parent CA")
+	altKeyType := fs.String("alt-key-type", "ml-dsa-65", "ML-DSA parameter set for a hybrid intermediate's alternative key")
 	subj := addSubjectFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -267,6 +288,8 @@ func cmdIssueIntermediate(db *database.DB, mgr *ca.Manager, args []string) error
 		Subject:    ca.PKIXName(subj.subject()),
 		Validity:   time.Duration(*validityDays) * 24 * time.Hour,
 		MaxPathLen: pathLenValue(*pathLen),
+		Algorithm:  ca.CertAlgorithm(normalizeAlgorithm(*algorithm)),
+		AltKeyType: *altKeyType,
 	})
 	if err != nil {
 		return err

@@ -13,6 +13,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
+	"github.com/blechschmidt/secsy-pki/server/internal/pqc"
 )
 
 // DefaultSessionPoolSize is the number of concurrent PKCS#11 sessions the
@@ -122,6 +123,14 @@ func (p *PKCS11Provider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInf
 	keyType, err := NormalizeKeyType(spec.KeyType)
 	if err != nil {
 		return nil, err
+	}
+	// Post-quantum keys are not (yet) supported by the PKCS#11 backend. SoftHSM
+	// in particular has no ML-DSA mechanism, so callers must use the software key
+	// provider for PQC keys; fail closed with an actionable message rather than
+	// emitting an opaque Cryptoki mechanism error.
+	if pqc.IsPQC(keyType) {
+		return nil, fmt.Errorf("keyprovider: ML-DSA key type %q is not supported by the PKCS#11 backend "+
+			"(the token/HSM lacks a post-quantum mechanism); use the software key provider for PQC keys", keyType)
 	}
 
 	// Enforce the Provider contract that GenerateKey fails if a key with the

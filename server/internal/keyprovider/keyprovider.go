@@ -20,6 +20,8 @@ import (
 	"crypto"
 	"fmt"
 	"strings"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/pqc"
 )
 
 // Canonical key-type identifiers accepted by GenerateKey. These match the
@@ -32,6 +34,12 @@ const (
 	KeyTypeECDSAP521 = "ecdsa-sha2-nistp521"
 	KeyTypeRSA2048   = "rsa-2048"
 	KeyTypeRSA4096   = "rsa-4096"
+
+	// Post-quantum ML-DSA (FIPS 204) key types. These are only supported by the
+	// software provider; see the pqc package and docs/pqc.md.
+	KeyTypeMLDSA44 = pqc.KeyTypeMLDSA44
+	KeyTypeMLDSA65 = pqc.KeyTypeMLDSA65
+	KeyTypeMLDSA87 = pqc.KeyTypeMLDSA87
 )
 
 // ProviderType selects which backend New constructs.
@@ -275,6 +283,10 @@ func NormalizeKeyType(s string) (string, error) {
 	case "rsa-4096", "rsa4096":
 		return KeyTypeRSA4096, nil
 	default:
+		// Fall back to the post-quantum normalizer (ml-dsa-44/65/87 and aliases).
+		if kt, err := pqc.NormalizeKeyType(s); err == nil {
+			return kt, nil
+		}
 		return "", fmt.Errorf("keyprovider: unsupported key type %q", s)
 	}
 }

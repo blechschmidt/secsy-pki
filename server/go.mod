@@ -3,6 +3,7 @@ module github.com/blechschmidt/secsy-pki/server
 go 1.25.7
 
 require (
+	github.com/cloudflare/circl v1.6.3
 	github.com/coreos/go-oidc/v3 v3.17.0
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/google/uuid v1.6.0

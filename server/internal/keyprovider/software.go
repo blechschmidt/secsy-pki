@@ -18,6 +18,8 @@ import (
 	"sync"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/pqc"
 )
 
 // SoftwareProvider stores private keys as PKCS#8 PEM files in a keystore
@@ -115,7 +117,7 @@ func (p *SoftwareProvider) GenerateKey(_ context.Context, spec KeySpec) (*KeyInf
 		return nil, err
 	}
 
-	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	der, err := marshalPKCS8(priv, keyType)
 	if err != nil {
 		return nil, fmt.Errorf("keyprovider: marshaling private key: %w", err)
 	}
@@ -252,6 +254,11 @@ func (p *SoftwareProvider) load(label string) (crypto.Signer, string, error) {
 	}
 	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
+		// Not a classical PKCS#8 key: try the post-quantum (ML-DSA) parser before
+		// giving up, so ML-DSA keys stored by this provider load back correctly.
+		if sk, keyType, pqcErr := pqc.ParsePKCS8PrivateKey(block.Bytes); pqcErr == nil {
+			return sk, keyType, nil
+		}
 		return nil, "", fmt.Errorf("keyprovider: parsing key %q: %w", label, err)
 	}
 	priv, ok := parsed.(crypto.Signer)
@@ -265,20 +272,35 @@ func (p *SoftwareProvider) load(label string) (crypto.Signer, string, error) {
 	return priv, keyType, nil
 }
 
+// marshalPKCS8 encodes a freshly generated private key for on-disk storage,
+// dispatching to the post-quantum encoder for ML-DSA keys (which the standard
+// library cannot marshal) and to the standard PKCS#8 encoder otherwise.
+func marshalPKCS8(priv crypto.Signer, keyType string) ([]byte, error) {
+	if pqc.IsPQC(keyType) {
+		return pqc.MarshalPKCS8PrivateKey(priv)
+	}
+	return x509.MarshalPKCS8PrivateKey(priv)
+}
+
 // keyInfo builds a KeyInfo including the SSH public key and software: URI.
+// ML-DSA keys have no SSH representation, so SSHPublicKey is left empty for them.
 func (p *SoftwareProvider) keyInfo(label, id, keyType string, pub crypto.PublicKey) (*KeyInfo, error) {
+	info := &KeyInfo{
+		Label:     label,
+		ID:        id,
+		KeyType:   keyType,
+		PublicKey: pub,
+		URI:       "software:" + label,
+	}
+	if pqc.IsPQC(keyType) {
+		return info, nil
+	}
 	sshPub, err := ssh.NewPublicKey(pub)
 	if err != nil {
 		return nil, fmt.Errorf("keyprovider: building SSH public key: %w", err)
 	}
-	return &KeyInfo{
-		Label:        label,
-		ID:           id,
-		KeyType:      keyType,
-		PublicKey:    pub,
-		URI:          "software:" + label,
-		SSHPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub))),
-	}, nil
+	info.SSHPublicKey = strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub)))
+	return info, nil
 }
 
 // generatePrivateKey creates a new private key of the given canonical type.
@@ -299,6 +321,9 @@ func generatePrivateKey(keyType string) (crypto.Signer, error) {
 	case KeyTypeRSA4096:
 		return rsa.GenerateKey(rand.Reader, 4096)
 	default:
+		if pqc.IsPQC(keyType) {
+			return pqc.GenerateKey(keyType)
+		}
 		return nil, fmt.Errorf("keyprovider: unsupported key type %q", keyType)
 	}
 }

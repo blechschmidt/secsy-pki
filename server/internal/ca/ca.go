@@ -12,6 +12,7 @@ import (
 	"context"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
 	"math/big"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
+	"github.com/blechschmidt/secsy-pki/server/internal/pqc"
 )
 
 // clockSkew backdates NotBefore slightly so freshly issued certificates are
@@ -52,6 +54,12 @@ type RootSpec struct {
 	Subject    pkix.Name
 	Validity   time.Duration
 	MaxPathLen *int // nil = unconstrained
+	// Algorithm selects the CA's signature scheme: classical (default), pure
+	// post-quantum (ML-DSA), or hybrid (classical primary + ML-DSA alternative).
+	Algorithm CertAlgorithm
+	// AltKeyType is the ML-DSA parameter set for a hybrid CA's alternative key
+	// (empty defaults to ml-dsa-65). Ignored for non-hybrid CAs.
+	AltKeyType string
 }
 
 // IntermediateSpec describes an intermediate CA to issue under an existing CA.
@@ -62,6 +70,10 @@ type IntermediateSpec struct {
 	Subject    pkix.Name
 	Validity   time.Duration
 	MaxPathLen *int // nil = unconstrained
+	// Algorithm and AltKeyType select the intermediate's signature scheme, as in
+	// RootSpec. A pqc/hybrid intermediate must be issued under a matching parent.
+	Algorithm  CertAlgorithm
+	AltKeyType string
 }
 
 // PKIXName converts an API/CLI subject into a pkix.Name.
@@ -92,27 +104,15 @@ func (m *Manager) InitRoot(ctx context.Context, spec RootSpec) (*models.CA, erro
 		return nil, err
 	}
 
-	keyInfo, err := m.provider.GenerateKey(ctx, keyprovider.KeySpec{Label: spec.Label, KeyType: spec.KeyType})
-	if err != nil {
-		return nil, fmt.Errorf("generating root CA key: %w", err)
-	}
-
-	signer, err := m.provider.Signer(ctx, keyprovider.KeyRef{Label: spec.Label})
-	if err != nil {
-		return nil, fmt.Errorf("opening root CA signer: %w", err)
-	}
-	defer signer.Close()
-
 	now := time.Now()
 	req := pki.CACertRequest{
 		Subject:    spec.Subject,
-		PublicKey:  keyInfo.PublicKey,
 		Serial:     big.NewInt(1), // a root's self-signed certificate is serial 1
 		NotBefore:  now.Add(-clockSkew),
 		NotAfter:   now.Add(spec.Validity),
 		MaxPathLen: spec.MaxPathLen,
 	}
-	der, err := pki.CreateCACertificate(signer, nil, req)
+	keyInfo, der, err := m.buildAndSignCACert(ctx, spec.Algorithm, spec.Label, spec.KeyType, spec.AltKeyType, req, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating root CA certificate: %w", err)
 	}
@@ -155,17 +155,6 @@ func (m *Manager) IssueIntermediate(ctx context.Context, spec IntermediateSpec) 
 		return nil, fmt.Errorf("allocating serial from parent CA: %w", err)
 	}
 
-	keyInfo, err := m.provider.GenerateKey(ctx, keyprovider.KeySpec{Label: spec.Label, KeyType: spec.KeyType})
-	if err != nil {
-		return nil, fmt.Errorf("generating intermediate CA key: %w", err)
-	}
-
-	parentSigner, err := m.provider.Signer(ctx, keyRefForCA(parent))
-	if err != nil {
-		return nil, fmt.Errorf("opening parent CA signer: %w", err)
-	}
-	defer parentSigner.Close()
-
 	// The intermediate's validity is clamped to the parent's expiry.
 	now := time.Now()
 	notAfter := now.Add(spec.Validity)
@@ -174,13 +163,12 @@ func (m *Manager) IssueIntermediate(ctx context.Context, spec IntermediateSpec) 
 	}
 	req := pki.CACertRequest{
 		Subject:    spec.Subject,
-		PublicKey:  keyInfo.PublicKey,
 		Serial:     big.NewInt(serial),
 		NotBefore:  now.Add(-clockSkew),
 		NotAfter:   notAfter,
 		MaxPathLen: spec.MaxPathLen,
 	}
-	der, err := pki.CreateCACertificate(parentSigner, parentCert, req)
+	keyInfo, der, err := m.buildAndSignCACert(ctx, spec.Algorithm, spec.Label, spec.KeyType, spec.AltKeyType, req, parent, parentCert)
 	if err != nil {
 		return nil, fmt.Errorf("creating intermediate CA certificate: %w", err)
 	}
@@ -238,13 +226,25 @@ func (m *Manager) persistCA(parentID *string, label string, keyInfo *keyprovider
 	denySSH := database.BuiltinDenyAllSSH
 	denyX509 := database.BuiltinDenyAllX509
 
+	// ML-DSA keys have no OpenSSH representation, so the software provider returns
+	// an empty SSHPublicKey for them. Store the DER SubjectPublicKeyInfo (PEM) as
+	// the CA's public key so the non-null column always carries the real key.
+	publicKey := keyInfo.SSHPublicKey
+	if publicKey == "" {
+		if der, err := pqc.MarshalPKIXPublicKey(keyInfo.PublicKey); err == nil {
+			publicKey = string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+		} else {
+			publicKey = keyInfo.KeyType // last-resort non-null marker
+		}
+	}
+
 	ca := &models.CA{
 		ID:                          uuid.New().String(),
 		ParentID:                    parentID,
 		Label:                       label,
 		PKCS11URI:                   keyInfo.URI,
 		KeyType:                     keyInfo.KeyType,
-		PublicKey:                   keyInfo.SSHPublicKey,
+		PublicKey:                   publicKey,
 		DefaultSSHRestrictionSetID:  &denySSH,
 		DefaultX509RestrictionSetID: &denyX509,
 		Certificate:                 string(pemBytes),

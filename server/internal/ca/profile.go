@@ -38,6 +38,44 @@ type Profile struct {
 	// Lint is the profile's pre-issuance lint policy. Nil applies the default
 	// gate (enforce mode, internal-name rules); see LintConfig.
 	Lint *LintConfig `json:"lint,omitempty"`
+
+	// Algorithm selects the signature scheme family for certificates issued under
+	// this profile: classical (default), pure post-quantum ML-DSA, or hybrid
+	// (classical primary + ML-DSA alternative signature). See the pqc package.
+	Algorithm CertAlgorithm `json:"algorithm,omitempty"`
+	// PQCKeyType is the ML-DSA parameter set used for the post-quantum key: the
+	// subject key for a pqc profile, or the alternative key for a hybrid profile.
+	// Empty defaults to ml-dsa-65. Ignored for classical profiles.
+	PQCKeyType string `json:"pqc_key_type,omitempty"`
+}
+
+// CertAlgorithm names the signature scheme family a profile issues under.
+type CertAlgorithm string
+
+const (
+	// AlgClassical issues ordinary ECDSA/RSA/Ed25519 certificates. It is the
+	// zero value, so profiles that omit Algorithm remain classical.
+	AlgClassical CertAlgorithm = ""
+	// AlgPQC issues pure post-quantum certificates: the subject key and issuer
+	// signature are both ML-DSA. Requires an ML-DSA issuing CA and the software
+	// key provider (SoftHSM has no ML-DSA mechanism).
+	AlgPQC CertAlgorithm = "pqc"
+	// AlgHybrid issues catalyst hybrid certificates: a classical primary key and
+	// signature plus a parallel ML-DSA key and signature carried in the
+	// alternative-signature extensions. Requires a hybrid issuing CA.
+	AlgHybrid CertAlgorithm = "hybrid"
+)
+
+// defaultPQCKeyType is the ML-DSA parameter set used when a PQC/hybrid profile
+// does not name one. ML-DSA-65 (NIST security category 3) is a balanced default.
+const defaultPQCKeyType = "ml-dsa-65"
+
+// pqcKeyType returns the profile's effective ML-DSA parameter set.
+func (p Profile) pqcKeyType() string {
+	if p.PQCKeyType != "" {
+		return p.PQCKeyType
+	}
+	return defaultPQCKeyType
 }
 
 // day is a convenience unit for profile validity periods.
@@ -85,6 +123,26 @@ var builtinProfiles = map[string]Profile{
 		ExtKeyUsages:    []string{"emailProtection"},
 		DefaultValidity: 365 * day,
 		MaxValidity:     2 * 365 * day,
+	},
+	"pqc-server": {
+		Name:            "pqc-server",
+		Description:     "Pure post-quantum TLS server certificate (ML-DSA subject key + ML-DSA signature)",
+		KeyUsages:       []string{"digitalSignature"},
+		ExtKeyUsages:    []string{"serverAuth"},
+		DefaultValidity: 365 * day,
+		MaxValidity:     397 * day,
+		Algorithm:       AlgPQC,
+		PQCKeyType:      "ml-dsa-65",
+	},
+	"hybrid-server": {
+		Name:            "hybrid-server",
+		Description:     "Hybrid TLS server certificate (classical primary + ML-DSA alternative signature)",
+		KeyUsages:       []string{"digitalSignature", "keyEncipherment"},
+		ExtKeyUsages:    []string{"serverAuth", "clientAuth"},
+		DefaultValidity: 365 * day,
+		MaxValidity:     397 * day,
+		Algorithm:       AlgHybrid,
+		PQCKeyType:      "ml-dsa-65",
 	},
 }
 
