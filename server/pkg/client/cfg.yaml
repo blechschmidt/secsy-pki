@@ -1,0 +1,16 @@
+# oapi-codegen configuration for the Secsy PKI Go client SDK.
+#
+# The source of truth is server/internal/handlers/openapi.yaml. Regenerate with:
+#
+#     go generate ./pkg/client/...     (from the server module root)
+#
+# or run scripts/gen-client.sh, which installs the pinned oapi-codegen first.
+package: client
+output: client.gen.go
+generate:
+  models: true
+  client: true
+output-options:
+  # Keep the generated file self-contained and skip the embedded copy of the
+  # spec (the server already serves it at /openapi.json).
+  skip-prune: false

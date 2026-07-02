@@ -139,7 +139,9 @@ is what Task 3 will build on.
   groups & members; permissions grant/revoke; restriction-set CRUD + defaults;
   application audit log + access log; HSM info / attestation / audit-log /
   signed / combined / provision / factory-reset; `/api/me`, `/api/health`,
-  `/api/auth/config`, Swagger at `/api/docs`.
+  `/api/auth/config`. A complete OpenAPI 3.1 spec is served at `/openapi.json`
+  (and `/openapi.yaml`), rendered as Redoc at `/docs` (Swagger UI at `/api/docs`);
+  a generated, typed Go client SDK lives in `server/pkg/client`.
 - **Database tables:** `cas`, `groups_`, `group_members`, `permissions`,
   `restriction_sets` (+ `ssh_restriction_details`, `x509_restriction_details`),
   `audit_log`, `access_log`, `hsm_audit_entries`. Built-in permit-all / deny-all

@@ -164,9 +164,15 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 		mux.Handle("GET /api/hsm/signed-audit-log", protected(http.HandlerFunc(a.GetSignedAuditLog)))
 	}
 
-	// OpenAPI docs
+	// OpenAPI spec + docs UI. The spec is served at the conventional
+	// /openapi.json (and /openapi.yaml) locations; Redoc is the primary docs UI
+	// at /docs, with Swagger UI kept for backwards compatibility at /api/docs.
+	mux.HandleFunc("GET /openapi.json", a.OpenAPIJSON)
+	mux.HandleFunc("GET /openapi.yaml", a.OpenAPISpec)
+	mux.HandleFunc("GET /docs", a.APIDocs)
 	mux.HandleFunc("GET /api/docs", a.SwaggerUI)
 	mux.HandleFunc("GET /api/docs/openapi.yaml", a.OpenAPISpec)
+	mux.HandleFunc("GET /api/docs/openapi.json", a.OpenAPIJSON)
 
 	mux.Handle("GET /api/me", protected(http.HandlerFunc(a.Me)))
 }

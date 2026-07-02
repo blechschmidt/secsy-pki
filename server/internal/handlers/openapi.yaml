@@ -1,883 +1,1872 @@
-openapi: "3.0.3"
+openapi: "3.1.0"
 info:
   title: Secsy PKI
-  description: HSM-backed SSH Certificate Authority with OIDC authentication and publicly auditable signing logs.
-  version: "1.0.0"
+  description: >-
+    HSM-backed enterprise PKI and secret-encryption platform. Exposes X.509
+    certificate-authority management (root/intermediate setup, issuance, renewal,
+    revocation with CRL/OCSP), SSH certificate signing, HSM-backed envelope
+    encryption for secrets, certificate-expiry monitoring, RBAC/audit
+    administration, ACME (RFC 8555) directory, and operational endpoints. Every
+    private-key operation runs inside the configured key provider (PKCS#11 HSM /
+    YubiHSM); key material never leaves the token.
+  version: "2.0.0"
   license:
     name: MIT
+  contact:
+    name: Secsy PKI
+    url: https://github.com/blechschmidt/secsy-pki
 
 servers:
-  - url: /api
+  - url: /
+    description: The Secsy PKI server root (all paths are absolute).
 
 security:
   - basicAuth: []
   - bearerAuth: []
+
+tags:
+  - name: Meta
+    description: Health, auth discovery, and current-user endpoints.
+  - name: Certificate Authorities
+    description: HSM-backed CA key management and root/intermediate setup.
+  - name: Certificate Lifecycle
+    description: End-entity issuance, renewal, and revocation (X.509 and SSH).
+  - name: Revocation
+    description: Public CRL and OCSP distribution points.
+  - name: Monitoring
+    description: Certificate-expiry reporting and on-demand scans.
+  - name: RBAC
+    description: Groups, memberships, and per-CA permission grants.
+  - name: Restrictions
+    description: SSH/X.509 signing restriction sets.
+  - name: Audit
+    description: Access log, sign-audit log, and the tamper-evident event log.
+  - name: Secrets
+    description: HSM-backed envelope encryption for passwords and small secrets.
+  - name: HSM
+    description: HSM device information and audit-log management.
+  - name: ACME
+    description: ACME (RFC 8555) directory and operator visibility.
+  - name: Operations
+    description: Prometheus metrics, liveness/readiness probes, and API docs.
+
+paths:
+  # ---------------------------------------------------------------------------
+  # Meta
+  # ---------------------------------------------------------------------------
+  /api/health:
+    get:
+      operationId: getHealth
+      tags: [Meta]
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: The service is up.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+
+  /api/auth/config:
+    get:
+      operationId: getAuthConfig
+      tags: [Meta]
+      summary: Public authentication configuration
+      description: Reports whether OIDC login is enabled and, if so, its issuer and client id.
+      security: []
+      responses:
+        "200":
+          description: Authentication discovery document.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthConfig" }
+
+  /api/me:
+    get:
+      operationId: getCurrentUser
+      tags: [Meta]
+      summary: Current authenticated user
+      responses:
+        "200":
+          description: The authenticated principal.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserInfo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ---------------------------------------------------------------------------
+  # Certificate Authorities
+  # ---------------------------------------------------------------------------
+  /api/keys:
+    get:
+      operationId: listCAs
+      tags: [Certificate Authorities]
+      summary: List certificate authorities / signing keys
+      responses:
+        "200":
+          description: All CAs and signing keys visible to the caller.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CA" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      operationId: createCA
+      tags: [Certificate Authorities]
+      summary: Register a signing key / CA (generic)
+      description: >-
+        Creates a signing key in the key provider (or references an existing one
+        via pkcs11_uri / public_key). For full X.509 root/intermediate setup use
+        the dedicated init-root and issue-intermediate operations.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateCARequest" }
+      responses:
+        "201":
+          description: The created CA.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CA" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/keys/{id}:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    get:
+      operationId: getCA
+      tags: [Certificate Authorities]
+      summary: Get a CA by id
+      responses:
+        "200":
+          description: The requested CA.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CA" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      operationId: deleteCA
+      tags: [Certificate Authorities]
+      summary: Delete a CA
+      responses:
+        "200":
+          description: The CA was deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/keys/{id}/children:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    get:
+      operationId: listCAChildren
+      tags: [Certificate Authorities]
+      summary: List a CA's direct children
+      responses:
+        "200":
+          description: Child CAs.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CA" }
+
+  /api/keys/{id}/public-key:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+      - name: format
+        in: query
+        description: Output encoding.
+        schema:
+          type: string
+          enum: [pem, ssh]
+          default: pem
+    get:
+      operationId: getCAPublicKey
+      tags: [Certificate Authorities]
+      summary: Get a CA public key (PEM or OpenSSH)
+      responses:
+        "200":
+          description: The public key.
+          content:
+            application/x-pem-file:
+              schema: { type: string }
+            text/plain:
+              schema: { type: string }
+
+  /api/ca/init-root:
+    post:
+      operationId: initRootCA
+      tags: [Certificate Authorities]
+      summary: Initialize a self-signed root CA
+      description: Generates the root key inside the HSM and self-signs the root certificate.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CAInitRootRequest" }
+      responses:
+        "201":
+          description: The initialized root CA (with certificate populated).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CA" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ca/{id}/issue-intermediate:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: issueIntermediateCA
+      tags: [Certificate Authorities]
+      summary: Issue an intermediate CA
+      description: Generates a new key in the HSM and signs an intermediate CA certificate with the parent identified by the path.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CAIssueIntermediateRequest" }
+      responses:
+        "201":
+          description: The issued intermediate CA.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CA" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ---------------------------------------------------------------------------
+  # Certificate Lifecycle
+  # ---------------------------------------------------------------------------
+  /api/profiles:
+    get:
+      operationId: listProfiles
+      tags: [Certificate Lifecycle]
+      summary: List certificate profiles
+      responses:
+        "200":
+          description: Available issuance profiles.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Profile" }
+
+  /api/ca/{id}/issue:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: issueCertificate
+      tags: [Certificate Lifecycle]
+      summary: Issue an end-entity certificate from a CSR
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IssueCertRequest" }
+      responses:
+        "201":
+          description: The issued certificate.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssueCertResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ca/{id}/renew:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: renewCertificate
+      tags: [Certificate Lifecycle]
+      summary: Renew a certificate by serial (optionally rekey)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RenewCertRequest" }
+      responses:
+        "201":
+          description: The renewed certificate.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssueCertResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ca/{id}/revoke:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: revokeCertificate
+      tags: [Certificate Lifecycle]
+      summary: Revoke a certificate by serial
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RevokeCertRequest" }
+      responses:
+        "200":
+          description: Revocation outcome.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RevokeResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ca/{id}/certificates:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    get:
+      operationId: listIssuedCertificates
+      tags: [Certificate Lifecycle]
+      summary: List certificates issued by a CA
+      responses:
+        "200":
+          description: Issued certificates.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/IssuedCertificate" }
+
+  /api/ca/{id}/revoked:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    get:
+      operationId: listRevokedCertificates
+      tags: [Certificate Lifecycle]
+      summary: List revoked serials for a CA
+      responses:
+        "200":
+          description: Revoked certificates.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RevokedCertificate" }
+
+  /api/keys/{id}/sign:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: signSSHCertificate
+      tags: [Certificate Lifecycle]
+      summary: Sign an OpenSSH certificate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SignRequest" }
+      responses:
+        "200":
+          description: The signed SSH certificate.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SignResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/keys/{id}/sign-x509:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: signX509Certificate
+      tags: [Certificate Lifecycle]
+      summary: Sign an X.509 certificate from a CSR (low-level)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/X509SignRequest" }
+      responses:
+        "200":
+          description: The signed X.509 certificate.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/X509SignResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/parse-csr:
+    post:
+      operationId: parseCSR
+      tags: [Certificate Lifecycle]
+      summary: Parse and validate a PEM PKCS#10 CSR
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ParseCSRRequest" }
+      responses:
+        "200":
+          description: Decoded CSR fields.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ParsedCSR" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/keys/{id}/my-restrictions:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+      - name: format
+        in: query
+        schema:
+          type: string
+          enum: [ssh, x509]
+          default: ssh
+    get:
+      operationId: getMyRestrictions
+      tags: [Restrictions]
+      summary: Effective restriction set for the caller on a CA
+      responses:
+        "200":
+          description: The effective restriction set.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RestrictionSet" }
+
+  # ---------------------------------------------------------------------------
+  # Revocation (public)
+  # ---------------------------------------------------------------------------
+  /api/ca/{id}/crl:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+      - name: format
+        in: query
+        schema:
+          type: string
+          enum: [der, pem]
+          default: der
+    get:
+      operationId: getCRL
+      tags: [Revocation]
+      summary: Download a CA's CRL
+      security: []
+      responses:
+        "200":
+          description: The CRL.
+          content:
+            application/pkix-crl:
+              schema: { type: string, format: binary }
+            application/x-pem-file:
+              schema: { type: string }
+
+  /api/ca/{id}/ocsp:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: postOCSP
+      tags: [Revocation]
+      summary: OCSP responder (POST, DER request body)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/ocsp-request:
+            schema: { type: string, format: binary }
+      responses:
+        "200":
+          description: DER OCSP response.
+          content:
+            application/ocsp-response:
+              schema: { type: string, format: binary }
+
+  /api/ca/{id}/ocsp/{ocspRequest}:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+      - name: ocspRequest
+        in: path
+        required: true
+        description: base64url-encoded DER OCSP request.
+        schema: { type: string }
+    get:
+      operationId: getOCSP
+      tags: [Revocation]
+      summary: OCSP responder (GET, base64 request in path)
+      security: []
+      responses:
+        "200":
+          description: DER OCSP response.
+          content:
+            application/ocsp-response:
+              schema: { type: string, format: binary }
+
+  # ---------------------------------------------------------------------------
+  # Monitoring
+  # ---------------------------------------------------------------------------
+  /api/monitor/expiring:
+    get:
+      operationId: listExpiringCertificates
+      tags: [Monitoring]
+      summary: Report certificates by remaining validity
+      parameters:
+        - name: ca
+          in: query
+          description: Restrict to one CA id.
+          schema: { type: string }
+        - name: days
+          in: query
+          description: Only certificates expiring within n days (and already expired).
+          schema: { type: integer, minimum: 0 }
+        - name: severity
+          in: query
+          schema: { type: string, enum: [warning, critical, expired] }
+        - name: include_superseded
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Expiry report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExpiryReport" }
+
+  /api/monitor/scan:
+    post:
+      operationId: runExpiryScan
+      tags: [Monitoring]
+      summary: Run an on-demand expiry scan (optionally auto-renew)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ScanRequest" }
+      responses:
+        "200":
+          description: Scan report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScanReport" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ---------------------------------------------------------------------------
+  # RBAC
+  # ---------------------------------------------------------------------------
+  /api/groups:
+    get:
+      operationId: listGroups
+      tags: [RBAC]
+      summary: List groups
+      responses:
+        "200":
+          description: All groups.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Group" }
+    post:
+      operationId: createGroup
+      tags: [RBAC]
+      summary: Create a group
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateGroupRequest" }
+      responses:
+        "201":
+          description: The created group.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Group" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/groups/{id}:
+    parameters:
+      - $ref: "#/components/parameters/GroupId"
+    delete:
+      operationId: deleteGroup
+      tags: [RBAC]
+      summary: Delete a group
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/groups/{id}/members:
+    parameters:
+      - $ref: "#/components/parameters/GroupId"
+    get:
+      operationId: listGroupMembers
+      tags: [RBAC]
+      summary: List group members
+      responses:
+        "200":
+          description: Member subjects.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+    post:
+      operationId: addGroupMember
+      tags: [RBAC]
+      summary: Add a group member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AddGroupMemberRequest" }
+      responses:
+        "200":
+          description: Added.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/groups/{id}/members/{sub}:
+    parameters:
+      - $ref: "#/components/parameters/GroupId"
+      - name: sub
+        in: path
+        required: true
+        description: User subject.
+        schema: { type: string }
+    delete:
+      operationId: removeGroupMember
+      tags: [RBAC]
+      summary: Remove a group member
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/keys/{id}/permissions:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    get:
+      operationId: listPermissions
+      tags: [RBAC]
+      summary: List per-CA permission grants
+      responses:
+        "200":
+          description: Permission entries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PermissionEntry" }
+    post:
+      operationId: grantPermission
+      tags: [RBAC]
+      summary: Grant a permission on a CA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PermissionGrant" }
+      responses:
+        "200":
+          description: Granted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    delete:
+      operationId: revokePermission
+      tags: [RBAC]
+      summary: Revoke a permission on a CA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PermissionGrant" }
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ---------------------------------------------------------------------------
+  # Restriction sets
+  # ---------------------------------------------------------------------------
+  /api/restriction-sets:
+    get:
+      operationId: listAllRestrictionSets
+      tags: [Restrictions]
+      summary: List all restriction sets
+      responses:
+        "200":
+          description: Restriction sets.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RestrictionSet" }
+    post:
+      operationId: createGlobalRestrictionSet
+      tags: [Restrictions]
+      summary: Create a global restriction set
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RestrictionSet" }
+      responses:
+        "201":
+          description: The created restriction set.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RestrictionSet" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/restriction-sets/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Restriction-set id.
+        schema: { type: string }
+    put:
+      operationId: updateRestrictionSet
+      tags: [Restrictions]
+      summary: Update a restriction set
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RestrictionSet" }
+      responses:
+        "200":
+          description: The updated restriction set.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RestrictionSet" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    delete:
+      operationId: deleteRestrictionSet
+      tags: [Restrictions]
+      summary: Delete a restriction set
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/keys/{id}/restriction-sets:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    get:
+      operationId: listCARestrictionSets
+      tags: [Restrictions]
+      summary: List a CA's restriction sets
+      responses:
+        "200":
+          description: Restriction sets scoped to the CA.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RestrictionSet" }
+    post:
+      operationId: createCARestrictionSet
+      tags: [Restrictions]
+      summary: Create a CA-scoped restriction set
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RestrictionSet" }
+      responses:
+        "201":
+          description: The created restriction set.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RestrictionSet" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/keys/{id}/default-restriction-set:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    put:
+      operationId: setDefaultRestrictionSet
+      tags: [Restrictions]
+      summary: Set a CA's default restriction set
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SetDefaultRestrictionSetRequest" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ---------------------------------------------------------------------------
+  # Audit
+  # ---------------------------------------------------------------------------
+  /api/audit-log:
+    get:
+      operationId: listAuditLog
+      tags: [Audit]
+      summary: List certificate-signing audit entries
+      parameters:
+        - name: ca_id
+          in: query
+          schema: { type: string }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - name: export
+          in: query
+          description: Set to "json" for a full unpaginated export.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Audit entries.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditLogPage" }
+
+  /api/access-log:
+    get:
+      operationId: listAccessLog
+      tags: [Audit]
+      summary: List HTTP access-log entries
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+        - name: export
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Access-log entries.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccessLogPage" }
+
+  /api/events:
+    get:
+      operationId: listEventLog
+      tags: [Audit]
+      summary: List the tamper-evident event log
+      parameters:
+        - name: action
+          in: query
+          schema: { type: string }
+        - name: actor
+          in: query
+          schema: { type: string }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: Event entries.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EventPage" }
+
+  /api/events/verify:
+    get:
+      operationId: verifyEventLog
+      tags: [Audit]
+      summary: Verify the event-log hash chain
+      responses:
+        "200":
+          description: The chain is intact.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EventVerifyResult" }
+        "409":
+          description: The chain has been tampered with.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EventVerifyResult" }
+
+  # ---------------------------------------------------------------------------
+  # ACME operator visibility
+  # ---------------------------------------------------------------------------
+  /api/acme/accounts:
+    get:
+      operationId: listACMEAccounts
+      tags: [ACME]
+      summary: List ACME accounts
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: ACME accounts.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ACMEAccount" }
+
+  /api/acme/orders:
+    get:
+      operationId: listACMEOrders
+      tags: [ACME]
+      summary: List ACME orders
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: ACME orders.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ACMEOrder" }
+
+  # ---------------------------------------------------------------------------
+  # Secrets
+  # ---------------------------------------------------------------------------
+  /api/secret/info:
+    get:
+      operationId: getSecretInfo
+      tags: [Secrets]
+      summary: Report KEK metadata (never key material)
+      responses:
+        "200":
+          description: KEK metadata.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecretInfo" }
+        "404":
+          description: Secret encryption is not enabled on this server.
+
+  /api/secret/encrypt:
+    post:
+      operationId: encryptSecret
+      tags: [Secrets]
+      summary: Envelope-encrypt a secret
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EncryptRequest" }
+      responses:
+        "200":
+          description: The versioned envelope.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EncryptResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413":
+          description: Plaintext exceeds the maximum size.
+
+  /api/secret/decrypt:
+    post:
+      operationId: decryptSecret
+      tags: [Secrets]
+      summary: Decrypt an envelope
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DecryptRequest" }
+      responses:
+        "200":
+          description: The recovered plaintext (base64).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecryptResponse" }
+        "400":
+          description: Decryption failed (generic, oracle-resistant).
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ---------------------------------------------------------------------------
+  # HSM
+  # ---------------------------------------------------------------------------
+  /api/hsm/info:
+    get:
+      operationId: getHSMInfo
+      tags: [HSM]
+      summary: HSM device information
+      responses:
+        "200":
+          description: HSM info.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HSMInfo" }
+
+  /api/hsm/attestation:
+    get:
+      operationId: getHSMAttestation
+      tags: [HSM]
+      summary: Download the HSM device attestation certificate (PEM)
+      responses:
+        "200":
+          description: PEM attestation certificate.
+          content:
+            application/x-pem-file:
+              schema: { type: string }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/hsm/audit-log:
+    get:
+      operationId: getHSMAuditLog
+      tags: [HSM]
+      summary: Read the HSM's on-device audit log
+      responses:
+        "200":
+          description: HSM audit entries.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HSMAuditLog" }
+
+  /api/hsm/provision-audit:
+    post:
+      operationId: provisionHSMAudit
+      tags: [HSM]
+      summary: Provision forced HSM audit logging
+      responses:
+        "200":
+          description: Provisioned.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusMessage" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/hsm/factory-reset:
+    post:
+      operationId: factoryResetHSM
+      tags: [HSM]
+      summary: Factory-reset the HSM (destroys all keys and logs)
+      responses:
+        "200":
+          description: Reset complete.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/hsm/combined-audit-log:
+    get:
+      operationId: exportCombinedAuditLog
+      tags: [HSM]
+      summary: Export the combined (HSM + signing) audit log
+      responses:
+        "200":
+          description: Combined audit export.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CombinedAuditExport" }
+
+  /api/hsm/signed-audit-log:
+    get:
+      operationId: getSignedAuditLog
+      tags: [HSM]
+      summary: Download the HSM-signed complete audit log
+      responses:
+        "200":
+          description: Signed audit-log document.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  # ---------------------------------------------------------------------------
+  # ACME directory (RFC 8555) — protocol endpoints authenticate via JWS.
+  # ---------------------------------------------------------------------------
+  /acme/directory:
+    get:
+      operationId: getACMEDirectory
+      tags: [ACME]
+      summary: ACME directory (RFC 8555 §7.1.1)
+      security: []
+      responses:
+        "200":
+          description: The ACME directory resource.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ACMEDirectory" }
+
+  /acme/new-nonce:
+    get:
+      operationId: getACMENonce
+      tags: [ACME]
+      summary: Fetch a fresh ACME replay-nonce
+      security: []
+      responses:
+        "204":
+          description: Empty body; the nonce is returned in the Replay-Nonce header.
+          headers:
+            Replay-Nonce:
+              schema: { type: string }
+
+  # ---------------------------------------------------------------------------
+  # Operations
+  # ---------------------------------------------------------------------------
+  /metrics:
+    get:
+      operationId: getMetrics
+      tags: [Operations]
+      summary: Prometheus metrics
+      security: []
+      responses:
+        "200":
+          description: Prometheus text exposition.
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /healthz:
+    get:
+      operationId: getLiveness
+      tags: [Operations]
+      summary: Liveness probe (always 200)
+      security: []
+      responses:
+        "200":
+          description: The process is alive.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+
+  /readyz:
+    get:
+      operationId: getReadiness
+      tags: [Operations]
+      summary: Readiness probe (checks DB and HSM)
+      security: []
+      responses:
+        "200":
+          description: Ready.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+        "503":
+          description: Not ready.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+
+  /openapi.json:
+    get:
+      operationId: getOpenAPIJSON
+      tags: [Operations]
+      summary: This OpenAPI document (JSON)
+      security: []
+      responses:
+        "200":
+          description: The OpenAPI 3.1 specification as JSON.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /openapi.yaml:
+    get:
+      operationId: getOpenAPIYAML
+      tags: [Operations]
+      summary: This OpenAPI document (YAML)
+      security: []
+      responses:
+        "200":
+          description: The OpenAPI 3.1 specification as YAML.
+          content:
+            application/yaml:
+              schema: { type: string }
 
 components:
   securitySchemes:
     basicAuth:
       type: http
       scheme: basic
+      description: Built-in root user (username/password).
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
+      description: OIDC access token.
+
+  parameters:
+    CAId:
+      name: id
+      in: path
+      required: true
+      description: CA / signing-key id.
+      schema: { type: string }
+    GroupId:
+      name: id
+      in: path
+      required: true
+      description: Group id.
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      description: Page size (1–500).
+      schema: { type: integer, minimum: 1, maximum: 500 }
+    Offset:
+      name: offset
+      in: query
+      description: Row offset.
+      schema: { type: integer, minimum: 0 }
+
+  responses:
+    BadRequest:
+      description: The request was malformed.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Authentication is required or failed.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: The caller lacks the required permission.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: The resource was not found.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
   schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+    StatusResponse:
+      type: object
+      properties:
+        status: { type: string }
+    StatusMessage:
+      type: object
+      properties:
+        status: { type: string }
+        output: { type: string }
+
+    AuthConfig:
+      type: object
+      properties:
+        oidc_enabled: { type: boolean }
+        issuer_url: { type: string }
+        client_id: { type: string }
+
+    UserInfo:
+      type: object
+      properties:
+        sub: { type: string }
+        email: { type: string }
+        email_verified: { type: boolean }
+        name: { type: string }
+        is_root: { type: boolean }
+        roles:
+          type: array
+          items: { type: string }
+
     CASubject:
       type: object
       required: [cn]
-      description: Distinguished-name fields for a CA certificate
       properties:
-        cn:
-          type: string
-          description: Common name (required)
-        o:
-          type: string
-          description: Organization
-        ou:
-          type: string
-          description: Organizational unit
-        c:
-          type: string
-          description: Country
-        st:
-          type: string
-          description: State / province
-        l:
-          type: string
-          description: Locality
+        cn: { type: string, description: Common name (required) }
+        o: { type: string }
+        ou: { type: string }
+        c: { type: string }
+        st: { type: string }
+        l: { type: string }
 
-paths:
-  /health:
-    get:
-      summary: Health check
-      security: []
-      responses:
-        "200":
-          description: OK
+    CA:
+      type: object
+      properties:
+        id: { type: string }
+        parent_id: { type: string }
+        label: { type: string }
+        pkcs11_uri: { type: string }
+        key_type: { type: string }
+        public_key: { type: string }
+        default_ssh_restriction_set_id: { type: string }
+        default_x509_restriction_set_id: { type: string }
+        created_at: { type: string, format: date-time }
+        certificate: { type: string, description: PEM X.509 CA certificate }
+        subject: { type: string }
+        serial: { type: string }
+        not_before: { type: string, format: date-time }
+        not_after: { type: string, format: date-time }
+        max_path_len: { type: integer }
 
-  /auth/config:
-    get:
-      summary: OIDC discovery config
-      security: []
-      responses:
-        "200":
-          description: OIDC configuration
+    CreateCARequest:
+      type: object
+      required: [label, key_type]
+      properties:
+        label: { type: string }
+        parent_id: { type: string }
+        pkcs11_uri: { type: string }
+        key_type: { type: string }
+        public_key: { type: string }
 
-  /me:
-    get:
-      summary: Current user info
-      responses:
-        "200":
-          description: User info with subject, email, name, is_root
+    CAInitRootRequest:
+      type: object
+      required: [label, key_type, subject]
+      properties:
+        label: { type: string }
+        key_type: { type: string, description: "e.g. ecdsa-p256, rsa-3072, ed25519" }
+        subject: { $ref: "#/components/schemas/CASubject" }
+        validity_days: { type: integer }
+        max_path_len: { type: integer }
 
-  /cas:
-    get:
-      summary: List certificate authorities
-      responses:
-        "200":
-          description: Array of CAs
-    post:
-      summary: Create a CA (omit pkcs11_uri to generate key on HSM)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [label, key_type]
-              properties:
-                label:
-                  type: string
-                parent_id:
-                  type: string
-                pkcs11_uri:
-                  type: string
-                  description: Leave empty to generate key on HSM
-                key_type:
-                  type: string
-                  enum: [ed25519, ecdsa-sha2-nistp256, ecdsa-sha2-nistp384, ecdsa-sha2-nistp521]
-                public_key:
-                  type: string
-      responses:
-        "201":
-          description: CA created
+    CAIssueIntermediateRequest:
+      type: object
+      required: [label, key_type, subject]
+      properties:
+        parent_id: { type: string }
+        label: { type: string }
+        key_type: { type: string }
+        subject: { $ref: "#/components/schemas/CASubject" }
+        validity_days: { type: integer }
+        max_path_len: { type: integer }
 
-  /ca/init-root:
-    post:
-      summary: Initialize a self-signed root CA (root only)
-      description: >
-        Generates a CA private key inside the configured key provider (HSM via
-        PKCS#11, or the software keystore) and creates a self-signed root CA
-        certificate whose signing operation is performed by the provider. The
-        certificate and metadata (serial, subject, validity) are persisted.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [label, key_type, subject]
-              properties:
-                label:
-                  type: string
-                  description: Key label / CA name (must be unique)
-                key_type:
-                  type: string
-                  enum: [ed25519, ecdsa-sha2-nistp256, ecdsa-sha2-nistp384, ecdsa-sha2-nistp521, rsa-2048, rsa-4096]
-                subject:
-                  $ref: "#/components/schemas/CASubject"
-                validity_days:
-                  type: integer
-                  description: Certificate lifetime in days (default 3650)
-                max_path_len:
-                  type: integer
-                  description: Max intermediate CAs below this one (omit for unconstrained, 0 = leaf-only)
-      responses:
-        "201":
-          description: Root CA created
-        "400":
-          description: Invalid request or duplicate label
+    Profile:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string }
+        key_usages:
+          type: array
+          items: { type: string }
+        ext_key_usages:
+          type: array
+          items: { type: string }
+        default_validity_days: { type: integer }
+        max_validity_days: { type: integer }
+        is_ca: { type: boolean }
+        max_path_len: { type: integer }
 
-  /ca/{id}/issue-intermediate:
-    post:
-      summary: Issue an intermediate CA under an existing CA (root only)
-      description: >
-        Generates an intermediate CA key inside the key provider and issues an
-        intermediate certificate signed by the parent CA on the device. The
-        intermediate's validity is clamped to the parent's expiry.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Parent CA id
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [label, key_type, subject]
-              properties:
-                label:
-                  type: string
-                key_type:
-                  type: string
-                  enum: [ed25519, ecdsa-sha2-nistp256, ecdsa-sha2-nistp384, ecdsa-sha2-nistp521, rsa-2048, rsa-4096]
-                subject:
-                  $ref: "#/components/schemas/CASubject"
-                validity_days:
-                  type: integer
-                  description: Certificate lifetime in days (default 1825)
-                max_path_len:
-                  type: integer
-      responses:
-        "201":
-          description: Intermediate CA created
-        "400":
-          description: Invalid request, unknown parent, or path-length violation
+    IssueCertRequest:
+      type: object
+      required: [csr]
+      properties:
+        csr: { type: string, description: PEM PKCS#10 CSR }
+        profile: { type: string }
+        validity_days: { type: integer }
 
-  /profiles:
-    get:
-      summary: List certificate profiles
-      description: >
-        Returns the built-in certificate profiles (server, client,
-        server-client, code-signing, email). Each profile defines the key
-        usages, extended key usages, and default/maximum validity applied when
-        issuing an end-entity certificate.
-      responses:
-        "200":
-          description: Array of profiles
+    IssueCertResponse:
+      type: object
+      properties:
+        certificate: { type: string, description: PEM leaf certificate }
+        chain: { type: string }
+        serial: { type: string }
+        profile: { type: string }
+        not_before: { type: string }
+        not_after: { type: string }
 
-  /ca/{id}/issue:
-    post:
-      summary: Issue an end-entity certificate from a CSR (requires SIGN_CERTIFICATE)
-      description: >
-        Signs a PKCS#10 CSR into an end-entity certificate under the named
-        profile, using the CA's HSM-held key. The subject, public key, and SANs
-        are taken from the CSR; key usage, extended key usage, and validity
-        bounds come from the profile. The serial number is allocated atomically
-        and the certificate is recorded for renewal/revocation.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Issuing CA id
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [csr]
-              properties:
-                csr:
-                  type: string
-                  description: PEM-encoded PKCS#10 certificate signing request
-                profile:
-                  type: string
-                  description: Profile name (default "server")
-                validity_days:
-                  type: integer
-                  description: Override validity in days (clamped to the profile max and CA expiry)
-      responses:
-        "201":
-          description: Certificate issued (PEM leaf + chain + serial)
-        "400":
-          description: Invalid CSR, unknown profile, or non-CA target
-        "403":
-          description: Missing SIGN_CERTIFICATE permission
+    RenewCertRequest:
+      type: object
+      required: [serial]
+      properties:
+        serial: { type: string }
+        csr: { type: string, description: "optional: rekey with a new CSR" }
+        validity_days: { type: integer }
 
-  /ca/{id}/renew:
-    post:
-      summary: Renew a previously issued certificate (requires SIGN_CERTIFICATE)
-      description: >
-        Reissues a certificate identified by serial with a fresh serial and
-        validity window, reusing the original subject/SANs/profile (and public
-        key, unless a new CSR is supplied). The original certificate is left
-        intact and may be revoked separately.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [serial]
-              properties:
-                serial:
-                  type: string
-                  description: Serial of the certificate to renew (decimal)
-                csr:
-                  type: string
-                  description: Optional PEM CSR to rekey the certificate
-                validity_days:
-                  type: integer
-      responses:
-        "201":
-          description: Certificate renewed
-        "400":
-          description: Unknown serial or invalid request
+    RevokeCertRequest:
+      type: object
+      required: [serial]
+      properties:
+        serial: { type: string }
+        reason: { type: string, description: RFC 5280 reason name }
 
-  /ca/{id}/revoke:
-    post:
-      summary: Revoke a certificate by serial (requires SIGN_CERTIFICATE)
-      description: >
-        Records a revocation in the CA's revocation store. Revocation is
-        idempotent; re-revoking a serial updates its reason. The revocation is
-        published via the CRL and OCSP endpoints.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [serial]
-              properties:
-                serial:
-                  type: string
-                  description: Serial to revoke (decimal)
-                reason:
-                  type: string
-                  description: >
-                    RFC 5280 reason name (unspecified, keyCompromise,
-                    cACompromise, affiliationChanged, superseded,
-                    cessationOfOperation, certificateHold, privilegeWithdrawn,
-                    aACompromise). Default "unspecified".
-      responses:
-        "200":
-          description: Revoked (or already-revoked)
+    RevokeResult:
+      type: object
+      properties:
+        status: { type: string, enum: [revoked, already-revoked] }
+        serial: { type: string }
 
-  /ca/{id}/certificates:
-    get:
-      summary: List certificates issued by a CA
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Array of issued certificate records
+    IssuedCertificate:
+      type: object
+      properties:
+        id: { type: string }
+        ca_id: { type: string }
+        serial: { type: string }
+        subject: { type: string }
+        common_name: { type: string }
+        sans:
+          type: array
+          items: { type: string }
+        profile: { type: string }
+        certificate: { type: string }
+        not_before: { type: string, format: date-time }
+        not_after: { type: string, format: date-time }
+        status: { type: string, enum: [valid, revoked, expired] }
+        revoked_at: { type: string, format: date-time }
+        revocation_reason: { type: integer }
+        requested_by: { type: string }
+        created_at: { type: string, format: date-time }
 
-  /ca/{id}/revoked:
-    get:
-      summary: List a CA's revocation records
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Array of revocation records
+    RevokedCertificate:
+      type: object
+      properties:
+        ca_id: { type: string }
+        serial: { type: string }
+        revoked_at: { type: string, format: date-time }
+        reason: { type: integer }
 
-  /ca/{id}/crl:
-    get:
-      summary: Fetch a freshly generated CRL (public)
-      description: >
-        Generates and returns a signed X.509 v2 CRL covering all recorded
-        revocations for the CA. Public — no authentication required. Returns DER
-        (application/pkix-crl) by default, or PEM with ?format=pem.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: format
-          in: query
-          required: false
-          schema:
-            type: string
-            enum: [der, pem]
-      responses:
-        "200":
-          description: DER or PEM CRL
+    SignRequest:
+      type: object
+      required: [public_key]
+      properties:
+        ca_id: { type: string }
+        public_key: { type: string, description: OpenSSH public key }
+        principals:
+          type: array
+          items: { type: string }
+        cert_type: { type: string, enum: [user, host] }
+        key_id: { type: string }
+        reason: { type: string }
+        valid_after: { type: string }
+        valid_before: { type: string }
+        extensions:
+          type: object
+          additionalProperties: { type: string }
+        critical_options:
+          type: object
+          additionalProperties: { type: string }
 
-  /ca/{id}/ocsp:
-    post:
-      summary: OCSP responder (public, RFC 6960)
-      description: >
-        Answers an OCSP request about a certificate issued by the CA. The
-        request body is the DER-encoded OCSP request; the response is a signed
-        DER OCSP response (application/ocsp-response). Public — no auth. A GET
-        form with a base64-encoded request in the path is also supported.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/ocsp-request:
-            schema:
-              type: string
-              format: binary
-      responses:
-        "200":
-          description: DER-encoded OCSP response
+    SignResponse:
+      type: object
+      properties:
+        certificate: { type: string }
+        key_id: { type: string }
 
-  /cas/{id}:
-    get:
-      summary: Get a CA
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: CA details
-    delete:
-      summary: Delete a CA (root only)
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Deleted
+    X509SignRequest:
+      type: object
+      required: [csr]
+      properties:
+        ca_id: { type: string }
+        csr: { type: string, description: PEM PKCS#10 CSR }
+        valid_before: { type: string }
+        reason: { type: string }
 
-  /cas/{id}/sign:
-    post:
-      summary: Sign an SSH certificate
-      description: Returns existing certificate if the same public key was already signed by this CA.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [public_key]
-              properties:
-                public_key:
-                  type: string
-                cert_type:
-                  type: string
-                  enum: [user, host]
-                  default: user
-                key_id:
-                  type: string
-                reason:
-                  type: string
-                principals:
-                  type: array
-                  items:
-                    type: string
-                valid_after:
-                  type: string
-                valid_before:
-                  type: string
-                extensions:
-                  type: object
-                  additionalProperties:
-                    type: string
-                critical_options:
-                  type: object
-                  additionalProperties:
-                    type: string
-      responses:
-        "200":
-          description: Signed certificate
+    X509SignResponse:
+      type: object
+      properties:
+        certificate: { type: string }
+        serial: { type: string }
 
-  /cas/{id}/my-restrictions:
-    get:
-      summary: Get effective restriction set for current user on a CA
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Restriction set or null
+    ParseCSRRequest:
+      type: object
+      required: [csr]
+      properties:
+        csr: { type: string }
 
-  /groups:
-    get:
-      summary: List groups
-      responses:
-        "200":
-          description: Array of groups
-    post:
-      summary: Create a group (root only)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name]
-              properties:
-                name:
-                  type: string
-      responses:
-        "201":
-          description: Group created
+    ParsedCSR:
+      type: object
+      properties:
+        subject:
+          type: object
+          additionalProperties: { type: string }
+        sans:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+        public_key_algorithm: { type: string }
 
-  /groups/{id}:
-    delete:
-      summary: Delete a group (root only)
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Deleted
+    Group:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
 
-  /groups/{id}/members:
-    get:
-      summary: List group members
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Array of user subjects
-    post:
-      summary: Add group member (root only)
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [user_sub]
-              properties:
-                user_sub:
-                  type: string
-      responses:
-        "200":
-          description: Member added
+    CreateGroupRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
 
-  /groups/{id}/members/{sub}:
-    delete:
-      summary: Remove group member (root only)
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: sub
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Member removed
+    AddGroupMemberRequest:
+      type: object
+      required: [user_sub]
+      properties:
+        user_sub: { type: string }
 
-  /cas/{id}/permissions:
-    get:
-      summary: List permissions on a CA
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Array of permission entries
-    post:
-      summary: Grant permission
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [entity_type, entity_id, permission]
-              properties:
-                entity_type:
-                  type: string
-                  enum: [user, group]
-                entity_id:
-                  type: string
-                permission:
-                  type: string
-                  enum: [SIGN_CERTIFICATE, MANAGE_PERMISSIONS, CONFIGURE_CA]
-                restriction_set_id:
-                  type: string
-      responses:
-        "200":
-          description: Permission granted
-    delete:
-      summary: Revoke permission
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Permission revoked
+    PermissionEntry:
+      type: object
+      properties:
+        id: { type: string }
+        ca_id: { type: string }
+        entity_type: { type: string, enum: [user, group] }
+        entity_id: { type: string }
+        permission: { $ref: "#/components/schemas/Permission" }
+        ssh_restriction_set_id: { type: string }
+        x509_restriction_set_id: { type: string }
 
-  /cas/{id}/restriction-sets:
-    get:
-      summary: List restriction sets for a CA
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Array of restriction sets
-    post:
-      summary: Create restriction set (requires CONFIGURE_CA)
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name]
-              properties:
-                name:
-                  type: string
-                max_validity_secs:
-                  type: integer
-                allowed_principals:
-                  type: array
-                  items:
-                    type: string
-                allowed_cert_types:
-                  type: array
-                  items:
-                    type: string
-                force_key_id_email:
-                  type: boolean
-                  description: Force key ID to user email
-                require_reason:
-                  type: boolean
-                  description: Require a reason (appended to key ID in parentheses)
-                deny_extensions:
-                  type: boolean
-                allowed_extensions:
-                  type: array
-                  items:
-                    type: string
-                deny_critical_options:
-                  type: boolean
-                max_valid_after_offset:
-                  type: integer
-      responses:
-        "201":
-          description: Restriction set created
+    PermissionGrant:
+      type: object
+      required: [ca_id, entity_type, entity_id, permission]
+      properties:
+        ca_id: { type: string }
+        entity_type: { type: string, enum: [user, group] }
+        entity_id: { type: string }
+        permission: { $ref: "#/components/schemas/Permission" }
+        ssh_restriction_set_id: { type: string }
+        x509_restriction_set_id: { type: string }
 
-  /restriction-sets/{id}:
-    put:
-      summary: Update restriction set
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Updated
-    delete:
-      summary: Delete restriction set
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Deleted
+    Permission:
+      type: string
+      enum: [SIGN_CERTIFICATE, MANAGE_PERMISSIONS, CONFIGURE_CA]
 
-  /cas/{id}/default-restriction-set:
-    put:
-      summary: Set CA default restriction set
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                restriction_set_id:
-                  type: string
-                  nullable: true
-      responses:
-        "200":
-          description: Updated
+    SetDefaultRestrictionSetRequest:
+      type: object
+      required: [type]
+      properties:
+        restriction_set_id: { type: string }
+        type: { type: string, enum: [ssh, x509] }
 
-  /audit-log:
-    get:
-      summary: Sign operations audit log
-      parameters:
-        - name: ca_id
-          in: query
-          schema:
-            type: string
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            default: 50
-        - name: offset
-          in: query
-          schema:
-            type: integer
-            default: 0
-        - name: export
-          in: query
-          schema:
-            type: string
-            enum: [json]
-      responses:
-        "200":
-          description: Paginated audit log entries
+    RestrictionSet:
+      type: object
+      properties:
+        id: { type: string }
+        ca_id: { type: string }
+        name: { type: string }
+        type: { type: string, enum: [ssh, x509] }
+        max_validity_secs: { type: integer, format: int64 }
+        deny_all: { type: boolean }
+        allowed_principals:
+          type: array
+          items: { type: string }
+        allowed_cert_types:
+          type: array
+          items: { type: string }
+        force_key_id_email: { type: boolean }
+        require_reason: { type: boolean }
+        allowed_extensions:
+          type: array
+          items: { type: string }
+        deny_extensions: { type: boolean }
+        deny_critical_options: { type: boolean }
+        max_valid_after_offset: { type: integer, format: int64 }
+        allowed_key_usages:
+          type: array
+          items: { type: string }
+        allowed_ext_key_usages:
+          type: array
+          items: { type: string }
+        allowed_san_types:
+          type: array
+          items: { type: string }
+        allowed_san_patterns:
+          type: array
+          items: { type: string }
+        allowed_subject_fields:
+          type: array
+          items: { type: string }
+        max_path_length: { type: integer }
+        deny_ca: { type: boolean }
 
-  /access-log:
-    get:
-      summary: API access log
-      parameters:
-        - name: limit
-          in: query
-          schema:
-            type: integer
-        - name: offset
-          in: query
-          schema:
-            type: integer
-        - name: export
-          in: query
-          schema:
-            type: string
-            enum: [json]
-      responses:
-        "200":
-          description: Paginated access log entries
+    AuditLogEntry:
+      type: object
+      properties:
+        id: { type: string }
+        timestamp: { type: string, format: date-time }
+        user_sub: { type: string }
+        user_email: { type: string }
+        user_name: { type: string }
+        ca_id: { type: string }
+        ca_label: { type: string }
+        cert_format: { type: string, enum: [ssh, x509] }
+        key_id: { type: string }
+        cert_type: { type: string }
+        principals:
+          type: array
+          items: { type: string }
+        valid_after: { type: string, format: date-time }
+        valid_before: { type: string, format: date-time }
+        extensions:
+          type: object
+          additionalProperties: { type: string }
+        critical_options:
+          type: object
+          additionalProperties: { type: string }
+        public_key: { type: string }
+        certificate: { type: string }
+        restriction_set_id: { type: string }
+        serial: { type: string }
 
-  /hsm/info:
-    get:
-      summary: HSM device info and audit status
-      description: Only available when YubiHSM is configured.
-      responses:
-        "200":
-          description: Device info
+    AuditLogPage:
+      type: object
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/AuditLogEntry" }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
 
-  /hsm/attestation:
-    get:
-      summary: Export device attestation certificate (PEM)
-      responses:
-        "200":
-          description: PEM certificate
+    AccessLogEntry:
+      type: object
+      properties:
+        id: { type: string }
+        timestamp: { type: string, format: date-time }
+        user_sub: { type: string }
+        method: { type: string }
+        path: { type: string }
+        status: { type: integer }
+        ip: { type: string }
+        request_id: { type: string }
 
-  /hsm/audit-log:
-    get:
-      summary: HSM audit log entries from database
-      responses:
-        "200":
-          description: HSM audit entries with hash chain verification
+    AccessLogPage:
+      type: object
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/AccessLogEntry" }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
 
-  /hsm/signed-audit-log:
-    get:
-      summary: Signed HSM audit log
-      description: Signature over the last hash in the HSM's internal hash chain.
-      responses:
-        "200":
-          description: Signed audit log JSON
+    Event:
+      type: object
+      properties:
+        seq: { type: integer, format: int64 }
+        id: { type: string }
+        timestamp: { type: string, format: date-time }
+        actor: { type: string }
+        actor_name: { type: string }
+        actor_roles: { type: string }
+        action: { type: string }
+        target: { type: string }
+        target_name: { type: string }
+        result: { type: string, enum: [success, denied, error] }
+        detail: { type: string }
+        ip: { type: string }
+        request_id: { type: string }
+        prev_hash: { type: string }
+        hash: { type: string }
 
-  /hsm/combined-audit-log:
-    get:
-      summary: Combined log with sign operations and key attestations
-      responses:
-        "200":
-          description: Combined audit log JSON
+    EventPage:
+      type: object
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/Event" }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
 
-  /hsm/provision-audit:
-    post:
-      summary: Enable forced audit logging (irreversible)
-      description: Requires factory reset first (device init entry at position 1).
-      responses:
-        "200":
-          description: Provisioned
-        "412":
-          description: Device not factory reset
+    EventVerifyResult:
+      type: object
+      properties:
+        valid: { type: boolean }
+        count: { type: integer }
+        broken_seq: { type: integer, format: int64 }
+        detail: { type: string }
 
-  /hsm/factory-reset:
-    post:
-      summary: Factory reset the YubiHSM
-      description: Erases all keys and logs.
-      responses:
-        "200":
-          description: Reset complete
+    ACMEIdentifier:
+      type: object
+      properties:
+        type: { type: string, enum: [dns, ip] }
+        value: { type: string }
 
-  /secret/info:
-    get:
-      summary: KEK metadata for envelope encryption
-      description: >
-        Returns metadata about the configured key-encryption key (label,
-        provider, key size, and algorithms). Only present when a KEK is
-        configured (secret.kek_label).
-      responses:
-        "200":
-          description: KEK metadata
+    ACMEAccount:
+      type: object
+      properties:
+        id: { type: string }
+        status: { type: string }
+        contacts:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
 
-  /secret/encrypt:
-    post:
-      summary: Encrypt a secret with HSM-backed envelope encryption
-      description: >
-        Generates a fresh AES-256 data key, seals the plaintext with
-        AES-256-GCM, and wraps the data key with the HSM-held RSA KEK
-        (RSA-OAEP). Returns a versioned, self-describing ciphertext envelope.
-        Plaintext is capped at 64 KiB.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [plaintext]
-              properties:
-                plaintext:
-                  type: string
-                  description: Base64-encoded plaintext secret
-                context:
-                  type: string
-                  description: >
-                    Optional base64-encoded encryption context bound into the
-                    ciphertext; must be supplied verbatim to decrypt.
-      responses:
-        "200":
-          description: Ciphertext envelope
-        "400":
-          description: Invalid request
-        "413":
-          description: Plaintext too large
+    ACMEOrder:
+      type: object
+      properties:
+        id: { type: string }
+        status: { type: string }
+        identifiers:
+          type: array
+          items: { $ref: "#/components/schemas/ACMEIdentifier" }
+        not_before: { type: string, format: date-time }
+        not_after: { type: string, format: date-time }
+        expires: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
 
-  /secret/decrypt:
-    post:
-      summary: Decrypt an envelope back to plaintext
-      description: >
-        Unwraps the data key on the HSM (RSA-OAEP C_Decrypt) and opens the
-        AES-256-GCM ciphertext. Returns a single generic error on any failure
-        so the endpoint does not act as a padding/decryption oracle.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [envelope]
-              properties:
-                envelope:
-                  type: object
-                  description: A version-1 ciphertext envelope
-                context:
-                  type: string
-                  description: Base64-encoded encryption context, if one was bound at encryption time
-      responses:
-        "200":
-          description: Base64-encoded plaintext
-        "400":
-          description: Decryption failed or invalid request
+    ACMEDirectory:
+      type: object
+      properties:
+        newNonce: { type: string }
+        newAccount: { type: string }
+        newOrder: { type: string }
+        revokeCert: { type: string }
+        keyChange: { type: string }
+        meta:
+          type: object
+          properties:
+            termsOfService: { type: string }
+            externalAccountRequired: { type: boolean }
+
+    CertItem:
+      type: object
+      properties:
+        ca_id: { type: string }
+        ca_label: { type: string }
+        serial: { type: string }
+        common_name: { type: string }
+        subject: { type: string }
+        profile: { type: string }
+        not_after: { type: string, format: date-time }
+        expires_in_seconds: { type: integer, format: int64 }
+        expires_in: { type: string }
+        severity: { type: string, enum: [ok, warning, critical, expired] }
+        superseded: { type: boolean }
+        renewed: { type: boolean }
+        new_serial: { type: string }
+        renew_error: { type: string }
+
+    ExpiryReport:
+      type: object
+      properties:
+        generated_at: { type: string, format: date-time }
+        warning_days: { type: integer }
+        critical_days: { type: integer }
+        counts:
+          type: object
+          additionalProperties: { type: integer }
+        total: { type: integer }
+        certificates:
+          type: array
+          items: { $ref: "#/components/schemas/CertItem" }
+
+    ScanRequest:
+      type: object
+      properties:
+        ca_id: { type: string }
+        auto_renew: { type: boolean }
+
+    ScanReport:
+      type: object
+      properties:
+        generated_at: { type: string, format: date-time }
+        counts:
+          type: object
+          additionalProperties: { type: integer }
+        renewed: { type: integer }
+        renew_failed: { type: integer }
+        total: { type: integer }
+        certificates:
+          type: array
+          items: { $ref: "#/components/schemas/CertItem" }
+
+    SecretInfo:
+      type: object
+      properties:
+        kek_label: { type: string }
+        provider: { type: string }
+        key_bits: { type: integer }
+        wrap_alg: { type: string }
+        data_alg: { type: string }
+        version: { type: string }
+
+    EncryptRequest:
+      type: object
+      required: [plaintext]
+      properties:
+        plaintext: { type: string, description: base64-encoded plaintext }
+        context: { type: string, description: base64-encoded optional AAD }
+
+    EncryptResponse:
+      type: object
+      properties:
+        envelope:
+          type: object
+          additionalProperties: true
+          description: Opaque versioned envelope document.
+
+    DecryptRequest:
+      type: object
+      required: [envelope]
+      properties:
+        envelope:
+          type: object
+          additionalProperties: true
+        context: { type: string, description: base64-encoded optional AAD }
+
+    DecryptResponse:
+      type: object
+      properties:
+        plaintext: { type: string, description: base64-encoded plaintext }
+
+    HSMInfo:
+      type: object
+      properties:
+        available: { type: boolean }
+        version: { type: string }
+        serial: { type: string }
+        part_number: { type: string }
+        log_used: { type: integer }
+        force_audit: { type: boolean }
+        audit_provisioned: { type: boolean }
+        suppress_audit_warning: { type: boolean }
+        error: { type: string }
+
+    HSMAuditEntry:
+      type: object
+      properties:
+        number: { type: integer }
+        command: { type: integer }
+        length: { type: integer }
+        session_key: { type: integer }
+        target_key: { type: integer }
+        second_key: { type: integer }
+        result: { type: integer }
+        tick: { type: integer }
+        hash: { type: string }
+        sign_audit_id: { type: string }
+
+    HSMAuditLog:
+      type: object
+      properties:
+        device_serial: { type: string }
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/HSMAuditEntry" }
+
+    CombinedAuditExport:
+      type: object
+      properties:
+        device_serial: { type: string }
+        hsm_entries:
+          type: array
+          items: { $ref: "#/components/schemas/HSMAuditEntry" }
+        sign_operations:
+          type: array
+          items: { $ref: "#/components/schemas/AuditLogEntry" }
+        key_attestations:
+          type: object
+          additionalProperties: { type: string }
+
+    Readiness:
+      type: object
+      properties:
+        status: { type: string, enum: [ready, not_ready] }
+        components:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              status: { type: string, enum: [up, down, skipped] }
+              error: { type: string }

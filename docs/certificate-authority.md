@@ -263,5 +263,6 @@ terminator, browser policy, or `openssl` invocation as shown above.
 - [HSM / PKCS#11 configuration](hsm-configuration.md)
 - [RBAC, audit logging & config](rbac-and-audit.md)
 - [Production HSM migration](hsm-migration.md)
-- Full HTTP reference: [`../README.md`](../README.md#api) and the served
-  `GET /api/docs/openapi.yaml`.
+- Full HTTP reference: [`../README.md`](../README.md#api), the OpenAPI 3.1 spec
+  served at `GET /openapi.json` (rendered at `/docs`), and the generated Go
+  client SDK in [`../server/pkg/client`](../server/pkg/client).

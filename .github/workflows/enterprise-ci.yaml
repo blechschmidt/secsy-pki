@@ -129,3 +129,34 @@ jobs:
       - name: Fuzz smoke run
         working-directory: server
         run: ./scripts/fuzz.sh
+
+  openapi:
+    name: OpenAPI spec & generated client SDK
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Verifies the OpenAPI 3.1 spec is valid and that the committed Go client
+    # SDK (server/pkg/client) is in sync with it. The generator (oapi-codegen)
+    # is pinned as a `tool` dependency in server/go.mod and runs via `go tool`,
+    # so this needs no SoftHSM and no extra install step. It regenerates the
+    # client and fails on any drift.
+    env:
+      GOTOOLCHAIN: auto
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Download Go modules
+        working-directory: server
+        run: go mod download
+
+      - name: Check spec and generated client are in sync
+        working-directory: server
+        run: ./scripts/openapi-check.sh
