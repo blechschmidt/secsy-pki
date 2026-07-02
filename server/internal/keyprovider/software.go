@@ -71,6 +71,17 @@ func (p *SoftwareProvider) GenerateKey(_ context.Context, spec KeySpec) (*KeyInf
 	if err != nil {
 		return nil, err
 	}
+	// A decryption key (KEK) must be an RSA key: envelope encryption wraps the
+	// data key with RSA-OAEP. The stored key material is identical to a signing
+	// RSA key; only the intended usage differs (the software backend does not
+	// enforce per-key usage flags the way a token does).
+	if spec.Usage == KeyUsageDecrypt {
+		if _, bitErr := rsaBits(keyType); bitErr != nil {
+			return nil, bitErr
+		}
+	} else if spec.Usage != "" && spec.Usage != KeyUsageSign {
+		return nil, fmt.Errorf("keyprovider: unsupported key usage %q", spec.Usage)
+	}
 	path, err := p.keyPath(spec.Label)
 	if err != nil {
 		return nil, err
@@ -152,6 +163,28 @@ func (p *SoftwareProvider) Signer(_ context.Context, ref KeyRef) (Signer, error)
 		return nil, err
 	}
 	return &softwareSigner{Signer: priv, keyType: keyType}, nil
+}
+
+// Decrypter returns a Decrypter for the referenced RSA KEK. The private key is
+// loaded from the keystore and used in-process; it implements crypto.Decrypter
+// (rsa.PrivateKey supports RSA-OAEP).
+func (p *SoftwareProvider) Decrypter(_ context.Context, ref KeyRef) (Decrypter, error) {
+	label, err := ref.resolve()
+	if err != nil {
+		return nil, err
+	}
+	priv, _, err := p.load(label)
+	if err != nil {
+		return nil, err
+	}
+	dec, ok := priv.(crypto.Decrypter)
+	if !ok {
+		return nil, fmt.Errorf("keyprovider: key %q cannot be used for decryption (not RSA)", label)
+	}
+	if _, ok := priv.Public().(*rsa.PublicKey); !ok {
+		return nil, fmt.Errorf("keyprovider: key %q is not an RSA key and cannot be used for decryption", label)
+	}
+	return &softwareDecrypter{Decrypter: dec}, nil
 }
 
 // load reads and parses the private key stored under label. All keys written by
@@ -262,5 +295,15 @@ func (s *softwareSigner) KeyType() string { return s.keyType }
 
 func (s *softwareSigner) Close() error { return nil }
 
+// softwareDecrypter adapts an in-memory crypto.Decrypter (an *rsa.PrivateKey)
+// to the keyprovider.Decrypter interface. Close is a no-op.
+type softwareDecrypter struct {
+	crypto.Decrypter
+}
+
+func (d *softwareDecrypter) Close() error { return nil }
+
 var _ Provider = (*SoftwareProvider)(nil)
 var _ Signer = (*softwareSigner)(nil)
+var _ DecrypterProvider = (*SoftwareProvider)(nil)
+var _ Decrypter = (*softwareDecrypter)(nil)

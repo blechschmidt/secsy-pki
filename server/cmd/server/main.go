@@ -84,7 +84,10 @@ func main() {
 		Password:     cfg.YubiHSM.Password,
 	}
 
-	api := handlers.NewAPI(db, provider, oidcProvider, hsmCfg, cfg.YubiHSM.SuppressAuditWarning)
+	api := handlers.NewAPI(db, provider, oidcProvider, hsmCfg, cfg.YubiHSM.SuppressAuditWarning, cfg.Secret.KEKLabel)
+	if cfg.Secret.KEKLabel != "" {
+		log.Printf("Secret encryption enabled (KEK label: %s)", cfg.Secret.KEKLabel)
+	}
 
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, authMw)

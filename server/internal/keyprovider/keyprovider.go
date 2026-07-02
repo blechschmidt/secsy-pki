@@ -64,6 +64,16 @@ func (r KeyRef) resolve() (string, error) {
 	return "", fmt.Errorf("keyprovider: key reference has neither label nor ID")
 }
 
+// Key usage identifiers. A key is generated either for signing (the default,
+// covering CA and end-entity certificate keys) or for decryption / key
+// wrapping (a KEK used by the envelope-encryption feature). Keeping these
+// separate lets the PKCS#11 backend generate keys with least-privilege usage
+// attributes on the token.
+const (
+	KeyUsageSign    = "sign"
+	KeyUsageDecrypt = "decrypt"
+)
+
 // KeySpec describes a key pair to generate.
 type KeySpec struct {
 	// Label is the human-readable identifier the key is stored under. Required.
@@ -73,6 +83,10 @@ type KeySpec struct {
 	// KeyType is one of the KeyType* constants (aliases such as "rsa",
 	// "ecdsa", or "rsa-2048" are normalized by NormalizeKeyType).
 	KeyType string
+	// Usage is KeyUsageSign (default) or KeyUsageDecrypt. A decryption key is
+	// generated as an RSA key-encryption key (KEK) for envelope encryption; it
+	// must therefore be an RSA key type.
+	Usage string
 }
 
 // KeyInfo describes a key that exists within a provider.
@@ -124,6 +138,26 @@ type Provider interface {
 	PublicKey(ctx context.Context, ref KeyRef) (crypto.PublicKey, error)
 	// Close releases any long-lived resources held by the provider.
 	Close() error
+}
+
+// Decrypter is a crypto.Decrypter bound to a specific provider key, plus a
+// Close that releases backend resources (a PKCS#11 session, etc.). It is used
+// to unwrap data-encryption keys during envelope decryption.
+type Decrypter interface {
+	crypto.Decrypter
+	// Close releases resources held by the decrypter. It is safe to call more
+	// than once.
+	Close() error
+}
+
+// DecrypterProvider is an optional capability implemented by providers that can
+// unwrap data-encryption keys with a KEK. Both the software and PKCS#11
+// backends implement it. Callers type-assert a Provider to this interface.
+type DecrypterProvider interface {
+	// Decrypter returns a Decrypter for the referenced key. The caller must
+	// Close the returned Decrypter when done. The referenced key must support
+	// decryption (an RSA KEK generated with KeyUsageDecrypt).
+	Decrypter(ctx context.Context, ref KeyRef) (Decrypter, error)
 }
 
 // ErrKeyNotFound is returned (wrapped) by FindKey / Signer / PublicKey when no

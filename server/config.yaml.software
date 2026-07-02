@@ -28,3 +28,10 @@ key_provider:
   type: "software"
   software:
     keystore_dir: "keystore"
+
+# HSM-backed envelope encryption for passwords / secrets (secsy-secret CLI and
+# /api/secret/* endpoints). kek_label names the RSA key-encryption key that
+# wraps per-message data keys; create it with:  secsy-secret init-kek
+# Leave empty to disable the secret encrypt/decrypt API.
+secret:
+  kek_label: "secsy-kek"

@@ -3,6 +3,7 @@ package keyprovider
 import (
 	"context"
 	"crypto"
+	"crypto/rsa"
 	"errors"
 	"fmt"
 	"io"
@@ -71,7 +72,19 @@ func (p *PKCS11Provider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInf
 		return nil, fmt.Errorf("keyprovider: checking for existing key %q: %w", spec.Label, err)
 	}
 
-	generated, err := pki.GenerateKeyOnHSM(p.cfg, spec.Label, keyType)
+	var generated *pki.GeneratedHSMKey
+	switch spec.Usage {
+	case "", KeyUsageSign:
+		generated, err = pki.GenerateKeyOnHSM(p.cfg, spec.Label, keyType)
+	case KeyUsageDecrypt:
+		bits, bitErr := rsaBits(keyType)
+		if bitErr != nil {
+			return nil, bitErr
+		}
+		generated, err = pki.GenerateRSAKEKOnHSM(p.cfg, spec.Label, bits)
+	default:
+		return nil, fmt.Errorf("keyprovider: unsupported key usage %q", spec.Usage)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("keyprovider: generating key on HSM: %w", err)
 	}
@@ -196,5 +209,61 @@ func (s *pkcs11Signer) Close() error {
 	return nil
 }
 
+// Decrypter returns a Decrypter for the referenced RSA KEK. The private key
+// never leaves the token; unwrapping happens on the device via C_Decrypt.
+func (p *PKCS11Provider) Decrypter(_ context.Context, ref KeyRef) (Decrypter, error) {
+	label, err := ref.resolve()
+	if err != nil {
+		return nil, err
+	}
+	signer, err := pki.NewPKCS11Signer(p.cfg, label)
+	if err != nil {
+		return nil, wrapNotFound(label, err)
+	}
+	if _, ok := signer.Public().(*rsa.PublicKey); !ok {
+		signer.Close()
+		return nil, fmt.Errorf("keyprovider: key %q is not an RSA key and cannot be used for decryption", label)
+	}
+	return &pkcs11Decrypter{inner: signer}, nil
+}
+
+// pkcs11Decrypter adapts *pki.PKCS11Signer (which also implements C_Decrypt via
+// its Decrypt method) to the keyprovider.Decrypter interface. Close is
+// idempotent.
+type pkcs11Decrypter struct {
+	inner  *pki.PKCS11Signer
+	closed bool
+}
+
+func (d *pkcs11Decrypter) Public() crypto.PublicKey { return d.inner.Public() }
+
+func (d *pkcs11Decrypter) Decrypt(rand io.Reader, ciphertext []byte, opts crypto.DecrypterOpts) ([]byte, error) {
+	return d.inner.Decrypt(rand, ciphertext, opts)
+}
+
+func (d *pkcs11Decrypter) Close() error {
+	if d.closed {
+		return nil
+	}
+	d.closed = true
+	d.inner.Close()
+	return nil
+}
+
+// rsaBits maps a canonical RSA key-type to its modulus size, rejecting
+// non-RSA types since a KEK must be an RSA key.
+func rsaBits(keyType string) (int, error) {
+	switch keyType {
+	case KeyTypeRSA2048:
+		return 2048, nil
+	case KeyTypeRSA4096:
+		return 4096, nil
+	default:
+		return 0, fmt.Errorf("keyprovider: a decryption key (KEK) must be RSA, got %q", keyType)
+	}
+}
+
 var _ Provider = (*PKCS11Provider)(nil)
 var _ Signer = (*pkcs11Signer)(nil)
+var _ DecrypterProvider = (*PKCS11Provider)(nil)
+var _ Decrypter = (*pkcs11Decrypter)(nil)

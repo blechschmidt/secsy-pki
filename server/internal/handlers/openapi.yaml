@@ -811,3 +811,73 @@ paths:
       responses:
         "200":
           description: Reset complete
+
+  /secret/info:
+    get:
+      summary: KEK metadata for envelope encryption
+      description: >
+        Returns metadata about the configured key-encryption key (label,
+        provider, key size, and algorithms). Only present when a KEK is
+        configured (secret.kek_label).
+      responses:
+        "200":
+          description: KEK metadata
+
+  /secret/encrypt:
+    post:
+      summary: Encrypt a secret with HSM-backed envelope encryption
+      description: >
+        Generates a fresh AES-256 data key, seals the plaintext with
+        AES-256-GCM, and wraps the data key with the HSM-held RSA KEK
+        (RSA-OAEP). Returns a versioned, self-describing ciphertext envelope.
+        Plaintext is capped at 64 KiB.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plaintext]
+              properties:
+                plaintext:
+                  type: string
+                  description: Base64-encoded plaintext secret
+                context:
+                  type: string
+                  description: >
+                    Optional base64-encoded encryption context bound into the
+                    ciphertext; must be supplied verbatim to decrypt.
+      responses:
+        "200":
+          description: Ciphertext envelope
+        "400":
+          description: Invalid request
+        "413":
+          description: Plaintext too large
+
+  /secret/decrypt:
+    post:
+      summary: Decrypt an envelope back to plaintext
+      description: >
+        Unwraps the data key on the HSM (RSA-OAEP C_Decrypt) and opens the
+        AES-256-GCM ciphertext. Returns a single generic error on any failure
+        so the endpoint does not act as a padding/decryption oracle.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [envelope]
+              properties:
+                envelope:
+                  type: object
+                  description: A version-1 ciphertext envelope
+                context:
+                  type: string
+                  description: Base64-encoded encryption context, if one was bound at encryption time
+      responses:
+        "200":
+          description: Base64-encoded plaintext
+        "400":
+          description: Decryption failed or invalid request

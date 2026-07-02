@@ -15,6 +15,15 @@ type Config struct {
 	KeyProvider KeyProviderConfig `yaml:"key_provider"`
 	PKCS11      PKCS11Config      `yaml:"pkcs11"`
 	YubiHSM     YubiHSMConfig     `yaml:"yubihsm"`
+	Secret      SecretConfig      `yaml:"secret"`
+}
+
+// SecretConfig configures the HSM-backed envelope-encryption feature. KEKLabel
+// is the label of the RSA key-encryption key used to wrap data keys; it must
+// exist in the configured key provider (create it with `secsy-secret init-kek`).
+// When empty, the secret encrypt/decrypt API endpoints are disabled.
+type SecretConfig struct {
+	KEKLabel string `yaml:"kek_label"`
 }
 
 type ServerConfig struct {
@@ -123,6 +132,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("SECSY_SOFTWARE_KEYSTORE_DIR"); v != "" {
 		cfg.KeyProvider.Software.KeystoreDir = v
+	}
+	if v := os.Getenv("SECSY_SECRET_KEK_LABEL"); v != "" {
+		cfg.Secret.KEKLabel = v
 	}
 }
 

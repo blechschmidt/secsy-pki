@@ -27,10 +27,11 @@ type API struct {
 	oidcProvider         *auth.OIDCProvider
 	hsmCfg               hsm.Config
 	suppressAuditWarning bool
+	secretKEKLabel       string
 }
 
-func NewAPI(db *database.DB, keyProvider keyprovider.Provider, oidcProvider *auth.OIDCProvider, hsmCfg hsm.Config, suppressAuditWarning bool) *API {
-	return &API{db: db, keyProvider: keyProvider, oidcProvider: oidcProvider, hsmCfg: hsmCfg, suppressAuditWarning: suppressAuditWarning}
+func NewAPI(db *database.DB, keyProvider keyprovider.Provider, oidcProvider *auth.OIDCProvider, hsmCfg hsm.Config, suppressAuditWarning bool, secretKEKLabel string) *API {
+	return &API{db: db, keyProvider: keyProvider, oidcProvider: oidcProvider, hsmCfg: hsmCfg, suppressAuditWarning: suppressAuditWarning, secretKEKLabel: secretKEKLabel}
 }
 
 func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddleware) {
@@ -96,6 +97,14 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 
 	mux.Handle("GET /api/audit-log", protected(http.HandlerFunc(a.ListAuditLog)))
 	mux.Handle("GET /api/access-log", protected(http.HandlerFunc(a.ListAccessLog)))
+
+	// HSM-backed envelope encryption for secrets. Enabled only when a KEK is
+	// configured (secret.kek_label).
+	if a.secretEnabled() {
+		mux.Handle("GET /api/secret/info", protected(http.HandlerFunc(a.SecretInfo)))
+		mux.Handle("POST /api/secret/encrypt", protected(http.HandlerFunc(a.EncryptSecret)))
+		mux.Handle("POST /api/secret/decrypt", protected(http.HandlerFunc(a.DecryptSecret)))
+	}
 
 	if a.hsmEnabled() {
 		mux.Handle("GET /api/hsm/info", protected(http.HandlerFunc(a.GetHSMInfo)))
