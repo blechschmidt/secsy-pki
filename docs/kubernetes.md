@@ -139,8 +139,40 @@ So a Ready pod is a working PKI. The probe scheme follows the TLS setting
 
 Default state is SQLite on a `ReadWriteOnce` PVC (`persistence.*`), and the
 Deployment uses the `Recreate` strategy — SQLite is single-writer, so keep
-`replicaCount: 1`. To scale horizontally, point `config.database` at a shared
-database and provision storage accordingly.
+`replicaCount: 1`. To scale horizontally, point every replica at a shared
+PostgreSQL via the `externalDatabase` block below.
+
+### External PostgreSQL for HA
+
+For multi-replica high availability, run a shared PostgreSQL and enable the
+chart's `externalDatabase` block. It injects `SECSY_DATABASE_DRIVER` and
+`SECSY_DATABASE_DSN` (from a Secret — the DSN carries credentials and never lands
+in the ConfigMap), plus the pool-size env vars, which override the rendered
+config at startup.
+
+```yaml
+replicaCount: 3
+persistence:
+  enabled: false          # PostgreSQL is now the source of truth
+externalDatabase:
+  enabled: true
+  driver: postgres
+  # Production: reference a Secret you manage (e.g. External Secrets / Vault):
+  dsnSecret:
+    name: secsy-pg
+    key: database-dsn
+  # ...or, for dev/CI only, render an inline DSN into the chart's Secret:
+  # dsn: "postgres://secsy:secsy@my-postgres:5432/secsy_pki?sslmode=require"
+  maxOpenConns: 10
+  maxIdleConns: 5
+```
+
+Migrate an existing single-node SQLite store into PostgreSQL **before** scaling
+out, with `secsy-ca db migrate` (see the
+[persistence guide](persistence.md#migrating-an-existing-sqlite-store-into-postgresql)).
+The audit-chain serialization and transactional serial/CRL counters make
+concurrent writes across replicas safe. HSM key material stays in the HSM — only
+metadata, public certificates, and audit records live in the database.
 
 ### Metrics
 

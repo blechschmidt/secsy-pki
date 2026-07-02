@@ -206,7 +206,7 @@ func (db *DB) NextCRLNumber(caID string) (int64, error) {
 	defer tx.Rollback()
 
 	var next int64
-	err = tx.QueryRow(db.ph(`SELECT next_number FROM ca_crl_counters WHERE ca_id = ?`), caID).Scan(&next)
+	err = tx.QueryRow(db.ph(`SELECT next_number FROM ca_crl_counters WHERE ca_id = ?`+db.forUpdate()), caID).Scan(&next)
 	if err == sql.ErrNoRows {
 		next = 1
 		if _, err := tx.Exec(db.ph(

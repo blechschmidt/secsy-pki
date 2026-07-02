@@ -206,6 +206,36 @@ secrets:
   userPin: "1234"
   rootPassword: "change-me-in-production"
 
+# --- External database (multi-replica HA) -------------------------------------
+# By default the server uses the embedded SQLite store (config.database above),
+# which is single-node. To run multiple replicas behind a Service, point them all
+# at a shared PostgreSQL by enabling this block: the chart injects
+# SECSY_DATABASE_DRIVER/DSN as env vars that override the rendered config, and the
+# DSN (which contains credentials) is sourced from a Secret, never the ConfigMap.
+#
+# When enabled you will typically also set replicaCount > 1 and
+# persistence.enabled=false (the SQLite PVC is no longer the source of truth).
+# Migrate an existing SQLite store into PostgreSQL first with:
+#   secsy-ca db migrate -from-dsn <sqlite-file> -to-dsn <postgres-dsn>
+externalDatabase:
+  enabled: false
+  driver: postgres
+  # Provide the DSN via ONE of the two mechanisms below.
+  #
+  # (a) Reference an existing Secret (recommended for production; e.g. one synced
+  #     by External Secrets / Vault). Leave name empty to use this chart's own
+  #     Secret (only useful together with the inline dsn in (b)).
+  dsnSecret:
+    name: ""
+    key: database-dsn
+  # (b) Inline DSN rendered into this chart's Secret (dev/CI only; requires
+  #     secrets.create=true). DO NOT commit real credentials.
+  #     e.g. "postgres://secsy:secsy@my-postgres:5432/secsy_pki?sslmode=require"
+  dsn: ""
+  # Connection-pool sizing per replica (empty = server defaults).
+  maxOpenConns: 10
+  maxIdleConns: 5
+
 # Extra environment variables passed to the server container.
 extraEnv: []
 #  - name: SECSY_ALLOW_INSECURE_HTTP

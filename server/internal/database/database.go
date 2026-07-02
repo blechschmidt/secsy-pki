@@ -27,7 +27,33 @@ type DB struct {
 	eventMu sync.Mutex
 }
 
+// PoolOptions tunes the underlying database/sql connection pool. Zero values
+// select driver-appropriate defaults (see New), so callers may leave any field
+// unset. The pool is only meaningful for networked backends such as PostgreSQL,
+// where multiple server replicas each maintain a bounded pool against the shared
+// database; SQLite is single-connection by construction and ignores these knobs.
+type PoolOptions struct {
+	// MaxOpenConns bounds the total number of open connections to the database.
+	MaxOpenConns int
+	// MaxIdleConns bounds the number of idle connections retained in the pool.
+	MaxIdleConns int
+	// ConnMaxLifetime is the maximum age of a connection before it is recycled.
+	// Recycling protects against server-side idle timeouts and load-balancer
+	// connection draining in front of a replicated PostgreSQL cluster.
+	ConnMaxLifetime time.Duration
+	// ConnMaxIdleTime is the maximum time a connection may sit idle before it is
+	// closed, releasing backend resources during quiet periods.
+	ConnMaxIdleTime time.Duration
+}
+
 func New(driver, dsn string) (*DB, error) {
+	return NewWithOptions(driver, dsn, PoolOptions{})
+}
+
+// NewWithOptions opens a database with an explicit connection-pool configuration.
+// It is the constructor used by the servers so operators can size the PostgreSQL
+// pool for their replica count and backend limits; New wraps it with defaults.
+func NewWithOptions(driver, dsn string, opts PoolOptions) (*DB, error) {
 	driverName := driver
 	if driverName == "sqlite" {
 		driverName = "sqlite3"
@@ -37,6 +63,9 @@ func New(driver, dsn string) (*DB, error) {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 	if driver == "sqlite" || driver == "sqlite3" {
+		// SQLite is an embedded, file-backed store; concurrent writers corrupt the
+		// hash-chained event log, so it is pinned to a single connection and relies
+		// on WAL mode for read concurrency. Pool options do not apply.
 		conn.SetMaxOpenConns(1)
 		if _, err := conn.Exec("PRAGMA journal_mode=WAL"); err != nil {
 			return nil, fmt.Errorf("setting journal mode: %w", err)
@@ -44,6 +73,33 @@ func New(driver, dsn string) (*DB, error) {
 		if _, err := conn.Exec("PRAGMA foreign_keys=ON"); err != nil {
 			return nil, fmt.Errorf("enabling foreign keys: %w", err)
 		}
+	} else {
+		// Networked backends (PostgreSQL) get a bounded pool so a fleet of replicas
+		// does not exhaust the server's connection limit. Defaults are conservative
+		// and overridable per deployment.
+		maxOpen := opts.MaxOpenConns
+		if maxOpen <= 0 {
+			maxOpen = 10
+		}
+		maxIdle := opts.MaxIdleConns
+		if maxIdle <= 0 {
+			maxIdle = 5
+		}
+		if maxIdle > maxOpen {
+			maxIdle = maxOpen
+		}
+		lifetime := opts.ConnMaxLifetime
+		if lifetime <= 0 {
+			lifetime = 30 * time.Minute
+		}
+		idleTime := opts.ConnMaxIdleTime
+		if idleTime <= 0 {
+			idleTime = 5 * time.Minute
+		}
+		conn.SetMaxOpenConns(maxOpen)
+		conn.SetMaxIdleConns(maxIdle)
+		conn.SetConnMaxLifetime(lifetime)
+		conn.SetConnMaxIdleTime(idleTime)
 	}
 	db := &DB{conn: conn, driver: driver}
 	if err := db.migrate(); err != nil {
@@ -97,6 +153,21 @@ func (db *DB) ph(query string) string {
 		}
 	}
 	return result.String()
+}
+
+// forUpdate returns the row-locking clause for transactional counter reads. On
+// PostgreSQL, where the pool hands out multiple connections and the default
+// READ COMMITTED isolation lets two transactions read the same counter value
+// before either writes, "FOR UPDATE" serializes them by locking the counter row
+// until commit — the guarantee that keeps serial and CRL numbers strictly
+// monotonic and non-repeating under concurrent, multi-replica issuance. SQLite
+// is pinned to a single connection (see New), so its counter transactions are
+// already serialized and it does not support the clause.
+func (db *DB) forUpdate() string {
+	if db.isPostgres() {
+		return " FOR UPDATE"
+	}
+	return ""
 }
 
 func (db *DB) Close() error {
@@ -633,7 +704,7 @@ func (db *DB) AllocateSerial(caID string) (int64, error) {
 	defer tx.Rollback()
 
 	var next int64
-	err = tx.QueryRow(db.ph(`SELECT next_serial FROM ca_serial_counters WHERE ca_id = ?`), caID).Scan(&next)
+	err = tx.QueryRow(db.ph(`SELECT next_serial FROM ca_serial_counters WHERE ca_id = ?`+db.forUpdate()), caID).Scan(&next)
 	if err == sql.ErrNoRows {
 		return 0, fmt.Errorf("no serial counter for CA %q", caID)
 	}

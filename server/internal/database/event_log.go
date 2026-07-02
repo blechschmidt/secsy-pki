@@ -21,6 +21,14 @@ func (db *DB) AppendEvent(e *audit.Event) error {
 	if e.Timestamp.IsZero() {
 		e.Timestamp = time.Now().UTC()
 	}
+	// Truncate to microseconds before sealing. The hash canonicalization encodes
+	// the timestamp at nanosecond precision, but SQL TIMESTAMP columns (PostgreSQL,
+	// in particular) store only microseconds. Sealing over a microsecond-truncated
+	// value guarantees the timestamp read back from any backend is byte-identical
+	// to the one hashed, so the chain verifies natively and survives a
+	// cross-backend migration. Without this, a nanosecond-precision seal would fail
+	// verification on PostgreSQL after the store round-trips the row.
+	e.Timestamp = e.Timestamp.Truncate(time.Microsecond)
 
 	db.eventMu.Lock()
 	defer db.eventMu.Unlock()

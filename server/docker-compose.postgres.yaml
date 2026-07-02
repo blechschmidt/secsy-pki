@@ -1,0 +1,32 @@
+# Test PostgreSQL for the pluggable persistence backend (Task 38).
+#
+# Brings up a throwaway PostgreSQL that the database integration tests and the
+# `secsy-ca db migrate` command can target. It is intentionally separate from
+# docker-compose.test.yaml (Keycloak/SSH e2e) so the DB backend can be exercised
+# on its own.
+#
+# Usage:
+#   docker compose -f docker-compose.postgres.yaml up -d
+#   export SECSY_TEST_PG_DSN='postgres://secsy:secsy@localhost:5433/secsy_pki?sslmode=disable'
+#   go test -tags sqlite ./internal/database/...   # runs both SQLite and Postgres paths
+#   docker compose -f docker-compose.postgres.yaml down -v
+#
+# The published port is 5433 to avoid colliding with a host-local PostgreSQL on
+# the default 5432.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: secsy
+      POSTGRES_PASSWORD: secsy
+      POSTGRES_DB: secsy_pki
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U secsy -d secsy_pki"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    tmpfs:
+      # Keep the test database in memory: fast and disposable, no volume to clean.
+      - /var/lib/postgresql/data

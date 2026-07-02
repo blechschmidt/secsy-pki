@@ -52,7 +52,12 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	db, err := database.New(cfg.Database.Driver, cfg.Database.DSN)
+	db, err := database.NewWithOptions(cfg.Database.Driver, cfg.Database.DSN, database.PoolOptions{
+		MaxOpenConns:    cfg.Database.MaxOpenConns,
+		MaxIdleConns:    cfg.Database.MaxIdleConns,
+		ConnMaxLifetime: time.Duration(cfg.Database.ConnMaxLifetimeSecs) * time.Second,
+		ConnMaxIdleTime: time.Duration(cfg.Database.ConnMaxIdleTimeSecs) * time.Second,
+	})
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}

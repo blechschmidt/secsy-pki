@@ -40,7 +40,7 @@ func (db *DB) NextScopedCRLNumber(caID, scope string) (int64, error) {
 	defer tx.Rollback()
 
 	var next int64
-	err = tx.QueryRow(db.ph(`SELECT next_number FROM ca_scoped_crl_counters WHERE ca_id = ? AND scope = ?`), caID, scope).Scan(&next)
+	err = tx.QueryRow(db.ph(`SELECT next_number FROM ca_scoped_crl_counters WHERE ca_id = ? AND scope = ?`+db.forUpdate()), caID, scope).Scan(&next)
 	if err == sql.ErrNoRows {
 		next = 1
 		if _, err := tx.Exec(db.ph(

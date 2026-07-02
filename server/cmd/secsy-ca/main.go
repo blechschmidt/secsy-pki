@@ -71,7 +71,20 @@ func run(args []string) error {
 		return cmdCMP(cmdArgs)
 	}
 
-	db, err := database.New(cfg.Database.Driver, cfg.Database.DSN)
+	// Store administration (migrate a file/SQLite store into PostgreSQL) opens its
+	// own source and destination databases from explicit flags, and needs no key
+	// provider. Dispatch it before the config-driven database is opened so it does
+	// not require the config's database to be the one being migrated.
+	if command == "db" {
+		return cmdDB(cfg, cmdArgs)
+	}
+
+	db, err := database.NewWithOptions(cfg.Database.Driver, cfg.Database.DSN, database.PoolOptions{
+		MaxOpenConns:    cfg.Database.MaxOpenConns,
+		MaxIdleConns:    cfg.Database.MaxIdleConns,
+		ConnMaxLifetime: time.Duration(cfg.Database.ConnMaxLifetimeSecs) * time.Second,
+		ConnMaxIdleTime: time.Duration(cfg.Database.ConnMaxIdleTimeSecs) * time.Second,
+	})
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
@@ -197,6 +210,7 @@ Commands:
   backup              Export CA metadata + a DR manifest (no private keys)
   restore             Restore/verify CA metadata against the key provider
   audit               Verify the audit hash-chain, or export it for SIEM
+  db                  Persistence administration (migrate SQLite file store → PostgreSQL)
 
 Run "secsy-ca <command> -h" for command-specific flags.
 `)

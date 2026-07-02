@@ -741,6 +741,15 @@ type OCSPConfig struct {
 type DatabaseConfig struct {
 	Driver string `yaml:"driver"`
 	DSN    string `yaml:"dsn"`
+
+	// Connection-pool tuning for networked backends (PostgreSQL). These are
+	// ignored for the embedded SQLite driver, which is pinned to one connection.
+	// Zero values select conservative built-in defaults (see
+	// database.NewWithOptions). Durations are expressed in seconds.
+	MaxOpenConns        int `yaml:"max_open_conns"`
+	MaxIdleConns        int `yaml:"max_idle_conns"`
+	ConnMaxLifetimeSecs int `yaml:"conn_max_lifetime_seconds"`
+	ConnMaxIdleTimeSecs int `yaml:"conn_max_idle_time_seconds"`
 }
 
 type OIDCConfig struct {
@@ -1243,6 +1252,27 @@ func applyEnvOverrides(cfg *Config) {
 	// Kubernetes Secret) so deployments can keep it out of version control.
 	if v := os.Getenv("SECSY_ROOT_PASSWORD"); v != "" {
 		cfg.RootUser.Password = v
+	}
+	// Database selection and — importantly — the DSN can be injected from the
+	// environment. For an external PostgreSQL the DSN embeds credentials, so it is
+	// sourced from a Secret via SECSY_DATABASE_DSN rather than the ConfigMap. The
+	// pool knobs are also overridable so operators can size the pool per replica
+	// count without re-rendering config.
+	if v := os.Getenv("SECSY_DATABASE_DRIVER"); v != "" {
+		cfg.Database.Driver = v
+	}
+	if v := os.Getenv("SECSY_DATABASE_DSN"); v != "" {
+		cfg.Database.DSN = v
+	}
+	if v := os.Getenv("SECSY_DATABASE_MAX_OPEN_CONNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Database.MaxOpenConns = n
+		}
+	}
+	if v := os.Getenv("SECSY_DATABASE_MAX_IDLE_CONNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Database.MaxIdleConns = n
+		}
 	}
 	if v := os.Getenv("SECSY_TOKEN_SERIAL"); v != "" {
 		cfg.PKCS11.TokenSerial = v

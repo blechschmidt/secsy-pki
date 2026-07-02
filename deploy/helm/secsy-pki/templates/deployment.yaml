@@ -97,6 +97,27 @@ spec:
                 secretKeyRef:
                   name: {{ include "secsy-pki.secretName" . }}
                   key: {{ .Values.secrets.rootPasswordKey }}
+            {{- if .Values.externalDatabase.enabled }}
+            # External (PostgreSQL) backend for multi-replica HA. The DSN carries
+            # credentials, so it is injected from a Secret as an env var and never
+            # written to the ConfigMap. SECSY_DATABASE_* overrides the rendered
+            # config at startup (see applyEnvOverrides).
+            - name: SECSY_DATABASE_DRIVER
+              value: {{ .Values.externalDatabase.driver | quote }}
+            - name: SECSY_DATABASE_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalDatabase.dsnSecret.name | default (include "secsy-pki.secretName" .) }}
+                  key: {{ .Values.externalDatabase.dsnSecret.key }}
+            {{- with .Values.externalDatabase.maxOpenConns }}
+            - name: SECSY_DATABASE_MAX_OPEN_CONNS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.externalDatabase.maxIdleConns }}
+            - name: SECSY_DATABASE_MAX_IDLE_CONNS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.tls.allowInsecureHTTP }}
             - name: SECSY_ALLOW_INSECURE_HTTP
               value: "1"
