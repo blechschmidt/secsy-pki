@@ -16,13 +16,18 @@ func (db *DB) RecordIssuedCertificate(c *models.IssuedCertificate) error {
 	if status == "" {
 		status = models.CertStatusValid
 	}
+	ctStatus := c.CTStatus
+	if ctStatus == "" {
+		ctStatus = models.CTStatusNone
+	}
 	_, err := db.exec(
 		`INSERT INTO issued_certificates
 			(id, ca_id, serial, subject, common_name, sans, profile, certificate,
-			 not_before, not_after, status, requested_by)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 not_before, not_after, status, requested_by, ct_status, sct_count)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.CAID, c.Serial, c.Subject, c.CommonName, string(sans), c.Profile,
 		c.Certificate, c.NotBefore, c.NotAfter, string(status), nullString(c.RequestedBy),
+		string(ctStatus), c.SCTCount,
 	)
 	return err
 }
@@ -30,18 +35,19 @@ func (db *DB) RecordIssuedCertificate(c *models.IssuedCertificate) error {
 // issuedCertColumns is the canonical column list for issued-certificate reads.
 const issuedCertColumns = `id, ca_id, serial, subject, common_name, sans, profile,
 	certificate, not_before, not_after, status, revoked_at, revocation_reason,
-	requested_by, created_at`
+	requested_by, created_at, ct_status, sct_count`
 
 func scanIssuedCert(s caScanner) (*models.IssuedCertificate, error) {
 	var c models.IssuedCertificate
 	var subject, commonName, sans, profile, requestedBy sql.NullString
 	var status string
+	var ctStatus sql.NullString
 	var notBefore, notAfter sql.NullTime
 	var revokedAt sql.NullTime
 	if err := s.Scan(
 		&c.ID, &c.CAID, &c.Serial, &subject, &commonName, &sans, &profile,
 		&c.Certificate, &notBefore, &notAfter, &status, &revokedAt, &c.RevocationReason,
-		&requestedBy, &c.CreatedAt,
+		&requestedBy, &c.CreatedAt, &ctStatus, &c.SCTCount,
 	); err != nil {
 		return nil, err
 	}
@@ -50,6 +56,11 @@ func scanIssuedCert(s caScanner) (*models.IssuedCertificate, error) {
 	c.Profile = profile.String
 	c.RequestedBy = requestedBy.String
 	c.Status = models.CertStatus(status)
+	if ctStatus.Valid && ctStatus.String != "" {
+		c.CTStatus = models.CTStatus(ctStatus.String)
+	} else {
+		c.CTStatus = models.CTStatusNone
+	}
 	if notBefore.Valid {
 		c.NotBefore = notBefore.Time
 	}

@@ -1395,6 +1395,31 @@ components:
         profile: { type: string }
         not_before: { type: string }
         not_after: { type: string }
+        ct:
+          $ref: "#/components/schemas/CTResponse"
+          description: >-
+            Certificate Transparency (RFC 6962) handling for this issuance.
+            Present only when the profile requested CT.
+
+    CTResponse:
+      type: object
+      description: Certificate Transparency outcome for an issuance.
+      properties:
+        enabled: { type: boolean, description: whether the profile requested CT }
+        embedded: { type: boolean, description: whether an SCT list was embedded }
+        sct_count: { type: integer, description: number of embedded SCTs }
+        status: { type: string, enum: [none, submitted, failed_open] }
+        logs:
+          type: array
+          items: { $ref: "#/components/schemas/CTLogOutcome" }
+
+    CTLogOutcome:
+      type: object
+      description: Per-log result of a precertificate submission.
+      properties:
+        log: { type: string, description: configured log name }
+        ok: { type: boolean }
+        error: { type: string, description: failure detail when ok is false }
 
     RenewCertRequest:
       type: object
@@ -1437,6 +1462,15 @@ components:
         revocation_reason: { type: integer }
         requested_by: { type: string }
         created_at: { type: string, format: date-time }
+        ct_status:
+          type: string
+          enum: [none, submitted, failed_open]
+          description: Certificate Transparency outcome for this certificate.
+        sct_count: { type: integer, description: number of embedded SCTs }
+        ct_logs:
+          type: array
+          items: { type: string }
+          description: names of CT logs that returned an embedded SCT
 
     RevokedCertificate:
       type: object

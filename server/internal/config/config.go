@@ -43,6 +43,45 @@ type Config struct {
 	// public endpoints (ACME, OCSP, CRL, SCEP/EST). Disabled unless
 	// rate_limit.enabled is true.
 	RateLimit RateLimitConfig `yaml:"rate_limit"`
+	// CertificateTransparency registers the RFC 6962 CT logs available to
+	// issuance profiles. Profiles opt in per-profile via their `ct` block; a log
+	// referenced by a profile must be registered here.
+	CertificateTransparency CTConfig `yaml:"certificate_transparency"`
+}
+
+// CTConfig registers the Certificate Transparency logs that issuance profiles
+// may submit precertificates to.
+type CTConfig struct {
+	// Logs is the set of known CT logs, keyed by name.
+	Logs []CTLogConfig `yaml:"logs"`
+}
+
+// CTLogConfig configures a single CT log endpoint.
+type CTLogConfig struct {
+	// Name is the identifier profiles reference and audit records display.
+	Name string `yaml:"name"`
+	// URL is the log's base URL; the RFC 6962 add-pre-chain path is appended.
+	URL string `yaml:"url"`
+	// PublicKey is the log's public key as a PEM SubjectPublicKeyInfo block. When
+	// set, returned SCT signatures are cryptographically verified against it (and
+	// the SCT's log id must match). PublicKeyFile is an alternative source.
+	PublicKey     string `yaml:"public_key"`
+	PublicKeyFile string `yaml:"public_key_file"`
+}
+
+// ProfileCTConfig is a profile's per-issuance Certificate Transparency policy.
+type ProfileCTConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Logs names the registered logs to submit to (empty = all registered logs).
+	Logs []string `yaml:"logs"`
+	// MinSCTs is the minimum SCT count the policy requires (0 defaults to 1).
+	MinSCTs int `yaml:"min_scts"`
+	// FailOpen selects fail-open (issue anyway) vs fail-closed (default: reject).
+	FailOpen bool `yaml:"fail_open"`
+	// TimeoutSeconds bounds each individual log attempt (0 uses a default).
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+	// Retries is the number of extra attempts per log after the first.
+	Retries int `yaml:"retries"`
 }
 
 // RateLimitConfig configures abuse protection for the public-facing endpoints.
@@ -363,6 +402,9 @@ type ProfileConfig struct {
 	ExtKeyUsages        []string `yaml:"ext_key_usages"`
 	DefaultValidityDays int      `yaml:"default_validity_days"`
 	MaxValidityDays     int      `yaml:"max_validity_days"`
+	// CT is the profile's Certificate Transparency policy (disabled unless
+	// ct.enabled is true).
+	CT ProfileCTConfig `yaml:"ct"`
 }
 
 // SecretConfig configures the HSM-backed envelope-encryption feature. KEKLabel

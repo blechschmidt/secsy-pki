@@ -50,6 +50,14 @@ type LeafCertRequest struct {
 	// rather than a leaf. For ordinary end-entity certificates IsCA is false.
 	IsCA       bool
 	MaxPathLen *int
+
+	// ExtraExtensions are appended verbatim after the built-in extensions. This
+	// is how Certificate Transparency data is carried: the precertificate poison
+	// extension, or the SCT list extension in the final certificate. Because they
+	// are appended last, a precertificate and its final certificate differ only
+	// in this trailing extension, keeping their TBSCertificates aligned for SCT
+	// verification.
+	ExtraExtensions []pkix.Extension
 }
 
 // CreateLeafCertificate builds and signs an X.509 end-entity certificate.
@@ -110,6 +118,7 @@ func CreateLeafCertificate(signer crypto.Signer, issuer *x509.Certificate, req L
 		URIs:                  parsedURIs,
 		CRLDistributionPoints: req.CRLDistributionPoints,
 		OCSPServer:            req.OCSPServer,
+		ExtraExtensions:       req.ExtraExtensions,
 	}
 
 	if req.IsCA {

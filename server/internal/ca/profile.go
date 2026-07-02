@@ -32,6 +32,9 @@ type Profile struct {
 	// specialized profiles; ordinary leaf profiles leave it false.
 	IsCA       bool `json:"is_ca"`
 	MaxPathLen *int `json:"max_path_len,omitempty"`
+	// CT is the profile's Certificate Transparency policy. Nil (or disabled)
+	// means precertificate submission and SCT embedding are skipped.
+	CT *CTConfig `json:"ct,omitempty"`
 }
 
 // day is a convenience unit for profile validity periods.

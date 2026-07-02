@@ -211,10 +211,25 @@ async function loadCerts() {
         <td>${escapeHTML(c.profile || '')}</td>
         <td>${fmtTime(c.not_after)}</td>
         <td><span class="badge ${c.status}">${c.status}</span></td>
+        <td>${ctBadge(c)}</td>
         <td>${c.status === 'valid'
           ? `<button class="btn danger sm" onclick="revokeCert('${id}','${c.serial}')">Revoke</button>` : ''}</td>
       </tr>`).join('') : emptyRow('No certificates issued yet.');
   } catch (e) { tbody.innerHTML = emptyRow(e.message); }
+}
+
+// ctBadge renders the Certificate Transparency status of an issued certificate.
+function ctBadge(c) {
+  switch (c.ct_status) {
+    case 'submitted': {
+      const logs = (c.ct_logs && c.ct_logs.length) ? ' — ' + c.ct_logs.map(escapeHTML).join(', ') : '';
+      return `<span class="badge valid" title="${c.sct_count || 0} SCT(s)${logs}">${c.sct_count || 0} SCT</span>`;
+    }
+    case 'failed_open':
+      return `<span class="badge revoked" title="CT policy not met; issued fail-open">fail-open</span>`;
+    default:
+      return `<span class="muted">—</span>`;
+  }
 }
 
 async function revokeCert(caID, serial) {
@@ -277,7 +292,13 @@ $('issueBtn').onclick = async () => {
   $('issueBtn').disabled = true;
   try {
     const res = await api('POST', `/api/ca/${id}/issue`, body);
-    msg.textContent = `Issued serial ${res.serial} (${res.profile}), valid until ${res.not_after}.`;
+    let ctNote = '';
+    if (res.ct && res.ct.enabled) {
+      ctNote = res.ct.embedded
+        ? ` CT: embedded ${res.ct.sct_count} SCT(s).`
+        : ` CT: no SCTs embedded (issued fail-open).`;
+    }
+    msg.textContent = `Issued serial ${res.serial} (${res.profile}), valid until ${res.not_after}.${ctNote}`;
     msg.className = 'notice ok';
     $('issueResult').classList.remove('hidden');
     $('issuePEM').value = res.certificate + (res.chain ? '\n' + res.chain : '');

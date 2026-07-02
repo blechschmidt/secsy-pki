@@ -102,6 +102,21 @@ const (
 	CertStatusExpired CertStatus = "expired"
 )
 
+// CTStatus is the Certificate Transparency outcome recorded for an issued
+// certificate.
+type CTStatus string
+
+const (
+	// CTStatusNone means CT was not requested for the profile (or was requested
+	// but no SCTs were embedded and the certificate was not issued fail-open).
+	CTStatusNone CTStatus = "none"
+	// CTStatusSubmitted means an SCT list was embedded in the certificate.
+	CTStatusSubmitted CTStatus = "submitted"
+	// CTStatusFailedOpen means the SCT policy was not met but the certificate was
+	// issued anyway because the profile is configured fail-open.
+	CTStatusFailedOpen CTStatus = "failed_open"
+)
+
 // IssuedCertificate records an end-entity certificate minted by a CA. It is the
 // authority's copy used for renewal, listing, and (via revocation) CRL/OCSP.
 type IssuedCertificate struct {
@@ -121,6 +136,12 @@ type IssuedCertificate struct {
 	RevocationReason int       `json:"revocation_reason,omitempty" db:"revocation_reason"`
 	RequestedBy      string    `json:"requested_by,omitempty" db:"requested_by"`
 	CreatedAt        time.Time `json:"created_at" db:"created_at"`
+	// CTStatus records the Certificate Transparency outcome for this certificate.
+	CTStatus CTStatus `json:"ct_status,omitempty" db:"ct_status"`
+	// SCTCount is the number of embedded SCTs (0 unless CTStatus is submitted).
+	SCTCount int `json:"sct_count,omitempty" db:"sct_count"`
+	// CTLogs names the CT logs that returned an embedded SCT.
+	CTLogs []string `json:"ct_logs,omitempty" db:"-"`
 }
 
 // RevokedCertificate is a single entry in a CA's revocation store. It is kept
@@ -150,6 +171,26 @@ type IssueCertResponse struct {
 	Profile     string `json:"profile"`
 	NotBefore   string `json:"not_before"`
 	NotAfter    string `json:"not_after"`
+	// CT reports Certificate Transparency handling for this issuance. Present only
+	// when the profile requested CT.
+	CT *CTResponse `json:"ct,omitempty"`
+}
+
+// CTResponse conveys the Certificate Transparency outcome of an issuance to API
+// clients and the admin console.
+type CTResponse struct {
+	Enabled  bool           `json:"enabled"`
+	Embedded bool           `json:"embedded"`
+	SCTCount int            `json:"sct_count"`
+	Status   CTStatus       `json:"status"`
+	Logs     []CTLogOutcome `json:"logs,omitempty"`
+}
+
+// CTLogOutcome is the per-log result of a precertificate submission.
+type CTLogOutcome struct {
+	Log   string `json:"log"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
 }
 
 // RenewCertRequest renews a previously issued certificate identified by serial

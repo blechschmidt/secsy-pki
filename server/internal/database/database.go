@@ -191,6 +191,8 @@ func (db *DB) migrate() error {
 			revocation_reason INTEGER NOT NULL DEFAULT 0,
 			requested_by TEXT,
 			created_at %s,
+			ct_status TEXT NOT NULL DEFAULT 'none',
+			sct_count INTEGER NOT NULL DEFAULT 0,
 			UNIQUE(ca_id, serial)
 		)`, currentTimestamp),
 		`CREATE INDEX IF NOT EXISTS idx_issued_certs_ca ON issued_certificates(ca_id)`,
@@ -367,6 +369,9 @@ func (db *DB) migrate() error {
 		// Observability: correlate access/audit rows with the request log.
 		db.conn.Exec("ALTER TABLE access_log ADD COLUMN IF NOT EXISTS request_id TEXT")
 		db.conn.Exec("ALTER TABLE event_log ADD COLUMN IF NOT EXISTS request_id TEXT")
+		// Certificate Transparency status (Task 26).
+		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN IF NOT EXISTS ct_status TEXT NOT NULL DEFAULT 'none'")
+		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN IF NOT EXISTS sct_count INTEGER NOT NULL DEFAULT 0")
 	} else {
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_ssh_restriction_set_id TEXT")
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_x509_restriction_set_id TEXT")
@@ -388,6 +393,9 @@ func (db *DB) migrate() error {
 		// Observability: correlate access/audit rows with the request log.
 		db.conn.Exec("ALTER TABLE access_log ADD COLUMN request_id TEXT")
 		db.conn.Exec("ALTER TABLE event_log ADD COLUMN request_id TEXT")
+		// Certificate Transparency status (Task 26).
+		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN ct_status TEXT NOT NULL DEFAULT 'none'")
+		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN sct_count INTEGER NOT NULL DEFAULT 0")
 	}
 
 	// ACME (RFC 8555) server tables.

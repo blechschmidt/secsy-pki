@@ -15,6 +15,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
+	"github.com/blechschmidt/secsy-pki/server/internal/ct"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/est"
 	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
@@ -85,18 +86,49 @@ func main() {
 		log.Printf("RBAC role assignments loaded (subjects=%d, groups=%d)", len(cfg.RBAC.Subjects), len(cfg.RBAC.Groups))
 	}
 
+	// Install the Certificate Transparency log registry (RFC 6962). Profiles opt
+	// in to CT per-profile and reference these logs by name.
+	ctSubmitter, err := buildCTSubmitter(cfg.CertificateTransparency)
+	if err != nil {
+		log.Fatalf("Invalid certificate_transparency config: %v", err)
+	}
+	if ctSubmitter != nil {
+		ca.SetCTSubmitter(ctSubmitter)
+		log.Printf("Certificate Transparency enabled with %d log(s): %v",
+			len(ctSubmitter.LogNames()), ctSubmitter.LogNames())
+	}
+
 	// Install any operator-defined certificate profiles, layered over built-ins.
 	if len(cfg.Profiles) > 0 {
 		profiles := make([]ca.Profile, 0, len(cfg.Profiles))
 		for _, p := range cfg.Profiles {
-			profiles = append(profiles, ca.Profile{
+			prof := ca.Profile{
 				Name:                p.Name,
 				Description:         p.Description,
 				KeyUsages:           p.KeyUsages,
 				ExtKeyUsages:        p.ExtKeyUsages,
 				DefaultValidityDays: p.DefaultValidityDays,
 				MaxValidityDays:     p.MaxValidityDays,
-			})
+			}
+			if p.CT.Enabled {
+				if ctSubmitter == nil {
+					log.Fatalf("Profile %q enables certificate transparency but no CT logs are configured", p.Name)
+				}
+				for _, name := range p.CT.Logs {
+					if !ctSubmitter.Has(name) {
+						log.Fatalf("Profile %q references unknown CT log %q", p.Name, name)
+					}
+				}
+				prof.CT = &ca.CTConfig{
+					Enabled:        true,
+					Logs:           p.CT.Logs,
+					MinSCTs:        p.CT.MinSCTs,
+					FailOpen:       p.CT.FailOpen,
+					TimeoutSeconds: p.CT.TimeoutSeconds,
+					Retries:        p.CT.Retries,
+				}
+			}
+			profiles = append(profiles, prof)
 		}
 		if err := ca.SetCustomProfiles(profiles); err != nil {
 			log.Fatalf("Invalid custom certificate profile: %v", err)
@@ -616,4 +648,30 @@ func orDefaultPath(p, def string) string {
 		return def
 	}
 	return p
+}
+
+// buildCTSubmitter constructs the Certificate Transparency submitter from the
+// configured logs. It returns (nil, nil) when no logs are configured, which
+// leaves CT disabled regardless of per-profile settings. Log public keys may be
+// supplied inline (public_key) or from a file (public_key_file).
+func buildCTSubmitter(cfg config.CTConfig) (*ct.Submitter, error) {
+	if len(cfg.Logs) == 0 {
+		return nil, nil
+	}
+	logs := make([]ct.LogConfig, 0, len(cfg.Logs))
+	for _, l := range cfg.Logs {
+		pubPEM := l.PublicKey
+		if pubPEM == "" && l.PublicKeyFile != "" {
+			data, err := os.ReadFile(l.PublicKeyFile)
+			if err != nil {
+				return nil, fmt.Errorf("reading public_key_file for CT log %q: %w", l.Name, err)
+			}
+			pubPEM = string(data)
+		}
+		logs = append(logs, ct.LogConfig{Name: l.Name, URL: l.URL, PublicKeyPEM: pubPEM})
+	}
+	// A dedicated HTTP client with a conservative overall timeout; per-attempt
+	// timeouts are applied by the submitter from each profile's policy.
+	client := &http.Client{Timeout: 30 * time.Second}
+	return ct.NewSubmitter(logs, client)
 }

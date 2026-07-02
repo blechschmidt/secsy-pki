@@ -46,6 +46,27 @@ type IssueResult struct {
 	Serial      *big.Int
 	Profile     string
 	Record      *models.IssuedCertificate
+	// CT summarises Certificate Transparency handling for this issuance. It is
+	// always non-nil; CT.Enabled is false when the profile did not request CT.
+	CT *CTStatus
+}
+
+// applyCTToRecord folds a CT status into the stored certificate record.
+func applyCTToRecord(record *models.IssuedCertificate, status *CTStatus) {
+	if status == nil || !status.Enabled {
+		record.CTStatus = models.CTStatusNone
+		return
+	}
+	record.SCTCount = status.SCTCount
+	record.CTLogs = status.succeededLogNames()
+	switch {
+	case status.Embedded:
+		record.CTStatus = models.CTStatusSubmitted
+	case status.FailedOpen:
+		record.CTStatus = models.CTStatusFailedOpen
+	default:
+		record.CTStatus = models.CTStatusNone
+	}
 }
 
 // IssueCertificate signs a CSR into an end-entity certificate under the given
@@ -112,7 +133,7 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 		uris[i] = u.String()
 	}
 
-	der, err := pki.CreateLeafCertificate(signer, issuerCert, pki.LeafCertRequest{
+	der, ctStatus, err := m.buildLeaf(ctx, signer, issuerCA, issuerCert, pki.LeafCertRequest{
 		Subject:        csr.Subject,
 		PublicKey:      csr.PublicKey,
 		Serial:         serial,
@@ -124,7 +145,7 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 		IPAddresses:    csr.IPAddresses,
 		EmailAddresses: csr.EmailAddresses,
 		URIs:           uris,
-	})
+	}, profile)
 	if err != nil {
 		return nil, fmt.Errorf("creating certificate: %w", err)
 	}
@@ -150,6 +171,7 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 		Status:      models.CertStatusValid,
 		RequestedBy: spec.RequestedBy,
 	}
+	applyCTToRecord(record, ctStatus)
 	if err := m.db.RecordIssuedCertificate(record); err != nil {
 		return nil, fmt.Errorf("recording issued certificate: %w", err)
 	}
@@ -161,6 +183,7 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 		Serial:      serial,
 		Profile:     profile.Name,
 		Record:      record,
+		CT:          ctStatus,
 	}, nil
 }
 
@@ -269,7 +292,7 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (*IssueR
 	}
 	defer signer.Close()
 
-	der, err := pki.CreateLeafCertificate(signer, issuerCert, pki.LeafCertRequest{
+	der, ctStatus, err := m.buildLeaf(ctx, signer, issuerCA, issuerCert, pki.LeafCertRequest{
 		Subject:        subject,
 		PublicKey:      publicKey,
 		Serial:         serial,
@@ -281,7 +304,7 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (*IssueR
 		IPAddresses:    ipAddresses,
 		EmailAddresses: emails,
 		URIs:           uris,
-	})
+	}, profile)
 	if err != nil {
 		return nil, fmt.Errorf("creating renewed certificate: %w", err)
 	}
@@ -307,6 +330,7 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (*IssueR
 		Status:      models.CertStatusValid,
 		RequestedBy: spec.RequestedBy,
 	}
+	applyCTToRecord(record, ctStatus)
 	if err := m.db.RecordIssuedCertificate(record); err != nil {
 		return nil, fmt.Errorf("recording renewed certificate: %w", err)
 	}
@@ -318,6 +342,7 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (*IssueR
 		Serial:      serial,
 		Profile:     profile.Name,
 		Record:      record,
+		CT:          ctStatus,
 	}, nil
 }
 

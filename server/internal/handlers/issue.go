@@ -69,7 +69,7 @@ func (a *API) IssueCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.recordEvent(r, audit.ActionCertIssue, caID, result.Serial.String(), audit.ResultSuccess, "profile="+result.Profile)
+	a.recordEvent(r, audit.ActionCertIssue, caID, result.Serial.String(), audit.ResultSuccess, "profile="+result.Profile+" "+result.CT.Summary())
 	writeJSON(w, http.StatusCreated, issueResponse(result))
 }
 
@@ -119,7 +119,7 @@ func (a *API) RenewCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.recordEvent(r, audit.ActionCertRenew, caID, result.Serial.String(), audit.ResultSuccess, "renewed_from="+req.Serial)
+	a.recordEvent(r, audit.ActionCertRenew, caID, result.Serial.String(), audit.ResultSuccess, "renewed_from="+req.Serial+" "+result.CT.Summary())
 	writeJSON(w, http.StatusCreated, issueResponse(result))
 }
 
@@ -344,7 +344,7 @@ func daysToDuration(days int) time.Duration {
 
 // issueResponse renders an issuance result as the API response shape.
 func issueResponse(result *ca.IssueResult) models.IssueCertResponse {
-	return models.IssueCertResponse{
+	resp := models.IssueCertResponse{
 		Certificate: string(result.PEM),
 		Chain:       string(result.ChainPEM),
 		Serial:      result.Serial.String(),
@@ -352,6 +352,19 @@ func issueResponse(result *ca.IssueResult) models.IssueCertResponse {
 		NotBefore:   result.Certificate.NotBefore.Format(time.RFC3339),
 		NotAfter:    result.Certificate.NotAfter.Format(time.RFC3339),
 	}
+	if ct := result.CT; ct != nil && ct.Enabled {
+		out := &models.CTResponse{
+			Enabled:  true,
+			Embedded: ct.Embedded,
+			SCTCount: ct.SCTCount,
+			Status:   result.Record.CTStatus,
+		}
+		for _, r := range ct.Logs {
+			out.Logs = append(out.Logs, models.CTLogOutcome{Log: r.Log, OK: r.OK, Error: r.Error})
+		}
+		resp.CT = out
+	}
+	return resp
 }
 
 // writeOCSPMalformed emits the standard OCSP "malformed request" response.

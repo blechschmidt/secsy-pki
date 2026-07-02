@@ -36,6 +36,13 @@ const (
 	AuditLogEntryCertFormatX509 AuditLogEntryCertFormat = "x509"
 )
 
+// Defines values for CTResponseStatus.
+const (
+	CTResponseStatusFailedOpen CTResponseStatus = "failed_open"
+	CTResponseStatusNone       CTResponseStatus = "none"
+	CTResponseStatusSubmitted  CTResponseStatus = "submitted"
+)
+
 // Defines values for CertItemSeverity.
 const (
 	CertItemSeverityCritical CertItemSeverity = "critical"
@@ -49,6 +56,13 @@ const (
 	EventResultDenied  EventResult = "denied"
 	EventResultError   EventResult = "error"
 	EventResultSuccess EventResult = "success"
+)
+
+// Defines values for IssuedCertificateCtStatus.
+const (
+	IssuedCertificateCtStatusFailedOpen IssuedCertificateCtStatus = "failed_open"
+	IssuedCertificateCtStatusNone       IssuedCertificateCtStatus = "none"
+	IssuedCertificateCtStatusSubmitted  IssuedCertificateCtStatus = "submitted"
 )
 
 // Defines values for IssuedCertificateStatus.
@@ -280,6 +294,33 @@ type CASubject struct {
 	St *string `json:"st,omitempty"`
 }
 
+// CTLogOutcome Per-log result of a precertificate submission.
+type CTLogOutcome struct {
+	// Error failure detail when ok is false
+	Error *string `json:"error,omitempty"`
+
+	// Log configured log name
+	Log *string `json:"log,omitempty"`
+	Ok  *bool   `json:"ok,omitempty"`
+}
+
+// CTResponse Certificate Transparency outcome for an issuance.
+type CTResponse struct {
+	// Embedded whether an SCT list was embedded
+	Embedded *bool `json:"embedded,omitempty"`
+
+	// Enabled whether the profile requested CT
+	Enabled *bool           `json:"enabled,omitempty"`
+	Logs    *[]CTLogOutcome `json:"logs,omitempty"`
+
+	// SctCount number of embedded SCTs
+	SctCount *int              `json:"sct_count,omitempty"`
+	Status   *CTResponseStatus `json:"status,omitempty"`
+}
+
+// CTResponseStatus defines model for CTResponse.Status.
+type CTResponseStatus string
+
 // CertItem defines model for CertItem.
 type CertItem struct {
 	CaId             *string           `json:"ca_id,omitempty"`
@@ -456,30 +497,45 @@ type IssueCertResponse struct {
 	// Certificate PEM leaf certificate
 	Certificate *string `json:"certificate,omitempty"`
 	Chain       *string `json:"chain,omitempty"`
-	NotAfter    *string `json:"not_after,omitempty"`
-	NotBefore   *string `json:"not_before,omitempty"`
-	Profile     *string `json:"profile,omitempty"`
-	Serial      *string `json:"serial,omitempty"`
+
+	// Ct Certificate Transparency outcome for an issuance.
+	Ct        *CTResponse `json:"ct,omitempty"`
+	NotAfter  *string     `json:"not_after,omitempty"`
+	NotBefore *string     `json:"not_before,omitempty"`
+	Profile   *string     `json:"profile,omitempty"`
+	Serial    *string     `json:"serial,omitempty"`
 }
 
 // IssuedCertificate defines model for IssuedCertificate.
 type IssuedCertificate struct {
-	CaId             *string                  `json:"ca_id,omitempty"`
-	Certificate      *string                  `json:"certificate,omitempty"`
-	CommonName       *string                  `json:"common_name,omitempty"`
-	CreatedAt        *time.Time               `json:"created_at,omitempty"`
-	Id               *string                  `json:"id,omitempty"`
-	NotAfter         *time.Time               `json:"not_after,omitempty"`
-	NotBefore        *time.Time               `json:"not_before,omitempty"`
-	Profile          *string                  `json:"profile,omitempty"`
-	RequestedBy      *string                  `json:"requested_by,omitempty"`
-	RevocationReason *int                     `json:"revocation_reason,omitempty"`
-	RevokedAt        *time.Time               `json:"revoked_at,omitempty"`
-	Sans             *[]string                `json:"sans,omitempty"`
-	Serial           *string                  `json:"serial,omitempty"`
-	Status           *IssuedCertificateStatus `json:"status,omitempty"`
-	Subject          *string                  `json:"subject,omitempty"`
+	CaId        *string    `json:"ca_id,omitempty"`
+	Certificate *string    `json:"certificate,omitempty"`
+	CommonName  *string    `json:"common_name,omitempty"`
+	CreatedAt   *time.Time `json:"created_at,omitempty"`
+
+	// CtLogs names of CT logs that returned an embedded SCT
+	CtLogs *[]string `json:"ct_logs,omitempty"`
+
+	// CtStatus Certificate Transparency outcome for this certificate.
+	CtStatus         *IssuedCertificateCtStatus `json:"ct_status,omitempty"`
+	Id               *string                    `json:"id,omitempty"`
+	NotAfter         *time.Time                 `json:"not_after,omitempty"`
+	NotBefore        *time.Time                 `json:"not_before,omitempty"`
+	Profile          *string                    `json:"profile,omitempty"`
+	RequestedBy      *string                    `json:"requested_by,omitempty"`
+	RevocationReason *int                       `json:"revocation_reason,omitempty"`
+	RevokedAt        *time.Time                 `json:"revoked_at,omitempty"`
+	Sans             *[]string                  `json:"sans,omitempty"`
+
+	// SctCount number of embedded SCTs
+	SctCount *int                     `json:"sct_count,omitempty"`
+	Serial   *string                  `json:"serial,omitempty"`
+	Status   *IssuedCertificateStatus `json:"status,omitempty"`
+	Subject  *string                  `json:"subject,omitempty"`
 }
+
+// IssuedCertificateCtStatus Certificate Transparency outcome for this certificate.
+type IssuedCertificateCtStatus string
 
 // IssuedCertificateStatus defines model for IssuedCertificate.Status.
 type IssuedCertificateStatus string

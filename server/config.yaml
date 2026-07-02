@@ -90,6 +90,37 @@ profiles: []
 #     ext_key_usages: [clientAuth]
 #     default_validity_days: 7
 #     max_validity_days: 30
+#   - name: server-ct
+#     description: "TLS server certificate with Certificate Transparency"
+#     key_usages: [digitalSignature, keyEncipherment]
+#     ext_key_usages: [serverAuth]
+#     default_validity_days: 90
+#     # ct enables RFC 6962 precertificate submission + SCT embedding for this
+#     # profile. Referenced logs must be registered under certificate_transparency.
+#     ct:
+#       enabled: true
+#       logs: [test-log]      # empty = submit to every registered log
+#       min_scts: 1           # minimum SCTs the policy requires (default 1)
+#       fail_open: false      # false = reject issuance if the policy is not met;
+#                             # true = issue anyway with whatever SCTs were obtained
+#       timeout_seconds: 5    # per-log attempt timeout
+#       retries: 2            # extra attempts per log after the first
+
+# certificate_transparency registers the RFC 6962 CT logs available to issuance
+# profiles (referenced by name from a profile's `ct.logs`). Supplying a log's
+# public_key (PEM SubjectPublicKeyInfo) enables cryptographic verification of the
+# SCT signatures it returns; without it, SCTs are accepted on count alone.
+certificate_transparency:
+  logs: []
+#     - name: test-log
+#       url: "https://ct.example.com/testlog"
+#       public_key: |
+#         -----BEGIN PUBLIC KEY-----
+#         ...
+#         -----END PUBLIC KEY-----
+#     - name: prod-log
+#       url: "https://ct.googleapis.com/logs/xenon2025"
+#       public_key_file: /etc/secsy-pki/ct/xenon2025.pem
 
 # acme configures the RFC 8555 automated-issuance server (certbot / lego /
 # acme.sh). Disabled by default; see docs/acme.md. When enabled, point it at an
