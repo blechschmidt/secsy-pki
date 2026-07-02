@@ -13,6 +13,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/console"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
@@ -199,6 +200,12 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.HandleFunc("GET /api/docs/openapi.json", a.OpenAPIJSON)
 
 	mux.Handle("GET /api/me", protected(http.HandlerFunc(a.Me)))
+
+	// Embedded operator web console (Task 21). Its static assets ship in the
+	// server binary via go:embed, so no separate front-end deploy is required.
+	// The console holds no privileges of its own — every operation it performs
+	// goes through the RBAC-gated, audited API endpoints registered above.
+	console.Register(mux)
 }
 
 func (a *API) hsmEnabled() bool {

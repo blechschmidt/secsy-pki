@@ -192,10 +192,18 @@ func main() {
 		acmeSrv.Register(mux)
 	}
 
-	// Serve the SPA
+	// Serve the legacy disk-based SPA from web/static when present. The Task 21
+	// operator console is served separately from an embedded (go:embed) bundle
+	// under /console/ by RegisterRoutes, so it ships in the binary regardless.
+	// When the legacy SPA is absent (e.g. the container image), send the site
+	// root straight to the embedded console.
 	webDir := "web/static"
 	if _, err := os.Stat(webDir); err == nil {
 		mux.Handle("GET /", http.FileServer(http.Dir(webDir)))
+	} else {
+		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/console/", http.StatusFound)
+		})
 	}
 
 	// Cap every request body to guard against memory-exhaustion DoS from an

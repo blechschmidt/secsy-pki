@@ -46,6 +46,7 @@ The `secsy-ca` and `secsy-secret` CLIs drive the CA and secret features; see the
 - **Public key export** — Export CA public keys in PEM (PKIX) or OpenSSH format via API and UI.
 - **HSM management** — Factory reset, audit provisioning, device info, and attestation certificate export from the UI.
 - **Web UI** — Bootstrap 5 SPA with dark theme and SRI-pinned CDN resources.
+- **Operator console** — Minimal, dependency-free web console embedded in the server binary (`go:embed`) at `/console/`, covering the enterprise certificate lifecycle: browse issued certificates, view expiry/renewal status from the monitor, issue and revoke leaves via profiles, download the CRL, and seal/recover HSM-backed secret envelopes. Ships with no separate front-end deploy; all actions run through the RBAC-gated, audited API.
 - **SQLite and PostgreSQL** — Dual database support. SQLite for development, PostgreSQL for production.
 - **Terraform provisioning** — Provision the root CA key on a YubiHSM using [terraform-provider-pkcs11](https://github.com/blechschmidt/terraform-provider-pkcs11).
 

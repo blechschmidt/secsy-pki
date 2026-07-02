@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Secsy PKI — Operator Console</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Login overlay -->
+  <div id="login">
+    <div class="card">
+      <h1>Secsy <span style="color:var(--accent)">PKI</span></h1>
+      <p>Operator console — sign in to continue.</p>
+      <div id="loginError" class="notice err hidden"></div>
+      <form id="loginForm">
+        <div class="field">
+          <label for="loginUser">Username</label>
+          <input id="loginUser" autocomplete="username" placeholder="root">
+        </div>
+        <div class="field">
+          <label for="loginPass">Password</label>
+          <input id="loginPass" type="password" autocomplete="current-password">
+        </div>
+        <button class="btn" type="submit">Sign in</button>
+      </form>
+      <div id="ssoBlock" class="hidden">
+        <div class="divider">— or —</div>
+        <button class="btn ghost" id="ssoBtn" type="button">Sign in with SSO (OIDC)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- App shell -->
+  <div id="app" class="hidden">
+    <header>
+      <span class="brand">Secsy <span class="dot">PKI</span></span>
+      <nav>
+        <button data-view="certs" class="active">Certificates</button>
+        <button data-view="monitor">Expiry Monitor</button>
+        <button data-view="issue">Issue</button>
+        <button data-view="secrets">Secrets</button>
+      </nav>
+      <span class="user" id="userBox"></span>
+      <button class="btn ghost sm" id="logoutBtn">Sign out</button>
+    </header>
+
+    <main>
+      <div id="globalError" class="notice err hidden"></div>
+
+      <!-- Certificates -->
+      <section class="view active" id="view-certs">
+        <h2>Issued certificates</h2>
+        <p class="sub">Browse the certificates issued by a CA, inspect status, download the CRL, and revoke leaves.</p>
+        <div class="toolbar">
+          <div class="field" style="margin:0">
+            <label for="certCA">Certificate authority</label>
+            <select id="certCA"></select>
+          </div>
+          <label class="muted" style="display:flex;gap:6px;align-items:center;margin-top:16px">
+            <input type="checkbox" id="showRevoked"> revoked only
+          </label>
+          <div class="spacer"></div>
+          <a class="btn ghost sm" id="crlLink" target="_blank" style="margin-top:16px">Download CRL (PEM)</a>
+          <button class="btn ghost sm" id="refreshCerts" style="margin-top:16px">Refresh</button>
+        </div>
+        <div class="panel">
+          <table>
+            <thead><tr><th>Serial</th><th>Common name</th><th>Profile</th><th>Not after</th><th>Status</th><th></th></tr></thead>
+            <tbody id="certRows"><tr><td colspan="6" class="muted">Select a CA…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Expiry monitor -->
+      <section class="view" id="view-monitor">
+        <h2>Expiry &amp; renewal status</h2>
+        <p class="sub">Certificates ranked by remaining validity, as reported by the background expiry monitor.</p>
+        <div class="toolbar">
+          <div class="field" style="margin:0">
+            <label for="monSeverity">Minimum severity</label>
+            <select id="monSeverity">
+              <option value="">all</option>
+              <option value="warning">warning</option>
+              <option value="critical">critical</option>
+              <option value="expired">expired</option>
+            </select>
+          </div>
+          <div class="spacer"></div>
+          <button class="btn ghost sm" id="monRefresh" style="margin-top:16px">Refresh</button>
+          <button class="btn sm" id="monScan" style="margin-top:16px">Scan &amp; auto-renew</button>
+        </div>
+        <div id="monCounts" class="muted" style="margin-bottom:12px"></div>
+        <div class="panel">
+          <table>
+            <thead><tr><th>Severity</th><th>Common name</th><th>CA</th><th>Profile</th><th>Expires in</th><th>Not after</th></tr></thead>
+            <tbody id="monRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Issue / revoke -->
+      <section class="view" id="view-issue">
+        <h2>Issue a leaf certificate</h2>
+        <p class="sub">Sign a PKCS#10 CSR under a profile. The CA key never leaves the HSM.</p>
+        <div class="panel">
+          <div id="issueMsg" class="notice hidden"></div>
+          <div class="row">
+            <div class="field" style="flex:1;min-width:220px">
+              <label for="issueCA">Certificate authority</label>
+              <select id="issueCA"></select>
+            </div>
+            <div class="field" style="flex:1;min-width:220px">
+              <label for="issueProfile">Profile</label>
+              <select id="issueProfile"></select>
+            </div>
+            <div class="field" style="width:150px">
+              <label for="issueDays">Validity (days)</label>
+              <input id="issueDays" type="number" min="1" placeholder="profile default">
+            </div>
+          </div>
+          <div class="field">
+            <label for="issueCSR">Certificate signing request (PEM)</label>
+            <textarea id="issueCSR" placeholder="-----BEGIN CERTIFICATE REQUEST-----"></textarea>
+          </div>
+          <button class="btn" id="issueBtn">Issue certificate</button>
+        </div>
+        <div class="panel hidden" id="issueResult">
+          <div class="field">
+            <label>Issued certificate (PEM)</label>
+            <textarea id="issuePEM" readonly></textarea>
+          </div>
+        </div>
+      </section>
+
+      <!-- Secrets -->
+      <section class="view" id="view-secrets">
+        <h2>Secret envelopes</h2>
+        <p class="sub">HSM-backed envelope encryption for passwords and small secrets. The KEK stays on the token.</p>
+        <div id="secretDisabled" class="notice err hidden">Secret encryption is not enabled on this server (no KEK configured).</div>
+        <div id="secretInfo" class="muted" style="margin-bottom:12px"></div>
+        <div class="row" style="align-items:stretch">
+          <div class="panel" style="flex:1;min-width:320px">
+            <h2 style="font-size:15px">Encrypt</h2>
+            <div class="field">
+              <label for="encPlain">Plaintext</label>
+              <textarea id="encPlain" placeholder="secret to seal…" style="min-height:90px"></textarea>
+            </div>
+            <button class="btn" id="encBtn">Encrypt →</button>
+            <div class="field" style="margin-top:12px">
+              <label for="encOut">Envelope (JSON)</label>
+              <textarea id="encOut" readonly style="min-height:120px"></textarea>
+            </div>
+          </div>
+          <div class="panel" style="flex:1;min-width:320px">
+            <h2 style="font-size:15px">Decrypt</h2>
+            <div class="field">
+              <label for="decEnv">Envelope (JSON)</label>
+              <textarea id="decEnv" placeholder='{"version":1,...}' style="min-height:120px"></textarea>
+            </div>
+            <button class="btn" id="decBtn">Decrypt →</button>
+            <div class="field" style="margin-top:12px">
+              <label for="decOut">Recovered plaintext</label>
+              <textarea id="decOut" readonly style="min-height:90px"></textarea>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
