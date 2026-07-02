@@ -1,0 +1,88 @@
+name: Enterprise CI (SoftHSM)
+
+# Runs the HSM-backed enterprise integration suite against a real PKCS#11
+# token (SoftHSM) on every push to the enterprise branch, and on pull requests
+# that target it. The suite drives the full product flow:
+#
+#   initialize token -> generate HSM CA key -> issue root + intermediate + leaf
+#   -> verify the chain -> revoke a cert and validate CRL/OCSP
+#   -> password encrypt/decrypt round-trips.
+#
+# The job reuses the same repeatable, idempotent scripts developers run locally
+# (scripts/setup-softhsm.sh and scripts/integration-test.sh) so CI and local
+# runs cannot drift. Any test failure fails the build.
+
+on:
+  push:
+    branches: [enterprise]
+  pull_request:
+    branches: [enterprise]
+  # Allow manual runs from the Actions tab for debugging / re-runs.
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref to save runner minutes.
+concurrency:
+  group: enterprise-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  softhsm-integration:
+    name: SoftHSM integration suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # Deterministic, self-contained SoftHSM location for this run. Kept in
+      # sync with the defaults in scripts/setup-softhsm.sh.
+      SOFTHSM2_CONF: /tmp/softhsm2.conf
+      SOFTHSM_TOKEN_DIR: /tmp/softhsm/tokens
+      # go.mod pins go1.25.7; system Go bootstraps it via GOTOOLCHAIN=auto.
+      GOTOOLCHAIN: auto
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # setup-go installs the exact toolchain pinned in go.mod and caches the
+      # module download cache + build cache keyed on server/go.sum.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Install SoftHSM and OpenSC
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends softhsm2 opensc
+
+      # Idempotent token provisioning. Re-runnable without duplicating tokens;
+      # SOFTHSM_REINIT=1 guarantees a clean token even on a warm/cached runner.
+      - name: Provision SoftHSM token
+        env:
+          SOFTHSM_REINIT: "1"
+        run: ./scripts/setup-softhsm.sh
+
+      - name: Download Go modules
+        working-directory: server
+        run: go mod download
+
+      # Build every binary (both with and without the sqlite tag) before tests
+      # so a compile break fails fast and independently of the test run.
+      - name: Build all targets
+        working-directory: server
+        run: |
+          go build -tags sqlite -o /dev/null ./cmd/server
+          for cmd in server verify secsy-ca secsy-secret secsy-ssh; do
+            echo "==> building ./cmd/$cmd"
+            go build -o /dev/null "./cmd/$cmd"
+          done
+
+      # Runs setup-softhsm.sh (idempotent), loads the SECSY_* PKCS#11 env, and
+      # executes the end-to-end suite serialized with -p 1 (a single SoftHSM
+      # token is not safe for concurrent access). Non-zero exit fails the build.
+      - name: Run integration test suite
+        run: ./scripts/integration-test.sh
