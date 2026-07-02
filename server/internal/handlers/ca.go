@@ -22,15 +22,30 @@ const (
 // self-signed root CA certificate signed on the device.
 func (a *API) InitRootCA(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !a.can(user, rbac.ActionManageCA) {
-		a.recordEvent(r, audit.ActionCAInitRoot, "", "", audit.ResultDenied, "ca:manage capability required")
-		writeError(w, http.StatusForbidden, "ca:manage capability required (admin role)")
-		return
-	}
 
 	var req models.CAInitRootRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+
+	tenantID := req.TenantID
+	if tenantID == "" {
+		tenantID = models.DefaultTenantID
+	}
+	middleware.SetTenant(r.Context(), tenantID)
+	// The tenant must exist, and the caller must hold ca:manage WITHIN it. A
+	// tenant admin can only create CAs in its own tenant.
+	if t, err := a.db.GetTenant(tenantID); err != nil {
+		writeError(w, http.StatusInternalServerError, "tenant lookup failed: %v", err)
+		return
+	} else if t == nil {
+		writeError(w, http.StatusBadRequest, "unknown tenant %q", tenantID)
+		return
+	}
+	if !a.canInTenant(user, tenantID, rbac.ActionManageCA) {
+		a.recordEvent(r, audit.ActionCAInitRoot, "", "", audit.ResultDenied, "ca:manage capability required")
+		writeError(w, http.StatusForbidden, "ca:manage capability required for tenant %q", tenantID)
 		return
 	}
 
@@ -45,6 +60,7 @@ func (a *API) InitRootCA(w http.ResponseWriter, r *http.Request) {
 	// key-generation and signing operations, mirroring the sign paths.
 	a.consumeHSMAuditLogs("")
 	result, err := mgr.InitRoot(r.Context(), ca.RootSpec{
+		TenantID:   tenantID,
 		Label:      req.Label,
 		KeyType:    req.KeyType,
 		Subject:    ca.PKIXName(req.Subject),
@@ -66,13 +82,25 @@ func (a *API) InitRootCA(w http.ResponseWriter, r *http.Request) {
 // and issues an intermediate certificate signed by the parent CA on the device.
 func (a *API) IssueIntermediateCA(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !a.can(user, rbac.ActionManageCA) {
-		a.recordEvent(r, audit.ActionCAIssueIntermediate, r.PathValue("id"), "", audit.ResultDenied, "ca:manage capability required")
-		writeError(w, http.StatusForbidden, "ca:manage capability required (admin role)")
+	parentID := r.PathValue("id")
+
+	// The intermediate inherits the parent's tenant; the caller must hold
+	// ca:manage within that tenant.
+	tenantID, err := a.db.GetCATenant(parentID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "parent CA lookup failed: %v", err)
 		return
 	}
-
-	parentID := r.PathValue("id")
+	if tenantID == "" {
+		writeError(w, http.StatusNotFound, "parent CA %q not found", parentID)
+		return
+	}
+	middleware.SetTenant(r.Context(), tenantID)
+	if !a.canInTenant(user, tenantID, rbac.ActionManageCA) {
+		a.recordEvent(r, audit.ActionCAIssueIntermediate, parentID, "", audit.ResultDenied, "ca:manage capability required")
+		writeError(w, http.StatusForbidden, "ca:manage capability required for tenant %q", tenantID)
+		return
+	}
 
 	var req models.CAIssueIntermediateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

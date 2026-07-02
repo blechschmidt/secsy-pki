@@ -49,6 +49,9 @@ func (m *Manager) ProviderName() string {
 
 // RootSpec describes a root CA to initialize.
 type RootSpec struct {
+	// TenantID is the tenant that will own this root and its entire issuance
+	// subtree. Empty defaults to the built-in default tenant.
+	TenantID   string
 	Label      string
 	KeyType    string
 	Subject    pkix.Name
@@ -117,7 +120,11 @@ func (m *Manager) InitRoot(ctx context.Context, spec RootSpec) (*models.CA, erro
 		return nil, fmt.Errorf("creating root CA certificate: %w", err)
 	}
 
-	return m.persistCA(nil, spec.Label, keyInfo, der, req)
+	tenantID := spec.TenantID
+	if tenantID == "" {
+		tenantID = models.DefaultTenantID
+	}
+	return m.persistCA(tenantID, nil, spec.Label, keyInfo, der, req)
 }
 
 // IssueIntermediate generates a key inside the provider and creates an
@@ -173,7 +180,9 @@ func (m *Manager) IssueIntermediate(ctx context.Context, spec IntermediateSpec) 
 		return nil, fmt.Errorf("creating intermediate CA certificate: %w", err)
 	}
 
-	return m.persistCA(&parent.ID, spec.Label, keyInfo, der, req)
+	// A subordinate CA always inherits its parent's tenant, so an intermediate can
+	// never cross the isolation boundary.
+	return m.persistCA(parent.TenantID, &parent.ID, spec.Label, keyInfo, der, req)
 }
 
 // validateSpec performs shared request validation, including key-type
@@ -214,7 +223,10 @@ func (m *Manager) checkPathLen(parent *models.CA, parentCert *x509.Certificate) 
 // persistCA parses the freshly signed certificate, records its metadata, and
 // stores the CA. It sets deny-all default restriction sets so a new CA cannot
 // sign anything until an operator configures it (issuance is handled elsewhere).
-func (m *Manager) persistCA(parentID *string, label string, keyInfo *keyprovider.KeyInfo, der []byte, req pki.CACertRequest) (*models.CA, error) {
+func (m *Manager) persistCA(tenantID string, parentID *string, label string, keyInfo *keyprovider.KeyInfo, der []byte, req pki.CACertRequest) (*models.CA, error) {
+	if tenantID == "" {
+		tenantID = models.DefaultTenantID
+	}
 	cert, err := x509.ParseCertificate(der)
 	if err != nil {
 		return nil, fmt.Errorf("parsing signed certificate: %w", err)
@@ -240,6 +252,7 @@ func (m *Manager) persistCA(parentID *string, label string, keyInfo *keyprovider
 
 	ca := &models.CA{
 		ID:                          uuid.New().String(),
+		TenantID:                    tenantID,
 		ParentID:                    parentID,
 		Label:                       label,
 		PKCS11URI:                   keyInfo.URI,

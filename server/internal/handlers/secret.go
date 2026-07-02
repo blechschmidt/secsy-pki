@@ -10,6 +10,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
+	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
 )
@@ -22,11 +23,61 @@ const maxSecretPlaintext = 64 * 1024 // 64 KiB
 
 func (a *API) secretEnabled() bool { return a.secretKEKLabel != "" }
 
+// TenantHeader names the request header a client uses to select the tenant whose
+// secret KEK should seal/open an envelope. When absent, the default tenant (and
+// the deployment-wide KEK) is used, preserving single-tenant behavior.
+const TenantHeader = "X-Secsy-Tenant"
+
+// resolveSecretTenant maps the request's tenant selector to (tenantID, kekLabel).
+// A tenant with its own KEK label seals its secrets under a tenant-specific key,
+// keeping one tenant's envelopes cryptographically separable from another's; a
+// tenant without one falls back to the deployment KEK. An unknown/suspended
+// tenant is an error. The resolved tenant is stamped on the request context for
+// auditing.
+func (a *API) resolveSecretTenant(r *http.Request) (tenantID, kekLabel string, err error) {
+	sel := r.Header.Get(TenantHeader)
+	if sel == "" {
+		middleware.SetTenant(r.Context(), models.DefaultTenantID)
+		return models.DefaultTenantID, a.secretKEKLabel, nil
+	}
+	// Accept either the tenant ID or its slug.
+	t, err := a.db.GetTenant(sel)
+	if err != nil {
+		return "", "", err
+	}
+	if t == nil {
+		if t, err = a.db.GetTenantBySlug(sel); err != nil {
+			return "", "", err
+		}
+	}
+	if t == nil {
+		return "", "", fmt.Errorf("unknown tenant %q", sel)
+	}
+	if t.Status != models.TenantStatusActive {
+		return "", "", fmt.Errorf("tenant %q is %s", t.Slug, t.Status)
+	}
+	middleware.SetTenant(r.Context(), t.ID)
+	label := t.KEKLabel
+	if label == "" {
+		label = a.secretKEKLabel
+	}
+	return t.ID, label, nil
+}
+
 // secretService builds a Service bound to the configured KEK for this request.
 // A fresh service is created per request so the KEK session is short-lived,
 // matching the signing path.
 func (a *API) secretService(r *http.Request) (*secret.Service, error) {
-	return secret.NewService(r.Context(), a.keyProvider, keyprovider.KeyRef{Label: a.secretKEKLabel})
+	return a.secretServiceWithKEK(r, a.secretKEKLabel)
+}
+
+// secretServiceWithKEK builds a Service bound to a specific KEK label (used to
+// select a tenant's KEK).
+func (a *API) secretServiceWithKEK(r *http.Request, kekLabel string) (*secret.Service, error) {
+	if kekLabel == "" {
+		return nil, fmt.Errorf("no KEK configured")
+	}
+	return secret.NewService(r.Context(), a.keyProvider, keyprovider.KeyRef{Label: kekLabel})
 }
 
 // SecretInfo reports metadata about the configured KEK (never key material).
@@ -65,14 +116,19 @@ type encryptResponse struct {
 
 // EncryptSecret seals a caller-supplied plaintext into a versioned envelope.
 func (a *API) EncryptSecret(w http.ResponseWriter, r *http.Request) {
-	if !a.can(middleware.GetUserInfo(r.Context()), rbac.ActionEncrypt) {
+	tenantID, kekLabel, err := a.resolveSecretTenant(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	if !a.canInTenant(middleware.GetUserInfo(r.Context()), tenantID, rbac.ActionEncrypt) {
 		metrics.Envelope.Inc("encrypt", metrics.ResultDenied)
-		a.recordEvent(r, audit.ActionSecretEncrypt, a.secretKEKLabel, "", audit.ResultDenied, "secret:encrypt capability required")
-		writeError(w, http.StatusForbidden, "secret:encrypt capability required (admin or issuer role)")
+		a.recordEvent(r, audit.ActionSecretEncrypt, kekLabel, "", audit.ResultDenied, "secret:encrypt capability required")
+		writeError(w, http.StatusForbidden, "secret:encrypt capability required for tenant %q", tenantID)
 		return
 	}
 
-	svc, err := a.secretService(r)
+	svc, err := a.secretServiceWithKEK(r, kekLabel)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "secret service unavailable: %v", err)
 		return
@@ -156,14 +212,19 @@ type decryptResponse struct {
 // DecryptSecret recovers plaintext from an envelope. The KEK (HSM) performs the
 // unwrap; a failure returns a generic 400 to avoid acting as an oracle.
 func (a *API) DecryptSecret(w http.ResponseWriter, r *http.Request) {
-	if !a.can(middleware.GetUserInfo(r.Context()), rbac.ActionDecrypt) {
+	tenantID, kekLabel, err := a.resolveSecretTenant(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	if !a.canInTenant(middleware.GetUserInfo(r.Context()), tenantID, rbac.ActionDecrypt) {
 		metrics.Envelope.Inc("decrypt", metrics.ResultDenied)
-		a.recordEvent(r, audit.ActionSecretDecrypt, a.secretKEKLabel, "", audit.ResultDenied, "secret:decrypt capability required")
-		writeError(w, http.StatusForbidden, "secret:decrypt capability required (admin or issuer role)")
+		a.recordEvent(r, audit.ActionSecretDecrypt, kekLabel, "", audit.ResultDenied, "secret:decrypt capability required")
+		writeError(w, http.StatusForbidden, "secret:decrypt capability required for tenant %q", tenantID)
 		return
 	}
 
-	svc, err := a.secretService(r)
+	svc, err := a.secretServiceWithKEK(r, kekLabel)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "secret service unavailable: %v", err)
 		return

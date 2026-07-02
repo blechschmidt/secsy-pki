@@ -27,6 +27,8 @@ security:
 tags:
   - name: Meta
     description: Health, auth discovery, and current-user endpoints.
+  - name: Tenants
+    description: Multi-tenant isolation boundaries (platform administration).
   - name: Certificate Authorities
     description: HSM-backed CA key management and root/intermediate setup.
   - name: Certificate Lifecycle
@@ -132,6 +134,104 @@ paths:
               schema: { $ref: "#/components/schemas/CA" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/tenants:
+    get:
+      operationId: listTenants
+      tags: [Tenants]
+      summary: List tenants (platform admin only)
+      description: >-
+        Returns every tenant. Restricted to platform operators (the root user or
+        a platform-wide admin role); a tenant-scoped admin governs resources
+        within its own tenant but cannot enumerate other tenants.
+      responses:
+        "200":
+          description: All tenants.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Tenant" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      operationId: createTenant
+      tags: [Tenants]
+      summary: Provision a tenant (platform admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateTenantRequest" }
+      responses:
+        "201":
+          description: The created tenant.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tenant" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/BadRequest" }
+
+  /api/tenants/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: Tenant id.
+    get:
+      operationId: getTenant
+      tags: [Tenants]
+      summary: Get a tenant by id
+      description: Readable by platform operators and by members of the tenant.
+      responses:
+        "200":
+          description: The requested tenant.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tenant" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      operationId: deleteTenant
+      tags: [Tenants]
+      summary: Delete an empty tenant (platform admin only)
+      description: >-
+        Refused for the default tenant and for any tenant that still owns CAs.
+      responses:
+        "200":
+          description: The tenant was deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/BadRequest" }
+
+  /api/tenants/{id}/status:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: Tenant id.
+    put:
+      operationId: setTenantStatus
+      tags: [Tenants]
+      summary: Activate or suspend a tenant (platform admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TenantStatusRequest" }
+      responses:
+        "200":
+          description: The updated status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /api/keys/{id}:
     parameters:
@@ -1036,6 +1136,13 @@ paths:
         - name: actor
           in: query
           schema: { type: string }
+        - name: tenant
+          in: query
+          description: >-
+            Restrict to one tenant's events. Platform operators may set it to
+            narrow the view; a tenant-scoped auditor is always confined to its
+            own tenant regardless of this parameter.
+          schema: { type: string }
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Offset"
       responses:
@@ -1121,6 +1228,8 @@ paths:
       operationId: encryptSecret
       tags: [Secrets]
       summary: Envelope-encrypt a secret
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
       requestBody:
         required: true
         content:
@@ -1142,6 +1251,8 @@ paths:
       operationId: decryptSecret
       tags: [Secrets]
       summary: Decrypt an envelope
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
       requestBody:
         required: true
         content:
@@ -1372,6 +1483,14 @@ components:
       required: true
       description: CA / signing-key id.
       schema: { type: string }
+    TenantHeader:
+      name: X-Secsy-Tenant
+      in: header
+      required: false
+      description: >-
+        Selects the tenant (id or slug) whose secret KEK seals/opens the
+        envelope. Omit to use the default tenant and the deployment-wide KEK.
+      schema: { type: string }
     GroupId:
       name: id
       in: path
@@ -1461,6 +1580,7 @@ components:
       type: object
       properties:
         id: { type: string }
+        tenant_id: { type: string, description: Owning tenant (isolation boundary). }
         parent_id: { type: string }
         label: { type: string }
         pkcs11_uri: { type: string }
@@ -1481,6 +1601,7 @@ components:
       required: [label, key_type]
       properties:
         label: { type: string }
+        tenant_id: { type: string, description: "Owning tenant (default: the built-in default tenant). Ignored when parent_id is set, which inherits the parent's tenant." }
         parent_id: { type: string }
         pkcs11_uri: { type: string }
         key_type: { type: string }
@@ -1491,10 +1612,35 @@ components:
       required: [label, key_type, subject]
       properties:
         label: { type: string }
+        tenant_id: { type: string, description: "Owning tenant for the root and its entire subtree (default: the built-in default tenant)." }
         key_type: { type: string, description: "e.g. ecdsa-p256, rsa-3072, ed25519" }
         subject: { $ref: "#/components/schemas/CASubject" }
         validity_days: { type: integer }
         max_path_len: { type: integer }
+
+    Tenant:
+      type: object
+      properties:
+        id: { type: string }
+        slug: { type: string, description: URL/CLI-friendly unique identifier. }
+        name: { type: string }
+        status: { type: string, enum: [active, suspended] }
+        kek_label: { type: string, description: Optional per-tenant secret KEK. }
+        created_at: { type: string, format: date-time }
+
+    CreateTenantRequest:
+      type: object
+      required: [slug]
+      properties:
+        slug: { type: string, description: "URL/CLI-friendly unique identifier ([a-z0-9-])." }
+        name: { type: string }
+        kek_label: { type: string }
+
+    TenantStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [active, suspended] }
 
     CAIssueIntermediateRequest:
       type: object

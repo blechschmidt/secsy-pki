@@ -416,7 +416,7 @@ func appendAudit(db *database.DB, e *audit.Event) {
 // auditHead returns the sequence number and hash of the newest audit-log entry,
 // used as a tamper-evidence anchor in ceremony transcripts and backup manifests.
 func auditHead(db *database.DB) (int64, string) {
-	events, _, err := db.ListEvents("", "", 1, 0)
+	events, _, err := db.ListEvents("", "", "", 1, 0)
 	if err != nil || len(events) == 0 {
 		return 0, ""
 	}

@@ -362,7 +362,7 @@ func TestACMEFullFlow(t *testing.T) {
 
 	t.Run("AuditAndInventoryRecorded", func(t *testing.T) {
 		// Every finalized order writes a tamper-evident audit event.
-		events, _, err := env.db.ListEvents("acme.order.finalize", "", 50, 0)
+		events, _, err := env.db.ListEvents("acme.order.finalize", "", "", 50, 0)
 		if err != nil {
 			t.Fatalf("ListEvents: %v", err)
 		}
@@ -484,7 +484,7 @@ func TestACMERenewalInfo(t *testing.T) {
 
 	// (4) The forced-renewal (revoked) lookup is audited on the tamper-evident
 	// chain; routine "normal" polls are intentionally not audited.
-	events, _, err := env.db.ListEvents("acme.renewal_info", "", 50, 0)
+	events, _, err := env.db.ListEvents("acme.renewal_info", "", "", 50, 0)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}

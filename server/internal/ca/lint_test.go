@@ -26,7 +26,7 @@ func withProfiles(t *testing.T, profiles []Profile) {
 // result recorded so far.
 func countLintEvents(t *testing.T, m *Manager, result string) int {
 	t.Helper()
-	events, _, err := m.db.ListEvents(audit.ActionCertLint, "", 1000, 0)
+	events, _, err := m.db.ListEvents(audit.ActionCertLint, "", "", 1000, 0)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}

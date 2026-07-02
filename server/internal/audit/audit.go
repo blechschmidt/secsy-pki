@@ -40,9 +40,14 @@ const (
 	ActionCAInitRoot          = "ca.init_root"
 	ActionCAIssueIntermediate = "ca.issue_intermediate"
 	ActionCADelete            = "ca.delete"
-	ActionCertIssue           = "cert.issue"
-	ActionCertRenew           = "cert.renew"
-	ActionCertRevoke          = "cert.revoke"
+	// Tenant lifecycle (Task 43). These are platform-level events (no owning
+	// tenant of their own beyond the one they mutate).
+	ActionTenantCreate = "tenant.create"
+	ActionTenantUpdate = "tenant.update"
+	ActionTenantDelete = "tenant.delete"
+	ActionCertIssue    = "cert.issue"
+	ActionCertRenew    = "cert.renew"
+	ActionCertRevoke   = "cert.revoke"
 	// ActionSVIDIssue records the minting of a SPIFFE X.509-SVID. The detail
 	// carries the spiffe:// identity, trust domain, and profile.
 	ActionSVIDIssue = "svid.issue"
@@ -63,11 +68,11 @@ const (
 	// expiry monitor (actor "monitor"), ahead of its expiry.
 	ActionCertAutoRenew = "cert.auto_renew"
 	// ActionCertExpiryScan records a completed expiry-monitor scan cycle.
-	ActionCertExpiryScan    = "cert.expiry_scan"
-	ActionCertSignSSH       = "cert.sign_ssh"
-	ActionCertSignX509      = "cert.sign_x509"
-	ActionSecretEncrypt     = "secret.encrypt"
-	ActionSecretDecrypt     = "secret.decrypt"
+	ActionCertExpiryScan = "cert.expiry_scan"
+	ActionCertSignSSH    = "cert.sign_ssh"
+	ActionCertSignX509   = "cert.sign_x509"
+	ActionSecretEncrypt  = "secret.encrypt"
+	ActionSecretDecrypt  = "secret.decrypt"
 	// ActionSecretEscrow records that a secret was sealed with an M-of-N key
 	// escrow (the DEK Shamir-split across recovery agents). The target is the KEK
 	// label; the detail records the threshold, agent count, and agent IDs.
@@ -77,7 +82,7 @@ const (
 	// detail records the participating agent IDs and the threshold met. Recovery
 	// is a privileged, dual-control break-glass operation, logged distinctly from
 	// routine secret.decrypt so it stands out in the audit trail.
-	ActionSecretRecover = "secret.recover"
+	ActionSecretRecover     = "secret.recover"
 	ActionPermissionGrant   = "permission.grant"
 	ActionPermissionRevoke  = "permission.revoke"
 	ActionGroupCreate       = "group.create"
@@ -153,11 +158,17 @@ type Event struct {
 	ActorName  string    `json:"actor_name,omitempty"`
 	ActorRoles string    `json:"actor_roles,omitempty"` // roles held at the time of the action
 	Action     string    `json:"action"`                // e.g. "cert.issue"
-	Target     string    `json:"target,omitempty"`      // stable id of the object acted on (CA id, serial)
-	TargetName string    `json:"target_name,omitempty"` // human label (CA label, common name)
-	Result     string    `json:"result"`                // ResultSuccess | ResultDenied | ResultError
-	Detail     string    `json:"detail,omitempty"`
-	IP         string    `json:"ip,omitempty"`
+	// Tenant is the owning tenant of the acted-on resource (empty for
+	// platform-level events not scoped to any tenant). It is bound into the hash
+	// chain (see canonicalBytes) so an event cannot be silently re-attributed to a
+	// different tenant, and the listing API filters on it so one tenant's auditors
+	// never see another tenant's trail.
+	Tenant     string `json:"tenant,omitempty"`
+	Target     string `json:"target,omitempty"`      // stable id of the object acted on (CA id, serial)
+	TargetName string `json:"target_name,omitempty"` // human label (CA label, common name)
+	Result     string `json:"result"`                // ResultSuccess | ResultDenied | ResultError
+	Detail     string `json:"detail,omitempty"`
+	IP         string `json:"ip,omitempty"`
 	// RequestID correlates this event with the structured request log line for
 	// the HTTP request that produced it. It is contextual metadata and is
 	// deliberately NOT part of the hash-chain canonicalization (see
@@ -197,6 +208,15 @@ func canonicalBytes(e *Event, prevHash string) []byte {
 	writeField(e.Result)
 	writeField(e.Detail)
 	writeField(e.IP)
+	// Tenant is appended conditionally: events written before multi-tenancy (and
+	// platform-level events with no tenant) have an empty Tenant and hash exactly
+	// as before, keeping historical chains verifiable. A tenant-scoped event binds
+	// its tenant into the chain under a domain-separating "tenant" tag so it cannot
+	// be re-attributed to another tenant without breaking verification.
+	if e.Tenant != "" {
+		writeField("tenant")
+		writeField(e.Tenant)
+	}
 	return b.Bytes()
 }
 

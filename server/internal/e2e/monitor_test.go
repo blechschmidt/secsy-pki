@@ -186,7 +186,7 @@ func TestExpiryMonitorAndAutoRenew(t *testing.T) {
 		}
 
 		// A cert.auto_renew success audit event must have been appended.
-		events, _, err := db.ListEvents(audit.ActionCertAutoRenew, "", 50, 0)
+		events, _, err := db.ListEvents(audit.ActionCertAutoRenew, "", "", 50, 0)
 		if err != nil {
 			t.Fatalf("listing audit events: %v", err)
 		}

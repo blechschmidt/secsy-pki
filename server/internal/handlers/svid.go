@@ -40,7 +40,7 @@ func (a *API) IssueSVID(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
 	caID := r.PathValue("id")
 
-	ok, err := a.canIssueOn(user, caID)
+	ok, err := a.canIssueOn(r.Context(), user, caID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
 		return

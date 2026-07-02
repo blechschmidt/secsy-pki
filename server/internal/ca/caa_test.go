@@ -39,7 +39,7 @@ func withCAAResolver(t *testing.T, r caa.Resolver) {
 // result recorded so far.
 func countCAAEvents(t *testing.T, m *Manager, result string) int {
 	t.Helper()
-	events, _, err := m.db.ListEvents(audit.ActionCertCAA, "", 1000, 0)
+	events, _, err := m.db.ListEvents(audit.ActionCertCAA, "", "", 1000, 0)
 	if err != nil {
 		t.Fatalf("ListEvents: %v", err)
 	}

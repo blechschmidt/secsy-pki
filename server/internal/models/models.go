@@ -2,6 +2,41 @@ package models
 
 import "time"
 
+// DefaultTenantID is the reserved identifier of the built-in tenant. Every
+// deployment always has this tenant; single-organization installs use it
+// implicitly and all pre-multi-tenancy resources are backfilled to it, so the
+// tenant concept is fully backward compatible. Its slug is also "default".
+const DefaultTenantID = "default"
+
+// Tenant lifecycle states.
+const (
+	// TenantStatusActive is the default state: the tenant may own CAs, issue
+	// certificates, and authenticate its members.
+	TenantStatusActive = "active"
+	// TenantStatusSuspended means the tenant still exists (its CAs and audit
+	// history are preserved) but issuance and mutating operations are refused.
+	TenantStatusSuspended = "suspended"
+)
+
+// Tenant is a first-class isolation boundary: a single deployment can serve
+// several independent organizations, each owning its own CAs, issuance
+// profiles/restriction sets, revocation state, secret envelopes, RBAC role
+// assignments, and audit trail. Every tenant-scoped resource carries the owning
+// tenant's ID, and authorization forbids a principal from reaching resources of
+// a tenant it is not a member of (platform admins excepted).
+type Tenant struct {
+	ID     string `json:"id" db:"id"`
+	Slug   string `json:"slug" db:"slug"`     // stable URL/CLI-friendly identifier (unique)
+	Name   string `json:"name" db:"name"`     // human-readable display name
+	Status string `json:"status" db:"status"` // active | suspended
+	// KEKLabel optionally names the HSM key-encryption key used to seal this
+	// tenant's secret envelopes. When empty the deployment-wide default KEK is
+	// used. Scoping the KEK per tenant keeps one tenant's secrets cryptographically
+	// separable from another's.
+	KEKLabel  string    `json:"kek_label,omitempty" db:"kek_label"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
+}
+
 type Permission string
 
 const (
@@ -17,7 +52,12 @@ var AllPermissions = []Permission{
 }
 
 type CA struct {
-	ID                          string    `json:"id" db:"id"`
+	ID string `json:"id" db:"id"`
+	// TenantID is the owning tenant. It is assigned at creation and never changes;
+	// a subordinate CA always inherits its parent's tenant. All certificates,
+	// revocation/CRL state, and serial allocation under a CA are scoped by it, so
+	// this single field transitively tenant-scopes the entire issuance subtree.
+	TenantID                    string    `json:"tenant_id" db:"tenant_id"`
 	ParentID                    *string   `json:"parent_id,omitempty" db:"parent_id"`
 	Label                       string    `json:"label" db:"label"`
 	PKCS11URI                   string    `json:"pkcs11_uri" db:"pkcs11_uri"`
@@ -75,6 +115,9 @@ type CASubject struct {
 // CAInitRootRequest initializes a self-signed root CA. The private key is
 // generated inside the configured key provider (HSM) and never leaves it.
 type CAInitRootRequest struct {
+	// TenantID assigns the root (and its entire subtree) to a tenant. Empty
+	// defaults to the built-in default tenant.
+	TenantID     string    `json:"tenant_id,omitempty"`
 	Label        string    `json:"label"`
 	KeyType      string    `json:"key_type"`
 	Subject      CASubject `json:"subject"`
@@ -244,8 +287,11 @@ type RevokeCertRequest struct {
 }
 
 type Group struct {
-	ID   string `json:"id" db:"id"`
-	Name string `json:"name" db:"name"`
+	ID string `json:"id" db:"id"`
+	// TenantID scopes the group to a tenant so a group name may be reused across
+	// tenants and membership never leaks across the isolation boundary.
+	TenantID string `json:"tenant_id" db:"tenant_id"`
+	Name     string `json:"name" db:"name"`
 }
 
 type GroupMember struct {
@@ -273,7 +319,10 @@ const (
 
 // RestrictionSet defines constraints on certificate signing parameters.
 type RestrictionSet struct {
-	ID              string             `json:"id"`
+	ID string `json:"id"`
+	// TenantID scopes the restriction set (issuance profile) to a tenant. A CA
+	// may only reference restriction sets belonging to its own tenant.
+	TenantID        string             `json:"tenant_id,omitempty" db:"tenant_id"`
 	CAID            string             `json:"ca_id,omitempty"`
 	Name            string             `json:"name"`
 	Type            RestrictionSetType `json:"type"` // "ssh" or "x509"
@@ -423,7 +472,30 @@ type UserInfo struct {
 	// authenticated subject holds, resolved at authentication time from central
 	// configuration plus group membership. The built-in root user carries no
 	// roles here; it is always treated as a superuser regardless.
+	//
+	// Roles listed here are PLATFORM-WIDE (cross-tenant): a principal holding them
+	// exercises the capability in every tenant. They are reserved for platform
+	// operators. Tenant-scoped roles live in TenantRoles.
 	Roles []string `json:"roles,omitempty"`
+	// TenantRoles maps a tenant ID to the roles the subject holds WITHIN that
+	// tenant. A principal may only act on a tenant's resources when it is root,
+	// holds a platform role, or holds a role for that specific tenant here — the
+	// mechanism that forbids cross-tenant access.
+	TenantRoles map[string][]string `json:"tenant_roles,omitempty"`
+}
+
+// TenantsWithRoles returns the set of tenant IDs the subject holds at least one
+// role in. It does not include platform-wide access; callers combine it with
+// IsRoot / platform Roles when deciding cross-tenant visibility.
+func (u *UserInfo) TenantsWithRoles() []string {
+	if u == nil || len(u.TenantRoles) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(u.TenantRoles))
+	for t := range u.TenantRoles {
+		out = append(out, t)
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

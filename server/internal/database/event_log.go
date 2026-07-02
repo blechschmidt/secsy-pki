@@ -57,10 +57,10 @@ func (db *DB) AppendEvent(e *audit.Event) error {
 	audit.Seal(e, nextSeq, prevHash)
 
 	if _, err := tx.Exec(db.ph(
-		`INSERT INTO event_log (seq, id, timestamp, actor, actor_name, actor_roles, action, target, target_name, result, detail, ip, request_id, prev_hash, hash)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		`INSERT INTO event_log (seq, id, timestamp, actor, actor_name, actor_roles, action, tenant, target, target_name, result, detail, ip, request_id, prev_hash, hash)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		e.Seq, e.ID, e.Timestamp.UTC(), e.Actor, nullString(e.ActorName), nullString(e.ActorRoles),
-		e.Action, nullString(e.Target), nullString(e.TargetName), e.Result, nullString(e.Detail),
+		e.Action, nullString(e.Tenant), nullString(e.Target), nullString(e.TargetName), e.Result, nullString(e.Detail),
 		nullString(e.IP), nullString(e.RequestID), e.PrevHash, e.Hash,
 	); err != nil {
 		return err
@@ -71,15 +71,16 @@ func (db *DB) AppendEvent(e *audit.Event) error {
 // scanEvent reads one event_log row selected with eventColumns.
 func scanEvent(s caScanner) (audit.Event, error) {
 	var e audit.Event
-	var actorName, actorRoles, target, targetName, detail, ip, requestID sql.NullString
+	var actorName, actorRoles, tenant, target, targetName, detail, ip, requestID sql.NullString
 	if err := s.Scan(
 		&e.Seq, &e.ID, &e.Timestamp, &e.Actor, &actorName, &actorRoles,
-		&e.Action, &target, &targetName, &e.Result, &detail, &ip, &requestID, &e.PrevHash, &e.Hash,
+		&e.Action, &tenant, &target, &targetName, &e.Result, &detail, &ip, &requestID, &e.PrevHash, &e.Hash,
 	); err != nil {
 		return audit.Event{}, err
 	}
 	e.ActorName = actorName.String
 	e.ActorRoles = actorRoles.String
+	e.Tenant = tenant.String
 	e.Target = target.String
 	e.TargetName = targetName.String
 	e.Detail = detail.String
@@ -88,12 +89,17 @@ func scanEvent(s caScanner) (audit.Event, error) {
 	return e, nil
 }
 
-const eventColumns = `seq, id, timestamp, actor, actor_name, actor_roles, action, target, target_name, result, detail, ip, request_id, prev_hash, hash`
+const eventColumns = `seq, id, timestamp, actor, actor_name, actor_roles, action, tenant, target, target_name, result, detail, ip, request_id, prev_hash, hash`
 
 // ListEvents returns a page of events in reverse-chronological order (newest
 // first) for display, along with the total count. Use ListAllEventsAsc for
 // integrity verification, which requires ascending order.
-func (db *DB) ListEvents(action, actor string, limit, offset int) ([]audit.Event, int, error) {
+//
+// tenant, when non-empty, restricts the result to events owned by that tenant —
+// the enforcement that keeps one tenant's auditors from reading another
+// tenant's trail. An empty tenant returns the unrestricted (platform) view and
+// must only be exposed to root / platform operators.
+func (db *DB) ListEvents(action, actor, tenant string, limit, offset int) ([]audit.Event, int, error) {
 	where := ""
 	var args []interface{}
 	add := func(clause string, v interface{}) {
@@ -110,6 +116,9 @@ func (db *DB) ListEvents(action, actor string, limit, offset int) ([]audit.Event
 	}
 	if actor != "" {
 		add("actor = ?", actor)
+	}
+	if tenant != "" {
+		add("tenant = ?", tenant)
 	}
 
 	var total int

@@ -121,7 +121,9 @@ func run(args []string) error {
 
 	switch command {
 	case "init-root":
-		return cmdInitRoot(mgr, cmdArgs)
+		return cmdInitRoot(db, mgr, cmdArgs)
+	case "tenant":
+		return cmdTenant(db, cmdArgs)
 	case "issue-intermediate":
 		return cmdIssueIntermediate(db, mgr, cmdArgs)
 	case "list":
@@ -279,9 +281,10 @@ func normalizeAlgorithm(s string) string {
 	}
 }
 
-func cmdInitRoot(mgr *ca.Manager, args []string) error {
+func cmdInitRoot(db *database.DB, mgr *ca.Manager, args []string) error {
 	fs := flag.NewFlagSet("init-root", flag.ContinueOnError)
 	label := fs.String("label", "", "key label / CA name (required)")
+	tenant := fs.String("tenant", "", "owning tenant id or slug (default: the built-in default tenant)")
 	keyType := fs.String("key-type", "ecdsa-p384", "key type (ed25519, ecdsa-p256/p384/p521, rsa-2048, rsa-4096, ml-dsa-44/65/87)")
 	validityDays := fs.Int("validity-days", 3650, "certificate validity in days")
 	pathLen := fs.Int("path-len", -1, "max path length (-1 = unconstrained, 0 = may only issue leaf certs)")
@@ -296,7 +299,13 @@ func cmdInitRoot(mgr *ca.Manager, args []string) error {
 		return fmt.Errorf("-label and -cn are required")
 	}
 
+	tenantID, err := resolveTenant(db, *tenant)
+	if err != nil {
+		return err
+	}
+
 	result, err := mgr.InitRoot(context.Background(), ca.RootSpec{
+		TenantID:   tenantID,
 		Label:      *label,
 		KeyType:    *keyType,
 		Subject:    ca.PKIXName(subj.subject()),

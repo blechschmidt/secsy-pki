@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"strconv"
@@ -49,6 +50,58 @@ func (a *API) decide(user *models.UserInfo, action rbac.Action) bool {
 	return rbac.Can(userRoles(user), action)
 }
 
+// tenantRolesFor returns the roles the user holds WITHIN a specific tenant as
+// typed rbac.Role values.
+func tenantRolesFor(user *models.UserInfo, tenantID string) []rbac.Role {
+	if user == nil || tenantID == "" {
+		return nil
+	}
+	names := user.TenantRoles[tenantID]
+	roles := make([]rbac.Role, 0, len(names))
+	for _, r := range names {
+		roles = append(roles, rbac.Role(r))
+	}
+	return roles
+}
+
+// canInTenant reports whether the user may perform action against resources of
+// the given tenant. Authority comes from being root, holding a PLATFORM-wide
+// role (which applies in every tenant), or holding the capability via a role
+// WITHIN that specific tenant. A principal with roles only in another tenant is
+// therefore denied — the core cross-tenant isolation check. A metric is recorded
+// exactly once per decision.
+func (a *API) canInTenant(user *models.UserInfo, tenantID string, action rbac.Action) bool {
+	allowed := a.decideInTenant(user, tenantID, action)
+	metrics.RecordAuthz(string(action), allowed)
+	return allowed
+}
+
+func (a *API) decideInTenant(user *models.UserInfo, tenantID string, action rbac.Action) bool {
+	if user == nil {
+		return false
+	}
+	if user.IsRoot {
+		return true
+	}
+	if rbac.Can(userRoles(user), action) { // platform-wide roles span all tenants
+		return true
+	}
+	return rbac.Can(tenantRolesFor(user, tenantID), action)
+}
+
+// isTenantMember reports whether the user has any standing in the tenant: root,
+// a platform role, or at least one tenant-scoped role. It gates read visibility
+// of a tenant's resources.
+func (a *API) isTenantMember(user *models.UserInfo, tenantID string) bool {
+	if user == nil {
+		return false
+	}
+	if user.IsRoot || len(user.Roles) > 0 {
+		return true
+	}
+	return len(user.TenantRoles[tenantID]) > 0
+}
+
 // canRead gates read-only inventory/listing endpoints (CA inventory, issued and
 // revoked certificates, groups and their members, restriction-set policy). Any
 // assigned role — admin, issuer, or auditor — may read; an authenticated
@@ -56,15 +109,54 @@ func (a *API) decide(user *models.UserInfo, action rbac.Action) bool {
 // the audit:read capability, so it is the natural gate for read visibility.
 // Mutating endpoints remain gated by their specific capability.
 func (a *API) canRead(user *models.UserInfo) bool {
-	return a.can(user, rbac.ActionReadAudit)
+	allowed := a.canReadAnyTenant(user)
+	metrics.RecordAuthz(string(rbac.ActionReadAudit), allowed)
+	return allowed
+}
+
+// canReadAnyTenant reports whether the user may read in at least one scope:
+// root, a platform read capability, or an audit:read-bearing role in any tenant.
+// Per-resource handlers still narrow visibility to the specific tenant via
+// isTenantMember / authorizeCARead, so this only decides whether the principal
+// has any read standing at all.
+func (a *API) canReadAnyTenant(user *models.UserInfo) bool {
+	if a.decide(user, rbac.ActionReadAudit) {
+		return true
+	}
+	if user == nil {
+		return false
+	}
+	for tid := range user.TenantRoles {
+		if rbac.Can(tenantRolesFor(user, tid), rbac.ActionReadAudit) {
+			return true
+		}
+	}
+	return false
 }
 
 // canIssueOn reports whether the user may perform issuing/signing operations on
-// a specific CA. This is satisfied by the org-wide issue capability (admin or
-// issuer role) OR a per-CA SIGN_CERTIFICATE grant. Restriction sets are still
-// enforced downstream regardless of how access was granted.
-func (a *API) canIssueOn(user *models.UserInfo, caID string) (bool, error) {
-	if a.can(user, rbac.ActionIssue) {
+// a specific CA. It first resolves the CA's owning tenant and records it on the
+// request context so any resulting audit event is attributed to that tenant.
+// Access is satisfied by the issue capability WITHIN the CA's tenant (a
+// platform/tenant issuer role) OR a per-CA SIGN_CERTIFICATE grant. A principal
+// whose roles live in a different tenant is denied here — this is where
+// cross-tenant issuance is blocked. Restriction sets are still enforced
+// downstream regardless of how access was granted.
+func (a *API) canIssueOn(ctx context.Context, user *models.UserInfo, caID string) (bool, error) {
+	tenantID, err := a.db.GetCATenant(caID)
+	if err != nil {
+		return false, err
+	}
+	if tenantID != "" {
+		middleware.SetTenant(ctx, tenantID)
+	}
+	if tenantID == "" {
+		// The CA does not exist. Preserve prior behavior: a platform issuer may
+		// proceed so the downstream manager returns a clean not-found; a
+		// tenant-scoped principal is denied rather than allowed to probe.
+		return a.can(user, rbac.ActionIssue), nil
+	}
+	if a.canInTenant(user, tenantID, rbac.ActionIssue) {
 		return true, nil
 	}
 	return a.checkPermission(user, caID, models.PermSignCertificate)
@@ -89,6 +181,7 @@ func (a *API) recordEvent(r *http.Request, action, target, targetName, result, d
 	e := &audit.Event{
 		ID:         uuid.New().String(),
 		Action:     action,
+		Tenant:     middleware.GetTenant(r.Context()),
 		Target:     target,
 		TargetName: targetName,
 		Result:     result,
@@ -114,13 +207,38 @@ func (a *API) recordEvent(r *http.Request, action, target, targetName, result, d
 // admins, auditors, and issuers (audit:read capability).
 func (a *API) ListEventLog(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !a.can(user, rbac.ActionReadAudit) {
+	if !a.canRead(user) {
 		writeError(w, http.StatusForbidden, "audit:read capability required (admin or auditor role)")
 		return
 	}
 
 	action := r.URL.Query().Get("action")
 	actor := r.URL.Query().Get("actor")
+	// Tenant scoping: a platform operator (root or a platform-wide role) may read
+	// across tenants, optionally narrowing with ?tenant=. A tenant-scoped
+	// principal is confined to the single tenant it belongs to and cannot widen
+	// the view — the audit-read isolation guarantee.
+	tenantFilter := r.URL.Query().Get("tenant")
+	if !user.IsRoot && len(user.Roles) == 0 {
+		member := user.TenantsWithRoles()
+		switch len(member) {
+		case 0:
+			writeError(w, http.StatusForbidden, "no tenant membership")
+			return
+		case 1:
+			tenantFilter = member[0]
+		default:
+			// A subject scoped to several tenants must name which one to read.
+			if tenantFilter == "" {
+				writeError(w, http.StatusBadRequest, "tenant query parameter is required")
+				return
+			}
+			if len(user.TenantRoles[tenantFilter]) == 0 {
+				writeError(w, http.StatusForbidden, "not a member of tenant %q", tenantFilter)
+				return
+			}
+		}
+	}
 	limit, offset := 50, 0
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
@@ -133,7 +251,7 @@ func (a *API) ListEventLog(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	entries, total, err := a.db.ListEvents(action, actor, limit, offset)
+	entries, total, err := a.db.ListEvents(action, actor, tenantFilter, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to query event log: %v", err)
 		return

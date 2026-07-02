@@ -84,17 +84,35 @@ func main() {
 	// authenticated OIDC subject carries its organization-wide roles. Assignments
 	// may be keyed by OIDC subject or by email; group-derived roles are unioned in.
 	rbacAssignments := rbac.NewAssignments(toRoleMap(cfg.RBAC.Subjects), toRoleMap(cfg.RBAC.Groups))
+
+	// Multi-tenant isolation (Task 43): provision the tenants declared in config
+	// (idempotent), and build the per-tenant RBAC assignments layered over the
+	// platform-wide ones above. The top-level rbac block grants PLATFORM roles
+	// (spanning all tenants); each tenant's rbac block grants roles ONLY within
+	// that tenant.
+	if err := provisionTenants(db, cfg.Tenants); err != nil {
+		log.Fatalf("Provisioning tenants: %v", err)
+	}
+	byTenant := make(map[string]*rbac.Assignments, len(cfg.Tenants))
+	for _, tc := range cfg.Tenants {
+		byTenant[tc.ID] = rbac.NewAssignments(toRoleMap(tc.RBAC.Subjects), toRoleMap(tc.RBAC.Groups))
+	}
+	tenantAssignments := rbac.NewTenantAssignments(rbacAssignments, byTenant)
+
 	authMw.SetRoleResolver(func(u *models.UserInfo) []string {
 		groupIDs, _ := db.GetUserGroups(u.Subject)
-		roles := rbacAssignments.RolesFor(u.Subject, groupIDs)
-		// Email-keyed assignments are only honored for a verified email. An
-		// unverified or user-settable email must not let a subject claim roles
-		// assigned to someone else's address. The immutable subject and group
-		// memberships are always trusted.
-		if u.Email != "" && u.EmailVerified {
-			roles = append(roles, rbacAssignments.RolesFor(u.Email, nil)...)
+		return dedupRoles(tenantAssignments.PlatformRolesFor(u.Subject, u.Email, u.EmailVerified, groupIDs))
+	})
+	authMw.SetTenantRoleResolver(func(u *models.UserInfo) map[string][]string {
+		groupIDs, _ := db.GetUserGroups(u.Subject)
+		out := make(map[string][]string)
+		for _, tid := range tenantAssignments.Tenants() {
+			roles := tenantAssignments.TenantRolesFor(tid, u.Subject, u.Email, u.EmailVerified, groupIDs)
+			if len(roles) > 0 {
+				out[tid] = dedupRoles(roles)
+			}
 		}
-		return dedupRoles(roles)
+		return out
 	})
 	authMw.SetRootEnabled(cfg.Policy.RootBasicAuthEnabled())
 	if !cfg.Policy.RootBasicAuthEnabled() {
@@ -102,6 +120,9 @@ func main() {
 	}
 	if !rbacAssignments.Empty() {
 		log.Printf("RBAC role assignments loaded (subjects=%d, groups=%d)", len(cfg.RBAC.Subjects), len(cfg.RBAC.Groups))
+	}
+	if len(cfg.Tenants) > 0 {
+		log.Printf("Multi-tenant mode: %d tenant(s) provisioned from config", len(cfg.Tenants))
 	}
 
 	// Install the Certificate Transparency log registry (RFC 6962). Profiles opt
@@ -901,6 +922,40 @@ func buildAuditExporter(db *database.DB, cfg *config.Config) (*siem.Exporter, er
 		Logger:       log.Default(),
 	}
 	return siem.NewExporter(db, db, sinks, opts), nil
+}
+
+// provisionTenants creates any config-declared tenants that do not yet exist and
+// keeps their name/slug/KEK in sync on restart. It is idempotent: an existing
+// tenant is updated in place rather than duplicated. The built-in default tenant
+// is seeded by the schema migration and never needs declaring.
+func provisionTenants(db *database.DB, tenants []config.TenantConfig) error {
+	for _, tc := range tenants {
+		slug := tc.Slug
+		if slug == "" {
+			slug = tc.ID
+		}
+		name := tc.Name
+		if name == "" {
+			name = tc.ID
+		}
+		existing, err := db.GetTenant(tc.ID)
+		if err != nil {
+			return fmt.Errorf("tenant %q: %w", tc.ID, err)
+		}
+		if existing == nil {
+			if err := db.CreateTenant(&models.Tenant{
+				ID:       tc.ID,
+				Slug:     slug,
+				Name:     name,
+				Status:   models.TenantStatusActive,
+				KEKLabel: tc.KEKLabel,
+			}); err != nil {
+				return fmt.Errorf("creating tenant %q: %w", tc.ID, err)
+			}
+			log.Printf("Provisioned tenant %q (slug=%s)", tc.ID, slug)
+		}
+	}
+	return nil
 }
 
 // toRoleMap converts a config string->[]string role map into the typed form the

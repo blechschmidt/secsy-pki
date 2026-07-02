@@ -110,6 +110,23 @@ rbac:
   groups: {}
   #   "group-uuid-for-pki-ops": [issuer]
 
+# tenants declares the isolated organizations this deployment serves. The
+# built-in "default" tenant always exists; declaring tenants here provisions
+# additional ones (idempotently) and their per-tenant RBAC assignments. A tenant
+# owns its own CAs, restriction sets, revocation/CRL state, secret envelopes, and
+# audit trail; a principal may only reach a tenant it is a member of. The
+# top-level rbac block above grants PLATFORM-wide roles (spanning all tenants,
+# for platform operators); a tenant's rbac block grants roles ONLY within it.
+tenants: []
+#   - id: acme-corp                 # stable, immutable internal id
+#     slug: acme                    # URL/CLI-friendly unique identifier
+#     name: "ACME Corporation"
+#     kek_label: "kek-acme"         # optional per-tenant secret KEK
+#     rbac:
+#       subjects:
+#         "oidc-subject-of-acme-admin": [admin]
+#         "issuer@acme.example.com": [issuer]
+
 # policy holds system-wide issuance guardrails, enforced centrally regardless
 # of per-CA restriction sets.
 policy:

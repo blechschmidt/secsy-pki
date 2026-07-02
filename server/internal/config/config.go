@@ -27,6 +27,11 @@ type Config struct {
 	RBAC     RBACConfig      `yaml:"rbac"`
 	Policy   PolicyConfig    `yaml:"policy"`
 	Profiles []ProfileConfig `yaml:"profiles"`
+	// Tenants declares the isolated organizations this deployment serves. The
+	// built-in "default" tenant always exists implicitly; declaring tenants here
+	// provisions additional ones and their per-tenant RBAC role assignments. See
+	// TenantConfig.
+	Tenants []TenantConfig `yaml:"tenants"`
 	// ACME configures the RFC 8555 automated-issuance server. Disabled unless
 	// acme.enabled is true.
 	ACME ACMEConfig `yaml:"acme"`
@@ -570,6 +575,28 @@ type TSAConfig struct {
 type RBACConfig struct {
 	Subjects map[string][]string `yaml:"subjects"`
 	Groups   map[string][]string `yaml:"groups"`
+}
+
+// TenantConfig declares an isolated organization served by this deployment.
+// Each tenant owns its own CAs, restriction sets, revocation state, secret
+// envelopes, and audit trail. RBAC assignments declared here are scoped to the
+// tenant: a subject listed under a tenant holds its roles ONLY within that
+// tenant. Platform-wide roles (which apply across all tenants) are configured in
+// the top-level rbac block and reserved for platform operators.
+type TenantConfig struct {
+	// ID is the stable internal identifier persisted on every tenant-scoped row.
+	// It must be unique and, once assigned, must never change.
+	ID string `yaml:"id"`
+	// Slug is the URL/CLI-friendly identifier used to resolve a tenant from a
+	// request path segment. Defaults to ID when empty.
+	Slug string `yaml:"slug"`
+	// Name is the human-readable display name. Defaults to ID when empty.
+	Name string `yaml:"name"`
+	// KEKLabel optionally overrides the deployment-wide secret KEK for this
+	// tenant, so its secret envelopes are sealed under a tenant-specific key.
+	KEKLabel string `yaml:"kek_label"`
+	// RBAC assigns tenant-scoped roles to subjects and groups.
+	RBAC RBACConfig `yaml:"rbac"`
 }
 
 // PolicyConfig holds system-wide issuance policy. These are conservative
@@ -1265,7 +1292,42 @@ func (c *Config) validateRBAC() error {
 	if err := check("subjects", c.RBAC.Subjects); err != nil {
 		return err
 	}
-	return check("groups", c.RBAC.Groups)
+	if err := check("groups", c.RBAC.Groups); err != nil {
+		return err
+	}
+	return c.validateTenants(check)
+}
+
+// validateTenants rejects duplicate/reserved tenant identifiers and unknown
+// role names in per-tenant RBAC assignments, so a misconfigured tenant fails
+// loudly at startup.
+func (c *Config) validateTenants(checkRoles func(string, map[string][]string) error) error {
+	seenID := map[string]bool{}
+	seenSlug := map[string]bool{}
+	for i, t := range c.Tenants {
+		if t.ID == "" {
+			return fmt.Errorf("tenants[%d]: id is required", i)
+		}
+		slug := t.Slug
+		if slug == "" {
+			slug = t.ID
+		}
+		if seenID[t.ID] {
+			return fmt.Errorf("tenants[%d]: duplicate tenant id %q", i, t.ID)
+		}
+		if seenSlug[slug] {
+			return fmt.Errorf("tenants[%d]: duplicate tenant slug %q", i, slug)
+		}
+		seenID[t.ID] = true
+		seenSlug[slug] = true
+		if err := checkRoles(fmt.Sprintf("tenants[%q].rbac.subjects", t.ID), t.RBAC.Subjects); err != nil {
+			return err
+		}
+		if err := checkRoles(fmt.Sprintf("tenants[%q].rbac.groups", t.ID), t.RBAC.Groups); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // applyEnvOverrides lets environment variables override file settings. The

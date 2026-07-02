@@ -210,8 +210,22 @@ func (db *DB) migrate() error {
 	}
 
 	stmts := []string{
+		// Tenants are the top-level isolation boundary (Task 43). Every deployment
+		// has the built-in 'default' tenant; single-organization installs use it
+		// implicitly. Tenant-scoped resources (cas, restriction_sets, groups_,
+		// event_log) carry the owning tenant, and authorization forbids reaching
+		// another tenant's resources.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS tenants (
+			id TEXT PRIMARY KEY,
+			slug TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			kek_label TEXT,
+			created_at %s
+		)`, currentTimestamp),
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS cas (
 			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'default' REFERENCES tenants(id),
 			parent_id TEXT REFERENCES cas(id),
 			label TEXT NOT NULL,
 			pkcs11_uri TEXT NOT NULL,
@@ -306,8 +320,12 @@ func (db *DB) migrate() error {
 		)`, blob),
 		`CREATE TABLE IF NOT EXISTS groups_ (
 			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL UNIQUE
+			tenant_id TEXT NOT NULL DEFAULT 'default',
+			name TEXT NOT NULL
 		)`,
+		// A group name is unique within a tenant, not globally, so the same name
+		// may be reused across tenants without collision.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_tenant_name ON groups_(tenant_id, name)`,
 		`CREATE TABLE IF NOT EXISTS group_members (
 			group_id TEXT NOT NULL REFERENCES groups_(id) ON DELETE CASCADE,
 			user_sub TEXT NOT NULL,
@@ -315,6 +333,7 @@ func (db *DB) migrate() error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS restriction_sets (
 			id TEXT PRIMARY KEY,
+			tenant_id TEXT REFERENCES tenants(id),
 			ca_id TEXT REFERENCES cas(id) ON DELETE CASCADE,
 			name TEXT NOT NULL,
 			type TEXT NOT NULL DEFAULT 'ssh',
@@ -415,6 +434,7 @@ func (db *DB) migrate() error {
 			actor_name TEXT,
 			actor_roles TEXT,
 			action TEXT NOT NULL,
+			tenant TEXT,
 			target TEXT,
 			target_name TEXT,
 			result TEXT NOT NULL,
@@ -469,6 +489,12 @@ func (db *DB) migrate() error {
 		// Certificate Transparency status (Task 26).
 		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN IF NOT EXISTS ct_status TEXT NOT NULL DEFAULT 'none'")
 		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN IF NOT EXISTS sct_count INTEGER NOT NULL DEFAULT 0")
+		// Multi-tenant isolation (Task 43). Existing rows backfill to the default
+		// tenant so the upgrade is transparent for single-organization installs.
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'")
+		db.conn.Exec("ALTER TABLE groups_ ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'")
+		db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN IF NOT EXISTS tenant_id TEXT")
+		db.conn.Exec("ALTER TABLE event_log ADD COLUMN IF NOT EXISTS tenant TEXT")
 	} else {
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_ssh_restriction_set_id TEXT")
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_x509_restriction_set_id TEXT")
@@ -493,6 +519,13 @@ func (db *DB) migrate() error {
 		// Certificate Transparency status (Task 26).
 		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN ct_status TEXT NOT NULL DEFAULT 'none'")
 		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN sct_count INTEGER NOT NULL DEFAULT 0")
+		// Multi-tenant isolation (Task 43). SQLite ADD COLUMN is idempotently
+		// retried; errors for already-present columns are ignored. Existing rows
+		// backfill to the default tenant.
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
+		db.conn.Exec("ALTER TABLE groups_ ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
+		db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN tenant_id TEXT")
+		db.conn.Exec("ALTER TABLE event_log ADD COLUMN tenant TEXT")
 	}
 
 	// ACME (RFC 8555) server tables.
@@ -503,6 +536,13 @@ func (db *DB) migrate() error {
 	// Migrate old mixed restriction_sets table to split tables (if old columns exist)
 	db.migrateRestrictionSets()
 	db.conn.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_log_cert_unique ON audit_log(ca_id, cert_hash)")
+
+	// Seed the built-in default tenant. insertOrIgnore keeps this idempotent and
+	// preserves any operator edits to its name/status on restart.
+	db.exec(db.insertOrIgnore("tenants", "id, slug, name, status", "?, ?, ?, ?"),
+		models.DefaultTenantID, models.DefaultTenantID, "Default Tenant", models.TenantStatusActive)
+	db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_cas_tenant ON cas(tenant_id)")
+	db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_event_log_tenant ON event_log(tenant)")
 
 	// Create built-in restriction sets
 	db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
@@ -562,7 +602,7 @@ func (db *DB) upsert(table, columns, placeholders, conflictCols, updateSet strin
 
 // caColumns is the canonical column list for CA reads. Keep it in sync with
 // scanCA.
-const caColumns = `id, parent_id, label, pkcs11_uri, key_type, public_key,
+const caColumns = `id, tenant_id, parent_id, label, pkcs11_uri, key_type, public_key,
 	default_ssh_restriction_set_id, default_x509_restriction_set_id,
 	certificate, subject, serial, not_before, not_after, max_path_len,
 	status, successor_id, predecessor_id, retire_after, created_at`
@@ -576,17 +616,22 @@ type caScanner interface {
 func scanCA(s caScanner) (*models.CA, error) {
 	var ca models.CA
 	var pubBlob []byte
-	var cert, subject, serial, status sql.NullString
+	var tenantID, cert, subject, serial, status sql.NullString
 	var successorID, predecessorID sql.NullString
 	var notBefore, notAfter, retireAfter sql.NullTime
 	var maxPathLen sql.NullInt64
 	if err := s.Scan(
-		&ca.ID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob,
+		&ca.ID, &tenantID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob,
 		&ca.DefaultSSHRestrictionSetID, &ca.DefaultX509RestrictionSetID,
 		&cert, &subject, &serial, &notBefore, &notAfter, &maxPathLen,
 		&status, &successorID, &predecessorID, &retireAfter, &ca.CreatedAt,
 	); err != nil {
 		return nil, err
+	}
+	if tenantID.Valid && tenantID.String != "" {
+		ca.TenantID = tenantID.String
+	} else {
+		ca.TenantID = models.DefaultTenantID
 	}
 	ca.PublicKey = blobToAuthorizedKey(pubBlob)
 	if cert.Valid {
@@ -666,14 +711,18 @@ func (db *DB) CreateCA(ca *models.CA) error {
 	if status == "" {
 		status = models.CAStatusActive
 	}
+	tenantID := ca.TenantID
+	if tenantID == "" {
+		tenantID = models.DefaultTenantID
+	}
 
 	if _, err := tx.Exec(db.ph(
-		`INSERT INTO cas (id, parent_id, label, pkcs11_uri, key_type, public_key,
+		`INSERT INTO cas (id, tenant_id, parent_id, label, pkcs11_uri, key_type, public_key,
 			default_ssh_restriction_set_id, default_x509_restriction_set_id,
 			certificate, subject, serial, not_before, not_after, max_path_len,
 			status, successor_id, predecessor_id, retire_after)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		ca.ID, ca.ParentID, ca.Label, ca.PKCS11URI, ca.KeyType, pubKeyToBlob(ca.PublicKey),
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		ca.ID, tenantID, ca.ParentID, ca.Label, ca.PKCS11URI, ca.KeyType, pubKeyToBlob(ca.PublicKey),
 		ca.DefaultSSHRestrictionSetID, ca.DefaultX509RestrictionSetID,
 		nullString(ca.Certificate), nullString(ca.Subject), nullString(ca.Serial),
 		notBefore, notAfter, maxPathLen,
@@ -754,6 +803,44 @@ func (db *DB) ListCAs() ([]models.CA, error) {
 	return cas, rows.Err()
 }
 
+// ListCAsForTenant returns only the CAs owned by the given tenant. It is the
+// tenant-scoped read path used by the API so a principal never sees another
+// tenant's authorities.
+func (db *DB) ListCAsForTenant(tenantID string) ([]models.CA, error) {
+	rows, err := db.query(`SELECT `+caColumns+` FROM cas WHERE tenant_id = ?`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cas []models.CA
+	for rows.Next() {
+		ca, err := scanCA(rows)
+		if err != nil {
+			return nil, err
+		}
+		cas = append(cas, *ca)
+	}
+	return cas, rows.Err()
+}
+
+// GetCATenant resolves the owning tenant of a CA by its ID. It returns
+// ("", nil) when the CA does not exist. This is the cheap lookup used to
+// authorize CA-scoped requests against the caller's tenant memberships.
+func (db *DB) GetCATenant(caID string) (string, error) {
+	var tenantID sql.NullString
+	err := db.queryRow(`SELECT tenant_id FROM cas WHERE id = ?`, caID).Scan(&tenantID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !tenantID.Valid || tenantID.String == "" {
+		return models.DefaultTenantID, nil
+	}
+	return tenantID.String, nil
+}
+
 func (db *DB) DeleteCA(id string) error {
 	_, err := db.exec(`DELETE FROM cas WHERE id = ?`, id)
 	return err
@@ -821,13 +908,30 @@ func (db *DB) GetChildren(parentID string) ([]models.CA, error) {
 // Group operations
 
 func (db *DB) CreateGroup(g *models.Group) error {
-	_, err := db.exec(`INSERT INTO groups_ (id, name) VALUES (?, ?)`, g.ID, g.Name)
+	tenantID := g.TenantID
+	if tenantID == "" {
+		tenantID = models.DefaultTenantID
+	}
+	_, err := db.exec(`INSERT INTO groups_ (id, tenant_id, name) VALUES (?, ?, ?)`, g.ID, tenantID, g.Name)
 	return err
 }
 
-func (db *DB) GetGroup(id string) (*models.Group, error) {
+func scanGroup(s caScanner) (*models.Group, error) {
 	g := &models.Group{}
-	err := db.queryRow(`SELECT id, name FROM groups_ WHERE id = ?`, id).Scan(&g.ID, &g.Name)
+	var tenantID sql.NullString
+	if err := s.Scan(&g.ID, &tenantID, &g.Name); err != nil {
+		return nil, err
+	}
+	if tenantID.Valid && tenantID.String != "" {
+		g.TenantID = tenantID.String
+	} else {
+		g.TenantID = models.DefaultTenantID
+	}
+	return g, nil
+}
+
+func (db *DB) GetGroup(id string) (*models.Group, error) {
+	g, err := scanGroup(db.queryRow(`SELECT id, tenant_id, name FROM groups_ WHERE id = ?`, id))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -835,18 +939,33 @@ func (db *DB) GetGroup(id string) (*models.Group, error) {
 }
 
 func (db *DB) ListGroups() ([]models.Group, error) {
-	rows, err := db.query(`SELECT id, name FROM groups_`)
+	return db.listGroupsWhere("")
+}
+
+// ListGroupsForTenant returns only the groups owned by the given tenant.
+func (db *DB) ListGroupsForTenant(tenantID string) ([]models.Group, error) {
+	return db.listGroupsWhere(tenantID)
+}
+
+func (db *DB) listGroupsWhere(tenantID string) ([]models.Group, error) {
+	q := `SELECT id, tenant_id, name FROM groups_`
+	var args []interface{}
+	if tenantID != "" {
+		q += ` WHERE tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	rows, err := db.query(q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var groups []models.Group
 	for rows.Next() {
-		var g models.Group
-		if err := rows.Scan(&g.ID, &g.Name); err != nil {
+		g, err := scanGroup(rows)
+		if err != nil {
 			return nil, err
 		}
-		groups = append(groups, g)
+		groups = append(groups, *g)
 	}
 	return groups, rows.Err()
 }
@@ -1060,8 +1179,8 @@ func (db *DB) CreateRestrictionSet(rs *models.RestrictionSet) error {
 		denyAll = 1
 	}
 	_, err := db.exec(
-		`INSERT INTO restriction_sets (id, ca_id, name, type, max_validity_secs, deny_all) VALUES (?, ?, ?, ?, ?, ?)`,
-		rs.ID, caID, rs.Name, rs.Type, rs.MaxValiditySecs, denyAll,
+		`INSERT INTO restriction_sets (id, tenant_id, ca_id, name, type, max_validity_secs, deny_all) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		rs.ID, nullString(rs.TenantID), caID, rs.Name, rs.Type, rs.MaxValiditySecs, denyAll,
 	)
 	if err != nil {
 		return err
@@ -1158,11 +1277,14 @@ func (db *DB) loadX509Details(rs *models.RestrictionSet) {
 
 func (db *DB) GetRestrictionSet(id string) (*models.RestrictionSet, error) {
 	var rs models.RestrictionSet
-	var caID sql.NullString
+	var tenantID, caID sql.NullString
 	var denyAll int
 	err := db.queryRow(
-		`SELECT id, ca_id, name, type, max_validity_secs, deny_all FROM restriction_sets WHERE id = ?`, id,
-	).Scan(&rs.ID, &caID, &rs.Name, &rs.Type, &rs.MaxValiditySecs, &denyAll)
+		`SELECT id, tenant_id, ca_id, name, type, max_validity_secs, deny_all FROM restriction_sets WHERE id = ?`, id,
+	).Scan(&rs.ID, &tenantID, &caID, &rs.Name, &rs.Type, &rs.MaxValiditySecs, &denyAll)
+	if tenantID.Valid {
+		rs.TenantID = tenantID.String
+	}
 	if caID.Valid {
 		rs.CAID = caID.String
 	}
@@ -1185,12 +1307,21 @@ func (db *DB) GetRestrictionSet(id string) (*models.RestrictionSet, error) {
 }
 
 func (db *DB) ListAllRestrictionSets() ([]models.RestrictionSet, error) {
-	return db.scanRestrictionSets(db.query(`SELECT id, ca_id, name, type, max_validity_secs, deny_all FROM restriction_sets`))
+	return db.scanRestrictionSets(db.query(`SELECT id, tenant_id, ca_id, name, type, max_validity_secs, deny_all FROM restriction_sets`))
 }
 
 func (db *DB) ListRestrictionSets(caID string) ([]models.RestrictionSet, error) {
 	return db.scanRestrictionSets(db.query(
-		`SELECT id, ca_id, name, type, max_validity_secs, deny_all FROM restriction_sets WHERE ca_id = ? OR ca_id IS NULL`, caID,
+		`SELECT id, tenant_id, ca_id, name, type, max_validity_secs, deny_all FROM restriction_sets WHERE ca_id = ? OR ca_id IS NULL`, caID,
+	))
+}
+
+// ListRestrictionSetsForTenant returns the restriction sets (issuance profiles)
+// a tenant may use: its own sets plus the global built-ins (which have no
+// tenant). A tenant never sees another tenant's custom restriction sets.
+func (db *DB) ListRestrictionSetsForTenant(tenantID string) ([]models.RestrictionSet, error) {
+	return db.scanRestrictionSets(db.query(
+		`SELECT id, tenant_id, ca_id, name, type, max_validity_secs, deny_all FROM restriction_sets WHERE tenant_id = ? OR tenant_id IS NULL`, tenantID,
 	))
 }
 
@@ -1202,10 +1333,13 @@ func (db *DB) scanRestrictionSets(rows *sql.Rows, err error) ([]models.Restricti
 	var sets []models.RestrictionSet
 	for rows.Next() {
 		var rs models.RestrictionSet
-		var caID sql.NullString
+		var tenantID, caID sql.NullString
 		var denyAll int
-		if err := rows.Scan(&rs.ID, &caID, &rs.Name, &rs.Type, &rs.MaxValiditySecs, &denyAll); err != nil {
+		if err := rows.Scan(&rs.ID, &tenantID, &caID, &rs.Name, &rs.Type, &rs.MaxValiditySecs, &denyAll); err != nil {
 			return nil, err
+		}
+		if tenantID.Valid {
+			rs.TenantID = tenantID.String
 		}
 		if caID.Valid {
 			rs.CAID = caID.String

@@ -33,7 +33,7 @@ func (a *API) IssueCertificate(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
 	caID := r.PathValue("id")
 
-	ok, err := a.canIssueOn(user, caID)
+	ok, err := a.canIssueOn(r.Context(), user, caID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
 		return
@@ -83,7 +83,7 @@ func (a *API) RenewCertificate(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
 	caID := r.PathValue("id")
 
-	ok, err := a.canIssueOn(user, caID)
+	ok, err := a.canIssueOn(r.Context(), user, caID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
 		return
@@ -132,7 +132,7 @@ func (a *API) RevokeCertificate(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
 	caID := r.PathValue("id")
 
-	ok, err := a.canIssueOn(user, caID)
+	ok, err := a.canIssueOn(r.Context(), user, caID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
 		return
@@ -180,8 +180,7 @@ func (a *API) RevokeCertificate(w http.ResponseWriter, r *http.Request) {
 
 // ListIssuedCertificates returns the certificates a CA has issued.
 func (a *API) ListIssuedCertificates(w http.ResponseWriter, r *http.Request) {
-	if !a.canRead(middleware.GetUserInfo(r.Context())) {
-		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+	if _, ok := a.authorizeCARead(w, r, r.PathValue("id")); !ok {
 		return
 	}
 	caID := r.PathValue("id")
@@ -200,8 +199,7 @@ func (a *API) ListIssuedCertificates(w http.ResponseWriter, r *http.Request) {
 
 // ListRevokedCertificates returns a CA's revocation records.
 func (a *API) ListRevokedCertificates(w http.ResponseWriter, r *http.Request) {
-	if !a.canRead(middleware.GetUserInfo(r.Context())) {
-		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+	if _, ok := a.authorizeCARead(w, r, r.PathValue("id")); !ok {
 		return
 	}
 	caID := r.PathValue("id")

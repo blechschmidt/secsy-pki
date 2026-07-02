@@ -35,6 +35,7 @@ design.
 | [Expiry monitoring & auto-renewal](expiry-monitoring.md) | The background expiry monitor, `secsy-ca expiring`/`monitor-run`, `/api/monitor/*`, notification sinks (log/webhook), auto-renewal, metrics & runbook |
 | [Password / secret encryption](password-encryption.md) | HSM-backed envelope encryption for passwords and small secrets (`secsy-secret`, `/api/secret/*`) |
 | [RBAC, audit logging & config](rbac-and-audit.md) | Organization-wide roles, per-CA permissions, the hash-chained event log, and centralized policy/profiles |
+| [Multi-tenant isolation](multi-tenancy.md) | Serving several isolated organizations from one deployment: per-tenant CAs, profiles, revocation/CRL state, secret envelopes, RBAC (platform vs. tenant roles), and a tenant-scoped audit trail; cross-tenant access is denied |
 | [Persistence backends (SQLite & PostgreSQL)](persistence.md) | The `Store` abstraction and its two engines; selecting a backend and pooling; the invariants preserved across both (audit-chain tamper-evidence, serial/CRL monotonicity); `secsy-ca db migrate` to lift a file store into PostgreSQL; and running multiple replicas for HA |
 | [Audit log export to SIEM](audit-siem-export.md) | Streaming the audit event log to syslog (TCP/TLS)/CEF/webhook with at-least-once delivery & a durable cursor, plus `secsy-ca audit verify` (tamper detection) and `audit export` (offline batch) |
 | [Observability](observability.md) | Prometheus `/metrics`, `/healthz` & `/readyz` (with HSM probe), structured JSON request logging, and a Prometheus/Grafana setup |

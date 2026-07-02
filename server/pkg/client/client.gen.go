@@ -128,6 +128,18 @@ const (
 	User SignRequestCertType = "user"
 )
 
+// Defines values for TenantStatus.
+const (
+	TenantStatusActive    TenantStatus = "active"
+	TenantStatusSuspended TenantStatus = "suspended"
+)
+
+// Defines values for TenantStatusRequestStatus.
+const (
+	TenantStatusRequestStatusActive    TenantStatusRequestStatus = "active"
+	TenantStatusRequestStatusSuspended TenantStatusRequestStatus = "suspended"
+)
+
 // Defines values for ListExpiringCertificatesParamsSeverity.
 const (
 	Critical ListExpiringCertificatesParamsSeverity = "critical"
@@ -260,16 +272,22 @@ type CA struct {
 	PublicKey                   *string    `json:"public_key,omitempty"`
 	Serial                      *string    `json:"serial,omitempty"`
 	Subject                     *string    `json:"subject,omitempty"`
+
+	// TenantId Owning tenant (isolation boundary).
+	TenantId *string `json:"tenant_id,omitempty"`
 }
 
 // CAInitRootRequest defines model for CAInitRootRequest.
 type CAInitRootRequest struct {
 	// KeyType e.g. ecdsa-p256, rsa-3072, ed25519
-	KeyType      string    `json:"key_type"`
-	Label        string    `json:"label"`
-	MaxPathLen   *int      `json:"max_path_len,omitempty"`
-	Subject      CASubject `json:"subject"`
-	ValidityDays *int      `json:"validity_days,omitempty"`
+	KeyType    string    `json:"key_type"`
+	Label      string    `json:"label"`
+	MaxPathLen *int      `json:"max_path_len,omitempty"`
+	Subject    CASubject `json:"subject"`
+
+	// TenantId Owning tenant for the root and its entire subtree (default: the built-in default tenant).
+	TenantId     *string `json:"tenant_id,omitempty"`
+	ValidityDays *int    `json:"validity_days,omitempty"`
 }
 
 // CAIssueIntermediateRequest defines model for CAIssueIntermediateRequest.
@@ -357,11 +375,23 @@ type CreateCARequest struct {
 	ParentId  *string `json:"parent_id,omitempty"`
 	Pkcs11Uri *string `json:"pkcs11_uri,omitempty"`
 	PublicKey *string `json:"public_key,omitempty"`
+
+	// TenantId Owning tenant (default: the built-in default tenant). Ignored when parent_id is set, which inherits the parent's tenant.
+	TenantId *string `json:"tenant_id,omitempty"`
 }
 
 // CreateGroupRequest defines model for CreateGroupRequest.
 type CreateGroupRequest struct {
 	Name string `json:"name"`
+}
+
+// CreateTenantRequest defines model for CreateTenantRequest.
+type CreateTenantRequest struct {
+	KekLabel *string `json:"kek_label,omitempty"`
+	Name     *string `json:"name,omitempty"`
+
+	// Slug URL/CLI-friendly unique identifier ([a-z0-9-]).
+	Slug string `json:"slug"`
 }
 
 // DecryptRequest defines model for DecryptRequest.
@@ -785,6 +815,31 @@ type StatusResponse struct {
 	Status *string `json:"status,omitempty"`
 }
 
+// Tenant defines model for Tenant.
+type Tenant struct {
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+	Id        *string    `json:"id,omitempty"`
+
+	// KekLabel Optional per-tenant secret KEK.
+	KekLabel *string `json:"kek_label,omitempty"`
+	Name     *string `json:"name,omitempty"`
+
+	// Slug URL/CLI-friendly unique identifier.
+	Slug   *string       `json:"slug,omitempty"`
+	Status *TenantStatus `json:"status,omitempty"`
+}
+
+// TenantStatus defines model for Tenant.Status.
+type TenantStatus string
+
+// TenantStatusRequest defines model for TenantStatusRequest.
+type TenantStatusRequest struct {
+	Status TenantStatusRequestStatus `json:"status"`
+}
+
+// TenantStatusRequestStatus defines model for TenantStatusRequest.Status.
+type TenantStatusRequestStatus string
+
 // UserInfo defines model for UserInfo.
 type UserInfo struct {
 	Email         *string   `json:"email,omitempty"`
@@ -822,6 +877,9 @@ type Limit = int
 
 // Offset defines model for Offset.
 type Offset = int
+
+// TenantHeader defines model for TenantHeader.
+type TenantHeader = string
 
 // BadRequest defines model for BadRequest.
 type BadRequest = Error
@@ -902,6 +960,9 @@ type ListEventLogParams struct {
 	Action *string `form:"action,omitempty" json:"action,omitempty"`
 	Actor  *string `form:"actor,omitempty" json:"actor,omitempty"`
 
+	// Tenant Restrict to one tenant's events. Platform operators may set it to narrow the view; a tenant-scoped auditor is always confined to its own tenant regardless of this parameter.
+	Tenant *string `form:"tenant,omitempty" json:"tenant,omitempty"`
+
 	// Limit Page size (1–500).
 	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
 
@@ -933,6 +994,18 @@ type ListExpiringCertificatesParams struct {
 
 // ListExpiringCertificatesParamsSeverity defines parameters for ListExpiringCertificates.
 type ListExpiringCertificatesParamsSeverity string
+
+// DecryptSecretParams defines parameters for DecryptSecret.
+type DecryptSecretParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// EncryptSecretParams defines parameters for EncryptSecret.
+type EncryptSecretParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
 
 // InitRootCAJSONRequestBody defines body for InitRootCA for application/json ContentType.
 type InitRootCAJSONRequestBody = CAInitRootRequest
@@ -996,6 +1069,12 @@ type DecryptSecretJSONRequestBody = DecryptRequest
 
 // EncryptSecretJSONRequestBody defines body for EncryptSecret for application/json ContentType.
 type EncryptSecretJSONRequestBody = EncryptRequest
+
+// CreateTenantJSONRequestBody defines body for CreateTenant for application/json ContentType.
+type CreateTenantJSONRequestBody = CreateTenantRequest
+
+// SetTenantStatusJSONRequestBody defines body for SetTenantStatus for application/json ContentType.
+type SetTenantStatusJSONRequestBody = TenantStatusRequest
 
 // RequestEditorFn  is the function signature for the RequestEditor callback function
 type RequestEditorFn func(ctx context.Context, req *http.Request) error
@@ -1298,17 +1377,36 @@ type ClientInterface interface {
 	UpdateRestrictionSet(ctx context.Context, id string, body UpdateRestrictionSetJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// DecryptSecretWithBody request with any body
-	DecryptSecretWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+	DecryptSecretWithBody(ctx context.Context, params *DecryptSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	DecryptSecret(ctx context.Context, body DecryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+	DecryptSecret(ctx context.Context, params *DecryptSecretParams, body DecryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// EncryptSecretWithBody request with any body
-	EncryptSecretWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+	EncryptSecretWithBody(ctx context.Context, params *EncryptSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	EncryptSecret(ctx context.Context, body EncryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+	EncryptSecret(ctx context.Context, params *EncryptSecretParams, body EncryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetSecretInfo request
 	GetSecretInfo(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListTenants request
+	ListTenants(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateTenantWithBody request with any body
+	CreateTenantWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreateTenant(ctx context.Context, body CreateTenantJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteTenant request
+	DeleteTenant(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetTenant request
+	GetTenant(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SetTenantStatusWithBody request with any body
+	SetTenantStatusWithBody(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	SetTenantStatus(ctx context.Context, id string, body SetTenantStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetLiveness request
 	GetLiveness(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2310,8 +2408,8 @@ func (c *Client) UpdateRestrictionSet(ctx context.Context, id string, body Updat
 	return c.Client.Do(req)
 }
 
-func (c *Client) DecryptSecretWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewDecryptSecretRequestWithBody(c.Server, contentType, body)
+func (c *Client) DecryptSecretWithBody(ctx context.Context, params *DecryptSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDecryptSecretRequestWithBody(c.Server, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -2322,8 +2420,8 @@ func (c *Client) DecryptSecretWithBody(ctx context.Context, contentType string, 
 	return c.Client.Do(req)
 }
 
-func (c *Client) DecryptSecret(ctx context.Context, body DecryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewDecryptSecretRequest(c.Server, body)
+func (c *Client) DecryptSecret(ctx context.Context, params *DecryptSecretParams, body DecryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDecryptSecretRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -2334,8 +2432,8 @@ func (c *Client) DecryptSecret(ctx context.Context, body DecryptSecretJSONReques
 	return c.Client.Do(req)
 }
 
-func (c *Client) EncryptSecretWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewEncryptSecretRequestWithBody(c.Server, contentType, body)
+func (c *Client) EncryptSecretWithBody(ctx context.Context, params *EncryptSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewEncryptSecretRequestWithBody(c.Server, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -2346,8 +2444,8 @@ func (c *Client) EncryptSecretWithBody(ctx context.Context, contentType string, 
 	return c.Client.Do(req)
 }
 
-func (c *Client) EncryptSecret(ctx context.Context, body EncryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewEncryptSecretRequest(c.Server, body)
+func (c *Client) EncryptSecret(ctx context.Context, params *EncryptSecretParams, body EncryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewEncryptSecretRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -2360,6 +2458,90 @@ func (c *Client) EncryptSecret(ctx context.Context, body EncryptSecretJSONReques
 
 func (c *Client) GetSecretInfo(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetSecretInfoRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListTenants(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListTenantsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateTenantWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateTenantRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateTenant(ctx context.Context, body CreateTenantJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateTenantRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteTenant(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteTenantRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetTenant(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetTenantRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SetTenantStatusWithBody(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetTenantStatusRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SetTenantStatus(ctx context.Context, id string, body SetTenantStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetTenantStatusRequest(c.Server, id, body)
 	if err != nil {
 		return nil, err
 	}
@@ -3586,6 +3768,22 @@ func NewListEventLogRequest(server string, params *ListEventLogParams) (*http.Re
 		if params.Actor != nil {
 
 			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "actor", runtime.ParamLocationQuery, *params.Actor); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Tenant != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "tenant", runtime.ParamLocationQuery, *params.Tenant); err != nil {
 				return nil, err
 			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
 				return nil, err
@@ -5119,18 +5317,18 @@ func NewUpdateRestrictionSetRequestWithBody(server string, id string, contentTyp
 }
 
 // NewDecryptSecretRequest calls the generic DecryptSecret builder with application/json body
-func NewDecryptSecretRequest(server string, body DecryptSecretJSONRequestBody) (*http.Request, error) {
+func NewDecryptSecretRequest(server string, params *DecryptSecretParams, body DecryptSecretJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewDecryptSecretRequestWithBody(server, "application/json", bodyReader)
+	return NewDecryptSecretRequestWithBody(server, params, "application/json", bodyReader)
 }
 
 // NewDecryptSecretRequestWithBody generates requests for DecryptSecret with any type of body
-func NewDecryptSecretRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+func NewDecryptSecretRequestWithBody(server string, params *DecryptSecretParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -5155,22 +5353,37 @@ func NewDecryptSecretRequestWithBody(server string, contentType string, body io.
 
 	req.Header.Add("Content-Type", contentType)
 
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
 	return req, nil
 }
 
 // NewEncryptSecretRequest calls the generic EncryptSecret builder with application/json body
-func NewEncryptSecretRequest(server string, body EncryptSecretJSONRequestBody) (*http.Request, error) {
+func NewEncryptSecretRequest(server string, params *EncryptSecretParams, body EncryptSecretJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewEncryptSecretRequestWithBody(server, "application/json", bodyReader)
+	return NewEncryptSecretRequestWithBody(server, params, "application/json", bodyReader)
 }
 
 // NewEncryptSecretRequestWithBody generates requests for EncryptSecret with any type of body
-func NewEncryptSecretRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+func NewEncryptSecretRequestWithBody(server string, params *EncryptSecretParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -5194,6 +5407,21 @@ func NewEncryptSecretRequestWithBody(server string, contentType string, body io.
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
 
 	return req, nil
 }
@@ -5221,6 +5449,188 @@ func NewGetSecretInfoRequest(server string) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewListTenantsRequest generates requests for ListTenants
+func NewListTenantsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/tenants")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewCreateTenantRequest calls the generic CreateTenant builder with application/json body
+func NewCreateTenantRequest(server string, body CreateTenantJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateTenantRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewCreateTenantRequestWithBody generates requests for CreateTenant with any type of body
+func NewCreateTenantRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/tenants")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewDeleteTenantRequest generates requests for DeleteTenant
+func NewDeleteTenantRequest(server string, id string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/tenants/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("DELETE", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetTenantRequest generates requests for GetTenant
+func NewGetTenantRequest(server string, id string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/tenants/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewSetTenantStatusRequest calls the generic SetTenantStatus builder with application/json body
+func NewSetTenantStatusRequest(server string, id string, body SetTenantStatusJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSetTenantStatusRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewSetTenantStatusRequestWithBody generates requests for SetTenantStatus with any type of body
+func NewSetTenantStatusRequestWithBody(server string, id string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/tenants/%s/status", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("PUT", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -5631,17 +6041,36 @@ type ClientWithResponsesInterface interface {
 	UpdateRestrictionSetWithResponse(ctx context.Context, id string, body UpdateRestrictionSetJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateRestrictionSetResponse, error)
 
 	// DecryptSecretWithBodyWithResponse request with any body
-	DecryptSecretWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DecryptSecretResponse, error)
+	DecryptSecretWithBodyWithResponse(ctx context.Context, params *DecryptSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DecryptSecretResponse, error)
 
-	DecryptSecretWithResponse(ctx context.Context, body DecryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*DecryptSecretResponse, error)
+	DecryptSecretWithResponse(ctx context.Context, params *DecryptSecretParams, body DecryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*DecryptSecretResponse, error)
 
 	// EncryptSecretWithBodyWithResponse request with any body
-	EncryptSecretWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*EncryptSecretResponse, error)
+	EncryptSecretWithBodyWithResponse(ctx context.Context, params *EncryptSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*EncryptSecretResponse, error)
 
-	EncryptSecretWithResponse(ctx context.Context, body EncryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*EncryptSecretResponse, error)
+	EncryptSecretWithResponse(ctx context.Context, params *EncryptSecretParams, body EncryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*EncryptSecretResponse, error)
 
 	// GetSecretInfoWithResponse request
 	GetSecretInfoWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSecretInfoResponse, error)
+
+	// ListTenantsWithResponse request
+	ListTenantsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListTenantsResponse, error)
+
+	// CreateTenantWithBodyWithResponse request with any body
+	CreateTenantWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateTenantResponse, error)
+
+	CreateTenantWithResponse(ctx context.Context, body CreateTenantJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateTenantResponse, error)
+
+	// DeleteTenantWithResponse request
+	DeleteTenantWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*DeleteTenantResponse, error)
+
+	// GetTenantWithResponse request
+	GetTenantWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*GetTenantResponse, error)
+
+	// SetTenantStatusWithBodyWithResponse request with any body
+	SetTenantStatusWithBodyWithResponse(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetTenantStatusResponse, error)
+
+	SetTenantStatusWithResponse(ctx context.Context, id string, body SetTenantStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*SetTenantStatusResponse, error)
 
 	// GetLivenessWithResponse request
 	GetLivenessWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetLivenessResponse, error)
@@ -7144,6 +7573,127 @@ func (r GetSecretInfoResponse) StatusCode() int {
 	return 0
 }
 
+type ListTenantsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *[]Tenant
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListTenantsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListTenantsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type CreateTenantResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *Tenant
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON409      *BadRequest
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateTenantResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateTenantResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type DeleteTenantResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *StatusResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON409      *BadRequest
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteTenantResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteTenantResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetTenantResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *Tenant
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetTenantResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetTenantResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type SetTenantStatusResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *StatusResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r SetTenantStatusResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SetTenantStatusResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type GetLivenessResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -7974,16 +8524,16 @@ func (c *ClientWithResponses) UpdateRestrictionSetWithResponse(ctx context.Conte
 }
 
 // DecryptSecretWithBodyWithResponse request with arbitrary body returning *DecryptSecretResponse
-func (c *ClientWithResponses) DecryptSecretWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DecryptSecretResponse, error) {
-	rsp, err := c.DecryptSecretWithBody(ctx, contentType, body, reqEditors...)
+func (c *ClientWithResponses) DecryptSecretWithBodyWithResponse(ctx context.Context, params *DecryptSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DecryptSecretResponse, error) {
+	rsp, err := c.DecryptSecretWithBody(ctx, params, contentType, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
 	return ParseDecryptSecretResponse(rsp)
 }
 
-func (c *ClientWithResponses) DecryptSecretWithResponse(ctx context.Context, body DecryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*DecryptSecretResponse, error) {
-	rsp, err := c.DecryptSecret(ctx, body, reqEditors...)
+func (c *ClientWithResponses) DecryptSecretWithResponse(ctx context.Context, params *DecryptSecretParams, body DecryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*DecryptSecretResponse, error) {
+	rsp, err := c.DecryptSecret(ctx, params, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -7991,16 +8541,16 @@ func (c *ClientWithResponses) DecryptSecretWithResponse(ctx context.Context, bod
 }
 
 // EncryptSecretWithBodyWithResponse request with arbitrary body returning *EncryptSecretResponse
-func (c *ClientWithResponses) EncryptSecretWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*EncryptSecretResponse, error) {
-	rsp, err := c.EncryptSecretWithBody(ctx, contentType, body, reqEditors...)
+func (c *ClientWithResponses) EncryptSecretWithBodyWithResponse(ctx context.Context, params *EncryptSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*EncryptSecretResponse, error) {
+	rsp, err := c.EncryptSecretWithBody(ctx, params, contentType, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
 	return ParseEncryptSecretResponse(rsp)
 }
 
-func (c *ClientWithResponses) EncryptSecretWithResponse(ctx context.Context, body EncryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*EncryptSecretResponse, error) {
-	rsp, err := c.EncryptSecret(ctx, body, reqEditors...)
+func (c *ClientWithResponses) EncryptSecretWithResponse(ctx context.Context, params *EncryptSecretParams, body EncryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*EncryptSecretResponse, error) {
+	rsp, err := c.EncryptSecret(ctx, params, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -8014,6 +8564,67 @@ func (c *ClientWithResponses) GetSecretInfoWithResponse(ctx context.Context, req
 		return nil, err
 	}
 	return ParseGetSecretInfoResponse(rsp)
+}
+
+// ListTenantsWithResponse request returning *ListTenantsResponse
+func (c *ClientWithResponses) ListTenantsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListTenantsResponse, error) {
+	rsp, err := c.ListTenants(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListTenantsResponse(rsp)
+}
+
+// CreateTenantWithBodyWithResponse request with arbitrary body returning *CreateTenantResponse
+func (c *ClientWithResponses) CreateTenantWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateTenantResponse, error) {
+	rsp, err := c.CreateTenantWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateTenantResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreateTenantWithResponse(ctx context.Context, body CreateTenantJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateTenantResponse, error) {
+	rsp, err := c.CreateTenant(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateTenantResponse(rsp)
+}
+
+// DeleteTenantWithResponse request returning *DeleteTenantResponse
+func (c *ClientWithResponses) DeleteTenantWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*DeleteTenantResponse, error) {
+	rsp, err := c.DeleteTenant(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteTenantResponse(rsp)
+}
+
+// GetTenantWithResponse request returning *GetTenantResponse
+func (c *ClientWithResponses) GetTenantWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*GetTenantResponse, error) {
+	rsp, err := c.GetTenant(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetTenantResponse(rsp)
+}
+
+// SetTenantStatusWithBodyWithResponse request with arbitrary body returning *SetTenantStatusResponse
+func (c *ClientWithResponses) SetTenantStatusWithBodyWithResponse(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetTenantStatusResponse, error) {
+	rsp, err := c.SetTenantStatusWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetTenantStatusResponse(rsp)
+}
+
+func (c *ClientWithResponses) SetTenantStatusWithResponse(ctx context.Context, id string, body SetTenantStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*SetTenantStatusResponse, error) {
+	rsp, err := c.SetTenantStatus(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetTenantStatusResponse(rsp)
 }
 
 // GetLivenessWithResponse request returning *GetLivenessResponse
@@ -9975,6 +10586,213 @@ func ParseGetSecretInfoResponse(rsp *http.Response) (*GetSecretInfoResponse, err
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListTenantsResponse parses an HTTP response from a ListTenantsWithResponse call
+func ParseListTenantsResponse(rsp *http.Response) (*ListTenantsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListTenantsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest []Tenant
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateTenantResponse parses an HTTP response from a CreateTenantWithResponse call
+func ParseCreateTenantResponse(rsp *http.Response) (*CreateTenantResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateTenantResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest Tenant
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteTenantResponse parses an HTTP response from a DeleteTenantWithResponse call
+func ParseDeleteTenantResponse(rsp *http.Response) (*DeleteTenantResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteTenantResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest StatusResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetTenantResponse parses an HTTP response from a GetTenantWithResponse call
+func ParseGetTenantResponse(rsp *http.Response) (*GetTenantResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetTenantResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Tenant
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseSetTenantStatusResponse parses an HTTP response from a SetTenantStatusWithResponse call
+func ParseSetTenantStatusResponse(rsp *http.Response) (*SetTenantStatusResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SetTenantStatusResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest StatusResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
 
 	}
 

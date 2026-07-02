@@ -178,7 +178,7 @@ func (m *Manager) RotateIntermediate(ctx context.Context, spec RotateSpec) (*Rot
 		return nil, fmt.Errorf("creating rotated intermediate certificate: %w", err)
 	}
 
-	newCA, err := m.persistCA(&parent.ID, newLabel, keyInfo, der, req)
+	newCA, err := m.persistCA(parent.TenantID, &parent.ID, newLabel, keyInfo, der, req)
 	if err != nil {
 		return nil, err
 	}

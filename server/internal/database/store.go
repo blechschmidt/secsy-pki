@@ -27,6 +27,7 @@ import (
 // than at a distant call site.
 type Store interface {
 	Lifecycle
+	TenantStore
 	CAStore
 	InventoryStore
 	RevocationStore
@@ -34,6 +35,21 @@ type Store interface {
 	ACMEStore
 	AuditStore
 	RBACStore
+}
+
+// TenantStore persists the top-level isolation boundary. Every deployment has
+// the built-in default tenant; additional tenants let one deployment serve
+// several isolated organizations. Tenant-scoped resources (CAs, restriction
+// sets, groups, audit events) carry the owning tenant, and the higher layers
+// forbid a principal from reaching a tenant it is not a member of.
+type TenantStore interface {
+	CreateTenant(t *models.Tenant) error
+	GetTenant(id string) (*models.Tenant, error)
+	GetTenantBySlug(slug string) (*models.Tenant, error)
+	ListTenants() ([]models.Tenant, error)
+	SetTenantStatus(id, status string) error
+	DeleteTenant(id string) error
+	CountCAsForTenant(tenantID string) (int, error)
 }
 
 // Lifecycle covers connection management and health/identity introspection.
@@ -50,6 +66,11 @@ type CAStore interface {
 	GetCA(id string) (*models.CA, error)
 	GetCAByLabel(label string) (*models.CA, error)
 	ListCAs() ([]models.CA, error)
+	// ListCAsForTenant returns only the CAs owned by the given tenant.
+	ListCAsForTenant(tenantID string) ([]models.CA, error)
+	// GetCATenant resolves the owning tenant of a CA (""/nil if it does not
+	// exist). It is the authorization lookup for CA-scoped requests.
+	GetCATenant(caID string) (string, error)
 	GetChildren(parentID string) ([]models.CA, error)
 	DeleteCA(id string) error
 	SetCAStatus(id, status string) error
@@ -124,7 +145,7 @@ type ACMEStore interface {
 // chaining even under concurrent writers; the implementation guarantees this.
 type AuditStore interface {
 	AppendEvent(e *audit.Event) error
-	ListEvents(action, actor string, limit, offset int) ([]audit.Event, int, error)
+	ListEvents(action, actor, tenant string, limit, offset int) ([]audit.Event, int, error)
 	ListAllEventsAsc() ([]audit.Event, error)
 	ListEventsSince(afterSeq int64, limit int) ([]audit.Event, error)
 	ListEventsByTimeRange(from, to time.Time) ([]audit.Event, error)
@@ -140,6 +161,7 @@ type RBACStore interface {
 	CreateGroup(g *models.Group) error
 	GetGroup(id string) (*models.Group, error)
 	ListGroups() ([]models.Group, error)
+	ListGroupsForTenant(tenantID string) ([]models.Group, error)
 	DeleteGroup(id string) error
 	AddGroupMember(groupID, userSub string) error
 	RemoveGroupMember(groupID, userSub string) error
@@ -156,6 +178,7 @@ type RBACStore interface {
 	GetRestrictionSet(id string) (*models.RestrictionSet, error)
 	ListAllRestrictionSets() ([]models.RestrictionSet, error)
 	ListRestrictionSets(caID string) ([]models.RestrictionSet, error)
+	ListRestrictionSetsForTenant(tenantID string) ([]models.RestrictionSet, error)
 	DeleteRestrictionSet(id string) error
 	GetEffectiveRestrictionSet(caID, userSub string, groupIDs []string, certFormat string) (*models.RestrictionSet, error)
 }

@@ -280,7 +280,7 @@ func cmdSecretAudit(cfg *config.Config, args []string) error {
 
 	var events []audit.Event
 	for _, action := range []string{audit.ActionSecretEscrow, audit.ActionSecretRecover} {
-		evs, _, err := db.ListEvents(action, "", *limit, 0)
+		evs, _, err := db.ListEvents(action, "", "", *limit, 0)
 		if err != nil {
 			return fmt.Errorf("listing %s events: %w", action, err)
 		}

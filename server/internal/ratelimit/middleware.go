@@ -100,6 +100,16 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 			keys := Keys{IP: clientIP(r)}
 			if c.account != nil {
 				keys.Account = c.account(r)
+				// Namespace the per-account bucket by tenant so accounts of
+				// different tenants never share a quota bucket (and one tenant
+				// cannot exhaust another's per-account allowance). The tenant
+				// selector is carried in the X-Secsy-Tenant header on public
+				// requests; absent it, the default namespace applies.
+				if keys.Account != "" {
+					if tenant := r.Header.Get("X-Secsy-Tenant"); tenant != "" {
+						keys.Account = "t:" + tenant + "|" + keys.Account
+					}
+				}
 			}
 			if d := m.limiter.Allow(keys); !d.Allowed {
 				metrics.RateLimitThrottled.Inc(c.name, d.Tier)

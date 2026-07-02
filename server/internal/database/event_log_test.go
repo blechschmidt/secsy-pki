@@ -39,7 +39,7 @@ func TestAppendEventRequestID(t *testing.T) {
 		t.Fatalf("AppendEvent: %v", err)
 	}
 
-	entries, _, err := db.ListEvents("", "", 10, 0)
+	entries, _, err := db.ListEvents("", "", "", 10, 0)
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("ListEvents: %d %v", len(entries), err)
 	}
@@ -314,7 +314,7 @@ func TestListEventsFilterAndPaging(t *testing.T) {
 		}
 	}
 
-	issues, total, err := db.ListEvents(audit.ActionCertIssue, "", 50, 0)
+	issues, total, err := db.ListEvents(audit.ActionCertIssue, "", "", 50, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +328,7 @@ func TestListEventsFilterAndPaging(t *testing.T) {
 	}
 
 	// Newest-first ordering.
-	all, _, err := db.ListEvents("", "dave", 50, 0)
+	all, _, err := db.ListEvents("", "dave", "", 50, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

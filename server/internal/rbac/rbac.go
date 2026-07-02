@@ -178,6 +178,92 @@ func (a *Assignments) Empty() bool {
 	return a == nil || (len(a.bySubject) == 0 && len(a.byGroup) == 0)
 }
 
+// TenantAssignments layers tenant-scoped role assignments over the platform-wide
+// (cross-tenant) assignments. A principal's effective capability in a tenant is
+// the union of:
+//
+//   - its PLATFORM roles (from the embedded platform Assignments), which apply in
+//     every tenant — reserved for platform operators; and
+//   - its roles WITHIN that specific tenant (from the tenant's own Assignments).
+//
+// A principal that holds a role only in tenant A therefore has no capability in
+// tenant B: the mechanism that enforces cross-tenant isolation at the RBAC layer.
+type TenantAssignments struct {
+	platform *Assignments
+	byTenant map[string]*Assignments
+}
+
+// NewTenantAssignments builds the index from the platform assignments and a
+// per-tenant map of assignments (typically decoded from config).
+func NewTenantAssignments(platform *Assignments, byTenant map[string]*Assignments) *TenantAssignments {
+	m := make(map[string]*Assignments, len(byTenant))
+	for k, v := range byTenant {
+		if v != nil {
+			m[k] = v
+		}
+	}
+	return &TenantAssignments{platform: platform, byTenant: m}
+}
+
+// Platform returns the cross-tenant assignments (may be nil).
+func (ta *TenantAssignments) Platform() *Assignments {
+	if ta == nil {
+		return nil
+	}
+	return ta.platform
+}
+
+// PlatformRolesFor returns the platform-wide roles a subject holds.
+func (ta *TenantAssignments) PlatformRolesFor(subject, email string, emailVerified bool, groupIDs []string) []Role {
+	if ta == nil {
+		return nil
+	}
+	return rolesFor(ta.platform, subject, email, emailVerified, groupIDs)
+}
+
+// TenantRolesFor returns the roles a subject holds within a specific tenant
+// (excluding platform roles, which the caller combines separately).
+func (ta *TenantAssignments) TenantRolesFor(tenantID, subject, email string, emailVerified bool, groupIDs []string) []Role {
+	if ta == nil {
+		return nil
+	}
+	return rolesFor(ta.byTenant[tenantID], subject, email, emailVerified, groupIDs)
+}
+
+// Tenants returns the tenant IDs that have any role assignment configured.
+func (ta *TenantAssignments) Tenants() []string {
+	if ta == nil {
+		return nil
+	}
+	out := make([]string, 0, len(ta.byTenant))
+	for t := range ta.byTenant {
+		out = append(out, t)
+	}
+	return out
+}
+
+// rolesFor resolves subject + verified-email + group roles against one
+// Assignments index. Email-keyed roles are honored only for a verified email.
+func rolesFor(a *Assignments, subject, email string, emailVerified bool, groupIDs []string) []Role {
+	if a == nil {
+		return nil
+	}
+	roles := a.RolesFor(subject, groupIDs)
+	if email != "" && emailVerified {
+		roles = append(roles, a.RolesFor(email, nil)...)
+	}
+	// Dedup preserving order.
+	seen := make(map[Role]bool, len(roles))
+	out := roles[:0]
+	for _, r := range roles {
+		if !seen[r] {
+			seen[r] = true
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // JoinRoles renders roles as a stable comma-separated string for logging.
 func JoinRoles(roles []Role) string {
 	parts := make([]string, len(roles))

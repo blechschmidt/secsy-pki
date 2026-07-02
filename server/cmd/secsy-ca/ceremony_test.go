@@ -256,7 +256,7 @@ func TestInventoryListsKeys(t *testing.T) {
 // with the given action.
 func assertAuditAction(t *testing.T, db *database.DB, action string, want int) {
 	t.Helper()
-	_, total, err := db.ListEvents(action, "", 1, 0)
+	_, total, err := db.ListEvents(action, "", "", 1, 0)
 	if err != nil {
 		t.Fatalf("listing events for %q: %v", action, err)
 	}

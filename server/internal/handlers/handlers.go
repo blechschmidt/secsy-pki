@@ -203,6 +203,14 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/keys", protected(http.HandlerFunc(a.ListCAs)))
 	mux.Handle("POST /api/keys", protected(http.HandlerFunc(a.CreateCA)))
 
+	// Multi-tenant administration (Task 43). Tenant provisioning is platform-level
+	// (root / platform admin); reading a single tenant is allowed for its members.
+	mux.Handle("GET /api/tenants", protected(http.HandlerFunc(a.ListTenants)))
+	mux.Handle("POST /api/tenants", protected(http.HandlerFunc(a.CreateTenant)))
+	mux.Handle("GET /api/tenants/{id}", protected(http.HandlerFunc(a.GetTenant)))
+	mux.Handle("PUT /api/tenants/{id}/status", protected(http.HandlerFunc(a.SetTenantStatus)))
+	mux.Handle("DELETE /api/tenants/{id}", protected(http.HandlerFunc(a.DeleteTenant)))
+
 	// HSM-backed X.509 certificate-authority setup
 	mux.Handle("POST /api/ca/init-root", protected(http.HandlerFunc(a.InitRootCA)))
 	mux.Handle("POST /api/ca/{id}/issue-intermediate", protected(http.HandlerFunc(a.IssueIntermediateCA)))
@@ -357,11 +365,27 @@ func (a *API) Me(w http.ResponseWriter, r *http.Request) {
 // CA handlers
 
 func (a *API) ListCAs(w http.ResponseWriter, r *http.Request) {
-	if !a.canRead(middleware.GetUserInfo(r.Context())) {
+	user := middleware.GetUserInfo(r.Context())
+	if !a.canRead(user) {
 		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
 		return
 	}
-	cas, err := a.db.ListCAs()
+	// Platform operators (root or a platform-wide role) see every tenant's CAs;
+	// a tenant-scoped principal sees only the CAs of the tenants it belongs to.
+	var cas []models.CA
+	var err error
+	if user.IsRoot || len(user.Roles) > 0 {
+		cas, err = a.db.ListCAs()
+	} else {
+		for _, tid := range user.TenantsWithRoles() {
+			ts, terr := a.db.ListCAsForTenant(tid)
+			if terr != nil {
+				err = terr
+				break
+			}
+			cas = append(cas, ts...)
+		}
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list CAs: %v", err)
 		return
@@ -372,16 +396,40 @@ func (a *API) ListCAs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, cas)
 }
 
+// authorizeCARead loads a CA and verifies the caller may read it: an assigned
+// role plus membership in the CA's tenant. It records the resolved tenant on the
+// request context and, on denial or error, writes the response and returns
+// (nil, false). This is the shared read-side tenant guard for CA-scoped GETs.
+func (a *API) authorizeCARead(w http.ResponseWriter, r *http.Request, caID string) (*models.CA, bool) {
+	user := middleware.GetUserInfo(r.Context())
+	if !a.canRead(user) {
+		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+		return nil, false
+	}
+	ca, err := a.db.GetCA(caID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database error: %v", err)
+		return nil, false
+	}
+	if ca == nil {
+		writeError(w, http.StatusNotFound, "CA not found")
+		return nil, false
+	}
+	middleware.SetTenant(r.Context(), ca.TenantID)
+	if !a.isTenantMember(user, ca.TenantID) {
+		// Do not disclose existence to non-members: 404 rather than 403.
+		writeError(w, http.StatusNotFound, "CA not found")
+		return nil, false
+	}
+	return ca, true
+}
+
 func (a *API) CreateCA(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !a.can(user, rbac.ActionManageCA) {
-		a.recordEvent(r, audit.ActionCACreate, "", "", audit.ResultDenied, "ca:manage capability required")
-		writeError(w, http.StatusForbidden, "ca:manage capability required (admin role)")
-		return
-	}
 
 	var req struct {
 		Label     string  `json:"label"`
+		TenantID  string  `json:"tenant_id,omitempty"`
 		ParentID  *string `json:"parent_id,omitempty"`
 		PKCS11URI string  `json:"pkcs11_uri"`
 		KeyType   string  `json:"key_type"`
@@ -397,13 +445,31 @@ func (a *API) CreateCA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If parent is specified, verify it exists
+	// Resolve the owning tenant: a subordinate inherits its parent's tenant;
+	// otherwise it is taken from the request (default tenant when omitted).
+	tenantID := req.TenantID
+	if tenantID == "" {
+		tenantID = models.DefaultTenantID
+	}
 	if req.ParentID != nil {
 		parent, err := a.db.GetCA(*req.ParentID)
 		if err != nil || parent == nil {
 			writeError(w, http.StatusBadRequest, "parent CA not found")
 			return
 		}
+		tenantID = parent.TenantID
+	} else if t, err := a.db.GetTenant(tenantID); err != nil {
+		writeError(w, http.StatusInternalServerError, "tenant lookup failed: %v", err)
+		return
+	} else if t == nil {
+		writeError(w, http.StatusBadRequest, "unknown tenant %q", tenantID)
+		return
+	}
+	middleware.SetTenant(r.Context(), tenantID)
+	if !a.canInTenant(user, tenantID, rbac.ActionManageCA) {
+		a.recordEvent(r, audit.ActionCACreate, "", "", audit.ResultDenied, "ca:manage capability required")
+		writeError(w, http.StatusForbidden, "ca:manage capability required for tenant %q", tenantID)
+		return
 	}
 
 	// If no key URI is supplied, generate a new key via the configured provider.
@@ -426,6 +492,7 @@ func (a *API) CreateCA(w http.ResponseWriter, r *http.Request) {
 	denyX509 := database.BuiltinDenyAllX509
 	ca := &models.CA{
 		ID:                          uuid.New().String(),
+		TenantID:                    tenantID,
 		ParentID:                    req.ParentID,
 		Label:                       req.Label,
 		PKCS11URI:                   req.PKCS11URI,
@@ -446,32 +513,16 @@ func (a *API) CreateCA(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) GetCA(w http.ResponseWriter, r *http.Request) {
-	if !a.canRead(middleware.GetUserInfo(r.Context())) {
-		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
-		return
-	}
-	id := r.PathValue("id")
-	ca, err := a.db.GetCA(id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "database error: %v", err)
-		return
-	}
-	if ca == nil {
-		writeError(w, http.StatusNotFound, "CA not found")
+	ca, ok := a.authorizeCARead(w, r, r.PathValue("id"))
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, ca)
 }
 
 func (a *API) GetPublicKey(w http.ResponseWriter, r *http.Request) {
-	if !a.canRead(middleware.GetUserInfo(r.Context())) {
-		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
-		return
-	}
-	id := r.PathValue("id")
-	ca, err := a.db.GetCA(id)
-	if err != nil || ca == nil {
-		writeError(w, http.StatusNotFound, "key not found")
+	ca, ok := a.authorizeCARead(w, r, r.PathValue("id"))
+	if !ok {
 		return
 	}
 
@@ -506,9 +557,19 @@ func (a *API) GetPublicKey(w http.ResponseWriter, r *http.Request) {
 func (a *API) DeleteCA(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
 	id := r.PathValue("id")
-	if !a.can(user, rbac.ActionManageCA) {
+	tenantID, err := a.db.GetCATenant(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database error: %v", err)
+		return
+	}
+	if tenantID == "" {
+		writeError(w, http.StatusNotFound, "CA not found")
+		return
+	}
+	middleware.SetTenant(r.Context(), tenantID)
+	if !a.canInTenant(user, tenantID, rbac.ActionManageCA) {
 		a.recordEvent(r, audit.ActionCADelete, id, "", audit.ResultDenied, "ca:manage capability required")
-		writeError(w, http.StatusForbidden, "ca:manage capability required (admin role)")
+		writeError(w, http.StatusForbidden, "ca:manage capability required for tenant %q", tenantID)
 		return
 	}
 
@@ -522,8 +583,7 @@ func (a *API) DeleteCA(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) GetCAChildren(w http.ResponseWriter, r *http.Request) {
-	if !a.canRead(middleware.GetUserInfo(r.Context())) {
-		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+	if _, ok := a.authorizeCARead(w, r, r.PathValue("id")); !ok {
 		return
 	}
 	id := r.PathValue("id")
@@ -545,7 +605,7 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 	caID := r.PathValue("id")
 
 	// Check permission: org-wide issuer/admin role OR a per-CA SIGN grant.
-	hasAccess, err := a.canIssueOn(user, caID)
+	hasAccess, err := a.canIssueOn(r.Context(), user, caID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
 		return
@@ -729,7 +789,7 @@ func (a *API) SignX509Certificate(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
 	caID := r.PathValue("id")
 
-	hasAccess, err := a.canIssueOn(user, caID)
+	hasAccess, err := a.canIssueOn(r.Context(), user, caID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
 		return

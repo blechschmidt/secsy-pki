@@ -17,6 +17,9 @@ import (
 // the file→Postgres migration remains complete; MigrateStore cross-checks the
 // live schema against this list and fails loudly on any omission.
 var migrationTables = []string{
+	// Tenants are the top-level isolation boundary; cas and restriction_sets
+	// reference them, so they must be copied first to satisfy the FK.
+	"tenants",
 	// Authorities and the subjects/policy that reference them.
 	"cas",
 	"restriction_sets",
