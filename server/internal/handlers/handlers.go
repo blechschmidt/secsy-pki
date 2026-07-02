@@ -10,26 +10,27 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/google/uuid"
-	"golang.org/x/crypto/ssh"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
+	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
+	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
-	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
+	"github.com/google/uuid"
+	"golang.org/x/crypto/ssh"
 )
 
 type API struct {
 	db                   *database.DB
-	p11cfg               pki.PKCS11Config
+	keyProvider          keyprovider.Provider
 	oidcProvider         *auth.OIDCProvider
 	hsmCfg               hsm.Config
 	suppressAuditWarning bool
 }
 
-func NewAPI(db *database.DB, p11cfg pki.PKCS11Config, oidcProvider *auth.OIDCProvider, hsmCfg hsm.Config, suppressAuditWarning bool) *API {
-	return &API{db: db, p11cfg: p11cfg, oidcProvider: oidcProvider, hsmCfg: hsmCfg, suppressAuditWarning: suppressAuditWarning}
+func NewAPI(db *database.DB, keyProvider keyprovider.Provider, oidcProvider *auth.OIDCProvider, hsmCfg hsm.Config, suppressAuditWarning bool) *API {
+	return &API{db: db, keyProvider: keyProvider, oidcProvider: oidcProvider, hsmCfg: hsmCfg, suppressAuditWarning: suppressAuditWarning}
 }
 
 func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddleware) {
@@ -169,16 +170,19 @@ func (a *API) CreateCA(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// If no PKCS#11 URI, generate a new key on the HSM
+	// If no key URI is supplied, generate a new key via the configured provider.
 	if req.PKCS11URI == "" {
 		a.consumeHSMAuditLogs("")
-		generated, err := pki.GenerateKeyOnHSM(a.p11cfg, req.Label, req.KeyType)
+		generated, err := a.keyProvider.GenerateKey(r.Context(), keyprovider.KeySpec{
+			Label:   req.Label,
+			KeyType: req.KeyType,
+		})
 		a.consumeHSMAuditLogs("")
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to generate key on HSM: %v", err)
+			writeError(w, http.StatusInternalServerError, "failed to generate key: %v", err)
 			return
 		}
-		req.PKCS11URI = generated.PKCS11URI
+		req.PKCS11URI = generated.URI
 		req.PublicKey = generated.SSHPublicKey
 	}
 
@@ -389,12 +393,9 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 	// Consume pending HSM logs to free space before signing
 	a.consumeHSMAuditLogs("")
 
-	// Get the key label from PKCS11 URI
-	keyLabel := extractKeyLabel(ca.PKCS11URI)
-
-	signer, err := pki.NewPKCS11Signer(a.p11cfg, keyLabel)
+	signer, err := a.keyProvider.Signer(r.Context(), keyRefForCA(ca))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to open PKCS#11 signer: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to open signer: %v", err)
 		return
 	}
 	defer signer.Close()
@@ -507,10 +508,9 @@ func (a *API) SignX509Certificate(w http.ResponseWriter, r *http.Request) {
 	// Consume HSM audit logs before signing
 	a.consumeHSMAuditLogs("")
 
-	keyLabel := extractKeyLabel(ca.PKCS11URI)
-	signer, err := pki.NewPKCS11Signer(a.p11cfg, keyLabel)
+	signer, err := a.keyProvider.Signer(r.Context(), keyRefForCA(ca))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to open PKCS#11 signer: %v", err)
+		writeError(w, http.StatusInternalServerError, "failed to open signer: %v", err)
 		return
 	}
 
@@ -598,8 +598,8 @@ func (a *API) ParseCSR(w http.ResponseWriter, r *http.Request) {
 	pubKeyAlgo := csr.PublicKeyAlgorithm.String()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"subject":          subject,
-		"sans":             sans,
+		"subject":              subject,
+		"sans":                 sans,
 		"public_key_algorithm": pubKeyAlgo,
 	})
 }
@@ -909,7 +909,9 @@ func (a *API) ListAccessLog(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to query access log: %v", err)
 			return
 		}
-		if entries == nil { entries = []models.AccessLogEntry{} }
+		if entries == nil {
+			entries = []models.AccessLogEntry{}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Disposition", "attachment; filename=access-log.json")
 		json.NewEncoder(w).Encode(entries)
@@ -921,7 +923,9 @@ func (a *API) ListAccessLog(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to query access log: %v", err)
 		return
 	}
-	if entries == nil { entries = []models.AccessLogEntry{} }
+	if entries == nil {
+		entries = []models.AccessLogEntry{}
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"entries": entries,
 		"total":   total,
@@ -1239,6 +1243,18 @@ func (a *API) checkPermission(user *models.UserInfo, caID string, perm models.Pe
 		return false, err
 	}
 	return a.db.HasPermission(caID, user.Subject, perm, groupIDs)
+}
+
+// keyRefForCA resolves the provider key reference for a CA. When the CA's URI
+// is a pkcs11: URI its object= label is authoritative (it may differ from the
+// CA label when an operator imported a pre-existing key); otherwise — e.g. for
+// software: URIs — the CA label is the key label.
+func keyRefForCA(ca *models.CA) keyprovider.KeyRef {
+	label := extractKeyLabel(ca.PKCS11URI)
+	if label == "" {
+		label = ca.Label
+	}
+	return keyprovider.KeyRef{Label: label}
 }
 
 func extractKeyLabel(pkcs11URI string) string {

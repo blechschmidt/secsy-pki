@@ -13,8 +13,8 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
+	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
-	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 )
 
 func main() {
@@ -59,13 +59,24 @@ func main() {
 		}
 	}
 
-	p11cfg := pki.PKCS11Config{
-		ModulePath:        cfg.PKCS11.ModulePath,
-		Pin:               cfg.PKCS11.Pin,
-		TokenLabel:        cfg.PKCS11.TokenLabel,
-		TokenSerial:       cfg.PKCS11.TokenSerial,
-		TokenManufacturer: cfg.PKCS11.TokenManufacturer,
+	provider, err := keyprovider.New(keyprovider.Config{
+		Type: keyprovider.ProviderType(cfg.KeyProvider.Type),
+		PKCS11: keyprovider.PKCS11Settings{
+			ModulePath:        cfg.PKCS11.ModulePath,
+			Pin:               cfg.PKCS11.Pin,
+			TokenLabel:        cfg.PKCS11.TokenLabel,
+			TokenSerial:       cfg.PKCS11.TokenSerial,
+			TokenManufacturer: cfg.PKCS11.TokenManufacturer,
+		},
+		Software: keyprovider.SoftwareSettings{
+			KeystoreDir: cfg.KeyProvider.Software.KeystoreDir,
+		},
+	})
+	if err != nil {
+		log.Fatalf("Failed to initialize key provider: %v", err)
 	}
+	defer provider.Close()
+	log.Printf("Key provider: %s", provider.Name())
 
 	hsmCfg := hsm.Config{
 		ConnectorURL: cfg.YubiHSM.ConnectorURL,
@@ -73,7 +84,7 @@ func main() {
 		Password:     cfg.YubiHSM.Password,
 	}
 
-	api := handlers.NewAPI(db, p11cfg, oidcProvider, hsmCfg, cfg.YubiHSM.SuppressAuditWarning)
+	api := handlers.NewAPI(db, provider, oidcProvider, hsmCfg, cfg.YubiHSM.SuppressAuditWarning)
 
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, authMw)

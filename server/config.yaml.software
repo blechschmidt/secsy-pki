@@ -1,0 +1,30 @@
+# Example configuration using the software key provider (no HSM).
+#
+# CA private keys are generated with the Go standard library and stored as
+# PKCS#8 PEM files under key_provider.software.keystore_dir (mode 0600). The
+# private keys never leave the server through the API — only public keys and
+# signatures are exported, mirroring the trust boundary of the HSM backend.
+#
+# This backend is intended for development and for deployments without an HSM.
+# For production, prefer the pkcs11 provider (see config.yaml.softhsm /
+# config.yaml.yubihsm).
+
+server:
+  host: "0.0.0.0"
+  port: 8443
+
+database:
+  driver: "sqlite"
+  dsn: "secsy-pki.db"
+
+oidc:
+  issuer_url: ""
+
+root_user:
+  username: "root"
+  password: "change-me-in-production"
+
+key_provider:
+  type: "software"
+  software:
+    keystore_dir: "keystore"

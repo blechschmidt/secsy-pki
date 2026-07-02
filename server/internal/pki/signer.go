@@ -87,6 +87,32 @@ func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {
 		}
 	}
 
+	// Track resource state so that any error after this point releases the
+	// session, login, and loaded module. Leaking a logged-in session breaks
+	// subsequent operations on tokens (e.g. SoftHSM) whose login state is
+	// per-application rather than per-session: the next Login fails with
+	// CKR_USER_ALREADY_LOGGED_IN. On success, ownership transfers to the
+	// returned signer and cleanup is skipped.
+	var (
+		session   pkcs11.SessionHandle
+		haveSess  bool
+		loggedIn  bool
+		succeeded bool
+	)
+	defer func() {
+		if succeeded {
+			return
+		}
+		if loggedIn {
+			ctx.Logout(session)
+		}
+		if haveSess {
+			ctx.CloseSession(session)
+		}
+		ctx.Finalize()
+		ctx.Destroy()
+	}()
+
 	slots, err := ctx.GetSlotList(true)
 	if err != nil {
 		return nil, fmt.Errorf("getting slots: %w", err)
@@ -97,14 +123,16 @@ func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {
 		return nil, err
 	}
 
-	session, err := ctx.OpenSession(slotID, pkcs11.CKF_SERIAL_SESSION)
+	session, err = ctx.OpenSession(slotID, pkcs11.CKF_SERIAL_SESSION)
 	if err != nil {
 		return nil, fmt.Errorf("opening session: %w", err)
 	}
+	haveSess = true
 
 	if err := ctx.Login(session, pkcs11.CKU_USER, cfg.Pin); err != nil {
 		return nil, fmt.Errorf("logging in: %w", err)
 	}
+	loggedIn = true
 
 	// Find private key
 	tmpl := []*pkcs11.Attribute{
@@ -164,6 +192,7 @@ func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {
 		}
 	}
 
+	succeeded = true
 	return signer, nil
 }
 

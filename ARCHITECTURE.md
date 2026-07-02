@@ -39,10 +39,14 @@ server/
       signer.go    PKCS11Signer: crypto.Signer over an HSM key; on-HSM keygen; PKCS#11 URIs
       ssh.go       SSH certificate signing (user/host, principals, extensions, critical opts)
       x509.go      X.509 certificate signing from a CSR
+    keyprovider/   Backend-agnostic key provider abstraction (Task 4)
+      keyprovider.go  Provider/Signer interfaces, Config, New() selector, key-type normalization
+      software.go  SoftwareProvider: on-disk PKCS#8 keystore (keys never exported)
+      pkcs11.go    PKCS11Provider: delegates to pki.PKCS11Signer / pki.GenerateKeyOnHSM
     hsm/
       yubihsm.go   YubiHSM 2 ops via `yubihsm-shell`: audit log, attestation, provisioning, reset
     handlers/      HTTP API (handlers.go), OpenAPI spec (openapi.yaml / openapi.go)
-    config/        YAML config loading
+    config/        YAML config loading (incl. key_provider selection + SECSY_* env overrides)
     database/      SQLite + PostgreSQL, schema migration, all persistence
     auth/          OIDC provider / token verification
     middleware/    auth.go (basic + bearer), audit.go (access log)
@@ -170,11 +174,20 @@ plan.
 - No revocation at all: **needed** — revoked-cert store, CRL generation & signing
   (HSM-backed), CRL distribution point + AIA extensions, and an OCSP responder.
 
-### Key storage abstraction (P0 — Task 4)
-- Signing is hard-wired to `PKCS11Signer`; there is no interface abstracting
-  "key backend". **Needed:** a `KeyStore`/`Signer` abstraction so software,
-  SoftHSM, YubiHSM (and future PKCS#11 tokens) are pluggable, with session
-  pooling/lifecycle management and consistent error surfacing.
+### Key storage abstraction (P0 — Task 4) — **DONE**
+- Signing was hard-wired to `PKCS11Signer` with no backend interface.
+- **Resolved:** `internal/keyprovider` introduces a `Provider` interface
+  (GenerateKey / FindKey / Signer / PublicKey / Close) plus a `Signer`
+  (`crypto.Signer` + `Close`). Two implementations ship: `SoftwareProvider`
+  (on-disk PKCS#8 keystore; private keys never leave the server) and
+  `PKCS11Provider` (delegates to the existing, HSM-tested `pki` code). The
+  backend is chosen by `key_provider.type` in config, defaulting to `pkcs11`
+  when a module is set and overridable via `SECSY_*` env vars. Handlers
+  (`CreateCA`, `SignCertificate`, `SignX509Certificate`) now go through the
+  provider, so all backends are pluggable. A latent session leak in
+  `NewPKCS11Signer` (post-login error paths) was fixed as part of this work —
+  it was breaking consecutive SoftHSM operations with
+  `CKR_USER_ALREADY_LOGGED_IN`.
 
 ### PKCS#11 integration breadth (P0/P1 — Tasks 3–4)
 - Currently validated against SoftHSM only in CI, YubiHSM behind a build tag.

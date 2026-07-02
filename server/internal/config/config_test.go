@@ -86,6 +86,136 @@ root_user:
 	}
 }
 
+func TestKeyProviderDefaultsToPKCS11WhenModuleSet(t *testing.T) {
+	clearProviderEnv(t)
+	cfg := writeAndLoad(t, `
+root_user:
+  password: secret
+pkcs11:
+  module_path: "/usr/lib/test.so"
+`)
+	if cfg.KeyProvider.Type != "pkcs11" {
+		t.Errorf("type = %q, want pkcs11", cfg.KeyProvider.Type)
+	}
+}
+
+func TestKeyProviderDefaultsToSoftware(t *testing.T) {
+	clearProviderEnv(t)
+	cfg := writeAndLoad(t, `
+root_user:
+  password: secret
+`)
+	if cfg.KeyProvider.Type != "software" {
+		t.Errorf("type = %q, want software", cfg.KeyProvider.Type)
+	}
+	if cfg.KeyProvider.Software.KeystoreDir != "keystore" {
+		t.Errorf("keystore_dir = %q, want default 'keystore'", cfg.KeyProvider.Software.KeystoreDir)
+	}
+}
+
+func TestKeyProviderExplicitSoftware(t *testing.T) {
+	clearProviderEnv(t)
+	cfg := writeAndLoad(t, `
+root_user:
+  password: secret
+key_provider:
+  type: software
+  software:
+    keystore_dir: /var/lib/secsy/keys
+`)
+	if cfg.KeyProvider.Type != "software" {
+		t.Errorf("type = %q", cfg.KeyProvider.Type)
+	}
+	if cfg.KeyProvider.Software.KeystoreDir != "/var/lib/secsy/keys" {
+		t.Errorf("keystore_dir = %q", cfg.KeyProvider.Software.KeystoreDir)
+	}
+}
+
+func TestKeyProviderInvalidType(t *testing.T) {
+	clearProviderEnv(t)
+	_, err := loadContent(t, `
+root_user:
+  password: secret
+key_provider:
+  type: bogus
+`)
+	if err == nil {
+		t.Fatal("expected error for invalid provider type")
+	}
+}
+
+func TestKeyProviderPKCS11RequiresModule(t *testing.T) {
+	clearProviderEnv(t)
+	_, err := loadContent(t, `
+root_user:
+  password: secret
+key_provider:
+  type: pkcs11
+`)
+	if err == nil {
+		t.Fatal("expected error: pkcs11 provider without module_path")
+	}
+}
+
+func TestKeyProviderEnvOverride(t *testing.T) {
+	t.Setenv("SECSY_KEY_PROVIDER", "pkcs11")
+	t.Setenv("SECSY_PKCS11_MODULE", "/env/module.so")
+	t.Setenv("SECSY_TOKEN_LABEL", "env-token")
+	t.Setenv("SECSY_USER_PIN", "9999")
+	cfg := writeAndLoad(t, `
+root_user:
+  password: secret
+key_provider:
+  type: software
+`)
+	if cfg.KeyProvider.Type != "pkcs11" {
+		t.Errorf("type = %q, want pkcs11 (env override)", cfg.KeyProvider.Type)
+	}
+	if cfg.PKCS11.ModulePath != "/env/module.so" {
+		t.Errorf("module_path = %q", cfg.PKCS11.ModulePath)
+	}
+	if cfg.PKCS11.TokenLabel != "env-token" {
+		t.Errorf("token_label = %q", cfg.PKCS11.TokenLabel)
+	}
+	if cfg.PKCS11.Pin != "9999" {
+		t.Errorf("pin = %q", cfg.PKCS11.Pin)
+	}
+}
+
+// clearProviderEnv neutralizes any ambient SECSY_* overrides (e.g. exported by
+// scripts/setup-softhsm.sh) so a test observes only its file content. Setting a
+// variable to "" makes applyEnvOverrides ignore it.
+func clearProviderEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		"SECSY_KEY_PROVIDER", "SECSY_PKCS11_MODULE", "SECSY_TOKEN_LABEL",
+		"SECSY_USER_PIN", "SECSY_SOFTWARE_KEYSTORE_DIR",
+	} {
+		t.Setenv(k, "")
+	}
+}
+
+// writeAndLoad writes content to a temp config and loads it, failing the test
+// on any load error.
+func writeAndLoad(t *testing.T, content string) *Config {
+	t.Helper()
+	cfg, err := loadContent(t, content)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return cfg
+}
+
+// loadContent writes content to a temp config and returns the load result.
+func loadContent(t *testing.T, content string) (*Config, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return Load(path)
+}
+
 func TestLoadMissingPassword(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

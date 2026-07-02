@@ -16,6 +16,17 @@ root_user:
   username: "root"
   password: "change-me-in-production"
 
+# key_provider selects the backend used to generate and sign with CA keys.
+#   type: "pkcs11"  -> keys live on an HSM / PKCS#11 token (see the pkcs11 block)
+#   type: "software" -> keys live in an on-disk keystore (see software.keystore_dir)
+# If omitted, the type defaults to "pkcs11" when pkcs11.module_path is set,
+# otherwise "software". These may be overridden by the SECSY_* environment
+# variables emitted by scripts/setup-softhsm.sh --export-env.
+key_provider:
+  type: "pkcs11"
+  software:
+    keystore_dir: "keystore"
+
 pkcs11:
   module_path: "/usr/lib/pkcs11/yubihsm_pkcs11.so"
   pin: "0001password"

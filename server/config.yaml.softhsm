@@ -1,0 +1,35 @@
+# Example configuration for running secsy-pki against a SoftHSM2 token.
+#
+# Set up the token first:
+#   ./scripts/setup-softhsm.sh
+# Then either edit the pkcs11 block below to match the script's output, or leave
+# it empty and export the environment instead:
+#   eval "$(./scripts/setup-softhsm.sh --export-env)"
+# The SECSY_PKCS11_MODULE / SECSY_TOKEN_LABEL / SECSY_USER_PIN variables that the
+# script exports override the pkcs11 values here at load time.
+
+server:
+  host: "0.0.0.0"
+  port: 8443
+  # Omit tls_cert/tls_key to serve plain HTTP for local development.
+
+database:
+  driver: "sqlite"
+  dsn: "secsy-pki.db"
+
+oidc:
+  issuer_url: ""
+
+root_user:
+  username: "root"
+  password: "change-me-in-production"
+
+key_provider:
+  type: "pkcs11"
+
+pkcs11:
+  # These default to the values from scripts/setup-softhsm.sh. They are
+  # overridden by SECSY_* environment variables when those are exported.
+  module_path: "/usr/lib/softhsm/libsofthsm2.so"
+  pin: "1234"
+  token_label: "secsy-pki-root"
