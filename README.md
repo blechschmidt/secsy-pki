@@ -25,6 +25,7 @@ Comprehensive deployment and operations guides live in [`docs/`](docs/README.md)
 | [Operator runbook](docs/RUNBOOK.md) | Day-2 ops: incident response, outage handling, tuning, rotation, DR |
 | [Architecture Decision Records](docs/adr/README.md) | Why the key design decisions were made |
 | [HSM / PKCS#11 configuration](docs/hsm-configuration.md) | Key provider, HSM & SoftHSM setup |
+| [Cloud KMS backend (AWS KMS / Azure Key Vault)](docs/cloud-kms.md) | Cloud-hosted CA/TSA/OCSP keys, per-role backend selection, IAM/RBAC |
 | [Certificate authority](docs/certificate-authority.md) | CA setup, issuance, renewal, revocation, CRL & OCSP |
 | [SCEP & EST enrollment](docs/enrollment.md) | Device / MDM / IoT auto-enrollment (RFC 8894 / RFC 7030) |
 | [Password / secret encryption](docs/password-encryption.md) | HSM-backed envelope encryption |

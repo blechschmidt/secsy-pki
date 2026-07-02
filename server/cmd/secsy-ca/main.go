@@ -97,7 +97,7 @@ func run(args []string) error {
 		return cmdAudit(db, cmdArgs)
 	}
 
-	provider, err := buildProvider(cfg)
+	provider, err := buildProvider(cfg, "ca")
 	if err != nil {
 		return fmt.Errorf("initializing key provider: %w", err)
 	}
@@ -161,7 +161,19 @@ func run(args []string) error {
 	case "publish-chain":
 		return cmdPublishChain(db, mgr, cmdArgs)
 	case "tsa-key":
-		return cmdTSAKey(db, mgr, provider, cmdArgs)
+		// The TSA signing key lives on the TSA-role backend, which may differ from
+		// the CA. Build a dedicated provider when the roles resolve differently;
+		// otherwise reuse the CA-role provider.
+		tsaProvider := provider
+		if cfg.KeyProviderTypeForRole("tsa") != cfg.KeyProviderTypeForRole("ca") {
+			tp, terr := buildProvider(cfg, "tsa")
+			if terr != nil {
+				return fmt.Errorf("initializing TSA key provider: %w", terr)
+			}
+			defer tp.Close()
+			tsaProvider = tp
+		}
+		return cmdTSAKey(db, mgr, tsaProvider, provider, cmdArgs)
 	case "backup":
 		return cmdBackup(db, cfg, provider, cmdArgs)
 	case "restore":
@@ -755,8 +767,11 @@ func writeOutput(path string, data []byte) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// buildProvider constructs the configured key provider, mirroring the server.
-func buildProvider(cfg *config.Config) (keyprovider.Provider, error) {
+// buildProvider constructs the configured key provider for a signing role ("ca"
+// or "tsa"), mirroring the server. The role selects the backend via the per-role
+// override (key_provider.roles), falling back to the global key_provider.type, so
+// a CA on a PKCS#11 HSM and a TSA in cloud KMS can coexist.
+func buildProvider(cfg *config.Config, role string) (keyprovider.Provider, error) {
 	// Ensure the YubiHSM PKCS#11 module can find its connector, matching the
 	// server's behavior.
 	if cfg.YubiHSM.ConnectorURL != "" && os.Getenv("YUBIHSM_PKCS11_CONF") == "" {
@@ -766,7 +781,7 @@ func buildProvider(cfg *config.Config) (keyprovider.Provider, error) {
 		}
 	}
 	return keyprovider.New(keyprovider.Config{
-		Type: keyprovider.ProviderType(cfg.KeyProvider.Type),
+		Type: keyprovider.ProviderType(cfg.KeyProviderTypeForRole(role)),
 		PKCS11: keyprovider.PKCS11Settings{
 			ModulePath:        cfg.PKCS11.ModulePath,
 			Pin:               cfg.PKCS11.Pin,
@@ -776,6 +791,12 @@ func buildProvider(cfg *config.Config) (keyprovider.Provider, error) {
 		},
 		Software: keyprovider.SoftwareSettings{
 			KeystoreDir: cfg.KeyProvider.Software.KeystoreDir,
+		},
+		KMS: keyprovider.KMSSettings{
+			Backend:   cfg.KeyProvider.KMS.Backend,
+			Region:    cfg.KeyProvider.KMS.Region,
+			KeyPrefix: cfg.KeyProvider.KMS.KeyPrefix,
+			VaultURL:  cfg.KeyProvider.KMS.VaultURL,
 		},
 	})
 }

@@ -765,14 +765,51 @@ type RootUserConfig struct {
 
 // KeyProviderConfig selects which key backend the server uses to generate and
 // sign with CA keys. Type is one of "pkcs11" (HSM-backed, the default when a
-// PKCS#11 module is configured) or "software" (on-disk keystore).
+// PKCS#11 module is configured), "software" (on-disk keystore), or "kms" (a cloud
+// KMS: AWS KMS or Azure Key Vault).
+//
+// Roles optionally overrides the backend for individual signing roles so, for
+// example, the CA key can live on a PKCS#11 HSM while the TSA key lives in AWS
+// KMS. An unset role falls back to Type. OCSP responder keys are provisioned and
+// used by the CA manager, so they follow the CA role.
 type KeyProviderConfig struct {
 	Type     string                 `yaml:"type"`
 	Software SoftwareProviderConfig `yaml:"software"`
+	KMS      KMSProviderConfig      `yaml:"kms"`
+	Roles    KeyProviderRoles       `yaml:"roles"`
 }
 
 type SoftwareProviderConfig struct {
 	KeystoreDir string `yaml:"keystore_dir"`
+}
+
+// KMSProviderConfig configures the cloud-KMS backend. Backend selects the cloud
+// service ("aws" or "azure"; "fake" is an in-memory emulation used only by
+// tests). See docs/cloud-kms.md for IAM/permissions requirements.
+type KMSProviderConfig struct {
+	// Backend is "aws", "azure", or "fake".
+	Backend string `yaml:"backend"`
+	// Region is the AWS region (AWS backend). When empty the AWS SDK default
+	// resolution (AWS_REGION / shared config) applies.
+	Region string `yaml:"region"`
+	// KeyPrefix namespaces this deployment's keys within the account/vault. It is
+	// prepended to the key label to form the AWS alias / Azure key name.
+	KeyPrefix string `yaml:"key_prefix"`
+	// VaultURL is the Azure Key Vault base URL (Azure backend), e.g.
+	// "https://my-vault.vault.azure.net/".
+	VaultURL string `yaml:"vault_url"`
+}
+
+// KeyProviderRoles overrides the backend type per signing role. Each value, when
+// set, must be a valid provider type ("pkcs11", "software", or "kms") whose
+// backend block is itself configured.
+type KeyProviderRoles struct {
+	// CA is the backend for the CA signing key (and, by extension, OCSP responder
+	// keys the CA manager provisions). Defaults to KeyProviderConfig.Type.
+	CA string `yaml:"ca"`
+	// TSA is the backend for the RFC 3161 timestamp-authority signing key.
+	// Defaults to KeyProviderConfig.Type.
+	TSA string `yaml:"tsa"`
 }
 
 type PKCS11Config struct {
@@ -1247,6 +1284,27 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SECSY_USER_PIN"); v != "" {
 		cfg.PKCS11.Pin = v
 	}
+	// Cloud-KMS backend selection. The vault URL and region are non-secret and may
+	// come from the environment; credentials are never taken from config and are
+	// resolved by the cloud SDK's default chain (env, workload identity, etc.).
+	if v := os.Getenv("SECSY_KMS_BACKEND"); v != "" {
+		cfg.KeyProvider.KMS.Backend = v
+	}
+	if v := os.Getenv("SECSY_KMS_REGION"); v != "" {
+		cfg.KeyProvider.KMS.Region = v
+	}
+	if v := os.Getenv("SECSY_KMS_KEY_PREFIX"); v != "" {
+		cfg.KeyProvider.KMS.KeyPrefix = v
+	}
+	if v := os.Getenv("SECSY_KMS_VAULT_URL"); v != "" {
+		cfg.KeyProvider.KMS.VaultURL = v
+	}
+	if v := os.Getenv("SECSY_KEY_PROVIDER_CA"); v != "" {
+		cfg.KeyProvider.Roles.CA = v
+	}
+	if v := os.Getenv("SECSY_KEY_PROVIDER_TSA"); v != "" {
+		cfg.KeyProvider.Roles.TSA = v
+	}
 	// The built-in root password is a credential and must not live in a config
 	// file or ConfigMap. Allow it to be injected from the environment (e.g. a
 	// Kubernetes Secret) so deployments can keep it out of version control.
@@ -1321,9 +1379,12 @@ func applyEnvOverrides(cfg *Config) {
 // when none are configured, preserving the historical HSM-backed behavior.
 func (c *Config) defaultKeyProvider() {
 	if c.KeyProvider.Type == "" {
-		if c.PKCS11.ModulePath != "" {
+		switch {
+		case c.PKCS11.ModulePath != "":
 			c.KeyProvider.Type = "pkcs11"
-		} else {
+		case c.KeyProvider.KMS.Backend != "":
+			c.KeyProvider.Type = "kms"
+		default:
 			c.KeyProvider.Type = "software"
 		}
 	}
@@ -1332,9 +1393,29 @@ func (c *Config) defaultKeyProvider() {
 	}
 }
 
-// validateKeyProvider ensures the selected provider has the settings it needs.
+// validateKeyProvider ensures the selected provider — and every configured
+// per-role override — has the settings it needs.
 func (c *Config) validateKeyProvider() error {
-	switch c.KeyProvider.Type {
+	if err := c.validateProviderType(c.KeyProvider.Type, "key_provider.type"); err != nil {
+		return err
+	}
+	if role := c.KeyProvider.Roles.CA; role != "" {
+		if err := c.validateProviderType(role, "key_provider.roles.ca"); err != nil {
+			return err
+		}
+	}
+	if role := c.KeyProvider.Roles.TSA; role != "" {
+		if err := c.validateProviderType(role, "key_provider.roles.tsa"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateProviderType checks that a provider type is valid and its backend block
+// is configured. field names the config path for error messages.
+func (c *Config) validateProviderType(providerType, field string) error {
+	switch providerType {
 	case "software":
 		if c.KeyProvider.Software.KeystoreDir == "" {
 			return fmt.Errorf("key_provider.software.keystore_dir is required for the software provider")
@@ -1343,8 +1424,38 @@ func (c *Config) validateKeyProvider() error {
 		if c.PKCS11.ModulePath == "" {
 			return fmt.Errorf("pkcs11.module_path is required for the pkcs11 provider")
 		}
+	case "kms":
+		switch c.KeyProvider.KMS.Backend {
+		case "aws", "fake":
+			// AWS region is resolved by the SDK when unset; nothing else required.
+		case "azure":
+			if c.KeyProvider.KMS.VaultURL == "" {
+				return fmt.Errorf("key_provider.kms.vault_url is required for the azure kms backend")
+			}
+		case "":
+			return fmt.Errorf("key_provider.kms.backend is required for the kms provider (aws, azure, or fake)")
+		default:
+			return fmt.Errorf("key_provider.kms.backend %q is invalid (must be \"aws\", \"azure\", or \"fake\")", c.KeyProvider.KMS.Backend)
+		}
 	default:
-		return fmt.Errorf("key_provider.type %q is invalid (must be \"pkcs11\" or \"software\")", c.KeyProvider.Type)
+		return fmt.Errorf("%s %q is invalid (must be \"pkcs11\", \"software\", or \"kms\")", field, providerType)
 	}
 	return nil
+}
+
+// KeyProviderTypeForRole returns the resolved backend type for a signing role
+// ("ca" or "tsa"), applying the per-role override when set and otherwise falling
+// back to the global key_provider.type.
+func (c *Config) KeyProviderTypeForRole(role string) string {
+	switch role {
+	case "ca":
+		if c.KeyProvider.Roles.CA != "" {
+			return c.KeyProvider.Roles.CA
+		}
+	case "tsa":
+		if c.KeyProvider.Roles.TSA != "" {
+			return c.KeyProvider.Roles.TSA
+		}
+	}
+	return c.KeyProvider.Type
 }

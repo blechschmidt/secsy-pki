@@ -50,6 +50,8 @@ const (
 	ProviderSoftware ProviderType = "software"
 	// ProviderPKCS11 stores and uses keys on a PKCS#11 token / HSM.
 	ProviderPKCS11 ProviderType = "pkcs11"
+	// ProviderKMS stores and uses keys in a cloud KMS (AWS KMS / Azure Key
+	// Vault). Defined in kms.go.
 )
 
 // KeyRef identifies an existing key within a provider. A key is addressed
@@ -248,6 +250,7 @@ type Config struct {
 	Type     ProviderType
 	PKCS11   PKCS11Settings
 	Software SoftwareSettings
+	KMS      KMSSettings
 }
 
 // New constructs the provider selected by cfg.Type.
@@ -257,11 +260,13 @@ func New(cfg Config) (Provider, error) {
 		return NewSoftwareProvider(cfg.Software)
 	case ProviderPKCS11:
 		return NewPKCS11Provider(cfg.PKCS11)
+	case ProviderKMS:
+		return NewKMSProvider(cfg.KMS)
 	case "":
 		return nil, fmt.Errorf("keyprovider: no provider type configured")
 	default:
-		return nil, fmt.Errorf("keyprovider: unknown provider type %q (supported: %s, %s)",
-			cfg.Type, ProviderSoftware, ProviderPKCS11)
+		return nil, fmt.Errorf("keyprovider: unknown provider type %q (supported: %s, %s, %s)",
+			cfg.Type, ProviderSoftware, ProviderPKCS11, ProviderKMS)
 	}
 }
 

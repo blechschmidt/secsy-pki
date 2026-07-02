@@ -228,30 +228,29 @@ func main() {
 		}
 	}
 
-	provider, err := keyprovider.New(keyprovider.Config{
-		Type: keyprovider.ProviderType(cfg.KeyProvider.Type),
-		PKCS11: keyprovider.PKCS11Settings{
-			ModulePath:        cfg.PKCS11.ModulePath,
-			Pin:               cfg.PKCS11.Pin,
-			TokenLabel:        cfg.PKCS11.TokenLabel,
-			TokenSerial:       cfg.PKCS11.TokenSerial,
-			TokenManufacturer: cfg.PKCS11.TokenManufacturer,
-			SessionPoolSize:   cfg.PKCS11.SessionPoolSize,
-		},
-		Software: keyprovider.SoftwareSettings{
-			KeystoreDir: cfg.KeyProvider.Software.KeystoreDir,
-		},
-	})
+	// The primary provider serves the CA role: CA-key signing, OCSP responder
+	// keys, ACME/SCEP/EST/CMP issuance, and the secret KEK. Its backend is the
+	// CA-role type (key_provider.roles.ca), falling back to the global type.
+	provider, err := buildRoleProvider(cfg, "ca")
 	if err != nil {
 		log.Fatalf("Failed to initialize key provider: %v", err)
 	}
 	defer provider.Close()
-	log.Printf("Key provider: %s", provider.Name())
+	log.Printf("Key provider (ca role): %s", provider.Name())
 
-	// Wrap the provider so every key operation (sign, decrypt, generate, find,
-	// public-key export, connectivity probe) records latency and error metrics.
-	// The wrapper is transparent and preserves the Decrypter/Prober capabilities.
-	provider = keyprovider.Instrument(provider)
+	// The TSA may sign with a different backend than the CA (e.g. CA on a PKCS#11
+	// HSM, TSA in AWS KMS). When the resolved backend matches the CA role, reuse
+	// the primary provider so a single HSM session pool / KMS client is shared.
+	tsaProvider := provider
+	if cfg.KeyProviderTypeForRole("tsa") != cfg.KeyProviderTypeForRole("ca") {
+		tp, terr := buildRoleProvider(cfg, "tsa")
+		if terr != nil {
+			log.Fatalf("Failed to initialize TSA key provider: %v", terr)
+		}
+		defer tp.Close()
+		tsaProvider = tp
+		log.Printf("Key provider (tsa role): %s", tsaProvider.Name())
+	}
 
 	hsmCfg := hsm.Config{
 		ConnectorURL: cfg.YubiHSM.ConnectorURL,
@@ -422,7 +421,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("TSA configuration error: %v", err)
 		}
-		authority, err := tsa.New(db, provider, tsaCfg)
+		authority, err := tsa.New(db, tsaProvider, tsaCfg)
 		if err != nil {
 			log.Fatalf("TSA configuration error: %v", err)
 		}
@@ -1056,6 +1055,47 @@ func (s *stapledCertificate) setStaple(staple []byte) {
 	c := *s.cert
 	c.OCSPStaple = staple
 	s.cert = &c
+}
+
+// buildRoleProvider constructs the instrumented key provider for a signing role
+// ("ca" or "tsa"), selecting the backend from the per-role override or the global
+// key_provider.type. All backend sub-settings (PKCS#11 token, software keystore,
+// cloud KMS) are shared; only the selected type differs per role.
+func buildRoleProvider(cfg *config.Config, role string) (keyprovider.Provider, error) {
+	p, err := keyprovider.New(keyProviderConfigForRole(cfg, role))
+	if err != nil {
+		return nil, err
+	}
+	// Wrap so every key operation (sign, decrypt, generate, find, public-key
+	// export, connectivity probe) records latency and error metrics. The wrapper
+	// is transparent and preserves the Decrypter/Prober/KeyLister capabilities.
+	return keyprovider.Instrument(p), nil
+}
+
+// keyProviderConfigForRole assembles the keyprovider.Config for a role, resolving
+// the backend type via the config's per-role override. It is shared by the server
+// and (in cmd/secsy-ca) the CLI so both wire identical settings.
+func keyProviderConfigForRole(cfg *config.Config, role string) keyprovider.Config {
+	return keyprovider.Config{
+		Type: keyprovider.ProviderType(cfg.KeyProviderTypeForRole(role)),
+		PKCS11: keyprovider.PKCS11Settings{
+			ModulePath:        cfg.PKCS11.ModulePath,
+			Pin:               cfg.PKCS11.Pin,
+			TokenLabel:        cfg.PKCS11.TokenLabel,
+			TokenSerial:       cfg.PKCS11.TokenSerial,
+			TokenManufacturer: cfg.PKCS11.TokenManufacturer,
+			SessionPoolSize:   cfg.PKCS11.SessionPoolSize,
+		},
+		Software: keyprovider.SoftwareSettings{
+			KeystoreDir: cfg.KeyProvider.Software.KeystoreDir,
+		},
+		KMS: keyprovider.KMSSettings{
+			Backend:   cfg.KeyProvider.KMS.Backend,
+			Region:    cfg.KeyProvider.KMS.Region,
+			KeyPrefix: cfg.KeyProvider.KMS.KeyPrefix,
+			VaultURL:  cfg.KeyProvider.KMS.VaultURL,
+		},
+	}
 }
 
 // newStapledCertificate loads the server's TLS key pair, produces an initial

@@ -157,6 +157,103 @@ key_provider:
 	}
 }
 
+func TestKeyProviderKMSAWS(t *testing.T) {
+	clearProviderEnv(t)
+	cfg := writeAndLoad(t, `
+root_user:
+  password: secret
+key_provider:
+  type: kms
+  kms:
+    backend: aws
+    region: eu-central-1
+    key_prefix: secsy/
+`)
+	if cfg.KeyProvider.Type != "kms" {
+		t.Errorf("type = %q, want kms", cfg.KeyProvider.Type)
+	}
+	if cfg.KeyProvider.KMS.Backend != "aws" || cfg.KeyProvider.KMS.Region != "eu-central-1" {
+		t.Errorf("kms = %+v", cfg.KeyProvider.KMS)
+	}
+}
+
+func TestKeyProviderKMSDefaultsFromBackend(t *testing.T) {
+	clearProviderEnv(t)
+	cfg := writeAndLoad(t, `
+root_user:
+  password: secret
+key_provider:
+  kms:
+    backend: fake
+`)
+	if cfg.KeyProvider.Type != "kms" {
+		t.Errorf("type = %q, want kms (inferred from kms.backend)", cfg.KeyProvider.Type)
+	}
+}
+
+func TestKeyProviderKMSBackendRequired(t *testing.T) {
+	clearProviderEnv(t)
+	if _, err := loadContent(t, `
+root_user:
+  password: secret
+key_provider:
+  type: kms
+`); err == nil {
+		t.Fatal("expected error: kms provider without backend")
+	}
+}
+
+func TestKeyProviderKMSAzureRequiresVaultURL(t *testing.T) {
+	clearProviderEnv(t)
+	if _, err := loadContent(t, `
+root_user:
+  password: secret
+key_provider:
+  type: kms
+  kms:
+    backend: azure
+`); err == nil {
+		t.Fatal("expected error: azure backend without vault_url")
+	}
+}
+
+func TestKeyProviderPerRoleSelection(t *testing.T) {
+	clearProviderEnv(t)
+	cfg := writeAndLoad(t, `
+root_user:
+  password: secret
+pkcs11:
+  module_path: /usr/lib/test.so
+key_provider:
+  type: pkcs11
+  kms:
+    backend: aws
+    region: us-east-1
+  roles:
+    tsa: kms
+`)
+	if got := cfg.KeyProviderTypeForRole("ca"); got != "pkcs11" {
+		t.Errorf("ca role = %q, want pkcs11 (falls back to global type)", got)
+	}
+	if got := cfg.KeyProviderTypeForRole("tsa"); got != "kms" {
+		t.Errorf("tsa role = %q, want kms (override)", got)
+	}
+}
+
+func TestKeyProviderInvalidRoleType(t *testing.T) {
+	clearProviderEnv(t)
+	if _, err := loadContent(t, `
+root_user:
+  password: secret
+key_provider:
+  type: software
+  roles:
+    tsa: bogus
+`); err == nil {
+		t.Fatal("expected error: invalid per-role provider type")
+	}
+}
+
 func TestKeyProviderEnvOverride(t *testing.T) {
 	t.Setenv("SECSY_KEY_PROVIDER", "pkcs11")
 	t.Setenv("SECSY_PKCS11_MODULE", "/env/module.so")
@@ -190,6 +287,8 @@ func clearProviderEnv(t *testing.T) {
 	for _, k := range []string{
 		"SECSY_KEY_PROVIDER", "SECSY_PKCS11_MODULE", "SECSY_TOKEN_LABEL",
 		"SECSY_USER_PIN", "SECSY_SOFTWARE_KEYSTORE_DIR",
+		"SECSY_KMS_BACKEND", "SECSY_KMS_REGION", "SECSY_KMS_KEY_PREFIX",
+		"SECSY_KMS_VAULT_URL", "SECSY_KEY_PROVIDER_CA", "SECSY_KEY_PROVIDER_TSA",
 	} {
 		t.Setenv(k, "")
 	}

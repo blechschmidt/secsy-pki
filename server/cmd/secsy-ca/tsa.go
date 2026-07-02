@@ -34,7 +34,12 @@ var oidExtKeyUsage = asn1.ObjectIdentifier{2, 5, 29, 37}
 // The emitted PEM (the TSA certificate, plus the issuer chain when -chain is
 // set) is what the server references via tsa.certificate_file; the key label is
 // referenced via tsa.key_label.
-func cmdTSAKey(db *database.DB, mgr *ca.Manager, provider keyprovider.Provider, args []string) error {
+// cmdTSAKey provisions the TSA signing key on the TSA-role provider (tsaProvider)
+// and issues its certificate under the CA whose signing key lives on the CA-role
+// provider (caProvider). The two may be different backends (e.g. a PKCS#11 CA and
+// a cloud-KMS TSA); when the roles resolve to the same backend the caller passes
+// the same instance for both.
+func cmdTSAKey(db *database.DB, mgr *ca.Manager, tsaProvider, caProvider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("tsa-key", flag.ContinueOnError)
 	caRef := fs.String("ca", "", "issuing CA id or label (required)")
 	label := fs.String("label", "tsa", "provider key label for the TSA signing key")
@@ -78,8 +83,9 @@ func cmdTSAKey(db *database.DB, mgr *ca.Manager, provider keyprovider.Provider, 
 
 	ctx := context.Background()
 
-	// Reuse an existing key of this label (idempotent reissue) or generate one.
-	pub, err := tsaPublicKey(ctx, provider, *label, kt)
+	// Reuse an existing key of this label (idempotent reissue) or generate one, on
+	// the TSA-role backend.
+	pub, err := tsaPublicKey(ctx, tsaProvider, *label, kt)
 	if err != nil {
 		return err
 	}
@@ -101,7 +107,7 @@ func cmdTSAKey(db *database.DB, mgr *ca.Manager, provider keyprovider.Provider, 
 		return err
 	}
 
-	caSigner, err := provider.Signer(ctx, tsaCAKeyRef(caModel))
+	caSigner, err := caProvider.Signer(ctx, tsaCAKeyRef(caModel))
 	if err != nil {
 		return fmt.Errorf("opening issuing CA signer: %w", err)
 	}

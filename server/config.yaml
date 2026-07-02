@@ -50,13 +50,29 @@ root_user:
 # key_provider selects the backend used to generate and sign with CA keys.
 #   type: "pkcs11"  -> keys live on an HSM / PKCS#11 token (see the pkcs11 block)
 #   type: "software" -> keys live in an on-disk keystore (see software.keystore_dir)
-# If omitted, the type defaults to "pkcs11" when pkcs11.module_path is set,
-# otherwise "software". These may be overridden by the SECSY_* environment
-# variables emitted by scripts/setup-softhsm.sh --export-env.
+#   type: "kms"     -> keys live in a cloud KMS (AWS KMS / Azure Key Vault; see
+#                      the kms block and docs/cloud-kms.md)
+# If omitted, the type defaults to "pkcs11" when pkcs11.module_path is set, to
+# "kms" when kms.backend is set, otherwise "software". These may be overridden by
+# the SECSY_* environment variables emitted by scripts/setup-softhsm.sh --export-env.
 key_provider:
   type: "pkcs11"
   software:
     keystore_dir: "keystore"
+  # Cloud KMS backend. Credentials are never taken from config — they come from
+  # the cloud SDK's default chain (AWS: env/instance role/IRSA; Azure: env/
+  # workload/managed identity). See docs/cloud-kms.md for IAM/RBAC requirements.
+  kms:
+    backend: ""            # "aws" | "azure" | "fake" (empty disables the kms backend)
+    region: ""             # AWS region, e.g. "eu-central-1" (AWS backend)
+    key_prefix: "secsy/"   # namespaces this deployment's keys (AWS alias / Azure key name)
+    vault_url: ""          # https://<vault>.vault.azure.net/ (Azure backend)
+  # Optional per-role backend selection. Each role, when set, must name a
+  # configured backend type ("pkcs11" | "software" | "kms"); unset falls back to
+  # key_provider.type. OCSP follows the "ca" role (the CA manager owns its keys).
+  roles:
+    ca: ""                 # CA signing key + OCSP responder keys
+    tsa: ""                # RFC 3161 TSA signing key
 
 pkcs11:
   module_path: "/usr/lib/pkcs11/yubihsm_pkcs11.so"
