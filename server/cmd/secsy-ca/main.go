@@ -19,7 +19,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -28,6 +30,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
+	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 )
 
 func main() {
@@ -75,6 +78,18 @@ func run(args []string) error {
 		return cmdIssueIntermediate(db, mgr, cmdArgs)
 	case "list":
 		return cmdList(db)
+	case "issue":
+		return cmdIssue(db, mgr, cmdArgs)
+	case "renew":
+		return cmdRenew(db, mgr, cmdArgs)
+	case "revoke":
+		return cmdRevoke(db, mgr, cmdArgs)
+	case "gen-crl":
+		return cmdGenCRL(db, mgr, cmdArgs)
+	case "list-certs":
+		return cmdListCerts(db, cmdArgs)
+	case "profiles":
+		return cmdProfiles()
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -94,6 +109,12 @@ Commands:
   init-root           Generate a root CA key and self-signed certificate
   issue-intermediate  Issue an intermediate CA under an existing CA
   list                List configured CAs
+  issue               Sign a CSR into an end-entity certificate (by profile)
+  renew               Renew a previously issued certificate by serial
+  revoke              Revoke a certificate by serial
+  gen-crl             Generate a signed CRL for a CA
+  list-certs          List certificates issued by a CA
+  profiles            List the available certificate profiles
 
 Run "secsy-ca <command> -h" for command-specific flags.
 `)
@@ -265,6 +286,221 @@ func printCA(header string, c *models.CA) {
 		fmt.Printf("  Validity: %s .. %s\n", c.NotBefore.Format(time.RFC3339), c.NotAfter.Format(time.RFC3339))
 	}
 	fmt.Printf("\n%s\n", c.Certificate)
+}
+
+func cmdIssue(db *database.DB, mgr *ca.Manager, args []string) error {
+	fs := flag.NewFlagSet("issue", flag.ContinueOnError)
+	caRef := fs.String("ca", "", "issuing CA id or label (required)")
+	csrPath := fs.String("csr", "", "path to a PEM CSR, or '-' for stdin (required)")
+	profile := fs.String("profile", "server", "certificate profile (see 'profiles')")
+	validityDays := fs.Int("validity-days", 0, "validity in days (0 = profile default)")
+	out := fs.String("out", "", "write the issued certificate PEM here (default: stdout)")
+	chain := fs.Bool("chain", false, "include the issuing CA certificate in the output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *caRef == "" || *csrPath == "" {
+		fs.Usage()
+		return fmt.Errorf("-ca and -csr are required")
+	}
+	caID, err := resolveCA(db, *caRef)
+	if err != nil {
+		return err
+	}
+	csrPEM, err := readInput(*csrPath)
+	if err != nil {
+		return fmt.Errorf("reading CSR: %w", err)
+	}
+
+	result, err := mgr.IssueCertificate(context.Background(), ca.IssueSpec{
+		CAID:        caID,
+		CSRPEM:      csrPEM,
+		Profile:     *profile,
+		Validity:    daysToDuration(*validityDays),
+		RequestedBy: "secsy-ca-cli",
+	})
+	if err != nil {
+		return err
+	}
+
+	pemOut := result.PEM
+	if *chain {
+		pemOut = result.ChainPEM
+	}
+	fmt.Fprintf(os.Stderr, "Issued certificate: serial=%s profile=%s not_after=%s\n",
+		result.Serial, result.Profile, result.Certificate.NotAfter.Format(time.RFC3339))
+	return writeOutput(*out, pemOut)
+}
+
+func cmdRenew(db *database.DB, mgr *ca.Manager, args []string) error {
+	fs := flag.NewFlagSet("renew", flag.ContinueOnError)
+	caRef := fs.String("ca", "", "issuing CA id or label (required)")
+	serial := fs.String("serial", "", "serial of the certificate to renew (required)")
+	csrPath := fs.String("csr", "", "optional PEM CSR to rekey (default: reuse original key)")
+	validityDays := fs.Int("validity-days", 0, "validity in days (0 = profile default)")
+	out := fs.String("out", "", "write the renewed certificate PEM here (default: stdout)")
+	chain := fs.Bool("chain", false, "include the issuing CA certificate in the output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *caRef == "" || *serial == "" {
+		fs.Usage()
+		return fmt.Errorf("-ca and -serial are required")
+	}
+	caID, err := resolveCA(db, *caRef)
+	if err != nil {
+		return err
+	}
+	var csrPEM []byte
+	if *csrPath != "" {
+		csrPEM, err = readInput(*csrPath)
+		if err != nil {
+			return fmt.Errorf("reading CSR: %w", err)
+		}
+	}
+
+	result, err := mgr.RenewCertificate(context.Background(), ca.RenewSpec{
+		CAID:        caID,
+		Serial:      *serial,
+		CSRPEM:      csrPEM,
+		Validity:    daysToDuration(*validityDays),
+		RequestedBy: "secsy-ca-cli",
+	})
+	if err != nil {
+		return err
+	}
+
+	pemOut := result.PEM
+	if *chain {
+		pemOut = result.ChainPEM
+	}
+	fmt.Fprintf(os.Stderr, "Renewed certificate: new serial=%s (was %s) not_after=%s\n",
+		result.Serial, *serial, result.Certificate.NotAfter.Format(time.RFC3339))
+	return writeOutput(*out, pemOut)
+}
+
+func cmdRevoke(db *database.DB, mgr *ca.Manager, args []string) error {
+	fs := flag.NewFlagSet("revoke", flag.ContinueOnError)
+	caRef := fs.String("ca", "", "issuing CA id or label (required)")
+	serial := fs.String("serial", "", "serial of the certificate to revoke (required)")
+	reason := fs.String("reason", "unspecified", "RFC 5280 reason (keyCompromise, superseded, …)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *caRef == "" || *serial == "" {
+		fs.Usage()
+		return fmt.Errorf("-ca and -serial are required")
+	}
+	caID, err := resolveCA(db, *caRef)
+	if err != nil {
+		return err
+	}
+
+	applied, err := mgr.RevokeCertificate(context.Background(), caID, *serial, *reason)
+	if err != nil {
+		return err
+	}
+	if applied {
+		fmt.Printf("Certificate serial %s revoked (reason: %s).\n", *serial, *reason)
+	} else {
+		fmt.Printf("Certificate serial %s was already revoked; reason updated to %s.\n", *serial, *reason)
+	}
+	return nil
+}
+
+func cmdGenCRL(db *database.DB, mgr *ca.Manager, args []string) error {
+	fs := flag.NewFlagSet("gen-crl", flag.ContinueOnError)
+	caRef := fs.String("ca", "", "issuing CA id or label (required)")
+	out := fs.String("out", "", "write the CRL here (default: stdout)")
+	der := fs.Bool("der", false, "emit DER instead of PEM")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *caRef == "" {
+		fs.Usage()
+		return fmt.Errorf("-ca is required")
+	}
+	caID, err := resolveCA(db, *caRef)
+	if err != nil {
+		return err
+	}
+
+	derBytes, err := mgr.GenerateCRL(context.Background(), caID)
+	if err != nil {
+		return err
+	}
+	if *der {
+		return writeOutput(*out, derBytes)
+	}
+	return writeOutput(*out, pki.EncodeCRLPEM(derBytes))
+}
+
+func cmdListCerts(db *database.DB, args []string) error {
+	fs := flag.NewFlagSet("list-certs", flag.ContinueOnError)
+	caRef := fs.String("ca", "", "CA id or label (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *caRef == "" {
+		fs.Usage()
+		return fmt.Errorf("-ca is required")
+	}
+	caID, err := resolveCA(db, *caRef)
+	if err != nil {
+		return err
+	}
+	db.MarkExpiredCertificates(caID, time.Now())
+	certs, err := db.ListIssuedCertificates(caID)
+	if err != nil {
+		return err
+	}
+	if len(certs) == 0 {
+		fmt.Println("No certificates issued by this CA.")
+		return nil
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "SERIAL\tPROFILE\tSTATUS\tSUBJECT\tNOT AFTER")
+	for _, c := range certs {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+			c.Serial, c.Profile, c.Status, c.CommonName, c.NotAfter.Format("2006-01-02"))
+	}
+	return tw.Flush()
+}
+
+func cmdProfiles() error {
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "NAME\tDEFAULT DAYS\tMAX DAYS\tKEY USAGES\tEXT KEY USAGES\tDESCRIPTION")
+	for _, p := range ca.Profiles() {
+		fmt.Fprintf(tw, "%s\t%d\t%d\t%s\t%s\t%s\n",
+			p.Name, p.DefaultValidityDays, p.MaxValidityDays,
+			strings.Join(p.KeyUsages, "+"), strings.Join(p.ExtKeyUsages, "+"), p.Description)
+	}
+	return tw.Flush()
+}
+
+// daysToDuration converts validity-in-days to a Duration (0 = profile default).
+func daysToDuration(days int) time.Duration {
+	if days <= 0 {
+		return 0
+	}
+	return time.Duration(days) * 24 * time.Hour
+}
+
+// readInput reads from a file path, or from stdin when path is "-".
+func readInput(path string) ([]byte, error) {
+	if path == "-" {
+		return io.ReadAll(os.Stdin)
+	}
+	return os.ReadFile(path)
+}
+
+// writeOutput writes to a file path, or to stdout when path is empty.
+func writeOutput(path string, data []byte) error {
+	if path == "" {
+		_, err := os.Stdout.Write(data)
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
 }
 
 // buildProvider constructs the configured key provider, mirroring the server.

@@ -52,6 +52,19 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("POST /api/ca/init-root", protected(http.HandlerFunc(a.InitRootCA)))
 	mux.Handle("POST /api/ca/{id}/issue-intermediate", protected(http.HandlerFunc(a.IssueIntermediateCA)))
 
+	// Certificate issuance, renewal, and revocation (X.509 end-entity certs).
+	mux.Handle("GET /api/profiles", protected(http.HandlerFunc(a.ListProfiles)))
+	mux.Handle("POST /api/ca/{id}/issue", protected(http.HandlerFunc(a.IssueCertificate)))
+	mux.Handle("POST /api/ca/{id}/renew", protected(http.HandlerFunc(a.RenewCertificate)))
+	mux.Handle("POST /api/ca/{id}/revoke", protected(http.HandlerFunc(a.RevokeCertificate)))
+	mux.Handle("GET /api/ca/{id}/certificates", protected(http.HandlerFunc(a.ListIssuedCertificates)))
+	mux.Handle("GET /api/ca/{id}/revoked", protected(http.HandlerFunc(a.ListRevokedCertificates)))
+
+	// Public revocation endpoints — relying parties fetch these without auth.
+	mux.HandleFunc("GET /api/ca/{id}/crl", a.GetCRL)
+	mux.HandleFunc("POST /api/ca/{id}/ocsp", a.OCSPResponder)
+	mux.HandleFunc("GET /api/ca/{id}/ocsp/{req}", a.OCSPResponder)
+
 	mux.Handle("GET /api/keys/{id}", protected(http.HandlerFunc(a.GetCA)))
 	mux.Handle("DELETE /api/keys/{id}", protected(http.HandlerFunc(a.DeleteCA)))
 	mux.Handle("GET /api/keys/{id}/children", protected(http.HandlerFunc(a.GetCAChildren)))

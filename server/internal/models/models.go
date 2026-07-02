@@ -70,6 +70,81 @@ type CAIssueIntermediateRequest struct {
 	MaxPathLen   *int      `json:"max_path_len,omitempty"` // nil = unconstrained
 }
 
+// CertStatus is the lifecycle status of an issued end-entity certificate.
+type CertStatus string
+
+const (
+	CertStatusValid   CertStatus = "valid"
+	CertStatusRevoked CertStatus = "revoked"
+	CertStatusExpired CertStatus = "expired"
+)
+
+// IssuedCertificate records an end-entity certificate minted by a CA. It is the
+// authority's copy used for renewal, listing, and (via revocation) CRL/OCSP.
+type IssuedCertificate struct {
+	ID          string     `json:"id" db:"id"`
+	CAID        string     `json:"ca_id" db:"ca_id"`
+	Serial      string     `json:"serial" db:"serial"` // decimal string
+	Subject     string     `json:"subject" db:"subject"`
+	CommonName  string     `json:"common_name" db:"common_name"`
+	SANs        []string   `json:"sans,omitempty" db:"-"`
+	Profile     string     `json:"profile" db:"profile"`
+	Certificate string     `json:"certificate" db:"certificate"` // PEM
+	NotBefore   time.Time  `json:"not_before" db:"not_before"`
+	NotAfter    time.Time  `json:"not_after" db:"not_after"`
+	Status      CertStatus `json:"status" db:"status"`
+	RevokedAt   *time.Time `json:"revoked_at,omitempty" db:"revoked_at"`
+	// RevocationReason is an RFC 5280 CRL reason code, meaningful when revoked.
+	RevocationReason int       `json:"revocation_reason,omitempty" db:"revocation_reason"`
+	RequestedBy      string    `json:"requested_by,omitempty" db:"requested_by"`
+	CreatedAt        time.Time `json:"created_at" db:"created_at"`
+}
+
+// RevokedCertificate is a single entry in a CA's revocation store. It is kept
+// even for serials not present in issued_certificates so that externally issued
+// certificates can still be revoked and published.
+type RevokedCertificate struct {
+	CAID      string    `json:"ca_id" db:"ca_id"`
+	Serial    string    `json:"serial" db:"serial"` // decimal string
+	RevokedAt time.Time `json:"revoked_at" db:"revoked_at"`
+	Reason    int       `json:"reason" db:"reason"`
+}
+
+// IssueCertRequest asks a CA to sign a CSR into an end-entity certificate under
+// a named profile. SANs and subject fields are taken from the CSR; the profile
+// governs key usage, extended key usage, and validity bounds.
+type IssueCertRequest struct {
+	CSR          string `json:"csr"`     // PEM-encoded PKCS#10 CSR
+	Profile      string `json:"profile"` // profile name; empty = default
+	ValidityDays int    `json:"validity_days,omitempty"`
+}
+
+// IssueCertResponse returns a freshly issued end-entity certificate.
+type IssueCertResponse struct {
+	Certificate string `json:"certificate"` // PEM leaf certificate
+	Chain       string `json:"chain,omitempty"`
+	Serial      string `json:"serial"`
+	Profile     string `json:"profile"`
+	NotBefore   string `json:"not_before"`
+	NotAfter    string `json:"not_after"`
+}
+
+// RenewCertRequest renews a previously issued certificate identified by serial
+// (or by supplying a fresh CSR for the same subject). A new serial and validity
+// window are produced; the original is left untouched (and may be revoked
+// separately).
+type RenewCertRequest struct {
+	Serial       string `json:"serial"`
+	CSR          string `json:"csr,omitempty"` // optional: rekey with a new CSR
+	ValidityDays int    `json:"validity_days,omitempty"`
+}
+
+// RevokeCertRequest revokes a certificate by serial number.
+type RevokeCertRequest struct {
+	Serial string `json:"serial"`
+	Reason string `json:"reason,omitempty"` // RFC 5280 reason name; default "unspecified"
+}
+
 type Group struct {
 	ID   string `json:"id" db:"id"`
 	Name string `json:"name" db:"name"`

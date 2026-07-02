@@ -123,6 +123,45 @@ func (db *DB) migrate() error {
 			ca_id TEXT PRIMARY KEY REFERENCES cas(id) ON DELETE CASCADE,
 			next_serial INTEGER NOT NULL
 		)`,
+		// Per-CA monotonic CRL number counter. Each published CRL must carry a
+		// strictly greater number than the previous one (RFC 5280 §5.2.3).
+		`CREATE TABLE IF NOT EXISTS ca_crl_counters (
+			ca_id TEXT PRIMARY KEY REFERENCES cas(id) ON DELETE CASCADE,
+			next_number INTEGER NOT NULL
+		)`,
+		// End-entity certificates issued by a CA. The authority keeps a copy for
+		// renewal, listing, and revocation bookkeeping. (serial is unique per
+		// issuing CA.)
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS issued_certificates (
+			id TEXT PRIMARY KEY,
+			ca_id TEXT NOT NULL REFERENCES cas(id) ON DELETE CASCADE,
+			serial TEXT NOT NULL,
+			subject TEXT,
+			common_name TEXT,
+			sans TEXT,
+			profile TEXT,
+			certificate TEXT NOT NULL,
+			not_before TIMESTAMP,
+			not_after TIMESTAMP,
+			status TEXT NOT NULL DEFAULT 'valid',
+			revoked_at TIMESTAMP,
+			revocation_reason INTEGER NOT NULL DEFAULT 0,
+			requested_by TEXT,
+			created_at %s,
+			UNIQUE(ca_id, serial)
+		)`, currentTimestamp),
+		`CREATE INDEX IF NOT EXISTS idx_issued_certs_ca ON issued_certificates(ca_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_issued_certs_status ON issued_certificates(ca_id, status)`,
+		// Authoritative revocation store read by CRL/OCSP generation. Kept
+		// separate from issued_certificates so a serial that was never recorded
+		// (e.g. an externally issued certificate) can still be revoked.
+		`CREATE TABLE IF NOT EXISTS revoked_certificates (
+			ca_id TEXT NOT NULL REFERENCES cas(id) ON DELETE CASCADE,
+			serial TEXT NOT NULL,
+			revoked_at TIMESTAMP NOT NULL,
+			reason INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (ca_id, serial)
+		)`,
 		`CREATE TABLE IF NOT EXISTS groups_ (
 			id TEXT PRIMARY KEY,
 			name TEXT NOT NULL UNIQUE
@@ -411,6 +450,10 @@ func (db *DB) CreateCA(ca *models.CA) error {
 
 	if _, err := tx.Exec(db.ph(
 		`INSERT INTO ca_serial_counters (ca_id, next_serial) VALUES (?, ?)`), ca.ID, 2); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(db.ph(
+		`INSERT INTO ca_crl_counters (ca_id, next_number) VALUES (?, ?)`), ca.ID, 1); err != nil {
 		return err
 	}
 	return tx.Commit()

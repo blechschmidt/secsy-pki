@@ -179,6 +179,204 @@ paths:
         "400":
           description: Invalid request, unknown parent, or path-length violation
 
+  /profiles:
+    get:
+      summary: List certificate profiles
+      description: >
+        Returns the built-in certificate profiles (server, client,
+        server-client, code-signing, email). Each profile defines the key
+        usages, extended key usages, and default/maximum validity applied when
+        issuing an end-entity certificate.
+      responses:
+        "200":
+          description: Array of profiles
+
+  /ca/{id}/issue:
+    post:
+      summary: Issue an end-entity certificate from a CSR (requires SIGN_CERTIFICATE)
+      description: >
+        Signs a PKCS#10 CSR into an end-entity certificate under the named
+        profile, using the CA's HSM-held key. The subject, public key, and SANs
+        are taken from the CSR; key usage, extended key usage, and validity
+        bounds come from the profile. The serial number is allocated atomically
+        and the certificate is recorded for renewal/revocation.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Issuing CA id
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [csr]
+              properties:
+                csr:
+                  type: string
+                  description: PEM-encoded PKCS#10 certificate signing request
+                profile:
+                  type: string
+                  description: Profile name (default "server")
+                validity_days:
+                  type: integer
+                  description: Override validity in days (clamped to the profile max and CA expiry)
+      responses:
+        "201":
+          description: Certificate issued (PEM leaf + chain + serial)
+        "400":
+          description: Invalid CSR, unknown profile, or non-CA target
+        "403":
+          description: Missing SIGN_CERTIFICATE permission
+
+  /ca/{id}/renew:
+    post:
+      summary: Renew a previously issued certificate (requires SIGN_CERTIFICATE)
+      description: >
+        Reissues a certificate identified by serial with a fresh serial and
+        validity window, reusing the original subject/SANs/profile (and public
+        key, unless a new CSR is supplied). The original certificate is left
+        intact and may be revoked separately.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [serial]
+              properties:
+                serial:
+                  type: string
+                  description: Serial of the certificate to renew (decimal)
+                csr:
+                  type: string
+                  description: Optional PEM CSR to rekey the certificate
+                validity_days:
+                  type: integer
+      responses:
+        "201":
+          description: Certificate renewed
+        "400":
+          description: Unknown serial or invalid request
+
+  /ca/{id}/revoke:
+    post:
+      summary: Revoke a certificate by serial (requires SIGN_CERTIFICATE)
+      description: >
+        Records a revocation in the CA's revocation store. Revocation is
+        idempotent; re-revoking a serial updates its reason. The revocation is
+        published via the CRL and OCSP endpoints.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [serial]
+              properties:
+                serial:
+                  type: string
+                  description: Serial to revoke (decimal)
+                reason:
+                  type: string
+                  description: >
+                    RFC 5280 reason name (unspecified, keyCompromise,
+                    cACompromise, affiliationChanged, superseded,
+                    cessationOfOperation, certificateHold, privilegeWithdrawn,
+                    aACompromise). Default "unspecified".
+      responses:
+        "200":
+          description: Revoked (or already-revoked)
+
+  /ca/{id}/certificates:
+    get:
+      summary: List certificates issued by a CA
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Array of issued certificate records
+
+  /ca/{id}/revoked:
+    get:
+      summary: List a CA's revocation records
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Array of revocation records
+
+  /ca/{id}/crl:
+    get:
+      summary: Fetch a freshly generated CRL (public)
+      description: >
+        Generates and returns a signed X.509 v2 CRL covering all recorded
+        revocations for the CA. Public — no authentication required. Returns DER
+        (application/pkix-crl) by default, or PEM with ?format=pem.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [der, pem]
+      responses:
+        "200":
+          description: DER or PEM CRL
+
+  /ca/{id}/ocsp:
+    post:
+      summary: OCSP responder (public, RFC 6960)
+      description: >
+        Answers an OCSP request about a certificate issued by the CA. The
+        request body is the DER-encoded OCSP request; the response is a signed
+        DER OCSP response (application/ocsp-response). Public — no auth. A GET
+        form with a base64-encoded request in the path is also supported.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/ocsp-request:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: DER-encoded OCSP response
+
   /cas/{id}:
     get:
       summary: Get a CA
