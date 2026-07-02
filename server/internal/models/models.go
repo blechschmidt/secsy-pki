@@ -598,6 +598,26 @@ func (u *UserInfo) TenantsWithRoles() []string {
 	return out
 }
 
+// WebAuthnCredential is a registered passkey used for operator step-up
+// authentication (Task 50). The private key never leaves the authenticator; the
+// server stores only the credential id, the public key (DER SubjectPublicKeyInfo),
+// and the authenticator's signature counter for clone detection.
+type WebAuthnCredential struct {
+	// ID is the base64url credential id assigned by the authenticator; it is the
+	// primary key and what the browser echoes in an assertion.
+	ID string `json:"id"`
+	// Subject is the owning principal (OIDC subject or "root").
+	Subject string `json:"subject"`
+	// Name is an operator-supplied label (e.g. "YubiKey 5C", "Laptop Touch ID").
+	Name string `json:"name"`
+	// PublicKeyDER is the credential public key marshaled as PKIX/SPKI DER.
+	PublicKeyDER []byte `json:"-"`
+	// SignCount is the last-seen authenticator signature counter. A non-increasing
+	// counter on a subsequent assertion signals a cloned authenticator.
+	SignCount uint32    `json:"sign_count"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // ---------------------------------------------------------------------------
 // ACME (RFC 8555) persistence records.
 //

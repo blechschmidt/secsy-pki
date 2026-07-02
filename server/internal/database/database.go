@@ -483,6 +483,18 @@ func (db *DB) migrate() error {
 			last_seq INTEGER NOT NULL,
 			updated_at %s
 		)`, currentTimestamp),
+		// Registered WebAuthn passkeys for operator step-up authentication (Task
+		// 50). Only the credential id, public key (SPKI DER), and signature counter
+		// are stored; the private key never leaves the authenticator.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS webauthn_credentials (
+			id TEXT PRIMARY KEY,
+			subject TEXT NOT NULL,
+			name TEXT,
+			public_key %s NOT NULL,
+			sign_count INTEGER NOT NULL DEFAULT 0,
+			created_at %s
+		)`, blob, currentTimestamp),
+		`CREATE INDEX IF NOT EXISTS idx_webauthn_subject ON webauthn_credentials(subject)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.exec(stmt); err != nil {

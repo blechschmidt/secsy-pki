@@ -161,6 +161,20 @@ const (
 	ActionCMPCertification  = "cmp.cr"
 	ActionCMPKeyUpdate      = "cmp.kur"
 	ActionCMPRevocation     = "cmp.rr"
+
+	// Operator authentication (Task 50). These record how a console/API principal
+	// authenticated and any subsequent step-up. The actor is the resolved
+	// principal (OIDC subject, mTLS-bound identity, or "root"); a failed login has
+	// no established actor and records the attempted identity in Detail. The target
+	// is the session id (opaque) so a login can be correlated with its logout.
+	ActionAuthLogin        = "auth.login"          // a session was established
+	ActionAuthLoginFailed  = "auth.login_failed"   // authentication was rejected
+	ActionAuthLogout       = "auth.logout"         // a session was terminated
+	ActionAuthStepUp       = "auth.step_up"        // WebAuthn step-up satisfied
+	ActionAuthStepUpDenied = "auth.step_up_denied" // a high-risk op lacked step-up
+	// WebAuthn passkey lifecycle for step-up authentication.
+	ActionWebAuthnRegister = "webauthn.register" // a passkey was enrolled
+	ActionWebAuthnRemove   = "webauthn.remove"   // a passkey was removed
 )
 
 // Event is a single entry in the tamper-evident audit log. Seq is a

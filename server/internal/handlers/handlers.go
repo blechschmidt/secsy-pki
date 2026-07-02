@@ -62,7 +62,27 @@ type API struct {
 	// issuance profile used for SVIDs.
 	spiffePolicy  *spiffe.Policy
 	spiffeProfile string
+	// authInfo advertises the enabled operator-authentication mechanisms to the
+	// console via /api/auth/config, so the SPA can render the right login options
+	// (server-side SSO redirect, password login, and WebAuthn step-up).
+	authInfo AuthInfo
 }
+
+// AuthInfo describes the operator-authentication mechanisms enabled on the
+// server, surfaced to the console through /api/auth/config.
+type AuthInfo struct {
+	// OIDCLogin reports that server-side interactive OIDC login (/auth/login) is
+	// available; the console prefers it over the in-browser PKCE flow.
+	OIDCLogin bool
+	// PasswordLogin reports that session-establishing password login
+	// (/auth/login/password) is available.
+	PasswordLogin bool
+	// WebAuthn reports that passkey step-up is configured.
+	WebAuthn bool
+}
+
+// SetAuthInfo records which operator-authentication mechanisms are enabled.
+func (a *API) SetAuthInfo(info AuthInfo) { a.authInfo = info }
 
 // OCSPPolicy holds the responder-hardening settings applied to the public OCSP
 // endpoint.
@@ -199,6 +219,13 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 		return authMw.Authenticate(auditMw(h))
 	}
 	protected := protect
+	// protectStepUp additionally gates a high-risk operation behind WebAuthn
+	// step-up for console (session) callers. The gate is inert unless the
+	// operation was declared via SetStepUpOperations, so this is safe to apply
+	// unconditionally to sensitive routes.
+	protectStepUp := func(op string, h http.Handler) http.Handler {
+		return authMw.Authenticate(auditMw(authMw.StepUpGate(op)(h)))
+	}
 
 	mux.Handle("GET /api/keys", protected(http.HandlerFunc(a.ListCAs)))
 	mux.Handle("POST /api/keys", protected(http.HandlerFunc(a.CreateCA)))
@@ -211,15 +238,16 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("PUT /api/tenants/{id}/status", protected(http.HandlerFunc(a.SetTenantStatus)))
 	mux.Handle("DELETE /api/tenants/{id}", protected(http.HandlerFunc(a.DeleteTenant)))
 
-	// HSM-backed X.509 certificate-authority setup
-	mux.Handle("POST /api/ca/init-root", protected(http.HandlerFunc(a.InitRootCA)))
-	mux.Handle("POST /api/ca/{id}/issue-intermediate", protected(http.HandlerFunc(a.IssueIntermediateCA)))
+	// HSM-backed X.509 certificate-authority setup. Root/intermediate creation is
+	// a key ceremony — gated behind WebAuthn step-up when enabled.
+	mux.Handle("POST /api/ca/init-root", protectStepUp("ca.init_root", http.HandlerFunc(a.InitRootCA)))
+	mux.Handle("POST /api/ca/{id}/issue-intermediate", protectStepUp("ca.issue_intermediate", http.HandlerFunc(a.IssueIntermediateCA)))
 
 	// Cross-signing and bridge-CA support (Task 47). Creating a cross-sign and
 	// listing relationships are management operations (ca:manage); the alternate
 	// chains a cross-sign publishes are public, like the overlap chain, so relying
 	// parties can fetch whichever trust path they need.
-	mux.Handle("POST /api/ca/{id}/cross-signs", protected(http.HandlerFunc(a.CreateCrossSign)))
+	mux.Handle("POST /api/ca/{id}/cross-signs", protectStepUp("ca.cross_sign", http.HandlerFunc(a.CreateCrossSign)))
 	mux.Handle("GET /api/ca/{id}/cross-signs", protected(http.HandlerFunc(a.ListCrossSigns)))
 	mux.HandleFunc("GET /api/ca/{id}/chains", a.GetAlternateChains)
 	mux.HandleFunc("GET /api/ca/{id}/cross-signs/{csid}/chain", a.GetCrossSignChain)
@@ -228,7 +256,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/profiles", protected(http.HandlerFunc(a.ListProfiles)))
 	mux.Handle("POST /api/ca/{id}/issue", protected(http.HandlerFunc(a.IssueCertificate)))
 	mux.Handle("POST /api/ca/{id}/renew", protected(http.HandlerFunc(a.RenewCertificate)))
-	mux.Handle("POST /api/ca/{id}/revoke", protected(http.HandlerFunc(a.RevokeCertificate)))
+	mux.Handle("POST /api/ca/{id}/revoke", protectStepUp("cert.revoke", http.HandlerFunc(a.RevokeCertificate)))
 	mux.Handle("GET /api/ca/{id}/certificates", protected(http.HandlerFunc(a.ListIssuedCertificates)))
 	mux.Handle("GET /api/ca/{id}/revoked", protected(http.HandlerFunc(a.ListRevokedCertificates)))
 
@@ -266,7 +294,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.HandleFunc("GET /api/ca/{id}/ocsp/{req}", a.OCSPResponder)
 
 	mux.Handle("GET /api/keys/{id}", protected(http.HandlerFunc(a.GetCA)))
-	mux.Handle("DELETE /api/keys/{id}", protected(http.HandlerFunc(a.DeleteCA)))
+	mux.Handle("DELETE /api/keys/{id}", protectStepUp("ca.manage", http.HandlerFunc(a.DeleteCA)))
 	mux.Handle("GET /api/keys/{id}/children", protected(http.HandlerFunc(a.GetCAChildren)))
 	mux.Handle("GET /api/keys/{id}/public-key", protected(http.HandlerFunc(a.GetPublicKey)))
 
@@ -320,7 +348,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 		mux.Handle("GET /api/hsm/attestation", protected(http.HandlerFunc(a.GetHSMAttestation)))
 		mux.Handle("GET /api/hsm/audit-log", protected(http.HandlerFunc(a.GetHSMAuditLog)))
 		mux.Handle("POST /api/hsm/provision-audit", protected(http.HandlerFunc(a.ProvisionHSMAudit)))
-		mux.Handle("POST /api/hsm/factory-reset", protected(http.HandlerFunc(a.FactoryResetHSM)))
+		mux.Handle("POST /api/hsm/factory-reset", protectStepUp("hsm.factory_reset", http.HandlerFunc(a.FactoryResetHSM)))
 		mux.Handle("GET /api/hsm/combined-audit-log", protected(http.HandlerFunc(a.ExportCombinedAuditLog)))
 		mux.Handle("GET /api/hsm/signed-audit-log", protected(http.HandlerFunc(a.GetSignedAuditLog)))
 	}
@@ -353,17 +381,17 @@ func (a *API) Health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) AuthConfig(w http.ResponseWriter, r *http.Request) {
-	if a.oidcProvider == nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"oidc_enabled": false,
-		})
-		return
+	resp := map[string]interface{}{
+		"oidc_enabled":       a.oidcProvider != nil,
+		"oidc_login_enabled": a.authInfo.OIDCLogin,
+		"password_login":     a.authInfo.PasswordLogin,
+		"webauthn_enabled":   a.authInfo.WebAuthn,
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"oidc_enabled": true,
-		"issuer_url":   a.oidcProvider.IssuerURL(),
-		"client_id":    a.oidcProvider.ClientID(),
-	})
+	if a.oidcProvider != nil {
+		resp["issuer_url"] = a.oidcProvider.IssuerURL()
+		resp["client_id"] = a.oidcProvider.ClientID()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (a *API) Me(w http.ResponseWriter, r *http.Request) {

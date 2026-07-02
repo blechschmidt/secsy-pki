@@ -1,10 +1,18 @@
 // Secsy PKI operator console — vanilla JS SPA, no build step, no external CDN.
 //
-// The console never holds privileges of its own: it stores the operator's
-// credential (an HTTP Authorization header — basic-auth for the root user or an
-// OIDC bearer token) and attaches it to every REST call. Authorization and
-// auditing happen server-side, so the console reflects exactly the caller's
-// RBAC permissions and every mutating action is recorded in the event log.
+// The console never holds privileges of its own. It authenticates the operator
+// one of two ways and lets the server decide everything else:
+//
+//   - a server-side session (established by interactive OIDC SSO or a password
+//     login), carried in an HttpOnly cookie and protected by a CSRF token echoed
+//     in the X-CSRF-Token header on every state-changing request; or
+//   - a stateless Authorization header (basic-auth root, or a bearer token),
+//     kept for backwards compatibility and API scripting.
+//
+// High-risk operations (revocation, CA ceremony, cross-signing) may demand a
+// WebAuthn/passkey step-up; the console runs the assertion ceremony on demand
+// and retries. Authorization and auditing always happen server-side, so the
+// console reflects exactly the caller's RBAC permissions.
 'use strict';
 
 const AUTH_KEY = 'secsy_console_auth';
@@ -13,26 +21,38 @@ const store = {
   set auth(v) { v ? sessionStorage.setItem(AUTH_KEY, v) : sessionStorage.removeItem(AUTH_KEY); },
 };
 
-let oidcConfig = null;      // { oidc_enabled, issuer_url, client_id }
-let oidcDiscovery = null;   // fetched .well-known document
+let authConfig = null;      // { oidc_enabled, oidc_login_enabled, webauthn_enabled, ... }
+let oidcConfig = null;      // alias kept for the legacy in-browser PKCE fallback
+let oidcDiscovery = null;   // fetched .well-known document (legacy fallback)
 let currentUser = null;
+let csrfToken = null;       // set when authenticated by a server-side session
+
+const UNSAFE = /^(POST|PUT|PATCH|DELETE)$/i;
 
 // ---- REST helper ---------------------------------------------------------
-async function api(method, path, body, raw) {
-  const opts = { method, headers: {} };
+async function api(method, path, body, raw, retried) {
+  const opts = { method, headers: {}, credentials: 'same-origin' };
   if (store.auth) opts.headers['Authorization'] = store.auth;
+  // Session (cookie) auth requires the CSRF synchronizer token on writes.
+  if (csrfToken && UNSAFE.test(method)) opts.headers['X-CSRF-Token'] = csrfToken;
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
   const res = await fetch(path, opts);
   if (res.status === 401) { logout(); throw new Error('authentication required'); }
-  if (raw) {
-    if (!res.ok) throw new Error(await res.text() || `HTTP ${res.status}`);
-    return res.text();
-  }
   const text = await res.text();
-  const data = text ? JSON.parse(text) : {};
+  let data = {};
+  if (text) { try { data = JSON.parse(text); } catch (_) { data = {}; } }
+  // A high-risk operation may demand a WebAuthn step-up. Run it once, then retry.
+  if (res.status === 403 && data.code === 'step_up_required' && !retried) {
+    await webauthnStepUp(data.operation);
+    return api(method, path, body, raw, true);
+  }
+  if (raw) {
+    if (!res.ok) throw new Error(data.error || text || `HTTP ${res.status}`);
+    return text;
+  }
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
 }
@@ -46,36 +66,72 @@ function showError(el, msg) {
 // ---- Authentication ------------------------------------------------------
 async function bootAuth() {
   try {
-    oidcConfig = await (await fetch('/api/auth/config')).json();
-  } catch (_) { oidcConfig = { oidc_enabled: false }; }
+    authConfig = await (await fetch('/api/auth/config')).json();
+  } catch (_) { authConfig = { oidc_enabled: false }; }
+  oidcConfig = authConfig;
 
-  // Complete an in-progress OIDC redirect, if any.
+  // Legacy in-browser PKCE fallback: complete an in-progress redirect if the
+  // server does not offer server-side login.
   const params = new URLSearchParams(location.search);
   if (params.get('code') && sessionStorage.getItem('pkce_verifier')) {
     try { await completeOIDC(params.get('code')); } catch (e) { showError($('loginError'), 'SSO failed: ' + e.message); }
     history.replaceState({}, '', location.pathname);
   }
 
-  if (oidcConfig.oidc_enabled) {
+  // Offer SSO: prefer the server-side flow (redirect to /auth/login), falling
+  // back to the in-browser PKCE flow when only bearer verification is available.
+  if (authConfig.oidc_login_enabled) {
+    $('ssoBlock').classList.remove('hidden');
+    $('ssoBtn').onclick = () => { location.href = '/auth/login'; };
+  } else if (authConfig.oidc_enabled) {
     $('ssoBlock').classList.remove('hidden');
     $('ssoBtn').onclick = beginOIDC;
   }
 
+  // A server-side session may already exist (e.g. after an SSO redirect).
+  if (await resumeSession()) return;
+  // Or a stateless credential kept from a prior visit.
   if (store.auth) {
     try { await afterLogin(); return; } catch (_) { store.auth = null; }
   }
   $('login').classList.remove('hidden');
 }
 
+// resumeSession restores state from an existing server-side session cookie.
+async function resumeSession() {
+  try {
+    const res = await fetch('/auth/session', { credentials: 'same-origin' });
+    if (!res.ok) return false;
+    const info = await res.json();
+    csrfToken = info.csrf_token || null;
+    await afterLogin();
+    return true;
+  } catch (_) { return false; }
+}
+
 $('loginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('loginError').classList.add('hidden');
   const u = $('loginUser').value, p = $('loginPass').value;
-  store.auth = 'Basic ' + btoa(u + ':' + p);
   try {
+    if (authConfig && authConfig.password_login) {
+      // Establish a real session (enables CSRF protection and WebAuthn step-up).
+      const res = await fetch('/auth/login/password', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: u, password: p }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'login failed');
+      csrfToken = data.csrf_token || null;
+      store.auth = null;
+    } else {
+      // Fallback: stateless basic-auth.
+      store.auth = 'Basic ' + btoa(u + ':' + p);
+    }
     await afterLogin();
   } catch (err) {
-    store.auth = null;
+    store.auth = null; csrfToken = null;
     showError($('loginError'), err.message);
   }
 });
@@ -88,21 +144,120 @@ async function afterLogin() {
     ? ` <span class="roles">[${currentUser.roles.join(', ')}]</span>`
     : (currentUser.is_root ? ' <span class="roles">[root]</span>' : '');
   $('userBox').innerHTML = `Signed in as <b>${escapeHTML(currentUser.name || currentUser.sub || 'user')}</b>${roles}`;
+  // Offer passkey enrollment when the server has WebAuthn step-up enabled and the
+  // caller holds a real session (not a stateless credential).
+  const pk = $('passkeyBtn');
+  if (pk) {
+    if (authConfig && authConfig.webauthn_enabled && csrfToken) {
+      pk.classList.remove('hidden');
+      pk.onclick = registerPasskey;
+    } else {
+      pk.classList.add('hidden');
+    }
+  }
   await loadCAs();
   await loadProfiles();
   await loadSecretInfo();
   switchView('certs');
 }
 
-function logout() {
+async function logout() {
+  try { await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }); } catch (_) {}
   store.auth = null;
+  csrfToken = null;
   currentUser = null;
   $('app').classList.add('hidden');
   $('login').classList.remove('hidden');
 }
 $('logoutBtn').onclick = logout;
 
-// Minimal OIDC Authorization-Code + PKCE flow (public client).
+// ---- WebAuthn step-up ----------------------------------------------------
+// b64uToBuf / bufToB64u convert between base64url (used on the wire) and the
+// ArrayBuffers the WebAuthn API expects.
+function b64uToBuf(s) {
+  s = s.replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) s += '=';
+  const bin = atob(s);
+  const buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return buf.buffer;
+}
+function bufToB64u(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function waHeaders() {
+  const h = { 'Content-Type': 'application/json' };
+  if (csrfToken) h['X-CSRF-Token'] = csrfToken;
+  if (store.auth) h['Authorization'] = store.auth;
+  return h;
+}
+
+// registerPasskey enrolls a new WebAuthn credential for the logged-in operator.
+async function registerPasskey() {
+  if (!window.PublicKeyCredential) { alert('This browser does not support WebAuthn.'); return; }
+  const name = prompt('Name this passkey (e.g. "YubiKey", "Laptop"):', 'Passkey');
+  if (name === null) return;
+  const beginRes = await fetch('/auth/webauthn/register/begin', { method: 'POST', credentials: 'same-origin', headers: waHeaders(), body: '{}' });
+  const opts = await beginRes.json();
+  if (!beginRes.ok) { alert('Cannot start registration: ' + (opts.error || beginRes.status)); return; }
+  const pub = {
+    challenge: b64uToBuf(opts.challenge),
+    rp: opts.rp,
+    user: { id: b64uToBuf(opts.user.id), name: opts.user.name, displayName: opts.user.displayName },
+    pubKeyCredParams: opts.pubKeyCredParams,
+    authenticatorSelection: opts.authenticatorSelection,
+    timeout: opts.timeout,
+    attestation: opts.attestation,
+    excludeCredentials: (opts.excludeCredentials || []).map(c => ({ type: c.type, id: b64uToBuf(c.id) })),
+  };
+  let cred;
+  try { cred = await navigator.credentials.create({ publicKey: pub }); }
+  catch (e) { alert('Passkey creation cancelled: ' + e.message); return; }
+  const res = await fetch('/auth/webauthn/register/finish', {
+    method: 'POST', credentials: 'same-origin', headers: waHeaders(),
+    body: JSON.stringify({
+      name,
+      id: cred.id,
+      clientDataJSON: bufToB64u(cred.response.clientDataJSON),
+      attestationObject: bufToB64u(cred.response.attestationObject),
+    }),
+  });
+  const out = await res.json();
+  if (!res.ok) { alert('Registration failed: ' + (out.error || res.status)); return; }
+  alert('Passkey registered.');
+}
+
+// webauthnStepUp runs an assertion to satisfy a high-risk operation's step-up.
+async function webauthnStepUp(operation) {
+  if (!window.PublicKeyCredential) throw new Error('step-up required but this browser has no WebAuthn support');
+  const beginRes = await fetch('/auth/webauthn/stepup/begin', { method: 'POST', credentials: 'same-origin', headers: waHeaders(), body: '{}' });
+  const opts = await beginRes.json();
+  if (beginRes.status === 428) throw new Error('a passkey is required for this operation — register one first');
+  if (!beginRes.ok) throw new Error(opts.error || 'cannot start step-up');
+  const pub = {
+    challenge: b64uToBuf(opts.challenge),
+    rpId: opts.rpId,
+    userVerification: opts.userVerification,
+    timeout: opts.timeout,
+    allowCredentials: (opts.allowCredentials || []).map(c => ({ type: c.type, id: b64uToBuf(c.id) })),
+  };
+  const assertion = await navigator.credentials.get({ publicKey: pub });
+  const res = await fetch('/auth/webauthn/stepup/finish', {
+    method: 'POST', credentials: 'same-origin', headers: waHeaders(),
+    body: JSON.stringify({
+      id: assertion.id,
+      clientDataJSON: bufToB64u(assertion.response.clientDataJSON),
+      authenticatorData: bufToB64u(assertion.response.authenticatorData),
+      signature: bufToB64u(assertion.response.signature),
+    }),
+  });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || 'step-up failed'); }
+}
+
+// Minimal OIDC Authorization-Code + PKCE flow (public client, legacy fallback).
 async function beginOIDC() {
   oidcDiscovery = await (await fetch(oidcConfig.issuer_url.replace(/\/$/, '') + '/.well-known/openid-configuration')).json();
   const verifier = randStr(64);

@@ -214,6 +214,25 @@ var (
 		"RBAC authorization decisions, partitioned by action and decision.",
 		"action", "decision")
 
+	// Operator authentication (Task 50). AuthLogins counts login attempts by
+	// method (oidc|password|mtls) and result (success|error). AuthLogouts counts
+	// session terminations. AuthStepUps counts WebAuthn step-up outcomes by result
+	// (success|error|denied). AuthSessionsActive tracks live console sessions.
+	AuthLogins = NewCounter(Default,
+		"secsy_auth_logins_total",
+		"Operator authentication attempts, partitioned by method and result.",
+		"method", "result")
+	AuthLogouts = NewCounter(Default,
+		"secsy_auth_logouts_total",
+		"Operator session terminations (logout or expiry).")
+	AuthStepUps = NewCounter(Default,
+		"secsy_auth_step_ups_total",
+		"WebAuthn step-up attempts for high-risk operations, partitioned by result.",
+		"result")
+	AuthSessionsActive = NewGauge(Default,
+		"secsy_auth_sessions_active",
+		"Number of live operator console sessions.")
+
 	// Rate limiting for the public endpoints. Throttled counts requests rejected
 	// by a token-bucket tier, partitioned by endpoint class (acme_new_order,
 	// ocsp, enroll, ...) and the tier that rejected it (global|per_ip|
@@ -419,3 +438,17 @@ func RecordEnvelope(operation string, err error) {
 func RecordAutoRenew(err error) {
 	AutoRenewals.Inc(resultLabel(err))
 }
+
+// RecordAuthLogin records an operator login attempt by method (oidc|password|
+// mtls) and success.
+func RecordAuthLogin(method string, ok bool) {
+	if ok {
+		AuthLogins.Inc(method, ResultSuccess)
+	} else {
+		AuthLogins.Inc(method, ResultError)
+	}
+}
+
+// RecordAuthStepUp records the outcome of a WebAuthn step-up. result is one of
+// success|error|denied.
+func RecordAuthStepUp(result string) { AuthStepUps.Inc(result) }

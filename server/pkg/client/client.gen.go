@@ -276,9 +276,20 @@ type AuditLogPage struct {
 
 // AuthConfig defines model for AuthConfig.
 type AuthConfig struct {
-	ClientId    *string `json:"client_id,omitempty"`
-	IssuerUrl   *string `json:"issuer_url,omitempty"`
-	OidcEnabled *bool   `json:"oidc_enabled,omitempty"`
+	ClientId  *string `json:"client_id,omitempty"`
+	IssuerUrl *string `json:"issuer_url,omitempty"`
+
+	// OidcEnabled Bearer-token OIDC verification is configured.
+	OidcEnabled *bool `json:"oidc_enabled,omitempty"`
+
+	// OidcLoginEnabled Server-side interactive OIDC login (/auth/login) is available.
+	OidcLoginEnabled *bool `json:"oidc_login_enabled,omitempty"`
+
+	// PasswordLogin Session-establishing password login (/auth/login/password) is available.
+	PasswordLogin *bool `json:"password_login,omitempty"`
+
+	// WebauthnEnabled WebAuthn/passkey step-up is configured for high-risk operations.
+	WebauthnEnabled *bool `json:"webauthn_enabled,omitempty"`
 }
 
 // CA defines model for CA.

@@ -86,6 +86,135 @@ type Config struct {
 	// stricter/looser mode via their `attestation` block. Inert unless a profile
 	// (or the default) sets a non-"off" mode.
 	Attestation AttestationConfig `yaml:"attestation"`
+	// Auth configures strong operator authentication for the console/API (Task
+	// 50): interactive OIDC/OAuth2 login with claim/group -> RBAC role mapping,
+	// mutual-TLS client-certificate binding for machine callers, WebAuthn/passkey
+	// step-up for high-risk operations, and the session/CSRF plumbing that ties
+	// them together. Each sub-feature is inert unless its `enabled` is set; the
+	// stateless basic-auth root and Bearer-token paths keep working regardless.
+	Auth AuthConfig `yaml:"auth"`
+}
+
+// AuthConfig is the top-level operator-authentication block (Task 50).
+type AuthConfig struct {
+	// Session configures the console session cookie and lifetimes.
+	Session SessionConfig `yaml:"session"`
+	// OIDC configures interactive Authorization-Code login for the console. When
+	// its fields are empty the login endpoints fall back to the top-level `oidc`
+	// block's issuer/client for token verification (Bearer only), but interactive
+	// login requires at least a redirect_url here.
+	OIDC AuthOIDCConfig `yaml:"oidc"`
+	// MTLS configures mutual-TLS client-certificate authentication.
+	MTLS MTLSConfig `yaml:"mtls"`
+	// WebAuthn configures passkey step-up for high-risk operations.
+	WebAuthn WebAuthnConfig `yaml:"webauthn"`
+}
+
+// SessionConfig configures console sessions.
+type SessionConfig struct {
+	// CookieName overrides the session cookie name (default "secsy_session").
+	CookieName string `yaml:"cookie_name"`
+	// TTLMinutes bounds a session's absolute lifetime (default 60).
+	TTLMinutes int `yaml:"ttl_minutes"`
+	// Insecure drops the Secure attribute on issued cookies. It exists only for
+	// local/plaintext testing; production must leave it false so cookies are
+	// HTTPS-only.
+	Insecure bool `yaml:"insecure"`
+}
+
+// AuthOIDCConfig configures interactive OIDC login and the claim -> role mapping.
+type AuthOIDCConfig struct {
+	// Enabled turns on the interactive login endpoints (/auth/login, /auth/callback).
+	Enabled bool `yaml:"enabled"`
+	// IssuerURL / ClientID identify the IdP and client. When empty they inherit
+	// the top-level `oidc` block, so a single IdP can serve both Bearer
+	// verification and interactive login.
+	IssuerURL string `yaml:"issuer_url"`
+	ClientID  string `yaml:"client_id"`
+	// ClientSecret authenticates a confidential client at the token endpoint. Omit
+	// for a public (PKCE-only) client.
+	ClientSecret string `yaml:"client_secret"`
+	// RedirectURL is this server's callback URL registered at the IdP, e.g.
+	// https://pki.example.com/auth/callback. Required for interactive login.
+	RedirectURL string `yaml:"redirect_url"`
+	// Scopes requested at authorization (default openid, profile, email). Add the
+	// IdP's groups scope here when using group-claim role mapping.
+	Scopes []string `yaml:"scopes"`
+	// GroupsClaim names the token claim carrying group memberships (default
+	// "groups"). Its values feed both the rbac group assignments and the mappings
+	// below.
+	GroupsClaim string `yaml:"groups_claim"`
+	// RoleMappings map IdP claim values to RBAC roles, optionally scoped to a
+	// tenant. They compose with the top-level rbac subject/email/group assignments.
+	RoleMappings []ClaimMappingConfig `yaml:"role_mappings"`
+	// AllowZeroRole permits a successful login even when the operator resolves to
+	// no RBAC role (a read-nothing principal). Defaults to false: an operator with
+	// no role is denied at login rather than landing in an empty console.
+	AllowZeroRole bool `yaml:"allow_zero_role"`
+}
+
+// ClaimMappingConfig maps one IdP claim value to RBAC roles.
+type ClaimMappingConfig struct {
+	// Claim is the token claim to inspect (default: the groups claim).
+	Claim string `yaml:"claim"`
+	// Value is the exact claim value that triggers the mapping.
+	Value string `yaml:"value"`
+	// Tenant scopes the granted roles to a tenant id; empty grants platform-wide.
+	Tenant string `yaml:"tenant"`
+	// Roles are the RBAC roles granted (admin|issuer|auditor).
+	Roles []string `yaml:"roles"`
+}
+
+// MTLSConfig configures mutual-TLS client-certificate authentication.
+type MTLSConfig struct {
+	// Enabled requests a client certificate in the TLS handshake and verifies it
+	// against CAFile. A caller presenting a bound certificate is authenticated;
+	// callers without one fall back to the other mechanisms.
+	Enabled bool `yaml:"enabled"`
+	// CAFile is a PEM bundle of the client-certificate CA(s) trusted to
+	// authenticate machine callers. Required when enabled.
+	CAFile string `yaml:"ca_file"`
+	// Bindings map a verified client certificate to a principal and roles.
+	Bindings []CertBindingConfig `yaml:"bindings"`
+}
+
+// CertBindingConfig binds a client certificate (matched by subject/SAN) to a
+// principal.
+type CertBindingConfig struct {
+	// Selectors — every non-empty one must match the presented certificate.
+	SubjectCN string `yaml:"subject_cn"`
+	SubjectDN string `yaml:"subject_dn"`
+	SANDNS    string `yaml:"san_dns"`
+	SANURI    string `yaml:"san_uri"`
+	SANEmail  string `yaml:"san_email"`
+	// Principal — Subject is the identity recorded in audit; Roles are platform
+	// roles; TenantRoles are tenant-scoped roles.
+	Subject     string              `yaml:"subject"`
+	Name        string              `yaml:"name"`
+	Roles       []string            `yaml:"roles"`
+	TenantRoles map[string][]string `yaml:"tenant_roles"`
+}
+
+// WebAuthnConfig configures passkey step-up.
+type WebAuthnConfig struct {
+	// Enabled turns on the WebAuthn registration and step-up endpoints and the
+	// step-up gate on high-risk operations.
+	Enabled bool `yaml:"enabled"`
+	// RPID is the WebAuthn Relying Party ID: the console's registrable domain
+	// (e.g. "pki.example.com"). Required when enabled.
+	RPID string `yaml:"rp_id"`
+	// RPName is the display name shown by the authenticator (default "Secsy PKI").
+	RPName string `yaml:"rp_name"`
+	// Origins are the acceptable browser origins (e.g. https://pki.example.com).
+	// At least one is required when enabled.
+	Origins []string `yaml:"origins"`
+	// StepUpTTLMinutes is how long a step-up remains valid within a session
+	// (default 5).
+	StepUpTTLMinutes int `yaml:"step_up_ttl_minutes"`
+	// StepUpOperations names the high-risk operations gated behind step-up.
+	// Recognized: cert.revoke, ca.manage, ca.init_root, ca.issue_intermediate,
+	// ca.cross_sign, hsm.factory_reset. Empty applies a safe default set.
+	StepUpOperations []string `yaml:"step_up_operations"`
 }
 
 // AttestationConfig holds the deployment-wide settings for enrollment
@@ -1057,7 +1186,88 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateAuth(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// validateAuth sanity-checks the operator-authentication block when its
+// sub-features are enabled, failing loudly at load so a half-configured login,
+// mTLS, or WebAuthn setup cannot silently disable a protection an operator meant
+// to turn on. Role names in mappings/bindings are checked against the known set.
+func (c *Config) validateAuth() error {
+	a := &c.Auth
+	validRole := func(where, r string) error {
+		switch r {
+		case "admin", "issuer", "auditor":
+			return nil
+		}
+		return fmt.Errorf("auth.%s: unknown role %q (want admin, issuer, or auditor)", where, r)
+	}
+
+	if a.OIDC.Enabled {
+		issuer := a.OIDC.IssuerURL
+		if issuer == "" {
+			issuer = c.OIDC.IssuerURL
+		}
+		if issuer == "" {
+			return fmt.Errorf("auth.oidc.enabled is true but no issuer_url is set (here or in the top-level oidc block)")
+		}
+		if strings.TrimSpace(a.OIDC.RedirectURL) == "" {
+			return fmt.Errorf("auth.oidc.enabled is true but auth.oidc.redirect_url is required for interactive login")
+		}
+		for i, m := range a.OIDC.RoleMappings {
+			if strings.TrimSpace(m.Value) == "" {
+				return fmt.Errorf("auth.oidc.role_mappings[%d]: value is required", i)
+			}
+			if len(m.Roles) == 0 {
+				return fmt.Errorf("auth.oidc.role_mappings[%d]: at least one role is required", i)
+			}
+			for _, r := range m.Roles {
+				if err := validRole(fmt.Sprintf("oidc.role_mappings[%d]", i), r); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	if a.MTLS.Enabled {
+		if strings.TrimSpace(a.MTLS.CAFile) == "" {
+			return fmt.Errorf("auth.mtls.enabled is true but auth.mtls.ca_file is required to verify client certificates")
+		}
+		if len(a.MTLS.Bindings) == 0 {
+			return fmt.Errorf("auth.mtls.enabled is true but no bindings are configured (every client cert would be rejected)")
+		}
+		for i, b := range a.MTLS.Bindings {
+			if b.SubjectCN == "" && b.SubjectDN == "" && b.SANDNS == "" && b.SANURI == "" && b.SANEmail == "" {
+				return fmt.Errorf("auth.mtls.bindings[%d]: at least one selector (subject_cn/subject_dn/san_*) is required", i)
+			}
+			for _, r := range b.Roles {
+				if err := validRole(fmt.Sprintf("mtls.bindings[%d]", i), r); err != nil {
+					return err
+				}
+			}
+			for tid, roles := range b.TenantRoles {
+				for _, r := range roles {
+					if err := validRole(fmt.Sprintf("mtls.bindings[%d].tenant_roles[%q]", i, tid), r); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+
+	if a.WebAuthn.Enabled {
+		if strings.TrimSpace(a.WebAuthn.RPID) == "" {
+			return fmt.Errorf("auth.webauthn.enabled is true but auth.webauthn.rp_id is required")
+		}
+		if len(a.WebAuthn.Origins) == 0 {
+			return fmt.Errorf("auth.webauthn.enabled is true but auth.webauthn.origins is required (e.g. https://pki.example.com)")
+		}
+	}
+	return nil
 }
 
 // validateTracing sanity-checks the OpenTelemetry tracing configuration when it

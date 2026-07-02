@@ -18,6 +18,8 @@ type authenticatorData struct {
 	raw           []byte // the full authData, needed for signature verification
 	rpIDHash      []byte // 32-byte SHA-256 of the RP ID
 	flags         byte
+	signCount     uint32           // the authenticator's signature counter
+	credentialID  []byte           // the attested credential id (AT flag set)
 	credPublicKey crypto.PublicKey // the attested credential (device) public key
 }
 
@@ -35,11 +37,11 @@ func parseAuthenticatorData(data []byte) (*authenticatorData, error) {
 		return nil, fmt.Errorf("authData too short: %d bytes", len(data))
 	}
 	ad := &authenticatorData{
-		raw:      data,
-		rpIDHash: data[:32],
-		flags:    data[32],
+		raw:       data,
+		rpIDHash:  data[:32],
+		flags:     data[32],
+		signCount: binary.BigEndian.Uint32(data[33:37]),
 	}
-	// data[33:37] is the 4-byte signature counter (unused here).
 	if ad.flags&authDataFlagAT == 0 {
 		return ad, nil
 	}
@@ -53,6 +55,7 @@ func parseAuthenticatorData(data []byte) (*authenticatorData, error) {
 	if len(rest) < credIDLen {
 		return nil, errors.New("authData: truncated credential id")
 	}
+	ad.credentialID = append([]byte(nil), rest[:credIDLen]...)
 	rest = rest[credIDLen:]
 
 	key, err := parseCOSEKey(rest)
@@ -61,6 +64,72 @@ func parseAuthenticatorData(data []byte) (*authenticatorData, error) {
 	}
 	ad.credPublicKey = key
 	return ad, nil
+}
+
+// WebAuthnAuthData is a public view of parsed WebAuthn authenticator data,
+// exposed so the operator-authentication step-up package (internal/authn) can
+// reuse this package's COSE/authData parsing rather than duplicating it. Only
+// the fields a step-up ceremony needs are surfaced.
+type WebAuthnAuthData struct {
+	Raw          []byte           // the full authData bytes (for signature verification)
+	RPIDHash     []byte           // SHA-256 of the RP ID
+	UserPresent  bool             // the UP flag was set
+	UserVerified bool             // the UV flag was set
+	SignCount    uint32           // the authenticator signature counter
+	CredentialID []byte           // attested credential id (nil when AT unset)
+	PublicKey    crypto.PublicKey // attested credential public key (nil when AT unset)
+}
+
+const authDataFlagUV = 0x04 // user verified
+
+// ParseWebAuthnAuthData parses raw WebAuthn authenticator data for the step-up
+// package. When the attested-credential (AT) flag is set — as it is on a
+// registration response — the credential id and public key are populated.
+func ParseWebAuthnAuthData(data []byte) (*WebAuthnAuthData, error) {
+	ad, err := parseAuthenticatorData(data)
+	if err != nil {
+		return nil, err
+	}
+	return &WebAuthnAuthData{
+		Raw:          ad.raw,
+		RPIDHash:     ad.rpIDHash,
+		UserPresent:  ad.flags&authDataFlagUP != 0,
+		UserVerified: ad.flags&authDataFlagUV != 0,
+		SignCount:    ad.signCount,
+		CredentialID: ad.credentialID,
+		PublicKey:    ad.credPublicKey,
+	}, nil
+}
+
+// ParseWebAuthnCOSEKey decodes a COSE_Key (CBOR) into a Go public key, exposed
+// for the step-up package to reconstruct a stored credential's public key.
+func ParseWebAuthnCOSEKey(coseKey []byte) (crypto.PublicKey, error) {
+	return parseCOSEKey(coseKey)
+}
+
+// ParseWebAuthnAttestationObject extracts the authenticator data (and the parsed
+// attested credential within it) from a WebAuthn registration attestation
+// object (CBOR). It is exposed for the step-up package's passkey registration.
+// The attestation statement itself is not verified: step-up proves possession of
+// a passkey the operator registered, not the authenticator's make/model.
+func ParseWebAuthnAttestationObject(attestationObject []byte) (*WebAuthnAuthData, error) {
+	obj, err := parseAttestationObject(attestationObject)
+	if err != nil {
+		return nil, err
+	}
+	ad, err := parseAuthenticatorData(obj.authData)
+	if err != nil {
+		return nil, err
+	}
+	return &WebAuthnAuthData{
+		Raw:          ad.raw,
+		RPIDHash:     ad.rpIDHash,
+		UserPresent:  ad.flags&authDataFlagUP != 0,
+		UserVerified: ad.flags&authDataFlagUV != 0,
+		SignCount:    ad.signCount,
+		CredentialID: ad.credentialID,
+		PublicKey:    ad.credPublicKey,
+	}, nil
 }
 
 // COSE key common label / value constants (RFC 8152) needed to reconstruct the

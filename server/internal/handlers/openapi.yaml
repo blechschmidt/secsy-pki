@@ -1645,7 +1645,10 @@ components:
     AuthConfig:
       type: object
       properties:
-        oidc_enabled: { type: boolean }
+        oidc_enabled: { type: boolean, description: "Bearer-token OIDC verification is configured." }
+        oidc_login_enabled: { type: boolean, description: "Server-side interactive OIDC login (/auth/login) is available." }
+        password_login: { type: boolean, description: "Session-establishing password login (/auth/login/password) is available." }
+        webauthn_enabled: { type: boolean, description: "WebAuthn/passkey step-up is configured for high-risk operations." }
         issuer_url: { type: string }
         client_id: { type: string }
 

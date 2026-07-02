@@ -65,3 +65,17 @@ func (o *OIDCProvider) IssuerURL() string {
 func (o *OIDCProvider) ClientID() string {
 	return o.clientID
 }
+
+// Provider exposes the underlying go-oidc provider so the interactive-login
+// handler (internal/authn) can reach the IdP's authorization/token endpoints
+// without re-running OIDC discovery.
+func (o *OIDCProvider) Provider() *oidc.Provider {
+	return o.provider
+}
+
+// VerifierForClient builds an ID-token verifier bound to a specific client id.
+// Interactive console login may use a different OAuth2 client than the API's
+// bearer-token audience, so it needs its own verifier.
+func (o *OIDCProvider) VerifierForClient(clientID string) *oidc.IDTokenVerifier {
+	return o.provider.Verifier(&oidc.Config{ClientID: clientID})
+}

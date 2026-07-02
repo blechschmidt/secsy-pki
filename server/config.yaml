@@ -43,6 +43,56 @@ oidc:
   issuer_url: "http://localhost:8080/realms/secsy-pki"
   client_id: "secsy-pki"
 
+# auth configures strong operator authentication for the console/API (Task 50).
+# Each sub-block is inert unless its `enabled` is set; the stateless basic-auth
+# root and Bearer-token paths keep working regardless. See docs/authentication.md.
+auth:
+  session:
+    # cookie_name overrides the session cookie name (default "secsy_session").
+    # ttl_minutes bounds a session's absolute lifetime (default 60).
+    ttl_minutes: 60
+    # insecure drops the Secure cookie attribute — ONLY for local plaintext
+    # testing; leave false in production so cookies are HTTPS-only.
+    insecure: false
+  oidc:
+    # Interactive Authorization-Code login for the console. Inherits issuer_url /
+    # client_id from the top-level oidc block when omitted here.
+    enabled: false
+    # client_secret authenticates a confidential client; omit for a public (PKCE)
+    # client. redirect_url is this server's callback registered at the IdP.
+    client_secret: ""
+    redirect_url: "https://pki.example.com/auth/callback"
+    scopes: ["openid", "profile", "email"]
+    # groups_claim names the token claim carrying group memberships (default
+    # "groups"); its values feed both the rbac group assignments and the mappings.
+    groups_claim: "groups"
+    # role_mappings map IdP claim values to RBAC roles, optionally per-tenant.
+    role_mappings:
+      - { claim: "groups", value: "pki-admins", roles: ["admin"] }
+      - { claim: "groups", value: "pki-issuers", roles: ["issuer"] }
+      # - { value: "acme-issuers", tenant: "acme-corp", roles: ["issuer"] }
+    # allow_zero_role: false denies login to an operator that resolves to no role.
+    allow_zero_role: false
+  mtls:
+    # Mutual-TLS client-certificate auth for machine/API callers. When enabled,
+    # a client cert is requested and verified against ca_file; a presented cert
+    # is bound to a principal by the bindings below.
+    enabled: false
+    ca_file: "certs/client-ca.pem"
+    bindings:
+      - { subject_cn: "build-robot", subject: "svc:build-robot", roles: ["issuer"] }
+      # - { san_uri: "spiffe://example.org/ns/ops/sa/deployer", roles: ["admin"] }
+  webauthn:
+    # Passkey step-up for high-risk operations (revocation, CA ceremony,
+    # cross-signing, factory reset). rp_id is the console's registrable domain.
+    enabled: false
+    rp_id: "pki.example.com"
+    rp_name: "Secsy PKI"
+    origins: ["https://pki.example.com"]
+    step_up_ttl_minutes: 5
+    # step_up_operations defaults to a safe set when omitted.
+    step_up_operations: ["cert.revoke", "ca.init_root", "ca.issue_intermediate", "ca.cross_sign", "ca.manage", "hsm.factory_reset"]
+
 root_user:
   username: "root"
   password: "change-me-in-production"

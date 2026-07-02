@@ -396,6 +396,15 @@ func main() {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, authMw)
 
+	// Strong operator authentication (Task 50): interactive OIDC/password login
+	// with claim/group -> RBAC role mapping, mutual-TLS client-certificate
+	// binding, WebAuthn step-up, and the session/CSRF plumbing. Returns the client
+	// CA pool to install on the TLS listener when mTLS is enabled.
+	mtlsClientCAs, err := setupOperatorAuth(cfg, db, oidcProvider, tenantAssignments, authMw, api, mux)
+	if err != nil {
+		log.Fatalf("Operator authentication setup failed: %v", err)
+	}
+
 	// Operational endpoints: Prometheus /metrics, /healthz (liveness), /readyz
 	// (readiness incl. HSM/DB probes). Unauthenticated by design — restrict at
 	// the network layer if needed.
@@ -545,6 +554,21 @@ func main() {
 	if cfg.Server.TLSCert != "" && cfg.Server.TLSKey != "" {
 		tlsCfg := &tls.Config{
 			MinVersion: tls.VersionTLS12,
+		}
+		// Mutual-TLS client-certificate authentication (Task 50). Request a client
+		// certificate and verify it against the configured client CA(s) when one is
+		// presented — VerifyClientCertIfGiven keeps the console and public endpoints
+		// reachable without a client cert, while a presented cert is chain-verified
+		// by the TLS stack before the auth middleware binds it to a principal.
+		if mtlsClientCAs != nil {
+			// Request (but do not require or handshake-verify) a client certificate:
+			// the operator-auth binder verifies presented certs against this pool,
+			// while other consumers (EST TLS reenrollment) validate their own device
+			// certs against the PKI CA. RequestClientCert therefore keeps both paths
+			// working without one CA pool having to trust the other.
+			tlsCfg.ClientCAs = mtlsClientCAs
+			tlsCfg.ClientAuth = tls.RequestClientCert
+			log.Printf("Mutual-TLS client-certificate authentication enabled")
 		}
 		// TLS OCSP stapling: when the operator names the CA that issued the
 		// server's own certificate, produce and periodically refresh an
