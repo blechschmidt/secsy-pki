@@ -32,6 +32,13 @@ type AuthMiddleware struct {
 	oidcProvider TokenVerifier
 	rootUsername string
 	rootPassword string
+	// rootEnabled gates the built-in basic-auth root user. When false, root
+	// credentials are rejected outright (production may prefer OIDC + RBAC only).
+	rootEnabled bool
+	// roleResolver, if set, populates the RBAC roles for an authenticated OIDC
+	// subject (from central config + group membership). It is nil for the root
+	// user, which is always a superuser.
+	roleResolver func(*models.UserInfo) []string
 }
 
 func NewAuthMiddleware(oidcProvider TokenVerifier, rootUsername, rootPassword string) *AuthMiddleware {
@@ -39,13 +46,28 @@ func NewAuthMiddleware(oidcProvider TokenVerifier, rootUsername, rootPassword st
 		oidcProvider: oidcProvider,
 		rootUsername: rootUsername,
 		rootPassword: rootPassword,
+		rootEnabled:  true,
 	}
+}
+
+// SetRoleResolver installs a function that resolves RBAC roles for OIDC users.
+func (am *AuthMiddleware) SetRoleResolver(f func(*models.UserInfo) []string) {
+	am.roleResolver = f
+}
+
+// SetRootEnabled toggles acceptance of the built-in basic-auth root user.
+func (am *AuthMiddleware) SetRootEnabled(enabled bool) {
+	am.rootEnabled = enabled
 }
 
 func (am *AuthMiddleware) Authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Try basic auth first (root user)
 		if username, password, ok := r.BasicAuth(); ok {
+			if !am.rootEnabled {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "basic-auth root login is disabled"})
+				return
+			}
 			if subtle.ConstantTimeCompare([]byte(username), []byte(am.rootUsername)) == 1 &&
 				subtle.ConstantTimeCompare([]byte(password), []byte(am.rootPassword)) == 1 {
 				info := &models.UserInfo{
@@ -92,6 +114,9 @@ func (am *AuthMiddleware) Authenticate(next http.Handler) http.Handler {
 			Email:   claims.Email,
 			Name:    claims.Name,
 			IsRoot:  false,
+		}
+		if am.roleResolver != nil {
+			info.Roles = am.roleResolver(info)
 		}
 		ctx := context.WithValue(r.Context(), UserInfoKey, info)
 		next.ServeHTTP(w, r.WithContext(ctx))

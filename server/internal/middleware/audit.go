@@ -4,9 +4,9 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/google/uuid"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
+	"github.com/google/uuid"
 )
 
 type statusWriter struct {

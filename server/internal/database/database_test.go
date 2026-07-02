@@ -17,11 +17,11 @@ import (
 
 // Aliases to avoid stuttering and make test code more concise
 var (
-	ed25519GenerateKey     = ed25519.GenerateKey
-	sshNewPublicKey        = ssh.NewPublicKey
+	ed25519GenerateKey      = ed25519.GenerateKey
+	sshNewPublicKey         = ssh.NewPublicKey
 	sshMarshalAuthorizedKey = ssh.MarshalAuthorizedKey
-	sshNewSignerFromSigner = ssh.NewSignerFromSigner
-	randReader             = rand.Reader
+	sshNewSignerFromSigner  = ssh.NewSignerFromSigner
+	randReader              = rand.Reader
 )
 
 type sshCertificate = ssh.Certificate
@@ -225,14 +225,14 @@ func TestRestrictionSetLifecycle(t *testing.T) {
 	maxVal := int64(3600)
 	rs := &models.RestrictionSet{
 		ID: "rs-1", CAID: "ca-1", Name: "Standard",
-		MaxValiditySecs:   &maxVal,
-		AllowedPrincipals: []string{"admin", "deploy"},
-		AllowedCertTypes:  []string{"user"},
-		ForceKeyIDEmail:   true,
-		RequireReason:     true,
-		DenyExtensions:    true,
+		MaxValiditySecs:     &maxVal,
+		AllowedPrincipals:   []string{"admin", "deploy"},
+		AllowedCertTypes:    []string{"user"},
+		ForceKeyIDEmail:     true,
+		RequireReason:       true,
+		DenyExtensions:      true,
 		DenyCriticalOptions: true,
-		AllowedExtensions: []string{"permit-pty"},
+		AllowedExtensions:   []string{"permit-pty"},
 	}
 	if err := db.CreateRestrictionSet(rs); err != nil {
 		t.Fatal(err)
@@ -265,7 +265,9 @@ func TestRestrictionSetLifecycle(t *testing.T) {
 	sets, _ := db.ListRestrictionSets("ca-1")
 	caSpecific := 0
 	for _, s := range sets {
-		if s.CAID == "ca-1" { caSpecific++ }
+		if s.CAID == "ca-1" {
+			caSpecific++
+		}
 	}
 	if caSpecific != 1 {
 		t.Fatalf("ca-specific sets = %d, want 1", caSpecific)
@@ -282,7 +284,9 @@ func TestRestrictionSetLifecycle(t *testing.T) {
 	sets, _ = db.ListRestrictionSets("ca-1")
 	caSpecific = 0
 	for _, s := range sets {
-		if s.CAID == "ca-1" { caSpecific++ }
+		if s.CAID == "ca-1" {
+			caSpecific++
+		}
 	}
 	if caSpecific != 0 {
 		t.Errorf("expected 0 ca-specific sets, got %d", caSpecific)
@@ -297,15 +301,15 @@ func TestRestrictionSetX509(t *testing.T) {
 	pathLen := 0
 	rs := &models.RestrictionSet{
 		ID: "rs-x509", CAID: "ca-1", Name: "X509 Policy",
-		Type:                models.RestrictionSetX509,
-		MaxValiditySecs:     &maxVal,
-		AllowedKeyUsages:    []string{"digitalSignature", "keyEncipherment"},
-		AllowedExtKeyUsages: []string{"serverAuth", "clientAuth"},
-		AllowedSANTypes:     []string{"dns", "ip"},
-		AllowedSANPatterns:  []string{"*.example.com", "10.0.0.0/8"},
+		Type:                 models.RestrictionSetX509,
+		MaxValiditySecs:      &maxVal,
+		AllowedKeyUsages:     []string{"digitalSignature", "keyEncipherment"},
+		AllowedExtKeyUsages:  []string{"serverAuth", "clientAuth"},
+		AllowedSANTypes:      []string{"dns", "ip"},
+		AllowedSANPatterns:   []string{"*.example.com", "10.0.0.0/8"},
 		AllowedSubjectFields: []string{"CN", "O"},
-		MaxPathLength:       &pathLen,
-		DenyCA:              true,
+		MaxPathLength:        &pathLen,
+		DenyCA:               true,
 	}
 	if err := db.CreateRestrictionSet(rs); err != nil {
 		t.Fatal(err)
@@ -344,7 +348,9 @@ func TestRestrictionSetX509(t *testing.T) {
 	sets, _ := db.ListRestrictionSets("ca-1")
 	found := false
 	for _, s := range sets {
-		if s.ID == "rs-x509" && s.Type == models.RestrictionSetX509 { found = true }
+		if s.ID == "rs-x509" && s.Type == models.RestrictionSetX509 {
+			found = true
+		}
 	}
 	if !found {
 		t.Errorf("x509 set not found in list: %v", sets)

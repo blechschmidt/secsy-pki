@@ -9,12 +9,15 @@ import (
 	"os"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
+	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
+	"github.com/blechschmidt/secsy-pki/server/internal/models"
+	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 )
 
 func main() {
@@ -48,6 +51,45 @@ func main() {
 	}
 
 	authMw := middleware.NewAuthMiddleware(oidcProvider, cfg.RootUser.Username, cfg.RootUser.Password)
+
+	// RBAC: build the central role assignments and install a resolver so every
+	// authenticated OIDC subject carries its organization-wide roles. Assignments
+	// may be keyed by OIDC subject or by email; group-derived roles are unioned in.
+	rbacAssignments := rbac.NewAssignments(toRoleMap(cfg.RBAC.Subjects), toRoleMap(cfg.RBAC.Groups))
+	authMw.SetRoleResolver(func(u *models.UserInfo) []string {
+		groupIDs, _ := db.GetUserGroups(u.Subject)
+		roles := rbacAssignments.RolesFor(u.Subject, groupIDs)
+		if u.Email != "" {
+			roles = append(roles, rbacAssignments.RolesFor(u.Email, nil)...)
+		}
+		return dedupRoles(roles)
+	})
+	authMw.SetRootEnabled(cfg.Policy.RootBasicAuthEnabled())
+	if !cfg.Policy.RootBasicAuthEnabled() {
+		log.Printf("Built-in root basic-auth login is DISABLED (policy.allow_root_basic_auth=false)")
+	}
+	if !rbacAssignments.Empty() {
+		log.Printf("RBAC role assignments loaded (subjects=%d, groups=%d)", len(cfg.RBAC.Subjects), len(cfg.RBAC.Groups))
+	}
+
+	// Install any operator-defined certificate profiles, layered over built-ins.
+	if len(cfg.Profiles) > 0 {
+		profiles := make([]ca.Profile, 0, len(cfg.Profiles))
+		for _, p := range cfg.Profiles {
+			profiles = append(profiles, ca.Profile{
+				Name:                p.Name,
+				Description:         p.Description,
+				KeyUsages:           p.KeyUsages,
+				ExtKeyUsages:        p.ExtKeyUsages,
+				DefaultValidityDays: p.DefaultValidityDays,
+				MaxValidityDays:     p.MaxValidityDays,
+			})
+		}
+		if err := ca.SetCustomProfiles(profiles); err != nil {
+			log.Fatalf("Invalid custom certificate profile: %v", err)
+		}
+		log.Printf("Loaded %d custom certificate profile(s)", len(profiles))
+	}
 
 	// Ensure YUBIHSM_PKCS11_CONF is set so the YubiHSM PKCS#11 module knows the connector URL
 	if cfg.YubiHSM.ConnectorURL != "" && os.Getenv("YUBIHSM_PKCS11_CONF") == "" {
@@ -85,6 +127,10 @@ func main() {
 	}
 
 	api := handlers.NewAPI(db, provider, oidcProvider, hsmCfg, cfg.YubiHSM.SuppressAuditWarning, cfg.Secret.KEKLabel)
+	api.SetPolicy(handlers.Policy{
+		RequireReason:       cfg.Policy.RequireReason,
+		MaxCertValidityDays: cfg.Policy.MaxCertValidityDays,
+	})
 	if cfg.Secret.KEKLabel != "" {
 		log.Printf("Secret encryption enabled (KEK label: %s)", cfg.Secret.KEKLabel)
 	}
@@ -119,4 +165,34 @@ func main() {
 			log.Fatalf("Server failed: %v", err)
 		}
 	}
+}
+
+// toRoleMap converts a config string->[]string role map into the typed form the
+// rbac package expects. Unknown role names are dropped by rbac.NewAssignments.
+func toRoleMap(in map[string][]string) map[string][]rbac.Role {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string][]rbac.Role, len(in))
+	for k, roles := range in {
+		typed := make([]rbac.Role, 0, len(roles))
+		for _, r := range roles {
+			typed = append(typed, rbac.Role(r))
+		}
+		out[k] = typed
+	}
+	return out
+}
+
+// dedupRoles collapses a role slice to unique string values, preserving order.
+func dedupRoles(roles []rbac.Role) []string {
+	seen := make(map[rbac.Role]bool, len(roles))
+	var out []string
+	for _, r := range roles {
+		if !seen[r] {
+			seen[r] = true
+			out = append(out, string(r))
+		}
+	}
+	return out
 }

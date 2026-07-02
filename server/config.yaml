@@ -36,3 +36,47 @@ yubihsm:
   connector_url: "yhusb://"
   auth_key_id: 1
   password: "password"
+
+# ---------------------------------------------------------------------------
+# Enterprise: RBAC, policy, and custom certificate profiles (Task 8)
+# ---------------------------------------------------------------------------
+
+# rbac assigns organization-wide roles to OIDC subjects and to group IDs.
+# Recognized roles:
+#   admin   - full control (equivalent to the built-in root user)
+#   issuer  - may issue/renew/revoke certs on any CA (restriction sets still
+#             apply) and encrypt/decrypt secrets; may read logs
+#   auditor - read-only access to the audit, access, and event logs
+# Subject keys may be the OIDC "sub" claim or the user's email. Group keys are
+# the group IDs from the /api/groups store. A user's effective roles are the
+# union of its subject and group assignments. Unknown role names are rejected
+# at startup.
+rbac:
+  subjects: {}
+  #   "1a2b3c-oidc-subject": [admin]
+  #   "auditor@example.com": [auditor]
+  groups: {}
+  #   "group-uuid-for-pki-ops": [issuer]
+
+# policy holds system-wide issuance guardrails, enforced centrally regardless
+# of per-CA restriction sets.
+policy:
+  # Cap the validity of any issued end-entity certificate (0 = no global cap;
+  # per-profile and per-CA limits still apply).
+  max_cert_validity_days: 0
+  # Require a non-empty reason on sign requests that carry a reason field.
+  require_reason: false
+  # Accept the built-in root basic-auth user. Set to false in production once
+  # OIDC admins are configured to remove the shared-credential superuser.
+  allow_root_basic_auth: true
+
+# profiles defines custom certificate profiles layered over the built-ins
+# (server, client, server-client, code-signing, email). A custom profile with
+# the same name as a built-in overrides it.
+profiles: []
+#   - name: short-lived-client
+#     description: "Ephemeral mTLS client certificate"
+#     key_usages: [digitalSignature]
+#     ext_key_usages: [clientAuth]
+#     default_validity_days: 7
+#     max_validity_days: 30

@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
+	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
+	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
 )
 
@@ -56,6 +59,12 @@ type encryptResponse struct {
 
 // EncryptSecret seals a caller-supplied plaintext into a versioned envelope.
 func (a *API) EncryptSecret(w http.ResponseWriter, r *http.Request) {
+	if !a.can(middleware.GetUserInfo(r.Context()), rbac.ActionEncrypt) {
+		a.recordEvent(r, audit.ActionSecretEncrypt, a.secretKEKLabel, "", audit.ResultDenied, "secret:encrypt capability required")
+		writeError(w, http.StatusForbidden, "secret:encrypt capability required (admin or issuer role)")
+		return
+	}
+
 	svc, err := a.secretService(r)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "secret service unavailable: %v", err)
@@ -95,10 +104,12 @@ func (a *API) EncryptSecret(w http.ResponseWriter, r *http.Request) {
 	blob, err := svc.EncryptToJSON(plaintext, context)
 	a.consumeHSMAuditLogs("")
 	if err != nil {
+		a.recordEvent(r, audit.ActionSecretEncrypt, a.secretKEKLabel, "", audit.ResultError, err.Error())
 		writeError(w, http.StatusInternalServerError, "encryption failed: %v", err)
 		return
 	}
 
+	a.recordEvent(r, audit.ActionSecretEncrypt, a.secretKEKLabel, "", audit.ResultSuccess, "")
 	writeJSON(w, http.StatusOK, encryptResponse{Envelope: json.RawMessage(blob)})
 }
 
@@ -115,6 +126,12 @@ type decryptResponse struct {
 // DecryptSecret recovers plaintext from an envelope. The KEK (HSM) performs the
 // unwrap; a failure returns a generic 400 to avoid acting as an oracle.
 func (a *API) DecryptSecret(w http.ResponseWriter, r *http.Request) {
+	if !a.can(middleware.GetUserInfo(r.Context()), rbac.ActionDecrypt) {
+		a.recordEvent(r, audit.ActionSecretDecrypt, a.secretKEKLabel, "", audit.ResultDenied, "secret:decrypt capability required")
+		writeError(w, http.StatusForbidden, "secret:decrypt capability required (admin or issuer role)")
+		return
+	}
+
 	svc, err := a.secretService(r)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "secret service unavailable: %v", err)
@@ -144,10 +161,12 @@ func (a *API) DecryptSecret(w http.ResponseWriter, r *http.Request) {
 	a.consumeHSMAuditLogs("")
 	if err != nil {
 		// Generic client error: wrong key/context or corrupted/invalid envelope.
+		a.recordEvent(r, audit.ActionSecretDecrypt, a.secretKEKLabel, "", audit.ResultError, "decryption failed")
 		writeError(w, http.StatusBadRequest, "decryption failed: %v", err)
 		return
 	}
 	defer zeroBytes(plaintext)
+	a.recordEvent(r, audit.ActionSecretDecrypt, a.secretKEKLabel, "", audit.ResultSuccess, "")
 
 	writeJSON(w, http.StatusOK, decryptResponse{
 		Plaintext: base64.StdEncoding.EncodeToString(plaintext),

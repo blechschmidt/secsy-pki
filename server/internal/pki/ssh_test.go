@@ -57,7 +57,10 @@ func TestParseTime(t *testing.T) {
 	}
 
 	// Relative hours/minutes/seconds
-	for _, tc := range []struct{ s, unit string; d time.Duration }{
+	for _, tc := range []struct {
+		s, unit string
+		d       time.Duration
+	}{
 		{"+2h", "h", 2 * time.Hour},
 		{"+30m", "m", 30 * time.Minute},
 		{"+60s", "s", 60 * time.Second},

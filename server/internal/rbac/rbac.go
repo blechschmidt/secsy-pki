@@ -1,0 +1,177 @@
+// Package rbac defines coarse-grained, organization-wide roles for PKI
+// operations and the capabilities each role grants.
+//
+// It complements — rather than replaces — the existing per-CA permission model
+// (SIGN_CERTIFICATE / MANAGE_PERMISSIONS / CONFIGURE_CA on individual CAs).
+// Roles are assigned centrally in configuration and answer the question "what
+// class of user is this?" across the whole system:
+//
+//   - admin   — full control, equivalent to the built-in root user.
+//   - issuer  — may issue/renew/revoke certificates on any CA (still subject to
+//     that CA's restriction sets) and read logs, but may not create or
+//     delete CAs, manage access control, or administer the HSM.
+//   - auditor — read-only: may read the audit, access, and event logs and list
+//     objects, but may not perform or authorize any signing or
+//     administrative operation.
+//
+// A subject may hold several roles; its effective capabilities are the union.
+package rbac
+
+import "strings"
+
+// Role is an organization-wide role name.
+type Role string
+
+const (
+	RoleAdmin   Role = "admin"
+	RoleIssuer  Role = "issuer"
+	RoleAuditor Role = "auditor"
+)
+
+// AllRoles is the set of recognized roles, used for validation.
+var AllRoles = []Role{RoleAdmin, RoleIssuer, RoleAuditor}
+
+// ValidRole reports whether r is a recognized role.
+func ValidRole(r Role) bool {
+	for _, k := range AllRoles {
+		if k == r {
+			return true
+		}
+	}
+	return false
+}
+
+// Action is a capability that a role may or may not grant.
+type Action string
+
+const (
+	// ActionIssue covers signing, issuing, renewing, and revoking certificates.
+	ActionIssue Action = "cert:issue"
+	// ActionReadAudit covers reading the audit, access, and event logs.
+	ActionReadAudit Action = "audit:read"
+	// ActionManageCA covers creating and deleting CAs and initializing roots /
+	// intermediates.
+	ActionManageCA Action = "ca:manage"
+	// ActionConfigureCA covers editing profiles, restriction sets, and defaults.
+	ActionConfigureCA Action = "ca:configure"
+	// ActionManageRBAC covers managing groups and per-CA permission grants.
+	ActionManageRBAC Action = "rbac:manage"
+	// ActionManageHSM covers HSM provisioning, attestation, and factory reset.
+	ActionManageHSM Action = "hsm:manage"
+	// ActionEncrypt / ActionDecrypt cover the secret envelope endpoints.
+	ActionEncrypt Action = "secret:encrypt"
+	ActionDecrypt Action = "secret:decrypt"
+)
+
+// roleActions is the static capability grant per role. admin is handled
+// separately as an allow-all superuser so new actions are covered by default.
+var roleActions = map[Role]map[Action]bool{
+	RoleIssuer: {
+		ActionIssue:     true,
+		ActionReadAudit: true, // issuers can review their own operations
+		ActionEncrypt:   true,
+		ActionDecrypt:   true,
+	},
+	RoleAuditor: {
+		ActionReadAudit: true,
+	},
+}
+
+// RoleGrants returns whether a single role grants an action.
+func RoleGrants(role Role, action Action) bool {
+	if role == RoleAdmin {
+		return true // admin is an allow-all superuser
+	}
+	return roleActions[role][action]
+}
+
+// Can reports whether any of the held roles grants the action.
+func Can(roles []Role, action Action) bool {
+	for _, r := range roles {
+		if RoleGrants(r, action) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasRole reports whether the set contains a specific role.
+func HasRole(roles []Role, want Role) bool {
+	for _, r := range roles {
+		if r == want {
+			return true
+		}
+	}
+	return false
+}
+
+// Assignments maps subjects and groups to roles. It is built from central
+// configuration and is immutable after construction, so lookups are safe for
+// concurrent use.
+type Assignments struct {
+	bySubject map[string][]Role
+	byGroup   map[string][]Role
+}
+
+// NewAssignments builds an Assignments index from subject->roles and
+// group->roles maps (typically decoded from config). Unknown role names are
+// ignored so a typo cannot silently grant broad access.
+func NewAssignments(bySubject, byGroup map[string][]Role) *Assignments {
+	a := &Assignments{
+		bySubject: make(map[string][]Role),
+		byGroup:   make(map[string][]Role),
+	}
+	filter := func(in map[string][]Role, out map[string][]Role) {
+		for k, roles := range in {
+			var valid []Role
+			for _, r := range roles {
+				if ValidRole(r) {
+					valid = append(valid, r)
+				}
+			}
+			if len(valid) > 0 {
+				out[k] = valid
+			}
+		}
+	}
+	filter(bySubject, a.bySubject)
+	filter(byGroup, a.byGroup)
+	return a
+}
+
+// RolesFor returns the deduplicated set of roles a subject holds, considering
+// both its direct subject assignment and its group memberships.
+func (a *Assignments) RolesFor(subject string, groupIDs []string) []Role {
+	if a == nil {
+		return nil
+	}
+	seen := make(map[Role]bool)
+	var out []Role
+	add := func(roles []Role) {
+		for _, r := range roles {
+			if !seen[r] {
+				seen[r] = true
+				out = append(out, r)
+			}
+		}
+	}
+	add(a.bySubject[subject])
+	for _, g := range groupIDs {
+		add(a.byGroup[g])
+	}
+	return out
+}
+
+// Empty reports whether no assignments are configured at all.
+func (a *Assignments) Empty() bool {
+	return a == nil || (len(a.bySubject) == 0 && len(a.byGroup) == 0)
+}
+
+// JoinRoles renders roles as a stable comma-separated string for logging.
+func JoinRoles(roles []Role) string {
+	parts := make([]string, len(roles))
+	for i, r := range roles {
+		parts[i] = string(r)
+	}
+	return strings.Join(parts, ",")
+}

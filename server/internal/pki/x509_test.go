@@ -19,8 +19,8 @@ func generateTestCSR(t *testing.T, cn string, dnsNames []string, ips []net.IP) [
 		t.Fatal(err)
 	}
 	template := &x509.CertificateRequest{
-		Subject:    pkix.Name{CommonName: cn},
-		DNSNames:   dnsNames,
+		Subject:     pkix.Name{CommonName: cn},
+		DNSNames:    dnsNames,
 		IPAddresses: ips,
 	}
 	csrDER, err := x509.CreateCertificateRequest(rand.Reader, template, key)

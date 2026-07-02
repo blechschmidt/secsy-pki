@@ -995,7 +995,7 @@ func cmdVerifyCombinedLog(args []string) {
 
 	// Step 7: Verify all certificates are unique (bijection)
 	fmt.Println("=== Step 7: Certificate Uniqueness (bijection) ===")
-	seenCerts := make(map[string]uint16)  // cert hash -> first HSM entry number
+	seenCerts := make(map[string]uint16)   // cert hash -> first HSM entry number
 	seenSerials := make(map[string]uint16) // serial -> first HSM entry number
 	dupes := 0
 	for hsmNum, signOp := range matchedPairs {

@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
+	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 )
 
 // Default certificate lifetimes when a request omits validity_days.
@@ -20,8 +22,9 @@ const (
 // self-signed root CA certificate signed on the device.
 func (a *API) InitRootCA(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !user.IsRoot {
-		writeError(w, http.StatusForbidden, "only root can initialize a root CA")
+	if !a.can(user, rbac.ActionManageCA) {
+		a.recordEvent(r, audit.ActionCAInitRoot, "", "", audit.ResultDenied, "ca:manage capability required")
+		writeError(w, http.StatusForbidden, "ca:manage capability required (admin role)")
 		return
 	}
 
@@ -50,10 +53,12 @@ func (a *API) InitRootCA(w http.ResponseWriter, r *http.Request) {
 	})
 	a.consumeHSMAuditLogs("")
 	if err != nil {
+		a.recordEvent(r, audit.ActionCAInitRoot, "", req.Label, audit.ResultError, err.Error())
 		writeError(w, http.StatusBadRequest, "failed to initialize root CA: %v", err)
 		return
 	}
 
+	a.recordEvent(r, audit.ActionCAInitRoot, result.ID, result.Label, audit.ResultSuccess, "subject="+result.Subject)
 	writeJSON(w, http.StatusCreated, result)
 }
 
@@ -61,8 +66,9 @@ func (a *API) InitRootCA(w http.ResponseWriter, r *http.Request) {
 // and issues an intermediate certificate signed by the parent CA on the device.
 func (a *API) IssueIntermediateCA(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !user.IsRoot {
-		writeError(w, http.StatusForbidden, "only root can issue an intermediate CA")
+	if !a.can(user, rbac.ActionManageCA) {
+		a.recordEvent(r, audit.ActionCAIssueIntermediate, r.PathValue("id"), "", audit.ResultDenied, "ca:manage capability required")
+		writeError(w, http.StatusForbidden, "ca:manage capability required (admin role)")
 		return
 	}
 
@@ -92,9 +98,11 @@ func (a *API) IssueIntermediateCA(w http.ResponseWriter, r *http.Request) {
 	})
 	a.consumeHSMAuditLogs("")
 	if err != nil {
+		a.recordEvent(r, audit.ActionCAIssueIntermediate, parentID, req.Label, audit.ResultError, err.Error())
 		writeError(w, http.StatusBadRequest, "failed to issue intermediate CA: %v", err)
 		return
 	}
 
+	a.recordEvent(r, audit.ActionCAIssueIntermediate, result.ID, result.Label, audit.ResultSuccess, "parent="+parentID)
 	writeJSON(w, http.StatusCreated, result)
 }

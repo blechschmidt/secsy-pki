@@ -16,6 +16,54 @@ type Config struct {
 	PKCS11      PKCS11Config      `yaml:"pkcs11"`
 	YubiHSM     YubiHSMConfig     `yaml:"yubihsm"`
 	Secret      SecretConfig      `yaml:"secret"`
+	// RBAC assigns organization-wide roles (admin/issuer/auditor) to subjects
+	// and groups; Policy holds issuance guardrails; Profiles defines custom
+	// certificate profiles layered over the built-ins. Together these give a
+	// single, centralized place to govern who may do what and under which rules.
+	RBAC     RBACConfig      `yaml:"rbac"`
+	Policy   PolicyConfig    `yaml:"policy"`
+	Profiles []ProfileConfig `yaml:"profiles"`
+}
+
+// RBACConfig maps OIDC subjects and group IDs to role names. Recognized roles
+// are "admin", "issuer", and "auditor"; unknown names are rejected at load so a
+// typo cannot silently grant or deny access.
+type RBACConfig struct {
+	Subjects map[string][]string `yaml:"subjects"`
+	Groups   map[string][]string `yaml:"groups"`
+}
+
+// PolicyConfig holds system-wide issuance policy. These are conservative
+// guardrails enforced centrally regardless of per-CA restriction sets.
+type PolicyConfig struct {
+	// RequireReason forces every certificate-issuing request to carry a
+	// non-empty reason, improving auditability.
+	RequireReason bool `yaml:"require_reason"`
+	// MaxCertValidityDays caps the validity of any issued end-entity certificate
+	// (0 = no global cap; per-profile and per-CA limits still apply).
+	MaxCertValidityDays int `yaml:"max_cert_validity_days"`
+	// AllowRootBasicAuth enables the built-in root user (HTTP basic auth). Set to
+	// false in production once OIDC + RBAC admins are configured, to remove the
+	// shared-credential superuser.
+	AllowRootBasicAuth *bool `yaml:"allow_root_basic_auth"`
+}
+
+// RootBasicAuthEnabled reports whether the built-in root user should be
+// accepted. It defaults to true (backward compatible) unless explicitly
+// disabled.
+func (p PolicyConfig) RootBasicAuthEnabled() bool {
+	return p.AllowRootBasicAuth == nil || *p.AllowRootBasicAuth
+}
+
+// ProfileConfig defines a custom certificate profile in configuration. It
+// mirrors ca.Profile using day-based validities for human-friendly YAML.
+type ProfileConfig struct {
+	Name                string   `yaml:"name"`
+	Description         string   `yaml:"description"`
+	KeyUsages           []string `yaml:"key_usages"`
+	ExtKeyUsages        []string `yaml:"ext_key_usages"`
+	DefaultValidityDays int      `yaml:"default_validity_days"`
+	MaxValidityDays     int      `yaml:"max_validity_days"`
 }
 
 // SecretConfig configures the HSM-backed envelope-encryption feature. KEKLabel
@@ -111,7 +159,35 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateRBAC(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// validRoleNames are the role identifiers accepted in the rbac config. Kept in
+// sync with the rbac package (duplicated here to avoid an import cycle risk and
+// to keep config self-contained).
+var validRoleNames = map[string]bool{"admin": true, "issuer": true, "auditor": true}
+
+// validateRBAC rejects unknown role names so a misconfiguration fails loudly at
+// startup rather than silently dropping an intended grant.
+func (c *Config) validateRBAC() error {
+	check := func(kind string, m map[string][]string) error {
+		for key, roles := range m {
+			for _, r := range roles {
+				if !validRoleNames[r] {
+					return fmt.Errorf("rbac.%s[%q]: unknown role %q (valid: admin, issuer, auditor)", kind, key, r)
+				}
+			}
+		}
+		return nil
+	}
+	if err := check("subjects", c.RBAC.Subjects); err != nil {
+		return err
+	}
+	return check("groups", c.RBAC.Groups)
 }
 
 // applyEnvOverrides lets environment variables override file settings. The

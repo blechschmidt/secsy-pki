@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -27,16 +28,15 @@ func (a *API) IssueCertificate(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
 	caID := r.PathValue("id")
 
-	if !user.IsRoot {
-		ok, err := a.checkPermission(user, caID, models.PermSignCertificate)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
-			return
-		}
-		if !ok {
-			writeError(w, http.StatusForbidden, "no SIGN_CERTIFICATE permission on this CA")
-			return
-		}
+	ok, err := a.canIssueOn(user, caID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
+		return
+	}
+	if !ok {
+		a.recordEvent(r, audit.ActionCertIssue, caID, "", audit.ResultDenied, "no SIGN_CERTIFICATE permission on this CA")
+		writeError(w, http.StatusForbidden, "no SIGN_CERTIFICATE permission on this CA")
+		return
 	}
 
 	var req models.IssueCertRequest
@@ -56,15 +56,17 @@ func (a *API) IssueCertificate(w http.ResponseWriter, r *http.Request) {
 		CAID:        caID,
 		CSRPEM:      []byte(req.CSR),
 		Profile:     req.Profile,
-		Validity:    daysToDuration(req.ValidityDays),
+		Validity:    daysToDuration(a.capValidityDays(req.ValidityDays)),
 		RequestedBy: user.Subject,
 	})
 	a.consumeHSMAuditLogs("")
 	if err != nil {
+		a.recordEvent(r, audit.ActionCertIssue, caID, "", audit.ResultError, err.Error())
 		writeError(w, http.StatusBadRequest, "failed to issue certificate: %v", err)
 		return
 	}
 
+	a.recordEvent(r, audit.ActionCertIssue, caID, result.Serial.String(), audit.ResultSuccess, "profile="+result.Profile)
 	writeJSON(w, http.StatusCreated, issueResponse(result))
 }
 
@@ -74,16 +76,15 @@ func (a *API) RenewCertificate(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
 	caID := r.PathValue("id")
 
-	if !user.IsRoot {
-		ok, err := a.checkPermission(user, caID, models.PermSignCertificate)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
-			return
-		}
-		if !ok {
-			writeError(w, http.StatusForbidden, "no SIGN_CERTIFICATE permission on this CA")
-			return
-		}
+	ok, err := a.canIssueOn(user, caID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
+		return
+	}
+	if !ok {
+		a.recordEvent(r, audit.ActionCertRenew, caID, "", audit.ResultDenied, "no SIGN_CERTIFICATE permission on this CA")
+		writeError(w, http.StatusForbidden, "no SIGN_CERTIFICATE permission on this CA")
+		return
 	}
 
 	var req models.RenewCertRequest
@@ -103,15 +104,17 @@ func (a *API) RenewCertificate(w http.ResponseWriter, r *http.Request) {
 		CAID:        caID,
 		Serial:      req.Serial,
 		CSRPEM:      []byte(req.CSR),
-		Validity:    daysToDuration(req.ValidityDays),
+		Validity:    daysToDuration(a.capValidityDays(req.ValidityDays)),
 		RequestedBy: user.Subject,
 	})
 	a.consumeHSMAuditLogs("")
 	if err != nil {
+		a.recordEvent(r, audit.ActionCertRenew, caID, req.Serial, audit.ResultError, err.Error())
 		writeError(w, http.StatusBadRequest, "failed to renew certificate: %v", err)
 		return
 	}
 
+	a.recordEvent(r, audit.ActionCertRenew, caID, result.Serial.String(), audit.ResultSuccess, "renewed_from="+req.Serial)
 	writeJSON(w, http.StatusCreated, issueResponse(result))
 }
 
@@ -120,16 +123,15 @@ func (a *API) RevokeCertificate(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
 	caID := r.PathValue("id")
 
-	if !user.IsRoot {
-		ok, err := a.checkPermission(user, caID, models.PermSignCertificate)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
-			return
-		}
-		if !ok {
-			writeError(w, http.StatusForbidden, "no SIGN_CERTIFICATE permission on this CA")
-			return
-		}
+	ok, err := a.canIssueOn(user, caID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
+		return
+	}
+	if !ok {
+		a.recordEvent(r, audit.ActionCertRevoke, caID, "", audit.ResultDenied, "no SIGN_CERTIFICATE permission on this CA")
+		writeError(w, http.StatusForbidden, "no SIGN_CERTIFICATE permission on this CA")
+		return
 	}
 
 	var req models.RevokeCertRequest
@@ -145,6 +147,7 @@ func (a *API) RevokeCertificate(w http.ResponseWriter, r *http.Request) {
 	mgr := ca.NewManager(a.db, a.keyProvider)
 	applied, err := mgr.RevokeCertificate(r.Context(), caID, req.Serial, req.Reason)
 	if err != nil {
+		a.recordEvent(r, audit.ActionCertRevoke, caID, req.Serial, audit.ResultError, err.Error())
 		writeError(w, http.StatusBadRequest, "failed to revoke certificate: %v", err)
 		return
 	}
@@ -153,6 +156,7 @@ func (a *API) RevokeCertificate(w http.ResponseWriter, r *http.Request) {
 	if !applied {
 		status = "already-revoked"
 	}
+	a.recordEvent(r, audit.ActionCertRevoke, caID, req.Serial, audit.ResultSuccess, "reason="+req.Reason+" status="+status)
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status": status,
 		"serial": req.Serial,

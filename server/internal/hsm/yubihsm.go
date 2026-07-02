@@ -81,24 +81,24 @@ func runShell(cfg Config, commands string) (string, error) {
 
 // YubiHSM command codes for audit log entries
 const (
-	CmdPutOption              = 0x4f
-	CmdGenerateAsymmetricKey  = 0x46
-	CmdSignECDSA              = 0x56
-	CmdSignEdDSA              = 0x6a
-	CmdSignRSAPKCS1           = 0x47
-	CmdSignRSAPSS             = 0x55
-	CmdPutAuthKey             = 0x44
-	CmdChangeAuthKey          = 0x6c
-	CmdDeleteObject           = 0x58
-	CmdPutWrapKey             = 0x4c
-	CmdGenerateWrapKey        = 0x5b
-	CmdPutPubWrapKey          = 0x73
-	CmdExportRSAWrapped       = 0x74
-	CmdImportRSAWrapped       = 0x75
-	CmdExportRSAWrappedObj    = 0x76
-	CmdImportRSAWrappedObj    = 0x77
-	CmdExportWrapped          = 0x4a
-	CmdImportWrapped          = 0x4b
+	CmdPutOption             = 0x4f
+	CmdGenerateAsymmetricKey = 0x46
+	CmdSignECDSA             = 0x56
+	CmdSignEdDSA             = 0x6a
+	CmdSignRSAPKCS1          = 0x47
+	CmdSignRSAPSS            = 0x55
+	CmdPutAuthKey            = 0x44
+	CmdChangeAuthKey         = 0x6c
+	CmdDeleteObject          = 0x58
+	CmdPutWrapKey            = 0x4c
+	CmdGenerateWrapKey       = 0x5b
+	CmdPutPubWrapKey         = 0x73
+	CmdExportRSAWrapped      = 0x74
+	CmdImportRSAWrapped      = 0x75
+	CmdExportRSAWrappedObj   = 0x76
+	CmdImportRSAWrappedObj   = 0x77
+	CmdExportWrapped         = 0x4a
+	CmdImportWrapped         = 0x4b
 )
 
 // CryptoCommands lists all commands that involve signing or key generation.
@@ -484,12 +484,12 @@ func GetDeviceAttestation(cfg Config) ([]byte, error) {
 }
 
 type DeviceInfo struct {
-	Version        string `json:"version"`
-	Serial         string `json:"serial"`
-	PartNumber     string `json:"part_number"`
-	LogUsed        string `json:"log_used"`
-	ForceAudit     bool   `json:"force_audit"`
-	AuditProvisioned bool `json:"audit_provisioned"` // all sign commands are force-audited
+	Version          string `json:"version"`
+	Serial           string `json:"serial"`
+	PartNumber       string `json:"part_number"`
+	LogUsed          string `json:"log_used"`
+	ForceAudit       bool   `json:"force_audit"`
+	AuditProvisioned bool   `json:"audit_provisioned"` // all sign commands are force-audited
 }
 
 func GetDeviceInfo(cfg Config) (*DeviceInfo, error) {

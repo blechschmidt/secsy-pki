@@ -85,13 +85,60 @@ var builtinProfiles = map[string]Profile{
 // defaultProfileName is used when a request omits the profile.
 const defaultProfileName = "server"
 
-// LookupProfile resolves a built-in profile by name (case-insensitive). When
-// name is empty the default profile is returned.
+// customProfiles holds operator-defined profiles installed from central
+// configuration via SetCustomProfiles. They layer over the built-ins: a custom
+// profile with the same (lowercase) name as a built-in overrides it. This lets
+// deployments add issuance shapes or tighten validity without a code change.
+// Set once at startup before serving, so no locking is required for reads.
+var customProfiles = map[string]Profile{}
+
+// SetCustomProfiles validates and installs operator-defined profiles. Each
+// profile must have a name and reference only known key usages / extended key
+// usages. It is intended to be called once during initialization; calling it
+// again replaces the previous custom set.
+func SetCustomProfiles(profiles []Profile) error {
+	next := make(map[string]Profile, len(profiles))
+	for _, p := range profiles {
+		if p.Name == "" {
+			return fmt.Errorf("custom profile: name is required")
+		}
+		key := normalizeProfileName(p.Name)
+		if _, dup := next[key]; dup {
+			return fmt.Errorf("custom profile %q: duplicate name", p.Name)
+		}
+		// Fold day-based validity (from config) into durations if the caller only
+		// supplied days, then validate the usage identifiers eagerly.
+		if p.DefaultValidity == 0 && p.DefaultValidityDays > 0 {
+			p.DefaultValidity = time.Duration(p.DefaultValidityDays) * day
+		}
+		if p.MaxValidity == 0 && p.MaxValidityDays > 0 {
+			p.MaxValidity = time.Duration(p.MaxValidityDays) * day
+		}
+		if _, err := p.keyUsage(); err != nil {
+			return err
+		}
+		if _, err := p.extKeyUsage(); err != nil {
+			return err
+		}
+		next[key] = p
+	}
+	customProfiles = next
+	return nil
+}
+
+// LookupProfile resolves a profile by name (case-insensitive), preferring a
+// custom profile over a built-in of the same name. When name is empty the
+// default profile is returned.
 func LookupProfile(name string) (Profile, error) {
 	if name == "" {
 		name = defaultProfileName
 	}
-	p, ok := builtinProfiles[normalizeProfileName(name)]
+	key := normalizeProfileName(name)
+	if p, ok := customProfiles[key]; ok {
+		p.fillValidityDays()
+		return p, nil
+	}
+	p, ok := builtinProfiles[key]
 	if !ok {
 		return Profile{}, fmt.Errorf("unknown certificate profile %q (available: %v)", name, ProfileNames())
 	}
@@ -99,10 +146,24 @@ func LookupProfile(name string) (Profile, error) {
 	return p, nil
 }
 
-// Profiles returns every built-in profile, sorted by name.
+// mergedProfiles returns the effective profile set: built-ins overlaid with any
+// custom profiles.
+func mergedProfiles() map[string]Profile {
+	out := make(map[string]Profile, len(builtinProfiles)+len(customProfiles))
+	for k, v := range builtinProfiles {
+		out[k] = v
+	}
+	for k, v := range customProfiles {
+		out[k] = v
+	}
+	return out
+}
+
+// Profiles returns every effective profile (built-in + custom), sorted by name.
 func Profiles() []Profile {
-	out := make([]Profile, 0, len(builtinProfiles))
-	for _, p := range builtinProfiles {
+	merged := mergedProfiles()
+	out := make([]Profile, 0, len(merged))
+	for _, p := range merged {
 		p.fillValidityDays()
 		out = append(out, p)
 	}
@@ -110,10 +171,11 @@ func Profiles() []Profile {
 	return out
 }
 
-// ProfileNames returns the sorted list of built-in profile names.
+// ProfileNames returns the sorted list of effective profile names.
 func ProfileNames() []string {
-	names := make([]string, 0, len(builtinProfiles))
-	for name := range builtinProfiles {
+	merged := mergedProfiles()
+	names := make([]string, 0, len(merged))
+	for name := range merged {
 		names = append(names, name)
 	}
 	sort.Strings(names)

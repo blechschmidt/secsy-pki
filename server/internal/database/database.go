@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	_ "github.com/lib/pq"
@@ -17,6 +18,11 @@ import (
 type DB struct {
 	conn   *sql.DB
 	driver string
+
+	// eventMu serializes appends to the tamper-evident event_log so the read of
+	// the previous entry's hash and the insert of the next entry are atomic with
+	// respect to each other, keeping the hash chain consistent under concurrency.
+	eventMu sync.Mutex
 }
 
 func New(driver, dsn string) (*DB, error) {
@@ -260,6 +266,29 @@ func (db *DB) migrate() error {
 			sign_audit_id TEXT REFERENCES audit_log(id)
 		)`, autoIncPK, currentTimestamp),
 		`CREATE INDEX IF NOT EXISTS idx_hsm_audit_number ON hsm_audit_entries(number)`,
+		// Tamper-evident, append-only event log. seq is a gap-free monotonic
+		// counter (assigned by the app under eventMu, not the DB, so it is part of
+		// the hashed content); prev_hash/hash form the chain. Any edit, deletion,
+		// or reordering of rows is detectable via audit.VerifyChain.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS event_log (
+			seq INTEGER PRIMARY KEY,
+			id TEXT NOT NULL,
+			timestamp %s,
+			actor TEXT NOT NULL,
+			actor_name TEXT,
+			actor_roles TEXT,
+			action TEXT NOT NULL,
+			target TEXT,
+			target_name TEXT,
+			result TEXT NOT NULL,
+			detail TEXT,
+			ip TEXT,
+			prev_hash TEXT NOT NULL,
+			hash TEXT NOT NULL
+		)`, currentTimestamp),
+		`CREATE INDEX IF NOT EXISTS idx_event_log_actor ON event_log(actor)`,
+		`CREATE INDEX IF NOT EXISTS idx_event_log_action ON event_log(action)`,
+		`CREATE INDEX IF NOT EXISTS idx_event_log_time ON event_log(timestamp)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.exec(stmt); err != nil {

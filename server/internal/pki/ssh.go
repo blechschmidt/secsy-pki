@@ -129,4 +129,3 @@ func parseRelativeTime(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("unknown time unit: %c", unit)
 	}
 }
-

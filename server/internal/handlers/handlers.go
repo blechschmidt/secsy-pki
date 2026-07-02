@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
@@ -17,6 +18,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
+	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 )
@@ -28,10 +30,35 @@ type API struct {
 	hsmCfg               hsm.Config
 	suppressAuditWarning bool
 	secretKEKLabel       string
+	policy               Policy
+}
+
+// Policy holds centrally-configured issuance guardrails enforced by the API
+// regardless of per-CA restriction sets.
+type Policy struct {
+	// RequireReason forces sign requests that carry a reason field to supply one.
+	RequireReason bool
+	// MaxCertValidityDays caps issued end-entity validity (0 = no global cap).
+	MaxCertValidityDays int
 }
 
 func NewAPI(db *database.DB, keyProvider keyprovider.Provider, oidcProvider *auth.OIDCProvider, hsmCfg hsm.Config, suppressAuditWarning bool, secretKEKLabel string) *API {
 	return &API{db: db, keyProvider: keyProvider, oidcProvider: oidcProvider, hsmCfg: hsmCfg, suppressAuditWarning: suppressAuditWarning, secretKEKLabel: secretKEKLabel}
+}
+
+// SetPolicy installs the centrally-configured issuance policy.
+func (a *API) SetPolicy(p Policy) { a.policy = p }
+
+// capValidityDays clamps a requested validity (in days) to the global policy
+// maximum, if one is configured. A non-positive request is left untouched so
+// the downstream profile default still applies.
+func (a *API) capValidityDays(days int) int {
+	if a.policy.MaxCertValidityDays > 0 {
+		if days <= 0 || days > a.policy.MaxCertValidityDays {
+			return a.policy.MaxCertValidityDays
+		}
+	}
+	return days
 }
 
 func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddleware) {
@@ -97,6 +124,11 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 
 	mux.Handle("GET /api/audit-log", protected(http.HandlerFunc(a.ListAuditLog)))
 	mux.Handle("GET /api/access-log", protected(http.HandlerFunc(a.ListAccessLog)))
+
+	// Tamper-evident, hash-chained event log covering all key/certificate/secret
+	// and access-control operations, plus its integrity-verification endpoint.
+	mux.Handle("GET /api/events", protected(http.HandlerFunc(a.ListEventLog)))
+	mux.Handle("GET /api/events/verify", protected(http.HandlerFunc(a.VerifyEventLog)))
 
 	// HSM-backed envelope encryption for secrets. Enabled only when a KEK is
 	// configured (secret.kek_label).
@@ -166,8 +198,9 @@ func (a *API) ListCAs(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) CreateCA(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !user.IsRoot {
-		writeError(w, http.StatusForbidden, "only root can create CAs")
+	if !a.can(user, rbac.ActionManageCA) {
+		a.recordEvent(r, audit.ActionCACreate, "", "", audit.ResultDenied, "ca:manage capability required")
+		writeError(w, http.StatusForbidden, "ca:manage capability required (admin role)")
 		return
 	}
 
@@ -227,10 +260,12 @@ func (a *API) CreateCA(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.db.CreateCA(ca); err != nil {
+		a.recordEvent(r, audit.ActionCACreate, ca.ID, ca.Label, audit.ResultError, err.Error())
 		writeError(w, http.StatusInternalServerError, "failed to create CA: %v", err)
 		return
 	}
 
+	a.recordEvent(r, audit.ActionCACreate, ca.ID, ca.Label, audit.ResultSuccess, "key_type="+ca.KeyType)
 	writeJSON(w, http.StatusCreated, ca)
 }
 
@@ -286,16 +321,19 @@ func (a *API) GetPublicKey(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) DeleteCA(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !user.IsRoot {
-		writeError(w, http.StatusForbidden, "only root can delete CAs")
+	id := r.PathValue("id")
+	if !a.can(user, rbac.ActionManageCA) {
+		a.recordEvent(r, audit.ActionCADelete, id, "", audit.ResultDenied, "ca:manage capability required")
+		writeError(w, http.StatusForbidden, "ca:manage capability required (admin role)")
 		return
 	}
 
-	id := r.PathValue("id")
 	if err := a.db.DeleteCA(id); err != nil {
+		a.recordEvent(r, audit.ActionCADelete, id, "", audit.ResultError, err.Error())
 		writeError(w, http.StatusInternalServerError, "failed to delete CA: %v", err)
 		return
 	}
+	a.recordEvent(r, audit.ActionCADelete, id, "", audit.ResultSuccess, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -318,17 +356,16 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
 	caID := r.PathValue("id")
 
-	// Check permission
-	if !user.IsRoot {
-		hasAccess, err := a.checkPermission(user, caID, models.PermSignCertificate)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
-			return
-		}
-		if !hasAccess {
-			writeError(w, http.StatusForbidden, "no SIGN_CERTIFICATE permission on this CA")
-			return
-		}
+	// Check permission: org-wide issuer/admin role OR a per-CA SIGN grant.
+	hasAccess, err := a.canIssueOn(user, caID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
+		return
+	}
+	if !hasAccess {
+		a.recordEvent(r, audit.ActionCertSignSSH, caID, "", audit.ResultDenied, "no SIGN_CERTIFICATE permission on this CA")
+		writeError(w, http.StatusForbidden, "no SIGN_CERTIFICATE permission on this CA")
+		return
 	}
 
 	ca, err := a.db.GetCA(caID)
@@ -345,6 +382,11 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 
 	if req.PublicKey == "" {
 		writeError(w, http.StatusBadRequest, "public_key is required")
+		return
+	}
+
+	if a.policy.RequireReason && req.Reason == "" {
+		writeError(w, http.StatusBadRequest, "a reason is required by policy")
 		return
 	}
 
@@ -485,6 +527,8 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 	// Consume HSM audit logs — the sign entry should now be in the buffer
 	a.consumeHSMAuditLogs(auditEntry.ID)
 
+	a.recordEvent(r, audit.ActionCertSignSSH, caID, ca.Label, audit.ResultSuccess, "serial="+serial+" key_id="+keyID)
+
 	writeJSON(w, http.StatusOK, models.SignResponse{
 		Certificate: string(certBytes),
 		KeyID:       keyID,
@@ -497,16 +541,15 @@ func (a *API) SignX509Certificate(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
 	caID := r.PathValue("id")
 
-	if !user.IsRoot {
-		hasAccess, err := a.checkPermission(user, caID, models.PermSignCertificate)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
-			return
-		}
-		if !hasAccess {
-			writeError(w, http.StatusForbidden, "no SIGN_CERTIFICATE permission on this CA")
-			return
-		}
+	hasAccess, err := a.canIssueOn(user, caID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
+		return
+	}
+	if !hasAccess {
+		a.recordEvent(r, audit.ActionCertSignX509, caID, "", audit.ResultDenied, "no SIGN_CERTIFICATE permission on this CA")
+		writeError(w, http.StatusForbidden, "no SIGN_CERTIFICATE permission on this CA")
+		return
 	}
 
 	ca, err := a.db.GetCA(caID)
@@ -523,6 +566,11 @@ func (a *API) SignX509Certificate(w http.ResponseWriter, r *http.Request) {
 
 	if req.CSR == "" {
 		writeError(w, http.StatusBadRequest, "csr is required")
+		return
+	}
+
+	if a.policy.RequireReason && req.Reason == "" {
+		writeError(w, http.StatusBadRequest, "a reason is required by policy")
 		return
 	}
 
@@ -549,9 +597,12 @@ func (a *API) SignX509Certificate(w http.ResponseWriter, r *http.Request) {
 	a.consumeHSMAuditLogs("")
 
 	if err != nil {
+		a.recordEvent(r, audit.ActionCertSignX509, caID, ca.Label, audit.ResultError, err.Error())
 		writeError(w, http.StatusInternalServerError, "failed to sign X.509 certificate: %v", err)
 		return
 	}
+
+	a.recordEvent(r, audit.ActionCertSignX509, caID, ca.Label, audit.ResultSuccess, "serial="+serial)
 
 	writeJSON(w, http.StatusOK, models.X509SignResponse{
 		Certificate: string(certPEM),
@@ -647,8 +698,8 @@ func (a *API) ListGroups(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) CreateGroup(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !user.IsRoot {
-		writeError(w, http.StatusForbidden, "only root can create groups")
+	if !a.can(user, rbac.ActionManageRBAC) {
+		writeError(w, http.StatusForbidden, "rbac:manage capability required (admin role)")
 		return
 	}
 
@@ -673,8 +724,8 @@ func (a *API) CreateGroup(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !user.IsRoot {
-		writeError(w, http.StatusForbidden, "only root can delete groups")
+	if !a.can(user, rbac.ActionManageRBAC) {
+		writeError(w, http.StatusForbidden, "rbac:manage capability required (admin role)")
 		return
 	}
 
@@ -701,8 +752,8 @@ func (a *API) GetGroupMembers(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) AddGroupMember(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !user.IsRoot {
-		writeError(w, http.StatusForbidden, "only root can manage group members")
+	if !a.can(user, rbac.ActionManageRBAC) {
+		writeError(w, http.StatusForbidden, "rbac:manage capability required (admin role)")
 		return
 	}
 
@@ -724,8 +775,8 @@ func (a *API) AddGroupMember(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) RemoveGroupMember(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !user.IsRoot {
-		writeError(w, http.StatusForbidden, "only root can manage group members")
+	if !a.can(user, rbac.ActionManageRBAC) {
+		writeError(w, http.StatusForbidden, "rbac:manage capability required (admin role)")
 		return
 	}
 
@@ -744,7 +795,7 @@ func (a *API) GetPermissions(w http.ResponseWriter, r *http.Request) {
 	caID := r.PathValue("id")
 	user := middleware.GetUserInfo(r.Context())
 
-	if !user.IsRoot {
+	if !a.can(user, rbac.ActionManageRBAC) {
 		hasAccess, err := a.checkPermission(user, caID, models.PermManagePermissions)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
@@ -771,13 +822,14 @@ func (a *API) GrantPermission(w http.ResponseWriter, r *http.Request) {
 	caID := r.PathValue("id")
 	user := middleware.GetUserInfo(r.Context())
 
-	if !user.IsRoot {
+	if !a.can(user, rbac.ActionManageRBAC) {
 		hasAccess, err := a.checkPermission(user, caID, models.PermManagePermissions)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
 			return
 		}
 		if !hasAccess {
+			a.recordEvent(r, audit.ActionPermissionGrant, caID, "", audit.ResultDenied, "no MANAGE_PERMISSIONS on this CA")
 			writeError(w, http.StatusForbidden, "no MANAGE_PERMISSIONS on this CA")
 			return
 		}
@@ -822,6 +874,8 @@ func (a *API) GrantPermission(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to grant permission: %v", err)
 		return
 	}
+	a.recordEvent(r, audit.ActionPermissionGrant, caID, req.EntityID, audit.ResultSuccess,
+		string(req.Permission)+" to "+req.EntityType+":"+req.EntityID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "granted"})
 }
 
@@ -829,13 +883,14 @@ func (a *API) RevokePermission(w http.ResponseWriter, r *http.Request) {
 	caID := r.PathValue("id")
 	user := middleware.GetUserInfo(r.Context())
 
-	if !user.IsRoot {
+	if !a.can(user, rbac.ActionManageRBAC) {
 		hasAccess, err := a.checkPermission(user, caID, models.PermManagePermissions)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
 			return
 		}
 		if !hasAccess {
+			a.recordEvent(r, audit.ActionPermissionRevoke, caID, "", audit.ResultDenied, "no MANAGE_PERMISSIONS on this CA")
 			writeError(w, http.StatusForbidden, "no MANAGE_PERMISSIONS on this CA")
 			return
 		}
@@ -851,13 +906,15 @@ func (a *API) RevokePermission(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to revoke permission: %v", err)
 		return
 	}
+	a.recordEvent(r, audit.ActionPermissionRevoke, caID, req.EntityID, audit.ResultSuccess,
+		string(req.Permission)+" from "+req.EntityType+":"+req.EntityID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 }
 
 func (a *API) ListAuditLog(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !user.IsRoot {
-		writeError(w, http.StatusForbidden, "only root can view audit logs")
+	if !a.can(user, rbac.ActionReadAudit) {
+		writeError(w, http.StatusForbidden, "audit:read capability required (admin or auditor role)")
 		return
 	}
 
@@ -911,8 +968,8 @@ func (a *API) ListAuditLog(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) ListAccessLog(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !user.IsRoot {
-		writeError(w, http.StatusForbidden, "only root can view access logs")
+	if !a.can(user, rbac.ActionReadAudit) {
+		writeError(w, http.StatusForbidden, "audit:read capability required (admin or auditor role)")
 		return
 	}
 
@@ -987,8 +1044,8 @@ func (a *API) GetHSMInfo(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) GetHSMAttestation(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !user.IsRoot {
-		writeError(w, http.StatusForbidden, "only root can access HSM attestation")
+	if !a.can(user, rbac.ActionManageHSM) {
+		writeError(w, http.StatusForbidden, "hsm:manage capability required (admin role)")
 		return
 	}
 
@@ -1009,8 +1066,8 @@ func (a *API) GetHSMAttestation(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) GetHSMAuditLog(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !user.IsRoot {
-		writeError(w, http.StatusForbidden, "only root can access HSM audit log")
+	if !a.can(user, rbac.ActionReadAudit) {
+		writeError(w, http.StatusForbidden, "audit:read capability required (admin or auditor role)")
 		return
 	}
 
@@ -1099,8 +1156,8 @@ func (a *API) consumeHSMAuditLogs(signAuditID string) {
 
 func (a *API) ExportCombinedAuditLog(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !user.IsRoot {
-		writeError(w, http.StatusForbidden, "only root can export combined audit logs")
+	if !a.can(user, rbac.ActionReadAudit) {
+		writeError(w, http.StatusForbidden, "audit:read capability required (admin or auditor role)")
 		return
 	}
 
@@ -1146,8 +1203,8 @@ func (a *API) ExportCombinedAuditLog(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) GetSignedAuditLog(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !user.IsRoot {
-		writeError(w, http.StatusForbidden, "only root can export signed audit logs")
+	if !a.can(user, rbac.ActionReadAudit) {
+		writeError(w, http.StatusForbidden, "audit:read capability required (admin or auditor role)")
 		return
 	}
 
@@ -1186,8 +1243,9 @@ func (a *API) GetSignedAuditLog(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) ProvisionHSMAudit(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !user.IsRoot {
-		writeError(w, http.StatusForbidden, "only root can provision HSM audit logging")
+	if !a.can(user, rbac.ActionManageHSM) {
+		a.recordEvent(r, audit.ActionHSMProvisionAudit, "", "", audit.ResultDenied, "hsm:manage capability required")
+		writeError(w, http.StatusForbidden, "hsm:manage capability required (admin role)")
 		return
 	}
 
@@ -1215,10 +1273,12 @@ func (a *API) ProvisionHSMAudit(w http.ResponseWriter, r *http.Request) {
 	output, err := hsm.ProvisionAuditLogging(a.hsmCfg)
 	a.consumeHSMAuditLogs("")
 	if err != nil {
+		a.recordEvent(r, audit.ActionHSMProvisionAudit, "", "", audit.ResultError, err.Error())
 		writeError(w, http.StatusInternalServerError, "failed to provision: %v", err)
 		return
 	}
 
+	a.recordEvent(r, audit.ActionHSMProvisionAudit, "", "", audit.ResultSuccess, "")
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status": "provisioned",
 		"output": output,
@@ -1227,16 +1287,19 @@ func (a *API) ProvisionHSMAudit(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) FactoryResetHSM(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !user.IsRoot {
-		writeError(w, http.StatusForbidden, "only root can factory reset the HSM")
+	if !a.can(user, rbac.ActionManageHSM) {
+		a.recordEvent(r, audit.ActionHSMFactoryReset, "", "", audit.ResultDenied, "hsm:manage capability required")
+		writeError(w, http.StatusForbidden, "hsm:manage capability required (admin role)")
 		return
 	}
 
 	if err := hsm.FactoryReset(a.hsmCfg); err != nil {
+		a.recordEvent(r, audit.ActionHSMFactoryReset, "", "", audit.ResultError, err.Error())
 		writeError(w, http.StatusInternalServerError, "factory reset failed: %v", err)
 		return
 	}
 
+	a.recordEvent(r, audit.ActionHSMFactoryReset, "", "", audit.ResultSuccess, "all keys and logs erased")
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status": "factory reset complete — all keys and logs have been erased",
 	})

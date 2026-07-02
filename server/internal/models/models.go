@@ -314,4 +314,9 @@ type UserInfo struct {
 	Email   string `json:"email,omitempty"`
 	Name    string `json:"name,omitempty"`
 	IsRoot  bool   `json:"is_root"`
+	// Roles are the organization-wide RBAC roles (admin/issuer/auditor) the
+	// authenticated subject holds, resolved at authentication time from central
+	// configuration plus group membership. The built-in root user carries no
+	// roles here; it is always treated as a superuser regardless.
+	Roles []string `json:"roles,omitempty"`
 }
