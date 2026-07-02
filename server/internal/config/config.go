@@ -366,6 +366,15 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SECSY_USER_PIN"); v != "" {
 		cfg.PKCS11.Pin = v
 	}
+	// The built-in root password is a credential and must not live in a config
+	// file or ConfigMap. Allow it to be injected from the environment (e.g. a
+	// Kubernetes Secret) so deployments can keep it out of version control.
+	if v := os.Getenv("SECSY_ROOT_PASSWORD"); v != "" {
+		cfg.RootUser.Password = v
+	}
+	if v := os.Getenv("SECSY_TOKEN_SERIAL"); v != "" {
+		cfg.PKCS11.TokenSerial = v
+	}
 	if v := os.Getenv("SECSY_SOFTWARE_KEYSTORE_DIR"); v != "" {
 		cfg.KeyProvider.Software.KeystoreDir = v
 	}

@@ -1,0 +1,201 @@
+{{- $tlsSecret := include "secsy-pki.tlsSecretName" . -}}
+{{- $softhsm := eq .Values.hsm.module.mode "softhsm" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "secsy-pki.fullname" . }}
+  labels:
+    {{- include "secsy-pki.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # SQLite state is single-writer; avoid rolling two writers onto one RWO volume.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "secsy-pki.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # Roll pods when the rendered config changes.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "secsy-pki.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "secsy-pki.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if $softhsm }}
+      initContainers:
+        # Provision a SoftHSM token into a shared volume so the PKCS#11 readiness
+        # probe succeeds. Idempotent: re-running leaves an existing token intact.
+        - name: softhsm-init
+          image: {{ include "secsy-pki.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["/bin/sh", "-euc"]
+          args:
+            - |
+              LABEL="{{ .Values.hsm.token.label }}"
+              if softhsm2-util --show-slots | grep -q "Label:[[:space:]]*$LABEL"; then
+                echo "SoftHSM token '$LABEL' already initialized; skipping."
+                exit 0
+              fi
+              echo "Initializing SoftHSM token '$LABEL'..."
+              softhsm2-util --init-token --free \
+                --label "$LABEL" \
+                --so-pin "{{ .Values.hsm.softhsm.soPin }}" \
+                --pin "$SECSY_USER_PIN"
+              softhsm2-util --show-slots
+          env:
+            - name: SECSY_USER_PIN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "secsy-pki.secretName" . }}
+                  key: {{ .Values.secrets.pinKey }}
+          volumeMounts:
+            - name: softhsm-tokens
+              mountPath: /var/lib/softhsm/tokens
+      {{- end }}
+      containers:
+        - name: secsy-pki
+          image: {{ include "secsy-pki.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          args:
+            - "-config"
+            - "/etc/secsy/config.yaml"
+          ports:
+            - name: http
+              containerPort: {{ int .Values.config.server.port }}
+              protocol: TCP
+            {{- if and .Values.config.acme.enabled (gt (int .Values.config.acme.http01Port) 0) }}
+            - name: acme-http01
+              containerPort: {{ int .Values.config.acme.http01Port }}
+              protocol: TCP
+            {{- end }}
+          env:
+            - name: SECSY_USER_PIN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "secsy-pki.secretName" . }}
+                  key: {{ .Values.secrets.pinKey }}
+            - name: SECSY_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "secsy-pki.secretName" . }}
+                  key: {{ .Values.secrets.rootPasswordKey }}
+            {{- if .Values.tls.allowInsecureHTTP }}
+            - name: SECSY_ALLOW_INSECURE_HTTP
+              value: "1"
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if .Values.probes.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.startup.path }}
+              port: http
+              scheme: {{ include "secsy-pki.scheme" . }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+              scheme: {{ include "secsy-pki.scheme" . }}
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+              scheme: {{ include "secsy-pki.scheme" . }}
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/secsy
+              readOnly: true
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+            - name: tmp
+              mountPath: /tmp
+            {{- if $softhsm }}
+            - name: softhsm-tokens
+              mountPath: /var/lib/softhsm/tokens
+            {{- end }}
+            {{- if eq .Values.hsm.module.mode "hostPath" }}
+            - name: pkcs11-module
+              mountPath: {{ .Values.hsm.module.hostPath.path }}
+              readOnly: true
+            {{- end }}
+            {{- if $tlsSecret }}
+            - name: tls
+              mountPath: /etc/secsy/tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "secsy-pki.fullname" . }}
+        - name: tmp
+          emptyDir: {}
+        - name: data
+        {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (include "secsy-pki.fullname" .) }}
+        {{- else }}
+          emptyDir: {}
+        {{- end }}
+        {{- if $softhsm }}
+        - name: softhsm-tokens
+          emptyDir: {}
+        {{- end }}
+        {{- if eq .Values.hsm.module.mode "hostPath" }}
+        - name: pkcs11-module
+          hostPath:
+            path: {{ .Values.hsm.module.hostPath.path }}
+            type: {{ .Values.hsm.module.hostPath.type }}
+        {{- end }}
+        {{- if $tlsSecret }}
+        - name: tls
+          secret:
+            secretName: {{ $tlsSecret }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

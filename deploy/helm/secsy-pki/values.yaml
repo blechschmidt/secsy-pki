@@ -1,0 +1,286 @@
+# Default values for the secsy-pki Helm chart.
+# See deploy/helm/secsy-pki/README.md and docs/kubernetes.md for the full guide.
+
+# -- Number of server replicas. secsy-pki uses SQLite by default (ReadWriteOnce
+# state), so keep this at 1 unless you point database.dsn at a shared/external
+# database and provision an RWX or external volume.
+replicaCount: 1
+
+image:
+  repository: secsy-pki
+  # -- Image tag. Defaults to the chart appVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# --- Pod / container security -------------------------------------------------
+# The image runs as non-root UID/GID 65532. fsGroup lets the mounted state and
+# SoftHSM token volumes be group-writable by that user.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# --- Service / networking -----------------------------------------------------
+service:
+  type: ClusterIP
+  port: 8443
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: pki.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: secsy-pki-ingress-tls
+  #    hosts:
+  #      - pki.example.com
+
+# --- secsy-pki application config ---------------------------------------------
+# These map onto server config.yaml. The chart renders a ConfigMap from them and
+# overlays secret material (HSM PIN, root password) via environment variables so
+# secrets never land in the ConfigMap.
+config:
+  server:
+    host: "0.0.0.0"
+    port: 8443
+
+  database:
+    driver: sqlite
+    # Points at the persistent volume mount when persistence.enabled=true.
+    dsn: /app/data/secsy-pki.db
+
+  oidc:
+    issuerURL: ""
+    clientID: ""
+
+  rootUser:
+    username: root
+    # Password is injected from a Secret (see secrets.rootPassword), never here.
+
+  # Key provider: "pkcs11" (HSM) or "software" (on-disk keystore, dev only).
+  keyProvider:
+    type: pkcs11
+    software:
+      keystoreDir: /app/data/keystore
+
+  # Secret / envelope encryption. Leave kekLabel empty to disable the API.
+  secret:
+    kekLabel: ""
+
+  policy:
+    maxCertValidityDays: 0
+    requireReason: false
+    # In production, disable the shared root basic-auth superuser once OIDC
+    # admins are configured.
+    allowRootBasicAuth: true
+
+  # Organization-wide RBAC role assignments (see docs/rbac-and-audit.md).
+  rbac:
+    subjects: {}
+    #  "oidc-subject-id": [admin]
+    groups: {}
+    #  "group-uuid": [issuer]
+
+  # Custom certificate profiles layered over the built-ins.
+  profiles: []
+
+  # Certificate-expiry monitor + auto-renewal (docs/expiry-monitoring.md).
+  monitor:
+    enabled: false
+    intervalHours: 12
+    warningDays: 30
+    criticalDays: 7
+    autoRenew: false
+    renewBeforeDays: 30
+    renewProfiles: []
+    notifications: []
+
+  # ACME (RFC 8555) server. Enable this to let cert-manager (or certbot/lego)
+  # request HSM-backed certificates. See certManager.* below and docs/acme.md.
+  acme:
+    enabled: false
+    baseURL: ""
+    caLabel: ""
+    caID: ""
+    profile: server
+    challengeTypes: ["http-01", "dns-01"]
+    http01Port: 0
+    requireEAB: false
+
+# --- HSM / PKCS#11 -----------------------------------------------------------
+hsm:
+  # module.mode selects where the PKCS#11 shared object comes from:
+  #   softhsm  – use the SoftHSM2 module baked into the image (dev / CI). An init
+  #              container provisions a token so /readyz passes.
+  #   hostPath – bind-mount a vendor module + config from the node (e.g. a
+  #              network-HSM client installed on the host).
+  #   image    – the module is already present in a custom image; just point
+  #              modulePath at it.
+  module:
+    mode: softhsm
+    # Path to the PKCS#11 .so inside the container. For softhsm mode this is the
+    # image's bundled module; override for real HSMs.
+    modulePath: /usr/lib/softhsm/libsofthsm2.so
+    hostPath:
+      # Directory on the node containing the vendor PKCS#11 library and any
+      # config it needs. Mounted read-only at the same path in the container.
+      path: /usr/lib/pkcs11
+      type: Directory
+
+  token:
+    # CKA token label the CA/KEK keys live under.
+    label: secsy-pki
+    # Extra selectors (optional) to disambiguate a slot.
+    serial: ""
+    manufacturer: ""
+
+  # SoftHSM-only: the init container initializes a token with these parameters
+  # into a shared volume before the server starts. Ignored for hostPath/image.
+  softhsm:
+    soPin: "0002"
+    tokensSubPath: tokens
+
+# --- Secrets ------------------------------------------------------------------
+# The HSM user PIN and the root password are always sourced from a Kubernetes
+# Secret and injected as env vars (SECSY_USER_PIN / SECSY_ROOT_PASSWORD).
+secrets:
+  # create=true renders a Secret from the literal values below (convenient for
+  # dev / CI). In production set create=false and reference an existing Secret,
+  # e.g. one synced by External Secrets / Vault.
+  create: true
+  existingSecret: ""
+  # Keys within the Secret.
+  pinKey: user-pin
+  rootPasswordKey: root-password
+  # Literal values used only when create=true. DO NOT commit real secrets here.
+  userPin: "1234"
+  rootPassword: "change-me-in-production"
+
+# Extra environment variables passed to the server container.
+extraEnv: []
+#  - name: SECSY_ALLOW_INSECURE_HTTP
+#    value: "1"
+
+# --- Server TLS ---------------------------------------------------------------
+# The server refuses to start in cleartext unless allowInsecureHTTP=true. Choose
+# exactly one TLS source, or terminate TLS at an ingress/proxy and set
+# allowInsecureHTTP=true.
+tls:
+  # existingSecret: a kubernetes.io/tls Secret providing tls.crt / tls.key.
+  existingSecret: ""
+  # certManager: have this chart render a cert-manager Certificate that issues
+  # the server's own TLS cert (typically from the secsy issuer itself, once a CA
+  # exists, or any other issuer). The resulting Secret is mounted automatically.
+  certManager:
+    enabled: false
+    issuerRef:
+      name: ""
+      kind: ClusterIssuer
+      group: cert-manager.io
+    dnsNames: []
+  # allowInsecureHTTP runs the server as plain HTTP (SECSY_ALLOW_INSECURE_HTTP=1).
+  # Only for use behind a trusted TLS-terminating proxy/ingress.
+  allowInsecureHTTP: false
+
+# --- Persistence --------------------------------------------------------------
+persistence:
+  enabled: true
+  # existingClaim: "" to reuse a PVC instead of creating one.
+  existingClaim: ""
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  # Mount point for writable state (SQLite DB, software keystore).
+  mountPath: /app/data
+
+# --- Probes -------------------------------------------------------------------
+# Wired to the server's /healthz (liveness) and /readyz (readiness, incl. HSM
+# and DB probes). Scheme follows tls.allowInsecureHTTP.
+probes:
+  liveness:
+    enabled: true
+    path: /healthz
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    path: /readyz
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 6
+  startup:
+    enabled: true
+    path: /healthz
+    periodSeconds: 5
+    failureThreshold: 30
+
+# --- Prometheus ServiceMonitor (optional) ------------------------------------
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+  # /metrics is served on the same port; scheme follows TLS settings.
+
+# --- cert-manager integration -------------------------------------------------
+# When acme.enabled and certManager.clusterIssuer.enabled are both true, the
+# chart renders a cert-manager ACME ClusterIssuer pointing at this server's ACME
+# directory, so workloads issue HSM-backed certs with a plain Certificate object.
+certManager:
+  clusterIssuer:
+    enabled: false
+    name: secsy-pki
+    # ACME account registration email.
+    email: "admin@example.com"
+    # Server URL of the secsy ACME directory. Defaults to the in-cluster service
+    # when empty (https://<svc>.<ns>.svc:<port>/acme/directory).
+    server: ""
+    # Name of the Secret cert-manager stores the ACME account key in.
+    privateKeySecretName: secsy-pki-acme-account-key
+    # solvers lets you override the default http01 ingress solver.
+    solvers: []
+    # skipTLSVerify trusts the ACME server's TLS without a CA bundle (dev only).
+    skipTLSVerify: false
+    # caBundle: base64 PEM of the CA that signed the ACME server's TLS cert.
+    caBundle: ""

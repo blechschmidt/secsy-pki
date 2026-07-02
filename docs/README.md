@@ -20,6 +20,7 @@ CA, secret-encryption, and governance features.
 | [Password / secret encryption](password-encryption.md) | HSM-backed envelope encryption for passwords and small secrets (`secsy-secret`, `/api/secret/*`) |
 | [RBAC, audit logging & config](rbac-and-audit.md) | Organization-wide roles, per-CA permissions, the hash-chained event log, and centralized policy/profiles |
 | [Observability](observability.md) | Prometheus `/metrics`, `/healthz` & `/readyz` (with HSM probe), structured JSON request logging, and a Prometheus/Grafana setup |
+| [Kubernetes deployment](kubernetes.md) | Multi-stage container image, Helm chart (HSM/PKCS#11 module mount, PIN via Secret, TLS, RBAC/policy config, `/healthz`+`/readyz` probes), cert-manager ACME issuer for HSM-backed workload certs, and a kind/SoftHSM smoke test |
 | [Production HSM migration](hsm-migration.md) | Moving from SoftHSM to a real HSM (YubiHSM / network HSM) for production |
 | [Security review & hardening](security-review.md) | The security review of the enterprise branch: findings, fixes, residual risks, and how to re-verify |
 | [Fuzz & property testing](fuzzing.md) | Native `go test -fuzz` over the untrusted-input parsers (CSR/DER, ACME JOSE/JWS, secret-envelope decrypt, OCSP/cert): targets, how to run local campaigns, CI smoke run, and handling crashes |
@@ -37,6 +38,8 @@ Related top-level docs: [architecture](../ARCHITECTURE.md) ·
 3. **Going to production** → [Production HSM migration](hsm-migration.md) →
    [Key ceremony, backup & DR](key-ceremony.md) →
    [Observability](observability.md).
+4. **Deploying on Kubernetes** → [Kubernetes deployment](kubernetes.md)
+   (container image, Helm chart, cert-manager issuer).
 
 ## The tools at a glance
 

@@ -1,0 +1,38 @@
+# Standalone cert-manager ACME ClusterIssuer for secsy-pki.
+#
+# Use this if you deploy secsy-pki without the chart's built-in issuer
+# (certManager.clusterIssuer.enabled=false) or manage cert-manager resources
+# separately. It makes cert-manager request HSM-backed certificates from the
+# secsy-pki ACME server, so any workload can obtain certs with a plain
+# Certificate object that references this issuer.
+#
+# Prerequisites:
+#   * cert-manager installed in the cluster.
+#   * secsy-pki running with config.acme.enabled=true and an ACME-enabled issuing
+#     CA (see docs/acme.md).
+#
+# Adjust:
+#   * spec.acme.server        -> the in-cluster (or public) ACME directory URL.
+#   * spec.acme.email         -> your ACME account contact.
+#   * spec.acme.solvers       -> ingress class / dns-01 provider for challenges.
+#   * skipTLSVerify/caBundle  -> trust for the ACME server's TLS certificate.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: secsy-pki
+spec:
+  acme:
+    # In-cluster service form: https://<release>.<namespace>.svc:<port>/acme/directory
+    server: https://secsy-pki.secsy-pki.svc:8443/acme/directory
+    email: admin@example.com
+    privateKeySecretRef:
+      name: secsy-pki-acme-account-key
+    # The secsy ACME server usually presents a cert from its own CA, which
+    # cert-manager will not trust by default. Supply the CA bundle (preferred)
+    # or, for non-production, set skipTLSVerify: true.
+    # caBundle: <base64 PEM of the secsy CA>
+    skipTLSVerify: true
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx

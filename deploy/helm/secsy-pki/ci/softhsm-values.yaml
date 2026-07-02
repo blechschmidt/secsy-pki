@@ -1,0 +1,46 @@
+# Values used by scripts/k8s-smoke-test.sh (kind + SoftHSM). This intentionally
+# runs a self-contained, ephemeral instance: bundled SoftHSM, no ingress, no
+# persistence, and cleartext HTTP behind the cluster network (never do this in
+# production). It exercises the full chart including the HSM readiness probe.
+image:
+  repository: secsy-pki
+  tag: ci
+  pullPolicy: IfNotPresent
+
+hsm:
+  module:
+    mode: softhsm
+  token:
+    label: secsy-ci
+  softhsm:
+    soPin: "0002"
+
+secrets:
+  create: true
+  userPin: "1234"
+  rootPassword: "ci-root-password"
+
+# Terminate no TLS: serve plain HTTP so the smoke test can curl endpoints without
+# a cert. The server refuses cleartext unless this is set.
+tls:
+  allowInsecureHTTP: true
+
+persistence:
+  enabled: false
+
+# Keep the CI pod light and fast to schedule on kind.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: "1"
+    memory: 256Mi
+
+probes:
+  readiness:
+    initialDelaySeconds: 3
+    periodSeconds: 3
+  startup:
+    periodSeconds: 3
+    failureThreshold: 40

@@ -1,0 +1,24 @@
+# Example workload certificate request. Once the secsy-pki ClusterIssuer exists,
+# any team requests an HSM-backed certificate declaratively — cert-manager drives
+# the ACME order/challenge against secsy-pki, which signs it with an HSM-held CA
+# key, and stores the result in the named Secret for the workload to mount.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: example-app-tls
+  namespace: default
+spec:
+  # cert-manager writes tls.crt / tls.key here.
+  secretName: example-app-tls
+  duration: 2160h    # 90d
+  renewBefore: 720h  # 30d
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  dnsNames:
+    - example-app.default.svc
+    - example-app.example.com
+  issuerRef:
+    name: secsy-pki
+    kind: ClusterIssuer
+    group: cert-manager.io

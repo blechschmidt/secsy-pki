@@ -1,0 +1,22 @@
+# Keep the build context small and reproducible. Only server/ sources are needed
+# by the Dockerfile; everything else is docs, local state, or tooling.
+.git
+.github
+.cloop
+docs
+terraform
+test-ssh
+deploy
+scripts
+*.md
+
+# Local/build state that must never leak into an image layer.
+server/secsy-pki.db
+server/secsy-pki.db-shm
+server/secsy-pki.db-wal
+server/secsy-pki-server
+server/ssh-pki-server
+server/ssh-pki.db*
+server/certs
+server/keystore
+**/*.exe

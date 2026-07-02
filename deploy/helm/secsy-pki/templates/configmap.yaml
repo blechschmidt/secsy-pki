@@ -1,0 +1,84 @@
+{{- $c := .Values.config -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "secsy-pki.fullname" . }}
+  labels:
+    {{- include "secsy-pki.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    # Rendered by the secsy-pki Helm chart. Secret material (HSM PIN, root
+    # password) is injected via environment variables, not written here.
+    server:
+      host: {{ $c.server.host | quote }}
+      port: {{ int $c.server.port }}
+    {{- if (include "secsy-pki.podTLSEnabled" .) }}
+      tls_cert: /etc/secsy/tls/tls.crt
+      tls_key: /etc/secsy/tls/tls.key
+    {{- end }}
+
+    database:
+      driver: {{ $c.database.driver | quote }}
+      dsn: {{ $c.database.dsn | quote }}
+
+    oidc:
+      issuer_url: {{ $c.oidc.issuerURL | quote }}
+      client_id: {{ $c.oidc.clientID | quote }}
+
+    root_user:
+      username: {{ $c.rootUser.username | quote }}
+
+    key_provider:
+      type: {{ $c.keyProvider.type | quote }}
+      software:
+        keystore_dir: {{ $c.keyProvider.software.keystoreDir | quote }}
+
+    pkcs11:
+      module_path: {{ .Values.hsm.module.modulePath | quote }}
+      token_label: {{ .Values.hsm.token.label | quote }}
+    {{- with .Values.hsm.token.serial }}
+      token_serial: {{ . | quote }}
+    {{- end }}
+    {{- with .Values.hsm.token.manufacturer }}
+      token_manufacturer: {{ . | quote }}
+    {{- end }}
+
+    secret:
+      kek_label: {{ $c.secret.kekLabel | quote }}
+
+    policy:
+      max_cert_validity_days: {{ int $c.policy.maxCertValidityDays }}
+      require_reason: {{ $c.policy.requireReason }}
+      allow_root_basic_auth: {{ $c.policy.allowRootBasicAuth }}
+
+    rbac:
+      subjects:
+        {{- toYaml $c.rbac.subjects | nindent 8 }}
+      groups:
+        {{- toYaml $c.rbac.groups | nindent 8 }}
+
+    profiles:
+      {{- toYaml $c.profiles | nindent 6 }}
+
+    monitor:
+      enabled: {{ $c.monitor.enabled }}
+      interval_hours: {{ int $c.monitor.intervalHours }}
+      warning_days: {{ int $c.monitor.warningDays }}
+      critical_days: {{ int $c.monitor.criticalDays }}
+      auto_renew: {{ $c.monitor.autoRenew }}
+      renew_before_days: {{ int $c.monitor.renewBeforeDays }}
+      renew_profiles:
+        {{- toYaml $c.monitor.renewProfiles | nindent 8 }}
+      notifications:
+        {{- toYaml $c.monitor.notifications | nindent 8 }}
+
+    acme:
+      enabled: {{ $c.acme.enabled }}
+      base_url: {{ $c.acme.baseURL | quote }}
+      ca_label: {{ $c.acme.caLabel | quote }}
+      ca_id: {{ $c.acme.caID | quote }}
+      profile: {{ $c.acme.profile | quote }}
+      challenge_types:
+        {{- toYaml $c.acme.challengeTypes | nindent 8 }}
+      http01_port: {{ int $c.acme.http01Port }}
+      require_eab: {{ $c.acme.requireEAB }}

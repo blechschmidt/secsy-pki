@@ -1,0 +1,42 @@
+secsy-pki has been deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+1. Watch the pod come up (readiness gates on the HSM + DB probe):
+
+   kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "secsy-pki.fullname" . }}
+
+2. Reach the API/UI:
+{{- if .Values.ingress.enabled }}
+   Ingress:
+   {{- range .Values.ingress.hosts }}
+     http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+   {{- end }}
+{{- else }}
+   Port-forward the {{ if .Values.tls.allowInsecureHTTP }}HTTP{{ else }}HTTPS{{ end }} service:
+
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "secsy-pki.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+     curl -k {{ if .Values.tls.allowInsecureHTTP }}http{{ else }}https{{ end }}://localhost:{{ .Values.service.port }}/healthz
+{{- end }}
+
+3. Provider: {{ .Values.config.keyProvider.type }} / HSM module mode: {{ .Values.hsm.module.mode }}
+{{- if eq .Values.hsm.module.mode "softhsm" }}
+   (SoftHSM token "{{ .Values.hsm.token.label }}" is auto-initialized by an init
+   container — suitable for dev/CI, NOT production.)
+{{- end }}
+
+4. Create your first CA on the HSM (run inside the pod):
+
+   kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "secsy-pki.fullname" . }} -- \
+     secsy-ca -config /etc/secsy/config.yaml init-root \
+       -label "{{ .Values.hsm.token.label }}-root" -cn "Secsy Root CA"
+
+{{- if .Values.certManager.clusterIssuer.enabled }}
+
+5. cert-manager ClusterIssuer "{{ .Values.certManager.clusterIssuer.name }}" was created,
+   pointing at {{ include "secsy-pki.acmeDirectoryURL" . }}
+   Workloads can now request HSM-backed certs with a Certificate referencing it.
+{{- else if not .Values.config.acme.enabled }}
+
+5. To let workloads request certs via cert-manager, enable the ACME server
+   (config.acme.enabled=true) and the ClusterIssuer
+   (certManager.clusterIssuer.enabled=true). See docs/kubernetes.md.
+{{- end }}

@@ -27,6 +27,7 @@ Comprehensive deployment and operations guides live in [`docs/`](docs/README.md)
 | [Password / secret encryption](docs/password-encryption.md) | HSM-backed envelope encryption |
 | [RBAC, audit logging & config](docs/rbac-and-audit.md) | Roles, event log, centralized policy |
 | [Observability](docs/observability.md) | Prometheus `/metrics`, health/readiness probes, structured logs |
+| [Kubernetes deployment](docs/kubernetes.md) | Container image, Helm chart, cert-manager ACME issuer, kind/SoftHSM smoke test |
 | [Production HSM migration](docs/hsm-migration.md) | SoftHSM → real HSM cutover |
 
 The `secsy-ca` and `secsy-secret` CLIs drive the CA and secret features; see the guides above. The sections below document the base server, SSH workflow, and per-key signing API.

@@ -1,0 +1,24 @@
+{{- if .Values.tls.certManager.enabled }}
+# cert-manager Certificate for the server's own TLS listener. cert-manager writes
+# the issued key/cert into the Secret mounted by the Deployment at /etc/secsy/tls.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "secsy-pki.fullname" . }}-tls
+  labels:
+    {{- include "secsy-pki.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "secsy-pki.tlsSecretName" . }}
+  dnsNames:
+    {{- if .Values.tls.certManager.dnsNames }}
+    {{- toYaml .Values.tls.certManager.dnsNames | nindent 4 }}
+    {{- else }}
+    - {{ include "secsy-pki.fullname" . }}
+    - {{ printf "%s.%s.svc" (include "secsy-pki.fullname" .) .Release.Namespace }}
+    - {{ printf "%s.%s.svc.cluster.local" (include "secsy-pki.fullname" .) .Release.Namespace }}
+    {{- end }}
+  issuerRef:
+    name: {{ required "tls.certManager.issuerRef.name is required" .Values.tls.certManager.issuerRef.name }}
+    kind: {{ .Values.tls.certManager.issuerRef.kind }}
+    group: {{ .Values.tls.certManager.issuerRef.group }}
+{{- end }}

@@ -1,0 +1,73 @@
+name: Kubernetes smoke (kind + SoftHSM)
+
+# Builds the container image and deploys the Helm chart onto an ephemeral kind
+# cluster using the SoftHSM module bundled in the image, then verifies the full
+# path: the SoftHSM init container provisions a token, the pod becomes Ready
+# (which means /readyz passed — the server reached the HSM via PKCS#11 and the
+# PIN was accepted in-cluster), /healthz and /readyz respond, and an HSM-backed
+# root CA can be created inside the pod.
+#
+# This exercises deploy/helm/secsy-pki, the Dockerfile, and scripts/k8s-smoke-test.sh.
+
+on:
+  push:
+    branches: [enterprise]
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "deploy/**"
+      - "scripts/k8s-smoke-test.sh"
+      - "server/**"
+      - ".github/workflows/k8s-smoke.yaml"
+  pull_request:
+    branches: [enterprise]
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "deploy/**"
+      - "scripts/k8s-smoke-test.sh"
+      - "server/**"
+      - ".github/workflows/k8s-smoke.yaml"
+  workflow_dispatch:
+
+concurrency:
+  group: k8s-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  kind-smoke:
+    name: kind + SoftHSM deployment smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lint the Helm chart
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: helm lint + template
+        run: |
+          helm lint deploy/helm/secsy-pki
+          helm template t deploy/helm/secsy-pki \
+            -f deploy/helm/secsy-pki/ci/softhsm-values.yaml >/dev/null
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: secsy-smoke
+          # The smoke script creates its own cluster if none exists, but doing it
+          # here caches the node image and keeps the script focused on deploy.
+          wait: 120s
+
+      - name: Run the deployment smoke test
+        env:
+          CLUSTER_NAME: secsy-smoke
+          KEEP: "1" # kind-action manages teardown
+        run: scripts/k8s-smoke-test.sh
