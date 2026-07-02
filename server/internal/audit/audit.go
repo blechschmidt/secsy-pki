@@ -53,6 +53,14 @@ const (
 	ActionGroupDelete         = "group.delete"
 	ActionHSMProvisionAudit   = "hsm.provision_audit"
 	ActionHSMFactoryReset     = "hsm.factory_reset"
+	// ACME (RFC 8555) protocol operations. The actor for these is the ACME
+	// account ("acme:<account-id>") rather than an OIDC/root principal, since
+	// ACME clients authenticate with their own account keys.
+	ActionACMEAccountNew    = "acme.account.new"
+	ActionACMEOrderNew      = "acme.order.new"
+	ActionACMEOrderFinalize = "acme.order.finalize"
+	ActionACMEChallenge     = "acme.challenge"
+	ActionACMECertRevoke    = "acme.cert.revoke"
 )
 
 // Event is a single entry in the tamper-evident audit log. Seq is a

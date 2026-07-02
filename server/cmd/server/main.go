@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/acme"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
@@ -143,6 +145,18 @@ func main() {
 	mux := http.NewServeMux()
 	api.RegisterRoutes(mux, authMw)
 
+	// ACME (RFC 8555) automated-issuance server. Its endpoints authenticate
+	// clients via JWS account keys (not OIDC/basic auth) and are therefore
+	// registered directly on the mux, outside the OIDC auth middleware.
+	if cfg.ACME.Enabled {
+		acmeCfg, err := buildACMEConfig(db, cfg)
+		if err != nil {
+			log.Fatalf("ACME configuration error: %v", err)
+		}
+		acmeSrv := acme.New(db, provider, acmeCfg)
+		acmeSrv.Register(mux)
+	}
+
 	// Serve the SPA
 	webDir := "web/static"
 	if _, err := os.Stat(webDir); err == nil {
@@ -208,6 +222,56 @@ func insecureHTTPAllowed() bool {
 		return true
 	}
 	return false
+}
+
+// buildACMEConfig resolves the ACME issuing CA and assembles the acme.Config
+// from the application config. It fails if the configured CA does not exist or
+// is not an X.509 issuer, so misconfiguration surfaces at startup.
+func buildACMEConfig(db *database.DB, cfg *config.Config) (acme.Config, error) {
+	caID := cfg.ACME.CAID
+	if caID == "" && cfg.ACME.CALabel != "" {
+		found, err := db.GetCAByLabel(cfg.ACME.CALabel)
+		if err != nil {
+			return acme.Config{}, fmt.Errorf("looking up ACME CA by label %q: %w", cfg.ACME.CALabel, err)
+		}
+		if found == nil {
+			return acme.Config{}, fmt.Errorf("ACME CA with label %q not found", cfg.ACME.CALabel)
+		}
+		caID = found.ID
+	}
+	if caID == "" {
+		return acme.Config{}, fmt.Errorf("no ACME issuing CA configured (set acme.ca_id or acme.ca_label)")
+	}
+	issuer, err := db.GetCA(caID)
+	if err != nil {
+		return acme.Config{}, fmt.Errorf("looking up ACME CA %q: %w", caID, err)
+	}
+	if issuer == nil {
+		return acme.Config{}, fmt.Errorf("ACME CA %q not found", caID)
+	}
+	if issuer.Certificate == "" {
+		return acme.Config{}, fmt.Errorf("ACME CA %q is not an X.509 issuer (no certificate)", issuer.Label)
+	}
+
+	ac := acme.Config{
+		BaseURL:            cfg.ACME.BaseURL,
+		DirectoryPath:      cfg.ACME.DirectoryPath,
+		CAID:               caID,
+		Profile:            cfg.ACME.Profile,
+		TermsOfService:     cfg.ACME.TermsOfService,
+		HTTP01Port:         cfg.ACME.HTTP01Port,
+		ChallengeTypes:     cfg.ACME.ChallengeTypes,
+		RequireEAB:         cfg.ACME.RequireEAB,
+		EABHMACKeys:        cfg.ACME.EABHMACKeys,
+		AllowIPIdentifiers: cfg.ACME.AllowIPIdentifiers,
+	}
+	if cfg.ACME.OrderValidityHours > 0 {
+		ac.OrderValidity = time.Duration(cfg.ACME.OrderValidityHours) * time.Hour
+	}
+	if cfg.ACME.AuthzValidityHours > 0 {
+		ac.AuthzValidity = time.Duration(cfg.ACME.AuthzValidityHours) * time.Hour
+	}
+	return ac, nil
 }
 
 // toRoleMap converts a config string->[]string role map into the typed form the

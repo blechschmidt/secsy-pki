@@ -80,3 +80,16 @@ profiles: []
 #     ext_key_usages: [clientAuth]
 #     default_validity_days: 7
 #     max_validity_days: 30
+
+# acme configures the RFC 8555 automated-issuance server (certbot / lego /
+# acme.sh). Disabled by default; see docs/acme.md. When enabled, point it at an
+# existing X.509 issuing CA and a certificate profile.
+acme:
+  enabled: false
+  # base_url: "https://pki.example.com"   # else derived from the request Host
+  # ca_label: "Secsy Issuing CA"          # or ca_id; the CA that signs ACME certs
+  profile: "server"                       # the ACME-enabled profile
+  challenge_types: ["http-01", "dns-01"]  # wildcards require dns-01
+  # require_eab: true                     # restrict who may register (RBAC-like)
+  # eab_hmac_keys:
+  #   team-web: "base64url-or-base64-hmac-key"

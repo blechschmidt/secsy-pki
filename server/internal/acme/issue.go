@@ -1,0 +1,464 @@
+package acme
+
+import (
+	"bytes"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"fmt"
+	"net/http"
+	"sort"
+	"strings"
+
+	jose "github.com/go-jose/go-jose/v4"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/audit"
+	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/models"
+)
+
+// handleFinalize issues the certificate for a ready order from a client CSR.
+func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
+	acct, payload, prob := s.authAccount(r)
+	if prob != nil {
+		s.writeProblem(w, prob)
+		return
+	}
+	order, prob := s.loadOwnedOrder(r, acct)
+	if prob != nil {
+		s.writeProblem(w, prob)
+		return
+	}
+
+	s.refreshOrderStatus(order)
+
+	// Idempotency: a client that retries finalize on an already-issued order
+	// should just get the order back.
+	if order.Status == models.ACMEOrderStatusValid {
+		w.Header().Set("Location", s.orderURL(r, order.ID))
+		s.writeOrder(w, r, order)
+		return
+	}
+	if order.Status != models.ACMEOrderStatusReady {
+		s.writeProblem(w, newProblem(probOrderNotReady, http.StatusForbidden,
+			"order is not ready to be finalized (status: "+order.Status+")"))
+		return
+	}
+
+	var req finalizeRequest
+	if err := json.Unmarshal(payload, &req); err != nil || req.CSR == "" {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest, "finalize requires a base64url-encoded CSR"))
+		return
+	}
+	der, err := base64.RawURLEncoding.DecodeString(req.CSR)
+	if err != nil {
+		s.writeProblem(w, newProblem(probBadCSR, http.StatusBadRequest, "CSR is not valid base64url"))
+		return
+	}
+	csr, err := x509.ParseCertificateRequest(der)
+	if err != nil {
+		s.writeProblem(w, newProblem(probBadCSR, http.StatusBadRequest, "cannot parse CSR: "+err.Error()))
+		return
+	}
+	if err := csr.CheckSignature(); err != nil {
+		s.writeProblem(w, newProblem(probBadCSR, http.StatusBadRequest, "CSR signature is invalid"))
+		return
+	}
+
+	authzs, err := s.db.ListACMEAuthorizationsByOrder(order.ID)
+	if err != nil {
+		s.writeProblem(w, newProblem(probServerInternal, http.StatusInternalServerError, "listing authorizations"))
+		return
+	}
+	if prob := matchCSRToOrder(order, authzs, csr); prob != nil {
+		s.writeProblem(w, prob)
+		return
+	}
+
+	// Mark processing while we sign, so a concurrent poll sees the transition.
+	_ = s.db.UpdateACMEOrderStatus(order.ID, models.ACMEOrderStatusProcessing, "")
+	order.Status = models.ACMEOrderStatusProcessing
+
+	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
+	result, err := s.caMgr.IssueCertificate(r.Context(), ca.IssueSpec{
+		CAID:        s.cfg.CAID,
+		CSRPEM:      csrPEM,
+		Profile:     s.cfg.Profile,
+		RequestedBy: "acme:" + acct.rec.ID,
+	})
+	if err != nil {
+		prob := newProblem(probServerInternal, http.StatusInternalServerError, "certificate issuance failed: "+err.Error())
+		s.markOrderInvalid(order.ID, prob)
+		s.recordEvent(r, acct.rec.ID, audit.ActionACMEOrderFinalize, order.ID, audit.ResultError, err.Error())
+		s.writeProblem(w, prob)
+		return
+	}
+
+	now := s.now().UTC()
+	if err := s.db.FinalizeACMEOrder(order.ID, s.cfg.CAID, result.Serial.String(), string(result.ChainPEM), now); err != nil {
+		s.writeProblem(w, newProblem(probServerInternal, http.StatusInternalServerError, "recording issued certificate"))
+		return
+	}
+	order.Status = models.ACMEOrderStatusValid
+	order.Certificate = string(result.ChainPEM)
+	order.Serial = result.Serial.String()
+	order.CAID = s.cfg.CAID
+
+	s.recordEvent(r, acct.rec.ID, audit.ActionACMEOrderFinalize, order.ID, audit.ResultSuccess,
+		"serial="+result.Serial.String()+" profile="+result.Profile)
+
+	w.Header().Set("Location", s.orderURL(r, order.ID))
+	s.writeOrder(w, r, order)
+}
+
+// handleCertificate serves the issued certificate chain (POST-as-GET).
+func (s *Server) handleCertificate(w http.ResponseWriter, r *http.Request) {
+	acct, _, prob := s.authAccount(r)
+	if prob != nil {
+		s.writeProblem(w, prob)
+		return
+	}
+	// The certificate URL reuses the order id.
+	order, err := s.db.GetACMEOrder(r.PathValue("id"))
+	if err != nil {
+		s.writeProblem(w, newProblem(probServerInternal, http.StatusInternalServerError, "order lookup failed"))
+		return
+	}
+	if order == nil || order.AccountID != acct.rec.ID {
+		s.writeProblem(w, newProblem(probUnauthorized, http.StatusUnauthorized, "certificate not found for this account"))
+		return
+	}
+	if order.Status != models.ACMEOrderStatusValid || order.Certificate == "" {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusNotFound, "certificate is not available for this order"))
+		return
+	}
+	s.addNonce(w)
+	w.Header().Set("Content-Type", "application/pem-certificate-chain")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(order.Certificate))
+}
+
+// handleRevokeCert revokes a previously issued certificate (RFC 8555 §7.6).
+// It accepts either account (kid) authentication — where the account must own
+// the order — or certificate-key (jwk) authentication, where the JWS is signed
+// by the certificate's own key pair.
+func (s *Server) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
+	d, prob := s.decodeJWS(r)
+	if prob != nil {
+		s.writeProblem(w, prob)
+		return
+	}
+
+	// Determine the verification key and (for kid auth) the account.
+	var payload []byte
+	var acctID string
+	if d.KID != "" {
+		acctID = s.accountIDFromKID(d.KID)
+		rec, err := s.db.GetACMEAccount(acctID)
+		if err != nil || rec == nil {
+			s.writeProblem(w, newProblem(probAccountDoesntExist, http.StatusBadRequest, "account does not exist"))
+			return
+		}
+		jwk, prob := parseStoredJWK(rec.JWK)
+		if prob != nil {
+			s.writeProblem(w, prob)
+			return
+		}
+		payload, prob = d.verify(jwk)
+		if prob != nil {
+			s.writeProblem(w, prob)
+			return
+		}
+	} else {
+		// Certificate-key authentication: verify with the embedded JWK now; we
+		// confirm below that it matches the certificate being revoked.
+		payload, prob = d.verify(d.JWK)
+		if prob != nil {
+			s.writeProblem(w, prob)
+			return
+		}
+	}
+
+	var req revokeRequest
+	if err := json.Unmarshal(payload, &req); err != nil || req.Certificate == "" {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest, "revoke requires a base64url-encoded certificate"))
+		return
+	}
+	der, err := base64.RawURLEncoding.DecodeString(req.Certificate)
+	if err != nil {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest, "certificate is not valid base64url"))
+		return
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest, "cannot parse certificate"))
+		return
+	}
+	serial := cert.SerialNumber.String()
+
+	// Find the order that produced this certificate.
+	order, prob := s.findOrderBySerial(serial)
+	if prob != nil {
+		s.writeProblem(w, prob)
+		return
+	}
+
+	// Authorization check.
+	if d.KID != "" {
+		if order == nil || order.AccountID != acctID {
+			s.writeProblem(w, newProblem(probUnauthorized, http.StatusUnauthorized, "account is not authorized to revoke this certificate"))
+			return
+		}
+	} else {
+		// jwk mode: the signing key must be the certificate's public key.
+		if !publicKeyMatches(d.JWK, cert) {
+			s.writeProblem(w, newProblem(probUnauthorized, http.StatusUnauthorized, "revocation JWS key does not match the certificate"))
+			return
+		}
+	}
+
+	caID := s.cfg.CAID
+	if order != nil && order.CAID != "" {
+		caID = order.CAID
+	}
+	reasonName := revocationReasonName(req.Reason)
+	if _, err := s.caMgr.RevokeCertificate(r.Context(), caID, serial, reasonName); err != nil {
+		s.writeProblem(w, newProblem(probServerInternal, http.StatusInternalServerError, "revocation failed: "+err.Error()))
+		return
+	}
+	s.recordEvent(r, acctID, audit.ActionACMECertRevoke, serial, audit.ResultSuccess, "reason="+reasonName)
+	s.addNonce(w)
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleKeyChange rotates an account's key (RFC 8555 §7.3.5). The outer JWS is
+// account-authenticated (old key); its payload is an inner JWS signed by the new
+// key that names the account and the old key.
+func (s *Server) handleKeyChange(w http.ResponseWriter, r *http.Request) {
+	acct, payload, prob := s.authAccount(r)
+	if prob != nil {
+		s.writeProblem(w, prob)
+		return
+	}
+
+	inner, err := jose.ParseSignedJSON(string(payload), allowedAlgs)
+	if err != nil || len(inner.Signatures) != 1 {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest, "malformed inner key-change JWS"))
+		return
+	}
+	newKey := inner.Signatures[0].Protected.JSONWebKey
+	if newKey == nil || !newKey.IsPublic() {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest, "inner JWS must carry the new public key as \"jwk\""))
+		return
+	}
+	// The inner url header must match this key-change URL.
+	if u, ok := inner.Signatures[0].Protected.ExtraHeaders[jose.HeaderKey("url")]; ok {
+		if str, _ := u.(string); str != "" && !strings.EqualFold(str, s.requestURL(r)) {
+			s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest, "inner key-change url mismatch"))
+			return
+		}
+	}
+	innerPayload, verr := inner.Verify(newKey)
+	if verr != nil {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest, "inner key-change signature is invalid"))
+		return
+	}
+
+	var kc keyChangeInner
+	if err := json.Unmarshal(innerPayload, &kc); err != nil {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest, "malformed inner key-change payload"))
+		return
+	}
+	if kc.Account != s.accountURL(r, acct.rec.ID) {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest, "inner payload account does not match"))
+		return
+	}
+	var oldKey jose.JSONWebKey
+	if err := json.Unmarshal(kc.OldKey, &oldKey); err != nil {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest, "inner payload oldKey is not a JWK"))
+		return
+	}
+	oldTP, _ := jwkThumbprint(&oldKey)
+	if oldTP != acct.rec.Thumbprint {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest, "inner payload oldKey does not match the account key"))
+		return
+	}
+
+	newTP, err := jwkThumbprint(newKey)
+	if err != nil {
+		s.writeProblem(w, newProblem(probBadPublicKey, http.StatusBadRequest, "cannot compute new key thumbprint"))
+		return
+	}
+	// The new key must not already be in use by another account.
+	if other, _ := s.db.GetACMEAccountByThumbprint(newTP); other != nil && other.ID != acct.rec.ID {
+		w.Header().Set("Location", s.accountURL(r, other.ID))
+		s.writeProblem(w, newProblem(probMalformed, http.StatusConflict, "the new key is already in use by another account"))
+		return
+	}
+
+	newKeyJSON, err := json.Marshal(newKey)
+	if err != nil {
+		s.writeProblem(w, newProblem(probServerInternal, http.StatusInternalServerError, "serializing new key"))
+		return
+	}
+	if err := s.db.UpdateACMEAccountKey(acct.rec.ID, string(newKeyJSON), newTP); err != nil {
+		s.writeProblem(w, newProblem(probServerInternal, http.StatusInternalServerError, "rotating account key"))
+		return
+	}
+	acct.rec.Thumbprint = newTP
+	s.writeJSON(w, http.StatusOK, s.wireAccount(r, acct.rec))
+}
+
+// writeOrder writes an order object to the response.
+func (s *Server) writeOrder(w http.ResponseWriter, r *http.Request, order *models.ACMEOrder) {
+	wo, prob := s.wireOrder(r, order)
+	if prob != nil {
+		s.writeProblem(w, prob)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, wo)
+}
+
+// findOrderBySerial locates the order that issued a certificate with the given
+// serial. Returns (nil, nil) when unknown (the certificate may still be
+// revocable via cert-key auth).
+func (s *Server) findOrderBySerial(serial string) (*models.ACMEOrder, *Problem) {
+	// Scan recent orders; ACME order volume is modest and this avoids a schema
+	// index solely for revocation.
+	orders, err := s.db.ListACMEOrders(10000, 0)
+	if err != nil {
+		return nil, newProblem(probServerInternal, http.StatusInternalServerError, "order lookup failed")
+	}
+	for i := range orders {
+		if orders[i].Serial == serial {
+			return &orders[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// matchCSRToOrder verifies that the CSR's subject names cover exactly the order's
+// authorized identifiers — no more, no fewer (RFC 8555 §7.4).
+func matchCSRToOrder(order *models.ACMEOrder, authzs []models.ACMEAuthorization, csr *x509.CertificateRequest) *Problem {
+	// Build the expected DNS and IP name sets from the authorizations (which
+	// carry the wildcard flag).
+	expectedDNS := map[string]bool{}
+	expectedIP := map[string]bool{}
+	for _, a := range authzs {
+		switch a.IdentifierType {
+		case "dns":
+			name := a.IdentifierValue
+			if a.Wildcard {
+				name = "*." + name
+			}
+			expectedDNS[strings.ToLower(name)] = true
+		case "ip":
+			expectedIP[a.IdentifierValue] = true
+		}
+	}
+
+	gotDNS := map[string]bool{}
+	for _, n := range csr.DNSNames {
+		gotDNS[strings.ToLower(strings.TrimSuffix(n, "."))] = true
+	}
+	// A CN that is a DNS name must also be authorized; fold it into the DNS set.
+	if cn := strings.ToLower(strings.TrimSpace(csr.Subject.CommonName)); cn != "" {
+		if strings.Contains(cn, ".") && !strings.ContainsAny(cn, " @") {
+			gotDNS[cn] = true
+		} else if len(expectedDNS) > 0 || len(expectedIP) > 0 {
+			// Non-hostname CN is not permitted for ACME server certs.
+			return newProblem(probBadCSR, http.StatusBadRequest, "CSR common name is not an authorized identifier")
+		}
+	}
+	gotIP := map[string]bool{}
+	for _, ip := range csr.IPAddresses {
+		gotIP[ip.String()] = true
+	}
+
+	// SECURITY: ACME orders authorize only dns/ip identifiers. Reject a CSR that
+	// smuggles in email or URI SANs — the issuance layer copies CSR SANs into the
+	// leaf, so an unchecked email/URI SAN would be an unauthorized-name injection
+	// (RFC 8555 §7.4 requires the CSR to request exactly the ordered identifiers).
+	if len(csr.EmailAddresses) > 0 || len(csr.URIs) > 0 {
+		return newProblem(probBadCSR, http.StatusBadRequest,
+			"CSR contains email or URI SANs that are not authorized by the order")
+	}
+
+	if !sameStringSet(expectedDNS, gotDNS) {
+		return newProblem(probBadCSR, http.StatusBadRequest,
+			fmt.Sprintf("CSR DNS names %v do not match the order's identifiers %v", sortedKeys(gotDNS), sortedKeys(expectedDNS)))
+	}
+	if !sameStringSet(expectedIP, gotIP) {
+		return newProblem(probBadCSR, http.StatusBadRequest,
+			fmt.Sprintf("CSR IP addresses %v do not match the order's identifiers %v", sortedKeys(gotIP), sortedKeys(expectedIP)))
+	}
+	return nil
+}
+
+// publicKeyMatches reports whether a JWK is the certificate's public key.
+func publicKeyMatches(jwk *jose.JSONWebKey, cert *x509.Certificate) bool {
+	if jwk == nil {
+		return false
+	}
+	jwkDER, err := x509.MarshalPKIXPublicKey(jwk.Key)
+	if err != nil {
+		return false
+	}
+	certDER, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(jwkDER, certDER)
+}
+
+// revocationReasonName maps an RFC 5280 numeric reason code to the reason name
+// understood by ca.Manager.RevokeCertificate. Unknown/nil codes map to "".
+func revocationReasonName(code *int) string {
+	if code == nil {
+		return ""
+	}
+	switch *code {
+	case 0:
+		return "unspecified"
+	case 1:
+		return "keyCompromise"
+	case 2:
+		return "caCompromise"
+	case 3:
+		return "affiliationChanged"
+	case 4:
+		return "superseded"
+	case 5:
+		return "cessationOfOperation"
+	case 6:
+		return "certificateHold"
+	case 9:
+		return "privilegeWithdrawn"
+	case 10:
+		return "aaCompromise"
+	default:
+		return ""
+	}
+}
+
+func sameStringSet(a, b map[string]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if !b[k] {
+			return false
+		}
+	}
+	return true
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}

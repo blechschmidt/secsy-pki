@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
@@ -23,6 +24,43 @@ type Config struct {
 	RBAC     RBACConfig      `yaml:"rbac"`
 	Policy   PolicyConfig    `yaml:"policy"`
 	Profiles []ProfileConfig `yaml:"profiles"`
+	// ACME configures the RFC 8555 automated-issuance server. Disabled unless
+	// acme.enabled is true.
+	ACME ACMEConfig `yaml:"acme"`
+}
+
+// ACMEConfig configures the ACME (RFC 8555) server. When enabled, an ACME
+// directory is exposed and clients can obtain HSM-backed certificates from the
+// configured CA/profile through account/order/challenge/finalize flows.
+type ACMEConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// BaseURL is the externally reachable origin (e.g. https://pki.example.com).
+	// Leave empty to derive it from each request (honoring X-Forwarded-Proto/Host).
+	BaseURL string `yaml:"base_url"`
+	// DirectoryPath is the URL prefix ACME endpoints mount under (default /acme).
+	DirectoryPath string `yaml:"directory_path"`
+	// CAID / CALabel select the issuing CA. Exactly one should be set; CAID wins.
+	CAID    string `yaml:"ca_id"`
+	CALabel string `yaml:"ca_label"`
+	// Profile is the certificate profile applied to ACME-issued certs (default
+	// "server").
+	Profile string `yaml:"profile"`
+	// TermsOfService, if set, is advertised in the directory and required on
+	// account creation.
+	TermsOfService string `yaml:"terms_of_service"`
+	// HTTP01Port overrides the http-01 validation port (default 80; tests only).
+	HTTP01Port int `yaml:"http01_port"`
+	// ChallengeTypes limits the offered challenge types (default http-01, dns-01).
+	ChallengeTypes []string `yaml:"challenge_types"`
+	// RequireEAB requires External Account Binding; EABHMACKeys maps kid -> key.
+	RequireEAB  bool              `yaml:"require_eab"`
+	EABHMACKeys map[string]string `yaml:"eab_hmac_keys"`
+	// AllowIPIdentifiers permits ip-type identifiers (RFC 8738).
+	AllowIPIdentifiers bool `yaml:"allow_ip_identifiers"`
+	// OrderValidityHours / AuthzValidityHours bound how long orders and
+	// authorizations remain pending (default 168h / 7 days).
+	OrderValidityHours int `yaml:"order_validity_hours"`
+	AuthzValidityHours int `yaml:"authz_validity_hours"`
 }
 
 // RBACConfig maps OIDC subjects and group IDs to role names. Recognized roles
@@ -163,7 +201,30 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateACME(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// validateACME sanity-checks the ACME configuration when it is enabled.
+func (c *Config) validateACME() error {
+	if !c.ACME.Enabled {
+		return nil
+	}
+	if c.ACME.CAID == "" && c.ACME.CALabel == "" {
+		return fmt.Errorf("acme.enabled is true but neither acme.ca_id nor acme.ca_label is set")
+	}
+	for _, ct := range c.ACME.ChallengeTypes {
+		if ct != "http-01" && ct != "dns-01" {
+			return fmt.Errorf("acme.challenge_types: unsupported challenge type %q (valid: http-01, dns-01)", ct)
+		}
+	}
+	if c.ACME.RequireEAB && len(c.ACME.EABHMACKeys) == 0 {
+		return fmt.Errorf("acme.require_eab is true but no acme.eab_hmac_keys are configured")
+	}
+	return nil
 }
 
 // validRoleNames are the role identifiers accepted in the rbac config. Kept in
@@ -211,6 +272,22 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("SECSY_SECRET_KEK_LABEL"); v != "" {
 		cfg.Secret.KEKLabel = v
+	}
+	// ACME overrides — convenient for the SoftHSM integration harness, which
+	// enables ACME against a freshly created CA and validates on a high port.
+	if v := os.Getenv("SECSY_ACME_ENABLED"); v == "1" || v == "true" {
+		cfg.ACME.Enabled = true
+	}
+	if v := os.Getenv("SECSY_ACME_CA_LABEL"); v != "" {
+		cfg.ACME.CALabel = v
+	}
+	if v := os.Getenv("SECSY_ACME_BASE_URL"); v != "" {
+		cfg.ACME.BaseURL = v
+	}
+	if v := os.Getenv("SECSY_ACME_HTTP01_PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.ACME.HTTP01Port = n
+		}
 	}
 }
 

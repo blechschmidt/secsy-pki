@@ -130,6 +130,11 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/events", protected(http.HandlerFunc(a.ListEventLog)))
 	mux.Handle("GET /api/events/verify", protected(http.HandlerFunc(a.VerifyEventLog)))
 
+	// ACME operator visibility (the ACME protocol endpoints are mounted
+	// separately, authenticated by account keys). Read-gated like other inventory.
+	mux.Handle("GET /api/acme/accounts", protected(http.HandlerFunc(a.ListACMEAccounts)))
+	mux.Handle("GET /api/acme/orders", protected(http.HandlerFunc(a.ListACMEOrders)))
+
 	// HSM-backed envelope encryption for secrets. Enabled only when a KEK is
 	// configured (secret.kek_label).
 	if a.secretEnabled() {

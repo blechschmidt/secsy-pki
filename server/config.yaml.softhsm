@@ -40,3 +40,16 @@ pkcs11:
 # Leave empty to disable the secret encrypt/decrypt API.
 secret:
   kek_label: "secsy-kek"
+
+# ACME (RFC 8555) automated issuance for certbot / lego / acme.sh. Disabled
+# unless enabled=true. Point it at an existing X.509 issuing CA (create one with
+# secsy-ca) and a certificate profile. See docs/acme.md for the full guide.
+acme:
+  enabled: false
+  # base_url: "https://pki.example.com"   # or derived from the request Host
+  ca_label: "Secsy Issuing CA"            # the CA that signs ACME certs
+  profile: "server"                       # the ACME-enabled profile
+  challenge_types: ["http-01", "dns-01"]
+  # require_eab: true                     # restrict who may register (RBAC-like)
+  # eab_hmac_keys:
+  #   team-web: "base64url-or-base64-hmac-key"

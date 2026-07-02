@@ -323,3 +323,113 @@ type UserInfo struct {
 	// roles here; it is always treated as a superuser regardless.
 	Roles []string `json:"roles,omitempty"`
 }
+
+// ---------------------------------------------------------------------------
+// ACME (RFC 8555) persistence records.
+//
+// These are the database-facing representations of the ACME protocol objects.
+// The acme package maps them to and from the RFC 8555 wire JSON. Keeping the
+// storage structs in models (rather than the acme package) lets the database
+// layer read and write them without importing acme, avoiding an import cycle.
+// ---------------------------------------------------------------------------
+
+// ACME object statuses (RFC 8555 §7.1.6). Stored as plain strings.
+const (
+	ACMEAccountStatusValid       = "valid"
+	ACMEAccountStatusDeactivated = "deactivated"
+	ACMEAccountStatusRevoked     = "revoked"
+
+	ACMEOrderStatusPending    = "pending"
+	ACMEOrderStatusReady      = "ready"
+	ACMEOrderStatusProcessing = "processing"
+	ACMEOrderStatusValid      = "valid"
+	ACMEOrderStatusInvalid    = "invalid"
+
+	ACMEAuthzStatusPending     = "pending"
+	ACMEAuthzStatusValid       = "valid"
+	ACMEAuthzStatusInvalid     = "invalid"
+	ACMEAuthzStatusDeactivated = "deactivated"
+	ACMEAuthzStatusExpired     = "expired"
+	ACMEAuthzStatusRevoked     = "revoked"
+
+	ACMEChallengeStatusPending    = "pending"
+	ACMEChallengeStatusProcessing = "processing"
+	ACMEChallengeStatusValid      = "valid"
+	ACMEChallengeStatusInvalid    = "invalid"
+)
+
+// ACME challenge type identifiers.
+const (
+	ACMEChallengeHTTP01 = "http-01"
+	ACMEChallengeDNS01  = "dns-01"
+)
+
+// ACMEIdentifier is a subject the client wishes to certify (RFC 8555 §7.1.4).
+type ACMEIdentifier struct {
+	Type  string `json:"type"`  // "dns" or "ip"
+	Value string `json:"value"` // the domain name or IP literal
+}
+
+// ACMEAccount is a registered ACME account, keyed by its public account key.
+type ACMEAccount struct {
+	ID string `json:"id"`
+	// Status is one of the ACMEAccountStatus* values.
+	Status string `json:"status"`
+	// Contacts are the "mailto:" (or other) contact URLs supplied by the client.
+	Contacts []string `json:"contacts,omitempty"`
+	// JWK is the account's public key, stored as a serialized JSON Web Key.
+	JWK string `json:"-"`
+	// Thumbprint is the base64url(SHA-256) JWK thumbprint (RFC 7638), used to
+	// look an account up by its key on newAccount.
+	Thumbprint string `json:"-"`
+	// EABKid records the External Account Binding key id the account bound with,
+	// when EAB is required. Empty otherwise.
+	EABKid           string    `json:"-"`
+	TermsOfServiceOK bool      `json:"-"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+// ACMEOrder is a request to issue a certificate for a set of identifiers.
+type ACMEOrder struct {
+	ID          string           `json:"id"`
+	AccountID   string           `json:"-"`
+	Status      string           `json:"status"`
+	Identifiers []ACMEIdentifier `json:"identifiers"`
+	NotBefore   *time.Time       `json:"not_before,omitempty"`
+	NotAfter    *time.Time       `json:"not_after,omitempty"`
+	Expires     time.Time        `json:"expires"`
+	// Error holds a serialized ACME problem document if the order failed.
+	Error string `json:"-"`
+	// CAID and Serial identify the issued certificate once the order is valid.
+	CAID   string `json:"-"`
+	Serial string `json:"-"`
+	// Certificate is the issued PEM chain (leaf first), populated on finalize.
+	Certificate string     `json:"-"`
+	FinalizedAt *time.Time `json:"-"`
+	CreatedAt   time.Time  `json:"created_at"`
+}
+
+// ACMEAuthorization is the authorization for a single identifier within an order.
+type ACMEAuthorization struct {
+	ID              string    `json:"id"`
+	OrderID         string    `json:"-"`
+	AccountID       string    `json:"-"`
+	IdentifierType  string    `json:"-"`
+	IdentifierValue string    `json:"-"`
+	Status          string    `json:"status"`
+	Expires         time.Time `json:"expires"`
+	Wildcard        bool      `json:"wildcard,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+// ACMEChallenge is one validation method offered for an authorization.
+type ACMEChallenge struct {
+	ID        string     `json:"id"`
+	AuthzID   string     `json:"-"`
+	Type      string     `json:"type"`
+	Token     string     `json:"token"`
+	Status    string     `json:"status"`
+	Validated *time.Time `json:"validated,omitempty"`
+	Error     string     `json:"-"`
+	CreatedAt time.Time  `json:"created_at"`
+}

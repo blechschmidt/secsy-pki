@@ -325,6 +325,11 @@ func (db *DB) migrate() error {
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN cert_hash TEXT")
 	}
 
+	// ACME (RFC 8555) server tables.
+	if err := db.migrateACME(); err != nil {
+		return err
+	}
+
 	// Migrate old mixed restriction_sets table to split tables (if old columns exist)
 	db.migrateRestrictionSets()
 	db.conn.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_log_cert_unique ON audit_log(ca_id, cert_hash)")
