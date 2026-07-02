@@ -16,6 +16,7 @@ CA, secret-encryption, and governance features.
 | [Certificate authority](certificate-authority.md) | Initializing root & intermediate CAs, profiles, issuing / renewing / revoking certificates, and serving CRL & OCSP |
 | [Key ceremony, backup & DR](key-ceremony.md) | M-of-N key ceremony (`secsy-ca ceremony`), key inventory, CA-metadata backup/restore, HSM token backup, and the disaster-recovery runbook & drill |
 | [ACME server (RFC 8555)](acme.md) | Automated certificate issuance for certbot/lego/acme.sh: enabling ACME, ACME-enabled profiles, http-01 & dns-01, and External Account Binding |
+| [SCEP & EST enrollment](enrollment.md) | Device / MDM / IoT auto-enrollment: SCEP (RFC 8894) with challenge-password grants and an HSM RA key, and EST (RFC 7030) over TLS with Basic / client-cert auth and server-side keygen |
 | [Expiry monitoring & auto-renewal](expiry-monitoring.md) | The background expiry monitor, `secsy-ca expiring`/`monitor-run`, `/api/monitor/*`, notification sinks (log/webhook), auto-renewal, metrics & runbook |
 | [Password / secret encryption](password-encryption.md) | HSM-backed envelope encryption for passwords and small secrets (`secsy-secret`, `/api/secret/*`) |
 | [RBAC, audit logging & config](rbac-and-audit.md) | Organization-wide roles, per-CA permissions, the hash-chained event log, and centralized policy/profiles |

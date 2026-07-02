@@ -24,6 +24,7 @@ Comprehensive deployment and operations guides live in [`docs/`](docs/README.md)
 |-------|-------|
 | [HSM / PKCS#11 configuration](docs/hsm-configuration.md) | Key provider, HSM & SoftHSM setup |
 | [Certificate authority](docs/certificate-authority.md) | CA setup, issuance, renewal, revocation, CRL & OCSP |
+| [SCEP & EST enrollment](docs/enrollment.md) | Device / MDM / IoT auto-enrollment (RFC 8894 / RFC 7030) |
 | [Password / secret encryption](docs/password-encryption.md) | HSM-backed envelope encryption |
 | [RBAC, audit logging & config](docs/rbac-and-audit.md) | Roles, event log, centralized policy |
 | [Observability](docs/observability.md) | Prometheus `/metrics`, health/readiness probes, structured logs |

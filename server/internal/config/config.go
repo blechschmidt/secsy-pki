@@ -27,6 +27,10 @@ type Config struct {
 	// ACME configures the RFC 8555 automated-issuance server. Disabled unless
 	// acme.enabled is true.
 	ACME ACMEConfig `yaml:"acme"`
+	// SCEP / EST configure the device-enrollment protocols (RFC 8894 / RFC 7030).
+	// Disabled unless their .enabled is true.
+	SCEP SCEPConfig `yaml:"scep"`
+	EST  ESTConfig  `yaml:"est"`
 	// Monitor configures the background certificate-expiry monitor and optional
 	// auto-renewal workflow. Disabled unless monitor.enabled is true.
 	Monitor MonitorConfig `yaml:"monitor"`
@@ -109,6 +113,73 @@ type ACMEConfig struct {
 	// authorizations remain pending (default 168h / 7 days).
 	OrderValidityHours int `yaml:"order_validity_hours"`
 	AuthzValidityHours int `yaml:"authz_validity_hours"`
+}
+
+// SCEPConfig configures the SCEP (RFC 8894) enrollment server. When enabled, a
+// SCEP endpoint is exposed for device/MDM auto-enrollment. The issuing CA MUST
+// be an RSA CA (SCEP wraps the request in a PKCS#7 EnvelopedData that uses RSA
+// key transport to the CA certificate).
+type SCEPConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// DirectoryPath is the URL prefix the SCEP endpoint mounts under (default
+	// /scep).
+	DirectoryPath string `yaml:"directory_path"`
+	// CAID / CALabel select the issuing (RSA) CA. Exactly one should be set.
+	CAID    string `yaml:"ca_id"`
+	CALabel string `yaml:"ca_label"`
+	// Profile is the default certificate profile (default "client").
+	Profile string `yaml:"profile"`
+	// Grants are the challenge-password enrollment credentials. Each grant is an
+	// operator-provisioned secret that authorizes enrollment under a profile.
+	Grants []SCEPGrantConfig `yaml:"grants"`
+	// RequireChallenge rejects an initial enrollment without a matching challenge
+	// password (default true). Setting it false enables open enrollment.
+	RequireChallenge *bool `yaml:"require_challenge"`
+	// AllowRenewal permits challenge-free renewal by a client signing with a
+	// currently-valid certificate this CA previously issued.
+	AllowRenewal bool `yaml:"allow_renewal"`
+}
+
+// SCEPGrantConfig is one challenge-password enrollment credential.
+type SCEPGrantConfig struct {
+	Name      string `yaml:"name"`
+	Challenge string `yaml:"challenge"`
+	Profile   string `yaml:"profile"`
+}
+
+// RequireChallengeEnabled reports whether a challenge password is required for
+// initial SCEP enrollment. It defaults to true.
+func (s SCEPConfig) RequireChallengeEnabled() bool {
+	return s.RequireChallenge == nil || *s.RequireChallenge
+}
+
+// ESTConfig configures the EST (RFC 7030) enrollment server. When enabled, EST
+// endpoints are exposed under /.well-known/est for device/MDM auto-enrollment
+// over TLS with HTTP Basic or TLS-client-certificate authentication.
+type ESTConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// BasePath is the URL prefix (default /.well-known/est).
+	BasePath string `yaml:"base_path"`
+	// CAID / CALabel select the issuing CA. Exactly one should be set.
+	CAID    string `yaml:"ca_id"`
+	CALabel string `yaml:"ca_label"`
+	// Profile is the default certificate profile (default "client").
+	Profile string `yaml:"profile"`
+	// Users maps a Basic-auth username to its enrollment credential.
+	Users map[string]ESTUserConfig `yaml:"users"`
+	// AllowTLSClientReenroll permits (re)enrollment authorized by a TLS client
+	// certificate this CA previously issued (RFC 7030 §3.3.2).
+	AllowTLSClientReenroll bool `yaml:"allow_tls_client_reenroll"`
+	// EnableServerKeygen enables /serverkeygen server-side key generation.
+	EnableServerKeygen bool `yaml:"enable_server_keygen"`
+	// ServerKeygenKeyType selects the generated key type (default rsa-2048).
+	ServerKeygenKeyType string `yaml:"server_keygen_key_type"`
+}
+
+// ESTUserConfig is one EST Basic-auth credential.
+type ESTUserConfig struct {
+	Password string `yaml:"password"`
+	Profile  string `yaml:"profile"`
 }
 
 // RBACConfig maps OIDC subjects and group IDs to role names. Recognized roles
@@ -270,7 +341,37 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateEnrollment(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// validateEnrollment sanity-checks the SCEP and EST configuration when enabled.
+func (c *Config) validateEnrollment() error {
+	if c.SCEP.Enabled {
+		if c.SCEP.CAID == "" && c.SCEP.CALabel == "" {
+			return fmt.Errorf("scep.enabled is true but neither scep.ca_id nor scep.ca_label is set")
+		}
+		if c.SCEP.RequireChallengeEnabled() && len(c.SCEP.Grants) == 0 {
+			return fmt.Errorf("scep.require_challenge is true but no scep.grants are configured")
+		}
+		for i, g := range c.SCEP.Grants {
+			if g.Challenge == "" {
+				return fmt.Errorf("scep.grants[%d]: challenge must not be empty", i)
+			}
+		}
+	}
+	if c.EST.Enabled {
+		if c.EST.CAID == "" && c.EST.CALabel == "" {
+			return fmt.Errorf("est.enabled is true but neither est.ca_id nor est.ca_label is set")
+		}
+		if len(c.EST.Users) == 0 && !c.EST.AllowTLSClientReenroll {
+			return fmt.Errorf("est.enabled is true but no est.users and no est.allow_tls_client_reenroll are configured")
+		}
+	}
+	return nil
 }
 
 // validateMonitor applies defaults and sanity-checks the expiry-monitor config

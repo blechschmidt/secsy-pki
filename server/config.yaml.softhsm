@@ -53,3 +53,32 @@ acme:
   # require_eab: true                     # restrict who may register (RBAC-like)
   # eab_hmac_keys:
   #   team-web: "base64url-or-base64-hmac-key"
+
+# SCEP (RFC 8894) device / MDM enrollment. Disabled unless enabled=true. The
+# issuing CA MUST be an RSA CA (SCEP wraps requests in a PKCS#7 EnvelopedData
+# using RSA key transport). A dedicated, decrypt-capable RA encryption key is
+# auto-provisioned on the HSM on first use. See docs/enrollment.md.
+scep:
+  enabled: false
+  ca_label: "Secsy Issuing CA"            # must be an RSA CA
+  profile: "client"                       # default profile for enrolled devices
+  # require_challenge: true               # require a matching grant challenge (default)
+  # allow_renewal: true                   # challenge-free renewal with a valid issued cert
+  grants:
+    - name: "fleet-a"                      # operator-provisioned enrollment credential
+      challenge: "change-me-shared-secret"
+      profile: "client"
+
+# EST (RFC 7030) device / MDM enrollment over TLS. Disabled unless enabled=true.
+# Authenticate with HTTP Basic (users below) or a TLS client certificate this CA
+# previously issued (allow_tls_client_reenroll). See docs/enrollment.md.
+est:
+  enabled: false
+  ca_label: "Secsy Issuing CA"            # any key type
+  profile: "client"
+  # allow_tls_client_reenroll: true       # accept a prior client cert for (re)enroll
+  # enable_server_keygen: true            # POST /serverkeygen returns a generated key
+  users:
+    device01:
+      password: "change-me"
+      profile: "client"

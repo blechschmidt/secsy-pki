@@ -77,6 +77,18 @@ const (
 	ActionACMEOrderFinalize = "acme.order.finalize"
 	ActionACMEChallenge     = "acme.challenge"
 	ActionACMECertRevoke    = "acme.cert.revoke"
+
+	// SCEP (RFC 8894) and EST (RFC 7030) device-enrollment actions. The actor is
+	// the enrollment grant / authenticated principal rather than an OIDC subject,
+	// since these protocols authenticate with a challenge password, HTTP Basic, or
+	// a TLS client certificate.
+	ActionSCEPGetCACert  = "scep.get_ca_cert"
+	ActionSCEPEnroll     = "scep.enroll"
+	ActionSCEPRenew      = "scep.renew"
+	ActionESTCACerts     = "est.cacerts"
+	ActionESTEnroll      = "est.simpleenroll"
+	ActionESTReenroll    = "est.simplereenroll"
+	ActionESTServerKeyGen = "est.serverkeygen"
 )
 
 // Event is a single entry in the tamper-evident audit log. Seq is a

@@ -68,6 +68,32 @@ func decryptOAEPOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, priv pk
 	return plaintext, nil
 }
 
+// decryptPKCS1v15OnSession performs an RSA PKCS#1 v1.5 (CKM_RSA_PKCS) unwrap for
+// a key resolved on the given session. This padding mode is required by the SCEP
+// (RFC 8894) pkiMessage EnvelopedData key-transport recipient info, which uses
+// the rsaEncryption OID rather than RSA-OAEP. The caller must have verified the
+// key is RSA. As with OAEP, the private key never leaves the token: the unwrap
+// runs on the device via C_Decrypt.
+//
+// SECURITY: PKCS#1 v1.5 decryption is susceptible to Bleichenbacher-style
+// padding-oracle attacks. Callers must return a single generic error to remote
+// peers on any failure (whether padding, length, or content), never signalling
+// which stage failed. The CMS layer that drives SCEP does exactly this.
+func decryptPKCS1v15OnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, priv pkcs11.ObjectHandle, ciphertext []byte) ([]byte, error) {
+	if len(ciphertext) == 0 {
+		return nil, fmt.Errorf("pkcs11 decrypt: empty ciphertext")
+	}
+	mech := []*pkcs11.Mechanism{pkcs11.NewMechanism(pkcs11.CKM_RSA_PKCS, nil)}
+	if err := ctx.DecryptInit(session, mech, priv); err != nil {
+		return nil, fmt.Errorf("pkcs11 decrypt init: %w", err)
+	}
+	plaintext, err := ctx.Decrypt(session, ciphertext)
+	if err != nil {
+		return nil, fmt.Errorf("pkcs11 decrypt: %w", err)
+	}
+	return plaintext, nil
+}
+
 // oaepMechParams maps the requested DecrypterOpts to the PKCS#11 OAEP hash and
 // MGF mechanism identifiers, enforcing an empty OAEP label and a consistent
 // hash/MGF pair.

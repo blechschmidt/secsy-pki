@@ -276,6 +276,9 @@ func (p *SessionPool) Decrypt(ctx context.Context, label string, ciphertext []by
 	if _, ok := ko.pubKey.(*rsa.PublicKey); !ok {
 		return nil, fmt.Errorf("pkcs11 decrypt: key %q is not RSA (type %T)", label, ko.pubKey)
 	}
+	if _, ok := opts.(*rsa.PKCS1v15DecryptOptions); ok {
+		return decryptPKCS1v15OnSession(p.ctx, s.handle, ko.priv, ciphertext)
+	}
 	return decryptOAEPOnSession(p.ctx, s.handle, ko.priv, ciphertext, opts)
 }
 

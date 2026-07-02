@@ -16,6 +16,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
+	"github.com/blechschmidt/secsy-pki/server/internal/est"
 	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
@@ -23,6 +24,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/monitor"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
+	"github.com/blechschmidt/secsy-pki/server/internal/scep"
 )
 
 func main() {
@@ -192,6 +194,28 @@ func main() {
 		acmeSrv.Register(mux)
 	}
 
+	// SCEP (RFC 8894) device-enrollment server. Like ACME it authenticates
+	// clients with its own scheme (challenge password), so it mounts outside the
+	// OIDC auth middleware. The issuing CA must be RSA (enveloped-data key
+	// transport).
+	if cfg.SCEP.Enabled {
+		scepCfg, err := buildSCEPConfig(db, cfg)
+		if err != nil {
+			log.Fatalf("SCEP configuration error: %v", err)
+		}
+		scep.New(db, provider, scepCfg).Register(mux)
+	}
+
+	// EST (RFC 7030) device-enrollment server. Authenticates via HTTP Basic or a
+	// TLS client certificate; mounted outside the OIDC middleware.
+	if cfg.EST.Enabled {
+		estCfg, err := buildESTConfig(db, cfg)
+		if err != nil {
+			log.Fatalf("EST configuration error: %v", err)
+		}
+		est.New(db, provider, estCfg).Register(mux)
+	}
+
 	// Serve the legacy disk-based SPA from web/static when present. The Task 21
 	// operator console is served separately from an embedded (go:embed) bundle
 	// under /console/ by RegisterRoutes, so it ships in the binary regardless.
@@ -322,6 +346,83 @@ func buildACMEConfig(db *database.DB, cfg *config.Config) (acme.Config, error) {
 		ac.AuthzValidity = time.Duration(cfg.ACME.AuthzValidityHours) * time.Hour
 	}
 	return ac, nil
+}
+
+// resolveCAID resolves a configured (caID, caLabel) pair to a concrete CA id,
+// verifying the CA exists and is an X.509 issuer. It centralizes the lookup
+// shared by the ACME/SCEP/EST config builders.
+func resolveCAID(db *database.DB, caID, caLabel, proto string) (string, error) {
+	if caID == "" && caLabel != "" {
+		found, err := db.GetCAByLabel(caLabel)
+		if err != nil {
+			return "", fmt.Errorf("looking up %s CA by label %q: %w", proto, caLabel, err)
+		}
+		if found == nil {
+			return "", fmt.Errorf("%s CA with label %q not found", proto, caLabel)
+		}
+		caID = found.ID
+	}
+	if caID == "" {
+		return "", fmt.Errorf("no %s issuing CA configured (set ca_id or ca_label)", proto)
+	}
+	issuer, err := db.GetCA(caID)
+	if err != nil {
+		return "", fmt.Errorf("looking up %s CA %q: %w", proto, caID, err)
+	}
+	if issuer == nil {
+		return "", fmt.Errorf("%s CA %q not found", proto, caID)
+	}
+	if issuer.Certificate == "" {
+		return "", fmt.Errorf("%s CA %q is not an X.509 issuer (no certificate)", proto, issuer.Label)
+	}
+	return caID, nil
+}
+
+// buildSCEPConfig assembles the scep.Config from the application config. It
+// additionally requires the issuing CA to be RSA, since SCEP's enveloped-data
+// key transport cannot address an ECDSA/Ed25519 CA certificate.
+func buildSCEPConfig(db *database.DB, cfg *config.Config) (scep.Config, error) {
+	caID, err := resolveCAID(db, cfg.SCEP.CAID, cfg.SCEP.CALabel, "scep")
+	if err != nil {
+		return scep.Config{}, err
+	}
+	issuer, _ := db.GetCA(caID)
+	if !strings.HasPrefix(strings.ToLower(issuer.KeyType), "rsa") {
+		return scep.Config{}, fmt.Errorf("SCEP CA %q has key type %q; SCEP requires an RSA CA", issuer.Label, issuer.KeyType)
+	}
+	grants := make([]scep.Grant, 0, len(cfg.SCEP.Grants))
+	for _, g := range cfg.SCEP.Grants {
+		grants = append(grants, scep.Grant{Name: g.Name, Challenge: g.Challenge, Profile: g.Profile})
+	}
+	return scep.Config{
+		DirectoryPath:    cfg.SCEP.DirectoryPath,
+		CAID:             caID,
+		Profile:          cfg.SCEP.Profile,
+		Grants:           grants,
+		RequireChallenge: cfg.SCEP.RequireChallengeEnabled(),
+		AllowRenewal:     cfg.SCEP.AllowRenewal,
+	}, nil
+}
+
+// buildESTConfig assembles the est.Config from the application config.
+func buildESTConfig(db *database.DB, cfg *config.Config) (est.Config, error) {
+	caID, err := resolveCAID(db, cfg.EST.CAID, cfg.EST.CALabel, "est")
+	if err != nil {
+		return est.Config{}, err
+	}
+	users := make(map[string]est.User, len(cfg.EST.Users))
+	for name, u := range cfg.EST.Users {
+		users[name] = est.User{Password: u.Password, Profile: u.Profile}
+	}
+	return est.Config{
+		BasePath:               cfg.EST.BasePath,
+		CAID:                   caID,
+		Profile:                cfg.EST.Profile,
+		Users:                  users,
+		AllowTLSClientReenroll: cfg.EST.AllowTLSClientReenroll,
+		EnableServerKeygen:     cfg.EST.EnableServerKeygen,
+		ServerKeygenKeyType:    cfg.EST.ServerKeygenKeyType,
+	}, nil
 }
 
 // toRoleMap converts a config string->[]string role map into the typed form the
