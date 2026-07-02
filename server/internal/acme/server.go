@@ -11,6 +11,7 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/google/uuid"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/attestation"
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
@@ -70,6 +71,13 @@ type Config struct {
 	// ExplanationURL, if set, is returned in every renewalInfo response and points
 	// operators/clients at a page explaining an active mass-renewal event.
 	ExplanationURL string
+
+	// Attestation, when set, verifies device-attest-01 hardware key-attestation
+	// evidence (draft-ietf-acme-device-attest) against trusted manufacturer roots
+	// (Task 49). When the ACME profile's attestation mode is not "off", the
+	// server offers a device-attest-01 challenge and validates the returned
+	// WebAuthn attestation object. A nil verifier disables the challenge.
+	Attestation *attestation.Verifier
 }
 
 // withDefaults returns a copy of the config with zero-valued fields filled in.

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/attestation"
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -209,7 +210,7 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.validateChallenge(r, acct, authz, chall)
+	s.validateChallenge(r, acct, authz, chall, payload)
 
 	// Re-read the challenge to reflect its new status.
 	updated, _ := s.db.GetACMEChallenge(chall.ID)
@@ -221,7 +222,7 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 
 // validateChallenge performs the outbound check for a challenge and persists the
 // resulting challenge, authorization, and order statuses.
-func (s *Server) validateChallenge(r *http.Request, acct *acmeAccount, authz *models.ACMEAuthorization, chall *models.ACMEChallenge) {
+func (s *Server) validateChallenge(r *http.Request, acct *acmeAccount, authz *models.ACMEAuthorization, chall *models.ACMEChallenge, payload []byte) {
 	// Mark processing before performing the (possibly slow) network check.
 	_ = s.db.UpdateACMEChallenge(chall.ID, models.ACMEChallengeStatusProcessing, nil, "")
 
@@ -235,6 +236,8 @@ func (s *Server) validateChallenge(r *http.Request, acct *acmeAccount, authz *mo
 		prob = s.validator.ValidateHTTP01(ctx, authz.IdentifierValue, chall.Token, keyAuth)
 	case models.ACMEChallengeDNS01:
 		prob = s.validator.ValidateDNS01(ctx, authz.IdentifierValue, keyAuth)
+	case models.ACMEChallengeDeviceAttest01:
+		prob = s.validateDeviceAttest01(r, acct, authz, payload, keyAuth)
 	default:
 		prob = newProblem(probMalformed, http.StatusBadRequest, "unsupported challenge type "+chall.Type)
 	}
@@ -423,9 +426,23 @@ func (s *Server) normalizeIdentifier(id wireIdentifier) (models.ACMEIdentifier, 
 
 // challengeTypesFor returns the challenge types offered for an identifier.
 // Wildcard DNS identifiers may only be validated with dns-01 (RFC 8555 §7.1.3).
+//
+// When the ACME profile enforces enrollment attestation (Task 49), a
+// device-attest-01 challenge (draft-ietf-acme-device-attest) is added: under
+// "require" it is the ONLY challenge, so the client must prove control of a
+// hardware-resident key; under "permissive" it is offered alongside the standard
+// domain-validation challenges.
 func (s *Server) challengeTypesFor(id models.ACMEIdentifier, wildcard bool) []string {
+	mode := s.attestationMode()
+	if mode == attestation.ModeRequire {
+		return []string{models.ACMEChallengeDeviceAttest01}
+	}
 	var out []string
 	for _, ct := range s.cfg.ChallengeTypes {
+		if ct == models.ACMEChallengeDeviceAttest01 {
+			// device-attest-01 is offered by policy below, not via ChallengeTypes.
+			continue
+		}
 		if wildcard && ct != models.ACMEChallengeDNS01 {
 			continue
 		}
@@ -435,7 +452,15 @@ func (s *Server) challengeTypesFor(id models.ACMEIdentifier, wildcard bool) []st
 		}
 		out = append(out, ct)
 	}
+	if mode == attestation.ModePermissive {
+		out = append(out, models.ACMEChallengeDeviceAttest01)
+	}
 	return out
+}
+
+// attestationMode returns the effective attestation mode for the ACME profile.
+func (s *Server) attestationMode() attestation.Mode {
+	return s.cfg.Attestation.Mode(s.cfg.Profile)
 }
 
 // ---- wire rendering -------------------------------------------------------

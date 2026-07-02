@@ -31,11 +31,13 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/attestation"
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/cms"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
+	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 )
@@ -70,6 +72,10 @@ type Config struct {
 	// memory and returned to the client — it is deliberately NOT an HSM key,
 	// since the private key must leave the server.
 	ServerKeygenKeyType string
+	// Attestation, when set, verifies hardware key-attestation evidence carried in
+	// the enrollment CSR before issuance, per the profile's attestation mode
+	// (Task 49). A nil verifier disables the gate (attestation off everywhere).
+	Attestation *attestation.Verifier
 }
 
 func (c Config) withDefaults() Config {
@@ -157,6 +163,10 @@ func (s *Server) handleEnroll(reenroll bool) http.HandlerFunc {
 			http.Error(w, "invalid CSR: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		if !s.enforceAttestation(r, csr, profile, actor) {
+			http.Error(w, "hardware key attestation required and missing or invalid", http.StatusForbidden)
+			return
+		}
 		leaf, err := s.issue(r, csr, profile, actor)
 		if err != nil {
 			s.recordEvent(r, actor, action, csr.Subject.CommonName, audit.ResultError, err.Error())
@@ -188,6 +198,17 @@ func (s *Server) handleServerKeygen(w http.ResponseWriter, r *http.Request) {
 	csr, err := s.readCSR(r)
 	if err != nil {
 		http.Error(w, "invalid CSR: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	// A server-generated key is, by construction, not hardware-resident and
+	// cannot be attested. If the profile requires attestation, serverkeygen is
+	// incompatible and must be refused fail-closed.
+	if s.cfg.Attestation.Mode(profile) == attestation.ModeRequire {
+		s.recordEvent(r, actor, audit.ActionCertAttestation, csr.Subject.CommonName, audit.ResultDenied,
+			"serverkeygen incompatible with required attestation (server-generated key is not hardware-resident)")
+		metrics.AttestationDenied.Inc("est")
+		metrics.AttestationChecks.Inc("est", string(attestation.ModeRequire), "missing")
+		http.Error(w, "profile requires hardware key attestation; server-side key generation is not permitted", http.StatusForbidden)
 		return
 	}
 
@@ -353,6 +374,46 @@ func (s *Server) caChain() ([]*x509.Certificate, error) {
 		return nil, fmt.Errorf("EST CA %q not found", s.cfg.CAID)
 	}
 	return chain, nil
+}
+
+// enforceAttestation runs the enrollment key-attestation gate against the CSR
+// and returns whether issuance may proceed. It records a cert.attestation audit
+// event and updates metrics for every outcome (pass, permissive-passthrough, or
+// fail-closed denial). A nil verifier is inert (attestation disabled).
+func (s *Server) enforceAttestation(r *http.Request, csr *x509.CertificateRequest, profile, actor string) bool {
+	dec := s.cfg.Attestation.VerifyEnrollment(profile, csr)
+	if dec.Mode == attestation.ModeOff {
+		return true
+	}
+
+	result := attestationResultLabel(dec)
+	metrics.AttestationChecks.Inc("est", string(dec.Mode), result)
+	if dec.Result != nil && dec.Result.Verified {
+		metrics.AttestationVerified.Inc(dec.Result.Format)
+	}
+
+	if !dec.Allow {
+		metrics.AttestationDenied.Inc("est")
+		s.recordEvent(r, actor, audit.ActionCertAttestation, csr.Subject.CommonName, audit.ResultDenied, dec.Detail)
+		return false
+	}
+	s.recordEvent(r, actor, audit.ActionCertAttestation, csr.Subject.CommonName, audit.ResultSuccess, dec.Detail)
+	return true
+}
+
+// attestationResultLabel maps an attestation decision to the metric "result"
+// label ("pass"|"missing"|"invalid"|"skip"), shared across enrollment paths.
+func attestationResultLabel(dec attestation.Decision) string {
+	switch {
+	case dec.Mode == attestation.ModeOff:
+		return "skip"
+	case dec.Result != nil && dec.Result.Verified:
+		return "pass"
+	case dec.Missing:
+		return "missing"
+	default:
+		return "invalid"
+	}
 }
 
 func (s *Server) recordEvent(r *http.Request, actor, action, target, result, detail string) {

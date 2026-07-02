@@ -17,11 +17,13 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/attestation"
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/cms"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
+	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 )
@@ -66,6 +68,10 @@ type Config struct {
 	EncryptionKeyLabel string
 	// Caps overrides the GetCACaps capability list.
 	Caps []string
+	// Attestation, when set, verifies hardware key-attestation evidence carried in
+	// the enrollment CSR before issuance, per the profile's attestation mode
+	// (Task 49). A nil verifier disables the gate (attestation off everywhere).
+	Attestation *attestation.Verifier
 }
 
 func (c Config) withDefaults() Config {
@@ -228,6 +234,11 @@ func (s *Server) handlePKIOperation(w http.ResponseWriter, r *http.Request) {
 	if failInfo != "" {
 		s.recordEvent(r, actor, enrollAction(isRenewal), csrCN(msg.CSR), audit.ResultDenied, "authorization failed")
 		s.writeFailure(w, r, caCert, msg, failInfo, "enrollment not authorized")
+		return
+	}
+
+	if !s.enforceAttestation(r, msg.CSR, profile, actor) {
+		s.writeFailure(w, r, caCert, msg, failInfoBadRequest, "hardware key attestation required and missing or invalid")
 		return
 	}
 
@@ -441,6 +452,43 @@ func (s *Server) newNonce() []byte {
 		copy(n[:], u[:])
 	}
 	return n[:]
+}
+
+// enforceAttestation runs the enrollment key-attestation gate against the SCEP
+// CSR and returns whether issuance may proceed, recording a cert.attestation
+// audit event and metrics for every outcome. A nil verifier is inert.
+func (s *Server) enforceAttestation(r *http.Request, csr *x509.CertificateRequest, profile, actor string) bool {
+	dec := s.cfg.Attestation.VerifyEnrollment(profile, csr)
+	if dec.Mode == attestation.ModeOff {
+		return true
+	}
+	result := attestationResultLabel(dec)
+	metrics.AttestationChecks.Inc("scep", string(dec.Mode), result)
+	if dec.Result != nil && dec.Result.Verified {
+		metrics.AttestationVerified.Inc(dec.Result.Format)
+	}
+	if !dec.Allow {
+		metrics.AttestationDenied.Inc("scep")
+		s.recordEvent(r, actor, audit.ActionCertAttestation, csrCN(csr), audit.ResultDenied, dec.Detail)
+		return false
+	}
+	s.recordEvent(r, actor, audit.ActionCertAttestation, csrCN(csr), audit.ResultSuccess, dec.Detail)
+	return true
+}
+
+// attestationResultLabel maps an attestation decision to the metric "result"
+// label ("pass"|"missing"|"invalid"|"skip").
+func attestationResultLabel(dec attestation.Decision) string {
+	switch {
+	case dec.Mode == attestation.ModeOff:
+		return "skip"
+	case dec.Result != nil && dec.Result.Verified:
+		return "pass"
+	case dec.Missing:
+		return "missing"
+	default:
+		return "invalid"
+	}
 }
 
 func (s *Server) recordEvent(r *http.Request, actor, action, target, result, detail string) {

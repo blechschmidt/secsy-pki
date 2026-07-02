@@ -210,6 +210,14 @@ profiles: []
 #       mode: enforce          # off (default) | permissive (audit only) | enforce
 #       identifier: pki.example.com  # overrides the top-level caa.identifier
 #       timeout_seconds: 5     # bounds all DNS lookups for one certificate
+#     # attestation configures the hardware key-attestation gate on the
+#     # device-enrollment paths (EST/SCEP/ACME). Under "require" an enrollment
+#     # under this profile must present a valid hardware attestation (YubiKey PIV,
+#     # TPM EK/AK, or Apple) bound to the enrolled key, chaining to a trusted
+#     # manufacturer root (see the top-level `attestation` block); otherwise the
+#     # enrollment is rejected fail-closed. "permissive" audits but never blocks.
+#     attestation:
+#       mode: require          # off (default) | permissive (audit only) | require
 
 # caa holds the deployment-wide CAA settings. Enforcement is opt-in per profile
 # (see a profile's `caa` block above); this section supplies the CA identifier a
@@ -220,6 +228,23 @@ caa:
   # profile running caa.mode: enforce.
   identifier: ""
   cache_ttl_seconds: 300   # how long resolved CAA/CNAME answers are reused (0 = 300)
+
+# attestation configures hardware key-attestation verification on the device
+# enrollment paths (EST/SCEP/ACME, Task 49). Enforcement is opt-in per profile
+# (see a profile's `attestation` block above) or via default_mode below. This
+# section supplies the trusted manufacturer roots every attestation certificate
+# chain must terminate at (YubiKey PIV roots, TPM manufacturer roots, Apple
+# attestation roots). Inert unless a profile (or default_mode) is non-"off".
+attestation:
+  default_mode: "off"        # off (default) | permissive | require
+  # trusted_root_files lists PEM files of trusted manufacturer roots (and any
+  # intermediates). Self-signed certificates are treated as roots; the rest as
+  # chain-building intermediates.
+  trusted_root_files: []
+  #   - /etc/secsy-pki/attestation/yubico-piv-root.pem
+  #   - /etc/secsy-pki/attestation/tpm-manufacturer-roots.pem
+  #   - /etc/secsy-pki/attestation/apple-attestation-root.pem
+  trusted_roots_pem: ""      # inline PEM alternative/supplement to the files above
 
 # crl configures delta CRLs and CRL partitioning/sharding (RFC 5280). Defaults
 # keep the pre-existing behavior: a single complete CRL, no stamped CDP URLs.

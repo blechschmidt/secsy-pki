@@ -37,6 +37,9 @@ const (
 	// probAlreadyReplaced signals that the certificate named in a newOrder
 	// "replaces" field has already been replaced by another order (ARI §5).
 	probAlreadyReplaced = "urn:ietf:params:acme:error:alreadyReplaced"
+	// probBadAttestation signals that a device-attest-01 attestation object was
+	// missing, malformed, or failed verification (draft-ietf-acme-device-attest).
+	probBadAttestation = "urn:ietf:params:acme:error:badAttestationStatement"
 )
 
 // Problem is an RFC 7807 / RFC 8555 problem document.

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/acme"
+	"github.com/blechschmidt/secsy-pki/server/internal/attestation"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/caa"
@@ -431,6 +432,15 @@ func main() {
 		go exporter.Run(context.Background())
 	}
 
+	// Shared hardware key-attestation verifier (Task 49). Built once from the
+	// attestation config plus per-profile modes and handed to every enrollment
+	// server so their per-profile "require"/"permissive" policies enforce
+	// consistently. Nil when attestation is disabled everywhere (gate inert).
+	attestVerifier, err := buildAttestationVerifier(cfg)
+	if err != nil {
+		log.Fatalf("Attestation configuration error: %v", err)
+	}
+
 	// ACME (RFC 8555) automated-issuance server. Its endpoints authenticate
 	// clients via JWS account keys (not OIDC/basic auth) and are therefore
 	// registered directly on the mux, outside the OIDC auth middleware.
@@ -439,6 +449,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("ACME configuration error: %v", err)
 		}
+		acmeCfg.Attestation = attestVerifier
 		acmeSrv := acme.New(db, provider, acmeCfg)
 		acmeSrv.Register(mux)
 	}
@@ -452,6 +463,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("SCEP configuration error: %v", err)
 		}
+		scepCfg.Attestation = attestVerifier
 		scep.New(db, provider, scepCfg).Register(mux)
 	}
 
@@ -462,6 +474,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("EST configuration error: %v", err)
 		}
+		estCfg.Attestation = attestVerifier
 		est.New(db, provider, estCfg).Register(mux)
 	}
 
@@ -611,6 +624,108 @@ func insecureHTTPAllowed() bool {
 		return true
 	}
 	return false
+}
+
+// buildAttestationVerifier assembles the shared hardware key-attestation
+// verifier (Task 49) from the top-level attestation config plus the per-profile
+// attestation modes. It returns (nil, nil) when attestation is disabled
+// everywhere (default mode off and no profile enforcing), so the enrollment
+// servers run with the gate inert. It fails at startup when a profile requires
+// attestation but no trusted manufacturer roots are configured — a policy that
+// could otherwise silently reject every enrollment.
+func buildAttestationVerifier(cfg *config.Config) (*attestation.Verifier, error) {
+	profileModes := make(map[string]attestation.Mode)
+	anyEnforcing := false
+	for _, p := range cfg.Profiles {
+		if strings.TrimSpace(p.Attestation.Mode) == "" {
+			continue
+		}
+		m, err := attestation.ParseMode(p.Attestation.Mode)
+		if err != nil {
+			return nil, fmt.Errorf("profile %q attestation: %w", p.Name, err)
+		}
+		profileModes[p.Name] = m
+		if m != attestation.ModeOff {
+			anyEnforcing = true
+		}
+	}
+	defMode, err := attestation.ParseMode(cfg.Attestation.DefaultMode)
+	if err != nil {
+		return nil, fmt.Errorf("attestation.default_mode: %w", err)
+	}
+	if defMode != attestation.ModeOff {
+		anyEnforcing = true
+	}
+	if !anyEnforcing {
+		return nil, nil
+	}
+
+	// Load trusted manufacturer certificates. Self-signed certificates become
+	// roots; the rest are made available as intermediates for chain building.
+	var allCerts []*x509.Certificate
+	for _, path := range cfg.Attestation.TrustedRootFiles {
+		pemBytes, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("reading attestation.trusted_root_files %q: %w", path, err)
+		}
+		certs, err := parseCertChainPEM(pemBytes)
+		if err != nil {
+			return nil, fmt.Errorf("parsing attestation trusted roots %q: %w", path, err)
+		}
+		allCerts = append(allCerts, certs...)
+	}
+	if strings.TrimSpace(cfg.Attestation.TrustedRootsPEM) != "" {
+		certs, err := parseCertChainPEM([]byte(cfg.Attestation.TrustedRootsPEM))
+		if err != nil {
+			return nil, fmt.Errorf("parsing attestation.trusted_roots_pem: %w", err)
+		}
+		allCerts = append(allCerts, certs...)
+	}
+
+	roots := x509.NewCertPool()
+	var intermediates []*x509.Certificate
+	for _, c := range allCerts {
+		if isSelfSigned(c) {
+			roots.AddCert(c)
+		} else {
+			intermediates = append(intermediates, c)
+		}
+	}
+
+	v, err := attestation.NewVerifier(attestation.Options{
+		Roots:         roots,
+		Intermediates: intermediates,
+		DefaultMode:   defMode,
+		ProfileModes:  profileModes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("Enrollment key attestation enabled (default_mode=%s, %d profile override(s), %d trusted cert(s))",
+		defMode, len(profileModes), len(allCerts))
+	return v, nil
+}
+
+// isSelfSigned reports whether a certificate is self-signed (its own issuer and
+// a valid self-signature), used to classify loaded attestation certificates into
+// trust anchors (roots) versus chain-building intermediates.
+func isSelfSigned(c *x509.Certificate) bool {
+	if !bytesEqualName(c.RawSubject, c.RawIssuer) {
+		return false
+	}
+	return c.CheckSignatureFrom(c) == nil
+}
+
+func bytesEqualName(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // buildACMEConfig resolves the ACME issuing CA and assembles the acme.Config

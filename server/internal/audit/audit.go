@@ -68,6 +68,13 @@ const (
 	// 5280 §4.2.1.10) blocking a leaf whose subject or SAN falls outside the
 	// issuing CA's permitted subtrees or inside an excluded subtree (fail-closed).
 	ActionCertNameConstraint = "cert.nameconstraint"
+	// ActionCertAttestation records the outcome of the enrollment key-attestation
+	// gate (Task 49) on the EST/SCEP/ACME device-enrollment paths: ResultSuccess
+	// when a hardware attestation verified (or a permissive-mode check let a
+	// missing/invalid attestation through), ResultDenied when a required
+	// attestation was missing or failed to verify and enrollment was blocked
+	// fail-closed. The detail carries the format, manufacturer, and device serial.
+	ActionCertAttestation = "cert.attestation"
 	// ActionCertAutoRenew records a certificate reissued automatically by the
 	// expiry monitor (actor "monitor"), ahead of its expiry.
 	ActionCertAutoRenew = "cert.auto_renew"

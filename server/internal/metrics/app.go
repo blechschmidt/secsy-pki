@@ -84,6 +84,28 @@ var (
 		"Pre-issuance name-constraint violations that forbid issuance, partitioned by kind.",
 		"kind")
 
+	// Enrollment key-attestation checking (Task 49 gate on the EST/SCEP/ACME
+	// device-enrollment paths). AttestationChecks counts every check by protocol
+	// ("est"|"scep"|"acme"), the applied "mode" (off|permissive|require), and the
+	// outcome "result": "pass" (a hardware attestation verified), "missing" (no
+	// attestation was presented), "invalid" (an attestation was present but did
+	// not verify), or "skip" (mode was off). AttestationVerified breaks verified
+	// attestations down by hardware "format" (yubikey-piv|tpm|apple|cert-chain).
+	AttestationChecks = NewCounter(Default,
+		"secsy_attestation_checks_total",
+		"Enrollment key-attestation checks, partitioned by protocol, mode, and result.",
+		"protocol", "mode", "result")
+	AttestationVerified = NewCounter(Default,
+		"secsy_attestation_verified_total",
+		"Verified enrollment key attestations, partitioned by hardware format.",
+		"format")
+	// AttestationDenied counts enrollments blocked fail-closed because a required
+	// attestation was missing or invalid, partitioned by protocol.
+	AttestationDenied = NewCounter(Default,
+		"secsy_attestation_denied_total",
+		"Enrollments denied because a required key attestation was missing or invalid, by protocol.",
+		"protocol")
+
 	// Revocation-data serving.
 	OCSPRequests = NewCounter(Default,
 		"secsy_ocsp_requests_total",

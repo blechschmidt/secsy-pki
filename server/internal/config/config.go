@@ -80,6 +80,43 @@ type Config struct {
 	// tracing.enabled is true; when disabled a no-op tracer is installed and the
 	// instrumentation throughout the codebase costs effectively nothing.
 	Tracing TracingConfig `yaml:"tracing"`
+	// Attestation configures hardware key-attestation verification on the
+	// device-enrollment paths (EST/SCEP/ACME). It supplies the trusted
+	// manufacturer roots and a default enforcement mode; profiles opt into a
+	// stricter/looser mode via their `attestation` block. Inert unless a profile
+	// (or the default) sets a non-"off" mode.
+	Attestation AttestationConfig `yaml:"attestation"`
+}
+
+// AttestationConfig holds the deployment-wide settings for enrollment
+// key-attestation verification (Task 49). Enforcement is turned on per issuance
+// profile (ProfileAttestationConfig) or via DefaultMode; this block supplies the
+// trusted manufacturer roots every attestation certificate chain must terminate
+// at (YubiKey PIV roots, TPM manufacturer roots, Apple attestation roots).
+type AttestationConfig struct {
+	// DefaultMode is the attestation mode applied to any issuance profile that
+	// does not set its own `attestation.mode`: "off" (default), "permissive", or
+	// "require". A profile-level mode overrides this.
+	DefaultMode string `yaml:"default_mode"`
+	// TrustedRootFiles are paths to PEM files, each holding one or more trusted
+	// manufacturer root (or intermediate) certificates. Roots and intermediates
+	// may be mixed; self-signed certificates are treated as roots and the rest as
+	// intermediates for chain building.
+	TrustedRootFiles []string `yaml:"trusted_root_files"`
+	// TrustedRootsPEM is inline PEM carrying trusted manufacturer certificates, an
+	// alternative (or supplement) to TrustedRootFiles.
+	TrustedRootsPEM string `yaml:"trusted_roots_pem"`
+}
+
+// ProfileAttestationConfig is a profile's enrollment key-attestation policy.
+// When the effective mode is "require", an enrollment under the profile is
+// rejected fail-closed unless it presents a valid hardware attestation bound to
+// the enrolled key; under "permissive" the attestation is evaluated and audited
+// but never blocks; "off" disables the gate for the profile.
+type ProfileAttestationConfig struct {
+	// Mode is "off" (inherit nothing / disabled), "permissive", or "require".
+	// Empty falls back to the global attestation.default_mode.
+	Mode string `yaml:"mode"`
 }
 
 // TracingConfig configures OpenTelemetry distributed tracing over the OTLP
@@ -680,6 +717,11 @@ type ProfileConfig struct {
 	// Policies assigns RFC 5280 certificate-policy OIDs (2.5.29.32) to leaves
 	// issued under the profile, optionally with a CPS URI and policy mappings.
 	Policies ProfilePolicyConfig `yaml:"policies"`
+	// Attestation is the profile's enrollment key-attestation policy (Task 49).
+	// When mode is "require", EST/SCEP/ACME enrollments under the profile must
+	// present a valid hardware attestation bound to the enrolled key. Empty mode
+	// inherits attestation.default_mode.
+	Attestation ProfileAttestationConfig `yaml:"attestation"`
 }
 
 // ProfilePolicyConfig is a profile's certificate-policy assignment. When oids is

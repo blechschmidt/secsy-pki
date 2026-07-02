@@ -636,6 +636,11 @@ const (
 const (
 	ACMEChallengeHTTP01 = "http-01"
 	ACMEChallengeDNS01  = "dns-01"
+	// ACMEChallengeDeviceAttest01 is the device-attest-01 challenge
+	// (draft-ietf-acme-device-attest): the client proves control of a
+	// hardware-resident key by returning a WebAuthn attestation object
+	// (Apple/TPM) committing to the challenge's key authorization.
+	ACMEChallengeDeviceAttest01 = "device-attest-01"
 )
 
 // ACMEIdentifier is a subject the client wishes to certify (RFC 8555 §7.1.4).
