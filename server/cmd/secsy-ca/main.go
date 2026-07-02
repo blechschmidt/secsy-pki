@@ -97,6 +97,14 @@ func run(args []string) error {
 		return cmdAudit(db, cmdArgs)
 	}
 
+	// Certificate discovery is a TLS client plus X.509 analysis against the stored
+	// CA certificates; it needs the database but never the HSM/key provider, so
+	// dispatch it before the provider is constructed. This lets an operator run a
+	// scan without the token being present or unlocked.
+	if command == "discover" {
+		return cmdDiscover(db, cfg, cmdArgs)
+	}
+
 	provider, err := buildProvider(cfg, "ca")
 	if err != nil {
 		return fmt.Errorf("initializing key provider: %w", err)
@@ -230,6 +238,7 @@ Commands:
   backup              Export CA metadata + a DR manifest (no private keys)
   restore             Restore/verify CA metadata against the key provider
   audit               Verify the audit hash-chain, or export it for SIEM
+  discover            Scan external TLS endpoints; flag expiring/weak/rogue certs
   db                  Persistence administration (migrate SQLite file store → PostgreSQL)
 
 Run "secsy-ca <command> -h" for command-specific flags.

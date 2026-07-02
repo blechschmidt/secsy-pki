@@ -495,6 +495,46 @@ func (db *DB) migrate() error {
 			created_at %s
 		)`, blob, currentTimestamp),
 		`CREATE INDEX IF NOT EXISTS idx_webauthn_subject ON webauthn_credentials(subject)`,
+		// Certificates observed on external TLS endpoints by the discovery scanner
+		// (Task 54). Unlike issued_certificates, these were not necessarily minted by
+		// this PKI; the scanner records each served leaf's details plus the security
+		// flags it raised (expiring, weak key, SHA-1, self-signed, hostname mismatch,
+		// and rogue/shadow certs not issued by this PKI). Boolean flags are stored as
+		// 0/1 INTEGERs for portability across SQLite and PostgreSQL. Keyed on
+		// (endpoint, fingerprint) so re-scanning updates the row in place.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS discovered_certificates (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'default' REFERENCES tenants(id),
+			endpoint TEXT NOT NULL,
+			server_name TEXT,
+			subject TEXT,
+			common_name TEXT,
+			sans TEXT,
+			issuer TEXT,
+			serial TEXT,
+			not_before TIMESTAMP,
+			not_after TIMESTAMP,
+			key_algorithm TEXT,
+			key_size INTEGER NOT NULL DEFAULT 0,
+			signature_algorithm TEXT,
+			chain_length INTEGER NOT NULL DEFAULT 0,
+			chain_complete INTEGER NOT NULL DEFAULT 0,
+			fingerprint TEXT NOT NULL,
+			certificate TEXT,
+			issued_by_pki INTEGER NOT NULL DEFAULT 0,
+			rogue INTEGER NOT NULL DEFAULT 0,
+			self_signed INTEGER NOT NULL DEFAULT 0,
+			weak_key INTEGER NOT NULL DEFAULT 0,
+			sha1_signature INTEGER NOT NULL DEFAULT 0,
+			hostname_mismatch INTEGER NOT NULL DEFAULT 0,
+			expiring_soon INTEGER NOT NULL DEFAULT 0,
+			severity TEXT NOT NULL DEFAULT 'ok',
+			flags TEXT,
+			discovered_at %s,
+			UNIQUE(endpoint, fingerprint)
+		)`, currentTimestamp),
+		`CREATE INDEX IF NOT EXISTS idx_discovered_certs_tenant ON discovered_certificates(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_discovered_certs_rogue ON discovered_certificates(rogue)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.exec(stmt); err != nil {

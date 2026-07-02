@@ -51,6 +51,9 @@ var migrationTables = []string{
 	"acme_challenges",
 	// Operator WebAuthn credentials (standalone; no foreign keys).
 	"webauthn_credentials",
+	// Discovered external certificates (Task 54). Tenant-scoped; references
+	// tenants, so copied after it.
+	"discovered_certificates",
 }
 
 // tableCopyOrder pins the read order for tables whose rows have intra-table

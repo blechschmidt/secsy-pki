@@ -64,6 +64,20 @@ const (
 	CrossSignStatusRevoked CrossSignStatus = "revoked"
 )
 
+// Defines values for DiscoveredCertificateSeverity.
+const (
+	DiscoveredCertificateSeverityCritical DiscoveredCertificateSeverity = "critical"
+	DiscoveredCertificateSeverityOk       DiscoveredCertificateSeverity = "ok"
+	DiscoveredCertificateSeverityWarning  DiscoveredCertificateSeverity = "warning"
+)
+
+// Defines values for DiscoveryFindingSeverity.
+const (
+	DiscoveryFindingSeverityCritical DiscoveryFindingSeverity = "critical"
+	DiscoveryFindingSeverityOk       DiscoveryFindingSeverity = "ok"
+	DiscoveryFindingSeverityWarning  DiscoveryFindingSeverity = "warning"
+)
+
 // Defines values for EventResult.
 const (
 	EventResultDenied  EventResult = "denied"
@@ -125,8 +139,8 @@ const (
 
 // Defines values for RevokeResultStatus.
 const (
-	RevokeResultStatusAlreadyRevoked RevokeResultStatus = "already-revoked"
-	RevokeResultStatusRevoked        RevokeResultStatus = "revoked"
+	AlreadyRevoked RevokeResultStatus = "already-revoked"
+	Revoked        RevokeResultStatus = "revoked"
 )
 
 // Defines values for SetDefaultRestrictionSetRequestType.
@@ -155,9 +169,9 @@ const (
 
 // Defines values for ListExpiringCertificatesParamsSeverity.
 const (
-	Critical ListExpiringCertificatesParamsSeverity = "critical"
-	Expired  ListExpiringCertificatesParamsSeverity = "expired"
-	Warning  ListExpiringCertificatesParamsSeverity = "warning"
+	ListExpiringCertificatesParamsSeverityCritical ListExpiringCertificatesParamsSeverity = "critical"
+	ListExpiringCertificatesParamsSeverityExpired  ListExpiringCertificatesParamsSeverity = "expired"
+	ListExpiringCertificatesParamsSeverityWarning  ListExpiringCertificatesParamsSeverity = "warning"
 )
 
 // ACMEAccount defines model for ACMEAccount.
@@ -533,6 +547,132 @@ type DecryptRequest struct {
 type DecryptResponse struct {
 	// Plaintext base64-encoded plaintext
 	Plaintext *string `json:"plaintext,omitempty"`
+}
+
+// DiscoveredCertificate A certificate observed on an external TLS endpoint by the discovery scanner.
+type DiscoveredCertificate struct {
+	// Certificate PEM-encoded leaf
+	Certificate   *string    `json:"certificate,omitempty"`
+	ChainComplete *bool      `json:"chain_complete,omitempty"`
+	ChainLength   *int       `json:"chain_length,omitempty"`
+	CommonName    *string    `json:"common_name,omitempty"`
+	DiscoveredAt  *time.Time `json:"discovered_at,omitempty"`
+
+	// Endpoint host:port scanned
+	Endpoint     *string `json:"endpoint,omitempty"`
+	ExpiringSoon *bool   `json:"expiring_soon,omitempty"`
+
+	// Fingerprint sha256 hex of the leaf DER
+	Fingerprint      *string    `json:"fingerprint,omitempty"`
+	Flags            *[]string  `json:"flags,omitempty"`
+	HostnameMismatch *bool      `json:"hostname_mismatch,omitempty"`
+	Id               *string    `json:"id,omitempty"`
+	IssuedByPki      *bool      `json:"issued_by_pki,omitempty"`
+	Issuer           *string    `json:"issuer,omitempty"`
+	KeyAlgorithm     *string    `json:"key_algorithm,omitempty"`
+	KeySize          *int       `json:"key_size,omitempty"`
+	NotAfter         *time.Time `json:"not_after,omitempty"`
+	NotBefore        *time.Time `json:"not_before,omitempty"`
+
+	// Rogue served leaf NOT issued by this PKI
+	Rogue      *bool     `json:"rogue,omitempty"`
+	Sans       *[]string `json:"sans,omitempty"`
+	SelfSigned *bool     `json:"self_signed,omitempty"`
+	Serial     *string   `json:"serial,omitempty"`
+
+	// ServerName SNI presented
+	ServerName         *string                        `json:"server_name,omitempty"`
+	Severity           *DiscoveredCertificateSeverity `json:"severity,omitempty"`
+	Sha1Signature      *bool                          `json:"sha1_signature,omitempty"`
+	SignatureAlgorithm *string                        `json:"signature_algorithm,omitempty"`
+	Subject            *string                        `json:"subject,omitempty"`
+	TenantId           *string                        `json:"tenant_id,omitempty"`
+	WeakKey            *bool                          `json:"weak_key,omitempty"`
+}
+
+// DiscoveredCertificateSeverity defines model for DiscoveredCertificate.Severity.
+type DiscoveredCertificateSeverity string
+
+// DiscoveredCertificateList defines model for DiscoveredCertificateList.
+type DiscoveredCertificateList struct {
+	Certificates *[]DiscoveredCertificate `json:"certificates,omitempty"`
+	Total        *int                     `json:"total,omitempty"`
+}
+
+// DiscoveryFinding defines model for DiscoveryFinding.
+type DiscoveryFinding struct {
+	// Certificate PEM-encoded leaf
+	Certificate   *string    `json:"certificate,omitempty"`
+	ChainComplete *bool      `json:"chain_complete,omitempty"`
+	ChainLength   *int       `json:"chain_length,omitempty"`
+	CommonName    *string    `json:"common_name,omitempty"`
+	DiscoveredAt  *time.Time `json:"discovered_at,omitempty"`
+
+	// Endpoint host:port scanned
+	Endpoint      *string `json:"endpoint,omitempty"`
+	Error         *string `json:"error,omitempty"`
+	ExpiresInDays *int    `json:"expires_in_days,omitempty"`
+	ExpiringSoon  *bool   `json:"expiring_soon,omitempty"`
+
+	// Fingerprint sha256 hex of the leaf DER
+	Fingerprint      *string    `json:"fingerprint,omitempty"`
+	Flags            *[]string  `json:"flags,omitempty"`
+	HostnameMismatch *bool      `json:"hostname_mismatch,omitempty"`
+	Id               *string    `json:"id,omitempty"`
+	IssuedByPki      *bool      `json:"issued_by_pki,omitempty"`
+	Issuer           *string    `json:"issuer,omitempty"`
+	KeyAlgorithm     *string    `json:"key_algorithm,omitempty"`
+	KeySize          *int       `json:"key_size,omitempty"`
+	NotAfter         *time.Time `json:"not_after,omitempty"`
+	NotBefore        *time.Time `json:"not_before,omitempty"`
+	Reachable        *bool      `json:"reachable,omitempty"`
+
+	// Rogue served leaf NOT issued by this PKI
+	Rogue      *bool     `json:"rogue,omitempty"`
+	Sans       *[]string `json:"sans,omitempty"`
+	SelfSigned *bool     `json:"self_signed,omitempty"`
+	Serial     *string   `json:"serial,omitempty"`
+
+	// ServerName SNI presented
+	ServerName         *string                   `json:"server_name,omitempty"`
+	Severity           *DiscoveryFindingSeverity `json:"severity,omitempty"`
+	Sha1Signature      *bool                     `json:"sha1_signature,omitempty"`
+	SignatureAlgorithm *string                   `json:"signature_algorithm,omitempty"`
+	Subject            *string                   `json:"subject,omitempty"`
+	TenantId           *string                   `json:"tenant_id,omitempty"`
+	WeakKey            *bool                     `json:"weak_key,omitempty"`
+}
+
+// DiscoveryFindingSeverity defines model for DiscoveryFinding.Severity.
+type DiscoveryFindingSeverity string
+
+// DiscoveryScanReport defines model for DiscoveryScanReport.
+type DiscoveryScanReport struct {
+	Counts      *map[string]int     `json:"counts,omitempty"`
+	ExpiryDays  *int                `json:"expiry_days,omitempty"`
+	Findings    *[]DiscoveryFinding `json:"findings,omitempty"`
+	GeneratedAt *time.Time          `json:"generated_at,omitempty"`
+
+	// Stored Number of findings persisted to the inventory.
+	Stored *int `json:"stored,omitempty"`
+}
+
+// DiscoveryScanRequest defines model for DiscoveryScanRequest.
+type DiscoveryScanRequest struct {
+	// Cidrs CIDR ranges to expand into targets on the default port.
+	Cidrs *[]string `json:"cidrs,omitempty"`
+
+	// ExpiryDays Override the expiring-soon window (0 uses the configured/default).
+	ExpiryDays *int `json:"expiry_days,omitempty"`
+
+	// Notify Dispatch flagged findings through the monitor notification sinks.
+	Notify *bool `json:"notify,omitempty"`
+
+	// Store Record findings into the discovered-certificate inventory.
+	Store *bool `json:"store,omitempty"`
+
+	// Targets host[:port][#sni] endpoints; falls back to configured targets when empty.
+	Targets *[]string `json:"targets,omitempty"`
 }
 
 // EncryptRequest defines model for EncryptRequest.
@@ -1186,6 +1326,9 @@ type RevokeCertificateJSONRequestBody = RevokeCertRequest
 // IssueSVIDJSONRequestBody defines body for IssueSVID for application/json ContentType.
 type IssueSVIDJSONRequestBody = SVIDRequest
 
+// RunDiscoveryScanJSONRequestBody defines body for RunDiscoveryScan for application/json ContentType.
+type RunDiscoveryScanJSONRequestBody = DiscoveryScanRequest
+
 // CreateGroupJSONRequestBody defines body for CreateGroup for application/json ContentType.
 type CreateGroupJSONRequestBody = CreateGroupRequest
 
@@ -1404,6 +1547,14 @@ type ClientInterface interface {
 
 	// GetSVIDBundle request
 	GetSVIDBundle(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListDiscoveredCertificates request
+	ListDiscoveredCertificates(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RunDiscoveryScanWithBody request with any body
+	RunDiscoveryScanWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	RunDiscoveryScan(ctx context.Context, body RunDiscoveryScanJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListEventLog request
 	ListEventLog(ctx context.Context, params *ListEventLogParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1997,6 +2148,42 @@ func (c *Client) IssueSVID(ctx context.Context, id CAId, body IssueSVIDJSONReque
 
 func (c *Client) GetSVIDBundle(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetSVIDBundleRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListDiscoveredCertificates(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListDiscoveredCertificatesRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RunDiscoveryScanWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRunDiscoveryScanRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RunDiscoveryScan(ctx context.Context, body RunDiscoveryScanJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRunDiscoveryScanRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -4114,6 +4301,73 @@ func NewGetSVIDBundleRequest(server string, id CAId) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewListDiscoveredCertificatesRequest generates requests for ListDiscoveredCertificates
+func NewListDiscoveredCertificatesRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/discovery")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewRunDiscoveryScanRequest calls the generic RunDiscoveryScan builder with application/json body
+func NewRunDiscoveryScanRequest(server string, body RunDiscoveryScanJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRunDiscoveryScanRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewRunDiscoveryScanRequestWithBody generates requests for RunDiscoveryScan with any type of body
+func NewRunDiscoveryScanRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/discovery/scan")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -6299,6 +6553,14 @@ type ClientWithResponsesInterface interface {
 	// GetSVIDBundleWithResponse request
 	GetSVIDBundleWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetSVIDBundleResponse, error)
 
+	// ListDiscoveredCertificatesWithResponse request
+	ListDiscoveredCertificatesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListDiscoveredCertificatesResponse, error)
+
+	// RunDiscoveryScanWithBodyWithResponse request with any body
+	RunDiscoveryScanWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RunDiscoveryScanResponse, error)
+
+	RunDiscoveryScanWithResponse(ctx context.Context, body RunDiscoveryScanJSONRequestBody, reqEditors ...RequestEditorFn) (*RunDiscoveryScanResponse, error)
+
 	// ListEventLogWithResponse request
 	ListEventLogWithResponse(ctx context.Context, params *ListEventLogParams, reqEditors ...RequestEditorFn) (*ListEventLogResponse, error)
 
@@ -7092,6 +7354,53 @@ func (r GetSVIDBundleResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetSVIDBundleResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListDiscoveredCertificatesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *DiscoveredCertificateList
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListDiscoveredCertificatesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListDiscoveredCertificatesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type RunDiscoveryScanResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *DiscoveryScanReport
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r RunDiscoveryScanResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RunDiscoveryScanResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -8603,6 +8912,32 @@ func (c *ClientWithResponses) GetSVIDBundleWithResponse(ctx context.Context, id 
 	return ParseGetSVIDBundleResponse(rsp)
 }
 
+// ListDiscoveredCertificatesWithResponse request returning *ListDiscoveredCertificatesResponse
+func (c *ClientWithResponses) ListDiscoveredCertificatesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListDiscoveredCertificatesResponse, error) {
+	rsp, err := c.ListDiscoveredCertificates(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListDiscoveredCertificatesResponse(rsp)
+}
+
+// RunDiscoveryScanWithBodyWithResponse request with arbitrary body returning *RunDiscoveryScanResponse
+func (c *ClientWithResponses) RunDiscoveryScanWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RunDiscoveryScanResponse, error) {
+	rsp, err := c.RunDiscoveryScanWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRunDiscoveryScanResponse(rsp)
+}
+
+func (c *ClientWithResponses) RunDiscoveryScanWithResponse(ctx context.Context, body RunDiscoveryScanJSONRequestBody, reqEditors ...RequestEditorFn) (*RunDiscoveryScanResponse, error) {
+	rsp, err := c.RunDiscoveryScan(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRunDiscoveryScanResponse(rsp)
+}
+
 // ListEventLogWithResponse request returning *ListEventLogResponse
 func (c *ClientWithResponses) ListEventLogWithResponse(ctx context.Context, params *ListEventLogParams, reqEditors ...RequestEditorFn) (*ListEventLogResponse, error) {
 	rsp, err := c.ListEventLog(ctx, params, reqEditors...)
@@ -9941,6 +10276,79 @@ func ParseGetSVIDBundleResponse(rsp *http.Response) (*GetSVIDBundleResponse, err
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListDiscoveredCertificatesResponse parses an HTTP response from a ListDiscoveredCertificatesWithResponse call
+func ParseListDiscoveredCertificatesResponse(rsp *http.Response) (*ListDiscoveredCertificatesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListDiscoveredCertificatesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest DiscoveredCertificateList
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRunDiscoveryScanResponse parses an HTTP response from a RunDiscoveryScanWithResponse call
+func ParseRunDiscoveryScanResponse(rsp *http.Response) (*RunDiscoveryScanResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RunDiscoveryScanResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest DiscoveryScanReport
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
 
 	}
 

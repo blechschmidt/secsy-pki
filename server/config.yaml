@@ -464,6 +464,29 @@ tracing:
   # headers:                       # optional static export headers (auth token, etc.)
   #   authorization: "Bearer ..."
 
+# --- External certificate discovery/scanner (Task 54) -------------------------
+# Periodically probes a list of TLS endpoints, records the served leaf
+# certificates into the discovered-certificate inventory, and flags expiring,
+# weak-key, SHA-1, self-signed, hostname-mismatched, and rogue (not-issued-by-
+# this-PKI) certs. Flagged findings are dispatched through the same notification
+# sinks as the expiry monitor. Inert unless enabled; the `secsy-ca discover` CLI
+# and the /api/discovery endpoints work regardless of this block.
+discovery:
+  enabled: false
+  interval_hours: 24            # background scan cadence (default 24)
+  expiry_days: 30               # "expiring soon" window (default 30)
+  # targets are literal host[:port][#sni] endpoints; #sni overrides the SNI.
+  targets: []
+  #   - "example.com"                 # :443, SNI=example.com
+  #   - "10.0.0.5:8443#internal.svc"  # explicit port + SNI
+  # hosts_file: "discovery-hosts.txt" # one endpoint per line ('#' comments)
+  # cidrs: ["10.0.0.0/28"]            # expand each host address on default_port
+  default_port: 443
+  dial_timeout_seconds: 8
+  concurrency: 16
+  store: true                   # persist findings to the inventory
+  notify: false                 # dispatch flagged findings via monitor.notifications
+
 # --- HSM-backed secret encryption (envelope encryption) -----------------------
 # Encrypt passwords and small secrets under a KEK held in the HSM. See
 # docs/password-encryption.md. When secret.kek_label is unset, the /api/secret/*

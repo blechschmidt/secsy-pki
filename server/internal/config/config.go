@@ -93,6 +93,41 @@ type Config struct {
 	// them together. Each sub-feature is inert unless its `enabled` is set; the
 	// stateless basic-auth root and Bearer-token paths keep working regardless.
 	Auth AuthConfig `yaml:"auth"`
+	// Discovery configures the external certificate discovery scanner (Task 54):
+	// the endpoints to probe, the "expiring soon" window, and whether results are
+	// stored to the inventory and alerted through the expiry-monitor sinks. Inert
+	// unless discovery.enabled is set; the `secsy-ca discover` CLI works regardless.
+	Discovery DiscoveryConfig `yaml:"discovery"`
+}
+
+// DiscoveryConfig configures the external certificate discovery scanner. When
+// enabled, a background scan periodically probes the configured TLS endpoints,
+// records the served leaf certificates (with their security flags) to the
+// inventory, and dispatches expiring/weak/rogue findings through the same
+// notification sinks as the expiry monitor (monitor.notifications).
+type DiscoveryConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// IntervalHours is how often the background scan runs (default 24 when unset).
+	IntervalHours int `yaml:"interval_hours"`
+	// ExpiryDays is the "expiring soon" window in days (default 30 when unset).
+	ExpiryDays int `yaml:"expiry_days"`
+	// Targets are literal "host[:port][#sni]" endpoints to scan.
+	Targets []string `yaml:"targets"`
+	// HostsFile is an optional file of endpoints, one per line ('#' comments).
+	HostsFile string `yaml:"hosts_file"`
+	// CIDRs are optional network ranges; each host address becomes a target on the
+	// default port.
+	CIDRs []string `yaml:"cidrs"`
+	// DefaultPort is applied to targets without an explicit port (default 443).
+	DefaultPort int `yaml:"default_port"`
+	// DialTimeoutSeconds bounds each endpoint's TCP+TLS handshake (default 8).
+	DialTimeoutSeconds int `yaml:"dial_timeout_seconds"`
+	// Concurrency bounds parallel endpoint dials (default 16).
+	Concurrency int `yaml:"concurrency"`
+	// Store persists findings to the discovered-certificates inventory.
+	Store bool `yaml:"store"`
+	// Notify dispatches flagged findings through the monitor.notifications sinks.
+	Notify bool `yaml:"notify"`
 }
 
 // AuthConfig is the top-level operator-authentication block (Task 50).

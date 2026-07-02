@@ -14,6 +14,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/console"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
@@ -66,6 +67,13 @@ type API struct {
 	// console via /api/auth/config, so the SPA can render the right login options
 	// (server-side SSO redirect, password login, and WebAuthn step-up).
 	authInfo AuthInfo
+	// discoveryCfg and monitorCfg drive the /api/discovery endpoints: the former
+	// supplies the default targets/expiry window for scans, the latter the
+	// notification sinks flagged findings are dispatched through (shared with the
+	// expiry monitor). Zero values leave discovery API scans working with
+	// request-supplied targets and no alerting.
+	discoveryCfg config.DiscoveryConfig
+	monitorCfg   config.MonitorConfig
 }
 
 // AuthInfo describes the operator-authentication mechanisms enabled on the
@@ -185,6 +193,14 @@ func (a *API) SetOCSPCacheTTL(ttl time.Duration) { a.ocspCache = ca.NewOCSPCache
 // /api/monitor endpoints so ad-hoc scans match the background monitor.
 func (a *API) SetMonitorOptions(o monitor.Options) { a.monitorOpts = o }
 
+// SetDiscoveryConfig installs the discovery scanner configuration used by the
+// /api/discovery endpoints: the default targets/expiry window and the monitor
+// notification config whose sinks flagged findings are dispatched through.
+func (a *API) SetDiscoveryConfig(d config.DiscoveryConfig, m config.MonitorConfig) {
+	a.discoveryCfg = d
+	a.monitorCfg = m
+}
+
 // SetSPIFFE installs the SPIFFE X.509-SVID trust-domain allowlist and issuance
 // profile, enabling the SVID and trust-bundle endpoints. Passing a nil policy
 // leaves SVID issuance disabled. Intended to be called once at startup.
@@ -278,6 +294,12 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	// export) and the CA/Browser-Forum conformance evidence pack. Read-gated.
 	mux.Handle("GET /api/report/inventory", protected(http.HandlerFunc(a.ReportInventory)))
 	mux.Handle("GET /api/report/compliance", protected(http.HandlerFunc(a.ReportCompliance)))
+
+	// External certificate discovery (Task 54): list the discovered external certs
+	// (read-gated) and run an on-demand scan (issue capability, since it actively
+	// probes endpoints and records to the inventory).
+	mux.Handle("GET /api/discovery", protected(http.HandlerFunc(a.ListDiscoveredCertificates)))
+	mux.Handle("POST /api/discovery/scan", protected(http.HandlerFunc(a.RunDiscoveryScan)))
 
 	// Public revocation endpoints — relying parties fetch these without auth.
 	// The complete/base CRL, its delta, and — when partitioning is enabled — the

@@ -31,6 +31,7 @@ type Store interface {
 	CAStore
 	CrossSignStore
 	InventoryStore
+	DiscoveryStore
 	RevocationStore
 	CRLStore
 	ACMEStore
@@ -107,6 +108,18 @@ type InventoryStore interface {
 	GetIssuedCertificate(caID, serial string) (*models.IssuedCertificate, error)
 	ListIssuedCertificates(caID string) ([]models.IssuedCertificate, error)
 	MarkExpiredCertificates(caID string, now time.Time) (int64, error)
+}
+
+// DiscoveryStore persists certificates observed on external TLS endpoints by the
+// discovery scanner (Task 54). These are not the authority's own issued
+// certificates; they are the shadow/rogue, expiring, weak, or otherwise notable
+// certificates found in the field, recorded so operators can inventory and alert
+// on them. Records are upserted on (endpoint, fingerprint) so re-scanning updates
+// in place rather than accumulating duplicates.
+type DiscoveryStore interface {
+	RecordDiscoveredCertificate(d *models.DiscoveredCertificate) error
+	ListDiscoveredCertificates(tenantID string) ([]models.DiscoveredCertificate, error)
+	DeleteDiscoveredCertificate(id string) error
 }
 
 // RevocationStore persists revoked-certificate records and the per-CA monotonic

@@ -306,6 +306,7 @@ function switchView(name) {
     v.classList.toggle('active', v.id === 'view-' + name));
   if (name === 'monitor') loadMonitor();
   if (name === 'inventory') loadInventory();
+  if (name === 'discovery') loadDiscovery();
   if (name === 'compliance') loadCompliance();
   if (name === 'bundle') loadBundle();
 }
@@ -484,6 +485,89 @@ async function loadMonitor() {
         <td>${fmtTime(it.not_after)}</td>
       </tr>`).join('') : emptyRow('No certificates match.');
   } catch (e) { tbody.innerHTML = emptyRow(e.message); }
+}
+
+// ---- External discovery view ---------------------------------------------
+$('discRefresh').onclick = loadDiscovery;
+$('discScan').onclick = runDiscoveryScan;
+
+// loadDiscovery lists the certificates already recorded by the discovery scanner.
+async function loadDiscovery() {
+  const tbody = $('discRows');
+  tbody.innerHTML = '<tr><td colspan="7" class="muted">Loading…</td></tr>';
+  try {
+    const rep = await api('GET', '/api/discovery');
+    renderDiscovery(rep.certificates || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="muted">${escapeHTML(e.message)}</td></tr>`;
+    $('discCounts').textContent = '';
+  }
+}
+
+// runDiscoveryScan probes the entered targets, then re-renders the results.
+async function runDiscoveryScan() {
+  const raw = $('discTargets').value.trim();
+  const targets = raw.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+  const btn = $('discScan');
+  btn.disabled = true;
+  const tbody = $('discRows');
+  tbody.innerHTML = '<tr><td colspan="7" class="muted">Scanning…</td></tr>';
+  try {
+    const rep = await api('POST', '/api/discovery/scan', {
+      targets,
+      store: $('discStore').checked,
+      notify: $('discNotify').checked,
+    });
+    // The scan returns findings (including unreachable endpoints); render them.
+    renderDiscovery((rep.findings || []).filter(f => f.reachable), rep.counts, rep.findings || []);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="muted">${escapeHTML(e.message)}</td></tr>`;
+  } finally { btn.disabled = false; }
+}
+
+// renderDiscovery paints a set of discovered certificates. It accepts either the
+// persisted records (from GET) or scan findings (from POST); both share the leaf
+// fields used here. Rogue (not-issued-by-this-PKI) certs are highlighted.
+function renderDiscovery(certs, counts, allFindings) {
+  const tbody = $('discRows');
+  const rank = { critical: 0, warning: 1, ok: 2 };
+  const rows = (certs || []).slice().sort((a, b) => (rank[a.severity] ?? 3) - (rank[b.severity] ?? 3));
+  if (counts) {
+    const unreachable = (allFindings || []).filter(f => !f.reachable).length;
+    $('discCounts').textContent =
+      `${counts.total} endpoint(s): ${counts.reachable} reachable, ${unreachable} unreachable · ` +
+      `expiring ${counts.expiring_soon} · weak ${counts.weak_key} · sha1 ${counts.sha1_signature} · ` +
+      `self-signed ${counts.self_signed} · mismatch ${counts.hostname_mismatch} · rogue ${counts.rogue}`;
+  } else {
+    $('discCounts').textContent = `${rows.length} discovered certificate(s)`;
+  }
+  tbody.innerHTML = rows.length ? rows.map(c => {
+    const key = c.key_algorithm ? (c.key_size ? `${c.key_algorithm}-${c.key_size}` : c.key_algorithm) : '—';
+    const origin = c.issued_by_pki
+      ? '<span class="badge pass" title="Chains to one of this PKI\'s CAs">this PKI</span>'
+      : (c.self_signed
+        ? '<span class="badge warning">self-signed</span>'
+        : '<span class="badge fail" title="Not issued by this PKI">rogue</span>');
+    const flags = (c.flags || []).length
+      ? c.flags.map(f => `<span class="badge ${c.severity}">${escapeHTML(f)}</span>`).join(' ')
+      : '<span class="muted">—</span>';
+    return `<tr>
+      <td class="mono">${escapeHTML(c.endpoint || '')}</td>
+      <td>${escapeHTML(c.common_name || '')}</td>
+      <td title="${escapeHTML(c.issuer || '')}">${escapeHTML(shortName(c.issuer))}</td>
+      <td>${escapeHTML(key)}</td>
+      <td>${fmtTime(c.not_after)}</td>
+      <td>${origin}</td>
+      <td>${flags}</td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="7" class="muted">No certificates found.</td></tr>';
+}
+
+// shortName renders the CN portion of a distinguished name for compact display.
+function shortName(dn) {
+  if (!dn) return '—';
+  const m = dn.match(/CN=([^,]+)/);
+  return m ? m[1] : (dn.length > 40 ? dn.slice(0, 39) + '…' : dn);
 }
 
 // ---- Inventory view ------------------------------------------------------

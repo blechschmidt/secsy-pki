@@ -40,6 +40,7 @@
         <button data-view="certs" class="active">Certificates</button>
         <button data-view="inventory">Inventory</button>
         <button data-view="monitor">Expiry Monitor</button>
+        <button data-view="discovery">Discovery</button>
         <button data-view="issue">Issue</button>
         <button data-view="compliance">Compliance</button>
         <button data-view="bundle">Trust Bundle</button>
@@ -141,6 +142,33 @@
           <table>
             <thead><tr><th>Severity</th><th>Common name</th><th>CA</th><th>Profile</th><th>Expires in</th><th>Not after</th></tr></thead>
             <tbody id="monRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- External certificate discovery -->
+      <section class="view" id="view-discovery">
+        <h2>External certificate discovery</h2>
+        <p class="sub">Scan external TLS endpoints and inventory the certificates they serve. Findings are flagged when expiring soon, using a weak key, a SHA-1 signature, self-signed, hostname-mismatched, or <strong>not issued by this PKI</strong> (rogue/shadow certs).</p>
+        <div class="toolbar">
+          <div class="field" style="margin:0;flex:1">
+            <label for="discTargets">Targets (host[:port][#sni], comma or newline separated)</label>
+            <input id="discTargets" placeholder="example.com, 10.0.0.5:8443#internal.example.com" style="width:100%">
+          </div>
+          <label class="muted" style="display:flex;gap:6px;align-items:center;margin-top:16px" title="Persist findings into the discovered-certificate inventory">
+            <input type="checkbox" id="discStore" checked> store
+          </label>
+          <label class="muted" style="display:flex;gap:6px;align-items:center;margin-top:16px" title="Dispatch flagged findings through the configured notification sinks">
+            <input type="checkbox" id="discNotify"> notify
+          </label>
+          <button class="btn sm" id="discScan" style="margin-top:16px">Scan</button>
+          <button class="btn ghost sm" id="discRefresh" style="margin-top:16px">Refresh</button>
+        </div>
+        <div id="discCounts" class="muted" style="margin-bottom:12px"></div>
+        <div class="panel">
+          <table>
+            <thead><tr><th>Endpoint</th><th>Common name</th><th>Issuer</th><th>Key</th><th>Not after</th><th>Origin</th><th>Flags</th></tr></thead>
+            <tbody id="discRows"><tr><td colspan="7" class="muted">No scans yet — enter targets and click Scan, or Refresh to load stored findings.</td></tr></tbody>
           </table>
         </div>
       </section>

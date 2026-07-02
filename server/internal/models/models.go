@@ -287,6 +287,46 @@ type IssuedCertificate struct {
 	CTLogs []string `json:"ct_logs,omitempty" db:"-"`
 }
 
+// DiscoveredCertificate is the persisted record of a certificate observed on an
+// external TLS endpoint by the discovery scanner (Task 54). Unlike an
+// IssuedCertificate — the authority's own copy of something it minted — a
+// discovered certificate may have been issued by anyone; the scanner records its
+// leaf details and the security flags it triggered so operators can spot expiring,
+// weak, or rogue/shadow certificates that this PKI did not issue. Records are keyed
+// on (endpoint, fingerprint) so re-scanning the same endpoint updates in place.
+type DiscoveredCertificate struct {
+	ID         string `json:"id" db:"id"`
+	TenantID   string `json:"tenant_id" db:"tenant_id"`
+	Endpoint   string `json:"endpoint" db:"endpoint"`       // host:port scanned
+	ServerName string `json:"server_name" db:"server_name"` // SNI presented
+	// Leaf certificate details.
+	Subject            string    `json:"subject" db:"subject"`
+	CommonName         string    `json:"common_name" db:"common_name"`
+	SANs               []string  `json:"sans,omitempty" db:"-"`
+	Issuer             string    `json:"issuer" db:"issuer"`
+	Serial             string    `json:"serial" db:"serial"`
+	NotBefore          time.Time `json:"not_before" db:"not_before"`
+	NotAfter           time.Time `json:"not_after" db:"not_after"`
+	KeyAlgorithm       string    `json:"key_algorithm" db:"key_algorithm"`
+	KeySize            int       `json:"key_size" db:"key_size"`
+	SignatureAlgorithm string    `json:"signature_algorithm" db:"signature_algorithm"`
+	ChainLength        int       `json:"chain_length" db:"chain_length"`
+	ChainComplete      bool      `json:"chain_complete" db:"chain_complete"`
+	Fingerprint        string    `json:"fingerprint" db:"fingerprint"` // sha256 hex of leaf DER
+	Certificate        string    `json:"certificate,omitempty" db:"certificate"`
+	// Security flags raised during analysis.
+	IssuedByPKI      bool      `json:"issued_by_pki" db:"issued_by_pki"`
+	Rogue            bool      `json:"rogue" db:"rogue"` // served leaf NOT issued by this PKI
+	SelfSigned       bool      `json:"self_signed" db:"self_signed"`
+	WeakKey          bool      `json:"weak_key" db:"weak_key"`
+	SHA1Signature    bool      `json:"sha1_signature" db:"sha1_signature"`
+	HostnameMismatch bool      `json:"hostname_mismatch" db:"hostname_mismatch"`
+	ExpiringSoon     bool      `json:"expiring_soon" db:"expiring_soon"`
+	Severity         string    `json:"severity" db:"severity"` // ok | warning | critical
+	Flags            []string  `json:"flags,omitempty" db:"-"` // human-readable flag list
+	DiscoveredAt     time.Time `json:"discovered_at" db:"discovered_at"`
+}
+
 // RevokedCertificate is a single entry in a CA's revocation store. It is kept
 // even for serials not present in issued_certificates so that externally issued
 // certificates can still be revoked and published.

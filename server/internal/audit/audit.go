@@ -80,6 +80,9 @@ const (
 	ActionCertAutoRenew = "cert.auto_renew"
 	// ActionCertExpiryScan records a completed expiry-monitor scan cycle.
 	ActionCertExpiryScan = "cert.expiry_scan"
+	// ActionCertDiscover records a completed external certificate discovery scan
+	// (Task 54). The detail carries the endpoint/stored/rogue/expiring counts.
+	ActionCertDiscover = "cert.discover"
 	ActionCertSignSSH    = "cert.sign_ssh"
 	ActionCertSignX509   = "cert.sign_x509"
 	ActionSecretEncrypt  = "secret.encrypt"

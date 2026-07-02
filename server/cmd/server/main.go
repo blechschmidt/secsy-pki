@@ -27,6 +27,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/ct"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
+	"github.com/blechschmidt/secsy-pki/server/internal/discovery"
 	"github.com/blechschmidt/secsy-pki/server/internal/est"
 	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
@@ -327,6 +328,9 @@ func main() {
 		monitorOpts.SVIDRenewFraction = cfg.SPIFFE.RenewFraction
 	}
 	api.SetMonitorOptions(monitorOpts)
+	// Discovery API endpoints (/api/discovery, /api/discovery/scan) use the
+	// configured targets/expiry window and share the monitor's notification sinks.
+	api.SetDiscoveryConfig(cfg.Discovery, cfg.Monitor)
 	// OCSP response cache TTL: 0 keeps the server default, a negative value
 	// disables caching, and a positive value sets an explicit TTL.
 	if cfg.Server.OCSPCacheTTLSeconds != 0 {
@@ -426,6 +430,23 @@ func main() {
 		// overlap window as intermediates near expiry.
 		runner.WithRotation(caMgr, db)
 		go runner.Run(context.Background())
+	}
+
+	// External certificate discovery scanner (Task 54): periodically probes the
+	// configured TLS endpoints, records the served leaf certificates (with their
+	// security flags) into the inventory, and dispatches expiring/weak/rogue
+	// findings through the same notification sinks as the expiry monitor. Runs for
+	// the process lifetime. No HSM operations — a TLS client plus X.509 analysis.
+	if cfg.Discovery.Enabled {
+		discoRunner, err := discovery.NewBackgroundRunner(db, cfg.Discovery, cfg.Monitor, log.Default())
+		if err != nil {
+			log.Fatalf("Certificate discovery configuration error: %v", err)
+		}
+		if discoRunner != nil {
+			go discoRunner.Run(context.Background())
+		} else {
+			log.Printf("Certificate discovery enabled but no targets configured; scanner not started")
+		}
 	}
 
 	// Audit-log SIEM export: a background worker per sink streams the

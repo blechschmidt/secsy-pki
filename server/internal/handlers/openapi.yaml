@@ -37,6 +37,8 @@ tags:
     description: Public CRL and OCSP distribution points.
   - name: Monitoring
     description: Certificate-expiry reporting and on-demand scans.
+  - name: Discovery
+    description: External TLS certificate discovery/scanning and rogue-cert inventory.
   - name: RBAC
     description: Groups, memberships, and per-CA permission grants.
   - name: Restrictions
@@ -907,6 +909,51 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ScanReport" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ---------------------------------------------------------------------------
+  # Discovery
+  # ---------------------------------------------------------------------------
+  /api/discovery:
+    get:
+      operationId: listDiscoveredCertificates
+      tags: [Discovery]
+      summary: List external certificates recorded by the discovery scanner
+      description: >-
+        Returns the certificates observed on external TLS endpoints, newest
+        first, including their security flags (expiring, weak key, SHA-1,
+        self-signed, hostname mismatch, and rogue/not-issued-by-this-PKI).
+      responses:
+        "200":
+          description: Discovered-certificate inventory.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoveredCertificateList" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/discovery/scan:
+    post:
+      operationId: runDiscoveryScan
+      tags: [Discovery]
+      summary: Run an on-demand external certificate discovery scan
+      description: >-
+        Probes the given TLS endpoints (or the configured discovery targets when
+        none are supplied), analyzes each served leaf, and optionally records the
+        findings to the inventory and dispatches flagged findings through the
+        monitor notification sinks. Requires the issue capability because it
+        actively probes endpoints and may write to the inventory and fire alerts.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DiscoveryScanRequest" }
+      responses:
+        "200":
+          description: Discovery scan report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoveryScanReport" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
   # ---------------------------------------------------------------------------
@@ -2357,6 +2404,84 @@ components:
         certificates:
           type: array
           items: { $ref: "#/components/schemas/CertItem" }
+
+    DiscoveredCertificate:
+      type: object
+      description: A certificate observed on an external TLS endpoint by the discovery scanner.
+      properties:
+        id: { type: string }
+        tenant_id: { type: string }
+        endpoint: { type: string, description: "host:port scanned" }
+        server_name: { type: string, description: "SNI presented" }
+        subject: { type: string }
+        common_name: { type: string }
+        sans: { type: array, items: { type: string } }
+        issuer: { type: string }
+        serial: { type: string }
+        not_before: { type: string, format: date-time }
+        not_after: { type: string, format: date-time }
+        key_algorithm: { type: string }
+        key_size: { type: integer }
+        signature_algorithm: { type: string }
+        chain_length: { type: integer }
+        chain_complete: { type: boolean }
+        fingerprint: { type: string, description: "sha256 hex of the leaf DER" }
+        certificate: { type: string, description: "PEM-encoded leaf" }
+        issued_by_pki: { type: boolean }
+        rogue: { type: boolean, description: "served leaf NOT issued by this PKI" }
+        self_signed: { type: boolean }
+        weak_key: { type: boolean }
+        sha1_signature: { type: boolean }
+        hostname_mismatch: { type: boolean }
+        expiring_soon: { type: boolean }
+        severity: { type: string, enum: [ok, warning, critical] }
+        flags: { type: array, items: { type: string } }
+        discovered_at: { type: string, format: date-time }
+
+    DiscoveredCertificateList:
+      type: object
+      properties:
+        total: { type: integer }
+        certificates:
+          type: array
+          items: { $ref: "#/components/schemas/DiscoveredCertificate" }
+
+    DiscoveryScanRequest:
+      type: object
+      properties:
+        targets:
+          type: array
+          items: { type: string }
+          description: "host[:port][#sni] endpoints; falls back to configured targets when empty."
+        cidrs:
+          type: array
+          items: { type: string }
+          description: "CIDR ranges to expand into targets on the default port."
+        expiry_days: { type: integer, description: "Override the expiring-soon window (0 uses the configured/default)." }
+        store: { type: boolean, description: "Record findings into the discovered-certificate inventory." }
+        notify: { type: boolean, description: "Dispatch flagged findings through the monitor notification sinks." }
+
+    DiscoveryFinding:
+      allOf:
+        - $ref: "#/components/schemas/DiscoveredCertificate"
+        - type: object
+          properties:
+            reachable: { type: boolean }
+            error: { type: string }
+            expires_in_days: { type: integer }
+
+    DiscoveryScanReport:
+      type: object
+      properties:
+        generated_at: { type: string, format: date-time }
+        expiry_days: { type: integer }
+        stored: { type: integer, description: "Number of findings persisted to the inventory." }
+        counts:
+          type: object
+          additionalProperties: { type: integer }
+        findings:
+          type: array
+          items: { $ref: "#/components/schemas/DiscoveryFinding" }
 
     SecretInfo:
       type: object
