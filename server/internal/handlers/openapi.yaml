@@ -510,6 +510,101 @@ paths:
               schema: { type: string }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/rotations:
+    get:
+      operationId: listRotations
+      tags: [Certificate Authorities]
+      summary: List CAs in a key-rotation lineage
+      description: >-
+        Returns every visible CA that participates in a signing-key rollover
+        (superseded, retired, or linked to a predecessor/successor), with each
+        one's outstanding-leaf count and retirement readiness.
+      responses:
+        "200":
+          description: Rotation lineage entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rotations:
+                    type: array
+                    items: { $ref: "#/components/schemas/RotationStatus" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ca/{id}/rotation:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    get:
+      operationId: getRotationStatus
+      tags: [Certificate Authorities]
+      summary: Report a CA's key-rollover state
+      description: >-
+        Returns the CA's rotation lineage (predecessor/successor), the number of
+        not-yet-expired leaves signed by its key, and whether a superseded key
+        can be retired now.
+      responses:
+        "200":
+          description: The rotation status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RotationStatus" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/ca/{id}/rotate:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: rotateIntermediateCA
+      tags: [Certificate Authorities]
+      summary: Rotate an intermediate CA's signing key
+      description: >-
+        Performs an HSM-backed key rollover: a fresh key is generated inside the
+        provider and certified under the same parent with the same subject DN.
+        The old CA is marked superseded and keeps validating its issued leaves
+        through the overlap window, during which the combined chain bundles both
+        intermediates. Requires ca:manage; step-up gated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RotateCARequest" }
+      responses:
+        "201":
+          description: The rotation outcome.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RotateCAResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ca/{id}/retire:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: retireIntermediateCA
+      tags: [Certificate Authorities]
+      summary: Retire a superseded intermediate key
+      description: >-
+        Decommissions a superseded intermediate after the overlap window has
+        drained: its certificate is revoked under the parent and the parent CRL
+        is refreshed. Refused while leaves signed by the old key are still
+        valid unless force is set (emergency key-compromise response). Requires
+        ca:manage; step-up gated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RetireCARequest" }
+      responses:
+        "200":
+          description: The retirement outcome.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RetireCAResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   # ---------------------------------------------------------------------------
   # Certificate Lifecycle
   # ---------------------------------------------------------------------------
@@ -1031,6 +1126,23 @@ paths:
   # SSH certificate authority (Task 57)
   # ---------------------------------------------------------------------------
   /api/ssh/cas:
+    get:
+      operationId: listSSHCAs
+      tags: [SSH CA]
+      summary: List SSH certificate authorities
+      description: >-
+        Returns the CA records that exist as SSH signing keys (no X.509
+        certificate). Visibility follows the X.509 CA list — platform
+        principals see every tenant, tenant-scoped principals only their own.
+      responses:
+        "200":
+          description: SSH CAs visible to the caller.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CA" }
+        "403": { $ref: "#/components/responses/Forbidden" }
     post:
       operationId: createSSHCA
       tags: [SSH CA]
@@ -1639,6 +1751,85 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/EventVerifyResult" }
+
+  /api/events/export:
+    get:
+      operationId: exportEventLog
+      tags: [Audit]
+      summary: Export the audit event log in a SIEM wire format
+      description: >-
+        Streams audit events as newline-delimited records in the requested
+        format — the REST counterpart of `secsy-ca audit export`. Requires a
+        platform-wide audit:read role (the export is a cross-tenant feed).
+      parameters:
+        - name: format
+          in: query
+          description: Record format; defaults to json (NDJSON).
+          schema: { type: string, enum: [json, cef, rfc5424], default: json }
+        - name: from
+          in: query
+          description: Start of the range (RFC 3339, inclusive).
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: End of the range (RFC 3339, exclusive).
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Newline-delimited audit records.
+          content:
+            application/x-ndjson:
+              schema: { type: string }
+            text/plain:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ---------------------------------------------------------------------------
+  # Diagnostics
+  # ---------------------------------------------------------------------------
+  /api/lint:
+    post:
+      operationId: lintCertificate
+      tags: [Audit]
+      summary: Lint a certificate against a profile's policy
+      description: >-
+        Parses a PEM certificate and lints it under a profile's policy (or the
+        baseline rules) — the REST counterpart of `secsy-ca lint`. Nothing is
+        issued or stored; the verdict mirrors the pre-issuance gate.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LintRequest" }
+      responses:
+        "200":
+          description: The lint verdict and findings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LintResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/inventory/keys:
+    get:
+      operationId: listProviderKeys
+      tags: [Audit]
+      summary: List the key provider's key inventory
+      description: >-
+        Enumerates the keys the configured key provider (HSM/KMS/software)
+        holds, annotated with the CA bound to each and the non-extractability
+        verdict — the REST counterpart of `secsy-ca inventory`. Requires
+        hsm:manage (admin role).
+      responses:
+        "200":
+          description: The provider key inventory.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KeyInventoryResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501":
+          description: The configured key provider cannot enumerate keys.
 
   # ---------------------------------------------------------------------------
   # ACME operator visibility
@@ -2309,6 +2500,129 @@ components:
           type: boolean
           description: Whether this is the subject's own parent-lineage chain.
         pem: { type: string, description: PEM chain bundle }
+
+    RotationStatus:
+      type: object
+      description: An intermediate CA's key-rollover state.
+      properties:
+        ca: { $ref: "#/components/schemas/CA" }
+        predecessor: { $ref: "#/components/schemas/CA" }
+        successor: { $ref: "#/components/schemas/CA" }
+        outstanding_leaves:
+          type: integer
+          description: Not-yet-expired, non-revoked leaves signed by this CA's key.
+        retire_after:
+          type: string
+          format: date-time
+          description: Recorded safe-to-retire deadline for a superseded key.
+        safe_to_retire:
+          type: boolean
+          description: Whether a superseded key can be retired now.
+
+    RotateCARequest:
+      type: object
+      description: >-
+        All fields optional: an empty new_label derives one from the old CA's
+        label, an empty key_type reuses the old key's algorithm, and zero
+        validity_days reuses the old certificate's validity span.
+      properties:
+        new_label: { type: string }
+        key_type: { type: string }
+        validity_days: { type: integer }
+
+    RotateCAResponse:
+      type: object
+      properties:
+        old_ca: { $ref: "#/components/schemas/CA" }
+        new_ca: { $ref: "#/components/schemas/CA" }
+        combined_chain_pem:
+          type: string
+          description: Overlap bundle covering both intermediates plus the parent chain.
+        retire_after: { type: string, format: date-time }
+
+    RetireCARequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: RFC 5280 revocation reason; empty defaults to cessationOfOperation.
+        force:
+          type: boolean
+          description: Retire even while leaves signed by the old key are still valid.
+
+    RetireCAResponse:
+      type: object
+      properties:
+        retired_ca: { $ref: "#/components/schemas/CA" }
+        parent_id: { type: string }
+        revoked_serial: { type: string }
+        crl_pem:
+          type: string
+          description: Freshly generated parent CRL (PEM) listing the retired intermediate.
+        outstanding_leaves: { type: integer }
+
+    LintRequest:
+      type: object
+      required: [certificate]
+      properties:
+        certificate: { type: string, description: PEM-encoded certificate to lint }
+        profile:
+          type: string
+          description: Apply the named profile's lint policy; empty lints against the baseline rules.
+        public:
+          type: boolean
+          description: Apply the CA/Browser-Forum public-trust rules.
+        mode:
+          type: string
+          enum: [enforce, warn]
+          description: Override the enforcement mode of every check.
+        max_validity_days: { type: integer }
+
+    LintFinding:
+      type: object
+      properties:
+        code: { type: string }
+        mode: { type: string, enum: [enforce, warn] }
+        description: { type: string }
+
+    LintResponse:
+      type: object
+      properties:
+        subject: { type: string }
+        serial: { type: string }
+        not_after: { type: string }
+        mode: { type: string }
+        public: { type: boolean }
+        pass: { type: boolean }
+        errors: { type: integer }
+        warnings: { type: integer }
+        summary: { type: string }
+        findings:
+          type: array
+          items: { $ref: "#/components/schemas/LintFinding" }
+
+    ProviderKeyEntry:
+      type: object
+      properties:
+        label: { type: string }
+        key_type: { type: string }
+        extractable:
+          type: boolean
+          description: Whether the private key may be read off the backend (must be false for HSM keys).
+        sensitive: { type: boolean }
+        ca_label:
+          type: string
+          description: The CA bound to this key; empty for KEK/TSA/signing keys.
+
+    KeyInventoryResponse:
+      type: object
+      properties:
+        provider: { type: string }
+        keys:
+          type: array
+          items: { $ref: "#/components/schemas/ProviderKeyEntry" }
+        extractable_count: { type: integer }
+        unbound_count: { type: integer }
 
     Profile:
       type: object
@@ -3144,6 +3458,15 @@ components:
         wrap_alg: { type: string }
         data_alg: { type: string }
         version: { type: string }
+        escrow_available:
+          type: boolean
+          description: Whether encrypt requests may ask for M-of-N key escrow.
+        escrow_threshold:
+          type: integer
+          description: Recovery-agent quorum required to recover an escrowed key.
+        escrow_agents:
+          type: integer
+          description: Number of configured recovery agents.
 
     EncryptRequest:
       type: object

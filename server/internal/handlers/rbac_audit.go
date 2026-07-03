@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
+	"github.com/blechschmidt/secsy-pki/server/internal/siem"
 )
 
 // userRoles returns the RBAC roles the user holds as typed rbac.Role values.
@@ -274,6 +276,68 @@ func (a *API) ListEventLog(w http.ResponseWriter, r *http.Request) {
 		"limit":   limit,
 		"offset":  offset,
 	})
+}
+
+// ExportEventLog streams the audit event log in a SIEM wire format — the REST
+// counterpart of `secsy-ca audit export`. Platform-wide audit:read only: the
+// export is a cross-tenant feed, so tenant-scoped principals are refused.
+func (a *API) ExportEventLog(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserInfo(r.Context())
+	if !a.can(user, rbac.ActionReadAudit) {
+		writeError(w, http.StatusForbidden, "audit:read capability required (admin or auditor role)")
+		return
+	}
+	if !user.IsRoot && len(user.Roles) == 0 {
+		writeError(w, http.StatusForbidden, "audit export requires a platform-wide role")
+		return
+	}
+
+	format := r.URL.Query().Get("format")
+	if format == "" {
+		format = string(siem.FormatJSON)
+	}
+	formatter, err := siem.NewFormatter(siem.Format(format), siem.FormatterOptions{})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+
+	var from, to time.Time
+	if v := r.URL.Query().Get("from"); v != "" {
+		if from, err = time.Parse(time.RFC3339, v); err != nil {
+			writeError(w, http.StatusBadRequest, "parsing from: %v", err)
+			return
+		}
+	}
+	if v := r.URL.Query().Get("to"); v != "" {
+		if to, err = time.Parse(time.RFC3339, v); err != nil {
+			writeError(w, http.StatusBadRequest, "parsing to: %v", err)
+			return
+		}
+	}
+	if !from.IsZero() && !to.IsZero() && !to.After(from) {
+		writeError(w, http.StatusBadRequest, "to (%s) must be after from (%s)", to, from)
+		return
+	}
+
+	events, err := a.db.ListEventsByTimeRange(from, to)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "loading events: %v", err)
+		return
+	}
+
+	contentType := "text/plain; charset=utf-8"
+	ext := format
+	if siem.Format(format) == siem.FormatJSON {
+		contentType = "application/x-ndjson"
+		ext = "ndjson"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", `attachment; filename="audit-export.`+ext+`"`)
+	for i := range events {
+		w.Write(formatter.Format(events[i]))
+		w.Write([]byte{'\n'})
+	}
 }
 
 // VerifyEventLog recomputes the event-log hash chain and reports whether it is

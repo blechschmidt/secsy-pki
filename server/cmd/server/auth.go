@@ -25,7 +25,8 @@ import (
 // WebAuthn step-up when the operator enables WebAuthn but does not name a set.
 var defaultStepUpOperations = []string{
 	"cert.revoke", "ca.init_root", "ca.issue_intermediate",
-	"ca.cross_sign", "ca.manage", "hsm.factory_reset",
+	"ca.cross_sign", "ca.rotate", "ca.retire", "ca.manage",
+	"ssh.ca_init", "ssh.revoke", "hsm.factory_reset",
 }
 
 // setupOperatorAuth wires the strong operator-authentication stack (Task 50):

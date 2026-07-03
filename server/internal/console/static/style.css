@@ -88,6 +88,7 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
 .notice { padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; font-size: 13px; }
 .notice.err { background: rgba(248,81,73,.12); border: 1px solid rgba(248,81,73,.4); color: #ffb3ae; }
 .notice.ok { background: rgba(63,185,80,.12); border: 1px solid rgba(63,185,80,.4); color: #a2f5b0; }
+.notice.warn { background: rgba(210,153,34,.12); border: 1px solid rgba(210,153,34,.4); color: #ecd9a0; }
 .hidden { display: none !important; }
 .muted { color: var(--muted); }
 .spacer { flex: 1; }

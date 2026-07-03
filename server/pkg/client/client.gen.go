@@ -106,6 +106,18 @@ const (
 	IssuedCertificateStatusValid   IssuedCertificateStatus = "valid"
 )
 
+// Defines values for LintFindingMode.
+const (
+	LintFindingModeEnforce LintFindingMode = "enforce"
+	LintFindingModeWarn    LintFindingMode = "warn"
+)
+
+// Defines values for LintRequestMode.
+const (
+	LintRequestModeEnforce LintRequestMode = "enforce"
+	LintRequestModeWarn    LintRequestMode = "warn"
+)
+
 // Defines values for Permission.
 const (
 	CONFIGURECA       Permission = "CONFIGURE_CA"
@@ -209,6 +221,13 @@ const (
 const (
 	Active    TenantUsageReportStatus = "active"
 	Suspended TenantUsageReportStatus = "suspended"
+)
+
+// Defines values for ExportEventLogParamsFormat.
+const (
+	Cef     ExportEventLogParamsFormat = "cef"
+	Json    ExportEventLogParamsFormat = "json"
+	Rfc5424 ExportEventLogParamsFormat = "rfc5424"
 )
 
 // Defines values for ListExpiringCertificatesParamsSeverity.
@@ -990,6 +1009,57 @@ type IssuedCertificateCtStatus string
 // IssuedCertificateStatus defines model for IssuedCertificate.Status.
 type IssuedCertificateStatus string
 
+// KeyInventoryResponse defines model for KeyInventoryResponse.
+type KeyInventoryResponse struct {
+	ExtractableCount *int                `json:"extractable_count,omitempty"`
+	Keys             *[]ProviderKeyEntry `json:"keys,omitempty"`
+	Provider         *string             `json:"provider,omitempty"`
+	UnboundCount     *int                `json:"unbound_count,omitempty"`
+}
+
+// LintFinding defines model for LintFinding.
+type LintFinding struct {
+	Code        *string          `json:"code,omitempty"`
+	Description *string          `json:"description,omitempty"`
+	Mode        *LintFindingMode `json:"mode,omitempty"`
+}
+
+// LintFindingMode defines model for LintFinding.Mode.
+type LintFindingMode string
+
+// LintRequest defines model for LintRequest.
+type LintRequest struct {
+	// Certificate PEM-encoded certificate to lint
+	Certificate     string `json:"certificate"`
+	MaxValidityDays *int   `json:"max_validity_days,omitempty"`
+
+	// Mode Override the enforcement mode of every check.
+	Mode *LintRequestMode `json:"mode,omitempty"`
+
+	// Profile Apply the named profile's lint policy; empty lints against the baseline rules.
+	Profile *string `json:"profile,omitempty"`
+
+	// Public Apply the CA/Browser-Forum public-trust rules.
+	Public *bool `json:"public,omitempty"`
+}
+
+// LintRequestMode Override the enforcement mode of every check.
+type LintRequestMode string
+
+// LintResponse defines model for LintResponse.
+type LintResponse struct {
+	Errors   *int           `json:"errors,omitempty"`
+	Findings *[]LintFinding `json:"findings,omitempty"`
+	Mode     *string        `json:"mode,omitempty"`
+	NotAfter *string        `json:"not_after,omitempty"`
+	Pass     *bool          `json:"pass,omitempty"`
+	Public   *bool          `json:"public,omitempty"`
+	Serial   *string        `json:"serial,omitempty"`
+	Subject  *string        `json:"subject,omitempty"`
+	Summary  *string        `json:"summary,omitempty"`
+	Warnings *int           `json:"warnings,omitempty"`
+}
+
 // NameConstraintsConfig RFC 5280 Name Constraints (2.5.29.30) applied to a CA certificate, bounding the identities certificates below it may assert. Enforced as a fail-closed pre-issuance gate and by conforming path validators.
 type NameConstraintsConfig struct {
 	// Critical Extension criticality (default true, as RFC 5280 requires).
@@ -1074,6 +1144,18 @@ type Profile struct {
 	Name                *string   `json:"name,omitempty"`
 }
 
+// ProviderKeyEntry defines model for ProviderKeyEntry.
+type ProviderKeyEntry struct {
+	// CaLabel The CA bound to this key; empty for KEK/TSA/signing keys.
+	CaLabel *string `json:"ca_label,omitempty"`
+
+	// Extractable Whether the private key may be read off the backend (must be false for HSM keys).
+	Extractable *bool   `json:"extractable,omitempty"`
+	KeyType     *string `json:"key_type,omitempty"`
+	Label       *string `json:"label,omitempty"`
+	Sensitive   *bool   `json:"sensitive,omitempty"`
+}
+
 // Readiness defines model for Readiness.
 type Readiness struct {
 	Components *map[string]struct {
@@ -1125,6 +1207,25 @@ type RestrictionSet struct {
 // RestrictionSetType defines model for RestrictionSet.Type.
 type RestrictionSetType string
 
+// RetireCARequest defines model for RetireCARequest.
+type RetireCARequest struct {
+	// Force Retire even while leaves signed by the old key are still valid.
+	Force *bool `json:"force,omitempty"`
+
+	// Reason RFC 5280 revocation reason; empty defaults to cessationOfOperation.
+	Reason *string `json:"reason,omitempty"`
+}
+
+// RetireCAResponse defines model for RetireCAResponse.
+type RetireCAResponse struct {
+	// CrlPem Freshly generated parent CRL (PEM) listing the retired intermediate.
+	CrlPem            *string `json:"crl_pem,omitempty"`
+	OutstandingLeaves *int    `json:"outstanding_leaves,omitempty"`
+	ParentId          *string `json:"parent_id,omitempty"`
+	RetiredCa         *CA     `json:"retired_ca,omitempty"`
+	RevokedSerial     *string `json:"revoked_serial,omitempty"`
+}
+
 // RevokeCertRequest defines model for RevokeCertRequest.
 type RevokeCertRequest struct {
 	// Reason RFC 5280 reason name
@@ -1147,6 +1248,38 @@ type RevokedCertificate struct {
 	Reason    *int       `json:"reason,omitempty"`
 	RevokedAt *time.Time `json:"revoked_at,omitempty"`
 	Serial    *string    `json:"serial,omitempty"`
+}
+
+// RotateCARequest All fields optional: an empty new_label derives one from the old CA's label, an empty key_type reuses the old key's algorithm, and zero validity_days reuses the old certificate's validity span.
+type RotateCARequest struct {
+	KeyType      *string `json:"key_type,omitempty"`
+	NewLabel     *string `json:"new_label,omitempty"`
+	ValidityDays *int    `json:"validity_days,omitempty"`
+}
+
+// RotateCAResponse defines model for RotateCAResponse.
+type RotateCAResponse struct {
+	// CombinedChainPem Overlap bundle covering both intermediates plus the parent chain.
+	CombinedChainPem *string    `json:"combined_chain_pem,omitempty"`
+	NewCa            *CA        `json:"new_ca,omitempty"`
+	OldCa            *CA        `json:"old_ca,omitempty"`
+	RetireAfter      *time.Time `json:"retire_after,omitempty"`
+}
+
+// RotationStatus An intermediate CA's key-rollover state.
+type RotationStatus struct {
+	Ca *CA `json:"ca,omitempty"`
+
+	// OutstandingLeaves Not-yet-expired, non-revoked leaves signed by this CA's key.
+	OutstandingLeaves *int `json:"outstanding_leaves,omitempty"`
+	Predecessor       *CA  `json:"predecessor,omitempty"`
+
+	// RetireAfter Recorded safe-to-retire deadline for a superseded key.
+	RetireAfter *time.Time `json:"retire_after,omitempty"`
+
+	// SafeToRetire Whether a superseded key can be retired now.
+	SafeToRetire *bool `json:"safe_to_retire,omitempty"`
+	Successor    *CA   `json:"successor,omitempty"`
 }
 
 // SSHCertificate defines model for SSHCertificate.
@@ -1339,12 +1472,21 @@ type ScanRequest struct {
 
 // SecretInfo defines model for SecretInfo.
 type SecretInfo struct {
-	DataAlg  *string `json:"data_alg,omitempty"`
-	KekLabel *string `json:"kek_label,omitempty"`
-	KeyBits  *int    `json:"key_bits,omitempty"`
-	Provider *string `json:"provider,omitempty"`
-	Version  *string `json:"version,omitempty"`
-	WrapAlg  *string `json:"wrap_alg,omitempty"`
+	DataAlg *string `json:"data_alg,omitempty"`
+
+	// EscrowAgents Number of configured recovery agents.
+	EscrowAgents *int `json:"escrow_agents,omitempty"`
+
+	// EscrowAvailable Whether encrypt requests may ask for M-of-N key escrow.
+	EscrowAvailable *bool `json:"escrow_available,omitempty"`
+
+	// EscrowThreshold Recovery-agent quorum required to recover an escrowed key.
+	EscrowThreshold *int    `json:"escrow_threshold,omitempty"`
+	KekLabel        *string `json:"kek_label,omitempty"`
+	KeyBits         *int    `json:"key_bits,omitempty"`
+	Provider        *string `json:"provider,omitempty"`
+	Version         *string `json:"version,omitempty"`
+	WrapAlg         *string `json:"wrap_alg,omitempty"`
 }
 
 // SetDefaultRestrictionSetRequest defines model for SetDefaultRestrictionSetRequest.
@@ -1612,6 +1754,21 @@ type ListEventLogParams struct {
 	Offset *Offset `form:"offset,omitempty" json:"offset,omitempty"`
 }
 
+// ExportEventLogParams defines parameters for ExportEventLog.
+type ExportEventLogParams struct {
+	// Format Record format; defaults to json (NDJSON).
+	Format *ExportEventLogParamsFormat `form:"format,omitempty" json:"format,omitempty"`
+
+	// From Start of the range (RFC 3339, inclusive).
+	From *time.Time `form:"from,omitempty" json:"from,omitempty"`
+
+	// To End of the range (RFC 3339, exclusive).
+	To *time.Time `form:"to,omitempty" json:"to,omitempty"`
+}
+
+// ExportEventLogParamsFormat defines parameters for ExportEventLog.
+type ExportEventLogParamsFormat string
+
 // GetMyRestrictionsParams defines parameters for GetMyRestrictions.
 type GetMyRestrictionsParams struct {
 	Format *string `form:"format,omitempty" json:"format,omitempty"`
@@ -1670,8 +1827,14 @@ type IssueIntermediateCAJSONRequestBody = CAIssueIntermediateRequest
 // RenewCertificateJSONRequestBody defines body for RenewCertificate for application/json ContentType.
 type RenewCertificateJSONRequestBody = RenewCertRequest
 
+// RetireIntermediateCAJSONRequestBody defines body for RetireIntermediateCA for application/json ContentType.
+type RetireIntermediateCAJSONRequestBody = RetireCARequest
+
 // RevokeCertificateJSONRequestBody defines body for RevokeCertificate for application/json ContentType.
 type RevokeCertificateJSONRequestBody = RevokeCertRequest
+
+// RotateIntermediateCAJSONRequestBody defines body for RotateIntermediateCA for application/json ContentType.
+type RotateIntermediateCAJSONRequestBody = RotateCARequest
 
 // IssueSVIDJSONRequestBody defines body for IssueSVID for application/json ContentType.
 type IssueSVIDJSONRequestBody = SVIDRequest
@@ -1705,6 +1868,9 @@ type SignSSHCertificateJSONRequestBody = SignRequest
 
 // SignX509CertificateJSONRequestBody defines body for SignX509Certificate for application/json ContentType.
 type SignX509CertificateJSONRequestBody = X509SignRequest
+
+// LintCertificateJSONRequestBody defines body for LintCertificate for application/json ContentType.
+type LintCertificateJSONRequestBody = LintRequest
 
 // RunExpiryScanJSONRequestBody defines body for RunExpiryScan for application/json ContentType.
 type RunExpiryScanJSONRequestBody = ScanRequest
@@ -1900,6 +2066,11 @@ type ClientInterface interface {
 
 	RenewCertificate(ctx context.Context, id CAId, body RenewCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// RetireIntermediateCAWithBody request with any body
+	RetireIntermediateCAWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	RetireIntermediateCA(ctx context.Context, id CAId, body RetireIntermediateCAJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// RevokeCertificateWithBody request with any body
 	RevokeCertificateWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -1907,6 +2078,14 @@ type ClientInterface interface {
 
 	// ListRevokedCertificates request
 	ListRevokedCertificates(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RotateIntermediateCAWithBody request with any body
+	RotateIntermediateCAWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	RotateIntermediateCA(ctx context.Context, id CAId, body RotateIntermediateCAJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetRotationStatus request
+	GetRotationStatus(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// IssueSVIDWithBody request with any body
 	IssueSVIDWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1926,6 +2105,9 @@ type ClientInterface interface {
 
 	// ListEventLog request
 	ListEventLog(ctx context.Context, params *ListEventLogParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ExportEventLog request
+	ExportEventLog(ctx context.Context, params *ExportEventLogParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// VerifyEventLog request
 	VerifyEventLog(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -1975,6 +2157,9 @@ type ClientInterface interface {
 
 	// GetSignedAuditLog request
 	GetSignedAuditLog(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListProviderKeys request
+	ListProviderKeys(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListCAs request
 	ListCAs(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2035,6 +2220,11 @@ type ClientInterface interface {
 
 	SignX509Certificate(ctx context.Context, id CAId, body SignX509CertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// LintCertificateWithBody request with any body
+	LintCertificateWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	LintCertificate(ctx context.Context, body LintCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetCurrentUser request
 	GetCurrentUser(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -2070,6 +2260,9 @@ type ClientInterface interface {
 
 	UpdateRestrictionSet(ctx context.Context, id string, body UpdateRestrictionSetJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ListRotations request
+	ListRotations(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// DecryptSecretWithBody request with any body
 	DecryptSecretWithBody(ctx context.Context, params *DecryptSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -2095,6 +2288,9 @@ type ClientInterface interface {
 	VerifyArtifactSignatureWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	VerifyArtifactSignature(ctx context.Context, body VerifyArtifactSignatureJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListSSHCAs request
+	ListSSHCAs(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// CreateSSHCAWithBody request with any body
 	CreateSSHCAWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2505,6 +2701,30 @@ func (c *Client) RenewCertificate(ctx context.Context, id CAId, body RenewCertif
 	return c.Client.Do(req)
 }
 
+func (c *Client) RetireIntermediateCAWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRetireIntermediateCARequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RetireIntermediateCA(ctx context.Context, id CAId, body RetireIntermediateCAJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRetireIntermediateCARequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) RevokeCertificateWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewRevokeCertificateRequestWithBody(c.Server, id, contentType, body)
 	if err != nil {
@@ -2531,6 +2751,42 @@ func (c *Client) RevokeCertificate(ctx context.Context, id CAId, body RevokeCert
 
 func (c *Client) ListRevokedCertificates(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListRevokedCertificatesRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RotateIntermediateCAWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRotateIntermediateCARequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RotateIntermediateCA(ctx context.Context, id CAId, body RotateIntermediateCAJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRotateIntermediateCARequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetRotationStatus(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetRotationStatusRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -2615,6 +2871,18 @@ func (c *Client) RunDiscoveryScan(ctx context.Context, body RunDiscoveryScanJSON
 
 func (c *Client) ListEventLog(ctx context.Context, params *ListEventLogParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListEventLogRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ExportEventLog(ctx context.Context, params *ExportEventLogParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewExportEventLogRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -2819,6 +3087,18 @@ func (c *Client) ProvisionHSMAudit(ctx context.Context, reqEditors ...RequestEdi
 
 func (c *Client) GetSignedAuditLog(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetSignedAuditLogRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListProviderKeys(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListProviderKeysRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -3093,6 +3373,30 @@ func (c *Client) SignX509Certificate(ctx context.Context, id CAId, body SignX509
 	return c.Client.Do(req)
 }
 
+func (c *Client) LintCertificateWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewLintCertificateRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) LintCertificate(ctx context.Context, body LintCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewLintCertificateRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) GetCurrentUser(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetCurrentUserRequest(c.Server)
 	if err != nil {
@@ -3249,6 +3553,18 @@ func (c *Client) UpdateRestrictionSet(ctx context.Context, id string, body Updat
 	return c.Client.Do(req)
 }
 
+func (c *Client) ListRotations(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListRotationsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) DecryptSecretWithBody(ctx context.Context, params *DecryptSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewDecryptSecretRequestWithBody(c.Server, params, contentType, body)
 	if err != nil {
@@ -3359,6 +3675,18 @@ func (c *Client) VerifyArtifactSignatureWithBody(ctx context.Context, contentTyp
 
 func (c *Client) VerifyArtifactSignature(ctx context.Context, body VerifyArtifactSignatureJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewVerifyArtifactSignatureRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListSSHCAs(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListSSHCAsRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -4790,6 +5118,53 @@ func NewRenewCertificateRequestWithBody(server string, id CAId, contentType stri
 	return req, nil
 }
 
+// NewRetireIntermediateCARequest calls the generic RetireIntermediateCA builder with application/json body
+func NewRetireIntermediateCARequest(server string, id CAId, body RetireIntermediateCAJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRetireIntermediateCARequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewRetireIntermediateCARequestWithBody generates requests for RetireIntermediateCA with any type of body
+func NewRetireIntermediateCARequestWithBody(server string, id CAId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/retire", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewRevokeCertificateRequest calls the generic RevokeCertificate builder with application/json body
 func NewRevokeCertificateRequest(server string, id CAId, body RevokeCertificateJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -4854,6 +5229,87 @@ func NewListRevokedCertificatesRequest(server string, id CAId) (*http.Request, e
 	}
 
 	operationPath := fmt.Sprintf("/api/ca/%s/revoked", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewRotateIntermediateCARequest calls the generic RotateIntermediateCA builder with application/json body
+func NewRotateIntermediateCARequest(server string, id CAId, body RotateIntermediateCAJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRotateIntermediateCARequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewRotateIntermediateCARequestWithBody generates requests for RotateIntermediateCA with any type of body
+func NewRotateIntermediateCARequestWithBody(server string, id CAId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/rotate", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGetRotationStatusRequest generates requests for GetRotationStatus
+func NewGetRotationStatusRequest(server string, id CAId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/rotation", pathParam0)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -5108,6 +5564,87 @@ func NewListEventLogRequest(server string, params *ListEventLogParams) (*http.Re
 		if params.Offset != nil {
 
 			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "offset", runtime.ParamLocationQuery, *params.Offset); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewExportEventLogRequest generates requests for ExportEventLog
+func NewExportEventLogRequest(server string, params *ExportEventLogParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/events/export")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Format != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "format", runtime.ParamLocationQuery, *params.Format); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.From != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "from", runtime.ParamLocationQuery, *params.From); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.To != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "to", runtime.ParamLocationQuery, *params.To); err != nil {
 				return nil, err
 			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
 				return nil, err
@@ -5581,6 +6118,33 @@ func NewGetSignedAuditLogRequest(server string) (*http.Request, error) {
 	}
 
 	operationPath := fmt.Sprintf("/api/hsm/signed-audit-log")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewListProviderKeysRequest generates requests for ListProviderKeys
+func NewListProviderKeysRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/inventory/keys")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -6229,6 +6793,46 @@ func NewSignX509CertificateRequestWithBody(server string, id CAId, contentType s
 	return req, nil
 }
 
+// NewLintCertificateRequest calls the generic LintCertificate builder with application/json body
+func NewLintCertificateRequest(server string, body LintCertificateJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewLintCertificateRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewLintCertificateRequestWithBody generates requests for LintCertificate with any type of body
+func NewLintCertificateRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/lint")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewGetCurrentUserRequest generates requests for GetCurrentUser
 func NewGetCurrentUserRequest(server string) (*http.Request, error) {
 	var err error
@@ -6608,6 +7212,33 @@ func NewUpdateRestrictionSetRequestWithBody(server string, id string, contentTyp
 	return req, nil
 }
 
+// NewListRotationsRequest generates requests for ListRotations
+func NewListRotationsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/rotations")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewDecryptSecretRequest calls the generic DecryptSecret builder with application/json body
 func NewDecryptSecretRequest(server string, params *DecryptSecretParams, body DecryptSecretJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -6848,6 +7479,33 @@ func NewVerifyArtifactSignatureRequestWithBody(server string, contentType string
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewListSSHCAsRequest generates requests for ListSSHCAs
+func NewListSSHCAsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ssh/cas")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
 
 	return req, nil
 }
@@ -7691,6 +8349,11 @@ type ClientWithResponsesInterface interface {
 
 	RenewCertificateWithResponse(ctx context.Context, id CAId, body RenewCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*RenewCertificateResponse, error)
 
+	// RetireIntermediateCAWithBodyWithResponse request with any body
+	RetireIntermediateCAWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RetireIntermediateCAResponse, error)
+
+	RetireIntermediateCAWithResponse(ctx context.Context, id CAId, body RetireIntermediateCAJSONRequestBody, reqEditors ...RequestEditorFn) (*RetireIntermediateCAResponse, error)
+
 	// RevokeCertificateWithBodyWithResponse request with any body
 	RevokeCertificateWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RevokeCertificateResponse, error)
 
@@ -7698,6 +8361,14 @@ type ClientWithResponsesInterface interface {
 
 	// ListRevokedCertificatesWithResponse request
 	ListRevokedCertificatesWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*ListRevokedCertificatesResponse, error)
+
+	// RotateIntermediateCAWithBodyWithResponse request with any body
+	RotateIntermediateCAWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RotateIntermediateCAResponse, error)
+
+	RotateIntermediateCAWithResponse(ctx context.Context, id CAId, body RotateIntermediateCAJSONRequestBody, reqEditors ...RequestEditorFn) (*RotateIntermediateCAResponse, error)
+
+	// GetRotationStatusWithResponse request
+	GetRotationStatusWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetRotationStatusResponse, error)
 
 	// IssueSVIDWithBodyWithResponse request with any body
 	IssueSVIDWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*IssueSVIDResponse, error)
@@ -7717,6 +8388,9 @@ type ClientWithResponsesInterface interface {
 
 	// ListEventLogWithResponse request
 	ListEventLogWithResponse(ctx context.Context, params *ListEventLogParams, reqEditors ...RequestEditorFn) (*ListEventLogResponse, error)
+
+	// ExportEventLogWithResponse request
+	ExportEventLogWithResponse(ctx context.Context, params *ExportEventLogParams, reqEditors ...RequestEditorFn) (*ExportEventLogResponse, error)
 
 	// VerifyEventLogWithResponse request
 	VerifyEventLogWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*VerifyEventLogResponse, error)
@@ -7766,6 +8440,9 @@ type ClientWithResponsesInterface interface {
 
 	// GetSignedAuditLogWithResponse request
 	GetSignedAuditLogWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSignedAuditLogResponse, error)
+
+	// ListProviderKeysWithResponse request
+	ListProviderKeysWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListProviderKeysResponse, error)
 
 	// ListCAsWithResponse request
 	ListCAsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListCAsResponse, error)
@@ -7826,6 +8503,11 @@ type ClientWithResponsesInterface interface {
 
 	SignX509CertificateWithResponse(ctx context.Context, id CAId, body SignX509CertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*SignX509CertificateResponse, error)
 
+	// LintCertificateWithBodyWithResponse request with any body
+	LintCertificateWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*LintCertificateResponse, error)
+
+	LintCertificateWithResponse(ctx context.Context, body LintCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*LintCertificateResponse, error)
+
 	// GetCurrentUserWithResponse request
 	GetCurrentUserWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetCurrentUserResponse, error)
 
@@ -7861,6 +8543,9 @@ type ClientWithResponsesInterface interface {
 
 	UpdateRestrictionSetWithResponse(ctx context.Context, id string, body UpdateRestrictionSetJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateRestrictionSetResponse, error)
 
+	// ListRotationsWithResponse request
+	ListRotationsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListRotationsResponse, error)
+
 	// DecryptSecretWithBodyWithResponse request with any body
 	DecryptSecretWithBodyWithResponse(ctx context.Context, params *DecryptSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DecryptSecretResponse, error)
 
@@ -7886,6 +8571,9 @@ type ClientWithResponsesInterface interface {
 	VerifyArtifactSignatureWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyArtifactSignatureResponse, error)
 
 	VerifyArtifactSignatureWithResponse(ctx context.Context, body VerifyArtifactSignatureJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyArtifactSignatureResponse, error)
+
+	// ListSSHCAsWithResponse request
+	ListSSHCAsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListSSHCAsResponse, error)
 
 	// CreateSSHCAWithBodyWithResponse request with any body
 	CreateSSHCAWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateSSHCAResponse, error)
@@ -8473,6 +9161,30 @@ func (r RenewCertificateResponse) StatusCode() int {
 	return 0
 }
 
+type RetireIntermediateCAResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *RetireCAResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r RetireIntermediateCAResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RetireIntermediateCAResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type RevokeCertificateResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -8513,6 +9225,53 @@ func (r ListRevokedCertificatesResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r ListRevokedCertificatesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type RotateIntermediateCAResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *RotateCAResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r RotateIntermediateCAResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RotateIntermediateCAResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetRotationStatusResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *RotationStatus
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetRotationStatusResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetRotationStatusResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -8628,6 +9387,29 @@ func (r ListEventLogResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r ListEventLogResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ExportEventLogResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ExportEventLogResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ExportEventLogResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -8965,6 +9747,29 @@ func (r GetSignedAuditLogResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetSignedAuditLogResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListProviderKeysResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *KeyInventoryResponse
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListProviderKeysResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListProviderKeysResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -9314,6 +10119,30 @@ func (r SignX509CertificateResponse) StatusCode() int {
 	return 0
 }
 
+type LintCertificateResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *LintResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r LintCertificateResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r LintCertificateResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type GetCurrentUserResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -9518,6 +10347,31 @@ func (r UpdateRestrictionSetResponse) StatusCode() int {
 	return 0
 }
 
+type ListRotationsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *struct {
+		Rotations *[]RotationStatus `json:"rotations,omitempty"`
+	}
+	JSON403 *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListRotationsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListRotationsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type DecryptSecretResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -9654,6 +10508,29 @@ func (r VerifyArtifactSignatureResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r VerifyArtifactSignatureResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListSSHCAsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *[]CA
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListSSHCAsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListSSHCAsResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -10374,6 +11251,23 @@ func (c *ClientWithResponses) RenewCertificateWithResponse(ctx context.Context, 
 	return ParseRenewCertificateResponse(rsp)
 }
 
+// RetireIntermediateCAWithBodyWithResponse request with arbitrary body returning *RetireIntermediateCAResponse
+func (c *ClientWithResponses) RetireIntermediateCAWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RetireIntermediateCAResponse, error) {
+	rsp, err := c.RetireIntermediateCAWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRetireIntermediateCAResponse(rsp)
+}
+
+func (c *ClientWithResponses) RetireIntermediateCAWithResponse(ctx context.Context, id CAId, body RetireIntermediateCAJSONRequestBody, reqEditors ...RequestEditorFn) (*RetireIntermediateCAResponse, error) {
+	rsp, err := c.RetireIntermediateCA(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRetireIntermediateCAResponse(rsp)
+}
+
 // RevokeCertificateWithBodyWithResponse request with arbitrary body returning *RevokeCertificateResponse
 func (c *ClientWithResponses) RevokeCertificateWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RevokeCertificateResponse, error) {
 	rsp, err := c.RevokeCertificateWithBody(ctx, id, contentType, body, reqEditors...)
@@ -10398,6 +11292,32 @@ func (c *ClientWithResponses) ListRevokedCertificatesWithResponse(ctx context.Co
 		return nil, err
 	}
 	return ParseListRevokedCertificatesResponse(rsp)
+}
+
+// RotateIntermediateCAWithBodyWithResponse request with arbitrary body returning *RotateIntermediateCAResponse
+func (c *ClientWithResponses) RotateIntermediateCAWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RotateIntermediateCAResponse, error) {
+	rsp, err := c.RotateIntermediateCAWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRotateIntermediateCAResponse(rsp)
+}
+
+func (c *ClientWithResponses) RotateIntermediateCAWithResponse(ctx context.Context, id CAId, body RotateIntermediateCAJSONRequestBody, reqEditors ...RequestEditorFn) (*RotateIntermediateCAResponse, error) {
+	rsp, err := c.RotateIntermediateCA(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRotateIntermediateCAResponse(rsp)
+}
+
+// GetRotationStatusWithResponse request returning *GetRotationStatusResponse
+func (c *ClientWithResponses) GetRotationStatusWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetRotationStatusResponse, error) {
+	rsp, err := c.GetRotationStatus(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetRotationStatusResponse(rsp)
 }
 
 // IssueSVIDWithBodyWithResponse request with arbitrary body returning *IssueSVIDResponse
@@ -10459,6 +11379,15 @@ func (c *ClientWithResponses) ListEventLogWithResponse(ctx context.Context, para
 		return nil, err
 	}
 	return ParseListEventLogResponse(rsp)
+}
+
+// ExportEventLogWithResponse request returning *ExportEventLogResponse
+func (c *ClientWithResponses) ExportEventLogWithResponse(ctx context.Context, params *ExportEventLogParams, reqEditors ...RequestEditorFn) (*ExportEventLogResponse, error) {
+	rsp, err := c.ExportEventLog(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseExportEventLogResponse(rsp)
 }
 
 // VerifyEventLogWithResponse request returning *VerifyEventLogResponse
@@ -10610,6 +11539,15 @@ func (c *ClientWithResponses) GetSignedAuditLogWithResponse(ctx context.Context,
 		return nil, err
 	}
 	return ParseGetSignedAuditLogResponse(rsp)
+}
+
+// ListProviderKeysWithResponse request returning *ListProviderKeysResponse
+func (c *ClientWithResponses) ListProviderKeysWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListProviderKeysResponse, error) {
+	rsp, err := c.ListProviderKeys(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListProviderKeysResponse(rsp)
 }
 
 // ListCAsWithResponse request returning *ListCAsResponse
@@ -10803,6 +11741,23 @@ func (c *ClientWithResponses) SignX509CertificateWithResponse(ctx context.Contex
 	return ParseSignX509CertificateResponse(rsp)
 }
 
+// LintCertificateWithBodyWithResponse request with arbitrary body returning *LintCertificateResponse
+func (c *ClientWithResponses) LintCertificateWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*LintCertificateResponse, error) {
+	rsp, err := c.LintCertificateWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseLintCertificateResponse(rsp)
+}
+
+func (c *ClientWithResponses) LintCertificateWithResponse(ctx context.Context, body LintCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*LintCertificateResponse, error) {
+	rsp, err := c.LintCertificate(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseLintCertificateResponse(rsp)
+}
+
 // GetCurrentUserWithResponse request returning *GetCurrentUserResponse
 func (c *ClientWithResponses) GetCurrentUserWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetCurrentUserResponse, error) {
 	rsp, err := c.GetCurrentUser(ctx, reqEditors...)
@@ -10916,6 +11871,15 @@ func (c *ClientWithResponses) UpdateRestrictionSetWithResponse(ctx context.Conte
 	return ParseUpdateRestrictionSetResponse(rsp)
 }
 
+// ListRotationsWithResponse request returning *ListRotationsResponse
+func (c *ClientWithResponses) ListRotationsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListRotationsResponse, error) {
+	rsp, err := c.ListRotations(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListRotationsResponse(rsp)
+}
+
 // DecryptSecretWithBodyWithResponse request with arbitrary body returning *DecryptSecretResponse
 func (c *ClientWithResponses) DecryptSecretWithBodyWithResponse(ctx context.Context, params *DecryptSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DecryptSecretResponse, error) {
 	rsp, err := c.DecryptSecretWithBody(ctx, params, contentType, body, reqEditors...)
@@ -11000,6 +11964,15 @@ func (c *ClientWithResponses) VerifyArtifactSignatureWithResponse(ctx context.Co
 		return nil, err
 	}
 	return ParseVerifyArtifactSignatureResponse(rsp)
+}
+
+// ListSSHCAsWithResponse request returning *ListSSHCAsResponse
+func (c *ClientWithResponses) ListSSHCAsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListSSHCAsResponse, error) {
+	rsp, err := c.ListSSHCAs(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListSSHCAsResponse(rsp)
 }
 
 // CreateSSHCAWithBodyWithResponse request with arbitrary body returning *CreateSSHCAResponse
@@ -11829,6 +12802,46 @@ func ParseRenewCertificateResponse(rsp *http.Response) (*RenewCertificateRespons
 	return response, nil
 }
 
+// ParseRetireIntermediateCAResponse parses an HTTP response from a RetireIntermediateCAWithResponse call
+func ParseRetireIntermediateCAResponse(rsp *http.Response) (*RetireIntermediateCAResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RetireIntermediateCAResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest RetireCAResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseRevokeCertificateResponse parses an HTTP response from a RevokeCertificateWithResponse call
 func ParseRevokeCertificateResponse(rsp *http.Response) (*RevokeCertificateResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -11889,6 +12902,79 @@ func ParseListRevokedCertificatesResponse(rsp *http.Response) (*ListRevokedCerti
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRotateIntermediateCAResponse parses an HTTP response from a RotateIntermediateCAWithResponse call
+func ParseRotateIntermediateCAResponse(rsp *http.Response) (*RotateIntermediateCAResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RotateIntermediateCAResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest RotateCAResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetRotationStatusResponse parses an HTTP response from a GetRotationStatusWithResponse call
+func ParseGetRotationStatusResponse(rsp *http.Response) (*GetRotationStatusResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetRotationStatusResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest RotationStatus
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
 
 	}
 
@@ -12054,6 +13140,39 @@ func ParseListEventLogResponse(rsp *http.Response) (*ListEventLogResponse, error
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseExportEventLogResponse parses an HTTP response from a ExportEventLogWithResponse call
+func ParseExportEventLogResponse(rsp *http.Response) (*ExportEventLogResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ExportEventLogResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
 
 	}
 
@@ -12493,6 +13612,39 @@ func ParseGetSignedAuditLogResponse(rsp *http.Response) (*GetSignedAuditLogRespo
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListProviderKeysResponse parses an HTTP response from a ListProviderKeysWithResponse call
+func ParseListProviderKeysResponse(rsp *http.Response) (*ListProviderKeysResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListProviderKeysResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest KeyInventoryResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
 
 	}
 
@@ -12977,6 +14129,46 @@ func ParseSignX509CertificateResponse(rsp *http.Response) (*SignX509CertificateR
 	return response, nil
 }
 
+// ParseLintCertificateResponse parses an HTTP response from a LintCertificateWithResponse call
+func ParseLintCertificateResponse(rsp *http.Response) (*LintCertificateResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &LintCertificateResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest LintResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseGetCurrentUserResponse parses an HTTP response from a GetCurrentUserWithResponse call
 func ParseGetCurrentUserResponse(rsp *http.Response) (*GetCurrentUserResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -13253,6 +14445,41 @@ func ParseUpdateRestrictionSetResponse(rsp *http.Response) (*UpdateRestrictionSe
 	return response, nil
 }
 
+// ParseListRotationsResponse parses an HTTP response from a ListRotationsWithResponse call
+func ParseListRotationsResponse(rsp *http.Response) (*ListRotationsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListRotationsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest struct {
+			Rotations *[]RotationStatus `json:"rotations,omitempty"`
+		}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseDecryptSecretResponse parses an HTTP response from a DecryptSecretWithResponse call
 func ParseDecryptSecretResponse(rsp *http.Response) (*DecryptSecretResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -13466,6 +14693,39 @@ func ParseVerifyArtifactSignatureResponse(rsp *http.Response) (*VerifyArtifactSi
 			return nil, err
 		}
 		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListSSHCAsResponse parses an HTTP response from a ListSSHCAsWithResponse call
+func ParseListSSHCAsResponse(rsp *http.Response) (*ListSSHCAsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListSSHCAsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest []CA
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
 		var dest Forbidden

@@ -81,6 +81,43 @@ func (a *API) CreateSSHCA(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, ca)
 }
 
+// ListSSHCAs lists the SSH certificate authorities visible to the caller: CA
+// records that exist as SSH signing keys (no X.509 certificate). Visibility
+// follows ListCAs — platform principals see every tenant, tenant-scoped
+// principals only their own.
+func (a *API) ListSSHCAs(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserInfo(r.Context())
+	if !a.canRead(user) {
+		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+		return
+	}
+	var cas []models.CA
+	var err error
+	if user.IsRoot || len(user.Roles) > 0 {
+		cas, err = a.db.ListCAs()
+	} else {
+		for _, tid := range user.TenantsWithRoles() {
+			ts, terr := a.db.ListCAsForTenant(tid)
+			if terr != nil {
+				err = terr
+				break
+			}
+			cas = append(cas, ts...)
+		}
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list CAs: %v", err)
+		return
+	}
+	sshCAs := []models.CA{}
+	for _, c := range cas {
+		if c.Certificate == "" && strings.TrimSpace(c.PublicKey) != "" {
+			sshCAs = append(sshCAs, c)
+		}
+	}
+	writeJSON(w, http.StatusOK, sshCAs)
+}
+
 // SignSSHCertRequest asks a CA to sign an OpenSSH public key into a user or
 // host certificate under a signing profile.
 type SignSSHCertRequest struct {

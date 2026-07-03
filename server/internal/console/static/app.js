@@ -307,6 +307,10 @@ function switchView(name) {
   if (name === 'monitor') loadMonitor();
   if (name === 'inventory') loadInventory();
   if (name === 'discovery') loadDiscovery();
+  if (name === 'cas') loadAuthorities();
+  if (name === 'ssh') loadSSH();
+  if (name === 'signing') loadSigning();
+  if (name === 'audit') loadAudit();
   if (name === 'compliance') loadCompliance();
   if (name === 'bundle') loadBundle();
   if (name === 'tenants') loadTenants();
@@ -315,28 +319,62 @@ document.querySelectorAll('header nav button').forEach(b =>
   b.onclick = () => switchView(b.dataset.view));
 
 // ---- CAs & profiles ------------------------------------------------------
+// cas holds every CA record; x509CAs only those with an X.509 certificate
+// (SSH-only signing keys live in the same store but drive the SSH CA page).
 let cas = [];
+let x509CAs = [];
+let profiles = [];
 async function loadCAs() {
   cas = await api('GET', '/api/keys');
-  const opts = cas.map(c => `<option value="${c.id}">${escapeHTML(c.label)}</option>`).join('');
+  x509CAs = cas.filter(c => c.certificate);
+  const opt = (c) => `<option value="${c.id}">${escapeHTML(c.label)}</option>`;
+  const opts = x509CAs.map(opt).join('');
+  // Issuance targets only active keys; superseded/retired stay browsable.
+  const activeOpts = x509CAs.filter(c => !c.status || c.status === 'active').map(opt).join('');
   const empty = '<option value="">— no CAs —</option>';
   const allOpt = '<option value="">all CAs</option>';
   $('certCA').innerHTML = opts || empty;
-  $('issueCA').innerHTML = opts || empty;
+  $('issueCA').innerHTML = activeOpts || empty;
   $('invCA').innerHTML = allOpt + opts;
   $('compCA').innerHTML = allOpt + opts;
   $('bundleCA').innerHTML = opts || empty;
-  if (cas.length) { updateCRLLink(); loadCerts(); }
+  $('interParent').innerHTML = activeOpts || empty;
+  $('csIssuer').innerHTML = activeOpts || empty;
+  $('csSubject').innerHTML = '<option value="">— external (paste below) —</option>' + opts;
+  $('csListCA').innerHTML = opts || empty;
+  $('verifyCA').innerHTML = allOpt + opts;
+  if (x509CAs.length) { updateCRLLink(); loadCerts(); }
 }
 // caLabel maps a CA id to its human label for tables that only carry the id.
 function caLabel(id) { const c = cas.find(x => x.id === id); return c ? c.label : id; }
 async function loadProfiles() {
   try {
-    const profs = await api('GET', '/api/profiles');
-    $('issueProfile').innerHTML = profs.map(p =>
+    profiles = await api('GET', '/api/profiles');
+    $('issueProfile').innerHTML = profiles.map(p =>
       `<option value="${p.name}">${escapeHTML(p.name)} — ${escapeHTML(p.description || '')}</option>`).join('');
+    $('lintProfile').innerHTML = '<option value="">baseline rules</option>' + profiles.map(p =>
+      `<option value="${p.name}">${escapeHTML(p.name)}</option>`).join('');
+    renderIssueProfileInfo();
   } catch (_) { /* profiles are read-gated; ignore if forbidden */ }
 }
+
+// renderIssueProfileInfo shows the selected profile's validation rules under
+// the issue form — what `secsy-ca profiles` prints on the CLI.
+function renderIssueProfileInfo() {
+  const p = profiles.find(x => x.name === $('issueProfile').value);
+  if (!p) { $('issueProfileInfo').textContent = ''; return; }
+  const bits = [];
+  if (p.default_validity_days) bits.push(`default validity ${p.default_validity_days}d`);
+  if (p.max_validity_days) bits.push(`max ${p.max_validity_days}d`);
+  if (p.key_usages && p.key_usages.length) bits.push('key usage: ' + p.key_usages.join(', '));
+  if (p.ext_key_usages && p.ext_key_usages.length) bits.push('EKU: ' + p.ext_key_usages.join(', '));
+  if (p.algorithm) bits.push('algorithm: ' + p.algorithm);
+  if (p.ct && p.ct.enabled) bits.push('CT submission');
+  if (p.caa && p.caa.mode && p.caa.mode !== 'off') bits.push('CAA ' + p.caa.mode);
+  if (p.lint && p.lint.public) bits.push('CA/B public lint rules');
+  $('issueProfileInfo').textContent = bits.length ? 'Profile policy: ' + bits.join(' · ') : '';
+}
+$('issueProfile').onchange = renderIssueProfileInfo;
 
 // ---- Certificates view ---------------------------------------------------
 $('certCA').onchange = () => { updateCRLLink(); loadCerts(); };
@@ -371,7 +409,13 @@ async function loadCRLStatus(id) {
         + (d.base_crl_number ? ` (base #${escapeHTML(d.base_crl_number)})` : '')
         + ` · ${d.revoked_count || 0} entries · next ${fmtTime(d.next_update)} ${expiryTag(d)}`;
     }
-    if (s.sharded) html += ` &nbsp;|&nbsp; partitioned into ${s.shard_count} shards`;
+    if (s.sharded) {
+      const links = [];
+      for (let i = 0; i < s.shard_count; i++) {
+        links.push(`<a href="/api/ca/${id}/crl/partition/${i}?format=pem" target="_blank">${i}</a>`);
+      }
+      html += ` &nbsp;|&nbsp; partitioned into ${s.shard_count} shards: ${links.join(' ')}`;
+    }
     el.innerHTML = html;
   } catch (e) { el.textContent = 'CRL status unavailable: ' + e.message; }
 }
@@ -406,11 +450,24 @@ async function loadCerts() {
         <td>${fmtTime(c.not_after)}</td>
         <td><span class="badge ${c.status}">${c.status}</span></td>
         <td>${ctBadge(c)}</td>
-        <td>${c.status === 'valid'
-          ? `<button class="btn danger sm" onclick="revokeCert('${id}','${c.serial}')">Revoke</button>` : ''}</td>
+        <td style="white-space:nowrap">${c.status === 'valid'
+          ? `<button class="btn ghost sm" onclick="renewCert('${id}','${c.serial}')" title="Reissue with a fresh serial and validity window, reusing the certified key">Renew</button>
+             <button class="btn danger sm" onclick="revokeCert('${id}','${c.serial}')">Revoke</button>` : ''}</td>
       </tr>`).join('') : emptyRow('No certificates issued yet.');
   } catch (e) { tbody.innerHTML = emptyRow(e.message); }
 }
+
+// renewCert reissues a certificate under the same CA/profile with a fresh
+// serial and validity window — the console counterpart of `secsy-ca renew`.
+async function renewCert(caID, serial) {
+  if (!confirm(`Renew certificate ${shortSerial(serial)}?\n\nA new certificate with a fresh serial and validity window is issued for the same key and profile; the old one stays valid until it expires or is revoked.`)) return;
+  try {
+    const res = await api('POST', `/api/ca/${caID}/renew`, { serial });
+    alert(`Renewed: new serial ${res.serial}, valid until ${res.not_after}.`);
+    if (selectedCertCA() === caID) loadCerts();
+  } catch (e) { alert('Renew failed: ' + e.message); }
+}
+window.renewCert = renewCert;
 
 // ctBadge renders the Certificate Transparency status of an issued certificate.
 function ctBadge(c) {
@@ -723,13 +780,36 @@ async function loadBundle() {
     showError(msg, 'Chain unavailable: ' + e.message); msg.className = 'notice err';
   }
   // The SPIFFE trust bundle exists only when SPIFFE issuance is enabled; a 404
-  // just hides the panel.
+  // just hides the panel (and the mint form with it).
+  $('svidMintPanel').classList.add('hidden');
   try {
     const bundle = await api('GET', `/api/ca/${id}/svid/bundle`, undefined, true);
     $('svidBundle').value = bundle;
     $('svidPanel').classList.remove('hidden');
+    $('svidMintPanel').classList.remove('hidden');
   } catch (_) { /* SPIFFE not enabled for this server */ }
 }
+
+// Mint an X.509-SVID under the selected CA (SPIFFE workload identity).
+$('svidMintBtn').onclick = async () => {
+  const id = $('bundleCA').value;
+  const err = $('svidError');
+  err.classList.add('hidden');
+  $('svidOutBox').classList.add('hidden');
+  const spiffeID = $('svidID').value.trim();
+  const csr = $('svidCSR').value.trim();
+  if (!spiffeID || !csr) { showError(err, 'A SPIFFE ID and a CSR are required.'); return; }
+  const body = { spiffe_id: spiffeID, csr };
+  const ttl = parseInt($('svidTTL').value, 10);
+  if (ttl > 0) body.ttl_seconds = ttl;
+  $('svidMintBtn').disabled = true;
+  try {
+    const res = await api('POST', `/api/ca/${id}/svid`, body);
+    $('svidOut').value = res.certificate + (res.chain || '');
+    $('svidOutBox').classList.remove('hidden');
+  } catch (e) { showError(err, e.message); }
+  finally { $('svidMintBtn').disabled = false; }
+};
 
 // downloadBlob saves text content as a file via a transient object URL.
 function downloadBlob(content, filename, type) {
@@ -774,8 +854,14 @@ $('issueBtn').onclick = async () => {
 async function loadSecretInfo() {
   try {
     const info = await api('GET', '/api/secret/info');
-    $('secretInfo').textContent =
-      `KEK ${info.kek_label} · ${info.provider} · ${info.key_bits}-bit · wrap ${info.wrap_alg} · data ${info.data_alg}`;
+    let text = `KEK ${info.kek_label} · ${info.provider} · ${info.key_bits}-bit · wrap ${info.wrap_alg} · data ${info.data_alg}`;
+    if (info.escrow_available) {
+      text += ` · escrow ${info.escrow_threshold}-of-${info.escrow_agents} recovery agents (recovery via secsy-secret recover, dual control)`;
+      $('encEscrowLabel').classList.remove('hidden');
+    } else {
+      $('encEscrowLabel').classList.add('hidden');
+    }
+    $('secretInfo').textContent = text;
     $('secretDisabled').classList.add('hidden');
   } catch (e) {
     // 404 when the feature is disabled (routes not registered).
@@ -786,7 +872,9 @@ async function loadSecretInfo() {
 $('encBtn').onclick = async () => {
   try {
     const pt = new TextEncoder().encode($('encPlain').value);
-    const res = await api('POST', '/api/secret/encrypt', { plaintext: b64(pt) });
+    const body = { plaintext: b64(pt) };
+    if ($('encEscrow').checked) body.escrow = true;
+    const res = await api('POST', '/api/secret/encrypt', body);
     $('encOut').value = JSON.stringify(res.envelope, null, 2);
   } catch (e) { alert('Encrypt failed: ' + e.message); }
 };
@@ -937,6 +1025,593 @@ async function loadTenantUsage(t) {
     $('tenantUsageEmpty').textContent = 'Usage unavailable: ' + e.message;
   }
 }
+
+// ---- Authorities view (Task 62: CLI parity) --------------------------------
+// CA lifecycle: create roots/intermediates, rotate/retire intermediate signing
+// keys, cross-sign, and the HSM key inventory. Everything is RBAC-gated
+// server-side (ca:manage / hsm:manage); high-risk calls may demand step-up.
+let rotationByCA = {}; // ca id -> RotationStatus (only CAs in a lineage)
+
+$('casRefresh').onclick = loadAuthorities;
+
+async function loadAuthorities() {
+  const tbody = $('casRows');
+  tbody.innerHTML = '<tr><td colspan="7" class="muted">Loading…</td></tr>';
+  try { await loadCAs(); } catch (e) { tbody.innerHTML = emptyRow(e.message); return; }
+  rotationByCA = {};
+  try {
+    const rep = await api('GET', '/api/rotations');
+    (rep.rotations || []).forEach(r => { if (r.ca) rotationByCA[r.ca.id] = r; });
+  } catch (_) { /* rotation list is read-gated; table still renders */ }
+
+  if (!x509CAs.length) { tbody.innerHTML = emptyRow('No CAs yet — create a root below.'); }
+  else {
+    tbody.innerHTML = x509CAs.map(c => {
+      const kind = c.parent_id ? 'intermediate' : 'root';
+      const status = c.status || 'active';
+      const rot = rotationByCA[c.id];
+      let statusCell = `<span class="badge ${status === 'active' ? 'valid' : (status === 'retired' ? 'revoked' : 'warning')}">${status}</span>`;
+      if (rot && status === 'superseded') {
+        statusCell += rot.safe_to_retire
+          ? ' <span class="muted">drained</span>'
+          : ` <span class="muted">${rot.outstanding_leaves} leaves outstanding</span>`;
+      }
+      const actions = [];
+      if (kind === 'intermediate' && status === 'active') {
+        actions.push(`<button class="btn ghost sm" data-act="rotate" data-id="${c.id}">Rotate key</button>`);
+      }
+      if (status === 'superseded') {
+        actions.push(`<button class="btn danger sm" data-act="retire" data-id="${c.id}">Retire</button>`);
+      }
+      actions.push(`<a class="btn ghost sm" href="/api/ca/${c.id}/chain" target="_blank">Chain</a>`);
+      return `<tr${status !== 'active' ? ' style="opacity:.65"' : ''}>
+        <td>${escapeHTML(c.label)}</td>
+        <td title="${escapeHTML(c.subject || '')}">${escapeHTML(shortName(c.subject))}</td>
+        <td>${escapeHTML(c.key_type || '')}</td>
+        <td>${kind}</td>
+        <td>${statusCell}</td>
+        <td>${fmtTime(c.not_after)}</td>
+        <td style="white-space:nowrap">${actions.join(' ')}</td>
+      </tr>`;
+    }).join('');
+    tbody.querySelectorAll('button[data-act]').forEach(b => {
+      if (b.dataset.act === 'rotate') b.onclick = () => openRotateModal(b.dataset.id);
+      if (b.dataset.act === 'retire') b.onclick = () => openRetireModal(b.dataset.id);
+    });
+  }
+  loadKeyInventory();
+}
+
+// -- create root / intermediate --
+$('rootCreateBtn').onclick = async () => {
+  const err = $('rootCreateError');
+  err.classList.add('hidden');
+  const body = {
+    label: $('rootLabel').value.trim(),
+    key_type: $('rootKeyType').value,
+    subject: { cn: $('rootCN').value.trim(), o: $('rootO').value.trim() },
+    validity_days: parseInt($('rootDays').value, 10) || 0,
+  };
+  if ($('rootPathLen').value !== '') body.max_path_len = parseInt($('rootPathLen').value, 10);
+  if (!body.label || !body.subject.cn) { showError(err, 'A label and a common name are required.'); return; }
+  $('rootCreateBtn').disabled = true;
+  try {
+    const ca = await api('POST', '/api/ca/init-root', body);
+    notice($('casMsg'), 'ok', `Root CA "${ca.label}" created — key generated inside the HSM.`);
+    $('rootLabel').value = $('rootCN').value = $('rootO').value = '';
+    await loadAuthorities();
+  } catch (e) { showError(err, e.message); }
+  finally { $('rootCreateBtn').disabled = false; }
+};
+
+$('interCreateBtn').onclick = async () => {
+  const err = $('interCreateError');
+  err.classList.add('hidden');
+  const parent = $('interParent').value;
+  const body = {
+    label: $('interLabel').value.trim(),
+    key_type: $('interKeyType').value,
+    subject: { cn: $('interCN').value.trim(), o: $('interO').value.trim() },
+    validity_days: parseInt($('interDays').value, 10) || 0,
+  };
+  if ($('interPathLen').value !== '') body.max_path_len = parseInt($('interPathLen').value, 10);
+  if (!parent) { showError(err, 'Select a parent CA.'); return; }
+  if (!body.label || !body.subject.cn) { showError(err, 'A label and a common name are required.'); return; }
+  $('interCreateBtn').disabled = true;
+  try {
+    const ca = await api('POST', `/api/ca/${parent}/issue-intermediate`, body);
+    notice($('casMsg'), 'ok', `Intermediate CA "${ca.label}" issued under ${caLabel(parent)}.`);
+    $('interLabel').value = $('interCN').value = $('interO').value = '';
+    await loadAuthorities();
+  } catch (e) { showError(err, e.message); }
+  finally { $('interCreateBtn').disabled = false; }
+};
+
+// -- rotate / retire modals --
+let rotateTarget = null;
+function openRotateModal(caID) {
+  rotateTarget = caID;
+  $('rotateCALabel').textContent = caLabel(caID);
+  $('rotateError').classList.add('hidden');
+  $('rotateNewLabel').value = '';
+  $('rotateKeyType').value = '';
+  $('rotateDays').value = '';
+  $('rotateModal').classList.remove('hidden');
+}
+$('rotateCancel').onclick = () => { $('rotateModal').classList.add('hidden'); rotateTarget = null; };
+$('rotateConfirm').onclick = async () => {
+  if (!rotateTarget) return;
+  const body = {};
+  if ($('rotateNewLabel').value.trim()) body.new_label = $('rotateNewLabel').value.trim();
+  if ($('rotateKeyType').value) body.key_type = $('rotateKeyType').value;
+  const days = parseInt($('rotateDays').value, 10);
+  if (days > 0) body.validity_days = days;
+  $('rotateConfirm').disabled = true;
+  try {
+    const res = await api('POST', `/api/ca/${rotateTarget}/rotate`, body);
+    $('rotateModal').classList.add('hidden');
+    rotateTarget = null;
+    const until = res.retire_after ? ` The old key can be retired after ${fmtTime(res.retire_after)} (once its leaves drain).` : '';
+    notice($('casMsg'), 'ok',
+      `Rotated: new key "${res.new_ca.label}" is now the active issuer; "${res.old_ca.label}" is superseded and keeps validating its leaves.${until} `
+      + `Publish the combined overlap chain to relying parties.`);
+    downloadBlob(res.combined_chain_pem, 'combined-chain.pem', 'application/x-pem-file');
+    await loadAuthorities();
+  } catch (e) { showError($('rotateError'), e.message); }
+  finally { $('rotateConfirm').disabled = false; }
+};
+
+let retireTarget = null;
+async function openRetireModal(caID) {
+  retireTarget = caID;
+  $('retireCALabel').textContent = caLabel(caID);
+  $('retireError').classList.add('hidden');
+  $('retireForce').checked = false;
+  $('retireReason').value = 'cessationOfOperation';
+  const rot = rotationByCA[caID];
+  $('retireInfo').textContent = rot && !rot.safe_to_retire
+    ? `${rot.outstanding_leaves} leaves signed by this key are still valid — retiring now requires force and will break their chains.`
+    : 'No outstanding leaves remain: the key can be retired safely. Its certificate is revoked under the parent and the parent CRL refreshed.';
+  $('retireModal').classList.remove('hidden');
+}
+$('retireCancel').onclick = () => { $('retireModal').classList.add('hidden'); retireTarget = null; };
+$('retireConfirm').onclick = async () => {
+  if (!retireTarget) return;
+  $('retireConfirm').disabled = true;
+  try {
+    const res = await api('POST', `/api/ca/${retireTarget}/retire`, {
+      reason: $('retireReason').value,
+      force: $('retireForce').checked,
+    });
+    $('retireModal').classList.add('hidden');
+    retireTarget = null;
+    notice($('casMsg'), 'ok',
+      `Retired "${res.retired_ca.label}": its certificate (serial ${shortSerial(res.revoked_serial)}) is revoked under the parent and the parent CRL was refreshed.`);
+    await loadAuthorities();
+  } catch (e) { showError($('retireError'), e.message); }
+  finally { $('retireConfirm').disabled = false; }
+};
+
+// -- cross-signing --
+$('crossSignBtn').onclick = async () => {
+  const err = $('crossSignError');
+  err.classList.add('hidden');
+  $('csResultBox').classList.add('hidden');
+  const issuer = $('csIssuer').value;
+  if (!issuer) { showError(err, 'Select an issuer CA.'); return; }
+  const body = {};
+  const subjectCA = $('csSubject').value;
+  const pemText = $('csPEM').value.trim();
+  if (subjectCA) {
+    body.subject_ca_id = subjectCA;
+  } else if (/BEGIN CERTIFICATE REQUEST/.test(pemText)) {
+    body.csr_pem = pemText;
+  } else if (/BEGIN CERTIFICATE/.test(pemText)) {
+    body.certificate_pem = pemText;
+  } else {
+    showError(err, 'Select a subject CA or paste an external certificate/CSR (PEM).');
+    return;
+  }
+  const days = parseInt($('csDays').value, 10);
+  if (days > 0) body.validity_days = days;
+  $('crossSignBtn').disabled = true;
+  try {
+    const res = await api('POST', `/api/ca/${issuer}/cross-signs`, body);
+    $('csResult').value = (res.chain_pem || res.certificate_pem || '');
+    $('csResultBox').classList.remove('hidden');
+    notice($('casMsg'), 'ok', `Cross-signed ${res.cross_sign.subject} under ${caLabel(issuer)} — alternate chain ready.`);
+    if ($('csListCA').value === issuer || $('csListCA').value === subjectCA) loadCrossSigns();
+  } catch (e) { showError(err, e.message); }
+  finally { $('crossSignBtn').disabled = false; }
+};
+
+$('csListRefresh').onclick = loadCrossSigns;
+async function loadCrossSigns() {
+  const id = $('csListCA').value;
+  const tbody = $('csRows');
+  if (!id) { tbody.innerHTML = emptyRow('Select a CA and load.'); return; }
+  tbody.innerHTML = '<tr><td colspan="6" class="muted">Loading…</td></tr>';
+  try {
+    const rep = await api('GET', `/api/ca/${id}/cross-signs`);
+    const list = rep.cross_signs || [];
+    tbody.innerHTML = list.length ? list.map(cs => `
+      <tr>
+        <td title="${escapeHTML(cs.subject || '')}">${escapeHTML(shortName(cs.subject))}</td>
+        <td>${escapeHTML(caLabel(cs.issuer_ca_id))}</td>
+        <td>${escapeHTML(cs.source || '')}</td>
+        <td>${fmtTime(cs.not_after)}</td>
+        <td><span class="badge ${cs.status === 'active' ? 'valid' : 'revoked'}">${escapeHTML(cs.status || '')}</span></td>
+        <td><a class="btn ghost sm" href="/api/ca/${id}/cross-signs/${cs.id}/chain" target="_blank">Chain</a></td>
+      </tr>`).join('') : emptyRow('No cross-signs for this CA.');
+  } catch (e) { tbody.innerHTML = emptyRow(e.message); }
+}
+
+// -- HSM key inventory --
+async function loadKeyInventory() {
+  const tbody = $('keyInvRows');
+  const note = $('keyInvNote');
+  try {
+    const inv = await api('GET', '/api/inventory/keys');
+    note.textContent = `Provider ${inv.provider} · ${inv.keys.length} key(s) · `
+      + (inv.extractable_count ? `⚠ ${inv.extractable_count} extractable` : 'none extractable')
+      + (inv.unbound_count ? ` · ${inv.unbound_count} not bound to a CA (KEK/TSA/signing keys)` : '');
+    tbody.innerHTML = inv.keys.length ? inv.keys.map(k => `
+      <tr>
+        <td class="mono">${escapeHTML(k.label)}</td>
+        <td>${escapeHTML(k.key_type || '')}</td>
+        <td>${k.extractable ? '<span class="badge fail">YES</span>' : '<span class="badge pass">no</span>'}</td>
+        <td>${k.sensitive ? 'yes' : 'no'}</td>
+        <td>${escapeHTML(k.ca_label || '—')}</td>
+      </tr>`).join('') : emptyRow('No keys on the provider.');
+  } catch (e) {
+    // 403 for non-admins, 501 when the provider cannot enumerate keys.
+    note.textContent = '';
+    tbody.innerHTML = emptyRow('Key inventory unavailable: ' + e.message);
+  }
+}
+
+// notice paints a dismissible status banner.
+function notice(el, cls, msg) {
+  el.textContent = msg;
+  el.className = 'notice ' + cls;
+}
+
+// ---- SSH CA view (Task 62: CLI parity) --------------------------------------
+let sshCAs = [];
+let sshProfiles = [];
+
+$('sshRefresh').onclick = loadSSH;
+$('sshCA').onchange = () => { updateSSHLinks(); loadSSHCerts(); };
+$('sshCertType').onchange = renderSSHProfileOptions;
+
+async function loadSSH() {
+  try {
+    sshCAs = await api('GET', '/api/ssh/cas');
+  } catch (e) {
+    notice($('sshMsg'), 'err', 'Listing SSH CAs failed: ' + e.message);
+    return;
+  }
+  $('sshCA').innerHTML = sshCAs.length
+    ? sshCAs.map(c => `<option value="${c.id}">${escapeHTML(c.label)}</option>`).join('')
+    : '<option value="">— no SSH CAs —</option>';
+  try {
+    sshProfiles = await api('GET', '/api/ssh/profiles');
+    renderSSHProfileOptions();
+  } catch (_) { /* read-gated */ }
+  updateSSHLinks();
+  loadSSHCerts();
+}
+
+function renderSSHProfileOptions() {
+  const type = $('sshCertType').value;
+  const list = sshProfiles.filter(p => !p.cert_type || p.cert_type === type);
+  $('sshProfile').innerHTML = '<option value="">default for type</option>' + list.map(p =>
+    `<option value="${p.name}">${escapeHTML(p.name)}${p.max_validity_secs ? ` (max ${fmtDuration(p.max_validity_secs)})` : ''}</option>`).join('');
+}
+
+function updateSSHLinks() {
+  const id = $('sshCA').value;
+  const pub = $('sshPubLink'), krl = $('sshKRLLink');
+  if (id) {
+    pub.href = `/api/ssh/cas/${id}/public`; pub.classList.remove('hidden');
+    krl.href = `/api/ssh/cas/${id}/krl`; krl.classList.remove('hidden');
+  } else { pub.classList.add('hidden'); krl.classList.add('hidden'); }
+}
+
+$('sshCreateBtn').onclick = async () => {
+  const err = $('sshCreateError');
+  err.classList.add('hidden');
+  const label = $('sshCALabel').value.trim();
+  if (!label) { showError(err, 'A label is required.'); return; }
+  $('sshCreateBtn').disabled = true;
+  try {
+    const ca = await api('POST', '/api/ssh/cas', { label, key_type: $('sshCAKeyType').value });
+    notice($('sshMsg'), 'ok', `SSH CA "${ca.label}" created. Install its public key as the trust anchor (TrustedUserCAKeys / @cert-authority).`);
+    $('sshCALabel').value = '';
+    await loadSSH();
+    $('sshCA').value = ca.id;
+    updateSSHLinks();
+    loadSSHCerts();
+  } catch (e) { showError(err, e.message); }
+  finally { $('sshCreateBtn').disabled = false; }
+};
+
+$('sshSignBtn').onclick = async () => {
+  const err = $('sshSignError');
+  err.classList.add('hidden');
+  $('sshCertBox').classList.add('hidden');
+  const id = $('sshCA').value;
+  if (!id) { showError(err, 'Select (or create) an SSH CA first.'); return; }
+  const pub = $('sshPubKey').value.trim();
+  if (!pub) { showError(err, 'Paste the public key to certify (authorized_keys line).'); return; }
+  const body = {
+    public_key: pub,
+    cert_type: $('sshCertType').value,
+    key_id: $('sshKeyID').value.trim(),
+    principals: $('sshPrincipals').value.split(',').map(s => s.trim()).filter(Boolean),
+  };
+  if ($('sshProfile').value) body.profile = $('sshProfile').value;
+  const secs = parseInt($('sshValidity').value, 10);
+  if (secs > 0) body.validity_seconds = secs;
+  $('sshSignBtn').disabled = true;
+  try {
+    const res = await api('POST', `/api/ssh/cas/${id}/sign`, body);
+    $('sshCertOut').value = res.certificate;
+    $('sshCertBox').classList.remove('hidden');
+    notice($('sshMsg'), 'ok', `Signed ${res.cert_type} certificate serial ${res.serial} (key ID ${res.key_id}), valid until ${fmtTime(res.valid_before)}.`);
+    loadSSHCerts();
+  } catch (e) { showError(err, e.message); }
+  finally { $('sshSignBtn').disabled = false; }
+};
+
+async function loadSSHCerts() {
+  const id = $('sshCA').value;
+  const certs = $('sshCertRows'), revs = $('sshRevRows');
+  if (!id) {
+    certs.innerHTML = emptyRow('Select an SSH CA…');
+    revs.innerHTML = '<tr><td colspan="3" class="muted">—</td></tr>';
+    return;
+  }
+  try {
+    const list = await api('GET', `/api/ssh/cas/${id}/certificates`);
+    certs.innerHTML = list.length ? list.map(c => `
+      <tr>
+        <td class="mono">${escapeHTML(c.serial)}</td>
+        <td>${escapeHTML(c.cert_type)}</td>
+        <td>${escapeHTML(c.key_id || '')}</td>
+        <td>${escapeHTML((c.principals || []).join(', '))}</td>
+        <td>${escapeHTML(c.profile || '')}</td>
+        <td><span class="badge ${c.status === 'valid' ? 'valid' : 'revoked'}">${escapeHTML(c.status)}</span></td>
+        <td>${fmtTime(c.valid_before)}</td>
+        <td>${c.status === 'valid'
+          ? `<button class="btn danger sm" onclick="revokeSSHCert('${id}','${c.serial}')">Revoke</button>` : ''}</td>
+      </tr>`).join('') : emptyRow('No certificates signed yet.');
+  } catch (e) { certs.innerHTML = emptyRow(e.message); }
+  try {
+    const list = await api('GET', `/api/ssh/cas/${id}/revocations`);
+    revs.innerHTML = list.length ? list.map(rv => `
+      <tr>
+        <td class="mono">${escapeHTML(rv.serial || rv.key_id || '')}</td>
+        <td>${escapeHTML(rv.reason || '')}</td>
+        <td>${fmtTime(rv.revoked_at)}</td>
+      </tr>`).join('') : '<tr><td colspan="3" class="muted">No revocations.</td></tr>';
+  } catch (e) { revs.innerHTML = `<tr><td colspan="3" class="muted">${escapeHTML(e.message)}</td></tr>`; }
+}
+
+async function revokeSSHCert(caID, serial) {
+  if (!confirm(`Revoke SSH certificate serial ${serial}?\n\nThe revocation is published to relying hosts through the CA's KRL.`)) return;
+  try {
+    await api('POST', `/api/ssh/cas/${caID}/revoke`, { serial });
+    notice($('sshMsg'), 'ok', `Revoked serial ${serial}. Re-distribute the KRL to relying hosts.`);
+    loadSSHCerts();
+  } catch (e) { alert('Revoke failed: ' + e.message); }
+}
+window.revokeSSHCert = revokeSSHCert;
+
+// ---- Artifact signing view (Task 62: CLI parity) ----------------------------
+let signers = [];
+
+async function loadSigning() {
+  const tbody = $('signerRows');
+  tbody.innerHTML = '<tr><td colspan="5" class="muted">Loading…</td></tr>';
+  try {
+    signers = await api('GET', '/api/sign/signers');
+  } catch (e) {
+    signers = [];
+    tbody.innerHTML = emptyRow(e.message);
+    return;
+  }
+  $('signingDisabled').classList.toggle('hidden', signers.length > 0);
+  $('signSigner').innerHTML = signers.map(s =>
+    `<option value="${escapeHTML(s.name)}">${escapeHTML(s.name)} — ${escapeHTML(shortName(s.subject))}</option>`).join('')
+    || '<option value="">— no signers —</option>';
+  tbody.innerHTML = signers.length ? signers.map(s => `
+    <tr>
+      <td>${escapeHTML(s.name)}</td>
+      <td title="${escapeHTML(s.subject)}">${escapeHTML(shortName(s.subject))}</td>
+      <td>${escapeHTML(s.digest_algorithm)}</td>
+      <td>${s.timestamp_default ? 'yes' : 'no'}</td>
+      <td>${fmtTime(s.not_after)}</td>
+    </tr>`).join('') : emptyRow('No signing identities configured (secsy-ca signing-key provisions one; signing.enabled activates the service).');
+}
+
+// readFileB64 reads a selected file as base64, refusing oversized uploads —
+// the digest path exists for anything bigger.
+const MAX_SIGN_UPLOAD = 8 * 1024 * 1024;
+function readFileB64(input) {
+  const f = input.files && input.files[0];
+  if (!f) return Promise.resolve(null);
+  if (f.size > MAX_SIGN_UPLOAD) return Promise.reject(new Error('file exceeds 8 MiB — sign by digest instead'));
+  return new Promise((resolve, reject) => {
+    const rd = new FileReader();
+    rd.onerror = () => reject(new Error('reading file failed'));
+    rd.onload = () => {
+      const bytes = new Uint8Array(rd.result);
+      let bin = '';
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      }
+      resolve(btoa(bin));
+    };
+    rd.readAsArrayBuffer(f);
+  });
+}
+
+$('signBtn').onclick = async () => {
+  const err = $('signError');
+  err.classList.add('hidden');
+  $('signOutBox').classList.add('hidden');
+  if (!$('signSigner').value) { showError(err, 'No signer available.'); return; }
+  const body = { signer: $('signSigner').value };
+  const ts = $('signTimestamp').value;
+  if (ts === 'yes') body.timestamp = true;
+  if (ts === 'no') body.timestamp = false;
+  $('signBtn').disabled = true;
+  try {
+    const artifact = await readFileB64($('signFile'));
+    const digest = $('signDigest').value.trim();
+    if (artifact && digest) throw new Error('provide a file or a digest, not both');
+    if (artifact) body.artifact = artifact;
+    else if (digest) body.digest = digest;
+    else throw new Error('choose an artifact file or paste its digest');
+    const res = await api('POST', '/api/sign', body);
+    $('signOut').value = res.signature_pem;
+    $('signOutBox').classList.remove('hidden');
+    $('signDownload').onclick = (ev) => {
+      ev.preventDefault();
+      downloadBlob(res.signature_pem, 'artifact.p7s', 'application/x-pem-file');
+    };
+    const tsNote = res.timestamped ? ` · RFC 3161 countersigned at ${fmtTime(res.timestamp_time)}` : '';
+    notice(err, 'ok', `Signed with ${res.signer} (${res.digest_algorithm}:${shortSerial(res.digest)})${tsNote}.`);
+  } catch (e) { showError(err, e.message); err.className = 'notice err'; }
+  finally { $('signBtn').disabled = false; }
+};
+
+$('verifyBtn').onclick = async () => {
+  const out = $('verifyResult');
+  out.className = 'notice hidden';
+  const sig = $('verifySig').value.trim();
+  if (!sig) { notice(out, 'err', 'Paste the detached signature.'); return; }
+  const body = { signature: sig, require_timestamp: $('verifyRequireTS').checked };
+  if ($('verifyCA').value) body.ca_id = $('verifyCA').value;
+  $('verifyBtn').disabled = true;
+  try {
+    const artifact = await readFileB64($('verifyFile'));
+    const digest = $('verifyDigest').value.trim();
+    if (artifact && digest) throw new Error('provide a file or a digest, not both');
+    if (artifact) body.artifact = artifact;
+    else if (digest) body.digest = digest;
+    else throw new Error('choose the artifact file or paste its digest');
+    const res = await api('POST', '/api/sign/verify', body);
+    if (res.valid) {
+      const ts = res.timestamped ? ` · timestamped ${fmtTime(res.timestamp_time)}` : '';
+      notice(out, 'ok', `✓ Valid — signed by ${res.signer_subject} (serial ${shortSerial(res.signer_serial)}), ${res.digest_algorithm}:${shortSerial(res.digest)}${ts}, verified at ${fmtTime(res.verified_at)}.`);
+    } else {
+      notice(out, 'err', `✗ Invalid — ${res.reason}${res.signer_subject ? ` (claimed signer: ${res.signer_subject})` : ''}`);
+    }
+  } catch (e) { notice(out, 'err', 'Verification failed: ' + e.message); }
+  finally { $('verifyBtn').disabled = false; }
+};
+
+// ---- Audit view (Task 62: CLI parity) ---------------------------------------
+let auditOffset = 0;
+
+$('auditRefresh').onclick = () => { auditOffset = 0; loadAudit(); };
+$('auditAction').onchange = () => { auditOffset = 0; loadAudit(); };
+$('auditActor').onchange = () => { auditOffset = 0; loadAudit(); };
+$('auditLimit').onchange = () => { auditOffset = 0; loadAudit(); };
+$('auditPrev').onclick = () => {
+  auditOffset = Math.max(0, auditOffset - parseInt($('auditLimit').value, 10));
+  loadAudit();
+};
+$('auditNext').onclick = () => {
+  auditOffset += parseInt($('auditLimit').value, 10);
+  loadAudit();
+};
+
+async function loadAudit() {
+  const tbody = $('auditRows');
+  tbody.innerHTML = '<tr><td colspan="7" class="muted">Loading…</td></tr>';
+  const p = new URLSearchParams();
+  if ($('auditAction').value.trim()) p.set('action', $('auditAction').value.trim());
+  if ($('auditActor').value.trim()) p.set('actor', $('auditActor').value.trim());
+  p.set('limit', $('auditLimit').value);
+  p.set('offset', String(auditOffset));
+  try {
+    const rep = await api('GET', '/api/events?' + p.toString());
+    const entries = rep.entries || [];
+    $('auditCounts').textContent = `${rep.total} event(s) · showing ${auditOffset + 1}–${auditOffset + entries.length}`;
+    $('auditPage').textContent = `offset ${auditOffset}`;
+    tbody.innerHTML = entries.length ? entries.map(e => `
+      <tr>
+        <td style="white-space:nowrap">${fmtTime(e.timestamp)}</td>
+        <td class="mono">${escapeHTML(e.action)}</td>
+        <td title="${escapeHTML(e.actor_roles || '')}">${escapeHTML(e.actor_name || e.actor || '')}</td>
+        <td>${escapeHTML(e.tenant || '')}</td>
+        <td class="mono" title="${escapeHTML(e.target || '')}">${escapeHTML(e.target_name || shortSerial(e.target))}</td>
+        <td><span class="badge ${e.result === 'success' ? 'valid' : (e.result === 'denied' ? 'revoked' : 'warning')}">${escapeHTML(e.result)}</span></td>
+        <td class="muted" title="${escapeHTML(e.detail || '')}">${escapeHTML((e.detail || '').slice(0, 80))}</td>
+      </tr>`).join('') : emptyRow('No events match.');
+  } catch (e) {
+    tbody.innerHTML = emptyRow(e.message);
+    $('auditCounts').textContent = '';
+  }
+}
+
+$('auditVerifyBtn').onclick = async () => {
+  const out = $('auditVerify');
+  out.className = 'notice';
+  out.textContent = 'Recomputing the hash chain…';
+  try {
+    const res = await api('GET', '/api/events/verify');
+    if (res.valid) notice(out, 'ok', `✓ Chain intact — ${res.count} event(s) verified against the genesis hash.`);
+    else notice(out, 'err', `✗ Chain BROKEN at seq ${res.broken_at_seq}: ${res.reason}`);
+  } catch (e) {
+    // 409 carries the verification result too; api() throws on it.
+    notice(out, 'err', '✗ ' + e.message);
+  }
+};
+
+async function exportAudit(format, filename) {
+  try {
+    const data = await api('GET', '/api/events/export?format=' + format, undefined, true);
+    downloadBlob(data, filename, 'text/plain');
+  } catch (e) { alert('Export failed: ' + e.message); }
+}
+$('auditExportJSON').onclick = () => exportAudit('json', 'audit-export.ndjson');
+$('auditExportCEF').onclick = () => exportAudit('cef', 'audit-export.cef.log');
+$('auditExportSyslog').onclick = () => exportAudit('rfc5424', 'audit-export.syslog.log');
+
+// ---- Certificate lint (Compliance view) -------------------------------------
+$('lintBtn').onclick = async () => {
+  const out = $('lintResult');
+  out.className = 'notice hidden';
+  $('lintTable').classList.add('hidden');
+  const pem = $('lintPEM').value.trim();
+  if (!pem) { notice(out, 'err', 'Paste a PEM certificate.'); return; }
+  const body = { certificate: pem };
+  if ($('lintProfile').value) body.profile = $('lintProfile').value;
+  if ($('lintPublic').checked) body.public = true;
+  if ($('lintMode').value) body.mode = $('lintMode').value;
+  $('lintBtn').disabled = true;
+  try {
+    const res = await api('POST', '/api/lint', body);
+    if (res.pass) {
+      notice(out, 'ok', `✓ PASS — ${shortName(res.subject)} (serial ${shortSerial(res.serial)}) raised no findings under ${res.profile || 'the'} ${res.mode} policy${res.public ? ' with CA/B public rules' : ''}.`);
+    } else {
+      notice(out, res.errors ? 'err' : 'warn',
+        `${res.errors ? '✗' : '⚠'} ${res.errors} error(s), ${res.warnings} warning(s) for ${shortName(res.subject)} — ${res.summary}`);
+      $('lintRows').innerHTML = (res.findings || []).map(f => `
+        <tr>
+          <td class="mono">${escapeHTML(f.code)}</td>
+          <td><span class="badge ${f.mode === 'enforce' ? 'fail' : 'warn'}">${escapeHTML(f.mode)}</span></td>
+          <td>${escapeHTML(f.description)}</td>
+        </tr>`).join('');
+      $('lintTable').classList.remove('hidden');
+    }
+  } catch (e) { notice(out, 'err', e.message); }
+  finally { $('lintBtn').disabled = false; }
+};
 
 // ---- Helpers -------------------------------------------------------------
 function emptyRow(msg) { return `<tr><td colspan="6" class="muted">${escapeHTML(msg)}</td></tr>`; }

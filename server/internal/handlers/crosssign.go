@@ -88,7 +88,13 @@ func (a *API) CreateCrossSign(w http.ResponseWriter, r *http.Request) {
 
 	a.recordEvent(r, audit.ActionCACrossSign, issuerID, result.CrossSign.Subject, audit.ResultSuccess,
 		"cross_sign_id="+result.CrossSign.ID+" subject_key_id="+result.CrossSign.SubjectKeyID+" source="+result.CrossSign.Source)
-	writeJSON(w, http.StatusCreated, result)
+	// Serialize with the documented snake_case keys and PEM strings (the manager
+	// struct has no JSON tags, and raw []byte would render as base64).
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"cross_sign":      result.CrossSign,
+		"certificate_pem": string(result.CertificatePEM),
+		"chain_pem":       string(result.ChainPEM),
+	})
 }
 
 // ListCrossSigns returns the cross-sign relationships related to CA {id}, both

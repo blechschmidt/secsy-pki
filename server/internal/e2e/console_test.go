@@ -20,6 +20,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -37,6 +38,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
+	"golang.org/x/crypto/ssh"
 )
 
 // consoleEnv is the wired-up server + fixtures for the console flow test.
@@ -150,6 +152,7 @@ func (e *consoleEnv) getPublic(t *testing.T, path string) (int, string, []byte) 
 func TestConsoleFlow(t *testing.T) {
 	env := setupConsole(t)
 	var serial string
+	var leafPEM string
 
 	// --- 1. Embedded console assets are served from the binary (go:embed). ---
 	t.Run("EmbeddedAssets", func(t *testing.T) {
@@ -226,6 +229,7 @@ func TestConsoleFlow(t *testing.T) {
 			t.Fatalf("unexpected issue response: %+v", res)
 		}
 		serial = res.Serial
+		leafPEM = res.Certificate
 	})
 
 	// --- 5. Browse issued certificates (Certificates view). ---
@@ -517,6 +521,435 @@ func TestConsoleFlow(t *testing.T) {
 		}
 		if !bytes.Equal(got, plaintext) {
 			t.Fatalf("secret round-trip mismatch: got %q want %q", got, plaintext)
+		}
+
+		// The Secrets view renders the escrow policy shape; none is configured
+		// here, so the info endpoint must say so (rather than omit the fields).
+		var info struct {
+			EscrowAvailable *bool `json:"escrow_available"`
+		}
+		_, body = env.req(t, "GET", "/api/secret/info", nil)
+		if err := json.Unmarshal(body, &info); err != nil {
+			t.Fatalf("decode secret info: %v", err)
+		}
+		if info.EscrowAvailable == nil || *info.EscrowAvailable {
+			t.Errorf("escrow_available should be present and false: %s", body)
+		}
+	})
+
+	// --- 14. CA lifecycle via the Authorities view: create a root and an
+	// intermediate over REST, rotate the intermediate's signing key, watch the
+	// rotation status, and retire the superseded key. ---
+	var root2ID string
+	t.Run("AuthoritiesLifecycle", func(t *testing.T) {
+		status, body := env.req(t, "POST", "/api/ca/init-root", map[string]any{
+			"label":         uniqueLabel(t, "console-root2"),
+			"key_type":      "ecdsa-p256",
+			"subject":       map[string]string{"cn": "Console Root 2", "o": "Secsy"},
+			"validity_days": 3650,
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("init-root = %d: %s", status, body)
+		}
+		var root2 models.CA
+		if err := json.Unmarshal(body, &root2); err != nil {
+			t.Fatalf("decode root: %v", err)
+		}
+		root2ID = root2.ID
+
+		status, body = env.req(t, "POST", "/api/ca/"+root2.ID+"/issue-intermediate", map[string]any{
+			"label":         uniqueLabel(t, "console-inter2"),
+			"key_type":      "ecdsa-p256",
+			"subject":       map[string]string{"cn": "Console Issuing 2"},
+			"validity_days": 1825,
+			"max_path_len":  0,
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("issue-intermediate = %d: %s", status, body)
+		}
+		var inter2 models.CA
+		if err := json.Unmarshal(body, &inter2); err != nil {
+			t.Fatalf("decode intermediate: %v", err)
+		}
+
+		// Rotate the intermediate's key: same subject, fresh HSM key.
+		status, body = env.req(t, "POST", "/api/ca/"+inter2.ID+"/rotate", map[string]any{})
+		if status != http.StatusCreated {
+			t.Fatalf("rotate = %d: %s", status, body)
+		}
+		var rot struct {
+			OldCA            models.CA `json:"old_ca"`
+			NewCA            models.CA `json:"new_ca"`
+			CombinedChainPEM string    `json:"combined_chain_pem"`
+		}
+		if err := json.Unmarshal(body, &rot); err != nil {
+			t.Fatalf("decode rotate response: %v", err)
+		}
+		if rot.OldCA.ID != inter2.ID || rot.OldCA.Status != models.CAStatusSuperseded {
+			t.Errorf("old CA not superseded: %+v", rot.OldCA)
+		}
+		if rot.NewCA.ID == inter2.ID || rot.NewCA.Status != models.CAStatusActive {
+			t.Errorf("new CA not active: %+v", rot.NewCA)
+		}
+		if strings.Count(rot.CombinedChainPEM, "BEGIN CERTIFICATE") < 3 {
+			t.Errorf("combined chain should bundle old+new+parent: %s", rot.CombinedChainPEM)
+		}
+
+		// Rotation status: superseded, linked to its successor, retirable (no leaves).
+		status, body = env.req(t, "GET", "/api/ca/"+inter2.ID+"/rotation", nil)
+		if status != http.StatusOK {
+			t.Fatalf("rotation status = %d: %s", status, body)
+		}
+		var rs struct {
+			CA           models.CA  `json:"ca"`
+			Successor    *models.CA `json:"successor"`
+			SafeToRetire bool       `json:"safe_to_retire"`
+		}
+		if err := json.Unmarshal(body, &rs); err != nil {
+			t.Fatalf("decode rotation status: %v", err)
+		}
+		if rs.Successor == nil || rs.Successor.ID != rot.NewCA.ID || !rs.SafeToRetire {
+			t.Errorf("unexpected rotation status: %s", body)
+		}
+
+		// The lineage shows up in the Authorities view's rotation list.
+		status, body = env.req(t, "GET", "/api/rotations", nil)
+		if status != http.StatusOK {
+			t.Fatalf("list rotations = %d: %s", status, body)
+		}
+		if !bytes.Contains(body, []byte(inter2.ID)) || !bytes.Contains(body, []byte(rot.NewCA.ID)) {
+			t.Errorf("rotation list missing lineage members: %s", body)
+		}
+
+		// Retire the drained superseded key; the parent CRL now lists it.
+		status, body = env.req(t, "POST", "/api/ca/"+inter2.ID+"/retire", map[string]any{
+			"reason": "cessationOfOperation",
+		})
+		if status != http.StatusOK {
+			t.Fatalf("retire = %d: %s", status, body)
+		}
+		var ret struct {
+			RetiredCA     models.CA `json:"retired_ca"`
+			RevokedSerial string    `json:"revoked_serial"`
+			CRLPEM        string    `json:"crl_pem"`
+		}
+		if err := json.Unmarshal(body, &ret); err != nil {
+			t.Fatalf("decode retire response: %v", err)
+		}
+		if ret.RetiredCA.Status != models.CAStatusRetired || ret.RevokedSerial == "" {
+			t.Errorf("unexpected retire result: %s", body)
+		}
+		if !strings.Contains(ret.CRLPEM, "BEGIN X509 CRL") {
+			t.Errorf("retire did not return the refreshed parent CRL: %q", ret.CRLPEM)
+		}
+	})
+
+	// --- 15. Renewal (Certificates view's Renew action). ---
+	t.Run("RenewLeaf", func(t *testing.T) {
+		csr := makeCSR(t, "renew.e2e.example.com", []string{"renew.e2e.example.com"})
+		status, body := env.req(t, "POST", "/api/ca/"+env.interID+"/issue", map[string]string{
+			"csr": string(csr), "profile": "server",
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("issue = %d: %s", status, body)
+		}
+		var issued models.IssueCertResponse
+		if err := json.Unmarshal(body, &issued); err != nil {
+			t.Fatalf("decode issue: %v", err)
+		}
+
+		status, body = env.req(t, "POST", "/api/ca/"+env.interID+"/renew", map[string]string{
+			"serial": issued.Serial,
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("renew = %d: %s", status, body)
+		}
+		var renewed models.IssueCertResponse
+		if err := json.Unmarshal(body, &renewed); err != nil {
+			t.Fatalf("decode renew: %v", err)
+		}
+		if renewed.Serial == "" || renewed.Serial == issued.Serial {
+			t.Errorf("renewal must mint a fresh serial: old=%s new=%s", issued.Serial, renewed.Serial)
+		}
+	})
+
+	// --- 16. Cross-signing (Authorities view): the second root certifies the
+	// original intermediate's key, yielding an alternate chain. ---
+	t.Run("CrossSignFlow", func(t *testing.T) {
+		if root2ID == "" {
+			t.Skip("AuthoritiesLifecycle did not run")
+		}
+		status, body := env.req(t, "POST", "/api/ca/"+root2ID+"/cross-signs", map[string]any{
+			"subject_ca_id": env.interID,
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("cross-sign = %d: %s", status, body)
+		}
+		var cs struct {
+			CrossSign struct {
+				ID string `json:"id"`
+			} `json:"cross_sign"`
+			ChainPEM string `json:"chain_pem"`
+		}
+		if err := json.Unmarshal(body, &cs); err != nil {
+			t.Fatalf("decode cross-sign: %v", err)
+		}
+		if cs.CrossSign.ID == "" || !strings.Contains(cs.ChainPEM, "BEGIN CERTIFICATE") {
+			t.Fatalf("unexpected cross-sign result: %s", body)
+		}
+
+		status, body = env.req(t, "GET", "/api/ca/"+env.interID+"/cross-signs", nil)
+		if status != http.StatusOK || !bytes.Contains(body, []byte(cs.CrossSign.ID)) {
+			t.Errorf("cross-sign list = %d, missing %s: %s", status, cs.CrossSign.ID, body)
+		}
+
+		// Both the per-cross-sign chain and the alternate-chain listing are public.
+		st, _, chain := env.getPublic(t, "/api/ca/"+env.interID+"/cross-signs/"+cs.CrossSign.ID+"/chain")
+		if st != http.StatusOK || !bytes.Contains(chain, []byte("BEGIN CERTIFICATE")) {
+			t.Errorf("cross-sign chain download = %d: %s", st, chain)
+		}
+		st, _, chains := env.getPublic(t, "/api/ca/"+env.interID+"/chains")
+		if st != http.StatusOK || !bytes.Contains(chains, []byte(cs.CrossSign.ID)) {
+			t.Errorf("alternate chains = %d: %s", st, chains)
+		}
+	})
+
+	// --- 17. SSH CA (SSH CA view): create, list, sign a user key, browse the
+	// inventory, revoke, and fetch the public trust anchor + KRL. ---
+	t.Run("SSHCAFlow", func(t *testing.T) {
+		status, body := env.req(t, "POST", "/api/ssh/cas", map[string]string{
+			"label": uniqueLabel(t, "console-sshca"), "key_type": "ed25519",
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("create SSH CA = %d: %s", status, body)
+		}
+		var sshCA models.CA
+		if err := json.Unmarshal(body, &sshCA); err != nil {
+			t.Fatalf("decode SSH CA: %v", err)
+		}
+
+		// The SSH CA list carries it — and no X.509 CA leaks in.
+		status, body = env.req(t, "GET", "/api/ssh/cas", nil)
+		if status != http.StatusOK {
+			t.Fatalf("list SSH CAs = %d: %s", status, body)
+		}
+		var sshCAs []models.CA
+		if err := json.Unmarshal(body, &sshCAs); err != nil {
+			t.Fatalf("decode SSH CA list: %v", err)
+		}
+		found := false
+		for _, c := range sshCAs {
+			if c.ID == sshCA.ID {
+				found = true
+			}
+			if c.ID == env.interID {
+				t.Errorf("X.509 CA leaked into the SSH CA list")
+			}
+		}
+		if !found {
+			t.Fatalf("created SSH CA missing from list: %s", body)
+		}
+
+		if st, body := env.req(t, "GET", "/api/ssh/profiles", nil); st != http.StatusOK ||
+			!bytes.Contains(body, []byte("user-default")) {
+			t.Errorf("ssh profiles = %d: %s", st, body)
+		}
+
+		// Sign a fresh ed25519 user key.
+		pub, _, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			t.Fatalf("generate user key: %v", err)
+		}
+		sshPub, err := ssh.NewPublicKey(pub)
+		if err != nil {
+			t.Fatalf("ssh public key: %v", err)
+		}
+		status, body = env.req(t, "POST", "/api/ssh/cas/"+sshCA.ID+"/sign", map[string]any{
+			"public_key": string(ssh.MarshalAuthorizedKey(sshPub)),
+			"cert_type":  "user",
+			"key_id":     "console-e2e",
+			"principals": []string{"alice"},
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("ssh sign = %d: %s", status, body)
+		}
+		var signed struct {
+			Certificate string `json:"certificate"`
+			Serial      string `json:"serial"`
+		}
+		if err := json.Unmarshal(body, &signed); err != nil {
+			t.Fatalf("decode ssh sign: %v", err)
+		}
+		if !strings.Contains(signed.Certificate, "cert-v01@openssh.com") || signed.Serial == "" {
+			t.Fatalf("unexpected ssh certificate: %s", body)
+		}
+
+		if st, body := env.req(t, "GET", "/api/ssh/cas/"+sshCA.ID+"/certificates", nil); st != http.StatusOK ||
+			!bytes.Contains(body, []byte(`"console-e2e"`)) {
+			t.Errorf("ssh certificates = %d: %s", st, body)
+		}
+
+		status, body = env.req(t, "POST", "/api/ssh/cas/"+sshCA.ID+"/revoke", map[string]string{
+			"serial": signed.Serial, "reason": "key compromise drill",
+		})
+		if status != http.StatusOK {
+			t.Fatalf("ssh revoke = %d: %s", status, body)
+		}
+		if st, body := env.req(t, "GET", "/api/ssh/cas/"+sshCA.ID+"/revocations", nil); st != http.StatusOK ||
+			!bytes.Contains(body, []byte(signed.Serial)) {
+			t.Errorf("ssh revocations = %d: %s", st, body)
+		}
+
+		// Public trust-anchor + KRL downloads (what the view's links point at).
+		st, _, pubLine := env.getPublic(t, "/api/ssh/cas/"+sshCA.ID+"/public")
+		if st != http.StatusOK || !bytes.Contains(pubLine, []byte("ssh-ed25519")) {
+			t.Errorf("ssh public key = %d: %s", st, pubLine)
+		}
+		st, _, krl := env.getPublic(t, "/api/ssh/cas/"+sshCA.ID+"/krl")
+		if st != http.StatusOK || !bytes.HasPrefix(krl, []byte("SSHKRL")) {
+			t.Errorf("krl = %d (magic %q)", st, string(krl[:min(6, len(krl))]))
+		}
+	})
+
+	// --- 18. Artifact signing (Signing view): the service is not configured in
+	// this environment, so the view sees an empty signer list and a clean 503. ---
+	t.Run("SigningEndpoints", func(t *testing.T) {
+		status, body := env.req(t, "GET", "/api/sign/signers", nil)
+		if status != http.StatusOK || strings.TrimSpace(string(body)) != "[]" {
+			t.Errorf("signers = %d: %s (want empty list)", status, body)
+		}
+		status, _ = env.req(t, "POST", "/api/sign", map[string]string{"signer": "release", "digest": "00"})
+		if status != http.StatusServiceUnavailable {
+			t.Errorf("sign without service = %d, want 503", status)
+		}
+	})
+
+	// --- 19. Ad-hoc lint (Compliance view): the issued leaf passes the profile
+	// gate it was issued under; garbage is rejected. ---
+	t.Run("LintEndpoint", func(t *testing.T) {
+		status, body := env.req(t, "POST", "/api/lint", map[string]string{
+			"certificate": leafPEM, "profile": "server",
+		})
+		if status != http.StatusOK {
+			t.Fatalf("lint = %d: %s", status, body)
+		}
+		var res struct {
+			Subject string `json:"subject"`
+			Pass    bool   `json:"pass"`
+			Errors  int    `json:"errors"`
+		}
+		if err := json.Unmarshal(body, &res); err != nil {
+			t.Fatalf("decode lint: %v", err)
+		}
+		if res.Subject == "" {
+			t.Errorf("lint response missing subject: %s", body)
+		}
+		if res.Errors > 0 {
+			t.Errorf("the gate-passed leaf must not lint with errors: %s", body)
+		}
+
+		if st, _ := env.req(t, "POST", "/api/lint", map[string]string{"certificate": "not pem"}); st != http.StatusBadRequest {
+			t.Errorf("lint of garbage = %d, want 400", st)
+		}
+	})
+
+	// --- 20. HSM key inventory (Authorities view): the issuing CA's key is on
+	// the token, non-extractable, and bound to its CA record. ---
+	t.Run("KeyInventory", func(t *testing.T) {
+		status, body := env.req(t, "GET", "/api/inventory/keys", nil)
+		if status != http.StatusOK {
+			t.Fatalf("inventory = %d: %s", status, body)
+		}
+		var inv struct {
+			Provider string `json:"provider"`
+			Keys     []struct {
+				Label       string `json:"label"`
+				Extractable bool   `json:"extractable"`
+				CALabel     string `json:"ca_label"`
+			} `json:"keys"`
+		}
+		if err := json.Unmarshal(body, &inv); err != nil {
+			t.Fatalf("decode inventory: %v", err)
+		}
+		st, caBody := env.req(t, "GET", "/api/keys/"+env.interID, nil)
+		if st != http.StatusOK {
+			t.Fatalf("get CA = %d", st)
+		}
+		var inter models.CA
+		if err := json.Unmarshal(caBody, &inter); err != nil {
+			t.Fatalf("decode CA: %v", err)
+		}
+		found := false
+		for _, k := range inv.Keys {
+			if k.Label == inter.Label {
+				found = true
+				if k.Extractable {
+					t.Errorf("issuing CA key %q reports extractable", k.Label)
+				}
+				if k.CALabel == "" {
+					t.Errorf("issuing CA key %q not bound to its CA record", k.Label)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("issuing CA key %q missing from provider inventory", inter.Label)
+		}
+	})
+
+	// --- 21. Audit trail (Audit view): list, verify the hash chain, export. ---
+	t.Run("AuditTrail", func(t *testing.T) {
+		status, body := env.req(t, "GET", "/api/events?limit=50", nil)
+		if status != http.StatusOK {
+			t.Fatalf("events = %d: %s", status, body)
+		}
+		var page struct {
+			Entries []json.RawMessage `json:"entries"`
+			Total   int               `json:"total"`
+		}
+		if err := json.Unmarshal(body, &page); err != nil {
+			t.Fatalf("decode events: %v", err)
+		}
+		if page.Total == 0 || len(page.Entries) == 0 {
+			t.Fatalf("the flow above must have produced audit events: %s", body)
+		}
+
+		status, body = env.req(t, "GET", "/api/events/verify", nil)
+		if status != http.StatusOK {
+			t.Fatalf("verify = %d: %s", status, body)
+		}
+		var vr struct {
+			Valid bool `json:"valid"`
+			Count int  `json:"count"`
+		}
+		if err := json.Unmarshal(body, &vr); err != nil {
+			t.Fatalf("decode verify: %v", err)
+		}
+		if !vr.Valid || vr.Count == 0 {
+			t.Errorf("event chain must verify: %s", body)
+		}
+
+		// Exports: NDJSON parses per line; CEF carries its header; junk is a 400.
+		status, body = env.req(t, "GET", "/api/events/export?format=json", nil)
+		if status != http.StatusOK {
+			t.Fatalf("export json = %d: %s", status, body)
+		}
+		lines := bytes.Split(bytes.TrimSpace(body), []byte("\n"))
+		if len(lines) != vr.Count {
+			t.Errorf("export line count = %d, chain count = %d", len(lines), vr.Count)
+		}
+		var ev struct {
+			Action string `json:"action"`
+		}
+		if err := json.Unmarshal(lines[0], &ev); err != nil || ev.Action == "" {
+			t.Errorf("export line is not an event: %s (%v)", lines[0], err)
+		}
+
+		status, body = env.req(t, "GET", "/api/events/export?format=cef", nil)
+		if status != http.StatusOK || !bytes.Contains(body, []byte("CEF:0|")) {
+			t.Errorf("export cef = %d: %.120s", status, body)
+		}
+		if st, _ := env.req(t, "GET", "/api/events/export?format=bogus", nil); st != http.StatusBadRequest {
+			t.Errorf("bogus export format = %d, want 400", st)
 		}
 	})
 }

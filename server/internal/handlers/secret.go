@@ -100,6 +100,7 @@ func (a *API) SecretInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info := svc.KEKInfo()
+	escrowAvailable, escrowThreshold, escrowAgents := a.escrowInfo()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"kek_label": info.Label,
 		"provider":  info.Provider,
@@ -107,6 +108,13 @@ func (a *API) SecretInfo(w http.ResponseWriter, r *http.Request) {
 		"wrap_alg":  info.WrapAlg,
 		"data_alg":  secret.AlgAES256GCM,
 		"version":   secret.FormatVersion1,
+		// M-of-N escrow policy shape (Task 33): whether encrypt requests may ask
+		// for escrow, and the recovery quorum. Recovery itself is a dual-control
+		// CLI operation (secsy-secret recover) and is deliberately not exposed
+		// over the API.
+		"escrow_available": escrowAvailable,
+		"escrow_threshold": escrowThreshold,
+		"escrow_agents":    escrowAgents,
 	})
 }
 

@@ -178,6 +178,15 @@ func (a *API) escrowConfigured() bool {
 	return len(a.escrowSpecs) > 0
 }
 
+// escrowInfo reports the configured escrow policy shape (availability,
+// recovery threshold, agent count) for the secret-info endpoint. It never
+// exposes agent key material or labels.
+func (a *API) escrowInfo() (available bool, threshold, agents int) {
+	a.escrowMu.Lock()
+	defer a.escrowMu.Unlock()
+	return len(a.escrowSpecs) > 0, a.escrowThreshold, len(a.escrowSpecs)
+}
+
 // escrowPolicyFor returns the cached escrow policy, building and caching it on
 // first use. It is safe for concurrent callers.
 func (a *API) escrowPolicyFor(r *http.Request) (*secret.EscrowPolicy, error) {
@@ -298,6 +307,13 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.HandleFunc("GET /api/ca/{id}/chains", a.GetAlternateChains)
 	mux.HandleFunc("GET /api/ca/{id}/cross-signs/{csid}/chain", a.GetCrossSignChain)
 
+	// Intermediate key rotation / rollover lifecycle (Task 24; REST surface for
+	// console parity, Task 62).
+	mux.Handle("GET /api/rotations", protected(http.HandlerFunc(a.ListRotations)))
+	mux.Handle("GET /api/ca/{id}/rotation", protected(http.HandlerFunc(a.GetRotationStatus)))
+	mux.Handle("POST /api/ca/{id}/rotate", protectStepUp("ca.rotate", http.HandlerFunc(a.RotateIntermediateCA)))
+	mux.Handle("POST /api/ca/{id}/retire", protectStepUp("ca.retire", http.HandlerFunc(a.RetireIntermediateCA)))
+
 	// Certificate issuance, renewal, and revocation (X.509 end-entity certs).
 	mux.Handle("GET /api/profiles", protected(http.HandlerFunc(a.ListProfiles)))
 	mux.Handle("POST /api/ca/{id}/issue", protected(http.HandlerFunc(a.IssueCertificate)))
@@ -338,6 +354,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	// and poll the latter for their sshd RevokedKeys option, exactly like TLS
 	// relying parties fetch the CRL.
 	mux.Handle("POST /api/ssh/cas", protectStepUp("ssh.ca_init", http.HandlerFunc(a.CreateSSHCA)))
+	mux.Handle("GET /api/ssh/cas", protected(http.HandlerFunc(a.ListSSHCAs)))
 	mux.Handle("GET /api/ssh/profiles", protected(http.HandlerFunc(a.ListSSHProfiles)))
 	mux.Handle("POST /api/ssh/cas/{id}/sign", protected(http.HandlerFunc(a.SignSSHCert)))
 	mux.Handle("POST /api/ssh/cas/{id}/revoke", protectStepUp("ssh.revoke", http.HandlerFunc(a.RevokeSSHCert)))
@@ -405,6 +422,12 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	// and access-control operations, plus its integrity-verification endpoint.
 	mux.Handle("GET /api/events", protected(http.HandlerFunc(a.ListEventLog)))
 	mux.Handle("GET /api/events/verify", protected(http.HandlerFunc(a.VerifyEventLog)))
+	mux.Handle("GET /api/events/export", protected(http.HandlerFunc(a.ExportEventLog)))
+
+	// Ad-hoc certificate linting and the key-provider inventory — REST
+	// counterparts of `secsy-ca lint` and `secsy-ca inventory` (Task 62).
+	mux.Handle("POST /api/lint", protected(http.HandlerFunc(a.LintCertificate)))
+	mux.Handle("GET /api/inventory/keys", protected(http.HandlerFunc(a.ListProviderKeys)))
 
 	// ACME operator visibility (the ACME protocol endpoints are mounted
 	// separately, authenticated by account keys). Read-gated like other inventory.
