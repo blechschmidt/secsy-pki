@@ -16,7 +16,7 @@ issuing-CA + profile, optional External Account Binding, and per-order auditing.
 
 - [1. Enabling the ACME server](#1-enabling-the-acme-server)
 - [2. Configuring the ACME-enabled profile](#2-configuring-the-acme-enabled-profile)
-- [3. Challenge types (http-01, dns-01)](#3-challenge-types-http-01-dns-01)
+- [3. Challenge types (http-01, dns-01, tls-alpn-01)](#3-challenge-types-http-01-dns-01-tls-alpn-01)
 - [4. Access control: External Account Binding](#4-access-control-external-account-binding)
 - [5. Client examples](#5-client-examples)
 - [6. Auditing and operator visibility](#6-auditing-and-operator-visibility)
@@ -42,8 +42,8 @@ acme:
   profile: "server"
   # Advertised in the directory; when set, clients must agree on registration.
   terms_of_service: "https://pki.example.com/tos"
-  # Challenge types offered per authorization (default: both).
-  challenge_types: ["http-01", "dns-01"]
+  # Challenge types offered per authorization (default: all three).
+  challenge_types: ["http-01", "dns-01", "tls-alpn-01"]
 ```
 
 The server fails to start if `acme.enabled` is true but the referenced CA does
@@ -102,11 +102,13 @@ Notes:
   governs the interactive `/issue` and `/sign` endpoints); bound ACME lifetime
   through the profile instead.
 
-## 3. Challenge types (http-01, dns-01)
+## 3. Challenge types (http-01, dns-01, tls-alpn-01)
 
 For each identifier in an order the server creates an authorization offering the
 configured challenge types. The server performs the validation itself
-(outbound), so it must be able to reach the client's challenge responder.
+(outbound), so it must be able to reach the client's challenge responder. The
+challenge path performs **no HSM operation** — only the finalize step signs, on
+the HSM, through the shared CA manager.
 
 **http-01** (RFC 8555 §8.3) — the client serves the key authorization at
 `http://<domain>/.well-known/acme-challenge/<token>` on **port 80**. The server
@@ -118,9 +120,23 @@ fetches it and compares. For local testing where port 80 is unavailable, set
 The server resolves it via DNS. dns-01 is the **only** challenge type offered for
 **wildcard** (`*.example.com`) identifiers, per the RFC.
 
+**tls-alpn-01** (RFC 8737) — the client answers on **port 443** by presenting a
+special validation certificate over a TLS handshake that negotiates the
+`acme-tls/1` ALPN protocol. The server dials the identifier, offering only
+`acme-tls/1`, and requires the peer to present a **self-signed** certificate
+whose single `subjectAltName` is the identifier and that carries the **critical**
+`id-pe-acmeIdentifier` extension (OID `1.3.6.1.5.5.7.1.31`) whose OCTET-STRING
+value equals `SHA-256(keyAuthorization)`. This validates over the same port a web
+service already listens on (no port 80 responder needed), and — like http-01 —
+it works for IP-address identifiers (RFC 8738) but **not** for wildcards. For
+local testing where port 443 is unavailable, set `acme.tls_alpn01_port` to a high
+port.
+
 Restrict the offered set with `acme.challenge_types` (e.g. `["dns-01"]` to force
-DNS validation only). IP-address identifiers (RFC 8738) are disabled unless
-`acme.allow_ip_identifiers: true`.
+DNS validation only, or `["tls-alpn-01"]` for a port-443-only responder). The
+default offers all three. IP-address identifiers (RFC 8738) are disabled unless
+`acme.allow_ip_identifiers: true`; when enabled they may be validated with
+http-01 or tls-alpn-01.
 
 ## 4. Access control: External Account Binding
 
@@ -197,7 +213,7 @@ Every ACME operation appends an entry to the [hash-chained event log](rbac-and-a
 |--------|------|
 | `acme.account.new` | An account is registered (records the EAB `kid`, if any) |
 | `acme.order.new` | An order is placed (records the identifiers) |
-| `acme.challenge` | A challenge is validated or fails |
+| `acme.challenge` | A challenge is validated or fails (the detail records the challenge type — `http-01`, `dns-01`, or `tls-alpn-01` — and identifier) |
 | `acme.order.finalize` | A certificate is issued (records the serial and profile) |
 | `acme.cert.revoke` | A certificate is revoked via ACME |
 | `acme.renewal_info` | A renewal-info (ARI) window is served (records whether the window is normal/revoked/rotating) |
@@ -207,6 +223,11 @@ The actor is `acme:<account-id>`. These events are covered by the same
 tamper-evidence and `GET /api/events/verify` integrity check as the rest of the
 log, and ACME-issued certificates appear in the CA's `issued_certificates`
 inventory and its CRL/OCSP responses just like any other certificate.
+
+Challenge validation is also metered: `secsy_acme_challenge_validations_total`
+counts attempts by challenge `type` (`http-01`|`dns-01`|`tls-alpn-01`) and
+`result` (`valid`|`invalid`), giving each challenge type observable parity on the
+[metrics endpoint](observability.md).
 
 Operators can inspect ACME state through RBAC-gated (read: admin/issuer/auditor)
 inventory endpoints:
@@ -303,8 +324,9 @@ To compute a CertID from a certificate you hold, use `acme.CertID(*x509.Certific
   Configure `server.tls_cert`/`tls_key`, or terminate TLS at a trusted proxy and
   set `base_url`/forwarded headers accordingly. (The server itself already
   [fails closed without TLS](security-review.md) unless explicitly overridden.)
-- **Reachability.** For http-01 the server must reach the client on port 80; for
-  dns-01 it must resolve public DNS. In split-horizon networks, prefer dns-01.
+- **Reachability.** For http-01 the server must reach the client on port 80, for
+  tls-alpn-01 on port 443 (negotiating `acme-tls/1`), and for dns-01 it must
+  resolve public DNS. In split-horizon networks, prefer dns-01.
 - **Nonces** are held in memory and are single-use; a restart simply forces
   clients to fetch a fresh one (`badNonce` → automatic retry). No configuration
   needed.
@@ -314,8 +336,10 @@ To compute a CertID from a certificate you hold, use `acme.CertID(*x509.Certific
 - **Testing.** `server/internal/e2e/acme_test.go` (build tag `sqlite`, gated on
   the `SECSY_*` SoftHSM env) runs the full http-01 and dns-01 flows, revocation,
   and the ARI renewal-hint flow against a real token; `server/internal/acme/server_test.go`
-  and `renewalinfo_http_test.go` run the same flows against the software provider
-  (no HSM needed).
+  runs the http-01, dns-01, and tls-alpn-01 flows against the software provider
+  (no HSM needed), and `server/internal/acme/tlsalpn_test.go` covers the RFC 8737
+  validation logic hermetically with an in-process TLS responder presenting
+  correctly and incorrectly crafted validation certificates.
 
 ## See also
 

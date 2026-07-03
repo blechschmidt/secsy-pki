@@ -107,6 +107,7 @@ data:
       challenge_types:
         {{- toYaml $c.acme.challengeTypes | nindent 8 }}
       http01_port: {{ int $c.acme.http01Port }}
+      tls_alpn01_port: {{ int $c.acme.tlsAlpn01Port }}
       require_eab: {{ $c.acme.requireEAB }}
 
     {{- with $c.publish }}

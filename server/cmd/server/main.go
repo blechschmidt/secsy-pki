@@ -1065,6 +1065,7 @@ func buildACMEConfig(db *database.DB, cfg *config.Config) (acme.Config, error) {
 		Profile:            cfg.ACME.Profile,
 		TermsOfService:     cfg.ACME.TermsOfService,
 		HTTP01Port:         cfg.ACME.HTTP01Port,
+		TLSALPN01Port:      cfg.ACME.TLSALPN01Port,
 		ChallengeTypes:     cfg.ACME.ChallengeTypes,
 		RequireEAB:         cfg.ACME.RequireEAB,
 		EABHMACKeys:        cfg.ACME.EABHMACKeys,

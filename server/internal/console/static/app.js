@@ -310,6 +310,7 @@ function switchView(name) {
   if (name === 'cas') loadAuthorities();
   if (name === 'ssh') loadSSH();
   if (name === 'signing') loadSigning();
+  if (name === 'acme') loadACME();
   if (name === 'audit') loadAudit();
   if (name === 'approvals') loadApprovals();
   if (name === 'compliance') loadCompliance();
@@ -1703,6 +1704,55 @@ $('verifyBtn').onclick = async () => {
   } catch (e) { notice(out, 'err', 'Verification failed: ' + e.message); }
   finally { $('verifyBtn').disabled = false; }
 };
+
+// ---- ACME service view (challenge capabilities + accounts/orders) -----------
+$('acmeRefresh').onclick = loadACME;
+
+async function loadACME() {
+  const accts = $('acmeAccountRows');
+  const orders = $('acmeOrderRows');
+  const msg = $('acmeMsg');
+  msg.className = 'notice hidden';
+  accts.innerHTML = '<tr><td colspan="6" class="muted">Loading…</td></tr>';
+  orders.innerHTML = '<tr><td colspan="6" class="muted">Loading…</td></tr>';
+
+  // The read-only account/order listings double as a liveness signal: an empty
+  // list is normal, but an outright error usually means ACME is not enabled.
+  let anyOK = false;
+  try {
+    const rows = await api('GET', '/api/acme/accounts?limit=100');
+    anyOK = true;
+    accts.innerHTML = (rows && rows.length) ? rows.map(a => `<tr>
+      <td class="mono">${escapeHTML(a.id)}</td>
+      <td><span class="badge ${a.status === 'valid' ? 'valid' : 'warning'}">${escapeHTML(a.status || '')}</span></td>
+      <td>${escapeHTML((a.contacts || []).join(', '))}</td>
+      <td style="white-space:nowrap">${fmtTime(a.created_at)}</td>
+    </tr>`).join('') : emptyRow('No ACME accounts registered.');
+  } catch (e) {
+    accts.innerHTML = emptyRow(e.message);
+  }
+
+  try {
+    const rows = await api('GET', '/api/acme/orders?limit=100');
+    anyOK = true;
+    orders.innerHTML = (rows && rows.length) ? rows.map(o => {
+      const ids = (o.identifiers || []).map(i => i.value).join(', ');
+      const badge = o.status === 'valid' ? 'valid'
+        : (o.status === 'invalid' ? 'revoked' : 'warning');
+      return `<tr>
+        <td class="mono">${escapeHTML(o.id)}</td>
+        <td><span class="badge ${badge}">${escapeHTML(o.status || '')}</span></td>
+        <td title="${escapeHTML(ids)}">${escapeHTML(ids)}</td>
+        <td style="white-space:nowrap">${fmtTime(o.expires)}</td>
+        <td style="white-space:nowrap">${fmtTime(o.created_at)}</td>
+      </tr>`;
+    }).join('') : emptyRow('No ACME orders yet.');
+  } catch (e) {
+    orders.innerHTML = emptyRow(e.message);
+  }
+
+  $('acmeDisabled').classList.toggle('hidden', anyOK);
+}
 
 // ---- Audit view (Task 62: CLI parity) ---------------------------------------
 let auditOffset = 0;

@@ -45,6 +45,7 @@
         <button data-view="cas">Authorities</button>
         <button data-view="ssh">SSH CA</button>
         <button data-view="signing">Signing</button>
+        <button data-view="acme">ACME</button>
         <button data-view="audit">Audit</button>
         <button data-view="approvals">Approvals</button>
         <button data-view="compliance">Compliance</button>
@@ -535,6 +536,44 @@
             <button class="btn" id="verifyBtn">Verify signature</button>
           </div>
         </div>
+      </section>
+
+      <!-- ACME (RFC 8555) service view: challenge capabilities + accounts/orders -->
+      <section class="view" id="view-acme">
+        <h2>ACME service</h2>
+        <p class="sub">Automated certificate issuance (RFC 8555) for standard clients (certbot, lego, acme.sh, cert-manager). Accounts self-register with a key pair and prove control of each identifier with a challenge; every leaf is signed on the HSM through the shared CA. Read-only.</p>
+        <div id="acmeDisabled" class="notice hidden" style="margin-bottom:12px">ACME does not appear to be enabled on this server. Enable it under <code>acme:</code> in the server config.</div>
+
+        <div class="panel">
+          <h2 style="font-size:15px">Supported challenge types</h2>
+          <p class="sub">Validation runs outbound from the server (no HSM). The offered set per authorization is controlled by <code>acme.challenge_types</code> (default: all three). Wildcard identifiers are validated with dns-01 only.</p>
+          <table>
+            <thead><tr><th>Type</th><th>Spec</th><th>How the client proves control</th><th>Wildcard</th><th>IP</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">http-01</td><td>RFC 8555 §8.3</td><td>Serves the key authorization at <code>http://&lt;id&gt;/.well-known/acme-challenge/&lt;token&gt;</code> on port 80.</td><td>No</td><td>Yes</td></tr>
+              <tr><td class="mono">dns-01</td><td>RFC 8555 §8.4</td><td>Publishes <code>base64url(SHA-256(keyAuth))</code> as a TXT record at <code>_acme-challenge.&lt;id&gt;</code>.</td><td><strong>Yes</strong></td><td>No</td></tr>
+              <tr><td class="mono">tls-alpn-01</td><td>RFC 8737</td><td>Answers on port 443 over the <code>acme-tls/1</code> ALPN with a self-signed cert carrying the critical <code>id-pe-acmeIdentifier</code> extension (<code>SHA-256(keyAuth)</code>).</td><td>No</td><td>Yes</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="toolbar">
+          <div class="spacer"></div>
+          <button class="btn ghost sm" id="acmeRefresh">Refresh</button>
+        </div>
+        <div id="acmeMsg" class="notice hidden" style="margin-bottom:12px"></div>
+
+        <h2 style="font-size:15px">Accounts</h2>
+        <table>
+          <thead><tr><th>Account ID</th><th>Status</th><th>Contacts</th><th>Registered</th></tr></thead>
+          <tbody id="acmeAccountRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+        </table>
+
+        <h2 style="font-size:15px;margin-top:20px">Recent orders</h2>
+        <table>
+          <thead><tr><th>Order ID</th><th>Status</th><th>Identifiers</th><th>Expires</th><th>Created</th></tr></thead>
+          <tbody id="acmeOrderRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+        </table>
       </section>
 
       <!-- Audit log (Task 62: CLI parity) -->

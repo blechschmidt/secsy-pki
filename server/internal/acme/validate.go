@@ -32,15 +32,26 @@ type Validator struct {
 	// port 80; it is configurable only so integration tests can run without
 	// binding a privileged port.
 	HTTPPort int
+	// TLSALPNPort is the TCP port used for tls-alpn-01 validation. RFC 8737
+	// mandates port 443; it is configurable only so tests can avoid a privileged
+	// port. Zero means 443.
+	TLSALPNPort int
+	// TLSDialContext, when non-nil, establishes the raw TCP connection used for
+	// the tls-alpn-01 handshake. Production leaves it nil to use a default
+	// dialer; tests point it at an in-process listener.
+	TLSDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
 // maxHTTP01Body bounds how many bytes we read from the challenge resource.
 const maxHTTP01Body = 4096
 
 // newValidator builds a Validator with sane production defaults.
-func newValidator(httpPort int) *Validator {
+func newValidator(httpPort, tlsALPNPort int) *Validator {
 	if httpPort == 0 {
 		httpPort = 80
+	}
+	if tlsALPNPort == 0 {
+		tlsALPNPort = 443
 	}
 	return &Validator{
 		HTTPClient: &http.Client{
@@ -52,8 +63,9 @@ func newValidator(httpPort int) *Validator {
 				return nil
 			},
 		},
-		Resolver: net.DefaultResolver,
-		HTTPPort: httpPort,
+		Resolver:    net.DefaultResolver,
+		HTTPPort:    httpPort,
+		TLSALPNPort: tlsALPNPort,
 	}
 }
 

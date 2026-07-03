@@ -939,6 +939,12 @@ const (
 const (
 	ACMEChallengeHTTP01 = "http-01"
 	ACMEChallengeDNS01  = "dns-01"
+	// ACMEChallengeTLSALPN01 is the tls-alpn-01 challenge (RFC 8737): the client
+	// proves control of an identifier by presenting, over a TLS handshake on the
+	// ACME TLS ALPN port that negotiates the "acme-tls/1" protocol, a self-signed
+	// certificate carrying the critical id-pe-acmeIdentifier extension whose value
+	// is SHA-256(keyAuthorization).
+	ACMEChallengeTLSALPN01 = "tls-alpn-01"
 	// ACMEChallengeDeviceAttest01 is the device-attest-01 challenge
 	// (draft-ietf-acme-device-attest): the client proves control of a
 	// hardware-resident key by returning a WebAuthn attestation object

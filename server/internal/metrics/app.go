@@ -265,6 +265,13 @@ var (
 		"secsy_acme_order_replaces_total",
 		"ACME newOrder requests carrying an ARI \"replaces\" CertID, by result (linked|rejected).",
 		"result")
+	// ACMEChallengeValidations counts identifier-validation challenge attempts by
+	// challenge "type" (http-01|dns-01|tls-alpn-01) and "result" (valid|invalid),
+	// giving each challenge type observable parity on the issuance path.
+	ACMEChallengeValidations = NewCounter(Default,
+		"secsy_acme_challenge_validations_total",
+		"ACME challenge validation attempts, by challenge type and result (valid|invalid).",
+		"type", "result")
 
 	// HSM / key-provider operations. The "operation" label is sign|decrypt|
 	// generate|find|public_key; "result" is success|error.

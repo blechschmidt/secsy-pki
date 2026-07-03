@@ -993,7 +993,11 @@ type ACMEConfig struct {
 	TermsOfService string `yaml:"terms_of_service"`
 	// HTTP01Port overrides the http-01 validation port (default 80; tests only).
 	HTTP01Port int `yaml:"http01_port"`
-	// ChallengeTypes limits the offered challenge types (default http-01, dns-01).
+	// TLSALPN01Port overrides the tls-alpn-01 validation port (default 443; tests
+	// only).
+	TLSALPN01Port int `yaml:"tls_alpn01_port"`
+	// ChallengeTypes limits the offered challenge types (default http-01, dns-01,
+	// tls-alpn-01).
 	ChallengeTypes []string `yaml:"challenge_types"`
 	// RequireEAB requires External Account Binding; EABHMACKeys maps kid -> key.
 	RequireEAB  bool              `yaml:"require_eab"`
@@ -2419,8 +2423,8 @@ func (c *Config) validateACME() error {
 		return fmt.Errorf("acme.enabled is true but neither acme.ca_id nor acme.ca_label is set")
 	}
 	for _, ct := range c.ACME.ChallengeTypes {
-		if ct != "http-01" && ct != "dns-01" {
-			return fmt.Errorf("acme.challenge_types: unsupported challenge type %q (valid: http-01, dns-01)", ct)
+		if ct != "http-01" && ct != "dns-01" && ct != "tls-alpn-01" {
+			return fmt.Errorf("acme.challenge_types: unsupported challenge type %q (valid: http-01, dns-01, tls-alpn-01)", ct)
 		}
 	}
 	if c.ACME.RequireEAB && len(c.ACME.EABHMACKeys) == 0 {
@@ -2639,6 +2643,11 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SECSY_ACME_HTTP01_PORT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.ACME.HTTP01Port = n
+		}
+	}
+	if v := os.Getenv("SECSY_ACME_TLS_ALPN01_PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.ACME.TLSALPN01Port = n
 		}
 	}
 	// Monitor overrides — let the SoftHSM integration harness enable the

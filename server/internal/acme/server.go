@@ -42,8 +42,11 @@ type Config struct {
 	// HTTP01Port overrides the port used for http-01 validation (default 80).
 	// Intended for tests, which cannot bind port 80.
 	HTTP01Port int
+	// TLSALPN01Port overrides the port used for tls-alpn-01 validation
+	// (default 443). Intended for tests, which cannot bind port 443.
+	TLSALPN01Port int
 	// ChallengeTypes lists the challenge types offered per authorization
-	// (default: http-01 and dns-01).
+	// (default: http-01, dns-01, and tls-alpn-01).
 	ChallengeTypes []string
 	// RequireEAB, when true, requires a valid External Account Binding on account
 	// creation, tying each account to an operator-provisioned key (the ACME
@@ -93,7 +96,7 @@ func (c Config) withDefaults() Config {
 		c.HTTP01Port = 80
 	}
 	if len(c.ChallengeTypes) == 0 {
-		c.ChallengeTypes = []string{"http-01", "dns-01"}
+		c.ChallengeTypes = []string{"http-01", "dns-01", "tls-alpn-01"}
 	}
 	if c.OrderValidity == 0 {
 		c.OrderValidity = 7 * 24 * time.Hour
@@ -129,7 +132,7 @@ func New(db *database.DB, provider keyprovider.Provider, cfg Config) *Server {
 		caMgr:     ca.NewManager(db, provider),
 		cfg:       cfg,
 		nonces:    newNonceStore(time.Now),
-		validator: newValidator(cfg.HTTP01Port),
+		validator: newValidator(cfg.HTTP01Port, cfg.TLSALPN01Port),
 		now:       time.Now,
 	}
 }

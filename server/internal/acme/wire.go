@@ -28,6 +28,7 @@ const (
 	probServerInternal     = "urn:ietf:params:acme:error:serverInternal"
 	probRateLimited        = "urn:ietf:params:acme:error:rateLimited"
 	probConnection         = "urn:ietf:params:acme:error:connection"
+	probTLS                = "urn:ietf:params:acme:error:tls"
 	probDNS                = "urn:ietf:params:acme:error:dns"
 	probIncorrectResponse  = "urn:ietf:params:acme:error:incorrectResponse"
 	probOrderNotReady      = "urn:ietf:params:acme:error:orderNotReady"

@@ -236,6 +236,8 @@ func (s *Server) validateChallenge(r *http.Request, acct *acmeAccount, authz *mo
 		prob = s.validator.ValidateHTTP01(ctx, authz.IdentifierValue, chall.Token, keyAuth)
 	case models.ACMEChallengeDNS01:
 		prob = s.validator.ValidateDNS01(ctx, authz.IdentifierValue, keyAuth)
+	case models.ACMEChallengeTLSALPN01:
+		prob = s.validator.ValidateTLSALPN01(ctx, authz.IdentifierValue, keyAuth)
 	case models.ACMEChallengeDeviceAttest01:
 		prob = s.validateDeviceAttest01(r, acct, authz, payload, keyAuth)
 	default:
@@ -244,6 +246,7 @@ func (s *Server) validateChallenge(r *http.Request, acct *acmeAccount, authz *mo
 
 	now := s.now().UTC()
 	if prob != nil {
+		metrics.ACMEChallengeValidations.Inc(chall.Type, "invalid")
 		errDoc, _ := json.Marshal(prob)
 		_ = s.db.UpdateACMEChallenge(chall.ID, models.ACMEChallengeStatusInvalid, nil, string(errDoc))
 		_ = s.db.UpdateACMEAuthorizationStatus(authz.ID, models.ACMEAuthzStatusInvalid)
@@ -253,6 +256,7 @@ func (s *Server) validateChallenge(r *http.Request, acct *acmeAccount, authz *mo
 		return
 	}
 
+	metrics.ACMEChallengeValidations.Inc(chall.Type, "valid")
 	_ = s.db.UpdateACMEChallenge(chall.ID, models.ACMEChallengeStatusValid, &now, "")
 	_ = s.db.UpdateACMEAuthorizationStatus(authz.ID, models.ACMEAuthzStatusValid)
 	s.recordEvent(r, acct.rec.ID, audit.ActionACMEChallenge, authz.OrderID, audit.ResultSuccess,

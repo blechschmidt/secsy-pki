@@ -42,6 +42,9 @@ type testEnv struct {
 	resolver *fakeResolver
 	httpMu   sync.Mutex
 	httpResp map[string]string
+	// tlsALPNAddr is the address of the in-process tls-alpn-01 responder the
+	// validator dials; set by tls-alpn-01 tests before accepting the challenge.
+	tlsALPNAddr string
 }
 
 type fakeResolver struct {
@@ -138,8 +141,19 @@ func newTestEnv(t *testing.T) *testEnv {
 				return (&net.Dialer{}).DialContext(ctx, network, solverAddr)
 			},
 		}},
-		Resolver: env.resolver,
-		HTTPPort: 80,
+		Resolver:    env.resolver,
+		HTTPPort:    80,
+		TLSALPNPort: 443,
+		// tls-alpn-01 dials are redirected to the per-test in-process responder.
+		TLSDialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			env.httpMu.Lock()
+			addr := env.tlsALPNAddr
+			env.httpMu.Unlock()
+			if addr == "" {
+				return nil, &net.OpError{Op: "dial", Err: errNoTLSALPNResponder{}}
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		},
 	})
 	mux := http.NewServeMux()
 	srv.Register(mux)
@@ -272,6 +286,121 @@ func TestACME_DNS01(t *testing.T) {
 		t.Fatalf("CreateOrderCert: %v", err)
 	}
 }
+
+// TestACME_TLSALPN01 drives a full order to a certificate over the tls-alpn-01
+// challenge (RFC 8737), using the x/crypto client's own validation-certificate
+// builder as an interop check: the server must offer tls-alpn-01, dial the
+// in-process responder over "acme-tls/1", accept the presented certificate, and
+// finalize the order.
+func TestACME_TLSALPN01(t *testing.T) {
+	env := newTestEnv(t)
+	c := env.client(t)
+	ctx := context.Background()
+	domain := "alpn.example.test"
+	order, err := c.AuthorizeOrder(ctx, xacme.DomainIDs(domain))
+	if err != nil {
+		t.Fatalf("AuthorizeOrder: %v", err)
+	}
+
+	var chal *xacme.Challenge
+	for _, au := range order.AuthzURLs {
+		authz, err := c.GetAuthorization(ctx, au)
+		if err != nil {
+			t.Fatalf("GetAuthorization: %v", err)
+		}
+		for _, ch := range authz.Challenges {
+			if ch.Type == "tls-alpn-01" {
+				chal = ch
+			}
+		}
+	}
+	if chal == nil {
+		t.Fatal("server did not offer a tls-alpn-01 challenge")
+	}
+
+	cert, err := c.TLSALPN01ChallengeCert(chal.Token, domain)
+	if err != nil {
+		t.Fatalf("TLSALPN01ChallengeCert: %v", err)
+	}
+	addr := startTLSALPNResponder(t, cert, []string{acmeTLS1ALPN})
+	env.httpMu.Lock()
+	env.tlsALPNAddr = addr
+	env.httpMu.Unlock()
+
+	if _, err := c.Accept(ctx, chal); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	for _, au := range order.AuthzURLs {
+		if _, err := c.WaitAuthorization(ctx, au); err != nil {
+			t.Fatalf("WaitAuthorization: %v", err)
+		}
+	}
+	if _, err := c.WaitOrder(ctx, order.URI); err != nil {
+		t.Fatalf("WaitOrder: %v", err)
+	}
+	der, _, err := c.CreateOrderCert(ctx, order.FinalizeURL, csrFor(t, domain), true)
+	if err != nil {
+		t.Fatalf("CreateOrderCert: %v", err)
+	}
+	leaf, err := x509.ParseCertificate(der[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: env.roots, Intermediates: env.inters,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}); err != nil {
+		t.Fatalf("chain verify: %v", err)
+	}
+}
+
+// TestACME_TLSALPN01_BadCertRejected confirms the authorization is marked invalid
+// when the responder presents a certificate committing to the wrong key
+// authorization.
+func TestACME_TLSALPN01_BadCertRejected(t *testing.T) {
+	env := newTestEnv(t)
+	c := env.client(t)
+	ctx := context.Background()
+	domain := "bad-alpn.example.test"
+	order, err := c.AuthorizeOrder(ctx, xacme.DomainIDs(domain))
+	if err != nil {
+		t.Fatalf("AuthorizeOrder: %v", err)
+	}
+	var chal *xacme.Challenge
+	for _, au := range order.AuthzURLs {
+		authz, _ := c.GetAuthorization(ctx, au)
+		for _, ch := range authz.Challenges {
+			if ch.Type == "tls-alpn-01" {
+				chal = ch
+			}
+		}
+	}
+	if chal == nil {
+		t.Fatal("server did not offer a tls-alpn-01 challenge")
+	}
+	// Present a certificate for a *different* token, so its committed digest does
+	// not match this challenge's key authorization.
+	cert, err := c.TLSALPN01ChallengeCert(chal.Token+"-wrong", domain)
+	if err != nil {
+		t.Fatalf("TLSALPN01ChallengeCert: %v", err)
+	}
+	addr := startTLSALPNResponder(t, cert, []string{acmeTLS1ALPN})
+	env.httpMu.Lock()
+	env.tlsALPNAddr = addr
+	env.httpMu.Unlock()
+
+	if _, err := c.Accept(ctx, chal); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	// The authorization must end up invalid, not valid.
+	if _, err := c.WaitAuthorization(ctx, order.AuthzURLs[0]); err == nil {
+		t.Fatal("expected authorization to fail for a mismatched tls-alpn-01 certificate")
+	}
+}
+
+// errNoTLSALPNResponder is returned by the test validator's tls-alpn-01 dialer
+// when a test has not stood up a responder.
+type errNoTLSALPNResponder struct{}
+
+func (errNoTLSALPNResponder) Error() string { return "no tls-alpn-01 responder configured" }
 
 func TestACME_CSRIdentifierMismatchRejected(t *testing.T) {
 	env := newTestEnv(t)

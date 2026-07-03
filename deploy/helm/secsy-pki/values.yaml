@@ -231,8 +231,9 @@ config:
     caLabel: ""
     caID: ""
     profile: server
-    challengeTypes: ["http-01", "dns-01"]
+    challengeTypes: ["http-01", "dns-01", "tls-alpn-01"]
     http01Port: 0
+    tlsAlpn01Port: 0
     requireEAB: false
 
   # OpenTelemetry (OTLP) distributed tracing. Complements the Prometheus metrics
