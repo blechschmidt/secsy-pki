@@ -12,6 +12,8 @@ import (
 	"net"
 	"net/url"
 	"time"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 )
 
 // LeafCertRequest describes an end-entity (leaf) certificate to be issued by a
@@ -81,6 +83,9 @@ func CreateLeafCertificate(signer crypto.Signer, issuer *x509.Certificate, req L
 	}
 	if req.PublicKey == nil {
 		return nil, fmt.Errorf("leaf certificate requires a subject public key")
+	}
+	if err := fips.CheckIssuance(signer.Public(), req.PublicKey); err != nil {
+		return nil, err
 	}
 	if !req.NotAfter.After(req.NotBefore) {
 		return nil, fmt.Errorf("leaf certificate not_after (%s) must be after not_before (%s)", req.NotAfter, req.NotBefore)

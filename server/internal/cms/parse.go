@@ -9,6 +9,8 @@ import (
 	"encoding/asn1"
 	"errors"
 	"fmt"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 )
 
 // ParsedSignedData is a decoded and (optionally) verified SignedData message.
@@ -330,6 +332,9 @@ func hashForDigestAlg(oid asn1.ObjectIdentifier) (crypto.Hash, error) {
 	case oid.Equal(oidDigestSHA256):
 		return crypto.SHA256, nil
 	case oid.Equal(oidDigestSHA1):
+		if fips.PolicyEnforced() {
+			return 0, fmt.Errorf("cms: digest algorithm SHA-1 is %w", fips.ErrNotApproved)
+		}
 		return crypto.SHA1, nil
 	case oid.Equal(oidDigestSHA384):
 		return crypto.SHA384, nil

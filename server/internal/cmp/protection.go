@@ -17,6 +17,8 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 )
 
 // errProtection is returned when message-protection verification fails. It is
@@ -67,6 +69,9 @@ func owfHash(oid asn1.ObjectIdentifier) (func() hash.Hash, error) {
 	case oid.Equal(oidSHA256):
 		return sha256.New, nil
 	case oid.Equal(oidSHA1):
+		if fips.PolicyEnforced() {
+			return nil, fmt.Errorf("cmp: PBM one-way function SHA-1 is %w", fips.ErrNotApproved)
+		}
 		return sha1.New, nil
 	case oid.Equal(oidSHA384):
 		return sha512.New384, nil
@@ -83,6 +88,9 @@ func macHash(oid asn1.ObjectIdentifier) (func() hash.Hash, error) {
 	case oid.Equal(oidHMACSHA256):
 		return sha256.New, nil
 	case oid.Equal(oidHMACSHA1):
+		if fips.PolicyEnforced() {
+			return nil, fmt.Errorf("cmp: PBM MAC HMAC-SHA1 is %w", fips.ErrNotApproved)
+		}
 		return sha1.New, nil
 	case oid.Equal(oidHMACSHA384):
 		return sha512.New384, nil

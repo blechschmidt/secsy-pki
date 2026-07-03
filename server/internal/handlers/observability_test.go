@@ -41,12 +41,25 @@ func TestHealthz(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	var body map[string]string
+	var body struct {
+		Status string            `json:"status"`
+		Build  map[string]string `json:"build"`
+	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("body not JSON: %v", err)
 	}
-	if body["status"] != "ok" {
-		t.Errorf("status = %q, want ok", body["status"])
+	if body.Status != "ok" {
+		t.Errorf("status = %q, want ok", body.Status)
+	}
+	// The build block must identify the binary and its FIPS 140-3 posture.
+	if body.Build["version"] == "" || !strings.HasPrefix(body.Build["go"], "go") {
+		t.Errorf("build block missing version/go: %v", body.Build)
+	}
+	if v := body.Build["fips140"]; v != "on" && v != "off" {
+		t.Errorf("build.fips140 = %q, want on|off", v)
+	}
+	if v := body.Build["fips140_policy"]; v != "enforced" && v != "off" {
+		t.Errorf("build.fips140_policy = %q, want enforced|off", v)
 	}
 }
 

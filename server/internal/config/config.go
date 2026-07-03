@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 )
 
 type Config struct {
@@ -120,6 +122,23 @@ type Config struct {
 	// layout a CDN can front. Disabled unless publish.enabled is true; the
 	// `secsy-ca publish` command works from this block regardless.
 	Publish PublishConfig `yaml:"publish"`
+	// Security holds deployment-wide cryptographic policy switches, notably the
+	// fail-closed FIPS 140-3 algorithm policy (security.fips). See SecurityConfig
+	// and docs/fips.md.
+	Security SecurityConfig `yaml:"security"`
+}
+
+// SecurityConfig holds deployment-wide cryptographic policy switches.
+type SecurityConfig struct {
+	// FIPS enables the fail-closed FIPS 140-3 crypto policy: configuration
+	// referencing non-approved algorithms (SHA-1, Ed25519, RSA<2048, ML-DSA)
+	// fails at load, key generation and certificate issuance reject
+	// non-approved key types and keys, and the secret envelope layer refuses
+	// the SoftHSM RSA-OAEP SHA-1 fallback. This is secsy-pki's algorithm
+	// policy; running on the validated Go Cryptographic Module additionally
+	// requires the FIPS build (`make build-fips`, GOFIPS140). `secsy-ca doctor`
+	// reports both halves. See docs/fips.md.
+	FIPS bool `yaml:"fips"`
 }
 
 // PublishConfig configures static artifact publishing for CDN offload.
@@ -1600,7 +1619,61 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateFIPS(); err != nil {
+		return nil, err
+	}
+	// Mirror the validated policy switch into the process-global enforcement
+	// flag. Load is the single path configuration enters a process through, so
+	// this is where key generation, issuance, and the secret layer pick the
+	// policy up (see internal/fips).
+	fips.SetPolicy(cfg.Security.FIPS)
+
 	return cfg, nil
+}
+
+// validateFIPS rejects configuration that names non-approved algorithms when
+// the fail-closed FIPS 140-3 policy (security.fips) is enabled. Every
+// violation is reported in one pass so an operator fixes the config once, and
+// each message names the offending key so `secsy-ca doctor` surfaces it
+// verbatim in its config.parse finding.
+func (c *Config) validateFIPS() error {
+	if !c.Security.FIPS {
+		return nil
+	}
+	var violations []string
+	for _, h := range c.TSA.AcceptedHashes {
+		if err := fips.ApprovedHashName(h); err != nil {
+			violations = append(violations, fmt.Sprintf("tsa.accepted_hashes: %v", err))
+		}
+	}
+	if d := c.TSA.SignatureDigest; d != "" {
+		if err := fips.ApprovedHashName(d); err != nil {
+			violations = append(violations, fmt.Sprintf("tsa.signature_digest: %v", err))
+		}
+	}
+	for i, sg := range c.Signing.Signers {
+		if sg.Digest == "" {
+			continue
+		}
+		if err := fips.ApprovedHashName(sg.Digest); err != nil {
+			violations = append(violations, fmt.Sprintf("signing.signers[%d] (%s): digest: %v", i, sg.Name, err))
+		}
+	}
+	if kt := c.EST.ServerKeygenKeyType; kt != "" {
+		if err := fips.ApprovedKeyType(kt); err != nil {
+			violations = append(violations, fmt.Sprintf("est.server_keygen_key_type: %v", err))
+		}
+	}
+	if kt := c.Server.OCSP.DelegatedKeyType; kt != "" {
+		if err := fips.ApprovedKeyType(kt); err != nil {
+			violations = append(violations, fmt.Sprintf("server.ocsp.delegated_key_type: %v", err))
+		}
+	}
+	if len(violations) == 0 {
+		return nil
+	}
+	return fmt.Errorf("security.fips is enabled but the configuration uses non-approved algorithms (fix these or disable security.fips):\n  - %s",
+		strings.Join(violations, "\n  - "))
 }
 
 // validateSigning sanity-checks the artifact-signing block so a misconfigured

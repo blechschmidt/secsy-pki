@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"fmt"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 )
 
@@ -39,12 +40,19 @@ func (w *rsaOAEPWrapper) URI() string          { return w.uri }
 func (w *rsaOAEPWrapper) ProviderName() string { return w.provider.Name() }
 func (w *rsaOAEPWrapper) Version() int         { return w.version }
 
-// algHash maps a wrapping-algorithm identifier to its OAEP hash.
+// algHash maps a wrapping-algorithm identifier to its OAEP hash. Under the
+// FIPS policy the SHA-1 algorithm is refused even for decryption of existing
+// envelopes: fail closed, and tell the operator how to migrate (rotate the KEK
+// to a SHA-256-capable provider and re-wrap, Task 63) rather than silently
+// keep exercising SHA-1.
 func algHash(alg string) (crypto.Hash, error) {
 	switch alg {
 	case AlgRSAOAEPSHA256:
 		return crypto.SHA256, nil
 	case AlgRSAOAEPSHA1:
+		if fips.PolicyEnforced() {
+			return 0, fmt.Errorf("secret: envelope wrap algorithm %s is %w; re-wrap existing envelopes under a SHA-256-capable KEK (secsy-secret rotate-kek/rewrap) before enabling security.fips", alg, fips.ErrNotApproved)
+		}
 		return crypto.SHA1, nil
 	default:
 		return 0, fmt.Errorf("secret: unsupported wrap algorithm %q", alg)
@@ -89,6 +97,12 @@ func (w *rsaOAEPWrapper) Unwrap(wrapped []byte, alg string) ([]byte, error) {
 // can actually unwrap with, by performing a wrap/unwrap self-test with a random
 // probe value. SHA-256 is tried first, then SHA-1 (for SoftHSM). This runs once
 // per Service and adapts transparently to the backend without configuration.
+//
+// Under the FIPS policy (security.fips) the SHA-1 fallback is refused: a token
+// that cannot unwrap with SHA-256 OAEP — SoftHSM 2.6.x notably — makes the
+// Service constructor fail with an actionable error instead of silently
+// downgrading. `secsy-ca doctor` runs this same negotiation and reports the
+// failure as a fips.secret_oaep finding.
 func negotiateWrapAlg(ctx context.Context, provider keyprovider.Provider, ref keyprovider.KeyRef, pub *rsa.PublicKey) (string, error) {
 	dp, ok := provider.(keyprovider.DecrypterProvider)
 	if !ok {
@@ -98,8 +112,12 @@ func negotiateWrapAlg(ctx context.Context, provider keyprovider.Provider, ref ke
 	if _, err := rand.Read(probe); err != nil {
 		return "", err
 	}
+	candidates := []string{AlgRSAOAEPSHA256, AlgRSAOAEPSHA1}
+	if fips.PolicyEnforced() {
+		candidates = candidates[:1]
+	}
 	var lastErr error
-	for _, alg := range []string{AlgRSAOAEPSHA256, AlgRSAOAEPSHA1} {
+	for _, alg := range candidates {
 		h, _ := algHash(alg)
 		wrapped, err := rsa.EncryptOAEP(h.New(), rand.Reader, pub, probe, nil)
 		if err != nil {
@@ -119,6 +137,9 @@ func negotiateWrapAlg(ctx context.Context, provider keyprovider.Provider, ref ke
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no supported OAEP hash")
+	}
+	if fips.PolicyEnforced() {
+		return "", fmt.Errorf("secret: KEK %q cannot RSA-OAEP unwrap with SHA-256, and security.fips refuses the SHA-1 fallback (SoftHSM supports only SHA-1 OAEP — use an HSM/provider with SHA-256 OAEP for FIPS deployments): %w", ref.Label, lastErr)
 	}
 	return "", fmt.Errorf("secret: KEK %q cannot RSA-OAEP unwrap with SHA-256 or SHA-1: %w", ref.Label, lastErr)
 }

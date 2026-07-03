@@ -61,8 +61,11 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 )
 
 const (
@@ -277,6 +280,13 @@ func open(w wrapper, env *Envelope, context []byte) ([]byte, error) {
 
 	dek, err := w.Unwrap(env.WrappedDEK, env.WrapAlg)
 	if err != nil {
+		// A FIPS-policy rejection is decided from the envelope header before any
+		// decryption is attempted, so surfacing it leaks no padding details —
+		// and the operator needs its remediation text (re-wrap before enabling
+		// security.fips).
+		if errors.Is(err, fips.ErrNotApproved) {
+			return nil, err
+		}
 		// Deliberately generic: unwrap failures must not leak padding details.
 		return nil, fmt.Errorf("secret: unwrapping data key failed")
 	}

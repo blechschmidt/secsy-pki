@@ -15,6 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 )
 
 // Attribute is an authenticated attribute to embed in a SignedData SignerInfo.
@@ -237,6 +239,9 @@ func signatureAlgorithm(pub crypto.PublicKey, hash crypto.Hash) (pkix.AlgorithmI
 		case crypto.SHA512:
 			oid = oidECDSAWithSHA512
 		case crypto.SHA1:
+			if fips.PolicyEnforced() {
+				return pkix.AlgorithmIdentifier{}, fmt.Errorf("cms: ECDSA-with-SHA1 is %w", fips.ErrNotApproved)
+			}
 			oid = oidECDSAWithSHA1
 		default:
 			return pkix.AlgorithmIdentifier{}, fmt.Errorf("cms: no ECDSA signature algorithm for digest %v", hash)
@@ -430,6 +435,9 @@ func digestAlgOID(h crypto.Hash) (asn1.ObjectIdentifier, error) {
 	case crypto.SHA256:
 		return oidDigestSHA256, nil
 	case crypto.SHA1:
+		if fips.PolicyEnforced() {
+			return nil, fmt.Errorf("cms: digest SHA-1 is %w", fips.ErrNotApproved)
+		}
 		return oidDigestSHA1, nil
 	case crypto.SHA384:
 		return oidDigestSHA384, nil

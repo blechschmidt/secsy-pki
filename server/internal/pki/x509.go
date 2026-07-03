@@ -11,6 +11,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 )
 
 // X509KeyUsageFromString converts a string key usage to the x509 constant.
@@ -50,6 +52,9 @@ func SignX509Certificate(signer crypto.Signer, csrPEM []byte, validBefore time.T
 	}
 	if err := csr.CheckSignature(); err != nil {
 		return nil, "", fmt.Errorf("CSR signature verification failed: %w", err)
+	}
+	if err := fips.CheckIssuance(signer.Public(), csr.PublicKey); err != nil {
+		return nil, "", err
 	}
 
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))

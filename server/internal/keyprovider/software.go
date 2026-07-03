@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
+
 	"golang.org/x/crypto/ssh"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/pqc"
@@ -86,6 +88,9 @@ func (p *SoftwareProvider) GenerateKey(_ context.Context, spec KeySpec) (*KeyInf
 	keyType, err := NormalizeKeyType(spec.KeyType)
 	if err != nil {
 		return nil, err
+	}
+	if err := fips.CheckKeyType(keyType); err != nil {
+		return nil, fmt.Errorf("keyprovider: %w", err)
 	}
 	// A decryption key (KEK) must be an RSA key: envelope encryption wraps the
 	// data key with RSA-OAEP. The stored key material is identical to a signing

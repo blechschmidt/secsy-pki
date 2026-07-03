@@ -2072,13 +2072,18 @@ paths:
       operationId: getLiveness
       tags: [Operations]
       summary: Liveness probe (always 200)
+      description: >-
+        Reports that the process is alive, plus a build block identifying the
+        binary: release version, Go runtime, and the FIPS 140-3 posture
+        (whether the Go Cryptographic Module is active and whether the
+        fail-closed security.fips algorithm policy is enforced).
       security: []
       responses:
         "200":
           description: The process is alive.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/StatusResponse" }
+              schema: { $ref: "#/components/schemas/Liveness" }
 
   /readyz:
     get:
@@ -2202,6 +2207,24 @@ components:
       type: object
       properties:
         status: { type: string }
+    Liveness:
+      type: object
+      properties:
+        status: { type: string }
+        build:
+          type: object
+          description: >-
+            Identity of the running binary. fips140 is "on" when the process
+            runs on the Go FIPS 140-3 Cryptographic Module (GOFIPS140 build or
+            GODEBUG=fips140=on); fips140_module is the GOFIPS140 module
+            selection the binary was built with ("" for non-FIPS builds);
+            fips140_policy is "enforced" when security.fips is active.
+          properties:
+            version: { type: string }
+            go: { type: string }
+            fips140: { type: string, enum: ["on", "off"] }
+            fips140_module: { type: string }
+            fips140_policy: { type: string, enum: [enforced, "off"] }
     StatusMessage:
       type: object
       properties:

@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
@@ -227,6 +228,11 @@ func (m *Manager) buildHybridCACert(ctx context.Context, label, keyType, altKeyT
 // Transparency does not apply (these are not submitted to public CT logs), but
 // the pre-issuance lint gate still runs.
 func (m *Manager) issuePQCLeaf(ctx context.Context, spec IssueSpec, issuerCA *models.CA, issuerCert *x509.Certificate, profile Profile) (_ *IssueResult, err error) {
+	// Fail-closed FIPS gate: ML-DSA comes from CIRCL, software outside the
+	// validated module boundary (see internal/fips).
+	if fips.PolicyEnforced() {
+		return nil, fmt.Errorf("profile %q issues pure post-quantum certificates, which are %w", profile.Name, fips.ErrNotApproved)
+	}
 	// Same tenant lifecycle + quota gate as the classical issueLeaf path.
 	gateDone, err := m.gateTenantIssuance(ctx, issuerCA, spec.RequestedBy)
 	if err != nil {
@@ -282,6 +288,11 @@ func (m *Manager) issuePQCLeaf(ctx context.Context, spec IssueSpec, issuerCA *mo
 // signature. It requires a hybrid issuing CA (classical primary key plus an
 // ML-DSA alternative key stored under altKeyLabel).
 func (m *Manager) issueHybridLeaf(ctx context.Context, spec IssueSpec, issuerCA *models.CA, issuerCert *x509.Certificate, profile Profile) (_ *IssueResult, err error) {
+	// Fail-closed FIPS gate: the ML-DSA alternative signature comes from CIRCL,
+	// software outside the validated module boundary (see internal/fips).
+	if fips.PolicyEnforced() {
+		return nil, fmt.Errorf("profile %q issues hybrid (catalyst) certificates, which are %w", profile.Name, fips.ErrNotApproved)
+	}
 	// Same tenant lifecycle + quota gate as the classical issueLeaf path.
 	gateDone, err := m.gateTenantIssuance(ctx, issuerCA, spec.RequestedBy)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/discovery"
 	"github.com/blechschmidt/secsy-pki/server/internal/est"
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 	"github.com/blechschmidt/secsy-pki/server/internal/grpcapi"
 	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
@@ -49,13 +51,38 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/tsa"
 )
 
+// version is the release version, stamped by the linker (-X main.version) in
+// release/container builds; "dev" otherwise. Reported by -version, the startup
+// log, and the /healthz build block.
+var version = "dev"
+
 func main() {
 	cfgPath := flag.String("config", "config.yaml", "path to config file")
+	showVersion := flag.Bool("version", false, "print version and FIPS 140-3 mode, then exit")
 	flag.Parse()
+
+	if *showVersion {
+		// Machine-checkable one-liner: `make build-fips` and the FIPS container
+		// build grep it for "fips140=on" to verify the binary really runs on the
+		// Go Cryptographic Module.
+		fmt.Printf("secsy-pki-server %s %s %s\n", version, runtime.Version(), fips.Summary())
+		return
+	}
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Report the FIPS 140-3 posture up front: whether the Go Cryptographic
+	// Module is active (build/GODEBUG) and whether the fail-closed security.fips
+	// algorithm policy is enforced (config, mirrored by config.Load). A policy
+	// without the module is a legitimate rehearsal configuration but not a FIPS
+	// deployment, so it warns loudly.
+	handlers.SetBuildVersion(version)
+	log.Printf("FIPS 140-3: %s", fips.Summary())
+	if cfg.Security.FIPS && !fips.ModuleEnabled() {
+		log.Printf("WARNING: security.fips is enforced but this binary is not running on the Go FIPS 140-3 module; build with `make build-fips` (GOFIPS140) or set GODEBUG=fips140=on")
 	}
 
 	// OpenTelemetry distributed tracing. Installs the global TracerProvider and

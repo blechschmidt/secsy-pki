@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 )
 
 // ProviderKMS stores and uses keys in a cloud key-management service (AWS KMS or
@@ -157,6 +159,9 @@ func (p *KMSProvider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInfo, 
 	keyType, err := NormalizeKeyType(spec.KeyType)
 	if err != nil {
 		return nil, err
+	}
+	if err := fips.CheckKeyType(keyType); err != nil {
+		return nil, fmt.Errorf("keyprovider: %w", err)
 	}
 	if spec.Usage != "" && spec.Usage != KeyUsageSign {
 		return nil, fmt.Errorf("keyprovider: kms backend supports only signing keys, not usage %q", spec.Usage)

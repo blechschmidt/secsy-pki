@@ -102,6 +102,45 @@ govulncheck: ## Gating vulnerability scan of the Go dependency tree
 	cd server && GOTOOLCHAIN=auto $(GOVULNCHECK) -tags sqlite ./...
 
 # ---------------------------------------------------------------------------
+# FIPS 140-3 build (Task 65)
+# ---------------------------------------------------------------------------
+# GOFIPS140 selects the Go Cryptographic Module the binaries are built against:
+# "latest" follows the toolchain's newest module; pin a frozen validated
+# snapshot (e.g. v1.0.0) for strict change control. A GOFIPS140 build defaults
+# GODEBUG=fips140=on, so the binaries run on the module out of the box; the
+# target proves it by running the freshly built server's -version and requiring
+# "fips140=on". Pair the build with `security.fips: true` in the config for the
+# fail-closed algorithm policy — see docs/fips.md.
+GOFIPS140 ?= latest
+FIPS_OUT  := $(DIST)/fips
+FIPS_GOFLAGS := GOTOOLCHAIN=auto GOFIPS140=$(GOFIPS140) CGO_ENABLED=1
+FIPS_LDFLAGS := -s -w -X main.version=$(VERSION)+fips
+
+.PHONY: build-fips
+build-fips: ## Build all binaries on the Go FIPS 140-3 module and verify fips140=on
+	@echo "==> building FIPS 140-3 binaries (GOFIPS140=$(GOFIPS140)) -> $(FIPS_OUT)"
+	@mkdir -p $(FIPS_OUT)
+	cd server && $(FIPS_GOFLAGS) go build -trimpath -tags sqlite -ldflags '$(FIPS_LDFLAGS)' -o "$(CURDIR)/$(FIPS_OUT)/secsy-pki-server" ./cmd/server
+	cd server && $(FIPS_GOFLAGS) go build -trimpath -tags sqlite -ldflags '$(FIPS_LDFLAGS)' -o "$(CURDIR)/$(FIPS_OUT)/secsy-ca"       ./cmd/secsy-ca
+	cd server && $(FIPS_GOFLAGS) go build -trimpath -tags sqlite -ldflags '$(FIPS_LDFLAGS)' -o "$(CURDIR)/$(FIPS_OUT)/secsy-secret"   ./cmd/secsy-secret
+	cd server && $(FIPS_GOFLAGS) go build -trimpath              -ldflags '$(FIPS_LDFLAGS)' -o "$(CURDIR)/$(FIPS_OUT)/secsy-ssh"      ./cmd/secsy-ssh
+	cd server && $(FIPS_GOFLAGS) go build -trimpath              -ldflags '$(FIPS_LDFLAGS)' -o "$(CURDIR)/$(FIPS_OUT)/secsy-verify"   ./cmd/verify
+	cd server && $(FIPS_GOFLAGS) go build -trimpath              -ldflags '$(FIPS_LDFLAGS)' -o "$(CURDIR)/$(FIPS_OUT)/secsy-agent"    ./cmd/secsy-agent
+	@echo "==> verifying the binaries report FIPS mode at startup"
+	@out="$$($(FIPS_OUT)/secsy-pki-server -version)"; echo "    $$out"; \
+	  echo "$$out" | grep -q 'fips140=on' || { echo "!! secsy-pki-server does not report fips140=on" >&2; exit 1; }
+	@out="$$($(FIPS_OUT)/secsy-ca version)"; echo "    $$out"; \
+	  echo "$$out" | grep -q 'fips140=on' || { echo "!! secsy-ca does not report fips140=on" >&2; exit 1; }
+	@echo "    FIPS mode verified"
+
+.PHONY: image-fips
+image-fips: ## Build the FIPS 140-3 container image (tag <version>-fips)
+	@echo "==> docker build $(IMAGE):$(VERSION)-fips (GOFIPS140=$(GOFIPS140))"
+	docker build -t $(IMAGE):$(VERSION)-fips \
+	  --build-arg VERSION=$(VERSION)+fips \
+	  --build-arg GOFIPS140=$(GOFIPS140) .
+
+# ---------------------------------------------------------------------------
 # gRPC / protobuf code generation (Task 56)
 # ---------------------------------------------------------------------------
 .PHONY: proto

@@ -23,6 +23,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/cms"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -89,8 +90,13 @@ func (c Config) withDefaults() Config {
 	if len(c.Caps) == 0 {
 		// POSTPKIOperation lets clients POST binary pkiMessages (avoiding the GET
 		// base64 length limit); SHA-256/AES advertise modern algorithm support;
-		// Renewal advertises support for certificate renewal.
+		// Renewal advertises support for certificate renewal. Under the FIPS
+		// policy the legacy SHA-1/DES3 capabilities are not advertised (and the
+		// cms layer rejects SHA-1-digested requests outright).
 		c.Caps = []string{"POSTPKIOperation", "SHA-256", "SHA-1", "AES", "DES3", "SCEPStandard", "Renewal"}
+		if fips.PolicyEnforced() {
+			c.Caps = []string{"POSTPKIOperation", "SHA-256", "AES", "SCEPStandard", "Renewal"}
+		}
 	}
 	return c
 }

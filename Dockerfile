@@ -37,6 +37,13 @@ COPY server/ ./
 
 ENV CGO_ENABLED=1 GOFLAGS=-trimpath
 ARG VERSION=dev
+# GOFIPS140 selects the Go FIPS 140-3 Cryptographic Module ("off" = ordinary
+# build). Build the FIPS variant with `make image-fips`, or directly:
+#   docker build --build-arg GOFIPS140=latest -t secsy-pki:fips .
+# A GOFIPS140 build defaults GODEBUG=fips140=on, and the step below refuses to
+# produce an image whose server does not report FIPS mode at startup.
+ARG GOFIPS140=off
+ENV GOFIPS140=${GOFIPS140}
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     set -eux; \
@@ -46,7 +53,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build -tags sqlite -ldflags "$ldflags" -o /out/secsy-secret   ./cmd/secsy-secret; \
     go build           -ldflags "$ldflags" -o /out/secsy-ssh      ./cmd/secsy-ssh; \
     go build           -ldflags "$ldflags" -o /out/secsy-verify   ./cmd/verify; \
-    go build           -ldflags "$ldflags" -o /out/secsy-agent    ./cmd/secsy-agent
+    go build           -ldflags "$ldflags" -o /out/secsy-agent    ./cmd/secsy-agent; \
+    if [ "${GOFIPS140}" != "off" ]; then \
+      /out/secsy-pki-server -version; \
+      /out/secsy-pki-server -version | grep -q 'fips140=on'; \
+    fi
 
 # ---------------------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime

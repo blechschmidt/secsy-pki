@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -29,10 +30,15 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/certlint"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 )
+
+// version is the release version, stamped by the linker (-X main.version) in
+// release/container builds; "dev" otherwise.
+var version = "dev"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -52,6 +58,14 @@ func run(args []string) error {
 		return fmt.Errorf("no command given")
 	}
 	command, cmdArgs := rest[0], rest[1:]
+
+	// version needs nothing at all — not even a config file. The FIPS summary
+	// reflects this process (module state from the build/GODEBUG; the policy is
+	// per-config, so it reads "off" here unless a config was loaded).
+	if command == "version" {
+		fmt.Printf("secsy-ca %s %s %s\n", version, runtime.Version(), fips.Summary())
+		return nil
+	}
 
 	// The doctor runs before the config is loaded: a config that fails to parse
 	// is one of its findings (reported with the documented exit codes), not a
@@ -312,6 +326,7 @@ Commands:
   init-root           Generate a root CA key and self-signed certificate
   issue-intermediate  Issue an intermediate CA under an existing CA
   list                List configured CAs
+  version             Print version, Go runtime, and FIPS 140-3 mode
   issue               Sign a CSR into an end-entity certificate (by profile)
   renew               Renew a previously issued certificate by serial
   revoke              Revoke a certificate by serial

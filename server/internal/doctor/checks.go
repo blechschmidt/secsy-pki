@@ -21,10 +21,12 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/pqc"
+	"github.com/blechschmidt/secsy-pki/server/internal/secret"
 )
 
 // --- 1. configuration --------------------------------------------------------
@@ -913,5 +915,111 @@ func checkListenerTLS(r *Report, cfg *config.Config, opts Options) {
 				addr, tls.VersionName(tlsConn.ConnectionState().Version))
 		}
 		return worse(status, StatusWarn), detail + fmt.Sprintf("; live handshake OK on %s but the server presents a DIFFERENT certificate (restart pending after cert rotation?)", addr)
+	})
+}
+
+// --- 10. FIPS 140-3 posture ---------------------------------------------------
+
+// checkFIPS diagnoses the FIPS 140-3 posture when the fail-closed security.fips
+// policy is enabled (config with non-approved algorithms never reaches here —
+// config.Load rejects it, which config.parse reports verbatim). It verifies the
+// process actually runs on the Go Cryptographic Module, that key material
+// already in the store satisfies the policy (a CA keyed before the policy was
+// enabled would fail at its next issuance), and that the secret-envelope KEKs
+// negotiate SHA-256 OAEP — the policy refuses the SHA-1 fallback SoftHSM would
+// otherwise get (see the secret package).
+func checkFIPS(ctx context.Context, r *Report, cfg *config.Config, db dbHandle, schemaOK bool, providers *roleProviders) {
+	if !cfg.Security.FIPS {
+		r.skip("fips.mode", "security.fips not enabled")
+		r.skip("fips.store_keys", "security.fips not enabled")
+		r.skip("fips.secret_oaep", "security.fips not enabled")
+		return
+	}
+
+	r.run("fips.mode", func() (Status, string) {
+		if !fips.ModuleEnabled() {
+			return StatusWarn, "security.fips policy is enforced but the process is NOT running on the Go FIPS 140-3 module — build with `make build-fips` (GOFIPS140) or set GODEBUG=fips140=on (" + fips.Summary() + ")"
+		}
+		return StatusPass, fips.Summary()
+	})
+
+	// Key material created before the policy was enabled may be non-approved;
+	// issuance under such a CA fails at runtime, so surface it up front.
+	r.run("fips.store_keys", func() (Status, string) {
+		if db == nil || !schemaOK {
+			return StatusSkip, "store unavailable or schema incomplete"
+		}
+		cas, err := db.ListCAs()
+		if err != nil {
+			return StatusFail, fmt.Sprintf("listing CAs: %v", err)
+		}
+		overall := StatusPass
+		checked := 0
+		var findings []string
+		for i := range cas {
+			c := &cas[i]
+			if c.Certificate == "" || c.Status == models.CAStatusRetired {
+				continue
+			}
+			cert, err := pki.ParseCertificatePEM([]byte(c.Certificate))
+			if err != nil {
+				// certs.ca_expiry already fails unparseable certificates.
+				continue
+			}
+			checked++
+			if err := fips.ApprovedPublicKey(cert.PublicKey); err != nil {
+				overall = worse(overall, StatusFail)
+				findings = append(findings, fmt.Sprintf("CA %s: %v", c.Label, err))
+				continue
+			}
+			if err := fips.ApprovedSignatureAlgorithm(cert.SignatureAlgorithm); err != nil {
+				overall = worse(overall, StatusFail)
+				findings = append(findings, fmt.Sprintf("CA %s: certificate signature: %v", c.Label, err))
+			}
+		}
+		if overall != StatusPass {
+			return overall, fmt.Sprintf("%d non-approved key%s in the store (issuance under them will be refused): %s",
+				len(findings), plural(len(findings)), strings.Join(findings, "; "))
+		}
+		return StatusPass, fmt.Sprintf("%d CA key%s satisfy the FIPS policy", checked, plural(checked))
+	})
+
+	// The secret layer refuses the SoftHSM SHA-1 OAEP fallback under the policy;
+	// run the same wrap/unwrap negotiation the server would, per configured KEK.
+	r.run("fips.secret_oaep", func() (Status, string) {
+		kekLabels := map[string]string{}
+		if cfg.Secret.KEKLabel != "" {
+			kekLabels[cfg.Secret.KEKLabel] = "secret.kek_label"
+		}
+		for _, t := range cfg.Tenants {
+			if t.KEKLabel != "" {
+				kekLabels[t.KEKLabel] = fmt.Sprintf("tenants[%s].kek_label", t.ID)
+			}
+		}
+		if len(kekLabels) == 0 {
+			return StatusSkip, "secret layer not configured (no kek_label)"
+		}
+		prov := providers.get("ca")
+		if prov == nil {
+			return StatusSkip, "ca key provider unavailable"
+		}
+		overall := StatusPass
+		var notes []string
+		for _, label := range sortedKeys(kekLabels) {
+			svc, err := secret.NewService(ctx, prov, keyprovider.KeyRef{Label: label})
+			switch {
+			case errors.Is(err, keyprovider.ErrKeyNotFound):
+				// Not a FIPS violation — the keys check already reports missing
+				// KEKs loudly; there is just nothing to negotiate against.
+				overall = worse(overall, StatusWarn)
+				notes = append(notes, fmt.Sprintf("%s (%s): KEK not provisioned, negotiation not probed", label, kekLabels[label]))
+			case err != nil:
+				overall = worse(overall, StatusFail)
+				notes = append(notes, fmt.Sprintf("%s (%s): %v", label, kekLabels[label], err))
+			default:
+				notes = append(notes, fmt.Sprintf("%s negotiates %s", label, svc.KEKInfo().WrapAlg))
+			}
+		}
+		return overall, strings.Join(notes, "; ")
 	})
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 )
 
@@ -254,6 +255,11 @@ func SetCustomProfiles(profiles []Profile) error {
 			if err := p.SMIME.validate(p.Name); err != nil {
 				return err
 			}
+		}
+		// Under the FIPS policy a PQC/hybrid profile is refused at install time so
+		// the misconfiguration surfaces at startup, not at the first issuance.
+		if fips.PolicyEnforced() && p.Algorithm != AlgClassical {
+			return fmt.Errorf("custom profile %q: algorithm %q is %w", p.Name, p.Algorithm, fips.ErrNotApproved)
 		}
 		next[key] = p
 	}

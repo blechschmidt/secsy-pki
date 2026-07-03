@@ -118,6 +118,18 @@ const (
 	LintRequestModeWarn    LintRequestMode = "warn"
 )
 
+// Defines values for LivenessBuildFips140.
+const (
+	LivenessBuildFips140Off LivenessBuildFips140 = "off"
+	LivenessBuildFips140On  LivenessBuildFips140 = "on"
+)
+
+// Defines values for LivenessBuildFips140Policy.
+const (
+	LivenessBuildFips140PolicyEnforced LivenessBuildFips140Policy = "enforced"
+	LivenessBuildFips140PolicyOff      LivenessBuildFips140Policy = "off"
+)
+
 // Defines values for Permission.
 const (
 	CONFIGURECA       Permission = "CONFIGURE_CA"
@@ -1059,6 +1071,25 @@ type LintResponse struct {
 	Summary  *string        `json:"summary,omitempty"`
 	Warnings *int           `json:"warnings,omitempty"`
 }
+
+// Liveness defines model for Liveness.
+type Liveness struct {
+	// Build Identity of the running binary. fips140 is "on" when the process runs on the Go FIPS 140-3 Cryptographic Module (GOFIPS140 build or GODEBUG=fips140=on); fips140_module is the GOFIPS140 module selection the binary was built with ("" for non-FIPS builds); fips140_policy is "enforced" when security.fips is active.
+	Build *struct {
+		Fips140       *LivenessBuildFips140       `json:"fips140,omitempty"`
+		Fips140Module *string                     `json:"fips140_module,omitempty"`
+		Fips140Policy *LivenessBuildFips140Policy `json:"fips140_policy,omitempty"`
+		Go            *string                     `json:"go,omitempty"`
+		Version       *string                     `json:"version,omitempty"`
+	} `json:"build,omitempty"`
+	Status *string `json:"status,omitempty"`
+}
+
+// LivenessBuildFips140 defines model for Liveness.Build.Fips140.
+type LivenessBuildFips140 string
+
+// LivenessBuildFips140Policy defines model for Liveness.Build.Fips140Policy.
+type LivenessBuildFips140Policy string
 
 // NameConstraintsConfig RFC 5280 Name Constraints (2.5.29.30) applied to a CA certificate, bounding the identities certificates below it may assert. Enforced as a fail-closed pre-issuance gate and by conforming path validators.
 type NameConstraintsConfig struct {
@@ -10897,7 +10928,7 @@ func (r GetTenantUsageResponse) StatusCode() int {
 type GetLivenessResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
-	JSON200      *StatusResponse
+	JSON200      *Liveness
 }
 
 // Status returns HTTPResponse.Status
@@ -15333,7 +15364,7 @@ func ParseGetLivenessResponse(rsp *http.Response) (*GetLivenessResponse, error) 
 
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
-		var dest StatusResponse
+		var dest Liveness
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}

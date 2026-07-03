@@ -218,6 +218,7 @@ func Run(ctx context.Context, opts Options) *Report {
 			"db.connectivity", "db.schema", "keyprovider.ca", "keys.ca",
 			"audit.chain_head", "certs.ca_expiry", "crl.freshness",
 			"clock.skew", "listener.tls",
+			"fips.mode", "fips.store_keys", "fips.secret_oaep",
 		} {
 			r.skip(name, "config did not load")
 		}
@@ -256,6 +257,11 @@ func Run(ctx context.Context, opts Options) *Report {
 	// 9. Listener TLS: static certificate/key material plus, when reachable, a
 	// live handshake against the configured address.
 	checkListenerTLS(r, cfg, opts)
+
+	// 10. FIPS 140-3 posture (only meaningful with security.fips): module state,
+	// store key-material policy conformance, and the secret-layer SHA-256 OAEP
+	// negotiation the policy requires.
+	checkFIPS(ctx, r, cfg, db, schemaOK, providers)
 
 	return r
 }

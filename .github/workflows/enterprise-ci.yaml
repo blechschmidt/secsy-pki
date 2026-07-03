@@ -130,6 +130,68 @@ jobs:
         working-directory: server
         run: ./scripts/fuzz.sh
 
+  fips:
+    name: FIPS 140-3 (GOFIPS140 build + fips140=on tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Task 65: build the FIPS variant on the Go Cryptographic Module and prove
+    # the suite holds with the module active. `make build-fips` fails unless
+    # the produced binaries report fips140=on at startup; the test runs then
+    # execute with GOFIPS140 selecting the module at build time and
+    # GODEBUG=fips140=on at runtime — first the full non-HSM unit suite, then a
+    # SoftHSM smoke pass over the e2e flow and the OAEP-sensitive packages.
+    # (fips140=on activates the module for approved algorithms; the fail-closed
+    # rejection of non-approved ones is secsy-pki's own security.fips policy,
+    # which the unit suite exercises.)
+    env:
+      SOFTHSM2_CONF: /tmp/softhsm2.conf
+      SOFTHSM_TOKEN_DIR: /tmp/softhsm/tokens
+      GOTOOLCHAIN: auto
+      GOFIPS140: latest
+      GODEBUG: fips140=on
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Download Go modules
+        working-directory: server
+        run: go mod download
+
+      - name: Build FIPS binaries and verify they report fips140=on
+        run: make build-fips
+
+      - name: Unit suite under fips140=on (no HSM)
+        working-directory: server
+        run: go test -tags sqlite ./...
+
+      - name: Install SoftHSM and OpenSC
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends softhsm2 opensc
+
+      - name: Provision SoftHSM token
+        env:
+          SOFTHSM_REINIT: "1"
+        run: ./scripts/setup-softhsm.sh
+
+      # Smoke, not the full HSM matrix: the end-to-end flow plus the packages
+      # where FIPS mode interacts with the token (secret-layer OAEP
+      # negotiation, doctor posture checks). Serialized with -p 1 — one SoftHSM
+      # token is not safe for concurrent package access.
+      - name: SoftHSM smoke under fips140=on
+        run: |
+          eval "$(./scripts/setup-softhsm.sh --export-env)"
+          cd server
+          go test -tags sqlite -p 1 -count=1 ./internal/e2e/ ./internal/secret/ ./internal/doctor/
+
   dr-store-integrity:
     name: DR store integrity (Postgres, no HSM)
     runs-on: ubuntu-latest

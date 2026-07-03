@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/pqc"
 )
@@ -123,6 +124,9 @@ func (p *PKCS11Provider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInf
 	keyType, err := NormalizeKeyType(spec.KeyType)
 	if err != nil {
 		return nil, err
+	}
+	if err := fips.CheckKeyType(keyType); err != nil {
+		return nil, fmt.Errorf("keyprovider: %w", err)
 	}
 	// Post-quantum keys are not (yet) supported by the PKCS#11 backend. SoftHSM
 	// in particular has no ML-DSA mechanism, so callers must use the software key

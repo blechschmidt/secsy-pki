@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/ct"
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
@@ -130,6 +131,17 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 		attribute.String("ca.id", issuerCA.ID),
 		attribute.String("ca.profile", profile.Name))
 	defer span.End()
+
+	// Fail-closed FIPS gate (security.fips): profiles issuing post-quantum or
+	// hybrid certificates are rejected before any signing — ML-DSA comes from
+	// CIRCL, software outside the validated module boundary. Key-level checks
+	// (Ed25519 / RSA<2048 subject keys, non-approved issuer keys) live in pki's
+	// certificate constructors, so this gate covers only what the profile itself
+	// declares.
+	if fips.PolicyEnforced() && profile.Algorithm != AlgClassical {
+		return nil, nil, fmt.Errorf("profile %q issues %q certificates, which are %w",
+			profile.Name, profile.Algorithm, fips.ErrNotApproved)
+	}
 
 	// Fail-closed pre-issuance S/MIME gate: for S/MIME profiles, validate and
 	// normalize every rfc822Name SAN (the certificate carries the normalized

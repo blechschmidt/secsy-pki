@@ -883,6 +883,9 @@ gate.
 | `crl.freshness` | every persisted base/delta/shard CRL vs `nextUpdate` | fail: stale while `publish.enabled` (static consumers); warn: stale (regenerated on next fetch) or inside the final ¼ of its window |
 | `clock.skew` | host↔PostgreSQL clock offset; newest audit event not future-dated | fail > 60s; warn > 10s (tune via code defaults) |
 | `listener.tls` | `server.tls_cert/tls_key` load and match, leaf headroom; if the listener is up, a live handshake must present the configured certificate | fail: no TLS (server fails closed) or broken pair; warn: running server serves a different certificate (restart pending) |
+| `fips.mode` | (with `security.fips: true`) the process runs on the Go FIPS 140-3 module (see [FIPS mode](fips.md)) | warn: policy enforced on a non-module binary (build with `make build-fips`) |
+| `fips.store_keys` | every stored CA key/certificate signature satisfies the FIPS algorithm policy | fail: pre-FIPS Ed25519/small-RSA CA (its next issuance would be refused) |
+| `fips.secret_oaep` | per configured KEK: the wrap/unwrap negotiation reaches RSA-OAEP-SHA256 (the policy refuses the SoftHSM SHA-1 fallback) | fail: token supports only SHA-1 OAEP; warn: KEK not provisioned |
 
 An unreachable listener is *not* a finding — doctor normally runs before the
 server starts. `-no-listener` skips the live probe entirely.

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"math/big"
 	"time"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 )
 
 // CACertRequest describes the certificate to build for a certificate authority.
@@ -65,6 +67,9 @@ func CreateCACertificate(signer crypto.Signer, parent *x509.Certificate, req CAC
 	}
 	if req.PublicKey == nil {
 		return nil, fmt.Errorf("CA certificate requires a subject public key")
+	}
+	if err := fips.CheckIssuance(signer.Public(), req.PublicKey); err != nil {
+		return nil, err
 	}
 	if !req.NotAfter.After(req.NotBefore) {
 		return nil, fmt.Errorf("CA certificate not_after (%s) must be after not_before (%s)", req.NotAfter, req.NotBefore)

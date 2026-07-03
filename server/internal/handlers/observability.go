@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"runtime"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 )
@@ -33,12 +35,52 @@ func (a *API) Metrics(w http.ResponseWriter, r *http.Request) {
 	metrics.Default.WriteTo(w)
 }
 
+// buildVersion is the release version stamped by the linker (-X main.version)
+// and installed via SetBuildVersion at startup; "dev" when unstamped.
+var buildVersion = "dev"
+
+// SetBuildVersion installs the binary's release version for the /healthz build
+// block. Called once from main before serving; an empty value keeps "dev".
+func SetBuildVersion(v string) {
+	if v != "" {
+		buildVersion = v
+	}
+}
+
+// buildInfo assembles the /healthz "build" block: release version, Go runtime,
+// and the FIPS 140-3 posture — whether the Go Cryptographic Module is active
+// (fips140), which frozen module snapshot the binary was built against
+// (fips140_module, empty for non-FIPS builds), and whether the fail-closed
+// security.fips algorithm policy is enforced (fips140_policy).
+func buildInfo() map[string]string {
+	module := "off"
+	if fips.ModuleEnabled() {
+		module = "on"
+	}
+	policy := "off"
+	if fips.PolicyEnforced() {
+		policy = "enforced"
+	}
+	return map[string]string{
+		"version":        buildVersion,
+		"go":             runtime.Version(),
+		"fips140":        module,
+		"fips140_module": fips.ModuleVersion(),
+		"fips140_policy": policy,
+	}
+}
+
 // Healthz is the liveness probe. It reports that the process is running and able
 // to serve HTTP; it deliberately does NOT check external dependencies, so a
 // transient database or HSM outage does not cause an orchestrator to kill and
 // restart an otherwise-healthy process (that is the readiness probe's job).
+// The build block identifies the running binary (version, Go, FIPS mode) so
+// operators can verify a FIPS deployment from the endpoint alone.
 func (a *API) Healthz(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		"build":  buildInfo(),
+	})
 }
 
 // componentStatus is the per-dependency result reported by the readiness probe.
