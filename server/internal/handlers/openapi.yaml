@@ -722,6 +722,35 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/ca/{id}/pkcs12:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: exportCertificatePKCS12
+      tags: [Certificate Lifecycle]
+      summary: Generate a subject key, issue a leaf, and export a PKCS#12 bundle
+      description: >
+        Generates a subject keypair server-side, issues a leaf under the named
+        profile, and returns a password-protected PKCS#12 (.p12/.pfx) bundle
+        containing the subject key, the leaf, and the full issuer chain — for
+        S/MIME and device-enrollment key delivery. The CA signing key never
+        leaves the HSM; only the freshly-generated subject key is bundled. When
+        escrow is requested the subject key is additionally escrowed under the
+        configured M-of-N recovery policy and the escrow envelope is returned.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExportPKCS12Request" }
+      responses:
+        "201":
+          description: The PKCS#12 bundle (base64 DER) and issuance metadata.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExportPKCS12Response" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /api/ca/{id}/renew:
     parameters:
       - $ref: "#/components/parameters/CAId"
@@ -2997,6 +3026,59 @@ components:
           description: >-
             Certificate Transparency (RFC 6962) handling for this issuance.
             Present only when the profile requested CT.
+
+    ExportPKCS12Request:
+      type: object
+      required: [password]
+      description: >
+        Server-side key generation + PKCS#12 export. A subject keypair is
+        generated, a leaf is issued under the profile, and the key + leaf + full
+        chain are packed into a password-protected bundle. A common name or at
+        least one SAN is required.
+      properties:
+        common_name: { type: string }
+        organization: { type: string }
+        organizational_unit: { type: string }
+        country: { type: string }
+        province: { type: string }
+        locality: { type: string }
+        dns_names: { type: array, items: { type: string } }
+        ip_addresses: { type: array, items: { type: string } }
+        emails: { type: array, items: { type: string }, description: e-mail SANs (S/MIME) }
+        uris: { type: array, items: { type: string } }
+        profile: { type: string }
+        key_type: { type: string, enum: [ecdsa, rsa], description: "subject key type (default: ecdsa)" }
+        key_bits: { type: integer, description: "RSA bits or ECDSA curve size (256|384|521); 0 = default" }
+        validity_days: { type: integer }
+        password: { type: string, description: protects the bundle (minimum 6 characters) }
+        encoder: { type: string, enum: [modern, legacy, legacyrc2], description: "PKCS#12 encoder (default: modern)" }
+        escrow: { type: boolean, description: escrow the subject key under the M-of-N policy }
+
+    ExportPKCS12Response:
+      type: object
+      properties:
+        serial: { type: string }
+        profile: { type: string }
+        not_after: { type: string }
+        pkcs12: { type: string, description: base64-encoded DER PKCS#12 bundle }
+        chain: { type: string, description: PEM certificate chain (leaf + issuers) }
+        key_type: { type: string }
+        encoder: { type: string }
+        escrow:
+          $ref: "#/components/schemas/PKCS12EscrowInfo"
+          description: Present only when escrow was requested.
+        ct:
+          $ref: "#/components/schemas/CTResponse"
+          description: Present only when the profile requested CT.
+
+    PKCS12EscrowInfo:
+      type: object
+      description: Escrow of a PKCS#12 subject key, with the envelope to retain for recovery.
+      properties:
+        threshold: { type: integer }
+        agents: { type: integer }
+        context: { type: string, description: encryption context to supply at recovery time }
+        envelope: { description: escrow envelope JSON to store for break-glass recovery }
 
     SVIDRequest:
       type: object

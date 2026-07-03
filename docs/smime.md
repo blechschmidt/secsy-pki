@@ -63,6 +63,11 @@ Prefer issuing **two certificates on two keys** per user over the single-key
     < alice-enc-key.p8 > alice-enc-key.envelope
   ```
 
+  For central key delivery, [PKCS#12 export](pkcs12.md) does the keygen,
+  issuance, bundling **and** escrow in one step — issue the encryption cert with
+  `secsy-ca export-p12 -profile smime-encrypt -escrow`, which hands you a
+  password-protected `.p12` for the user and the escrow envelope for the vault.
+
 - Renewal differs too: rotate signing keys freely at every renewal; keep (or
   escrow-recover) encryption keys as long as mail encrypted to them must stay
   readable.

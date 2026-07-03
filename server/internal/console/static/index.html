@@ -42,6 +42,7 @@
         <button data-view="monitor">Expiry Monitor</button>
         <button data-view="discovery">Discovery</button>
         <button data-view="issue">Issue</button>
+        <button data-view="p12">PKCS#12</button>
         <button data-view="cas">Authorities</button>
         <button data-view="ssh">SSH CA</button>
         <button data-view="signing">Signing</button>
@@ -275,6 +276,91 @@
           <div class="field">
             <label>Issued certificate (PEM)</label>
             <textarea id="issuePEM" readonly></textarea>
+          </div>
+        </div>
+      </section>
+
+      <!-- PKCS#12 export: server-side key generation + bundle (Task 80) -->
+      <section class="view" id="view-p12">
+        <h2>Export PKCS#12 (.p12/.pfx)</h2>
+        <p class="sub">Generate a subject keypair on the server, issue a leaf under a profile, and download a password-protected PKCS#12 bundle (key + leaf + full chain) — for S/MIME and device enrollment. The CA key never leaves the HSM; only the freshly-generated subject key is bundled.</p>
+        <div class="panel">
+          <div id="p12Msg" class="notice hidden"></div>
+          <div class="row">
+            <div class="field" style="flex:1;min-width:220px">
+              <label for="p12CA">Certificate authority</label>
+              <select id="p12CA"></select>
+            </div>
+            <div class="field" style="flex:1;min-width:220px">
+              <label for="p12Profile">Profile</label>
+              <select id="p12Profile"></select>
+            </div>
+            <div class="field" style="width:150px">
+              <label for="p12Days">Validity (days)</label>
+              <input id="p12Days" type="number" min="1" placeholder="profile default">
+            </div>
+          </div>
+          <div class="row">
+            <div class="field" style="flex:1;min-width:220px">
+              <label for="p12CN">Subject common name</label>
+              <input id="p12CN" placeholder="Jane Doe / device-01.example.com">
+            </div>
+            <div class="field" style="flex:1;min-width:220px">
+              <label for="p12O">Organization (optional)</label>
+              <input id="p12O" placeholder="Example Corp">
+            </div>
+          </div>
+          <div class="row">
+            <div class="field" style="flex:1;min-width:220px">
+              <label for="p12Emails">E-mail SANs (comma-separated, S/MIME)</label>
+              <input id="p12Emails" placeholder="jane@example.com">
+            </div>
+            <div class="field" style="flex:1;min-width:220px">
+              <label for="p12DNS">DNS SANs (comma-separated)</label>
+              <input id="p12DNS" placeholder="device-01.example.com">
+            </div>
+          </div>
+          <div class="row">
+            <div class="field" style="width:160px">
+              <label for="p12KeyType">Key type</label>
+              <select id="p12KeyType">
+                <option value="ecdsa">ECDSA</option>
+                <option value="rsa">RSA</option>
+              </select>
+            </div>
+            <div class="field" style="width:160px">
+              <label for="p12KeyBits">Key size</label>
+              <input id="p12KeyBits" type="number" min="0" placeholder="default">
+            </div>
+            <div class="field" style="width:200px">
+              <label for="p12Encoder">Encoder</label>
+              <select id="p12Encoder">
+                <option value="modern">modern (AES-256)</option>
+                <option value="legacy">legacy (3DES)</option>
+                <option value="legacyrc2">legacy RC2 (oldest)</option>
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <div class="field" style="flex:1;min-width:220px">
+              <label for="p12Password">Export password (protects the bundle)</label>
+              <input id="p12Password" type="password" placeholder="high-entropy password (min 6 chars)">
+            </div>
+            <div class="field" style="align-self:flex-end;padding-bottom:8px">
+              <label><input id="p12Escrow" type="checkbox"> Escrow subject key (M-of-N)</label>
+            </div>
+          </div>
+          <button class="btn" id="p12Btn">Generate &amp; download .p12</button>
+        </div>
+        <div class="panel hidden" id="p12Result">
+          <div class="field">
+            <label>Issued certificate chain (PEM)</label>
+            <textarea id="p12Chain" readonly></textarea>
+          </div>
+          <div class="field hidden" id="p12EscrowWrap">
+            <label>Escrow envelope — store securely for break-glass recovery (<a href="#" id="p12EscrowDownload">download</a>)</label>
+            <div id="p12EscrowNote" class="muted" style="margin-bottom:6px"></div>
+            <textarea id="p12EscrowEnvelope" readonly></textarea>
           </div>
         </div>
       </section>

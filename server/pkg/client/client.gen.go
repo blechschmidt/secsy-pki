@@ -106,6 +106,19 @@ const (
 	EventResultSuccess EventResult = "success"
 )
 
+// Defines values for ExportPKCS12RequestEncoder.
+const (
+	Legacy    ExportPKCS12RequestEncoder = "legacy"
+	Legacyrc2 ExportPKCS12RequestEncoder = "legacyrc2"
+	Modern    ExportPKCS12RequestEncoder = "modern"
+)
+
+// Defines values for ExportPKCS12RequestKeyType.
+const (
+	Ecdsa ExportPKCS12RequestKeyType = "ecdsa"
+	Rsa   ExportPKCS12RequestKeyType = "rsa"
+)
+
 // Defines values for IssuedCertificateCtStatus.
 const (
 	IssuedCertificateCtStatusFailedOpen IssuedCertificateCtStatus = "failed_open"
@@ -1166,6 +1179,65 @@ type ExpiryReport struct {
 	WarningDays  *int            `json:"warning_days,omitempty"`
 }
 
+// ExportPKCS12Request Server-side key generation + PKCS#12 export. A subject keypair is generated, a leaf is issued under the profile, and the key + leaf + full chain are packed into a password-protected bundle. A common name or at least one SAN is required.
+type ExportPKCS12Request struct {
+	CommonName *string   `json:"common_name,omitempty"`
+	Country    *string   `json:"country,omitempty"`
+	DnsNames   *[]string `json:"dns_names,omitempty"`
+
+	// Emails e-mail SANs (S/MIME)
+	Emails *[]string `json:"emails,omitempty"`
+
+	// Encoder PKCS#12 encoder (default: modern)
+	Encoder *ExportPKCS12RequestEncoder `json:"encoder,omitempty"`
+
+	// Escrow escrow the subject key under the M-of-N policy
+	Escrow      *bool     `json:"escrow,omitempty"`
+	IpAddresses *[]string `json:"ip_addresses,omitempty"`
+
+	// KeyBits RSA bits or ECDSA curve size (256|384|521); 0 = default
+	KeyBits *int `json:"key_bits,omitempty"`
+
+	// KeyType subject key type (default: ecdsa)
+	KeyType            *ExportPKCS12RequestKeyType `json:"key_type,omitempty"`
+	Locality           *string                     `json:"locality,omitempty"`
+	Organization       *string                     `json:"organization,omitempty"`
+	OrganizationalUnit *string                     `json:"organizational_unit,omitempty"`
+
+	// Password protects the bundle (minimum 6 characters)
+	Password     string    `json:"password"`
+	Profile      *string   `json:"profile,omitempty"`
+	Province     *string   `json:"province,omitempty"`
+	Uris         *[]string `json:"uris,omitempty"`
+	ValidityDays *int      `json:"validity_days,omitempty"`
+}
+
+// ExportPKCS12RequestEncoder PKCS#12 encoder (default: modern)
+type ExportPKCS12RequestEncoder string
+
+// ExportPKCS12RequestKeyType subject key type (default: ecdsa)
+type ExportPKCS12RequestKeyType string
+
+// ExportPKCS12Response defines model for ExportPKCS12Response.
+type ExportPKCS12Response struct {
+	// Chain PEM certificate chain (leaf + issuers)
+	Chain *string `json:"chain,omitempty"`
+
+	// Ct Certificate Transparency outcome for an issuance.
+	Ct      *CTResponse `json:"ct,omitempty"`
+	Encoder *string     `json:"encoder,omitempty"`
+
+	// Escrow Escrow of a PKCS#12 subject key, with the envelope to retain for recovery.
+	Escrow   *PKCS12EscrowInfo `json:"escrow,omitempty"`
+	KeyType  *string           `json:"key_type,omitempty"`
+	NotAfter *string           `json:"not_after,omitempty"`
+
+	// Pkcs12 base64-encoded DER PKCS#12 bundle
+	Pkcs12  *string `json:"pkcs12,omitempty"`
+	Profile *string `json:"profile,omitempty"`
+	Serial  *string `json:"serial,omitempty"`
+}
+
 // Group defines model for Group.
 type Group struct {
 	Id   *string `json:"id,omitempty"`
@@ -1359,6 +1431,18 @@ type NameConstraintsSubtrees struct {
 
 	// Uri URI host subtrees (domain rules as DNS).
 	Uri *[]string `json:"uri,omitempty"`
+}
+
+// PKCS12EscrowInfo Escrow of a PKCS#12 subject key, with the envelope to retain for recovery.
+type PKCS12EscrowInfo struct {
+	Agents *int `json:"agents,omitempty"`
+
+	// Context encryption context to supply at recovery time
+	Context *string `json:"context,omitempty"`
+
+	// Envelope escrow envelope JSON to store for break-glass recovery
+	Envelope  *interface{} `json:"envelope,omitempty"`
+	Threshold *int         `json:"threshold,omitempty"`
 }
 
 // ParseCSRRequest defines model for ParseCSRRequest.
@@ -2160,6 +2244,9 @@ type IssueCertificateJSONRequestBody = IssueCertRequest
 // IssueIntermediateCAJSONRequestBody defines body for IssueIntermediateCA for application/json ContentType.
 type IssueIntermediateCAJSONRequestBody = CAIssueIntermediateRequest
 
+// ExportCertificatePKCS12JSONRequestBody defines body for ExportCertificatePKCS12 for application/json ContentType.
+type ExportCertificatePKCS12JSONRequestBody = ExportPKCS12Request
+
 // RenewCertificateJSONRequestBody defines body for RenewCertificate for application/json ContentType.
 type RenewCertificateJSONRequestBody = RenewCertRequest
 
@@ -2428,6 +2515,11 @@ type ClientInterface interface {
 
 	// GetOCSP request
 	GetOCSP(ctx context.Context, id CAId, ocspRequest string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ExportCertificatePKCS12WithBody request with any body
+	ExportCertificatePKCS12WithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ExportCertificatePKCS12(ctx context.Context, id CAId, body ExportCertificatePKCS12JSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// RenewCertificateWithBody request with any body
 	RenewCertificateWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3172,6 +3264,30 @@ func (c *Client) PostOCSPWithBody(ctx context.Context, id CAId, contentType stri
 
 func (c *Client) GetOCSP(ctx context.Context, id CAId, ocspRequest string, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetOCSPRequest(c.Server, id, ocspRequest)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ExportCertificatePKCS12WithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewExportCertificatePKCS12RequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ExportCertificatePKCS12(ctx context.Context, id CAId, body ExportCertificatePKCS12JSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewExportCertificatePKCS12Request(c.Server, id, body)
 	if err != nil {
 		return nil, err
 	}
@@ -5942,6 +6058,53 @@ func NewGetOCSPRequest(server string, id CAId, ocspRequest string) (*http.Reques
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewExportCertificatePKCS12Request calls the generic ExportCertificatePKCS12 builder with application/json body
+func NewExportCertificatePKCS12Request(server string, id CAId, body ExportCertificatePKCS12JSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewExportCertificatePKCS12RequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewExportCertificatePKCS12RequestWithBody generates requests for ExportCertificatePKCS12 with any type of body
+func NewExportCertificatePKCS12RequestWithBody(server string, id CAId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/pkcs12", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -9295,6 +9458,11 @@ type ClientWithResponsesInterface interface {
 	// GetOCSPWithResponse request
 	GetOCSPWithResponse(ctx context.Context, id CAId, ocspRequest string, reqEditors ...RequestEditorFn) (*GetOCSPResponse, error)
 
+	// ExportCertificatePKCS12WithBodyWithResponse request with any body
+	ExportCertificatePKCS12WithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ExportCertificatePKCS12Response, error)
+
+	ExportCertificatePKCS12WithResponse(ctx context.Context, id CAId, body ExportCertificatePKCS12JSONRequestBody, reqEditors ...RequestEditorFn) (*ExportCertificatePKCS12Response, error)
+
 	// RenewCertificateWithBodyWithResponse request with any body
 	RenewCertificateWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RenewCertificateResponse, error)
 
@@ -10246,6 +10414,30 @@ func (r GetOCSPResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetOCSPResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ExportCertificatePKCS12Response struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *ExportPKCS12Response
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ExportCertificatePKCS12Response) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ExportCertificatePKCS12Response) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -12472,6 +12664,23 @@ func (c *ClientWithResponses) GetOCSPWithResponse(ctx context.Context, id CAId, 
 	return ParseGetOCSPResponse(rsp)
 }
 
+// ExportCertificatePKCS12WithBodyWithResponse request with arbitrary body returning *ExportCertificatePKCS12Response
+func (c *ClientWithResponses) ExportCertificatePKCS12WithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ExportCertificatePKCS12Response, error) {
+	rsp, err := c.ExportCertificatePKCS12WithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseExportCertificatePKCS12Response(rsp)
+}
+
+func (c *ClientWithResponses) ExportCertificatePKCS12WithResponse(ctx context.Context, id CAId, body ExportCertificatePKCS12JSONRequestBody, reqEditors ...RequestEditorFn) (*ExportCertificatePKCS12Response, error) {
+	rsp, err := c.ExportCertificatePKCS12(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseExportCertificatePKCS12Response(rsp)
+}
+
 // RenewCertificateWithBodyWithResponse request with arbitrary body returning *RenewCertificateResponse
 func (c *ClientWithResponses) RenewCertificateWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RenewCertificateResponse, error) {
 	rsp, err := c.RenewCertificateWithBody(ctx, id, contentType, body, reqEditors...)
@@ -14229,6 +14438,46 @@ func ParseGetOCSPResponse(rsp *http.Response) (*GetOCSPResponse, error) {
 	response := &GetOCSPResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
+	}
+
+	return response, nil
+}
+
+// ParseExportCertificatePKCS12Response parses an HTTP response from a ExportCertificatePKCS12WithResponse call
+func ParseExportCertificatePKCS12Response(rsp *http.Response) (*ExportCertificatePKCS12Response, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ExportCertificatePKCS12Response{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest ExportPKCS12Response
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
 	}
 
 	return response, nil

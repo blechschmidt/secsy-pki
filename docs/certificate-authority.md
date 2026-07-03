@@ -146,6 +146,13 @@ curl -sk -u root:password -X POST https://localhost:8443/api/ca/{ca_id}/issue \
 List what a CA has issued: `secsy-ca list-certs -ca "Issuing CA"` or
 `GET /api/ca/{id}/certificates`.
 
+The flow above signs a CSR whose key the subscriber generated. When you instead
+need to **deliver the private key** — for S/MIME or device enrollment — use
+[PKCS#12 export](pkcs12.md): the server generates the subject key, issues the
+leaf, and returns a password-protected `.p12` (key + leaf + full chain), with
+optional M-of-N escrow of the subject key (`secsy-ca export-p12`, `POST
+/api/ca/{id}/pkcs12`).
+
 ## 5. Renew a certificate
 
 Renewal issues a fresh certificate (new serial, new validity window) for an
@@ -370,6 +377,7 @@ explicitly.
 
 ## See also
 
+- [PKCS#12 (.p12/.pfx) export](pkcs12.md) — server-side-keygen key delivery
 - [HSM / PKCS#11 configuration](hsm-configuration.md)
 - [RBAC, audit logging & config](rbac-and-audit.md)
 - [Production HSM migration](hsm-migration.md)

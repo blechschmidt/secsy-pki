@@ -337,6 +337,7 @@ async function loadCAs() {
   const allOpt = '<option value="">all CAs</option>';
   $('certCA').innerHTML = opts || empty;
   $('issueCA').innerHTML = activeOpts || empty;
+  $('p12CA').innerHTML = activeOpts || empty;
   $('invCA').innerHTML = allOpt + opts;
   $('compCA').innerHTML = allOpt + opts;
   $('bundleCA').innerHTML = opts || empty;
@@ -353,6 +354,8 @@ async function loadProfiles() {
   try {
     profiles = await api('GET', '/api/profiles');
     $('issueProfile').innerHTML = profiles.map(p =>
+      `<option value="${p.name}">${escapeHTML(p.name)} — ${escapeHTML(p.description || '')}</option>`).join('');
+    $('p12Profile').innerHTML = profiles.map(p =>
       `<option value="${p.name}">${escapeHTML(p.name)} — ${escapeHTML(p.description || '')}</option>`).join('');
     $('lintProfile').innerHTML = '<option value="">baseline rules</option>' + profiles.map(p =>
       `<option value="${p.name}">${escapeHTML(p.name)}</option>`).join('');
@@ -960,6 +963,71 @@ $('issueBtn').onclick = async () => {
   } catch (e) {
     showError(msg, e.message); msg.className = 'notice err';
   } finally { $('issueBtn').disabled = false; }
+};
+
+// ---- PKCS#12 export view -------------------------------------------------
+// Split a comma-separated input into trimmed, non-empty values.
+function csvList(v) {
+  return (v || '').split(',').map(s => s.trim()).filter(Boolean);
+}
+$('p12Btn').onclick = async () => {
+  const id = $('p12CA').value;
+  const msg = $('p12Msg');
+  msg.className = 'notice hidden';
+  if (!id) { showError(msg, 'Select a CA.'); msg.className = 'notice err'; return; }
+  const cn = $('p12CN').value.trim();
+  const emails = csvList($('p12Emails').value);
+  const dns = csvList($('p12DNS').value);
+  if (!cn && !emails.length && !dns.length) {
+    showError(msg, 'Provide a common name or at least one SAN.'); msg.className = 'notice err'; return;
+  }
+  const password = $('p12Password').value;
+  if (password.length < 6) { showError(msg, 'Password must be at least 6 characters.'); msg.className = 'notice err'; return; }
+
+  const body = {
+    profile: $('p12Profile').value,
+    common_name: cn,
+    key_type: $('p12KeyType').value,
+    encoder: $('p12Encoder').value,
+    password,
+    escrow: $('p12Escrow').checked,
+  };
+  const org = $('p12O').value.trim(); if (org) body.organization = org;
+  if (emails.length) body.emails = emails;
+  if (dns.length) body.dns_names = dns;
+  const bits = parseInt($('p12KeyBits').value, 10); if (bits > 0) body.key_bits = bits;
+  const days = parseInt($('p12Days').value, 10); if (days > 0) body.validity_days = days;
+
+  $('p12Btn').disabled = true;
+  try {
+    const res = await api('POST', `/api/ca/${id}/pkcs12`, body);
+    // Download the binary bundle (base64 DER -> bytes).
+    const fname = (cn || res.serial || 'certificate').replace(/[^A-Za-z0-9._-]+/g, '_') + '.p12';
+    downloadBlob(unb64(res.pkcs12), fname, 'application/x-pkcs12');
+
+    let note = `Exported serial ${res.serial} (${res.profile}, ${res.key_type}, ${res.encoder}), valid until ${res.not_after}. Bundle downloaded as ${fname}.`;
+    if (res.escrow) note += ` Subject key escrowed (${res.escrow.threshold}-of-${res.escrow.agents}).`;
+    msg.textContent = note;
+    msg.className = 'notice ok';
+
+    $('p12Result').classList.remove('hidden');
+    $('p12Chain').value = res.chain || '';
+    if (res.escrow) {
+      $('p12EscrowWrap').classList.remove('hidden');
+      const env = JSON.stringify(res.escrow.envelope, null, 2);
+      $('p12EscrowEnvelope').value = env;
+      $('p12EscrowNote').textContent = `Recover with: secsy-secret recover -context "${res.escrow.context}" (quorum: ${res.escrow.threshold}-of-${res.escrow.agents}).`;
+      $('p12EscrowDownload').onclick = (e) => {
+        e.preventDefault();
+        downloadBlob(env, `${res.serial}.escrow.json`, 'application/json');
+      };
+    } else {
+      $('p12EscrowWrap').classList.add('hidden');
+    }
+    if (selectedCertCA() === id) loadCerts();
+  } catch (e) {
+    showError(msg, e.message); msg.className = 'notice err';
+  } finally { $('p12Btn').disabled = false; }
 };
 
 // ---- Secrets view --------------------------------------------------------

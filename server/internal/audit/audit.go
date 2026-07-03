@@ -107,6 +107,13 @@ const (
 	ActionCanaryProbe  = "canary.probe"
 	ActionCertSignSSH  = "cert.sign_ssh"
 	ActionCertSignX509 = "cert.sign_x509"
+	// ActionCertPKCS12 records a server-side-keygen PKCS#12 (.p12/.pfx) export
+	// (Task 80): a subject keypair is generated, a leaf is issued, and the leaf,
+	// key, and full chain are packed into a password-protected bundle. The detail
+	// carries the profile, key type, and encoder; a paired secret.escrow event is
+	// emitted when the subject key is additionally escrowed under the M-of-N
+	// policy.
+	ActionCertPKCS12 = "cert.pkcs12"
 
 	// SSH certificate authority (Task 57). ActionSSHCAInit records creation of
 	// an HSM-backed SSH CA. ActionSSHSign records an OpenSSH user/host
@@ -152,9 +159,9 @@ const (
 	// ActionSecretExec records secrets being decrypted for injection into a
 	// child process environment via `secsy-secret exec`; the detail lists the
 	// secret NAMES and the command, never any plaintext.
-	ActionSecretPut      = "secret.put"
-	ActionSecretRollback = "secret.rollback"
-	ActionSecretExec     = "secret.exec"
+	ActionSecretPut         = "secret.put"
+	ActionSecretRollback    = "secret.rollback"
+	ActionSecretExec        = "secret.exec"
 	ActionPermissionGrant   = "permission.grant"
 	ActionPermissionRevoke  = "permission.revoke"
 	ActionGroupCreate       = "group.create"

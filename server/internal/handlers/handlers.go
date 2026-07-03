@@ -362,6 +362,10 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	// Certificate issuance, renewal, and revocation (X.509 end-entity certs).
 	mux.Handle("GET /api/profiles", protected(http.HandlerFunc(a.ListProfiles)))
 	mux.Handle("POST /api/ca/{id}/issue", protected(http.HandlerFunc(a.IssueCertificate)))
+	// Server-side key generation + PKCS#12 (.p12/.pfx) bundle export (Task 80).
+	// Delivers a subject key + leaf + full chain in a password-protected bundle
+	// for S/MIME and device enrollment; the CA key never leaves the HSM.
+	mux.Handle("POST /api/ca/{id}/pkcs12", protected(http.HandlerFunc(a.ExportCertificatePKCS12)))
 	mux.Handle("POST /api/ca/{id}/renew", protected(http.HandlerFunc(a.RenewCertificate)))
 	mux.Handle("POST /api/ca/{id}/revoke", protectStepUp("cert.revoke", http.HandlerFunc(a.RevokeCertificate)))
 	// Bulk revocation for compromise scenarios (Task 70). More privileged than

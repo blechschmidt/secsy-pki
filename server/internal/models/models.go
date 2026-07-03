@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -581,6 +582,82 @@ type CTLogOutcome struct {
 	Log   string `json:"log"`
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+}
+
+// ExportPKCS12Request asks a CA to generate a subject keypair server-side, issue
+// a leaf under the named profile, and return a password-protected PKCS#12
+// (.p12/.pfx) bundle containing the subject key, the leaf, and the full issuer
+// chain. The CA signing key never leaves the HSM — only the freshly-generated
+// subject key is bundled. This is the key-delivery path for S/MIME and device
+// enrollment, where the subscriber legitimately needs its own private key.
+type ExportPKCS12Request struct {
+	// Subject distinguished-name fields. A common name or at least one SAN is
+	// required.
+	CommonName         string `json:"common_name,omitempty"`
+	Organization       string `json:"organization,omitempty"`
+	OrganizationalUnit string `json:"organizational_unit,omitempty"`
+	Country            string `json:"country,omitempty"`
+	Province           string `json:"province,omitempty"`
+	Locality           string `json:"locality,omitempty"`
+	// Subject Alternative Names. The profile still governs which are permitted.
+	DNSNames    []string `json:"dns_names,omitempty"`
+	IPAddresses []string `json:"ip_addresses,omitempty"`
+	Emails      []string `json:"emails,omitempty"`
+	URIs        []string `json:"uris,omitempty"`
+	// Profile is the certificate profile name (empty = default).
+	Profile string `json:"profile,omitempty"`
+	// KeyType is "ecdsa" (default) or "rsa"; KeyBits sizes it (RSA bits, or ECDSA
+	// curve 256/384/521). Zero selects the type default.
+	KeyType string `json:"key_type,omitempty"`
+	KeyBits int    `json:"key_bits,omitempty"`
+	// ValidityDays overrides the profile default (0 = default), clamped to the
+	// profile maximum and any deployment cap.
+	ValidityDays int `json:"validity_days,omitempty"`
+	// Password protects the PKCS#12 bundle. Required; short passwords are refused.
+	Password string `json:"password"`
+	// Encoder selects the PKCS#12 encoding: "modern" (default; PBES2/AES-256),
+	// "legacy" (3DES, broad compatibility), or "legacyrc2" (oldest software).
+	Encoder string `json:"encoder,omitempty"`
+	// Escrow, when true, additionally escrows the freshly-generated subject
+	// private key under the configured M-of-N recovery policy (Task 33), returning
+	// the escrow envelope for the operator to store for break-glass recovery. It
+	// requires the secret KEK and secret.escrow to be configured.
+	Escrow bool `json:"escrow,omitempty"`
+}
+
+// ExportPKCS12Response returns the produced PKCS#12 bundle (base64-encoded DER)
+// and issuance metadata. The private key is delivered only inside the
+// password-protected bundle; it is never returned in the clear.
+type ExportPKCS12Response struct {
+	Serial   string `json:"serial"`
+	Profile  string `json:"profile"`
+	NotAfter string `json:"not_after"`
+	// PKCS12 is the base64-encoded DER PKCS#12 bundle.
+	PKCS12 string `json:"pkcs12"`
+	// Chain is the PEM certificate chain (leaf + issuers), for display/verification.
+	Chain string `json:"chain,omitempty"`
+	// KeyType is the resolved subject key description (e.g. "ecdsa-p256").
+	KeyType string `json:"key_type"`
+	// Encoder is the resolved PKCS#12 encoder name used.
+	Encoder string `json:"encoder"`
+	// Escrow, present only when escrow was requested, carries the escrow envelope
+	// and the recovery context needed for a later break-glass ceremony.
+	Escrow *PKCS12EscrowInfo `json:"escrow,omitempty"`
+	// CT reports Certificate Transparency handling; present only when the profile
+	// requested CT.
+	CT *CTResponse `json:"ct,omitempty"`
+}
+
+// PKCS12EscrowInfo describes the escrow of a PKCS#12 subject key and carries the
+// envelope the operator must retain for recovery.
+type PKCS12EscrowInfo struct {
+	Threshold int `json:"threshold"`
+	Agents    int `json:"agents"`
+	// Context is the encryption context bound into the escrow envelope; the same
+	// value must be supplied at recovery time (`secsy-secret recover -context`).
+	Context string `json:"context"`
+	// Envelope is the escrow envelope JSON to store for break-glass recovery.
+	Envelope json.RawMessage `json:"envelope"`
 }
 
 // IssueSVIDRequest asks a CA to mint a SPIFFE X.509-SVID. The workload supplies
