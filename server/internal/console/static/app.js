@@ -1044,10 +1044,14 @@ async function loadAuthorities() {
     (rep.rotations || []).forEach(r => { if (r.ca) rotationByCA[r.ca.id] = r; });
   } catch (_) { /* rotation list is read-gated; table still renders */ }
 
-  if (!x509CAs.length) { tbody.innerHTML = emptyRow('No CAs yet — create a root below.'); }
+  // The table shows every X.509 authority plus pending externally-signed CAs
+  // (key + CSR emitted, certificate not imported yet).
+  const authorities = cas.filter(c => c.certificate || c.status === 'pending');
+  if (!authorities.length) { tbody.innerHTML = emptyRow('No CAs yet — create a root below.'); }
   else {
-    tbody.innerHTML = x509CAs.map(c => {
-      const kind = c.parent_id ? 'intermediate' : 'root';
+    tbody.innerHTML = authorities.map(c => {
+      const external = !c.parent_id && !!c.csr;
+      const kind = c.parent_id ? 'intermediate' : (external ? 'external sub' : 'root');
       const status = c.status || 'active';
       const rot = rotationByCA[c.id];
       let statusCell = `<span class="badge ${status === 'active' ? 'valid' : (status === 'retired' ? 'revoked' : 'warning')}">${status}</span>`;
@@ -1056,6 +1060,9 @@ async function loadAuthorities() {
           ? ' <span class="muted">drained</span>'
           : ` <span class="muted">${rot.outstanding_leaves} leaves outstanding</span>`;
       }
+      if (status === 'pending') {
+        statusCell += ' <span class="muted">awaiting external signature</span>';
+      }
       const actions = [];
       if (kind === 'intermediate' && status === 'active') {
         actions.push(`<button class="btn ghost sm" data-act="rotate" data-id="${c.id}">Rotate key</button>`);
@@ -1063,7 +1070,13 @@ async function loadAuthorities() {
       if (status === 'superseded') {
         actions.push(`<button class="btn danger sm" data-act="retire" data-id="${c.id}">Retire</button>`);
       }
-      actions.push(`<a class="btn ghost sm" href="/api/ca/${c.id}/chain" target="_blank">Chain</a>`);
+      if (external) {
+        actions.push(`<button class="btn ghost sm" data-act="csr" data-id="${c.id}">CSR</button>`);
+        actions.push(`<button class="btn ghost sm" data-act="import" data-id="${c.id}">${status === 'pending' ? 'Import cert' : 'Re-import'}</button>`);
+      }
+      if (c.certificate) {
+        actions.push(`<a class="btn ghost sm" href="/api/ca/${c.id}/chain" target="_blank">Chain</a>`);
+      }
       return `<tr${status !== 'active' ? ' style="opacity:.65"' : ''}>
         <td>${escapeHTML(c.label)}</td>
         <td title="${escapeHTML(c.subject || '')}">${escapeHTML(shortName(c.subject))}</td>
@@ -1077,6 +1090,8 @@ async function loadAuthorities() {
     tbody.querySelectorAll('button[data-act]').forEach(b => {
       if (b.dataset.act === 'rotate') b.onclick = () => openRotateModal(b.dataset.id);
       if (b.dataset.act === 'retire') b.onclick = () => openRetireModal(b.dataset.id);
+      if (b.dataset.act === 'csr') b.onclick = () => downloadExternalCSR(b.dataset.id);
+      if (b.dataset.act === 'import') b.onclick = () => openImportCertModal(b.dataset.id);
     });
   }
   loadKeyInventory();
@@ -1125,6 +1140,71 @@ $('interCreateBtn').onclick = async () => {
     await loadAuthorities();
   } catch (e) { showError(err, e.message); }
   finally { $('interCreateBtn').disabled = false; }
+};
+
+// -- externally-signed subordinate CA (offline/third-party root) --
+$('extCsrBtn').onclick = async () => {
+  const err = $('extCsrError');
+  err.classList.add('hidden');
+  const body = {
+    label: $('extLabel').value.trim(),
+    key_type: $('extKeyType').value,
+    subject: { cn: $('extCN').value.trim(), o: $('extO').value.trim() },
+  };
+  if ($('extPathLen').value !== '') body.max_path_len = parseInt($('extPathLen').value, 10);
+  if (!body.label || !body.subject.cn) { showError(err, 'A label and a common name are required.'); return; }
+  $('extCsrBtn').disabled = true;
+  try {
+    const res = await api('POST', '/api/ca/csr', body);
+    notice($('casMsg'), 'ok',
+      `Key for "${res.ca.label}" generated inside the HSM; the CA is pending until the signed certificate is imported. `
+      + `Submit the downloaded CSR to the external parent for signing.`);
+    downloadBlob(res.csr_pem, `${res.ca.label}.csr.pem`, 'application/x-pem-file');
+    $('extLabel').value = $('extCN').value = $('extO').value = '';
+    await loadAuthorities();
+  } catch (e) { showError(err, e.message); }
+  finally { $('extCsrBtn').disabled = false; }
+};
+
+async function downloadExternalCSR(caID) {
+  try {
+    const pem = await api('GET', `/api/ca/${caID}/csr`, undefined, true);
+    downloadBlob(pem, `${caLabel(caID)}.csr.pem`, 'application/x-pem-file');
+  } catch (e) { notice($('casMsg'), 'err', e.message); }
+}
+
+let importTarget = null;
+function openImportCertModal(caID) {
+  importTarget = caID;
+  const ca = cas.find(c => c.id === caID);
+  $('importCALabel').textContent = caLabel(caID);
+  $('importError').classList.add('hidden');
+  $('importCertPEM').value = '';
+  $('importChainPEM').value = '';
+  $('importReplace').checked = false;
+  // Replace only applies once a certificate is installed (external renewal).
+  $('importReplaceRow').classList.toggle('hidden', !ca || ca.status === 'pending');
+  $('importCertModal').classList.remove('hidden');
+}
+$('importCancel').onclick = () => { $('importCertModal').classList.add('hidden'); importTarget = null; };
+$('importConfirm').onclick = async () => {
+  if (!importTarget) return;
+  const body = { certificate_pem: $('importCertPEM').value.trim() };
+  if (!body.certificate_pem) { showError($('importError'), 'Paste the signed CA certificate (PEM).'); return; }
+  if ($('importChainPEM').value.trim()) body.chain_pem = $('importChainPEM').value.trim();
+  if ($('importReplace').checked) body.replace = true;
+  $('importConfirm').disabled = true;
+  try {
+    const res = await api('POST', `/api/ca/${importTarget}/import-cert`, body);
+    $('importCertModal').classList.add('hidden');
+    importTarget = null;
+    const warn = (res.warnings || []).length ? ` Warnings: ${res.warnings.join(' • ')}` : '';
+    notice($('casMsg'), (res.warnings || []).length ? 'warn' : 'ok',
+      `Imported certificate for "${res.ca.label}" — the CA is now active and its served chain includes the external parent(s).${warn}`);
+    downloadBlob(res.chain_pem, `${res.ca.label}-chain.pem`, 'application/x-pem-file');
+    await loadAuthorities();
+  } catch (e) { showError($('importError'), e.message); }
+  finally { $('importConfirm').disabled = false; }
 };
 
 // -- rotate / retire modals --

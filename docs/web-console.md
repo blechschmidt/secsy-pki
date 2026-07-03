@@ -19,7 +19,7 @@ SSO, or stateless basic auth/bearer tokens for scripting parity.
 | **Expiry Monitor** | Certificates ranked by remaining validity; on-demand scan with auto-renewal | `/api/monitor/expiring`, `/api/monitor/scan` |
 | **Discovery** | External TLS endpoint scanning; flags expiring/weak/SHA-1/self-signed/mismatched/rogue certificates | `/api/discovery`, `/api/discovery/scan` |
 | **Issue** | Sign a PKCS#10 CSR under a profile (with the selected profile's policy summary) | `/api/ca/{id}/issue`, `/api/profiles` |
-| **Authorities** | CA hierarchy table with rollover state; **create root**, **issue intermediate**, **rotate** an intermediate's signing key (dual-chain overlap), **retire** a drained superseded key, **cross-sign** (local CA or external cert/CSR) with alternate-chain downloads, and the **HSM key inventory** (non-extractability verdict, admin-only) | `/api/ca/init-root`, `/api/ca/{id}/issue-intermediate`, `/api/rotations`, `/api/ca/{id}/rotation`, `/rotate`, `/retire`, `/cross-signs`, `/api/inventory/keys` |
+| **Authorities** | CA hierarchy table with rollover state; **create root**, **issue intermediate**, **external subordinate CA** (generate HSM key + PKCS#10 CSR for an offline/third-party parent, download/re-download the CSR, import the signed certificate + external chain with validation warnings), **rotate** an intermediate's signing key (dual-chain overlap), **retire** a drained superseded key, **cross-sign** (local CA or external cert/CSR) with alternate-chain downloads, and the **HSM key inventory** (non-extractability verdict, admin-only) | `/api/ca/init-root`, `/api/ca/{id}/issue-intermediate`, `/api/ca/csr`, `/api/ca/{id}/csr`, `/api/ca/{id}/import-cert`, `/api/rotations`, `/api/ca/{id}/rotation`, `/rotate`, `/retire`, `/cross-signs`, `/api/inventory/keys` |
 | **SSH CA** | Create SSH CAs, sign user/host public keys under profiles, browse/revoke signed certificates, download the CA public key and the KRL | `/api/ssh/cas[...]`, `/api/ssh/profiles` |
 | **Signing** | Artifact code-signing: configured signer list, detached CMS signature over an uploaded file or a digest (optionally RFC 3161 countersigned), and signature verification against the PKI's anchors | `/api/sign`, `/api/sign/verify`, `/api/sign/signers` |
 | **Audit** | The tamper-evident event log with action/actor filters and paging, hash-chain verification, and SIEM exports (NDJSON, CEF, RFC 5424 syslog) | `/api/events`, `/api/events/verify`, `/api/events/export` |
@@ -40,6 +40,7 @@ CLIs expose reachable from the console as well. The mapping:
 | `list-certs`, `expiring`, `monitor-run`, `profiles` | Certificates, Inventory, Expiry Monitor, Issue pages |
 | `rotate-intermediate`, `rotation-status`, `list-rotations`, `retire-intermediate`, `publish-chain` | Authorities page (rotate/retire actions, status badges) + Trust Bundle chain download |
 | `cross-sign`, `list-cross-signs` | Authorities page (cross-signing panels) |
+| `ca csr`, `ca import-cert` | Authorities page (external subordinate CA panel; CSR / Import cert actions on pending rows) |
 | `ssh ca-init / sign-user / sign-host / revoke / krl / list / profiles` | SSH CA page |
 | `sign`, `verify-signature` | Signing page |
 | `svid`, `svid-bundle` | Trust Bundle page (SVID mint panel, bundle download) |

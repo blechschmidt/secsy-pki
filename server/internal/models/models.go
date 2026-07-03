@@ -178,6 +178,16 @@ type CA struct {
 	NotAfter    *time.Time `json:"not_after,omitempty" db:"not_after"`
 	MaxPathLen  *int       `json:"max_path_len,omitempty" db:"max_path_len"` // nil = unconstrained
 
+	// Externally-signed subordinate CA state (Task 69). CSR is the PKCS#10
+	// request emitted for the CA's HSM-backed key, kept so an operator can
+	// re-download it while the CA is pending external signature (and as
+	// provenance afterwards). ExternalChain is the PEM bundle of the external
+	// issuing chain — the offline/third-party parent(s) up to and including the
+	// external root — imported alongside the signed certificate so chain serving
+	// can include the external parent. Both are empty for locally signed CAs.
+	CSR           string `json:"csr,omitempty" db:"csr"`
+	ExternalChain string `json:"external_chain,omitempty" db:"external_chain"`
+
 	// Key-rotation / rollover state. These track an intermediate CA's position in
 	// a signing-key rollover (see the ca package's rotation support). A freshly
 	// created CA is CAStatusActive with no predecessor or successor.
@@ -200,6 +210,11 @@ const (
 	// certificate has been revoked under the parent and it neither issues nor is
 	// expected to validate new chains.
 	CAStatusRetired = "retired"
+	// CAStatusPending means the CA's HSM-backed key exists and a PKCS#10 CSR has
+	// been emitted, but the externally signed certificate has not been imported
+	// yet (see the ca package's external-CA support). A pending CA cannot issue
+	// anything until "ca import-cert" installs its certificate.
+	CAStatusPending = "pending"
 )
 
 // CASubject describes the distinguished-name fields for a CA certificate in API
@@ -248,6 +263,51 @@ type CAIssueIntermediateRequest struct {
 	// Policies emits certificatePolicies / policyMappings / policyConstraints on
 	// the intermediate certificate.
 	Policies *certpolicy.PolicyConfig `json:"policies,omitempty"`
+}
+
+// CAExternalCSRRequest generates an HSM-backed subordinate-CA key and emits a
+// PKCS#10 CSR carrying CA basicConstraints/keyUsage attributes, for signature by
+// an external parent (offline corporate root or third-party bridge). The CA is
+// created in the "pending" state until the signed certificate is imported.
+type CAExternalCSRRequest struct {
+	// TenantID assigns the CA to a tenant. Empty defaults to the built-in
+	// default tenant.
+	TenantID string    `json:"tenant_id,omitempty"`
+	Label    string    `json:"label"`
+	KeyType  string    `json:"key_type"`
+	Subject  CASubject `json:"subject"`
+	// MaxPathLen is the path-length constraint requested in the CSR's
+	// basicConstraints attribute (nil = unconstrained). The external parent may
+	// override it; the issued certificate's value is authoritative after import.
+	MaxPathLen *int `json:"max_path_len,omitempty"`
+}
+
+// CAExternalCSRResponse returns the pending CA record and its PKCS#10 CSR.
+type CAExternalCSRResponse struct {
+	CA     *CA    `json:"ca"`
+	CSRPEM string `json:"csr_pem"`
+}
+
+// CAImportCertRequest installs the externally signed certificate for a pending
+// CA ({id} in the request path). The certificate's public key must match the
+// CA's HSM-backed key. ChainPEM optionally imports the external issuing chain
+// (intermediates and root) so /api/ca/{id}/chain can serve the full path to the
+// external trust anchor; when the certificate PEM itself is a bundle, the
+// certificates after the first are treated as chain too.
+type CAImportCertRequest struct {
+	CertificatePEM string `json:"certificate_pem"`
+	ChainPEM       string `json:"chain_pem,omitempty"`
+	// Replace permits re-importing onto an already-active externally-signed CA
+	// (renewed certificate for the same key, or adding the chain later).
+	Replace bool `json:"replace,omitempty"`
+}
+
+// CAImportCertResponse returns the now-active CA, any non-fatal validation
+// warnings, and the combined chain as served to relying parties.
+type CAImportCertResponse struct {
+	CA       *CA      `json:"ca"`
+	Warnings []string `json:"warnings,omitempty"`
+	ChainPEM string   `json:"chain_pem"`
 }
 
 // CertStatus is the lifecycle status of an issued end-entity certificate.

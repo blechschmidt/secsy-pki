@@ -320,6 +320,8 @@ func (db *DB) migrate() error {
 			successor_id TEXT,
 			predecessor_id TEXT,
 			retire_after TIMESTAMP,
+			csr TEXT,
+			external_chain TEXT,
 			created_at %s
 		)`, blob, currentTimestamp),
 		// Per-CA monotonic serial counter used to allocate unique certificate
@@ -728,6 +730,9 @@ func (db *DB) migrate() error {
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS successor_id TEXT")
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS predecessor_id TEXT")
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS retire_after TIMESTAMP")
+		// Externally-signed subordinate CA support (Task 69).
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS csr TEXT")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS external_chain TEXT")
 		db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS ssh_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS certificate BYTEA")
@@ -765,6 +770,9 @@ func (db *DB) migrate() error {
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN successor_id TEXT")
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN predecessor_id TEXT")
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN retire_after TIMESTAMP")
+		// Externally-signed subordinate CA support (Task 69).
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN csr TEXT")
+		db.conn.Exec("ALTER TABLE cas ADD COLUMN external_chain TEXT")
 		db.conn.Exec("ALTER TABLE permissions ADD COLUMN ssh_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE permissions ADD COLUMN x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN certificate BLOB")
@@ -868,7 +876,7 @@ func (db *DB) upsert(table, columns, placeholders, conflictCols, updateSet strin
 const caColumns = `id, tenant_id, parent_id, label, pkcs11_uri, key_type, public_key,
 	default_ssh_restriction_set_id, default_x509_restriction_set_id,
 	certificate, subject, serial, not_before, not_after, max_path_len,
-	status, successor_id, predecessor_id, retire_after, created_at`
+	status, successor_id, predecessor_id, retire_after, csr, external_chain, created_at`
 
 // caScanner is the minimal surface shared by *sql.Row and *sql.Rows.
 type caScanner interface {
@@ -880,16 +888,22 @@ func scanCA(s caScanner) (*models.CA, error) {
 	var ca models.CA
 	var pubBlob []byte
 	var tenantID, cert, subject, serial, status sql.NullString
-	var successorID, predecessorID sql.NullString
+	var successorID, predecessorID, csr, externalChain sql.NullString
 	var notBefore, notAfter, retireAfter sql.NullTime
 	var maxPathLen sql.NullInt64
 	if err := s.Scan(
 		&ca.ID, &tenantID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob,
 		&ca.DefaultSSHRestrictionSetID, &ca.DefaultX509RestrictionSetID,
 		&cert, &subject, &serial, &notBefore, &notAfter, &maxPathLen,
-		&status, &successorID, &predecessorID, &retireAfter, &ca.CreatedAt,
+		&status, &successorID, &predecessorID, &retireAfter, &csr, &externalChain, &ca.CreatedAt,
 	); err != nil {
 		return nil, err
+	}
+	if csr.Valid {
+		ca.CSR = csr.String
+	}
+	if externalChain.Valid {
+		ca.ExternalChain = externalChain.String
 	}
 	if tenantID.Valid && tenantID.String != "" {
 		ca.TenantID = tenantID.String
@@ -983,13 +997,14 @@ func (db *DB) CreateCA(ca *models.CA) error {
 		`INSERT INTO cas (id, tenant_id, parent_id, label, pkcs11_uri, key_type, public_key,
 			default_ssh_restriction_set_id, default_x509_restriction_set_id,
 			certificate, subject, serial, not_before, not_after, max_path_len,
-			status, successor_id, predecessor_id, retire_after)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			status, successor_id, predecessor_id, retire_after, csr, external_chain)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		ca.ID, tenantID, ca.ParentID, ca.Label, ca.PKCS11URI, ca.KeyType, pubKeyToBlob(ca.PublicKey),
 		ca.DefaultSSHRestrictionSetID, ca.DefaultX509RestrictionSetID,
 		nullString(ca.Certificate), nullString(ca.Subject), nullString(ca.Serial),
 		notBefore, notAfter, maxPathLen,
 		status, ca.SuccessorID, ca.PredecessorID, retireAfter,
+		nullString(ca.CSR), nullString(ca.ExternalChain),
 	); err != nil {
 		return err
 	}
@@ -1140,6 +1155,30 @@ func (db *DB) MarkCARotated(oldID, newID string, retireAfter *time.Time) error {
 func (db *DB) SetCAStatus(id, status string) error {
 	_, err := db.exec(`UPDATE cas SET status = ? WHERE id = ?`, status, id)
 	return err
+}
+
+// InstallCACertificate installs an externally signed certificate on a CA in one
+// atomic update: the certificate and its parsed metadata (subject, serial,
+// validity, path-length constraint), the imported external issuing chain, and
+// the new lifecycle status (pending → active). It is the persistence half of
+// the externally-signed subordinate CA flow; validation happens in the ca
+// package before this is called.
+func (db *DB) InstallCACertificate(id, certificate, subject, serial string, notBefore, notAfter time.Time, maxPathLen *int, externalChain, status string) error {
+	var mpl interface{}
+	if maxPathLen != nil {
+		mpl = *maxPathLen
+	}
+	res, err := db.exec(
+		`UPDATE cas SET certificate = ?, subject = ?, serial = ?, not_before = ?, not_after = ?,
+			max_path_len = ?, external_chain = ?, status = ? WHERE id = ?`,
+		certificate, subject, serial, notBefore, notAfter, mpl, nullString(externalChain), status, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("CA %q not found", id)
+	}
+	return nil
 }
 
 func (db *DB) SetCADefaultRestrictionSet(caID string, rsType string, rsID *string) error {

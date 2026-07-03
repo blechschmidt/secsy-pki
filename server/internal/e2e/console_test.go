@@ -20,10 +20,16 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -37,9 +43,73 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
+	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
 	"golang.org/x/crypto/ssh"
 )
+
+// testExternalRoot plays the offline corporate root for the external-CA flow:
+// a key + self-signed certificate that exist only in the test, signing our
+// CSRs "out-of-band" the way an external parent would.
+type testExternalRoot struct {
+	key     *ecdsa.PrivateKey
+	cert    *x509.Certificate
+	certPEM []byte
+}
+
+func newTestExternalRoot(t *testing.T, cn string) *testExternalRoot {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("external root key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: cn, Organization: []string{"External Corp"}},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("external root cert: %v", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &testExternalRoot{key: key, cert: cert, certPEM: pki.EncodeCertificatePEM(der)}
+}
+
+// signCACSR signs a subordinate-CA CSR under the external root with full CA
+// attributes, returning the certificate PEM.
+func (r *testExternalRoot) signCACSR(t *testing.T, csrPEM []byte) []byte {
+	t.Helper()
+	csr, err := pki.ParseCSRPEM(csrPEM)
+	if err != nil {
+		t.Fatalf("parsing CSR: %v", err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               csr.Subject,
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(5 * 365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, r.cert, csr.PublicKey, r.key)
+	if err != nil {
+		t.Fatalf("signing CSR under external root: %v", err)
+	}
+	return pki.EncodeCertificatePEM(der)
+}
 
 // consoleEnv is the wired-up server + fixtures for the console flow test.
 type consoleEnv struct {
@@ -711,6 +781,105 @@ func TestConsoleFlow(t *testing.T) {
 		st, _, chains := env.getPublic(t, "/api/ca/"+env.interID+"/chains")
 		if st != http.StatusOK || !bytes.Contains(chains, []byte(cs.CrossSign.ID)) {
 			t.Errorf("alternate chains = %d: %s", st, chains)
+		}
+	})
+
+	// --- 16b. Externally-signed subordinate CA (Authorities view, Task 69):
+	// generate an HSM-backed key + CSR via REST, play the offline corporate root
+	// in-test, import the signed certificate + external chain, and confirm the
+	// public chain endpoint reaches the external anchor and issuance works. ---
+	t.Run("ExternalCAFlow", func(t *testing.T) {
+		status, body := env.req(t, "POST", "/api/ca/csr", map[string]any{
+			"label":    uniqueLabel(t, "console-extsub"),
+			"key_type": "ecdsa-p256",
+			"subject":  map[string]string{"cn": "Console External Sub CA", "o": "Secsy"},
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("ca csr = %d: %s", status, body)
+		}
+		var csrRes models.CAExternalCSRResponse
+		if err := json.Unmarshal(body, &csrRes); err != nil {
+			t.Fatalf("decode csr response: %v", err)
+		}
+		if csrRes.CA.Status != models.CAStatusPending || !strings.Contains(csrRes.CSRPEM, "BEGIN CERTIFICATE REQUEST") {
+			t.Fatalf("unexpected csr result: status=%q csr=%.60q", csrRes.CA.Status, csrRes.CSRPEM)
+		}
+		extID := csrRes.CA.ID
+
+		// A pending CA must not appear among the SSH signing keys.
+		status, body = env.req(t, "GET", "/api/ssh/cas", nil)
+		if status != http.StatusOK {
+			t.Fatalf("list ssh cas = %d: %s", status, body)
+		}
+		if bytes.Contains(body, []byte(extID)) {
+			t.Errorf("pending external CA leaked into the SSH CA list: %s", body)
+		}
+
+		// The CSR is re-downloadable while the signing ceremony is in flight.
+		status, body = env.req(t, "GET", "/api/ca/"+extID+"/csr", nil)
+		if status != http.StatusOK || string(body) != csrRes.CSRPEM {
+			t.Fatalf("csr re-download = %d (matches original: %t)", status, string(body) == csrRes.CSRPEM)
+		}
+
+		// Play the external root out-of-band and sign the CSR.
+		root := newTestExternalRoot(t, "Console External Corp Root")
+		signedPEM := root.signCACSR(t, []byte(csrRes.CSRPEM))
+
+		// Fail-closed check via REST: a certificate for a different key is refused.
+		otherRes, otherBody := env.req(t, "POST", "/api/ca/csr", map[string]any{
+			"label":    uniqueLabel(t, "console-extsub-other"),
+			"key_type": "ecdsa-p256",
+			"subject":  map[string]string{"cn": "Console External Other"},
+		})
+		if otherRes != http.StatusCreated {
+			t.Fatalf("second ca csr = %d: %s", otherRes, otherBody)
+		}
+		var other models.CAExternalCSRResponse
+		if err := json.Unmarshal(otherBody, &other); err != nil {
+			t.Fatal(err)
+		}
+		status, body = env.req(t, "POST", "/api/ca/"+other.CA.ID+"/import-cert", map[string]any{
+			"certificate_pem": string(signedPEM), // signed for extID's key, not other's
+		})
+		if status != http.StatusBadRequest || !bytes.Contains(body, []byte("does not match")) {
+			t.Fatalf("mismatched import = %d, want 400 key mismatch: %s", status, body)
+		}
+
+		// Import the certificate with the external root as chain.
+		status, body = env.req(t, "POST", "/api/ca/"+extID+"/import-cert", map[string]any{
+			"certificate_pem": string(signedPEM),
+			"chain_pem":       string(root.certPEM),
+		})
+		if status != http.StatusOK {
+			t.Fatalf("import-cert = %d: %s", status, body)
+		}
+		var imp models.CAImportCertResponse
+		if err := json.Unmarshal(body, &imp); err != nil {
+			t.Fatalf("decode import response: %v", err)
+		}
+		if imp.CA.Status != models.CAStatusActive || imp.CA.ExternalChain == "" {
+			t.Fatalf("import did not activate with chain: %s", body)
+		}
+
+		// The public chain endpoint serves our certificate plus the external root.
+		st, _, chain := env.getPublic(t, "/api/ca/"+extID+"/chain")
+		if st != http.StatusOK {
+			t.Fatalf("chain download = %d", st)
+		}
+		if !bytes.Contains(chain, bytes.TrimSpace(root.certPEM)) {
+			t.Errorf("served chain does not include the external root:\n%s", chain)
+		}
+		if strings.Count(string(chain), "BEGIN CERTIFICATE") < 2 {
+			t.Errorf("served chain should carry the CA cert + external root: %s", chain)
+		}
+
+		// Issuance from the imported CA works through the same REST path.
+		csr := makeCSR(t, "ext.e2e.example.com", []string{"ext.e2e.example.com"})
+		status, body = env.req(t, "POST", "/api/ca/"+extID+"/issue", map[string]string{
+			"csr": string(csr), "profile": "server",
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("issue under imported CA = %d: %s", status, body)
 		}
 	})
 

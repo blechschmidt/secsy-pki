@@ -315,6 +315,14 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("POST /api/ca/init-root", protectStepUp("ca.init_root", http.HandlerFunc(a.InitRootCA)))
 	mux.Handle("POST /api/ca/{id}/issue-intermediate", protectStepUp("ca.issue_intermediate", http.HandlerFunc(a.IssueIntermediateCA)))
 
+	// Externally-signed subordinate CA flow (Task 69): HSM-backed key + PKCS#10
+	// CSR for an external parent, then validated import of the certificate that
+	// parent signed. Both mutate the CA hierarchy, so they are step-up gated
+	// like init-root; re-downloading the CSR is a tenant-scoped read.
+	mux.Handle("POST /api/ca/csr", protectStepUp("ca.csr", http.HandlerFunc(a.CreateExternalCACSR)))
+	mux.Handle("GET /api/ca/{id}/csr", protected(http.HandlerFunc(a.GetExternalCACSR)))
+	mux.Handle("POST /api/ca/{id}/import-cert", protectStepUp("ca.import_cert", http.HandlerFunc(a.ImportExternalCACert)))
+
 	// Cross-signing and bridge-CA support (Task 47). Creating a cross-sign and
 	// listing relationships are management operations (ca:manage); the alternate
 	// chains a cross-sign publishes are public, like the overlap chain, so relying

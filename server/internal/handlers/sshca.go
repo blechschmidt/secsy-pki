@@ -111,7 +111,9 @@ func (a *API) ListSSHCAs(w http.ResponseWriter, r *http.Request) {
 	}
 	sshCAs := []models.CA{}
 	for _, c := range cas {
-		if c.Certificate == "" && strings.TrimSpace(c.PublicKey) != "" {
+		// A pending externally-signed X.509 CA also has no certificate yet; it is
+		// awaiting import, not an SSH-only signer.
+		if c.Certificate == "" && c.Status != models.CAStatusPending && strings.TrimSpace(c.PublicKey) != "" {
 			sshCAs = append(sshCAs, c)
 		}
 	}

@@ -193,6 +193,9 @@ func run(args []string) error {
 		return cmdTenant(db, cmdArgs)
 	case "issue-intermediate":
 		return cmdIssueIntermediate(db, mgr, cmdArgs)
+	case "ca":
+		// Externally-signed subordinate CA flow: "ca csr" / "ca import-cert".
+		return cmdCA(db, mgr, cmdArgs)
 	case "list":
 		return cmdList(db)
 	case "issue":
@@ -325,6 +328,10 @@ Usage:
 Commands:
   init-root           Generate a root CA key and self-signed certificate
   issue-intermediate  Issue an intermediate CA under an existing CA
+  ca csr              Generate an HSM-backed CA key + PKCS#10 CSR for an
+                      external parent (offline corporate root / bridge) to sign
+  ca import-cert      Validate and install the externally signed CA certificate
+                      (+ optional external chain for chain serving)
   list                List configured CAs
   version             Print version, Go runtime, and FIPS 140-3 mode
   issue               Sign a CSR into an end-entity certificate (by profile)

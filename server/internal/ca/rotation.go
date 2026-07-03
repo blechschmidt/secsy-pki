@@ -99,6 +99,9 @@ func (m *Manager) RotateIntermediate(ctx context.Context, spec RotateSpec) (*Rot
 		return nil, fmt.Errorf("CA %q is not an X.509 CA (no certificate)", old.Label)
 	}
 	if old.ParentID == nil {
+		if old.CSR != "" {
+			return nil, fmt.Errorf("CA %q is externally signed; its parent is not held here, so rotate it out-of-band: generate a fresh key and CSR with \"ca csr\", have the external parent sign it, and import the certificate", old.Label)
+		}
 		return nil, fmt.Errorf("CA %q is a root CA; only intermediate keys can be rotated with this workflow", old.Label)
 	}
 	if old.Status == models.CAStatusRetired {
@@ -444,6 +447,7 @@ func (m *Manager) CombinedChainPEM(caID string) ([]byte, error) {
 
 	// Walk the parent chain up to the root. Guard against cycles.
 	seen := map[string]bool{}
+	top := ca
 	parentID := ca.ParentID
 	for parentID != nil && *parentID != "" && !seen[*parentID] {
 		seen[*parentID] = true
@@ -455,7 +459,15 @@ func (m *Manager) CombinedChainPEM(caID string) ([]byte, error) {
 			break
 		}
 		appendCert(parent.Certificate)
+		top = parent
 		parentID = parent.ParentID
+	}
+
+	// When the topmost local CA was signed by an external parent (offline
+	// corporate root, third-party bridge), append its imported external chain so
+	// relying parties get the full path to the external trust anchor.
+	if top.ExternalChain != "" {
+		appendCert(top.ExternalChain)
 	}
 
 	return out, nil

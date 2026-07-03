@@ -277,6 +277,27 @@
             </div>
             <button class="btn" id="interCreateBtn">Issue intermediate</button>
           </div>
+          <div class="panel" style="flex:1;min-width:300px">
+            <h2 style="font-size:15px">External subordinate CA (CSR)</h2>
+            <p class="sub">Generate an HSM-backed CA key and download a PKCS#10 CSR for an offline corporate root or third-party parent to sign. Import the signed certificate from the table above when it returns.</p>
+            <div id="extCsrError" class="notice err hidden"></div>
+            <div class="field"><label for="extLabel">Label (unique key label)</label><input id="extLabel" placeholder="corp-issuing"></div>
+            <div class="row">
+              <div class="field" style="flex:1"><label for="extKeyType">Key type</label>
+                <select id="extKeyType">
+                  <option value="ecdsa-p384">ecdsa-p384</option>
+                  <option value="ecdsa-p256">ecdsa-p256</option>
+                  <option value="rsa-4096">rsa-4096</option>
+                  <option value="rsa-3072">rsa-3072</option>
+                  <option value="rsa-2048">rsa-2048</option>
+                </select>
+              </div>
+              <div class="field" style="width:120px"><label for="extPathLen">Path length</label><input id="extPathLen" type="number" min="0" placeholder="none"></div>
+            </div>
+            <div class="field"><label for="extCN">Common name</label><input id="extCN" placeholder="Corp Issuing CA"></div>
+            <div class="field"><label for="extO">Organization</label><input id="extO" placeholder="Corp"></div>
+            <button class="btn" id="extCsrBtn">Generate key + CSR</button>
+          </div>
         </div>
 
         <div class="row" style="align-items:stretch;margin-top:14px">
@@ -743,6 +764,30 @@
       <div class="row" style="justify-content:flex-end;gap:8px;margin-top:8px">
         <button class="btn ghost sm" id="rotateCancel">Cancel</button>
         <button class="btn sm" id="rotateConfirm">Rotate key</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import externally signed CA certificate modal -->
+  <div id="importCertModal" class="modal hidden">
+    <div class="card">
+      <h2 style="font-size:16px;margin-top:0">Import signed certificate — <span id="importCALabel"></span></h2>
+      <p class="sub">Install the certificate the external parent issued for this CA's HSM-backed key. The public key must match the key on the HSM; the optional chain (external intermediates and root) is verified and then served with the CA's chain.</p>
+      <div id="importError" class="notice err hidden"></div>
+      <div class="field">
+        <label for="importCertPEM">Signed CA certificate (PEM — extra certificates in a bundle are treated as chain)</label>
+        <textarea id="importCertPEM" placeholder="-----BEGIN CERTIFICATE-----" style="min-height:100px"></textarea>
+      </div>
+      <div class="field">
+        <label for="importChainPEM">External chain (PEM, optional — the parent(s) up to the external root)</label>
+        <textarea id="importChainPEM" placeholder="-----BEGIN CERTIFICATE-----" style="min-height:80px"></textarea>
+      </div>
+      <label class="muted" id="importReplaceRow" style="display:flex;gap:6px;align-items:center;margin-bottom:10px" title="Replace the current externally signed certificate: an external renewal for the same key, or adding the chain after the fact.">
+        <input type="checkbox" id="importReplace"> replace the existing certificate (external renewal)
+      </label>
+      <div class="row" style="justify-content:flex-end;gap:8px;margin-top:8px">
+        <button class="btn ghost sm" id="importCancel">Cancel</button>
+        <button class="btn sm" id="importConfirm">Validate &amp; import</button>
       </div>
     </div>
   </div>

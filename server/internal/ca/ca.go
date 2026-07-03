@@ -264,18 +264,6 @@ func (m *Manager) persistCA(tenantID string, parentID *string, label string, key
 	denySSH := database.BuiltinDenyAllSSH
 	denyX509 := database.BuiltinDenyAllX509
 
-	// ML-DSA keys have no OpenSSH representation, so the software provider returns
-	// an empty SSHPublicKey for them. Store the DER SubjectPublicKeyInfo (PEM) as
-	// the CA's public key so the non-null column always carries the real key.
-	publicKey := keyInfo.SSHPublicKey
-	if publicKey == "" {
-		if der, err := pqc.MarshalPKIXPublicKey(keyInfo.PublicKey); err == nil {
-			publicKey = string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
-		} else {
-			publicKey = keyInfo.KeyType // last-resort non-null marker
-		}
-	}
-
 	ca := &models.CA{
 		ID:                          uuid.New().String(),
 		TenantID:                    tenantID,
@@ -283,7 +271,7 @@ func (m *Manager) persistCA(tenantID string, parentID *string, label string, key
 		Label:                       label,
 		PKCS11URI:                   keyInfo.URI,
 		KeyType:                     keyInfo.KeyType,
-		PublicKey:                   publicKey,
+		PublicKey:                   caPublicKeyString(keyInfo),
 		DefaultSSHRestrictionSetID:  &denySSH,
 		DefaultX509RestrictionSetID: &denyX509,
 		Certificate:                 string(pemBytes),
@@ -298,6 +286,19 @@ func (m *Manager) persistCA(tenantID string, parentID *string, label string, key
 		return nil, fmt.Errorf("persisting CA: %w", err)
 	}
 	return ca, nil
+}
+
+// caPublicKeyString renders a generated key's public half for the CA record's
+// non-null public_key column: the OpenSSH form when available, else the DER
+// SubjectPublicKeyInfo as PEM (ML-DSA keys have no OpenSSH representation).
+func caPublicKeyString(keyInfo *keyprovider.KeyInfo) string {
+	if keyInfo.SSHPublicKey != "" {
+		return keyInfo.SSHPublicKey
+	}
+	if der, err := pqc.MarshalPKIXPublicKey(keyInfo.PublicKey); err == nil {
+		return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	}
+	return keyInfo.KeyType // last-resort non-null marker
 }
 
 // keyRefForCA resolves the provider key reference for a CA, preferring the

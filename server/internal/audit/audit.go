@@ -159,6 +159,13 @@ const (
 	// bridge-CA and root-transition alternate chains. No private key material is
 	// handled; the subject key is certified, not imported.
 	ActionCACrossSign = "ca.cross_sign"
+	// Externally-signed subordinate CA flow (Task 69). CSR records an HSM-backed
+	// CA key being generated and its PKCS#10 request emitted for an external
+	// parent (offline corporate root / third-party bridge); ImportCert records
+	// the externally signed certificate being validated and installed. Only the
+	// CSR and certificates cross the trust boundary — never key material.
+	ActionCACSR        = "ca.csr"
+	ActionCAImportCert = "ca.import_cert"
 	// ACME (RFC 8555) protocol operations. The actor for these is the ACME
 	// account ("acme:<account-id>") rather than an OIDC/root principal, since
 	// ACME clients authenticate with their own account keys.

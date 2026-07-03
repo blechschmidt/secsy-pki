@@ -43,6 +43,14 @@ const (
 	AuditLogEntryCertFormatX509 AuditLogEntryCertFormat = "x509"
 )
 
+// Defines values for CAStatus.
+const (
+	CAStatusActive     CAStatus = "active"
+	CAStatusPending    CAStatus = "pending"
+	CAStatusRetired    CAStatus = "retired"
+	CAStatusSuperseded CAStatus = "superseded"
+)
+
 // Defines values for CTResponseStatus.
 const (
 	CTResponseStatusFailedOpen CTResponseStatus = "failed_open"
@@ -184,9 +192,9 @@ const (
 
 // Defines values for SSHCertificateStatus.
 const (
-	SSHCertificateStatusExpired SSHCertificateStatus = "expired"
-	SSHCertificateStatusRevoked SSHCertificateStatus = "revoked"
-	SSHCertificateStatusValid   SSHCertificateStatus = "valid"
+	Expired SSHCertificateStatus = "expired"
+	Revoked SSHCertificateStatus = "revoked"
+	Valid   SSHCertificateStatus = "valid"
 )
 
 // Defines values for SSHProfileCertType.
@@ -479,25 +487,37 @@ type AuthConfig struct {
 // CA defines model for CA.
 type CA struct {
 	// Certificate PEM X.509 CA certificate
-	Certificate                 *string    `json:"certificate,omitempty"`
-	CreatedAt                   *time.Time `json:"created_at,omitempty"`
-	DefaultSshRestrictionSetId  *string    `json:"default_ssh_restriction_set_id,omitempty"`
-	DefaultX509RestrictionSetId *string    `json:"default_x509_restriction_set_id,omitempty"`
-	Id                          *string    `json:"id,omitempty"`
-	KeyType                     *string    `json:"key_type,omitempty"`
-	Label                       *string    `json:"label,omitempty"`
-	MaxPathLen                  *int       `json:"max_path_len,omitempty"`
-	NotAfter                    *time.Time `json:"not_after,omitempty"`
-	NotBefore                   *time.Time `json:"not_before,omitempty"`
-	ParentId                    *string    `json:"parent_id,omitempty"`
-	Pkcs11Uri                   *string    `json:"pkcs11_uri,omitempty"`
-	PublicKey                   *string    `json:"public_key,omitempty"`
-	Serial                      *string    `json:"serial,omitempty"`
-	Subject                     *string    `json:"subject,omitempty"`
+	Certificate *string    `json:"certificate,omitempty"`
+	CreatedAt   *time.Time `json:"created_at,omitempty"`
+
+	// Csr Stored PKCS#10 CSR (PEM) of a CA created for external signing; empty for locally signed CAs.
+	Csr                         *string `json:"csr,omitempty"`
+	DefaultSshRestrictionSetId  *string `json:"default_ssh_restriction_set_id,omitempty"`
+	DefaultX509RestrictionSetId *string `json:"default_x509_restriction_set_id,omitempty"`
+
+	// ExternalChain Imported external issuing chain (PEM bundle up to the external root) served after the CA's own certificate in its chain.
+	ExternalChain *string    `json:"external_chain,omitempty"`
+	Id            *string    `json:"id,omitempty"`
+	KeyType       *string    `json:"key_type,omitempty"`
+	Label         *string    `json:"label,omitempty"`
+	MaxPathLen    *int       `json:"max_path_len,omitempty"`
+	NotAfter      *time.Time `json:"not_after,omitempty"`
+	NotBefore     *time.Time `json:"not_before,omitempty"`
+	ParentId      *string    `json:"parent_id,omitempty"`
+	Pkcs11Uri     *string    `json:"pkcs11_uri,omitempty"`
+	PublicKey     *string    `json:"public_key,omitempty"`
+	Serial        *string    `json:"serial,omitempty"`
+
+	// Status Lifecycle state. "pending" marks an externally-signed CA whose key and CSR exist but whose certificate has not been imported yet.
+	Status  *CAStatus `json:"status,omitempty"`
+	Subject *string   `json:"subject,omitempty"`
 
 	// TenantId Owning tenant (isolation boundary).
 	TenantId *string `json:"tenant_id,omitempty"`
 }
+
+// CAStatus Lifecycle state. "pending" marks an externally-signed CA whose key and CSR exist but whose certificate has not been imported yet.
+type CAStatus string
 
 // CACrossSignRequest A cross-sign request. Provide exactly one subject source: subject_ca_id (a CA in this deployment), certificate_pem (an external certificate), or csr_pem (an external CSR).
 type CACrossSignRequest struct {
@@ -515,6 +535,51 @@ type CACrossSignRequest struct {
 
 	// ValidityDays Cross-signed certificate validity. Omitted reuses a certificate/local subject's own span (required for a CSR subject). Always clamped to the issuer's expiry.
 	ValidityDays *int `json:"validity_days,omitempty"`
+}
+
+// CAExternalCSRRequest defines model for CAExternalCSRRequest.
+type CAExternalCSRRequest struct {
+	// KeyType Classical key types only (e.g. ecdsa-p384, rsa-3072); the external parent signs with classical tooling.
+	KeyType string `json:"key_type"`
+	Label   string `json:"label"`
+
+	// MaxPathLen Path-length constraint requested in the CSR's basicConstraints attribute; the external parent may override it.
+	MaxPathLen *int      `json:"max_path_len,omitempty"`
+	Subject    CASubject `json:"subject"`
+
+	// TenantId Owning tenant (default: the built-in default tenant).
+	TenantId *string `json:"tenant_id,omitempty"`
+}
+
+// CAExternalCSRResponse defines model for CAExternalCSRResponse.
+type CAExternalCSRResponse struct {
+	Ca *CA `json:"ca,omitempty"`
+
+	// CsrPem PKCS#10 CSR (PEM) to submit to the external parent.
+	CsrPem *string `json:"csr_pem,omitempty"`
+}
+
+// CAImportCertRequest defines model for CAImportCertRequest.
+type CAImportCertRequest struct {
+	// CertificatePem The externally signed CA certificate (PEM). Extra certificates in a bundle are treated as chain material.
+	CertificatePem string `json:"certificate_pem"`
+
+	// ChainPem External issuing chain (PEM bundle: intermediates and root) used to verify the certificate and then served with the CA's chain.
+	ChainPem *string `json:"chain_pem,omitempty"`
+
+	// Replace Permit re-importing onto an already-active externally-signed CA — a renewed certificate for the same key, or adding the chain later.
+	Replace *bool `json:"replace,omitempty"`
+}
+
+// CAImportCertResponse defines model for CAImportCertResponse.
+type CAImportCertResponse struct {
+	Ca *CA `json:"ca,omitempty"`
+
+	// ChainPem The combined chain now served for the CA (own certificate + external parents).
+	ChainPem *string `json:"chain_pem,omitempty"`
+
+	// Warnings Non-fatal validation findings the operator should review.
+	Warnings *[]string `json:"warnings,omitempty"`
 }
 
 // CAInitRootRequest defines model for CAInitRootRequest.
@@ -1846,11 +1911,17 @@ type GetTenantUsageParams struct {
 	Days *int `form:"days,omitempty" json:"days,omitempty"`
 }
 
+// CreateExternalCACSRJSONRequestBody defines body for CreateExternalCACSR for application/json ContentType.
+type CreateExternalCACSRJSONRequestBody = CAExternalCSRRequest
+
 // InitRootCAJSONRequestBody defines body for InitRootCA for application/json ContentType.
 type InitRootCAJSONRequestBody = CAInitRootRequest
 
 // CreateCrossSignJSONRequestBody defines body for CreateCrossSign for application/json ContentType.
 type CreateCrossSignJSONRequestBody = CACrossSignRequest
+
+// ImportExternalCACertJSONRequestBody defines body for ImportExternalCACert for application/json ContentType.
+type ImportExternalCACertJSONRequestBody = CAImportCertRequest
 
 // IssueCertificateJSONRequestBody defines body for IssueCertificate for application/json ContentType.
 type IssueCertificateJSONRequestBody = IssueCertRequest
@@ -2042,6 +2113,11 @@ type ClientInterface interface {
 	// GetAuthConfig request
 	GetAuthConfig(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// CreateExternalCACSRWithBody request with any body
+	CreateExternalCACSRWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreateExternalCACSR(ctx context.Context, body CreateExternalCACSRJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// InitRootCAWithBody request with any body
 	InitRootCAWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -2078,6 +2154,14 @@ type ClientInterface interface {
 
 	// GetCrossSignChain request
 	GetCrossSignChain(ctx context.Context, id CAId, csid string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetExternalCACSR request
+	GetExternalCACSR(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ImportExternalCACertWithBody request with any body
+	ImportExternalCACertWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ImportExternalCACert(ctx context.Context, id CAId, body ImportExternalCACertJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// IssueCertificateWithBody request with any body
 	IssueCertificateWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2483,6 +2567,30 @@ func (c *Client) GetAuthConfig(ctx context.Context, reqEditors ...RequestEditorF
 	return c.Client.Do(req)
 }
 
+func (c *Client) CreateExternalCACSRWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateExternalCACSRRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateExternalCACSR(ctx context.Context, body CreateExternalCACSRJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateExternalCACSRRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) InitRootCAWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewInitRootCARequestWithBody(c.Server, contentType, body)
 	if err != nil {
@@ -2629,6 +2737,42 @@ func (c *Client) CreateCrossSign(ctx context.Context, id CAId, body CreateCrossS
 
 func (c *Client) GetCrossSignChain(ctx context.Context, id CAId, csid string, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetCrossSignChainRequest(c.Server, id, csid)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetExternalCACSR(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetExternalCACSRRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ImportExternalCACertWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewImportExternalCACertRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ImportExternalCACert(ctx context.Context, id CAId, body ImportExternalCACertJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewImportExternalCACertRequest(c.Server, id, body)
 	if err != nil {
 		return nil, err
 	}
@@ -4432,6 +4576,46 @@ func NewGetAuthConfigRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewCreateExternalCACSRRequest calls the generic CreateExternalCACSR builder with application/json body
+func NewCreateExternalCACSRRequest(server string, body CreateExternalCACSRJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateExternalCACSRRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewCreateExternalCACSRRequestWithBody generates requests for CreateExternalCACSR with any type of body
+func NewCreateExternalCACSRRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/csr")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewInitRootCARequest calls the generic InitRootCA builder with application/json body
 func NewInitRootCARequest(server string, body InitRootCAJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -4930,6 +5114,87 @@ func NewGetCrossSignChainRequest(server string, id CAId, csid string) (*http.Req
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewGetExternalCACSRRequest generates requests for GetExternalCACSR
+func NewGetExternalCACSRRequest(server string, id CAId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/csr", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewImportExternalCACertRequest calls the generic ImportExternalCACert builder with application/json body
+func NewImportExternalCACertRequest(server string, id CAId, body ImportExternalCACertJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewImportExternalCACertRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewImportExternalCACertRequestWithBody generates requests for ImportExternalCACert with any type of body
+func NewImportExternalCACertRequestWithBody(server string, id CAId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/import-cert", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -8325,6 +8590,11 @@ type ClientWithResponsesInterface interface {
 	// GetAuthConfigWithResponse request
 	GetAuthConfigWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetAuthConfigResponse, error)
 
+	// CreateExternalCACSRWithBodyWithResponse request with any body
+	CreateExternalCACSRWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateExternalCACSRResponse, error)
+
+	CreateExternalCACSRWithResponse(ctx context.Context, body CreateExternalCACSRJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateExternalCACSRResponse, error)
+
 	// InitRootCAWithBodyWithResponse request with any body
 	InitRootCAWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*InitRootCAResponse, error)
 
@@ -8361,6 +8631,14 @@ type ClientWithResponsesInterface interface {
 
 	// GetCrossSignChainWithResponse request
 	GetCrossSignChainWithResponse(ctx context.Context, id CAId, csid string, reqEditors ...RequestEditorFn) (*GetCrossSignChainResponse, error)
+
+	// GetExternalCACSRWithResponse request
+	GetExternalCACSRWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetExternalCACSRResponse, error)
+
+	// ImportExternalCACertWithBodyWithResponse request with any body
+	ImportExternalCACertWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ImportExternalCACertResponse, error)
+
+	ImportExternalCACertWithResponse(ctx context.Context, id CAId, body ImportExternalCACertJSONRequestBody, reqEditors ...RequestEditorFn) (*ImportExternalCACertResponse, error)
 
 	// IssueCertificateWithBodyWithResponse request with any body
 	IssueCertificateWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*IssueCertificateResponse, error)
@@ -8835,6 +9113,30 @@ func (r GetAuthConfigResponse) StatusCode() int {
 	return 0
 }
 
+type CreateExternalCACSRResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *CAExternalCSRResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateExternalCACSRResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateExternalCACSRResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type InitRootCAResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -9075,6 +9377,53 @@ func (r GetCrossSignChainResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetCrossSignChainResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetExternalCACSRResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetExternalCACSRResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetExternalCACSRResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ImportExternalCACertResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *CAImportCertResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r ImportExternalCACertResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ImportExternalCACertResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -11101,6 +11450,23 @@ func (c *ClientWithResponses) GetAuthConfigWithResponse(ctx context.Context, req
 	return ParseGetAuthConfigResponse(rsp)
 }
 
+// CreateExternalCACSRWithBodyWithResponse request with arbitrary body returning *CreateExternalCACSRResponse
+func (c *ClientWithResponses) CreateExternalCACSRWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateExternalCACSRResponse, error) {
+	rsp, err := c.CreateExternalCACSRWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateExternalCACSRResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreateExternalCACSRWithResponse(ctx context.Context, body CreateExternalCACSRJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateExternalCACSRResponse, error) {
+	rsp, err := c.CreateExternalCACSR(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateExternalCACSRResponse(rsp)
+}
+
 // InitRootCAWithBodyWithResponse request with arbitrary body returning *InitRootCAResponse
 func (c *ClientWithResponses) InitRootCAWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*InitRootCAResponse, error) {
 	rsp, err := c.InitRootCAWithBody(ctx, contentType, body, reqEditors...)
@@ -11214,6 +11580,32 @@ func (c *ClientWithResponses) GetCrossSignChainWithResponse(ctx context.Context,
 		return nil, err
 	}
 	return ParseGetCrossSignChainResponse(rsp)
+}
+
+// GetExternalCACSRWithResponse request returning *GetExternalCACSRResponse
+func (c *ClientWithResponses) GetExternalCACSRWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetExternalCACSRResponse, error) {
+	rsp, err := c.GetExternalCACSR(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetExternalCACSRResponse(rsp)
+}
+
+// ImportExternalCACertWithBodyWithResponse request with arbitrary body returning *ImportExternalCACertResponse
+func (c *ClientWithResponses) ImportExternalCACertWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ImportExternalCACertResponse, error) {
+	rsp, err := c.ImportExternalCACertWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseImportExternalCACertResponse(rsp)
+}
+
+func (c *ClientWithResponses) ImportExternalCACertWithResponse(ctx context.Context, id CAId, body ImportExternalCACertJSONRequestBody, reqEditors ...RequestEditorFn) (*ImportExternalCACertResponse, error) {
+	rsp, err := c.ImportExternalCACert(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseImportExternalCACertResponse(rsp)
 }
 
 // IssueCertificateWithBodyWithResponse request with arbitrary body returning *IssueCertificateResponse
@@ -12409,6 +12801,46 @@ func ParseGetAuthConfigResponse(rsp *http.Response) (*GetAuthConfigResponse, err
 	return response, nil
 }
 
+// ParseCreateExternalCACSRResponse parses an HTTP response from a CreateExternalCACSRWithResponse call
+func ParseCreateExternalCACSRResponse(rsp *http.Response) (*CreateExternalCACSRResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateExternalCACSRResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest CAExternalCSRResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseInitRootCAResponse parses an HTTP response from a InitRootCAWithResponse call
 func ParseInitRootCAResponse(rsp *http.Response) (*InitRootCAResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -12672,6 +13104,79 @@ func ParseGetCrossSignChainResponse(rsp *http.Response) (*GetCrossSignChainRespo
 	}
 
 	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetExternalCACSRResponse parses an HTTP response from a GetExternalCACSRWithResponse call
+func ParseGetExternalCACSRResponse(rsp *http.Response) (*GetExternalCACSRResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetExternalCACSRResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseImportExternalCACertResponse parses an HTTP response from a ImportExternalCACertWithResponse call
+func ParseImportExternalCACertResponse(rsp *http.Response) (*ImportExternalCACertResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ImportExternalCACertResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest CAImportCertResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
 		var dest NotFound
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {

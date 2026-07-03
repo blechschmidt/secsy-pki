@@ -414,6 +414,81 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/ca/csr:
+    post:
+      operationId: createExternalCACSR
+      tags: [Certificate Authorities]
+      summary: Prepare an externally-signed subordinate CA (key + CSR)
+      description: >
+        Generates a subordinate-CA key inside the HSM and returns a PKCS#10 CSR
+        carrying CA basicConstraints/keyUsage attributes, for signature by an
+        external parent (an offline corporate root or a third-party bridge CA).
+        The CA is persisted in the "pending" state and cannot issue anything
+        until the signed certificate is installed via import-cert.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CAExternalCSRRequest" }
+      responses:
+        "201":
+          description: The pending CA record and its PKCS#10 CSR.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CAExternalCSRResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ca/{id}/csr:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    get:
+      operationId: getExternalCACSR
+      tags: [Certificate Authorities]
+      summary: Re-download an externally-signed CA's PKCS#10 CSR
+      description: >
+        Returns the stored CSR of a CA created for external signing — while the
+        out-of-band signing ceremony is in flight, or later to have the external
+        parent re-certify the same key (renewal).
+      responses:
+        "200":
+          description: The PKCS#10 CSR (PEM).
+          content:
+            application/x-pem-file:
+              schema: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/ca/{id}/import-cert:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: importExternalCACert
+      tags: [Certificate Authorities]
+      summary: Install the externally signed certificate for a pending CA
+      description: >
+        Validates and installs the certificate an external parent issued for the
+        CA's HSM-backed key. Fail-closed checks: the public key must match the
+        key held by the provider, basicConstraints must assert cA=TRUE, keyUsage
+        (when present) must include keyCertSign, the certificate must be
+        currently valid and not self-signed, and — when a chain is supplied —
+        it must verify against the external chain. The verified external chain
+        is then served via the CA's chain endpoint. Non-fatal findings (missing
+        cRLSign, rewritten DN, changed path length) are returned as warnings.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CAImportCertRequest" }
+      responses:
+        "200":
+          description: The activated CA, validation warnings, and the served chain.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CAImportCertResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/ca/{id}/cross-signs:
     parameters:
       - $ref: "#/components/parameters/CAId"
@@ -930,7 +1005,9 @@ paths:
         intermediate, any overlapping superseded siblings still within their
         key-rotation overlap window, and the parent chain up to the root. During
         an intermediate-key rollover this bundle lets relying parties validate
-        leaves signed by either the old or the new key.
+        leaves signed by either the old or the new key. For an externally-signed
+        subordinate the bundle continues past the local hierarchy with the
+        imported external chain, up to the external trust anchor.
       security: []
       responses:
         "200":
@@ -2315,6 +2392,22 @@ components:
         not_before: { type: string, format: date-time }
         not_after: { type: string, format: date-time }
         max_path_len: { type: integer }
+        status:
+          type: string
+          enum: [active, superseded, retired, pending]
+          description: >-
+            Lifecycle state. "pending" marks an externally-signed CA whose key
+            and CSR exist but whose certificate has not been imported yet.
+        csr:
+          type: string
+          description: >-
+            Stored PKCS#10 CSR (PEM) of a CA created for external signing;
+            empty for locally signed CAs.
+        external_chain:
+          type: string
+          description: >-
+            Imported external issuing chain (PEM bundle up to the external
+            root) served after the CA's own certificate in its chain.
 
     CreateCARequest:
       type: object
@@ -2449,6 +2542,58 @@ components:
         max_path_len: { type: integer }
         name_constraints: { $ref: "#/components/schemas/NameConstraintsConfig" }
         policies: { $ref: "#/components/schemas/CertPolicyConfig" }
+
+    CAExternalCSRRequest:
+      type: object
+      required: [label, key_type, subject]
+      properties:
+        label: { type: string }
+        tenant_id: { type: string, description: "Owning tenant (default: the built-in default tenant)." }
+        key_type: { type: string, description: "Classical key types only (e.g. ecdsa-p384, rsa-3072); the external parent signs with classical tooling." }
+        subject: { $ref: "#/components/schemas/CASubject" }
+        max_path_len:
+          type: integer
+          description: >-
+            Path-length constraint requested in the CSR's basicConstraints
+            attribute; the external parent may override it.
+
+    CAExternalCSRResponse:
+      type: object
+      properties:
+        ca: { $ref: "#/components/schemas/CA" }
+        csr_pem: { type: string, description: PKCS#10 CSR (PEM) to submit to the external parent. }
+
+    CAImportCertRequest:
+      type: object
+      required: [certificate_pem]
+      properties:
+        certificate_pem:
+          type: string
+          description: >-
+            The externally signed CA certificate (PEM). Extra certificates in a
+            bundle are treated as chain material.
+        chain_pem:
+          type: string
+          description: >-
+            External issuing chain (PEM bundle: intermediates and root) used to
+            verify the certificate and then served with the CA's chain.
+        replace:
+          type: boolean
+          description: >-
+            Permit re-importing onto an already-active externally-signed CA — a
+            renewed certificate for the same key, or adding the chain later.
+
+    CAImportCertResponse:
+      type: object
+      properties:
+        ca: { $ref: "#/components/schemas/CA" }
+        warnings:
+          type: array
+          items: { type: string }
+          description: Non-fatal validation findings the operator should review.
+        chain_pem:
+          type: string
+          description: The combined chain now served for the CA (own certificate + external parents).
 
     CACrossSignRequest:
       type: object
