@@ -194,6 +194,30 @@ func TestGRPCIssueRevokeE2E(t *testing.T) {
 		if !found {
 			t.Fatal("ListCertificates did not include the issued serial")
 		}
+		// The paged response (Task 83) carries the total matching count; the small
+		// test inventory fits in one page, so there is no further page.
+		if resp.GetTotal() < 1 {
+			t.Errorf("ListCertificates total = %d, want >= 1", resp.GetTotal())
+		}
+		if resp.GetHasMore() {
+			t.Error("ListCertificates unexpectedly reports a further page for a small inventory")
+		}
+	}
+
+	// 8. The paging filters flow through gRPC: a serial_prefix that cannot match
+	// returns an empty page with a zero total.
+	{
+		ctx, cancel := grpcRootCtx(t)
+		defer cancel()
+		resp, err := client.ListCertificates(ctx, &pkiv1.ListCertificatesRequest{
+			CaId: caID, SerialPrefix: "zzz-no-such-serial",
+		})
+		if err != nil {
+			t.Fatalf("ListCertificates(filtered): %v", err)
+		}
+		if resp.GetTotal() != 0 || len(resp.GetCertificates()) != 0 {
+			t.Errorf("filtered list: total=%d items=%d, want 0/0", resp.GetTotal(), len(resp.GetCertificates()))
+		}
 	}
 }
 

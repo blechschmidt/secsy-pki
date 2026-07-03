@@ -1155,8 +1155,24 @@ func (x *GetCertificateStatusResponse) GetRevocationReason() int32 {
 }
 
 type ListCertificatesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CaId          string                 `protobuf:"bytes,1,opt,name=ca_id,json=caId,proto3" json:"ca_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	CaId  string                 `protobuf:"bytes,1,opt,name=ca_id,json=caId,proto3" json:"ca_id,omitempty"`
+	// Pagination and filtering (Task 83). The response returns one keyset page,
+	// newest first; pass next_cursor back in cursor to fetch the following page.
+	// limit defaults to the server default and is capped at the server maximum.
+	Limit  int32  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
+	Cursor string `protobuf:"bytes,3,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	// status filters by lifecycle state (valid, revoked, held, expired).
+	Status string `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
+	// profile filters by issuing profile name.
+	Profile string `protobuf:"bytes,5,opt,name=profile,proto3" json:"profile,omitempty"`
+	// query is a case-insensitive substring matched against subject/CN/SANs.
+	Query string `protobuf:"bytes,6,opt,name=query,proto3" json:"query,omitempty"`
+	// serial_prefix restricts to serials beginning with this decimal string.
+	SerialPrefix string `protobuf:"bytes,7,opt,name=serial_prefix,json=serialPrefix,proto3" json:"serial_prefix,omitempty"`
+	// expires_before restricts to certificates whose NotAfter is before this
+	// instant.
+	ExpiresBefore *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=expires_before,json=expiresBefore,proto3" json:"expires_before,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1198,9 +1214,64 @@ func (x *ListCertificatesRequest) GetCaId() string {
 	return ""
 }
 
+func (x *ListCertificatesRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *ListCertificatesRequest) GetCursor() string {
+	if x != nil {
+		return x.Cursor
+	}
+	return ""
+}
+
+func (x *ListCertificatesRequest) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *ListCertificatesRequest) GetProfile() string {
+	if x != nil {
+		return x.Profile
+	}
+	return ""
+}
+
+func (x *ListCertificatesRequest) GetQuery() string {
+	if x != nil {
+		return x.Query
+	}
+	return ""
+}
+
+func (x *ListCertificatesRequest) GetSerialPrefix() string {
+	if x != nil {
+		return x.SerialPrefix
+	}
+	return ""
+}
+
+func (x *ListCertificatesRequest) GetExpiresBefore() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ExpiresBefore
+	}
+	return nil
+}
+
 type ListCertificatesResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Certificates  []*CertificateInfo     `protobuf:"bytes,1,rep,name=certificates,proto3" json:"certificates,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Certificates []*CertificateInfo     `protobuf:"bytes,1,rep,name=certificates,proto3" json:"certificates,omitempty"`
+	// next_cursor continues the listing; empty when this is the last page.
+	NextCursor string `protobuf:"bytes,2,opt,name=next_cursor,json=nextCursor,proto3" json:"next_cursor,omitempty"`
+	// total is the number of certificates matching the filter across all pages.
+	Total int32 `protobuf:"varint,3,opt,name=total,proto3" json:"total,omitempty"`
+	// has_more is true when further pages remain past this one.
+	HasMore       bool `protobuf:"varint,4,opt,name=has_more,json=hasMore,proto3" json:"has_more,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1240,6 +1311,27 @@ func (x *ListCertificatesResponse) GetCertificates() []*CertificateInfo {
 		return x.Certificates
 	}
 	return nil
+}
+
+func (x *ListCertificatesResponse) GetNextCursor() string {
+	if x != nil {
+		return x.NextCursor
+	}
+	return ""
+}
+
+func (x *ListCertificatesResponse) GetTotal() int32 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
+func (x *ListCertificatesResponse) GetHasMore() bool {
+	if x != nil {
+		return x.HasMore
+	}
+	return false
 }
 
 type GetCRLMetadataRequest struct {
@@ -1617,11 +1709,22 @@ const file_pki_v1_pki_proto_rawDesc = "" +
 	"\x06status\x18\x01 \x01(\x0e2\x1f.secsy.pki.v1.CertificateStatusR\x06status\x129\n" +
 	"\n" +
 	"revoked_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\trevokedAt\x12+\n" +
-	"\x11revocation_reason\x18\x03 \x01(\x05R\x10revocationReason\".\n" +
+	"\x11revocation_reason\x18\x03 \x01(\x05R\x10revocationReason\"\x8c\x02\n" +
 	"\x17ListCertificatesRequest\x12\x13\n" +
-	"\x05ca_id\x18\x01 \x01(\tR\x04caId\"]\n" +
+	"\x05ca_id\x18\x01 \x01(\tR\x04caId\x12\x14\n" +
+	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12\x16\n" +
+	"\x06cursor\x18\x03 \x01(\tR\x06cursor\x12\x16\n" +
+	"\x06status\x18\x04 \x01(\tR\x06status\x12\x18\n" +
+	"\aprofile\x18\x05 \x01(\tR\aprofile\x12\x14\n" +
+	"\x05query\x18\x06 \x01(\tR\x05query\x12#\n" +
+	"\rserial_prefix\x18\a \x01(\tR\fserialPrefix\x12A\n" +
+	"\x0eexpires_before\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\rexpiresBefore\"\xaf\x01\n" +
 	"\x18ListCertificatesResponse\x12A\n" +
-	"\fcertificates\x18\x01 \x03(\v2\x1d.secsy.pki.v1.CertificateInfoR\fcertificates\"Q\n" +
+	"\fcertificates\x18\x01 \x03(\v2\x1d.secsy.pki.v1.CertificateInfoR\fcertificates\x12\x1f\n" +
+	"\vnext_cursor\x18\x02 \x01(\tR\n" +
+	"nextCursor\x12\x14\n" +
+	"\x05total\x18\x03 \x01(\x05R\x05total\x12\x19\n" +
+	"\bhas_more\x18\x04 \x01(\bR\ahasMore\"Q\n" +
 	"\x15GetCRLMetadataRequest\x12\x13\n" +
 	"\x05ca_id\x18\x01 \x01(\tR\x04caId\x12\x19\n" +
 	"\x05shard\x18\x02 \x01(\x05H\x00R\x05shard\x88\x01\x01B\b\n" +
@@ -1721,36 +1824,37 @@ var file_pki_v1_pki_proto_depIdxs = []int32{
 	12, // 9: secsy.pki.v1.GetCertificateResponse.certificate:type_name -> secsy.pki.v1.CertificateInfo
 	0,  // 10: secsy.pki.v1.GetCertificateStatusResponse.status:type_name -> secsy.pki.v1.CertificateStatus
 	23, // 11: secsy.pki.v1.GetCertificateStatusResponse.revoked_at:type_name -> google.protobuf.Timestamp
-	12, // 12: secsy.pki.v1.ListCertificatesResponse.certificates:type_name -> secsy.pki.v1.CertificateInfo
-	23, // 13: secsy.pki.v1.GetCRLMetadataResponse.this_update:type_name -> google.protobuf.Timestamp
-	23, // 14: secsy.pki.v1.GetCRLMetadataResponse.next_update:type_name -> google.protobuf.Timestamp
-	23, // 15: secsy.pki.v1.GetCRLMetadataResponse.delta_this_update:type_name -> google.protobuf.Timestamp
-	23, // 16: secsy.pki.v1.GetCRLMetadataResponse.delta_next_update:type_name -> google.protobuf.Timestamp
-	3,  // 17: secsy.pki.v1.PKIService.IssueCertificate:input_type -> secsy.pki.v1.IssueCertificateRequest
-	4,  // 18: secsy.pki.v1.PKIService.RenewCertificate:input_type -> secsy.pki.v1.RenewCertificateRequest
-	6,  // 19: secsy.pki.v1.PKIService.RevokeCertificate:input_type -> secsy.pki.v1.RevokeCertificateRequest
-	8,  // 20: secsy.pki.v1.PKIService.SuspendCertificate:input_type -> secsy.pki.v1.SuspendCertificateRequest
-	10, // 21: secsy.pki.v1.PKIService.ReleaseCertificate:input_type -> secsy.pki.v1.ReleaseCertificateRequest
-	13, // 22: secsy.pki.v1.PKIService.GetCertificate:input_type -> secsy.pki.v1.GetCertificateRequest
-	15, // 23: secsy.pki.v1.PKIService.GetCertificateStatus:input_type -> secsy.pki.v1.GetCertificateStatusRequest
-	17, // 24: secsy.pki.v1.PKIService.ListCertificates:input_type -> secsy.pki.v1.ListCertificatesRequest
-	19, // 25: secsy.pki.v1.PKIService.GetCRLMetadata:input_type -> secsy.pki.v1.GetCRLMetadataRequest
-	21, // 26: secsy.pki.v1.PKIService.GetOCSPMetadata:input_type -> secsy.pki.v1.GetOCSPMetadataRequest
-	5,  // 27: secsy.pki.v1.PKIService.IssueCertificate:output_type -> secsy.pki.v1.CertificateResponse
-	5,  // 28: secsy.pki.v1.PKIService.RenewCertificate:output_type -> secsy.pki.v1.CertificateResponse
-	7,  // 29: secsy.pki.v1.PKIService.RevokeCertificate:output_type -> secsy.pki.v1.RevokeCertificateResponse
-	9,  // 30: secsy.pki.v1.PKIService.SuspendCertificate:output_type -> secsy.pki.v1.SuspendCertificateResponse
-	11, // 31: secsy.pki.v1.PKIService.ReleaseCertificate:output_type -> secsy.pki.v1.ReleaseCertificateResponse
-	14, // 32: secsy.pki.v1.PKIService.GetCertificate:output_type -> secsy.pki.v1.GetCertificateResponse
-	16, // 33: secsy.pki.v1.PKIService.GetCertificateStatus:output_type -> secsy.pki.v1.GetCertificateStatusResponse
-	18, // 34: secsy.pki.v1.PKIService.ListCertificates:output_type -> secsy.pki.v1.ListCertificatesResponse
-	20, // 35: secsy.pki.v1.PKIService.GetCRLMetadata:output_type -> secsy.pki.v1.GetCRLMetadataResponse
-	22, // 36: secsy.pki.v1.PKIService.GetOCSPMetadata:output_type -> secsy.pki.v1.GetOCSPMetadataResponse
-	27, // [27:37] is the sub-list for method output_type
-	17, // [17:27] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	23, // 12: secsy.pki.v1.ListCertificatesRequest.expires_before:type_name -> google.protobuf.Timestamp
+	12, // 13: secsy.pki.v1.ListCertificatesResponse.certificates:type_name -> secsy.pki.v1.CertificateInfo
+	23, // 14: secsy.pki.v1.GetCRLMetadataResponse.this_update:type_name -> google.protobuf.Timestamp
+	23, // 15: secsy.pki.v1.GetCRLMetadataResponse.next_update:type_name -> google.protobuf.Timestamp
+	23, // 16: secsy.pki.v1.GetCRLMetadataResponse.delta_this_update:type_name -> google.protobuf.Timestamp
+	23, // 17: secsy.pki.v1.GetCRLMetadataResponse.delta_next_update:type_name -> google.protobuf.Timestamp
+	3,  // 18: secsy.pki.v1.PKIService.IssueCertificate:input_type -> secsy.pki.v1.IssueCertificateRequest
+	4,  // 19: secsy.pki.v1.PKIService.RenewCertificate:input_type -> secsy.pki.v1.RenewCertificateRequest
+	6,  // 20: secsy.pki.v1.PKIService.RevokeCertificate:input_type -> secsy.pki.v1.RevokeCertificateRequest
+	8,  // 21: secsy.pki.v1.PKIService.SuspendCertificate:input_type -> secsy.pki.v1.SuspendCertificateRequest
+	10, // 22: secsy.pki.v1.PKIService.ReleaseCertificate:input_type -> secsy.pki.v1.ReleaseCertificateRequest
+	13, // 23: secsy.pki.v1.PKIService.GetCertificate:input_type -> secsy.pki.v1.GetCertificateRequest
+	15, // 24: secsy.pki.v1.PKIService.GetCertificateStatus:input_type -> secsy.pki.v1.GetCertificateStatusRequest
+	17, // 25: secsy.pki.v1.PKIService.ListCertificates:input_type -> secsy.pki.v1.ListCertificatesRequest
+	19, // 26: secsy.pki.v1.PKIService.GetCRLMetadata:input_type -> secsy.pki.v1.GetCRLMetadataRequest
+	21, // 27: secsy.pki.v1.PKIService.GetOCSPMetadata:input_type -> secsy.pki.v1.GetOCSPMetadataRequest
+	5,  // 28: secsy.pki.v1.PKIService.IssueCertificate:output_type -> secsy.pki.v1.CertificateResponse
+	5,  // 29: secsy.pki.v1.PKIService.RenewCertificate:output_type -> secsy.pki.v1.CertificateResponse
+	7,  // 30: secsy.pki.v1.PKIService.RevokeCertificate:output_type -> secsy.pki.v1.RevokeCertificateResponse
+	9,  // 31: secsy.pki.v1.PKIService.SuspendCertificate:output_type -> secsy.pki.v1.SuspendCertificateResponse
+	11, // 32: secsy.pki.v1.PKIService.ReleaseCertificate:output_type -> secsy.pki.v1.ReleaseCertificateResponse
+	14, // 33: secsy.pki.v1.PKIService.GetCertificate:output_type -> secsy.pki.v1.GetCertificateResponse
+	16, // 34: secsy.pki.v1.PKIService.GetCertificateStatus:output_type -> secsy.pki.v1.GetCertificateStatusResponse
+	18, // 35: secsy.pki.v1.PKIService.ListCertificates:output_type -> secsy.pki.v1.ListCertificatesResponse
+	20, // 36: secsy.pki.v1.PKIService.GetCRLMetadata:output_type -> secsy.pki.v1.GetCRLMetadataResponse
+	22, // 37: secsy.pki.v1.PKIService.GetOCSPMetadata:output_type -> secsy.pki.v1.GetOCSPMetadataResponse
+	28, // [28:38] is the sub-list for method output_type
+	18, // [18:28] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_pki_v1_pki_proto_init() }

@@ -954,6 +954,38 @@ func (db *DB) migrate() error {
 	db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
 		BuiltinDenyAllX509, "Disallow all signatures", "x509", 1)
 
+	// Indexes backing the paginated/filtered inventory list endpoints (Task 83).
+	// The keyset indexes match the (timestamp, tiebreaker) DESC sort so a page can
+	// be served as an index range scan rather than a full sort; the filter indexes
+	// back the common status/profile/expiry predicates. All are created after the
+	// tables/columns above so they apply to both fresh and upgraded databases.
+	db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_issued_certs_page ON issued_certificates(ca_id, created_at, serial)")
+	db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_issued_certs_profile ON issued_certificates(ca_id, profile)")
+	db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_issued_certs_notafter ON issued_certificates(ca_id, not_after)")
+	db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_revoked_certs_page ON revoked_certificates(ca_id, revoked_at, serial)")
+	db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_discovered_certs_page ON discovered_certificates(tenant_id, discovered_at, id)")
+	db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_discovered_certs_notafter ON discovered_certificates(tenant_id, not_after)")
+
+	// Keyset pagination (Task 83) compares issued_certificates.created_at against a
+	// bound time.Time. On SQLite timestamps are stored as text and compared
+	// lexically, so a cursor only excludes its own row when the stored format
+	// matches what the driver binds. Rows written before Task 83 relied on the
+	// column DEFAULT (CURRENT_TIMESTAMP → "YYYY-MM-DD HH:MM:SS", no timezone),
+	// whereas RecordIssuedCertificate now writes an explicit UTC time.Time
+	// (rendered "…+00:00"). Normalize the legacy rows once by appending the UTC
+	// offset so both formats sort and self-exclude consistently. Idempotent: a
+	// legacy value never contains '+' or a trailing 'Z' (the driver renders the
+	// explicit UTC time as "…+00:00"), so already-normalized rows are skipped.
+	// PostgreSQL stores real timestamps and compares them temporally, so it needs
+	// no normalization.
+	if !db.isPostgres() {
+		db.conn.Exec(`UPDATE issued_certificates
+			SET created_at = created_at || '+00:00'
+			WHERE created_at IS NOT NULL
+			  AND created_at NOT LIKE '%+%'
+			  AND created_at NOT LIKE '%Z'`)
+	}
+
 	return nil
 }
 

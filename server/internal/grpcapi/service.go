@@ -19,6 +19,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/grpcapi/pkiv1"
 	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
@@ -319,20 +320,41 @@ func (s *service) GetCertificateStatus(ctx context.Context, req *pkiv1.GetCertif
 	return resp, nil
 }
 
-// ListCertificates lists the certificates a CA has issued.
+// ListCertificates returns one keyset page of the certificates a CA has issued,
+// newest first (Task 83). It mirrors the REST endpoint's pagination and filter
+// surface: limit/cursor plus status/profile/query/serial_prefix/expires_before.
 func (s *service) ListCertificates(ctx context.Context, req *pkiv1.ListCertificatesRequest) (*pkiv1.ListCertificatesResponse, error) {
 	user := middleware.GetUserInfo(ctx)
 	if _, err := s.api.AuthorizeCARead(ctx, user, req.GetCaId()); err != nil {
 		return nil, mapAuthzError(err)
 	}
+	filter := database.CertFilter{
+		Status:       req.GetStatus(),
+		Profile:      req.GetProfile(),
+		Query:        req.GetQuery(),
+		SerialPrefix: req.GetSerialPrefix(),
+	}
+	if req.GetExpiresBefore() != nil {
+		filter.ExpiresBefore = req.GetExpiresBefore().AsTime()
+	}
+	page := database.CertPageRequest{Limit: int(req.GetLimit()), Cursor: req.GetCursor()}
+
 	s.api.DB().MarkExpiredCertificates(req.GetCaId(), time.Now())
-	certs, err := s.api.DB().ListIssuedCertificates(req.GetCaId())
+	result, err := s.api.DB().PageIssuedCertificates(req.GetCaId(), filter, page)
 	if err != nil {
+		if errors.Is(err, database.ErrInvalidCursor) {
+			return nil, status.Errorf(codes.InvalidArgument, "%v", err)
+		}
 		return nil, status.Errorf(codes.Internal, "failed to list certificates: %v", err)
 	}
-	out := &pkiv1.ListCertificatesResponse{Certificates: make([]*pkiv1.CertificateInfo, 0, len(certs))}
-	for i := range certs {
-		out.Certificates = append(out.Certificates, certificateInfo(&certs[i]))
+	out := &pkiv1.ListCertificatesResponse{
+		Certificates: make([]*pkiv1.CertificateInfo, 0, len(result.Items)),
+		NextCursor:   result.NextCursor,
+		Total:        int32(result.Total),
+		HasMore:      result.HasMore,
+	}
+	for i := range result.Items {
+		out.Certificates = append(out.Certificates, certificateInfo(&result.Items[i]))
 	}
 	return out, nil
 }

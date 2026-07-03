@@ -383,8 +383,12 @@ $('issueProfile').onchange = renderIssueProfileInfo;
 
 // ---- Certificates view ---------------------------------------------------
 $('certCA').onchange = () => { updateCRLLink(); loadCerts(); };
-$('showRevoked').onchange = loadCerts;
-$('refreshCerts').onclick = loadCerts;
+$('showRevoked').onchange = () => loadCerts();
+$('refreshCerts').onclick = () => loadCerts();
+$('certStatus').onchange = () => loadCerts();
+$('certProfile').oninput = debounce(() => loadCerts(), 300);
+$('certSearch').oninput = debounce(() => loadCerts(), 300);
+$('certLoadMore').onclick = () => loadCerts(true);
 
 function selectedCertCA() { return $('certCA').value; }
 function updateCRLLink() {
@@ -428,50 +432,100 @@ function expiryTag(scope) {
   return scope && scope.expired ? '<span class="badge fail">stale</span>' : '';
 }
 
-async function loadCerts() {
+// certPageCursor carries the next-page cursor between "Load more" clicks; it is
+// reset whenever the CA, filters, or view mode change.
+let certPageCursor = '';
+
+// certListQuery builds the ?limit=&cursor=&… query string for the paginated
+// certificate/revoked endpoints (Task 83) from the toolbar filter controls.
+function certListQuery(revoked) {
+  const p = new URLSearchParams();
+  p.set('limit', '50');
+  if (certPageCursor) p.set('cursor', certPageCursor);
+  const search = $('certSearch').value.trim();
+  if (revoked) {
+    // The revoked store records only (serial, revoked_at, reason); map the search
+    // box to a serial prefix, the one filter it supports.
+    if (search) p.set('serial_prefix', search);
+  } else {
+    if (search) p.set('q', search);
+    if ($('certStatus').value) p.set('status', $('certStatus').value);
+    if ($('certProfile').value.trim()) p.set('profile', $('certProfile').value.trim());
+  }
+  return '?' + p.toString();
+}
+
+// loadCerts renders one page of the selected CA's certificates. Called with
+// append=false (default) it resets the table and paging cursor for a fresh
+// filter; append=true fetches the next page and appends it ("Load more").
+async function loadCerts(append) {
   const id = selectedCertCA();
   const tbody = $('certRows');
-  if (!id) { tbody.innerHTML = '<tr><td colspan="6" class="muted">Select a CA…</td></tr>'; return; }
-  tbody.innerHTML = '<tr><td colspan="6" class="muted">Loading…</td></tr>';
+  const more = $('certLoadMore');
+  const count = $('certCount');
+  const revoked = $('showRevoked').checked;
+  if (!id) {
+    tbody.innerHTML = '<tr><td colspan="7" class="muted">Select a CA…</td></tr>';
+    more.classList.add('hidden'); count.textContent = '';
+    return;
+  }
+  if (!append) { certPageCursor = ''; tbody.innerHTML = '<tr><td colspan="7" class="muted">Loading…</td></tr>'; }
   try {
-    if ($('showRevoked').checked) {
-      const revoked = await api('GET', `/api/ca/${id}/revoked`);
-      tbody.innerHTML = revoked.length ? revoked.map(r => {
-        // reason 6 (certificateHold) is a reversible hold, not a permanent
-        // revocation: badge it distinctly and offer a Release action.
-        const held = (r.reason === 6);
-        return `
-        <tr>
-          <td class="mono">${escapeHTML(shortSerial(r.serial))}</td>
-          <td colspan="2" class="muted">${held ? 'on hold' : 'revoked'}</td>
-          <td>${fmtTime(r.revoked_at)}</td>
-          <td><span class="badge ${held ? 'held' : 'revoked'}">${held ? 'held' : 'revoked'}</span></td>
-          <td class="muted">reason ${r.reason ?? 0}${held
-            ? ` · <button class="btn ghost sm" onclick="releaseCert('${id}','${r.serial}')" title="Remove the hold and return the certificate to service">Release</button>`
-            : ''}</td>
-        </tr>`;
-      }).join('') : emptyRow('No revoked certificates.');
-      return;
+    const endpoint = revoked ? `/api/ca/${id}/revoked` : `/api/ca/${id}/certificates`;
+    const res = await api('GET', endpoint + certListQuery(revoked));
+    const items = res.items || [];
+    const rowsHTML = revoked ? items.map(r => revokedRowHTML(id, r)).join('')
+                             : items.map(c => certRowHTML(id, c)).join('');
+    if (!append) {
+      tbody.innerHTML = rowsHTML || emptyRow(revoked ? 'No revoked certificates.' : 'No certificates match.');
+    } else if (rowsHTML) {
+      tbody.insertAdjacentHTML('beforeend', rowsHTML);
     }
-    const certs = await api('GET', `/api/ca/${id}/certificates`);
-    tbody.innerHTML = certs.length ? certs.map(c => `
-      <tr>
-        <td class="mono">${escapeHTML(shortSerial(c.serial))}</td>
-        <td>${escapeHTML(c.common_name || '')}</td>
-        <td>${escapeHTML(c.profile || '')}</td>
-        <td>${fmtTime(c.not_after)}</td>
-        <td><span class="badge ${c.status}">${c.status}</span></td>
-        <td>${ctBadge(c)}</td>
-        <td style="white-space:nowrap">${c.status === 'valid'
-          ? `<button class="btn ghost sm" onclick="renewCert('${id}','${c.serial}')" title="Reissue with a fresh serial and validity window, reusing the certified key">Renew</button>
-             <button class="btn ghost sm" onclick="suspendCert('${id}','${c.serial}')" title="Place on hold (RFC 5280 certificateHold) — a reversible revocation">Suspend</button>
-             <button class="btn danger sm" onclick="revokeCert('${id}','${c.serial}')">Revoke</button>`
-          : c.status === 'held'
-          ? `<button class="btn ghost sm" onclick="releaseCert('${id}','${c.serial}')" title="Remove the hold and return the certificate to service">Release</button>
-             <button class="btn danger sm" onclick="revokeCert('${id}','${c.serial}')" title="Convert the hold into a permanent revocation">Revoke</button>`
-          : ''}</td>
-      </tr>`).join('') : emptyRow('No certificates issued yet.');
-  } catch (e) { tbody.innerHTML = emptyRow(e.message); }
+    certPageCursor = res.next_cursor || '';
+    more.classList.toggle('hidden', !res.has_more);
+    const shown = tbody.querySelectorAll('tr').length - (tbody.querySelector('.muted') ? 1 : 0);
+    count.textContent = res.total ? `${Math.min(shown, res.total)} of ${res.total}` : '';
+  } catch (e) {
+    if (!append) tbody.innerHTML = emptyRow(e.message);
+    else alert('Load more failed: ' + e.message);
+  }
+}
+
+// revokedRowHTML renders one revocation row. reason 6 (certificateHold) is a
+// reversible hold, badged distinctly with a Release action.
+function revokedRowHTML(id, r) {
+  const held = (r.reason === 6);
+  return `
+    <tr>
+      <td class="mono">${escapeHTML(shortSerial(r.serial))}</td>
+      <td colspan="2" class="muted">${held ? 'on hold' : 'revoked'}</td>
+      <td>${fmtTime(r.revoked_at)}</td>
+      <td><span class="badge ${held ? 'held' : 'revoked'}">${held ? 'held' : 'revoked'}</span></td>
+      <td class="muted">reason ${r.reason ?? 0}${held
+        ? ` · <button class="btn ghost sm" onclick="releaseCert('${id}','${r.serial}')" title="Remove the hold and return the certificate to service">Release</button>`
+        : ''}</td>
+    </tr>`;
+}
+
+// certRowHTML renders one issued-certificate row with its lifecycle actions.
+function certRowHTML(id, c) {
+  return `
+    <tr>
+      <td class="mono">${escapeHTML(shortSerial(c.serial))}</td>
+      <td>${escapeHTML(c.common_name || '')}</td>
+      <td>${escapeHTML(c.profile || '')}</td>
+      <td>${fmtTime(c.not_after)}</td>
+      <td><span class="badge ${c.status}">${c.status}</span></td>
+      <td>${ctBadge(c)}</td>
+      <td style="white-space:nowrap">${c.status === 'valid'
+        ? `<button class="btn ghost sm" onclick="renewCert('${id}','${c.serial}')" title="Reissue with a fresh serial and validity window, reusing the certified key">Renew</button>
+           <button class="btn ghost sm" onclick="suspendCert('${id}','${c.serial}')" title="Place on hold (RFC 5280 certificateHold) — a reversible revocation">Suspend</button>
+           <button class="btn danger sm" onclick="revokeCert('${id}','${c.serial}')">Revoke</button>`
+        : c.status === 'held'
+        ? `<button class="btn ghost sm" onclick="releaseCert('${id}','${c.serial}')" title="Remove the hold and return the certificate to service">Release</button>
+           <button class="btn danger sm" onclick="revokeCert('${id}','${c.serial}')" title="Convert the hold into a permanent revocation">Revoke</button>`
+        : ''}</td>
+    </tr>`;
 }
 
 // renewCert reissues a certificate under the same CA/profile with a fresh
@@ -699,19 +753,47 @@ async function loadMonitor() {
 }
 
 // ---- External discovery view ---------------------------------------------
-$('discRefresh').onclick = loadDiscovery;
+$('discRefresh').onclick = () => loadDiscovery();
 $('discScan').onclick = runDiscoveryScan;
+$('discSearch').oninput = debounce(() => loadDiscovery(), 300);
+$('discLoadMore').onclick = () => loadDiscovery(true);
 
-// loadDiscovery lists the certificates already recorded by the discovery scanner.
-async function loadDiscovery() {
+// discPageCursor carries the next-page cursor between "Load more" clicks over the
+// stored discovered-certificate inventory; reset when the search filter changes.
+let discPageCursor = '';
+
+// loadDiscovery lists one page of the certificates already recorded by the
+// discovery scanner (Task 83). append=true fetches the next page ("Load more");
+// otherwise it resets for a fresh search. Unlike a scan (renderDiscovery), the
+// stored inventory is paged server-side, so rows appear in the server's
+// newest-first order rather than being re-sorted by severity across pages.
+async function loadDiscovery(append) {
   const tbody = $('discRows');
-  tbody.innerHTML = '<tr><td colspan="7" class="muted">Loading…</td></tr>';
+  const more = $('discLoadMore');
+  const count = $('discCount');
+  if (!append) { discPageCursor = ''; tbody.innerHTML = '<tr><td colspan="7" class="muted">Loading…</td></tr>'; }
   try {
-    const rep = await api('GET', '/api/discovery');
-    renderDiscovery(rep.certificates || []);
-  } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="7" class="muted">${escapeHTML(e.message)}</td></tr>`;
+    const p = new URLSearchParams();
+    p.set('limit', '50');
+    if (discPageCursor) p.set('cursor', discPageCursor);
+    const search = $('discSearch').value.trim();
+    if (search) p.set('q', search);
+    const rep = await api('GET', '/api/discovery?' + p.toString());
+    const items = rep.items || rep.certificates || [];
+    const rowsHTML = items.map(discoveredRowHTML).join('');
+    if (!append) {
+      tbody.innerHTML = rowsHTML || '<tr><td colspan="7" class="muted">No stored certificates match.</td></tr>';
+    } else if (rowsHTML) {
+      tbody.insertAdjacentHTML('beforeend', rowsHTML);
+    }
+    discPageCursor = rep.next_cursor || '';
+    more.classList.toggle('hidden', !rep.has_more);
+    const shown = tbody.querySelectorAll('tr').length - (tbody.querySelector('.muted') ? 1 : 0);
+    count.textContent = rep.total ? `${Math.min(shown, rep.total)} of ${rep.total} stored` : '';
     $('discCounts').textContent = '';
+  } catch (e) {
+    if (!append) { tbody.innerHTML = `<tr><td colspan="7" class="muted">${escapeHTML(e.message)}</td></tr>`; $('discCounts').textContent = ''; }
+    else alert('Load more failed: ' + e.message);
   }
 }
 
@@ -752,26 +834,34 @@ function renderDiscovery(certs, counts, allFindings) {
   } else {
     $('discCounts').textContent = `${rows.length} discovered certificate(s)`;
   }
-  tbody.innerHTML = rows.length ? rows.map(c => {
-    const key = c.key_algorithm ? (c.key_size ? `${c.key_algorithm}-${c.key_size}` : c.key_algorithm) : '—';
-    const origin = c.issued_by_pki
-      ? '<span class="badge pass" title="Chains to one of this PKI\'s CAs">this PKI</span>'
-      : (c.self_signed
-        ? '<span class="badge warning">self-signed</span>'
-        : '<span class="badge fail" title="Not issued by this PKI">rogue</span>');
-    const flags = (c.flags || []).length
-      ? c.flags.map(f => `<span class="badge ${c.severity}">${escapeHTML(f)}</span>`).join(' ')
-      : '<span class="muted">—</span>';
-    return `<tr>
-      <td class="mono">${escapeHTML(c.endpoint || '')}</td>
-      <td>${escapeHTML(c.common_name || '')}</td>
-      <td title="${escapeHTML(c.issuer || '')}">${escapeHTML(shortName(c.issuer))}</td>
-      <td>${escapeHTML(key)}</td>
-      <td>${fmtTime(c.not_after)}</td>
-      <td>${origin}</td>
-      <td>${flags}</td>
-    </tr>`;
-  }).join('') : '<tr><td colspan="7" class="muted">No certificates found.</td></tr>';
+  // A scan renders its full result set, so hide the stored-inventory pager.
+  $('discLoadMore').classList.add('hidden');
+  $('discCount').textContent = '';
+  tbody.innerHTML = rows.length ? rows.map(discoveredRowHTML).join('')
+    : '<tr><td colspan="7" class="muted">No certificates found.</td></tr>';
+}
+
+// discoveredRowHTML renders one discovered-certificate row, shared by the paged
+// stored-inventory listing and the scan-result view.
+function discoveredRowHTML(c) {
+  const key = c.key_algorithm ? (c.key_size ? `${c.key_algorithm}-${c.key_size}` : c.key_algorithm) : '—';
+  const origin = c.issued_by_pki
+    ? '<span class="badge pass" title="Chains to one of this PKI\'s CAs">this PKI</span>'
+    : (c.self_signed
+      ? '<span class="badge warning">self-signed</span>'
+      : '<span class="badge fail" title="Not issued by this PKI">rogue</span>');
+  const flags = (c.flags || []).length
+    ? c.flags.map(f => `<span class="badge ${c.severity}">${escapeHTML(f)}</span>`).join(' ')
+    : '<span class="muted">—</span>';
+  return `<tr>
+    <td class="mono">${escapeHTML(c.endpoint || '')}</td>
+    <td>${escapeHTML(c.common_name || '')}</td>
+    <td title="${escapeHTML(c.issuer || '')}">${escapeHTML(shortName(c.issuer))}</td>
+    <td>${escapeHTML(key)}</td>
+    <td>${fmtTime(c.not_after)}</td>
+    <td>${origin}</td>
+    <td>${flags}</td>
+  </tr>`;
 }
 
 // shortName renders the CN portion of a distinguished name for compact display.
@@ -2048,6 +2138,12 @@ $('lintBtn').onclick = async () => {
 };
 
 // ---- Helpers -------------------------------------------------------------
+// debounce coalesces rapid calls (e.g. keystrokes in a filter box) into a single
+// invocation after the input settles, so typing does not fire a request per key.
+function debounce(fn, ms) {
+  let timer;
+  return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
+}
 function emptyRow(msg) { return `<tr><td colspan="6" class="muted">${escapeHTML(msg)}</td></tr>`; }
 function escapeHTML(s) {
   return String(s ?? '').replace(/[&<>"']/g, c =>

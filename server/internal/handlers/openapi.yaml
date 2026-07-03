@@ -917,14 +917,25 @@ paths:
       operationId: listIssuedCertificates
       tags: [Certificate Lifecycle]
       summary: List certificates issued by a CA
+      description: >-
+        Returns one keyset page of the CA's issued certificates, newest first.
+        Pass the returned next_cursor back in ?cursor to fetch the following
+        page. The page size defaults to 100 and is capped at 500.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/CertStatusFilter"
+        - $ref: "#/components/parameters/CertProfileFilter"
+        - $ref: "#/components/parameters/CertSearch"
+        - $ref: "#/components/parameters/CertSerialPrefix"
+        - $ref: "#/components/parameters/CertExpiresBefore"
       responses:
         "200":
-          description: Issued certificates.
+          description: One page of issued certificates.
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: "#/components/schemas/IssuedCertificate" }
+              schema: { $ref: "#/components/schemas/IssuedCertificatePage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
 
   /api/ca/{id}/revoked:
     parameters:
@@ -933,14 +944,21 @@ paths:
       operationId: listRevokedCertificates
       tags: [Certificate Lifecycle]
       summary: List revoked serials for a CA
+      description: >-
+        Returns one keyset page of the CA's revocation records, newest
+        revocation first. Pass the returned next_cursor back in ?cursor to fetch
+        the following page.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/CertSerialPrefix"
       responses:
         "200":
-          description: Revoked certificates.
+          description: One page of revocation records.
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: "#/components/schemas/RevokedCertificate" }
+              schema: { $ref: "#/components/schemas/RevokedCertificatePage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
 
   /api/keys/{id}/sign:
     parameters:
@@ -1313,15 +1331,24 @@ paths:
       tags: [Discovery]
       summary: List external certificates recorded by the discovery scanner
       description: >-
-        Returns the certificates observed on external TLS endpoints, newest
-        first, including their security flags (expiring, weak key, SHA-1,
-        self-signed, hostname mismatch, and rogue/not-issued-by-this-PKI).
+        Returns one keyset page of the certificates observed on external TLS
+        endpoints, newest first, including their security flags (expiring, weak
+        key, SHA-1, self-signed, hostname mismatch, and rogue/not-issued-by-this-
+        PKI). Pass the returned next_cursor back in ?cursor to fetch the following
+        page. The legacy "certificates" key aliases "items" for older clients.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/CertSearch"
+        - $ref: "#/components/parameters/CertSerialPrefix"
+        - $ref: "#/components/parameters/CertExpiresBefore"
       responses:
         "200":
-          description: Discovered-certificate inventory.
+          description: One page of the discovered-certificate inventory.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DiscoveredCertificateList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/discovery/scan:
@@ -2552,6 +2579,38 @@ components:
       in: query
       description: Row offset.
       schema: { type: integer, minimum: 0 }
+    Cursor:
+      name: cursor
+      in: query
+      description: >-
+        Opaque keyset continuation token from a prior page's next_cursor. Omit
+        for the first page. Do not construct or interpret this value.
+      schema: { type: string }
+    CertStatusFilter:
+      name: status
+      in: query
+      description: Filter by certificate lifecycle status.
+      schema: { type: string, enum: [valid, revoked, held, expired] }
+    CertProfileFilter:
+      name: profile
+      in: query
+      description: Filter by issuing profile name (exact match).
+      schema: { type: string }
+    CertSearch:
+      name: q
+      in: query
+      description: Case-insensitive substring matched against subject, common name, and SANs (and issuer, for discovery).
+      schema: { type: string }
+    CertSerialPrefix:
+      name: serial_prefix
+      in: query
+      description: Restrict to serials beginning with this decimal prefix.
+      schema: { type: string }
+    CertExpiresBefore:
+      name: expires_before
+      in: query
+      description: Restrict to certificates whose notAfter is before this instant (RFC 3339 or YYYY-MM-DD).
+      schema: { type: string }
     ApprovalId:
       name: id
       in: path
@@ -3382,7 +3441,7 @@ components:
         certificate: { type: string }
         not_before: { type: string, format: date-time }
         not_after: { type: string, format: date-time }
-        status: { type: string, enum: [valid, revoked, expired] }
+        status: { type: string, enum: [valid, revoked, held, expired] }
         revoked_at: { type: string, format: date-time }
         revocation_reason: { type: integer }
         requested_by: { type: string }
@@ -3404,6 +3463,34 @@ components:
         serial: { type: string }
         revoked_at: { type: string, format: date-time }
         reason: { type: integer }
+
+    IssuedCertificatePage:
+      type: object
+      description: One keyset page of issued certificates (Task 83).
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/IssuedCertificate" }
+        next_cursor:
+          type: string
+          description: Continuation token for the next page; empty on the last page.
+        total:
+          type: integer
+          description: Number of certificates matching the filter across all pages.
+        has_more:
+          type: boolean
+          description: True when further pages remain past this one.
+
+    RevokedCertificatePage:
+      type: object
+      description: One keyset page of revocation records (Task 83).
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/RevokedCertificate" }
+        next_cursor: { type: string }
+        total: { type: integer }
+        has_more: { type: boolean }
 
     SignRequest:
       type: object
@@ -3862,10 +3949,19 @@ components:
 
     DiscoveredCertificateList:
       type: object
+      description: >-
+        One keyset page of the discovered-certificate inventory (Task 83). The
+        "certificates" field is a backward-compatible alias of "items".
       properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/DiscoveredCertificate" }
+        next_cursor: { type: string }
+        has_more: { type: boolean }
         total: { type: integer }
         certificates:
           type: array
+          description: Deprecated alias of items, retained for older clients.
           items: { $ref: "#/components/schemas/DiscoveredCertificate" }
 
     DiscoveryScanRequest:

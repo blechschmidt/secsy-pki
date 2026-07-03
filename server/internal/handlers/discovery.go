@@ -2,32 +2,54 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
+	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/discovery"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
+	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 )
 
-// ListDiscoveredCertificates returns the external certificates recorded by the
-// discovery scanner, newest first. Read-gated (any role). It is the API behind
-// the console's Discovery page.
+// ListDiscoveredCertificates returns a page of the external certificates
+// recorded by the discovery scanner, newest first (Task 83). Read-gated (any
+// role). It accepts ?limit, ?cursor, ?q, ?serial_prefix, and ?expires_before and
+// returns {items, next_cursor, total}. It is the API behind the console's
+// Discovery page. The legacy "certificates" key is retained alongside "items"
+// for backward compatibility with older console builds.
 func (a *API) ListDiscoveredCertificates(w http.ResponseWriter, r *http.Request) {
 	if !a.canRead(middleware.GetUserInfo(r.Context())) {
 		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
 		return
 	}
-	certs, err := a.db.ListDiscoveredCertificates("")
+	filter, page, clamped, err := parseCertListParams(r)
 	if err != nil {
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	result, err := a.db.PageDiscoveredCertificates("", filter, page)
+	if err != nil {
+		if errors.Is(err, database.ErrInvalidCursor) {
+			writeError(w, http.StatusBadRequest, "%v", err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to list discovered certificates: %v", err)
 		return
 	}
+	if result.Items == nil {
+		result.Items = []models.DiscoveredCertificate{}
+	}
+	logPageTruncation(r, "discovery", len(result.Items), result.Total, clamped, result.HasMore)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"total":        len(certs),
-		"certificates": certs,
+		"items":        result.Items,
+		"next_cursor":  result.NextCursor,
+		"has_more":     result.HasMore,
+		"total":        result.Total,
+		"certificates": result.Items, // legacy alias
 	})
 }
 

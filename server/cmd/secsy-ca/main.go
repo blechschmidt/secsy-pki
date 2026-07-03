@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -830,9 +831,22 @@ func cmdGenCRL(db *database.DB, mgr *ca.Manager, args []string) error {
 	return writeOutput(*out, pki.EncodeCRLPEM(derBytes))
 }
 
+// cmdListCerts lists a CA's issued certificates with server-side pagination,
+// filtering, and search (Task 83). By default it auto-follows every page so a
+// full dump stays complete while each underlying query remains bounded; passing
+// -cursor or -page fetches a single page and reports the cursor to resume from.
 func cmdListCerts(db *database.DB, args []string) error {
 	fs := flag.NewFlagSet("list-certs", flag.ContinueOnError)
 	caRef := fs.String("ca", "", "CA id or label (required)")
+	limit := fs.Int("limit", 0, "page size (0 = server default; capped at the server maximum)")
+	cursor := fs.String("cursor", "", "resume from this pagination cursor (fetches a single page)")
+	single := fs.Bool("page", false, "fetch only one page instead of following all pages")
+	statusFilter := fs.String("status", "", "filter by status: valid|revoked|held|expired")
+	profileFilter := fs.String("profile", "", "filter by profile name")
+	query := fs.String("filter", "", "case-insensitive substring over subject / common name / SANs")
+	serialPrefix := fs.String("serial-prefix", "", "filter to serials beginning with this decimal prefix")
+	expiresBefore := fs.String("expires-before", "", "only certificates expiring before this time (RFC 3339 or YYYY-MM-DD)")
+	asJSON := fs.Bool("json", false, "emit the page as JSON {items,next_cursor,total,has_more}")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -845,21 +859,80 @@ func cmdListCerts(db *database.DB, args []string) error {
 		return err
 	}
 	db.MarkExpiredCertificates(caID, time.Now())
-	certs, err := db.ListIssuedCertificates(caID)
-	if err != nil {
-		return err
+
+	filter := database.CertFilter{
+		Status:       *statusFilter,
+		Profile:      *profileFilter,
+		Query:        *query,
+		SerialPrefix: *serialPrefix,
 	}
-	if len(certs) == 0 {
-		fmt.Println("No certificates issued by this CA.")
+	if t, err := parseBulkTime(*expiresBefore, false); err != nil {
+		return fmt.Errorf("-expires-before: %w", err)
+	} else if t != nil {
+		filter.ExpiresBefore = *t
+	}
+
+	// A cursor or an explicit -page fetches one page; otherwise follow every page
+	// so the default behavior remains a complete dump.
+	followAll := *cursor == "" && !*single
+	pageReq := database.CertPageRequest{Limit: *limit, Cursor: *cursor}
+
+	var items []models.IssuedCertificate
+	var last database.IssuedCertPage
+	for {
+		page, err := db.PageIssuedCertificates(caID, filter, pageReq)
+		if err != nil {
+			return err
+		}
+		last = page
+		items = append(items, page.Items...)
+		if !followAll || !page.HasMore {
+			break
+		}
+		pageReq.Cursor = page.NextCursor
+	}
+
+	if *asJSON {
+		out := struct {
+			Items      []models.IssuedCertificate `json:"items"`
+			NextCursor string                     `json:"next_cursor"`
+			Total      int                        `json:"total"`
+			HasMore    bool                       `json:"has_more"`
+		}{Items: items, Total: last.Total}
+		if !followAll {
+			out.NextCursor = last.NextCursor
+			out.HasMore = last.HasMore
+		}
+		if out.Items == nil {
+			out.Items = []models.IssuedCertificate{}
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+
+	if len(items) == 0 {
+		fmt.Println("No certificates match.")
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "SERIAL\tPROFILE\tSTATUS\tSUBJECT\tNOT AFTER")
-	for _, c := range certs {
+	for _, c := range items {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
 			c.Serial, c.Profile, c.Status, c.CommonName, c.NotAfter.Format("2006-01-02"))
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if followAll {
+		fmt.Printf("\n%d certificate(s).\n", last.Total)
+	} else {
+		fmt.Printf("\nShowing %d of %d matching certificate(s).\n", len(items), last.Total)
+		if last.HasMore {
+			fmt.Printf("Next page: secsy-ca list-certs -ca %s -cursor %s\n", *caRef, last.NextCursor)
+		}
+	}
+	return nil
 }
 
 func cmdProfiles() error {

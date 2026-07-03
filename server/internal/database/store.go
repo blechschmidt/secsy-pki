@@ -177,6 +177,12 @@ type InventoryStore interface {
 	RecordIssuedCertificate(c *models.IssuedCertificate) error
 	GetIssuedCertificate(caID, serial string) (*models.IssuedCertificate, error)
 	ListIssuedCertificates(caID string) ([]models.IssuedCertificate, error)
+	// PageIssuedCertificates is the paginated, filtered read behind the list
+	// endpoints (Task 83). It returns one bounded, keyset-ordered page plus a
+	// continuation cursor and the total matching count; the unbounded
+	// ListIssuedCertificates remains for internal full-scan consumers (reporting,
+	// monitoring, rotation).
+	PageIssuedCertificates(caID string, f CertFilter, p CertPageRequest) (IssuedCertPage, error)
 	MarkExpiredCertificates(caID string, now time.Time) (int64, error)
 }
 
@@ -189,6 +195,9 @@ type InventoryStore interface {
 type DiscoveryStore interface {
 	RecordDiscoveredCertificate(d *models.DiscoveredCertificate) error
 	ListDiscoveredCertificates(tenantID string) ([]models.DiscoveredCertificate, error)
+	// PageDiscoveredCertificates is the paginated, filtered read behind the
+	// discovery list endpoint (Task 83).
+	PageDiscoveredCertificates(tenantID string, f CertFilter, p CertPageRequest) (DiscoveredCertPage, error)
 	DeleteDiscoveredCertificate(id string) error
 }
 
@@ -198,6 +207,10 @@ type RevocationStore interface {
 	RevokeCertificate(caID, serial string, reason int, when time.Time) (bool, error)
 	GetRevokedCertificate(caID, serial string) (*models.RevokedCertificate, error)
 	ListRevokedCertificates(caID string) ([]models.RevokedCertificate, error)
+	// PageRevokedCertificates is the paginated, filtered read behind the revoked
+	// list endpoint (Task 83). ListRevokedCertificates remains the full-scan input
+	// to CRL generation.
+	PageRevokedCertificates(caID string, f CertFilter, p CertPageRequest) (RevokedCertPage, error)
 	// Reversible certificate hold (Task 82, RFC 5280 certificateHold /
 	// removeFromCRL). SuspendCertificate places a serial on hold; ReleaseHold
 	// removes the hold only when the current reason is certificateHold (rejecting

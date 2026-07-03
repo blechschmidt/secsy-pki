@@ -20,14 +20,27 @@ func (db *DB) RecordIssuedCertificate(c *models.IssuedCertificate) error {
 	if ctStatus == "" {
 		ctStatus = models.CTStatusNone
 	}
+	// Write created_at explicitly (in UTC) rather than leaning on the column
+	// DEFAULT. Keyset pagination (Task 83) compares this column against a bound
+	// time.Time cursor; on SQLite, where timestamps are stored and compared as
+	// text, that comparison is only self-consistent when the stored format matches
+	// what the driver binds for a time.Time. The DEFAULT (CURRENT_TIMESTAMP) writes
+	// a timezone-less "YYYY-MM-DD HH:MM:SS", which does not, so an explicit UTC
+	// value is required for correct, non-duplicating pages. A caller-supplied
+	// CreatedAt is honored (used by tests to control ordering).
+	if c.CreatedAt.IsZero() {
+		c.CreatedAt = time.Now().UTC()
+	} else {
+		c.CreatedAt = c.CreatedAt.UTC()
+	}
 	_, err := db.exec(
 		`INSERT INTO issued_certificates
 			(id, ca_id, serial, subject, common_name, sans, profile, certificate,
-			 not_before, not_after, status, requested_by, ct_status, sct_count, marker)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 not_before, not_after, status, requested_by, ct_status, sct_count, marker, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.CAID, c.Serial, c.Subject, c.CommonName, string(sans), c.Profile,
 		c.Certificate, c.NotBefore, c.NotAfter, string(status), nullString(c.RequestedBy),
-		string(ctStatus), c.SCTCount, c.Marker,
+		string(ctStatus), c.SCTCount, c.Marker, c.CreatedAt,
 	)
 	return err
 }

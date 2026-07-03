@@ -146,6 +146,21 @@ curl -sk -u root:password -X POST https://localhost:8443/api/ca/{ca_id}/issue \
 List what a CA has issued: `secsy-ca list-certs -ca "Issuing CA"` or
 `GET /api/ca/{id}/certificates`.
 
+The list endpoints are paginated and searchable so they scale to large
+inventories. `GET /api/ca/{id}/certificates` accepts
+`?limit=&cursor=&status=&profile=&q=&serial_prefix=&expires_before=` and returns
+`{items, next_cursor, total, has_more}`; pass the returned `next_cursor` back in
+`?cursor=` to page forward. Pages are keyset-ordered (newest first) so they stay
+stable while new certificates are being issued. `q` matches a substring of the
+subject/CN/SANs; `status` is one of `valid|revoked|held|expired`. The page size
+defaults to 100 and is capped at 500. `GET /api/ca/{id}/revoked` and
+`GET /api/discovery` take the same `limit`/`cursor` paging (revoked and discovery
+support `serial_prefix`/`q` where applicable). On the CLI, `secsy-ca list-certs`
+auto-follows every page for a full dump by default and accepts
+`-limit/-cursor/-status/-profile/-filter/-serial-prefix/-expires-before` (and
+`-page` for a single page); the gRPC `ListCertificates` RPC carries the same
+paging and filter fields.
+
 The flow above signs a CSR whose key the subscriber generated. When you instead
 need to **deliver the private key** — for S/MIME or device enrollment — use
 [PKCS#12 export](pkcs12.md): the server generates the subject key, issues the

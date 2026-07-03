@@ -66,10 +66,28 @@
       <section class="view active" id="view-certs">
         <h2>Issued certificates</h2>
         <p class="sub">Browse the certificates issued by a CA, inspect status, download the CRL, and revoke leaves.</p>
-        <div class="toolbar">
+        <div class="toolbar" style="flex-wrap:wrap">
           <div class="field" style="margin:0">
             <label for="certCA">Certificate authority</label>
             <select id="certCA"></select>
+          </div>
+          <div class="field" style="margin:0">
+            <label for="certSearch">Search</label>
+            <input id="certSearch" placeholder="subject, CN, SAN…" style="width:180px">
+          </div>
+          <div class="field" style="margin:0">
+            <label for="certStatus">Status</label>
+            <select id="certStatus">
+              <option value="">any</option>
+              <option value="valid">valid</option>
+              <option value="revoked">revoked</option>
+              <option value="held">held</option>
+              <option value="expired">expired</option>
+            </select>
+          </div>
+          <div class="field" style="margin:0">
+            <label for="certProfile">Profile</label>
+            <input id="certProfile" placeholder="any" style="width:120px">
           </div>
           <label class="muted" style="display:flex;gap:6px;align-items:center;margin-top:16px">
             <input type="checkbox" id="showRevoked"> revoked only
@@ -85,6 +103,10 @@
             <thead><tr><th>Serial</th><th>Common name</th><th>Profile</th><th>Not after</th><th>Status</th><th>CT</th><th></th></tr></thead>
             <tbody id="certRows"><tr><td colspan="7" class="muted">Select a CA…</td></tr></tbody>
           </table>
+          <div class="toolbar" style="justify-content:space-between;align-items:center">
+            <span id="certCount" class="muted"></span>
+            <button class="btn ghost sm hidden" id="certLoadMore">Load more</button>
+          </div>
         </div>
 
         <!-- Bulk revocation (Task 70, incident response) -->
@@ -234,7 +256,13 @@
             <input type="checkbox" id="discNotify"> notify
           </label>
           <button class="btn sm" id="discScan" style="margin-top:16px">Scan</button>
-          <button class="btn ghost sm" id="discRefresh" style="margin-top:16px">Refresh</button>
+          <button class="btn ghost sm" id="discRefresh" style="margin-top:16px" title="Load the stored discovered-certificate inventory">Refresh</button>
+        </div>
+        <div class="toolbar" style="margin-top:-6px">
+          <div class="field" style="margin:0">
+            <label for="discSearch">Search stored inventory</label>
+            <input id="discSearch" placeholder="endpoint, CN, SAN, issuer…" style="width:240px">
+          </div>
         </div>
         <div id="discCounts" class="muted" style="margin-bottom:12px"></div>
         <div class="panel">
@@ -242,6 +270,10 @@
             <thead><tr><th>Endpoint</th><th>Common name</th><th>Issuer</th><th>Key</th><th>Not after</th><th>Origin</th><th>Flags</th></tr></thead>
             <tbody id="discRows"><tr><td colspan="7" class="muted">No scans yet — enter targets and click Scan, or Refresh to load stored findings.</td></tr></tbody>
           </table>
+          <div class="toolbar" style="justify-content:space-between;align-items:center">
+            <span id="discCount" class="muted"></span>
+            <button class="btn ghost sm hidden" id="discLoadMore">Load more</button>
+          </div>
         </div>
       </section>
 

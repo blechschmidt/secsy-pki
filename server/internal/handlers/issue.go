@@ -12,6 +12,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
@@ -203,40 +204,67 @@ func (a *API) RevokeCertificate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ListIssuedCertificates returns the certificates a CA has issued.
+// ListIssuedCertificates returns a page of the certificates a CA has issued,
+// newest first (Task 83). It accepts ?limit, ?cursor, ?status, ?profile, ?q,
+// ?serial_prefix, and ?expires_before, and returns {items, next_cursor, total}.
+// The page size defaults to database.DefaultPageSize and is capped at
+// database.MaxPageSize.
 func (a *API) ListIssuedCertificates(w http.ResponseWriter, r *http.Request) {
 	if _, ok := a.authorizeCARead(w, r, r.PathValue("id")); !ok {
 		return
 	}
 	caID := r.PathValue("id")
-	// Reflect expiry lazily so listings show accurate status.
-	a.db.MarkExpiredCertificates(caID, time.Now())
-	certs, err := a.db.ListIssuedCertificates(caID)
+	filter, page, clamped, err := parseCertListParams(r)
 	if err != nil {
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	// Reflect expiry lazily so listings (and the status filter) show accurate
+	// state before the page is read.
+	a.db.MarkExpiredCertificates(caID, time.Now())
+	result, err := a.db.PageIssuedCertificates(caID, filter, page)
+	if err != nil {
+		if errors.Is(err, database.ErrInvalidCursor) {
+			writeError(w, http.StatusBadRequest, "%v", err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to list certificates: %v", err)
 		return
 	}
-	if certs == nil {
-		certs = []models.IssuedCertificate{}
+	if result.Items == nil {
+		result.Items = []models.IssuedCertificate{}
 	}
-	writeJSON(w, http.StatusOK, certs)
+	logPageTruncation(r, "issued", len(result.Items), result.Total, clamped, result.HasMore)
+	writeJSON(w, http.StatusOK, result)
 }
 
-// ListRevokedCertificates returns a CA's revocation records.
+// ListRevokedCertificates returns a page of a CA's revocation records, newest
+// revocation first (Task 83). It accepts ?limit, ?cursor, and ?serial_prefix and
+// returns {items, next_cursor, total}.
 func (a *API) ListRevokedCertificates(w http.ResponseWriter, r *http.Request) {
 	if _, ok := a.authorizeCARead(w, r, r.PathValue("id")); !ok {
 		return
 	}
 	caID := r.PathValue("id")
-	revoked, err := a.db.ListRevokedCertificates(caID)
+	filter, page, clamped, err := parseCertListParams(r)
 	if err != nil {
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	result, err := a.db.PageRevokedCertificates(caID, filter, page)
+	if err != nil {
+		if errors.Is(err, database.ErrInvalidCursor) {
+			writeError(w, http.StatusBadRequest, "%v", err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to list revocations: %v", err)
 		return
 	}
-	if revoked == nil {
-		revoked = []models.RevokedCertificate{}
+	if result.Items == nil {
+		result.Items = []models.RevokedCertificate{}
 	}
-	writeJSON(w, http.StatusOK, revoked)
+	logPageTruncation(r, "revoked", len(result.Items), result.Total, clamped, result.HasMore)
+	writeJSON(w, http.StatusOK, result)
 }
 
 // GetCRL returns the complete (base) CRL for a CA. It is a public endpoint so

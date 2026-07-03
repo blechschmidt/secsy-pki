@@ -121,9 +121,9 @@ const (
 
 // Defines values for HoldResultStatus.
 const (
-	AlreadyHeld HoldResultStatus = "already-held"
-	Held        HoldResultStatus = "held"
-	Released    HoldResultStatus = "released"
+	HoldResultStatusAlreadyHeld HoldResultStatus = "already-held"
+	HoldResultStatusHeld        HoldResultStatus = "held"
+	HoldResultStatusReleased    HoldResultStatus = "released"
 )
 
 // Defines values for IssuedCertificateCtStatus.
@@ -136,6 +136,7 @@ const (
 // Defines values for IssuedCertificateStatus.
 const (
 	IssuedCertificateStatusExpired IssuedCertificateStatus = "expired"
+	IssuedCertificateStatusHeld    IssuedCertificateStatus = "held"
 	IssuedCertificateStatusRevoked IssuedCertificateStatus = "revoked"
 	IssuedCertificateStatusValid   IssuedCertificateStatus = "valid"
 )
@@ -292,13 +293,29 @@ const (
 	Suspended TenantUsageReportStatus = "suspended"
 )
 
+// Defines values for CertStatusFilter.
+const (
+	CertStatusFilterExpired CertStatusFilter = "expired"
+	CertStatusFilterHeld    CertStatusFilter = "held"
+	CertStatusFilterRevoked CertStatusFilter = "revoked"
+	CertStatusFilterValid   CertStatusFilter = "valid"
+)
+
 // Defines values for ListApprovalsParamsStatus.
 const (
-	Approved ListApprovalsParamsStatus = "approved"
-	Executed ListApprovalsParamsStatus = "executed"
-	Expired  ListApprovalsParamsStatus = "expired"
-	Pending  ListApprovalsParamsStatus = "pending"
-	Rejected ListApprovalsParamsStatus = "rejected"
+	ListApprovalsParamsStatusApproved ListApprovalsParamsStatus = "approved"
+	ListApprovalsParamsStatusExecuted ListApprovalsParamsStatus = "executed"
+	ListApprovalsParamsStatusExpired  ListApprovalsParamsStatus = "expired"
+	ListApprovalsParamsStatusPending  ListApprovalsParamsStatus = "pending"
+	ListApprovalsParamsStatusRejected ListApprovalsParamsStatus = "rejected"
+)
+
+// Defines values for ListIssuedCertificatesParamsStatus.
+const (
+	ListIssuedCertificatesParamsStatusExpired ListIssuedCertificatesParamsStatus = "expired"
+	ListIssuedCertificatesParamsStatusHeld    ListIssuedCertificatesParamsStatus = "held"
+	ListIssuedCertificatesParamsStatusRevoked ListIssuedCertificatesParamsStatus = "revoked"
+	ListIssuedCertificatesParamsStatusValid   ListIssuedCertificatesParamsStatus = "valid"
 )
 
 // Defines values for ExportEventLogParamsFormat.
@@ -1034,9 +1051,13 @@ type DiscoveredCertificate struct {
 // DiscoveredCertificateSeverity defines model for DiscoveredCertificate.Severity.
 type DiscoveredCertificateSeverity string
 
-// DiscoveredCertificateList defines model for DiscoveredCertificateList.
+// DiscoveredCertificateList One keyset page of the discovered-certificate inventory (Task 83). The "certificates" field is a backward-compatible alias of "items".
 type DiscoveredCertificateList struct {
+	// Certificates Deprecated alias of items, retained for older clients.
 	Certificates *[]DiscoveredCertificate `json:"certificates,omitempty"`
+	HasMore      *bool                    `json:"has_more,omitempty"`
+	Items        *[]DiscoveredCertificate `json:"items,omitempty"`
+	NextCursor   *string                  `json:"next_cursor,omitempty"`
 	Total        *int                     `json:"total,omitempty"`
 }
 
@@ -1349,6 +1370,19 @@ type IssuedCertificateCtStatus string
 
 // IssuedCertificateStatus defines model for IssuedCertificate.Status.
 type IssuedCertificateStatus string
+
+// IssuedCertificatePage One keyset page of issued certificates (Task 83).
+type IssuedCertificatePage struct {
+	// HasMore True when further pages remain past this one.
+	HasMore *bool                `json:"has_more,omitempty"`
+	Items   *[]IssuedCertificate `json:"items,omitempty"`
+
+	// NextCursor Continuation token for the next page; empty on the last page.
+	NextCursor *string `json:"next_cursor,omitempty"`
+
+	// Total Number of certificates matching the filter across all pages.
+	Total *int `json:"total,omitempty"`
+}
 
 // KeyInventoryResponse defines model for KeyInventoryResponse.
 type KeyInventoryResponse struct {
@@ -1671,6 +1705,14 @@ type RevokedCertificate struct {
 	Reason    *int       `json:"reason,omitempty"`
 	RevokedAt *time.Time `json:"revoked_at,omitempty"`
 	Serial    *string    `json:"serial,omitempty"`
+}
+
+// RevokedCertificatePage One keyset page of revocation records (Task 83).
+type RevokedCertificatePage struct {
+	HasMore    *bool                 `json:"has_more,omitempty"`
+	Items      *[]RevokedCertificate `json:"items,omitempty"`
+	NextCursor *string               `json:"next_cursor,omitempty"`
+	Total      *int                  `json:"total,omitempty"`
 }
 
 // RotateCARequest All fields optional: an empty new_label derives one from the old CA's label, an empty key_type reuses the old key's algorithm, and zero validity_days reuses the old certificate's validity span.
@@ -2079,8 +2121,26 @@ type ApprovalId = string
 // CAId defines model for CAId.
 type CAId = string
 
+// CertExpiresBefore defines model for CertExpiresBefore.
+type CertExpiresBefore = string
+
+// CertProfileFilter defines model for CertProfileFilter.
+type CertProfileFilter = string
+
+// CertSearch defines model for CertSearch.
+type CertSearch = string
+
 // CertSerial defines model for CertSerial.
 type CertSerial = string
+
+// CertSerialPrefix defines model for CertSerialPrefix.
+type CertSerialPrefix = string
+
+// CertStatusFilter defines model for CertStatusFilter.
+type CertStatusFilter string
+
+// Cursor defines model for Cursor.
+type Cursor = string
 
 // GroupId defines model for GroupId.
 type GroupId = string
@@ -2164,6 +2224,33 @@ type ListAuditLogParams struct {
 	Export *string `form:"export,omitempty" json:"export,omitempty"`
 }
 
+// ListIssuedCertificatesParams defines parameters for ListIssuedCertificates.
+type ListIssuedCertificatesParams struct {
+	// Limit Page size (1–500).
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque keyset continuation token from a prior page's next_cursor. Omit for the first page. Do not construct or interpret this value.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Status Filter by certificate lifecycle status.
+	Status *ListIssuedCertificatesParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+
+	// Profile Filter by issuing profile name (exact match).
+	Profile *CertProfileFilter `form:"profile,omitempty" json:"profile,omitempty"`
+
+	// Q Case-insensitive substring matched against subject, common name, and SANs (and issuer, for discovery).
+	Q *CertSearch `form:"q,omitempty" json:"q,omitempty"`
+
+	// SerialPrefix Restrict to serials beginning with this decimal prefix.
+	SerialPrefix *CertSerialPrefix `form:"serial_prefix,omitempty" json:"serial_prefix,omitempty"`
+
+	// ExpiresBefore Restrict to certificates whose notAfter is before this instant (RFC 3339 or YYYY-MM-DD).
+	ExpiresBefore *CertExpiresBefore `form:"expires_before,omitempty" json:"expires_before,omitempty"`
+}
+
+// ListIssuedCertificatesParamsStatus defines parameters for ListIssuedCertificates.
+type ListIssuedCertificatesParamsStatus string
+
 // GetCRLParams defines parameters for GetCRL.
 type GetCRLParams struct {
 	Format *string `form:"format,omitempty" json:"format,omitempty"`
@@ -2182,6 +2269,36 @@ type GetShardCRLParams struct {
 // GetShardDeltaCRLParams defines parameters for GetShardDeltaCRL.
 type GetShardDeltaCRLParams struct {
 	Format *string `form:"format,omitempty" json:"format,omitempty"`
+}
+
+// ListRevokedCertificatesParams defines parameters for ListRevokedCertificates.
+type ListRevokedCertificatesParams struct {
+	// Limit Page size (1–500).
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque keyset continuation token from a prior page's next_cursor. Omit for the first page. Do not construct or interpret this value.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// SerialPrefix Restrict to serials beginning with this decimal prefix.
+	SerialPrefix *CertSerialPrefix `form:"serial_prefix,omitempty" json:"serial_prefix,omitempty"`
+}
+
+// ListDiscoveredCertificatesParams defines parameters for ListDiscoveredCertificates.
+type ListDiscoveredCertificatesParams struct {
+	// Limit Page size (1–500).
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque keyset continuation token from a prior page's next_cursor. Omit for the first page. Do not construct or interpret this value.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Q Case-insensitive substring matched against subject, common name, and SANs (and issuer, for discovery).
+	Q *CertSearch `form:"q,omitempty" json:"q,omitempty"`
+
+	// SerialPrefix Restrict to serials beginning with this decimal prefix.
+	SerialPrefix *CertSerialPrefix `form:"serial_prefix,omitempty" json:"serial_prefix,omitempty"`
+
+	// ExpiresBefore Restrict to certificates whose notAfter is before this instant (RFC 3339 or YYYY-MM-DD).
+	ExpiresBefore *CertExpiresBefore `form:"expires_before,omitempty" json:"expires_before,omitempty"`
 }
 
 // ListEventLogParams defines parameters for ListEventLog.
@@ -2501,7 +2618,7 @@ type ClientInterface interface {
 	InitRootCA(ctx context.Context, body InitRootCAJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListIssuedCertificates request
-	ListIssuedCertificates(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+	ListIssuedCertificates(ctx context.Context, id CAId, params *ListIssuedCertificatesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ReleaseCertificate request
 	ReleaseCertificate(ctx context.Context, id CAId, serial CertSerial, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2588,7 +2705,7 @@ type ClientInterface interface {
 	RevokeCertificate(ctx context.Context, id CAId, body RevokeCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListRevokedCertificates request
-	ListRevokedCertificates(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+	ListRevokedCertificates(ctx context.Context, id CAId, params *ListRevokedCertificatesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// RotateIntermediateCAWithBody request with any body
 	RotateIntermediateCAWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2607,7 +2724,7 @@ type ClientInterface interface {
 	GetSVIDBundle(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListDiscoveredCertificates request
-	ListDiscoveredCertificates(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	ListDiscoveredCertificates(ctx context.Context, params *ListDiscoveredCertificatesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// RunDiscoveryScanWithBody request with any body
 	RunDiscoveryScanWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3092,8 +3209,8 @@ func (c *Client) InitRootCA(ctx context.Context, body InitRootCAJSONRequestBody,
 	return c.Client.Do(req)
 }
 
-func (c *Client) ListIssuedCertificates(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListIssuedCertificatesRequest(c.Server, id)
+func (c *Client) ListIssuedCertificates(ctx context.Context, id CAId, params *ListIssuedCertificatesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListIssuedCertificatesRequest(c.Server, id, params)
 	if err != nil {
 		return nil, err
 	}
@@ -3476,8 +3593,8 @@ func (c *Client) RevokeCertificate(ctx context.Context, id CAId, body RevokeCert
 	return c.Client.Do(req)
 }
 
-func (c *Client) ListRevokedCertificates(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListRevokedCertificatesRequest(c.Server, id)
+func (c *Client) ListRevokedCertificates(ctx context.Context, id CAId, params *ListRevokedCertificatesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListRevokedCertificatesRequest(c.Server, id, params)
 	if err != nil {
 		return nil, err
 	}
@@ -3560,8 +3677,8 @@ func (c *Client) GetSVIDBundle(ctx context.Context, id CAId, reqEditors ...Reque
 	return c.Client.Do(req)
 }
 
-func (c *Client) ListDiscoveredCertificates(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListDiscoveredCertificatesRequest(c.Server)
+func (c *Client) ListDiscoveredCertificates(ctx context.Context, params *ListDiscoveredCertificatesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListDiscoveredCertificatesRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -5465,7 +5582,7 @@ func NewInitRootCARequestWithBody(server string, contentType string, body io.Rea
 }
 
 // NewListIssuedCertificatesRequest generates requests for ListIssuedCertificates
-func NewListIssuedCertificatesRequest(server string, id CAId) (*http.Request, error) {
+func NewListIssuedCertificatesRequest(server string, id CAId, params *ListIssuedCertificatesParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -5488,6 +5605,124 @@ func NewListIssuedCertificatesRequest(server string, id CAId) (*http.Request, er
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "limit", runtime.ParamLocationQuery, *params.Limit); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "cursor", runtime.ParamLocationQuery, *params.Cursor); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Status != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "status", runtime.ParamLocationQuery, *params.Status); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Profile != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "profile", runtime.ParamLocationQuery, *params.Profile); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Q != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "q", runtime.ParamLocationQuery, *params.Q); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.SerialPrefix != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "serial_prefix", runtime.ParamLocationQuery, *params.SerialPrefix); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.ExpiresBefore != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "expires_before", runtime.ParamLocationQuery, *params.ExpiresBefore); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
 	}
 
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
@@ -6496,7 +6731,7 @@ func NewRevokeCertificateRequestWithBody(server string, id CAId, contentType str
 }
 
 // NewListRevokedCertificatesRequest generates requests for ListRevokedCertificates
-func NewListRevokedCertificatesRequest(server string, id CAId) (*http.Request, error) {
+func NewListRevokedCertificatesRequest(server string, id CAId, params *ListRevokedCertificatesParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -6519,6 +6754,60 @@ func NewListRevokedCertificatesRequest(server string, id CAId) (*http.Request, e
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "limit", runtime.ParamLocationQuery, *params.Limit); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "cursor", runtime.ParamLocationQuery, *params.Cursor); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.SerialPrefix != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "serial_prefix", runtime.ParamLocationQuery, *params.SerialPrefix); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
 	}
 
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
@@ -6692,7 +6981,7 @@ func NewGetSVIDBundleRequest(server string, id CAId) (*http.Request, error) {
 }
 
 // NewListDiscoveredCertificatesRequest generates requests for ListDiscoveredCertificates
-func NewListDiscoveredCertificatesRequest(server string) (*http.Request, error) {
+func NewListDiscoveredCertificatesRequest(server string, params *ListDiscoveredCertificatesParams) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -6708,6 +6997,92 @@ func NewListDiscoveredCertificatesRequest(server string) (*http.Request, error) 
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "limit", runtime.ParamLocationQuery, *params.Limit); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "cursor", runtime.ParamLocationQuery, *params.Cursor); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Q != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "q", runtime.ParamLocationQuery, *params.Q); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.SerialPrefix != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "serial_prefix", runtime.ParamLocationQuery, *params.SerialPrefix); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.ExpiresBefore != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "expires_before", runtime.ParamLocationQuery, *params.ExpiresBefore); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
 	}
 
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
@@ -9604,7 +9979,7 @@ type ClientWithResponsesInterface interface {
 	InitRootCAWithResponse(ctx context.Context, body InitRootCAJSONRequestBody, reqEditors ...RequestEditorFn) (*InitRootCAResponse, error)
 
 	// ListIssuedCertificatesWithResponse request
-	ListIssuedCertificatesWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*ListIssuedCertificatesResponse, error)
+	ListIssuedCertificatesWithResponse(ctx context.Context, id CAId, params *ListIssuedCertificatesParams, reqEditors ...RequestEditorFn) (*ListIssuedCertificatesResponse, error)
 
 	// ReleaseCertificateWithResponse request
 	ReleaseCertificateWithResponse(ctx context.Context, id CAId, serial CertSerial, reqEditors ...RequestEditorFn) (*ReleaseCertificateResponse, error)
@@ -9691,7 +10066,7 @@ type ClientWithResponsesInterface interface {
 	RevokeCertificateWithResponse(ctx context.Context, id CAId, body RevokeCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*RevokeCertificateResponse, error)
 
 	// ListRevokedCertificatesWithResponse request
-	ListRevokedCertificatesWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*ListRevokedCertificatesResponse, error)
+	ListRevokedCertificatesWithResponse(ctx context.Context, id CAId, params *ListRevokedCertificatesParams, reqEditors ...RequestEditorFn) (*ListRevokedCertificatesResponse, error)
 
 	// RotateIntermediateCAWithBodyWithResponse request with any body
 	RotateIntermediateCAWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RotateIntermediateCAResponse, error)
@@ -9710,7 +10085,7 @@ type ClientWithResponsesInterface interface {
 	GetSVIDBundleWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetSVIDBundleResponse, error)
 
 	// ListDiscoveredCertificatesWithResponse request
-	ListDiscoveredCertificatesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListDiscoveredCertificatesResponse, error)
+	ListDiscoveredCertificatesWithResponse(ctx context.Context, params *ListDiscoveredCertificatesParams, reqEditors ...RequestEditorFn) (*ListDiscoveredCertificatesResponse, error)
 
 	// RunDiscoveryScanWithBodyWithResponse request with any body
 	RunDiscoveryScanWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RunDiscoveryScanResponse, error)
@@ -10294,7 +10669,8 @@ func (r InitRootCAResponse) StatusCode() int {
 type ListIssuedCertificatesResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
-	JSON200      *[]IssuedCertificate
+	JSON200      *IssuedCertificatePage
+	JSON400      *BadRequest
 }
 
 // Status returns HTTPResponse.Status
@@ -10827,7 +11203,8 @@ func (r RevokeCertificateResponse) StatusCode() int {
 type ListRevokedCertificatesResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
-	JSON200      *[]RevokedCertificate
+	JSON200      *RevokedCertificatePage
+	JSON400      *BadRequest
 }
 
 // Status returns HTTPResponse.Status
@@ -10943,6 +11320,7 @@ type ListDiscoveredCertificatesResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
 	JSON200      *DiscoveredCertificateList
+	JSON400      *BadRequest
 	JSON403      *Forbidden
 }
 
@@ -12778,8 +13156,8 @@ func (c *ClientWithResponses) InitRootCAWithResponse(ctx context.Context, body I
 }
 
 // ListIssuedCertificatesWithResponse request returning *ListIssuedCertificatesResponse
-func (c *ClientWithResponses) ListIssuedCertificatesWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*ListIssuedCertificatesResponse, error) {
-	rsp, err := c.ListIssuedCertificates(ctx, id, reqEditors...)
+func (c *ClientWithResponses) ListIssuedCertificatesWithResponse(ctx context.Context, id CAId, params *ListIssuedCertificatesParams, reqEditors ...RequestEditorFn) (*ListIssuedCertificatesResponse, error) {
+	rsp, err := c.ListIssuedCertificates(ctx, id, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -13057,8 +13435,8 @@ func (c *ClientWithResponses) RevokeCertificateWithResponse(ctx context.Context,
 }
 
 // ListRevokedCertificatesWithResponse request returning *ListRevokedCertificatesResponse
-func (c *ClientWithResponses) ListRevokedCertificatesWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*ListRevokedCertificatesResponse, error) {
-	rsp, err := c.ListRevokedCertificates(ctx, id, reqEditors...)
+func (c *ClientWithResponses) ListRevokedCertificatesWithResponse(ctx context.Context, id CAId, params *ListRevokedCertificatesParams, reqEditors ...RequestEditorFn) (*ListRevokedCertificatesResponse, error) {
+	rsp, err := c.ListRevokedCertificates(ctx, id, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -13118,8 +13496,8 @@ func (c *ClientWithResponses) GetSVIDBundleWithResponse(ctx context.Context, id 
 }
 
 // ListDiscoveredCertificatesWithResponse request returning *ListDiscoveredCertificatesResponse
-func (c *ClientWithResponses) ListDiscoveredCertificatesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListDiscoveredCertificatesResponse, error) {
-	rsp, err := c.ListDiscoveredCertificates(ctx, reqEditors...)
+func (c *ClientWithResponses) ListDiscoveredCertificatesWithResponse(ctx context.Context, params *ListDiscoveredCertificatesParams, reqEditors ...RequestEditorFn) (*ListDiscoveredCertificatesResponse, error) {
+	rsp, err := c.ListDiscoveredCertificates(ctx, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -14378,11 +14756,18 @@ func ParseListIssuedCertificatesResponse(rsp *http.Response) (*ListIssuedCertifi
 
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
-		var dest []IssuedCertificate
+		var dest IssuedCertificatePage
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
 
 	}
 
@@ -15108,11 +15493,18 @@ func ParseListRevokedCertificatesResponse(rsp *http.Response) (*ListRevokedCerti
 
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
-		var dest []RevokedCertificate
+		var dest RevokedCertificatePage
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
 
 	}
 
@@ -15278,6 +15670,13 @@ func ParseListDiscoveredCertificatesResponse(rsp *http.Response) (*ListDiscovere
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
 		var dest Forbidden

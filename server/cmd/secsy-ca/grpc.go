@@ -205,17 +205,34 @@ func cmdGRPC(args []string) error {
 		if *caID == "" {
 			return fmt.Errorf("grpc list: -ca is required")
 		}
-		ctx, cancel := authCtx()
-		defer cancel()
-		resp, err := client.ListCertificates(ctx, &pkiv1.ListCertificatesRequest{CaId: *caID})
-		if err != nil {
-			return fmt.Errorf("ListCertificates: %w", err)
+		// Auto-follow the keyset pages (Task 83) so the client prints the full
+		// inventory while each RPC returns a bounded page. -profile narrows the
+		// listing, mirroring the REST/CLI filter surface.
+		shown, cursor := 0, ""
+		var total int32
+		for {
+			ctx, cancel := authCtx()
+			resp, err := client.ListCertificates(ctx, &pkiv1.ListCertificatesRequest{
+				CaId:    *caID,
+				Cursor:  cursor,
+				Profile: *profile,
+			})
+			cancel()
+			if err != nil {
+				return fmt.Errorf("ListCertificates: %w", err)
+			}
+			total = resp.GetTotal()
+			for _, c := range resp.GetCertificates() {
+				fmt.Printf("  serial=%s cn=%q status=%s expires=%s\n",
+					c.GetSerial(), c.GetCommonName(), statusName(c.GetStatus()), c.GetNotAfter().AsTime().UTC().Format(time.RFC3339))
+				shown++
+			}
+			if !resp.GetHasMore() {
+				break
+			}
+			cursor = resp.GetNextCursor()
 		}
-		fmt.Printf("%d certificate(s):\n", len(resp.GetCertificates()))
-		for _, c := range resp.GetCertificates() {
-			fmt.Printf("  serial=%s cn=%q status=%s expires=%s\n",
-				c.GetSerial(), c.GetCommonName(), statusName(c.GetStatus()), c.GetNotAfter().AsTime().UTC().Format(time.RFC3339))
-		}
+		fmt.Printf("%d of %d certificate(s).\n", shown, total)
 		return nil
 
 	case "crl-metadata":

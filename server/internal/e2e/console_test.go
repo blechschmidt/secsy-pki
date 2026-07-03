@@ -312,12 +312,15 @@ func TestConsoleFlow(t *testing.T) {
 		if status != http.StatusOK {
 			t.Fatalf("list certificates = %d: %s", status, body)
 		}
-		var certs []models.IssuedCertificate
-		if err := json.Unmarshal(body, &certs); err != nil {
+		// The list endpoint is paginated (Task 83): {items, next_cursor, total}.
+		var page struct {
+			Items []models.IssuedCertificate `json:"items"`
+		}
+		if err := json.Unmarshal(body, &page); err != nil {
 			t.Fatalf("decode certificates: %v", err)
 		}
 		found := false
-		for _, c := range certs {
+		for _, c := range page.Items {
 			if c.Serial == serial {
 				found = true
 				if c.Status != models.CertStatusValid {

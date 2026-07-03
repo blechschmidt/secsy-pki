@@ -218,10 +218,32 @@ message GetCertificateStatusResponse {
 
 message ListCertificatesRequest {
   string ca_id = 1;
+  // Pagination and filtering (Task 83). The response returns one keyset page,
+  // newest first; pass next_cursor back in cursor to fetch the following page.
+  // limit defaults to the server default and is capped at the server maximum.
+  int32 limit = 2;
+  string cursor = 3;
+  // status filters by lifecycle state (valid, revoked, held, expired).
+  string status = 4;
+  // profile filters by issuing profile name.
+  string profile = 5;
+  // query is a case-insensitive substring matched against subject/CN/SANs.
+  string query = 6;
+  // serial_prefix restricts to serials beginning with this decimal string.
+  string serial_prefix = 7;
+  // expires_before restricts to certificates whose NotAfter is before this
+  // instant.
+  google.protobuf.Timestamp expires_before = 8;
 }
 
 message ListCertificatesResponse {
   repeated CertificateInfo certificates = 1;
+  // next_cursor continues the listing; empty when this is the last page.
+  string next_cursor = 2;
+  // total is the number of certificates matching the filter across all pages.
+  int32 total = 3;
+  // has_more is true when further pages remain past this one.
+  bool has_more = 4;
 }
 
 message GetCRLMetadataRequest {

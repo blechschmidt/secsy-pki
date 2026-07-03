@@ -168,16 +168,18 @@ func TestGeneratedClientSmoke(t *testing.T) {
 	}
 	issuedSerial := *issued.JSON201.Serial
 
-	// 8. The issued leaf must show up in the CA's certificate inventory.
-	list, err := c.ListIssuedCertificatesWithResponse(ctx, interID)
+	// 8. The issued leaf must show up in the CA's certificate inventory. The list
+	// endpoint is paginated (Task 83); nil params requests the first (default)
+	// page, and the response is the {items, next_cursor, total} envelope.
+	list, err := c.ListIssuedCertificatesWithResponse(ctx, interID, nil)
 	if err != nil {
 		t.Fatalf("ListIssuedCertificates: %v", err)
 	}
-	if list.JSON200 == nil {
+	if list.JSON200 == nil || list.JSON200.Items == nil {
 		t.Fatalf("ListIssuedCertificates body = %s", list.Body)
 	}
 	found := false
-	for _, item := range *list.JSON200 {
+	for _, item := range *list.JSON200.Items {
 		if item.Serial != nil && *item.Serial == issuedSerial {
 			found = true
 			break
