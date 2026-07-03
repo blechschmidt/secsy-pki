@@ -29,11 +29,15 @@ type rsaOAEPWrapper struct {
 	label    string
 	uri      string
 	wrapAlg  string
+	// version is the KEK's rotation version within its family (1 for the
+	// initial key), stamped into the header of newly sealed envelopes.
+	version int
 }
 
 func (w *rsaOAEPWrapper) Label() string        { return w.label }
 func (w *rsaOAEPWrapper) URI() string          { return w.uri }
 func (w *rsaOAEPWrapper) ProviderName() string { return w.provider.Name() }
+func (w *rsaOAEPWrapper) Version() int         { return w.version }
 
 // algHash maps a wrapping-algorithm identifier to its OAEP hash.
 func algHash(alg string) (crypto.Hash, error) {
@@ -139,28 +143,60 @@ type Service struct {
 
 // NewService binds a Service to the KEK identified by kekRef within the given
 // key provider. The KEK must already exist (see ProvisionKEK) and be an RSA
-// key; NewService fails otherwise.
+// key; NewService fails otherwise. The KEK is treated as rotation version 1 of
+// its family; rotation-aware callers use NewVersionedService (via LoadRing).
 func NewService(ctx context.Context, provider keyprovider.Provider, kekRef keyprovider.KeyRef) (*Service, error) {
+	return NewVersionedService(ctx, provider, kekRef, 1)
+}
+
+// NewVersionedService is NewService for a KEK that is a specific rotation
+// version of its family; the version is stamped into the header of every
+// envelope the Service seals.
+func NewVersionedService(ctx context.Context, provider keyprovider.Provider, kekRef keyprovider.KeyRef, version int) (*Service, error) {
+	svc, pub, err := newServiceCommon(ctx, provider, kekRef, version)
+	if err != nil {
+		return nil, err
+	}
+	wrapAlg, err := negotiateWrapAlg(ctx, provider, svc.wrapper.ref, pub)
+	if err != nil {
+		return nil, err
+	}
+	svc.wrapper.wrapAlg = wrapAlg
+	return svc, nil
+}
+
+// newDecryptOnlyService binds a Service that can only open envelopes (used by
+// the Ring for previous KEK versions during a rotation window). It skips the
+// wrap-algorithm negotiation — two HSM round-trips that only matter for
+// sealing new ciphertext, since Unwrap always honors the algorithm recorded in
+// the envelope being opened.
+func newDecryptOnlyService(ctx context.Context, provider keyprovider.Provider, kekRef keyprovider.KeyRef, version int) (*Service, error) {
+	svc, _, err := newServiceCommon(ctx, provider, kekRef, version)
+	return svc, err
+}
+
+// newServiceCommon locates and vets the KEK and assembles the Service, leaving
+// the wrap algorithm to the caller.
+func newServiceCommon(ctx context.Context, provider keyprovider.Provider, kekRef keyprovider.KeyRef, version int) (*Service, *rsa.PublicKey, error) {
 	if provider == nil {
-		return nil, fmt.Errorf("secret: nil key provider")
+		return nil, nil, fmt.Errorf("secret: nil key provider")
 	}
 	if _, ok := provider.(keyprovider.DecrypterProvider); !ok {
-		return nil, fmt.Errorf("secret: key provider %q cannot decrypt (no KEK support)", provider.Name())
+		return nil, nil, fmt.Errorf("secret: key provider %q cannot decrypt (no KEK support)", provider.Name())
+	}
+	if version < 1 {
+		return nil, nil, fmt.Errorf("secret: KEK version must be at least 1 (got %d)", version)
 	}
 	info, err := provider.FindKey(ctx, kekRef)
 	if err != nil {
-		return nil, fmt.Errorf("secret: locating KEK: %w", err)
+		return nil, nil, fmt.Errorf("secret: locating KEK: %w", err)
 	}
 	pub, ok := info.PublicKey.(*rsa.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("secret: KEK %q is not an RSA key (type %T); a KEK must be RSA", info.Label, info.PublicKey)
+		return nil, nil, fmt.Errorf("secret: KEK %q is not an RSA key (type %T); a KEK must be RSA", info.Label, info.PublicKey)
 	}
 	if pub.N.BitLen() < 2048 {
-		return nil, fmt.Errorf("secret: KEK %q is too small (%d bits); minimum is 2048", info.Label, pub.N.BitLen())
-	}
-	wrapAlg, err := negotiateWrapAlg(ctx, provider, kekRef, pub)
-	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("secret: KEK %q is too small (%d bits); minimum is 2048", info.Label, pub.N.BitLen())
 	}
 	return &Service{wrapper: &rsaOAEPWrapper{
 		provider: provider,
@@ -168,8 +204,8 @@ func NewService(ctx context.Context, provider keyprovider.Provider, kekRef keypr
 		pub:      pub,
 		label:    info.Label,
 		uri:      info.URI,
-		wrapAlg:  wrapAlg,
-	}}, nil
+		version:  version,
+	}}, pub, nil
 }
 
 // Encrypt seals plaintext into a versioned Envelope. context is an optional
@@ -228,6 +264,9 @@ type KEKInfo struct {
 	Provider string
 	KeyBits  int
 	WrapAlg  string
+	// Version is the KEK's rotation version within its family (1 for the
+	// initial key).
+	Version int
 }
 
 // KEKInfo returns metadata about the bound KEK.
@@ -238,6 +277,7 @@ func (s *Service) KEKInfo() KEKInfo {
 		Provider: s.wrapper.ProviderName(),
 		KeyBits:  s.wrapper.pub.N.BitLen(),
 		WrapAlg:  s.wrapper.wrapAlg,
+		Version:  s.wrapper.version,
 	}
 }
 

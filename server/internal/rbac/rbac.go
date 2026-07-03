@@ -78,6 +78,14 @@ const (
 	// recovery. The cryptographic M-of-N quorum enforces dual control on top of
 	// this capability.
 	ActionRecover Action = "secret:recover"
+	// ActionRotateKEK covers the secret-layer KEK rotation lifecycle: rotating
+	// a family to a new HSM wrapping key, re-wrapping stored secrets onto it,
+	// retiring superseded versions, and reading the rotation status. It is
+	// key management, deliberately admin-only and separate from the day-to-day
+	// secret:encrypt/secret:decrypt capabilities: a credential that encrypts
+	// application secrets must not be able to rotate or retire the keys that
+	// protect every other tenant's ciphertext.
+	ActionRotateKEK Action = "secret:rotate"
 	// ActionSignArtifact covers producing CMS detached signatures over release
 	// artifacts with the configured code-signing keys (/api/sign). It is granted
 	// to the dedicated signer role (and admins), NOT to issuers: a credential

@@ -32,6 +32,10 @@ type Runner struct {
 	rotateAfter  bool          // whether auto-rotation of intermediates is enabled
 	rotateBefore time.Duration // remaining-validity threshold to rotate an intermediate
 	auditSink    AuditSink
+	// secretKEKCheck, when set, runs each tick to refresh the secret-layer KEK
+	// rotation gauges (secsy_secret_on_old_kek and friends) and returns warning
+	// lines for secrets lingering on superseded KEK versions (Task 63).
+	secretKEKCheck func(ctx context.Context) ([]string, error)
 }
 
 // NewRunner assembles a Runner from the application monitor config. The Monitor
@@ -64,6 +68,16 @@ func NewRunner(m *Monitor, cfg config.MonitorConfig, logger *log.Logger) (*Runne
 func (r *Runner) WithRotation(rotator Rotator, auditSink AuditSink) *Runner {
 	r.rotator = rotator
 	r.auditSink = auditSink
+	return r
+}
+
+// WithSecretKEKCheck wires the secret-layer KEK rotation check into the scan
+// loop: each tick, check refreshes the per-family rotation gauges and returns
+// warning lines (secrets still on an old or retired KEK version), which the
+// runner surfaces in the monitor log. check is typically a closure over
+// secret.RefreshKEKMetrics and the store.
+func (r *Runner) WithSecretKEKCheck(check func(ctx context.Context) ([]string, error)) *Runner {
+	r.secretKEKCheck = check
 	return r
 }
 
@@ -116,6 +130,7 @@ func (r *Runner) Run(ctx context.Context) {
 // freshly rotated-in key is already active for the scan's downstream renewals.
 func (r *Runner) runOnce(ctx context.Context) {
 	r.rotateOnce(ctx)
+	r.checkSecretKEK(ctx)
 
 	report, err := r.monitor.Scan(ctx, ScanRequest{AutoRenew: r.autoRenew, RequestedBy: "monitor"})
 	if err != nil {
@@ -123,6 +138,23 @@ func (r *Runner) runOnce(ctx context.Context) {
 		return
 	}
 	r.monitor.Dispatch(ctx, report, r.bindings)
+}
+
+// checkSecretKEK refreshes the secret-layer KEK rotation gauges and logs any
+// secrets lingering on superseded KEK versions. Failures are logged, not
+// fatal: the check reruns on the next tick.
+func (r *Runner) checkSecretKEK(ctx context.Context) {
+	if r.secretKEKCheck == nil {
+		return
+	}
+	warnings, err := r.secretKEKCheck(ctx)
+	if err != nil {
+		r.logger.Printf("cert-expiry monitor: secret KEK rotation check failed: %v", err)
+		return
+	}
+	for _, w := range warnings {
+		r.logger.Printf("cert-expiry monitor: secret KEK: %s", w)
+	}
 }
 
 // rotateOnce triggers HSM-backed rotation of any active intermediate CA whose

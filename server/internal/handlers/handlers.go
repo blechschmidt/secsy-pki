@@ -440,6 +440,19 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 		mux.Handle("GET /api/secret/info", protected(http.HandlerFunc(a.SecretInfo)))
 		mux.Handle("POST /api/secret/encrypt", protected(http.HandlerFunc(a.EncryptSecret)))
 		mux.Handle("POST /api/secret/decrypt", protected(http.HandlerFunc(a.DecryptSecret)))
+		// KEK rotation lifecycle (Task 63): key management, gated on
+		// secret:rotate in the handlers; rotate/retire additionally sit behind
+		// the WebAuthn step-up like CA rotation.
+		mux.Handle("GET /api/secret/kek/status", protected(http.HandlerFunc(a.SecretKEKStatus)))
+		mux.Handle("POST /api/secret/kek/rotate", protectStepUp("secret.kek_rotate", http.HandlerFunc(a.RotateSecretKEK)))
+		mux.Handle("POST /api/secret/kek/retire", protectStepUp("secret.kek_retire", http.HandlerFunc(a.RetireSecretKEK)))
+		mux.Handle("POST /api/secret/rewrap", protected(http.HandlerFunc(a.RewrapSecrets)))
+		// Stored-secret registry: server-held envelopes, which is what makes a
+		// fleet-wide re-wrap enumerable.
+		mux.Handle("POST /api/secret/store", protected(http.HandlerFunc(a.StoreSecret)))
+		mux.Handle("GET /api/secret/store", protected(http.HandlerFunc(a.ListStoredSecrets)))
+		mux.Handle("GET /api/secret/store/{id}", protected(http.HandlerFunc(a.GetStoredSecret)))
+		mux.Handle("DELETE /api/secret/store/{id}", protected(http.HandlerFunc(a.DeleteStoredSecret)))
 	}
 
 	if a.hsmEnabled() {

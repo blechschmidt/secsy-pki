@@ -17,13 +17,38 @@
 // is serialized as a self-describing, versioned JSON document so the format can
 // evolve without ambiguity.
 //
+// # Format versions
+//
+// Version 1 bound the KEK label and wrap algorithm into the GCM
+// additional-authenticated-data. That makes the wrap header immutable — and
+// therefore makes KEK rotation impossible without re-encrypting the data.
+//
+// Version 2 (the format new envelopes are sealed in) instead binds a
+// key-commitment — SHA-256 over the DEK under a fixed domain-separation tag —
+// into the AAD, and leaves the wrap header (provider, KEK label/URI/version,
+// wrap algorithm, wrapped DEK) outside it. A KEK rotation can then re-wrap the
+// DEK under a new KEK by rewriting only the header: the nonce, ciphertext, and
+// escrow block are untouched (see Ring.Rewrap in rotation.go). The commitment
+// is at least as strong a binding as v1's label: substituting a different KEK
+// or wrapped DEK yields a different DEK, which fails the commitment check
+// before any data decryption is attempted, and forging a passing header
+// requires knowing the DEK itself — a party that could already decrypt. The
+// commitment also gives the scheme key-commitment, which plain AES-GCM lacks.
+//
+// A v1 envelope that has been re-wrapped is upgraded in place to version 2
+// with an Origin block recording the immutable v1 AAD inputs (the original KEK
+// label and wrap algorithm), so its unchanged GCM tag keeps verifying while
+// the live wrap header points at the current KEK.
+//
 // # Security properties
 //
 //   - Confidentiality & integrity of the plaintext come from AES-256-GCM.
-//   - The envelope header (version, algorithms, KEK label, and any caller
-//     context) is bound into the GCM additional-authenticated-data (AAD). An
-//     attacker cannot swap algorithms, point the record at a different KEK, or
-//     replay a ciphertext under a different context without GCM detecting it.
+//   - The authenticated envelope header (format version, data algorithm, DEK
+//     commitment — or, for v1 and upgraded-v1 envelopes, the original KEK label
+//     and wrap algorithm — plus any caller context and the escrow block) is
+//     bound into the GCM AAD. An attacker cannot swap algorithms, substitute
+//     the wrapped key material, or replay a ciphertext under a different
+//     context without the commitment check or GCM detecting it.
 //   - Forward compatibility: the Version field is checked on decrypt; unknown
 //     versions are rejected rather than silently mis-parsed.
 package secret
@@ -33,6 +58,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -40,8 +66,15 @@ import (
 )
 
 const (
-	// FormatVersion1 is the current envelope format version.
+	// FormatVersion1 is the legacy envelope format version, still accepted for
+	// decryption. Its AAD binds the KEK label, so a v1 envelope cannot have its
+	// wrap header rewritten in place; re-wrapping upgrades it to version 2 with
+	// an Origin block (see the package comment).
 	FormatVersion1 = 1
+	// FormatVersion2 is the current envelope format version, sealed by Encrypt.
+	// Its AAD binds a DEK commitment instead of the KEK label, making the wrap
+	// header rewritable for KEK rotation.
+	FormatVersion2 = 2
 
 	// AlgAES256GCM is the only supported data-encryption algorithm.
 	AlgAES256GCM = "AES-256-GCM"
@@ -78,12 +111,30 @@ type Envelope struct {
 	KEKLabel string `json:"kek_label"`
 	// KEKURI is a stable reference to the KEK (a pkcs11: or software: URI).
 	KEKURI string `json:"kek_uri,omitempty"`
+	// KEKVersion is the rotation version of the KEK the DEK is currently
+	// wrapped under (1 for a family's initial key). Version-2 envelopes only;
+	// it is rewritten by Rewrap alongside the other wrap-header fields.
+	KEKVersion int `json:"kek_version,omitempty"`
 	// WrapAlg is the DEK-wrapping algorithm (AlgRSAOAEPSHA256).
 	WrapAlg string `json:"wrap_alg"`
 	// DataAlg is the data-encryption algorithm (AlgAES256GCM).
 	DataAlg string `json:"data_alg"`
 	// WrappedDEK is the DEK encrypted under the KEK.
 	WrappedDEK []byte `json:"wrapped_dek"`
+	// DEKCommit is a SHA-256 key-commitment to the DEK (see dekCommitment). On a
+	// natively sealed version-2 envelope it is bound into the GCM AAD and is the
+	// authenticated replacement for v1's KEK-label binding; on an upgraded-v1
+	// envelope it is advisory (the v1 AAD cannot be extended) and the GCM tag
+	// remains the authoritative check. It is always verified after unwrap when
+	// present, so a wrong or substituted KEK fails closed before any data
+	// decryption is attempted.
+	DEKCommit []byte `json:"dek_commit,omitempty"`
+	// Origin, present only on a v1 envelope that was upgraded by a KEK re-wrap,
+	// freezes the immutable v1 AAD inputs (the KEK label and wrap algorithm the
+	// envelope was originally sealed under) so the unchanged GCM tag keeps
+	// verifying. Tampering with these fields alters the reconstructed AAD and is
+	// caught by GCM. They never change again, even across further re-wraps.
+	Origin *OriginBinding `json:"origin,omitempty"`
 	// Nonce is the AES-GCM nonce.
 	Nonce []byte `json:"nonce"`
 	// Ciphertext is the AES-GCM output (ciphertext followed by the auth tag).
@@ -98,6 +149,14 @@ type Envelope struct {
 	// GCM AAD so it cannot be tampered with or substituted. It is optional;
 	// envelopes without escrow are unaffected.
 	Escrow *EscrowBlock `json:"escrow,omitempty"`
+}
+
+// OriginBinding carries the immutable AAD inputs of a v1 envelope that was
+// upgraded to v2 by a KEK re-wrap: the KEK label and wrap algorithm it was
+// originally sealed under. See Envelope.Origin.
+type OriginBinding struct {
+	KEKLabel string `json:"kek_label"`
+	WrapAlg  string `json:"wrap_alg"`
 }
 
 // wrapper is the minimal DEK wrap/unwrap capability the envelope layer needs.
@@ -115,6 +174,25 @@ type wrapper interface {
 	Label() string
 	URI() string
 	ProviderName() string
+	// Version is the KEK's rotation version (1 for a family's initial key),
+	// recorded in the envelope header of newly sealed ciphertext.
+	Version() int
+}
+
+// dekCommitTag domain-separates the DEK commitment from any other use of
+// SHA-256 over key material.
+const dekCommitTag = "secsy-dek-commit-v1\x00"
+
+// dekCommitment returns the key-commitment bound into a v2 envelope's AAD:
+// SHA-256 over a fixed domain-separation tag and the DEK. Publishing it is
+// safe — the DEK is 256 bits of fresh randomness, so the preimage cannot be
+// searched — and it lets decrypt verify that an unwrap produced the DEK this
+// envelope was sealed with before the DEK is used.
+func dekCommitment(dek []byte) []byte {
+	h := sha256.New()
+	h.Write([]byte(dekCommitTag))
+	h.Write(dek)
+	return h.Sum(nil)
 }
 
 // seal performs the envelope encryption given a wrapper. context is optional
@@ -156,13 +234,15 @@ func seal(w wrapper, plaintext, context []byte, escrow *EscrowPolicy) (*Envelope
 	}
 
 	env := &Envelope{
-		Version:      FormatVersion1,
+		Version:      FormatVersion2,
 		Provider:     w.ProviderName(),
 		KEKLabel:     w.Label(),
 		KEKURI:       w.URI(),
+		KEKVersion:   w.Version(),
 		WrapAlg:      wrapAlg,
 		DataAlg:      AlgAES256GCM,
 		WrappedDEK:   wrapped,
+		DEKCommit:    dekCommitment(dek),
 		Nonce:        nonce,
 		ContextBound: len(context) > 0,
 	}
@@ -207,10 +287,18 @@ func open(w wrapper, env *Envelope, context []byte) ([]byte, error) {
 // openWithDEK performs the AES-GCM decryption of an envelope given an
 // already-recovered DEK. It is shared by the normal KEK-unwrap path (open) and
 // the escrow-recovery path (RecoveryService.Recover), so both enforce the same
-// DEK-length, nonce, and AAD checks. The DEK is the caller's to zeroize.
+// DEK-length, commitment, nonce, and AAD checks. The DEK is the caller's to
+// zeroize.
 func openWithDEK(env *Envelope, dek, context []byte) ([]byte, error) {
 	if len(dek) != dekSize {
 		return nil, fmt.Errorf("secret: data key has wrong length")
+	}
+	// Verify the key-commitment before the DEK touches any cipher state: a
+	// wrong or substituted KEK (or a mis-reconstructed escrow quorum) fails
+	// closed here. The error is as generic as a GCM failure so the two are
+	// indistinguishable to a caller probing the endpoint.
+	if len(env.DEKCommit) > 0 && !subtleEqual(dekCommitment(dek), env.DEKCommit) {
+		return nil, fmt.Errorf("secret: decryption failed (wrong key/context or corrupted ciphertext)")
 	}
 	block, err := aes.NewCipher(dek)
 	if err != nil {
@@ -234,10 +322,41 @@ func openWithDEK(env *Envelope, dek, context []byte) ([]byte, error) {
 }
 
 // validate checks that an envelope declares a supported version and algorithms
-// and carries the required fields, before any cryptographic work is attempted.
+// and carries the required fields — including the per-version shape rules —
+// before any cryptographic work is attempted.
 func (e *Envelope) validate() error {
-	if e.Version != FormatVersion1 {
-		return fmt.Errorf("secret: unsupported envelope version %d (this build supports %d)", e.Version, FormatVersion1)
+	switch e.Version {
+	case FormatVersion1:
+		// The legacy shape: none of the v2 fields may appear on a v1 envelope.
+		if e.KEKVersion != 0 || len(e.DEKCommit) != 0 || e.Origin != nil {
+			return fmt.Errorf("secret: version-1 envelope carries version-2 fields")
+		}
+	case FormatVersion2:
+		if e.KEKVersion < 1 {
+			return fmt.Errorf("secret: version-2 envelope is missing kek_version")
+		}
+		if e.Origin == nil {
+			// Natively sealed v2: the commitment is mandatory (it is the
+			// authenticated binding that replaced the v1 KEK-label binding).
+			if len(e.DEKCommit) != sha256.Size {
+				return fmt.Errorf("secret: version-2 envelope has a missing or malformed dek_commit")
+			}
+		} else {
+			// Upgraded from v1 by a re-wrap: the origin block must reconstruct a
+			// valid v1 AAD; the commitment is optional but well-formed if present.
+			if e.Origin.KEKLabel == "" {
+				return fmt.Errorf("secret: upgraded envelope is missing origin kek_label")
+			}
+			if !supportedWrapAlgs[e.Origin.WrapAlg] {
+				return fmt.Errorf("secret: upgraded envelope has unsupported origin wrap algorithm %q", e.Origin.WrapAlg)
+			}
+			if len(e.DEKCommit) != 0 && len(e.DEKCommit) != sha256.Size {
+				return fmt.Errorf("secret: upgraded envelope has a malformed dek_commit")
+			}
+		}
+	default:
+		return fmt.Errorf("secret: unsupported envelope version %d (this build supports %d and %d)",
+			e.Version, FormatVersion1, FormatVersion2)
 	}
 	if !supportedWrapAlgs[e.WrapAlg] {
 		return fmt.Errorf("secret: unsupported wrap algorithm %q", e.WrapAlg)
@@ -260,10 +379,16 @@ func (e *Envelope) validate() error {
 }
 
 // aad builds the deterministic additional-authenticated-data bound into the GCM
-// tag. It commits to the format version, both algorithm identifiers, the KEK
-// label, and any caller-supplied context, so none of these can be altered
-// without invalidating the tag. The encoding is length-prefixed to be
-// unambiguous (no field can be confused with an adjacent one).
+// tag. The encoding is length-prefixed to be unambiguous (no field can be
+// confused with an adjacent one), and the format version leads, so the v1 and
+// v2 shapes are domain-separated from the first bytes.
+//
+// The v1 shape commits to the wrap algorithm and KEK label; because the AAD is
+// frozen at seal time, an upgraded-v1 envelope (Origin != nil) reconstructs
+// exactly those original bytes from its Origin block regardless of what the
+// live wrap header now says. The v2 shape commits to the DEK commitment
+// instead, which is what makes the wrap header rewritable for KEK rotation
+// (see the package comment for why this binding is equivalent).
 func (e *Envelope) aad(context []byte) []byte {
 	var buf bytes.Buffer
 	buf.WriteString("secsy-envelope\x00")
@@ -273,13 +398,30 @@ func (e *Envelope) aad(context []byte) []byte {
 		buf.Write(n[:])
 		buf.Write(b)
 	}
-	var ver [4]byte
-	binary.BigEndian.PutUint32(ver[:], uint32(e.Version))
-	buf.Write(ver[:])
-	writeLP([]byte(e.WrapAlg))
-	writeLP([]byte(e.DataAlg))
-	writeLP([]byte(e.KEKLabel))
-	writeLP(context)
+	writeVer := func(v uint32) {
+		var ver [4]byte
+		binary.BigEndian.PutUint32(ver[:], v)
+		buf.Write(ver[:])
+	}
+	switch {
+	case e.Version == FormatVersion1 || e.Origin != nil:
+		// The v1 AAD — either a live v1 envelope (fields in the header) or an
+		// upgraded one (fields frozen in the Origin block).
+		wrapAlg, kekLabel := e.WrapAlg, e.KEKLabel
+		if e.Origin != nil {
+			wrapAlg, kekLabel = e.Origin.WrapAlg, e.Origin.KEKLabel
+		}
+		writeVer(FormatVersion1)
+		writeLP([]byte(wrapAlg))
+		writeLP([]byte(e.DataAlg))
+		writeLP([]byte(kekLabel))
+		writeLP(context)
+	default:
+		writeVer(FormatVersion2)
+		writeLP([]byte(e.DataAlg))
+		writeLP(e.DEKCommit)
+		writeLP(context)
+	}
 	// Bind the escrow block (if any) so recovery agents and shares cannot be
 	// tampered with, substituted, or stripped without invalidating the GCM tag.
 	// Envelopes without escrow append nothing, so the AAD of pre-escrow

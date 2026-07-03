@@ -270,6 +270,32 @@ var (
 		"HSM-backed envelope encryption operations, by operation and result.",
 		"operation", "result")
 
+	// Secret-layer KEK rotation (Task 63). SecretRewrap counts individual DEK
+	// re-wraps by result (ok|conflict|error). SecretRewrapPending is the size of
+	// the remaining re-wrap work list for a family, live during a batch and
+	// refreshed by the expiry monitor between batches. SecretsOnOldKEK is the
+	// number of stored secrets whose envelope is still wrapped under a
+	// non-active KEK version of the family — the drain-to-zero gauge a rotation
+	// is finished by, refreshed on every monitor tick and after each
+	// rotate/re-wrap/retire operation. SecretKEKActiveVersion exposes the
+	// family's current version number so dashboards can annotate rotations.
+	SecretRewrap = NewCounter(Default,
+		"secsy_secret_rewrap_total",
+		"Stored-secret DEK re-wrap operations, by result (ok|conflict|error).",
+		"result")
+	SecretRewrapPending = NewGauge(Default,
+		"secsy_secret_rewrap_pending",
+		"Stored secrets remaining in the current re-wrap work list, by KEK family.",
+		"family")
+	SecretsOnOldKEK = NewGauge(Default,
+		"secsy_secret_on_old_kek",
+		"Stored secrets still wrapped under a non-active KEK version, by KEK family.",
+		"family")
+	SecretKEKActiveVersion = NewGauge(Default,
+		"secsy_secret_kek_active_version",
+		"Active KEK rotation version of a family, by KEK family.",
+		"family")
+
 	// RBAC authorization decisions. "action" is the coarse capability checked;
 	// "decision" is allow|deny.
 	AuthzDecisions = NewCounter(Default,

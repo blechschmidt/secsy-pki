@@ -38,6 +38,35 @@ type Store interface {
 	ACMEStore
 	AuditStore
 	RBACStore
+	SecretStore
+}
+
+// SecretStore persists the secret-layer KEK rotation state (Task 63): the
+// versioned key-encryption-key lineage per family and the registry of
+// server-held envelopes, which is what makes fleet-wide re-wrap ("which
+// secrets still sit on an old KEK?") an enumerable operation. Neither table
+// ever holds key material or plaintext.
+type SecretStore interface {
+	// KEK rotation lineage. RotateKEKVersion atomically supersedes the active
+	// version (active → retiring) and installs the new one, backfilling the
+	// implicit version 1 on a family's first rotation.
+	ListKEKVersions(family string) ([]models.KEKVersion, error)
+	ListKEKFamilies() ([]string, error)
+	RotateKEKVersion(newVersion *models.KEKVersion) error
+	SetKEKVersionStatus(family string, version int, status string) (bool, error)
+
+	// Server-held envelopes. UpdateStoredSecretEnvelope is optimistic (applies
+	// only while the row still carries the expected KEK label) so concurrent
+	// re-wraps never clobber newer ciphertext.
+	CreateStoredSecret(s *models.StoredSecret) error
+	GetStoredSecret(id string) (*models.StoredSecret, error)
+	GetStoredSecretByName(tenantID, name string) (*models.StoredSecret, error)
+	ListStoredSecrets(tenantID string) ([]models.StoredSecret, error)
+	ListStoredSecretIDsForRewrap(family, activeLabel string) ([]string, error)
+	UpdateStoredSecretEnvelope(id, envelope, kekLabel string, kekVersion int, expectKEKLabel string) (bool, error)
+	DeleteStoredSecret(id string) (bool, error)
+	CountStoredSecretsOnKEK(label string) (int64, error)
+	CountStoredSecretsByKEKLabel(family string) (map[string]int64, error)
 }
 
 // TenantStore persists the top-level isolation boundary. Every deployment has

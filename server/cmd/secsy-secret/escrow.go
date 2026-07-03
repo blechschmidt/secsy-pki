@@ -279,7 +279,11 @@ func cmdSecretAudit(cfg *config.Config, args []string) error {
 	}
 
 	var events []audit.Event
-	for _, action := range []string{audit.ActionSecretEscrow, audit.ActionSecretRecover} {
+	for _, action := range []string{
+		audit.ActionSecretEscrow, audit.ActionSecretRecover,
+		audit.ActionSecretKEKRotate, audit.ActionSecretRewrap, audit.ActionSecretKEKRetire,
+		audit.ActionSecretStore, audit.ActionSecretStoreDelete,
+	} {
 		evs, _, err := db.ListEvents(action, "", "", *limit, 0)
 		if err != nil {
 			return fmt.Errorf("listing %s events: %w", action, err)
@@ -291,7 +295,7 @@ func cmdSecretAudit(cfg *config.Config, args []string) error {
 		events = events[:*limit]
 	}
 	if len(events) == 0 {
-		fmt.Println("No escrow or recovery events recorded yet.")
+		fmt.Println("No secret-lifecycle (escrow/recovery/KEK-rotation) events recorded yet.")
 		return nil
 	}
 	fmt.Printf("%-6s %-20s %-16s %-9s %-16s %s\n", "SEQ", "TIMESTAMP", "ACTION", "RESULT", "ACTOR", "DETAIL")

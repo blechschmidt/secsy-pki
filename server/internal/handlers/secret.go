@@ -7,7 +7,6 @@ import (
 	"net/http"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
-	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -76,38 +75,41 @@ func writeSecretTenantError(w http.ResponseWriter, err error) {
 	writeError(w, http.StatusBadRequest, "%v", err)
 }
 
-// secretService builds a Service bound to the configured KEK for this request.
-// A fresh service is created per request so the KEK session is short-lived,
-// matching the signing path.
-func (a *API) secretService(r *http.Request) (*secret.Service, error) {
-	return a.secretServiceWithKEK(r, a.secretKEKLabel)
-}
-
-// secretServiceWithKEK builds a Service bound to a specific KEK label (used to
-// select a tenant's KEK).
-func (a *API) secretServiceWithKEK(r *http.Request, kekLabel string) (*secret.Service, error) {
-	if kekLabel == "" {
+// secretRing builds the KEK family's rotation-aware Ring for this request: it
+// seals under the family's active KEK version and opens envelopes wrapped
+// under the active or any still-retiring version (the dual-KEK decrypt window
+// of Task 63). A fresh ring is created per request so the KEK session is
+// short-lived, matching the signing path. family is the base KEK label (the
+// deployment-wide secret.kek_label or the tenant's kek_label).
+func (a *API) secretRing(r *http.Request, family string) (*secret.Ring, error) {
+	if family == "" {
 		return nil, fmt.Errorf("no KEK configured")
 	}
-	return secret.NewService(r.Context(), a.keyProvider, keyprovider.KeyRef{Label: kekLabel})
+	versions, err := a.db.ListKEKVersions(family)
+	if err != nil {
+		return nil, fmt.Errorf("reading KEK rotation state: %w", err)
+	}
+	return secret.LoadRing(r.Context(), a.keyProvider, family, versions)
 }
 
 // SecretInfo reports metadata about the configured KEK (never key material).
 func (a *API) SecretInfo(w http.ResponseWriter, r *http.Request) {
-	svc, err := a.secretService(r)
+	ring, err := a.secretRing(r, a.secretKEKLabel)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "secret service unavailable: %v", err)
 		return
 	}
-	info := svc.KEKInfo()
+	info := ring.Active().KEKInfo()
 	escrowAvailable, escrowThreshold, escrowAgents := a.escrowInfo()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"kek_label": info.Label,
-		"provider":  info.Provider,
-		"key_bits":  info.KeyBits,
-		"wrap_alg":  info.WrapAlg,
-		"data_alg":  secret.AlgAES256GCM,
-		"version":   secret.FormatVersion1,
+		"kek_label":   info.Label,
+		"kek_family":  ring.Family(),
+		"kek_version": info.Version,
+		"provider":    info.Provider,
+		"key_bits":    info.KeyBits,
+		"wrap_alg":    info.WrapAlg,
+		"data_alg":    secret.AlgAES256GCM,
+		"version":     secret.FormatVersion2,
 		// M-of-N escrow policy shape (Task 33): whether encrypt requests may ask
 		// for escrow, and the recovery quorum. Recovery itself is a dual-control
 		// CLI operation (secsy-secret recover) and is deliberately not exposed
@@ -148,7 +150,7 @@ func (a *API) EncryptSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	svc, err := a.secretServiceWithKEK(r, kekLabel)
+	ring, err := a.secretRing(r, kekLabel)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "secret service unavailable: %v", err)
 		return
@@ -212,7 +214,7 @@ func (a *API) EncryptSecret(w http.ResponseWriter, r *http.Request) {
 
 	// Consume pending HSM audit logs to free space, mirroring the signing path.
 	a.consumeHSMAuditLogs("")
-	blob, err := svc.EncryptWithEscrowToJSON(plaintext, context, escrowPolicy)
+	blob, err := ring.EncryptWithEscrowToJSON(plaintext, context, escrowPolicy)
 	a.consumeHSMAuditLogs("")
 	quotaDone(err)
 	metrics.RecordEnvelope("encrypt", err)
@@ -257,7 +259,7 @@ func (a *API) DecryptSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	svc, err := a.secretServiceWithKEK(r, kekLabel)
+	ring, err := a.secretRing(r, kekLabel)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "secret service unavailable: %v", err)
 		return
@@ -294,7 +296,7 @@ func (a *API) DecryptSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.consumeHSMAuditLogs("")
-	plaintext, err := svc.DecryptJSON(req.Envelope, context)
+	plaintext, err := ring.DecryptJSON(r.Context(), req.Envelope, context)
 	a.consumeHSMAuditLogs("")
 	quotaDone(err)
 	metrics.RecordEnvelope("decrypt", err)

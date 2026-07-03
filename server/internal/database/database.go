@@ -651,6 +651,45 @@ func (db *DB) migrate() error {
 			revoked_at TIMESTAMP NOT NULL,
 			PRIMARY KEY (ca_id, serial, key_id)
 		)`,
+
+		// Secret-layer KEK rotation lineage (Task 63). One row per versioned
+		// key-encryption key of a family (family = the base KEK label from config
+		// or a tenant's kek_label); at most one row per family is 'active'. label
+		// is globally unique — it is the HSM CKA_LABEL, and duplicate labels make
+		// PKCS#11 lookups ambiguous. A family with no rows has never rotated: its
+		// base key is implicitly version 1, active. Rows carry only bookkeeping
+		// about HSM-resident keys, never key material.
+		`CREATE TABLE IF NOT EXISTS kek_versions (
+			family TEXT NOT NULL,
+			version INTEGER NOT NULL,
+			label TEXT NOT NULL UNIQUE,
+			status TEXT NOT NULL DEFAULT 'active',
+			created_at TIMESTAMP NOT NULL,
+			rotated_at TIMESTAMP,
+			retired_at TIMESTAMP,
+			PRIMARY KEY (family, version)
+		)`,
+
+		// Server-held envelope-encrypted secrets (Task 63). The envelope is the
+		// same opaque JSON the encrypt API returns — never plaintext, never key
+		// material. kek_family/kek_label/kek_version are denormalized from the
+		// envelope header so re-wrap work lists and the secrets-on-old-KEK gauge
+		// are cheap queries.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS stored_secrets (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'default' REFERENCES tenants(id),
+			name TEXT NOT NULL,
+			envelope TEXT NOT NULL,
+			kek_family TEXT NOT NULL,
+			kek_label TEXT NOT NULL,
+			kek_version INTEGER NOT NULL DEFAULT 1,
+			context_bound %s,
+			escrowed %s,
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL,
+			UNIQUE (tenant_id, name)
+		)`, boolType, boolType),
+		`CREATE INDEX IF NOT EXISTS idx_stored_secrets_kek ON stored_secrets(kek_family, kek_label)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.exec(stmt); err != nil {

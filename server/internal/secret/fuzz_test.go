@@ -36,6 +36,7 @@ func (w *fuzzWrapper) Unwrap(wrapped []byte, alg string) ([]byte, error) {
 func (w *fuzzWrapper) Label() string        { return "fuzz-kek" }
 func (w *fuzzWrapper) URI() string          { return "software:fuzz-kek" }
 func (w *fuzzWrapper) ProviderName() string { return "software" }
+func (w *fuzzWrapper) Version() int         { return 1 }
 
 func newFuzzWrapper(tb testing.TB) *fuzzWrapper {
 	tb.Helper()

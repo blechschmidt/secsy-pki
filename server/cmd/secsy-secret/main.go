@@ -32,6 +32,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
+	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
 )
 
@@ -59,12 +60,18 @@ func run(args []string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	// The audit subcommand only reads the tamper-evident event log; it never
-	// touches key material, so dispatch it before constructing the key provider.
-	// This lets an auditor inspect or verify escrow/recovery events without the
-	// HSM being present or unlocked.
-	if command == "audit" {
+	// These subcommands only read the database (the tamper-evident event log,
+	// the KEK rotation lineage, the stored-secret registry); they never touch
+	// key material, so dispatch them before constructing the key provider. This
+	// lets an auditor or operator inspect state without the HSM being present
+	// or unlocked.
+	switch command {
+	case "audit":
 		return cmdSecretAudit(cfg, cmdArgs)
+	case "kek-versions":
+		return cmdKEKVersions(cfg, cmdArgs)
+	case "list-secrets":
+		return cmdListSecrets(cfg, cmdArgs)
 	}
 
 	provider, err := buildProvider(cfg)
@@ -82,6 +89,12 @@ func run(args []string) error {
 		return cmdDecrypt(cfg, provider, cmdArgs)
 	case "kek-info":
 		return cmdKEKInfo(cfg, provider, cmdArgs)
+	case "rotate-kek":
+		return cmdRotateKEK(cfg, provider, cmdArgs)
+	case "retire-kek":
+		return cmdRetireKEK(cfg, provider, cmdArgs)
+	case "rewrap":
+		return cmdRewrap(cfg, provider, cmdArgs)
 	case "escrow-config":
 		return cmdEscrowConfig(cfg, provider, cmdArgs)
 	case "escrow-init-agent":
@@ -106,13 +119,23 @@ Usage:
 Commands:
   init-kek           Generate the RSA key-encryption key (KEK) on the provider
   encrypt            Encrypt stdin or a file into a ciphertext envelope (JSON)
-                     (add -escrow to also wrap the data key to recovery agents)
+                     (add -escrow to also wrap the data key to recovery agents,
+                     -store -name NAME to persist it in the stored-secret registry)
   decrypt            Decrypt a ciphertext envelope back to plaintext
+                     (accepts envelopes on any non-retired KEK version; -id decrypts
+                     a stored secret from the registry)
   kek-info           Show metadata about the configured KEK
+  rotate-kek         Generate the next versioned KEK in the HSM and make it active
+                     (existing envelopes keep decrypting under the retiring version)
+  rewrap             Re-wrap data keys onto the active KEK version (-all, -id, or -in FILE);
+                     data ciphertext and escrow shares are untouched
+  retire-kek         Withdraw a superseded KEK version (fails while secrets remain on it)
+  kek-versions       Show the family's rotation lineage and per-version secret counts
+  list-secrets       List the stored-secret registry (metadata only)
   escrow-config      Show/verify the M-of-N key-escrow configuration
   escrow-init-agent  Generate an RSA recovery-agent key on the provider
   recover            Recover plaintext under a quorum of recovery agents
-  audit              Show/verify escrow and recovery audit-log events
+  audit              Show/verify secret-lifecycle audit-log events
 
 Run "secsy-secret <command> -h" for command-specific flags.
 `)
@@ -155,17 +178,18 @@ func cmdInitKEK(cfg *config.Config, provider keyprovider.Provider, args []string
 
 func cmdKEKInfo(cfg *config.Config, provider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("kek-info", flag.ContinueOnError)
-	label := fs.String("kek", "", "KEK label (default: secret.kek_label from config)")
+	label := fs.String("kek", "", "explicit KEK label override (default: the family's ACTIVE KEK version)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	kek, err := resolveKEK(cfg, *label)
+	ring, svc, err := serviceOrRing(cfg, provider, *label)
 	if err != nil {
 		return err
 	}
-	svc, err := secret.NewService(context.Background(), provider, keyprovider.KeyRef{Label: kek})
-	if err != nil {
-		return err
+	if ring != nil {
+		svc = ring.Active()
+		fmt.Printf("KEK family %q (active version %d; see `secsy-secret kek-versions` for the lineage)\n",
+			ring.Family(), ring.ActiveVersion())
 	}
 	printKEK(svc.KEKInfo())
 	return nil
@@ -173,22 +197,34 @@ func cmdKEKInfo(cfg *config.Config, provider keyprovider.Provider, args []string
 
 func cmdEncrypt(cfg *config.Config, provider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("encrypt", flag.ContinueOnError)
-	label := fs.String("kek", "", "KEK label (default: secret.kek_label from config)")
+	label := fs.String("kek", "", "explicit KEK label override (default: the family's ACTIVE KEK version)")
 	in := fs.String("in", "-", "input plaintext file, or '-' for stdin")
 	out := fs.String("out", "-", "output envelope file, or '-' for stdout")
 	context_ := fs.String("context", "", "optional encryption context bound to the ciphertext (required verbatim to decrypt)")
 	escrow := fs.Bool("escrow", false, "additionally escrow the data key to the configured M-of-N recovery agents")
+	store := fs.Bool("store", false, "persist the envelope in the stored-secret registry (requires -name and the database)")
+	name := fs.String("name", "", "tenant-unique name for the stored secret (with -store)")
+	tenant := fs.String("tenant", models.DefaultTenantID, "owning tenant for the stored secret (with -store)")
 	operator := fs.String("operator", "", "operator identity recorded in the escrow audit event (default: OS user)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	kek, err := resolveKEK(cfg, *label)
+	if *store && *name == "" {
+		return fmt.Errorf("-store requires -name")
+	}
+	if *store && *label != "" {
+		return fmt.Errorf("-store seals under the family's active KEK version; it cannot be combined with an explicit -kek")
+	}
+
+	// Rotation-aware sealing: encrypt under the family's active KEK version so
+	// a rotated deployment never seals new ciphertext under a superseded key.
+	ring, svc, err := serviceOrRing(cfg, provider, *label)
 	if err != nil {
 		return err
 	}
-	svc, err := secret.NewService(context.Background(), provider, keyprovider.KeyRef{Label: kek})
-	if err != nil {
-		return err
+	var ops envelopeOps = svc
+	if ring != nil {
+		ops = ring
 	}
 
 	plaintext, err := readInput(*in)
@@ -197,36 +233,54 @@ func cmdEncrypt(cfg *config.Config, provider keyprovider.Provider, args []string
 	}
 	defer zero(plaintext)
 
-	if !*escrow {
-		blob, err := svc.EncryptToJSON(plaintext, []byte(*context_))
+	// Resolve the escrow policy (if requested) before any encryption happens.
+	var policy *secret.EscrowPolicy
+	if *escrow {
+		if policy, err = escrowPolicyFromConfig(context.Background(), cfg, provider); err != nil {
+			return err
+		}
+	}
+
+	blob, err := ops.EncryptWithEscrowToJSON(plaintext, []byte(*context_), policy)
+	if err != nil {
+		return err
+	}
+
+	family, _ := resolveKEK(cfg, *label)
+	if policy != nil {
+		db, err := openAuditDB(cfg)
 		if err != nil {
 			return err
 		}
-		return writeOutput(*out, append(blob, '\n'))
+		detail := fmt.Sprintf("threshold=%d agents=[%s]", policy.Threshold(), agentIDsCSV(policy))
+		err = recordEscrowEvent(db, operatorActor(*operator), audit.ActionSecretEscrow, family, audit.ResultSuccess, detail)
+		db.Close()
+		if err != nil {
+			return fmt.Errorf("secret was escrow-encrypted but recording the audit event failed: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Escrowed to %d recovery agent(s), %d-of-%d quorum required for recovery.\n",
+			len(policy.Agents()), policy.Threshold(), len(policy.Agents()))
 	}
 
-	// Escrow path: build the M-of-N policy, seal with recovery shares, and record
-	// the escrow to the tamper-evident audit log.
-	policy, err := escrowPolicyFromConfig(context.Background(), cfg, provider)
-	if err != nil {
-		return err
+	if *store {
+		if ring == nil {
+			return fmt.Errorf("-store requires the KEK rotation state (database) to record the sealing KEK version")
+		}
+		db, err := openAuditDB(cfg)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		stored, err := storeEncryptedSecret(db, *tenant, *name, family, ring, blob, *context_ != "", policy != nil)
+		if err != nil {
+			return err
+		}
+		detail := fmt.Sprintf("id=%s kek_label=%s kek_version=%d escrow=%v", stored.ID, stored.KEKLabel, stored.KEKVersion, stored.Escrowed)
+		if err := recordEscrowEvent(db, operatorActor(*operator), audit.ActionSecretStore, *name, audit.ResultSuccess, detail); err != nil {
+			return fmt.Errorf("secret was stored but recording the audit event failed: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Stored secret %q (id %s) sealed under KEK version %d.\n", stored.Name, stored.ID, stored.KEKVersion)
 	}
-	db, err := openAuditDB(cfg)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
-	blob, err := svc.EncryptWithEscrowToJSON(plaintext, []byte(*context_), policy)
-	if err != nil {
-		return err
-	}
-	detail := fmt.Sprintf("threshold=%d agents=[%s]", policy.Threshold(), agentIDsCSV(policy))
-	if err := recordEscrowEvent(db, operatorActor(*operator), audit.ActionSecretEscrow, kek, audit.ResultSuccess, detail); err != nil {
-		return fmt.Errorf("secret was escrow-encrypted but recording the audit event failed: %w", err)
-	}
-	fmt.Fprintf(os.Stderr, "Escrowed to %d recovery agent(s), %d-of-%d quorum required for recovery.\n",
-		len(policy.Agents()), policy.Threshold(), len(policy.Agents()))
 	return writeOutput(*out, append(blob, '\n'))
 }
 
@@ -242,27 +296,52 @@ func agentIDsCSV(policy *secret.EscrowPolicy) string {
 
 func cmdDecrypt(cfg *config.Config, provider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("decrypt", flag.ContinueOnError)
-	label := fs.String("kek", "", "KEK label (default: secret.kek_label from config)")
+	label := fs.String("kek", "", "explicit KEK label override (disaster-recovery path; skips the rotation state)")
 	in := fs.String("in", "-", "input envelope file, or '-' for stdin")
+	id := fs.String("id", "", "decrypt a stored secret from the registry by ID (instead of -in)")
 	out := fs.String("out", "-", "output plaintext file, or '-' for stdout")
 	context_ := fs.String("context", "", "encryption context that was bound at encryption time")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	kek, err := resolveKEK(cfg, *label)
-	if err != nil {
-		return err
-	}
-	svc, err := secret.NewService(context.Background(), provider, keyprovider.KeyRef{Label: kek})
-	if err != nil {
-		return err
+
+	var blob []byte
+	if *id != "" {
+		db, err := openAuditDB(cfg)
+		if err != nil {
+			return err
+		}
+		s, err := db.GetStoredSecret(*id)
+		db.Close()
+		if err != nil {
+			return err
+		}
+		if s == nil {
+			return fmt.Errorf("no stored secret with id %q", *id)
+		}
+		blob = []byte(s.Envelope)
+	} else {
+		var err error
+		if blob, err = readInput(*in); err != nil {
+			return fmt.Errorf("reading envelope: %w", err)
+		}
 	}
 
-	blob, err := readInput(*in)
+	// Rotation-aware opening: the ring accepts envelopes wrapped under the
+	// active or any still-retiring KEK version (and refuses retired ones). An
+	// explicit -kek override, or a missing database, falls back to a single
+	// KEK — the path that keeps decryption working in disaster recovery with
+	// nothing but the HSM.
+	ring, svc, err := serviceOrRing(cfg, provider, *label)
 	if err != nil {
-		return fmt.Errorf("reading envelope: %w", err)
+		return err
 	}
-	plaintext, err := svc.DecryptJSON(blob, []byte(*context_))
+	var plaintext []byte
+	if ring != nil {
+		plaintext, err = ring.DecryptJSON(context.Background(), blob, []byte(*context_))
+	} else {
+		plaintext, err = svc.DecryptJSON(blob, []byte(*context_))
+	}
 	if err != nil {
 		return err
 	}
@@ -272,6 +351,7 @@ func cmdDecrypt(cfg *config.Config, provider keyprovider.Provider, args []string
 
 func printKEK(info secret.KEKInfo) {
 	fmt.Printf("  Label:    %s\n", info.Label)
+	fmt.Printf("  Version:  %d\n", info.Version)
 	fmt.Printf("  Provider: %s\n", info.Provider)
 	fmt.Printf("  Key bits: %d\n", info.KeyBits)
 	fmt.Printf("  Wrap alg: %s\n", info.WrapAlg)

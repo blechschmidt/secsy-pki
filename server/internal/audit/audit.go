@@ -111,7 +111,22 @@ const (
 	// detail records the participating agent IDs and the threshold met. Recovery
 	// is a privileged, dual-control break-glass operation, logged distinctly from
 	// routine secret.decrypt so it stands out in the audit trail.
-	ActionSecretRecover     = "secret.recover"
+	ActionSecretRecover = "secret.recover"
+	// Secret-layer KEK rotation lifecycle (Task 63). ActionSecretKEKRotate
+	// records that a family's next versioned wrapping key was generated in the
+	// HSM and made active (target: family; detail: old/new version and label).
+	// ActionSecretRewrap records a DEK re-wrap batch migrating stored secrets
+	// onto the active KEK (detail: per-result counts). ActionSecretKEKRetire
+	// records that a superseded KEK version was withdrawn from service —
+	// decryption under it is refused fail-closed from then on.
+	ActionSecretKEKRotate = "secret.kek_rotate"
+	ActionSecretRewrap    = "secret.rewrap"
+	ActionSecretKEKRetire = "secret.kek_retire"
+	// ActionSecretStore / ActionSecretStoreDelete record the lifecycle of
+	// server-held envelopes in the stored-secret registry (the encryption
+	// itself is additionally recorded as secret.encrypt).
+	ActionSecretStore       = "secret.store"
+	ActionSecretStoreDelete = "secret.store_delete"
 	ActionPermissionGrant   = "permission.grant"
 	ActionPermissionRevoke  = "permission.revoke"
 	ActionGroupCreate       = "group.create"

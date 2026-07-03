@@ -914,3 +914,83 @@ type ACMEChallenge struct {
 	Error     string     `json:"-"`
 	CreatedAt time.Time  `json:"created_at"`
 }
+
+// KEK (key-encryption-key) rotation states for the secret envelope layer
+// (Task 63). A KEK family — named by its base label, e.g. the configured
+// secret.kek_label or a tenant's kek_label — is a lineage of versioned HSM
+// keys. Exactly one version is active (seals new envelopes); previous versions
+// stay retiring (still able to open their envelopes) until every secret has
+// been re-wrapped, and are then retired, after which decryption under them is
+// refused fail-closed.
+const (
+	// KEKStatusActive marks the family's current wrapping key: new envelopes
+	// are sealed under it, and it can open envelopes it wrapped.
+	KEKStatusActive = "active"
+	// KEKStatusRetiring marks a superseded version inside the dual-KEK decrypt
+	// window: it no longer seals new envelopes but still opens existing ones,
+	// so reads keep working while secrets are re-wrapped.
+	KEKStatusRetiring = "retiring"
+	// KEKStatusRetired marks a version withdrawn from service: decryption under
+	// it is refused. Retire a version only once nothing is wrapped under it.
+	KEKStatusRetired = "retired"
+)
+
+// KEKVersion is one versioned key-encryption key in a family's rotation
+// lineage. Version 1 is the family's initial key whose HSM label is the family
+// name itself; version N>1 lives under the label "<family>-vN", keeping every
+// CKA_LABEL unique (generating a second key under an in-use label makes lookup
+// ambiguous on PKCS#11 tokens).
+type KEKVersion struct {
+	Family  string `json:"family" db:"family"`
+	Version int    `json:"version" db:"version"`
+	Label   string `json:"label" db:"label"`
+	Status  string `json:"status" db:"status"` // active | retiring | retired
+	// CreatedAt is when the version was generated (or first registered, for a
+	// backfilled version-1 row).
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
+	// RotatedAt is when the version stopped being active (nil while active).
+	RotatedAt *time.Time `json:"rotated_at,omitempty" db:"rotated_at"`
+	// RetiredAt is when decryption under the version was withdrawn.
+	RetiredAt *time.Time `json:"retired_at,omitempty" db:"retired_at"`
+}
+
+// StoredSecret is a server-held envelope-encrypted secret: the ciphertext
+// envelope plus the bookkeeping that makes fleet-wide KEK rotation possible
+// (which KEK family/label/version currently wraps its data key). The plaintext
+// is never stored; the envelope is exactly what /api/secret/encrypt returns
+// and decrypting it still requires the HSM-held KEK. KEKLabel/KEKVersion are
+// denormalized from the envelope header so "which secrets still sit on an old
+// KEK" is a cheap query for re-wrap batches and the on-old-KEK gauge.
+type StoredSecret struct {
+	ID       string `json:"id" db:"id"`
+	TenantID string `json:"tenant_id" db:"tenant_id"`
+	// Name is the caller-chosen identifier, unique within the tenant.
+	Name string `json:"name" db:"name"`
+	// Envelope is the serialized JSON envelope (see secret.Envelope). Omitted
+	// from list responses; fetched individually.
+	Envelope string `json:"envelope,omitempty" db:"envelope"`
+	// KEKFamily is the rotation family that seals this secret (the deployment
+	// or tenant KEK base label at encryption time).
+	KEKFamily string `json:"kek_family" db:"kek_family"`
+	// KEKLabel / KEKVersion mirror the envelope's current wrap header.
+	KEKLabel   string `json:"kek_label" db:"kek_label"`
+	KEKVersion int    `json:"kek_version" db:"kek_version"`
+	// ContextBound records that decryption requires the caller-supplied
+	// encryption context (which is deliberately not stored).
+	ContextBound bool `json:"context_bound,omitempty" db:"context_bound"`
+	// Escrowed records that the envelope carries an M-of-N recovery block.
+	Escrowed  bool      `json:"escrowed,omitempty" db:"escrowed"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
+	// UpdatedAt advances on every envelope rewrite (i.e. each re-wrap).
+	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
+}
+
+// KEKUsage summarizes how many stored secrets are wrapped under one KEK
+// version, joined against the version's rotation status for the KEK status
+// report and the secrets-on-old-KEK gauge.
+type KEKUsage struct {
+	Label   string `json:"label"`
+	Version int    `json:"version"`
+	Status  string `json:"status"`
+	Secrets int64  `json:"secrets"`
+}

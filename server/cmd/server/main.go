@@ -495,6 +495,12 @@ func main() {
 		// manager cross-signs a fresh key under the parent and opens a dual-chain
 		// overlap window as intermediates near expiry.
 		runner.WithRotation(caMgr, db)
+		// Secret-layer KEK rotation posture (Task 63): each tick refreshes the
+		// secrets-on-old-KEK / active-version gauges and logs families whose
+		// stored secrets still need a re-wrap.
+		runner.WithSecretKEKCheck(func(context.Context) ([]string, error) {
+			return secret.RefreshKEKMetrics(db, cfg.Secret.KEKLabel)
+		})
 		go runner.Run(context.Background())
 	}
 

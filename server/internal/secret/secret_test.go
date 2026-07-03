@@ -64,14 +64,23 @@ func TestCiphertextIsVersionedAndOpaque(t *testing.T) {
 	if err := json.Unmarshal(blob, &env); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if env.Version != FormatVersion1 {
-		t.Errorf("version = %d, want %d", env.Version, FormatVersion1)
+	if env.Version != FormatVersion2 {
+		t.Errorf("version = %d, want %d", env.Version, FormatVersion2)
 	}
 	if env.WrapAlg != AlgRSAOAEPSHA256 || env.DataAlg != AlgAES256GCM {
 		t.Errorf("unexpected algs: wrap=%q data=%q", env.WrapAlg, env.DataAlg)
 	}
 	if env.KEKLabel != "test-kek" {
 		t.Errorf("kek label = %q", env.KEKLabel)
+	}
+	if env.KEKVersion != 1 {
+		t.Errorf("kek version = %d, want 1", env.KEKVersion)
+	}
+	if len(env.DEKCommit) != 32 {
+		t.Errorf("dek commitment length = %d, want 32", len(env.DEKCommit))
+	}
+	if bytes.Contains(blob, []byte("origin")) {
+		t.Error("natively sealed envelope carries an origin block")
 	}
 }
 
@@ -114,13 +123,38 @@ func TestTamperDetection(t *testing.T) {
 		}
 	})
 
-	t.Run("alter kek label bound in AAD", func(t *testing.T) {
-		// Change the label but keep validate() happy by round-tripping; the AAD
-		// mismatch must still cause a GCM failure.
+	t.Run("alter dek commitment bound in AAD", func(t *testing.T) {
+		// The v2 AAD binds the DEK commitment (the KEK label moved out of the
+		// AAD so re-wrap can rewrite the wrap header); altering it must fail.
 		bad := *env
+		bad.DEKCommit = append([]byte(nil), env.DEKCommit...)
+		bad.DEKCommit[0] ^= 0x01
+		if _, err := svc.Decrypt(&bad, nil); err == nil {
+			t.Fatal("expected failure when DEK commitment is altered")
+		}
+	})
+
+	t.Run("substitute wrapped DEK", func(t *testing.T) {
+		// A wrapped DEK swapped in from another envelope unwraps to a different
+		// DEK, which the commitment check rejects before any data decryption.
+		other, err := svc.Encrypt([]byte("other secret"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bad := *env
+		bad.WrappedDEK = other.WrappedDEK
+		if _, err := svc.Decrypt(&bad, nil); err == nil {
+			t.Fatal("expected failure when the wrapped DEK is substituted")
+		}
+	})
+
+	t.Run("alter kek label on v1 envelope bound in AAD", func(t *testing.T) {
+		// The legacy v1 AAD binds the KEK label directly; altering it must fail.
+		v1 := sealV1(t, svc, []byte("v1 integrity"), nil)
+		bad := *v1
 		bad.KEKLabel = "attacker-kek"
 		if _, err := svc.Decrypt(&bad, nil); err == nil {
-			t.Fatal("expected failure when KEK label is altered")
+			t.Fatal("expected failure when a v1 KEK label is altered")
 		}
 	})
 }
