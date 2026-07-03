@@ -45,7 +45,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build -tags sqlite -ldflags "$ldflags" -o /out/secsy-ca       ./cmd/secsy-ca; \
     go build -tags sqlite -ldflags "$ldflags" -o /out/secsy-secret   ./cmd/secsy-secret; \
     go build           -ldflags "$ldflags" -o /out/secsy-ssh      ./cmd/secsy-ssh; \
-    go build           -ldflags "$ldflags" -o /out/secsy-verify   ./cmd/verify
+    go build           -ldflags "$ldflags" -o /out/secsy-verify   ./cmd/verify; \
+    go build           -ldflags "$ldflags" -o /out/secsy-agent    ./cmd/secsy-agent
 
 # ---------------------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
@@ -67,6 +68,7 @@ COPY --from=builder /out/secsy-ca         /usr/local/bin/secsy-ca
 COPY --from=builder /out/secsy-secret     /usr/local/bin/secsy-secret
 COPY --from=builder /out/secsy-ssh        /usr/local/bin/secsy-ssh
 COPY --from=builder /out/secsy-verify     /usr/local/bin/secsy-verify
+COPY --from=builder /out/secsy-agent      /usr/local/bin/secsy-agent
 
 # The server serves the SPA from web/static relative to its working directory.
 COPY server/web/static /app/web/static

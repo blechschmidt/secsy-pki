@@ -1,0 +1,23 @@
+# One-shot secsy-agent pass, driven by secsy-agent-once.timer (the cron-style
+# alternative to the resident secsy-agent.service daemon).
+#
+# Exit codes: 0 = nothing to do, 2 = renewed at least one certificate,
+# 1 = failure. 2 is declared a success below so a renewal does not mark the
+# unit failed.
+
+[Unit]
+Description=secsy-pki host auto-enrollment agent (single pass)
+Documentation=https://github.com/blechschmidt/secsy-pki/blob/main/docs/agent.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/secsy-agent -config /etc/secsy/agent.yaml once
+SuccessExitStatus=0 2
+StateDirectory=secsy-agent
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+#ReadWritePaths=/etc/pki /var/lib/node_exporter/textfile_collector

@@ -1,0 +1,43 @@
+# secsy-agent daemon: keeps this host's certificates fresh by enrolling
+# against a secsy-pki server (EST or ACME) and reloading consumers on renewal.
+#
+# Install:
+#   cp secsy-agent /usr/local/bin/
+#   cp agent.yaml /etc/secsy/agent.yaml
+#   systemctl enable --now secsy-agent.service
+#
+# Prefer periodic single passes instead of a resident daemon? Use the
+# secsy-agent-once.timer unit next to this file.
+
+[Unit]
+Description=secsy-pki host auto-enrollment agent
+Documentation=https://github.com/blechschmidt/secsy-pki/blob/main/docs/agent.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/secsy-agent -config /etc/secsy/agent.yaml run
+Restart=on-failure
+RestartSec=10s
+
+# The agent needs to write certificates where services read them and (when
+# configured) chown them, so it typically runs as root. Everything else is
+# locked down.
+StateDirectory=secsy-agent
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+# Binding the http-01 solver to :80 as non-root requires this instead of root:
+#AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# Allow writing the configured certificate output directories, e.g.:
+#ReadWritePaths=/etc/pki /var/lib/node_exporter/textfile_collector
+
+[Install]
+WantedBy=multi-user.target

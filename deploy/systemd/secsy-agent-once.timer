@@ -1,0 +1,16 @@
+# Periodic secsy-agent passes. Renewal timing itself is decided by the agent
+# (ARI window / lifetime fraction with per-certificate jitter), so a coarse
+# timer cadence is fine; RandomizedDelaySec only spreads server load.
+#
+#   systemctl enable --now secsy-agent-once.timer
+
+[Unit]
+Description=Run the secsy-pki host agent hourly
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
