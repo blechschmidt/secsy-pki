@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/config"
 )
 
 // Sink receives expiry notifications. Implementations are expected to be safe
@@ -31,6 +33,23 @@ type Notification struct {
 	Renewed []CertItem `json:"renewed,omitempty"`
 	// Counts mirrors Report.Counts for at-a-glance totals.
 	Counts map[Severity]int `json:"counts"`
+	// CanaryFailures lists failed synthetic issuance-canary probes (Task 71).
+	// They are delivered through the same sinks as expiry warnings and are set
+	// only on canary-originated notifications (never on expiry-scan ones).
+	CanaryFailures []CanaryFailure `json:"canary_failures,omitempty"`
+}
+
+// CanaryFailure describes one failed synthetic issuance-canary probe for
+// notification sinks: which CA's issuance path broke, at which probe stage,
+// and why. A canary failure means real issuance is (or is about to be) broken,
+// so it is treated as critical severity for sink filtering.
+type CanaryFailure struct {
+	CAID    string    `json:"ca_id"`
+	CALabel string    `json:"ca_label"`
+	Stage   string    `json:"stage"`
+	Serial  string    `json:"serial,omitempty"` // empty when issuance itself failed
+	Error   string    `json:"error"`
+	At      time.Time `json:"at"`
 }
 
 // LogSink writes a concise summary of each notification to a logger. It is the
@@ -50,6 +69,13 @@ func NewLogSink(logger *log.Logger) *LogSink {
 func (s *LogSink) Name() string { return "log" }
 
 func (s *LogSink) Notify(_ context.Context, n Notification) error {
+	if len(n.Warnings) == 0 && len(n.Renewed) == 0 && len(n.CanaryFailures) == 0 {
+		return nil
+	}
+	for _, f := range n.CanaryFailures {
+		s.logger.Printf("issuance-canary: FAILURE ca=%s (%s) stage=%s serial=%s error=%s",
+			f.CALabel, f.CAID, f.Stage, f.Serial, f.Error)
+	}
 	if len(n.Warnings) == 0 && len(n.Renewed) == 0 {
 		return nil
 	}
@@ -91,7 +117,7 @@ func NewWebhookSink(url string, headers map[string]string, timeout time.Duration
 func (s *WebhookSink) Name() string { return "webhook(" + s.url + ")" }
 
 func (s *WebhookSink) Notify(ctx context.Context, n Notification) error {
-	if len(n.Warnings) == 0 && len(n.Renewed) == 0 {
+	if len(n.Warnings) == 0 && len(n.Renewed) == 0 && len(n.CanaryFailures) == 0 {
 		return nil // nothing to report; don't spam the endpoint
 	}
 	body, err := json.Marshal(n)
@@ -121,6 +147,54 @@ func (s *WebhookSink) Notify(ctx context.Context, n Notification) error {
 type sinkBinding struct {
 	sink        Sink
 	minSeverity Severity
+}
+
+// Notifier delivers ad-hoc notifications (currently: issuance-canary probe
+// failures) through the monitor's configured notification sinks, independent
+// of an expiry scan. It lets other subsystems reuse the operator's existing
+// log/webhook alerting channels without duplicating sink configuration.
+type Notifier struct {
+	bindings []sinkBinding
+	logger   *log.Logger
+}
+
+// NewNotifier resolves the monitor config's notification sinks into a
+// Notifier. Like the Runner, it always has at least a log sink, so failures
+// are never silently dropped — even when monitor.notifications is empty or
+// the expiry monitor itself is disabled.
+func NewNotifier(cfg config.MonitorConfig, logger *log.Logger) (*Notifier, error) {
+	if logger == nil {
+		logger = log.Default()
+	}
+	bindings, err := buildSinks(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+	return &Notifier{bindings: bindings, logger: logger}, nil
+}
+
+// NotifyCanaryFailures delivers canary probe failures to every sink whose
+// minimum severity is at or below critical (a broken issuance path is always
+// at least critical; sinks filtering for "expired" only are skipped). Sink
+// errors are logged and do not abort delivery to the others.
+func (n *Notifier) NotifyCanaryFailures(ctx context.Context, failures []CanaryFailure) {
+	if len(failures) == 0 {
+		return
+	}
+	payload := Notification{
+		GeneratedAt:    time.Now(),
+		MinSeverity:    SeverityCritical,
+		Counts:         map[Severity]int{},
+		CanaryFailures: failures,
+	}
+	for _, b := range n.bindings {
+		if !SeverityCritical.atLeast(b.minSeverity) {
+			continue
+		}
+		if err := b.sink.Notify(ctx, payload); err != nil {
+			n.logger.Printf("canary: notification sink %s failed: %v", b.sink.Name(), err)
+		}
+	}
 }
 
 // Dispatch delivers a report to every sink, filtered by each sink's minimum

@@ -398,3 +398,40 @@ groups:
           summary: "Background-job leadership flapping ({{ $labels.job }})"
           description: "More than 6 leadership transitions across the fleet in 30m. The leader cannot hold its advisory-lock lease — check PostgreSQL health/latency and the 'leader:' lines in the server logs."
           runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#observability-alert-response"
+
+  - name: secsy-pki.canary
+    rules:
+      - alert: SecsyPKICanaryFailing
+        # The synthetic issuance canary (Task 71) walks a real certificate
+        # through the full lifecycle per probed CA: HSM-signed issuance from
+        # the lint-enforced canary profile, chain verification, an OCSP "good"
+        # answer, CRL freshness, revocation, and "revoked" propagation. A
+        # failing probe means real issuance or revocation is broken (or about
+        # to be) for that CA — treat it as an issuance-path outage, not a
+        # monitoring hiccup. The stage label pinpoints where it broke.
+        expr: sum by (job, ca, stage) (increase(secsy_canary_failures_total[15m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: secsy-pki
+        annotations:
+          summary: "Issuance canary failing on {{ $labels.ca }} at {{ $labels.stage }} ({{ $labels.job }})"
+          description: "Synthetic issuance probes against CA {{ $labels.ca }} keep failing at the {{ $labels.stage }} stage. Real clients hit the same path. Run `secsy-ca doctor` (canary.last_probe surfaces the last outcome), inspect the canary.probe audit events, and check HSM, OCSP, and CRL health for the failing stage."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#observability-alert-response"
+
+      - alert: SecsyPKICanaryStalled
+        # The canary has succeeded before (the gauge exists) but no probe has
+        # completed successfully in over an hour — 4x the default 15-minute
+        # interval. Either every probe is failing (SecsyPKICanaryFailing will
+        # also fire), the canary job is not running anywhere (no leader — see
+        # SecsyPKINoJobLeader), or canary.interval_minutes was raised without
+        # adjusting this threshold.
+        expr: (time() - max by (job, ca) (secsy_canary_last_success_timestamp_seconds)) > 3600
+        for: 15m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "Issuance canary stalled for {{ $labels.ca }} ({{ $labels.job }})"
+          description: "No fully successful canary probe for CA {{ $labels.ca }} in >1h (4x the 15m default interval). The issuance path has stopped being continuously proven healthy. Check the canary job (leader election, server logs) and `secsy-ca doctor`; adjust the threshold if canary.interval_minutes differs."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#observability-alert-response"

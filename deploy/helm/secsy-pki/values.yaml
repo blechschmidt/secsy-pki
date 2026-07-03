@@ -125,6 +125,19 @@ config:
   #     renew_interval_seconds: 5
   #     retry_interval_seconds: 5
 
+  # Synthetic issuance canary (Task 71, rendered as the top-level canary:
+  # block verbatim; snake_case keys). Per listed CA it periodically issues a
+  # short-lived certificate from the lint-enforced "canary" profile, verifies
+  # the chain, checks OCSP/CRL, revokes it, and confirms revocation
+  # propagates. Failures alert through monitor.notifications and the
+  # SecsyPKICanary* Prometheus rules. Leader-gated. See docs/canary.md.
+  #   canary:
+  #     enabled: true
+  #     interval_minutes: 15
+  #     timeout_seconds: 60
+  #     cas: [issuing-ca]     # CA ids or labels to probe (required)
+  #     profile: canary
+
   # gRPC API surface (Task 56): exposes the core PKIService (issue/renew/revoke/
   # status + CRL/OCSP metadata) over gRPC alongside the REST API, enforcing the
   # same operator authentication, RBAC, tenant scoping, and audit. Disabled by

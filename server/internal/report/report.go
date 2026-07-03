@@ -48,6 +48,11 @@ type Filter struct {
 	Profile string    `json:"profile,omitempty"`
 	From    time.Time `json:"from,omitempty"`
 	To      time.Time `json:"to,omitempty"`
+	// IncludeSynthetic includes marker-tagged synthetic certificates (issuance-
+	// canary probes, Task 71) in the report. By default they are excluded:
+	// they are operational self-test artifacts, not part of the real inventory
+	// or the compliance population.
+	IncludeSynthetic bool `json:"include_synthetic,omitempty"`
 }
 
 // Lint verdicts recorded per certificate. A certificate that produced no
@@ -346,6 +351,9 @@ func selectCAs(src DataSource, f Filter) ([]models.CA, error) {
 // matchesFilter reports whether a certificate is in scope for the profile and
 // date-range filter. CA scoping is handled by selectCAs.
 func matchesFilter(c *models.IssuedCertificate, f Filter) bool {
+	if c.Marker != "" && !f.IncludeSynthetic {
+		return false
+	}
 	if f.Profile != "" && c.Profile != f.Profile {
 		return false
 	}

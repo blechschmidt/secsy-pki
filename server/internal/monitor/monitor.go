@@ -303,6 +303,13 @@ func (m *Monitor) Scan(ctx context.Context, req ScanRequest) (*Report, error) {
 			if cert.Status == models.CertStatusRevoked {
 				continue
 			}
+			// Synthetic issuance-canary certificates (Task 71) are deliberately
+			// short-lived probe artifacts. Without this exclusion every probe
+			// would immediately land in the critical/expired buckets and — worse
+			// — the auto-renewal storm logic would keep reissuing them forever.
+			if cert.Marker == models.CertMarkerCanary {
+				continue
+			}
 			entries = append(entries, entry{cert: cert})
 			key := m.identityKey(cert)
 			if cur, ok := latestByIdentity[key]; !ok || cert.NotAfter.After(cur) {

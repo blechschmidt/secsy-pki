@@ -798,6 +798,73 @@ func caLabelIndex(db dbHandle) map[string]string {
 	return labels
 }
 
+// --- 7b. issuance canary -----------------------------------------------------
+
+// canaryEventWindow bounds how many recent canary.probe audit events the check
+// reads to find each probed CA's newest result. Far above any realistic number
+// of canary-probed CAs per cycle.
+const canaryEventWindow = 100
+
+// checkCanary surfaces the synthetic issuance canary's last outcome per probed
+// CA (Task 71) from the canary.probe audit trail: a fail when any CA's newest
+// probe errored, a warn when the canary looks stalled (enabled but silent for
+// over three intervals), and the last-success ages otherwise. The audit log is
+// the offline source of truth here — doctor runs out-of-process, so it cannot
+// read the prober's in-memory state or metrics.
+func checkCanary(r *Report, cfg *config.Config, db dbHandle, schemaOK bool) {
+	r.run("canary.last_probe", func() (Status, string) {
+		if db == nil || !schemaOK {
+			return StatusSkip, "store unavailable or schema incomplete"
+		}
+		events, _, err := db.ListEvents(audit.ActionCanaryProbe, "", "", canaryEventWindow, 0)
+		if err != nil {
+			return StatusFail, fmt.Sprintf("listing canary.probe audit events: %v", err)
+		}
+		if len(events) == 0 {
+			if cfg.Canary.Enabled {
+				return StatusWarn, "canary.enabled is set but no probe has been recorded yet (server not started, or this replica never led?)"
+			}
+			return StatusSkip, "issuance canary disabled (canary.enabled) and no probes on record"
+		}
+
+		// Newest event per probed CA (events arrive newest-first).
+		type lastProbe struct{ e audit.Event }
+		latest := map[string]lastProbe{}
+		order := []string{}
+		for _, e := range events {
+			if _, seen := latest[e.Target]; seen {
+				continue
+			}
+			latest[e.Target] = lastProbe{e: e}
+			order = append(order, e.Target)
+		}
+
+		now := time.Now()
+		stalledAfter := 3 * cfg.Canary.Interval()
+		overall := StatusPass
+		var parts []string
+		for _, target := range order {
+			e := latest[target].e
+			name := e.TargetName
+			if name == "" {
+				name = target
+			}
+			age := humanDuration(now.Sub(e.Timestamp))
+			switch {
+			case e.Result != audit.ResultSuccess:
+				overall = worse(overall, StatusFail)
+				parts = append(parts, fmt.Sprintf("%s: FAILED %s ago (%s)", name, age, e.Detail))
+			case cfg.Canary.Enabled && now.Sub(e.Timestamp) > stalledAfter:
+				overall = worse(overall, StatusWarn)
+				parts = append(parts, fmt.Sprintf("%s: ok but stalled — last probe %s ago exceeds 3x the %s interval", name, age, cfg.Canary.Interval()))
+			default:
+				parts = append(parts, fmt.Sprintf("%s: ok %s ago", name, age))
+			}
+		}
+		return overall, strings.Join(parts, "; ")
+	})
+}
+
 // --- 8. clock skew ---------------------------------------------------------------
 
 // checkClockSkew sanity-checks this host's clock. Against PostgreSQL it

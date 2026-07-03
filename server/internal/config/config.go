@@ -56,6 +56,13 @@ type Config struct {
 	// Monitor configures the background certificate-expiry monitor and optional
 	// auto-renewal workflow. Disabled unless monitor.enabled is true.
 	Monitor MonitorConfig `yaml:"monitor"`
+	// Canary configures the synthetic issuance canary (Task 71): an end-to-end
+	// self-test loop that periodically issues, verifies, and revokes a
+	// short-lived certificate per configured CA to prove the whole issuance/
+	// revocation path (HSM signing, lint gate, OCSP, CRL) is healthy. Failures
+	// are dispatched through the monitor's notification sinks. Disabled unless
+	// canary.enabled is true.
+	Canary CanaryConfig `yaml:"canary"`
 	// Audit configures streaming export of the tamper-evident audit event log to
 	// external SIEM systems (syslog/CEF/webhook). Disabled unless
 	// audit.export.enabled is true.
@@ -847,6 +854,48 @@ type MonitorConfig struct {
 	Notifications []NotificationConfig `yaml:"notifications"`
 }
 
+// CanaryConfig configures the synthetic issuance canary (internal/canary).
+// Each interval, the canary issues a short-lived certificate from the canary
+// profile under every listed CA, verifies the full chain, checks OCSP answers
+// "good" and the CRL is fresh, revokes it, and confirms "revoked" propagates —
+// timing every stage. Probe certificates are stamped with the canary marker so
+// the expiry monitor and inventory reports ignore them.
+type CanaryConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// IntervalMinutes is how often each configured CA is probed. Defaults to 15
+	// minutes when unset. Every probe costs a handful of HSM signing operations
+	// (leaf + OCSP responses + possibly a CRL), so very short intervals add
+	// measurable HSM load.
+	IntervalMinutes int `yaml:"interval_minutes"`
+	// CAs lists the CAs to probe, each by id or label. Required when enabled.
+	// Probes follow key-rotation lineage, so listing a rotated CA keeps probing
+	// its active successor.
+	CAs []string `yaml:"cas"`
+	// Profile is the certificate profile probe certs are issued under. Defaults
+	// to the built-in "canary" profile (short-lived, non-public, lint enforced).
+	// A custom profile must be classical (not pqc/hybrid): the prober generates
+	// an ECDSA key per probe.
+	Profile string `yaml:"profile"`
+	// TimeoutSeconds bounds one CA's full probe (all stages). Defaults to 60.
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+}
+
+// Interval returns the resolved probe interval.
+func (c CanaryConfig) Interval() time.Duration {
+	if c.IntervalMinutes <= 0 {
+		return 15 * time.Minute
+	}
+	return time.Duration(c.IntervalMinutes) * time.Minute
+}
+
+// Timeout returns the resolved per-CA probe timeout.
+func (c CanaryConfig) Timeout() time.Duration {
+	if c.TimeoutSeconds <= 0 {
+		return 60 * time.Second
+	}
+	return time.Duration(c.TimeoutSeconds) * time.Second
+}
+
 // NotificationConfig configures a single notification sink for expiry warnings.
 type NotificationConfig struct {
 	// Type selects the sink implementation: "log" or "webhook".
@@ -1615,6 +1664,10 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateCanary(); err != nil {
+		return nil, err
+	}
+
 	if err := cfg.validateEnrollment(); err != nil {
 		return nil, err
 	}
@@ -2261,6 +2314,35 @@ func (c *Config) validateMonitor() error {
 		default:
 			return fmt.Errorf("monitor.notifications[%d]: invalid min_severity %q (valid: warning, critical, expired)", i, n.MinSeverity)
 		}
+	}
+	return nil
+}
+
+// validateCanary sanity-checks the synthetic issuance-canary configuration
+// when it is enabled. The probed CAs must be listed explicitly: the canary
+// issues (and revokes) real certificates and consumes tenant quota, so opting
+// a CA in is a deliberate choice.
+func (c *Config) validateCanary() error {
+	cn := &c.Canary
+	if !cn.Enabled {
+		return nil
+	}
+	if len(cn.CAs) == 0 {
+		return fmt.Errorf("canary.enabled is true but canary.cas is empty; list the CAs to probe by id or label")
+	}
+	for i, ref := range cn.CAs {
+		if strings.TrimSpace(ref) == "" {
+			return fmt.Errorf("canary.cas[%d] is empty", i)
+		}
+	}
+	if cn.IntervalMinutes < 0 {
+		return fmt.Errorf("canary.interval_minutes must be positive")
+	}
+	if cn.TimeoutSeconds < 0 {
+		return fmt.Errorf("canary.timeout_seconds must be positive")
+	}
+	if cn.Timeout() >= cn.Interval() {
+		return fmt.Errorf("canary.timeout_seconds (%s) must be shorter than canary.interval_minutes (%s)", cn.Timeout(), cn.Interval())
 	}
 	return nil
 }

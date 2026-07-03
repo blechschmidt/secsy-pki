@@ -357,6 +357,7 @@ func (db *DB) migrate() error {
 			created_at %s,
 			ct_status TEXT NOT NULL DEFAULT 'none',
 			sct_count INTEGER NOT NULL DEFAULT 0,
+			marker TEXT NOT NULL DEFAULT '',
 			UNIQUE(ca_id, serial)
 		)`, currentTimestamp),
 		`CREATE INDEX IF NOT EXISTS idx_issued_certs_ca ON issued_certificates(ca_id)`,
@@ -743,6 +744,9 @@ func (db *DB) migrate() error {
 		// Certificate Transparency status (Task 26).
 		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN IF NOT EXISTS ct_status TEXT NOT NULL DEFAULT 'none'")
 		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN IF NOT EXISTS sct_count INTEGER NOT NULL DEFAULT 0")
+		// Synthetic-certificate marker (Task 71): tags issuance-canary probes so
+		// monitoring and reports can exclude them.
+		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN IF NOT EXISTS marker TEXT NOT NULL DEFAULT ''")
 		// Multi-tenant isolation (Task 43). Existing rows backfill to the default
 		// tenant so the upgrade is transparent for single-organization installs.
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'")
@@ -783,6 +787,9 @@ func (db *DB) migrate() error {
 		// Certificate Transparency status (Task 26).
 		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN ct_status TEXT NOT NULL DEFAULT 'none'")
 		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN sct_count INTEGER NOT NULL DEFAULT 0")
+		// Synthetic-certificate marker (Task 71): tags issuance-canary probes so
+		// monitoring and reports can exclude them.
+		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN marker TEXT NOT NULL DEFAULT ''")
 		// Multi-tenant isolation (Task 43). SQLite ADD COLUMN is idempotently
 		// retried; errors for already-present columns are ignored. Existing rows
 		// backfill to the default tenant.

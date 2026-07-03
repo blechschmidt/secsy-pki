@@ -246,6 +246,8 @@ CRL/monitor cadence; the rationale and response steps live in the
 | `SecsyPKIAuditExportStalled` | backlog + no ack in 30m | critical | — |
 | `SecsyPKINoJobLeader` | fleet-wide `max(secsy_leader_is_leader) == 0` for 10m | warning | — |
 | `SecsyPKILeadershipFlapping` | `> 6` leadership transitions in 30m | warning | — |
+| `SecsyPKICanaryFailing` | any `secsy_canary_failures_total` increase in 15m, for 5m | critical | — |
+| `SecsyPKICanaryStalled` | no successful canary probe in 1h | warning | match `canary.interval_minutes` |
 
 > **CRL/delta staleness caveat:** `SecsyPKICRLNotRegenerating` is a best-effort
 > cadence check — the metrics expose no CRL `nextUpdate` timestamp. For an

@@ -41,6 +41,10 @@ type IssueSpec struct {
 	Validity time.Duration
 	// RequestedBy records who requested the certificate (for audit).
 	RequestedBy string
+	// Marker tags the stored record as synthetic (e.g. models.CertMarkerCanary)
+	// so monitoring and reports can exclude it. It is internal plumbing for
+	// system probes and is never settable through the API layers.
+	Marker string
 }
 
 // IssueResult is the outcome of issuing an end-entity certificate.
@@ -125,6 +129,7 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 		IPAddresses:    csr.IPAddresses,
 		EmailAddresses: csr.EmailAddresses,
 		URIs:           uris,
+		Marker:         spec.Marker,
 	}, spec.Validity, spec.RequestedBy)
 }
 
@@ -191,7 +196,8 @@ func (m *Manager) IssueCertificateFromTemplate(ctx context.Context, spec Templat
 
 // leafParts carries the subject, public key, and SANs of a leaf certificate,
 // abstracting over whether they were sourced from a PKCS#10 CSR or a CMP
-// CertTemplate so both share one issuance path.
+// CertTemplate so both share one issuance path. Marker rides along for the
+// stored record only; it never affects certificate contents.
 type leafParts struct {
 	Subject        pkix.Name
 	PublicKey      crypto.PublicKey
@@ -199,6 +205,7 @@ type leafParts struct {
 	IPAddresses    []net.IP
 	EmailAddresses []string
 	URIs           []string
+	Marker         string
 }
 
 // issueLeaf is the shared classical end-entity issuance path: it resolves the
@@ -291,6 +298,7 @@ func (m *Manager) issueLeaf(ctx context.Context, issuerCA *models.CA, issuerCert
 		NotAfter:    cert.NotAfter,
 		Status:      models.CertStatusValid,
 		RequestedBy: requestedBy,
+		Marker:      parts.Marker,
 	}
 	applyCTToRecord(record, ctStatus)
 	span.SetAttributes(attribute.String("cert.serial", serial.String()))
@@ -468,6 +476,8 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (_ *Issu
 		NotAfter:    cert.NotAfter,
 		Status:      models.CertStatusValid,
 		RequestedBy: spec.RequestedBy,
+		// A renewal of a synthetic certificate is itself synthetic.
+		Marker: prior.Marker,
 	}
 	applyCTToRecord(record, ctStatus)
 	if err := m.db.RecordIssuedCertificate(record); err != nil {

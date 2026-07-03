@@ -3,7 +3,8 @@
 A single secsy-pki server runs a set of **singleton background jobs**: the
 certificate-expiry monitor with auto-renewal, intermediate-CA auto-rotation,
 OCSP pre-signing, the scheduled CRL/artifact publisher, audit-chain anchoring,
-SIEM export, and the external discovery scanner. Run two replicas naively and
+SIEM export, the external discovery scanner, and the synthetic issuance
+canary. Run two replicas naively and
 every one of those jobs runs twice — duplicate expiry alerts, racing renewals,
 double HSM batch load, and two processes advancing the same SIEM cursor.
 
@@ -58,6 +59,7 @@ before. This is also why the Helm chart refuses `replicaCount > 1` on SQLite.
 | Audit-chain anchoring | one anchor per head is the point | the idle-skip rule refuses to re-anchor an unchanged head, so the new leader's first run is a no-op unless events arrived |
 | SIEM export | the per-sink cursor is shared state | delivery is at-least-once from the durable cursor; a handover at worst redelivers the last unacknowledged batch |
 | Discovery scanner | N replicas would probe every external endpoint N times | inventory records are upserted by fingerprint |
+| Issuance canary | N replicas would multiply HSM probe load and tenant quota consumption | each probe is self-contained (issue → verify → revoke); a handover simply probes again on the new leader's schedule |
 
 Per-instance loops are deliberately **not** gated: the TLS OCSP staple
 refresher (each replica staples its own listener certificate) and the gRPC/HTTP

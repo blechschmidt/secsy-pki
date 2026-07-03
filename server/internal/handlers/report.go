@@ -21,6 +21,9 @@ func reportFilter(r *http.Request) (report.Filter, error) {
 	f := report.Filter{
 		CAID:    strings.TrimSpace(q.Get("ca_id")),
 		Profile: strings.TrimSpace(q.Get("profile")),
+		// Synthetic issuance-canary probe certificates are excluded unless the
+		// caller opts in.
+		IncludeSynthetic: q.Get("include_synthetic") == "true",
 	}
 	parse := func(key string) (time.Time, error) {
 		v := strings.TrimSpace(q.Get(key))

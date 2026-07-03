@@ -280,7 +280,7 @@ func (m *Manager) issuePQCLeaf(ctx context.Context, spec IssueSpec, issuerCA *mo
 	if err != nil {
 		return nil, fmt.Errorf("creating post-quantum certificate: %w", err)
 	}
-	return m.recordLeaf(issuerCA, der, base.Serial, profile, spec.RequestedBy)
+	return m.recordLeaf(issuerCA, der, base.Serial, profile, spec.RequestedBy, spec.Marker)
 }
 
 // issueHybridLeaf issues a catalyst hybrid end-entity certificate from a hybrid
@@ -343,7 +343,7 @@ func (m *Manager) issueHybridLeaf(ctx context.Context, spec IssueSpec, issuerCA 
 	if err != nil {
 		return nil, fmt.Errorf("creating hybrid certificate: %w", err)
 	}
-	return m.recordLeaf(issuerCA, der, base.Serial, profile, spec.RequestedBy)
+	return m.recordLeaf(issuerCA, der, base.Serial, profile, spec.RequestedBy, spec.Marker)
 }
 
 // leafBaseFromCSR builds the shared LeafCertRequest for a PQC/hybrid leaf from a
@@ -390,7 +390,7 @@ func (m *Manager) leafBaseFromCSR(publicKey any, parsed *x509.CertificateRequest
 // recordLeaf parses a freshly issued PQC/hybrid leaf, persists its bookkeeping
 // record, and assembles the IssueResult. CT does not apply, so the record's CT
 // status is "none".
-func (m *Manager) recordLeaf(issuerCA *models.CA, der []byte, serial *big.Int, profile Profile, requestedBy string) (*IssueResult, error) {
+func (m *Manager) recordLeaf(issuerCA *models.CA, der []byte, serial *big.Int, profile Profile, requestedBy, marker string) (*IssueResult, error) {
 	cert, err := x509.ParseCertificate(der)
 	if err != nil {
 		return nil, fmt.Errorf("parsing issued certificate: %w", err)
@@ -411,6 +411,7 @@ func (m *Manager) recordLeaf(issuerCA *models.CA, der []byte, serial *big.Int, p
 		NotAfter:    cert.NotAfter,
 		Status:      models.CertStatusValid,
 		RequestedBy: requestedBy,
+		Marker:      marker,
 	}
 	applyCTToRecord(record, nil)
 	if err := m.db.RecordIssuedCertificate(record); err != nil {

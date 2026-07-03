@@ -98,6 +98,13 @@ const (
 	// ActionCertDiscover records a completed external certificate discovery scan
 	// (Task 54). The detail carries the endpoint/stored/rogue/expiring counts.
 	ActionCertDiscover = "cert.discover"
+	// ActionCanaryProbe records one synthetic issuance-canary probe (Task 71):
+	// issue → chain verify → OCSP good → CRL freshness → revoke → revoked
+	// propagation against one CA. Result is success or error; the detail carries
+	// the probed serial, per-stage timings, and (on error) the failed stage.
+	// `secsy-ca doctor` reads the newest of these to surface the last canary
+	// outcome.
+	ActionCanaryProbe  = "canary.probe"
 	ActionCertSignSSH  = "cert.sign_ssh"
 	ActionCertSignX509 = "cert.sign_x509"
 

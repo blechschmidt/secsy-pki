@@ -211,6 +211,24 @@ var builtinProfiles = map[string]Profile{
 		Algorithm:       AlgHybrid,
 		PQCKeyType:      "ml-dsa-65",
 	},
+	// canary is the dedicated profile for the synthetic issuance canary
+	// (internal/canary, Task 71). Its certificates are short-lived operational
+	// self-test artifacts: minted, chain/OCSP/CRL-checked, and revoked within a
+	// single probe. The profile is deliberately non-public (internal names like
+	// secsy-canary.invalid must lint cleanly) with the lint gate pinned to
+	// enforce mode, so every probe also proves the fail-closed lint path. The
+	// prober stamps its records with models.CertMarkerCanary, which keeps them
+	// out of expiry monitoring and inventory reports; tenant scoping follows the
+	// probed CA through the ordinary issuance gate.
+	"canary": {
+		Name:            "canary",
+		Description:     "Synthetic issuance-canary probe certificate (short-lived, internal-only, revoked after each probe)",
+		KeyUsages:       []string{"digitalSignature"},
+		ExtKeyUsages:    []string{"clientAuth"},
+		DefaultValidity: time.Hour,
+		MaxValidity:     24 * time.Hour,
+		Lint:            &LintConfig{Mode: "enforce"},
+	},
 }
 
 // defaultProfileName is used when a request omits the profile.

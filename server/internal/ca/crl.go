@@ -84,6 +84,26 @@ func SetCRLConfig(c CRLDistConfig) {
 // CRLShardCount returns the configured number of CRL partitions (0/1 = unsharded).
 func CRLShardCount() int { return crlConfig.Shards }
 
+// baseCRLValidity / deltaCRLValidity return the effective validity windows,
+// falling back to the defaults when SetCRLConfig was never called — keeping
+// the documented zero-value contract ("default validities") true for library
+// consumers and background jobs that run before/without the serving setup.
+// Without the fallback an uninstalled config would silently mint CRLs whose
+// nextUpdate equals thisUpdate, i.e. born stale.
+func baseCRLValidity() time.Duration {
+	if crlConfig.BaseValidity > 0 {
+		return crlConfig.BaseValidity
+	}
+	return defaultCRLValidity
+}
+
+func deltaCRLValidity() time.Duration {
+	if crlConfig.DeltaValidity > 0 {
+		return crlConfig.DeltaValidity
+	}
+	return defaultDeltaValidity
+}
+
 // crlSharded reports whether CRL partitioning is active.
 func crlSharded() bool { return crlConfig.Shards >= 2 }
 
@@ -267,7 +287,7 @@ func (m *Manager) regenerateBaseCRL(ctx context.Context, caID string, shard int)
 	req := pki.CRLRequest{
 		Number:     big.NewInt(number),
 		ThisUpdate: genTime.Add(-clockSkew),
-		NextUpdate: genTime.Add(crlConfig.BaseValidity),
+		NextUpdate: genTime.Add(baseCRLValidity()),
 		Revoked:    entries,
 	}
 	if u := deltaURL(caID, shard); u != "" {
@@ -360,7 +380,7 @@ func (m *Manager) regenerateDeltaCRL(ctx context.Context, caID string, shard int
 	req := pki.CRLRequest{
 		Number:        big.NewInt(number),
 		ThisUpdate:    genTime.Add(-clockSkew),
-		NextUpdate:    genTime.Add(crlConfig.DeltaValidity),
+		NextUpdate:    genTime.Add(deltaCRLValidity()),
 		Revoked:       entries,
 		BaseCRLNumber: big.NewInt(base.Number),
 	}

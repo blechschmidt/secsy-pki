@@ -416,6 +416,12 @@ const (
 	CTStatusFailedOpen CTStatus = "failed_open"
 )
 
+// CertMarkerCanary marks certificates minted by the synthetic issuance canary
+// (Task 71). Marked certificates are operational self-test artifacts, not real
+// credentials: the expiry monitor neither warns on nor auto-renews them, and
+// inventory/compliance reports exclude them by default.
+const CertMarkerCanary = "canary"
+
 // IssuedCertificate records an end-entity certificate minted by a CA. It is the
 // authority's copy used for renewal, listing, and (via revocation) CRL/OCSP.
 type IssuedCertificate struct {
@@ -441,6 +447,9 @@ type IssuedCertificate struct {
 	SCTCount int `json:"sct_count,omitempty" db:"sct_count"`
 	// CTLogs names the CT logs that returned an embedded SCT.
 	CTLogs []string `json:"ct_logs,omitempty" db:"-"`
+	// Marker tags synthetic certificates (e.g. CertMarkerCanary). Empty for
+	// ordinary certificates.
+	Marker string `json:"marker,omitempty" db:"marker"`
 }
 
 // DiscoveredCertificate is the persisted record of a certificate observed on an

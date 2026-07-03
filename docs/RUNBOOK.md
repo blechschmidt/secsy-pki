@@ -711,6 +711,15 @@ Note 429 (rate limit) and 503 (HSM guard) are different levers.
 `SecsyPKIMonitorStalled` — the expiry monitor has not completed a scan in >36h,
 so expiry gauges are stale and auto-renew is not running; match the rule window
 to `monitor.intervalHours` and check the monitor loop/logs.
+`SecsyPKICanaryFailing` — the synthetic issuance canary's end-to-end probe
+(issue → chain → OCSP → CRL → revoke → revoked) is failing on a CA: real
+issuance or revocation is broken on the same path. The alert's `stage` label
+pinpoints the break (issue = HSM/lint/tenant gate; ocsp_* / crl = revocation
+infrastructure). Run `secsy-ca doctor` — the `canary.last_probe` check prints
+the last outcome per CA — and read the `canary.probe` audit events for
+per-stage timings. `SecsyPKICanaryStalled` — probes stopped succeeding (or
+running: check leader election) without an explicit failure; adjust the rule
+threshold if `canary.interval_minutes` was raised. See [canary.md](canary.md).
 `SecsyPKIAuditExportLagHigh` / `SecsyPKIAuditExportStalled` — audit events are
 piling up undelivered to a SIEM sink (lag high) or delivery is stuck (backlog +
 no ack in 30m), risking a compliance gap. Check the named sink's reachability and

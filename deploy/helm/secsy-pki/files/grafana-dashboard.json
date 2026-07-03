@@ -467,6 +467,59 @@
       "targets": [
         { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "max by (sink) (secsy_audit_export_lag_events{job=~\"$job\"})", "legendFormat": "{{sink}}", "refId": "A" }
       ]
+    },
+    {
+      "type": "row",
+      "title": "Issuance canary",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 74 },
+      "id": 106,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Canary last success age",
+      "description": "Seconds since each probed CA's last fully successful synthetic issuance probe (issue → chain → OCSP → CRL → revoke → revoked). Feeds the SecsyPKICanaryStalled alert; absent until the canary's first success.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 4, "x": 0, "y": 75 },
+      "id": 60,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 2700 }, { "color": "red", "value": 3600 } ] }
+        }
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "time() - max by (ca) (secsy_canary_last_success_timestamp_seconds{job=~\"$job\"})", "legendFormat": "{{ca}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Canary probes & failures",
+      "description": "Synthetic issuance probes by result, and failures broken down by the lifecycle stage that broke (issue, chain, ocsp_good, crl, revoke, ocsp_revoked). Any failure means real issuance/revocation is broken for that CA.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 10, "x": 4, "y": 75 },
+      "id": 61,
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum by (ca, result) (rate(secsy_canary_probes_total{job=~\"$job\"}[30m]))", "legendFormat": "{{ca}} / {{result}}", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "sum by (ca, stage) (rate(secsy_canary_failures_total{job=~\"$job\"}[30m]))", "legendFormat": "{{ca}} failed @ {{stage}}", "refId": "B" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Canary stage duration p95",
+      "description": "95th-percentile duration of each probe stage. Issue and ocsp stages ride the HSM signing path; a creeping issue-stage p95 is early warning of HSM latency before real clients notice.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 10, "x": 14, "y": 75 },
+      "id": 62,
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }, "expr": "histogram_quantile(0.95, sum by (stage, le) (rate(secsy_canary_stage_duration_seconds_bucket{job=~\"$job\"}[30m])))", "legendFormat": "{{stage}}", "refId": "A" }
+      ]
     }
   ]
 }

@@ -43,8 +43,9 @@ database:
 # With replicas > 1 on a shared PostgreSQL, the servers elect a background-job
 # leader (PostgreSQL advisory lock with lease renewal): the singleton jobs —
 # expiry monitor/auto-renewal, CA auto-rotation, OCSP pre-signing, CRL
-# regeneration/publishing, audit anchoring, SIEM export, discovery scans — run
-# on exactly one replica at a time, with automatic failover. All replicas keep
+# regeneration/publishing, audit anchoring, SIEM export, discovery scans, the
+# issuance canary — run on exactly one replica at a time, with automatic
+# failover. All replicas keep
 # serving API traffic; /readyz reports each replica's role ("leadership") and
 # secsy_leader_is_leader / secsy_leader_transitions_total meter the election.
 # The defaults are correct for both single-node and multi-replica deployments:
@@ -551,6 +552,26 @@ discovery:
   concurrency: 16
   store: true                   # persist findings to the inventory
   notify: false                 # dispatch flagged findings via monitor.notifications
+
+# --- Synthetic issuance canary (Task 71) --------------------------------------
+# An end-to-end self-test loop that continuously proves the issuance path
+# works: per listed CA it periodically issues a short-lived certificate from
+# the dedicated (non-public, lint-enforced) "canary" profile, verifies the
+# full chain, checks the OCSP responder answers "good" and the CRL is fresh,
+# revokes the certificate, and confirms "revoked" propagates — timing every
+# stage (secsy_canary_* metrics). Failures alert through the expiry monitor's
+# notification sinks; `secsy-ca doctor` surfaces the last probe outcome.
+# Probe certs carry the "canary" marker, keeping them out of expiry
+# monitoring and inventory reports. Leader-gated with replicas > 1.
+# Note: probes consume the probed CA's tenant issuance quota (one cert per
+# probe) and a few HSM signatures per run. See docs/canary.md.
+canary:
+  enabled: false
+  interval_minutes: 15          # probe cadence per CA (default 15)
+  timeout_seconds: 60           # per-CA probe budget; must be < interval
+  cas: []                       # REQUIRED when enabled: CA ids or labels
+  #   - "Secsy Issuing CA"
+  profile: "canary"             # issuance profile for probe certs
 
 # --- HSM-backed secret encryption (envelope encryption) -----------------------
 # Encrypt passwords and small secrets under a KEK held in the HSM. See

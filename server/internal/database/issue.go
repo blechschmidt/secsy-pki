@@ -23,11 +23,11 @@ func (db *DB) RecordIssuedCertificate(c *models.IssuedCertificate) error {
 	_, err := db.exec(
 		`INSERT INTO issued_certificates
 			(id, ca_id, serial, subject, common_name, sans, profile, certificate,
-			 not_before, not_after, status, requested_by, ct_status, sct_count)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 not_before, not_after, status, requested_by, ct_status, sct_count, marker)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.CAID, c.Serial, c.Subject, c.CommonName, string(sans), c.Profile,
 		c.Certificate, c.NotBefore, c.NotAfter, string(status), nullString(c.RequestedBy),
-		string(ctStatus), c.SCTCount,
+		string(ctStatus), c.SCTCount, c.Marker,
 	)
 	return err
 }
@@ -35,19 +35,19 @@ func (db *DB) RecordIssuedCertificate(c *models.IssuedCertificate) error {
 // issuedCertColumns is the canonical column list for issued-certificate reads.
 const issuedCertColumns = `id, ca_id, serial, subject, common_name, sans, profile,
 	certificate, not_before, not_after, status, revoked_at, revocation_reason,
-	requested_by, created_at, ct_status, sct_count`
+	requested_by, created_at, ct_status, sct_count, marker`
 
 func scanIssuedCert(s caScanner) (*models.IssuedCertificate, error) {
 	var c models.IssuedCertificate
 	var subject, commonName, sans, profile, requestedBy sql.NullString
 	var status string
-	var ctStatus sql.NullString
+	var ctStatus, marker sql.NullString
 	var notBefore, notAfter sql.NullTime
 	var revokedAt sql.NullTime
 	if err := s.Scan(
 		&c.ID, &c.CAID, &c.Serial, &subject, &commonName, &sans, &profile,
 		&c.Certificate, &notBefore, &notAfter, &status, &revokedAt, &c.RevocationReason,
-		&requestedBy, &c.CreatedAt, &ctStatus, &c.SCTCount,
+		&requestedBy, &c.CreatedAt, &ctStatus, &c.SCTCount, &marker,
 	); err != nil {
 		return nil, err
 	}
@@ -55,6 +55,7 @@ func scanIssuedCert(s caScanner) (*models.IssuedCertificate, error) {
 	c.CommonName = commonName.String
 	c.Profile = profile.String
 	c.RequestedBy = requestedBy.String
+	c.Marker = marker.String
 	c.Status = models.CertStatus(status)
 	if ctStatus.Valid && ctStatus.String != "" {
 		c.CTStatus = models.CTStatus(ctStatus.String)

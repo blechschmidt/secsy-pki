@@ -122,6 +122,12 @@ data:
       {{- toYaml . | nindent 6 }}
     {{- end }}
 
+    {{- with $c.canary }}
+    # Synthetic issuance canary (Task 71; rendered verbatim, snake_case keys).
+    canary:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+
     {{- with $c.tracing }}
     tracing:
       enabled: {{ .enabled }}

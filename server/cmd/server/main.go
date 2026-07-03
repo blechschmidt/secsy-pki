@@ -22,6 +22,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/caa"
+	"github.com/blechschmidt/secsy-pki/server/internal/canary"
 	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/cmp"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
@@ -574,6 +575,25 @@ func main() {
 			return secret.RefreshKEKMetrics(db, cfg.Secret.KEKLabel)
 		})
 		elector.Register("expiry-monitor", runner.Run)
+	}
+
+	// Synthetic issuance canary (Task 71): an end-to-end self-test loop that
+	// per configured CA periodically issues a short-lived certificate from the
+	// dedicated canary profile, verifies the full chain, checks OCSP answers
+	// "good" and the CRL is fresh, revokes it, and confirms "revoked"
+	// propagates — timing every stage and alerting through the monitor's
+	// notification sinks on failure. Leader-gated: probes cost real HSM signing
+	// operations and consume tenant quota, so exactly one replica probes.
+	if cfg.Canary.Enabled {
+		notifier, err := monitor.NewNotifier(cfg.Monitor, log.Default())
+		if err != nil {
+			log.Fatalf("Issuance canary notification configuration error: %v", err)
+		}
+		prober, err := canary.New(ca.NewManager(db, provider), db, cfg.Canary, notifier, log.Default())
+		if err != nil {
+			log.Fatalf("Issuance canary configuration error: %v", err)
+		}
+		elector.Register("issuance-canary", prober.Run)
 	}
 
 	// External certificate discovery scanner (Task 54): periodically probes the

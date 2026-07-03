@@ -432,6 +432,28 @@ var (
 		"secsy_certificate_monitor_last_scan_timestamp_seconds",
 		"Unix timestamp (seconds) of the last completed certificate-expiry monitor scan.")
 
+	// Synthetic issuance canary (Task 71). Each probe runs the full certificate
+	// lifecycle against one CA: issue → chain verify → OCSP good → CRL freshness
+	// → revoke → revoked propagation. CanaryLastSuccess is the primary alert
+	// signal: a stale (or never-set) per-CA timestamp means the issuance path has
+	// stopped being proven healthy. CanaryFailures pinpoints the broken stage.
+	CanaryProbes = NewCounter(Default,
+		"secsy_canary_probes_total",
+		"Synthetic issuance-canary probes, partitioned by CA label and result (success|error).",
+		"ca", "result")
+	CanaryFailures = NewCounter(Default,
+		"secsy_canary_failures_total",
+		"Synthetic issuance-canary probe failures, partitioned by CA label and the stage that failed (issue|chain|ocsp_good|crl|revoke|ocsp_revoked).",
+		"ca", "stage")
+	CanaryLastSuccess = NewGauge(Default,
+		"secsy_canary_last_success_timestamp_seconds",
+		"Unix timestamp (seconds) of the last fully successful issuance-canary probe, by CA label. Absent for a CA until its first success.",
+		"ca")
+	CanaryStageDuration = NewHistogram(Default,
+		"secsy_canary_stage_duration_seconds",
+		"Duration of individual issuance-canary probe stages in seconds, by stage.",
+		DefBuckets, "stage")
+
 	// Audit-log SIEM export. Each series is partitioned by the sink name so an
 	// operator can tell which downstream (syslog/CEF/webhook) is falling behind.
 	//

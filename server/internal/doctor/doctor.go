@@ -217,7 +217,7 @@ func Run(ctx context.Context, opts Options) *Report {
 		for _, name := range []string{
 			"db.connectivity", "db.schema", "keyprovider.ca", "keys.ca",
 			"audit.chain_head", "certs.ca_expiry", "crl.freshness",
-			"clock.skew", "listener.tls",
+			"canary.last_probe", "clock.skew", "listener.tls",
 			"fips.mode", "fips.store_keys", "fips.secret_oaep",
 		} {
 			r.skip(name, "config did not load")
@@ -250,6 +250,9 @@ func Run(ctx context.Context, opts Options) *Report {
 
 	// 7. CRL freshness against nextUpdate.
 	checkCRLFreshness(r, cfg, db, schemaOK)
+
+	// 7b. Issuance canary: the newest canary.probe outcome per probed CA.
+	checkCanary(r, cfg, db, schemaOK)
 
 	// 8. Clock-skew sanity against the database host and the audit head.
 	checkClockSkew(ctx, r, db, schemaOK, opts)
