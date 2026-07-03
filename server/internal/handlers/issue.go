@@ -376,19 +376,26 @@ func (a *API) OCSPResponder(w http.ResponseWriter, r *http.Request) {
 
 	// Serve from the response cache when possible: an OCSP response is a signed
 	// object valid until its NextUpdate, so a fresh HSM signature is not needed
-	// for every request. The cache is keyed by (CA, serial) and invalidated on
-	// revocation. It is bypassed for nonce-bearing requests, whose whole point
-	// is a fresh, request-bound signature. Parsing the request to recover the
-	// serial is cheap relative to an on-HSM signing round-trip.
+	// for every request. The cache is keyed by (CA, serial), invalidated on
+	// revocation, and — when pre-signing is enabled — batch-filled in the
+	// background so this hit path is the norm and the HSM stays off the public
+	// hot path entirely. It is bypassed for nonce-bearing requests, whose whole
+	// point is a fresh, request-bound signature. Parsing the request to recover
+	// the serial is cheap relative to an on-HSM signing round-trip.
 	var cacheSerial string
-	if len(nonce) == 0 && a.ocspCache.Enabled() {
+	if a.ocspCache.Enabled() || a.recentOCSP != nil {
 		if serial, ok := pki.OCSPRequestSerial(reqDER); ok {
 			cacheSerial = serial
-			if cached, hit := a.ocspCache.Get(caID, cacheSerial); hit {
-				metrics.OCSPRequests.Inc(metrics.ResultSuccess)
-				w.Header().Set("Content-Type", "application/ocsp-response")
-				w.Write(cached)
-				return
+			// Feed the presigner's recently-queried set (nonce requests included:
+			// the same serial is typically queried nonce-less by other clients).
+			a.recentOCSP.Record(caID, serial)
+			if len(nonce) == 0 && a.ocspCache.Enabled() {
+				if cached, hit := a.ocspCache.Get(caID, cacheSerial); hit {
+					metrics.OCSPRequests.Inc(metrics.ResultSuccess)
+					w.Header().Set("Content-Type", "application/ocsp-response")
+					w.Write(cached)
+					return
+				}
 			}
 		}
 	}
@@ -424,7 +431,9 @@ func (a *API) OCSPResponder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	metrics.OCSPSigner.Inc(signerLabel)
-	if cacheSerial != "" {
+	// Never cache a nonce-bearing response: it is bound to one request and
+	// replaying it to other clients would defeat RFC 8954.
+	if cacheSerial != "" && len(nonce) == 0 {
 		a.ocspCache.Put(caID, cacheSerial, respDER)
 	}
 

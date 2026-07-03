@@ -501,6 +501,14 @@ func main() {
 		}
 	}
 
+	// OCSP pre-signing and static artifact publishing (Task 58): batch-sign OCSP
+	// responses for all known serials into the response cache so the public
+	// responder stays off the HSM, and publish CRLs/chains/pre-signed responses
+	// as static artifacts (directory or S3) for CDN fronting. Each runs for the
+	// process lifetime when enabled.
+	presigner := setupOCSPPresign(cfg, db, provider, api)
+	setupPublish(cfg, db, provider, presigner)
+
 	// Audit-log SIEM export: a background worker per sink streams the
 	// tamper-evident event log to external syslog/CEF/webhook collectors from a
 	// durable per-sink cursor. At-least-once, backpressured, and lossless across

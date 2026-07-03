@@ -108,6 +108,88 @@ type Config struct {
 	// profiles, and the comment stamped into generated KRLs. The /api/ssh
 	// endpoints and `secsy-ca ssh` commands work with the built-ins regardless.
 	SSH SSHCAConfig `yaml:"ssh"`
+	// Publish configures the static revocation-artifact publisher (Task 58):
+	// CRLs, delta CRLs, partition shards, issuer chains, and pre-signed OCSP
+	// responses written to a local directory or S3-compatible object store in a
+	// layout a CDN can front. Disabled unless publish.enabled is true; the
+	// `secsy-ca publish` command works from this block regardless.
+	Publish PublishConfig `yaml:"publish"`
+}
+
+// PublishConfig configures static artifact publishing for CDN offload.
+type PublishConfig struct {
+	// Enabled starts the background publish loop in the server.
+	Enabled bool `yaml:"enabled"`
+	// IntervalMinutes is how often the server republishes (default: the OCSP
+	// presign refresh interval when pre-signing is enabled, else 60).
+	IntervalMinutes int `yaml:"interval_minutes"`
+	// CAs restricts publishing to these CA ids or labels; empty publishes every
+	// unexpired X.509 CA.
+	CAs []string `yaml:"cas"`
+	// IncludeOCSP publishes the pre-signed OCSP responses alongside the CRLs
+	// and chains. Nil defaults to enabled.
+	IncludeOCSP *bool `yaml:"include_ocsp"`
+	// Dir configures the local-directory backend. Used when s3.bucket is unset.
+	Dir PublishDirConfig `yaml:"dir"`
+	// S3 configures the S3-compatible backend; setting s3.bucket selects it.
+	S3 PublishS3Config `yaml:"s3"`
+}
+
+// PublishDirConfig configures the local-directory publish backend.
+type PublishDirConfig struct {
+	// Path is the publish root. Artifacts are served from <path>/current, a
+	// symlink flipped atomically over versioned snapshot directories.
+	Path string `yaml:"path"`
+	// KeepSnapshots is how many snapshots to retain (default 3).
+	KeepSnapshots int `yaml:"keep_snapshots"`
+}
+
+// PublishS3Config configures the S3-compatible publish backend.
+type PublishS3Config struct {
+	// Endpoint is the base URL of an S3-compatible service (e.g.
+	// http://minio:9000). Empty targets AWS S3 in Region.
+	Endpoint string `yaml:"endpoint"`
+	// Region is the SigV4 signing region (default us-east-1).
+	Region string `yaml:"region"`
+	// Bucket is the destination bucket; setting it selects the S3 backend.
+	Bucket string `yaml:"bucket"`
+	// Prefix is prepended to every object key.
+	Prefix string `yaml:"prefix"`
+	// AccessKeyID / SecretAccessKey / SessionToken are static credentials. When
+	// access_key_id is empty the default AWS credential chain applies
+	// (environment, shared config, IAM role).
+	AccessKeyID     string `yaml:"access_key_id"`
+	SecretAccessKey string `yaml:"secret_access_key"`
+	SessionToken    string `yaml:"session_token"`
+	// ForcePathStyle addresses the bucket in the URL path. Applied
+	// automatically when endpoint is set.
+	ForcePathStyle bool `yaml:"force_path_style"`
+	// Concurrency bounds parallel artifact uploads (default 8).
+	Concurrency int `yaml:"concurrency"`
+}
+
+// Backend reports which publish backend the configuration selects.
+func (c PublishConfig) Backend() string {
+	if c.S3.Bucket != "" {
+		return "s3"
+	}
+	return "dir"
+}
+
+// IncludeOCSPEnabled reports whether pre-signed OCSP responses are published.
+func (c PublishConfig) IncludeOCSPEnabled() bool {
+	return c.IncludeOCSP == nil || *c.IncludeOCSP
+}
+
+// Interval returns the effective publish interval given the presign settings.
+func (c PublishConfig) Interval(presign OCSPPresignConfig) time.Duration {
+	if c.IntervalMinutes > 0 {
+		return time.Duration(c.IntervalMinutes) * time.Minute
+	}
+	if presign.Enabled {
+		return presign.Refresh()
+	}
+	return time.Hour
 }
 
 // SSHCAConfig configures the SSH certificate authority (Task 57).
@@ -1100,6 +1182,70 @@ type OCSPConfig struct {
 	// certificate. The server periodically produces an OCSP staple for its TLS
 	// certificate under this CA and serves it in the TLS handshake.
 	StapleCAID string `yaml:"staple_ca_id"`
+	// Presign configures background OCSP response pre-signing (Task 58): every
+	// known serial gets a batch-signed response placed in the response cache so
+	// the public responder never touches the HSM on the hot path (nonce-bearing
+	// requests still bypass per RFC 8954).
+	Presign OCSPPresignConfig `yaml:"presign"`
+}
+
+// OCSPPresignConfig configures batch OCSP response pre-signing.
+type OCSPPresignConfig struct {
+	// Enabled turns background pre-signing on.
+	Enabled bool `yaml:"enabled"`
+	// ValidityMinutes is the NextUpdate window of pre-signed responses (default
+	// 1440 = 24h). It bounds how long pre-signed responses keep being served
+	// through an HSM outage, and how long a revocation may take to reach
+	// consumers of pre-signed/published responses.
+	ValidityMinutes int `yaml:"validity_minutes"`
+	// RefreshMinutes is how often the pre-signing batch runs (default
+	// validity/4). It must leave a comfortable margin under the validity window
+	// so a missed batch or two never means serving expired responses.
+	RefreshMinutes int `yaml:"refresh_minutes"`
+	// RecentlyQueried also pre-signs serials recently asked about through the
+	// online responder that are not in the store (answered "unknown"). Nil
+	// defaults to enabled.
+	RecentlyQueried *bool `yaml:"recently_queried"`
+	// RecentCapacity bounds the recently-queried tracker (default 4096).
+	RecentCapacity int `yaml:"recent_capacity"`
+	// ExpiredGraceMinutes keeps pre-signing a serial for this long past its
+	// certificate's expiry (default 1440 = 24h); -1 disables the grace.
+	ExpiredGraceMinutes int `yaml:"expired_grace_minutes"`
+}
+
+// Validity returns the effective pre-signed response validity window.
+func (c OCSPPresignConfig) Validity() time.Duration {
+	if c.ValidityMinutes <= 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(c.ValidityMinutes) * time.Minute
+}
+
+// Refresh returns the effective batch interval: the configured one, or a
+// quarter of the validity window, floored at one minute.
+func (c OCSPPresignConfig) Refresh() time.Duration {
+	if c.RefreshMinutes > 0 {
+		return time.Duration(c.RefreshMinutes) * time.Minute
+	}
+	r := c.Validity() / 4
+	if r < time.Minute {
+		r = time.Minute
+	}
+	return r
+}
+
+// ExpiredGrace returns the effective post-expiry grace window (-1 minute
+// disables it; the ca package maps negatives to zero).
+func (c OCSPPresignConfig) ExpiredGrace() time.Duration {
+	if c.ExpiredGraceMinutes == 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(c.ExpiredGraceMinutes) * time.Minute
+}
+
+// TrackRecentlyQueried reports whether recently-queried serials join batches.
+func (c OCSPPresignConfig) TrackRecentlyQueried() bool {
+	return c.RecentlyQueried == nil || *c.RecentlyQueried
 }
 
 type DatabaseConfig struct {
@@ -1302,7 +1448,49 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validatePresignPublish(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// validatePresignPublish sanity-checks the OCSP pre-signing and static
+// publishing blocks so a misconfiguration fails at load rather than silently
+// serving stale or no revocation data.
+func (c *Config) validatePresignPublish() error {
+	p := c.Server.OCSP.Presign
+	if p.Enabled {
+		if c.Server.OCSPCacheTTLSeconds < 0 {
+			return fmt.Errorf("server.ocsp.presign.enabled requires the OCSP response cache, but server.ocsp_cache_ttl_seconds disables it")
+		}
+		if p.RefreshMinutes > 0 && p.ValidityMinutes > 0 && p.RefreshMinutes*2 > p.ValidityMinutes {
+			return fmt.Errorf("server.ocsp.presign.refresh_minutes (%d) must be at most half of validity_minutes (%d) so responses are always refreshed well before they expire",
+				p.RefreshMinutes, p.ValidityMinutes)
+		}
+	}
+
+	pub := c.Publish
+	if !pub.Enabled {
+		return nil
+	}
+	switch pub.Backend() {
+	case "s3":
+		if pub.S3.Endpoint != "" && !strings.Contains(pub.S3.Endpoint, "://") {
+			return fmt.Errorf("publish.s3.endpoint must be a URL (e.g. https://minio.internal:9000)")
+		}
+	default:
+		if pub.Dir.Path == "" {
+			return fmt.Errorf("publish.enabled requires publish.dir.path or publish.s3.bucket")
+		}
+	}
+	if pub.IncludeOCSPEnabled() && !p.Enabled {
+		// Publishing OCSP without the presign loop still works (the publisher
+		// pre-signs on demand), but the cache then never serves those responses.
+		// Require the explicit opt-out rather than guessing.
+		return fmt.Errorf("publish.enabled with OCSP artifacts requires server.ocsp.presign.enabled (or set publish.include_ocsp: false)")
+	}
+	return nil
 }
 
 // validateAuth sanity-checks the operator-authentication block when its

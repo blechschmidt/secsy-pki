@@ -1,6 +1,9 @@
 package metrics
 
-import "time"
+import (
+	"sync/atomic"
+	"time"
+)
 
 // Default is the process-wide registry that all application metrics register on
 // and that the /metrics endpoint serves.
@@ -150,6 +153,30 @@ var (
 		"secsy_ocsp_staples_total",
 		"TLS OCSP staples generated for the server's own certificate, by result.",
 		"result")
+	// OCSP pre-signing (Task 58). The presigner batch-signs a response for every
+	// known serial on a schedule so the public responder serves from cache and
+	// never touches the HSM on the hot path. OCSPPresignBatchDuration times each
+	// batch (all CAs); OCSPPresignResponses counts individual responses signed by
+	// result (signed|error); OCSPPresignedCached is the number of unexpired
+	// pre-signed responses currently servable from the cache; and
+	// OCSPPresignLastSuccess / the secsy_ocsp_presign_staleness_seconds FuncGauge
+	// (below) expose when the pre-signed set was last refreshed, the primary
+	// alert signal — a climbing staleness means responses are aging toward their
+	// NextUpdate with no fresh batch behind them.
+	OCSPPresignBatchDuration = NewHistogram(Default,
+		"secsy_ocsp_presign_batch_duration_seconds",
+		"Duration of OCSP pre-signing batches (all CAs) in seconds.",
+		BatchBuckets)
+	OCSPPresignResponses = NewCounter(Default,
+		"secsy_ocsp_presign_responses_total",
+		"OCSP responses produced by the pre-signing batches, partitioned by result.",
+		"result")
+	OCSPPresignedCached = NewGauge(Default,
+		"secsy_ocsp_presigned_responses",
+		"Unexpired pre-signed OCSP responses currently servable from the response cache.")
+	OCSPPresignLastSuccess = NewGauge(Default,
+		"secsy_ocsp_presign_last_success_timestamp_seconds",
+		"Unix timestamp (seconds) of the last successful OCSP pre-signing batch.")
 	CRLRequests = NewCounter(Default,
 		"secsy_crl_requests_total",
 		"CRL distribution requests, partitioned by result.",
@@ -345,6 +372,100 @@ var (
 		"Unix timestamp (seconds) of the last acknowledged SIEM export batch, by sink.",
 		"sink")
 )
+
+// Static artifact publishing (Task 58). The publisher writes CRLs, chains, and
+// pre-signed OCSP responses as static artifacts to a directory or S3-compatible
+// store for CDN fronting. PublishRuns/PublishDuration track each run by backend
+// (dir|s3); PublishArtifacts is the artifact count of the last successful
+// snapshot by kind; PublishLastSuccess plus the staleness FuncGauge expose how
+// long the published snapshot has been aging.
+var (
+	PublishRuns = NewCounter(Default,
+		"secsy_publish_runs_total",
+		"Static artifact publishing runs, partitioned by backend and result.",
+		"backend", "result")
+	PublishDuration = NewHistogram(Default,
+		"secsy_publish_duration_seconds",
+		"Duration of static artifact publishing runs in seconds, by backend.",
+		BatchBuckets, "backend")
+	PublishArtifacts = NewGauge(Default,
+		"secsy_publish_artifacts",
+		"Artifacts written by the last successful publish snapshot, by kind (crl|delta_crl|chain|ca_cert|ocsp|manifest).",
+		"kind")
+	PublishLastSuccess = NewGauge(Default,
+		"secsy_publish_last_success_timestamp_seconds",
+		"Unix timestamp (seconds) of the last successful static artifact publish, by backend.",
+		"backend")
+)
+
+// BatchBuckets covers background batch work (pre-signing, publishing), which
+// runs from well under a second on small deployments to minutes on large ones —
+// a range DefBuckets (tuned for per-request latency) tops out far below.
+var BatchBuckets = []float64{
+	0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300,
+}
+
+// Staleness gauges, computed at scrape time from the last-success instants so
+// they climb continuously rather than in refresh-interval steps. Both stay
+// absent (header only) until the first successful run, so alerts can key on
+// their existence.
+var (
+	ocspPresignLastSuccessNano atomic.Int64
+	publishLastSuccessNano     atomic.Int64
+
+	_ = NewFuncGauge(Default,
+		"secsy_ocsp_presign_staleness_seconds",
+		"Seconds since the last successful OCSP pre-signing batch. Absent until the first batch succeeds.",
+		func() (float64, bool) { return sinceNano(ocspPresignLastSuccessNano.Load()) })
+	_ = NewFuncGauge(Default,
+		"secsy_publish_staleness_seconds",
+		"Seconds since the last successful static artifact publish (any backend). Absent until the first publish succeeds.",
+		func() (float64, bool) { return sinceNano(publishLastSuccessNano.Load()) })
+)
+
+func sinceNano(nano int64) (float64, bool) {
+	if nano == 0 {
+		return 0, false
+	}
+	return time.Since(time.Unix(0, nano)).Seconds(), true
+}
+
+// RecordOCSPPresignBatch records a completed pre-signing batch: its duration,
+// the per-response outcome counts, and — when the batch succeeded — the
+// last-success instant the staleness gauge derives from and the servable
+// pre-signed entry count. A batch that signed nothing because there are no CAs
+// still counts as success (staleness resets: the presigner is live).
+func RecordOCSPPresignBatch(start time.Time, signed, failed int, err error) {
+	OCSPPresignBatchDuration.Observe(time.Since(start).Seconds())
+	if signed > 0 {
+		OCSPPresignResponses.Add(uint64(signed), ResultSuccess)
+	}
+	if failed > 0 {
+		OCSPPresignResponses.Add(uint64(failed), ResultError)
+	}
+	if err == nil {
+		now := time.Now()
+		OCSPPresignLastSuccess.Set(float64(now.Unix()))
+		ocspPresignLastSuccessNano.Store(now.UnixNano())
+	}
+}
+
+// SetOCSPPresignedCached refreshes the servable pre-signed response gauge.
+func SetOCSPPresignedCached(n int) { OCSPPresignedCached.Set(float64(n)) }
+
+// RecordPublishRun records a completed publish run against a backend, stamping
+// the last-success instants on success.
+func RecordPublishRun(backend string, start time.Time, err error) {
+	PublishDuration.Observe(time.Since(start).Seconds(), backend)
+	if err != nil {
+		PublishRuns.Inc(backend, ResultError)
+		return
+	}
+	PublishRuns.Inc(backend, ResultSuccess)
+	now := time.Now()
+	PublishLastSuccess.Set(float64(now.Unix()), backend)
+	publishLastSuccessNano.Store(now.UnixNano())
+}
 
 // Export result label values for AuditExportEvents.
 const (

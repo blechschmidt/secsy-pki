@@ -197,6 +197,20 @@ CRL-capable relying parties have a fallback. Extending
 `server.ocsp_cache_ttl_seconds` trades staleness for availability during an
 incident.
 
+### Pre-signing / CDN offload (recommended)
+
+With `server.ocsp.presign.enabled`, responses for **all known serials** are
+batch-signed on a schedule and served from the response cache, so the public
+responder does not touch the HSM at all on the hot path — and keeps serving
+valid responses through an HSM outage until they reach their `NextUpdate`
+(up to `presign.validity_minutes`). Nonce requests still bypass per RFC 8954.
+The `publish:` block additionally writes CRLs, chains, and the pre-signed
+responses as static artifacts (directory or S3) for CDN fronting, with
+`secsy-ca publish -verify` proving snapshot integrity **without the HSM**.
+Alert on `secsy_ocsp_presign_staleness_seconds` and
+`secsy_publish_staleness_seconds`. Full procedure, layout, CDN mapping rules,
+and outage timelines: [OCSP pre-signing & static publishing](ocsp-presign-publish.md).
+
 ---
 
 ## Endpoint troubleshooting

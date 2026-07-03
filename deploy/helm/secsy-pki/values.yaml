@@ -83,6 +83,26 @@ config:
   server:
     host: "0.0.0.0"
     port: 8443
+    # OCSP responder options (rendered under server.ocsp verbatim). Enable
+    # background pre-signing so the public responder serves batch-signed
+    # responses from cache and never touches the HSM on the hot path:
+    #   ocsp:
+    #     presign:
+    #       enabled: true
+    #       validity_minutes: 1440
+    #       refresh_minutes: 360
+
+  # Static revocation-artifact publishing (Task 58, rendered as the top-level
+  # publish: block verbatim): CRLs, delta CRLs, partition shards, issuer
+  # chains, and pre-signed OCSP responses written to a directory (mount a
+  # volume for it) or an S3-compatible object store for CDN fronting.
+  #   publish:
+  #     enabled: true
+  #     s3:
+  #       endpoint: http://minio.storage:9000
+  #       bucket: pki-artifacts
+  #       access_key_id: "..."
+  #       secret_access_key: "..."
 
   # gRPC API surface (Task 56): exposes the core PKIService (issue/renew/revoke/
   # status + CRL/OCSP metadata) over gRPC alongside the REST API, enforcing the

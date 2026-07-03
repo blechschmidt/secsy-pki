@@ -85,6 +85,77 @@ func BuildOCSPRequest(cert, issuer *x509.Certificate) ([]byte, error) {
 	return ocsp.CreateRequest(cert, issuer, nil)
 }
 
+// BuildOCSPRequestForSerial constructs the canonical DER-encoded OCSP request
+// asking about one serial under issuer: SHA-1 certID (the RFC 6960 default and
+// what RFC 5019 lightweight clients send) and no extensions. Because the
+// encoding is fully determined by (issuer, serial), it is usable as a stable
+// lookup key: the static artifact publisher stores each pre-signed response
+// under the base64url form of this encoding so a CDN can map RFC 6960 A.1 GET
+// requests onto static objects.
+func BuildOCSPRequestForSerial(issuer *x509.Certificate, serial *big.Int) ([]byte, error) {
+	if issuer == nil {
+		return nil, fmt.Errorf("OCSP request requires an issuing CA certificate")
+	}
+	if serial == nil {
+		return nil, fmt.Errorf("OCSP request requires a serial number")
+	}
+	var spki struct {
+		Algorithm        pkix.AlgorithmIdentifier
+		SubjectPublicKey asn1.BitString
+	}
+	if _, err := asn1.Unmarshal(issuer.RawSubjectPublicKeyInfo, &spki); err != nil {
+		return nil, fmt.Errorf("parsing issuer public key: %w", err)
+	}
+	h := crypto.SHA1.New()
+	h.Write(spki.SubjectPublicKey.RightAlign())
+	keyHash := h.Sum(nil)
+	h.Reset()
+	h.Write(issuer.RawSubject)
+	nameHash := h.Sum(nil)
+
+	req := ocsp.Request{
+		HashAlgorithm:  crypto.SHA1,
+		IssuerNameHash: nameHash,
+		IssuerKeyHash:  keyHash,
+		SerialNumber:   serial,
+	}
+	return req.Marshal()
+}
+
+// BuildOCSPRequestWithNonce builds the canonical request for a serial under
+// issuer (as BuildOCSPRequestForSerial) carrying an RFC 8954 nonce request
+// extension. golang.org/x/crypto/ocsp cannot marshal request extensions, so
+// the TBSRequest is assembled directly.
+func BuildOCSPRequestWithNonce(issuer *x509.Certificate, serial *big.Int, nonce []byte) ([]byte, error) {
+	base, err := BuildOCSPRequestForSerial(issuer, serial)
+	if err != nil {
+		return nil, err
+	}
+	if len(nonce) == 0 {
+		return base, nil
+	}
+	var req ocspRequestASN1
+	if _, err := asn1.Unmarshal(base, &req); err != nil {
+		return nil, fmt.Errorf("re-parsing canonical request: %w", err)
+	}
+	ext, err := nonceExtension(nonce)
+	if err != nil {
+		return nil, err
+	}
+	type tbs struct {
+		RequestList []asn1.RawValue
+		Extensions  []pkix.Extension `asn1:"explicit,tag:2,optional"`
+	}
+	out, err := asn1.Marshal(struct{ TBS tbs }{TBS: tbs{
+		RequestList: req.TBSRequest.RequestList,
+		Extensions:  []pkix.Extension{ext},
+	}})
+	if err != nil {
+		return nil, fmt.Errorf("marshaling nonce-bearing request: %w", err)
+	}
+	return out, nil
+}
+
 // OCSPResponseNextUpdate parses a signed OCSP response (without verifying its
 // signature) and returns its NextUpdate. It is used by the TLS stapler to decide
 // when to refresh a staple. It reports false if the response cannot be parsed or

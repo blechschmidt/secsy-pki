@@ -248,6 +248,37 @@ groups:
           description: "No base CRL has been signed on the HSM in >25h while CRLs are still being requested. Served CRLs may go stale past nextUpdate. Tune the window to your crl.baseValidityHours; verify HSM signing and the CRL scheduler."
           runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#crldelta-staleness"
 
+      - alert: SecsyPKIOCSPPresignStale
+        # The pre-signed OCSP response set is aging with no fresh batch behind
+        # it. Once responses pass their NextUpdate (presign.validity_minutes,
+        # default 24h) the responder falls back to on-HSM signing — or, during
+        # an HSM outage, to tryLater. The 12h threshold assumes the default
+        # 24h validity; tune to ~validity/2. Fires only where pre-signing has
+        # run at least once (the gauge is absent otherwise).
+        expr: max by (job) (secsy_ocsp_presign_staleness_seconds) > 43200
+        for: 15m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "OCSP pre-signing stale ({{ $labels.job }})"
+          description: "The last successful OCSP pre-signing batch was {{ $value | humanizeDuration }} ago (>12h). Pre-signed responses are aging toward their NextUpdate; check HSM availability and the presign loop logs. See docs/ocsp-presign-publish.md."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#ocsp--crl-outage"
+
+      - alert: SecsyPKIPublishStale
+        # The static artifact snapshot (CDN origin) has not been republished.
+        # A CDN keeps serving the old snapshot, whose OCSP responses expire at
+        # presign.validity — republish must land well before that.
+        expr: max by (job) (secsy_publish_staleness_seconds) > 43200
+        for: 15m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "Static artifact publishing stale ({{ $labels.job }})"
+          description: "The last successful artifact publish was {{ $value | humanizeDuration }} ago (>12h). CDN-served revocation data is aging toward expiry (see manifest.json earliest_expiry). Check the publish loop and backend (dir/S3) reachability. See docs/ocsp-presign-publish.md."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#ocsp--crl-outage"
+
   # --- Rate limiting ---------------------------------------------------------
   - name: secsy-pki.ratelimit
     rules:

@@ -119,6 +119,18 @@ func run(args []string) error {
 		return cmdDiscover(db, cfg, cmdArgs)
 	}
 
+	// Publishing constructs the key provider lazily so `publish -verify` (a pure
+	// manifest/digest audit of the published snapshot) works during an HSM
+	// outage — exactly when an operator most wants to prove the static artifacts
+	// are intact. The CRL config below is installed here too since publishing
+	// regenerates stale CRLs.
+	if command == "publish" {
+		installCRLConfig(cfg)
+		return cmdPublish(db, cfg, func() (keyprovider.Provider, error) {
+			return buildProvider(cfg, "ca")
+		}, cmdArgs)
+	}
+
 	provider, err := buildProvider(cfg, "ca")
 	if err != nil {
 		return fmt.Errorf("initializing key provider: %w", err)
@@ -128,18 +140,8 @@ func run(args []string) error {
 	mgr := ca.NewManager(db, provider)
 
 	// Install the CRL distribution policy so gen-crl (and any CDP stamping) sees
-	// the configured shard count, base URL, and validity windows. Mirrors the
-	// server's wiring, including the ACME base-URL fallback.
-	crlBaseURL := cfg.CRL.BaseURL
-	if crlBaseURL == "" {
-		crlBaseURL = cfg.ACME.BaseURL
-	}
-	ca.SetCRLConfig(ca.CRLDistConfig{
-		Shards:        cfg.CRL.Shards,
-		BaseURL:       crlBaseURL,
-		BaseValidity:  time.Duration(cfg.CRL.BaseValidityHours) * time.Hour,
-		DeltaValidity: time.Duration(cfg.CRL.DeltaIntervalMinutes) * time.Minute,
-	})
+	// the configured shard count, base URL, and validity windows.
+	installCRLConfig(cfg)
 
 	switch command {
 	case "init-root":
@@ -219,6 +221,22 @@ func run(args []string) error {
 	}
 }
 
+// installCRLConfig installs the process-wide CRL distribution policy from
+// configuration, mirroring the server's wiring including the ACME base-URL
+// fallback.
+func installCRLConfig(cfg *config.Config) {
+	crlBaseURL := cfg.CRL.BaseURL
+	if crlBaseURL == "" {
+		crlBaseURL = cfg.ACME.BaseURL
+	}
+	ca.SetCRLConfig(ca.CRLDistConfig{
+		Shards:        cfg.CRL.Shards,
+		BaseURL:       crlBaseURL,
+		BaseValidity:  time.Duration(cfg.CRL.BaseValidityHours) * time.Hour,
+		DeltaValidity: time.Duration(cfg.CRL.DeltaIntervalMinutes) * time.Minute,
+	})
+}
+
 func usage() {
 	fmt.Fprint(os.Stderr, `secsy-ca — HSM-backed certificate-authority setup
 
@@ -257,6 +275,7 @@ Commands:
   restore             Restore/verify CA metadata against the key provider
   audit               Verify the audit hash-chain, or export it for SIEM
   discover            Scan external TLS endpoints; flag expiring/weak/rogue certs
+  publish             Publish CRLs/chains/pre-signed OCSP as static artifacts (CDN offload)
   db                  Persistence administration (migrate SQLite file store → PostgreSQL)
 
 Run "secsy-ca <command> -h" for command-specific flags.

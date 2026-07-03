@@ -16,6 +16,10 @@ data:
       tls_cert: /etc/secsy/tls/tls.crt
       tls_key: /etc/secsy/tls/tls.key
     {{- end }}
+    {{- with $c.server.ocsp }}
+      ocsp:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
 
     grpc:
       enabled: {{ $c.grpc.enabled }}
@@ -97,6 +101,11 @@ data:
         {{- toYaml $c.acme.challengeTypes | nindent 8 }}
       http01_port: {{ int $c.acme.http01Port }}
       require_eab: {{ $c.acme.requireEAB }}
+
+    {{- with $c.publish }}
+    publish:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
 
     {{- with $c.tracing }}
     tracing:

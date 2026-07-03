@@ -58,6 +58,11 @@ type API struct {
 	// delegatedResponders manages per-CA short-lived delegated OCSP-signing
 	// certificates; non-nil only when delegated signing is enabled.
 	delegatedResponders *ca.DelegatedResponderCache
+	// recentOCSP, when non-nil, records the serials the public responder is
+	// asked about so the background OCSP presigner includes recently queried
+	// (even store-unknown) serials in its batches. Installed at startup when
+	// pre-signing tracks recent queries.
+	recentOCSP *ca.RecentSerialTracker
 	// spiffePolicy is the SPIFFE trust-domain allowlist enforced before an SVID is
 	// minted; non-nil only when SPIFFE issuance is enabled. spiffeProfile is the
 	// issuance profile used for SVIDs.
@@ -189,8 +194,23 @@ func (a *API) escrowPolicyFor(r *http.Request) (*secret.EscrowPolicy, error) {
 
 // SetOCSPCacheTTL configures the OCSP response cache TTL. A non-positive
 // duration disables caching (every request is answered freshly on the HSM). It
-// is intended to be called once at startup from configuration.
+// is intended to be called once at startup from configuration, before the
+// presigner is wired to the cache via OCSPCache.
 func (a *API) SetOCSPCacheTTL(ttl time.Duration) { a.ocspCache = ca.NewOCSPCache(ttl) }
+
+// OCSPCache exposes the live response cache so the background OCSP presigner
+// can fill it (ca.OCSPCache.PutUntil). Call after any SetOCSPCacheTTL.
+func (a *API) OCSPCache() *ca.OCSPCache { return a.ocspCache }
+
+// DelegatedResponderCache exposes the delegated OCSP-responder certificate
+// cache (nil unless delegated signing is enabled) so the presigner signs with
+// the same responder certificate as the online path.
+func (a *API) DelegatedResponderCache() *ca.DelegatedResponderCache { return a.delegatedResponders }
+
+// SetOCSPRecentTracker installs the recently-queried serial tracker the public
+// OCSP responder records into. Intended to be called once at startup when
+// pre-signing is configured to cover recently queried serials.
+func (a *API) SetOCSPRecentTracker(t *ca.RecentSerialTracker) { a.recentOCSP = t }
 
 // SetMonitorOptions installs the expiry-monitor thresholds used by the
 // /api/monitor endpoints so ad-hoc scans match the background monitor.

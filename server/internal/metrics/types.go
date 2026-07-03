@@ -184,6 +184,44 @@ func (g *Gauge) write(b *strings.Builder) {
 }
 
 // ---------------------------------------------------------------------------
+// FuncGauge
+// ---------------------------------------------------------------------------
+
+// FuncGauge is an unlabelled gauge whose value is computed at scrape time by a
+// callback. Use it for values derived from the current clock (e.g. "seconds
+// since X last succeeded"), which a stored gauge could only approximate by
+// being rewritten on a timer. The callback returns (value, ok); when ok is
+// false no sample is emitted (only the metric header), so a "staleness" gauge
+// can stay absent until the thing it measures has happened at least once.
+type FuncGauge struct {
+	desc
+	fn func() (float64, bool)
+}
+
+// NewFuncGauge registers and returns a FuncGauge on r. fn must be safe for
+// concurrent use; it is invoked on every scrape.
+func NewFuncGauge(r *Registry, name, help string, fn func() (float64, bool)) *FuncGauge {
+	g := &FuncGauge{
+		desc: desc{metricName: name, help: help, mtype: typeGauge},
+		fn:   fn,
+	}
+	r.register(g)
+	return g
+}
+
+func (g *FuncGauge) write(b *strings.Builder) {
+	g.writeHeader(b)
+	v, ok := g.fn()
+	if !ok {
+		return
+	}
+	b.WriteString(g.metricName)
+	b.WriteByte(' ')
+	b.WriteString(formatFloat(v))
+	b.WriteByte('\n')
+}
+
+// ---------------------------------------------------------------------------
 // Histogram
 // ---------------------------------------------------------------------------
 
