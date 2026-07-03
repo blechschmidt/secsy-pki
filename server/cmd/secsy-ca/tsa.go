@@ -39,7 +39,7 @@ var oidExtKeyUsage = asn1.ObjectIdentifier{2, 5, 29, 37}
 // provider (caProvider). The two may be different backends (e.g. a PKCS#11 CA and
 // a cloud-KMS TSA); when the roles resolve to the same backend the caller passes
 // the same instance for both.
-func cmdTSAKey(db *database.DB, mgr *ca.Manager, tsaProvider, caProvider keyprovider.Provider, args []string) error {
+func cmdTSAKey(db *database.DB, _ *ca.Manager, tsaProvider, caProvider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("tsa-key", flag.ContinueOnError)
 	caRef := fs.String("ca", "", "issuing CA id or label (required)")
 	label := fs.String("label", "tsa", "provider key label for the TSA signing key")

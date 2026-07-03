@@ -292,7 +292,7 @@ func writeThrottled(w http.ResponseWriter, c *class, retryAfter time.Duration) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusTooManyRequests)
-	io.WriteString(w, "429 Too Many Requests: rate limit exceeded\n")
+	_, _ = io.WriteString(w, "429 Too Many Requests: rate limit exceeded\n")
 }
 
 // writeTenantSuspended refuses an enrollment request because its tenant is
@@ -307,7 +307,7 @@ func writeTenantSuspended(w http.ResponseWriter, c *class) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusForbidden)
-	io.WriteString(w, "403 Forbidden: tenant is suspended; enrollment is disabled\n")
+	_, _ = io.WriteString(w, "403 Forbidden: tenant is suspended; enrollment is disabled\n")
 }
 
 // writeGuardRejected responds when the HSM concurrency guard sheds a request.
@@ -327,7 +327,7 @@ func writeGuardRejected(w http.ResponseWriter, c *class, err error) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusServiceUnavailable)
-	io.WriteString(w, "503 Service Unavailable: issuance backend at capacity\n")
+	_, _ = io.WriteString(w, "503 Service Unavailable: issuance backend at capacity\n")
 }
 
 // setRetryAfter writes a Retry-After header in whole seconds (minimum 1).
@@ -343,7 +343,7 @@ func setRetryAfter(w http.ResponseWriter, d time.Duration) {
 func writeACMEProblem(w http.ResponseWriter, status int, typ, detail string) {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"type":   typ,
 		"detail": detail,
 		"status": status,

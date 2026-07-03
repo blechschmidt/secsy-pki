@@ -458,7 +458,7 @@ func (s *Server) respond(w http.ResponseWriter, req *message, bodyTag int, bodyC
 // writeError writes a PKIMessage error response. When a protector is available
 // the error is protected; otherwise it is sent unprotected (permitted by RFC
 // 4210 for messages that cannot be authenticated).
-func (s *Server) writeError(w http.ResponseWriter, r *http.Request, req *message, prot protector, failBit int, text, _ string, action string) {
+func (s *Server) writeError(w http.ResponseWriter, r *http.Request, req *message, prot protector, failBit int, text, _ string, action string) { //nolint:unparam // prot is reserved for protected error responses; RFC 4210 permits unprotected and current callers pass nil.
 	s.recordEvent(r, actorForKID(req.header.SenderKID), action, "", audit.ResultDenied, text)
 	content, err := buildErrorContent(text, failBit)
 	if err != nil {
@@ -618,7 +618,7 @@ func (s *Server) recordEvent(r *http.Request, actor, action, target, result, det
 func writeMessage(w http.ResponseWriter, der []byte) {
 	w.Header().Set("Content-Type", contentType)
 	w.WriteHeader(http.StatusOK)
-	w.Write(der)
+	_, _ = w.Write(der)
 }
 
 // mustCertResponse builds a CertResponse, panicking only on an internal encoding

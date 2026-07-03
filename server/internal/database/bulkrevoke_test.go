@@ -26,17 +26,17 @@ func seedBulkCA(t *testing.T, db *DB, caID string, n int) {
 	now := time.Now()
 	for i := 0; i < n; i++ {
 		if err := db.RecordIssuedCertificate(&models.IssuedCertificate{
-			ID:         fmt.Sprintf("%s-cert-%04d", caID, i),
-			CAID:       caID,
-			Serial:     fmt.Sprintf("%06d", i+1),
-			Subject:    fmt.Sprintf("CN=host-%04d.example.com", i),
-			CommonName: fmt.Sprintf("host-%04d.example.com", i),
-			SANs:       []string{fmt.Sprintf("host-%04d.example.com", i)},
-			Profile:    "server",
+			ID:          fmt.Sprintf("%s-cert-%04d", caID, i),
+			CAID:        caID,
+			Serial:      fmt.Sprintf("%06d", i+1),
+			Subject:     fmt.Sprintf("CN=host-%04d.example.com", i),
+			CommonName:  fmt.Sprintf("host-%04d.example.com", i),
+			SANs:        []string{fmt.Sprintf("host-%04d.example.com", i)},
+			Profile:     "server",
 			Certificate: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
-			NotBefore:  now.Add(-time.Hour),
-			NotAfter:   now.Add(90 * 24 * time.Hour),
-			Status:     models.CertStatusValid,
+			NotBefore:   now.Add(-time.Hour),
+			NotAfter:    now.Add(90 * 24 * time.Hour),
+			Status:      models.CertStatusValid,
 		}); err != nil {
 			t.Fatalf("RecordIssuedCertificate(%d): %v", i, err)
 		}
@@ -360,7 +360,9 @@ func TestListRevocationCandidatesPostgres(t *testing.T) {
 func TestBulkRevokeConcurrentIssuancePostgres(t *testing.T) {
 	testBulkRevokeUnderConcurrentIssuance(t, freshPostgres(t))
 }
-func TestBulkVersusSingleRevokePostgres(t *testing.T) { testBulkVersusSingleRevoke(t, freshPostgres(t)) }
+func TestBulkVersusSingleRevokePostgres(t *testing.T) {
+	testBulkVersusSingleRevoke(t, freshPostgres(t))
+}
 
 func serialsOf(cs []RevocationCandidate) []string {
 	out := make([]string, len(cs))

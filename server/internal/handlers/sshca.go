@@ -382,5 +382,5 @@ func (a *API) GetSSHKRL(w http.ResponseWriter, r *http.Request) {
 	metrics.SSHKRLRequests.Inc(metrics.ResultSuccess)
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", `attachment; filename="ca.krl"`)
-	w.Write(krl)
+	_, _ = w.Write(krl)
 }

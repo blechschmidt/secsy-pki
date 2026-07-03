@@ -144,7 +144,7 @@ func runExternalCAOpenSSLRoot(t *testing.T, mgr *Manager, tag string) {
 	// growing normally below the external anchor)...
 	child, err := mgr.IssueIntermediate(ctx, IntermediateSpec{
 		ParentID:   res.CA.ID,
-		Label:      uniqueLabel(t, tag + "-extchild"),
+		Label:      uniqueLabel(t, tag+"-extchild"),
 		KeyType:    "ecdsa-p256",
 		Subject:    PKIXName(models.CASubject{CommonName: "Ext Corp Issuing CA L2 " + tag}),
 		Validity:   365 * 24 * time.Hour,

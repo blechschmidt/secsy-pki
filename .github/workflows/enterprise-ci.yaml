@@ -291,6 +291,53 @@ jobs:
         working-directory: server
         run: ./scripts/openapi-check.sh
 
+  static-analysis:
+    name: Static analysis (go vet + golangci-lint, no HSM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Task 85: HSM-free quality gate. Runs `go vet ./...` and `golangci-lint
+    # run` (config server/.golangci.yml) with the sqlite build tag so the SQLite
+    # persistence driver and its dependents type-check without a token. It runs
+    # the same `make vet` / `make lint` targets developers use locally, and
+    # golangci-lint is pinned to the Makefile's GOLANGCI_LINT_VERSION so CI and
+    # local runs cannot drift. Kept green on the enterprise branch and PRs.
+    env:
+      GOTOOLCHAIN: auto
+      # Keep in lockstep with GOLANGCI_LINT_VERSION in the root Makefile.
+      GOLANGCI_LINT_VERSION: v2.11.4
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Download Go modules
+        working-directory: server
+        run: go mod download
+
+      # go vet is fast and catches a compiler-adjacent class of issues distinct
+      # from golangci-lint; run it first (also proves the `make vet` target).
+      - name: go vet (make vet)
+        run: make vet
+
+      # Install the pinned golangci-lint to GOPATH/bin via the official script
+      # (deterministic, no action-version coupling), then expose it on PATH so
+      # `make lint` picks up the binary instead of the go-run fallback.
+      - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: golangci-lint (make lint)
+        run: make lint
+
   chaos-resilience:
     name: Chaos / fault-injection resilience suite
     runs-on: ubuntu-latest

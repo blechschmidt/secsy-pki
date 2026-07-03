@@ -82,7 +82,7 @@ func (db *DB) tryNextCounter(selQ, updQ, insQ string, keyVals []any) (int64, err
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var next int64
 	err = tx.QueryRow(db.ph(selQ+db.forUpdate()), keyVals...).Scan(&next)

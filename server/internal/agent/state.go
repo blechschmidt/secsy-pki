@@ -68,7 +68,7 @@ func loadState(dir string) (*agentState, error) {
 	if err := json.Unmarshal(data, st); err != nil {
 		// A corrupt state file must not brick the agent: renewal decisions
 		// degrade gracefully (ARI re-fetches, jitter is deterministic anyway).
-		return &agentState{
+		return &agentState{ //nolint:nilerr // a corrupt state file is deliberately recovered into a fresh state (see comment); the nil error is intentional.
 			Certificates: make(map[string]*certState),
 			path:         filepath.Join(dir, stateFileName),
 		}, nil

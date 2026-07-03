@@ -313,7 +313,7 @@ func (s *Server) refreshOrderStatus(order *models.ACMEOrder) {
 		}
 	}
 
-	newStatus := order.Status
+	var newStatus string
 	switch {
 	case anyInvalid:
 		newStatus = models.ACMEOrderStatusInvalid
@@ -351,7 +351,7 @@ func (s *Server) expireAuthzIfNeeded(authz *models.ACMEAuthorization) {
 // §5) and returns the canonical CertID to record on the order, or a Problem if
 // the replacement is not permitted. An empty input returns ("", nil) — the field
 // is optional.
-func (s *Server) resolveReplaces(r *http.Request, acct *acmeAccount, replaces string) (string, *Problem) {
+func (s *Server) resolveReplaces(_ *http.Request, acct *acmeAccount, replaces string) (string, *Problem) {
 	if replaces == "" {
 		return "", nil
 	}

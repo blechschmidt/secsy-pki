@@ -37,7 +37,7 @@ func ringFromDB(cfg *config.Config, provider keyprovider.Provider, family string
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	versions, err := db.ListKEKVersions(family)
 	if err != nil {
 		return nil, fmt.Errorf("reading KEK rotation state: %w", err)
@@ -82,7 +82,7 @@ func recordRotationEvent(cfg *config.Config, actor, action, target, result, deta
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	return recordEscrowEvent(db, actor, action, target, result, detail)
 }
 
@@ -107,7 +107,7 @@ func cmdRotateKEK(cfg *config.Config, provider keyprovider.Provider, args []stri
 	if err != nil {
 		return fmt.Errorf("KEK rotation requires the database (rotation state and audit): %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Four-eyes gate (Task 81): KEK rotation is a high-risk key-management
 	// operation with no REST endpoint, so this CLI gate is its only chokepoint.
@@ -138,7 +138,7 @@ func cmdRotateKEK(cfg *config.Config, provider keyprovider.Provider, args []stri
 
 // cmdRetireKEK withdraws a superseded KEK version from service (fail-closed:
 // refused while stored secrets still sit on it, unless -force).
-func cmdRetireKEK(cfg *config.Config, provider keyprovider.Provider, args []string) error {
+func cmdRetireKEK(cfg *config.Config, _ keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("retire-kek", flag.ContinueOnError)
 	family := fs.String("family", "", "KEK family (default: secret.kek_label from config)")
 	version := fs.Int("version", 0, "KEK version to retire (required)")
@@ -160,7 +160,7 @@ func cmdRetireKEK(cfg *config.Config, provider keyprovider.Provider, args []stri
 	if err != nil {
 		return fmt.Errorf("KEK retirement requires the database (rotation state and audit): %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	retired, err := secret.RetireKEK(db, fam, *version, *force)
 	if err != nil {
@@ -256,7 +256,7 @@ func cmdRewrap(cfg *config.Config, provider keyprovider.Provider, args []string)
 	if err != nil {
 		return fmt.Errorf("re-wrap requires the database (stored secrets and audit): %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	versions, err := db.ListKEKVersions(fam)
 	if err != nil {
 		return err
@@ -313,7 +313,7 @@ func cmdKEKVersions(cfg *config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	st, err := secret.BuildKEKStatus(db, fam)
 	if err != nil {
@@ -356,7 +356,7 @@ func cmdListSecrets(cfg *config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	secrets, err := db.ListStoredSecrets(*tenant)
 	if err != nil {

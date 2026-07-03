@@ -119,7 +119,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Multi-replica coordination (Task 68): the singleton background jobs
 	// registered below (expiry monitor/auto-renewal + CA rotation, discovery
@@ -367,7 +367,7 @@ func main() {
 		if err := os.WriteFile(confPath, []byte("connector = "+cfg.YubiHSM.ConnectorURL+"\n"), 0600); err != nil {
 			log.Printf("WARNING: failed to write %s: %v", confPath, err)
 		} else {
-			os.Setenv("YUBIHSM_PKCS11_CONF", confPath)
+			_ = os.Setenv("YUBIHSM_PKCS11_CONF", confPath)
 		}
 	}
 

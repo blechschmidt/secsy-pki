@@ -221,7 +221,7 @@ func (a *API) ListIssuedCertificates(w http.ResponseWriter, r *http.Request) {
 	}
 	// Reflect expiry lazily so listings (and the status filter) show accurate
 	// state before the page is read.
-	a.db.MarkExpiredCertificates(caID, time.Now())
+	_, _ = a.db.MarkExpiredCertificates(caID, time.Now())
 	result, err := a.db.PageIssuedCertificates(caID, filter, page)
 	if err != nil {
 		if errors.Is(err, database.ErrInvalidCursor) {
@@ -337,12 +337,12 @@ func (a *API) serveCRL(w http.ResponseWriter, r *http.Request, shard int, delta 
 
 	if r.URL.Query().Get("format") == "pem" {
 		w.Header().Set("Content-Type", "application/x-pem-file")
-		w.Write(pki.EncodeCRLPEM(der))
+		_, _ = w.Write(pki.EncodeCRLPEM(der))
 		return
 	}
 	w.Header().Set("Content-Type", "application/pkix-crl")
 	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
-	w.Write(der)
+	_, _ = w.Write(der)
 }
 
 // GetChain returns the combined overlap chain (AIA/bundle) for a CA: the active
@@ -361,7 +361,7 @@ func (a *API) GetChain(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.Header().Set("Content-Disposition", "attachment; filename=chain.pem")
-	w.Write(chain)
+	_, _ = w.Write(chain)
 }
 
 // OCSPResponder answers OCSP requests for a CA. It supports both the POST form
@@ -446,7 +446,7 @@ func (a *API) OCSPResponder(w http.ResponseWriter, r *http.Request) {
 				if cached, hit := a.ocspCache.Get(caID, cacheSerial); hit {
 					metrics.OCSPRequests.Inc(metrics.ResultSuccess)
 					w.Header().Set("Content-Type", "application/ocsp-response")
-					w.Write(cached)
+					_, _ = w.Write(cached)
 					return
 				}
 			}
@@ -492,7 +492,7 @@ func (a *API) OCSPResponder(w http.ResponseWriter, r *http.Request) {
 
 	metrics.OCSPRequests.Inc(metrics.ResultSuccess)
 	w.Header().Set("Content-Type", "application/ocsp-response")
-	w.Write(respDER)
+	_, _ = w.Write(respDER)
 }
 
 // writeOCSPError maps a responder error to the correct RFC 6960 §4.2.1 status
@@ -502,16 +502,16 @@ func writeOCSPError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ca.ErrOCSPMalformed):
 		metrics.OCSPRequests.Inc("malformed")
-		w.Write(pki.OCSPMalformedResponse)
+		_, _ = w.Write(pki.OCSPMalformedResponse)
 	case errors.Is(err, ca.ErrOCSPUnauthorized):
 		metrics.OCSPRequests.Inc("unauthorized")
-		w.Write(pki.OCSPUnauthorizedResponse)
+		_, _ = w.Write(pki.OCSPUnauthorizedResponse)
 	case errors.Is(err, ca.ErrOCSPTryLater):
 		metrics.OCSPRequests.Inc("try_later")
-		w.Write(pki.OCSPTryLaterResponse)
+		_, _ = w.Write(pki.OCSPTryLaterResponse)
 	default:
 		metrics.OCSPRequests.Inc(metrics.ResultError)
-		w.Write(pki.OCSPInternalErrorResponse)
+		_, _ = w.Write(pki.OCSPInternalErrorResponse)
 	}
 }
 
@@ -553,7 +553,7 @@ func issueResponse(result *ca.IssueResult) models.IssueCertResponse {
 func writeOCSPMalformed(w http.ResponseWriter) {
 	metrics.OCSPRequests.Inc("malformed")
 	w.Header().Set("Content-Type", "application/ocsp-response")
-	w.Write(pki.OCSPMalformedResponse)
+	_, _ = w.Write(pki.OCSPMalformedResponse)
 }
 
 func decodeOCSPGet(encoded string) ([]byte, error) {

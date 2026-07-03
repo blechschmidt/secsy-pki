@@ -397,7 +397,7 @@ func cmdPublishChain(db *database.DB, mgr *ca.Manager, args []string) error {
 
 // cmdListRotations lists CAs by rollover state, so an operator can see which
 // superseded keys are awaiting retirement and whether they are safe to retire.
-func cmdListRotations(db *database.DB, mgr *ca.Manager, args []string) error {
+func cmdListRotations(db *database.DB, mgr *ca.Manager, _ []string) error {
 	cas, err := db.ListCAs()
 	if err != nil {
 		return err

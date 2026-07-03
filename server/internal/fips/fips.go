@@ -136,7 +136,7 @@ func ApprovedPublicKey(pub crypto.PublicKey) error {
 			return nil
 		}
 		name := "unknown"
-		if k.Curve != nil && k.Curve.Params() != nil {
+		if k.Curve != nil && k.Params() != nil {
 			name = k.Curve.Params().Name
 		}
 		return fmt.Errorf("ECDSA curve %s is %w", name, ErrNotApproved)

@@ -305,11 +305,11 @@ func TestSignSSHCertificate_Ed25519_UserCert(t *testing.T) {
 	if len(cert.ValidPrincipals) != 2 {
 		t.Errorf("principals = %v", cert.ValidPrincipals)
 	}
-	if cert.Permissions.Extensions["permit-pty"] != "" {
-		t.Errorf("extensions = %v", cert.Permissions.Extensions)
+	if cert.Extensions["permit-pty"] != "" {
+		t.Errorf("extensions = %v", cert.Extensions)
 	}
-	if cert.Permissions.CriticalOptions["source-address"] != "10.0.0.0/8" {
-		t.Errorf("critical_options = %v", cert.Permissions.CriticalOptions)
+	if cert.CriticalOptions["source-address"] != "10.0.0.0/8" {
+		t.Errorf("critical_options = %v", cert.CriticalOptions)
 	}
 }
 
@@ -336,7 +336,7 @@ func TestSignSSHCertificate_HostCert(t *testing.T) {
 		t.Errorf("cert type = %d, want host", cert.CertType)
 	}
 	// Host certs with nil extensions should not get default user extensions
-	if _, ok := cert.Permissions.Extensions["permit-pty"]; ok {
+	if _, ok := cert.Extensions["permit-pty"]; ok {
 		t.Error("host cert should not have permit-pty")
 	}
 }
@@ -359,16 +359,16 @@ func TestSignSSHCertificate_DefaultExtensions(t *testing.T) {
 
 	parsed, _, _, _, _ := ssh.ParseAuthorizedKey(certBytes)
 	cert := parsed.(*ssh.Certificate)
-	if _, ok := cert.Permissions.Extensions["permit-pty"]; !ok {
+	if _, ok := cert.Extensions["permit-pty"]; !ok {
 		t.Error("default extensions should include permit-pty")
 	}
-	if _, ok := cert.Permissions.Extensions["permit-agent-forwarding"]; !ok {
+	if _, ok := cert.Extensions["permit-agent-forwarding"]; !ok {
 		t.Error("default extensions should include permit-agent-forwarding")
 	}
-	if _, ok := cert.Permissions.Extensions["permit-port-forwarding"]; !ok {
+	if _, ok := cert.Extensions["permit-port-forwarding"]; !ok {
 		t.Error("default extensions should include permit-port-forwarding")
 	}
-	if _, ok := cert.Permissions.Extensions["permit-user-rc"]; !ok {
+	if _, ok := cert.Extensions["permit-user-rc"]; !ok {
 		t.Error("default extensions should include permit-user-rc")
 	}
 }
@@ -467,7 +467,7 @@ func TestHsmPubKeyToSSH_RSA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	modulus := rsaKey.PublicKey.N.Bytes()
+	modulus := rsaKey.N.Bytes()
 	exponent := big.NewInt(int64(rsaKey.PublicKey.E)).Bytes()
 
 	attrs := []*pkcs11.Attribute{
@@ -496,7 +496,7 @@ func TestHsmPubKeyToSSH_RSA4096(t *testing.T) {
 		t.Fatal(err)
 	}
 	attrs := []*pkcs11.Attribute{
-		pkcs11.NewAttribute(pkcs11.CKA_MODULUS, rsaKey.PublicKey.N.Bytes()),
+		pkcs11.NewAttribute(pkcs11.CKA_MODULUS, rsaKey.N.Bytes()),
 		pkcs11.NewAttribute(pkcs11.CKA_PUBLIC_EXPONENT, big.NewInt(int64(rsaKey.PublicKey.E)).Bytes()),
 	}
 
@@ -591,7 +591,7 @@ func TestHsmPubKeyToSSH_ECDSA_P256(t *testing.T) {
 	}
 
 	ecParams, _ := asn1.Marshal(asn1.ObjectIdentifier{1, 2, 840, 10045, 3, 1, 7})
-	pointBytes := elliptic.Marshal(key.PublicKey.Curve, key.PublicKey.X, key.PublicKey.Y)
+	pointBytes := elliptic.Marshal(key.Curve, key.X, key.Y) //nolint:staticcheck // SA1019: the test builds the raw uncompressed EC point encoding the parser consumes; elliptic.Marshal mirrors that wire format.
 	ecPoint, _ := asn1.Marshal(pointBytes)
 
 	attrs := []*pkcs11.Attribute{
@@ -621,7 +621,7 @@ func TestHsmPubKeyToSSH_ECDSA_P384(t *testing.T) {
 	}
 
 	ecParams, _ := asn1.Marshal(asn1.ObjectIdentifier{1, 3, 132, 0, 34})
-	pointBytes := elliptic.Marshal(key.PublicKey.Curve, key.PublicKey.X, key.PublicKey.Y)
+	pointBytes := elliptic.Marshal(key.Curve, key.X, key.Y) //nolint:staticcheck // SA1019: the test builds the raw uncompressed EC point encoding the parser consumes; elliptic.Marshal mirrors that wire format.
 	ecPoint, _ := asn1.Marshal(pointBytes)
 
 	attrs := []*pkcs11.Attribute{
@@ -645,7 +645,7 @@ func TestHsmPubKeyToSSH_ECDSA_P521(t *testing.T) {
 	}
 
 	ecParams, _ := asn1.Marshal(asn1.ObjectIdentifier{1, 3, 132, 0, 35})
-	pointBytes := elliptic.Marshal(key.PublicKey.Curve, key.PublicKey.X, key.PublicKey.Y)
+	pointBytes := elliptic.Marshal(key.Curve, key.X, key.Y) //nolint:staticcheck // SA1019: the test builds the raw uncompressed EC point encoding the parser consumes; elliptic.Marshal mirrors that wire format.
 	ecPoint, _ := asn1.Marshal(pointBytes)
 
 	attrs := []*pkcs11.Attribute{
@@ -722,7 +722,7 @@ func TestParsePublicKey_Ed25519(t *testing.T) {
 func TestParsePublicKey_ECDSA_P256(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	ecParams, _ := asn1.Marshal(asn1.ObjectIdentifier{1, 2, 840, 10045, 3, 1, 7})
-	pointBytes := elliptic.Marshal(key.PublicKey.Curve, key.PublicKey.X, key.PublicKey.Y)
+	pointBytes := elliptic.Marshal(key.Curve, key.X, key.Y) //nolint:staticcheck // SA1019: the test builds the raw uncompressed EC point encoding the parser consumes; elliptic.Marshal mirrors that wire format.
 	ecPoint, _ := asn1.Marshal(pointBytes)
 
 	s := &PKCS11Signer{}
@@ -742,7 +742,7 @@ func TestParsePublicKey_ECDSA_P256(t *testing.T) {
 func TestParsePublicKey_ECDSA_P384(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	ecParams, _ := asn1.Marshal(asn1.ObjectIdentifier{1, 3, 132, 0, 34})
-	pointBytes := elliptic.Marshal(key.PublicKey.Curve, key.PublicKey.X, key.PublicKey.Y)
+	pointBytes := elliptic.Marshal(key.Curve, key.X, key.Y) //nolint:staticcheck // SA1019: the test builds the raw uncompressed EC point encoding the parser consumes; elliptic.Marshal mirrors that wire format.
 	ecPoint, _ := asn1.Marshal(pointBytes)
 
 	s := &PKCS11Signer{}
@@ -762,7 +762,7 @@ func TestParsePublicKey_ECDSA_P384(t *testing.T) {
 func TestParsePublicKey_ECDSA_P521(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
 	ecParams, _ := asn1.Marshal(asn1.ObjectIdentifier{1, 3, 132, 0, 35})
-	pointBytes := elliptic.Marshal(key.PublicKey.Curve, key.PublicKey.X, key.PublicKey.Y)
+	pointBytes := elliptic.Marshal(key.Curve, key.X, key.Y) //nolint:staticcheck // SA1019: the test builds the raw uncompressed EC point encoding the parser consumes; elliptic.Marshal mirrors that wire format.
 	ecPoint, _ := asn1.Marshal(pointBytes)
 
 	s := &PKCS11Signer{}
@@ -834,7 +834,7 @@ func TestParseRSAPublicKey(t *testing.T) {
 	rsaKey, _ := rsa.GenerateKey(rand.Reader, 2048)
 	s := &PKCS11Signer{}
 	s.parseRSAPublicKey([]*pkcs11.Attribute{
-		pkcs11.NewAttribute(pkcs11.CKA_MODULUS, rsaKey.PublicKey.N.Bytes()),
+		pkcs11.NewAttribute(pkcs11.CKA_MODULUS, rsaKey.N.Bytes()),
 		pkcs11.NewAttribute(pkcs11.CKA_PUBLIC_EXPONENT, big.NewInt(int64(rsaKey.PublicKey.E)).Bytes()),
 	})
 	if s.pubKey == nil {
@@ -848,11 +848,11 @@ func TestParseRSAPublicKey(t *testing.T) {
 	if !ok {
 		t.Fatal("pubKey is not *rsa.PublicKey")
 	}
-	if rsaPub.N.Cmp(rsaKey.PublicKey.N) != 0 {
+	if rsaPub.N.Cmp(rsaKey.N) != 0 {
 		t.Error("modulus mismatch")
 	}
-	if rsaPub.E != rsaKey.PublicKey.E {
-		t.Errorf("exponent: got %d, want %d", rsaPub.E, rsaKey.PublicKey.E)
+	if rsaPub.E != rsaKey.E {
+		t.Errorf("exponent: got %d, want %d", rsaPub.E, rsaKey.E)
 	}
 }
 

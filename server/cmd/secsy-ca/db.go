@@ -84,7 +84,7 @@ func cmdDBVerify(cfg *config.Config, args []string) error {
 	if err != nil {
 		return fmt.Errorf("opening %s store: %w", drv, err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	res, err := db.VerifyStoreIntegrity()
 	if err != nil {
@@ -171,14 +171,14 @@ func cmdDBMigrate(cfg *config.Config, args []string) error {
 	if err != nil {
 		return fmt.Errorf("opening source database: %w", err)
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	fmt.Fprintf(os.Stderr, "Opening destination %s store...\n", *toDriver)
 	dst, err := database.NewWithOptions(*toDriver, *toDSN, database.PoolOptions{MaxOpenConns: *maxOpen})
 	if err != nil {
 		return fmt.Errorf("opening destination database: %w", err)
 	}
-	defer dst.Close()
+	defer func() { _ = dst.Close() }()
 
 	// A generous ceiling: even large inventories copy in seconds-to-minutes, and
 	// the operator can re-run after fixing connectivity if it is exceeded.
@@ -203,6 +203,6 @@ func printMigrationReport(r *database.MigrationReport) {
 		fmt.Fprintf(tw, "%s\t%d\n", t.Table, t.Rows)
 	}
 	fmt.Fprintf(tw, "%s\t%d\n", "TOTAL", r.TotalRows)
-	tw.Flush()
+	_ = tw.Flush()
 	fmt.Printf("\nAudit chain verified on destination: %d events, intact=%v\n", r.ChainCount, r.ChainValid)
 }

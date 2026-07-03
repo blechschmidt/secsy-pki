@@ -76,10 +76,10 @@ func (s *Server) authInterceptor(ctx context.Context, req any, info *grpc.UnaryS
 	user, err := s.authMw.AuthenticateRPC(ctx, authorization, peerCerts)
 	if err != nil {
 		metrics.RecordAuthLogin("grpc", false)
-		switch {
-		case err == middleware.ErrNoCredentials:
+		switch err {
+		case middleware.ErrNoCredentials:
 			return nil, status.Error(grpccodes.Unauthenticated, "authorization required")
-		case err == middleware.ErrInvalidCredentials:
+		case middleware.ErrInvalidCredentials:
 			return nil, status.Error(grpccodes.Unauthenticated, "invalid credentials")
 		default:
 			return nil, status.Error(grpccodes.Unauthenticated, err.Error())

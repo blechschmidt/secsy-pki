@@ -114,7 +114,7 @@ func (s *SystemResolver) LookupCNAME(ctx context.Context, name string) (string, 
 // query sends a single question and returns the answer records and the smallest
 // TTL seen. A NODATA/NXDOMAIN response yields (nil, 0, nil); a SERVFAIL/refused
 // or transport failure yields an error (authorization undetermined).
-func (s *SystemResolver) query(ctx context.Context, name string, qtype uint16) ([]dnsmessage.Resource, uint32, error) {
+func (s *SystemResolver) query(ctx context.Context, name string, qtype uint16) ([]dnsmessage.Resource, uint32, error) { //nolint:unparam // the minimum-TTL return is part of the resolver's DNS answer surface; current CAA callers don't cache it.
 	fqdn := name
 	if !strings.HasSuffix(fqdn, ".") {
 		fqdn += "."
@@ -187,7 +187,7 @@ func (s *SystemResolver) roundTrip(ctx context.Context, network, server string, 
 	if err != nil {
 		return nil, false, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if dl, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
 	}
@@ -231,7 +231,7 @@ func (s *SystemResolver) roundTrip(ctx context.Context, network, server string, 
 // parseResponse validates the response header (ID match, RCODE) and returns the
 // answer resources plus the minimum TTL. NXDOMAIN and NODATA are non-errors that
 // return no records; SERVFAIL/refused are errors.
-func parseResponse(resp []byte, id uint16, qtype uint16) ([]dnsmessage.Resource, uint32, error) {
+func parseResponse(resp []byte, id uint16, _ uint16) ([]dnsmessage.Resource, uint32, error) {
 	var p dnsmessage.Parser
 	h, err := p.Start(resp)
 	if err != nil {
@@ -311,7 +311,7 @@ func resolvConfServers(path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var servers []string
 	sc := bufio.NewScanner(f)

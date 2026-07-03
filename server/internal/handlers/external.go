@@ -95,7 +95,7 @@ func (a *API) GetExternalCACSR(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", caRec.Label+".csr.pem"))
-	w.Write(csrPEM)
+	_, _ = w.Write(csrPEM)
 }
 
 // ImportExternalCACert validates and installs the externally signed certificate

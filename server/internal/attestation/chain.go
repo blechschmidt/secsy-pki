@@ -25,7 +25,7 @@ func constantTimeEqual(a, b []byte) bool {
 // at all for YubiKey PIV attestation leaves); pinning a specific EKU would
 // reject legitimate hardware. Trust is established purely by chaining to a
 // configured manufacturer root — the operator's explicit trust decision.
-func (v *Verifier) verifyChain(leaf *x509.Certificate, extra []*x509.Certificate) ([]*x509.Certificate, error) {
+func (v *Verifier) verifyChain(leaf *x509.Certificate, extra []*x509.Certificate) ([]*x509.Certificate, error) { //nolint:unparam // returns the verified attestation chain for callers that want it; the current caller only checks the error.
 	if v.roots == nil || len(v.roots.Subjects()) == 0 { //nolint:staticcheck
 		return nil, errors.New("no trusted manufacturer roots configured")
 	}

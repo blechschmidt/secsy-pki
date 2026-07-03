@@ -188,7 +188,7 @@ func (s *Scanner) Scan(ctx context.Context, targets []Target) []Finding {
 }
 
 // scanOne dials a single endpoint and analyzes the served leaf certificate.
-func (s *Scanner) scanOne(ctx context.Context, t Target) Finding {
+func (s *Scanner) scanOne(_ context.Context, t Target) Finding {
 	f := Finding{
 		Endpoint:     t.Address(),
 		ServerName:   t.ServerName,
@@ -210,7 +210,7 @@ func (s *Scanner) scanOne(ctx context.Context, t Target) Finding {
 		f.Error = err.Error()
 		return f
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	state := conn.ConnectionState()
 	chain := state.PeerCertificates
@@ -357,15 +357,11 @@ func chainComplete(chain []*x509.Certificate, now time.Time) bool {
 // collectSANs renders every subject alternative name into a stable, sorted list.
 func collectSANs(c *x509.Certificate) []string {
 	var sans []string
-	for _, d := range c.DNSNames {
-		sans = append(sans, d)
-	}
+	sans = append(sans, c.DNSNames...)
 	for _, ip := range c.IPAddresses {
 		sans = append(sans, ip.String())
 	}
-	for _, e := range c.EmailAddresses {
-		sans = append(sans, e)
-	}
+	sans = append(sans, c.EmailAddresses...)
 	for _, u := range c.URIs {
 		sans = append(sans, u.String())
 	}

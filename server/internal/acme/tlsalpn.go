@@ -54,7 +54,7 @@ func (v *Validator) ValidateTLSALPN01(ctx context.Context, identifier, keyAuth s
 		return newProblem(probConnection, http.StatusBadRequest,
 			fmt.Sprintf("dialing tls-alpn-01 challenge at %s: %v", addr, err))
 	}
-	defer rawConn.Close()
+	defer func() { _ = rawConn.Close() }()
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = rawConn.SetDeadline(deadline)
 	}

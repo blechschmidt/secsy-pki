@@ -15,8 +15,8 @@ func TestParseEndpoint(t *testing.T) {
 	}{
 		{"example.com", "example.com", 443, "example.com"},
 		{"example.com:8443", "example.com", 8443, "example.com"},
-		{"10.0.0.5", "10.0.0.5", 443, ""},                        // bare IP => no SNI
-		{"10.0.0.5:9443", "10.0.0.5", 9443, ""},                  // bare IP with port
+		{"10.0.0.5", "10.0.0.5", 443, ""},                                        // bare IP => no SNI
+		{"10.0.0.5:9443", "10.0.0.5", 9443, ""},                                  // bare IP with port
 		{"10.0.0.5:9443#internal.example", "10.0.0.5", 9443, "internal.example"}, // explicit SNI
 		{"host.example#sni.example", "host.example", 443, "sni.example"},
 	}

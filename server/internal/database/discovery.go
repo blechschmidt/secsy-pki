@@ -124,10 +124,10 @@ func scanDiscoveredCert(s caScanner) (*models.DiscoveredCertificate, error) {
 	d.HostnameMismatch = hostnameMismatch != 0
 	d.ExpiringSoon = expiringSoon != 0
 	if sans.Valid && sans.String != "" {
-		json.Unmarshal([]byte(sans.String), &d.SANs)
+		_ = json.Unmarshal([]byte(sans.String), &d.SANs)
 	}
 	if flags.Valid && flags.String != "" {
-		json.Unmarshal([]byte(flags.String), &d.Flags)
+		_ = json.Unmarshal([]byte(flags.String), &d.Flags)
 	}
 	if d.TenantID == "" {
 		d.TenantID = models.DefaultTenantID

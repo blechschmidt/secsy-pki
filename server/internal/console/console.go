@@ -1,7 +1,8 @@
 // Package console serves a minimal, embedded operator web console for the
 // enterprise PKI. The single-page app is bundled into the server binary via
-// go:embed, so no separate front-end build or deploy is required — the console
-// ships wherever the server ships (including the container image / Helm chart).
+// the go:embed directive, so no separate front-end build or deploy is required
+// — the console ships wherever the server ships (including the container image
+// / Helm chart).
 //
 // The console holds no privileges of its own: every data operation it performs
 // goes through the existing REST API, which is authenticated, RBAC-gated, and

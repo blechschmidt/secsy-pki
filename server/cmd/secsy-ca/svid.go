@@ -100,7 +100,7 @@ func cmdSVID(db *database.DB, mgr *ca.Manager, args []string) error {
 // generateSVIDCSR generates an ECDSA P-256 key and a minimal CSR for it, writing
 // the private key PEM to keyOut (or stderr-noting stdout is unavailable). The CSR
 // subject/SANs are irrelevant to issuance; only its public key is used.
-func generateSVIDCSR(sid spiffe.ID, keyOut string) ([]byte, error) {
+func generateSVIDCSR(_ spiffe.ID, keyOut string) ([]byte, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generating SVID key: %w", err)

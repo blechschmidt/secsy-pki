@@ -86,7 +86,7 @@ func scanIssuedCert(s caScanner) (*models.IssuedCertificate, error) {
 		c.RevokedAt = &t
 	}
 	if sans.Valid && sans.String != "" {
-		json.Unmarshal([]byte(sans.String), &c.SANs)
+		_ = json.Unmarshal([]byte(sans.String), &c.SANs)
 	}
 	return &c, nil
 }

@@ -39,7 +39,7 @@ func (a Accuracy) marshal() (asn1.RawValue, bool, error) {
 	if a.IsZero() {
 		return asn1.RawValue{}, false, nil
 	}
-	der, err := asn1.Marshal(rawAccuracy{Seconds: a.Seconds, Millis: a.Millis, Micros: a.Micros})
+	der, err := asn1.Marshal(rawAccuracy(a))
 	if err != nil {
 		return asn1.RawValue{}, false, fmt.Errorf("tsa: marshaling accuracy: %w", err)
 	}

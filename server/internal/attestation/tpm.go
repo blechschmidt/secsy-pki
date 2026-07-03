@@ -207,7 +207,7 @@ func (r *tpmReader) u32() (uint32, error) {
 	return v, nil
 }
 
-func (r *tpmReader) u64() (uint64, error) {
+func (r *tpmReader) u64() (uint64, error) { //nolint:unparam // symmetric fixed-width reader API (u8/u16/u32/u64); some call sites advance past a field without consuming its value.
 	if r.pos+8 > len(r.buf) {
 		return 0, errors.New("tpm: truncated uint64")
 	}
@@ -369,7 +369,7 @@ func parseTPMECC(r *tpmReader) (crypto.PublicKey, error) {
 	}
 	x := new(big.Int).SetBytes(xb)
 	y := new(big.Int).SetBytes(yb)
-	if !curve.IsOnCurve(x, y) {
+	if !curve.IsOnCurve(x, y) { //nolint:staticcheck // SA1019: crypto/ecdh exposes no big.Int X/Y to rebuild the key this attestation path needs; the deprecated on-curve check is retained deliberately.
 		return nil, errors.New("tpm ECC point is not on the curve")
 	}
 	return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil

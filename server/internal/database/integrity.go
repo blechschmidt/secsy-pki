@@ -162,7 +162,7 @@ func (db *DB) checkSerialMonotonicity() (detail string, sumNext int64, ok bool, 
 	if err != nil {
 		return "", 0, false, err
 	}
-	defer crows.Close()
+	defer func() { _ = crows.Close() }()
 	maxChild := map[string]*big.Int{}
 	for crows.Next() {
 		var parent, serial string
@@ -223,7 +223,7 @@ func (db *DB) checkCRLContinuity() (detail string, sumNext int64, ok bool, err e
 		var ca, scope string
 		var n int64
 		if err := prows.Scan(&ca, &scope, &n); err != nil {
-			prows.Close()
+			_ = prows.Close()
 			return "", 0, false, err
 		}
 		k := key{ca, scope}
@@ -232,10 +232,10 @@ func (db *DB) checkCRLContinuity() (detail string, sumNext int64, ok bool, err e
 		}
 	}
 	if err := prows.Err(); err != nil {
-		prows.Close()
+		_ = prows.Close()
 		return "", 0, false, err
 	}
-	prows.Close()
+	_ = prows.Close()
 
 	counters := 0
 	violations := 0
@@ -262,23 +262,23 @@ func (db *DB) checkCRLContinuity() (detail string, sumNext int64, ok bool, err e
 		var ca string
 		var n int64
 		if err := frows.Scan(&ca, &n); err != nil {
-			frows.Close()
+			_ = frows.Close()
 			return "", 0, false, err
 		}
 		check(ca, "full", n)
 	}
 	if err := frows.Err(); err != nil {
-		frows.Close()
+		_ = frows.Close()
 		return "", 0, false, err
 	}
-	frows.Close()
+	_ = frows.Close()
 
 	// Partitioned scopes.
 	srows, err := db.query(`SELECT ca_id, scope, next_number FROM ca_scoped_crl_counters`)
 	if err != nil {
 		return "", 0, false, err
 	}
-	defer srows.Close()
+	defer func() { _ = srows.Close() }()
 	for srows.Next() {
 		var ca, scope string
 		var n int64

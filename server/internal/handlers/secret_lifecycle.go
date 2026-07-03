@@ -31,11 +31,11 @@ import (
 // TTLDays/RotateEveryDays are tri-state via pointers: absent keeps the stored
 // schedule, 0 clears it, > 0 sets it.
 type putSecretRequest struct {
-	Plaintext string `json:"plaintext"`         // base64
-	Context   string `json:"context,omitempty"` // base64, optional (not stored)
-	Escrow    bool   `json:"escrow,omitempty"`
-	TTLDays   *int   `json:"ttl_days,omitempty"`
-	RotateEveryDays *int `json:"rotate_every_days,omitempty"`
+	Plaintext       string `json:"plaintext"`         // base64
+	Context         string `json:"context,omitempty"` // base64, optional (not stored)
+	Escrow          bool   `json:"escrow,omitempty"`
+	TTLDays         *int   `json:"ttl_days,omitempty"`
+	RotateEveryDays *int   `json:"rotate_every_days,omitempty"`
 	Comment         string `json:"comment,omitempty"`
 	// ExpectVersion optionally makes the put conditional on the secret still
 	// being at this version (compare-and-swap for external orchestrators).
@@ -305,7 +305,7 @@ func (a *API) GetStoredSecretVersion(w http.ResponseWriter, r *http.Request) {
 
 type rollbackSecretRequest struct {
 	// Version is the history entry whose value becomes current again.
-	Version int `json:"version"`
+	Version int    `json:"version"`
 	Comment string `json:"comment,omitempty"`
 }
 

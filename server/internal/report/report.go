@@ -68,24 +68,24 @@ const (
 
 // CertRecord is one row of the certificate inventory.
 type CertRecord struct {
-	CAID             string    `json:"ca_id"`
-	CASubject        string    `json:"ca_subject"`
-	Serial           string    `json:"serial"`
-	Subject          string    `json:"subject"`
-	CommonName       string    `json:"common_name"`
-	SANs             []string  `json:"sans,omitempty"`
-	Profile          string    `json:"profile"`
-	NotBefore        time.Time `json:"not_before"`
-	NotAfter         time.Time `json:"not_after"`
-	Status           string    `json:"status"` // valid | revoked | expired
+	CAID             string     `json:"ca_id"`
+	CASubject        string     `json:"ca_subject"`
+	Serial           string     `json:"serial"`
+	Subject          string     `json:"subject"`
+	CommonName       string     `json:"common_name"`
+	SANs             []string   `json:"sans,omitempty"`
+	Profile          string     `json:"profile"`
+	NotBefore        time.Time  `json:"not_before"`
+	NotAfter         time.Time  `json:"not_after"`
+	Status           string     `json:"status"` // valid | revoked | expired
 	RevokedAt        *time.Time `json:"revoked_at,omitempty"`
-	RevocationReason int       `json:"revocation_reason,omitempty"`
-	RevocationText   string    `json:"revocation_reason_text,omitempty"`
-	CTStatus         string    `json:"ct_status"`
-	SCTCount         int       `json:"sct_count"`
-	SCTPresent       bool      `json:"sct_present"`
-	LintVerdict      string    `json:"lint_verdict"` // pass | warn (fail never issues)
-	LintFindings     []string  `json:"lint_findings,omitempty"`
+	RevocationReason int        `json:"revocation_reason,omitempty"`
+	RevocationText   string     `json:"revocation_reason_text,omitempty"`
+	CTStatus         string     `json:"ct_status"`
+	SCTCount         int        `json:"sct_count"`
+	SCTPresent       bool       `json:"sct_present"`
+	LintVerdict      string     `json:"lint_verdict"` // pass | warn (fail never issues)
+	LintFindings     []string   `json:"lint_findings,omitempty"`
 }
 
 // Inventory is the full certificate-inventory export.

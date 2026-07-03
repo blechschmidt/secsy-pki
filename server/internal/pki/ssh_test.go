@@ -65,7 +65,7 @@ func TestParseTime(t *testing.T) {
 		{"+30m", "m", 30 * time.Minute},
 		{"+60s", "s", 60 * time.Second},
 	} {
-		got, err = ParseTime(tc.s, now)
+		_, err = ParseTime(tc.s, now)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.s, err)
 		}
@@ -81,7 +81,7 @@ func TestParseTime(t *testing.T) {
 	}
 
 	// Unix timestamp
-	got, err = ParseTime("1700000000", now)
+	_, err = ParseTime("1700000000", now)
 	if err != nil {
 		t.Fatal(err)
 	}

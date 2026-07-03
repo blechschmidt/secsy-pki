@@ -226,7 +226,7 @@ func readSerialsFile(path, format string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading serials file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var out []string
 	scanner := bufio.NewScanner(f)

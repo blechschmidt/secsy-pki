@@ -135,13 +135,13 @@ func (p *SoftwareProvider) GenerateKey(_ context.Context, spec KeySpec) (*KeyInf
 		return nil, fmt.Errorf("keyprovider: creating temp key file: %w", err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op after a successful rename
+	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return nil, fmt.Errorf("keyprovider: chmod temp key file: %w", err)
 	}
 	if _, err := tmp.Write(pemBytes); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return nil, fmt.Errorf("keyprovider: writing key file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {

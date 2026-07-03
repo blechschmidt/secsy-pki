@@ -196,7 +196,7 @@ func (o *Observability) write(entry requestLog) {
 	}
 	b = append(b, '\n')
 	o.mu.Lock()
-	o.out.Write(b)
+	_, _ = o.out.Write(b)
 	o.mu.Unlock()
 }
 

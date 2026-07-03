@@ -109,7 +109,7 @@ func (db *DB) ListRevocationCandidates(sel RevocationSelector) ([]RevocationCand
 		c.Profile = profile.String
 		c.Status = models.CertStatus(status)
 		if sans.Valid && sans.String != "" {
-			json.Unmarshal([]byte(sans.String), &c.SANs)
+			_ = json.Unmarshal([]byte(sans.String), &c.SANs)
 		}
 		out = append(out, c)
 	}
@@ -150,20 +150,20 @@ func (db *DB) BulkRevokeCertificates(caID string, serials []string, reason int, 
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	insert, err := tx.Prepare(db.insertOrIgnore("revoked_certificates", "ca_id, serial, revoked_at, reason", "?, ?, ?, ?"))
 	if err != nil {
 		return nil, err
 	}
-	defer insert.Close()
+	defer func() { _ = insert.Close() }()
 	update, err := tx.Prepare(db.ph(
 		`UPDATE issued_certificates SET status = ?, revoked_at = ?, revocation_reason = ?
 		 WHERE ca_id = ? AND serial = ? AND status <> ?`))
 	if err != nil {
 		return nil, err
 	}
-	defer update.Close()
+	defer func() { _ = update.Close() }()
 
 	applied := make([]string, 0, len(ordered))
 	for _, serial := range ordered {

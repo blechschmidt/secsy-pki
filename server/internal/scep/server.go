@@ -157,7 +157,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetCACaps(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
-	io.WriteString(w, strings.Join(s.cfg.Caps, "\n")+"\n")
+	_, _ = io.WriteString(w, strings.Join(s.cfg.Caps, "\n")+"\n")
 }
 
 // handleGetCACert returns the issuing CA certificate together with the SCEP RA
@@ -190,7 +190,7 @@ func (s *Server) handleGetCACert(w http.ResponseWriter, r *http.Request) {
 	s.recordEvent(r, "scep:anonymous", audit.ActionSCEPGetCACert, s.cfg.CAID, audit.ResultSuccess, "")
 	w.Header().Set("Content-Type", "application/x-x509-ca-ra-cert")
 	w.WriteHeader(http.StatusOK)
-	w.Write(p7)
+	_, _ = w.Write(p7)
 }
 
 func (s *Server) handlePKIOperation(w http.ResponseWriter, r *http.Request) {
@@ -383,7 +383,7 @@ func (s *Server) writeFailure(w http.ResponseWriter, r *http.Request, caCert *x5
 func (s *Server) writePKIResponse(w http.ResponseWriter, resp []byte) {
 	w.Header().Set("Content-Type", "application/x-pki-message")
 	w.WriteHeader(http.StatusOK)
-	w.Write(resp)
+	_, _ = w.Write(resp)
 }
 
 // readPKIBody reads the pkiMessage bytes from a POST body (raw DER) or a GET

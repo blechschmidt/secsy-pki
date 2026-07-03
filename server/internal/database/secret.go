@@ -319,7 +319,7 @@ func (db *DB) PutStoredSecretVersion(p *PutSecretVersion) (*models.StoredSecret,
 		return nil, err
 	}
 	updated, err := scanStoredSecret(tx.QueryRow(db.ph(
-		`SELECT ` + storedSecretColumns + ` FROM stored_secrets WHERE id = ?`), p.ID))
+		`SELECT `+storedSecretColumns+` FROM stored_secrets WHERE id = ?`), p.ID))
 	if err != nil {
 		return nil, err
 	}

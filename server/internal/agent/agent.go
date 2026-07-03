@@ -245,7 +245,7 @@ func backoffDelay(base time.Duration, failures int) time.Duration {
 // renew generates a fresh local key, enrolls it over the spec's protocol,
 // verifies the returned chain against the trust bundle, and installs it
 // atomically. It returns the new leaf's serial.
-func (a *Agent) renew(ctx context.Context, spec *CertSpec, st *certState, now time.Time) (string, error) {
+func (a *Agent) renew(ctx context.Context, spec *CertSpec, _ *certState, now time.Time) (string, error) {
 	bundle, err := a.trustBundle(ctx)
 	if err != nil {
 		return "", err

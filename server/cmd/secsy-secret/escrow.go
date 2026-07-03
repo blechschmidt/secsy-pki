@@ -137,7 +137,7 @@ func cmdEscrowConfig(cfg *config.Config, provider keyprovider.Provider, args []s
 // cmdEscrowInitAgent generates an RSA recovery-agent key on the configured
 // provider, mirroring init-kek but for an escrow agent. The generated key is a
 // decryption key (least-privilege) so it can unwrap its share during recovery.
-func cmdEscrowInitAgent(cfg *config.Config, provider keyprovider.Provider, args []string) error {
+func cmdEscrowInitAgent(_ *config.Config, provider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("escrow-init-agent", flag.ContinueOnError)
 	label := fs.String("label", "", "key label for the new recovery-agent key (required)")
 	keyType := fs.String("key-type", "rsa-4096", "RSA key type (rsa-2048 or rsa-4096)")
@@ -200,7 +200,7 @@ func cmdRecover(cfg *config.Config, provider keyprovider.Provider, args []string
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	actor := operatorActor(*operator)
 
 	blob, err := readInput(*in)
@@ -263,7 +263,7 @@ func cmdSecretAudit(cfg *config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	if *verify {
 		res, err := db.VerifyEventChain()

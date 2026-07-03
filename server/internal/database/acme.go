@@ -85,11 +85,11 @@ func (db *DB) migrateACME() error {
 	// Errors are ignored — the column already exists on a fresh CREATE TABLE above
 	// and on a second startup.
 	if db.isPostgres() {
-		db.conn.Exec(`ALTER TABLE acme_orders ADD COLUMN IF NOT EXISTS replaces TEXT`)
+		_, _ = db.conn.Exec(`ALTER TABLE acme_orders ADD COLUMN IF NOT EXISTS replaces TEXT`)
 	} else {
-		db.conn.Exec(`ALTER TABLE acme_orders ADD COLUMN replaces TEXT`)
+		_, _ = db.conn.Exec(`ALTER TABLE acme_orders ADD COLUMN replaces TEXT`)
 	}
-	db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_acme_orders_serial ON acme_orders(serial)`)
+	_, _ = db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_acme_orders_serial ON acme_orders(serial)`)
 	return nil
 }
 
@@ -120,7 +120,7 @@ func scanACMEAccount(s caScanner) (*models.ACMEAccount, error) {
 	}
 	a.EABKid = eabKid.String
 	if contacts.Valid && contacts.String != "" {
-		json.Unmarshal([]byte(contacts.String), &a.Contacts)
+		_ = json.Unmarshal([]byte(contacts.String), &a.Contacts)
 	}
 	return &a, nil
 }
@@ -141,7 +141,7 @@ func (db *DB) ListACMEAccounts(limit, offset int) ([]models.ACMEAccount, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []models.ACMEAccount
 	for rows.Next() {
 		a, err := scanACMEAccount(rows)
@@ -212,7 +212,7 @@ func scanACMEOrder(s caScanner) (*models.ACMEOrder, error) {
 		return nil, err
 	}
 	o.Replaces = replaces.String
-	json.Unmarshal([]byte(ids), &o.Identifiers)
+	_ = json.Unmarshal([]byte(ids), &o.Identifiers)
 	if notBefore.Valid {
 		t := notBefore.Time
 		o.NotBefore = &t
@@ -247,7 +247,7 @@ func (db *DB) ListACMEOrdersByAccount(accountID string) ([]models.ACMEOrder, err
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []models.ACMEOrder
 	for rows.Next() {
 		o, err := scanACMEOrder(rows)
@@ -265,7 +265,7 @@ func (db *DB) ListACMEOrders(limit, offset int) ([]models.ACMEOrder, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []models.ACMEOrder
 	for rows.Next() {
 		o, err := scanACMEOrder(rows)
@@ -364,7 +364,7 @@ func (db *DB) ListACMEAuthorizationsByOrder(orderID string) ([]models.ACMEAuthor
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []models.ACMEAuthorization
 	for rows.Next() {
 		a, err := scanACMEAuthz(rows)
@@ -430,7 +430,7 @@ func (db *DB) ListACMEChallengesByAuthz(authzID string) ([]models.ACMEChallenge,
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []models.ACMEChallenge
 	for rows.Next() {
 		c, err := scanACMEChallenge(rows)

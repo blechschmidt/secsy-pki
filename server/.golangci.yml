@@ -1,0 +1,156 @@
+# golangci-lint configuration for the secsy-pki server module (Task 85).
+#
+# Schema v2 (golangci-lint >= 2.x). The gate runs HSM-free in CI: it builds
+# with the project's `sqlite` build tag so the SQLite persistence driver and
+# every package that depends on it typecheck. SoftHSM-only code paths are
+# gated at *runtime* via env vars (not build tags), so no extra tag is needed
+# to lint them — only the yubihsm hardware tests sit behind a build tag and are
+# intentionally left out of the default lint build.
+#
+# Pinned to match the Makefile's GOLANGCI_LINT_VERSION and the CI workflow so
+# local `make lint` and CI cannot drift.
+
+version: "2"
+
+run:
+  # Build the analysis with the same tag CI/tests use so the sqlite driver and
+  # its dependents are type-checked. CGO is required by mattn/go-sqlite3 and is
+  # on by default wherever a C toolchain is present (CI runners included).
+  build-tags:
+    - sqlite
+  # Large module (46+ packages) with cgo + unparam/staticcheck: give it room.
+  timeout: 10m
+
+issues:
+  # Report EVERY finding. The defaults (max-issues-per-linter: 50,
+  # max-same-issues: 3) silently truncate output, which hides findings behind a
+  # cap and turns a clean-up into whack-a-mole. This gate is kept green, so
+  # showing the full set is what we want.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters:
+  # Start from an empty set and enable exactly the linters this gate owns, so
+  # the finding surface is deliberate and reviewable rather than "whatever the
+  # default set happens to be this release".
+  default: none
+  enable:
+    - bodyclose    # HTTP response bodies must be closed (leak / fd exhaustion)
+    - errcheck     # unchecked errors (Close/Write/etc.)
+    - govet        # standard vet suite (printf, copylocks, lostcancel, ...)
+    - ineffassign  # ineffectual assignments
+    - misspell     # comment/string typos
+    - nilerr       # `return nil` after a non-nil error check
+    - staticcheck  # staticcheck SA/ST/QF suite (incl. gosimple, stylecheck)
+    - unconvert    # redundant type conversions
+    - unparam      # unused function parameters / always-same-value returns
+
+  # NOTE on govet's `shadow` analyzer: it is deliberately left OFF (as it is in
+  # upstream `go vet`). It fires almost exclusively on the idiomatic
+  # `x, err := f()` re-declaration in a nested scope where the outer err is
+  # already handled. Task 85 triaged all ~50 such sites in this tree and
+  # confirmed every one benign; enabling it would force non-idiomatic `err2`
+  # renames for no correctness gain (and risk behavior changes).
+  settings:
+    errcheck:
+      # Exclude classes of calls whose error is genuinely unactionable at the
+      # call site, so errcheck's signal stays on errors that matter (data
+      # writes, queries, decode of untrusted input). Everything NOT listed here
+      # is still enforced.
+      exclude-functions:
+        # Cleanup on defer/teardown paths: the resource is being released and
+        # the error cannot change the outcome.
+        - (io.Closer).Close
+        - (*database/sql.Tx).Rollback
+        - (*database/sql.Rows).Close
+        # Diagnostic output to stderr/stdout (CLI help/usage/error banners).
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        # PKCS#11 session teardown (miekg/pkcs11): best-effort HSM cleanup run
+        # on Close/defer; a failing logout/finalize can't be recovered here.
+        - (*github.com/miekg/pkcs11.Ctx).Logout
+        - (*github.com/miekg/pkcs11.Ctx).Finalize
+        - (*github.com/miekg/pkcs11.Ctx).CloseSession
+        - (*github.com/miekg/pkcs11.Ctx).FindObjectsFinal
+        # HSM key-handle release (Task 4 keyprovider): Signer/Decrypter/Provider
+        # are closed on defer to free the underlying PKCS#11 session; the error
+        # is teardown-only and unactionable at the call site.
+        - (github.com/blechschmidt/secsy-pki/server/internal/keyprovider.Signer).Close
+        - (github.com/blechschmidt/secsy-pki/server/internal/keyprovider.Decrypter).Close
+        - (github.com/blechschmidt/secsy-pki/server/internal/keyprovider.Provider).Close
+    staticcheck:
+      # `all` turns on every staticcheck check; we then drop only ST1000
+      # ("every package needs a doc comment"). It is disabled in upstream
+      # staticcheck's own defaults for the same reason: mandating a doc comment
+      # on all ~50 internal packages is boilerplate churn, not a quality signal.
+      # Everything else (SA bug checks, S simplifications, QF quickfixes, and the
+      # remaining ST style checks incl. ST1003/ST1005/ST1020) stays enabled.
+      checks:
+        - all
+        - -ST1000
+    # misspell is intentionally left at its DEFAULT settings (no `locale:` key):
+    # this tree is written in consistent British English (cancelled, labelled,
+    # serialise, summarise, analogue, ...) and `locale: US` would "correct" all
+    # of it — and risk flipping RFC/protocol terms (authorization, serialize).
+    # With no locale, misspell only flags unambiguous typos, not British↔American
+    # variants.
+
+  exclusions:
+    # Auto-detect and skip files carrying a "Code generated ... DO NOT EDIT"
+    # header (protobuf, oapi-codegen, mockgen). `lax` also skips a couple of
+    # well-known generated-adjacent patterns.
+    generated: lax
+    # The explicit generated-dir rules below are belt-and-suspenders on top of
+    # `generated: lax` (which already skips them via their DO-NOT-EDIT header),
+    # so they legitimately match 0 extra issues — don't warn about that.
+    warn-unused: false
+    rules:
+      # --- Generated code (explicit, on top of `generated: lax`) ---
+      # Task 85 calls these out by name; the paths document intent and also
+      # protect the dirs if a regenerator ever drops the standard header.
+      - path: internal/grpcapi/pkiv1/
+        linters:
+          - bodyclose
+          - errcheck
+          - govet
+          - ineffassign
+          - misspell
+          - nilerr
+          - staticcheck
+          - unconvert
+          - unparam
+      - path: pkg/client/client\.gen\.go
+        linters:
+          - bodyclose
+          - errcheck
+          - govet
+          - ineffassign
+          - misspell
+          - nilerr
+          - staticcheck
+          - unconvert
+          - unparam
+
+      # --- Tests: keep the high-signal checks, drop the noisy ones ---
+      # Test helpers legitimately ignore Close/Write errors, shadow `err`
+      # across sub-tests, and carry parameters that exist only to satisfy a
+      # signature. Bugs those linters would catch in tests are low-severity, so
+      # exclude them there to keep the gate focused on shipping code.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - unparam
+          - bodyclose
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  # `goimports` is intentionally left with default settings (no `local-prefixes`
+  # import-regrouping): the tree never adopted a separate local-import block, so
+  # forcing one would churn ~60 files for a pure style preference. With defaults,
+  # goimports only sorts/dedups imports and gofmt handles the rest — the gate
+  # fixes genuine drift without imposing a new convention.
+  exclusions:
+    generated: lax

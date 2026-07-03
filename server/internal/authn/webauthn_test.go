@@ -337,7 +337,7 @@ func TestWebAuthnRegisterRoundTrip(t *testing.T) {
 		t.Fatalf("parse stored key: %v", err)
 	}
 	ek, ok := pub.(*ecdsa.PublicKey)
-	if !ok || ek.X.Cmp(e.priv.PublicKey.X) != 0 || ek.Y.Cmp(e.priv.PublicKey.Y) != 0 {
+	if !ok || ek.X.Cmp(e.priv.X) != 0 || ek.Y.Cmp(e.priv.Y) != 0 {
 		t.Error("stored public key does not match the registered key")
 	}
 }

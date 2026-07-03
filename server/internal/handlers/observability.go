@@ -32,7 +32,7 @@ func (a *API) RegisterObservability(mux *http.ServeMux) {
 // format.
 func (a *API) Metrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", metrics.ContentType)
-	metrics.Default.WriteTo(w)
+	_, _ = metrics.Default.WriteTo(w)
 }
 
 // buildVersion is the release version stamped by the linker (-X main.version)

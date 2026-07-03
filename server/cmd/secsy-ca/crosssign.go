@@ -68,10 +68,10 @@ func cmdCrossSign(db *database.DB, mgr *ca.Manager, args []string) error {
 	}
 	// -2 preserves the subject's constraint; -1 means explicitly unconstrained;
 	// >= 0 sets the constraint to that value.
-	switch {
-	case *pathLen == -2:
+	switch *pathLen {
+	case -2:
 		// leave spec.MaxPathLen nil so the subject's constraint is preserved
-	case *pathLen == -1:
+	case -1:
 		// unconstrained: CreateCACertificate leaves the path length unset
 	default:
 		v := *pathLen

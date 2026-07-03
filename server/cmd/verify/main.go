@@ -57,7 +57,7 @@ func cmdVerifyAuditLog(args []string) {
 	auditLogPath := fs.String("audit-log", "", "Path to exported audit log JSON (signed, combined, or HSM-only)")
 	yubicoCAPath := fs.String("yubico-ca", "", "Path to Yubico root CA PEM")
 	yubicoIntPath := fs.String("yubico-intermediate", "", "Path to Yubico intermediate CA PEM")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	if *auditLogPath == "" {
 		fmt.Fprintln(os.Stderr, "Usage: secsy-verify verify-audit-log --audit-log <file> [--yubico-ca <pem> --yubico-intermediate <pem>]")
@@ -709,7 +709,7 @@ func cmdVerifyCombinedLog(args []string) {
 	caKeyPath := fs.String("ca-key", "", "Path to the CA public key file (SSH format)")
 	yubicoCAPath := fs.String("yubico-ca", "", "Path to Yubico root CA PEM")
 	yubicoIntPath := fs.String("yubico-intermediate", "", "Path to Yubico intermediate CA PEM")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 
 	if *signedLogPath == "" || *combinedLogPath == "" || *caKeyPath == "" {
 		fmt.Fprintln(os.Stderr, "Usage: secsy-verify verify-combined-log \\")

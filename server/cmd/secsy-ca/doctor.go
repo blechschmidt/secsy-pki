@@ -82,7 +82,7 @@ func printDoctorReport(r *doctor.Report) {
 	for _, c := range r.Checks {
 		fmt.Fprintf(tw, "%s\t%s\t%s\n", doctorMark(c.Status), c.Name, c.Detail)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 
 	s := r.Summary
 	fmt.Printf("\n%d passed, %d warning%s, %d failed, %d skipped\n",

@@ -289,7 +289,7 @@ func (s *Server) issue(r *http.Request, csr *x509.CertificateRequest, profile, a
 
 // authenticate authorizes a request via TLS client certificate (when enabled)
 // or HTTP Basic credentials, returning the profile and an audit actor label.
-func (s *Server) authenticate(r *http.Request, reenroll bool) (profile, actor string, ok bool) {
+func (s *Server) authenticate(r *http.Request, _ bool) (profile, actor string, ok bool) {
 	// Certificate-based client authentication: a TLS client certificate this CA
 	// issued authorizes (re)enrollment without a shared secret.
 	if s.cfg.AllowTLSClientReenroll && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
@@ -522,12 +522,12 @@ func writeServerKeygen(w http.ResponseWriter, keyDER, certP7 []byte) {
 	w.WriteHeader(http.StatusOK)
 
 	fmt.Fprintf(w, "--%s\r\n", boundary)
-	io.WriteString(w, "Content-Type: application/pkcs8\r\n")
-	io.WriteString(w, "Content-Transfer-Encoding: base64\r\n\r\n")
+	_, _ = io.WriteString(w, "Content-Type: application/pkcs8\r\n")
+	_, _ = io.WriteString(w, "Content-Transfer-Encoding: base64\r\n\r\n")
 	writeBase64(w, keyDER)
 	fmt.Fprintf(w, "\r\n--%s\r\n", boundary)
-	io.WriteString(w, "Content-Type: application/pkcs7-mime; smime-type=certs-only\r\n")
-	io.WriteString(w, "Content-Transfer-Encoding: base64\r\n\r\n")
+	_, _ = io.WriteString(w, "Content-Type: application/pkcs7-mime; smime-type=certs-only\r\n")
+	_, _ = io.WriteString(w, "Content-Transfer-Encoding: base64\r\n\r\n")
 	writeBase64(w, certP7)
 	fmt.Fprintf(w, "\r\n--%s--\r\n", boundary)
 }
@@ -536,10 +536,10 @@ func writeServerKeygen(w http.ResponseWriter, keyDER, certP7 []byte) {
 func writeBase64(w io.Writer, data []byte) {
 	enc := base64.StdEncoding.EncodeToString(data)
 	for len(enc) > 64 {
-		io.WriteString(w, enc[:64])
-		io.WriteString(w, "\r\n")
+		_, _ = io.WriteString(w, enc[:64])
+		_, _ = io.WriteString(w, "\r\n")
 		enc = enc[64:]
 	}
-	io.WriteString(w, enc)
-	io.WriteString(w, "\r\n")
+	_, _ = io.WriteString(w, enc)
+	_, _ = io.WriteString(w, "\r\n")
 }

@@ -230,7 +230,7 @@ func testKUR(t *testing.T, env *testEnv) {
 	}
 	// The new certificate must bind the new key and keep the subject.
 	pub := res.Certificate.PublicKey.(*ecdsa.PublicKey)
-	if pub.X.Cmp(newKeyPair.PublicKey.X) != 0 {
+	if pub.X.Cmp(newKeyPair.X) != 0 {
 		t.Error("kur certificate does not bind the new key")
 	}
 	if res.Certificate.Subject.CommonName != oldCert.Subject.CommonName {

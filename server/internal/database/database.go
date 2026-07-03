@@ -806,121 +806,121 @@ func (db *DB) migrate() error {
 	// Migration: add columns if they don't exist (for existing databases)
 	// These are idempotent — errors are ignored for columns that already exist
 	if db.isPostgres() {
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS default_ssh_restriction_set_id TEXT")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS default_x509_restriction_set_id TEXT")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS certificate TEXT")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS subject TEXT")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS serial TEXT")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS not_before TIMESTAMP")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS not_after TIMESTAMP")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS max_path_len INTEGER")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS default_ssh_restriction_set_id TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS default_x509_restriction_set_id TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS certificate TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS subject TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS serial TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS not_before TIMESTAMP")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS not_after TIMESTAMP")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS max_path_len INTEGER")
 		// Key-rotation / rollover state (Task 24).
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS successor_id TEXT")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS predecessor_id TEXT")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS retire_after TIMESTAMP")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS successor_id TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS predecessor_id TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS retire_after TIMESTAMP")
 		// Externally-signed subordinate CA support (Task 69).
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS csr TEXT")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS external_chain TEXT")
-		db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS ssh_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
-		db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
-		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS certificate BYTEA")
-		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS cert_hash TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS csr TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS external_chain TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS ssh_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
+		_, _ = db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
+		_, _ = db.conn.Exec("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS certificate BYTEA")
+		_, _ = db.conn.Exec("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS cert_hash TEXT")
 		// Observability: correlate access/audit rows with the request log.
-		db.conn.Exec("ALTER TABLE access_log ADD COLUMN IF NOT EXISTS request_id TEXT")
-		db.conn.Exec("ALTER TABLE event_log ADD COLUMN IF NOT EXISTS request_id TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE access_log ADD COLUMN IF NOT EXISTS request_id TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE event_log ADD COLUMN IF NOT EXISTS request_id TEXT")
 		// Certificate Transparency status (Task 26).
-		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN IF NOT EXISTS ct_status TEXT NOT NULL DEFAULT 'none'")
-		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN IF NOT EXISTS sct_count INTEGER NOT NULL DEFAULT 0")
+		_, _ = db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN IF NOT EXISTS ct_status TEXT NOT NULL DEFAULT 'none'")
+		_, _ = db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN IF NOT EXISTS sct_count INTEGER NOT NULL DEFAULT 0")
 		// Synthetic-certificate marker (Task 71): tags issuance-canary probes so
 		// monitoring and reports can exclude them.
-		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN IF NOT EXISTS marker TEXT NOT NULL DEFAULT ''")
+		_, _ = db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN IF NOT EXISTS marker TEXT NOT NULL DEFAULT ''")
 		// Multi-tenant isolation (Task 43). Existing rows backfill to the default
 		// tenant so the upgrade is transparent for single-organization installs.
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'")
-		db.conn.Exec("ALTER TABLE groups_ ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'")
-		db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN IF NOT EXISTS tenant_id TEXT")
-		db.conn.Exec("ALTER TABLE event_log ADD COLUMN IF NOT EXISTS tenant TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'")
+		_, _ = db.conn.Exec("ALTER TABLE groups_ ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'")
+		_, _ = db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN IF NOT EXISTS tenant_id TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE event_log ADD COLUMN IF NOT EXISTS tenant TEXT")
 		// Per-tenant quotas (Task 61). Zero means unlimited, so existing tenants
 		// are unaffected by the upgrade.
-		db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_certs_per_day INTEGER NOT NULL DEFAULT 0")
-		db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_active_certs INTEGER NOT NULL DEFAULT 0")
-		db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_secret_ops_per_day INTEGER NOT NULL DEFAULT 0")
-		db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS rate_limit_per_second REAL NOT NULL DEFAULT 0")
-		db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS rate_limit_burst REAL NOT NULL DEFAULT 0")
+		_, _ = db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_certs_per_day INTEGER NOT NULL DEFAULT 0")
+		_, _ = db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_active_certs INTEGER NOT NULL DEFAULT 0")
+		_, _ = db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_secret_ops_per_day INTEGER NOT NULL DEFAULT 0")
+		_, _ = db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS rate_limit_per_second REAL NOT NULL DEFAULT 0")
+		_, _ = db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS rate_limit_burst REAL NOT NULL DEFAULT 0")
 		// Secret lifecycle: value versioning + TTL/rotation reminders (Task 73).
-		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS current_version INTEGER NOT NULL DEFAULT 1")
-		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
-		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS rotate_every_days INTEGER NOT NULL DEFAULT 0")
-		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS value_changed_at TIMESTAMP")
+		_, _ = db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS current_version INTEGER NOT NULL DEFAULT 1")
+		_, _ = db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
+		_, _ = db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS rotate_every_days INTEGER NOT NULL DEFAULT 0")
+		_, _ = db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS value_changed_at TIMESTAMP")
 		// Per-profile manual issuance-approval gate (Task 84): cert.issue requests
 		// park their issuance inputs (payload) and, once completed, the issued
 		// serial (result) so the certificate can be delivered after approval.
 		// Existing approval rows default to empty, so admin-op approvals are
 		// unaffected by the upgrade.
-		db.conn.Exec("ALTER TABLE pending_approvals ADD COLUMN IF NOT EXISTS payload TEXT NOT NULL DEFAULT ''")
-		db.conn.Exec("ALTER TABLE pending_approvals ADD COLUMN IF NOT EXISTS result TEXT NOT NULL DEFAULT ''")
+		_, _ = db.conn.Exec("ALTER TABLE pending_approvals ADD COLUMN IF NOT EXISTS payload TEXT NOT NULL DEFAULT ''")
+		_, _ = db.conn.Exec("ALTER TABLE pending_approvals ADD COLUMN IF NOT EXISTS result TEXT NOT NULL DEFAULT ''")
 	} else {
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_ssh_restriction_set_id TEXT")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_x509_restriction_set_id TEXT")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN certificate TEXT")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN subject TEXT")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN serial TEXT")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN not_before TIMESTAMP")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN not_after TIMESTAMP")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN max_path_len INTEGER")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN default_ssh_restriction_set_id TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN default_x509_restriction_set_id TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN certificate TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN subject TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN serial TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN not_before TIMESTAMP")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN not_after TIMESTAMP")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN max_path_len INTEGER")
 		// Key-rotation / rollover state (Task 24).
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN successor_id TEXT")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN predecessor_id TEXT")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN retire_after TIMESTAMP")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN successor_id TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN predecessor_id TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN retire_after TIMESTAMP")
 		// Externally-signed subordinate CA support (Task 69).
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN csr TEXT")
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN external_chain TEXT")
-		db.conn.Exec("ALTER TABLE permissions ADD COLUMN ssh_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
-		db.conn.Exec("ALTER TABLE permissions ADD COLUMN x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
-		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN certificate BLOB")
-		db.conn.Exec("ALTER TABLE audit_log ADD COLUMN cert_hash TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN csr TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN external_chain TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE permissions ADD COLUMN ssh_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
+		_, _ = db.conn.Exec("ALTER TABLE permissions ADD COLUMN x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
+		_, _ = db.conn.Exec("ALTER TABLE audit_log ADD COLUMN certificate BLOB")
+		_, _ = db.conn.Exec("ALTER TABLE audit_log ADD COLUMN cert_hash TEXT")
 		// Observability: correlate access/audit rows with the request log.
-		db.conn.Exec("ALTER TABLE access_log ADD COLUMN request_id TEXT")
-		db.conn.Exec("ALTER TABLE event_log ADD COLUMN request_id TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE access_log ADD COLUMN request_id TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE event_log ADD COLUMN request_id TEXT")
 		// Certificate Transparency status (Task 26).
-		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN ct_status TEXT NOT NULL DEFAULT 'none'")
-		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN sct_count INTEGER NOT NULL DEFAULT 0")
+		_, _ = db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN ct_status TEXT NOT NULL DEFAULT 'none'")
+		_, _ = db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN sct_count INTEGER NOT NULL DEFAULT 0")
 		// Synthetic-certificate marker (Task 71): tags issuance-canary probes so
 		// monitoring and reports can exclude them.
-		db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN marker TEXT NOT NULL DEFAULT ''")
+		_, _ = db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN marker TEXT NOT NULL DEFAULT ''")
 		// Multi-tenant isolation (Task 43). SQLite ADD COLUMN is idempotently
 		// retried; errors for already-present columns are ignored. Existing rows
 		// backfill to the default tenant.
-		db.conn.Exec("ALTER TABLE cas ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
-		db.conn.Exec("ALTER TABLE groups_ ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
-		db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN tenant_id TEXT")
-		db.conn.Exec("ALTER TABLE event_log ADD COLUMN tenant TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
+		_, _ = db.conn.Exec("ALTER TABLE groups_ ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
+		_, _ = db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN tenant_id TEXT")
+		_, _ = db.conn.Exec("ALTER TABLE event_log ADD COLUMN tenant TEXT")
 		// Per-tenant quotas (Task 61). Zero means unlimited, so existing tenants
 		// are unaffected by the upgrade.
-		db.conn.Exec("ALTER TABLE tenants ADD COLUMN max_certs_per_day INTEGER NOT NULL DEFAULT 0")
-		db.conn.Exec("ALTER TABLE tenants ADD COLUMN max_active_certs INTEGER NOT NULL DEFAULT 0")
-		db.conn.Exec("ALTER TABLE tenants ADD COLUMN max_secret_ops_per_day INTEGER NOT NULL DEFAULT 0")
-		db.conn.Exec("ALTER TABLE tenants ADD COLUMN rate_limit_per_second REAL NOT NULL DEFAULT 0")
-		db.conn.Exec("ALTER TABLE tenants ADD COLUMN rate_limit_burst REAL NOT NULL DEFAULT 0")
+		_, _ = db.conn.Exec("ALTER TABLE tenants ADD COLUMN max_certs_per_day INTEGER NOT NULL DEFAULT 0")
+		_, _ = db.conn.Exec("ALTER TABLE tenants ADD COLUMN max_active_certs INTEGER NOT NULL DEFAULT 0")
+		_, _ = db.conn.Exec("ALTER TABLE tenants ADD COLUMN max_secret_ops_per_day INTEGER NOT NULL DEFAULT 0")
+		_, _ = db.conn.Exec("ALTER TABLE tenants ADD COLUMN rate_limit_per_second REAL NOT NULL DEFAULT 0")
+		_, _ = db.conn.Exec("ALTER TABLE tenants ADD COLUMN rate_limit_burst REAL NOT NULL DEFAULT 0")
 		// Secret lifecycle: value versioning + TTL/rotation reminders (Task 73).
-		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN current_version INTEGER NOT NULL DEFAULT 1")
-		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN expires_at TIMESTAMP")
-		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN rotate_every_days INTEGER NOT NULL DEFAULT 0")
-		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN value_changed_at TIMESTAMP")
+		_, _ = db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN current_version INTEGER NOT NULL DEFAULT 1")
+		_, _ = db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN expires_at TIMESTAMP")
+		_, _ = db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN rotate_every_days INTEGER NOT NULL DEFAULT 0")
+		_, _ = db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN value_changed_at TIMESTAMP")
 		// Per-profile manual issuance-approval gate (Task 84). SQLite ADD COLUMN is
 		// idempotently retried; errors for already-present columns are ignored.
-		db.conn.Exec("ALTER TABLE pending_approvals ADD COLUMN payload TEXT NOT NULL DEFAULT ''")
-		db.conn.Exec("ALTER TABLE pending_approvals ADD COLUMN result TEXT NOT NULL DEFAULT ''")
+		_, _ = db.conn.Exec("ALTER TABLE pending_approvals ADD COLUMN payload TEXT NOT NULL DEFAULT ''")
+		_, _ = db.conn.Exec("ALTER TABLE pending_approvals ADD COLUMN result TEXT NOT NULL DEFAULT ''")
 	}
 
 	// Backfill for stored secrets that predate value versioning (Task 73):
 	// their rotation-reminder clock starts at the last envelope write, and
 	// their current envelope becomes version-history entry 1 so history,
 	// rollback, and the version-aware KEK retire guard see every secret.
-	db.exec(`UPDATE stored_secrets SET value_changed_at = updated_at WHERE value_changed_at IS NULL`)
-	db.exec(`INSERT INTO stored_secret_versions
+	_, _ = db.exec(`UPDATE stored_secrets SET value_changed_at = updated_at WHERE value_changed_at IS NULL`)
+	_, _ = db.exec(`INSERT INTO stored_secret_versions
 			(secret_id, version, envelope, kek_family, kek_label, kek_version,
 			 context_bound, escrowed, created_by, comment, created_at)
 		 SELECT s.id, s.current_version, s.envelope, s.kek_family, s.kek_label, s.kek_version,
@@ -935,23 +935,23 @@ func (db *DB) migrate() error {
 
 	// Migrate old mixed restriction_sets table to split tables (if old columns exist)
 	db.migrateRestrictionSets()
-	db.conn.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_log_cert_unique ON audit_log(ca_id, cert_hash)")
+	_, _ = db.conn.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_log_cert_unique ON audit_log(ca_id, cert_hash)")
 
 	// Seed the built-in default tenant. insertOrIgnore keeps this idempotent and
 	// preserves any operator edits to its name/status on restart.
-	db.exec(db.insertOrIgnore("tenants", "id, slug, name, status", "?, ?, ?, ?"),
+	_, _ = db.exec(db.insertOrIgnore("tenants", "id, slug, name, status", "?, ?, ?, ?"),
 		models.DefaultTenantID, models.DefaultTenantID, "Default Tenant", models.TenantStatusActive)
-	db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_cas_tenant ON cas(tenant_id)")
-	db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_event_log_tenant ON event_log(tenant)")
+	_, _ = db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_cas_tenant ON cas(tenant_id)")
+	_, _ = db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_event_log_tenant ON event_log(tenant)")
 
 	// Create built-in restriction sets
-	db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
+	_, _ = db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
 		BuiltinPermitAllSSH, "Permit all signatures", "ssh", 0)
-	db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
+	_, _ = db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
 		BuiltinDenyAllSSH, "Disallow all signatures", "ssh", 1)
-	db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
+	_, _ = db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
 		BuiltinPermitAllX509, "Permit all signatures", "x509", 0)
-	db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
+	_, _ = db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
 		BuiltinDenyAllX509, "Disallow all signatures", "x509", 1)
 
 	// Indexes backing the paginated/filtered inventory list endpoints (Task 83).
@@ -959,12 +959,12 @@ func (db *DB) migrate() error {
 	// be served as an index range scan rather than a full sort; the filter indexes
 	// back the common status/profile/expiry predicates. All are created after the
 	// tables/columns above so they apply to both fresh and upgraded databases.
-	db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_issued_certs_page ON issued_certificates(ca_id, created_at, serial)")
-	db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_issued_certs_profile ON issued_certificates(ca_id, profile)")
-	db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_issued_certs_notafter ON issued_certificates(ca_id, not_after)")
-	db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_revoked_certs_page ON revoked_certificates(ca_id, revoked_at, serial)")
-	db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_discovered_certs_page ON discovered_certificates(tenant_id, discovered_at, id)")
-	db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_discovered_certs_notafter ON discovered_certificates(tenant_id, not_after)")
+	_, _ = db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_issued_certs_page ON issued_certificates(ca_id, created_at, serial)")
+	_, _ = db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_issued_certs_profile ON issued_certificates(ca_id, profile)")
+	_, _ = db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_issued_certs_notafter ON issued_certificates(ca_id, not_after)")
+	_, _ = db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_revoked_certs_page ON revoked_certificates(ca_id, revoked_at, serial)")
+	_, _ = db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_discovered_certs_page ON discovered_certificates(tenant_id, discovered_at, id)")
+	_, _ = db.conn.Exec("CREATE INDEX IF NOT EXISTS idx_discovered_certs_notafter ON discovered_certificates(tenant_id, not_after)")
 
 	// Keyset pagination (Task 83) compares issued_certificates.created_at against a
 	// bound time.Time. On SQLite timestamps are stored as text and compared
@@ -979,7 +979,7 @@ func (db *DB) migrate() error {
 	// PostgreSQL stores real timestamps and compares them temporally, so it needs
 	// no normalization.
 	if !db.isPostgres() {
-		db.conn.Exec(`UPDATE issued_certificates
+		_, _ = db.conn.Exec(`UPDATE issued_certificates
 			SET created_at = created_at || '+00:00'
 			WHERE created_at IS NOT NULL
 			  AND created_at NOT LIKE '%+%'
@@ -1007,10 +1007,10 @@ func (db *DB) migrateRestrictionSets() {
 	rows.Close()
 
 	// Migrate SSH rows
-	db.conn.Exec(`INSERT OR IGNORE INTO ssh_restriction_details (restriction_set_id, allowed_principals, allowed_cert_types, force_key_id_email_reason, require_reason, allowed_extensions, deny_extensions, deny_critical_options, max_valid_after_offset)
+	_, _ = db.conn.Exec(`INSERT OR IGNORE INTO ssh_restriction_details (restriction_set_id, allowed_principals, allowed_cert_types, force_key_id_email_reason, require_reason, allowed_extensions, deny_extensions, deny_critical_options, max_valid_after_offset)
 		SELECT id, allowed_principals, allowed_cert_types, force_key_id_email_reason, require_reason, allowed_extensions, deny_extensions, deny_critical_options, max_valid_after_offset FROM restriction_sets WHERE type = 'ssh' OR type = ''`)
 	// Migrate X.509 rows
-	db.conn.Exec(`INSERT OR IGNORE INTO x509_restriction_details (restriction_set_id, allowed_key_usages, allowed_ext_key_usages, allowed_san_types, allowed_san_patterns, allowed_subject_fields, max_path_length, deny_ca)
+	_, _ = db.conn.Exec(`INSERT OR IGNORE INTO x509_restriction_details (restriction_set_id, allowed_key_usages, allowed_ext_key_usages, allowed_san_types, allowed_san_patterns, allowed_subject_fields, max_path_length, deny_ca)
 		SELECT id, allowed_key_usages, allowed_ext_key_usages, allowed_san_types, allowed_san_patterns, allowed_subject_fields, max_path_length, deny_ca FROM restriction_sets WHERE type = 'x509'`)
 }
 
@@ -1128,7 +1128,7 @@ func (db *DB) CreateCA(ca *models.CA) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var notBefore, notAfter interface{}
 	if ca.NotBefore != nil {
@@ -1768,8 +1768,8 @@ func (db *DB) UpdateRestrictionSet(rs *models.RestrictionSet) error {
 		return err
 	}
 	// Clean up old details and insert new
-	db.exec(`DELETE FROM ssh_restriction_details WHERE restriction_set_id = ?`, rs.ID)
-	db.exec(`DELETE FROM x509_restriction_details WHERE restriction_set_id = ?`, rs.ID)
+	_, _ = db.exec(`DELETE FROM ssh_restriction_details WHERE restriction_set_id = ?`, rs.ID)
+	_, _ = db.exec(`DELETE FROM x509_restriction_details WHERE restriction_set_id = ?`, rs.ID)
 	return db.upsertRestrictionDetails(rs)
 }
 
@@ -1805,13 +1805,13 @@ func (db *DB) loadSSHDetails(rs *models.RestrictionSet) {
 	rs.DenyExtensions = denyExt != 0
 	rs.DenyCriticalOptions = denyCrit != 0
 	if principals.Valid {
-		json.Unmarshal([]byte(principals.String), &rs.AllowedPrincipals)
+		_ = json.Unmarshal([]byte(principals.String), &rs.AllowedPrincipals)
 	}
 	if certTypes.Valid {
-		json.Unmarshal([]byte(certTypes.String), &rs.AllowedCertTypes)
+		_ = json.Unmarshal([]byte(certTypes.String), &rs.AllowedCertTypes)
 	}
 	if extensions.Valid {
-		json.Unmarshal([]byte(extensions.String), &rs.AllowedExtensions)
+		_ = json.Unmarshal([]byte(extensions.String), &rs.AllowedExtensions)
 	}
 }
 
@@ -1826,19 +1826,19 @@ func (db *DB) loadX509Details(rs *models.RestrictionSet) {
 	}
 	rs.DenyCA = denyCa != 0
 	if keyUsages.Valid {
-		json.Unmarshal([]byte(keyUsages.String), &rs.AllowedKeyUsages)
+		_ = json.Unmarshal([]byte(keyUsages.String), &rs.AllowedKeyUsages)
 	}
 	if extKeyUsages.Valid {
-		json.Unmarshal([]byte(extKeyUsages.String), &rs.AllowedExtKeyUsages)
+		_ = json.Unmarshal([]byte(extKeyUsages.String), &rs.AllowedExtKeyUsages)
 	}
 	if sanTypes.Valid {
-		json.Unmarshal([]byte(sanTypes.String), &rs.AllowedSANTypes)
+		_ = json.Unmarshal([]byte(sanTypes.String), &rs.AllowedSANTypes)
 	}
 	if sanPatterns.Valid {
-		json.Unmarshal([]byte(sanPatterns.String), &rs.AllowedSANPatterns)
+		_ = json.Unmarshal([]byte(sanPatterns.String), &rs.AllowedSANPatterns)
 	}
 	if subjectFields.Valid {
-		json.Unmarshal([]byte(subjectFields.String), &rs.AllowedSubjectFields)
+		_ = json.Unmarshal([]byte(subjectFields.String), &rs.AllowedSubjectFields)
 	}
 }
 
@@ -1933,8 +1933,8 @@ func (db *DB) scanRestrictionSets(rows *sql.Rows, err error) ([]models.Restricti
 
 func (db *DB) DeleteRestrictionSet(id string) error {
 	// Clear references from CA defaults
-	db.exec(`UPDATE cas SET default_ssh_restriction_set_id = NULL WHERE default_ssh_restriction_set_id = ?`, id)
-	db.exec(`UPDATE cas SET default_x509_restriction_set_id = NULL WHERE default_x509_restriction_set_id = ?`, id)
+	_, _ = db.exec(`UPDATE cas SET default_ssh_restriction_set_id = NULL WHERE default_ssh_restriction_set_id = ?`, id)
+	_, _ = db.exec(`UPDATE cas SET default_x509_restriction_set_id = NULL WHERE default_x509_restriction_set_id = ?`, id)
 	_, err := db.exec(`DELETE FROM restriction_sets WHERE id = ?`, id)
 	return err
 }
@@ -2024,13 +2024,13 @@ func (db *DB) FindExistingCertificate(caID, publicKey string) (*models.AuditLogE
 		return nil, err
 	}
 	if principals.Valid {
-		json.Unmarshal([]byte(principals.String), &e.Principals)
+		_ = json.Unmarshal([]byte(principals.String), &e.Principals)
 	}
 	if extensions.Valid {
-		json.Unmarshal([]byte(extensions.String), &e.Extensions)
+		_ = json.Unmarshal([]byte(extensions.String), &e.Extensions)
 	}
 	if critOpts.Valid {
-		json.Unmarshal([]byte(critOpts.String), &e.CriticalOptions)
+		_ = json.Unmarshal([]byte(critOpts.String), &e.CriticalOptions)
 	}
 	return &e, nil
 }
@@ -2074,13 +2074,13 @@ func (db *DB) ListAuditLog(caID string, limit, offset int) ([]models.AuditLogEnt
 		e.PublicKey = blobToAuthorizedKey(pubBlob)
 		e.Certificate = certBlobToAuthorizedKey(certBlob)
 		if principals.Valid {
-			json.Unmarshal([]byte(principals.String), &e.Principals)
+			_ = json.Unmarshal([]byte(principals.String), &e.Principals)
 		}
 		if extensions.Valid {
-			json.Unmarshal([]byte(extensions.String), &e.Extensions)
+			_ = json.Unmarshal([]byte(extensions.String), &e.Extensions)
 		}
 		if critOpts.Valid {
-			json.Unmarshal([]byte(critOpts.String), &e.CriticalOptions)
+			_ = json.Unmarshal([]byte(critOpts.String), &e.CriticalOptions)
 		}
 		entries = append(entries, e)
 	}
@@ -2139,7 +2139,7 @@ func (db *DB) StoreHSMAuditEntries(entries []models.HSMAuditEntry) error {
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for _, e := range entries {
 		_, err := stmt.Exec(e.Number, e.Command, e.Length, e.SessionKey, e.TargetKey, e.SecondKey, e.Result, e.Tick, e.Hash, e.SignAuditID)

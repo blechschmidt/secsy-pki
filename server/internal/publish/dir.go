@@ -81,7 +81,7 @@ func (s *DirStore) Publish(ctx context.Context, manifest []byte, artifacts []Art
 	cleanup := true
 	defer func() {
 		if cleanup {
-			os.RemoveAll(snapDir)
+			_ = os.RemoveAll(snapDir)
 		}
 	}()
 
@@ -123,7 +123,7 @@ func (s *DirStore) Publish(ctx context.Context, manifest []byte, artifacts []Art
 		return fmt.Errorf("creating snapshot symlink: %w", err)
 	}
 	if err := os.Rename(tmpLink, filepath.Join(s.root, dirCurrent)); err != nil {
-		os.Remove(tmpLink)
+		_ = os.Remove(tmpLink)
 		return fmt.Errorf("swapping current snapshot: %w", err)
 	}
 	if err := syncDir(s.root); err != nil {
@@ -168,7 +168,7 @@ func (s *DirStore) prune(currentRel string) {
 		if rel == currentRel || rel == live {
 			continue
 		}
-		os.RemoveAll(filepath.Join(s.root, rel))
+		_ = os.RemoveAll(filepath.Join(s.root, rel))
 	}
 }
 
@@ -204,11 +204,11 @@ func writeFileSync(path string, data []byte) error {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
 	if _, err := f.Write(data); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("syncing %s: %w", path, err)
 	}
 	return f.Close()
@@ -219,6 +219,6 @@ func syncDir(path string) error {
 	if err != nil {
 		return err
 	}
-	defer d.Close()
+	defer func() { _ = d.Close() }()
 	return d.Sync()
 }

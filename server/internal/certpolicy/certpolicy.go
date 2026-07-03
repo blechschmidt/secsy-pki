@@ -153,7 +153,7 @@ func (p Policies) policyMappingsExtension() (pkix.Extension, error) {
 		if len(m.IssuerDomainPolicy) == 0 || len(m.SubjectDomainPolicy) == 0 {
 			return pkix.Extension{}, fmt.Errorf("policy mapping requires both issuer and subject domain policy OIDs")
 		}
-		maps = append(maps, policyMapping{IssuerDomainPolicy: m.IssuerDomainPolicy, SubjectDomainPolicy: m.SubjectDomainPolicy})
+		maps = append(maps, policyMapping(m))
 	}
 	value, err := asn1.Marshal(maps)
 	if err != nil {

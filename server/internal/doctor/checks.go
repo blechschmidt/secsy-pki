@@ -184,7 +184,7 @@ func checkDatabase(r *Report, cfg *config.Config) (dbHandle, bool) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := d.Ping(ctx); err != nil {
-			d.Close()
+			_ = d.Close()
 			return StatusFail, fmt.Sprintf("%s: %v", cfg.Database.Driver, err)
 		}
 		db = d
@@ -913,7 +913,7 @@ func checkClockSkew(ctx context.Context, r *Report, db dbHandle, schemaOK bool, 
 		if schemaOK {
 			if maxSeq, err := db.MaxEventSeq(); err == nil && maxSeq > 0 {
 				if events, err := db.ListEventsSince(maxSeq-1, 1); err == nil && len(events) == 1 {
-					if ahead := events[0].Timestamp.Sub(time.Now()); ahead > 2*time.Minute {
+					if ahead := time.Until(events[0].Timestamp); ahead > 2*time.Minute {
 						status = worse(status, StatusWarn)
 						parts = append(parts, fmt.Sprintf("newest audit event is %s in the future (clock rewound, or a replica clock is ahead)", humanDuration(ahead)))
 					}
@@ -966,8 +966,8 @@ func checkListenerTLS(r *Report, cfg *config.Config, opts Options) {
 		if err != nil {
 			return status, detail + fmt.Sprintf("; listener %s not reachable (server not running?)", addr)
 		}
-		defer conn.Close()
-		conn.SetDeadline(time.Now().Add(opts.DialTimeout))
+		defer func() { _ = conn.Close() }()
+		_ = conn.SetDeadline(time.Now().Add(opts.DialTimeout))
 
 		// The handshake itself is the check; the served chain is then compared
 		// to the configured certificate, so verification is pinned rather than

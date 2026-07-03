@@ -152,7 +152,7 @@ func MigrateStore(ctx context.Context, src, dst *DB) (*MigrationReport, error) {
 		if err != nil {
 			return fmt.Errorf("acquiring destination connection: %w", err)
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		// Best-effort: on PostgreSQL run as a superuser this bypasses FK triggers so
 		// ordering mistakes cannot wedge the copy. It is not required — the ordered
@@ -160,7 +160,7 @@ func MigrateStore(ctx context.Context, src, dst *DB) (*MigrationReport, error) {
 		// is ignored and the ordered inserts carry the load.
 		if dst.isPostgres() {
 			_, _ = conn.ExecContext(ctx, "SET session_replication_role = replica")
-			defer conn.ExecContext(ctx, "SET session_replication_role = origin")
+			defer func() { _, _ = conn.ExecContext(ctx, "SET session_replication_role = origin") }()
 		}
 
 		destTypes := map[string]map[string]string{}

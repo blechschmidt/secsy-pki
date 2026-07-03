@@ -280,7 +280,7 @@ func (s *service) GetCertificate(ctx context.Context, req *pkiv1.GetCertificateR
 		return nil, status.Error(codes.InvalidArgument, "serial is required")
 	}
 	// Reflect expiry lazily so the returned status is accurate.
-	s.api.DB().MarkExpiredCertificates(req.GetCaId(), time.Now())
+	_, _ = s.api.DB().MarkExpiredCertificates(req.GetCaId(), time.Now())
 	cert, err := s.api.DB().GetIssuedCertificate(req.GetCaId(), req.GetSerial())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to load certificate: %v", err)
@@ -300,7 +300,7 @@ func (s *service) GetCertificateStatus(ctx context.Context, req *pkiv1.GetCertif
 	if strings.TrimSpace(req.GetSerial()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "serial is required")
 	}
-	s.api.DB().MarkExpiredCertificates(req.GetCaId(), time.Now())
+	_, _ = s.api.DB().MarkExpiredCertificates(req.GetCaId(), time.Now())
 	cert, err := s.api.DB().GetIssuedCertificate(req.GetCaId(), req.GetSerial())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to load certificate: %v", err)
@@ -339,7 +339,7 @@ func (s *service) ListCertificates(ctx context.Context, req *pkiv1.ListCertifica
 	}
 	page := database.CertPageRequest{Limit: int(req.GetLimit()), Cursor: req.GetCursor()}
 
-	s.api.DB().MarkExpiredCertificates(req.GetCaId(), time.Now())
+	_, _ = s.api.DB().MarkExpiredCertificates(req.GetCaId(), time.Now())
 	result, err := s.api.DB().PageIssuedCertificates(req.GetCaId(), filter, page)
 	if err != nil {
 		if errors.Is(err, database.ErrInvalidCursor) {

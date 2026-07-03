@@ -190,7 +190,7 @@ func (s *SyslogSink) connect(ctx context.Context) error {
 // redials. The caller holds s.mu.
 func (s *SyslogSink) dropConn() {
 	if s.conn != nil {
-		s.conn.Close()
+		_ = s.conn.Close()
 		s.conn = nil
 	}
 }
@@ -220,9 +220,9 @@ func (s *SyslogSink) Deliver(ctx context.Context, events []audit.Event, formatte
 	}
 
 	if dl, ok := ctx.Deadline(); ok {
-		s.conn.SetWriteDeadline(dl)
+		_ = s.conn.SetWriteDeadline(dl)
 	} else {
-		s.conn.SetWriteDeadline(time.Now().Add(s.cfg.Timeout))
+		_ = s.conn.SetWriteDeadline(time.Now().Add(s.cfg.Timeout))
 	}
 	if _, err := s.conn.Write(buf.Bytes()); err != nil {
 		// A broken pipe means the collector dropped the connection; discard it so
@@ -302,7 +302,7 @@ func (s *WebhookSink) Deliver(ctx context.Context, events []audit.Event, formatt
 	}
 	defer resp.Body.Close()
 	// Drain the body so the connection can be reused by keep-alive.
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("webhook %s returned status %d", s.cfg.URL, resp.StatusCode)
 	}

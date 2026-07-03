@@ -433,12 +433,12 @@ func TestAuditLog(t *testing.T) {
 		t.Fatalf("list: %d %d %v", total, len(entries), err)
 	}
 
-	entries, total, _ = db.ListAuditLog("ca-1", 10, 0)
+	_, total, _ = db.ListAuditLog("ca-1", 10, 0)
 	if total != 1 {
 		t.Error("filter by ca_id failed")
 	}
 
-	entries, total, _ = db.ListAuditLog("other", 10, 0)
+	_, total, _ = db.ListAuditLog("other", 10, 0)
 	if total != 0 {
 		t.Error("should be 0 for other ca")
 	}
@@ -1397,7 +1397,7 @@ func TestCreateAuditLogEntryEdgeCases(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, total, _ = db.ListAuditLog("ca-1", 10, 0)
+	_, total, _ = db.ListAuditLog("ca-1", 10, 0)
 	if total != 2 {
 		t.Fatalf("total = %d, want 2", total)
 	}

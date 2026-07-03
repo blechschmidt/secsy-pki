@@ -492,7 +492,7 @@ func humanizeRemaining(d time.Duration) string {
 	return fmt.Sprintf("%dm", mins)
 }
 
-// FromConfig builds Options from day-based configuration values.
+// OptionsFromDays builds Options from day-based configuration values.
 func OptionsFromDays(warningDays, criticalDays, renewBeforeDays int, renewProfiles []string) Options {
 	day := 24 * time.Hour
 	return Options{

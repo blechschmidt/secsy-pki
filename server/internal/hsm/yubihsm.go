@@ -1,3 +1,4 @@
+// Package hsm provides YubiHSM audit-log verification, device attestation, and yubihsm-shell-backed helpers.
 package hsm
 
 import (
@@ -204,7 +205,7 @@ func CheckDeviceInitEntry(entries []AuditLogEntry) error {
 			"no audit log entries found — cannot verify device state.\n" +
 				"Please factory reset the device first:\n" +
 				"  yubihsm-shell> reset 0\n" +
-				"Then re-run provisioning.")
+				"Then re-run provisioning")
 	}
 	if !IsBootSentinel(entries[0]) {
 		return fmt.Errorf(
@@ -212,7 +213,7 @@ func CheckDeviceInitEntry(entries []AuditLogEntry) error {
 				"The device was not factory reset before provisioning.\n" +
 				"There may be unaudited operations. Please factory reset the device first:\n" +
 				"  yubihsm-shell> reset 0\n" +
-				"Then re-run provisioning.")
+				"Then re-run provisioning")
 	}
 	return nil
 }
@@ -289,9 +290,13 @@ func signLastHash(cfg Config, lastHash string) (signature, attestCertPEM, device
 	if err != nil {
 		return "", "", "", err
 	}
-	hashFile.Write(hashBytes)
-	hashFile.Close()
-	defer os.Remove(hashFile.Name())
+	if _, err := hashFile.Write(hashBytes); err != nil {
+		return "", "", "", err
+	}
+	if err := hashFile.Close(); err != nil {
+		return "", "", "", err
+	}
+	defer func() { _ = os.Remove(hashFile.Name()) }()
 
 	sigOut, err := runShell(cfg, fmt.Sprintf("sign eddsa 0 0x0001 ed25519 %s", hashFile.Name()))
 	if err != nil {
@@ -473,8 +478,8 @@ func GetDeviceAttestation(cfg Config) ([]byte, error) {
 		return nil, err
 	}
 	tmpPath := tmpFile.Name()
-	tmpFile.Close()
-	defer os.Remove(tmpPath)
+	_ = tmpFile.Close()
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	out, err := runShell(cfg, fmt.Sprintf("get opaque 0 0 %s", tmpPath))
 	if err != nil {

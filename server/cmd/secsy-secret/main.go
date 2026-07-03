@@ -53,7 +53,7 @@ func main() {
 func run(args []string) error {
 	cfgPath := flag.String("config", "config.yaml", "path to config file")
 	flag.Usage = usage
-	flag.CommandLine.Parse(args)
+	_ = flag.CommandLine.Parse(args)
 
 	rest := flag.Args()
 	if len(rest) == 0 {
@@ -291,7 +291,7 @@ func cmdEncrypt(cfg *config.Config, provider keyprovider.Provider, args []string
 		}
 		detail := fmt.Sprintf("threshold=%d agents=[%s]", policy.Threshold(), agentIDsCSV(policy))
 		err = recordEscrowEvent(db, operatorActor(*operator), audit.ActionSecretEscrow, family, audit.ResultSuccess, detail)
-		db.Close()
+		_ = db.Close()
 		if err != nil {
 			return fmt.Errorf("secret was escrow-encrypted but recording the audit event failed: %w", err)
 		}
@@ -307,7 +307,7 @@ func cmdEncrypt(cfg *config.Config, provider keyprovider.Provider, args []string
 		if err != nil {
 			return err
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 		stored, err := storeEncryptedSecret(db, *tenant, *name, family, ring, blob, *context_ != "", policy != nil,
 			storeSecretSpec{ttlDays: *ttlDays, rotateEveryDays: *rotateEvery, operator: operatorActor(*operator)})
 		if err != nil {
@@ -350,7 +350,7 @@ func cmdDecrypt(cfg *config.Config, provider keyprovider.Provider, args []string
 			return err
 		}
 		s, err := db.GetStoredSecret(*id)
-		db.Close()
+		_ = db.Close()
 		if err != nil {
 			return err
 		}
@@ -422,7 +422,7 @@ func buildProvider(cfg *config.Config) (keyprovider.Provider, error) {
 	if cfg.YubiHSM.ConnectorURL != "" && os.Getenv("YUBIHSM_PKCS11_CONF") == "" {
 		confPath := "yubihsm_pkcs11.conf"
 		if err := os.WriteFile(confPath, []byte("connector = "+cfg.YubiHSM.ConnectorURL+"\n"), 0600); err == nil {
-			os.Setenv("YUBIHSM_PKCS11_CONF", confPath)
+			_ = os.Setenv("YUBIHSM_PKCS11_CONF", confPath)
 		}
 	}
 	return keyprovider.New(keyprovider.Config{

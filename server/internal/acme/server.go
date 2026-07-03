@@ -250,7 +250,7 @@ func (s *Server) writeProblem(w http.ResponseWriter, p *Problem) {
 	s.addNonce(w)
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(p.httpStatus())
-	json.NewEncoder(w).Encode(p)
+	_ = json.NewEncoder(w).Encode(p)
 }
 
 // writeProblemNoNonce writes a problem document without issuing a Replay-Nonce.
@@ -260,7 +260,7 @@ func (s *Server) writeProblemNoNonce(w http.ResponseWriter, p *Problem) {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(p.httpStatus())
-	json.NewEncoder(w).Encode(p)
+	_ = json.NewEncoder(w).Encode(p)
 }
 
 // writeJSONBody writes a JSON body with an explicit status and no nonce. Callers

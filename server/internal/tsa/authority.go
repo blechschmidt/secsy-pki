@@ -192,7 +192,7 @@ func (a *Authority) handle(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", contentTypeReply)
 	w.WriteHeader(http.StatusOK)
-	w.Write(result.Response)
+	_, _ = w.Write(result.Response)
 }
 
 // Result is the outcome of a Stamp call. Response is always a DER-encoded

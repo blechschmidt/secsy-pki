@@ -244,7 +244,7 @@ func (c *acmeClient) solveAuthorization(ctx context.Context, client *xacme.Clien
 // between passes.
 func (c *acmeClient) closeSolver() {
 	if c.solver != nil {
-		c.solver.close()
+		_ = c.solver.close()
 	}
 }
 

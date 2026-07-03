@@ -188,12 +188,11 @@ func (o *Options) applyDefaults() {
 }
 
 // run executes one named check, timing it and recording its result.
-func (r *Report) run(name string, fn func() (Status, string)) Result {
+func (r *Report) run(name string, fn func() (Status, string)) {
 	start := time.Now()
 	status, detail := fn()
 	res := Result{Name: name, Status: status, Detail: detail, ElapsedMS: time.Since(start).Milliseconds()}
 	r.add(res)
-	return res
 }
 
 // skip records a skipped check with a reason.
@@ -234,7 +233,7 @@ func Run(ctx context.Context, opts Options) *Report {
 	// (missing table) detection.
 	db, schemaOK := checkDatabase(r, cfg)
 	if db != nil {
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 	}
 
 	// 4. Role keys: a sign/verify self-test per configured key, against the

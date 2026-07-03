@@ -167,8 +167,8 @@ func (r *Ring) Versions() []models.KEKVersion {
 	return append([]models.KEKVersion(nil), r.ordered...)
 }
 
-// Encrypt, EncryptWithEscrow and their *ToJSON variants seal under the active
-// KEK version, exactly like the corresponding Service methods.
+// Encrypt seals under the active KEK version, exactly like the corresponding
+// Service method (as do EncryptWithEscrow and the *ToJSON variants).
 func (r *Ring) Encrypt(plaintext, context []byte) (*Envelope, error) {
 	return r.active.Encrypt(plaintext, context)
 }

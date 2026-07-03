@@ -46,27 +46,27 @@ func (a *API) OpenAPIJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(data)
+	_, _ = w.Write(data)
 }
 
 // OpenAPISpec serves the specification as YAML.
 func (a *API) OpenAPISpec(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/yaml")
-	w.Write(openapiSpec)
+	_, _ = w.Write(openapiSpec)
 }
 
 // APIDocs serves a self-contained Redoc documentation UI pointed at
 // /openapi.json. Redoc is a single static script, so this stays lightweight.
 func (a *API) APIDocs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(redocHTML))
+	_, _ = w.Write([]byte(redocHTML))
 }
 
 // SwaggerUI serves a Swagger UI documentation page (kept for backwards
 // compatibility at /api/docs). It also renders /openapi.json.
 func (a *API) SwaggerUI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(swaggerHTML))
+	_, _ = w.Write([]byte(swaggerHTML))
 }
 
 const redocHTML = `<!DOCTYPE html>

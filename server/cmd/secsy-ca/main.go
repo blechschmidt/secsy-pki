@@ -51,7 +51,7 @@ func main() {
 func run(args []string) error {
 	cfgPath := flag.String("config", "config.yaml", "path to config file")
 	flag.Usage = usage
-	flag.CommandLine.Parse(args)
+	_ = flag.CommandLine.Parse(args)
 
 	rest := flag.Args()
 	if len(rest) == 0 {
@@ -137,7 +137,7 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Audit-log administration (chain/anchor verification, offline export) is
 	// dispatched before the key provider is constructed, so an auditor can run
@@ -858,7 +858,7 @@ func cmdListCerts(db *database.DB, args []string) error {
 	if err != nil {
 		return err
 	}
-	db.MarkExpiredCertificates(caID, time.Now())
+	_, _ = db.MarkExpiredCertificates(caID, time.Now())
 
 	filter := database.CertFilter{
 		Status:       *statusFilter,
@@ -1129,7 +1129,7 @@ func buildProvider(cfg *config.Config, role string) (keyprovider.Provider, error
 	if cfg.YubiHSM.ConnectorURL != "" && os.Getenv("YUBIHSM_PKCS11_CONF") == "" {
 		confPath := "yubihsm_pkcs11.conf"
 		if err := os.WriteFile(confPath, []byte("connector = "+cfg.YubiHSM.ConnectorURL+"\n"), 0600); err == nil {
-			os.Setenv("YUBIHSM_PKCS11_CONF", confPath)
+			_ = os.Setenv("YUBIHSM_PKCS11_CONF", confPath)
 		}
 	}
 	return keyprovider.New(keyprovider.Config{

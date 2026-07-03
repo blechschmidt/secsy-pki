@@ -61,7 +61,7 @@ type backupManifest struct {
 // exported — only public certificates, key identifiers, and the audit trail.
 // The HSM token state (encrypted key blobs) must be backed up separately with
 // the token's own tooling; the DR runbook documents this.
-func cmdBackup(db *database.DB, cfg *config.Config, provider keyprovider.Provider, args []string) error {
+func cmdBackup(db *database.DB, _ *config.Config, provider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
 	outDir := fs.String("out", "", "output directory for the backup bundle (required)")
 	if err := fs.Parse(args); err != nil {
@@ -183,7 +183,7 @@ func cmdBackup(db *database.DB, cfg *config.Config, provider keyprovider.Provide
 // matching public-key fingerprint, and the audit chain is intact and at least as
 // current as the backup. With -load-metadata it will also repopulate an empty
 // metadata store from cas.json (the engine-agnostic recovery path).
-func cmdRestore(db *database.DB, cfg *config.Config, provider keyprovider.Provider, args []string) error {
+func cmdRestore(db *database.DB, _ *config.Config, provider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
 	inDir := fs.String("in", "", "backup bundle directory produced by 'backup' (required)")
 	loadMetadata := fs.Bool("load-metadata", false, "repopulate CA records from cas.json if the metadata store is empty")

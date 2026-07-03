@@ -335,8 +335,8 @@ func (a *API) ExportEventLog(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", `attachment; filename="audit-export.`+ext+`"`)
 	for i := range events {
-		w.Write(formatter.Format(events[i]))
-		w.Write([]byte{'\n'})
+		_, _ = w.Write(formatter.Format(events[i]))
+		_, _ = w.Write([]byte{'\n'})
 	}
 }
 

@@ -40,9 +40,9 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 )
 
-// stubIdP is an in-process OpenID Connect provider: discovery, JWKS, and a token
+// stubIDP is an in-process OpenID Connect provider: discovery, JWKS, and a token
 // endpoint that mints a signed id token carrying the group claim under test.
-type stubIdP struct {
+type stubIDP struct {
 	srv      *httptest.Server
 	signer   jose.Signer
 	clientID string
@@ -52,7 +52,7 @@ type stubIdP struct {
 	sub   string
 }
 
-func newStubIdP(t *testing.T, clientID, sub string) *stubIdP {
+func newStubIDP(t *testing.T, clientID, sub string) *stubIDP {
 	t.Helper()
 	priv := testRSAKey(t)
 	signer, err := jose.NewSigner(
@@ -62,7 +62,7 @@ func newStubIdP(t *testing.T, clientID, sub string) *stubIdP {
 	if err != nil {
 		t.Fatalf("jose signer: %v", err)
 	}
-	idp := &stubIdP{signer: signer, clientID: clientID, sub: sub}
+	idp := &stubIDP{signer: signer, clientID: clientID, sub: sub}
 
 	mux := http.NewServeMux()
 	idp.srv = httptest.NewServer(mux)
@@ -71,10 +71,10 @@ func newStubIdP(t *testing.T, clientID, sub string) *stubIdP {
 
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(w, map[string]interface{}{
-			"issuer":                 issuer,
-			"authorization_endpoint": issuer + "/authorize",
-			"token_endpoint":         issuer + "/token",
-			"jwks_uri":               issuer + "/jwks",
+			"issuer":                                issuer,
+			"authorization_endpoint":                issuer + "/authorize",
+			"token_endpoint":                        issuer + "/token",
+			"jwks_uri":                              issuer + "/jwks",
 			"id_token_signing_alg_values_supported": []string{"RS256"},
 		})
 	})
@@ -116,13 +116,13 @@ func newStubIdP(t *testing.T, clientID, sub string) *stubIdP {
 // consoleLoginEnv is the wired-up app server for the login flow test.
 type consoleLoginEnv struct {
 	srv *httptest.Server
-	idp *stubIdP
+	idp *stubIDP
 }
 
 func setupConsoleLogin(t *testing.T) *consoleLoginEnv {
 	t.Helper()
 	const clientID = "secsy-console"
-	idp := newStubIdP(t, clientID, "alice-oidc-subject")
+	idp := newStubIDP(t, clientID, "alice-oidc-subject")
 
 	db, err := database.New("sqlite", t.TempDir()+"/login.db")
 	if err != nil {

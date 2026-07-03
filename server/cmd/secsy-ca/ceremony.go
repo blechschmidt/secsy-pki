@@ -289,7 +289,7 @@ func collectConfirmations(db *database.DB, actor, label, ceremonyID string, enro
 		if err != nil {
 			return nil, fmt.Errorf("opening confirmation file: %w", err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		if err := readConfirmationLines(f, record); err != nil {
 			return nil, err
 		}

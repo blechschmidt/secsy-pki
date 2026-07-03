@@ -220,7 +220,7 @@ func completeApproved(ctx context.Context, eng *approval.Engine, mgr *ca.Manager
 		msg := "corrupt approval payload: " + err.Error()
 		_ = eng.RecordResult(ctx, pa.ID, mustMarshalResult(Result{Error: msg}))
 		metrics.CertIssueApprovals.Inc("error")
-		return &Outcome{Approval: claimed, State: StateFailed, Err: msg}, nil
+		return &Outcome{Approval: claimed, State: StateFailed, Err: msg}, nil //nolint:nilerr // the failure is deliberately surfaced as a terminal StateFailed Outcome, not propagated as a Go error.
 	}
 
 	result, issueErr := mgr.IssueCertificate(ctx, ca.IssueSpec{
@@ -236,7 +236,7 @@ func completeApproved(ctx context.Context, eng *approval.Engine, mgr *ca.Manager
 		auditEvent(db, pa.TenantID, actor, actorName, ip, audit.ActionCertIssueApproved, payload.CAID, "",
 			audit.ResultError, "approval="+pa.ID+"; issuance failed after approval: "+msg)
 		metrics.CertIssueApprovals.Inc("error")
-		return &Outcome{Approval: claimed, State: StateFailed, Err: msg}, nil
+		return &Outcome{Approval: claimed, State: StateFailed, Err: msg}, nil //nolint:nilerr // the failure is deliberately surfaced as a terminal StateFailed Outcome, not propagated as a Go error.
 	}
 
 	res := Result{

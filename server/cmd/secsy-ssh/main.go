@@ -141,9 +141,13 @@ func runSSH(keyPath, certStr string, sshArgs []string) {
 		fatal("Failed to create memfd: %v", err)
 	}
 	certFile := os.NewFile(fd, "secsy-ssh-cert")
-	certFile.WriteString(certStr)
+	if _, err := certFile.WriteString(certStr); err != nil {
+		fatal("Failed to write certificate: %v", err)
+	}
 	// Seek back so ssh can read it, keep the fd open
-	certFile.Seek(0, 0)
+	if _, err := certFile.Seek(0, 0); err != nil {
+		fatal("Failed to seek certificate: %v", err)
+	}
 
 	// ExtraFiles makes the fd available to the child process as fd 3+index
 	// Index 0 in ExtraFiles = fd 3 in the child
@@ -182,11 +186,11 @@ func cacheDir() string {
 	// Use XDG_RUNTIME_DIR if available, otherwise /tmp/secsy-ssh-<uid>
 	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
 		d := filepath.Join(dir, "secsy-ssh")
-		os.MkdirAll(d, 0700)
+		_ = os.MkdirAll(d, 0700)
 		return d
 	}
 	d := filepath.Join(os.TempDir(), fmt.Sprintf("secsy-ssh-%d", os.Getuid()))
-	os.MkdirAll(d, 0700)
+	_ = os.MkdirAll(d, 0700)
 	return d
 }
 
@@ -206,17 +210,17 @@ func loadCachedCert(key string) string {
 	// Parse the certificate and check ValidBefore
 	pub, _, _, _, err := sshPkg.ParseAuthorizedKey([]byte(cert))
 	if err != nil {
-		os.Remove(path)
+		_ = os.Remove(path)
 		return ""
 	}
 	sshCert, ok := pub.(*sshPkg.Certificate)
 	if !ok {
-		os.Remove(path)
+		_ = os.Remove(path)
 		return ""
 	}
 	expiry := time.Unix(int64(sshCert.ValidBefore), 0)
 	if time.Now().After(expiry) {
-		os.Remove(path)
+		_ = os.Remove(path)
 		return ""
 	}
 	return cert
@@ -224,7 +228,7 @@ func loadCachedCert(key string) string {
 
 func cacheCert(key, cert string) {
 	path := filepath.Join(cacheDir(), key+".pub")
-	os.WriteFile(path, []byte(cert), 0600)
+	_ = os.WriteFile(path, []byte(cert), 0600)
 }
 
 // --- Config ---
@@ -325,7 +329,7 @@ func apiGet(cfg *Config, token, path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
@@ -342,7 +346,7 @@ func apiPost(cfg *Config, token, path string, payload interface{}) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 && resp.StatusCode != 201 {
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
@@ -433,7 +437,7 @@ func oidcLogin(cfg *Config) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("getting auth config: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 
 	var authCfg struct {
@@ -452,7 +456,7 @@ func oidcLogin(cfg *Config) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("OIDC discovery: %w", err)
 	}
-	defer discoResp.Body.Close()
+	defer func() { _ = discoResp.Body.Close() }()
 	discoBody, _ := io.ReadAll(discoResp.Body)
 
 	var disco struct {
@@ -486,16 +490,16 @@ func oidcLogin(cfg *Config) (string, error) {
 		code := r.URL.Query().Get("code")
 		if code == "" {
 			errChan <- fmt.Errorf("no code in callback: %s", r.URL.Query().Get("error_description"))
-			w.Write([]byte("Login failed. Check the terminal."))
+			_, _ = w.Write([]byte("Login failed. Check the terminal."))
 			return
 		}
 		codeChan <- code
-		w.Write([]byte("<html><body><h2>Login successful!</h2><p>You can close this window.</p><script>window.close()</script></body></html>"))
+		_, _ = w.Write([]byte("<html><body><h2>Login successful!</h2><p>You can close this window.</p><script>window.close()</script></body></html>"))
 	})
 
 	srv := &http.Server{Handler: mux}
-	go srv.Serve(listener)
-	defer srv.Shutdown(context.Background())
+	go func() { _ = srv.Serve(listener) }()
+	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	state := base64URLEncode(verifierBytes[:16])
 	authURL := disco.AuthEndpoint + "?" + url.Values{

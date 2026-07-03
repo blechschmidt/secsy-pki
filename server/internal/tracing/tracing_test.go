@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // TestInitDisabledInstallsNoopTracer confirms the default (disabled) path is a
@@ -61,7 +60,7 @@ func TestHelpersAreSafeWithoutRecordingSpan(t *testing.T) {
 	if got := SpanFromContext(ctx); got == nil {
 		t.Error("SpanFromContext returned nil; want a non-recording span")
 	}
-	var _ trace.Span = SpanFromContext(ctx)
+	var _ = SpanFromContext(ctx)
 }
 
 // TestInitEnabledBuildsProvider confirms that enabling tracing with a valid OTLP

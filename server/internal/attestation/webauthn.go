@@ -207,7 +207,7 @@ func parseCOSEEC2(m map[interface{}]interface{}) (crypto.PublicKey, error) {
 	}
 	x := new(big.Int).SetBytes(xb)
 	y := new(big.Int).SetBytes(yb)
-	if !curve.IsOnCurve(x, y) {
+	if !curve.IsOnCurve(x, y) { //nolint:staticcheck // SA1019: crypto/ecdh exposes no big.Int X/Y to rebuild the key this path needs; the deprecated on-curve check is retained deliberately.
 		return nil, errors.New("EC2 COSE key point is not on the curve")
 	}
 	return &ecdsa.PublicKey{Curve: curve, X: x, Y: y}, nil

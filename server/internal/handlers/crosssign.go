@@ -175,7 +175,7 @@ func (a *API) GetCrossSignChain(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.Header().Set("Content-Disposition", "attachment; filename=cross-sign-chain.pem")
-	w.Write(chain)
+	_, _ = w.Write(chain)
 }
 
 // crossSignRelatesTo reports whether a cross-sign involves the given CA id as

@@ -89,8 +89,8 @@ func TestInitCASignAndVerify(t *testing.T) {
 	if cert.KeyId != "alice@corp" {
 		t.Errorf("key ID = %q, want requester fallback", cert.KeyId)
 	}
-	if len(cert.Permissions.Extensions) != 5 || cert.Permissions.Extensions["permit-pty"] != "" {
-		t.Errorf("extensions = %v, want the standard permit-* set", cert.Permissions.Extensions)
+	if len(cert.Extensions) != 5 || cert.Extensions["permit-pty"] != "" {
+		t.Errorf("extensions = %v, want the standard permit-* set", cert.Extensions)
 	}
 	if _, err := authority.VerifyCertificate(ctx, ca.ID, userResult.AuthorizedKey, "alice", time.Now()); err != nil {
 		t.Errorf("user certificate does not verify: %v", err)
@@ -116,8 +116,8 @@ func TestInitCASignAndVerify(t *testing.T) {
 	if hostResult.Certificate.CertType != ssh.HostCert {
 		t.Errorf("cert type = %d, want host", hostResult.Certificate.CertType)
 	}
-	if len(hostResult.Certificate.Permissions.Extensions) != 0 {
-		t.Errorf("host cert carries extensions: %v", hostResult.Certificate.Permissions.Extensions)
+	if len(hostResult.Certificate.Extensions) != 0 {
+		t.Errorf("host cert carries extensions: %v", hostResult.Certificate.Extensions)
 	}
 	if _, err := authority.VerifyCertificate(ctx, ca.ID, hostResult.AuthorizedKey, "web1.example.com", time.Now()); err != nil {
 		t.Errorf("host certificate does not verify: %v", err)
@@ -223,8 +223,8 @@ func TestProfileEnforcement(t *testing.T) {
 	if want := 24*time.Hour + clockSkewBackdate; lifetime != want {
 		t.Errorf("lifetime = %v, want clamped %v", lifetime, want)
 	}
-	if result.Certificate.Permissions.CriticalOptions["source-address"] != "10.0.0.0/8" {
-		t.Errorf("critical options = %v", result.Certificate.Permissions.CriticalOptions)
+	if result.Certificate.CriticalOptions["source-address"] != "10.0.0.0/8" {
+		t.Errorf("critical options = %v", result.Certificate.CriticalOptions)
 	}
 	if result.Record.Profile != "ci-deploy" {
 		t.Errorf("recorded profile = %q", result.Record.Profile)

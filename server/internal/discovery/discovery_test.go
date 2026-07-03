@@ -25,8 +25,8 @@ type certOpts struct {
 	dnsNames  []string
 	notBefore time.Time
 	notAfter  time.Time
-	rsaBits   int              // >0 => RSA of this size; else EC P-256
-	ecCurve   elliptic.Curve   // overrides the default P-256 when set
+	rsaBits   int            // >0 => RSA of this size; else EC P-256
+	ecCurve   elliptic.Curve // overrides the default P-256 when set
 	sigAlg    x509.SignatureAlgorithm
 	isCA      bool
 	parent    *x509.Certificate

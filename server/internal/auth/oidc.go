@@ -1,3 +1,4 @@
+// Package auth provides operator authentication: OIDC SSO login and ID-token verification with claim-to-role mapping.
 package auth
 
 import (

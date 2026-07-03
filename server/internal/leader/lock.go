@@ -180,11 +180,11 @@ func (l *pgLock) Release() {
 // and therefore the lease.
 func (l *pgLock) discard() {
 	if l.conn != nil {
-		l.conn.Close()
+		_ = l.conn.Close()
 		l.conn = nil
 	}
 	if l.db != nil {
-		l.db.Close()
+		_ = l.db.Close()
 		l.db = nil
 	}
 }

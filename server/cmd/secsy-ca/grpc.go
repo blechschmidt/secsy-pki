@@ -73,7 +73,7 @@ func cmdGRPC(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	client := pkiv1.NewPKIServiceClient(conn)
 
 	// Build the per-call context: attach the authorization metadata and a deadline.
@@ -382,7 +382,7 @@ func dialGRPC(o grpcDialOptions) (*grpc.ClientConn, error) {
 // generated with an ephemeral EC key for the given subject and SANs. The
 // generated private key is returned so a caller may persist it, but the demo
 // discards it (the certificate is revoked immediately).
-func loadOrGenerateCSR(csrFile, cn string, dns []string) (csrPEM string, key *ecdsa.PrivateKey, err error) {
+func loadOrGenerateCSR(csrFile, cn string, dns []string) (csrPEM string, key *ecdsa.PrivateKey, err error) { //nolint:unparam // key is returned for API completeness so a caller can persist it; the demo callers discard it (see doc comment).
 	if csrFile != "" {
 		b, rerr := os.ReadFile(csrFile)
 		if rerr != nil {

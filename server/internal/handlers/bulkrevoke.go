@@ -164,7 +164,7 @@ func (a *API) BulkRevokeCertificates(w http.ResponseWriter, r *http.Request) {
 		// so the operator can resume.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"error":  err.Error(),
 			"result": result,
 		})

@@ -784,13 +784,13 @@ func (a *API) GetPublicKey(w http.ResponseWriter, r *http.Request) {
 		}
 		pemBlock := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: derBytes})
 		w.Header().Set("Content-Type", "application/x-pem-file")
-		w.Write(pemBlock)
+		_, _ = w.Write(pemBlock)
 		return
 	}
 
 	// Default: OpenSSH format
 	w.Header().Set("Content-Type", "text/plain")
-	w.Write([]byte(ca.PublicKey + "\n"))
+	_, _ = w.Write([]byte(ca.PublicKey + "\n"))
 }
 
 func (a *API) DeleteCA(w http.ResponseWriter, r *http.Request) {
@@ -1459,7 +1459,7 @@ func (a *API) ListAuditLog(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Disposition", "attachment; filename=audit-log.json")
-		json.NewEncoder(w).Encode(entries)
+		_ = json.NewEncoder(w).Encode(entries)
 		return
 	}
 
@@ -1511,7 +1511,7 @@ func (a *API) ListAccessLog(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Disposition", "attachment; filename=access-log.json")
-		json.NewEncoder(w).Encode(entries)
+		_ = json.NewEncoder(w).Encode(entries)
 		return
 	}
 
@@ -1574,7 +1574,7 @@ func (a *API) GetHSMAttestation(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.Header().Set("Content-Disposition", "attachment; filename=device-attestation.pem")
-	w.Write(pemBlock)
+	_, _ = w.Write(pemBlock)
 }
 
 func (a *API) GetHSMAuditLog(w http.ResponseWriter, r *http.Request) {
@@ -1711,7 +1711,7 @@ func (a *API) ExportCombinedAuditLog(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=combined-audit-log.json")
-	json.NewEncoder(w).Encode(export)
+	_ = json.NewEncoder(w).Encode(export)
 }
 
 func (a *API) GetSignedAuditLog(w http.ResponseWriter, r *http.Request) {
@@ -1751,7 +1751,7 @@ func (a *API) GetSignedAuditLog(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=signed-audit-log.json")
-	json.NewEncoder(w).Encode(signedLog)
+	_ = json.NewEncoder(w).Encode(signedLog)
 }
 
 func (a *API) ProvisionHSMAudit(w http.ResponseWriter, r *http.Request) {
@@ -1863,7 +1863,7 @@ func keyRefForCA(ca *models.CA) keyprovider.KeyRef {
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 func writeError(w http.ResponseWriter, status int, format string, args ...interface{}) {
@@ -1873,7 +1873,7 @@ func writeError(w http.ResponseWriter, status int, format string, args ...interf
 }
 
 // enforceRestrictions validates a sign request against a restriction set.
-func enforceRestrictions(rs *models.RestrictionSet, req *models.SignRequest, user *models.UserInfo) error {
+func enforceRestrictions(rs *models.RestrictionSet, req *models.SignRequest, _ *models.UserInfo) error {
 	if rs.DenyAll {
 		return fmt.Errorf("signing is denied by restriction set %q", rs.Name)
 	}

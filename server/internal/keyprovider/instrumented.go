@@ -72,7 +72,7 @@ func (p *instrumentedProvider) GenerateKey(ctx context.Context, spec KeySpec) (*
 	ctx, span := tracing.Start(ctx, "hsm.generate_key",
 		attribute.String("hsm.operation", "generate"),
 		attribute.String("hsm.key.label", spec.Label),
-		attribute.String("hsm.provider", p.Provider.Name()))
+		attribute.String("hsm.provider", p.Name()))
 	defer span.End()
 	start := time.Now()
 	info, err := p.Provider.GenerateKey(ctx, spec)
@@ -85,7 +85,7 @@ func (p *instrumentedProvider) FindKey(ctx context.Context, ref KeyRef) (*KeyInf
 	ctx, span := tracing.Start(ctx, "hsm.find_key",
 		attribute.String("hsm.operation", "find"),
 		attribute.String("hsm.key.label", ref.Label),
-		attribute.String("hsm.provider", p.Provider.Name()))
+		attribute.String("hsm.provider", p.Name()))
 	defer span.End()
 	start := time.Now()
 	info, err := p.Provider.FindKey(ctx, ref)
@@ -98,7 +98,7 @@ func (p *instrumentedProvider) PublicKey(ctx context.Context, ref KeyRef) (crypt
 	ctx, span := tracing.Start(ctx, "hsm.public_key",
 		attribute.String("hsm.operation", "public_key"),
 		attribute.String("hsm.key.label", ref.Label),
-		attribute.String("hsm.provider", p.Provider.Name()))
+		attribute.String("hsm.provider", p.Name()))
 	defer span.End()
 	start := time.Now()
 	pub, err := p.Provider.PublicKey(ctx, ref)
@@ -111,7 +111,7 @@ func (p *instrumentedProvider) Signer(ctx context.Context, ref KeyRef) (Signer, 
 	spanCtx, span := tracing.Start(ctx, "hsm.signer",
 		attribute.String("hsm.operation", "signer"),
 		attribute.String("hsm.key.label", ref.Label),
-		attribute.String("hsm.provider", p.Provider.Name()))
+		attribute.String("hsm.provider", p.Name()))
 	defer span.End()
 	start := time.Now()
 	s, err := p.Provider.Signer(spanCtx, ref)
@@ -123,7 +123,7 @@ func (p *instrumentedProvider) Signer(ctx context.Context, ref KeyRef) (Signer, 
 	// Capture the caller's context (not the ended signer-acquisition span's
 	// context) so each Sign attaches its span to the live request trace. The
 	// crypto.Signer interface carries no context, so this is the only channel.
-	return &instrumentedSigner{Signer: s, ctx: ctx, label: ref.Label, provider: p.Provider.Name()}, nil
+	return &instrumentedSigner{Signer: s, ctx: ctx, label: ref.Label, provider: p.Name()}, nil
 }
 
 // instrumentedSigner times the actual signing operation (the on-device C_Sign
@@ -168,7 +168,7 @@ func (p *instrumentedDecrypterProvider) Decrypter(ctx context.Context, ref KeyRe
 		metrics.HSMOperations.Inc("decrypt", metrics.ResultError)
 		return nil, err
 	}
-	return &instrumentedDecrypter{Decrypter: d, ctx: ctx, label: ref.Label, provider: p.Provider.Name()}, nil
+	return &instrumentedDecrypter{Decrypter: d, ctx: ctx, label: ref.Label, provider: p.Name()}, nil
 }
 
 type instrumentedDecrypter struct {

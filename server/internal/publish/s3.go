@@ -241,10 +241,7 @@ type header struct{ key, value string }
 
 // newSignedRequest builds and SigV4-signs one S3 request.
 func (s *S3Store) newSignedRequest(ctx context.Context, method, p string, body []byte, contentType string, extra ...header) (*http.Request, error) {
-	u, err := s.objectURL(p)
-	if err != nil {
-		return nil, err
-	}
+	u := s.objectURL(p)
 	var rd io.Reader
 	if body != nil {
 		rd = bytes.NewReader(body)
@@ -278,7 +275,7 @@ func (s *S3Store) newSignedRequest(ctx context.Context, method, p string, body [
 
 // objectURL builds the object URL for a snapshot path, path-style or
 // virtual-hosted per configuration.
-func (s *S3Store) objectURL(p string) (string, error) {
+func (s *S3Store) objectURL(p string) string {
 	key := p
 	if s.cfg.Prefix != "" {
 		key = path.Join(strings.Trim(s.cfg.Prefix, "/"), p)
@@ -295,9 +292,9 @@ func (s *S3Store) objectURL(p string) (string, error) {
 		if base == "" {
 			base = "https://s3." + s.cfg.Region + ".amazonaws.com"
 		}
-		return strings.TrimRight(base, "/") + "/" + s.cfg.Bucket + "/" + escaped, nil
+		return strings.TrimRight(base, "/") + "/" + s.cfg.Bucket + "/" + escaped
 	}
-	return "https://" + s.cfg.Bucket + ".s3." + s.cfg.Region + ".amazonaws.com/" + escaped, nil
+	return "https://" + s.cfg.Bucket + ".s3." + s.cfg.Region + ".amazonaws.com/" + escaped
 }
 
 func truncate(b []byte, n int) string {

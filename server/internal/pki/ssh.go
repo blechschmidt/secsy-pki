@@ -32,10 +32,10 @@ func SignSSHCertificate(signer crypto.Signer, pubKeyData []byte, certType uint32
 	}
 
 	if extensions != nil {
-		cert.Permissions.Extensions = extensions
+		cert.Extensions = extensions
 	} else if certType == ssh.UserCert {
 		// Default extensions for user certificates
-		cert.Permissions.Extensions = map[string]string{
+		cert.Extensions = map[string]string{
 			"permit-X11-forwarding":   "",
 			"permit-agent-forwarding": "",
 			"permit-port-forwarding":  "",
@@ -45,7 +45,7 @@ func SignSSHCertificate(signer crypto.Signer, pubKeyData []byte, certType uint32
 	}
 
 	if criticalOptions != nil {
-		cert.Permissions.CriticalOptions = criticalOptions
+		cert.CriticalOptions = criticalOptions
 	}
 
 	caSigner, err := ssh.NewSignerFromSigner(signer)

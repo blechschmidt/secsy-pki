@@ -1,3 +1,4 @@
+// Package models defines the shared data types persisted and exchanged across secsy-pki.
 package models
 
 import (

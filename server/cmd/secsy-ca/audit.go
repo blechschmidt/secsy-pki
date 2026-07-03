@@ -307,7 +307,7 @@ func cmdAuditExport(db *database.DB, args []string) error {
 		if err != nil {
 			return fmt.Errorf("opening -out: %w", err)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		w = f
 	}
 

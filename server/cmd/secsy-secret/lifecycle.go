@@ -118,7 +118,7 @@ func cmdPut(cfg *config.Config, provider keyprovider.Provider, args []string) er
 	if err != nil {
 		return fmt.Errorf("put requires the database (stored secrets and audit): %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	tenantID, family, err := tenantFamily(cfg, db, *tenant)
 	if err != nil {
 		return err
@@ -255,7 +255,7 @@ func cmdGet(cfg *config.Config, provider keyprovider.Provider, args []string) er
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	tenantID, _, err := tenantFamily(cfg, db, *tenant)
 	if err != nil {
 		return err
@@ -310,7 +310,7 @@ func cmdVersions(cfg *config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	tenantID, _, err := tenantFamily(cfg, db, *tenant)
 	if err != nil {
 		return err
@@ -360,7 +360,7 @@ func cmdRollback(cfg *config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	tenantID, _, err := tenantFamily(cfg, db, *tenant)
 	if err != nil {
 		return err
@@ -431,7 +431,7 @@ func cmdLifecycle(cfg *config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	secrets, err := db.ListStoredSecretsWithSchedule()
 	if err != nil {
 		return err
@@ -502,7 +502,7 @@ func cmdExec(cfg *config.Config, provider keyprovider.Provider, args []string) e
 	if err != nil {
 		return fmt.Errorf("exec requires the database (stored secrets and audit): %w", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	tenantID, _, err := tenantFamily(cfg, db, *tenant)
 	if err != nil {
 		return err

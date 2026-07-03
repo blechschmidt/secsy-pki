@@ -177,7 +177,7 @@ func (s *Server) handleCertificate(w http.ResponseWriter, r *http.Request) {
 	s.addNonce(w)
 	w.Header().Set("Content-Type", "application/pem-certificate-chain")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(order.Certificate))
+	_, _ = w.Write([]byte(order.Certificate))
 }
 
 // handleRevokeCert revokes a previously issued certificate (RFC 8555 §7.6).
@@ -381,7 +381,7 @@ func (s *Server) findOrderBySerial(serial string) (*models.ACMEOrder, *Problem) 
 
 // matchCSRToOrder verifies that the CSR's subject names cover exactly the order's
 // authorized identifiers — no more, no fewer (RFC 8555 §7.4).
-func matchCSRToOrder(order *models.ACMEOrder, authzs []models.ACMEAuthorization, csr *x509.CertificateRequest) *Problem {
+func matchCSRToOrder(_ *models.ACMEOrder, authzs []models.ACMEAuthorization, csr *x509.CertificateRequest) *Problem {
 	// Build the expected DNS and IP name sets from the authorizations (which
 	// carry the wildcard flag).
 	expectedDNS := map[string]bool{}

@@ -102,6 +102,35 @@ govulncheck: ## Gating vulnerability scan of the Go dependency tree
 	cd server && GOTOOLCHAIN=auto $(GOVULNCHECK) -tags sqlite ./...
 
 # ---------------------------------------------------------------------------
+# Static analysis (Task 85): go vet + golangci-lint, HSM-free
+# ---------------------------------------------------------------------------
+# The gate builds with the `sqlite` build tag (see server/.golangci.yml) so the
+# SQLite persistence driver and its dependents type-check without an HSM. The
+# golangci-lint version is pinned so `make lint` and CI cannot drift; if a
+# golangci-lint isn't already on PATH, the pinned version runs via `go run`
+# (no global install needed, matching the other Go-native tools in this file).
+GOLANGCI_LINT_VERSION ?= v2.11.4
+BUILD_TAGS            ?= sqlite
+GOLANGCI_LINT := $(shell command -v golangci-lint 2>/dev/null)
+ifeq ($(strip $(GOLANGCI_LINT)),)
+GOLANGCI_LINT = go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+endif
+
+.PHONY: vet
+vet: ## go vet the server module (-tags sqlite)
+	@echo "==> go vet (-tags $(BUILD_TAGS))"
+	cd server && GOTOOLCHAIN=auto go vet -tags '$(BUILD_TAGS)' ./...
+
+.PHONY: lint
+lint: ## Run golangci-lint on the server module (config: server/.golangci.yml)
+	@echo "==> golangci-lint run ($(GOLANGCI_LINT_VERSION))"
+	cd server && GOTOOLCHAIN=auto $(GOLANGCI_LINT) run
+
+.PHONY: lint-fix
+lint-fix: ## Run golangci-lint with --fix (gofmt/goimports + safe autofixes)
+	cd server && GOTOOLCHAIN=auto $(GOLANGCI_LINT) run --fix
+
+# ---------------------------------------------------------------------------
 # FIPS 140-3 build (Task 65)
 # ---------------------------------------------------------------------------
 # GOFIPS140 selects the Go Cryptographic Module the binaries are built against:

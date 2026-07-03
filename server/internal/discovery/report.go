@@ -12,10 +12,10 @@ import (
 
 // Report is the outcome of a discovery scan: every finding plus roll-up counts.
 type Report struct {
-	GeneratedAt time.Time      `json:"generated_at"`
-	ExpiryDays  int            `json:"expiry_days"`
-	Findings    []Finding      `json:"findings"`
-	Counts      ReportCounts   `json:"counts"`
+	GeneratedAt time.Time    `json:"generated_at"`
+	ExpiryDays  int          `json:"expiry_days"`
+	Findings    []Finding    `json:"findings"`
+	Counts      ReportCounts `json:"counts"`
 }
 
 // ReportCounts summarizes a scan for at-a-glance dashboards and alerts.
@@ -146,7 +146,7 @@ func (r *Report) WriteText(w io.Writer) {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			f.Endpoint, truncate(f.CommonName, 32), key, expires, f.Severity, flags)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 
 	c := r.Counts
 	fmt.Fprintf(w, "\n%d endpoint(s): %d reachable, %d unreachable.\n", c.Total, c.Reachable, c.Unreachable)

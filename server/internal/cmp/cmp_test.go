@@ -61,7 +61,7 @@ func TestBuildParseInitializationRequest(t *testing.T) {
 		t.Errorf("subject CN = %q, want %q", got.subject.CommonName, subject.CommonName)
 	}
 	pub, ok := got.publicKey.(*ecdsa.PublicKey)
-	if !ok || pub.X.Cmp(key.PublicKey.X) != 0 || pub.Y.Cmp(key.PublicKey.Y) != 0 {
+	if !ok || pub.X.Cmp(key.X) != 0 || pub.Y.Cmp(key.Y) != 0 {
 		t.Errorf("template public key does not match the request key")
 	}
 	if len(got.dnsNames) != 2 || got.dnsNames[0] != "device-1.example.com" {

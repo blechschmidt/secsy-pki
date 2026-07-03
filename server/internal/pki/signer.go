@@ -17,7 +17,7 @@ import (
 )
 
 // CKM_EDDSA is not in miekg/pkcs11 (PKCS#11 v3.0)
-const CKM_EDDSA = 0x00001057
+const CKM_EDDSA = 0x00001057 //nolint:staticcheck // ST1003: mirrors the PKCS#11 spec constant name (cf. miekg/pkcs11 CKM_*/CKK_*).
 
 type PKCS11Signer struct {
 	ctx        *pkcs11.Ctx
@@ -291,7 +291,7 @@ func parseECPublicKeyAttrs(attrs []*pkcs11.Attribute) (pub crypto.PublicKey, key
 	}
 
 	pointBytes := extractECPoint(ecPoint)
-	x, y := elliptic.Unmarshal(curve, pointBytes)
+	x, y := elliptic.Unmarshal(curve, pointBytes) //nolint:staticcheck // SA1019: elliptic.Unmarshal is deprecated, but crypto/ecdh exposes no big.Int X/Y to build the ecdsa.PublicKey this code feeds to x509.
 	if x == nil {
 		return nil, "", false
 	}
@@ -465,10 +465,10 @@ type GeneratedHSMKey struct {
 }
 
 // CKM_EC_EDWARDS_KEY_PAIR_GEN (PKCS#11 v3.0)
-const CKM_EC_EDWARDS_KEY_PAIR_GEN = 0x00001055
+const CKM_EC_EDWARDS_KEY_PAIR_GEN = 0x00001055 //nolint:staticcheck // ST1003: mirrors the PKCS#11 spec constant name (cf. miekg/pkcs11 CKM_*/CKK_*).
 
 // CKK_EC_EDWARDS (PKCS#11 v3.0)
-const CKK_EC_EDWARDS = 0x00000040
+const CKK_EC_EDWARDS = 0x00000040 //nolint:staticcheck // ST1003: mirrors the PKCS#11 spec constant name (cf. miekg/pkcs11 CKM_*/CKK_*).
 
 // GenerateKeyOnHSM creates a new key pair on the HSM and returns its metadata.
 // Supported key types: "ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521".
@@ -763,7 +763,7 @@ func hsmPubKeyToSSH(attrs []*pkcs11.Attribute, keyType string) (string, error) {
 		return "", fmt.Errorf("unsupported EC curve OID: %v", oid)
 	}
 
-	x, y := elliptic.Unmarshal(curve, raw)
+	x, y := elliptic.Unmarshal(curve, raw) //nolint:staticcheck // SA1019: elliptic.Unmarshal is deprecated, but crypto/ecdh exposes no big.Int X/Y to build the ecdsa.PublicKey this code feeds to x509.
 	if x == nil {
 		return "", fmt.Errorf("failed to unmarshal EC point")
 	}

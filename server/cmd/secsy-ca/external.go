@@ -155,7 +155,7 @@ func emitCSR(csrPEM []byte, out string) error {
 		fmt.Printf("CSR written to %s\n", out)
 		return nil
 	}
-	os.Stdout.Write(csrPEM)
+	_, _ = os.Stdout.Write(csrPEM)
 	return nil
 }
 
