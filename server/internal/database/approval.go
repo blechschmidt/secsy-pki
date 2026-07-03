@@ -21,7 +21,7 @@ import (
 // (k of N) without a second round trip.
 const pendingApprovalSelect = `SELECT p.id, p.tenant_id, p.operation_class, p.resource_key, p.resource_name,
 	p.fingerprint, p.summary, p.details, p.requested_by, p.requested_by_name, p.required_approvals,
-	p.status, p.created_at, p.expires_at, p.decided_at, p.executed_at,
+	p.status, p.created_at, p.expires_at, p.decided_at, p.executed_at, p.payload, p.result,
 	(SELECT COUNT(*) FROM approval_decisions d WHERE d.approval_id = p.id AND d.decision = 'approve') AS approvals_count
 	FROM pending_approvals p`
 
@@ -31,7 +31,8 @@ func scanPendingApproval(s caScanner) (*models.PendingApproval, error) {
 	var decidedAt, executedAt sql.NullTime
 	if err := s.Scan(&pa.ID, &pa.TenantID, &pa.OperationClass, &pa.ResourceKey, &pa.ResourceName,
 		&pa.Fingerprint, &pa.Summary, &pa.Details, &pa.RequestedBy, &pa.RequestedByName, &pa.RequiredApprovals,
-		&pa.Status, &pa.CreatedAt, &pa.ExpiresAt, &decidedAt, &executedAt, &pa.ApprovalsCount); err != nil {
+		&pa.Status, &pa.CreatedAt, &pa.ExpiresAt, &decidedAt, &executedAt, &pa.Payload, &pa.Result,
+		&pa.ApprovalsCount); err != nil {
 		return nil, err
 	}
 	if decidedAt.Valid {
@@ -59,11 +60,11 @@ func (db *DB) CreatePendingApproval(a *models.PendingApproval) error {
 	_, err := db.exec(
 		`INSERT INTO pending_approvals (id, tenant_id, operation_class, resource_key, resource_name,
 			fingerprint, summary, details, requested_by, requested_by_name, required_approvals, status,
-			created_at, expires_at, decided_at, executed_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			created_at, expires_at, decided_at, executed_at, payload, result)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.ID, a.TenantID, a.OperationClass, a.ResourceKey, a.ResourceName,
 		a.Fingerprint, a.Summary, a.Details, a.RequestedBy, a.RequestedByName, a.RequiredApprovals, a.Status,
-		a.CreatedAt, a.ExpiresAt, nullableTime(a.DecidedAt), nullableTime(a.ExecutedAt))
+		a.CreatedAt, a.ExpiresAt, nullableTime(a.DecidedAt), nullableTime(a.ExecutedAt), a.Payload, a.Result)
 	return err
 }
 
@@ -222,6 +223,16 @@ func (db *DB) SetApprovalStatus(id, from, to string, at time.Time) (bool, error)
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// SetApprovalResult stores the opaque outcome blob against a request (Task 84's
+// cert.issue records the issued serial here), so the completed operation's
+// artifact can be delivered on later fetches. It is a plain update keyed by id;
+// the state transition that authorizes completion is done separately via
+// SetApprovalStatus.
+func (db *DB) SetApprovalResult(id, result string) error {
+	_, err := db.exec(`UPDATE pending_approvals SET result = ? WHERE id = ?`, result, id)
+	return err
 }
 
 // ListExpirableApprovals returns open requests whose window has elapsed, oldest

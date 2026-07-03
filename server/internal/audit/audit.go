@@ -123,6 +123,20 @@ const (
 	// policy.
 	ActionCertPKCS12 = "cert.pkcs12"
 
+	// Per-profile manual issuance-approval gate (Task 84). When a certificate
+	// profile sets require_approval, operator/API-driven leaf issuance is routed
+	// through the four-eyes engine instead of executing immediately.
+	// ActionCertIssuePending records a leaf-issuance request parked for approval
+	// (the certificate is NOT issued yet); ActionCertIssueApproved records the
+	// certificate being completed and delivered once the approver threshold was
+	// met; ActionCertIssueDenied records a request that will never issue because
+	// it was rejected or expired. These complement the generic approval.* events
+	// the engine records for every guarded class. Target is the issuing CA; the
+	// approval request id travels in the detail.
+	ActionCertIssuePending  = "cert.issue.pending"
+	ActionCertIssueApproved = "cert.issue.approved"
+	ActionCertIssueDenied   = "cert.issue.denied"
+
 	// SSH certificate authority (Task 57). ActionSSHCAInit records creation of
 	// an HSM-backed SSH CA. ActionSSHSign records an OpenSSH user/host
 	// certificate signed under a profile (target: CA; detail: serial, type, key

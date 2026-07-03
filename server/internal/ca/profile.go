@@ -61,6 +61,19 @@ type Profile struct {
 	// subject key for a pqc profile, or the alternative key for a hybrid profile.
 	// Empty defaults to ml-dsa-65. Ignored for classical profiles.
 	PQCKeyType string `json:"pqc_key_type,omitempty"`
+
+	// RequireApproval routes operator/API-driven leaf issuance under this profile
+	// through the four-eyes / maker-checker approval gate (Task 84) instead of
+	// issuing immediately: the request is parked for a configurable number of
+	// distinct approvers, and the certificate is delivered only once the threshold
+	// is met. Enterprises use it for high-assurance, wildcard, or otherwise
+	// sensitive profiles. It gates only operator/API issuance (the REST and gRPC
+	// IssueCertificate paths); automated protocol flows (ACME/EST/SCEP/CMP), which
+	// enroll machines, deliberately bypass the manual gate. Enforcement also
+	// requires the approvals engine to be enabled and the cert.issue class guarded
+	// (see approvals.enabled / approvals.thresholds); when the gate is disabled the
+	// flag is inert and issuance proceeds immediately.
+	RequireApproval bool `json:"require_approval,omitempty"`
 }
 
 // CertAlgorithm names the signature scheme family a profile issues under.

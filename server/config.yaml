@@ -265,6 +265,21 @@ profiles: []
 #                             # true = issue anyway with whatever SCTs were obtained
 #       timeout_seconds: 5    # per-log attempt timeout
 #       retries: 2            # extra attempts per log after the first
+#   - name: wildcard-tls
+#     description: "Wildcard TLS certificate — held for manual approval"
+#     key_usages: [digitalSignature, keyEncipherment]
+#     ext_key_usages: [serverAuth]
+#     default_validity_days: 90
+#     max_validity_days: 397
+#     # require_approval routes operator/API issuance under this profile through
+#     # the four-eyes / maker-checker gate (Task 84) instead of issuing at once:
+#     # the request is parked until the required number of DISTINCT approvers sign
+#     # off (see the `approvals` block, cert.issue class). Use it for wildcard,
+#     # high-assurance, or otherwise sensitive profiles. It gates ONLY operator/API
+#     # issuance (REST + gRPC); automated protocol flows (ACME/EST/SCEP/CMP), which
+#     # enroll machines, always bypass the manual gate. It is inert unless
+#     # approvals.enabled and the cert.issue class is guarded.
+#     require_approval: true
 #   - name: public-tls
 #     description: "Publicly-trusted TLS server certificate (CA/B BR enforced)"
 #     key_usages: [digitalSignature, keyEncipherment]
@@ -595,3 +610,33 @@ canary:
 #       - id: "carol"
 #         # public_key_file: "carol.pub"  # or an externally-held public key (wrap-only)
 #         key_label: "agent-carol"
+
+# --- Four-eyes / maker-checker approval gate ----------------------------------
+# Hold high-risk operations until a configurable number of DISTINCT approvers
+# (never the requester) sign off. Approving requires the `approver` role
+# (approval:approve), deliberately separate from the roles that REQUEST the
+# operations. The gate is disabled unless approvals.enabled is set, so existing
+# deployments are unaffected until they opt in. See docs/approvals.md.
+approvals:
+  enabled: false
+  # default_threshold is the distinct-approver count for any guarded class without
+  # its own threshold. A bare `enabled: true` defaults it to 2 (classic four-eyes);
+  # if only per-class thresholds are given, unlisted classes stay ungated.
+  default_threshold: 2
+  # request_ttl_hours bounds how long a pending request stays actionable (default 72).
+  request_ttl_hours: 72
+  # thresholds overrides the approver count per operation class. A value of 0
+  # leaves that class ungated even while approvals are enabled. Classes:
+  #   ca.create, ca.rotate, ca.retire, revocation.bulk, secret.kek_rotate,
+  #   profile.change, escrow.policy, and cert.issue (Task 84).
+  #
+  # cert.issue guards operator/API leaf issuance, but ONLY for profiles whose
+  # require_approval flag is set (see the profiles block). Automated protocol
+  # flows (ACME/EST/SCEP/CMP) enroll machines and always bypass the manual gate.
+  # Approve with `secsy-ca approvals approve <id>` (or the console Approvals page),
+  # then fetch the certificate with `secsy-ca approvals certificate <id>` or
+  # GET /api/approvals/<id>/certificate.
+  thresholds: {}
+  #   cert.issue: 2
+  #   ca.create: 2
+  #   revocation.bulk: 3

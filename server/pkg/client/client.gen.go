@@ -169,6 +169,7 @@ const (
 	CaCreate        PendingApprovalOperationClass = "ca.create"
 	CaRetire        PendingApprovalOperationClass = "ca.retire"
 	CaRotate        PendingApprovalOperationClass = "ca.rotate"
+	CertIssue       PendingApprovalOperationClass = "cert.issue"
 	EscrowPolicy    PendingApprovalOperationClass = "escrow.policy"
 	ProfileChange   PendingApprovalOperationClass = "profile.change"
 	RevocationBulk  PendingApprovalOperationClass = "revocation.bulk"
@@ -1506,6 +1507,20 @@ type PendingApprovalOperationClass string
 // PendingApprovalStatus defines model for PendingApproval.Status.
 type PendingApprovalStatus string
 
+// PendingIssuanceResponse Returned (202) when leaf issuance is held for four-eyes approval (Task 84). No certificate was issued; fetch it from certificate_url once approved.
+type PendingIssuanceResponse struct {
+	// Approval A four-eyes / maker-checker approval request. The guarded operation is held until required_approvals DISTINCT approvers (never the requester) sign off, then re-running it consumes the approval (status executed).
+	Approval       *PendingApproval `json:"approval,omitempty"`
+	ApprovalId     *string          `json:"approval_id,omitempty"`
+	ApprovalsCount *int             `json:"approvals_count,omitempty"`
+
+	// CertificateUrl Where to fetch the certificate once the request is approved.
+	CertificateUrl    *string `json:"certificate_url,omitempty"`
+	Message           *string `json:"message,omitempty"`
+	RequiredApprovals *int    `json:"required_approvals,omitempty"`
+	Status            *string `json:"status,omitempty"`
+}
+
 // Permission defines model for Permission.
 type Permission string
 
@@ -1546,6 +1561,9 @@ type Profile struct {
 	MaxPathLen          *int      `json:"max_path_len,omitempty"`
 	MaxValidityDays     *int      `json:"max_validity_days,omitempty"`
 	Name                *string   `json:"name,omitempty"`
+
+	// RequireApproval When true, operator/API issuance under this profile is routed through the four-eyes manual approval gate (Task 84) instead of issuing immediately. Automated protocol flows (ACME/EST/SCEP/CMP) bypass it.
+	RequireApproval *bool `json:"require_approval,omitempty"`
 }
 
 // ProviderKeyEntry defines model for ProviderKeyEntry.
@@ -2458,6 +2476,9 @@ type ClientInterface interface {
 
 	ApproveApproval(ctx context.Context, id ApprovalId, body ApproveApprovalJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetApprovalCertificate request
+	GetApprovalCertificate(ctx context.Context, id ApprovalId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// RejectApprovalWithBody request with any body
 	RejectApprovalWithBody(ctx context.Context, id ApprovalId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -2953,6 +2974,18 @@ func (c *Client) ApproveApprovalWithBody(ctx context.Context, id ApprovalId, con
 
 func (c *Client) ApproveApproval(ctx context.Context, id ApprovalId, body ApproveApprovalJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewApproveApprovalRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetApprovalCertificate(ctx context.Context, id ApprovalId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetApprovalCertificateRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -5142,6 +5175,40 @@ func NewApproveApprovalRequestWithBody(server string, id ApprovalId, contentType
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGetApprovalCertificateRequest generates requests for GetApprovalCertificate
+func NewGetApprovalCertificateRequest(server string, id ApprovalId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/approvals/%s/certificate", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
 
 	return req, nil
 }
@@ -9512,6 +9579,9 @@ type ClientWithResponsesInterface interface {
 
 	ApproveApprovalWithResponse(ctx context.Context, id ApprovalId, body ApproveApprovalJSONRequestBody, reqEditors ...RequestEditorFn) (*ApproveApprovalResponse, error)
 
+	// GetApprovalCertificateWithResponse request
+	GetApprovalCertificateWithResponse(ctx context.Context, id ApprovalId, reqEditors ...RequestEditorFn) (*GetApprovalCertificateResponse, error)
+
 	// RejectApprovalWithBodyWithResponse request with any body
 	RejectApprovalWithBodyWithResponse(ctx context.Context, id ApprovalId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RejectApprovalResponse, error)
 
@@ -10084,6 +10154,29 @@ func (r ApproveApprovalResponse) StatusCode() int {
 	return 0
 }
 
+type GetApprovalCertificateResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *IssueCertResponse
+	JSON202      *PendingIssuanceResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetApprovalCertificateResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetApprovalCertificateResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type RejectApprovalResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -10520,6 +10613,7 @@ type IssueCertificateResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
 	JSON201      *IssueCertResponse
+	JSON202      *PendingIssuanceResponse
 	JSON400      *BadRequest
 	JSON403      *Forbidden
 }
@@ -12605,6 +12699,15 @@ func (c *ClientWithResponses) ApproveApprovalWithResponse(ctx context.Context, i
 	return ParseApproveApprovalResponse(rsp)
 }
 
+// GetApprovalCertificateWithResponse request returning *GetApprovalCertificateResponse
+func (c *ClientWithResponses) GetApprovalCertificateWithResponse(ctx context.Context, id ApprovalId, reqEditors ...RequestEditorFn) (*GetApprovalCertificateResponse, error) {
+	rsp, err := c.GetApprovalCertificate(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetApprovalCertificateResponse(rsp)
+}
+
 // RejectApprovalWithBodyWithResponse request with arbitrary body returning *RejectApprovalResponse
 func (c *ClientWithResponses) RejectApprovalWithBodyWithResponse(ctx context.Context, id ApprovalId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RejectApprovalResponse, error) {
 	rsp, err := c.RejectApprovalWithBody(ctx, id, contentType, body, reqEditors...)
@@ -14069,6 +14172,39 @@ func ParseApproveApprovalResponse(rsp *http.Response) (*ApproveApprovalResponse,
 	return response, nil
 }
 
+// ParseGetApprovalCertificateResponse parses an HTTP response from a GetApprovalCertificateWithResponse call
+func ParseGetApprovalCertificateResponse(rsp *http.Response) (*GetApprovalCertificateResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetApprovalCertificateResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest IssueCertResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 202:
+		var dest PendingIssuanceResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON202 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseRejectApprovalResponse parses an HTTP response from a RejectApprovalWithResponse call
 func ParseRejectApprovalResponse(rsp *http.Response) (*RejectApprovalResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -14642,6 +14778,13 @@ func ParseIssueCertificateResponse(rsp *http.Response) (*IssueCertificateRespons
 			return nil, err
 		}
 		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 202:
+		var dest PendingIssuanceResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON202 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
 		var dest BadRequest

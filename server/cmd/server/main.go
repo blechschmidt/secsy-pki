@@ -35,6 +35,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/grpcapi"
 	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
+	"github.com/blechschmidt/secsy-pki/server/internal/issueapproval"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/leader"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
@@ -239,6 +240,7 @@ func main() {
 				ExtKeyUsages:        p.ExtKeyUsages,
 				DefaultValidityDays: p.DefaultValidityDays,
 				MaxValidityDays:     p.MaxValidityDays,
+				RequireApproval:     p.RequireApproval,
 			}
 			if p.CT.Enabled {
 				if ctSubmitter == nil {
@@ -428,6 +430,10 @@ func main() {
 		Thresholds:       cfg.Approvals.Thresholds,
 		TTL:              cfg.Approvals.ApprovalTTL(),
 	})
+	// Emit the cert.issue.denied domain event + metric whenever a per-profile
+	// issuance approval (Task 84) is rejected or expires, regardless of the
+	// transport that triggered it (including the background expiry sweep below).
+	approvalEngine.SetTerminalHook(issueapproval.NewTerminalHook(db))
 	api.SetApprovals(approvalEngine)
 	// Expire stale approval requests on a leader-elected background loop (a
 	// singleton job, like the other periodic sweeps). Expiry is also enforced

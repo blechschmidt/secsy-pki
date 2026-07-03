@@ -164,8 +164,9 @@ type ApprovalsConfig struct {
 	DefaultThreshold int `yaml:"default_threshold"`
 	// Thresholds overrides the required approver count per operation class, keyed
 	// by class id: ca.create, ca.rotate, ca.retire, profile.change,
-	// revocation.bulk, escrow.policy, secret.kek_rotate. A value of 0 leaves that
-	// class ungated even while approvals are enabled.
+	// revocation.bulk, escrow.policy, secret.kek_rotate, cert.issue. A value of 0
+	// leaves that class ungated even while approvals are enabled. cert.issue only
+	// takes effect for profiles whose require_approval flag is set (Task 84).
 	Thresholds map[string]int `yaml:"thresholds"`
 	// RequestTTLHours bounds how long a pending request stays actionable before
 	// it expires. Defaults to 72 (three days) when unset.
@@ -1293,6 +1294,14 @@ type ProfileConfig struct {
 	// domain allowlists before signing, and the CA/B Forum S/MIME Baseline
 	// Requirements lint rules apply. See ProfileSMIMEConfig.
 	SMIME ProfileSMIMEConfig `yaml:"smime"`
+	// RequireApproval routes operator/API-driven leaf issuance under this profile
+	// through the four-eyes / maker-checker approval gate (Task 84) instead of
+	// issuing immediately. Use it for high-assurance, wildcard, or otherwise
+	// sensitive profiles. Enforcement also needs approvals.enabled with the
+	// cert.issue class guarded (approvals.default_threshold or
+	// approvals.thresholds[cert.issue] > 0); when the gate is off the flag is
+	// inert. Automated protocol flows (ACME/EST/SCEP/CMP) always bypass it.
+	RequireApproval bool `yaml:"require_approval"`
 }
 
 // ProfileSMIMEConfig is a profile's S/MIME issuance policy. Enabled switches
@@ -2444,6 +2453,7 @@ var validRoleNames = map[string]bool{"admin": true, "issuer": true, "signer": tr
 var validApprovalClasses = map[string]bool{
 	"ca.create": true, "ca.rotate": true, "ca.retire": true, "profile.change": true,
 	"revocation.bulk": true, "escrow.policy": true, "secret.kek_rotate": true,
+	"cert.issue": true,
 }
 
 // validateApprovals sanity-checks the four-eyes approval configuration when
@@ -2468,7 +2478,7 @@ func (c *Config) validateApprovals() error {
 	guarded := a.ApprovalDefaultThreshold() > 0
 	for class, n := range a.Thresholds {
 		if !validApprovalClasses[class] {
-			return fmt.Errorf("approvals.thresholds[%q]: unknown operation class (valid: ca.create, ca.rotate, ca.retire, profile.change, revocation.bulk, escrow.policy, secret.kek_rotate)", class)
+			return fmt.Errorf("approvals.thresholds[%q]: unknown operation class (valid: ca.create, ca.rotate, ca.retire, profile.change, revocation.bulk, escrow.policy, secret.kek_rotate, cert.issue)", class)
 		}
 		if n < 0 {
 			return fmt.Errorf("approvals.thresholds[%q]: threshold must not be negative", class)

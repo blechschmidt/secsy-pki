@@ -130,6 +130,13 @@ func (m *memStore) SetApprovalStatus(id, from, to string, at time.Time) (bool, e
 	return true, nil
 }
 
+func (m *memStore) SetApprovalResult(id, result string) error {
+	if pa, ok := m.approvals[id]; ok {
+		pa.Result = result
+	}
+	return nil
+}
+
 func (m *memStore) ListExpirableApprovals(now time.Time) ([]models.PendingApproval, error) {
 	var out []models.PendingApproval
 	for _, pa := range m.approvals {
@@ -389,5 +396,131 @@ func TestDisabledAndUnguarded(t *testing.T) {
 	// But a guarded class in the same policy still blocks.
 	if res, _ := partial.Guard(context.Background(), GuardRequest{Class: ClassBulkRevoke, ResourceKey: "ca:1", Actor: "a"}); res.Allowed {
 		t.Fatal("a guarded class must still block")
+	}
+}
+
+// ---- Task 84: cert.issue ParkOnly + Claim + RecordResult + terminal hook -----
+
+// guardIssue parks a cert.issue request (ParkOnly) for a given requester.
+func guardIssue(t *testing.T, eng *Engine, actor string) GuardResult {
+	t.Helper()
+	res, err := eng.Guard(context.Background(), GuardRequest{
+		Class:       ClassCertIssue,
+		ResourceKey: "ca:1",
+		Summary:     "issue leaf for " + actor,
+		Params:      "profile=server\nsubject=CN=" + actor + "\nsans=host.example\nrequester=" + actor,
+		Payload:     `{"ca_id":"1","profile":"server","csr":"PEM","requested_by":"` + actor + `"}`,
+		Actor:       actor,
+		Tenant:      models.DefaultTenantID,
+		ParkOnly:    true,
+	})
+	if err != nil {
+		t.Fatalf("Guard(cert.issue): %v", err)
+	}
+	return res
+}
+
+// TestGuardCreatedFlag: the first park reports Created; a re-park of the same
+// still-pending request reuses it and does not report Created.
+func TestGuardCreatedFlag(t *testing.T) {
+	eng, st, _ := testEngine(t)
+	first := guardIssue(t, eng, "alice")
+	if !first.Created || first.Approval.Status != StatusPending {
+		t.Fatalf("first park must be a fresh pending request: %+v", first)
+	}
+	second := guardIssue(t, eng, "alice")
+	if second.Created {
+		t.Fatal("re-park of the same pending request must not report Created")
+	}
+	if second.Approval.ID != first.Approval.ID {
+		t.Fatal("re-park must reuse the same request")
+	}
+	if len(st.approvals) != 1 {
+		t.Fatalf("want exactly 1 stored request, got %d", len(st.approvals))
+	}
+}
+
+// TestParkOnlyNeverConsumes: a ParkOnly guard reports an approved request as
+// blocked (never consuming it inline), and Claim then completes it exactly once.
+func TestParkOnlyNeverConsumes(t *testing.T) {
+	eng, st, _ := testEngine(t)
+	id := guardIssue(t, eng, "alice").Approval.ID
+
+	if _, err := eng.Approve(context.Background(), id, "bob", "Bob", "", ""); err != nil {
+		t.Fatalf("approve bob: %v", err)
+	}
+	if _, err := eng.Approve(context.Background(), id, "carol", "Carol", "", ""); err != nil {
+		t.Fatalf("approve carol: %v", err)
+	}
+	if pa, _ := eng.Get(id); pa.Status != StatusApproved {
+		t.Fatalf("after 2/2 approvals want approved, got %s", pa.Status)
+	}
+
+	// A ParkOnly guard against the approved request must NOT execute it.
+	res := guardIssue(t, eng, "alice")
+	if res.Allowed {
+		t.Fatal("ParkOnly guard must never allow inline execution")
+	}
+	if res.Created || res.Approval.ID != id || res.Approval.Status != StatusApproved {
+		t.Fatalf("ParkOnly guard must reuse the approved request untouched: %+v", res)
+	}
+	if len(st.approvals) != 1 {
+		t.Fatalf("no duplicate request may be created, got %d", len(st.approvals))
+	}
+
+	// Claim wins exactly once and flips approved -> executed.
+	claimed, won, err := eng.Claim(context.Background(), id, "alice", "Alice", "")
+	if err != nil || !won || claimed.Status != StatusExecuted {
+		t.Fatalf("first Claim must win and execute: won=%v err=%v pa=%+v", won, err, claimed)
+	}
+	if _, won2, _ := eng.Claim(context.Background(), id, "alice", "Alice", ""); won2 {
+		t.Fatal("a second Claim on an executed request must not win")
+	}
+	if executeEvents := st.eventCount(audit.ActionApprovalExecute, audit.ResultSuccess); executeEvents != 1 {
+		t.Fatalf("exactly one approval.execute event expected, got %d", executeEvents)
+	}
+
+	// RecordResult stores the outcome blob for later delivery.
+	if err := eng.RecordResult(context.Background(), id, `{"serial":"42","ca_id":"1"}`); err != nil {
+		t.Fatalf("RecordResult: %v", err)
+	}
+	if got, _ := eng.Get(id); got.Result != `{"serial":"42","ca_id":"1"}` {
+		t.Fatalf("result not persisted: %q", got.Result)
+	}
+}
+
+// TestClaimRejectsUnapproved: Claim refuses a still-pending request and is
+// idempotent on an already-executed one.
+func TestClaimRejectsUnapproved(t *testing.T) {
+	eng, _, _ := testEngine(t)
+	id := guardIssue(t, eng, "alice").Approval.ID
+	if _, won, err := eng.Claim(context.Background(), id, "x", "", ""); won || err == nil {
+		t.Fatalf("Claim on a pending request must not win and must error, won=%v err=%v", won, err)
+	}
+}
+
+// TestTerminalHookFires: the terminal hook is invoked with OutcomeDenied on
+// rejection and OutcomeExpired on a sweep, for cert.issue requests.
+func TestTerminalHookFires(t *testing.T) {
+	eng, _, clock := testEngine(t)
+	var got []string
+	eng.SetTerminalHook(func(pa *models.PendingApproval, outcome string) {
+		got = append(got, pa.OperationClass+":"+outcome)
+	})
+
+	// Reject one request.
+	rejID := guardIssue(t, eng, "alice").Approval.ID
+	if _, err := eng.Reject(context.Background(), rejID, "bob", "Bob", "veto", ""); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+	// Let another expire, then sweep.
+	guardIssue(t, eng, "dave")
+	*clock = clock.Add(100 * time.Hour) // past the 72h TTL
+	if _, err := eng.SweepExpired(context.Background()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	if len(got) != 2 || got[0] != ClassCertIssue+":"+OutcomeDenied || got[1] != ClassCertIssue+":"+OutcomeExpired {
+		t.Fatalf("terminal hook events = %v, want [cert.issue:denied cert.issue:expired]", got)
 	}
 }

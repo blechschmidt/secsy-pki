@@ -20,6 +20,15 @@ type Engine struct {
 	pol   Policy
 	// clock is injectable so tests can drive expiry deterministically.
 	clock func() time.Time
+	// onTerminal, when set, is invoked after a request reaches a NEGATIVE
+	// terminal state (rejected or expired) with the outcome string
+	// OutcomeDenied or OutcomeExpired. The wiring layer uses it to emit
+	// operation-class-specific audit events and metrics (e.g. cert.issue.denied,
+	// Task 84) for classes that need them, without coupling this package to those
+	// domains. It runs synchronously after the transition is durably recorded and
+	// must not block. The positive terminal (executed) is owned by the caller that
+	// completes the operation, so it is deliberately not reported here.
+	onTerminal func(pa *models.PendingApproval, outcome string)
 }
 
 // NewEngine builds an Engine. A nil store or auditor is tolerated only for a
@@ -27,6 +36,23 @@ type Engine struct {
 // requires both.
 func NewEngine(store Store, aud Auditor, pol Policy) *Engine {
 	return &Engine{store: store, audit: aud, pol: pol, clock: time.Now}
+}
+
+// SetTerminalHook installs a callback invoked when a request reaches a negative
+// terminal state (rejected or expired). See Engine.onTerminal. Passing nil
+// clears it. It is safe to call once during wiring, before the engine serves.
+func (e *Engine) SetTerminalHook(fn func(pa *models.PendingApproval, outcome string)) {
+	if e == nil {
+		return
+	}
+	e.onTerminal = fn
+}
+
+// fireTerminal invokes the terminal hook, if installed, tolerating a nil engine.
+func (e *Engine) fireTerminal(pa *models.PendingApproval, outcome string) {
+	if e != nil && e.onTerminal != nil && pa != nil {
+		e.onTerminal(pa, outcome)
+	}
 }
 
 // Policy returns the engine's effective policy.
@@ -60,6 +86,19 @@ type GuardRequest struct {
 	ActorName    string
 	Tenant       string
 	IP           string
+	// Payload is an opaque, class-specific serialization of the operation stored
+	// on a freshly created request so it can be completed after approval without
+	// the requester resubmitting it (Task 84's cert.issue parks the CSR and
+	// issuance parameters here). It is used only on the create path.
+	Payload string
+	// ParkOnly makes Guard never consume an approved request inline: it always
+	// reports the operation as blocked (Allowed=false), returning the pending or
+	// approved request so the caller can direct the requester to fetch the
+	// completed result separately. It is used by classes whose completion is a
+	// distinct, server-side step rather than a re-run of the original call
+	// (cert.issue). Admin-op classes leave it false to keep the re-run-consumes
+	// semantics.
+	ParkOnly bool
 }
 
 func (r GuardRequest) tenant() string {
@@ -83,6 +122,10 @@ type GuardResult struct {
 	Allowed  bool
 	Approval *models.PendingApproval
 	Reason   string
+	// Created is true only when this call recorded a brand-new pending request
+	// (rather than reusing an already-open one), so the caller can emit a
+	// "request parked" domain event exactly once instead of on every re-attempt.
+	Created bool
 }
 
 // Guard is the fail-closed pre-execution chokepoint. For an unguarded class it
@@ -113,12 +156,19 @@ func (e *Engine) Guard(ctx context.Context, req GuardRequest) (GuardResult, erro
 		if ok, _ := e.store.SetApprovalStatus(existing.ID, existing.Status, StatusExpired, now); ok {
 			e.record(existing, audit.ActionApprovalExpire, req.Actor, req.ActorName, req.IP,
 				audit.ResultSuccess, "expired before execution")
+			e.fireTerminal(existing, OutcomeExpired)
 		}
 		existing = nil
 	}
 	if existing != nil {
 		switch existing.Status {
 		case StatusApproved:
+			// ParkOnly classes complete via a separate server-side step (e.g.
+			// cert.issue's fetch/deliver), so never consume inline: report the
+			// approved request as ready-to-fetch while still blocking this call path.
+			if req.ParkOnly {
+				return GuardResult{Allowed: false, Approval: existing, Reason: "approved; awaiting completion"}, nil
+			}
 			// Atomically consume: approved -> executed. Only one racing caller wins.
 			ok, err := e.store.SetApprovalStatus(existing.ID, StatusApproved, StatusExecuted, now)
 			if err != nil {
@@ -154,13 +204,14 @@ func (e *Engine) Guard(ctx context.Context, req GuardRequest) (GuardResult, erro
 		Status:            StatusPending,
 		CreatedAt:         now,
 		ExpiresAt:         now.Add(e.pol.ttl()),
+		Payload:           req.Payload,
 	}
 	if err := e.store.CreatePendingApproval(pa); err != nil {
 		return GuardResult{}, fmt.Errorf("approval: recording request: %w", err)
 	}
 	e.record(pa, audit.ActionApprovalRequest, req.Actor, req.ActorName, req.IP, audit.ResultSuccess,
 		fmt.Sprintf("requires %d distinct approver(s)", pa.RequiredApprovals))
-	return GuardResult{Allowed: false, Approval: pa, Reason: "approval required"}, nil
+	return GuardResult{Allowed: false, Approval: pa, Reason: "approval required", Created: true}, nil
 }
 
 // Approve records one approver's sign-off. It denies self-approval (approver ==
@@ -215,6 +266,58 @@ func (e *Engine) Approve(ctx context.Context, id, approver, approverName, commen
 	return e.load(id)
 }
 
+// Claim atomically transitions an approved request to executed so a ParkOnly
+// class (Task 84's cert.issue) can complete the guarded operation exactly once.
+// It returns claimed=true to the single caller that won the transition; racing
+// callers get claimed=false and the current request state, and must NOT perform
+// the operation. On a win it appends the approval.execute lifecycle event; the
+// caller records the operation's own outcome via RecordResult and audits the
+// domain event. A request that is not currently approved yields a StateError
+// (pending) or is returned as-is when already executed (idempotent completion).
+func (e *Engine) Claim(ctx context.Context, id, actor, actorName, ip string) (pa *models.PendingApproval, claimed bool, err error) {
+	pa, err = e.load(id)
+	if err != nil {
+		return nil, false, err
+	}
+	switch pa.Status {
+	case StatusExecuted:
+		// Already completed by an earlier claim; the caller delivers the stored
+		// Result rather than re-running the operation.
+		return pa, false, nil
+	case StatusApproved:
+		// fall through to the atomic claim below.
+	default:
+		return pa, false, &StateError{Status: pa.Status}
+	}
+	now := e.now()
+	ok, err := e.store.SetApprovalStatus(id, StatusApproved, StatusExecuted, now)
+	if err != nil {
+		return nil, false, fmt.Errorf("approval: claiming approved request: %w", err)
+	}
+	if !ok {
+		// Lost the race (another caller consumed it, or it expired). Reload so the
+		// caller sees the authoritative state.
+		reloaded, _ := e.load(id)
+		return reloaded, false, nil
+	}
+	pa.Status = StatusExecuted
+	pa.ExecutedAt = &now
+	e.record(pa, audit.ActionApprovalExecute, actor, actorName, ip, audit.ResultSuccess,
+		"threshold met; operation completed")
+	return pa, true, nil
+}
+
+// RecordResult stores an opaque outcome blob against a request (e.g. the issued
+// certificate's serial for cert.issue), so the completed operation's artifact
+// can be delivered on later fetches. It is a plain update, independent of the
+// state machine; call it after Claim has authorized completion.
+func (e *Engine) RecordResult(ctx context.Context, id, result string) error {
+	if err := e.store.SetApprovalResult(id, result); err != nil {
+		return fmt.Errorf("approval: recording result: %w", err)
+	}
+	return nil
+}
+
 // Reject vetoes a pending request. A single rejection is terminal (four-eyes:
 // any approver may block). The requester may also reject to withdraw their own
 // request.
@@ -241,7 +344,8 @@ func (e *Engine) Reject(ctx context.Context, id, approver, approverName, comment
 		Comment:      comment,
 		CreatedAt:    now,
 	})
-	if _, err := e.store.SetApprovalStatus(id, StatusPending, StatusRejected, now); err != nil {
+	rejected, err := e.store.SetApprovalStatus(id, StatusPending, StatusRejected, now)
+	if err != nil {
 		return nil, fmt.Errorf("approval: marking rejected: %w", err)
 	}
 	detail := "rejected"
@@ -249,6 +353,9 @@ func (e *Engine) Reject(ctx context.Context, id, approver, approverName, comment
 		detail += ": " + comment
 	}
 	e.record(pa, audit.ActionApprovalReject, approver, approverName, ip, audit.ResultSuccess, detail)
+	if rejected {
+		e.fireTerminal(pa, OutcomeDenied)
+	}
 	return e.load(id)
 }
 
@@ -283,6 +390,7 @@ func (e *Engine) SweepExpired(ctx context.Context) (int, error) {
 		}
 		if ok, _ := e.store.SetApprovalStatus(pa.ID, pa.Status, StatusExpired, now); ok {
 			e.record(pa, audit.ActionApprovalExpire, "system", "", "", audit.ResultSuccess, "expired (swept)")
+			e.fireTerminal(pa, OutcomeExpired)
 			n++
 		}
 	}
@@ -305,6 +413,7 @@ func (e *Engine) load(id string) (*models.PendingApproval, error) {
 func (e *Engine) expire(pa *models.PendingApproval, actor, actorName, ip string) {
 	if ok, _ := e.store.SetApprovalStatus(pa.ID, pa.Status, StatusExpired, e.now()); ok {
 		e.record(pa, audit.ActionApprovalExpire, actor, actorName, ip, audit.ResultSuccess, "expired")
+		e.fireTerminal(pa, OutcomeExpired)
 	}
 }
 

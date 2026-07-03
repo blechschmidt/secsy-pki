@@ -61,6 +61,23 @@ func (s *service) IssueCertificate(ctx context.Context, req *pkiv1.IssueCertific
 		return nil, err
 	}
 
+	// Per-profile manual issuance-approval gate (Task 84). Machine protocol flows
+	// (ACME/EST/SCEP/CMP) bypass this; operator/API gRPC issuance under a
+	// require_approval profile is held for approval and answered with a
+	// FailedPrecondition carrying the request id, so the same four-eyes queue
+	// backs both transports. The certificate is fetched over REST/CLI/console once
+	// approved.
+	if pa, gated, clientErr, gateErr := s.api.IssuanceApprovalGate(
+		ctx, caID, req.GetProfile(), req.GetCsrPem(), int(req.GetValidityDays()), user, peerIP(ctx)); clientErr != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", clientErr)
+	} else if gateErr != nil {
+		return nil, status.Errorf(codes.Internal, "approval gate error: %v", gateErr)
+	} else if gated {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"certificate issuance requires four-eyes approval: request %s needs %d distinct approver(s); once approved, fetch it via GET /api/approvals/%s/certificate",
+			pa.ID, pa.RequiredApprovals, pa.ID)
+	}
+
 	mgr := s.newManager()
 	s.api.ConsumeHSMAuditLogs("")
 	result, err := mgr.IssueCertificate(ctx, ca.IssueSpec{

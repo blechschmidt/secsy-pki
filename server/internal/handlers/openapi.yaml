@@ -708,6 +708,13 @@ paths:
       operationId: issueCertificate
       tags: [Certificate Lifecycle]
       summary: Issue an end-entity certificate from a CSR
+      description: >-
+        Signs a CSR into an end-entity certificate under a profile. When the
+        selected profile sets require_approval and the four-eyes approval gate is
+        enabled with the cert.issue class guarded (Task 84), the certificate is
+        NOT issued: the request is held for manual approval and a 202 is returned
+        carrying the pending-approval id. Once the approver threshold is met,
+        fetch the certificate from /api/approvals/{id}/certificate.
       requestBody:
         required: true
         content:
@@ -719,6 +726,15 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/IssueCertResponse" }
+        "202":
+          description: >-
+            Issuance was held for four-eyes approval (the profile requires it).
+            No certificate was issued; poll /api/approvals/{id}/certificate once
+            the request is approved. The pending-approval id is also returned in
+            the X-Secsy-Approval-Id header.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PendingIssuanceResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
@@ -2453,6 +2469,40 @@ paths:
         "409":
           description: The request is no longer pending.
 
+  /api/approvals/{id}/certificate:
+    get:
+      operationId: getApprovalCertificate
+      tags: [Approvals]
+      summary: Fetch (and complete) the certificate for an approved issuance request
+      description: >-
+        Delivers the certificate for a per-profile issuance-approval request
+        (Task 84). While the request is still pending it returns 202; once the
+        approver threshold is met it performs the held issuance on the HSM exactly
+        once and returns the certificate; after rejection or expiry it returns 409
+        and never issues. Requires the SIGN_CERTIFICATE capability on the target
+        CA (the same capability needed to request it).
+      parameters:
+        - $ref: "#/components/parameters/ApprovalId"
+      responses:
+        "200":
+          description: The issued certificate.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssueCertResponse" }
+        "202":
+          description: The request still awaits approval; no certificate yet.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PendingIssuanceResponse" }
+        "400":
+          description: The request is not a certificate-issuance approval.
+        "403":
+          description: The caller lacks SIGN_CERTIFICATE on the target CA.
+        "404":
+          description: No such request (or the approval workflow is disabled).
+        "409":
+          description: The request was rejected or expired; no certificate will be issued.
+
 components:
   securitySchemes:
     basicAuth:
@@ -3064,6 +3114,12 @@ components:
         max_validity_days: { type: integer }
         is_ca: { type: boolean }
         max_path_len: { type: integer }
+        require_approval:
+          type: boolean
+          description: >-
+            When true, operator/API issuance under this profile is routed through
+            the four-eyes manual approval gate (Task 84) instead of issuing
+            immediately. Automated protocol flows (ACME/EST/SCEP/CMP) bypass it.
 
     IssueCertRequest:
       type: object
@@ -3622,7 +3678,7 @@ components:
         operation_class:
           type: string
           description: The guarded operation family.
-          enum: [ca.create, ca.rotate, ca.retire, profile.change, revocation.bulk, escrow.policy, secret.kek_rotate]
+          enum: [ca.create, ca.rotate, ca.retire, profile.change, revocation.bulk, escrow.policy, secret.kek_rotate, cert.issue]
         resource_key: { type: string }
         resource_name: { type: string }
         fingerprint:
@@ -3654,6 +3710,22 @@ components:
         requests:
           type: array
           items: { $ref: "#/components/schemas/PendingApproval" }
+
+    PendingIssuanceResponse:
+      type: object
+      description: >-
+        Returned (202) when leaf issuance is held for four-eyes approval (Task 84).
+        No certificate was issued; fetch it from certificate_url once approved.
+      properties:
+        status: { type: string, example: pending_approval }
+        approval_id: { type: string }
+        required_approvals: { type: integer }
+        approvals_count: { type: integer }
+        certificate_url:
+          type: string
+          description: Where to fetch the certificate once the request is approved.
+        message: { type: string }
+        approval: { $ref: "#/components/schemas/PendingApproval" }
 
     ApprovalDecisionRequest:
       type: object

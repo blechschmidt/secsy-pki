@@ -1252,11 +1252,14 @@ type KEKUsage struct {
 
 // PendingApproval is one four-eyes / maker-checker approval request (Task 81):
 // a high-risk administrative operation held at the gate until a configured
-// number of DISTINCT approvers (none of them the requester) sign off. It never
-// stores the operation's payload — only enough to identify it (class,
-// ResourceKey, Fingerprint) and describe it to approvers (Summary, Details).
-// The guarded operation re-runs after approval and the gate consumes the
-// approved request (status -> executed).
+// number of DISTINCT approvers (none of them the requester) sign off. For most
+// classes it stores only enough to identify the operation (class, ResourceKey,
+// Fingerprint) and describe it to approvers (Summary, Details); the guarded
+// operation re-runs after approval and the gate consumes the approved request
+// (status -> executed). Classes that cannot be re-run by the requester — notably
+// Task 84's cert.issue leaf issuance — additionally park the request inputs in
+// Payload and the completed outcome in Result, so the certificate can be issued
+// and delivered server-side after approval.
 type PendingApproval struct {
 	ID       string `json:"id" db:"id"`
 	TenantID string `json:"tenant_id" db:"tenant_id"`
@@ -1295,6 +1298,17 @@ type PendingApproval struct {
 	// single request is fetched.
 	ApprovalsCount int                `json:"approvals_count" db:"-"`
 	Decisions      []ApprovalDecision `json:"decisions,omitempty" db:"-"`
+	// Payload optionally carries an opaque, class-specific serialization of the
+	// parked operation so it can be completed after approval WITHOUT the requester
+	// resubmitting it (Task 84's cert.issue class stores the CSR and issuance
+	// parameters here). Admin-op classes that simply re-run after approval leave it
+	// empty. It is never exposed in API responses (json:"-").
+	Payload string `json:"-" db:"payload"`
+	// Result optionally carries an opaque, class-specific serialization of the
+	// completed operation's outcome (Task 84's cert.issue stores the issued serial
+	// here), so the certificate can be delivered on a later fetch. Empty until the
+	// approved request is consumed. It is never exposed in API responses.
+	Result string `json:"-" db:"result"`
 }
 
 // Expired reports whether the request's actionable window has elapsed.

@@ -987,6 +987,16 @@ $('issueBtn').onclick = async () => {
   $('issueBtn').disabled = true;
   try {
     const res = await api('POST', `/api/ca/${id}/issue`, body);
+    // A require_approval profile (Task 84) holds issuance for four-eyes approval:
+    // no certificate is returned yet — point the operator at the Approvals queue.
+    if (res.status === 'pending_approval') {
+      msg.textContent = `Issuance held for approval: request ${res.approval_id} needs ` +
+        `${res.required_approvals} distinct approver(s). Approve it under Approvals, then fetch the certificate there.`;
+      msg.className = 'notice warn';
+      $('issueResult').classList.add('hidden');
+      loadApprovals();
+      return;
+    }
     let ctNote = '';
     if (res.ct && res.ct.enabled) {
       ctNote = res.ct.embedded
@@ -1943,10 +1953,15 @@ async function loadApprovals() {
     tbody.innerHTML = rows.length ? rows.map(r => {
       const badge = (r.status === 'approved' || r.status === 'executed') ? 'valid'
         : ((r.status === 'rejected' || r.status === 'expired') ? 'revoked' : 'warning');
-      const actions = r.status === 'pending'
+      let actions = r.status === 'pending'
         ? `<button class="btn ghost sm" onclick="doApprove('${escapeHTML(r.id)}')">Approve</button>
            <button class="btn ghost sm" onclick="doReject('${escapeHTML(r.id)}')">Reject</button>`
         : '';
+      // Per-profile issuance approvals (Task 84) deliver the certificate once
+      // approved: offer a fetch button for cert.issue requests past the gate.
+      if (r.operation_class === 'cert.issue' && (r.status === 'approved' || r.status === 'executed')) {
+        actions += ` <button class="btn ghost sm" onclick="fetchApprovalCert('${escapeHTML(r.id)}')">Certificate</button>`;
+      }
       return `<tr>
         <td class="mono" title="${escapeHTML(r.summary || '')}">${escapeHTML(r.id)}</td>
         <td class="mono">${escapeHTML(r.operation_class)}</td>
@@ -1977,6 +1992,26 @@ async function doReject(id) {
   try { await api('POST', '/api/approvals/' + id + '/reject', { comment }); loadApprovals(); }
   catch (e) { alert('Reject failed: ' + e.message); }
 }
+// fetchApprovalCert completes and retrieves the certificate for an approved
+// per-profile issuance request (Task 84). On the first call for an approved
+// request the server issues it on the HSM; subsequent calls redeliver the same
+// certificate. It is global so the per-row button can reach it.
+async function fetchApprovalCert(id) {
+  try {
+    const res = await api('GET', '/api/approvals/' + id + '/certificate');
+    if (res.certificate) {
+      const pem = res.certificate + (res.chain ? '\n' + res.chain : '');
+      downloadBlob(pem, `cert-${res.serial || id}.pem`, 'application/x-pem-file');
+      alert(`Certificate for request ${id} issued (serial ${res.serial}); the PEM has been downloaded.`);
+    } else {
+      alert(res.message || 'The certificate is not ready yet.');
+    }
+    loadApprovals();
+  } catch (e) {
+    alert('Fetch certificate failed: ' + e.message);
+  }
+}
+
 $('approvalsRefresh').onclick = () => loadApprovals();
 $('approvalsStatus').onchange = () => loadApprovals();
 $('approvalsClass').addEventListener('keydown', e => { if (e.key === 'Enter') loadApprovals(); });

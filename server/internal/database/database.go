@@ -775,7 +775,9 @@ func (db *DB) migrate() error {
 			created_at TIMESTAMP NOT NULL,
 			expires_at TIMESTAMP NOT NULL,
 			decided_at TIMESTAMP,
-			executed_at TIMESTAMP
+			executed_at TIMESTAMP,
+			payload TEXT NOT NULL DEFAULT '',
+			result TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_pending_approvals_open ON pending_approvals(tenant_id, operation_class, fingerprint, status)`,
 		`CREATE INDEX IF NOT EXISTS idx_pending_approvals_status ON pending_approvals(status)`,
@@ -851,6 +853,13 @@ func (db *DB) migrate() error {
 		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
 		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS rotate_every_days INTEGER NOT NULL DEFAULT 0")
 		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS value_changed_at TIMESTAMP")
+		// Per-profile manual issuance-approval gate (Task 84): cert.issue requests
+		// park their issuance inputs (payload) and, once completed, the issued
+		// serial (result) so the certificate can be delivered after approval.
+		// Existing approval rows default to empty, so admin-op approvals are
+		// unaffected by the upgrade.
+		db.conn.Exec("ALTER TABLE pending_approvals ADD COLUMN IF NOT EXISTS payload TEXT NOT NULL DEFAULT ''")
+		db.conn.Exec("ALTER TABLE pending_approvals ADD COLUMN IF NOT EXISTS result TEXT NOT NULL DEFAULT ''")
 	} else {
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_ssh_restriction_set_id TEXT")
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_x509_restriction_set_id TEXT")
@@ -900,6 +909,10 @@ func (db *DB) migrate() error {
 		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN expires_at TIMESTAMP")
 		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN rotate_every_days INTEGER NOT NULL DEFAULT 0")
 		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN value_changed_at TIMESTAMP")
+		// Per-profile manual issuance-approval gate (Task 84). SQLite ADD COLUMN is
+		// idempotently retried; errors for already-present columns are ignored.
+		db.conn.Exec("ALTER TABLE pending_approvals ADD COLUMN payload TEXT NOT NULL DEFAULT ''")
+		db.conn.Exec("ALTER TABLE pending_approvals ADD COLUMN result TEXT NOT NULL DEFAULT ''")
 	}
 
 	// Backfill for stored secrets that predate value versioning (Task 73):

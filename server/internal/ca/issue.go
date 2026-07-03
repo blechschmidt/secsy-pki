@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -643,6 +644,40 @@ func parseAndVerifyCSR(csrPEM []byte) (*x509.CertificateRequest, error) {
 		return nil, fmt.Errorf("CSR must contain a subject common name or at least one SAN")
 	}
 	return csr, nil
+}
+
+// CSRIdentity is the subject and SANs extracted from a verified PKCS#10 CSR.
+// The per-profile issuance-approval gate (Task 84) uses it to validate a request
+// up front and to describe and fingerprint it while it is parked for approval.
+type CSRIdentity struct {
+	// Subject is the RFC 2253 string form of the CSR subject DN.
+	Subject string
+	// SANs are the CSR's DNS, IP, e-mail, and URI subject alternative names as
+	// flat strings, sorted so the fingerprint is stable regardless of ordering.
+	SANs []string
+}
+
+// InspectCSRForIssue decodes and verifies a PEM PKCS#10 CSR exactly as the leaf
+// issuance path does (valid self-signature and at least one identity), returning
+// its subject and SANs. It lets the operator/API issuance-approval gate reject
+// malformed requests before parking them and derive a stable request
+// fingerprint, without duplicating the CSR-validation rules.
+func InspectCSRForIssue(csrPEM []byte) (CSRIdentity, error) {
+	csr, err := parseAndVerifyCSR(csrPEM)
+	if err != nil {
+		return CSRIdentity{}, err
+	}
+	var sans []string
+	sans = append(sans, csr.DNSNames...)
+	for _, ip := range csr.IPAddresses {
+		sans = append(sans, ip.String())
+	}
+	sans = append(sans, csr.EmailAddresses...)
+	for _, u := range csr.URIs {
+		sans = append(sans, u.String())
+	}
+	sort.Strings(sans)
+	return CSRIdentity{Subject: csr.Subject.String(), SANs: sans}, nil
 }
 
 // newSerial returns a cryptographically random, positive certificate serial

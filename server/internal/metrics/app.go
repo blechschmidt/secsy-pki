@@ -44,6 +44,18 @@ var (
 		"Certificate lifecycle operations, partitioned by operation and result.",
 		"operation", "result")
 
+	// Per-profile manual issuance-approval gate (Task 84). CertIssueApprovals
+	// counts each transition of an operator/API leaf-issuance request routed
+	// through the four-eyes engine: "result" is pending (parked for approval),
+	// approved (certificate completed and delivered), denied (rejected or expired
+	// — never issued), or error (issuance failed after approval). It lets
+	// operators alert on a growing approval backlog or post-approval failures
+	// distinctly from ordinary issuance.
+	CertIssueApprovals = NewCounter(Default,
+		"secsy_cert_issue_approvals_total",
+		"Operator/API leaf-issuance requests routed through the manual approval gate, by outcome (pending|approved|denied|error).",
+		"result")
+
 	// Pre-issuance certificate linting (CA/Browser Forum Baseline Requirements
 	// gate). CertificateLints counts every lint run by outcome: "result" is
 	// pass|warn|fail (fail = an enforce-mode check blocked signing).

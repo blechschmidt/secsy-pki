@@ -55,13 +55,21 @@ const (
 	ClassEscrowPolicy = "escrow.policy"
 	// ClassKEKRotate guards secret-layer KEK rotation (Task 63).
 	ClassKEKRotate = "secret.kek_rotate"
+	// ClassCertIssue guards operator/API-driven end-entity (leaf) certificate
+	// issuance under a profile whose require_approval flag is set (Task 84).
+	// Unlike the admin-op classes, a cert.issue request cannot simply be re-run
+	// by the requester after approval; the request inputs are parked on the
+	// PendingApproval and the certificate is completed and delivered server-side
+	// once the approver threshold is met. Automated protocol flows
+	// (ACME/EST/SCEP/CMP) do not go through this class — they issue directly.
+	ClassCertIssue = "cert.issue"
 )
 
 // Classes is the set of recognized operation classes, in a stable order for
 // listing/validation and configuration documentation.
 var Classes = []string{
 	ClassCACreate, ClassCARotate, ClassCARetire, ClassProfileChange,
-	ClassBulkRevoke, ClassEscrowPolicy, ClassKEKRotate,
+	ClassBulkRevoke, ClassEscrowPolicy, ClassKEKRotate, ClassCertIssue,
 }
 
 var classTitles = map[string]string{
@@ -72,6 +80,7 @@ var classTitles = map[string]string{
 	ClassBulkRevoke:    "bulk revocation",
 	ClassEscrowPolicy:  "escrow-policy change",
 	ClassKEKRotate:     "secret KEK rotation",
+	ClassCertIssue:     "certificate issuance",
 }
 
 // ValidClass reports whether c names a recognized operation class.
@@ -104,6 +113,15 @@ const (
 const (
 	DecisionApprove = "approve"
 	DecisionReject  = "reject"
+)
+
+// Negative-terminal outcomes reported to the Engine's terminal hook (Task 84).
+// A rejected request is OutcomeDenied; a request whose window elapsed is
+// OutcomeExpired. The positive terminal (executed) is not reported — the caller
+// that completes the guarded operation owns that event.
+const (
+	OutcomeDenied  = "denied"
+	OutcomeExpired = "expired"
 )
 
 // DefaultTTL bounds how long a request may sit pending before it is treated as
@@ -204,6 +222,12 @@ type Store interface {
 	// stamping decided_at/executed_at as appropriate. changed is false when the
 	// row had already moved on, which the caller treats as losing a race.
 	SetApprovalStatus(id, from, to string, at time.Time) (changed bool, err error)
+	// SetApprovalResult records the opaque outcome blob (Result) of a completed
+	// request — used by classes that deliver a stored artifact after approval
+	// (Task 84's cert.issue records the issued serial). It is a plain update keyed
+	// by id; the state transition that authorizes completion is done separately
+	// via SetApprovalStatus.
+	SetApprovalResult(id, result string) error
 	// ListExpirableApprovals returns open requests whose window has elapsed.
 	ListExpirableApprovals(now time.Time) ([]models.PendingApproval, error)
 }

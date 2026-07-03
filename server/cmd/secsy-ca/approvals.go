@@ -23,8 +23,11 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/approval"
+	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
+	"github.com/blechschmidt/secsy-pki/server/internal/issueapproval"
+	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
 
@@ -39,9 +42,13 @@ func approvalPolicy(cfg *config.Config) approval.Policy {
 }
 
 // newApprovalEngine constructs the approval engine over the shared database
-// (which is both the Store and the audit Auditor).
+// (which is both the Store and the audit Auditor). It installs the Task 84
+// terminal hook so a cert.issue request rejected or expired from the CLI records
+// the same cert.issue.denied domain event and metric as the server would.
 func newApprovalEngine(db *database.DB, cfg *config.Config) *approval.Engine {
-	return approval.NewEngine(db, db, approvalPolicy(cfg))
+	eng := approval.NewEngine(db, db, approvalPolicy(cfg))
+	eng.SetTerminalHook(issueapproval.NewTerminalHook(db))
+	return eng
 }
 
 // guardCLI runs the approval gate for a CLI-initiated guarded operation. It
@@ -70,9 +77,11 @@ func guardCLI(db *database.DB, cfg *config.Config, req approval.GuardRequest) er
 		pa.ID, pa.RequiredApprovals, pa.ApprovalsCount, pa.ID)
 }
 
-// cmdApprovals dispatches the `approvals` subcommands. It needs only the
-// database and config (no key provider), so main dispatches it early.
-func cmdApprovals(db *database.DB, cfg *config.Config, args []string) error {
+// cmdApprovals dispatches the `approvals` subcommands. Most need only the
+// database and config (no key provider), so main dispatches it early; the
+// `certificate` subcommand completes a per-profile issuance approval (Task 84),
+// which signs on the HSM, so it builds a key provider lazily via providerFn.
+func cmdApprovals(db *database.DB, cfg *config.Config, providerFn func() (keyprovider.Provider, error), args []string) error {
 	if len(args) == 0 {
 		approvalsUsage()
 		return fmt.Errorf("approvals: no subcommand given")
@@ -87,6 +96,8 @@ func cmdApprovals(db *database.DB, cfg *config.Config, args []string) error {
 		return cmdApprovalsDecide(db, cfg, approval.DecisionApprove, rest)
 	case "reject":
 		return cmdApprovalsDecide(db, cfg, approval.DecisionReject, rest)
+	case "certificate", "cert":
+		return cmdApprovalsCertificate(db, cfg, providerFn, rest)
 	case "expire":
 		return cmdApprovalsExpire(db, cfg, rest)
 	case "help", "-h", "--help":
@@ -116,6 +127,13 @@ Usage:
 
   secsy-ca approvals reject <id> [-approver ID] [-comment TEXT]
       Veto a request (terminal). The requester may also reject to withdraw.
+
+  secsy-ca approvals certificate <id> [-out FILE] [-chain] [-json]
+      Complete and fetch the certificate for an APPROVED per-profile issuance
+      request (Task 84). Once the approver threshold is met this issues the
+      certificate on the HSM (exactly once) and prints it (PEM). Before approval
+      it reports the request is still pending; after rejection/expiry it reports
+      the request will never issue.
 
   secsy-ca approvals expire [-json]
       Retire every request whose approval window has elapsed.
@@ -257,8 +275,14 @@ func cmdApprovalsDecide(db *database.DB, cfg *config.Config, decision string, ar
 	}
 	switch pa.Status {
 	case approval.StatusApproved:
-		fmt.Printf("Request %s is now APPROVED (%d of %d) — the operation may be re-run to execute.\n",
-			pa.ID, pa.ApprovalsCount, pa.RequiredApprovals)
+		if pa.OperationClass == approval.ClassCertIssue {
+			fmt.Printf("Request %s is now APPROVED (%d of %d) — fetch the certificate with:\n"+
+				"  secsy-ca approvals certificate %s\n",
+				pa.ID, pa.ApprovalsCount, pa.RequiredApprovals, pa.ID)
+		} else {
+			fmt.Printf("Request %s is now APPROVED (%d of %d) — the operation may be re-run to execute.\n",
+				pa.ID, pa.ApprovalsCount, pa.RequiredApprovals)
+		}
 	case approval.StatusRejected:
 		fmt.Printf("Request %s is REJECTED.\n", pa.ID)
 	default:
@@ -278,6 +302,7 @@ func cmdApprovalsExpire(db *database.DB, cfg *config.Config, args []string) erro
 	// run so an operator can clean up requests left from a previously-enabled gate.
 	eng := approval.NewEngine(db, db, approval.Policy{Enabled: true,
 		DefaultThreshold: cfg.Approvals.ApprovalDefaultThreshold(), TTL: cfg.Approvals.ApprovalTTL()})
+	eng.SetTerminalHook(issueapproval.NewTerminalHook(db))
 	n, err := eng.SweepExpired(context.Background())
 	if err != nil {
 		return err
@@ -287,4 +312,75 @@ func cmdApprovalsExpire(db *database.DB, cfg *config.Config, args []string) erro
 	}
 	fmt.Printf("Expired %d stale request(s).\n", n)
 	return nil
+}
+
+// cmdApprovalsCertificate completes and fetches the certificate for an approved
+// per-profile issuance request (Task 84). It reuses the shared issueapproval
+// completion driver, so the certificate is issued on the HSM exactly once and
+// the same certificate is returned on any subsequent fetch.
+func cmdApprovalsCertificate(db *database.DB, cfg *config.Config, providerFn func() (keyprovider.Provider, error), args []string) error {
+	fs := flag.NewFlagSet("approvals certificate", flag.ContinueOnError)
+	out := fs.String("out", "", "write the certificate PEM to FILE instead of stdout")
+	chain := fs.Bool("chain", false, "print the full chain (leaf + issuer) rather than just the leaf")
+	asJSON := fs.Bool("json", false, "emit the full issuance response as JSON")
+	id, rest := splitIDAndFlags(args)
+	if err := fs.Parse(rest); err != nil {
+		return err
+	}
+	if id == "" {
+		id = fs.Arg(0)
+	}
+	if id == "" {
+		return fmt.Errorf("usage: secsy-ca approvals certificate <id>")
+	}
+
+	provider, err := providerFn()
+	if err != nil {
+		return fmt.Errorf("initializing key provider: %w", err)
+	}
+	defer provider.Close()
+
+	eng := newApprovalEngine(db, cfg)
+	mgr := ca.NewManager(db, provider)
+	outcome, err := issueapproval.Complete(context.Background(), eng, mgr, db, id, cliActor(), "", "")
+	if err != nil {
+		return err
+	}
+
+	switch outcome.State {
+	case issueapproval.StateDelivered:
+		if *asJSON {
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+				"serial":      outcome.Issued.Serial,
+				"profile":     outcome.Issued.Profile,
+				"not_before":  outcome.Issued.NotBefore.Format(time.RFC3339),
+				"not_after":   outcome.Issued.NotAfter.Format(time.RFC3339),
+				"certificate": outcome.Issued.Certificate,
+				"chain":       outcome.ChainPEM,
+			})
+		}
+		pem := outcome.Issued.Certificate
+		if *chain {
+			pem = outcome.ChainPEM
+		}
+		if *out != "" {
+			if err := os.WriteFile(*out, []byte(pem), 0o600); err != nil {
+				return fmt.Errorf("writing certificate: %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "Certificate for approval %s (serial %s) written to %s\n",
+				id, outcome.Issued.Serial, *out)
+			return nil
+		}
+		fmt.Print(pem)
+		return nil
+	case issueapproval.StatePending:
+		return fmt.Errorf("request %s is still awaiting approval (%s); the certificate is not issued yet",
+			id, outcome.Reason)
+	case issueapproval.StateDenied:
+		return fmt.Errorf("request %s will not issue: %s", id, outcome.Reason)
+	case issueapproval.StateFailed:
+		return fmt.Errorf("issuance failed after approval for request %s: %s", id, outcome.Err)
+	default:
+		return fmt.Errorf("request %s: %s", id, outcome.Reason)
+	}
 }

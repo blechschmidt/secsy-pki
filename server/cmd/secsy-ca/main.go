@@ -148,9 +148,13 @@ func run(args []string) error {
 	}
 
 	// The four-eyes approval queue (Task 81) needs only the database and config
-	// (no key provider), so dispatch it here alongside audit administration.
+	// for most subcommands, so dispatch it here alongside audit administration.
+	// The `certificate` subcommand (Task 84) completes an approved issuance on the
+	// HSM, so it is handed a lazy CA key-provider factory it invokes only then.
 	if command == "approvals" {
-		return cmdApprovals(db, cfg, cmdArgs)
+		return cmdApprovals(db, cfg, func() (keyprovider.Provider, error) {
+			return buildProvider(cfg, "ca")
+		}, cmdArgs)
 	}
 
 	// Certificate discovery is a TLS client plus X.509 analysis against the stored

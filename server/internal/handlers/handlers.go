@@ -490,6 +490,8 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/approvals/{id}", protected(http.HandlerFunc(a.GetApproval)))
 	mux.Handle("POST /api/approvals/{id}/approve", protected(http.HandlerFunc(a.ApproveApproval)))
 	mux.Handle("POST /api/approvals/{id}/reject", protected(http.HandlerFunc(a.RejectApproval)))
+	// Deliver the certificate for an approved per-profile issuance request (Task 84).
+	mux.Handle("GET /api/approvals/{id}/certificate", protected(http.HandlerFunc(a.GetApprovalCertificate)))
 
 	// Ad-hoc certificate linting and the key-provider inventory — REST
 	// counterparts of `secsy-ca lint` and `secsy-ca inventory` (Task 62).

@@ -55,6 +55,25 @@ func (a *API) IssueCertificate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-profile manual issuance-approval gate (Task 84): when the selected
+	// profile sets require_approval and the four-eyes engine guards cert.issue,
+	// hold the request for approval instead of issuing now. Automated protocol
+	// flows (ACME/EST/SCEP/CMP) call ca.Manager directly and never reach here.
+	pa, gated, clientErr, gateErr := a.IssuanceApprovalGate(
+		r.Context(), caID, req.Profile, req.CSR, req.ValidityDays, user, clientIP(r))
+	if clientErr != nil {
+		writeError(w, http.StatusBadRequest, "%v", clientErr)
+		return
+	}
+	if gateErr != nil {
+		writeError(w, http.StatusInternalServerError, "approval gate error: %v", gateErr)
+		return
+	}
+	if gated {
+		writeIssuancePending(w, pa)
+		return
+	}
+
 	mgr := ca.NewManager(a.db, a.keyProvider)
 
 	a.consumeHSMAuditLogs("")
