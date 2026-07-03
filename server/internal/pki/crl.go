@@ -263,8 +263,14 @@ const (
 	RevocationReasonSuperseded           = 4
 	RevocationReasonCessationOfOperation = 5
 	RevocationReasonCertificateHold      = 6
-	RevocationReasonPrivilegeWithdrawn   = 9
-	RevocationReasonAACompromise         = 10
+	// RevocationReasonRemoveFromCRL (8) is reserved for delta CRLs only (RFC 5280
+	// §5.3.1). It indicates a certificate that was on the base CRL with reason
+	// certificateHold has been released and must be removed from the running
+	// revocation set. It is never a valid input to a revocation request and is
+	// therefore deliberately absent from revocationReasonNames.
+	RevocationReasonRemoveFromCRL      = 8
+	RevocationReasonPrivilegeWithdrawn = 9
+	RevocationReasonAACompromise       = 10
 )
 
 // revocationReasonNames maps RFC 5280 reason names to their numeric codes.

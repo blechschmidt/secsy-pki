@@ -40,6 +40,23 @@ service PKIService {
   // cached OCSP "good" response so the new status is served immediately.
   rpc RevokeCertificate(RevokeCertificateRequest) returns (RevokeCertificateResponse);
 
+  // SuspendCertificate places a certificate on hold (RFC 5280 certificateHold) —
+  // a reversible revocation. While held the serial is reported revoked by OCSP
+  // and listed on the base CRL. Requires the same issue capability as revocation.
+  //
+  // Errors: PERMISSION_DENIED, INVALID_ARGUMENT (bad serial / already permanently
+  // revoked), NOT_FOUND (unknown CA).
+  rpc SuspendCertificate(SuspendCertificateRequest) returns (SuspendCertificateResponse);
+
+  // ReleaseCertificate removes a certificate hold, returning the certificate to
+  // service: OCSP reports it good, the next base CRL omits it, and the next delta
+  // CRL carries removeFromCRL. It succeeds only for a certificate on hold; a
+  // permanent revocation cannot be released.
+  //
+  // Errors: PERMISSION_DENIED, FAILED_PRECONDITION (not on hold / not revoked),
+  // NOT_FOUND (unknown CA).
+  rpc ReleaseCertificate(ReleaseCertificateRequest) returns (ReleaseCertificateResponse);
+
   // GetCertificate returns the authority's stored copy of a certificate it
   // issued, including its current status. Requires read standing in the CA's
   // tenant.
@@ -135,6 +152,29 @@ message RevokeCertificateResponse {
   string serial = 1;
   // status is "revoked" for a newly applied revocation or "already-revoked"
   // when the serial was already revoked (idempotent).
+  string status = 2;
+}
+
+message SuspendCertificateRequest {
+  string ca_id = 1;
+  string serial = 2;
+}
+
+message SuspendCertificateResponse {
+  string serial = 1;
+  // status is "held" for a newly applied hold or "already-held" when the serial
+  // was already on hold (idempotent).
+  string status = 2;
+}
+
+message ReleaseCertificateRequest {
+  string ca_id = 1;
+  string serial = 2;
+}
+
+message ReleaseCertificateResponse {
+  string serial = 1;
+  // status is "released".
   string status = 2;
 }
 

@@ -212,6 +212,10 @@ func run(args []string) error {
 		return cmdRenew(db, mgr, cmdArgs)
 	case "revoke":
 		return cmdRevoke(db, mgr, cmdArgs)
+	case "suspend":
+		return cmdSuspend(db, mgr, cmdArgs)
+	case "release":
+		return cmdRelease(db, mgr, cmdArgs)
 	case "revoke-bulk":
 		return cmdRevokeBulk(db, mgr, cfg, cmdArgs)
 	case "gen-crl":
@@ -350,6 +354,10 @@ Commands:
                       chain); optionally escrow the subject key (M-of-N)
   renew               Renew a previously issued certificate by serial
   revoke              Revoke a certificate by serial
+  suspend             Place a certificate on hold (RFC 5280 certificateHold);
+                      reversible with release
+  release             Remove a certificate hold, returning it to service
+                      (emits removeFromCRL in the next delta CRL)
   revoke-bulk         Mass-revoke certificates for compromise response (filters,
                       dry-run preview, batched, single CRL+delta regen)
   gen-crl             Generate a signed CRL for a CA
@@ -721,6 +729,61 @@ func cmdRevoke(db *database.DB, mgr *ca.Manager, args []string) error {
 	} else {
 		fmt.Printf("Certificate serial %s was already revoked; reason updated to %s.\n", *serial, *reason)
 	}
+	return nil
+}
+
+// cmdSuspend places a certificate on hold (RFC 5280 certificateHold) — a
+// reversible revocation that can be undone with `secsy-ca release`.
+func cmdSuspend(db *database.DB, mgr *ca.Manager, args []string) error {
+	fs := flag.NewFlagSet("suspend", flag.ContinueOnError)
+	caRef := fs.String("ca", "", "issuing CA id or label (required)")
+	serial := fs.String("serial", "", "serial of the certificate to suspend (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *caRef == "" || *serial == "" {
+		fs.Usage()
+		return fmt.Errorf("-ca and -serial are required")
+	}
+	caID, err := resolveCA(db, *caRef)
+	if err != nil {
+		return err
+	}
+
+	applied, err := mgr.SuspendCertificate(context.Background(), caID, *serial)
+	if err != nil {
+		return err
+	}
+	if applied {
+		fmt.Printf("Certificate serial %s placed on hold (certificateHold). Release with: secsy-ca release -ca %s -serial %s\n", *serial, *caRef, *serial)
+	} else {
+		fmt.Printf("Certificate serial %s was already on hold.\n", *serial)
+	}
+	return nil
+}
+
+// cmdRelease removes a certificate hold, returning the certificate to service.
+// It fails if the certificate was permanently revoked rather than suspended.
+func cmdRelease(db *database.DB, mgr *ca.Manager, args []string) error {
+	fs := flag.NewFlagSet("release", flag.ContinueOnError)
+	caRef := fs.String("ca", "", "issuing CA id or label (required)")
+	serial := fs.String("serial", "", "serial of the held certificate to release (required)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *caRef == "" || *serial == "" {
+		fs.Usage()
+		return fmt.Errorf("-ca and -serial are required")
+	}
+	caID, err := resolveCA(db, *caRef)
+	if err != nil {
+		return err
+	}
+
+	if err := mgr.ReleaseCertificate(context.Background(), caID, *serial); err != nil {
+		return err
+	}
+	fmt.Printf("Certificate serial %s released; it is valid again. The next delta CRL carries removeFromCRL for it.\n", *serial)
 	return nil
 }
 

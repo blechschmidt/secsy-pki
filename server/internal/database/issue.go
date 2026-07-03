@@ -154,6 +154,15 @@ func (db *DB) RevokeCertificate(caID, serial string, reason int, when time.Time)
 		return false, err
 	}
 
+	// A serial that was previously on hold and released may be revoked again
+	// (e.g. hold -> release -> key compromise found). Drop any release marker so
+	// delta CRL generation does not emit a contradictory removeFromCRL entry for
+	// a serial that is now permanently revoked.
+	if _, err := tx.Exec(db.ph(`DELETE FROM released_holds WHERE ca_id = ? AND serial = ?`),
+		caID, serial); err != nil {
+		return false, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}

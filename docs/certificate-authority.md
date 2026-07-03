@@ -183,8 +183,10 @@ secsy-ca -config config.yaml revoke -ca "Issuing CA" -serial 0x03 -reason keyCom
 
 `-reason` is an RFC 5280 reason name (default `unspecified`): `keyCompromise`,
 `cACompromise`, `affiliationChanged`, `superseded`, `cessationOfOperation`,
-`certificateHold`, `privilegeWithdrawn`, `aaCompromise`, `removeFromCRL`.
-Re-revoking an already-revoked serial updates its reason rather than failing.
+`certificateHold`, `privilegeWithdrawn`, `aaCompromise`. (`removeFromCRL` is a
+delta-CRL-only status, not a revocation reason — see suspend/release below.)
+Revoking with these reasons is **permanent**. Re-revoking an already-revoked
+serial updates its reason rather than failing.
 
 **API:** `POST /api/ca/{id}/revoke` with `{"serial":"...","reason":"keyCompromise"}`.
 List revocations: `GET /api/ca/{id}/revoked`.
@@ -195,6 +197,41 @@ CN/SAN pattern, issuance window, serial list) in batches with a mandatory
 dry-run count confirmation, one CRL+delta regeneration at the end, and
 per-certificate + summary audit events. See the
 [incident-response runbook](incident-response.md).
+
+### Suspend and release (reversible hold)
+
+A **hold** is a *reversible* revocation (RFC 5280 `certificateHold`, reason 6),
+for when a certificate must be taken out of service temporarily — a lost device
+that may be recovered, a policy review, a suspected but unconfirmed compromise —
+without permanently burning the credential.
+
+```bash
+# Place on hold: OCSP reports revoked(certificateHold) and it appears on the CRL.
+secsy-ca -config config.yaml suspend -ca "Issuing CA" -serial 0x03
+
+# Release: OCSP reports good again; the certificate is back in service.
+secsy-ca -config config.yaml release -ca "Issuing CA" -serial 0x03
+```
+
+**API:** `POST /api/ca/{id}/certificates/{serial}:suspend` and
+`.../{serial}:release` (gRPC: `SuspendCertificate` / `ReleaseCertificate`; the
+web console shows **Suspend**/**Release** buttons on the certificate list). Both
+use the same authorization and tenant scope as single revocation.
+
+Semantics (RFC 5280 §5.2.4 / §5.3.2):
+
+- **While held** — OCSP returns `revoked` with reason `certificateHold`, and the
+  serial is listed on the base CRL. The certificate's inventory status is `held`.
+- **On release** — the hold is removed: OCSP returns `good`, the next base CRL
+  omits the serial, and the next **delta CRL** carries a `removeFromCRL` (reason
+  8) entry so relying parties holding an older base CRL (one that still lists the
+  hold) drop the serial from their running revocation set.
+- **Release is guarded** — only a certificate that is *on hold* can be released.
+  A certificate that was permanently revoked (`keyCompromise`, etc.) cannot be
+  released; the request is refused (HTTP 409 / gRPC `FAILED_PRECONDITION`). This
+  is a safety invariant: a withdrawn credential is never silently resurrected.
+
+Audit events `cert.suspend` and `cert.release` record every transition.
 
 ## 7. Publish revocation status
 

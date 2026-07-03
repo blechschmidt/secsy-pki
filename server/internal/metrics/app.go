@@ -36,8 +36,9 @@ var (
 		"secsy_http_requests_in_flight",
 		"Number of HTTP requests currently being served.")
 
-	// Certificate lifecycle. The "operation" label is issue|renew|revoke and the
-	// "result" label is success|error|denied.
+	// Certificate lifecycle. The "operation" label is issue|renew|revoke|suspend|
+	// release (suspend/release are the reversible certificateHold path, Task 82)
+	// and the "result" label is success|error|denied.
 	Certificates = NewCounter(Default,
 		"secsy_certificates_total",
 		"Certificate lifecycle operations, partitioned by operation and result.",

@@ -166,6 +166,91 @@ func (s *service) RevokeCertificate(ctx context.Context, req *pkiv1.RevokeCertif
 	return &pkiv1.RevokeCertificateResponse{Serial: req.GetSerial(), Status: statusStr}, nil
 }
 
+// SuspendCertificate places a certificate on hold (RFC 5280 certificateHold), a
+// reversible revocation. It shares the single-revocation authorization and
+// OCSP-cache invalidation with RevokeCertificate.
+func (s *service) SuspendCertificate(ctx context.Context, req *pkiv1.SuspendCertificateRequest) (*pkiv1.SuspendCertificateResponse, error) {
+	user := middleware.GetUserInfo(ctx)
+	caID := req.GetCaId()
+
+	ok, err := s.api.AuthorizeIssueOn(ctx, user, caID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "permission check failed: %v", err)
+	}
+	if !ok {
+		metrics.Certificates.Inc("suspend", metrics.ResultDenied)
+		s.audit(ctx, audit.ActionCertSuspend, caID, "", audit.ResultDenied, "no SIGN_CERTIFICATE permission on this CA")
+		return nil, status.Error(codes.PermissionDenied, "no SIGN_CERTIFICATE permission on this CA")
+	}
+	if strings.TrimSpace(req.GetSerial()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "serial is required")
+	}
+	if err := s.requireCA(caID); err != nil {
+		return nil, err
+	}
+
+	mgr := s.newManager()
+	applied, err := mgr.SuspendCertificate(ctx, caID, req.GetSerial())
+	metrics.RecordCertificate("suspend", err)
+	if err != nil {
+		s.audit(ctx, audit.ActionCertSuspend, caID, req.GetSerial(), audit.ResultError, err.Error())
+		return nil, mapIssueError(err)
+	}
+
+	s.api.InvalidateOCSPCache(caID, req.GetSerial())
+
+	statusStr := "held"
+	if !applied {
+		statusStr = "already-held"
+	}
+	s.audit(ctx, audit.ActionCertSuspend, caID, req.GetSerial(), audit.ResultSuccess, "reason=certificateHold status="+statusStr)
+	return &pkiv1.SuspendCertificateResponse{Serial: req.GetSerial(), Status: statusStr}, nil
+}
+
+// ReleaseCertificate removes a certificate hold. It succeeds only for a
+// certificate on hold; a permanent revocation cannot be released
+// (FAILED_PRECONDITION).
+func (s *service) ReleaseCertificate(ctx context.Context, req *pkiv1.ReleaseCertificateRequest) (*pkiv1.ReleaseCertificateResponse, error) {
+	user := middleware.GetUserInfo(ctx)
+	caID := req.GetCaId()
+
+	ok, err := s.api.AuthorizeIssueOn(ctx, user, caID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "permission check failed: %v", err)
+	}
+	if !ok {
+		metrics.Certificates.Inc("release", metrics.ResultDenied)
+		s.audit(ctx, audit.ActionCertRelease, caID, "", audit.ResultDenied, "no SIGN_CERTIFICATE permission on this CA")
+		return nil, status.Error(codes.PermissionDenied, "no SIGN_CERTIFICATE permission on this CA")
+	}
+	if strings.TrimSpace(req.GetSerial()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "serial is required")
+	}
+	if err := s.requireCA(caID); err != nil {
+		return nil, err
+	}
+
+	mgr := s.newManager()
+	err = mgr.ReleaseCertificate(ctx, caID, req.GetSerial())
+	metrics.RecordCertificate("release", err)
+	if err != nil {
+		s.audit(ctx, audit.ActionCertRelease, caID, req.GetSerial(), audit.ResultError, err.Error())
+		switch {
+		case errors.Is(err, ca.ErrNotOnHold):
+			return nil, status.Error(codes.FailedPrecondition, "certificate is not on hold; a permanent revocation cannot be released")
+		case errors.Is(err, ca.ErrNotRevoked):
+			return nil, status.Error(codes.FailedPrecondition, "certificate is not on hold (it is not revoked)")
+		default:
+			return nil, mapIssueError(err)
+		}
+	}
+
+	s.api.InvalidateOCSPCache(caID, req.GetSerial())
+
+	s.audit(ctx, audit.ActionCertRelease, caID, req.GetSerial(), audit.ResultSuccess, "removed hold; removeFromCRL in next delta CRL")
+	return &pkiv1.ReleaseCertificateResponse{Serial: req.GetSerial(), Status: "released"}, nil
+}
+
 // GetCertificate returns the authority's stored copy of a certificate, gated by
 // tenant-scoped read authorization.
 func (s *service) GetCertificate(ctx context.Context, req *pkiv1.GetCertificateRequest) (*pkiv1.GetCertificateResponse, error) {
@@ -392,12 +477,15 @@ func certificateInfo(c *models.IssuedCertificate) *pkiv1.CertificateInfo {
 	return info
 }
 
-// certStatus maps the stored certificate status to the protobuf enum.
+// certStatus maps the stored certificate status to the protobuf enum. A held
+// (suspended) certificate is reported REVOKED: it is revoked from a relying
+// party's perspective (OCSP revoked, on the base CRL) for as long as the hold
+// stands, and the enum has no dedicated on-hold value.
 func certStatus(s models.CertStatus) pkiv1.CertificateStatus {
 	switch s {
 	case models.CertStatusValid:
 		return pkiv1.CertificateStatus_CERTIFICATE_STATUS_VALID
-	case models.CertStatusRevoked:
+	case models.CertStatusRevoked, models.CertStatusHeld:
 		return pkiv1.CertificateStatus_CERTIFICATE_STATUS_REVOKED
 	case models.CertStatusExpired:
 		return pkiv1.CertificateStatus_CERTIFICATE_STATUS_EXPIRED

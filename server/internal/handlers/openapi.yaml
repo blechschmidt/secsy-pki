@@ -793,6 +793,61 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/ca/{id}/certificates/{serial}:suspend:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+      - $ref: "#/components/parameters/CertSerial"
+    post:
+      operationId: suspendCertificate
+      tags: [Certificate Lifecycle]
+      summary: Suspend a certificate (place on hold)
+      description: >
+        Place a certificate on hold (RFC 5280 certificateHold) — a reversible
+        revocation, distinct from the permanent revocation of /revoke. While
+        held the certificate is reported revoked by OCSP (reason
+        certificateHold) and listed on the base CRL; a release restores it to
+        service. Gated by the same SIGN_CERTIFICATE / tenant authorization as
+        single revocation. Suspending a certificate already permanently revoked
+        is refused.
+      responses:
+        "200":
+          description: Suspension outcome.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HoldResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ca/{id}/certificates/{serial}:release:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+      - $ref: "#/components/parameters/CertSerial"
+    post:
+      operationId: releaseCertificate
+      tags: [Certificate Lifecycle]
+      summary: Release a certificate hold
+      description: >
+        Remove a certificate hold, returning the certificate to service: OCSP
+        reports it good again, the next base CRL omits it, and the next delta
+        CRL carries a removeFromCRL entry (RFC 5280 §5.2.4). Succeeds only for a
+        certificate that is on hold; a permanently revoked certificate cannot be
+        released and is refused with 409.
+      responses:
+        "200":
+          description: Release outcome.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HoldResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: >
+            The certificate is not on hold (it is permanently revoked, or not
+            revoked at all); nothing was changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/ca/{id}/revocations:bulk:
     parameters:
       - $ref: "#/components/parameters/CAId"
@@ -2417,6 +2472,12 @@ components:
       required: true
       description: CA / signing-key id.
       schema: { type: string }
+    CertSerial:
+      name: serial
+      in: path
+      required: true
+      description: Certificate serial (decimal string).
+      schema: { type: string }
     TenantHeader:
       name: X-Secsy-Tenant
       in: header
@@ -3151,6 +3212,13 @@ components:
       type: object
       properties:
         status: { type: string, enum: [revoked, already-revoked] }
+        serial: { type: string }
+
+    HoldResult:
+      type: object
+      description: Outcome of a certificate suspend (hold) or release.
+      properties:
+        status: { type: string, enum: [held, already-held, released] }
         serial: { type: string }
 
     BulkRevokeFilter:

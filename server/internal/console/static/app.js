@@ -436,14 +436,21 @@ async function loadCerts() {
   try {
     if ($('showRevoked').checked) {
       const revoked = await api('GET', `/api/ca/${id}/revoked`);
-      tbody.innerHTML = revoked.length ? revoked.map(r => `
+      tbody.innerHTML = revoked.length ? revoked.map(r => {
+        // reason 6 (certificateHold) is a reversible hold, not a permanent
+        // revocation: badge it distinctly and offer a Release action.
+        const held = (r.reason === 6);
+        return `
         <tr>
           <td class="mono">${escapeHTML(shortSerial(r.serial))}</td>
-          <td colspan="2" class="muted">revoked</td>
+          <td colspan="2" class="muted">${held ? 'on hold' : 'revoked'}</td>
           <td>${fmtTime(r.revoked_at)}</td>
-          <td><span class="badge revoked">revoked</span></td>
-          <td class="muted">reason ${r.reason ?? 0}</td>
-        </tr>`).join('') : emptyRow('No revoked certificates.');
+          <td><span class="badge ${held ? 'held' : 'revoked'}">${held ? 'held' : 'revoked'}</span></td>
+          <td class="muted">reason ${r.reason ?? 0}${held
+            ? ` · <button class="btn ghost sm" onclick="releaseCert('${id}','${r.serial}')" title="Remove the hold and return the certificate to service">Release</button>`
+            : ''}</td>
+        </tr>`;
+      }).join('') : emptyRow('No revoked certificates.');
       return;
     }
     const certs = await api('GET', `/api/ca/${id}/certificates`);
@@ -457,7 +464,12 @@ async function loadCerts() {
         <td>${ctBadge(c)}</td>
         <td style="white-space:nowrap">${c.status === 'valid'
           ? `<button class="btn ghost sm" onclick="renewCert('${id}','${c.serial}')" title="Reissue with a fresh serial and validity window, reusing the certified key">Renew</button>
-             <button class="btn danger sm" onclick="revokeCert('${id}','${c.serial}')">Revoke</button>` : ''}</td>
+             <button class="btn ghost sm" onclick="suspendCert('${id}','${c.serial}')" title="Place on hold (RFC 5280 certificateHold) — a reversible revocation">Suspend</button>
+             <button class="btn danger sm" onclick="revokeCert('${id}','${c.serial}')">Revoke</button>`
+          : c.status === 'held'
+          ? `<button class="btn ghost sm" onclick="releaseCert('${id}','${c.serial}')" title="Remove the hold and return the certificate to service">Release</button>
+             <button class="btn danger sm" onclick="revokeCert('${id}','${c.serial}')" title="Convert the hold into a permanent revocation">Revoke</button>`
+          : ''}</td>
       </tr>`).join('') : emptyRow('No certificates issued yet.');
   } catch (e) { tbody.innerHTML = emptyRow(e.message); }
 }
@@ -473,6 +485,32 @@ async function renewCert(caID, serial) {
   } catch (e) { alert('Renew failed: ' + e.message); }
 }
 window.renewCert = renewCert;
+
+// suspendCert places a certificate on hold (RFC 5280 certificateHold) — a
+// reversible revocation. No reason picker: certificateHold is the only reason.
+async function suspendCert(caID, serial) {
+  if (!confirm(`Suspend certificate ${shortSerial(serial)}?\n\nThe certificate is placed on hold (certificateHold): OCSP reports it revoked and it appears on the CRL, but the hold can be released later to return it to service.`)) return;
+  try {
+    const res = await api('POST', `/api/ca/${caID}/certificates/${encodeURIComponent(serial)}:suspend`);
+    alert(`Certificate ${shortSerial(serial)} is ${res.status}.`);
+    if (selectedCertCA() === caID) { loadCerts(); loadCRLStatus(caID); }
+    if ($('view-inventory').classList.contains('active')) loadInventory();
+  } catch (e) { alert('Suspend failed: ' + e.message); }
+}
+window.suspendCert = suspendCert;
+
+// releaseCert removes a certificate hold, returning it to service. It fails if
+// the certificate was permanently revoked rather than suspended.
+async function releaseCert(caID, serial) {
+  if (!confirm(`Release the hold on certificate ${shortSerial(serial)}?\n\nOCSP will report it good again and the next base CRL omits it; the next delta CRL carries removeFromCRL for it. Only a suspended (on-hold) certificate can be released.`)) return;
+  try {
+    const res = await api('POST', `/api/ca/${caID}/certificates/${encodeURIComponent(serial)}:release`);
+    alert(`Certificate ${shortSerial(serial)} is ${res.status}.`);
+    if (selectedCertCA() === caID) { loadCerts(); loadCRLStatus(caID); }
+    if ($('view-inventory').classList.contains('active')) loadInventory();
+  } catch (e) { alert('Release failed: ' + e.message); }
+}
+window.releaseCert = releaseCert;
 
 // ctBadge renders the Certificate Transparency status of an issued certificate.
 function ctBadge(c) {

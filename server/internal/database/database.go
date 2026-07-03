@@ -372,6 +372,21 @@ func (db *DB) migrate() error {
 			reason INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (ca_id, serial)
 		)`,
+		// Certificates that were on hold (RFC 5280 certificateHold) and have since
+		// been released. The row survives the release so delta CRL generation can
+		// emit the removeFromCRL (reason 8) entry for relying parties still holding a
+		// base CRL that lists the hold (RFC 5280 §5.2.4). A serial here is NOT in the
+		// current revocation set — OCSP reports it good and the base CRL omits it —
+		// and it is cleared if the serial is later re-suspended or permanently
+		// revoked.
+		`CREATE TABLE IF NOT EXISTS released_holds (
+			ca_id TEXT NOT NULL REFERENCES cas(id) ON DELETE CASCADE,
+			serial TEXT NOT NULL,
+			reason INTEGER NOT NULL DEFAULT 6,
+			held_at TIMESTAMP NOT NULL,
+			released_at TIMESTAMP NOT NULL,
+			PRIMARY KEY (ca_id, serial)
+		)`,
 		// Per-CA-and-scope monotonic CRL number counter for partitioned CRLs. The
 		// unsharded ("full") scope keeps using ca_crl_counters for backward
 		// compatibility; each partition ("partition:N") gets its own independent

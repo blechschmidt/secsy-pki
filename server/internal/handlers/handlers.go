@@ -375,6 +375,10 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("POST /api/ca/{id}/revocations:bulk", protectStepUp("cert.revoke_bulk", http.HandlerFunc(a.BulkRevokeCertificates)))
 	mux.Handle("GET /api/ca/{id}/certificates", protected(http.HandlerFunc(a.ListIssuedCertificates)))
 	mux.Handle("GET /api/ca/{id}/revoked", protected(http.HandlerFunc(a.ListRevokedCertificates)))
+	// Reversible certificate suspend (RFC 5280 certificateHold) and release
+	// (Task 82). Gated by the same single-revocation RBAC/tenant scope; the
+	// {action} segment carries "<serial>:suspend" or "<serial>:release".
+	mux.Handle("POST /api/ca/{id}/certificates/{action}", protectStepUp("cert.revoke", http.HandlerFunc(a.CertificateHoldAction)))
 
 	// SPIFFE X.509-SVID workload identity. Minting an SVID is an issuing operation
 	// (gated by the CA's issue capability plus the trust-domain allowlist); the

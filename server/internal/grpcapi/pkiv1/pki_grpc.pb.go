@@ -36,6 +36,8 @@ const (
 	PKIService_IssueCertificate_FullMethodName     = "/secsy.pki.v1.PKIService/IssueCertificate"
 	PKIService_RenewCertificate_FullMethodName     = "/secsy.pki.v1.PKIService/RenewCertificate"
 	PKIService_RevokeCertificate_FullMethodName    = "/secsy.pki.v1.PKIService/RevokeCertificate"
+	PKIService_SuspendCertificate_FullMethodName   = "/secsy.pki.v1.PKIService/SuspendCertificate"
+	PKIService_ReleaseCertificate_FullMethodName   = "/secsy.pki.v1.PKIService/ReleaseCertificate"
 	PKIService_GetCertificate_FullMethodName       = "/secsy.pki.v1.PKIService/GetCertificate"
 	PKIService_GetCertificateStatus_FullMethodName = "/secsy.pki.v1.PKIService/GetCertificateStatus"
 	PKIService_ListCertificates_FullMethodName     = "/secsy.pki.v1.PKIService/ListCertificates"
@@ -65,6 +67,21 @@ type PKIServiceClient interface {
 	// RevokeCertificate records a revocation for a serial and invalidates any
 	// cached OCSP "good" response so the new status is served immediately.
 	RevokeCertificate(ctx context.Context, in *RevokeCertificateRequest, opts ...grpc.CallOption) (*RevokeCertificateResponse, error)
+	// SuspendCertificate places a certificate on hold (RFC 5280 certificateHold) —
+	// a reversible revocation. While held the serial is reported revoked by OCSP
+	// and listed on the base CRL. Requires the same issue capability as revocation.
+	//
+	// Errors: PERMISSION_DENIED, INVALID_ARGUMENT (bad serial / already permanently
+	// revoked), NOT_FOUND (unknown CA).
+	SuspendCertificate(ctx context.Context, in *SuspendCertificateRequest, opts ...grpc.CallOption) (*SuspendCertificateResponse, error)
+	// ReleaseCertificate removes a certificate hold, returning the certificate to
+	// service: OCSP reports it good, the next base CRL omits it, and the next delta
+	// CRL carries removeFromCRL. It succeeds only for a certificate on hold; a
+	// permanent revocation cannot be released.
+	//
+	// Errors: PERMISSION_DENIED, FAILED_PRECONDITION (not on hold / not revoked),
+	// NOT_FOUND (unknown CA).
+	ReleaseCertificate(ctx context.Context, in *ReleaseCertificateRequest, opts ...grpc.CallOption) (*ReleaseCertificateResponse, error)
 	// GetCertificate returns the authority's stored copy of a certificate it
 	// issued, including its current status. Requires read standing in the CA's
 	// tenant.
@@ -115,6 +132,26 @@ func (c *pKIServiceClient) RevokeCertificate(ctx context.Context, in *RevokeCert
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RevokeCertificateResponse)
 	err := c.cc.Invoke(ctx, PKIService_RevokeCertificate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pKIServiceClient) SuspendCertificate(ctx context.Context, in *SuspendCertificateRequest, opts ...grpc.CallOption) (*SuspendCertificateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SuspendCertificateResponse)
+	err := c.cc.Invoke(ctx, PKIService_SuspendCertificate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pKIServiceClient) ReleaseCertificate(ctx context.Context, in *ReleaseCertificateRequest, opts ...grpc.CallOption) (*ReleaseCertificateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReleaseCertificateResponse)
+	err := c.cc.Invoke(ctx, PKIService_ReleaseCertificate_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -193,6 +230,21 @@ type PKIServiceServer interface {
 	// RevokeCertificate records a revocation for a serial and invalidates any
 	// cached OCSP "good" response so the new status is served immediately.
 	RevokeCertificate(context.Context, *RevokeCertificateRequest) (*RevokeCertificateResponse, error)
+	// SuspendCertificate places a certificate on hold (RFC 5280 certificateHold) —
+	// a reversible revocation. While held the serial is reported revoked by OCSP
+	// and listed on the base CRL. Requires the same issue capability as revocation.
+	//
+	// Errors: PERMISSION_DENIED, INVALID_ARGUMENT (bad serial / already permanently
+	// revoked), NOT_FOUND (unknown CA).
+	SuspendCertificate(context.Context, *SuspendCertificateRequest) (*SuspendCertificateResponse, error)
+	// ReleaseCertificate removes a certificate hold, returning the certificate to
+	// service: OCSP reports it good, the next base CRL omits it, and the next delta
+	// CRL carries removeFromCRL. It succeeds only for a certificate on hold; a
+	// permanent revocation cannot be released.
+	//
+	// Errors: PERMISSION_DENIED, FAILED_PRECONDITION (not on hold / not revoked),
+	// NOT_FOUND (unknown CA).
+	ReleaseCertificate(context.Context, *ReleaseCertificateRequest) (*ReleaseCertificateResponse, error)
 	// GetCertificate returns the authority's stored copy of a certificate it
 	// issued, including its current status. Requires read standing in the CA's
 	// tenant.
@@ -227,6 +279,12 @@ func (UnimplementedPKIServiceServer) RenewCertificate(context.Context, *RenewCer
 }
 func (UnimplementedPKIServiceServer) RevokeCertificate(context.Context, *RevokeCertificateRequest) (*RevokeCertificateResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RevokeCertificate not implemented")
+}
+func (UnimplementedPKIServiceServer) SuspendCertificate(context.Context, *SuspendCertificateRequest) (*SuspendCertificateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SuspendCertificate not implemented")
+}
+func (UnimplementedPKIServiceServer) ReleaseCertificate(context.Context, *ReleaseCertificateRequest) (*ReleaseCertificateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReleaseCertificate not implemented")
 }
 func (UnimplementedPKIServiceServer) GetCertificate(context.Context, *GetCertificateRequest) (*GetCertificateResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetCertificate not implemented")
@@ -314,6 +372,42 @@ func _PKIService_RevokeCertificate_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(PKIServiceServer).RevokeCertificate(ctx, req.(*RevokeCertificateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PKIService_SuspendCertificate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SuspendCertificateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PKIServiceServer).SuspendCertificate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PKIService_SuspendCertificate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PKIServiceServer).SuspendCertificate(ctx, req.(*SuspendCertificateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PKIService_ReleaseCertificate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseCertificateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PKIServiceServer).ReleaseCertificate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PKIService_ReleaseCertificate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PKIServiceServer).ReleaseCertificate(ctx, req.(*ReleaseCertificateRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -426,6 +520,14 @@ var PKIService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RevokeCertificate",
 			Handler:    _PKIService_RevokeCertificate_Handler,
+		},
+		{
+			MethodName: "SuspendCertificate",
+			Handler:    _PKIService_SuspendCertificate_Handler,
+		},
+		{
+			MethodName: "ReleaseCertificate",
+			Handler:    _PKIService_ReleaseCertificate_Handler,
 		},
 		{
 			MethodName: "GetCertificate",

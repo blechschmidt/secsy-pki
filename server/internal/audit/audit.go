@@ -59,6 +59,14 @@ const (
 	// cert.revoke event carrying the same operation id in its detail, so the
 	// full set is reconstructable from the log.
 	ActionCertRevokeBulk = "cert.revoke_bulk"
+	// ActionCertSuspend records a reversible certificate hold (RFC 5280
+	// certificateHold, Task 82): the certificate is revoked with reason
+	// certificateHold and can be returned to service with a release.
+	ActionCertSuspend = "cert.suspend"
+	// ActionCertRelease records the removal of a certificate hold, returning the
+	// certificate to service (OCSP good, dropped from the base CRL, removeFromCRL
+	// emitted in the next delta CRL).
+	ActionCertRelease = "cert.release"
 	// ActionSVIDIssue records the minting of a SPIFFE X.509-SVID. The detail
 	// carries the spiffe:// identity, trust domain, and profile.
 	ActionSVIDIssue = "svid.issue"

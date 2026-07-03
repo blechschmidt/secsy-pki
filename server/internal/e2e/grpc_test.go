@@ -322,6 +322,92 @@ func TestGRPCReflection(t *testing.T) {
 	}
 }
 
+// TestGRPCSuspendReleaseE2E drives the reversible certificate-hold RPCs over
+// gRPC against a real SoftHSM-backed CA: issue -> suspend (status REVOKED) ->
+// release (status VALID again), plus the negative case that a permanently
+// revoked certificate cannot be released (FAILED_PRECONDITION).
+func TestGRPCSuspendReleaseE2E(t *testing.T) {
+	addr, caID := startGRPCServer(t)
+	client := pkiv1.NewPKIServiceClient(dialLocal(t, addr))
+
+	issue := func(cn string) string {
+		t.Helper()
+		ctx, cancel := grpcRootCtx(t)
+		defer cancel()
+		resp, err := client.IssueCertificate(ctx, &pkiv1.IssueCertificateRequest{
+			CaId: caID, CsrPem: string(makeCSR(t, cn, []string{cn})), Profile: "server",
+		})
+		if err != nil {
+			t.Fatalf("IssueCertificate(%s): %v", cn, err)
+		}
+		return resp.GetSerial()
+	}
+
+	// --- Reversible hold round-trip. ---
+	serial := issue("grpc-hold.example.test")
+
+	// Suspend: newly held, reported REVOKED by status.
+	{
+		ctx, cancel := grpcRootCtx(t)
+		defer cancel()
+		resp, err := client.SuspendCertificate(ctx, &pkiv1.SuspendCertificateRequest{CaId: caID, Serial: serial})
+		if err != nil {
+			t.Fatalf("SuspendCertificate: %v", err)
+		}
+		if resp.GetStatus() != "held" {
+			t.Fatalf("suspend status = %q, want held", resp.GetStatus())
+		}
+	}
+	assertStatus(t, client, caID, serial, pkiv1.CertificateStatus_CERTIFICATE_STATUS_REVOKED)
+
+	// Suspend again is idempotent.
+	{
+		ctx, cancel := grpcRootCtx(t)
+		defer cancel()
+		resp, err := client.SuspendCertificate(ctx, &pkiv1.SuspendCertificateRequest{CaId: caID, Serial: serial})
+		if err != nil {
+			t.Fatalf("second SuspendCertificate: %v", err)
+		}
+		if resp.GetStatus() != "already-held" {
+			t.Fatalf("second suspend status = %q, want already-held", resp.GetStatus())
+		}
+	}
+
+	// Release: returns to service, reported VALID again.
+	{
+		ctx, cancel := grpcRootCtx(t)
+		defer cancel()
+		resp, err := client.ReleaseCertificate(ctx, &pkiv1.ReleaseCertificateRequest{CaId: caID, Serial: serial})
+		if err != nil {
+			t.Fatalf("ReleaseCertificate: %v", err)
+		}
+		if resp.GetStatus() != "released" {
+			t.Fatalf("release status = %q, want released", resp.GetStatus())
+		}
+	}
+	assertStatus(t, client, caID, serial, pkiv1.CertificateStatus_CERTIFICATE_STATUS_VALID)
+
+	// --- A permanent revocation cannot be released. ---
+	perm := issue("grpc-perm.example.test")
+	{
+		ctx, cancel := grpcRootCtx(t)
+		defer cancel()
+		if _, err := client.RevokeCertificate(ctx, &pkiv1.RevokeCertificateRequest{
+			CaId: caID, Serial: perm, Reason: "keyCompromise",
+		}); err != nil {
+			t.Fatalf("RevokeCertificate: %v", err)
+		}
+	}
+	{
+		ctx, cancel := grpcRootCtx(t)
+		defer cancel()
+		_, err := client.ReleaseCertificate(ctx, &pkiv1.ReleaseCertificateRequest{CaId: caID, Serial: perm})
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("release of permanently revoked cert: code = %v, want FailedPrecondition (err=%v)", status.Code(err), err)
+		}
+	}
+}
+
 func assertStatus(t *testing.T, client pkiv1.PKIServiceClient, caID, serial string, want pkiv1.CertificateStatus) {
 	t.Helper()
 	ctx, cancel := grpcRootCtx(t)

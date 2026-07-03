@@ -119,6 +119,13 @@ const (
 	Rsa   ExportPKCS12RequestKeyType = "rsa"
 )
 
+// Defines values for HoldResultStatus.
+const (
+	AlreadyHeld HoldResultStatus = "already-held"
+	Held        HoldResultStatus = "held"
+	Released    HoldResultStatus = "released"
+)
+
 // Defines values for IssuedCertificateCtStatus.
 const (
 	IssuedCertificateCtStatusFailedOpen IssuedCertificateCtStatus = "failed_open"
@@ -1277,6 +1284,15 @@ type HSMInfo struct {
 	Version              *string `json:"version,omitempty"`
 }
 
+// HoldResult Outcome of a certificate suspend (hold) or release.
+type HoldResult struct {
+	Serial *string           `json:"serial,omitempty"`
+	Status *HoldResultStatus `json:"status,omitempty"`
+}
+
+// HoldResultStatus defines model for HoldResult.Status.
+type HoldResultStatus string
+
 // IssueCertRequest defines model for IssueCertRequest.
 type IssueCertRequest struct {
 	// Csr PEM PKCS#10 CSR
@@ -2045,6 +2061,9 @@ type ApprovalId = string
 // CAId defines model for CAId.
 type CAId = string
 
+// CertSerial defines model for CertSerial.
+type CertSerial = string
+
 // GroupId defines model for GroupId.
 type GroupId = string
 
@@ -2462,6 +2481,12 @@ type ClientInterface interface {
 
 	// ListIssuedCertificates request
 	ListIssuedCertificates(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ReleaseCertificate request
+	ReleaseCertificate(ctx context.Context, id CAId, serial CertSerial, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SuspendCertificate request
+	SuspendCertificate(ctx context.Context, id CAId, serial CertSerial, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetChain request
 	GetChain(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3036,6 +3061,30 @@ func (c *Client) InitRootCA(ctx context.Context, body InitRootCAJSONRequestBody,
 
 func (c *Client) ListIssuedCertificates(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListIssuedCertificatesRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ReleaseCertificate(ctx context.Context, id CAId, serial CertSerial, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewReleaseCertificateRequest(c.Server, id, serial)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SuspendCertificate(ctx context.Context, id CAId, serial CertSerial, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSuspendCertificateRequest(c.Server, id, serial)
 	if err != nil {
 		return nil, err
 	}
@@ -5375,6 +5424,88 @@ func NewListIssuedCertificatesRequest(server string, id CAId) (*http.Request, er
 	}
 
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewReleaseCertificateRequest generates requests for ReleaseCertificate
+func NewReleaseCertificateRequest(server string, id CAId, serial CertSerial) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "serial", runtime.ParamLocationPath, serial)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/certificates/%s:release", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewSuspendCertificateRequest generates requests for SuspendCertificate
+func NewSuspendCertificateRequest(server string, id CAId, serial CertSerial) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "serial", runtime.ParamLocationPath, serial)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/certificates/%s:suspend", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -9405,6 +9536,12 @@ type ClientWithResponsesInterface interface {
 	// ListIssuedCertificatesWithResponse request
 	ListIssuedCertificatesWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*ListIssuedCertificatesResponse, error)
 
+	// ReleaseCertificateWithResponse request
+	ReleaseCertificateWithResponse(ctx context.Context, id CAId, serial CertSerial, reqEditors ...RequestEditorFn) (*ReleaseCertificateResponse, error)
+
+	// SuspendCertificateWithResponse request
+	SuspendCertificateWithResponse(ctx context.Context, id CAId, serial CertSerial, reqEditors ...RequestEditorFn) (*SuspendCertificateResponse, error)
+
 	// GetChainWithResponse request
 	GetChainWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetChainResponse, error)
 
@@ -10077,6 +10214,55 @@ func (r ListIssuedCertificatesResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r ListIssuedCertificatesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ReleaseCertificateResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *HoldResult
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON409      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r ReleaseCertificateResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ReleaseCertificateResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type SuspendCertificateResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *HoldResult
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r SuspendCertificateResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SuspendCertificateResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -12497,6 +12683,24 @@ func (c *ClientWithResponses) ListIssuedCertificatesWithResponse(ctx context.Con
 	return ParseListIssuedCertificatesResponse(rsp)
 }
 
+// ReleaseCertificateWithResponse request returning *ReleaseCertificateResponse
+func (c *ClientWithResponses) ReleaseCertificateWithResponse(ctx context.Context, id CAId, serial CertSerial, reqEditors ...RequestEditorFn) (*ReleaseCertificateResponse, error) {
+	rsp, err := c.ReleaseCertificate(ctx, id, serial, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseReleaseCertificateResponse(rsp)
+}
+
+// SuspendCertificateWithResponse request returning *SuspendCertificateResponse
+func (c *ClientWithResponses) SuspendCertificateWithResponse(ctx context.Context, id CAId, serial CertSerial, reqEditors ...RequestEditorFn) (*SuspendCertificateResponse, error) {
+	rsp, err := c.SuspendCertificate(ctx, id, serial, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSuspendCertificateResponse(rsp)
+}
+
 // GetChainWithResponse request returning *GetChainResponse
 func (c *ClientWithResponses) GetChainWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetChainResponse, error) {
 	rsp, err := c.GetChain(ctx, id, reqEditors...)
@@ -14043,6 +14247,93 @@ func ParseListIssuedCertificatesResponse(rsp *http.Response) (*ListIssuedCertifi
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseReleaseCertificateResponse parses an HTTP response from a ReleaseCertificateWithResponse call
+func ParseReleaseCertificateResponse(rsp *http.Response) (*ReleaseCertificateResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ReleaseCertificateResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest HoldResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseSuspendCertificateResponse parses an HTTP response from a SuspendCertificateWithResponse call
+func ParseSuspendCertificateResponse(rsp *http.Response) (*SuspendCertificateResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SuspendCertificateResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest HoldResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
 
 	}
 

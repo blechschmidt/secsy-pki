@@ -84,6 +84,9 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
 .badge.revoked, .badge.crit, .badge.critical { background: rgba(248,81,73,.15); color: var(--crit); }
 .badge.expired { background: rgba(163,113,247,.15); color: var(--expired); }
 .badge.warning { background: rgba(210,153,34,.15); color: var(--warn); }
+/* A held (suspended) certificate is a reversible revocation — amber, distinct
+   from a permanent red revocation. */
+.badge.held { background: rgba(210,153,34,.15); color: var(--warn); }
 
 .notice { padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; font-size: 13px; }
 .notice.err { background: rgba(248,81,73,.12); border: 1px solid rgba(248,81,73,.4); color: #ffb3ae; }

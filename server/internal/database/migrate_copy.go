@@ -37,6 +37,9 @@ var migrationTables = []string{
 	"ca_published_crls",
 	"issued_certificates",
 	"revoked_certificates",
+	// Released certificateHold records (Task 82) retained for delta-CRL
+	// removeFromCRL generation; references cas, so copied after it.
+	"released_holds",
 	// Cross-signing relationships reference tenants and cas (issuer/subject), so
 	// they are copied after both.
 	"cross_signs",

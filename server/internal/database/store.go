@@ -198,6 +198,14 @@ type RevocationStore interface {
 	RevokeCertificate(caID, serial string, reason int, when time.Time) (bool, error)
 	GetRevokedCertificate(caID, serial string) (*models.RevokedCertificate, error)
 	ListRevokedCertificates(caID string) ([]models.RevokedCertificate, error)
+	// Reversible certificate hold (Task 82, RFC 5280 certificateHold /
+	// removeFromCRL). SuspendCertificate places a serial on hold; ReleaseHold
+	// removes the hold only when the current reason is certificateHold (rejecting
+	// permanent revocations with ErrNotOnHold / ErrNotRevoked); ListReleasedHolds
+	// feeds the removeFromCRL entries of delta CRL generation.
+	SuspendCertificate(caID, serial string, when time.Time) (bool, error)
+	ReleaseHold(caID, serial string, when time.Time) error
+	ListReleasedHolds(caID string) ([]models.ReleasedHold, error)
 	// Bulk revocation (Task 70). ListRevocationCandidates projects the
 	// not-yet-revoked inventory matching a selector for the mass-revocation
 	// engine; BulkRevokeCertificates applies one batch transactionally and

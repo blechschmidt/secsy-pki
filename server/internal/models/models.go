@@ -318,6 +318,12 @@ const (
 	CertStatusValid   CertStatus = "valid"
 	CertStatusRevoked CertStatus = "revoked"
 	CertStatusExpired CertStatus = "expired"
+	// CertStatusHeld marks a certificate that has been suspended (placed on hold
+	// with RFC 5280 reason certificateHold). Unlike CertStatusRevoked the state
+	// is reversible: releasing the hold returns the certificate to
+	// CertStatusValid. A held certificate is treated as revoked by OCSP and the
+	// base CRL for as long as the hold stands.
+	CertStatusHeld CertStatus = "held"
 )
 
 // Cross-sign lifecycle states.
@@ -501,6 +507,20 @@ type RevokedCertificate struct {
 	Serial    string    `json:"serial" db:"serial"` // decimal string
 	RevokedAt time.Time `json:"revoked_at" db:"revoked_at"`
 	Reason    int       `json:"reason" db:"reason"`
+}
+
+// ReleasedHold records a certificate that was on hold (RFC 5280 certificateHold)
+// and has since been released. The row is retained after the hold is removed so
+// delta CRL generation can emit the removeFromCRL (reason 8) entry that tells
+// relying parties holding an older base CRL — one that still lists the hold — to
+// drop the serial (RFC 5280 §5.2.4). It is not part of the current revocation
+// set: OCSP reports the serial "good" and the base CRL omits it.
+type ReleasedHold struct {
+	CAID       string    `json:"ca_id" db:"ca_id"`
+	Serial     string    `json:"serial" db:"serial"` // decimal string
+	Reason     int       `json:"reason" db:"reason"` // the hold reason (certificateHold)
+	HeldAt     time.Time `json:"held_at" db:"held_at"`
+	ReleasedAt time.Time `json:"released_at" db:"released_at"`
 }
 
 // SSHCertificate is the authoritative record of an OpenSSH certificate signed by

@@ -34,7 +34,7 @@ import (
 func cmdGRPC(args []string) error {
 	fs := flag.NewFlagSet("grpc", flag.ContinueOnError)
 	addr := fs.String("addr", "localhost:9443", "gRPC server address host:port")
-	operation := fs.String("operation", "demo", "operation: demo|issue|renew|revoke|get|status|list|crl-metadata|ocsp-metadata")
+	operation := fs.String("operation", "demo", "operation: demo|issue|renew|revoke|suspend|release|get|status|list|crl-metadata|ocsp-metadata")
 	caID := fs.String("ca", "", "issuing CA id (required for most operations)")
 	profile := fs.String("profile", "", "certificate profile (issue/renew)")
 	cn := fs.String("cn", "grpc-demo.example.com", "subject common name for the generated CSR (issue/demo)")
@@ -144,6 +144,32 @@ func cmdGRPC(args []string) error {
 			return fmt.Errorf("RevokeCertificate: %w", err)
 		}
 		fmt.Printf("Revocation: serial=%s status=%s\n", resp.GetSerial(), resp.GetStatus())
+		return nil
+
+	case "suspend":
+		if *caID == "" || *serial == "" {
+			return fmt.Errorf("grpc suspend: -ca and -serial are required")
+		}
+		ctx, cancel := authCtx()
+		defer cancel()
+		resp, err := client.SuspendCertificate(ctx, &pkiv1.SuspendCertificateRequest{CaId: *caID, Serial: *serial})
+		if err != nil {
+			return fmt.Errorf("SuspendCertificate: %w", err)
+		}
+		fmt.Printf("Suspend: serial=%s status=%s\n", resp.GetSerial(), resp.GetStatus())
+		return nil
+
+	case "release":
+		if *caID == "" || *serial == "" {
+			return fmt.Errorf("grpc release: -ca and -serial are required")
+		}
+		ctx, cancel := authCtx()
+		defer cancel()
+		resp, err := client.ReleaseCertificate(ctx, &pkiv1.ReleaseCertificateRequest{CaId: *caID, Serial: *serial})
+		if err != nil {
+			return fmt.Errorf("ReleaseCertificate: %w", err)
+		}
+		fmt.Printf("Release: serial=%s status=%s\n", resp.GetSerial(), resp.GetStatus())
 		return nil
 
 	case "get":

@@ -244,6 +244,40 @@ func (m *Manager) scopedRevocationEntries(caID string, shard int, sinceExclusive
 	return entries, nil
 }
 
+// scopedReleaseEntries returns the removeFromCRL (RFC 5280 reason 8) entries for
+// certificate holds released strictly after sinceExclusive that fall in a scope.
+// They are emitted only in delta CRLs (RFC 5280 §5.2.4/§5.3.1): a delta relative
+// to a base CRL that still lists a now-released hold carries removeFromCRL so a
+// relying party reconstructing the union drops the serial. A base CRL cut after
+// the release simply omits the serial, at which point later deltas (relative to
+// that newer base) no longer carry the removeFromCRL — matched by the same
+// sinceExclusive = base.GeneratedAt filter used for revocations.
+func (m *Manager) scopedReleaseEntries(caID string, shard int, sinceExclusive time.Time) ([]pki.RevokedEntry, error) {
+	released, err := m.db.ListReleasedHolds(caID)
+	if err != nil {
+		return nil, fmt.Errorf("listing released holds: %w", err)
+	}
+	entries := make([]pki.RevokedEntry, 0, len(released))
+	for _, rh := range released {
+		serial, ok := new(big.Int).SetString(rh.Serial, 10)
+		if !ok {
+			return nil, fmt.Errorf("stored released-hold serial %q is not a valid integer", rh.Serial)
+		}
+		if shard != FullScope && ShardForSerial(serial) != shard {
+			continue
+		}
+		if !rh.ReleasedAt.After(sinceExclusive) {
+			continue
+		}
+		entries = append(entries, pki.RevokedEntry{
+			Serial:    serial,
+			RevokedAt: rh.ReleasedAt,
+			Reason:    pki.RevocationReasonRemoveFromCRL,
+		})
+	}
+	return entries, nil
+}
+
 // GetBaseCRL returns the DER of the base (complete) CRL for a scope, serving the
 // stored copy while it is still fresh and regenerating (HSM-signing) a new one
 // otherwise. shard is FullScope for the unsharded CRL or a partition index. The
@@ -372,6 +406,13 @@ func (m *Manager) regenerateDeltaCRL(ctx context.Context, caID string, shard int
 	if err != nil {
 		return nil, err
 	}
+	// Certificates released from hold since the base was cut are reported with
+	// removeFromCRL so relying parties drop them from the running revocation set.
+	released, err := m.scopedReleaseEntries(caID, shard, since)
+	if err != nil {
+		return nil, err
+	}
+	entries = append(entries, released...)
 	number, err := m.nextCRLNumber(caID, shard)
 	if err != nil {
 		return nil, fmt.Errorf("allocating CRL number: %w", err)
