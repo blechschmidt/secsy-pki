@@ -415,6 +415,48 @@ func verifyTableCoverage(dst *DB) error {
 	return nil
 }
 
+// MissingTables reports which tables from the canonical schema list
+// (migrationTables — the single source of truth for the persisted schema) are
+// absent from the live store, in the canonical order. It is the read-only
+// pending-migration probe used by `secsy-ca doctor`: a non-empty result means
+// the store predates the current schema (or was never initialized) and the
+// missing tables will be created the next time the store is opened with New.
+func (db *DB) MissingTables() ([]string, error) {
+	var rows *sql.Rows
+	var err error
+	if db.isPostgres() {
+		rows, err = db.conn.Query(
+			`SELECT table_name FROM information_schema.tables
+			  WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`)
+	} else {
+		rows, err = db.conn.Query(`SELECT name FROM sqlite_master WHERE type = 'table'`)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listing tables: %w", err)
+	}
+	defer rows.Close()
+
+	live := map[string]bool{}
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		live[t] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var missing []string
+	for _, t := range migrationTables {
+		if !live[t] {
+			missing = append(missing, t)
+		}
+	}
+	return missing, nil
+}
+
 // ensureDestinationEmpty refuses to migrate into a store that already holds
 // authority or audit data, so a re-run cannot double-insert and violate unique
 // or primary-key constraints (which would leave a half-copied database).

@@ -150,6 +150,31 @@ func (db *DB) GetPublishedCRL(caID, scope, kind string) (*PublishedCRL, error) {
 	return c, nil
 }
 
+// ListPublishedCRLs returns the metadata of every persisted base/delta CRL
+// across all CAs and scopes, without the DER payloads (the DER field is left
+// nil to keep the scan light). It is the enumeration used by freshness
+// diagnostics (`secsy-ca doctor`), which care about the update windows rather
+// than the artifact bytes.
+func (db *DB) ListPublishedCRLs() ([]PublishedCRL, error) {
+	rows, err := db.query(
+		`SELECT ca_id, scope, kind, crl_number, base_number, this_update, next_update, generated_at
+		   FROM ca_published_crls`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PublishedCRL
+	for rows.Next() {
+		var c PublishedCRL
+		if err := rows.Scan(&c.CAID, &c.Scope, &c.Kind, &c.Number, &c.BaseNumber,
+			&c.ThisUpdate, &c.NextUpdate, &c.GeneratedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // UpsertPublishedCRL stores (replacing any prior) the latest CRL for its
 // (CA, scope, kind).
 func (db *DB) UpsertPublishedCRL(c *PublishedCRL) error {

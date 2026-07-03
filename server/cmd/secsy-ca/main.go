@@ -53,6 +53,13 @@ func run(args []string) error {
 	}
 	command, cmdArgs := rest[0], rest[1:]
 
+	// The doctor runs before the config is loaded: a config that fails to parse
+	// is one of its findings (reported with the documented exit codes), not a
+	// reason the diagnostics cannot run.
+	if command == "doctor" {
+		return cmdDoctor(*cfgPath, cmdArgs)
+	}
+
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -323,6 +330,8 @@ Commands:
   discover            Scan external TLS endpoints; flag expiring/weak/rogue certs
   publish             Publish CRLs/chains/pre-signed OCSP as static artifacts (CDN offload)
   db                  Persistence administration (migrate SQLite file store → PostgreSQL)
+  doctor              Read-only preflight diagnostics (config, HSM/KMS, keys, DB,
+                      audit chain, expiry, CRL freshness, clock, TLS); exit 0/1/2
 
 Run "secsy-ca <command> -h" for command-specific flags.
 `)

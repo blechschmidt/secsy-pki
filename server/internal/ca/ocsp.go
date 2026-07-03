@@ -239,6 +239,13 @@ func (c *DelegatedResponderCache) clock() time.Time {
 // responder key.
 func delegatedLabel(caID string) string { return "ocsp-responder-" + caID }
 
+// DelegatedOCSPKeyLabel exposes the stable provider key label under which a
+// CA's delegated OCSP responder key is provisioned, so diagnostics can probe
+// the exact key the responder cache uses. The responder *certificate* is
+// deliberately not persisted: it is short-lived and re-issued in memory as it
+// nears expiry (see DelegatedResponderCache).
+func DelegatedOCSPKeyLabel(caID string) string { return delegatedLabel(caID) }
+
 // fresh reports whether a cached responder is still comfortably valid (before
 // its refresh point). The refresh lead is half the certificate's *actual*
 // lifetime, so a responder issued against a CA that is itself near expiry (its

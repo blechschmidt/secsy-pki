@@ -1,8 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"encoding/asn1"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -1419,6 +1422,36 @@ type YubiHSMConfig struct {
 	AuthKeyID            int    `yaml:"auth_key_id"`
 	Password             string `yaml:"password"`
 	SuppressAuditWarning bool   `yaml:"suppress_audit_warning"`
+}
+
+// UnknownKeys re-decodes raw config YAML in strict mode and returns one
+// human-readable finding per key that does not correspond to any known config
+// field (e.g. "line 12: field pkcs1 not found in type config.Config" — usually
+// a typo that would otherwise be silently ignored). Malformed YAML returns an
+// error instead; callers are expected to have surfaced parse failures via Load
+// already. It is used by `secsy-ca doctor` for preflight config linting.
+func UnknownKeys(data []byte) ([]string, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	var c Config
+	err := dec.Decode(&c)
+	if err == nil || errors.Is(err, io.EOF) {
+		return nil, nil
+	}
+	var te *yaml.TypeError
+	if errors.As(err, &te) {
+		var unknown []string
+		for _, msg := range te.Errors {
+			// A strict decode also reports genuine type mismatches; those already
+			// fail the non-strict Load and are reported there. Only the
+			// unknown-field findings are new information here.
+			if strings.Contains(msg, "not found in type") {
+				unknown = append(unknown, msg)
+			}
+		}
+		return unknown, nil
+	}
+	return nil, err
 }
 
 func Load(path string) (*Config, error) {

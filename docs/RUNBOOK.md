@@ -22,7 +22,8 @@ The design decisions behind these procedures are recorded in
 7. [Disaster-recovery drill](#disaster-recovery-drill)
 8. [Observability: dashboards & alerts](#observability-dashboards--alerts)
 9. [Supply-chain / image verification failure](#supply-chain--image-verification-failure)
-10. [First-response quick reference](#first-response-quick-reference)
+10. [Preflight diagnostics (`secsy-ca doctor`)](#preflight-diagnostics-secsy-ca-doctor)
+11. [First-response quick reference](#first-response-quick-reference)
 
 ---
 
@@ -728,10 +729,76 @@ enforcement, the `make` targets): [supply-chain.md](supply-chain.md).
 
 ---
 
+## Preflight diagnostics (`secsy-ca doctor`)
+
+Run the read-only diagnostic suite before starting a node and after anything
+that could change its dependencies — an upgrade, a config edit, a restore, a
+key or certificate rotation, an HSM/KMS migration:
+
+```bash
+secsy-ca -config config.yaml doctor           # human table
+secsy-ca -config config.yaml doctor -json     # machine-readable, for CI/automation
+secsy-ca -config config.yaml doctor -deep     # + full store-integrity gate (walks the whole audit chain)
+```
+
+The doctor never mutates anything: no keys are generated, no rows written, no
+schema migrations applied (the store is opened read-inspect-only), and the key
+self-tests sign inside the provider and verify against the public half — no
+private material leaves the backend, per
+[ADR 0002](adr/0002-hsm-non-extractability-invariants.md). It reuses the same
+probes the server trusts: `keyprovider.Prober` (the `/readyz` HSM probe),
+`audit.VerifyChain`, and — with `-deep` — the `secsy-ca db verify` integrity
+gate.
+
+### Exit codes (CI contract)
+
+| Code | Meaning | Typical CI policy |
+|------|---------|-------------------|
+| `0` | every check passed (or was skipped as not-applicable) | proceed |
+| `1` | at least one check **failed** — the node is broken or will refuse to start | block |
+| `2` | no failures, but at least one **warning** (expiring cert, degraded HA set, config typo, …) | proceed + page/annotate; tolerate with `secsy-ca doctor \|\| [ $? -eq 2 ]` |
+
+### What is checked
+
+| Check | Verifies | Fails when / warns when |
+|-------|----------|--------------------------|
+| `config.parse` | config file parses and passes the same validation the server runs | fail: malformed YAML or invalid values |
+| `config.unknown_keys` | strict re-decode flags keys that map to no known field | warn: typo'd keys that would be silently ignored |
+| `keyprovider.<role>` | per signing role (`ca`, `tsa`, `signing`): PKCS#11 module/slot/PIN login, cloud-KMS credentials, or software keystore access | fail: module missing, wrong PIN, token absent, KMS credentials rejected |
+| `hsm.ha_tokens` | every token of a multi-token HA set is actively probed (not just the rotation state, which starts optimistic) | warn: some tokens unreachable; fail: all |
+| `db.connectivity` | store reachable, opened **without** migrating; a missing SQLite file is never created | fail: unreachable/missing |
+| `db.schema` | pending-migration detection against the canonical table list | warn: tables missing (created on next normal start) |
+| `keys.ca` | sign/verify self-test per CA key (X.509 and SSH), against the exact label the issuance path uses; provider key must match the certificate on record; PKCS#11 keys must be non-extractable | fail: key missing, sign fails, key↔cert mismatch; warn: CKA_EXTRACTABLE set |
+| `keys.tsa`, `keys.signing` | same self-test for the TSA and artifact-signing keys on their role backends | fail: missing/unusable |
+| `keys.secret_kek` | envelope KEKs (deployment-wide + per-tenant) present and RSA | warn: not yet provisioned; fail: wrong type |
+| `keys.ocsp_delegate` | delegated OCSP responder keys usable (certificates are short-lived and re-issued automatically) | fail: present but unusable |
+| `audit.chain_head` | hash-chain of the newest `-audit-sample` events (default 1000): contiguous seq, back-links, content hashes | fail: tampering/breakage in the sampled window |
+| `db.integrity` | (`-deep` only) full `db verify`: whole chain from genesis + serial/CRL/revocation monotonicity | fail: any invariant broken |
+| `certs.ca_expiry` | CA certificate headroom (superseded CAs cap at warn; retired skipped) | fail < `-expiry-fail-days` (7); warn < `-expiry-warn-days` (30) |
+| `certs.tsa_expiry`, `certs.signing_expiry` | the configured `certificate_file`s parse and have headroom | fail: unreadable or expiring |
+| `crl.freshness` | every persisted base/delta/shard CRL vs `nextUpdate` | fail: stale while `publish.enabled` (static consumers); warn: stale (regenerated on next fetch) or inside the final ¼ of its window |
+| `clock.skew` | host↔PostgreSQL clock offset; newest audit event not future-dated | fail > 60s; warn > 10s (tune via code defaults) |
+| `listener.tls` | `server.tls_cert/tls_key` load and match, leaf headroom; if the listener is up, a live handshake must present the configured certificate | fail: no TLS (server fails closed) or broken pair; warn: running server serves a different certificate (restart pending) |
+
+An unreachable listener is *not* a finding — doctor normally runs before the
+server starts. `-no-listener` skips the live probe entirely.
+
+### Rehearsing failure detection
+
+The SoftHSM test suite (`server/internal/doctor`) injects each failure mode
+deliberately — wrong PIN, a CA row whose key is missing from the token, a
+stale CRL, a tampered audit event, a dead HA token — and asserts the doctor
+catches it with the right severity. To rehearse by hand against a scratch
+token: point `pkcs11.pin` at a wrong value (expect `keyprovider.ca` FAIL,
+exit 1), or age a persisted CRL and expect `crl.freshness` WARN, exit 2.
+
+---
+
 ## First-response quick reference
 
 | Situation | First command / check |
 |-----------|-----------------------|
+| Preflight a node (config/HSM/DB/expiry/…) | `secsy-ca doctor` (`-json` in CI; exit 0/1/2) |
 | Is the service healthy? | `GET /healthz` (live), `GET /readyz` (DB + HSM) |
 | Is the HSM reachable? | `GET /readyz`; inspect HSM probe in `/metrics` |
 | Prove the CA key wasn't misused | `secsy-ca audit verify -json` + `secsy-verify verify-combined-log` |

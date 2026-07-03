@@ -309,3 +309,8 @@ func keyRefForCA(ca *models.CA) keyprovider.KeyRef {
 	}
 	return keyprovider.KeyRef{Label: label}
 }
+
+// KeyRefForCA exposes the provider key reference the manager uses for a CA's
+// signing key, so out-of-package diagnostics (`secsy-ca doctor`) address
+// exactly the key the issuance path would use rather than re-deriving it.
+func KeyRefForCA(ca *models.CA) keyprovider.KeyRef { return keyRefForCA(ca) }

@@ -614,6 +614,27 @@ func (p *PKCS11HAProvider) TokenHealthy(i int) bool {
 	return p.members[i].isHealthy()
 }
 
+// ProbeToken actively probes member token i right now and returns the probe
+// error (nil when reachable). Unlike TokenHealthy — which reflects the
+// failure-threshold state machine and starts optimistic — this reports actual
+// current reachability, which is what preflight diagnostics (`secsy-ca
+// doctor`) need to surface a dead backup token before it is ever routed to.
+// The probe outcome also feeds the member's health accounting exactly as the
+// background prober would.
+func (p *PKCS11HAProvider) ProbeToken(ctx context.Context, i int) error {
+	if i < 0 || i >= len(p.members) {
+		return fmt.Errorf("keyprovider: token index %d out of range", i)
+	}
+	m := p.members[i]
+	err := m.ping(ctx)
+	if err != nil {
+		m.recordFailure(p.threshold)
+	} else {
+		m.recordSuccess()
+	}
+	return err
+}
+
 // FailTokenForTest sets or clears the synthetic "unreachable" fault on member
 // token i, exactly as the in-package failover test does via the unreachable
 // seam. It lets the resilience suite pull a token out mid-load and return it to

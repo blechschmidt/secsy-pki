@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,6 +55,43 @@ func New(driver, dsn string) (*DB, error) {
 // It is the constructor used by the servers so operators can size the PostgreSQL
 // pool for their replica count and backend limits; New wraps it with defaults.
 func NewWithOptions(driver, dsn string, opts PoolOptions) (*DB, error) {
+	return open(driver, dsn, opts, true)
+}
+
+// OpenExisting opens an already-provisioned store WITHOUT applying schema
+// migrations or seeding baseline rows, so read-only tooling (`secsy-ca doctor`)
+// can inspect a store exactly as it stands. Unlike New it also refuses to
+// create a missing SQLite file (sql.Open would silently create an empty one)
+// and leaves the journal mode untouched. Use MissingTables to report whether
+// the schema is complete; a store opened this way may predate newer tables, so
+// reads against those tables will fail until the server (or `secsy-ca`) next
+// opens the store normally and migrates it.
+func OpenExisting(driver, dsn string) (*DB, error) {
+	if driver == "sqlite" || driver == "sqlite3" {
+		if path := sqliteFilePath(dsn); path != "" {
+			if _, err := os.Stat(path); err != nil {
+				return nil, fmt.Errorf("sqlite database %q does not exist (refusing to create it): %w", path, err)
+			}
+		}
+	}
+	return open(driver, dsn, PoolOptions{}, false)
+}
+
+// sqliteFilePath extracts the on-disk path from a SQLite DSN, returning "" for
+// in-memory databases (where there is no file whose existence could be
+// required).
+func sqliteFilePath(dsn string) string {
+	path := strings.TrimPrefix(dsn, "file:")
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i]
+	}
+	if path == "" || path == ":memory:" || strings.Contains(dsn, "mode=memory") {
+		return ""
+	}
+	return path
+}
+
+func open(driver, dsn string, opts PoolOptions, runMigrations bool) (*DB, error) {
 	driverName := driver
 	if driverName == "sqlite" {
 		driverName = "sqlite3"
@@ -67,8 +105,12 @@ func NewWithOptions(driver, dsn string, opts PoolOptions) (*DB, error) {
 		// hash-chained event log, so it is pinned to a single connection and relies
 		// on WAL mode for read concurrency. Pool options do not apply.
 		conn.SetMaxOpenConns(1)
-		if _, err := conn.Exec("PRAGMA journal_mode=WAL"); err != nil {
-			return nil, fmt.Errorf("setting journal mode: %w", err)
+		if runMigrations {
+			// Switching the journal mode rewrites the database file, so the
+			// non-migrating (read-only inspection) open path leaves it untouched.
+			if _, err := conn.Exec("PRAGMA journal_mode=WAL"); err != nil {
+				return nil, fmt.Errorf("setting journal mode: %w", err)
+			}
 		}
 		if _, err := conn.Exec("PRAGMA foreign_keys=ON"); err != nil {
 			return nil, fmt.Errorf("enabling foreign keys: %w", err)
@@ -102,8 +144,10 @@ func NewWithOptions(driver, dsn string, opts PoolOptions) (*DB, error) {
 		conn.SetConnMaxIdleTime(idleTime)
 	}
 	db := &DB{conn: conn, driver: driver}
-	if err := db.migrate(); err != nil {
-		return nil, fmt.Errorf("migrating: %w", err)
+	if runMigrations {
+		if err := db.migrate(); err != nil {
+			return nil, fmt.Errorf("migrating: %w", err)
+		}
 	}
 	return db, nil
 }
@@ -179,6 +223,22 @@ func (db *DB) Close() error {
 // deadline.
 func (db *DB) Ping(ctx context.Context) error {
 	return db.conn.PingContext(ctx)
+}
+
+// ServerTime returns the database server's wall-clock time for networked
+// backends, so diagnostics can detect clock skew between this host and the
+// shared store (which would distort certificate validity windows, CRL
+// thisUpdate/nextUpdate, and audit timestamps across replicas). ok is false
+// for embedded SQLite, which runs in-process and shares the host clock.
+func (db *DB) ServerTime(ctx context.Context) (t time.Time, ok bool, err error) {
+	if !db.isPostgres() {
+		return time.Time{}, false, nil
+	}
+	err = db.conn.QueryRowContext(ctx, `SELECT NOW()`).Scan(&t)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return t, true, nil
 }
 
 func (db *DB) exec(query string, args ...interface{}) (sql.Result, error) {
