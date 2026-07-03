@@ -87,7 +87,24 @@ type API struct {
 	// (Task 60); nil when signing.enabled is false, in which case the endpoints
 	// answer 503.
 	signingService *signing.Service
+	// leaderInfo reports this replica's background-job leadership for the
+	// /readyz detail (Task 68); nil when the process runs without an elector
+	// (tests), in which case the readiness report omits the component.
+	leaderInfo LeaderInfo
 }
+
+// LeaderInfo is the read-only view of the multi-replica coordination elector
+// surfaced through the readiness probe. *leader.Elector satisfies it.
+type LeaderInfo interface {
+	// IsLeader reports whether this replica currently runs the singleton
+	// background jobs.
+	IsLeader() bool
+	// Mode reports the election backend ("postgres" or "static").
+	Mode() string
+}
+
+// SetLeaderInfo installs the coordination elector's leadership view.
+func (a *API) SetLeaderInfo(li LeaderInfo) { a.leaderInfo = li }
 
 // AuthInfo describes the operator-authentication mechanisms enabled on the
 // server, surfaced to the console through /api/auth/config.

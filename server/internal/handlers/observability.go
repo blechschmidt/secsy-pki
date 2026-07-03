@@ -85,8 +85,9 @@ func (a *API) Healthz(w http.ResponseWriter, r *http.Request) {
 
 // componentStatus is the per-dependency result reported by the readiness probe.
 type componentStatus struct {
-	Status string `json:"status"`          // "up" | "down" | "skipped"
-	Error  string `json:"error,omitempty"` // present when Status == "down"
+	Status string `json:"status"`           // "up" | "down" | "skipped" | "leader" | "follower"
+	Error  string `json:"error,omitempty"`  // present when Status == "down"
+	Detail string `json:"detail,omitempty"` // extra context, e.g. the election mode
 }
 
 // Readyz is the readiness probe. It verifies the process can actually serve
@@ -115,6 +116,18 @@ func (a *API) Readyz(w http.ResponseWriter, r *http.Request) {
 	// provider that does not is reported as "skipped" and does not fail
 	// readiness (there is nothing we can assert about it).
 	components["hsm"] = a.probeKeyProvider(ctx, &ready)
+
+	// Background-job leadership (Task 68). Informational only: a follower is
+	// fully ready to serve traffic (the singleton jobs run on the leader), so
+	// leadership never fails readiness — it is surfaced here so operators can
+	// identify the job-running replica from the probe they already watch.
+	if a.leaderInfo != nil {
+		st := "follower"
+		if a.leaderInfo.IsLeader() {
+			st = "leader"
+		}
+		components["leadership"] = componentStatus{Status: st, Detail: "mode=" + a.leaderInfo.Mode()}
+	}
 
 	status := http.StatusOK
 	overall := "ready"

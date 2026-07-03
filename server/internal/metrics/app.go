@@ -371,6 +371,21 @@ var (
 		"Health of a subsystem probed by the readiness check (1 = up, 0 = down).",
 		"component")
 
+	// Multi-replica coordination (Task 68). LeaderIsLeader is this replica's
+	// current leadership over the singleton background jobs; summed across the
+	// fleet it should always be exactly 1 (0 means jobs are paused — e.g. the
+	// election store is unreachable). LeaderTransitions counts this replica's
+	// gains ("leader") and losses ("follower"); a fleet-wide burst indicates
+	// leadership flapping, typically a struggling database or an overloaded
+	// leader missing lease renewals.
+	LeaderIsLeader = NewGauge(Default,
+		"secsy_leader_is_leader",
+		"Whether this replica currently leads the singleton background jobs (1 = leader, 0 = follower).")
+	LeaderTransitions = NewCounter(Default,
+		"secsy_leader_transitions_total",
+		"Leadership transitions observed by this replica, by direction (leader = acquired, follower = lost or stepped down).",
+		"to")
+
 	// Certificate expiry monitoring. CertsExpiring is refreshed on every monitor
 	// scan and reports how many unexpired certificates fall into each severity
 	// window (warning|critical) plus how many have already expired. It lets

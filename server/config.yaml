@@ -39,6 +39,23 @@ database:
   # conn_max_lifetime_seconds: 1800
   # conn_max_idle_time_seconds: 300
 
+# --- Multi-replica coordination (Task 68) -------------------------------------
+# With replicas > 1 on a shared PostgreSQL, the servers elect a background-job
+# leader (PostgreSQL advisory lock with lease renewal): the singleton jobs —
+# expiry monitor/auto-renewal, CA auto-rotation, OCSP pre-signing, CRL
+# regeneration/publishing, audit anchoring, SIEM export, discovery scans — run
+# on exactly one replica at a time, with automatic failover. All replicas keep
+# serving API traffic; /readyz reports each replica's role ("leadership") and
+# secsy_leader_is_leader / secsy_leader_transitions_total meter the election.
+# The defaults are correct for both single-node and multi-replica deployments:
+# mode "auto" elects via PostgreSQL when database.driver is postgres, and holds
+# leadership statically on single-node SQLite. See docs/high-availability.md.
+# coordination:
+#   mode: "auto"                            # auto | postgres | static
+#   lock_name: "secsy-pki/background-jobs"  # keep stable; namespaces the lock
+#   renew_interval_seconds: 5               # leader lease confirmation cadence
+#   retry_interval_seconds: 5               # follower acquisition retry (failover bound)
+
 oidc:
   issuer_url: "http://localhost:8080/realms/secsy-pki"
   client_id: "secsy-pki"

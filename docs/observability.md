@@ -53,10 +53,17 @@ TLS-terminating proxy anyway.
   "status": "ready",
   "components": {
     "database": { "status": "up" },
-    "hsm": { "status": "up" }
+    "hsm": { "status": "up" },
+    "leadership": { "status": "leader", "detail": "mode=postgres" }
   }
 }
 ```
+
+The `leadership` component reports which replica runs the singleton background
+jobs (see [multi-replica coordination](high-availability.md)). It is
+**informational only**: a `"follower"` replica is fully ready — it serves all
+API traffic — so leadership never turns the probe `503`. In single-node
+deployments it reads `"leader"` with `mode=static`.
 
 When a dependency is down the overall `status` becomes `not_ready`, the HTTP
 status is `503`, and the failing component carries an `error`:
@@ -104,6 +111,8 @@ embedded IDs/serials).
 | `secsy_envelope_operations_total` | counter | `operation` (`encrypt`/`decrypt`), `result` | HSM-backed envelope encryption operations |
 | `secsy_authz_decisions_total` | counter | `action`, `decision` (`allow`/`deny`) | RBAC authorization decisions |
 | `secsy_component_up` | gauge | `component` (`database`/`hsm`) | Last readiness-probe result (1 = up) |
+| `secsy_leader_is_leader` | gauge | — | 1 on the replica leading the singleton background jobs, 0 on followers (see [high availability](high-availability.md)) |
+| `secsy_leader_transitions_total` | counter | `to` (`leader`/`follower`) | Leadership gains/losses observed by this replica |
 | `secsy_certificates_expiring` | gauge | `severity` (`warning`/`critical`/`expired`) | Certs in each expiry window as of the last monitor scan |
 | `secsy_certificate_auto_renewals_total` | counter | `result` (`success`/`error`) | Certificates auto-renewed by the expiry monitor |
 | `secsy_certificate_monitor_scans_total` | counter | `result` | Expiry-monitor scan cycles |
@@ -235,6 +244,8 @@ CRL/monitor cadence; the rationale and response steps live in the
 | `SecsyPKIRateLimitThrottleSpike` | throttled fraction `> 30%` for 10m | warning | expected abuse baseline |
 | `SecsyPKIAuditExportLagHigh` | lag `> 5000` events for 15m | warning | sink throughput |
 | `SecsyPKIAuditExportStalled` | backlog + no ack in 30m | critical | — |
+| `SecsyPKINoJobLeader` | fleet-wide `max(secsy_leader_is_leader) == 0` for 10m | warning | — |
+| `SecsyPKILeadershipFlapping` | `> 6` leadership transitions in 30m | warning | — |
 
 > **CRL/delta staleness caveat:** `SecsyPKICRLNotRegenerating` is a best-effort
 > cadence check — the metrics expose no CRL `nextUpdate` timestamp. For an

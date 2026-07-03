@@ -135,7 +135,12 @@ After a successful migration, point `config.database` (or the
    automatically on first start.
 3. Configure every replica with the same PostgreSQL DSN.
 4. Scale out. The audit-chain serialization and transactional counters make
-   concurrent issuance, revocation, and ACME progress safe across replicas.
+   concurrent issuance, revocation, and ACME progress safe across replicas, and
+   the replicas elect a **background-job leader** through the same PostgreSQL
+   (advisory lock) so the singleton jobs — expiry monitor/auto-renewal, CA
+   rotation, OCSP pre-signing, CRL publishing, audit anchoring, SIEM export —
+   run exactly once fleet-wide with automatic failover. See
+   [multi-replica coordination & HA](high-availability.md).
 
 > **Note:** HSM/PKCS#11 key material is *not* stored in the database — it stays
 > in the HSM. The database holds only metadata, public certificates, and audit

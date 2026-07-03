@@ -1,5 +1,18 @@
 {{- $tlsSecret := include "secsy-pki.tlsSecretName" . -}}
 {{- $softhsm := eq .Values.hsm.module.mode "softhsm" -}}
+{{- /* Multi-replica preconditions (Task 68). The server coordinates its
+singleton background jobs via PostgreSQL advisory-lock leader election, so
+replicas > 1 is only sound when every replica shares one PostgreSQL and one
+real HSM. Fail the render early on the two silently-corrupting combinations. */}}
+{{- if gt (int .Values.replicaCount) 1 }}
+{{- $driver := ternary .Values.externalDatabase.driver .Values.config.database.driver .Values.externalDatabase.enabled }}
+{{- if has $driver (list "sqlite" "sqlite3") }}
+{{- fail "replicaCount > 1 requires a shared PostgreSQL store: enable externalDatabase (recommended) or set config.database.driver=postgres. SQLite is single-node by construction. See docs/high-availability.md." }}
+{{- end }}
+{{- if $softhsm }}
+{{- fail "replicaCount > 1 is not supported with hsm.module.mode=softhsm: each pod provisions its own token, so replicas would hold different CA keys. Use a shared/network HSM (hsm.module.mode=hostPath or image). See docs/high-availability.md." }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,9 +21,17 @@ metadata:
     {{- include "secsy-pki.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  {{- if gt (int .Values.replicaCount) 1 }}
+  # Multi-replica HA: roll pods gradually. Followers keep serving during the
+  # roll, and background-job leadership hands over via the advisory lock the
+  # moment the leader pod stops.
+  strategy:
+    type: RollingUpdate
+  {{- else }}
   # SQLite state is single-writer; avoid rolling two writers onto one RWO volume.
   strategy:
     type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "secsy-pki.selectorLabels" . | nindent 6 }}

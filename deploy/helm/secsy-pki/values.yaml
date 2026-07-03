@@ -1,9 +1,19 @@
 # Default values for the secsy-pki Helm chart.
 # See deploy/helm/secsy-pki/README.md and docs/kubernetes.md for the full guide.
 
-# -- Number of server replicas. secsy-pki uses SQLite by default (ReadWriteOnce
-# state), so keep this at 1 unless you point database.dsn at a shared/external
-# database and provision an RWX or external volume.
+# -- Number of server replicas. The default deployment (embedded SQLite +
+# SoftHSM) is single-node: keep this at 1. Running replicaCount > 1 is
+# supported when every replica shares the same state (Task 68):
+#   * externalDatabase.enabled=true (shared PostgreSQL — the chart refuses to
+#     render >1 replica on SQLite), and
+#   * a shared/network HSM (hsm.module.mode hostPath or image; SoftHSM mode is
+#     per-pod and also refused), and
+#   * typically persistence.enabled=false (PostgreSQL is the source of truth).
+# The replicas elect a background-job leader via a PostgreSQL advisory lock —
+# expiry monitoring/auto-renewal, CA rotation, OCSP pre-signing, CRL
+# regeneration/publishing, audit anchoring, and SIEM export each run on exactly
+# one replica, with automatic failover. No extra config needed; tuning lives
+# under config.coordination. See docs/high-availability.md.
 replicaCount: 1
 
 image:
@@ -103,6 +113,17 @@ config:
   #       bucket: pki-artifacts
   #       access_key_id: "..."
   #       secret_access_key: "..."
+
+  # Multi-replica leader election tuning (Task 68, rendered as the top-level
+  # coordination: block verbatim; snake_case keys). Normally omitted — the
+  # default mode "auto" elects via a PostgreSQL advisory lock whenever the
+  # effective database driver is postgres (e.g. via externalDatabase) and is
+  # static single-node leadership on SQLite. Override only to tune failover
+  # latency or to isolate deployments sharing one PostgreSQL database:
+  #   coordination:
+  #     lock_name: secsy-pki/background-jobs   # keep stable; see docs
+  #     renew_interval_seconds: 5
+  #     retry_interval_seconds: 5
 
   # gRPC API surface (Task 56): exposes the core PKIService (issue/renew/revoke/
   # status + CRL/OCSP metadata) over gRPC alongside the REST API, enforcing the
@@ -283,6 +304,8 @@ secrets:
 #
 # When enabled you will typically also set replicaCount > 1 and
 # persistence.enabled=false (the SQLite PVC is no longer the source of truth).
+# With replicas > 1 the pods elect a background-job leader through this
+# database automatically (see replicaCount above and docs/high-availability.md).
 # Migrate an existing SQLite store into PostgreSQL first with:
 #   secsy-ca db migrate -from-dsn <sqlite-file> -to-dsn <postgres-dsn>
 externalDatabase:

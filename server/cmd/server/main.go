@@ -34,6 +34,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
+	"github.com/blechschmidt/secsy-pki/server/internal/leader"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -116,6 +117,28 @@ func main() {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer db.Close()
+
+	// Multi-replica coordination (Task 68): the singleton background jobs
+	// registered below (expiry monitor/auto-renewal + CA rotation, discovery
+	// scans, OCSP pre-signing, CRL regeneration/publishing, SIEM export, audit
+	// anchoring) run only on the elected leader, so the server is safe to run
+	// with replicas > 1 against a shared PostgreSQL. On SQLite the elector
+	// resolves to static single-node leadership and the jobs start at boot
+	// exactly as before. The elector holds a session-level advisory lock on its
+	// own dedicated connection; jobs start when it is acquired and stop when it
+	// is lost.
+	elector, err := leader.New(leader.Config{
+		Mode:          cfg.Coordination.Mode,
+		Driver:        cfg.Database.Driver,
+		DSN:           cfg.Database.DSN,
+		LockName:      cfg.Coordination.LockName,
+		RenewInterval: time.Duration(cfg.Coordination.RenewIntervalSeconds) * time.Second,
+		RetryInterval: time.Duration(cfg.Coordination.RetryIntervalSeconds) * time.Second,
+		Logger:        log.Default(),
+	})
+	if err != nil {
+		log.Fatalf("Coordination configuration error: %v", err)
+	}
 
 	// Initialize OIDC provider (optional - may fail if no OIDC configured)
 	var oidcProvider *auth.OIDCProvider
@@ -529,7 +552,10 @@ func main() {
 	// Certificate-expiry monitor: a background goroutine that periodically scans
 	// issued certificates, reports upcoming expirations through the configured
 	// notification sinks, and (when enabled) auto-renews eligible leaves via the
-	// same HSM-backed issuance path. Runs for the process lifetime.
+	// same HSM-backed issuance path. Leader-gated: with replicas > 1, a single
+	// replica scanning prevents duplicate expiry alerts and racing auto-renewals
+	// (and re-scanning after a handover is idempotent — a renewed certificate is
+	// superseded and never renewed twice).
 	if cfg.Monitor.Enabled {
 		caMgr := ca.NewManager(db, provider)
 		mon := monitor.New(db, caMgr, db, monitorOpts)
@@ -547,21 +573,23 @@ func main() {
 		runner.WithSecretKEKCheck(func(context.Context) ([]string, error) {
 			return secret.RefreshKEKMetrics(db, cfg.Secret.KEKLabel)
 		})
-		go runner.Run(context.Background())
+		elector.Register("expiry-monitor", runner.Run)
 	}
 
 	// External certificate discovery scanner (Task 54): periodically probes the
 	// configured TLS endpoints, records the served leaf certificates (with their
 	// security flags) into the inventory, and dispatches expiring/weak/rogue
-	// findings through the same notification sinks as the expiry monitor. Runs for
-	// the process lifetime. No HSM operations — a TLS client plus X.509 analysis.
+	// findings through the same notification sinks as the expiry monitor.
+	// Leader-gated: one replica scanning avoids probing every external endpoint
+	// once per replica and duplicating findings/alerts. No HSM operations — a
+	// TLS client plus X.509 analysis.
 	if cfg.Discovery.Enabled {
 		discoRunner, err := discovery.NewBackgroundRunner(db, cfg.Discovery, cfg.Monitor, log.Default())
 		if err != nil {
 			log.Fatalf("Certificate discovery configuration error: %v", err)
 		}
 		if discoRunner != nil {
-			go discoRunner.Run(context.Background())
+			elector.Register("discovery-scan", discoRunner.Run)
 		} else {
 			log.Printf("Certificate discovery enabled but no targets configured; scanner not started")
 		}
@@ -570,22 +598,29 @@ func main() {
 	// OCSP pre-signing and static artifact publishing (Task 58): batch-sign OCSP
 	// responses for all known serials into the response cache so the public
 	// responder stays off the HSM, and publish CRLs/chains/pre-signed responses
-	// as static artifacts (directory or S3) for CDN fronting. Each runs for the
-	// process lifetime when enabled.
-	presigner := setupOCSPPresign(cfg, db, provider, api)
-	setupPublish(cfg, db, provider, presigner)
+	// as static artifacts (directory or S3) for CDN fronting. Both are
+	// leader-gated: presigning on one replica keeps the batch HSM load constant
+	// as replicas scale (followers fall back to the on-demand signing path with
+	// its TTL cache), and the publish loop — which regenerates CRLs, delta
+	// CRLs, and partition shards on its schedule — must not have replicas
+	// racing snapshot swaps against the same store.
+	presigner := setupOCSPPresign(cfg, db, provider, api, elector)
+	setupPublish(cfg, db, provider, presigner, elector)
 
 	// Audit-log SIEM export: a background worker per sink streams the
 	// tamper-evident event log to external syslog/CEF/webhook collectors from a
 	// durable per-sink cursor. At-least-once, backpressured, and lossless across
-	// restarts. Runs for the process lifetime.
+	// restarts. Leader-gated: the per-sink cursor is shared state, and a single
+	// exporter advancing it avoids replicas delivering interleaved duplicates;
+	// a handover at worst redelivers the last unacknowledged batch, which the
+	// at-least-once contract already requires downstreams to tolerate.
 	if cfg.Audit.Export.Enabled {
 		exporter, err := buildAuditExporter(db, cfg)
 		if err != nil {
 			log.Fatalf("Audit SIEM export configuration error: %v", err)
 		}
 		log.Printf("Audit SIEM export enabled (%d sink(s))", len(cfg.Audit.Export.Sinks))
-		go exporter.Run(context.Background())
+		elector.Register("siem-export", exporter.Run)
 	}
 
 	// Shared hardware key-attestation verifier (Task 49). Built once from the
@@ -656,7 +691,9 @@ func main() {
 	// the tamper-evident event log's head hash into an RFC 3161 timestamp token
 	// — from the in-process TSA above, or an external TSA URL for independence —
 	// and persists it, so `secsy-ca audit verify` detects whole-chain truncation
-	// or rewrite behind any anchor point. Runs for the process lifetime.
+	// or rewrite behind any anchor point. Leader-gated: one anchor per head is
+	// the point of the exercise, and the idle-skip rule (an unchanged head is
+	// not re-anchored) makes the post-handover first run a no-op.
 	if cfg.Audit.Anchor.Enabled {
 		ts, err := buildAnchorTimestamper(cfg, tsaAuthority)
 		if err != nil {
@@ -664,7 +701,7 @@ func main() {
 		}
 		anchorRunner := anchor.NewRunner(anchor.NewService(db, ts),
 			time.Duration(cfg.Audit.Anchor.IntervalHours)*time.Hour, log.Default())
-		go anchorRunner.Run(context.Background())
+		elector.Register("audit-anchor", anchorRunner.Run)
 	}
 
 	// Artifact code-signing service (Task 60): CMS detached signatures over
@@ -706,6 +743,14 @@ func main() {
 			http.Redirect(w, r, "/console/", http.StatusFound)
 		})
 	}
+
+	// Job registration is complete — start the election. On SQLite (static
+	// mode) leadership and every registered job start immediately, preserving
+	// single-node behavior; on PostgreSQL the jobs start once the advisory lock
+	// is acquired, which for a lone replica is the first attempt. The readiness
+	// probe reports this replica's role under the "leadership" component.
+	api.SetLeaderInfo(elector)
+	go elector.Run(context.Background())
 
 	// Cap every request body to guard against memory-exhaustion DoS from an
 	// (authenticated) client. Individual handlers may impose tighter limits.

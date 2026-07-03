@@ -126,6 +126,38 @@ type Config struct {
 	// fail-closed FIPS 140-3 algorithm policy (security.fips). See SecurityConfig
 	// and docs/fips.md.
 	Security SecurityConfig `yaml:"security"`
+	// Coordination configures multi-replica leader election (Task 68): with a
+	// shared PostgreSQL store, exactly one replica at a time runs the singleton
+	// background jobs (expiry monitor/auto-renewal, CA auto-rotation, OCSP
+	// pre-signing, CRL regeneration/publishing, audit anchoring, SIEM export,
+	// discovery scans). The zero value is mode "auto", which elects via a
+	// PostgreSQL advisory lock when database.driver is postgres and holds
+	// leadership statically on single-node SQLite — so replicas>1 needs no
+	// explicit configuration beyond the shared database. See
+	// docs/high-availability.md.
+	Coordination CoordinationConfig `yaml:"coordination"`
+}
+
+// CoordinationConfig tunes the background-job leader election. All fields are
+// optional; the defaults elect correctly for the configured database driver.
+type CoordinationConfig struct {
+	// Mode selects the election backend: "auto" (default — advisory-lock
+	// election on postgres, static single-node leadership on sqlite),
+	// "postgres" (require advisory-lock election; rejected on sqlite), or
+	// "static" (this replica always runs the jobs; only safe with exactly one
+	// replica).
+	Mode string `yaml:"mode"`
+	// LockName namespaces the advisory lock (hashed to the 64-bit key). Give
+	// each deployment sharing a PostgreSQL database its own name; renaming it
+	// during a rolling update briefly allows two leaders (old and new name), so
+	// keep it stable. Default "secsy-pki/background-jobs".
+	LockName string `yaml:"lock_name"`
+	// RenewIntervalSeconds is how often the leader re-confirms its lease (and
+	// steps down when it cannot). Default 5.
+	RenewIntervalSeconds int `yaml:"renew_interval_seconds"`
+	// RetryIntervalSeconds is how often a follower retries acquisition, which
+	// bounds failover latency after the old leader's session ends. Default 5.
+	RetryIntervalSeconds int `yaml:"retry_interval_seconds"`
 }
 
 // SecurityConfig holds deployment-wide cryptographic policy switches.
@@ -1595,6 +1627,10 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateCoordination(); err != nil {
+		return nil, err
+	}
+
 	if err := cfg.validateRateLimit(); err != nil {
 		return nil, err
 	}
@@ -2004,6 +2040,30 @@ func (c *Config) validateAuditExport() error {
 // validateAuditAnchor sanity-checks the audit-chain anchoring configuration
 // when it is enabled, so a token source that cannot exist fails at load rather
 // than on the first anchor tick.
+// validateCoordination sanity-checks the multi-replica leader-election block.
+// The mode strings mirror internal/leader (which re-validates at construction);
+// checking here surfaces a misconfiguration as a config.Load error with the
+// yaml key, before any component starts.
+func (c *Config) validateCoordination() error {
+	co := &c.Coordination
+	switch co.Mode {
+	case "", "auto", "postgres", "static":
+	default:
+		return fmt.Errorf("coordination.mode %q is not valid (valid: auto, postgres, static)", co.Mode)
+	}
+	isPostgres := c.Database.Driver == "postgres" || c.Database.Driver == "postgresql"
+	if co.Mode == "postgres" && !isPostgres {
+		return fmt.Errorf("coordination.mode \"postgres\" requires database.driver postgres (got %q)", c.Database.Driver)
+	}
+	if co.RenewIntervalSeconds < 0 {
+		return fmt.Errorf("coordination.renew_interval_seconds must not be negative")
+	}
+	if co.RetryIntervalSeconds < 0 {
+		return fmt.Errorf("coordination.retry_interval_seconds must not be negative")
+	}
+	return nil
+}
+
 func (c *Config) validateAuditAnchor() error {
 	a := &c.Audit.Anchor
 	if !a.Enabled {

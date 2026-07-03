@@ -362,3 +362,39 @@ groups:
           summary: "Audit-chain anchoring failing ({{ $labels.instance }})"
           description: "More than one audit-anchor attempt failed in the last 6h. Check the TSA (internal /tsa health, or the external audit.anchor.tsa_url) and the audit.anchor error events in the log."
           runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#audit-chain-anchoring"
+
+  # --- Multi-replica coordination -------------------------------------------
+  - name: secsy-pki.coordination
+    rules:
+      - alert: SecsyPKINoJobLeader
+        # No replica holds the background-job leadership: the singleton jobs
+        # (expiry monitor/auto-renewal, CA rotation, OCSP pre-signing, CRL
+        # publishing, audit anchoring, SIEM export) are all paused. This
+        # usually means every replica is failing to reach PostgreSQL for the
+        # advisory-lock election, or a dead leader's session has not yet been
+        # reaped. API traffic is unaffected, so this fires before the derived
+        # staleness alerts (presign/publish/anchor/export) start to.
+        expr: max by (job) (secsy_leader_is_leader) == 0
+        for: 10m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "No background-job leader elected ({{ $labels.job }})"
+          description: "secsy_leader_is_leader is 0 on every replica for >10m: no instance is running the singleton background jobs. Check replica connectivity to PostgreSQL, and pg_locks for an orphaned advisory-lock session."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#observability-alert-response"
+
+      - alert: SecsyPKILeadershipFlapping
+        # Leadership keeps changing hands: a leader that repeatedly fails lease
+        # renewal (struggling database, saturated pool, flaky network) forces
+        # constant job restarts. Handovers are idempotent, so this degrades job
+        # cadence rather than correctness — but the election store is unhealthy.
+        expr: sum by (job) (increase(secsy_leader_transitions_total[30m])) > 6
+        for: 15m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "Background-job leadership flapping ({{ $labels.job }})"
+          description: "More than 6 leadership transitions across the fleet in 30m. The leader cannot hold its advisory-lock lease — check PostgreSQL health/latency and the 'leader:' lines in the server logs."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#observability-alert-response"

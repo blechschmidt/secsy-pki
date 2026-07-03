@@ -151,9 +151,11 @@ const (
 
 // Defines values for ReadinessComponentsStatus.
 const (
-	Down    ReadinessComponentsStatus = "down"
-	Skipped ReadinessComponentsStatus = "skipped"
-	Up      ReadinessComponentsStatus = "up"
+	Down     ReadinessComponentsStatus = "down"
+	Follower ReadinessComponentsStatus = "follower"
+	Leader   ReadinessComponentsStatus = "leader"
+	Skipped  ReadinessComponentsStatus = "skipped"
+	Up       ReadinessComponentsStatus = "up"
 )
 
 // Defines values for ReadinessStatus.
@@ -1190,6 +1192,7 @@ type ProviderKeyEntry struct {
 // Readiness defines model for Readiness.
 type Readiness struct {
 	Components *map[string]struct {
+		Detail *string                    `json:"detail,omitempty"`
 		Error  *string                    `json:"error,omitempty"`
 		Status *ReadinessComponentsStatus `json:"status,omitempty"`
 	} `json:"components,omitempty"`

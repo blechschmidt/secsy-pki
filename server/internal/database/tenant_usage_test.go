@@ -238,10 +238,18 @@ func runTenantUsageSuite(t *testing.T, db *DB) {
 				t.Fatalf("RecordIssuedCertificate(%s): %v", serial, err)
 			}
 		}
-		record(caA, "1", now.Add(24*time.Hour), models.CertStatusValid)   // active
-		record(caA, "2", now.Add(24*time.Hour), models.CertStatusRevoked) // revoked
-		record(caA, "3", now.Add(-time.Minute), models.CertStatusValid)   // expired
-		record(caB, "4", now.Add(24*time.Hour), models.CertStatusValid)   // other tenant
+		record(caA, "1", now.Add(24*time.Hour), models.CertStatusValid) // active
+		record(caA, "2", now.Add(24*time.Hour), models.CertStatusValid)
+		record(caA, "3", now.Add(-time.Minute), models.CertStatusValid) // expired
+		record(caB, "4", now.Add(24*time.Hour), models.CertStatusValid) // other tenant
+		// Revoke serial 2 through the store API rather than recording
+		// status=revoked directly: the whole-store revocation-consistency
+		// integrity check (VerifyStoreIntegrity, also run by the chaos suite
+		// against the same shared PostgreSQL database) treats a revoked-status
+		// certificate with no revoked_certificates row as corruption.
+		if _, err := db.RevokeCertificate(caA, "2", 0, now); err != nil {
+			t.Fatalf("RevokeCertificate: %v", err)
+		}
 
 		active, err := db.CountActiveCertificatesForTenant(tnA.ID, now)
 		if err != nil {

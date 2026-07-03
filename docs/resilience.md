@@ -107,6 +107,29 @@ asserts a queued acquire times out (rather than blocking forever). Every
 rejection increments the matching `secsy_ratelimit_throttled_total` /
 `secsy_hsm_guard_rejected_total` counter.
 
+### 5. Multi-replica leader election & job failover (Task 68, PostgreSQL only)
+
+`TestChaosLeaderElectionTwoReplicas` assembles two in-process server instances
+— each with its own store pool, key provider, and leader-gated background jobs
+(expiry monitor with auto-renew, audit anchoring), wired exactly as
+`cmd/server` does — against one PostgreSQL, plus a certificate seeded one hour
+from expiry. It asserts the Task 68
+[coordination](high-availability.md) invariants:
+
+- Exactly one replica acquires leadership; the follower starts **zero** jobs.
+- The expiring certificate is auto-renewed **exactly once** fleet-wide.
+- Anchor ticks on a 200 ms interval **idle-skip** an unchanged head instead of
+  re-anchoring it, and every stored anchor covers a distinct head sequence.
+- Stopping the leader fails leadership over to the standby, which starts the
+  jobs it had never run — and its immediate first scan/anchor pass does **not**
+  double-renew or re-anchor (supersession + idle-skip idempotency).
+- The concurrently appended-to audit chain stays contiguous throughout.
+
+The election primitive itself (advisory-lock mutual exclusion, lease
+confirmation, step-down on `pg_terminate_backend`) is covered by the
+`internal/leader` tests, which run in the store-integrity CI job against the
+same PostgreSQL service.
+
 ## Guarantees observed
 
 Running the full suite against SoftHSM + PostgreSQL confirms, under concurrent
@@ -124,3 +147,6 @@ load and injected faults:
   no partial state and no wrong-key result.
 - Overload backpressure returns the **correct status codes with `Retry-After`**
   and is fully observable in metrics.
+- With two replicas on one PostgreSQL, singleton background jobs run on
+  **exactly one** replica, leadership fails over when the leader stops, and a
+  handover never double-renews a certificate or double-anchors the audit head.

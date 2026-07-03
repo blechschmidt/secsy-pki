@@ -245,10 +245,12 @@ jobs:
       # (integrity_test.go), the migration copier (migrate_copy_test.go), and the
       # concurrent counter-monotonicity invariants. -p 1 keeps the shared Postgres
       # database from being raced across packages. The sqlite build tag pulls in
-      # the SQLite driver so the SQLite path runs alongside Postgres.
+      # the SQLite driver so the SQLite path runs alongside Postgres. The leader
+      # package rides along for its advisory-lock election tests (exactly one
+      # leader, failover on session kill), which need the same real Postgres.
       - name: Run store-integrity & migration tests (SQLite + Postgres)
         working-directory: server
-        run: go test -tags sqlite -p 1 -count=1 ./internal/database/...
+        run: go test -tags sqlite -p 1 -count=1 ./internal/database/... ./internal/leader/...
 
       # Static-check the DR drill script so a syntax error can't ship unnoticed.
       - name: Shellcheck the DR drill scripts

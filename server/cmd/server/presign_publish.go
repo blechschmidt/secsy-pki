@@ -10,6 +10,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
+	"github.com/blechschmidt/secsy-pki/server/internal/leader"
 	"github.com/blechschmidt/secsy-pki/server/internal/publish"
 )
 
@@ -19,7 +20,13 @@ import (
 // memory without touching the HSM — and keeps serving through an HSM outage
 // for as long as the responses remain valid. Returns the presigner for the
 // publisher to reuse (nil when disabled).
-func setupOCSPPresign(cfg *config.Config, db *database.DB, provider keyprovider.Provider, api *handlers.API) *ca.OCSPPresigner {
+//
+// The loop is leader-gated (Task 68): pre-signing every known serial is a
+// batch HSM workload that must not multiply with the replica count. On a
+// follower the public responder still answers from its per-request signing
+// path and TTL cache; on leadership gain the first batch runs immediately, so
+// a fresh leader's cache warms within one run.
+func setupOCSPPresign(cfg *config.Config, db *database.DB, provider keyprovider.Provider, api *handlers.API, elector *leader.Elector) *ca.OCSPPresigner {
 	pc := cfg.Server.OCSP.Presign
 	if !pc.Enabled {
 		return nil
@@ -41,8 +48,7 @@ func setupOCSPPresign(cfg *config.Config, db *database.DB, provider keyprovider.
 	log.Printf("OCSP pre-signing enabled (validity %s, refresh %s, delegated=%v, recent-tracking=%v)",
 		pc.Validity(), refresh, presignCfg.Delegated != nil, presignCfg.Recent != nil)
 
-	go func() {
-		ctx := context.Background()
+	elector.Register("ocsp-presign", func(ctx context.Context) {
 		runPresign := func() {
 			stats, err := presigner.Run(ctx)
 			if err != nil {
@@ -57,10 +63,15 @@ func setupOCSPPresign(cfg *config.Config, db *database.DB, provider keyprovider.
 		runPresign()
 		ticker := time.NewTicker(refresh)
 		defer ticker.Stop()
-		for range ticker.C {
-			runPresign()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				runPresign()
+			}
 		}
-	}()
+	})
 	return presigner
 }
 
@@ -68,7 +79,12 @@ func setupOCSPPresign(cfg *config.Config, db *database.DB, provider keyprovider.
 // every interval it snapshots the CRLs, delta CRLs, partition shards, issuer
 // chains, and pre-signed OCSP responses and writes them to the configured
 // directory or S3-compatible store with an atomic swap and integrity check.
-func setupPublish(cfg *config.Config, db *database.DB, provider keyprovider.Provider, presigner *ca.OCSPPresigner) {
+//
+// The loop is leader-gated (Task 68): it is the scheduled CRL/delta-CRL
+// regeneration path, and one replica producing snapshots prevents racing
+// atomic swaps against the same target. A handover is idempotent — the new
+// leader's first snapshot simply supersedes the old leader's last one.
+func setupPublish(cfg *config.Config, db *database.DB, provider keyprovider.Provider, presigner *ca.OCSPPresigner, elector *leader.Elector) {
 	pub := cfg.Publish
 	if !pub.Enabled {
 		return
@@ -92,8 +108,7 @@ func setupPublish(cfg *config.Config, db *database.DB, provider keyprovider.Prov
 	log.Printf("Static artifact publishing enabled (backend %s, interval %s, ocsp=%v)",
 		store.Name(), interval, opts.IncludeOCSP)
 
-	go func() {
-		ctx := context.Background()
+	elector.Register("artifact-publish", func(ctx context.Context) {
 		runPublish := func() {
 			artifacts, cas, err := publish.BuildSnapshot(ctx, src, opts)
 			if err != nil {
@@ -109,17 +124,26 @@ func setupPublish(cfg *config.Config, db *database.DB, provider keyprovider.Prov
 		}
 		// First publish waits for the initial presign batch to have something to
 		// publish; a short delay keeps startup ordering simple without coupling
-		// the two loops.
+		// the two loops (both start together on leadership gain).
 		if opts.IncludeOCSP {
-			time.Sleep(5 * time.Second)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
 		}
 		runPublish()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
-		for range ticker.C {
-			runPublish()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				runPublish()
+			}
 		}
-	}()
+	})
 }
 
 // newPublishStore constructs the configured publish backend.

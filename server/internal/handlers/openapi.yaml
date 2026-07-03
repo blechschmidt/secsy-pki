@@ -3585,5 +3585,10 @@ components:
           additionalProperties:
             type: object
             properties:
-              status: { type: string, enum: [up, down, skipped] }
+              # up/down/skipped for dependency probes (database, hsm);
+              # leader/follower for the informational "leadership" component,
+              # which reports whether this replica runs the singleton
+              # background jobs and never fails readiness.
+              status: { type: string, enum: [up, down, skipped, leader, follower] }
               error: { type: string }
+              detail: { type: string }

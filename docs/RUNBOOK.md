@@ -621,6 +621,18 @@ General triage for any secsy-pki page (and for `SecsyPKITargetDown`):
 3. If the scrape target itself is down, check pod status/logs and the readiness
    probe before trusting derived alerts — most go stale when the target is down.
 
+For `SecsyPKINoJobLeader` / `SecsyPKILeadershipFlapping` (multi-replica
+deployments — see [high availability](high-availability.md)): each replica's
+`/readyz` names its role under the `leadership` component. No leader means the
+replicas cannot hold a PostgreSQL advisory-lock session — check database
+connectivity/latency from the pods, and look for an orphaned election session
+(`SELECT pid FROM pg_locks WHERE locktype='advisory' AND granted`; a dead pod's
+session is reaped by TCP keepalives, or free it manually with
+`pg_terminate_backend(pid)`). While no leader exists the singleton jobs
+(renewal, rotation, presign, publish, anchoring, SIEM export) are paused; API
+serving is unaffected. Flapping means the leader keeps missing lease renewals —
+read the `leader:` server-log lines and check PostgreSQL load.
+
 ### HSM probe down
 
 `SecsyPKIHSMProbeDown` — `secsy_component_up{component="hsm"}=0`. All signing is

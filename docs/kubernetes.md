@@ -174,6 +174,17 @@ The audit-chain serialization and transactional serial/CRL counters make
 concurrent writes across replicas safe. HSM key material stays in the HSM — only
 metadata, public certificates, and audit records live in the database.
 
+With `replicaCount > 1` the replicas automatically elect a **background-job
+leader** through PostgreSQL (advisory lock), so the singleton jobs — expiry
+monitoring/auto-renewal, CA rotation, OCSP pre-signing, CRL publishing, audit
+anchoring, SIEM export — run on exactly one pod with automatic failover, while
+every pod serves API traffic. The chart refuses `replicaCount > 1` on the
+SQLite driver and in `hsm.module.mode=softhsm` (per-pod tokens would hold
+different CA keys — every replica must reach the *same* HSM), and switches the
+Deployment to `RollingUpdate`. Each pod's `/readyz` reports its role under the
+`leadership` component. See
+[multi-replica coordination & HA](high-availability.md).
+
 ### Metrics
 
 With the Prometheus operator, set `serviceMonitor.enabled=true` to scrape

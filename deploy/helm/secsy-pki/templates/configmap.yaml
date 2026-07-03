@@ -114,6 +114,14 @@ data:
       {{- toYaml . | nindent 6 }}
     {{- end }}
 
+    {{- with $c.coordination }}
+    # Multi-replica leader election (Task 68; rendered verbatim, snake_case
+    # keys). Normally omitted: mode "auto" elects via PostgreSQL when the
+    # database driver is postgres and is static on SQLite.
+    coordination:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+
     {{- with $c.tracing }}
     tracing:
       enabled: {{ .enabled }}
