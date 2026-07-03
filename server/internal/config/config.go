@@ -1045,6 +1045,12 @@ type TenantConfig struct {
 	KEKLabel string `yaml:"kek_label"`
 	// RBAC assigns tenant-scoped roles to subjects and groups.
 	RBAC RBACConfig `yaml:"rbac"`
+	// AllowedEmailDomains scopes S/MIME issuance for this tenant: certificates
+	// minted by the tenant's CAs under an S/MIME profile may only certify
+	// e-mail addresses in these domains ("example.com" exact, "*.example.com"
+	// subdomains). Empty means the tenant imposes no restriction of its own;
+	// profile-level allowed_domains still apply.
+	AllowedEmailDomains []string `yaml:"allowed_email_domains"`
 }
 
 // PolicyConfig holds system-wide issuance policy. These are conservative
@@ -1096,6 +1102,33 @@ type ProfileConfig struct {
 	// present a valid hardware attestation bound to the enrolled key. Empty mode
 	// inherits attestation.default_mode.
 	Attestation ProfileAttestationConfig `yaml:"attestation"`
+	// SMIME marks the profile as an S/MIME (emailProtection) profile: rfc822Name
+	// SANs are validated, normalized (punycode domains), and checked against the
+	// domain allowlists before signing, and the CA/B Forum S/MIME Baseline
+	// Requirements lint rules apply. See ProfileSMIMEConfig.
+	SMIME ProfileSMIMEConfig `yaml:"smime"`
+}
+
+// ProfileSMIMEConfig is a profile's S/MIME issuance policy. Enabled switches
+// the profile into S/MIME mode; the remaining fields refine it.
+type ProfileSMIMEConfig struct {
+	// Enabled turns the S/MIME gate and lint rules on for the profile.
+	Enabled bool `yaml:"enabled"`
+	// Variant declares the key-usage split: "sign", "encrypt", or "dual"
+	// (default). It must agree with the profile's key_usages; the lint gate
+	// verifies that.
+	Variant string `yaml:"variant"`
+	// BRProfile selects the S/MIME Baseline Requirements class: "legacy"
+	// (1185-day validity cap), "multipurpose" (825 days; default), or "strict"
+	// (825 days, no EKU besides emailProtection).
+	BRProfile string `yaml:"br_profile"`
+	// AllowedDomains restricts the e-mail domains the profile may certify.
+	// "example.com" matches exactly; "*.example.com" matches subdomains. Empty
+	// means unrestricted (tenant allowlists still apply).
+	AllowedDomains []string `yaml:"allowed_domains"`
+	// SubjectEmail mirrors the first rfc822Name SAN into the subject DN as a
+	// PKCS#9 emailAddress attribute for legacy relying parties.
+	SubjectEmail bool `yaml:"subject_email"`
 }
 
 // ProfilePolicyConfig is a profile's certificate-policy assignment. When oids is

@@ -136,9 +136,9 @@ func (c *scepClient) recipient() *x509.Certificate {
 }
 
 // enroll runs a PKCSReq and returns the issued certificate.
-func (c *scepClient) enroll(cn, challenge string) (*x509.Certificate, string, error) {
+func (c *scepClient) enroll(cn, challenge string, emails ...string) (*x509.Certificate, string, error) {
 	c.t.Helper()
-	csrDER := buildCSR(c.t, c.key, cn, challenge)
+	csrDER := buildCSR(c.t, c.key, cn, challenge, emails...)
 
 	enveloped, err := cms.BuildEnvelopedData(csrDER, c.recipient())
 	if err != nil {
@@ -343,8 +343,10 @@ func attrOctet(t *testing.T, sd *cms.ParsedSignedData, oid asn1.ObjectIdentifier
 	return b
 }
 
-// buildCSR builds a PKCS#10 CSR carrying an optional challengePassword attribute.
-func buildCSR(t *testing.T, key *rsa.PrivateKey, cn, challenge string) []byte {
+// buildCSR builds a PKCS#10 CSR carrying an optional challengePassword
+// attribute and, when emails are given, a subjectAltName extensionRequest with
+// rfc822Name entries (the S/MIME enrollment shape).
+func buildCSR(t *testing.T, key *rsa.PrivateKey, cn, challenge string, emails ...string) []byte {
 	t.Helper()
 	spki, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	if err != nil {
@@ -368,6 +370,28 @@ func buildCSR(t *testing.T, key *rsa.PrivateKey, cn, challenge string) []byte {
 		attrs = append(attrs, criAttr{
 			Type:   oidChallengePassword,
 			Values: asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSet, IsCompound: true, Bytes: cpVal},
+		})
+	}
+	if len(emails) > 0 {
+		// subjectAltName: SEQUENCE OF GeneralName, rfc822Name = [1] IA5String.
+		var names []asn1.RawValue
+		for _, e := range emails {
+			names = append(names, asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 1, Bytes: []byte(e)})
+		}
+		sanValue, err := asn1.Marshal(names)
+		if err != nil {
+			t.Fatal(err)
+		}
+		extsVal, err := asn1.Marshal([]pkix.Extension{{
+			Id:    asn1.ObjectIdentifier{2, 5, 29, 17}, // subjectAltName
+			Value: sanValue,
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		attrs = append(attrs, criAttr{
+			Type:   asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 14}, // extensionRequest
+			Values: asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSet, IsCompound: true, Bytes: extsVal},
 		})
 	}
 

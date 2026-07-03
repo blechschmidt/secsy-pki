@@ -127,6 +127,18 @@ func main() {
 	}
 	tenantAssignments := rbac.NewTenantAssignments(rbacAssignments, byTenant)
 
+	// Per-tenant S/MIME e-mail domain scoping (Task 66): certificates minted by
+	// a tenant's CAs under an S/MIME profile may only certify these domains.
+	tenantEmailDomains := make(map[string][]string)
+	for _, tc := range cfg.Tenants {
+		if len(tc.AllowedEmailDomains) > 0 {
+			tenantEmailDomains[tc.ID] = tc.AllowedEmailDomains
+		}
+	}
+	if err := ca.SetTenantEmailDomains(tenantEmailDomains); err != nil {
+		log.Fatalf("Invalid tenant allowed_email_domains: %v", err)
+	}
+
 	authMw.SetRoleResolver(func(u *models.UserInfo) []string {
 		groupIDs, _ := db.GetUserGroups(u.Subject)
 		return dedupRoles(tenantAssignments.PlatformRolesFor(u.Subject, u.Email, u.EmailVerified, groupIDs))
@@ -221,6 +233,14 @@ func main() {
 					CPS:      p.Policies.CPS,
 					Critical: p.Policies.Critical,
 					Mappings: p.Policies.Mappings,
+				}
+			}
+			if p.SMIME.Enabled {
+				prof.SMIME = &ca.SMIMEConfig{
+					Variant:        p.SMIME.Variant,
+					BRProfile:      p.SMIME.BRProfile,
+					AllowedDomains: p.SMIME.AllowedDomains,
+					SubjectEmail:   p.SMIME.SubjectEmail,
 				}
 			}
 			profiles = append(profiles, prof)

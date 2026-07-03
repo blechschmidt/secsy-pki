@@ -47,6 +47,10 @@ type Profile struct {
 	// issued under this profile, optionally with a CPS-URI qualifier and policy
 	// mappings. Empty emits no certificatePolicies extension. See certpolicy.
 	Policies *certpolicy.PolicyConfig `json:"policies,omitempty"`
+	// SMIME marks this as an S/MIME (emailProtection) profile: rfc822Name SANs
+	// are validated, normalized, and allowlist-checked before signing, and the
+	// CA/B Forum S/MIME Baseline Requirements lint rules apply. See SMIMEConfig.
+	SMIME *SMIMEConfig `json:"smime,omitempty"`
 
 	// Algorithm selects the signature scheme family for certificates issued under
 	// this profile: classical (default), pure post-quantum ML-DSA, or hybrid
@@ -125,13 +129,53 @@ var builtinProfiles = map[string]Profile{
 		DefaultValidity: 3 * 365 * day,
 		MaxValidity:     3 * 365 * day,
 	},
+	// email predates the first-class S/MIME profiles below and is kept for
+	// backward compatibility. New deployments should prefer smime / smime-sign /
+	// smime-encrypt, which validate and normalize mailbox addresses and enforce
+	// the CA/B Forum S/MIME Baseline Requirements.
 	"email": {
 		Name:            "email",
-		Description:     "S/MIME e-mail protection certificate (emailProtection)",
+		Description:     "S/MIME e-mail protection certificate (emailProtection; legacy — prefer the smime profiles)",
 		KeyUsages:       []string{"digitalSignature", "keyEncipherment"},
 		ExtKeyUsages:    []string{"emailProtection"},
 		DefaultValidity: 365 * day,
 		MaxValidity:     2 * 365 * day,
+	},
+	// The smime profile family issues mailbox-validated e-mail protection
+	// certificates per the CA/B Forum S/MIME Baseline Requirements
+	// (multipurpose class by default). smime is single-key dual-use; the
+	// sign/encrypt pair splits the usages so the encryption key can be escrowed
+	// (see internal/secret escrow, Task 33) without ever escrowing a signing
+	// key. The dual-use and encryption profiles expect RSA subject keys
+	// (keyEncipherment); EC (ECDH keyAgreement) encryption is not offered as a
+	// built-in — define a custom profile with key_usages: [keyAgreement] for
+	// that. Validity stays well inside the 825-day multipurpose cap.
+	"smime": {
+		Name:            "smime",
+		Description:     "S/MIME dual-use certificate (sign + encrypt, single RSA key)",
+		KeyUsages:       []string{"digitalSignature", "keyEncipherment"},
+		ExtKeyUsages:    []string{"emailProtection"},
+		DefaultValidity: 365 * day,
+		MaxValidity:     2 * 365 * day,
+		SMIME:           &SMIMEConfig{Variant: "dual"},
+	},
+	"smime-sign": {
+		Name:            "smime-sign",
+		Description:     "S/MIME signing-only certificate (digitalSignature)",
+		KeyUsages:       []string{"digitalSignature"},
+		ExtKeyUsages:    []string{"emailProtection"},
+		DefaultValidity: 365 * day,
+		MaxValidity:     2 * 365 * day,
+		SMIME:           &SMIMEConfig{Variant: "sign"},
+	},
+	"smime-encrypt": {
+		Name:            "smime-encrypt",
+		Description:     "S/MIME encryption-only certificate (keyEncipherment, RSA)",
+		KeyUsages:       []string{"keyEncipherment"},
+		ExtKeyUsages:    []string{"emailProtection"},
+		DefaultValidity: 365 * day,
+		MaxValidity:     2 * 365 * day,
+		SMIME:           &SMIMEConfig{Variant: "encrypt"},
 	},
 	"pqc-server": {
 		Name:            "pqc-server",
@@ -205,6 +249,11 @@ func SetCustomProfiles(profiles []Profile) error {
 		}
 		if _, err := p.extKeyUsage(); err != nil {
 			return err
+		}
+		if p.SMIME != nil {
+			if err := p.SMIME.validate(p.Name); err != nil {
+				return err
+			}
 		}
 		next[key] = p
 	}

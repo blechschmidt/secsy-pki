@@ -72,6 +72,19 @@ func run(args []string) error {
 		return fmt.Errorf("loading ssh profiles: %w", err)
 	}
 
+	// Install the per-tenant S/MIME e-mail domain scoping up front too (pure
+	// config), so CLI issuance under a tenant-owned CA enforces the same
+	// allowlists as the server.
+	tenantEmailDomains := make(map[string][]string)
+	for _, tc := range cfg.Tenants {
+		if len(tc.AllowedEmailDomains) > 0 {
+			tenantEmailDomains[tc.ID] = tc.AllowedEmailDomains
+		}
+	}
+	if err := ca.SetTenantEmailDomains(tenantEmailDomains); err != nil {
+		return fmt.Errorf("loading tenant allowed_email_domains: %w", err)
+	}
+
 	// Certificate linting is fully offline (no database or key provider): dispatch
 	// it before opening either, so an operator can lint a certificate anywhere.
 	if command == "lint" {
@@ -867,6 +880,14 @@ func installConfigProfiles(cfg *config.Config) error {
 				Mode:           mode,
 				Identifier:     identifier,
 				TimeoutSeconds: p.CAA.TimeoutSeconds,
+			}
+		}
+		if p.SMIME.Enabled {
+			prof.SMIME = &ca.SMIMEConfig{
+				Variant:        p.SMIME.Variant,
+				BRProfile:      p.SMIME.BRProfile,
+				AllowedDomains: p.SMIME.AllowedDomains,
+				SubjectEmail:   p.SMIME.SubjectEmail,
 			}
 		}
 		profiles = append(profiles, prof)

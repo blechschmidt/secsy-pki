@@ -72,6 +72,21 @@ var (
 		"Pre-issuance CAA findings that forbid issuance, partitioned by reason.",
 		"reason")
 
+	// Pre-issuance S/MIME checking (mailbox validation gate for
+	// email-protection profiles). CertificateSMIMEChecks counts every run on an
+	// S/MIME profile by outcome: "result" is pass|fail (fail = a malformed
+	// rfc822Name or a domain outside the profile/tenant allowlists blocked
+	// signing). CertificateSMIMEFindings partitions failures by "reason"
+	// (syntax|domain|config).
+	CertificateSMIMEChecks = NewCounter(Default,
+		"secsy_certificate_smime_checks_total",
+		"Pre-issuance S/MIME mailbox checks, partitioned by outcome (pass|fail).",
+		"result")
+	CertificateSMIMEFindings = NewCounter(Default,
+		"secsy_certificate_smime_findings_total",
+		"Pre-issuance S/MIME findings that blocked issuance, partitioned by reason.",
+		"reason")
+
 	// Pre-issuance Name Constraints checking (RFC 5280 §4.2.1.10 gate).
 	// CertificateNameConstraintChecks counts every run by outcome: "result" is
 	// pass|fail|error (fail = the issuing CA's constraints rejected the leaf,

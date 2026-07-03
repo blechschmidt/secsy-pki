@@ -247,6 +247,11 @@ func (m *Manager) issuePQCLeaf(ctx context.Context, spec IssueSpec, issuerCA *mo
 	if err != nil {
 		return nil, err
 	}
+	// Same S/MIME mailbox gate as the classical buildLeaf path (normalization
+	// must precede linting so the lint checks see the final SAN values).
+	if base, err = m.applySMIMEPolicy(base, profile, issuerCA, spec.RequestedBy); err != nil {
+		return nil, err
+	}
 	if err := m.lintLeaf(base, profile, issuerCA, spec.RequestedBy); err != nil {
 		return nil, err
 	}
@@ -295,6 +300,11 @@ func (m *Manager) issueHybridLeaf(ctx context.Context, spec IssueSpec, issuerCA 
 
 	base, err := m.leafBaseFromCSR(csr.PrimaryKey, csr.Parsed, spec, profile, issuerCert)
 	if err != nil {
+		return nil, err
+	}
+	// Same S/MIME mailbox gate as the classical buildLeaf path (normalization
+	// must precede linting so the lint checks see the final SAN values).
+	if base, err = m.applySMIMEPolicy(base, profile, issuerCA, spec.RequestedBy); err != nil {
 		return nil, err
 	}
 	if err := m.lintLeaf(base, profile, issuerCA, spec.RequestedBy); err != nil {

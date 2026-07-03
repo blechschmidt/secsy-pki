@@ -91,6 +91,11 @@ type Policy struct {
 	// Overrides sets the enforcement mode for individual checks by code,
 	// overriding Mode. A check absent from the map uses Mode.
 	Overrides map[string]Mode
+	// SMIME, when non-nil, applies the CA/B Forum S/MIME Baseline Requirements
+	// rule set for mailbox-validated certificates (rfc822Name SAN presence and
+	// syntax, EKU exclusivity, key-usage split, class validity caps). See
+	// SMIMEPolicy.
+	SMIME *SMIMEPolicy
 }
 
 // modeFor resolves the effective enforcement mode for a check code.
@@ -222,6 +227,9 @@ func Lint(cert *x509.Certificate, policy Policy) Result {
 		checkCNInSAN(cert, add)
 		checkNames(cert, add)
 	}
+	if policy.SMIME != nil {
+		checkSMIME(cert, *policy.SMIME, add)
+	}
 
 	res := Result{}
 	for _, is := range issues {
@@ -250,6 +258,7 @@ func CertificateFromLeaf(req pki.LeafCertRequest) (*x509.Certificate, error) {
 	cert := &x509.Certificate{
 		SerialNumber:          req.Serial,
 		Subject:               req.Subject,
+		PublicKey:             req.PublicKey,
 		NotBefore:             req.NotBefore,
 		NotAfter:              req.NotAfter,
 		KeyUsage:              req.KeyUsage,

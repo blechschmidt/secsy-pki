@@ -34,9 +34,13 @@ type LintConfig struct {
 }
 
 // LintPolicy resolves the profile's effective certlint.Policy, folding in the
-// profile's maximum validity as the validity cap.
+// profile's maximum validity as the validity cap and, for S/MIME profiles, the
+// CA/B Forum S/MIME Baseline Requirements rule set.
 func (p Profile) LintPolicy() certlint.Policy {
 	pol := certlint.Policy{MaxValidity: p.MaxValidity}
+	if p.SMIME != nil {
+		pol.SMIME = &certlint.SMIMEPolicy{Class: p.SMIME.class(), Variant: p.SMIME.variant()}
+	}
 	if p.Lint != nil {
 		pol.Public = p.Lint.Public
 		if p.Lint.Mode != "" {

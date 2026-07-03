@@ -131,6 +131,18 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 		attribute.String("ca.profile", profile.Name))
 	defer span.End()
 
+	// Fail-closed pre-issuance S/MIME gate: for S/MIME profiles, validate and
+	// normalize every rfc822Name SAN (the certificate carries the normalized
+	// forms) and enforce the profile/tenant e-mail domain allowlists. Runs
+	// before the lint gate so linting sees the final SAN values.
+	if err := traceGate(ctx, "ca.gate.smime", func() error {
+		var gateErr error
+		base, gateErr = m.applySMIMEPolicy(base, profile, issuerCA, requestedBy)
+		return gateErr
+	}); err != nil {
+		return nil, nil, err
+	}
+
 	// Fail-closed pre-issuance lint gate: run CA/Browser-Forum Baseline
 	// Requirements checks on the to-be-signed template BEFORE any HSM signature.
 	// A violating template is rejected here — neither the precertificate nor the
