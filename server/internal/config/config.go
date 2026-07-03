@@ -20,7 +20,7 @@ type Config struct {
 	PKCS11      PKCS11Config      `yaml:"pkcs11"`
 	YubiHSM     YubiHSMConfig     `yaml:"yubihsm"`
 	Secret      SecretConfig      `yaml:"secret"`
-	// RBAC assigns organization-wide roles (admin/issuer/auditor) to subjects
+	// RBAC assigns organization-wide roles (admin/issuer/signer/auditor) to subjects
 	// and groups; Policy holds issuance guardrails; Profiles defines custom
 	// certificate profiles layered over the built-ins. Together these give a
 	// single, centralized place to govern who may do what and under which rules.
@@ -42,6 +42,9 @@ type Config struct {
 	// TSA configures the RFC 3161 Time-Stamp Authority. Disabled unless
 	// tsa.enabled is true.
 	TSA TSAConfig `yaml:"tsa"`
+	// Signing configures the artifact code-signing service (/api/sign and
+	// `secsy-ca sign`). Disabled unless signing.enabled is true.
+	Signing SigningConfig `yaml:"signing"`
 	// CMP configures the Lightweight CMP (RFC 9483) certificate-management server.
 	// Disabled unless cmp.enabled is true.
 	CMP CMPConfig `yaml:"cmp"`
@@ -355,7 +358,7 @@ type ClaimMappingConfig struct {
 	Value string `yaml:"value"`
 	// Tenant scopes the granted roles to a tenant id; empty grants platform-wide.
 	Tenant string `yaml:"tenant"`
-	// Roles are the RBAC roles granted (admin|issuer|auditor).
+	// Roles are the RBAC roles granted (admin|issuer|signer|auditor).
 	Roles []string `yaml:"roles"`
 }
 
@@ -966,9 +969,47 @@ type TSAConfig struct {
 	IncludeTSAName bool `yaml:"include_tsa_name"`
 }
 
+// SigningConfig configures the artifact code-signing service (Task 60): CMS
+// detached signatures over release artifacts with provider-held keys, exposed
+// at /api/sign (RBAC role "signer") and through `secsy-ca sign`. Each signer's
+// key and certificate are provisioned offline with `secsy-ca signing-key`,
+// which issues the certificate under the lint-gated "code-signing" profile.
+type SigningConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Signers are the signing identities available to callers.
+	Signers []SigningSignerConfig `yaml:"signers"`
+}
+
+// SigningSignerConfig is one configured signing identity.
+type SigningSignerConfig struct {
+	// Name is the identity callers reference in sign requests. Required, unique.
+	Name string `yaml:"name"`
+	// KeyLabel is the provider label of the signing key (RSA or ECDSA), created
+	// by `secsy-ca signing-key`.
+	KeyLabel string `yaml:"key_label"`
+	// CertificateFile is the PEM file written by `secsy-ca signing-key`. When it
+	// contains multiple certificates the first is the signer certificate and the
+	// rest form the issuer chain embedded in every signature.
+	CertificateFile string `yaml:"certificate_file"`
+	// CAID / CALabel identify the CA that issued the signer certificate; its
+	// chain is appended after the signer certificate when CertificateFile holds
+	// only the leaf. Optional when the file already carries the full chain.
+	CAID    string `yaml:"ca_id"`
+	CALabel string `yaml:"ca_label"`
+	// Digest is the message-digest / signature hash (sha256|sha384|sha512,
+	// default sha256).
+	Digest string `yaml:"digest"`
+	// Timestamp embeds an RFC 3161 countersignature from the local TSA on every
+	// signature unless a request opts out. Requires tsa.enabled.
+	Timestamp bool `yaml:"timestamp"`
+	// Tenant scopes this signer to a tenant for RBAC and audit. Empty means the
+	// default tenant.
+	Tenant string `yaml:"tenant"`
+}
+
 // RBACConfig maps OIDC subjects and group IDs to role names. Recognized roles
-// are "admin", "issuer", and "auditor"; unknown names are rejected at load so a
-// typo cannot silently grant or deny access.
+// are "admin", "issuer", "signer", and "auditor"; unknown names are rejected at
+// load so a typo cannot silently grant or deny access.
 type RBACConfig struct {
 	Subjects map[string][]string `yaml:"subjects"`
 	Groups   map[string][]string `yaml:"groups"`
@@ -1320,6 +1361,9 @@ type KeyProviderRoles struct {
 	// TSA is the backend for the RFC 3161 timestamp-authority signing key.
 	// Defaults to KeyProviderConfig.Type.
 	TSA string `yaml:"tsa"`
+	// Signing is the backend for artifact code-signing keys (the signing:
+	// service). Defaults to KeyProviderConfig.Type.
+	Signing string `yaml:"signing"`
 }
 
 type PKCS11Config struct {
@@ -1452,7 +1496,49 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateSigning(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+// validateSigning sanity-checks the artifact-signing block so a misconfigured
+// signer fails at load rather than at the first sign request.
+func (c *Config) validateSigning() error {
+	s := c.Signing
+	if !s.Enabled {
+		return nil
+	}
+	if len(s.Signers) == 0 {
+		return fmt.Errorf("signing.enabled requires at least one entry under signing.signers")
+	}
+	seen := map[string]bool{}
+	for i, sg := range s.Signers {
+		where := fmt.Sprintf("signing.signers[%d]", i)
+		if sg.Name == "" {
+			return fmt.Errorf("%s: name is required", where)
+		}
+		if seen[sg.Name] {
+			return fmt.Errorf("%s: duplicate signer name %q", where, sg.Name)
+		}
+		seen[sg.Name] = true
+		if sg.KeyLabel == "" {
+			return fmt.Errorf("%s (%s): key_label is required", where, sg.Name)
+		}
+		if sg.CertificateFile == "" {
+			return fmt.Errorf("%s (%s): certificate_file is required (write it with `secsy-ca signing-key`)", where, sg.Name)
+		}
+		switch sg.Digest {
+		case "", "sha256", "sha384", "sha512":
+		default:
+			return fmt.Errorf("%s (%s): digest must be sha256, sha384, or sha512 (got %q)", where, sg.Name, sg.Digest)
+		}
+		if sg.Timestamp && !c.TSA.Enabled {
+			return fmt.Errorf("%s (%s): timestamp: true requires tsa.enabled", where, sg.Name)
+		}
+	}
+	return nil
 }
 
 // validatePresignPublish sanity-checks the OCSP pre-signing and static
@@ -1501,10 +1587,10 @@ func (c *Config) validateAuth() error {
 	a := &c.Auth
 	validRole := func(where, r string) error {
 		switch r {
-		case "admin", "issuer", "auditor":
+		case "admin", "issuer", "signer", "auditor":
 			return nil
 		}
-		return fmt.Errorf("auth.%s: unknown role %q (want admin, issuer, or auditor)", where, r)
+		return fmt.Errorf("auth.%s: unknown role %q (want admin, issuer, signer, or auditor)", where, r)
 	}
 
 	if a.OIDC.Enabled {
@@ -1941,7 +2027,7 @@ func (c *Config) validateACME() error {
 // validRoleNames are the role identifiers accepted in the rbac config. Kept in
 // sync with the rbac package (duplicated here to avoid an import cycle risk and
 // to keep config self-contained).
-var validRoleNames = map[string]bool{"admin": true, "issuer": true, "auditor": true}
+var validRoleNames = map[string]bool{"admin": true, "issuer": true, "signer": true, "auditor": true}
 
 // validateRBAC rejects unknown role names so a misconfiguration fails loudly at
 // startup rather than silently dropping an intended grant.
@@ -1950,7 +2036,7 @@ func (c *Config) validateRBAC() error {
 		for key, roles := range m {
 			for _, r := range roles {
 				if !validRoleNames[r] {
-					return fmt.Errorf("rbac.%s[%q]: unknown role %q (valid: admin, issuer, auditor)", kind, key, r)
+					return fmt.Errorf("rbac.%s[%q]: unknown role %q (valid: admin, issuer, signer, auditor)", kind, key, r)
 				}
 			}
 		}
@@ -2033,6 +2119,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("SECSY_KEY_PROVIDER_TSA"); v != "" {
 		cfg.KeyProvider.Roles.TSA = v
+	}
+	if v := os.Getenv("SECSY_KEY_PROVIDER_SIGNING"); v != "" {
+		cfg.KeyProvider.Roles.Signing = v
 	}
 	// The built-in root password is a credential and must not live in a config
 	// file or ConfigMap. Allow it to be injected from the environment (e.g. a
@@ -2149,6 +2238,11 @@ func (c *Config) validateKeyProvider() error {
 			return err
 		}
 	}
+	if role := c.KeyProvider.Roles.Signing; role != "" {
+		if err := c.validateProviderType(role, "key_provider.roles.signing"); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -2219,8 +2313,8 @@ func (c *Config) validatePKCS11HA() error {
 }
 
 // KeyProviderTypeForRole returns the resolved backend type for a signing role
-// ("ca" or "tsa"), applying the per-role override when set and otherwise falling
-// back to the global key_provider.type.
+// ("ca", "tsa", or "signing"), applying the per-role override when set and
+// otherwise falling back to the global key_provider.type.
 func (c *Config) KeyProviderTypeForRole(role string) string {
 	switch role {
 	case "ca":
@@ -2230,6 +2324,10 @@ func (c *Config) KeyProviderTypeForRole(role string) string {
 	case "tsa":
 		if c.KeyProvider.Roles.TSA != "" {
 			return c.KeyProvider.Roles.TSA
+		}
+	case "signing":
+		if c.KeyProvider.Roles.Signing != "" {
+			return c.KeyProvider.Roles.Signing
 		}
 	}
 	return c.KeyProvider.Type

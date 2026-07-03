@@ -166,6 +166,15 @@ const (
 	// target is the issued token serial.
 	ActionTSATimestamp = "tsa.timestamp"
 
+	// Artifact (code) signing (Task 60). ActionArtifactSign records a CMS
+	// detached signature produced with an HSM-held code-signing key: the target
+	// is the signer name, the detail carries the artifact digest, digest
+	// algorithm, and whether an RFC 3161 countersignature was embedded — enough
+	// to later answer "what exactly did we sign, when, and with which key".
+	// ActionArtifactVerify records a verification request and its outcome.
+	ActionArtifactSign   = "artifact.sign"
+	ActionArtifactVerify = "artifact.verify"
+
 	// Lightweight CMP (RFC 9483) certificate-management actions. The actor is the
 	// shared-secret reference value (PBM) or the subject of the signing
 	// certificate, since CMP authenticates with its own message protection rather

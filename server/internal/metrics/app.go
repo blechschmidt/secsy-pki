@@ -196,6 +196,25 @@ var (
 		"RFC 3161 time-stamp requests, partitioned by result (granted|rejected|error).",
 		"result")
 
+	// Artifact (code) signing. ArtifactSignatures counts CMS detached-signature
+	// operations by signer name and result (success|denied|error) — each success
+	// is one HSM signature (plus one more on the TSA key when countersigned).
+	// ArtifactVerifications counts verification outcomes (valid|invalid|error).
+	// ArtifactTimestamps tracks the embedded RFC 3161 countersignature sub-step
+	// of signing (success|error), separating TSA trouble from signing trouble.
+	ArtifactSignatures = NewCounter(Default,
+		"secsy_artifact_signatures_total",
+		"Artifact (code) signing operations, partitioned by signer and result (success|denied|error).",
+		"signer", "result")
+	ArtifactVerifications = NewCounter(Default,
+		"secsy_artifact_verifications_total",
+		"Artifact signature verifications, partitioned by result (valid|invalid|error).",
+		"result")
+	ArtifactTimestamps = NewCounter(Default,
+		"secsy_artifact_timestamps_total",
+		"RFC 3161 timestamp countersignatures embedded during artifact signing, by result (success|error).",
+		"result")
+
 	// ACME Renewal Information (ARI, draft-ietf-acme-ari). ACMERenewalInfo counts
 	// renewalInfo lookups by "result": hit (window served), not_found (unknown
 	// certificate), or error. The "window" label distinguishes a normal suggested

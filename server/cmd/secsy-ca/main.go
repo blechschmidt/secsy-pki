@@ -119,6 +119,13 @@ func run(args []string) error {
 		return cmdDiscover(db, cfg, cmdArgs)
 	}
 
+	// Signature verification is public-key only (trust anchors come from the
+	// store or a PEM file), so dispatch it before the key provider too — a
+	// release can be verified anywhere, without the HSM.
+	if command == "verify-signature" {
+		return cmdVerifySignature(db, cmdArgs)
+	}
+
 	// Publishing constructs the key provider lazily so `publish -verify` (a pure
 	// manifest/digest audit of the published snapshot) works during an HSM
 	// outage — exactly when an operator most wants to prove the static artifacts
@@ -206,6 +213,42 @@ func run(args []string) error {
 			tsaProvider = tp
 		}
 		return cmdTSAKey(db, mgr, tsaProvider, provider, cmdArgs)
+	case "signing-key":
+		// Artifact code-signing keys live on the signing-role backend, which may
+		// differ from the CA (the certificate is still issued by the CA manager
+		// on the CA-role provider).
+		signingProvider := provider
+		if cfg.KeyProviderTypeForRole("signing") != cfg.KeyProviderTypeForRole("ca") {
+			sp, serr := buildProvider(cfg, "signing")
+			if serr != nil {
+				return fmt.Errorf("initializing signing key provider: %w", serr)
+			}
+			defer sp.Close()
+			signingProvider = sp
+		}
+		return cmdSigningKey(db, mgr, signingProvider, cmdArgs)
+	case "sign":
+		// Artifact signing uses the signing-role backend for the artifact key and
+		// the TSA-role backend for the optional RFC 3161 countersignature.
+		signingProvider := provider
+		if cfg.KeyProviderTypeForRole("signing") != cfg.KeyProviderTypeForRole("ca") {
+			sp, serr := buildProvider(cfg, "signing")
+			if serr != nil {
+				return fmt.Errorf("initializing signing key provider: %w", serr)
+			}
+			defer sp.Close()
+			signingProvider = sp
+		}
+		tsaProvider := provider
+		if cfg.KeyProviderTypeForRole("tsa") != cfg.KeyProviderTypeForRole("ca") {
+			tp, terr := buildProvider(cfg, "tsa")
+			if terr != nil {
+				return fmt.Errorf("initializing TSA key provider: %w", terr)
+			}
+			defer tp.Close()
+			tsaProvider = tp
+		}
+		return cmdSign(db, cfg, signingProvider, tsaProvider, cmdArgs)
 	case "backup":
 		return cmdBackup(db, cfg, provider, cmdArgs)
 	case "restore":
@@ -270,6 +313,9 @@ Commands:
   cross-sign          Cross-sign a subject key under an issuer CA (bridge/root-transition)
   list-cross-signs    List a CA's cross-sign relationships or alternate chains
   tsa-key             Provision an RFC 3161 TSA signing key + certificate
+  signing-key         Provision an artifact code-signing key + certificate (code-signing profile)
+  sign                Sign a release artifact (file or digest) as CMS/PKCS#7, optionally RFC 3161 timestamped
+  verify-signature    Verify a CMS artifact signature (file or digest) against the PKI trust anchors
   ssh                 SSH certificate authority (ca-init, sign-user, sign-host, revoke, krl)
   backup              Export CA metadata + a DR manifest (no private keys)
   restore             Restore/verify CA metadata against the key provider

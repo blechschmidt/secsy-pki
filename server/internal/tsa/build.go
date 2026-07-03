@@ -2,7 +2,6 @@ package tsa
 
 import (
 	"crypto"
-	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -169,29 +168,13 @@ func chainOrSelf(tsaCert *x509.Certificate, chain []*x509.Certificate) []*x509.C
 }
 
 // signingCertificateV2Attr builds the id-aa-signingCertificateV2 authenticated
-// attribute. Only the leaf (the TSA certificate) is required by RFC 5035, but
-// including the whole chain lets strict verifiers bind every certificate.
+// attribute (RFC 5035) over the TSA chain, via the shared CMS helper.
 func signingCertificateV2Attr(chain []*x509.Certificate) (cms.Attribute, error) {
-	if len(chain) == 0 {
-		return cms.Attribute{}, fmt.Errorf("tsa: signing-certificate attribute requires at least the TSA certificate")
+	attr, err := cms.SigningCertificateV2Attribute(chain)
+	if err != nil {
+		return cms.Attribute{}, fmt.Errorf("tsa: %w", err)
 	}
-	certs := make([]essCertIDv2, 0, len(chain))
-	for _, c := range chain {
-		sum := sha256.Sum256(c.Raw)
-		certs = append(certs, essCertIDv2{CertHash: sum[:]})
-	}
-	return cms.Attribute{Type: OIDSigningCertificateV2, Value: signingCertificateV2{Certs: certs}}, nil
-}
-
-// essCertIDv2 is RFC 5035 ESSCertIDv2 with the default (id-sha256) hash
-// algorithm and no issuerSerial, so it encodes as SEQUENCE { certHash }.
-type essCertIDv2 struct {
-	CertHash []byte
-}
-
-// signingCertificateV2 is RFC 5035 SigningCertificateV2 with no policies.
-type signingCertificateV2 struct {
-	Certs []essCertIDv2
+	return attr, nil
 }
 
 // ---- TimeStampResp construction -------------------------------------------

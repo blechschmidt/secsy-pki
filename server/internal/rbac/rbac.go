@@ -10,6 +10,11 @@
 //   - issuer  — may issue/renew/revoke certificates on any CA (still subject to
 //     that CA's restriction sets) and read logs, but may not create or
 //     delete CAs, manage access control, or administer the HSM.
+//   - signer  — may sign release artifacts with the configured code-signing
+//     keys (and read logs), but holds no certificate-issuance or
+//     administrative capability. Kept separate from issuer so a CI
+//     pipeline credential that signs builds cannot mint certificates,
+//     and vice versa (separation of duties for code signing).
 //   - auditor — read-only: may read the audit, access, and event logs and list
 //     objects, but may not perform or authorize any signing or
 //     administrative operation.
@@ -25,11 +30,12 @@ type Role string
 const (
 	RoleAdmin   Role = "admin"
 	RoleIssuer  Role = "issuer"
+	RoleSigner  Role = "signer"
 	RoleAuditor Role = "auditor"
 )
 
 // AllRoles is the set of recognized roles, used for validation.
-var AllRoles = []Role{RoleAdmin, RoleIssuer, RoleAuditor}
+var AllRoles = []Role{RoleAdmin, RoleIssuer, RoleSigner, RoleAuditor}
 
 // ValidRole reports whether r is a recognized role.
 func ValidRole(r Role) bool {
@@ -72,6 +78,11 @@ const (
 	// recovery. The cryptographic M-of-N quorum enforces dual control on top of
 	// this capability.
 	ActionRecover Action = "secret:recover"
+	// ActionSignArtifact covers producing CMS detached signatures over release
+	// artifacts with the configured code-signing keys (/api/sign). It is granted
+	// to the dedicated signer role (and admins), NOT to issuers: a credential
+	// that signs builds must not also mint certificates.
+	ActionSignArtifact Action = "artifact:sign"
 )
 
 // roleActions is the static capability grant per role. admin is handled
@@ -82,6 +93,10 @@ var roleActions = map[Role]map[Action]bool{
 		ActionReadAudit: true, // issuers can review their own operations
 		ActionEncrypt:   true,
 		ActionDecrypt:   true,
+	},
+	RoleSigner: {
+		ActionSignArtifact: true,
+		ActionReadAudit:    true, // signers can review their own operations
 	},
 	RoleAuditor: {
 		ActionReadAudit: true,

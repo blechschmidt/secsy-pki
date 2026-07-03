@@ -25,6 +25,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
+	"github.com/blechschmidt/secsy-pki/server/internal/signing"
 	"github.com/blechschmidt/secsy-pki/server/internal/spiffe"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
@@ -82,6 +83,10 @@ type API struct {
 	// sshKRLComment is stamped into the header of every generated SSH Key
 	// Revocation List (Task 57); empty is fine.
 	sshKRLComment string
+	// signingService is the artifact code-signing service behind /api/sign
+	// (Task 60); nil when signing.enabled is false, in which case the endpoints
+	// answer 503.
+	signingService *signing.Service
 }
 
 // AuthInfo describes the operator-authentication mechanisms enabled on the
@@ -338,6 +343,15 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/ssh/cas/{id}/revocations", protected(http.HandlerFunc(a.ListSSHRevocations)))
 	mux.HandleFunc("GET /api/ssh/cas/{id}/public", a.GetSSHCAPublicKey)
 	mux.HandleFunc("GET /api/ssh/cas/{id}/krl", a.GetSSHKRL)
+
+	// Artifact code-signing service (Task 60). Signing needs the artifact:sign
+	// capability (signer role) within the signer's tenant and signs on the HSM
+	// (rate-limited + concurrency-guarded via the /api/sign prefix class);
+	// verification and the signer listing are read-gated. Endpoints answer 503
+	// until signing.enabled installs the service.
+	mux.Handle("POST /api/sign", protected(http.HandlerFunc(a.SignArtifact)))
+	mux.Handle("POST /api/sign/verify", protected(http.HandlerFunc(a.VerifyArtifact)))
+	mux.Handle("GET /api/sign/signers", protected(http.HandlerFunc(a.ListSigners)))
 
 	// Public revocation endpoints — relying parties fetch these without auth.
 	// The complete/base CRL, its delta, and — when partitioning is enabled — the

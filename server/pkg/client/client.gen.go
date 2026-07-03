@@ -30,6 +30,13 @@ const (
 	Ip  ACMEIdentifierType = "ip"
 )
 
+// Defines values for ArtifactSignResponseDigestAlgorithm.
+const (
+	Sha256 ArtifactSignResponseDigestAlgorithm = "sha256"
+	Sha384 ArtifactSignResponseDigestAlgorithm = "sha384"
+	Sha512 ArtifactSignResponseDigestAlgorithm = "sha512"
+)
+
 // Defines values for AuditLogEntryCertFormat.
 const (
 	AuditLogEntryCertFormatSsh  AuditLogEntryCertFormat = "ssh"
@@ -283,6 +290,99 @@ type AlternateChain struct {
 
 	// Pem PEM chain bundle
 	Pem *string `json:"pem,omitempty"`
+}
+
+// ArtifactSignRequest defines model for ArtifactSignRequest.
+type ArtifactSignRequest struct {
+	// Artifact The artifact bytes, base64-encoded. Mutually exclusive with digest.
+	Artifact *string `json:"artifact,omitempty"`
+
+	// Digest Hex digest of the artifact, computed with the signer's digest algorithm — signs artifacts too large to ship through the API. Mutually exclusive with artifact.
+	Digest *string `json:"digest,omitempty"`
+
+	// Signer Name of the configured signing identity.
+	Signer string `json:"signer"`
+
+	// Timestamp Overrides the signer's timestamp-by-default setting: true embeds an RFC 3161 countersignature, false suppresses it. Omitted applies the signer's default.
+	Timestamp *bool `json:"timestamp,omitempty"`
+}
+
+// ArtifactSignResponse defines model for ArtifactSignResponse.
+type ArtifactSignResponse struct {
+	// Digest Hex digest of the artifact the signature covers.
+	Digest          *string                              `json:"digest,omitempty"`
+	DigestAlgorithm *ArtifactSignResponseDigestAlgorithm `json:"digest_algorithm,omitempty"`
+
+	// Signature DER CMS/PKCS#7 detached SignedData, base64-encoded.
+	Signature *string `json:"signature,omitempty"`
+
+	// SignaturePem The same signature as a PKCS7 PEM block, for file use.
+	SignaturePem *string `json:"signature_pem,omitempty"`
+	Signer       *string `json:"signer,omitempty"`
+
+	// SignerCertificate The code-signing certificate (PEM).
+	SignerCertificate *string `json:"signer_certificate,omitempty"`
+
+	// TimestampSerial RFC 3161 token serial (when timestamped).
+	TimestampSerial *string `json:"timestamp_serial,omitempty"`
+
+	// TimestampTime RFC 3161 token genTime (when timestamped).
+	TimestampTime *time.Time `json:"timestamp_time,omitempty"`
+	Timestamped   *bool      `json:"timestamped,omitempty"`
+}
+
+// ArtifactSignResponseDigestAlgorithm defines model for ArtifactSignResponse.DigestAlgorithm.
+type ArtifactSignResponseDigestAlgorithm string
+
+// ArtifactSignerInfo defines model for ArtifactSignerInfo.
+type ArtifactSignerInfo struct {
+	DigestAlgorithm  *string    `json:"digest_algorithm,omitempty"`
+	Name             *string    `json:"name,omitempty"`
+	NotAfter         *time.Time `json:"not_after,omitempty"`
+	NotBefore        *time.Time `json:"not_before,omitempty"`
+	Serial           *string    `json:"serial,omitempty"`
+	Subject          *string    `json:"subject,omitempty"`
+	Tenant           *string    `json:"tenant,omitempty"`
+	TimestampDefault *bool      `json:"timestamp_default,omitempty"`
+}
+
+// ArtifactVerifyRequest defines model for ArtifactVerifyRequest.
+type ArtifactVerifyRequest struct {
+	// Artifact The artifact bytes, base64-encoded. Mutually exclusive with digest.
+	Artifact *string `json:"artifact,omitempty"`
+
+	// CaId Restrict trust anchors to this CA. Empty trusts every CA of the caller's tenants.
+	CaId *string `json:"ca_id,omitempty"`
+
+	// Digest Hex digest of the artifact in the signature's digest algorithm. Mutually exclusive with artifact.
+	Digest *string `json:"digest,omitempty"`
+
+	// RequireTimestamp Fail verification when no RFC 3161 countersignature is embedded.
+	RequireTimestamp *bool `json:"require_timestamp,omitempty"`
+
+	// Signature The detached signature — base64 DER, or a PKCS7 PEM block.
+	Signature string `json:"signature"`
+}
+
+// ArtifactVerifyResponse defines model for ArtifactVerifyResponse.
+type ArtifactVerifyResponse struct {
+	Digest          *string `json:"digest,omitempty"`
+	DigestAlgorithm *string `json:"digest_algorithm,omitempty"`
+
+	// Reason Why verification failed (valid=false only).
+	Reason *string `json:"reason,omitempty"`
+
+	// SignerCertificate The signer certificate (PEM), on a valid signature.
+	SignerCertificate *string    `json:"signer_certificate,omitempty"`
+	SignerSerial      *string    `json:"signer_serial,omitempty"`
+	SignerSubject     *string    `json:"signer_subject,omitempty"`
+	TimestampSerial   *string    `json:"timestamp_serial,omitempty"`
+	TimestampTime     *time.Time `json:"timestamp_time,omitempty"`
+	Timestamped       *bool      `json:"timestamped,omitempty"`
+	Valid             *bool      `json:"valid,omitempty"`
+
+	// VerifiedAt The instant chain validity was evaluated at — the timestamp genTime when countersigned, else the wall clock.
+	VerifiedAt *time.Time `json:"verified_at,omitempty"`
 }
 
 // AuditLogEntry defines model for AuditLogEntry.
@@ -1547,6 +1647,12 @@ type DecryptSecretJSONRequestBody = DecryptRequest
 // EncryptSecretJSONRequestBody defines body for EncryptSecret for application/json ContentType.
 type EncryptSecretJSONRequestBody = EncryptRequest
 
+// SignArtifactJSONRequestBody defines body for SignArtifact for application/json ContentType.
+type SignArtifactJSONRequestBody = ArtifactSignRequest
+
+// VerifyArtifactSignatureJSONRequestBody defines body for VerifyArtifactSignature for application/json ContentType.
+type VerifyArtifactSignatureJSONRequestBody = ArtifactVerifyRequest
+
 // CreateSSHCAJSONRequestBody defines body for CreateSSHCA for application/json ContentType.
 type CreateSSHCAJSONRequestBody = CreateSSHCARequest
 
@@ -1896,6 +2002,19 @@ type ClientInterface interface {
 
 	// GetSecretInfo request
 	GetSecretInfo(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SignArtifactWithBody request with any body
+	SignArtifactWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	SignArtifact(ctx context.Context, body SignArtifactJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListArtifactSigners request
+	ListArtifactSigners(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// VerifyArtifactSignatureWithBody request with any body
+	VerifyArtifactSignatureWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	VerifyArtifactSignature(ctx context.Context, body VerifyArtifactSignatureJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// CreateSSHCAWithBody request with any body
 	CreateSSHCAWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3092,6 +3211,66 @@ func (c *Client) EncryptSecret(ctx context.Context, params *EncryptSecretParams,
 
 func (c *Client) GetSecretInfo(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetSecretInfoRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SignArtifactWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSignArtifactRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SignArtifact(ctx context.Context, body SignArtifactJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSignArtifactRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListArtifactSigners(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListArtifactSignersRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyArtifactSignatureWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyArtifactSignatureRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyArtifactSignature(ctx context.Context, body VerifyArtifactSignatureJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyArtifactSignatureRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -6442,6 +6621,113 @@ func NewGetSecretInfoRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewSignArtifactRequest calls the generic SignArtifact builder with application/json body
+func NewSignArtifactRequest(server string, body SignArtifactJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSignArtifactRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewSignArtifactRequestWithBody generates requests for SignArtifact with any type of body
+func NewSignArtifactRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/sign")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewListArtifactSignersRequest generates requests for ListArtifactSigners
+func NewListArtifactSignersRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/sign/signers")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewVerifyArtifactSignatureRequest calls the generic VerifyArtifactSignature builder with application/json body
+func NewVerifyArtifactSignatureRequest(server string, body VerifyArtifactSignatureJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewVerifyArtifactSignatureRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewVerifyArtifactSignatureRequestWithBody generates requests for VerifyArtifactSignature with any type of body
+func NewVerifyArtifactSignatureRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/sign/verify")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewCreateSSHCARequest calls the generic CreateSSHCA builder with application/json body
 func NewCreateSSHCARequest(server string, body CreateSSHCAJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -7360,6 +7646,19 @@ type ClientWithResponsesInterface interface {
 
 	// GetSecretInfoWithResponse request
 	GetSecretInfoWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSecretInfoResponse, error)
+
+	// SignArtifactWithBodyWithResponse request with any body
+	SignArtifactWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SignArtifactResponse, error)
+
+	SignArtifactWithResponse(ctx context.Context, body SignArtifactJSONRequestBody, reqEditors ...RequestEditorFn) (*SignArtifactResponse, error)
+
+	// ListArtifactSignersWithResponse request
+	ListArtifactSignersWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListArtifactSignersResponse, error)
+
+	// VerifyArtifactSignatureWithBodyWithResponse request with any body
+	VerifyArtifactSignatureWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyArtifactSignatureResponse, error)
+
+	VerifyArtifactSignatureWithResponse(ctx context.Context, body VerifyArtifactSignatureJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyArtifactSignatureResponse, error)
 
 	// CreateSSHCAWithBodyWithResponse request with any body
 	CreateSSHCAWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateSSHCAResponse, error)
@@ -9053,6 +9352,79 @@ func (r GetSecretInfoResponse) StatusCode() int {
 	return 0
 }
 
+type SignArtifactResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ArtifactSignResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *NotFound
+	JSON503      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r SignArtifactResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SignArtifactResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListArtifactSignersResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *[]ArtifactSignerInfo
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListArtifactSignersResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListArtifactSignersResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type VerifyArtifactSignatureResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ArtifactVerifyResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r VerifyArtifactSignatureResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r VerifyArtifactSignatureResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type CreateSSHCAResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -10301,6 +10673,49 @@ func (c *ClientWithResponses) GetSecretInfoWithResponse(ctx context.Context, req
 		return nil, err
 	}
 	return ParseGetSecretInfoResponse(rsp)
+}
+
+// SignArtifactWithBodyWithResponse request with arbitrary body returning *SignArtifactResponse
+func (c *ClientWithResponses) SignArtifactWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SignArtifactResponse, error) {
+	rsp, err := c.SignArtifactWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSignArtifactResponse(rsp)
+}
+
+func (c *ClientWithResponses) SignArtifactWithResponse(ctx context.Context, body SignArtifactJSONRequestBody, reqEditors ...RequestEditorFn) (*SignArtifactResponse, error) {
+	rsp, err := c.SignArtifact(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSignArtifactResponse(rsp)
+}
+
+// ListArtifactSignersWithResponse request returning *ListArtifactSignersResponse
+func (c *ClientWithResponses) ListArtifactSignersWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListArtifactSignersResponse, error) {
+	rsp, err := c.ListArtifactSigners(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListArtifactSignersResponse(rsp)
+}
+
+// VerifyArtifactSignatureWithBodyWithResponse request with arbitrary body returning *VerifyArtifactSignatureResponse
+func (c *ClientWithResponses) VerifyArtifactSignatureWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyArtifactSignatureResponse, error) {
+	rsp, err := c.VerifyArtifactSignatureWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyArtifactSignatureResponse(rsp)
+}
+
+func (c *ClientWithResponses) VerifyArtifactSignatureWithResponse(ctx context.Context, body VerifyArtifactSignatureJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyArtifactSignatureResponse, error) {
+	rsp, err := c.VerifyArtifactSignature(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyArtifactSignatureResponse(rsp)
 }
 
 // CreateSSHCAWithBodyWithResponse request with arbitrary body returning *CreateSSHCAResponse
@@ -12621,6 +13036,133 @@ func ParseGetSecretInfoResponse(rsp *http.Response) (*GetSecretInfoResponse, err
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseSignArtifactResponse parses an HTTP response from a SignArtifactWithResponse call
+func ParseSignArtifactResponse(rsp *http.Response) (*SignArtifactResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SignArtifactResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ArtifactSignResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListArtifactSignersResponse parses an HTTP response from a ListArtifactSignersWithResponse call
+func ParseListArtifactSignersResponse(rsp *http.Response) (*ListArtifactSignersResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListArtifactSignersResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest []ArtifactSignerInfo
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseVerifyArtifactSignatureResponse parses an HTTP response from a VerifyArtifactSignatureWithResponse call
+func ParseVerifyArtifactSignatureResponse(rsp *http.Response) (*VerifyArtifactSignatureResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &VerifyArtifactSignatureResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ArtifactVerifyResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
 
 	}
 

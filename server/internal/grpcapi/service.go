@@ -410,7 +410,7 @@ func certStatus(s models.CertStatus) pkiv1.CertificateStatus {
 func mapAuthzError(err error) error {
 	switch {
 	case errors.Is(err, handlers.ErrForbidden):
-		return status.Error(codes.PermissionDenied, "read access requires a role (admin, issuer, or auditor)")
+		return status.Error(codes.PermissionDenied, "read access requires a role (admin, issuer, signer, or auditor)")
 	case errors.Is(err, handlers.ErrNotFound):
 		return status.Error(codes.NotFound, "CA not found")
 	default:

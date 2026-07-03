@@ -37,6 +37,14 @@ CA's signing key. `secsy-ca ceremony` scripts it:
   who participated, the resulting certificate, the public-key fingerprint, and
   an audit-log anchor (`seq` + `hash`) for later tamper checks.
 
+The same discipline applies to other long-lived signing credentials: the RFC
+3161 TSA key (`secsy-ca tsa-key`) and artifact code-signing keys
+(`secsy-ca signing-key`) are generated on-device through the key provider and
+never leave it. For release-signing keys specifically, see the dedicated
+[key-ceremony notes in artifact-signing.md](artifact-signing.md#key-ceremony-notes-for-signing-keys)
+(per-purpose keys, signer-role separation of duties, certificate-vs-key
+rotation, and the revocation plan).
+
 ### Command
 
 ```

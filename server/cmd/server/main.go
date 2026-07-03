@@ -43,6 +43,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/scep"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
 	"github.com/blechschmidt/secsy-pki/server/internal/siem"
+	"github.com/blechschmidt/secsy-pki/server/internal/signing"
 	"github.com/blechschmidt/secsy-pki/server/internal/spiffe"
 	"github.com/blechschmidt/secsy-pki/server/internal/sshca"
 	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
@@ -321,6 +322,19 @@ func main() {
 		log.Printf("Key provider (tsa role): %s", tsaProvider.Name())
 	}
 
+	// Artifact code-signing keys (Task 60) may likewise live on a dedicated
+	// backend (key_provider.roles.signing).
+	signingProvider := provider
+	if cfg.Signing.Enabled && cfg.KeyProviderTypeForRole("signing") != cfg.KeyProviderTypeForRole("ca") {
+		sp, serr := buildRoleProvider(cfg, "signing")
+		if serr != nil {
+			log.Fatalf("Failed to initialize signing key provider: %v", serr)
+		}
+		defer sp.Close()
+		signingProvider = sp
+		log.Printf("Key provider (signing role): %s", signingProvider.Name())
+	}
+
 	hsmCfg := hsm.Config{
 		ConnectorURL: cfg.YubiHSM.ConnectorURL,
 		AuthKeyID:    cfg.YubiHSM.AuthKeyID,
@@ -570,7 +584,9 @@ func main() {
 
 	// RFC 3161 Time-Stamp Authority. The /tsa endpoint is anonymous and public
 	// (like OCSP/CRL), so it mounts outside the OIDC middleware and is metered by
-	// the rate-limit + HSM-concurrency guard below.
+	// the rate-limit + HSM-concurrency guard below. The authority is kept for the
+	// artifact-signing service, which countersigns with it in-process.
+	var tsaAuthority *tsa.Authority
 	if cfg.TSA.Enabled {
 		tsaCfg, err := buildTSAConfig(db, cfg)
 		if err != nil {
@@ -581,6 +597,21 @@ func main() {
 			log.Fatalf("TSA configuration error: %v", err)
 		}
 		authority.Register(mux)
+		tsaAuthority = authority
+	}
+
+	// Artifact code-signing service (Task 60): CMS detached signatures over
+	// release artifacts at /api/sign (RBAC role "signer"), with optional RFC 3161
+	// countersignatures from the in-process TSA. Signer keys/certificates are
+	// provisioned offline with `secsy-ca signing-key`.
+	if cfg.Signing.Enabled {
+		svc, err := buildSigningService(db, cfg, signingProvider, tsaAuthority)
+		if err != nil {
+			log.Fatalf("Signing configuration error: %v", err)
+		}
+		api.SetSigningService(svc)
+		log.Printf("Artifact signing enabled (%d signer(s), timestamping available: %t)",
+			len(cfg.Signing.Signers), svc.TimestampingAvailable())
 	}
 
 	// Lightweight CMP (RFC 9483) certificate-management server. Like the other
@@ -1050,6 +1081,54 @@ func buildTSAConfig(db *database.DB, cfg *config.Config) (tsa.Config, error) {
 	return tc, nil
 }
 
+// buildSigningService assembles the artifact-signing service from the signing:
+// config block: each signer's certificate (and any inline chain) is loaded from
+// its PEM file, the issuing CA's chain is appended from the database when the
+// file holds only the leaf, and the tenant defaults to the built-in one. The
+// TSA authority may be nil; NewService then rejects signers that default to
+// timestamping.
+func buildSigningService(db *database.DB, cfg *config.Config, provider keyprovider.Provider, authority *tsa.Authority) (*signing.Service, error) {
+	signers := make([]signing.SignerConfig, 0, len(cfg.Signing.Signers))
+	for _, sc := range cfg.Signing.Signers {
+		certPEM, err := os.ReadFile(sc.CertificateFile)
+		if err != nil {
+			return nil, fmt.Errorf("signer %q: reading certificate_file %q: %w", sc.Name, sc.CertificateFile, err)
+		}
+		chain, err := parseCertChainPEM(certPEM)
+		if err != nil {
+			return nil, fmt.Errorf("signer %q: parsing certificate_file: %w", sc.Name, err)
+		}
+		if len(chain) == 0 {
+			return nil, fmt.Errorf("signer %q: certificate_file %q contains no certificates", sc.Name, sc.CertificateFile)
+		}
+		if len(chain) == 1 && (sc.CAID != "" || sc.CALabel != "") {
+			caID, err := resolveCAID(db, sc.CAID, sc.CALabel, "signing")
+			if err != nil {
+				return nil, fmt.Errorf("signer %q: %w", sc.Name, err)
+			}
+			issuers, err := loadCAChain(db, caID)
+			if err != nil {
+				return nil, fmt.Errorf("signer %q: %w", sc.Name, err)
+			}
+			chain = append(chain, issuers...)
+		}
+		tenant := sc.Tenant
+		if tenant == "" {
+			tenant = models.DefaultTenantID
+		}
+		signers = append(signers, signing.SignerConfig{
+			Name:               sc.Name,
+			KeyLabel:           sc.KeyLabel,
+			Certificate:        chain[0],
+			Chain:              chain,
+			Digest:             hashFromName(sc.Digest),
+			TimestampByDefault: sc.Timestamp,
+			TenantID:           tenant,
+		})
+	}
+	return signing.NewService(provider, authority, signers)
+}
+
 // loadCAChain returns the certificate chain for caID: the CA certificate
 // followed by its parents up to the root.
 func loadCAChain(db *database.DB, caID string) ([]*x509.Certificate, error) {
@@ -1318,6 +1397,9 @@ func buildRateLimit(cfg *config.Config) *ratelimit.Middleware {
 	}
 	if cfg.CMP.Enabled {
 		pref.CMP = orDefaultPath(cfg.CMP.Path, "/cmp")
+	}
+	if cfg.Signing.Enabled {
+		pref.Sign = "/api/sign"
 	}
 
 	return ratelimit.New(ratelimit.Options{Limiter: limiter, Guard: guard, Prefixes: pref})

@@ -51,6 +51,12 @@ tags:
     description: >-
       HSM-backed OpenSSH certificate authority: user/host certificate signing
       under profiles, revocation, and public KRL distribution.
+  - name: Artifact Signing
+    description: >-
+      HSM-backed code/artifact signing: CMS (PKCS#7, RFC 5652) detached
+      signatures over release artifacts with CA-issued code-signing
+      certificates, optional embedded RFC 3161 timestamp countersignatures,
+      and verification against the PKI's trust anchors.
   - name: RBAC
     description: Groups, memberships, and per-CA permission grants.
   - name: Restrictions
@@ -1140,6 +1146,90 @@ paths:
             application/octet-stream:
               schema: { type: string, format: binary }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------------------------------------------------------------------
+  # Artifact signing (Task 60)
+  # ---------------------------------------------------------------------------
+  /api/sign:
+    post:
+      operationId: signArtifact
+      tags: [Artifact Signing]
+      summary: Produce a CMS detached signature over a release artifact
+      description: >-
+        Signs the submitted artifact (base64) — or its precomputed digest
+        (hex), for artifacts too large to ship — with a configured code-signing
+        key held by the key provider, returning a detached CMS/PKCS#7
+        SignedData. When timestamping applies (the signer's default, or the
+        request's explicit choice), an RFC 3161 timestamp token over the
+        signature value from the in-process TSA is embedded as the
+        id-aa-timeStampToken unsigned attribute, so the signature stays
+        verifiable after the signing certificate expires. Requires the
+        artifact:sign capability (signer role) within the signer's tenant;
+        audited as artifact.sign; rate-limited and HSM-concurrency-guarded.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ArtifactSignRequest" }
+      responses:
+        "200":
+          description: The detached signature.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactSignResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503":
+          description: Artifact signing is not enabled on this server.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/sign/verify:
+    post:
+      operationId: verifyArtifactSignature
+      tags: [Artifact Signing]
+      summary: Verify a CMS detached signature
+      description: >-
+        Checks a detached signature against the artifact (or its digest) and
+        the PKI's CA certificates as trust anchors, confined to CAs of tenants
+        the caller belongs to (or one CA named by ca_id). A valid embedded
+        RFC 3161 countersignature moves chain validation to the token's
+        genTime, so countersigned artifacts keep verifying after signer-
+        certificate expiry. An invalid signature is a successful request:
+        HTTP 200 with valid=false and a reason. Audited as artifact.verify.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ArtifactVerifyRequest" }
+      responses:
+        "200":
+          description: The verification verdict.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ArtifactVerifyResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/sign/signers:
+    get:
+      operationId: listArtifactSigners
+      tags: [Artifact Signing]
+      summary: List the configured signing identities
+      description: >-
+        The signing identities available on this server, confined to tenants
+        the caller belongs to. Empty when artifact signing is disabled.
+      responses:
+        "200":
+          description: The configured signers.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ArtifactSignerInfo" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   # ---------------------------------------------------------------------------
   # RBAC
@@ -2705,6 +2795,115 @@ components:
         allowed_critical_options:
           type: array
           items: { type: string }
+
+    ArtifactSignRequest:
+      type: object
+      required: [signer]
+      properties:
+        signer:
+          type: string
+          description: Name of the configured signing identity.
+        artifact:
+          type: string
+          description: The artifact bytes, base64-encoded. Mutually exclusive with digest.
+        digest:
+          type: string
+          description: >-
+            Hex digest of the artifact, computed with the signer's digest
+            algorithm — signs artifacts too large to ship through the API.
+            Mutually exclusive with artifact.
+        timestamp:
+          type: boolean
+          description: >-
+            Overrides the signer's timestamp-by-default setting: true embeds an
+            RFC 3161 countersignature, false suppresses it. Omitted applies the
+            signer's default.
+
+    ArtifactSignResponse:
+      type: object
+      properties:
+        signature:
+          type: string
+          description: DER CMS/PKCS#7 detached SignedData, base64-encoded.
+        signature_pem:
+          type: string
+          description: The same signature as a PKCS7 PEM block, for file use.
+        signer: { type: string }
+        signer_certificate:
+          type: string
+          description: The code-signing certificate (PEM).
+        digest_algorithm: { type: string, enum: [sha256, sha384, sha512] }
+        digest:
+          type: string
+          description: Hex digest of the artifact the signature covers.
+        timestamped: { type: boolean }
+        timestamp_time:
+          type: string
+          format: date-time
+          description: RFC 3161 token genTime (when timestamped).
+        timestamp_serial:
+          type: string
+          description: RFC 3161 token serial (when timestamped).
+
+    ArtifactVerifyRequest:
+      type: object
+      required: [signature]
+      properties:
+        signature:
+          type: string
+          description: The detached signature — base64 DER, or a PKCS7 PEM block.
+        artifact:
+          type: string
+          description: The artifact bytes, base64-encoded. Mutually exclusive with digest.
+        digest:
+          type: string
+          description: >-
+            Hex digest of the artifact in the signature's digest algorithm.
+            Mutually exclusive with artifact.
+        ca_id:
+          type: string
+          description: >-
+            Restrict trust anchors to this CA. Empty trusts every CA of the
+            caller's tenants.
+        require_timestamp:
+          type: boolean
+          description: Fail verification when no RFC 3161 countersignature is embedded.
+
+    ArtifactVerifyResponse:
+      type: object
+      properties:
+        valid: { type: boolean }
+        reason:
+          type: string
+          description: Why verification failed (valid=false only).
+        signer_subject: { type: string }
+        signer_serial: { type: string }
+        signer_certificate:
+          type: string
+          description: The signer certificate (PEM), on a valid signature.
+        digest_algorithm: { type: string }
+        digest: { type: string }
+        timestamped: { type: boolean }
+        timestamp_time: { type: string, format: date-time }
+        timestamp_serial: { type: string }
+        verified_at:
+          type: string
+          format: date-time
+          description: >-
+            The instant chain validity was evaluated at — the timestamp genTime
+            when countersigned, else the wall clock.
+
+    ArtifactSignerInfo:
+      type: object
+      properties:
+        name: { type: string }
+        subject: { type: string }
+        serial: { type: string }
+        not_before: { type: string, format: date-time }
+        not_after: { type: string, format: date-time }
+        digest_algorithm: { type: string }
+        timestamp_default: { type: boolean }
+        tenant: { type: string }
 
     SSHSignRequest:
       type: object

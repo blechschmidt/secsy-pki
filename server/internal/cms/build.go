@@ -5,8 +5,10 @@ import (
 	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
@@ -44,12 +46,25 @@ func DegenerateCertsOnly(certs []*x509.Certificate) ([]byte, error) {
 
 // SignedDataOpts parameterizes BuildSignedData.
 type SignedDataOpts struct {
-	// Content is the eContent to encapsulate and sign (attached signature).
+	// Content is the eContent to encapsulate and sign (attached signature). For a
+	// detached signature it is the external content the messageDigest attribute
+	// covers; it may then be nil when ContentDigest is supplied instead.
 	Content []byte
+	// ContentDigest, when set, is the precomputed Digest-hash of the content and
+	// is used verbatim as the messageDigest attribute. It allows signing very
+	// large artifacts by digest without streaming them through the builder. It is
+	// only valid for a Detached signature (an attached signature must embed the
+	// content itself) and must be exactly Digest.Size() bytes.
+	ContentDigest []byte
+	// Detached omits the eContent from the encapsulated content info (RFC 5652
+	// §5.2: an "external signature"). The signature still covers the content via
+	// the mandatory messageDigest authenticated attribute; verifiers are handed
+	// the content (or its digest) out of band.
+	Detached bool
 	// ContentType is the eContentType (default: data).
 	ContentType asn1.ObjectIdentifier
 	// SignerCert / Signer produce the single SignerInfo. Signer is typically an
-	// HSM-backed crypto.Signer.
+	// HSM-backed crypto.Signer holding an RSA or ECDSA key.
 	SignerCert *x509.Certificate
 	Signer     crypto.Signer
 	// Digest selects the message-digest / signature hash (default: SHA-256).
@@ -66,6 +81,12 @@ type SignedDataOpts struct {
 	// transaction attributes) added alongside the mandatory contentType and
 	// messageDigest.
 	ExtraAttrs []Attribute
+	// UnauthAttrsFunc, when non-nil, is invoked with the computed SignerInfo
+	// signature value and returns unauthenticated (unsigned) attributes to embed
+	// alongside it. This is how an RFC 3161 timestamp countersignature — a token
+	// over the signature value — is attached (id-aa-timeStampToken, RFC 3161
+	// Appendix A): the token can only be obtained after the signature exists.
+	UnauthAttrsFunc func(signature []byte) ([]Attribute, error)
 }
 
 // BuildSignedData builds an attached-signature SignedData with a single
@@ -89,9 +110,22 @@ func BuildSignedData(opts SignedDataOpts) ([]byte, error) {
 	}
 
 	// Mandatory authenticated attributes: contentType and messageDigest.
-	h := hash.New()
-	h.Write(opts.Content)
-	msgDigest := h.Sum(nil)
+	var msgDigest []byte
+	switch {
+	case opts.ContentDigest != nil:
+		if !opts.Detached {
+			return nil, errors.New("cms: ContentDigest requires a detached signature (attached signatures must embed the content)")
+		}
+		if len(opts.ContentDigest) != hash.Size() {
+			return nil, fmt.Errorf("cms: ContentDigest length %d does not match %v output size %d",
+				len(opts.ContentDigest), hash, hash.Size())
+		}
+		msgDigest = opts.ContentDigest
+	default:
+		h := hash.New()
+		h.Write(opts.Content)
+		msgDigest = h.Sum(nil)
+	}
 
 	attrList := []Attribute{
 		{Type: oidAttrContentType, Value: contentType},
@@ -115,6 +149,11 @@ func BuildSignedData(opts SignedDataOpts) ([]byte, error) {
 		return nil, err
 	}
 
+	sigAlg, err := signatureAlgorithm(opts.Signer.Public(), hash)
+	if err != nil {
+		return nil, err
+	}
+
 	signedBytes, err := marshalAuthAttrsForSigning(attrs)
 	if err != nil {
 		return nil, err
@@ -124,6 +163,26 @@ func BuildSignedData(opts SignedDataOpts) ([]byte, error) {
 	sig, err := opts.Signer.Sign(rand.Reader, dh.Sum(nil), hash)
 	if err != nil {
 		return nil, fmt.Errorf("cms: signing authenticated attributes: %w", err)
+	}
+
+	// Unauthenticated attributes are outside the signature, so they can be
+	// derived from it (the RFC 3161 timestamp-countersignature pattern).
+	var unauthAttrs []attribute
+	if opts.UnauthAttrsFunc != nil {
+		extra, err := opts.UnauthAttrsFunc(sig)
+		if err != nil {
+			return nil, fmt.Errorf("cms: building unauthenticated attributes: %w", err)
+		}
+		for _, a := range extra {
+			enc, err := buildAttribute(a)
+			if err != nil {
+				return nil, err
+			}
+			unauthAttrs = append(unauthAttrs, enc)
+		}
+		if err := sortAttributes(unauthAttrs); err != nil {
+			return nil, err
+		}
 	}
 
 	certs := opts.Certificates
@@ -139,21 +198,53 @@ func BuildSignedData(opts SignedDataOpts) ([]byte, error) {
 		},
 		DigestAlgorithm:           pkix.AlgorithmIdentifier{Algorithm: digestOID, Parameters: asn1.NullRawValue},
 		AuthenticatedAttributes:   attrs,
-		DigestEncryptionAlgorithm: pkix.AlgorithmIdentifier{Algorithm: oidRSAEncryption, Parameters: asn1.NullRawValue},
+		DigestEncryptionAlgorithm: sigAlg,
 		EncryptedDigest:           sig,
+		UnauthenticatedAttributes: unauthAttrs,
+	}
+
+	eContent := encapContentInfo{ContentType: contentType}
+	if !opts.Detached {
+		eContent.Content = asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: mustMarshalOctet(opts.Content)}
 	}
 
 	sd := signedData{
 		Version:          1,
 		DigestAlgorithms: []pkix.AlgorithmIdentifier{{Algorithm: digestOID, Parameters: asn1.NullRawValue}},
-		ContentInfo: encapContentInfo{
-			ContentType: contentType,
-			Content:     asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: mustMarshalOctet(opts.Content)},
-		},
-		Certificates: marshalCerts(certs),
-		SignerInfos:  []signerInfo{si},
+		ContentInfo:      eContent,
+		Certificates:     marshalCerts(certs),
+		SignerInfos:      []signerInfo{si},
 	}
 	return wrapContentInfo(oidSignedData, sd)
+}
+
+// signatureAlgorithm selects the SignerInfo signatureAlgorithm for the signer's
+// key type. RSA keeps the historical rsaEncryption identifier (PKCS#1 v1.5, the
+// form SCEP/EST/TSA verifiers including openssl expect); ECDSA uses the
+// digest-specific ecdsa-with-SHA* identifier with absent parameters (RFC 5758
+// §3.2).
+func signatureAlgorithm(pub crypto.PublicKey, hash crypto.Hash) (pkix.AlgorithmIdentifier, error) {
+	switch pub.(type) {
+	case *rsa.PublicKey:
+		return pkix.AlgorithmIdentifier{Algorithm: oidRSAEncryption, Parameters: asn1.NullRawValue}, nil
+	case *ecdsa.PublicKey:
+		var oid asn1.ObjectIdentifier
+		switch hash {
+		case crypto.SHA256:
+			oid = oidECDSAWithSHA256
+		case crypto.SHA384:
+			oid = oidECDSAWithSHA384
+		case crypto.SHA512:
+			oid = oidECDSAWithSHA512
+		case crypto.SHA1:
+			oid = oidECDSAWithSHA1
+		default:
+			return pkix.AlgorithmIdentifier{}, fmt.Errorf("cms: no ECDSA signature algorithm for digest %v", hash)
+		}
+		return pkix.AlgorithmIdentifier{Algorithm: oid}, nil
+	default:
+		return pkix.AlgorithmIdentifier{}, fmt.Errorf("cms: unsupported signer key type %T (RSA and ECDSA are supported)", pub)
+	}
 }
 
 // BuildEnvelopedData encrypts plaintext to a single recipient certificate using
@@ -215,6 +306,38 @@ func BuildEnvelopedData(plaintext []byte, recipient *x509.Certificate) ([]byte, 
 		},
 	}
 	return wrapContentInfo(oidEnvelopedData, ed)
+}
+
+// OIDSigningCertificateV2 (id-aa-signingCertificateV2) is the ESS signed
+// attribute binding a SignerInfo to the signing certificate (RFC 5035).
+var OIDSigningCertificateV2 = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 16, 2, 47}
+
+// essCertIDv2 is RFC 5035 ESSCertIDv2 with the default (id-sha256) hash
+// algorithm and no issuerSerial, so it encodes as SEQUENCE { certHash }.
+type essCertIDv2 struct {
+	CertHash []byte
+}
+
+// signingCertificateV2 is RFC 5035 SigningCertificateV2 with no policies.
+type signingCertificateV2 struct {
+	Certs []essCertIDv2
+}
+
+// SigningCertificateV2Attribute builds the id-aa-signingCertificateV2
+// authenticated attribute over the given certificates (RFC 5035). Only the
+// leaf (the signing certificate) is required; including the whole chain lets
+// strict verifiers bind every certificate. Used by both the RFC 3161 TSA and
+// the artifact-signing service.
+func SigningCertificateV2Attribute(chain []*x509.Certificate) (Attribute, error) {
+	if len(chain) == 0 {
+		return Attribute{}, errors.New("cms: signing-certificate attribute requires at least the signer certificate")
+	}
+	certs := make([]essCertIDv2, 0, len(chain))
+	for _, c := range chain {
+		sum := sha256.Sum256(c.Raw)
+		certs = append(certs, essCertIDv2{CertHash: sum[:]})
+	}
+	return Attribute{Type: OIDSigningCertificateV2, Value: signingCertificateV2{Certs: certs}}, nil
 }
 
 // ---- encoding helpers -----------------------------------------------------

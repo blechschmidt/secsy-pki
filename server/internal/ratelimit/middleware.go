@@ -3,7 +3,9 @@ package ratelimit
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -26,6 +28,7 @@ type Prefixes struct {
 	SCEP string // e.g. "/scep"
 	TSA  string // e.g. "/tsa"
 	CMP  string // e.g. "/cmp"
+	Sign string // e.g. "/api/sign" (authenticated, but HSM-bound per request)
 }
 
 // Options configures the rate-limit middleware.
@@ -56,6 +59,7 @@ func New(opts Options) *Middleware {
 			SCEP: normalizePrefix(opts.Prefixes.SCEP),
 			TSA:  normalizePrefix(opts.Prefixes.TSA),
 			CMP:  normalizePrefix(opts.Prefixes.CMP),
+			Sign: normalizePrefix(opts.Prefixes.Sign),
 		},
 	}
 }
@@ -198,6 +202,18 @@ func (m *Middleware) classify(r *http.Request) *class {
 		return &class{name: "cmp", hsmBound: true}
 	}
 
+	// Artifact signing. POST /api/sign signs on the HSM, so it is both metered
+	// and gated behind the concurrency guard; verification and the signer
+	// listing are CPU-only, so they are metered but never queue on the HSM
+	// guard. Requests are keyed per credential (Basic user or bearer-token
+	// digest) so one pipeline cannot starve others behind the same NAT.
+	if p := m.prefixes.Sign; p != "" && underPrefix(path, p) {
+		if path == p && r.Method == http.MethodPost {
+			return &class{name: "artifact_sign", hsmBound: true, account: apiAccount}
+		}
+		return &class{name: "artifact_sign_other", account: apiAccount}
+	}
+
 	return nil
 }
 
@@ -298,6 +314,21 @@ func clientIP(r *http.Request) string {
 func estAccount(r *http.Request) string {
 	if user, _, ok := r.BasicAuth(); ok && user != "" {
 		return "est:" + user
+	}
+	return ""
+}
+
+// apiAccount keys an authenticated API request by its credential: the Basic
+// username when present, otherwise a digest of the Authorization header (a
+// bearer token must never be used verbatim as a metric/bucket key). Cookie-
+// session (console) callers fall back to the IP and global tiers.
+func apiAccount(r *http.Request) string {
+	if user, _, ok := r.BasicAuth(); ok && user != "" {
+		return "api:" + user
+	}
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		sum := sha256.Sum256([]byte(auth))
+		return "api:tok:" + hex.EncodeToString(sum[:8])
 	}
 	return ""
 }

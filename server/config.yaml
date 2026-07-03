@@ -123,6 +123,7 @@ key_provider:
   roles:
     ca: ""                 # CA signing key + OCSP responder keys
     tsa: ""                # RFC 3161 TSA signing key
+    signing: ""            # artifact code-signing keys (signing: service)
 
 pkcs11:
   module_path: "/usr/lib/pkcs11/yubihsm_pkcs11.so"
@@ -169,6 +170,9 @@ yubihsm:
 #   admin   - full control (equivalent to the built-in root user)
 #   issuer  - may issue/renew/revoke certs on any CA (restriction sets still
 #             apply) and encrypt/decrypt secrets; may read logs
+#   signer  - may sign release artifacts with the configured code-signing keys
+#             (signing: service, /api/sign); may read logs. Separate from
+#             issuer so a build credential cannot mint certificates.
 #   auditor - read-only access to the audit, access, and event logs
 # Subject keys may be the OIDC "sub" claim or the user's email. Group keys are
 # the group IDs from the /api/groups store. A user's effective roles are the
@@ -373,6 +377,23 @@ tsa:
   # signature_digest: sha256                # sha256 | sha384 | sha512
   # accepted_hashes: [sha256, sha384, sha512]  # message-imprint algs (sha1 opt-in)
   # include_tsa_name: false                 # embed signer subject as tsa GeneralName
+
+# signing enables the artifact code-signing service (Task 60): CMS/PKCS#7
+# detached signatures over release artifacts at POST /api/sign (RBAC role
+# "signer") and via `secsy-ca sign`, with optional RFC 3161 countersignatures
+# from the tsa service above. Provision each signer's key + certificate first
+# with `secsy-ca signing-key` (lint-gated code-signing profile). See
+# docs/artifact-signing.md.
+signing:
+  enabled: false
+  # signers:
+  #   - name: release                              # callers reference this name
+  #     key_label: codesign-release                # provider label from signing-key
+  #     certificate_file: /etc/secsy/codesign.pem  # written by signing-key
+  #     ca_label: "Secsy Issuing CA"               # or ca_id; completes the chain
+  #     digest: sha256                             # sha256 | sha384 | sha512
+  #     timestamp: true                            # countersign by default (needs tsa.enabled)
+  #     tenant: ""                                 # owning tenant ("" = default)
 
 # cmp enables the Lightweight CMP (RFC 9483) certificate-management endpoint for
 # enterprise clients that speak CMP rather than ACME/EST. It handles the ir/cr/
