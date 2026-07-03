@@ -69,6 +69,11 @@ var migrationTables = []string{
 	"kek_versions",
 	"stored_secrets",
 	"stored_secret_versions",
+	// Four-eyes approval workflow (Task 81). pending_approvals references
+	// tenants, so it is copied after them; the per-approver decisions reference
+	// pending_approvals, so they come last.
+	"pending_approvals",
+	"approval_decisions",
 }
 
 // tableCopyOrder pins the read order for tables whose rows have intra-table

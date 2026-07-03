@@ -63,6 +63,10 @@ tags:
     description: SSH/X.509 signing restriction sets.
   - name: Audit
     description: Access log, sign-audit log, and the tamper-evident event log.
+  - name: Approvals
+    description: >-
+      Four-eyes / maker-checker approval workflow for high-risk administrative
+      operations: list the queue, and approve or reject pending requests.
   - name: Secrets
     description: HSM-backed envelope encryption for passwords and small secrets.
   - name: HSM
@@ -2254,6 +2258,117 @@ paths:
             application/yaml:
               schema: { type: string }
 
+  /api/approvals:
+    get:
+      operationId: listApprovals
+      tags: [Approvals]
+      summary: List four-eyes approval requests
+      description: >-
+        Lists maker-checker approval requests, newest first. Requires the
+        approval:read capability (held by the approver and auditor roles). A
+        platform-scoped reader sees all tenants (optionally narrowed by
+        `tenant`); a tenant-scoped approver sees only their own tenant(s).
+      parameters:
+        - name: status
+          in: query
+          description: Filter by status.
+          schema: { type: string, enum: [pending, approved, rejected, executed, expired] }
+        - name: class
+          in: query
+          description: Filter by operation class (e.g. ca.rotate, revocation.bulk).
+          schema: { type: string }
+        - name: tenant
+          in: query
+          schema: { type: string }
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: The approval queue.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApprovalList" }
+        "403":
+          description: The caller lacks the approval:read capability.
+
+  /api/approvals/{id}:
+    get:
+      operationId: getApproval
+      tags: [Approvals]
+      summary: Get one approval request with its decision log
+      parameters:
+        - $ref: "#/components/parameters/ApprovalId"
+      responses:
+        "200":
+          description: The request and its decisions.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PendingApproval" }
+        "403":
+          description: The caller lacks the approval:read capability.
+        "404":
+          description: No such request (or the workflow is disabled).
+
+  /api/approvals/{id}/approve:
+    post:
+      operationId: approveApproval
+      tags: [Approvals]
+      summary: Approve a pending request
+      description: >-
+        Records the caller's sign-off. Self-approval (approver == requester) is
+        refused (403), as is a repeat vote by the same approver (409). When the
+        distinct-approver threshold is met the request becomes `approved` and the
+        guarded operation may then execute. Requires the approval:approve
+        capability in the request's tenant.
+      parameters:
+        - $ref: "#/components/parameters/ApprovalId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApprovalDecisionRequest" }
+      responses:
+        "200":
+          description: The updated request.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PendingApproval" }
+        "403":
+          description: The caller lacks approval:approve, or attempted self-approval.
+        "404":
+          description: No such request.
+        "409":
+          description: The approver already decided, or the request is no longer pending.
+
+  /api/approvals/{id}/reject:
+    post:
+      operationId: rejectApproval
+      tags: [Approvals]
+      summary: Reject a pending request
+      description: >-
+        Vetoes a request (terminal). A single rejection blocks the operation.
+        The requester may also reject to withdraw their own request. Requires the
+        approval:approve capability in the request's tenant (or being the
+        requester).
+      parameters:
+        - $ref: "#/components/parameters/ApprovalId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApprovalDecisionRequest" }
+      responses:
+        "200":
+          description: The updated (rejected) request.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PendingApproval" }
+        "403":
+          description: The caller lacks approval:approve.
+        "404":
+          description: No such request.
+        "409":
+          description: The request is no longer pending.
+
 components:
   securitySchemes:
     basicAuth:
@@ -2297,6 +2412,12 @@ components:
       in: query
       description: Row offset.
       schema: { type: integer, minimum: 0 }
+    ApprovalId:
+      name: id
+      in: path
+      required: true
+      description: Approval request id.
+      schema: { type: string }
 
   responses:
     BadRequest:
@@ -3328,6 +3449,66 @@ components:
         count: { type: integer }
         broken_seq: { type: integer, format: int64 }
         detail: { type: string }
+
+    ApprovalDecision:
+      type: object
+      description: One approver's vote on a request.
+      properties:
+        approver: { type: string }
+        approver_name: { type: string }
+        decision: { type: string, enum: [approve, reject] }
+        comment: { type: string }
+        created_at: { type: string, format: date-time }
+
+    PendingApproval:
+      type: object
+      description: >-
+        A four-eyes / maker-checker approval request. The guarded operation is
+        held until required_approvals DISTINCT approvers (never the requester)
+        sign off, then re-running it consumes the approval (status executed).
+      properties:
+        id: { type: string }
+        tenant_id: { type: string }
+        operation_class:
+          type: string
+          description: The guarded operation family.
+          enum: [ca.create, ca.rotate, ca.retire, profile.change, revocation.bulk, escrow.policy, secret.kek_rotate]
+        resource_key: { type: string }
+        resource_name: { type: string }
+        fingerprint:
+          type: string
+          description: Pins the exact operation parameters an approval authorizes.
+        summary: { type: string }
+        details: { type: string }
+        requested_by: { type: string }
+        requested_by_name: { type: string }
+        required_approvals: { type: integer }
+        approvals_count:
+          type: integer
+          description: Running number of distinct approvers so far.
+        status: { type: string, enum: [pending, approved, rejected, executed, expired] }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        decided_at: { type: string, format: date-time }
+        executed_at: { type: string, format: date-time }
+        decisions:
+          type: array
+          items: { $ref: "#/components/schemas/ApprovalDecision" }
+
+    ApprovalList:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          description: Whether the approval gate is enabled in configuration.
+        requests:
+          type: array
+          items: { $ref: "#/components/schemas/PendingApproval" }
+
+    ApprovalDecisionRequest:
+      type: object
+      properties:
+        comment: { type: string }
 
     ACMEIdentifier:
       type: object

@@ -147,6 +147,12 @@ func run(args []string) error {
 		return cmdAudit(db, cfg, cmdArgs)
 	}
 
+	// The four-eyes approval queue (Task 81) needs only the database and config
+	// (no key provider), so dispatch it here alongside audit administration.
+	if command == "approvals" {
+		return cmdApprovals(db, cfg, cmdArgs)
+	}
+
 	// Certificate discovery is a TLS client plus X.509 analysis against the stored
 	// CA certificates; it needs the database but never the HSM/key provider, so
 	// dispatch it before the provider is constructed. This lets an operator run a
@@ -205,7 +211,7 @@ func run(args []string) error {
 	case "revoke":
 		return cmdRevoke(db, mgr, cmdArgs)
 	case "revoke-bulk":
-		return cmdRevokeBulk(db, mgr, cmdArgs)
+		return cmdRevokeBulk(db, mgr, cfg, cmdArgs)
 	case "gen-crl":
 		return cmdGenCRL(db, mgr, cmdArgs)
 	case "list-certs":
@@ -225,13 +231,13 @@ func run(args []string) error {
 	case "ceremony":
 		return cmdCeremony(db, mgr, provider, cmdArgs)
 	case "rotate-intermediate":
-		return cmdRotateIntermediate(db, mgr, cmdArgs)
+		return cmdRotateIntermediate(db, mgr, cfg, cmdArgs)
 	case "rotation-status":
 		return cmdRotationStatus(db, mgr, cmdArgs)
 	case "list-rotations":
 		return cmdListRotations(db, mgr, cmdArgs)
 	case "retire-intermediate":
-		return cmdRetireIntermediate(db, mgr, cmdArgs)
+		return cmdRetireIntermediate(db, mgr, cfg, cmdArgs)
 	case "publish-chain":
 		return cmdPublishChain(db, mgr, cmdArgs)
 	case "cross-sign":

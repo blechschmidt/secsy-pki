@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/approval"
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
@@ -13,6 +16,24 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 )
+
+// bulkRevokeParams builds the canonical parameter string that pins a bulk
+// revocation's approval to this exact selection. Serials are sorted so the same
+// selection fingerprints identically across re-runs (order-independent), while
+// any change to the filter, reason, or confirmed count yields a different
+// fingerprint — so an approval cannot be reused for a different revocation.
+func bulkRevokeParams(caID string, req models.BulkRevokeRequest) string {
+	serials := append([]string(nil), req.Filter.Serials...)
+	sort.Strings(serials)
+	confirm := -1
+	if req.ConfirmCount != nil {
+		confirm = *req.ConfirmCount
+	}
+	return fmt.Sprintf("ca=%s;reason=%s;confirm=%d;profile=%s;pattern=%s;after=%s;before=%s;include_expired=%v;serials=%s",
+		caID, req.Reason, confirm, req.Filter.Profile, req.Filter.Pattern,
+		req.Filter.IssuedAfter, req.Filter.IssuedBefore, req.Filter.IncludeExpired,
+		strings.Join(serials, ","))
+}
 
 // BulkRevokeCertificates is the incident-response mass-revocation endpoint
 // (Task 70): POST /api/ca/{id}/revocations:bulk.
@@ -100,6 +121,19 @@ func (a *API) BulkRevokeCertificates(w http.ResponseWriter, r *http.Request) {
 	if req.ConfirmCount == nil {
 		writeError(w, http.StatusBadRequest,
 			"confirm_count is required: run with dry_run first and echo the reported total")
+		return
+	}
+
+	// Four-eyes gate (Task 81): a real bulk revocation cannot execute until the
+	// configured number of distinct approvers sign off. The fingerprint pins the
+	// exact selection (filter + reason + confirmed count), so approval to revoke
+	// one selection cannot authorize a different one.
+	if !a.guard(w, r, approval.ClassBulkRevoke, "ca:"+caID, caID,
+		fmt.Sprintf("Bulk-revoke %d certificate(s) on CA %s (reason %q)", *req.ConfirmCount, caID, req.Reason),
+		bulkRevokeParams(caID, req),
+		fmt.Sprintf("filter: profile=%q pattern=%q serials=%d after=%q before=%q include_expired=%v",
+			req.Filter.Profile, req.Filter.Pattern, len(req.Filter.Serials),
+			req.Filter.IssuedAfter, req.Filter.IssuedBefore, req.Filter.IncludeExpired)) {
 		return
 	}
 

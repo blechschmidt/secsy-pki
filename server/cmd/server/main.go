@@ -18,6 +18,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/acme"
 	"github.com/blechschmidt/secsy-pki/server/internal/anchor"
+	"github.com/blechschmidt/secsy-pki/server/internal/approval"
 	"github.com/blechschmidt/secsy-pki/server/internal/attestation"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
@@ -416,6 +417,26 @@ func main() {
 		RequireReason:       cfg.Policy.RequireReason,
 		MaxCertValidityDays: cfg.Policy.MaxCertValidityDays,
 	})
+	// Four-eyes / maker-checker approval gate (Task 81): construct the engine over
+	// the shared store (which is both the Store and the audit Auditor) and install
+	// it so the guarded operations (CA creation/rotation/retirement, bulk
+	// revocation) become fail-closed chokepoints. The policy governs enforcement,
+	// so installing unconditionally is safe — a disabled policy is a no-op gate.
+	approvalEngine := approval.NewEngine(db, db, approval.Policy{
+		Enabled:          cfg.Approvals.Enabled,
+		DefaultThreshold: cfg.Approvals.ApprovalDefaultThreshold(),
+		Thresholds:       cfg.Approvals.Thresholds,
+		TTL:              cfg.Approvals.ApprovalTTL(),
+	})
+	api.SetApprovals(approvalEngine)
+	// Expire stale approval requests on a leader-elected background loop (a
+	// singleton job, like the other periodic sweeps). Expiry is also enforced
+	// fail-closed at read time in the engine, so this is hygiene, not correctness.
+	if cfg.Approvals.Enabled {
+		elector.Register("approval-expiry", func(ctx context.Context) {
+			approvalExpiryLoop(ctx, approvalEngine, log.Default())
+		})
+	}
 	monitorOpts := monitor.OptionsFromDays(
 		cfg.Monitor.WarningDays, cfg.Monitor.CriticalDays,
 		cfg.Monitor.RenewBeforeDays, cfg.Monitor.RenewProfiles)
@@ -1398,6 +1419,32 @@ func provisionTenants(db *database.DB, tenants []config.TenantConfig) error {
 		}
 	}
 	return nil
+}
+
+// approvalExpiryLoop periodically retires stale four-eyes approval requests
+// (Task 81). It runs only on the elected leader; an initial sweep runs
+// immediately so a restart does not leave already-expired requests lingering
+// until the first tick.
+func approvalExpiryLoop(ctx context.Context, eng *approval.Engine, logger *log.Logger) {
+	const interval = time.Hour
+	sweep := func() {
+		if n, err := eng.SweepExpired(ctx); err != nil {
+			logger.Printf("approval-expiry: sweep failed: %v", err)
+		} else if n > 0 {
+			logger.Printf("approval-expiry: expired %d stale approval request(s)", n)
+		}
+	}
+	sweep()
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			sweep()
+		}
+	}
 }
 
 // toRoleMap converts a config string->[]string role map into the typed form the

@@ -39,6 +39,26 @@ type Store interface {
 	AuditStore
 	RBACStore
 	SecretStore
+	ApprovalStore
+}
+
+// ApprovalStore persists the four-eyes / maker-checker approval workflow (Task
+// 81): pending high-risk-operation requests and the per-approver decisions on
+// them. The distinct-approver threshold is enforced by the
+// UNIQUE(approval_id, approver) constraint, and status transitions are
+// optimistic (SetApprovalStatus applies only from the expected prior status) so
+// an approved request is consumed at most once under concurrency. It structurally
+// satisfies approval.Store; the method set is kept in lockstep with it.
+type ApprovalStore interface {
+	CreatePendingApproval(a *models.PendingApproval) error
+	GetPendingApproval(id string) (*models.PendingApproval, error)
+	FindOpenApproval(tenantID, class, fingerprint string) (*models.PendingApproval, error)
+	ListPendingApprovals(tenantID, status, class string, limit int) ([]models.PendingApproval, error)
+	ListApprovalDecisions(approvalID string) ([]models.ApprovalDecision, error)
+	AddApprovalDecision(d *models.ApprovalDecision) (bool, error)
+	CountApprovalDecisions(approvalID, decision string) (int, error)
+	SetApprovalStatus(id, from, to string, at time.Time) (bool, error)
+	ListExpirableApprovals(now time.Time) ([]models.PendingApproval, error)
 }
 
 // SecretStore persists the secret-layer KEK rotation state (Task 63): the

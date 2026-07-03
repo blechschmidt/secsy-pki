@@ -311,6 +311,7 @@ function switchView(name) {
   if (name === 'ssh') loadSSH();
   if (name === 'signing') loadSigning();
   if (name === 'audit') loadAudit();
+  if (name === 'approvals') loadApprovals();
   if (name === 'compliance') loadCompliance();
   if (name === 'bundle') loadBundle();
   if (name === 'tenants') loadTenants();
@@ -1771,6 +1772,58 @@ async function exportAudit(format, filename) {
 $('auditExportJSON').onclick = () => exportAudit('json', 'audit-export.ndjson');
 $('auditExportCEF').onclick = () => exportAudit('cef', 'audit-export.cef.log');
 $('auditExportSyslog').onclick = () => exportAudit('rfc5424', 'audit-export.syslog.log');
+
+// ---- Four-eyes / maker-checker approvals ------------------------------------
+async function loadApprovals() {
+  const tbody = $('approvalsRows');
+  tbody.innerHTML = '<tr><td colspan="8" class="muted">Loading…</td></tr>';
+  const p = new URLSearchParams();
+  if ($('approvalsStatus').value) p.set('status', $('approvalsStatus').value);
+  if ($('approvalsClass').value.trim()) p.set('class', $('approvalsClass').value.trim());
+  try {
+    const rep = await api('GET', '/api/approvals?' + p.toString());
+    $('approvalsDisabled').classList.toggle('hidden', rep.enabled !== false);
+    const rows = rep.requests || [];
+    tbody.innerHTML = rows.length ? rows.map(r => {
+      const badge = (r.status === 'approved' || r.status === 'executed') ? 'valid'
+        : ((r.status === 'rejected' || r.status === 'expired') ? 'revoked' : 'warning');
+      const actions = r.status === 'pending'
+        ? `<button class="btn ghost sm" onclick="doApprove('${escapeHTML(r.id)}')">Approve</button>
+           <button class="btn ghost sm" onclick="doReject('${escapeHTML(r.id)}')">Reject</button>`
+        : '';
+      return `<tr>
+        <td class="mono" title="${escapeHTML(r.summary || '')}">${escapeHTML(r.id)}</td>
+        <td class="mono">${escapeHTML(r.operation_class)}</td>
+        <td class="mono">${escapeHTML(r.resource_name || r.resource_key)}</td>
+        <td>${escapeHTML(r.requested_by_name || r.requested_by)}</td>
+        <td>${r.approvals_count}/${r.required_approvals}</td>
+        <td><span class="badge ${badge}">${escapeHTML(r.status)}</span></td>
+        <td style="white-space:nowrap">${fmtTime(r.created_at)}</td>
+        <td>${actions}</td>
+      </tr>`;
+    }).join('') : emptyRow('No approval requests.');
+  } catch (e) {
+    tbody.innerHTML = emptyRow(e.message);
+  }
+}
+
+// doApprove / doReject are global so the per-row buttons (inline onclick) can
+// reach them. A distinct approver is required; the server refuses self-approval.
+async function doApprove(id) {
+  const comment = prompt('Approve request ' + id + '?\nA DIFFERENT approver than the requester is required.\nOptional comment:');
+  if (comment === null) return; // cancelled
+  try { await api('POST', '/api/approvals/' + id + '/approve', { comment }); loadApprovals(); }
+  catch (e) { alert('Approve failed: ' + e.message); }
+}
+async function doReject(id) {
+  const comment = prompt('Reject request ' + id + '? Optional reason:');
+  if (comment === null) return;
+  try { await api('POST', '/api/approvals/' + id + '/reject', { comment }); loadApprovals(); }
+  catch (e) { alert('Reject failed: ' + e.message); }
+}
+$('approvalsRefresh').onclick = () => loadApprovals();
+$('approvalsStatus').onchange = () => loadApprovals();
+$('approvalsClass').addEventListener('keydown', e => { if (e.key === 'Enter') loadApprovals(); });
 
 // ---- Certificate lint (Compliance view) -------------------------------------
 $('lintBtn').onclick = async () => {

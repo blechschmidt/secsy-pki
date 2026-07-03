@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/approval"
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
@@ -96,6 +97,10 @@ type API struct {
 	// /readyz detail (Task 68); nil when the process runs without an elector
 	// (tests), in which case the readiness report omits the component.
 	leaderInfo LeaderInfo
+	// approvals is the four-eyes / maker-checker approval engine (Task 81); nil
+	// when the gate is disabled, in which case guarded operations execute
+	// immediately as before. Non-nil installs the fail-closed chokepoint.
+	approvals *approval.Engine
 }
 
 // LeaderInfo is the read-only view of the multi-replica coordination elector
@@ -110,6 +115,11 @@ type LeaderInfo interface {
 
 // SetLeaderInfo installs the coordination elector's leadership view.
 func (a *API) SetLeaderInfo(li LeaderInfo) { a.leaderInfo = li }
+
+// SetApprovals installs the four-eyes approval engine, turning the guarded
+// operations (CA creation/rotation/retirement, bulk revocation) into fail-closed
+// chokepoints. A nil engine leaves them ungated.
+func (a *API) SetApprovals(e *approval.Engine) { a.approvals = e }
 
 // AuthInfo describes the operator-authentication mechanisms enabled on the
 // server, surfaced to the console through /api/auth/config.
@@ -464,6 +474,15 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/events/verify", protected(http.HandlerFunc(a.VerifyEventLog)))
 	mux.Handle("GET /api/events/export", protected(http.HandlerFunc(a.ExportEventLog)))
 
+	// Four-eyes / maker-checker approval workflow (Task 81). Read is gated by the
+	// endpoints themselves (approval:read); approve/reject enforce approval:approve
+	// scoped to the request's tenant. Fine-grained authorization lives in the
+	// handlers, so only the shared auth/audit wrapper is applied here.
+	mux.Handle("GET /api/approvals", protected(http.HandlerFunc(a.ListApprovals)))
+	mux.Handle("GET /api/approvals/{id}", protected(http.HandlerFunc(a.GetApproval)))
+	mux.Handle("POST /api/approvals/{id}/approve", protected(http.HandlerFunc(a.ApproveApproval)))
+	mux.Handle("POST /api/approvals/{id}/reject", protected(http.HandlerFunc(a.RejectApproval)))
+
 	// Ad-hoc certificate linting and the key-provider inventory — REST
 	// counterparts of `secsy-ca lint` and `secsy-ca inventory` (Task 62).
 	mux.Handle("POST /api/lint", protected(http.HandlerFunc(a.LintCertificate)))
@@ -665,6 +684,20 @@ func (a *API) CreateCA(w http.ResponseWriter, r *http.Request) {
 	if !a.canInTenant(user, tenantID, rbac.ActionManageCA) {
 		a.recordEvent(r, audit.ActionCACreate, "", "", audit.ResultDenied, "ca:manage capability required")
 		writeError(w, http.StatusForbidden, "ca:manage capability required for tenant %q", tenantID)
+		return
+	}
+
+	// Four-eyes gate (Task 81): creating a CA cannot execute (nor generate a key)
+	// until the configured number of distinct approvers sign off. Keyed on the
+	// label within the tenant so re-running the same request matches the approval.
+	parentID := ""
+	if req.ParentID != nil {
+		parentID = *req.ParentID
+	}
+	if !a.guard(w, r, approval.ClassCACreate, "ca:new:"+req.Label, req.Label,
+		fmt.Sprintf("Create CA %q (%s) in tenant %s", req.Label, req.KeyType, tenantID),
+		fmt.Sprintf("tenant=%s;label=%s;key_type=%s;parent=%s", tenantID, req.Label, req.KeyType, parentID),
+		"") {
 		return
 	}
 

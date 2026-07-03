@@ -3,9 +3,11 @@ package handlers
 import (
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/approval"
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
@@ -108,6 +110,15 @@ func (a *API) RotateIntermediateCA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Four-eyes gate (Task 81): a CA key rotation cannot execute until the
+	// configured number of distinct approvers sign off.
+	if !a.guard(w, r, approval.ClassCARotate, "ca:"+caID, caID,
+		"Rotate intermediate CA "+caID,
+		fmt.Sprintf("ca=%s;new_label=%s;key_type=%s;validity_days=%d", caID, req.NewLabel, req.KeyType, req.ValidityDays),
+		"") {
+		return
+	}
+
 	mgr := ca.NewManager(a.db, a.keyProvider)
 	a.consumeHSMAuditLogs("")
 	result, err := mgr.RotateIntermediate(r.Context(), ca.RotateSpec{
@@ -149,6 +160,15 @@ func (a *API) RetireIntermediateCA(w http.ResponseWriter, r *http.Request) {
 	var req RetireCARequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+
+	// Four-eyes gate (Task 81): retiring a superseded intermediate cannot execute
+	// until the configured number of distinct approvers sign off.
+	if !a.guard(w, r, approval.ClassCARetire, "ca:"+caID, caID,
+		"Retire superseded intermediate CA "+caID,
+		fmt.Sprintf("ca=%s;reason=%s;force=%v", caID, req.Reason, req.Force),
+		"") {
 		return
 	}
 

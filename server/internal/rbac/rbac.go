@@ -18,6 +18,12 @@
 //   - auditor — read-only: may read the audit, access, and event logs and list
 //     objects, but may not perform or authorize any signing or
 //     administrative operation.
+//   - approver — may approve or reject four-eyes / maker-checker approval
+//     requests for high-risk operations (Task 81), and read the request
+//     queue. Deliberately separate from the roles that REQUEST those
+//     operations (admin/issuer): a maker cannot also be the checker, and
+//     the gate additionally denies self-approval by identity, so genuine
+//     dual control needs a distinct approver principal.
 //
 // A subject may hold several roles; its effective capabilities are the union.
 package rbac
@@ -28,14 +34,15 @@ import "strings"
 type Role string
 
 const (
-	RoleAdmin   Role = "admin"
-	RoleIssuer  Role = "issuer"
-	RoleSigner  Role = "signer"
-	RoleAuditor Role = "auditor"
+	RoleAdmin    Role = "admin"
+	RoleIssuer   Role = "issuer"
+	RoleSigner   Role = "signer"
+	RoleAuditor  Role = "auditor"
+	RoleApprover Role = "approver"
 )
 
 // AllRoles is the set of recognized roles, used for validation.
-var AllRoles = []Role{RoleAdmin, RoleIssuer, RoleSigner, RoleAuditor}
+var AllRoles = []Role{RoleAdmin, RoleIssuer, RoleSigner, RoleAuditor, RoleApprover}
 
 // ValidRole reports whether r is a recognized role.
 func ValidRole(r Role) bool {
@@ -91,6 +98,16 @@ const (
 	// to the dedicated signer role (and admins), NOT to issuers: a credential
 	// that signs builds must not also mint certificates.
 	ActionSignArtifact Action = "artifact:sign"
+	// ActionReadApproval covers viewing the four-eyes approval queue (Task 81):
+	// pending requests and their decision history. Granted to approvers (who act
+	// on them) and auditors (read-only oversight).
+	ActionReadApproval Action = "approval:read"
+	// ActionApprove covers approving or rejecting a four-eyes approval request.
+	// Granted to the dedicated approver role (and admins). It is deliberately
+	// NOT implied by the capability to REQUEST the guarded operation: separating
+	// maker from checker is the whole point of the control, and the gate further
+	// denies self-approval by identity.
+	ActionApprove Action = "approval:approve"
 )
 
 // roleActions is the static capability grant per role. admin is handled
@@ -107,7 +124,13 @@ var roleActions = map[Role]map[Action]bool{
 		ActionReadAudit:    true, // signers can review their own operations
 	},
 	RoleAuditor: {
-		ActionReadAudit: true,
+		ActionReadAudit:    true,
+		ActionReadApproval: true, // read-only oversight of the approval queue
+	},
+	RoleApprover: {
+		ActionReadApproval: true,
+		ActionApprove:      true,
+		ActionReadAudit:    true, // approvers review the trail behind a request
 	},
 }
 

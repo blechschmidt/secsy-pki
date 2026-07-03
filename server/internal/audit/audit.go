@@ -260,6 +260,19 @@ const (
 	// WebAuthn passkey lifecycle for step-up authentication.
 	ActionWebAuthnRegister = "webauthn.register" // a passkey was enrolled
 	ActionWebAuthnRemove   = "webauthn.remove"   // a passkey was removed
+
+	// Four-eyes / maker-checker approval workflow (Task 81). ActionApprovalRequest
+	// records a guarded operation being held at the gate (a request created);
+	// ActionApprovalApprove and ActionApprovalReject record each approver's
+	// decision (a self-approval attempt is ResultDenied); ActionApprovalExecute
+	// records the gate consuming an approved request to authorize the operation;
+	// ActionApprovalExpire records a stale request being retired. The request id
+	// is the Target so a request and all decisions on it correlate.
+	ActionApprovalRequest = "approval.request"
+	ActionApprovalApprove = "approval.approve"
+	ActionApprovalReject  = "approval.reject"
+	ActionApprovalExecute = "approval.execute"
+	ActionApprovalExpire  = "approval.expire"
 )
 
 // Event is a single entry in the tamper-evident audit log. Seq is a

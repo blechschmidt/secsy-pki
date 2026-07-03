@@ -736,6 +736,50 @@ func (db *DB) migrate() error {
 			PRIMARY KEY (secret_id, version)
 		)`, boolType, boolType),
 		`CREATE INDEX IF NOT EXISTS idx_stored_secret_versions_kek ON stored_secret_versions(kek_family, kek_label)`,
+
+		// Four-eyes / maker-checker approval requests (Task 81). A high-risk
+		// operation is held here until enough DISTINCT approvers sign off. The row
+		// stores only the operation's identity (class, resource_key, fingerprint)
+		// and a human description — never the operation's payload. fingerprint pins
+		// the exact parameters so an approval cannot authorize a different
+		// operation. required_approvals is snapshotted at request time so a later
+		// policy change cannot weaken an in-flight request.
+		`CREATE TABLE IF NOT EXISTS pending_approvals (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'default' REFERENCES tenants(id),
+			operation_class TEXT NOT NULL,
+			resource_key TEXT NOT NULL,
+			resource_name TEXT NOT NULL DEFAULT '',
+			fingerprint TEXT NOT NULL,
+			summary TEXT NOT NULL DEFAULT '',
+			details TEXT NOT NULL DEFAULT '',
+			requested_by TEXT NOT NULL,
+			requested_by_name TEXT NOT NULL DEFAULT '',
+			required_approvals INTEGER NOT NULL DEFAULT 1,
+			status TEXT NOT NULL DEFAULT 'pending',
+			created_at TIMESTAMP NOT NULL,
+			expires_at TIMESTAMP NOT NULL,
+			decided_at TIMESTAMP,
+			executed_at TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_pending_approvals_open ON pending_approvals(tenant_id, operation_class, fingerprint, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_pending_approvals_status ON pending_approvals(status)`,
+
+		// One row per approver decision on a request. UNIQUE(approval_id, approver)
+		// is the mechanism that makes "N DISTINCT approvers" enforceable: a given
+		// approver contributes at most one decision, so the threshold cannot be met
+		// by one principal voting repeatedly.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS approval_decisions (
+			id %s,
+			approval_id TEXT NOT NULL REFERENCES pending_approvals(id),
+			approver TEXT NOT NULL,
+			approver_name TEXT NOT NULL DEFAULT '',
+			decision TEXT NOT NULL,
+			comment TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL,
+			UNIQUE (approval_id, approver)
+		)`, autoIncPK),
+		`CREATE INDEX IF NOT EXISTS idx_approval_decisions_approval ON approval_decisions(approval_id)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.exec(stmt); err != nil {

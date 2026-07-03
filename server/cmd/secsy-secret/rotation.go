@@ -109,6 +109,12 @@ func cmdRotateKEK(cfg *config.Config, provider keyprovider.Provider, args []stri
 	}
 	defer db.Close()
 
+	// Four-eyes gate (Task 81): KEK rotation is a high-risk key-management
+	// operation with no REST endpoint, so this CLI gate is its only chokepoint.
+	if err := guardKEKRotate(cfg, db, fam, *keyType, actor); err != nil {
+		return err
+	}
+
 	res, err := secret.RotateKEK(context.Background(), provider, db, fam, *keyType)
 	if err != nil {
 		_ = recordEscrowEvent(db, actor, audit.ActionSecretKEKRotate, fam, audit.ResultError, err.Error())

@@ -143,6 +143,60 @@ type Config struct {
 	// explicit configuration beyond the shared database. See
 	// docs/high-availability.md.
 	Coordination CoordinationConfig `yaml:"coordination"`
+	// Approvals configures the four-eyes / maker-checker approval gate (Task 81)
+	// for high-risk administrative operations (CA creation/rotation/retirement,
+	// bulk revocation, secret KEK rotation). Disabled unless approvals.enabled is
+	// true, in which case guarded operations cannot execute until the configured
+	// number of distinct approvers sign off. See ApprovalsConfig.
+	Approvals ApprovalsConfig `yaml:"approvals"`
+}
+
+// ApprovalsConfig configures the four-eyes / maker-checker approval workflow.
+// When enabled, high-risk operations are held at a fail-closed gate until a
+// configurable number of DISTINCT approvers (never the requester) sign off. The
+// zero value (enabled=false) leaves every operation ungated, so existing
+// deployments are unaffected until they opt in.
+type ApprovalsConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// DefaultThreshold is the number of distinct approvers required for any
+	// guarded operation class without its own explicit threshold. Defaults to 2
+	// when enabled and unset (classic four-eyes).
+	DefaultThreshold int `yaml:"default_threshold"`
+	// Thresholds overrides the required approver count per operation class, keyed
+	// by class id: ca.create, ca.rotate, ca.retire, profile.change,
+	// revocation.bulk, escrow.policy, secret.kek_rotate. A value of 0 leaves that
+	// class ungated even while approvals are enabled.
+	Thresholds map[string]int `yaml:"thresholds"`
+	// RequestTTLHours bounds how long a pending request stays actionable before
+	// it expires. Defaults to 72 (three days) when unset.
+	RequestTTLHours int `yaml:"request_ttl_hours"`
+}
+
+// ApprovalTTL returns the effective request lifetime.
+func (c ApprovalsConfig) ApprovalTTL() time.Duration {
+	if c.RequestTTLHours > 0 {
+		return time.Duration(c.RequestTTLHours) * time.Hour
+	}
+	return 72 * time.Hour
+}
+
+// ApprovalDefaultThreshold returns the effective default distinct-approver
+// threshold applied to any class without its own threshold:
+//
+//   - an explicit positive default_threshold is used as-is;
+//   - a bare `enabled: true` (no default, no per-class thresholds) defaults to
+//     2 so opting in guards every class at classic four-eyes; but
+//   - when only per-class thresholds are given (no default), the blanket
+//     default is 0, so unlisted classes stay ungated and an operator can guard
+//     just a subset (e.g. only bulk revocation).
+func (c ApprovalsConfig) ApprovalDefaultThreshold() int {
+	if c.DefaultThreshold > 0 {
+		return c.DefaultThreshold
+	}
+	if len(c.Thresholds) > 0 {
+		return 0
+	}
+	return 2
 }
 
 // CoordinationConfig tunes the background-job leader election. All fields are
@@ -1689,6 +1743,10 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateApprovals(); err != nil {
+		return nil, err
+	}
+
 	if err := cfg.validateRateLimit(); err != nil {
 		return nil, err
 	}
@@ -2374,7 +2432,52 @@ func (c *Config) validateACME() error {
 // validRoleNames are the role identifiers accepted in the rbac config. Kept in
 // sync with the rbac package (duplicated here to avoid an import cycle risk and
 // to keep config self-contained).
-var validRoleNames = map[string]bool{"admin": true, "issuer": true, "signer": true, "auditor": true}
+var validRoleNames = map[string]bool{"admin": true, "issuer": true, "signer": true, "auditor": true, "approver": true}
+
+// validApprovalClasses are the operation-class identifiers accepted in the
+// approvals.thresholds config. Kept in sync with the approval package
+// (duplicated here to keep config self-contained and avoid an import cycle).
+var validApprovalClasses = map[string]bool{
+	"ca.create": true, "ca.rotate": true, "ca.retire": true, "profile.change": true,
+	"revocation.bulk": true, "escrow.policy": true, "secret.kek_rotate": true,
+}
+
+// validateApprovals sanity-checks the four-eyes approval configuration when
+// enabled: the thresholds must be non-negative and reference known operation
+// classes, and at least one class must be guarded (a positive default threshold
+// or a positive per-class threshold), so enabling the gate without guarding
+// anything fails loudly rather than silently doing nothing.
+func (c *Config) validateApprovals() error {
+	a := c.Approvals
+	if !a.Enabled {
+		return nil
+	}
+	if a.DefaultThreshold < 0 {
+		return fmt.Errorf("approvals.default_threshold must not be negative")
+	}
+	if a.RequestTTLHours < 0 {
+		return fmt.Errorf("approvals.request_ttl_hours must not be negative")
+	}
+	// An explicit 0 for a class disables the (possibly defaulted) guard for that
+	// class; a positive value guards it. The blanket default guards everything
+	// unless it too resolves to 0.
+	guarded := a.ApprovalDefaultThreshold() > 0
+	for class, n := range a.Thresholds {
+		if !validApprovalClasses[class] {
+			return fmt.Errorf("approvals.thresholds[%q]: unknown operation class (valid: ca.create, ca.rotate, ca.retire, profile.change, revocation.bulk, escrow.policy, secret.kek_rotate)", class)
+		}
+		if n < 0 {
+			return fmt.Errorf("approvals.thresholds[%q]: threshold must not be negative", class)
+		}
+		if n > 0 {
+			guarded = true
+		}
+	}
+	if !guarded {
+		return fmt.Errorf("approvals.enabled is set but no operation class is guarded: set approvals.default_threshold or a positive approvals.thresholds entry")
+	}
+	return nil
+}
 
 // validateRBAC rejects unknown role names so a misconfiguration fails loudly at
 // startup rather than silently dropping an intended grant.
@@ -2383,7 +2486,7 @@ func (c *Config) validateRBAC() error {
 		for key, roles := range m {
 			for _, r := range roles {
 				if !validRoleNames[r] {
-					return fmt.Errorf("rbac.%s[%q]: unknown role %q (valid: admin, issuer, signer, auditor)", kind, key, r)
+					return fmt.Errorf("rbac.%s[%q]: unknown role %q (valid: admin, issuer, signer, auditor, approver)", kind, key, r)
 				}
 			}
 		}

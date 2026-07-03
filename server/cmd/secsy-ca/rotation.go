@@ -11,8 +11,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/approval"
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 )
 
@@ -51,7 +53,7 @@ type rotationTranscript struct {
 // superseded and enters a dual-chain overlap window during which both keys
 // validate. When operators are enrolled, an M-of-N confirmation quorum gates the
 // rollover, mirroring the key ceremony.
-func cmdRotateIntermediate(db *database.DB, mgr *ca.Manager, args []string) error {
+func cmdRotateIntermediate(db *database.DB, mgr *ca.Manager, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("rotate-intermediate", flag.ContinueOnError)
 	caRef := fs.String("ca", "", "intermediate CA id or label to rotate (required)")
 	newLabel := fs.String("new-label", "", "label for the new key (default: derived '-rN' suffix)")
@@ -72,6 +74,22 @@ func cmdRotateIntermediate(db *database.DB, mgr *ca.Manager, args []string) erro
 	}
 	caID, err := resolveCA(db, *caRef)
 	if err != nil {
+		return err
+	}
+
+	// Four-eyes gate (Task 81): authorize the rotation before the ceremony
+	// begins. This is complementary to the M-of-N operator quorum below — the
+	// approval records distinct RBAC approvers in the audit chain, the quorum is
+	// the execution-time phrase ceremony.
+	rotateTenant, _ := db.GetCATenant(caID)
+	if err := guardCLI(db, cfg, approval.GuardRequest{
+		Class:        approval.ClassCARotate,
+		ResourceKey:  "ca:" + caID,
+		ResourceName: *caRef,
+		Summary:      "Rotate intermediate CA " + caID,
+		Params:       fmt.Sprintf("ca=%s;new_label=%s;key_type=%s;validity_days=%d", caID, *newLabel, *keyType, *validityDays),
+		Tenant:       rotateTenant,
+	}); err != nil {
 		return err
 	}
 
@@ -257,7 +275,7 @@ func cmdRotationStatus(db *database.DB, mgr *ca.Manager, args []string) error {
 // valid (unless -force), revokes the old intermediate under its parent on the
 // HSM, refreshes the parent CRL, and marks the CA retired. Like a ceremony, it
 // can require an M-of-N operator quorum.
-func cmdRetireIntermediate(db *database.DB, mgr *ca.Manager, args []string) error {
+func cmdRetireIntermediate(db *database.DB, mgr *ca.Manager, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("retire-intermediate", flag.ContinueOnError)
 	caRef := fs.String("ca", "", "superseded CA id or label to retire (required)")
 	reason := fs.String("reason", "cessationOfOperation", "RFC 5280 revocation reason for the old intermediate")
@@ -276,6 +294,19 @@ func cmdRetireIntermediate(db *database.DB, mgr *ca.Manager, args []string) erro
 	}
 	caID, err := resolveCA(db, *caRef)
 	if err != nil {
+		return err
+	}
+
+	// Four-eyes gate (Task 81): authorize the retirement before the ceremony.
+	retireTenant, _ := db.GetCATenant(caID)
+	if err := guardCLI(db, cfg, approval.GuardRequest{
+		Class:        approval.ClassCARetire,
+		ResourceKey:  "ca:" + caID,
+		ResourceName: *caRef,
+		Summary:      "Retire superseded intermediate CA " + caID,
+		Params:       fmt.Sprintf("ca=%s;reason=%s;force=%v", caID, *reason, *force),
+		Tenant:       retireTenant,
+	}); err != nil {
 		return err
 	}
 

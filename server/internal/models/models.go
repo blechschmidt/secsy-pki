@@ -1146,3 +1146,70 @@ type KEKUsage struct {
 	Status  string `json:"status"`
 	Secrets int64  `json:"secrets"`
 }
+
+// PendingApproval is one four-eyes / maker-checker approval request (Task 81):
+// a high-risk administrative operation held at the gate until a configured
+// number of DISTINCT approvers (none of them the requester) sign off. It never
+// stores the operation's payload — only enough to identify it (class,
+// ResourceKey, Fingerprint) and describe it to approvers (Summary, Details).
+// The guarded operation re-runs after approval and the gate consumes the
+// approved request (status -> executed).
+type PendingApproval struct {
+	ID       string `json:"id" db:"id"`
+	TenantID string `json:"tenant_id" db:"tenant_id"`
+	// OperationClass names the guarded operation family (e.g. "ca.rotate").
+	OperationClass string `json:"operation_class" db:"operation_class"`
+	// ResourceKey is the stable, human-meaningful target id (e.g. "ca:<id>").
+	ResourceKey string `json:"resource_key" db:"resource_key"`
+	// ResourceName is an optional human label for the target (a CA label, etc.).
+	ResourceName string `json:"resource_name,omitempty" db:"resource_name"`
+	// Fingerprint pins the exact operation parameters so an approval cannot
+	// authorize a different operation than the one requested.
+	Fingerprint string `json:"fingerprint" db:"fingerprint"`
+	// Summary is a one-line description shown to approvers; Details is optional
+	// structured/long-form context.
+	Summary string `json:"summary" db:"summary"`
+	Details string `json:"details,omitempty" db:"details"`
+	// RequestedBy is the principal that triggered the operation (the maker);
+	// RequestedByName is their display name. A distinct approver is required.
+	RequestedBy     string `json:"requested_by" db:"requested_by"`
+	RequestedByName string `json:"requested_by_name,omitempty" db:"requested_by_name"`
+	// RequiredApprovals is the distinct-approver threshold snapshotted from the
+	// policy at request time, so tightening the policy later cannot retroactively
+	// weaken an in-flight request.
+	RequiredApprovals int `json:"required_approvals" db:"required_approvals"`
+	// Status is pending | approved | rejected | executed | expired.
+	Status    string    `json:"status" db:"status"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
+	// ExpiresAt bounds how long the request is actionable.
+	ExpiresAt time.Time `json:"expires_at" db:"expires_at"`
+	// DecidedAt is when the request reached a terminal approved/rejected/expired
+	// state; ExecutedAt is when the gate consumed an approved request.
+	DecidedAt  *time.Time `json:"decided_at,omitempty" db:"decided_at"`
+	ExecutedAt *time.Time `json:"executed_at,omitempty" db:"executed_at"`
+	// ApprovalsCount is the running number of DISTINCT approvers (populated on
+	// read, not a stored column). Decisions carries the full decision log when a
+	// single request is fetched.
+	ApprovalsCount int                `json:"approvals_count" db:"-"`
+	Decisions      []ApprovalDecision `json:"decisions,omitempty" db:"-"`
+}
+
+// Expired reports whether the request's actionable window has elapsed.
+func (p *PendingApproval) Expired(now time.Time) bool {
+	return !p.ExpiresAt.IsZero() && now.After(p.ExpiresAt)
+}
+
+// ApprovalDecision is one approver's vote on a PendingApproval. The store's
+// UNIQUE(approval_id, approver) constraint makes "N distinct approvers"
+// enforceable: a given approver contributes at most one decision, so the
+// threshold cannot be met by one person voting repeatedly.
+type ApprovalDecision struct {
+	ID           int64  `json:"id" db:"id"`
+	ApprovalID   string `json:"approval_id" db:"approval_id"`
+	Approver     string `json:"approver" db:"approver"`
+	ApproverName string `json:"approver_name,omitempty" db:"approver_name"`
+	// Decision is "approve" or "reject".
+	Decision  string    `json:"decision" db:"decision"`
+	Comment   string    `json:"comment,omitempty" db:"comment"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
+}

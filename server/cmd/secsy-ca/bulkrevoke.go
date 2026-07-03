@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/approval"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 )
 
@@ -23,7 +26,7 @@ import (
 // An interrupted run is resumed by re-running the same command: the selection
 // only ever covers not-yet-revoked certificates. See docs/incident-response.md
 // for the full key-compromise runbook.
-func cmdRevokeBulk(db *database.DB, mgr *ca.Manager, args []string) error {
+func cmdRevokeBulk(db *database.DB, mgr *ca.Manager, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("revoke-bulk", flag.ContinueOnError)
 	caRef := fs.String("ca", "", "issuing CA id or label (required)")
 	profile := fs.String("profile", "", "only certificates issued under this profile")
@@ -109,6 +112,25 @@ func cmdRevokeBulk(db *database.DB, mgr *ca.Manager, args []string) error {
 
 	if plan.Total == 0 {
 		fmt.Fprintln(os.Stderr, "Nothing to revoke; selection is empty (already fully revoked?).")
+	}
+
+	// Four-eyes gate (Task 81): a real bulk revocation cannot execute until the
+	// configured number of distinct approvers sign off. The fingerprint pins the
+	// exact selection (filter + reason + previewed count), so an approval cannot
+	// be reused for a different revocation.
+	serials := append([]string(nil), filter.Serials...)
+	sort.Strings(serials)
+	tenant, _ := db.GetCATenant(caID)
+	if err := guardCLI(db, cfg, approval.GuardRequest{
+		Class:        approval.ClassBulkRevoke,
+		ResourceKey:  "ca:" + caID,
+		ResourceName: plan.CALabel,
+		Summary:      fmt.Sprintf("Bulk-revoke %d certificate(s) on CA %s (reason %q)", plan.Total, caID, *reason),
+		Params: fmt.Sprintf("ca=%s;reason=%s;confirm=%d;profile=%s;pattern=%s;after=%s;before=%s;include_expired=%v;serials=%s",
+			caID, *reason, plan.Total, filter.Profile, filter.Pattern, *issuedAfter, *issuedBefore, filter.IncludeExpired, strings.Join(serials, ",")),
+		Tenant: tenant,
+	}); err != nil {
+		return err
 	}
 
 	fmt.Fprintf(os.Stderr, "\nExecuting bulk revocation (operation %s)...\n", plan.OperationID)

@@ -46,6 +46,7 @@
         <button data-view="ssh">SSH CA</button>
         <button data-view="signing">Signing</button>
         <button data-view="audit">Audit</button>
+        <button data-view="approvals">Approvals</button>
         <button data-view="compliance">Compliance</button>
         <button data-view="bundle">Trust Bundle</button>
         <button data-view="secrets">Secrets</button>
@@ -565,6 +566,34 @@
           <button class="btn ghost sm" id="auditPrev">← Newer</button>
           <span class="muted" id="auditPage" style="margin-top:6px"></span>
           <button class="btn ghost sm" id="auditNext">Older →</button>
+        </div>
+      </section>
+
+      <!-- Four-eyes / maker-checker approvals -->
+      <section class="view" id="view-approvals">
+        <h2>Approvals</h2>
+        <p class="sub">Four-eyes / maker-checker queue for high-risk operations (CA creation/rotation/retirement, bulk revocation, secret KEK rotation). A request needs a configured number of <em>distinct</em> approvers — never the requester — before the guarded operation can execute. Self-approval is refused.</p>
+        <div id="approvalsDisabled" class="notice hidden" style="margin-bottom:12px">The approval gate is disabled (<code>approvals.enabled</code> is false); guarded operations execute immediately.</div>
+        <div class="toolbar">
+          <div class="field" style="margin:0"><label for="approvalsStatus">Status</label>
+            <select id="approvalsStatus">
+              <option value="">all</option>
+              <option value="pending" selected>pending</option>
+              <option value="approved">approved</option>
+              <option value="rejected">rejected</option>
+              <option value="executed">executed</option>
+              <option value="expired">expired</option>
+            </select>
+          </div>
+          <div class="field" style="margin:0"><label for="approvalsClass">Class</label><input id="approvalsClass" placeholder="e.g. ca.rotate" style="width:150px"></div>
+          <div class="spacer"></div>
+          <button class="btn ghost sm" id="approvalsRefresh" style="margin-top:16px">Refresh</button>
+        </div>
+        <div class="panel">
+          <table>
+            <thead><tr><th>Request</th><th>Class</th><th>Resource</th><th>Requester</th><th>Approvals</th><th>Status</th><th>Created</th><th></th></tr></thead>
+            <tbody id="approvalsRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+          </table>
         </div>
       </section>
 

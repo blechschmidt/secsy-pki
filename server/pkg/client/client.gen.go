@@ -30,6 +30,12 @@ const (
 	Ip  ACMEIdentifierType = "ip"
 )
 
+// Defines values for ApprovalDecisionDecision.
+const (
+	Approve ApprovalDecisionDecision = "approve"
+	Reject  ApprovalDecisionDecision = "reject"
+)
+
 // Defines values for ArtifactSignResponseDigestAlgorithm.
 const (
 	Sha256 ArtifactSignResponseDigestAlgorithm = "sha256"
@@ -138,6 +144,26 @@ const (
 	LivenessBuildFips140PolicyOff      LivenessBuildFips140Policy = "off"
 )
 
+// Defines values for PendingApprovalOperationClass.
+const (
+	CaCreate        PendingApprovalOperationClass = "ca.create"
+	CaRetire        PendingApprovalOperationClass = "ca.retire"
+	CaRotate        PendingApprovalOperationClass = "ca.rotate"
+	EscrowPolicy    PendingApprovalOperationClass = "escrow.policy"
+	ProfileChange   PendingApprovalOperationClass = "profile.change"
+	RevocationBulk  PendingApprovalOperationClass = "revocation.bulk"
+	SecretKekRotate PendingApprovalOperationClass = "secret.kek_rotate"
+)
+
+// Defines values for PendingApprovalStatus.
+const (
+	PendingApprovalStatusApproved PendingApprovalStatus = "approved"
+	PendingApprovalStatusExecuted PendingApprovalStatus = "executed"
+	PendingApprovalStatusExpired  PendingApprovalStatus = "expired"
+	PendingApprovalStatusPending  PendingApprovalStatus = "pending"
+	PendingApprovalStatusRejected PendingApprovalStatus = "rejected"
+)
+
 // Defines values for Permission.
 const (
 	CONFIGURECA       Permission = "CONFIGURE_CA"
@@ -192,9 +218,9 @@ const (
 
 // Defines values for SSHCertificateStatus.
 const (
-	Expired SSHCertificateStatus = "expired"
-	Revoked SSHCertificateStatus = "revoked"
-	Valid   SSHCertificateStatus = "valid"
+	SSHCertificateStatusExpired SSHCertificateStatus = "expired"
+	SSHCertificateStatusRevoked SSHCertificateStatus = "revoked"
+	SSHCertificateStatusValid   SSHCertificateStatus = "valid"
 )
 
 // Defines values for SSHProfileCertType.
@@ -243,6 +269,15 @@ const (
 const (
 	Active    TenantUsageReportStatus = "active"
 	Suspended TenantUsageReportStatus = "suspended"
+)
+
+// Defines values for ListApprovalsParamsStatus.
+const (
+	Approved ListApprovalsParamsStatus = "approved"
+	Executed ListApprovalsParamsStatus = "executed"
+	Expired  ListApprovalsParamsStatus = "expired"
+	Pending  ListApprovalsParamsStatus = "pending"
+	Rejected ListApprovalsParamsStatus = "rejected"
 )
 
 // Defines values for ExportEventLogParamsFormat.
@@ -337,6 +372,30 @@ type AlternateChain struct {
 
 	// Pem PEM chain bundle
 	Pem *string `json:"pem,omitempty"`
+}
+
+// ApprovalDecision One approver's vote on a request.
+type ApprovalDecision struct {
+	Approver     *string                   `json:"approver,omitempty"`
+	ApproverName *string                   `json:"approver_name,omitempty"`
+	Comment      *string                   `json:"comment,omitempty"`
+	CreatedAt    *time.Time                `json:"created_at,omitempty"`
+	Decision     *ApprovalDecisionDecision `json:"decision,omitempty"`
+}
+
+// ApprovalDecisionDecision defines model for ApprovalDecision.Decision.
+type ApprovalDecisionDecision string
+
+// ApprovalDecisionRequest defines model for ApprovalDecisionRequest.
+type ApprovalDecisionRequest struct {
+	Comment *string `json:"comment,omitempty"`
+}
+
+// ApprovalList defines model for ApprovalList.
+type ApprovalList struct {
+	// Enabled Whether the approval gate is enabled in configuration.
+	Enabled  *bool              `json:"enabled,omitempty"`
+	Requests *[]PendingApproval `json:"requests,omitempty"`
 }
 
 // ArtifactSignRequest defines model for ArtifactSignRequest.
@@ -1314,6 +1373,39 @@ type ParsedCSR struct {
 	Subject            *map[string]string   `json:"subject,omitempty"`
 }
 
+// PendingApproval A four-eyes / maker-checker approval request. The guarded operation is held until required_approvals DISTINCT approvers (never the requester) sign off, then re-running it consumes the approval (status executed).
+type PendingApproval struct {
+	// ApprovalsCount Running number of distinct approvers so far.
+	ApprovalsCount *int                `json:"approvals_count,omitempty"`
+	CreatedAt      *time.Time          `json:"created_at,omitempty"`
+	DecidedAt      *time.Time          `json:"decided_at,omitempty"`
+	Decisions      *[]ApprovalDecision `json:"decisions,omitempty"`
+	Details        *string             `json:"details,omitempty"`
+	ExecutedAt     *time.Time          `json:"executed_at,omitempty"`
+	ExpiresAt      *time.Time          `json:"expires_at,omitempty"`
+
+	// Fingerprint Pins the exact operation parameters an approval authorizes.
+	Fingerprint *string `json:"fingerprint,omitempty"`
+	Id          *string `json:"id,omitempty"`
+
+	// OperationClass The guarded operation family.
+	OperationClass    *PendingApprovalOperationClass `json:"operation_class,omitempty"`
+	RequestedBy       *string                        `json:"requested_by,omitempty"`
+	RequestedByName   *string                        `json:"requested_by_name,omitempty"`
+	RequiredApprovals *int                           `json:"required_approvals,omitempty"`
+	ResourceKey       *string                        `json:"resource_key,omitempty"`
+	ResourceName      *string                        `json:"resource_name,omitempty"`
+	Status            *PendingApprovalStatus         `json:"status,omitempty"`
+	Summary           *string                        `json:"summary,omitempty"`
+	TenantId          *string                        `json:"tenant_id,omitempty"`
+}
+
+// PendingApprovalOperationClass The guarded operation family.
+type PendingApprovalOperationClass string
+
+// PendingApprovalStatus defines model for PendingApproval.Status.
+type PendingApprovalStatus string
+
 // Permission defines model for Permission.
 type Permission string
 
@@ -1863,6 +1955,9 @@ type X509SignResponse struct {
 	Serial      *string `json:"serial,omitempty"`
 }
 
+// ApprovalId defines model for ApprovalId.
+type ApprovalId = string
+
 // CAId defines model for CAId.
 type CAId = string
 
@@ -1917,6 +2012,22 @@ type ListACMEOrdersParams struct {
 	// Offset Row offset.
 	Offset *Offset `form:"offset,omitempty" json:"offset,omitempty"`
 }
+
+// ListApprovalsParams defines parameters for ListApprovals.
+type ListApprovalsParams struct {
+	// Status Filter by status.
+	Status *ListApprovalsParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+
+	// Class Filter by operation class (e.g. ca.rotate, revocation.bulk).
+	Class  *string `form:"class,omitempty" json:"class,omitempty"`
+	Tenant *string `form:"tenant,omitempty" json:"tenant,omitempty"`
+
+	// Limit Page size (1–500).
+	Limit *Limit `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// ListApprovalsParamsStatus defines parameters for ListApprovals.
+type ListApprovalsParamsStatus string
 
 // ListAuditLogParams defines parameters for ListAuditLog.
 type ListAuditLogParams struct {
@@ -2024,6 +2135,12 @@ type GetTenantUsageParams struct {
 	// Days Size of the rolling usage window in UTC days.
 	Days *int `form:"days,omitempty" json:"days,omitempty"`
 }
+
+// ApproveApprovalJSONRequestBody defines body for ApproveApproval for application/json ContentType.
+type ApproveApprovalJSONRequestBody = ApprovalDecisionRequest
+
+// RejectApprovalJSONRequestBody defines body for RejectApproval for application/json ContentType.
+type RejectApprovalJSONRequestBody = ApprovalDecisionRequest
 
 // CreateExternalCACSRJSONRequestBody defines body for CreateExternalCACSR for application/json ContentType.
 type CreateExternalCACSRJSONRequestBody = CAExternalCSRRequest
@@ -2223,6 +2340,22 @@ type ClientInterface interface {
 
 	// ListACMEOrders request
 	ListACMEOrders(ctx context.Context, params *ListACMEOrdersParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListApprovals request
+	ListApprovals(ctx context.Context, params *ListApprovalsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetApproval request
+	GetApproval(ctx context.Context, id ApprovalId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ApproveApprovalWithBody request with any body
+	ApproveApprovalWithBody(ctx context.Context, id ApprovalId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ApproveApproval(ctx context.Context, id ApprovalId, body ApproveApprovalJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RejectApprovalWithBody request with any body
+	RejectApprovalWithBody(ctx context.Context, id ApprovalId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	RejectApproval(ctx context.Context, id ApprovalId, body RejectApprovalJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListAuditLog request
 	ListAuditLog(ctx context.Context, params *ListAuditLogParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2655,6 +2788,78 @@ func (c *Client) ListACMEAccounts(ctx context.Context, params *ListACMEAccountsP
 
 func (c *Client) ListACMEOrders(ctx context.Context, params *ListACMEOrdersParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListACMEOrdersRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListApprovals(ctx context.Context, params *ListApprovalsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListApprovalsRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetApproval(ctx context.Context, id ApprovalId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetApprovalRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ApproveApprovalWithBody(ctx context.Context, id ApprovalId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewApproveApprovalRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ApproveApproval(ctx context.Context, id ApprovalId, body ApproveApprovalJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewApproveApprovalRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RejectApprovalWithBody(ctx context.Context, id ApprovalId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRejectApprovalRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RejectApproval(ctx context.Context, id ApprovalId, body RejectApprovalJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRejectApprovalRequest(c.Server, id, body)
 	if err != nil {
 		return nil, err
 	}
@@ -4594,6 +4799,231 @@ func NewListACMEOrdersRequest(server string, params *ListACMEOrdersParams) (*htt
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewListApprovalsRequest generates requests for ListApprovals
+func NewListApprovalsRequest(server string, params *ListApprovalsParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/approvals")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Status != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "status", runtime.ParamLocationQuery, *params.Status); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Class != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "class", runtime.ParamLocationQuery, *params.Class); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Tenant != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "tenant", runtime.ParamLocationQuery, *params.Tenant); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "limit", runtime.ParamLocationQuery, *params.Limit); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetApprovalRequest generates requests for GetApproval
+func NewGetApprovalRequest(server string, id ApprovalId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/approvals/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewApproveApprovalRequest calls the generic ApproveApproval builder with application/json body
+func NewApproveApprovalRequest(server string, id ApprovalId, body ApproveApprovalJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewApproveApprovalRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewApproveApprovalRequestWithBody generates requests for ApproveApproval with any type of body
+func NewApproveApprovalRequestWithBody(server string, id ApprovalId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/approvals/%s/approve", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewRejectApprovalRequest calls the generic RejectApproval builder with application/json body
+func NewRejectApprovalRequest(server string, id ApprovalId, body RejectApprovalJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRejectApprovalRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewRejectApprovalRequestWithBody generates requests for RejectApproval with any type of body
+func NewRejectApprovalRequestWithBody(server string, id ApprovalId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/approvals/%s/reject", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -8777,6 +9207,22 @@ type ClientWithResponsesInterface interface {
 	// ListACMEOrdersWithResponse request
 	ListACMEOrdersWithResponse(ctx context.Context, params *ListACMEOrdersParams, reqEditors ...RequestEditorFn) (*ListACMEOrdersResponse, error)
 
+	// ListApprovalsWithResponse request
+	ListApprovalsWithResponse(ctx context.Context, params *ListApprovalsParams, reqEditors ...RequestEditorFn) (*ListApprovalsResponse, error)
+
+	// GetApprovalWithResponse request
+	GetApprovalWithResponse(ctx context.Context, id ApprovalId, reqEditors ...RequestEditorFn) (*GetApprovalResponse, error)
+
+	// ApproveApprovalWithBodyWithResponse request with any body
+	ApproveApprovalWithBodyWithResponse(ctx context.Context, id ApprovalId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ApproveApprovalResponse, error)
+
+	ApproveApprovalWithResponse(ctx context.Context, id ApprovalId, body ApproveApprovalJSONRequestBody, reqEditors ...RequestEditorFn) (*ApproveApprovalResponse, error)
+
+	// RejectApprovalWithBodyWithResponse request with any body
+	RejectApprovalWithBodyWithResponse(ctx context.Context, id ApprovalId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RejectApprovalResponse, error)
+
+	RejectApprovalWithResponse(ctx context.Context, id ApprovalId, body RejectApprovalJSONRequestBody, reqEditors ...RequestEditorFn) (*RejectApprovalResponse, error)
+
 	// ListAuditLogWithResponse request
 	ListAuditLogWithResponse(ctx context.Context, params *ListAuditLogParams, reqEditors ...RequestEditorFn) (*ListAuditLogResponse, error)
 
@@ -9261,6 +9707,94 @@ func (r ListACMEOrdersResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r ListACMEOrdersResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListApprovalsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ApprovalList
+}
+
+// Status returns HTTPResponse.Status
+func (r ListApprovalsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListApprovalsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetApprovalResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *PendingApproval
+}
+
+// Status returns HTTPResponse.Status
+func (r GetApprovalResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetApprovalResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ApproveApprovalResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *PendingApproval
+}
+
+// Status returns HTTPResponse.Status
+func (r ApproveApprovalResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ApproveApprovalResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type RejectApprovalResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *PendingApproval
+}
+
+// Status returns HTTPResponse.Status
+func (r RejectApprovalResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RejectApprovalResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -11658,6 +12192,58 @@ func (c *ClientWithResponses) ListACMEOrdersWithResponse(ctx context.Context, pa
 	return ParseListACMEOrdersResponse(rsp)
 }
 
+// ListApprovalsWithResponse request returning *ListApprovalsResponse
+func (c *ClientWithResponses) ListApprovalsWithResponse(ctx context.Context, params *ListApprovalsParams, reqEditors ...RequestEditorFn) (*ListApprovalsResponse, error) {
+	rsp, err := c.ListApprovals(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListApprovalsResponse(rsp)
+}
+
+// GetApprovalWithResponse request returning *GetApprovalResponse
+func (c *ClientWithResponses) GetApprovalWithResponse(ctx context.Context, id ApprovalId, reqEditors ...RequestEditorFn) (*GetApprovalResponse, error) {
+	rsp, err := c.GetApproval(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetApprovalResponse(rsp)
+}
+
+// ApproveApprovalWithBodyWithResponse request with arbitrary body returning *ApproveApprovalResponse
+func (c *ClientWithResponses) ApproveApprovalWithBodyWithResponse(ctx context.Context, id ApprovalId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ApproveApprovalResponse, error) {
+	rsp, err := c.ApproveApprovalWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseApproveApprovalResponse(rsp)
+}
+
+func (c *ClientWithResponses) ApproveApprovalWithResponse(ctx context.Context, id ApprovalId, body ApproveApprovalJSONRequestBody, reqEditors ...RequestEditorFn) (*ApproveApprovalResponse, error) {
+	rsp, err := c.ApproveApproval(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseApproveApprovalResponse(rsp)
+}
+
+// RejectApprovalWithBodyWithResponse request with arbitrary body returning *RejectApprovalResponse
+func (c *ClientWithResponses) RejectApprovalWithBodyWithResponse(ctx context.Context, id ApprovalId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RejectApprovalResponse, error) {
+	rsp, err := c.RejectApprovalWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRejectApprovalResponse(rsp)
+}
+
+func (c *ClientWithResponses) RejectApprovalWithResponse(ctx context.Context, id ApprovalId, body RejectApprovalJSONRequestBody, reqEditors ...RequestEditorFn) (*RejectApprovalResponse, error) {
+	rsp, err := c.RejectApproval(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRejectApprovalResponse(rsp)
+}
+
 // ListAuditLogWithResponse request returning *ListAuditLogResponse
 func (c *ClientWithResponses) ListAuditLogWithResponse(ctx context.Context, params *ListAuditLogParams, reqEditors ...RequestEditorFn) (*ListAuditLogResponse, error) {
 	rsp, err := c.ListAuditLog(ctx, params, reqEditors...)
@@ -12982,6 +13568,110 @@ func ParseListACMEOrdersResponse(rsp *http.Response) (*ListACMEOrdersResponse, e
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
 		var dest []ACMEOrder
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListApprovalsResponse parses an HTTP response from a ListApprovalsWithResponse call
+func ParseListApprovalsResponse(rsp *http.Response) (*ListApprovalsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListApprovalsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ApprovalList
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetApprovalResponse parses an HTTP response from a GetApprovalWithResponse call
+func ParseGetApprovalResponse(rsp *http.Response) (*GetApprovalResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetApprovalResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PendingApproval
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseApproveApprovalResponse parses an HTTP response from a ApproveApprovalWithResponse call
+func ParseApproveApprovalResponse(rsp *http.Response) (*ApproveApprovalResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ApproveApprovalResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PendingApproval
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRejectApprovalResponse parses an HTTP response from a RejectApprovalWithResponse call
+func ParseRejectApprovalResponse(rsp *http.Response) (*RejectApprovalResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RejectApprovalResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PendingApproval
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
