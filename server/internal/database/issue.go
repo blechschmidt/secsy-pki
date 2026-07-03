@@ -116,6 +116,11 @@ func (db *DB) ListIssuedCertificates(caID string) ([]models.IssuedCertificate, e
 //
 // It returns whether the revocation is newly effective (false if the serial was
 // already revoked).
+//
+// The write is a conflict-tolerant insert first (not check-then-insert): two
+// concurrent revocations of the same serial — two operators, or a single
+// revocation racing a bulk operation — must resolve to exactly one "newly
+// revoked" outcome instead of a primary-key violation on PostgreSQL.
 func (db *DB) RevokeCertificate(caID, serial string, reason int, when time.Time) (bool, error) {
 	tx, err := db.conn.Begin()
 	if err != nil {
@@ -123,21 +128,17 @@ func (db *DB) RevokeCertificate(caID, serial string, reason int, when time.Time)
 	}
 	defer tx.Rollback()
 
-	var existing int
-	err = tx.QueryRow(db.ph(
-		`SELECT COUNT(*) FROM revoked_certificates WHERE ca_id = ? AND serial = ?`),
-		caID, serial).Scan(&existing)
+	res, err := tx.Exec(db.insertOrIgnore("revoked_certificates", "ca_id, serial, revoked_at, reason", "?, ?, ?, ?"),
+		caID, serial, when, reason)
 	if err != nil {
 		return false, err
 	}
-
-	if existing == 0 {
-		if _, err := tx.Exec(db.ph(
-			`INSERT INTO revoked_certificates (ca_id, serial, revoked_at, reason) VALUES (?, ?, ?, ?)`),
-			caID, serial, when, reason); err != nil {
-			return false, err
-		}
-	} else {
+	inserted, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if inserted == 0 {
+		// Already revoked: refresh the reason/time per this method's contract.
 		if _, err := tx.Exec(db.ph(
 			`UPDATE revoked_certificates SET revoked_at = ?, reason = ? WHERE ca_id = ? AND serial = ?`),
 			when, reason, caID, serial); err != nil {
@@ -155,7 +156,7 @@ func (db *DB) RevokeCertificate(caID, serial string, reason int, when time.Time)
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
-	return existing == 0, nil
+	return inserted == 1, nil
 }
 
 // GetRevokedCertificate returns the revocation record for (CA, serial), or

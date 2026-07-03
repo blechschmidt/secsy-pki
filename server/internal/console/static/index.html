@@ -83,6 +83,70 @@
             <tbody id="certRows"><tr><td colspan="7" class="muted">Select a CA…</td></tr></tbody>
           </table>
         </div>
+
+        <!-- Bulk revocation (Task 70, incident response) -->
+        <div class="panel" style="margin-top:16px;border-color:#a33">
+          <h3 style="margin-top:0">Bulk revocation — incident response</h3>
+          <p class="sub">Mass-revoke certificates of the selected CA for compromise scenarios (CA/B Forum: key compromise must be revoked within <strong>24 hours</strong>). Narrow the selection with filters, preview the dry-run counts, then confirm the exact count to execute. Revocations apply in batches; the CRL and delta CRL are regenerated once at the end and cached OCSP responses are invalidated. An interrupted run is resumed by executing the same selection again. See <code>docs/incident-response.md</code>.</p>
+          <div class="toolbar" style="flex-wrap:wrap">
+            <div class="field" style="margin:0">
+              <label for="bulkProfile">Profile</label>
+              <input id="bulkProfile" placeholder="any" style="width:120px">
+            </div>
+            <div class="field" style="margin:0">
+              <label for="bulkPattern">CN/SAN pattern (glob)</label>
+              <input id="bulkPattern" placeholder="*.corp.example.com" style="width:190px">
+            </div>
+            <div class="field" style="margin:0">
+              <label for="bulkIssuedAfter">Issued after (UTC)</label>
+              <input id="bulkIssuedAfter" type="datetime-local" style="width:190px">
+            </div>
+            <div class="field" style="margin:0">
+              <label for="bulkIssuedBefore">Issued before (UTC)</label>
+              <input id="bulkIssuedBefore" type="datetime-local" style="width:190px">
+            </div>
+            <div class="field" style="margin:0">
+              <label for="bulkReason">Reason</label>
+              <select id="bulkReason" style="width:170px">
+                <option value="keyCompromise">keyCompromise</option>
+                <option value="cACompromise">cACompromise</option>
+                <option value="affiliationChanged">affiliationChanged</option>
+                <option value="superseded">superseded</option>
+                <option value="cessationOfOperation">cessationOfOperation</option>
+                <option value="privilegeWithdrawn">privilegeWithdrawn</option>
+                <option value="unspecified">unspecified</option>
+              </select>
+            </div>
+            <label class="muted" style="display:flex;gap:6px;align-items:center;margin-top:16px">
+              <input type="checkbox" id="bulkIncludeExpired"> include expired
+            </label>
+          </div>
+          <div class="field">
+            <label for="bulkSerials">Serial list (optional; one decimal serial per line, # comments — serials unknown to the inventory are revoked as bare CRL entries)</label>
+            <textarea id="bulkSerials" rows="3" placeholder="123456789…" style="width:100%;font-family:var(--mono,monospace)"></textarea>
+          </div>
+          <div class="toolbar">
+            <button class="btn sm" id="bulkPreview">Preview (dry run)</button>
+            <span class="muted" id="bulkHint">Nothing is revoked until you confirm the previewed count below.</span>
+          </div>
+          <div id="bulkError" class="notice err hidden"></div>
+          <div id="bulkPlanBox" class="hidden" style="margin-top:12px">
+            <div id="bulkPlanSummary" style="margin-bottom:8px"></div>
+            <table>
+              <thead><tr><th>Serial</th><th>Common name</th><th>Profile</th><th>Not after</th></tr></thead>
+              <tbody id="bulkSampleRows"></tbody>
+            </table>
+            <div class="toolbar" style="margin-top:12px">
+              <div class="field" style="margin:0">
+                <label for="bulkConfirmCount">Type the certificate count to confirm (<span id="bulkExpectedCount">0</span>)</label>
+                <input id="bulkConfirmCount" inputmode="numeric" autocomplete="off" placeholder="count" style="width:130px">
+              </div>
+              <button class="btn danger" id="bulkExecute" disabled style="margin-top:16px">Revoke certificates</button>
+              <span class="muted" id="bulkProgress" style="margin-top:20px"></span>
+            </div>
+          </div>
+          <div id="bulkResultBox" class="hidden" style="margin-top:12px"></div>
+        </div>
       </section>
 
       <!-- Certificate inventory -->

@@ -204,6 +204,8 @@ func run(args []string) error {
 		return cmdRenew(db, mgr, cmdArgs)
 	case "revoke":
 		return cmdRevoke(db, mgr, cmdArgs)
+	case "revoke-bulk":
+		return cmdRevokeBulk(db, mgr, cmdArgs)
 	case "gen-crl":
 		return cmdGenCRL(db, mgr, cmdArgs)
 	case "list-certs":
@@ -337,6 +339,8 @@ Commands:
   issue               Sign a CSR into an end-entity certificate (by profile)
   renew               Renew a previously issued certificate by serial
   revoke              Revoke a certificate by serial
+  revoke-bulk         Mass-revoke certificates for compromise response (filters,
+                      dry-run preview, batched, single CRL+delta regen)
   gen-crl             Generate a signed CRL for a CA
   list-certs          List certificates issued by a CA
   expiring            List certificates by remaining validity (expiry monitor)

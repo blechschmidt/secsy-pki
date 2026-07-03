@@ -64,6 +64,11 @@ type API struct {
 	// (even store-unknown) serials in its batches. Installed at startup when
 	// pre-signing tracks recent queries.
 	recentOCSP *ca.RecentSerialTracker
+	// ocspPresigner, when non-nil, is the background OCSP presigner instance,
+	// shared here so bulk revocation (Task 70) can refresh the pre-signed
+	// response set immediately after a mass revocation instead of waiting for
+	// the next scheduled batch.
+	ocspPresigner *ca.OCSPPresigner
 	// spiffePolicy is the SPIFFE trust-domain allowlist enforced before an SVID is
 	// minted; non-nil only when SPIFFE issuance is enabled. spiffeProfile is the
 	// issuance profile used for SVIDs.
@@ -243,6 +248,11 @@ func (a *API) DelegatedResponderCache() *ca.DelegatedResponderCache { return a.d
 // pre-signing is configured to cover recently queried serials.
 func (a *API) SetOCSPRecentTracker(t *ca.RecentSerialTracker) { a.recentOCSP = t }
 
+// SetOCSPPresigner installs the background OCSP presigner so bulk revocation
+// can refresh the pre-signed response set right after a mass revocation.
+// Intended to be called once at startup when pre-signing is enabled.
+func (a *API) SetOCSPPresigner(p *ca.OCSPPresigner) { a.ocspPresigner = p }
+
 // SetMonitorOptions installs the expiry-monitor thresholds used by the
 // /api/monitor endpoints so ad-hoc scans match the background monitor.
 func (a *API) SetMonitorOptions(o monitor.Options) { a.monitorOpts = o }
@@ -344,6 +354,11 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("POST /api/ca/{id}/issue", protected(http.HandlerFunc(a.IssueCertificate)))
 	mux.Handle("POST /api/ca/{id}/renew", protected(http.HandlerFunc(a.RenewCertificate)))
 	mux.Handle("POST /api/ca/{id}/revoke", protectStepUp("cert.revoke", http.HandlerFunc(a.RevokeCertificate)))
+	// Bulk revocation for compromise scenarios (Task 70). More privileged than
+	// single revocation (ca:manage, step-up eligible) and deliberately outside
+	// the public rate-limit classes and tenant quota gates: mass revocation
+	// must never be throttled during the CA/B 24-hour response window.
+	mux.Handle("POST /api/ca/{id}/revocations:bulk", protectStepUp("cert.revoke_bulk", http.HandlerFunc(a.BulkRevokeCertificates)))
 	mux.Handle("GET /api/ca/{id}/certificates", protected(http.HandlerFunc(a.ListIssuedCertificates)))
 	mux.Handle("GET /api/ca/{id}/revoked", protected(http.HandlerFunc(a.ListRevokedCertificates)))
 

@@ -624,6 +624,42 @@ type RevokeCertRequest struct {
 	Reason string `json:"reason,omitempty"` // RFC 5280 reason name; default "unspecified"
 }
 
+// BulkRevokeFilterRequest narrows a bulk revocation (Task 70). All set fields
+// AND together; a zero filter selects every not-yet-revoked, unexpired
+// certificate of the CA.
+type BulkRevokeFilterRequest struct {
+	// Profile restricts to certificates issued under this profile.
+	Profile string `json:"profile,omitempty"`
+	// Pattern is a case-insensitive glob matched against the CN and every SAN.
+	Pattern string `json:"pattern,omitempty"`
+	// IssuedAfter / IssuedBefore bound the certificate NotBefore (inclusive).
+	IssuedAfter  *time.Time `json:"issued_after,omitempty"`
+	IssuedBefore *time.Time `json:"issued_before,omitempty"`
+	// Serials restricts the operation to these serials (decimal strings).
+	// Serials unknown to the inventory are still revoked as bare CRL entries.
+	Serials []string `json:"serials,omitempty"`
+	// IncludeExpired also revokes certificates past their NotAfter.
+	IncludeExpired bool `json:"include_expired,omitempty"`
+}
+
+// BulkRevokeRequest is the body of POST /api/ca/{id}/revocations:bulk. A
+// dry-run returns the plan (counts + sample) without changing anything; an
+// execution must echo the dry-run total in confirm_count and is refused with
+// 409 when the live selection has drifted from it.
+type BulkRevokeRequest struct {
+	DryRun bool                    `json:"dry_run,omitempty"`
+	Reason string                  `json:"reason,omitempty"` // RFC 5280 reason name; default "unspecified"
+	Filter BulkRevokeFilterRequest `json:"filter,omitempty"`
+	// ConfirmCount is the operator-confirmed certificate count (required
+	// unless dry_run). It must match the recomputed selection exactly.
+	ConfirmCount *int `json:"confirm_count,omitempty"`
+	// OperationID correlates audit events across a resumed operation
+	// (optional; generated when empty).
+	OperationID string `json:"operation_id,omitempty"`
+	// BatchSize overrides the per-transaction batch size (bounded server-side).
+	BatchSize int `json:"batch_size,omitempty"`
+}
+
 type Group struct {
 	ID string `json:"id" db:"id"`
 	// TenantID scopes the group to a tenant so a group name may be reused across

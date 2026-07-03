@@ -14,7 +14,7 @@ SSO, or stateless basic auth/bearer tokens for scripting parity.
 
 | Page | What it covers | Backing endpoints |
 |---|---|---|
-| **Certificates** | Browse a CA's issued certificates, revoke (RFC 5280 reason picker), **renew** with a fresh serial, download base/delta CRLs and per-shard partition CRLs, CRL freshness strip | `/api/ca/{id}/certificates`, `/revoked`, `/renew`, `/revoke`, `/crl[...]`, `/crl/status` |
+| **Certificates** | Browse a CA's issued certificates, revoke (RFC 5280 reason picker), **renew** with a fresh serial, download base/delta CRLs and per-shard partition CRLs, CRL freshness strip, and the **bulk revocation (incident response)** panel — filters (profile / CN-SAN glob / issuance window / serial list), dry-run preview, mandatory typed confirmation of the previewed count, result summary (see [incident-response.md](incident-response.md)) | `/api/ca/{id}/certificates`, `/revoked`, `/renew`, `/revoke`, `/revocations:bulk`, `/crl[...]`, `/crl/status` |
 | **Inventory** | Cross-CA certificate inventory with search/status/profile filters, CT and lint verdicts, CSV export | `/api/report/inventory` |
 | **Expiry Monitor** | Certificates ranked by remaining validity; on-demand scan with auto-renewal | `/api/monitor/expiring`, `/api/monitor/scan` |
 | **Discovery** | External TLS endpoint scanning; flags expiring/weak/SHA-1/self-signed/mismatched/rogue certificates | `/api/discovery`, `/api/discovery/scan` |
@@ -36,7 +36,7 @@ CLIs expose reachable from the console as well. The mapping:
 | CLI | Console |
 |---|---|
 | `init-root`, `issue-intermediate`, `list` | Authorities page |
-| `issue`, `renew`, `revoke`, `gen-crl` (incl. delta/shards) | Issue + Certificates pages |
+| `issue`, `renew`, `revoke`, `revoke-bulk`, `gen-crl` (incl. delta/shards) | Issue + Certificates pages (bulk revocation panel with dry-run count confirmation) |
 | `list-certs`, `expiring`, `monitor-run`, `profiles` | Certificates, Inventory, Expiry Monitor, Issue pages |
 | `rotate-intermediate`, `rotation-status`, `list-rotations`, `retire-intermediate`, `publish-chain` | Authorities page (rotate/retire actions, status badges) + Trust Bundle chain download |
 | `cross-sign`, `list-cross-signs` | Authorities page (cross-signing panels) |

@@ -484,6 +484,120 @@ type AuthConfig struct {
 	WebauthnEnabled *bool `json:"webauthn_enabled,omitempty"`
 }
 
+// BulkRevokeConflict confirm_count did not match the live selection; nothing was revoked.
+type BulkRevokeConflict struct {
+	ActualCount  *int    `json:"actual_count,omitempty"`
+	ConfirmCount *int    `json:"confirm_count,omitempty"`
+	Error        *string `json:"error,omitempty"`
+}
+
+// BulkRevokeFilter Selection filters for a bulk revocation; set fields AND together. A zero filter selects every not-yet-revoked, unexpired certificate of the CA (the CA-key-compromise case).
+type BulkRevokeFilter struct {
+	// IncludeExpired Also revoke certificates past their NotAfter.
+	IncludeExpired *bool `json:"include_expired,omitempty"`
+
+	// IssuedAfter Only certificates with NotBefore at/after this time.
+	IssuedAfter *time.Time `json:"issued_after,omitempty"`
+
+	// IssuedBefore Only certificates with NotBefore at/before this time.
+	IssuedBefore *time.Time `json:"issued_before,omitempty"`
+
+	// Pattern Case-insensitive glob matched against the CN and every SAN.
+	Pattern *string `json:"pattern,omitempty"`
+
+	// Profile Only certificates issued under this profile.
+	Profile *string `json:"profile,omitempty"`
+
+	// Serials Restrict to these serials (decimal strings). Serials unknown to the inventory are still revoked, as bare CRL entries.
+	Serials *[]string `json:"serials,omitempty"`
+}
+
+// BulkRevokePlan Dry-run preview of a bulk revocation.
+type BulkRevokePlan struct {
+	// AlreadyRevoked Listed serials skipped because they are already revoked.
+	AlreadyRevoked *int    `json:"already_revoked,omitempty"`
+	CaId           *string `json:"ca_id,omitempty"`
+	CaLabel        *string `json:"ca_label,omitempty"`
+
+	// ExpiredExcluded Matching certificates skipped as expired (include_expired off).
+	ExpiredExcluded *int `json:"expired_excluded,omitempty"`
+
+	// Filter Human-readable rendering of the applied filters.
+	Filter *string `json:"filter,omitempty"`
+
+	// FilteredOut Listed serials present in the inventory but excluded by the other filters.
+	FilteredOut *int `json:"filtered_out,omitempty"`
+
+	// Known Inventory-backed certificates in the selection.
+	Known       *int                     `json:"known,omitempty"`
+	OperationId *string                  `json:"operation_id,omitempty"`
+	Reason      *string                  `json:"reason,omitempty"`
+	Sample      *[]BulkRevokeSampleEntry `json:"sample,omitempty"`
+
+	// Total Certificates the operation will revoke (the count to confirm).
+	Total *int `json:"total,omitempty"`
+
+	// Unknown Serial-list entries with no inventory row (revoked as bare CRL entries).
+	Unknown *int `json:"unknown,omitempty"`
+}
+
+// BulkRevokeRequest defines model for BulkRevokeRequest.
+type BulkRevokeRequest struct {
+	// BatchSize Certificates revoked per store transaction (bounded server-side).
+	BatchSize *int `json:"batch_size,omitempty"`
+
+	// ConfirmCount The dry-run total the operator confirmed. Required unless dry_run; must match the recomputed selection exactly (409 otherwise).
+	ConfirmCount *int `json:"confirm_count,omitempty"`
+
+	// DryRun Compute and return the plan without revoking anything.
+	DryRun *bool `json:"dry_run,omitempty"`
+
+	// Filter Selection filters for a bulk revocation; set fields AND together. A zero filter selects every not-yet-revoked, unexpired certificate of the CA (the CA-key-compromise case).
+	Filter *BulkRevokeFilter `json:"filter,omitempty"`
+
+	// OperationId Correlates audit events across resumed runs (generated when empty).
+	OperationId *string `json:"operation_id,omitempty"`
+
+	// Reason RFC 5280 reason name applied to every certificate (default unspecified).
+	Reason *string `json:"reason,omitempty"`
+}
+
+// BulkRevokeResult Outcome of an executed bulk revocation.
+type BulkRevokeResult struct {
+	// AlreadySkipped Planned serials revoked concurrently by another path.
+	AlreadySkipped *int    `json:"already_skipped,omitempty"`
+	Batches        *int    `json:"batches,omitempty"`
+	CaId           *string `json:"ca_id,omitempty"`
+
+	// CrlScopes CRL scopes (full, partition:N) whose base+delta pairs were regenerated.
+	CrlScopes       *[]string `json:"crl_scopes,omitempty"`
+	DurationSeconds *float32  `json:"duration_seconds,omitempty"`
+	OcspInvalidated *int      `json:"ocsp_invalidated,omitempty"`
+	OperationId     *string   `json:"operation_id,omitempty"`
+	Planned         *int      `json:"planned,omitempty"`
+
+	// PresignError Non-fatal presign-refresh failure
+	PresignError *string `json:"presign_error,omitempty"`
+
+	// PresignRefreshed Pre-signed OCSP responses re-signed after the revocation.
+	PresignRefreshed *int    `json:"presign_refreshed,omitempty"`
+	Reason           *string `json:"reason,omitempty"`
+
+	// Revoked Certificates newly revoked by this run.
+	Revoked *int `json:"revoked,omitempty"`
+}
+
+// BulkRevokeSampleEntry defines model for BulkRevokeSampleEntry.
+type BulkRevokeSampleEntry struct {
+	CommonName *string `json:"common_name,omitempty"`
+
+	// Known False for a serial-list entry with no inventory row.
+	Known    *bool      `json:"known,omitempty"`
+	NotAfter *time.Time `json:"not_after,omitempty"`
+	Profile  *string    `json:"profile,omitempty"`
+	Serial   *string    `json:"serial,omitempty"`
+}
+
 // CA defines model for CA.
 type CA struct {
 	// Certificate PEM X.509 CA certificate
@@ -1935,6 +2049,9 @@ type RenewCertificateJSONRequestBody = RenewCertRequest
 // RetireIntermediateCAJSONRequestBody defines body for RetireIntermediateCA for application/json ContentType.
 type RetireIntermediateCAJSONRequestBody = RetireCARequest
 
+// BulkRevokeCertificatesJSONRequestBody defines body for BulkRevokeCertificates for application/json ContentType.
+type BulkRevokeCertificatesJSONRequestBody = BulkRevokeRequest
+
 // RevokeCertificateJSONRequestBody defines body for RevokeCertificate for application/json ContentType.
 type RevokeCertificateJSONRequestBody = RevokeCertRequest
 
@@ -2188,6 +2305,11 @@ type ClientInterface interface {
 	RetireIntermediateCAWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	RetireIntermediateCA(ctx context.Context, id CAId, body RetireIntermediateCAJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// BulkRevokeCertificatesWithBody request with any body
+	BulkRevokeCertificatesWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	BulkRevokeCertificates(ctx context.Context, id CAId, body BulkRevokeCertificatesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// RevokeCertificateWithBody request with any body
 	RevokeCertificateWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2893,6 +3015,30 @@ func (c *Client) RetireIntermediateCAWithBody(ctx context.Context, id CAId, cont
 
 func (c *Client) RetireIntermediateCA(ctx context.Context, id CAId, body RetireIntermediateCAJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewRetireIntermediateCARequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) BulkRevokeCertificatesWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewBulkRevokeCertificatesRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) BulkRevokeCertificates(ctx context.Context, id CAId, body BulkRevokeCertificatesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewBulkRevokeCertificatesRequest(c.Server, id, body)
 	if err != nil {
 		return nil, err
 	}
@@ -5445,6 +5591,53 @@ func NewRetireIntermediateCARequestWithBody(server string, id CAId, contentType 
 	}
 
 	operationPath := fmt.Sprintf("/api/ca/%s/retire", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewBulkRevokeCertificatesRequest calls the generic BulkRevokeCertificates builder with application/json body
+func NewBulkRevokeCertificatesRequest(server string, id CAId, body BulkRevokeCertificatesJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewBulkRevokeCertificatesRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewBulkRevokeCertificatesRequestWithBody generates requests for BulkRevokeCertificates with any type of body
+func NewBulkRevokeCertificatesRequestWithBody(server string, id CAId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/revocations:bulk", pathParam0)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -8666,6 +8859,11 @@ type ClientWithResponsesInterface interface {
 
 	RetireIntermediateCAWithResponse(ctx context.Context, id CAId, body RetireIntermediateCAJSONRequestBody, reqEditors ...RequestEditorFn) (*RetireIntermediateCAResponse, error)
 
+	// BulkRevokeCertificatesWithBodyWithResponse request with any body
+	BulkRevokeCertificatesWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*BulkRevokeCertificatesResponse, error)
+
+	BulkRevokeCertificatesWithResponse(ctx context.Context, id CAId, body BulkRevokeCertificatesJSONRequestBody, reqEditors ...RequestEditorFn) (*BulkRevokeCertificatesResponse, error)
+
 	// RevokeCertificateWithBodyWithResponse request with any body
 	RevokeCertificateWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RevokeCertificateResponse, error)
 
@@ -9562,6 +9760,34 @@ func (r RetireIntermediateCAResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r RetireIntermediateCAResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type BulkRevokeCertificatesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *struct {
+		union json.RawMessage
+	}
+	JSON400 *BadRequest
+	JSON403 *Forbidden
+	JSON404 *NotFound
+	JSON409 *BulkRevokeConflict
+}
+
+// Status returns HTTPResponse.Status
+func (r BulkRevokeCertificatesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r BulkRevokeCertificatesResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -11694,6 +11920,23 @@ func (c *ClientWithResponses) RetireIntermediateCAWithResponse(ctx context.Conte
 	return ParseRetireIntermediateCAResponse(rsp)
 }
 
+// BulkRevokeCertificatesWithBodyWithResponse request with arbitrary body returning *BulkRevokeCertificatesResponse
+func (c *ClientWithResponses) BulkRevokeCertificatesWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*BulkRevokeCertificatesResponse, error) {
+	rsp, err := c.BulkRevokeCertificatesWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseBulkRevokeCertificatesResponse(rsp)
+}
+
+func (c *ClientWithResponses) BulkRevokeCertificatesWithResponse(ctx context.Context, id CAId, body BulkRevokeCertificatesJSONRequestBody, reqEditors ...RequestEditorFn) (*BulkRevokeCertificatesResponse, error) {
+	rsp, err := c.BulkRevokeCertificates(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseBulkRevokeCertificatesResponse(rsp)
+}
+
 // RevokeCertificateWithBodyWithResponse request with arbitrary body returning *RevokeCertificateResponse
 func (c *ClientWithResponses) RevokeCertificateWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RevokeCertificateResponse, error) {
 	rsp, err := c.RevokeCertificateWithBody(ctx, id, contentType, body, reqEditors...)
@@ -13375,6 +13618,62 @@ func ParseRetireIntermediateCAResponse(rsp *http.Response) (*RetireIntermediateC
 			return nil, err
 		}
 		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseBulkRevokeCertificatesResponse parses an HTTP response from a BulkRevokeCertificatesWithResponse call
+func ParseBulkRevokeCertificatesResponse(rsp *http.Response) (*BulkRevokeCertificatesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &BulkRevokeCertificatesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest struct {
+			union json.RawMessage
+		}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest BulkRevokeConflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
 
 	}
 

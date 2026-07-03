@@ -606,6 +606,12 @@ func main() {
 	// racing snapshot swaps against the same store.
 	presigner := setupOCSPPresign(cfg, db, provider, api, elector)
 	setupPublish(cfg, db, provider, presigner, elector)
+	if presigner != nil {
+		// Bulk revocation (Task 70) refreshes the pre-signed OCSP set right
+		// after a mass revocation so cached responses say "revoked" without
+		// waiting for the next scheduled batch.
+		api.SetOCSPPresigner(presigner)
+	}
 
 	// Audit-log SIEM export: a background worker per sink streams the
 	// tamper-evident event log to external syslog/CEF/webhook collectors from a

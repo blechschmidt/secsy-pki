@@ -53,6 +53,12 @@ const (
 	ActionCertIssue   = "cert.issue"
 	ActionCertRenew   = "cert.renew"
 	ActionCertRevoke  = "cert.revoke"
+	// ActionCertRevokeBulk records the summary of a bulk-revocation operation
+	// (Task 70): the operation id, filters, and revoked/skipped counts. Each
+	// certificate revoked by the operation additionally gets its own
+	// cert.revoke event carrying the same operation id in its detail, so the
+	// full set is reconstructable from the log.
+	ActionCertRevokeBulk = "cert.revoke_bulk"
 	// ActionSVIDIssue records the minting of a SPIFFE X.509-SVID. The detail
 	// carries the spiffe:// identity, trust domain, and profile.
 	ActionSVIDIssue = "svid.issue"

@@ -509,6 +509,116 @@ $('revokeConfirm').onclick = async () => {
   finally { $('revokeConfirm').disabled = false; }
 };
 
+// ---- Bulk revocation (Task 70, incident response) -------------------------
+// Two-phase flow with a mandatory confirmation of the dry-run count: Preview
+// posts {dry_run:true} and renders the plan; Execute is armed only while the
+// typed count equals the previewed total and echoes it as confirm_count, which
+// the server re-checks against the live selection (409 on drift).
+let bulkPlan = null; // last previewed plan for the currently selected CA
+
+function bulkFilterBody() {
+  const filter = {};
+  if ($('bulkProfile').value.trim()) filter.profile = $('bulkProfile').value.trim();
+  if ($('bulkPattern').value.trim()) filter.pattern = $('bulkPattern').value.trim();
+  // datetime-local values carry no zone; incident timelines are kept in UTC.
+  if ($('bulkIssuedAfter').value) filter.issued_after = $('bulkIssuedAfter').value + ':00Z';
+  if ($('bulkIssuedBefore').value) filter.issued_before = $('bulkIssuedBefore').value + ':00Z';
+  if ($('bulkIncludeExpired').checked) filter.include_expired = true;
+  const serials = $('bulkSerials').value.split('\n')
+    .map(l => l.replace(/#.*$/, '').trim()).filter(Boolean);
+  if (serials.length) filter.serials = serials;
+  return filter;
+}
+
+function resetBulkPlan() {
+  bulkPlan = null;
+  $('bulkPlanBox').classList.add('hidden');
+  $('bulkResultBox').classList.add('hidden');
+  $('bulkError').classList.add('hidden');
+  $('bulkConfirmCount').value = '';
+  $('bulkExecute').disabled = true;
+  $('bulkProgress').textContent = '';
+}
+$('certCA').addEventListener('change', resetBulkPlan);
+
+$('bulkPreview').onclick = async () => {
+  const id = selectedCertCA();
+  if (!id) { showError($('bulkError'), 'Select a CA first.'); return; }
+  resetBulkPlan();
+  $('bulkPreview').disabled = true;
+  try {
+    bulkPlan = await api('POST', `/api/ca/${id}/revocations:bulk`, {
+      dry_run: true,
+      reason: $('bulkReason').value,
+      filter: bulkFilterBody(),
+    });
+    const p = bulkPlan;
+    const bits = [`<b>${p.total}</b> certificate(s) will be revoked (reason <b>${escapeHTML(p.reason)}</b>, filter: ${escapeHTML(p.filter)})`];
+    if (p.unknown) bits.push(`${p.unknown} serial(s) are not in the inventory and will be revoked as bare CRL entries`);
+    if (p.already_revoked) bits.push(`${p.already_revoked} already revoked (skipped — resuming an earlier run?)`);
+    if (p.filtered_out) bits.push(`${p.filtered_out} listed serial(s) excluded by the other filters`);
+    if (p.expired_excluded) bits.push(`${p.expired_excluded} matching certificate(s) skipped as expired`);
+    $('bulkPlanSummary').innerHTML = bits.join('<br>');
+    $('bulkSampleRows').innerHTML = (p.sample || []).map(s => `
+      <tr>
+        <td class="mono">${escapeHTML(shortSerial(s.serial))}</td>
+        <td>${s.known ? escapeHTML(s.common_name || '') : '<span class="muted">not in inventory</span>'}</td>
+        <td>${escapeHTML(s.profile || '')}</td>
+        <td>${s.known ? fmtTime(s.not_after) : ''}</td>
+      </tr>`).join('') || emptyRow('Nothing matches this selection.');
+    if (p.total > (p.sample || []).length) {
+      $('bulkSampleRows').innerHTML += `<tr><td colspan="4" class="muted">… and ${p.total - p.sample.length} more</td></tr>`;
+    }
+    $('bulkExpectedCount').textContent = p.total;
+    $('bulkPlanBox').classList.remove('hidden');
+    if (p.total === 0) $('bulkConfirmCount').placeholder = 'nothing to revoke';
+  } catch (e) { showError($('bulkError'), e.message); }
+  finally { $('bulkPreview').disabled = false; }
+};
+
+// The execute button arms only while the typed count matches the previewed
+// total — the operator must actively transcribe the number they reviewed.
+$('bulkConfirmCount').addEventListener('input', () => {
+  const armed = bulkPlan && bulkPlan.total > 0 &&
+    $('bulkConfirmCount').value.trim() === String(bulkPlan.total);
+  $('bulkExecute').disabled = !armed;
+});
+
+$('bulkExecute').onclick = async () => {
+  const id = selectedCertCA();
+  if (!id || !bulkPlan) return;
+  const confirmed = parseInt($('bulkConfirmCount').value.trim(), 10);
+  if (confirmed !== bulkPlan.total) return;
+  $('bulkExecute').disabled = true;
+  $('bulkProgress').textContent = `Revoking ${bulkPlan.total} certificate(s)…`;
+  try {
+    const result = await api('POST', `/api/ca/${id}/revocations:bulk`, {
+      reason: $('bulkReason').value,
+      filter: bulkFilterBody(),
+      confirm_count: confirmed,
+      operation_id: bulkPlan.operation_id,
+    });
+    $('bulkResultBox').innerHTML = `<div class="crl-status">Bulk revocation complete: <b>${result.revoked}</b> revoked`
+      + ` in ${result.batches} batch(es), CRL scopes regenerated: ${escapeHTML((result.crl_scopes || []).join(', ') || 'none')}`
+      + `, ${Number(result.duration_seconds || 0).toFixed(2)}s (operation <span class="mono">${escapeHTML(result.operation_id)}</span>)`
+      + (result.presign_error ? ` — <span class="badge fail">presign refresh failed</span>` : '')
+      + `</div>`;
+    $('bulkResultBox').classList.remove('hidden');
+    $('bulkPlanBox').classList.add('hidden');
+    bulkPlan = null;
+    loadCerts(); loadCRLStatus(id);
+  } catch (e) {
+    // The most common failure is 409 count drift (issuance raced the preview);
+    // force a fresh preview so the operator confirms the new number.
+    showError($('bulkError'), e.message + ' — run Preview again and confirm the fresh count.');
+    $('bulkPlanBox').classList.add('hidden');
+    bulkPlan = null;
+  } finally {
+    $('bulkProgress').textContent = '';
+    $('bulkConfirmCount').value = '';
+  }
+};
+
 // ---- Monitor view --------------------------------------------------------
 $('monRefresh').onclick = loadMonitor;
 $('monSeverity').onchange = loadMonitor;

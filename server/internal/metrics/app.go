@@ -204,6 +204,27 @@ var (
 		"CRLs freshly signed on the HSM, by kind (base|delta) and scope (full|partition).",
 		"kind", "scope")
 
+	// Bulk revocation (Task 70, incident response). RevocationsBulk counts
+	// mass-revocation operations by result (success|error|denied); dry-run
+	// previews are not counted. RevocationsBulkCertificates counts the
+	// certificates newly revoked by those operations (idempotent re-runs only
+	// count serials not already revoked). RevocationsBulkDuration times the
+	// whole operation — batched store updates, per-certificate audit events,
+	// the single end-of-run CRL+delta regeneration, and the OCSP presign
+	// refresh — which is the number to watch against the CA/B Forum 24-hour
+	// key-compromise revocation obligation.
+	RevocationsBulk = NewCounter(Default,
+		"secsy_revocations_bulk_total",
+		"Bulk-revocation operations, partitioned by result (success|error|denied).",
+		"result")
+	RevocationsBulkCertificates = NewCounter(Default,
+		"secsy_revocations_bulk_certificates_total",
+		"Certificates newly revoked by bulk-revocation operations.")
+	RevocationsBulkDuration = NewHistogram(Default,
+		"secsy_revocations_bulk_duration_seconds",
+		"End-to-end duration of bulk-revocation operations in seconds.",
+		BatchBuckets)
+
 	// RFC 3161 time-stamping. "result" is granted|rejected|error; the token is
 	// signed on the HSM, so this tracks TSA demand and rejection rates.
 	TimestampRequests = NewCounter(Default,

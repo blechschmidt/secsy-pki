@@ -28,6 +28,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"math/big"
 	"net/http"
@@ -390,6 +391,91 @@ func TestConsoleFlow(t *testing.T) {
 		}
 		if !bytes.Contains(crl, []byte("BEGIN X509 CRL")) {
 			t.Errorf("CRL is not PEM: %s", crl)
+		}
+	})
+
+	// --- 8b. Bulk revocation (Task 70): the console's incident-response panel
+	// drives the dry-run → confirm-count → execute contract through the real
+	// route table (proving the "revocations:bulk" pattern) against the HSM.
+	t.Run("BulkRevoke", func(t *testing.T) {
+		for i := 0; i < 3; i++ {
+			cn := "breach-" + string(rune('a'+i)) + ".bulk.example.com"
+			csr := makeCSR(t, cn, []string{cn})
+			status, body := env.req(t, "POST", "/api/ca/"+env.interID+"/issue", map[string]string{
+				"csr": string(csr), "profile": "server",
+			})
+			if status != http.StatusCreated {
+				t.Fatalf("seed issue %d = %d: %s", i, status, body)
+			}
+		}
+
+		// Dry run: the pattern selects exactly the three seeded leaves.
+		status, body := env.req(t, "POST", "/api/ca/"+env.interID+"/revocations:bulk", map[string]any{
+			"dry_run": true,
+			"reason":  "keyCompromise",
+			"filter":  map[string]any{"pattern": "*.bulk.example.com"},
+		})
+		if status != http.StatusOK {
+			t.Fatalf("bulk dry run = %d: %s", status, body)
+		}
+		var plan struct {
+			OperationID string `json:"operation_id"`
+			Total       int    `json:"total"`
+		}
+		if err := json.Unmarshal(body, &plan); err != nil {
+			t.Fatalf("decode plan: %v", err)
+		}
+		if plan.Total != 3 {
+			t.Fatalf("plan total = %d, want 3: %s", plan.Total, body)
+		}
+
+		// A drifted confirmation is refused without side effects.
+		status, body = env.req(t, "POST", "/api/ca/"+env.interID+"/revocations:bulk", map[string]any{
+			"reason":        "keyCompromise",
+			"filter":        map[string]any{"pattern": "*.bulk.example.com"},
+			"confirm_count": 2,
+		})
+		if status != http.StatusConflict {
+			t.Fatalf("drifted confirm = %d: %s, want 409", status, body)
+		}
+
+		// The confirmed count executes: three revoked, CRL regenerated once.
+		status, body = env.req(t, "POST", "/api/ca/"+env.interID+"/revocations:bulk", map[string]any{
+			"reason":        "keyCompromise",
+			"filter":        map[string]any{"pattern": "*.bulk.example.com"},
+			"confirm_count": plan.Total,
+			"operation_id":  plan.OperationID,
+		})
+		if status != http.StatusOK {
+			t.Fatalf("bulk execute = %d: %s", status, body)
+		}
+		var result struct {
+			Revoked   int      `json:"revoked"`
+			CRLScopes []string `json:"crl_scopes"`
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			t.Fatalf("decode result: %v", err)
+		}
+		if result.Revoked != 3 || len(result.CRLScopes) == 0 {
+			t.Fatalf("bulk result = %+v, want 3 revoked with regenerated scopes", result)
+		}
+
+		// The regenerated CRL (public endpoint) now carries all three serials
+		// alongside the single revocation from step 7.
+		st, _, crlPEM := env.getPublic(t, "/api/ca/"+env.interID+"/crl?format=pem")
+		if st != http.StatusOK {
+			t.Fatalf("CRL after bulk = %d", st)
+		}
+		block, _ := pem.Decode(crlPEM)
+		if block == nil {
+			t.Fatal("CRL is not PEM")
+		}
+		crl, err := x509.ParseRevocationList(block.Bytes)
+		if err != nil {
+			t.Fatalf("parsing CRL: %v", err)
+		}
+		if len(crl.RevokedCertificateEntries) < 4 {
+			t.Errorf("CRL entries = %d, want >= 4 (single + 3 bulk)", len(crl.RevokedCertificateEntries))
 		}
 	})
 

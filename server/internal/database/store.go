@@ -172,6 +172,13 @@ type RevocationStore interface {
 	RevokeCertificate(caID, serial string, reason int, when time.Time) (bool, error)
 	GetRevokedCertificate(caID, serial string) (*models.RevokedCertificate, error)
 	ListRevokedCertificates(caID string) ([]models.RevokedCertificate, error)
+	// Bulk revocation (Task 70). ListRevocationCandidates projects the
+	// not-yet-revoked inventory matching a selector for the mass-revocation
+	// engine; BulkRevokeCertificates applies one batch transactionally and
+	// reports only the serials newly revoked (already-revoked ones are left
+	// untouched, keeping resumed operations idempotent).
+	ListRevocationCandidates(sel RevocationSelector) ([]RevocationCandidate, error)
+	BulkRevokeCertificates(caID string, serials []string, reason int, when time.Time) ([]string, error)
 	// NextCRLNumber returns the next full-scope CRL number, incremented atomically.
 	NextCRLNumber(caID string) (int64, error)
 	// NextScopedCRLNumber returns the next CRL number for a partition/delta scope,

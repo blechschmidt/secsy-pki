@@ -760,6 +760,52 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/ca/{id}/revocations:bulk:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: bulkRevokeCertificates
+      tags: [Certificate Lifecycle]
+      summary: Mass-revoke certificates (incident response)
+      description: >
+        Bulk revocation for compromise scenarios (CA/B Forum 24-hour
+        key-compromise obligation). Certificates are selected by filters
+        (profile, CN/SAN glob, issuance window, explicit serial list — serials
+        unknown to the inventory are revoked as bare CRL entries) and revoked
+        in batches; the base and delta CRLs are regenerated once at the end
+        and cached OCSP responses are invalidated. A dry_run request returns
+        the plan (counts and a sample) without changing anything; a real run
+        must echo the dry-run total in confirm_count and is refused with 409
+        when the live selection has drifted. Re-running an interrupted
+        operation resumes it (already-revoked certificates are never
+        re-selected). Requires the ca:manage capability in the CA's tenant and
+        is step-up eligible; it is never rate-limited or quota-gated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkRevokeRequest" }
+      responses:
+        "200":
+          description: The dry-run plan, or the executed operation's result.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/BulkRevokePlan"
+                  - $ref: "#/components/schemas/BulkRevokeResult"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: >
+            confirm_count no longer matches the live selection (certificates
+            were issued or revoked since the dry run). Nothing was revoked;
+            re-run the dry run and confirm the fresh count.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BulkRevokeConflict" }
+
   /api/ca/{id}/certificates:
     parameters:
       - $ref: "#/components/parameters/CAId"
@@ -2903,6 +2949,96 @@ components:
       properties:
         status: { type: string, enum: [revoked, already-revoked] }
         serial: { type: string }
+
+    BulkRevokeFilter:
+      type: object
+      description: >
+        Selection filters for a bulk revocation; set fields AND together. A
+        zero filter selects every not-yet-revoked, unexpired certificate of
+        the CA (the CA-key-compromise case).
+      properties:
+        profile: { type: string, description: Only certificates issued under this profile. }
+        pattern: { type: string, description: Case-insensitive glob matched against the CN and every SAN. }
+        issued_after: { type: string, format: date-time, description: Only certificates with NotBefore at/after this time. }
+        issued_before: { type: string, format: date-time, description: Only certificates with NotBefore at/before this time. }
+        serials:
+          type: array
+          items: { type: string }
+          description: >
+            Restrict to these serials (decimal strings). Serials unknown to
+            the inventory are still revoked, as bare CRL entries.
+        include_expired: { type: boolean, description: Also revoke certificates past their NotAfter. }
+
+    BulkRevokeRequest:
+      type: object
+      properties:
+        dry_run: { type: boolean, description: Compute and return the plan without revoking anything. }
+        reason: { type: string, description: RFC 5280 reason name applied to every certificate (default unspecified). }
+        filter: { $ref: "#/components/schemas/BulkRevokeFilter" }
+        confirm_count:
+          type: integer
+          description: >
+            The dry-run total the operator confirmed. Required unless
+            dry_run; must match the recomputed selection exactly (409
+            otherwise).
+        operation_id: { type: string, description: Correlates audit events across resumed runs (generated when empty). }
+        batch_size: { type: integer, description: Certificates revoked per store transaction (bounded server-side). }
+
+    BulkRevokeSampleEntry:
+      type: object
+      properties:
+        serial: { type: string }
+        common_name: { type: string }
+        profile: { type: string }
+        not_after: { type: string, format: date-time }
+        known: { type: boolean, description: False for a serial-list entry with no inventory row. }
+
+    BulkRevokePlan:
+      type: object
+      description: Dry-run preview of a bulk revocation.
+      properties:
+        operation_id: { type: string }
+        ca_id: { type: string }
+        ca_label: { type: string }
+        reason: { type: string }
+        filter: { type: string, description: Human-readable rendering of the applied filters. }
+        total: { type: integer, description: Certificates the operation will revoke (the count to confirm). }
+        known: { type: integer, description: Inventory-backed certificates in the selection. }
+        unknown: { type: integer, description: Serial-list entries with no inventory row (revoked as bare CRL entries). }
+        already_revoked: { type: integer, description: Listed serials skipped because they are already revoked. }
+        filtered_out: { type: integer, description: Listed serials present in the inventory but excluded by the other filters. }
+        expired_excluded: { type: integer, description: Matching certificates skipped as expired (include_expired off). }
+        sample:
+          type: array
+          items: { $ref: "#/components/schemas/BulkRevokeSampleEntry" }
+
+    BulkRevokeResult:
+      type: object
+      description: Outcome of an executed bulk revocation.
+      properties:
+        operation_id: { type: string }
+        ca_id: { type: string }
+        reason: { type: string }
+        planned: { type: integer }
+        revoked: { type: integer, description: Certificates newly revoked by this run. }
+        already_skipped: { type: integer, description: Planned serials revoked concurrently by another path. }
+        batches: { type: integer }
+        crl_scopes:
+          type: array
+          items: { type: string }
+          description: CRL scopes (full, partition:N) whose base+delta pairs were regenerated.
+        ocsp_invalidated: { type: integer }
+        presign_refreshed: { type: integer, description: Pre-signed OCSP responses re-signed after the revocation. }
+        presign_error: { type: string, description: Non-fatal presign-refresh failure, if any. }
+        duration_seconds: { type: number }
+
+    BulkRevokeConflict:
+      type: object
+      description: confirm_count did not match the live selection; nothing was revoked.
+      properties:
+        error: { type: string }
+        confirm_count: { type: integer }
+        actual_count: { type: integer }
 
     IssuedCertificate:
       type: object

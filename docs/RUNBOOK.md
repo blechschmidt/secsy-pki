@@ -79,9 +79,22 @@ apply and you must assume the worst if the host was compromised.
 # For a targeted stop, disable the CA's profiles in config and reload.
 ```
 
-Revoke outstanding leaves you believe are affected (`secsy-ca revoke -ca <ca>
--serial <hex> -reason keyCompromise`) and regenerate revocation material (next
-section) so the compromise propagates to relying parties.
+Revoke the affected leaves. For anything beyond a handful of serials use the
+bulk engine — it selects by profile / CN-SAN pattern / issuance window /
+serial list, previews the count, revokes in batches, and regenerates the
+CRL+delta once at the end (see the dedicated
+[mass-revocation runbook](incident-response.md) for the full procedure,
+including resume-after-interruption and the CA/B 24-hour obligations):
+
+```bash
+secsy-ca -config config.yaml revoke-bulk -ca <ca> -reason keyCompromise \
+  -operation-id IR-<ticket> -dry-run          # preview: prints WILL REVOKE: N
+secsy-ca -config config.yaml revoke-bulk -ca <ca> -reason keyCompromise \
+  -operation-id IR-<ticket> -confirm <N>      # execute with the confirmed count
+```
+
+Single certificates: `secsy-ca revoke -ca <ca> -serial <serial> -reason
+keyCompromise`.
 
 ### 3. Rotate or retire the compromised key
 

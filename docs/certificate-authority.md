@@ -182,6 +182,13 @@ Re-revoking an already-revoked serial updates its reason rather than failing.
 **API:** `POST /api/ca/{id}/revoke` with `{"serial":"...","reason":"keyCompromise"}`.
 List revocations: `GET /api/ca/{id}/revoked`.
 
+**Mass revocation (compromise response):** `secsy-ca revoke-bulk` /
+`POST /api/ca/{id}/revocations:bulk` revoke a whole selection (profile,
+CN/SAN pattern, issuance window, serial list) in batches with a mandatory
+dry-run count confirmation, one CRL+delta regeneration at the end, and
+per-certificate + summary audit events. See the
+[incident-response runbook](incident-response.md).
+
 ## 7. Publish revocation status
 
 ### CRL
