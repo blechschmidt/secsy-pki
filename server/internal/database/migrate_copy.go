@@ -40,12 +40,15 @@ var migrationTables = []string{
 	// Cross-signing relationships reference tenants and cas (issuer/subject), so
 	// they are copied after both.
 	"cross_signs",
-	// Audit and export state.
+	// Audit and export state. audit_anchors holds the RFC 3161 head attestations
+	// (Task 64); copying them verbatim keeps truncation evidence intact across a
+	// store migration.
 	"audit_log",
 	"access_log",
 	"hsm_audit_entries",
 	"event_log",
 	"siem_export_cursor",
+	"audit_anchors",
 	// ACME state (account → order → authorization → challenge).
 	"acme_accounts",
 	"acme_orders",

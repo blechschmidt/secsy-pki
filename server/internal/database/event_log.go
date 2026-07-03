@@ -232,6 +232,24 @@ func (db *DB) ListEventsByTimeRange(from, to time.Time) ([]audit.Event, error) {
 	return events, rows.Err()
 }
 
+// EventLogHead returns the chain's newest entry: its sequence number, hash,
+// and action, or (0, "", "") when the log is empty. The audit-anchor job reads
+// it to learn what to anchor — and the head action lets it recognize when the
+// only entry since the last anchor is that anchor's own audit record, so an
+// idle log is not re-anchored every tick.
+func (db *DB) EventLogHead() (int64, string, string, error) {
+	var seq int64
+	var hash, action string
+	err := db.queryRow(`SELECT seq, hash, action FROM event_log ORDER BY seq DESC LIMIT 1`).Scan(&seq, &hash, &action)
+	if err == sql.ErrNoRows {
+		return 0, "", "", nil
+	}
+	if err != nil {
+		return 0, "", "", err
+	}
+	return seq, hash, action, nil
+}
+
 // MaxEventSeq returns the highest sequence number in the event log (the head of
 // the chain), or 0 when the log is empty. The SIEM exporter uses it to compute
 // per-sink export lag.

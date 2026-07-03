@@ -178,3 +178,64 @@ audit:
 		})
 	}
 }
+
+func TestAuditAnchorConfig(t *testing.T) {
+	clearProviderEnv(t)
+	cfg := writeAndLoad(t, `
+root_user: {password: secret}
+audit:
+  anchor:
+    enabled: true
+    interval_hours: 6
+    tsa_url: https://tsa.example/tsa
+    timeout_seconds: 15
+`)
+	a := cfg.Audit.Anchor
+	if !a.Enabled || a.IntervalHours != 6 || a.TSAURL != "https://tsa.example/tsa" || a.TimeoutSeconds != 15 {
+		t.Fatalf("anchor config = %+v", a)
+	}
+
+	// Internal TSA satisfies the token-source requirement without a tsa_url.
+	clearProviderEnv(t)
+	cfg = writeAndLoad(t, `
+root_user: {password: secret}
+tsa:
+  enabled: true
+  key_label: tsa
+  certificate_file: /etc/secsy/tsa.pem
+audit:
+  anchor: {enabled: true}
+`)
+	if !cfg.Audit.Anchor.Enabled {
+		t.Fatal("anchor should be enabled")
+	}
+}
+
+func TestAuditAnchorRejectsBadConfig(t *testing.T) {
+	cases := map[string]string{
+		"no token source": `
+root_user: {password: secret}
+audit:
+  anchor: {enabled: true}`,
+		"non-http tsa url": `
+root_user: {password: secret}
+audit:
+  anchor: {enabled: true, tsa_url: "ldap://tsa.example"}`,
+		"negative interval": `
+root_user: {password: secret}
+audit:
+  anchor: {enabled: true, tsa_url: "https://tsa.example/tsa", interval_hours: -1}`,
+		"negative timeout": `
+root_user: {password: secret}
+audit:
+  anchor: {enabled: true, tsa_url: "https://tsa.example/tsa", timeout_seconds: -1}`,
+	}
+	for name, content := range cases {
+		t.Run(name, func(t *testing.T) {
+			clearProviderEnv(t)
+			if _, err := loadContent(t, content); err == nil {
+				t.Fatalf("expected error for %s", name)
+			}
+		})
+	}
+}

@@ -330,3 +330,35 @@ groups:
           summary: "Audit export stalled (sink {{ $labels.sink }})"
           description: "SIEM sink '{{ $labels.sink }}' has a backlog but has not acknowledged a batch in >30m. Delivery is stuck — audit events are not reaching the SIEM. See docs/audit-siem-export.md."
           runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#monitor-and-audit-health"
+
+      - alert: SecsyPKIAuditAnchorStale
+        # The audit chain has unattested events but has not been re-anchored in
+        # >2x the default daily cadence: the anchor job is dead or its TSA is
+        # unreachable, and the window an undetected truncation could cover is
+        # growing. Pending > 1 excludes the idle steady state (the last anchor's
+        # own audit record), so a quiet deployment never pages.
+        expr: |
+          (max by (job, instance) (secsy_audit_anchor_age_seconds) > 172800)
+          and (max by (job, instance) (secsy_audit_anchor_pending_events) > 1)
+        for: 30m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "Audit-chain anchor stale ({{ $labels.instance }})"
+          description: "The newest audit-chain anchor is older than 48h while unanchored events exist. The anchor job is not running or its TSA is failing; events since the last anchor lack external truncation evidence. Run 'secsy-ca audit anchor' and check the TSA."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#audit-chain-anchoring"
+
+      - alert: SecsyPKIAuditAnchorFailures
+        # Anchoring attempts are erroring (TSA down/rejecting, or the anchor
+        # insert failing). One-off blips retry on the next tick; repeated
+        # failures warrant a look before the staleness alert fires.
+        expr: sum by (job, instance) (increase(secsy_audit_anchors_total{result="error"}[6h])) > 1
+        for: 30m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "Audit-chain anchoring failing ({{ $labels.instance }})"
+          description: "More than one audit-anchor attempt failed in the last 6h. Check the TSA (internal /tsa health, or the external audit.anchor.tsa_url) and the audit.anchor error events in the log."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#audit-chain-anchoring"

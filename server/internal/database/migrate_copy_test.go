@@ -139,6 +139,20 @@ func populateStore(t *testing.T, db *DB) storeMarks {
 		t.Fatal(err)
 	}
 
+	// An audit-chain anchor (Task 64) exercises its bytea token column; the DER
+	// bytes must survive the copy verbatim or truncation evidence is lost.
+	headSeq, headHash, _, err := db.EventLogHead()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertAuditAnchor(&audit.Anchor{
+		ID: "anchor-1", Seq: headSeq, HeadHash: headHash,
+		Token:   []byte{0x30, 0x82, 0x00, 0x10, 0xde, 0xad, 0xbe, 0xef},
+		GenTime: now, CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	// ACME state with boolean columns (tos_agreed, wildcard).
 	if err := db.CreateACMEAccount(&models.ACMEAccount{
 		ID: "acct-1", Status: "valid", Contacts: []string{"mailto:a@example.com"},
@@ -249,6 +263,24 @@ func assertMigratedFidelity(t *testing.T, dst *DB, marks storeMarks) {
 	// SIEM cursor preserved.
 	if c, _ := dst.GetSIEMCursor("splunk"); c != 3 {
 		t.Errorf("SIEM cursor = %d, want 3", c)
+	}
+
+	// Audit anchor preserved with byte-identical token DER.
+	anchors, err := dst.ListAuditAnchorsAsc()
+	if err != nil || len(anchors) != 1 {
+		t.Fatalf("ListAuditAnchorsAsc = %d (%v), want 1", len(anchors), err)
+	}
+	wantTok := []byte{0x30, 0x82, 0x00, 0x10, 0xde, 0xad, 0xbe, 0xef}
+	if len(anchors[0].Token) != len(wantTok) {
+		t.Fatalf("anchor token length = %d, want %d", len(anchors[0].Token), len(wantTok))
+	}
+	for i := range wantTok {
+		if anchors[0].Token[i] != wantTok[i] {
+			t.Fatalf("anchor token byte %d = %#x, want %#x", i, anchors[0].Token[i], wantTok[i])
+		}
+	}
+	if anchors[0].Seq != 5 {
+		t.Errorf("anchor seq = %d, want 5", anchors[0].Seq)
 	}
 
 	// ACME booleans preserved.

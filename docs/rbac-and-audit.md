@@ -79,6 +79,14 @@ from that point forward. `audit.VerifyChain` (and the `GET /api/events/verify`
 endpoint) recompute the chain and report the sequence number of the first
 inconsistency.
 
+The chain alone cannot prove the log ever extended further than it does now — a
+writer with store access could drop the newest entries or re-seal a rewritten
+history. Enabling **audit-chain anchoring** (`audit.anchor` config) closes that
+gap: the chain head is periodically bound into an RFC 3161 timestamp token
+(internal HSM-backed TSA or an external TSA URL), persisted in `audit_anchors`,
+and validated by `secsy-ca audit verify`. See the
+[Audit-chain anchoring runbook section](RUNBOOK.md#audit-chain-anchoring).
+
 ### Endpoints (require `audit:read` — admin or auditor)
 
 | Method & path | Purpose |

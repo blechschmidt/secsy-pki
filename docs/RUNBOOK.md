@@ -21,9 +21,10 @@ The design decisions behind these procedures are recorded in
 6. [CA key rotation and retirement](#ca-key-rotation-and-retirement)
 7. [Disaster-recovery drill](#disaster-recovery-drill)
 8. [Observability: dashboards & alerts](#observability-dashboards--alerts)
-9. [Supply-chain / image verification failure](#supply-chain--image-verification-failure)
-10. [Preflight diagnostics (`secsy-ca doctor`)](#preflight-diagnostics-secsy-ca-doctor)
-11. [First-response quick reference](#first-response-quick-reference)
+9. [Audit-chain anchoring](#audit-chain-anchoring)
+10. [Supply-chain / image verification failure](#supply-chain--image-verification-failure)
+11. [Preflight diagnostics (`secsy-ca doctor`)](#preflight-diagnostics-secsy-ca-doctor)
+12. [First-response quick reference](#first-response-quick-reference)
 
 ---
 
@@ -689,6 +690,109 @@ to `monitor.intervalHours` and check the monitor loop/logs.
 piling up undelivered to a SIEM sink (lag high) or delivery is stuck (backlog +
 no ack in 30m), risking a compliance gap. Check the named sink's reachability and
 the exporter cursor; see [audit-siem-export.md](audit-siem-export.md).
+`SecsyPKIAuditAnchorStale` / `SecsyPKIAuditAnchorFailures` — the audit-chain
+anchor job is not producing RFC 3161 head attestations; see
+[Audit-chain anchoring](#audit-chain-anchoring).
+
+---
+
+## Audit-chain anchoring
+
+The hash-chained event log proves *internal* consistency: editing, reordering,
+or deleting an entry breaks the chain from that point on. What it cannot prove
+by itself is that the log ever extended further than it does now — a party with
+write access to the store can drop the newest entries (truncation) or re-seal
+every entry after an edit (whole-chain rewrite) and present a shorter,
+internally consistent log.
+
+Anchoring closes that gap. On a fixed cadence (and on demand) the server takes
+the chain head `(seq, hash)`, has an RFC 3161 TSA sign a timestamp token over
+its canonical digest, and stores the token in `audit_anchors`. The token is
+produced by a key the store writer does not hold (the HSM-resident TSA key, or
+an external TSA entirely), so after each anchor point the log's existence and
+exact head hash are independently attested. Every anchoring also appends an
+`audit.anchor` event — which the SIEM export streams off-host, giving an
+external copy of each anchored head even if the local anchor rows are deleted.
+
+### Configuration and cadence
+
+```yaml
+tsa:
+  enabled: true            # internal TSA (HSM-backed); provision with: secsy-ca tsa-key
+  key_label: tsa
+  certificate_file: tsa.pem
+audit:
+  anchor:
+    enabled: true
+    interval_hours: 24     # default; each interval bounds the truncation window
+    # tsa_url: https://tsa.example/tsa   # external TSA for full independence
+    # timeout_seconds: 30
+```
+
+Choosing the cadence: an attacker who rewrites or truncates the log can only
+hide events appended **since the last anchor**, so the interval is your maximum
+undetectable-truncation window. Daily is the default; high-assurance
+deployments run hourly (each anchor costs one TSA signature and a ~4 KB row).
+Anchoring skips automatically while the log is idle, so a quiet deployment does
+not accumulate anchors.
+
+Internal vs. external TSA: the internal TSA keeps the trust boundary at the
+HSM — a database-level attacker cannot re-anchor a rewritten log because the
+TSA key never leaves the token. If your threat model includes an attacker who
+controls this host *and* can drive its HSM, set `audit.anchor.tsa_url` to an
+independent TSA (or run both: anchor internally and periodically re-anchor
+externally with `secsy-ca audit anchor` from another machine's config).
+
+### Operating it
+
+```bash
+# Anchor the current head now (e.g. before maintenance or a restore):
+secsy-ca -config config.yaml audit anchor
+
+# List stored anchors; -json includes the base64 DER tokens for archival:
+secsy-ca -config config.yaml audit anchor -list
+
+# Verify: chain walk + every anchor (linkage and token signature). Non-zero
+# exit on any failure. -tsa-ca additionally chains the TSA cert to a root.
+secsy-ca -config config.yaml audit verify -tsa-ca tsa-root.pem
+```
+
+Metrics: `secsy_audit_anchor_age_seconds` (seconds since the newest anchor,
+seeded from the store at startup), `secsy_audit_anchor_pending_events` (events
+appended since it), `secsy_audit_anchors_total{result}` (success/error/skipped),
+and `secsy_audit_anchor_head_seq`.
+
+### Interpreting verification failures
+
+`audit verify` reports the chain result and each anchor separately. Read them
+together:
+
+- **Chain BROKEN, anchors OK/irrelevant** — in-place tampering after the break
+  point, the case the chain alone already catches. Investigate from the
+  reported seq; see [Suspected CA-key compromise](#suspected-ca-key-compromise).
+- **Chain OK, anchor fails `log was truncated: anchored head seq N is beyond
+  the current tail M`** — the log verifies but used to extend past its current
+  tail: entries after seq M were deleted. Everything between M and N (and
+  anything after) is missing; recover the events from the SIEM export or a
+  backup and treat the store as compromised.
+- **Chain OK, anchor fails `chain hash at seq N does not match the anchored
+  head`** — the whole chain was rewritten and re-sealed: history up to N was
+  altered even though every link now checks out. The SIEM copy (exported before
+  the rewrite) is the authoritative record to diff against.
+- **Anchor fails token checks (`timestamp token signature`, `does not cover
+  this anchor's (seq, head hash)`)** — the anchor row itself was tampered with
+  or corrupted. The chain may still be fine; cross-check against the remaining
+  anchors and the off-host `audit.anchor` events.
+- **After a restore/PITR** — old anchors must still verify against the restored
+  log (they attest prefixes). A newest anchor failing with "truncated" tells
+  you the backup predates it: events after the restore point were lost — walk
+  the SIEM export from the restored head seq to reconstruct. Anchor immediately
+  after any restore (`secsy-ca audit anchor -force`) to attest the new baseline.
+
+An anchor only ever attests history **up to** its seq. Events after the newest
+anchor carry no external evidence yet — that residual window is what
+`SecsyPKIAuditAnchorStale` guards (it fires when unanchored events exist and no
+anchor happened for >48h).
 
 ---
 

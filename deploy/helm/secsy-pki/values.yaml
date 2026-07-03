@@ -179,6 +179,15 @@ config:
       retryBackoffSeconds: 0
       maxBackoffSeconds: 0
       sinks: []
+    # Audit-chain anchoring (RFC 3161): periodically bind the event log's head
+    # hash into a timestamp token so truncation/rewrite is detectable by
+    # `secsy-ca audit verify`. Requires the internal TSA (tsa.enabled) or an
+    # external tsaURL. See the runbook section "Audit-chain anchoring".
+    anchor:
+      enabled: false
+      intervalHours: 0   # 0 = default (24)
+      tsaURL: ""         # external RFC 3161 TSA; empty = internal TSA
+      timeoutSeconds: 0  # 0 = default (30)
 
   # ACME (RFC 8555) server. Enable this to let cert-manager (or certbot/lego)
   # request HSM-backed certificates. See certManager.* below and docs/acme.md.

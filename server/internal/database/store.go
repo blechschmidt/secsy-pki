@@ -250,6 +250,15 @@ type AuditStore interface {
 	VerifyEventChain() (audit.VerifyResult, error)
 	GetSIEMCursor(sink string) (int64, error)
 	SetSIEMCursor(sink string, seq int64) error
+
+	// Audit-chain anchors (Task 64): periodic RFC 3161 attestations of the
+	// event-log head that make whole-chain truncation/rewrite detectable.
+	// EventLogHead reports the newest entry (seq, hash, action) so the anchor
+	// job knows what to attest.
+	EventLogHead() (seq int64, hash, action string, err error)
+	InsertAuditAnchor(a *audit.Anchor) error
+	ListAuditAnchorsAsc() ([]audit.Anchor, error)
+	LatestAuditAnchor() (*audit.Anchor, error)
 }
 
 // RBACStore persists authorization state: groups, memberships, per-CA

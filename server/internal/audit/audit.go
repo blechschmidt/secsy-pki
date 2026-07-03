@@ -190,6 +190,14 @@ const (
 	// target is the issued token serial.
 	ActionTSATimestamp = "tsa.timestamp"
 
+	// ActionAuditAnchor records an anchoring of this very log's head hash into
+	// an RFC 3161 timestamp token (Task 64): ResultSuccess with the covered
+	// (seq, head hash), token genTime, and TSA source in the detail, or
+	// ResultError when obtaining/persisting the token failed. Because the event
+	// itself is chained (and exported to SIEM sinks), it doubles as an external
+	// record of the anchored head even if the local anchor row is later deleted.
+	ActionAuditAnchor = "audit.anchor"
+
 	// Artifact (code) signing (Task 60). ActionArtifactSign records a CMS
 	// detached signature produced with an HSM-held code-signing key: the target
 	// is the signer name, the detail carries the artifact digest, digest

@@ -560,6 +560,22 @@ func (db *DB) migrate() error {
 			last_seq INTEGER NOT NULL,
 			updated_at %s
 		)`, currentTimestamp),
+		// Audit-chain anchors (Task 64): periodic RFC 3161 attestations of the
+		// event_log head. Each row records that at created_at the chain's newest
+		// entry was (seq, head_hash), proven by the DER TimeStampToken in token —
+		// signed by a TSA key the store writer does not hold, so truncating or
+		// rewriting the log behind an anchor is detectable by `secsy-ca audit
+		// verify`. tsa_url is NULL for the internal TSA, else the external URL.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS audit_anchors (
+			id TEXT PRIMARY KEY,
+			seq INTEGER NOT NULL,
+			head_hash TEXT NOT NULL,
+			token %s NOT NULL,
+			tsa_url TEXT,
+			gen_time TIMESTAMP NOT NULL,
+			created_at TIMESTAMP NOT NULL
+		)`, blob),
+		`CREATE INDEX IF NOT EXISTS idx_audit_anchors_seq ON audit_anchors(seq)`,
 		// Registered WebAuthn passkeys for operator step-up authentication (Task
 		// 50). Only the credential id, public key (SPKI DER), and signature counter
 		// are stored; the private key never leaves the authenticator.

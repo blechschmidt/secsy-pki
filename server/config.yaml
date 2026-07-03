@@ -446,6 +446,16 @@ audit:
     #     headers:
     #       Authorization: "Bearer <token>"
 
+  # Audit-chain anchoring (RFC 3161): periodically bind the event log's head
+  # hash into a timestamp token so whole-chain truncation/rewrite is detectable
+  # by `secsy-ca audit verify`. Needs the internal TSA (tsa.enabled) or an
+  # external tsa_url. See docs/RUNBOOK.md "Audit-chain anchoring".
+  anchor:
+    enabled: false
+    # interval_hours: 24         # anchor cadence; bounds the truncation window
+    # tsa_url: ""                # external RFC 3161 TSA; empty = internal TSA
+    # timeout_seconds: 30        # external TSA request timeout
+
 # rate_limit protects the public-facing endpoints (ACME newOrder/newAccount,
 # OCSP, CRL, and SCEP/EST enrollment) from issuance abuse and HSM overload.
 # Disabled by default; see docs/rate-limiting.md. When enabled, a token-bucket

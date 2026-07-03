@@ -75,6 +75,68 @@ func TestCmdAuditVerifyDetectsTamper(t *testing.T) {
 	}
 }
 
+// TestCmdAuditVerifyDetectsTruncationBehindAnchor: deleting the newest events
+// leaves an internally valid chain, so the plain walk passes — but a stored
+// anchor attesting a higher head must make the CLI fail. (Token validity is
+// covered in internal/anchor; a linkage failure is reported first, so a
+// placeholder token suffices here.)
+func TestCmdAuditVerifyDetectsTruncationBehindAnchor(t *testing.T) {
+	db, _ := auditCLITestDB(t)
+	appendN(t, db, 3)
+
+	seq, hash, _, err := db.EventLogHead()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertAuditAnchor(&audit.Anchor{
+		ID: "anchor-1", Seq: seq + 2, HeadHash: hash, Token: []byte{0x01},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = cmdAuditVerify(db, nil)
+	if err == nil {
+		t.Fatal("verify must fail when an anchor attests a head beyond the current tail")
+	}
+	if !strings.Contains(err.Error(), "anchor") {
+		t.Errorf("error should name the anchor failure: %v", err)
+	}
+}
+
+// TestCmdAuditVerifyDetectsAnchorHashMismatch: an anchor whose recorded head
+// hash no longer matches the chain (history rewritten) fails verification.
+func TestCmdAuditVerifyDetectsAnchorHashMismatch(t *testing.T) {
+	db, _ := auditCLITestDB(t)
+	appendN(t, db, 3)
+
+	seq, _, _, err := db.EventLogHead()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertAuditAnchor(&audit.Anchor{
+		ID: "anchor-1", Seq: seq, HeadHash: strings.Repeat("ab", 32), Token: []byte{0x01},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdAuditVerify(db, nil); err == nil {
+		t.Fatal("verify must fail when the anchored head hash mismatches the chain")
+	}
+}
+
+// TestCmdAuditAnchorList covers the -list path (no key provider needed).
+func TestCmdAuditAnchorList(t *testing.T) {
+	db, _ := auditCLITestDB(t)
+	if err := listAuditAnchors(db, false); err != nil {
+		t.Fatalf("empty listing: %v", err)
+	}
+	if err := db.InsertAuditAnchor(&audit.Anchor{ID: "a1", Seq: 1, HeadHash: "aa", Token: []byte{1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := listAuditAnchors(db, true); err != nil {
+		t.Fatalf("json listing: %v", err)
+	}
+}
+
 // TestCmdAuditExportWritesRange verifies offline export writes one record per
 // event in the range to the output file.
 func TestCmdAuditExportWritesRange(t *testing.T) {

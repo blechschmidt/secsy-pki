@@ -670,9 +670,32 @@ func (c ConcurrencyConfig) GuardEnabled(parentEnabled bool) bool {
 	return parentEnabled
 }
 
-// AuditConfig groups audit-log settings; currently the SIEM export pipeline.
+// AuditConfig groups audit-log settings: the SIEM export pipeline and the
+// audit-chain anchoring job.
 type AuditConfig struct {
 	Export ExportConfig `yaml:"export"`
+	Anchor AnchorConfig `yaml:"anchor"`
+}
+
+// AnchorConfig configures periodic anchoring of the audit hash-chain head
+// (Task 64). When enabled, a background job takes the event log's newest
+// (seq, hash), obtains an RFC 3161 timestamp token over their canonical digest,
+// and persists it in audit_anchors — making whole-chain truncation or rewrite
+// after each anchor point detectable by `secsy-ca audit verify`.
+type AnchorConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// IntervalHours is the anchor cadence. Defaults to 24 when unset. Each
+	// interval bounds the window of newest events an undetected truncation
+	// could cover.
+	IntervalHours int `yaml:"interval_hours"`
+	// TSAURL, when set, obtains tokens from an external RFC 3161 TSA at this
+	// http(s) URL instead of the in-process one — for deployments that want the
+	// anchor authority independent of the PKI being anchored (an attacker who
+	// owns this host and its HSM could otherwise re-anchor a rewritten log).
+	// Empty uses the internal TSA, which then must be enabled (tsa.enabled).
+	TSAURL string `yaml:"tsa_url"`
+	// TimeoutSeconds bounds each external TSA request. Defaults to 30.
+	TimeoutSeconds int `yaml:"timeout_seconds"`
 }
 
 // ExportConfig configures the audit-log SIEM exporter. When enabled, a
@@ -1549,6 +1572,10 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateAuditAnchor(); err != nil {
+		return nil, err
+	}
+
 	if err := cfg.validateRateLimit(); err != nil {
 		return nil, err
 	}
@@ -1897,6 +1924,32 @@ func (c *Config) validateAuditExport() error {
 		default:
 			return fmt.Errorf("audit.export.sinks[%q]: unknown type %q (valid: syslog, webhook)", s.Name, s.Type)
 		}
+	}
+	return nil
+}
+
+// validateAuditAnchor sanity-checks the audit-chain anchoring configuration
+// when it is enabled, so a token source that cannot exist fails at load rather
+// than on the first anchor tick.
+func (c *Config) validateAuditAnchor() error {
+	a := &c.Audit.Anchor
+	if !a.Enabled {
+		return nil
+	}
+	if a.IntervalHours < 0 {
+		return fmt.Errorf("audit.anchor.interval_hours must not be negative")
+	}
+	if a.TimeoutSeconds < 0 {
+		return fmt.Errorf("audit.anchor.timeout_seconds must not be negative")
+	}
+	if a.TSAURL != "" {
+		if !strings.HasPrefix(a.TSAURL, "http://") && !strings.HasPrefix(a.TSAURL, "https://") {
+			return fmt.Errorf("audit.anchor.tsa_url %q must be an http(s) URL", a.TSAURL)
+		}
+		return nil
+	}
+	if !c.TSA.Enabled {
+		return fmt.Errorf("audit.anchor.enabled requires the internal TSA (tsa.enabled: true) or an external audit.anchor.tsa_url")
 	}
 	return nil
 }

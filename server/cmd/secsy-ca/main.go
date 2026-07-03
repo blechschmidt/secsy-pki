@@ -124,11 +124,13 @@ func run(args []string) error {
 	}
 	defer db.Close()
 
-	// Audit-log administration (chain verification, offline export) never touches
-	// key material, so dispatch it before constructing the key provider. This lets
-	// an auditor run "audit verify" without the HSM being present or unlocked.
+	// Audit-log administration (chain/anchor verification, offline export) is
+	// dispatched before the key provider is constructed, so an auditor can run
+	// "audit verify" without the HSM being present or unlocked. Only
+	// "audit anchor" against the internal TSA builds a (TSA-role) provider, and
+	// it does so lazily inside the command.
 	if command == "audit" {
-		return cmdAudit(db, cmdArgs)
+		return cmdAudit(db, cfg, cmdArgs)
 	}
 
 	// Certificate discovery is a TLS client plus X.509 analysis against the stored
@@ -339,7 +341,8 @@ Commands:
   ssh                 SSH certificate authority (ca-init, sign-user, sign-host, revoke, krl)
   backup              Export CA metadata + a DR manifest (no private keys)
   restore             Restore/verify CA metadata against the key provider
-  audit               Verify the audit hash-chain, or export it for SIEM
+  audit               Verify the audit hash-chain (incl. RFC 3161 anchors),
+                      anchor the chain head, or export events for SIEM
   discover            Scan external TLS endpoints; flag expiring/weak/rogue certs
   publish             Publish CRLs/chains/pre-signed OCSP as static artifacts (CDN offload)
   db                  Persistence administration (migrate SQLite file store → PostgreSQL)

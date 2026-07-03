@@ -5,19 +5,18 @@ import (
 	"crypto"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/asn1"
 	"encoding/pem"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/acme"
+	"github.com/blechschmidt/secsy-pki/server/internal/anchor"
 	"github.com/blechschmidt/secsy-pki/server/internal/attestation"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
@@ -626,6 +625,21 @@ func main() {
 		tsaAuthority = authority
 	}
 
+	// Audit-chain anchoring (Task 64): a background job that periodically binds
+	// the tamper-evident event log's head hash into an RFC 3161 timestamp token
+	// — from the in-process TSA above, or an external TSA URL for independence —
+	// and persists it, so `secsy-ca audit verify` detects whole-chain truncation
+	// or rewrite behind any anchor point. Runs for the process lifetime.
+	if cfg.Audit.Anchor.Enabled {
+		ts, err := buildAnchorTimestamper(cfg, tsaAuthority)
+		if err != nil {
+			log.Fatalf("Audit anchor configuration error: %v", err)
+		}
+		anchorRunner := anchor.NewRunner(anchor.NewService(db, ts),
+			time.Duration(cfg.Audit.Anchor.IntervalHours)*time.Hour, log.Default())
+		go anchorRunner.Run(context.Background())
+	}
+
 	// Artifact code-signing service (Task 60): CMS detached signatures over
 	// release artifacts at /api/sign (RBAC role "signer"), with optional RFC 3161
 	// countersignatures from the in-process TSA. Signer keys/certificates are
@@ -1053,61 +1067,26 @@ func buildCMPConfig(db *database.DB, cfg *config.Config) (cmp.Config, error) {
 	}, nil
 }
 
-// buildTSAConfig assembles the tsa.Config from the application config. It loads
-// the TSA signing certificate (and any inline chain) from the configured PEM
-// file, appending the issuing CA's chain from the database when a CA is named
-// and the file carries only the leaf. It parses the policy OID, signature
-// digest, and accepted message-imprint hashes.
+// buildTSAConfig assembles the tsa.Config from the application config. The
+// assembly (certificate/chain loading, policy OID and digest parsing) lives in
+// tsa.LoadAuthorityConfig so the secsy-ca CLI (audit-chain anchoring) builds an
+// identical authority from the same config block.
 func buildTSAConfig(db *database.DB, cfg *config.Config) (tsa.Config, error) {
-	certPEM, err := os.ReadFile(cfg.TSA.CertificateFile)
-	if err != nil {
-		return tsa.Config{}, fmt.Errorf("reading tsa.certificate_file %q: %w", cfg.TSA.CertificateFile, err)
-	}
-	chain, err := parseCertChainPEM(certPEM)
-	if err != nil {
-		return tsa.Config{}, fmt.Errorf("parsing tsa.certificate_file: %w", err)
-	}
-	if len(chain) == 0 {
-		return tsa.Config{}, fmt.Errorf("tsa.certificate_file %q contains no certificates", cfg.TSA.CertificateFile)
-	}
+	return tsa.LoadAuthorityConfig(db, cfg.TSA)
+}
 
-	// If the file holds only the TSA leaf, append the issuing CA's chain from the
-	// database so certReq responses carry a verifiable path.
-	if len(chain) == 1 && (cfg.TSA.CAID != "" || cfg.TSA.CALabel != "") {
-		caID, err := resolveCAID(db, cfg.TSA.CAID, cfg.TSA.CALabel, "tsa")
-		if err != nil {
-			return tsa.Config{}, err
-		}
-		issuers, err := loadCAChain(db, caID)
-		if err != nil {
-			return tsa.Config{}, err
-		}
-		chain = append(chain, issuers...)
+// buildAnchorTimestamper selects the audit-anchor token source: the external
+// TSA URL when configured, else the in-process authority. Config validation
+// already requires one of the two, but the authority can still be nil here if
+// its own construction was skipped, so this re-checks fail-fast.
+func buildAnchorTimestamper(cfg *config.Config, authority *tsa.Authority) (anchor.Timestamper, error) {
+	if url := cfg.Audit.Anchor.TSAURL; url != "" {
+		return anchor.NewHTTPTimestamper(url, time.Duration(cfg.Audit.Anchor.TimeoutSeconds)*time.Second), nil
 	}
-
-	tc := tsa.Config{
-		Path:            cfg.TSA.Path,
-		KeyLabel:        cfg.TSA.KeyLabel,
-		Certificate:     chain[0],
-		Chain:           chain,
-		Accuracy:        tsa.Accuracy{Seconds: cfg.TSA.AccuracySeconds, Millis: cfg.TSA.AccuracyMillis, Micros: cfg.TSA.AccuracyMicros},
-		Ordering:        cfg.TSA.Ordering,
-		SignatureDigest: hashFromName(cfg.TSA.SignatureDigest),
-		IncludeTSAName:  cfg.TSA.IncludeTSAName,
+	if authority == nil {
+		return nil, fmt.Errorf("audit.anchor.enabled requires the internal TSA (tsa.enabled: true) or audit.anchor.tsa_url")
 	}
-	if cfg.TSA.PolicyOID != "" {
-		oid, err := parseDottedOID(cfg.TSA.PolicyOID)
-		if err != nil {
-			return tsa.Config{}, fmt.Errorf("tsa.policy_oid: %w", err)
-		}
-		tc.PolicyOID = oid
-	}
-	for _, name := range cfg.TSA.AcceptedHashes {
-		if h := hashFromName(name); h != 0 {
-			tc.AcceptedHashes = append(tc.AcceptedHashes, h)
-		}
-	}
-	return tc, nil
+	return anchor.NewAuthorityTimestamper(authority), nil
 }
 
 // buildSigningService assembles the artifact-signing service from the signing:
@@ -1220,20 +1199,6 @@ func hashFromName(name string) crypto.Hash {
 	default:
 		return 0
 	}
-}
-
-// parseDottedOID parses a dotted-decimal OID into an asn1.ObjectIdentifier.
-func parseDottedOID(s string) (asn1.ObjectIdentifier, error) {
-	parts := strings.Split(s, ".")
-	oid := make(asn1.ObjectIdentifier, 0, len(parts))
-	for _, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil || n < 0 {
-			return nil, fmt.Errorf("invalid arc %q", p)
-		}
-		oid = append(oid, n)
-	}
-	return oid, nil
 }
 
 // buildAuditExporter translates the audit-export config into a siem.Exporter

@@ -90,6 +90,13 @@ data:
         max_backoff_seconds: {{ int $c.audit.export.maxBackoffSeconds }}
         sinks:
           {{- toYaml $c.audit.export.sinks | nindent 10 }}
+      {{- with $c.audit.anchor }}
+      anchor:
+        enabled: {{ .enabled }}
+        interval_hours: {{ int .intervalHours }}
+        tsa_url: {{ .tsaURL | quote }}
+        timeout_seconds: {{ int .timeoutSeconds }}
+      {{- end }}
 
     acme:
       enabled: {{ $c.acme.enabled }}

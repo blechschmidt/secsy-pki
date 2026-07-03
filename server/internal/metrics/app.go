@@ -431,6 +431,32 @@ var (
 		"secsy_audit_export_last_success_timestamp_seconds",
 		"Unix timestamp (seconds) of the last acknowledged SIEM export batch, by sink.",
 		"sink")
+
+	// Audit-chain anchoring (Task 64). AuditAnchors counts every anchoring
+	// attempt: success = an anchor was persisted, error = obtaining or storing
+	// the token failed, skipped = nothing new to anchor (idle log). The failure
+	// series is the alert signal for a broken TSA path.
+	AuditAnchors = NewCounter(Default,
+		"secsy_audit_anchors_total",
+		"Audit-chain anchoring attempts, by result (success|error|skipped).",
+		"result")
+	// AuditAnchorLastSuccess records when the newest anchor was persisted;
+	// seeded from the store at startup so restarts do not blank it.
+	AuditAnchorLastSuccess = NewGauge(Default,
+		"secsy_audit_anchor_last_success_timestamp_seconds",
+		"Unix timestamp (seconds) of the most recent persisted audit-chain anchor.")
+	// AuditAnchorHeadSeq is the event-log sequence number the newest anchor
+	// covers — everything up to it is externally attested.
+	AuditAnchorHeadSeq = NewGauge(Default,
+		"secsy_audit_anchor_head_seq",
+		"Event-log sequence number covered by the most recent audit-chain anchor.")
+	// AuditAnchorPending is the unattested tail: events appended since the last
+	// anchor (head seq minus anchored seq), refreshed on every anchor run. A
+	// value of 1 is steady-state (the anchor's own audit record); alerts pair it
+	// with the age gauge so an idle log never pages.
+	AuditAnchorPending = NewGauge(Default,
+		"secsy_audit_anchor_pending_events",
+		"Audit events appended since the last anchor (event-log head seq minus anchored seq).")
 )
 
 // Static artifact publishing (Task 58). The publisher writes CRLs, chains, and
@@ -472,6 +498,7 @@ var BatchBuckets = []float64{
 var (
 	ocspPresignLastSuccessNano atomic.Int64
 	publishLastSuccessNano     atomic.Int64
+	auditAnchorLastNano        atomic.Int64
 
 	_ = NewFuncGauge(Default,
 		"secsy_ocsp_presign_staleness_seconds",
@@ -481,6 +508,10 @@ var (
 		"secsy_publish_staleness_seconds",
 		"Seconds since the last successful static artifact publish (any backend). Absent until the first publish succeeds.",
 		func() (float64, bool) { return sinceNano(publishLastSuccessNano.Load()) })
+	_ = NewFuncGauge(Default,
+		"secsy_audit_anchor_age_seconds",
+		"Seconds since the most recent audit-chain anchor was persisted (seeded from the store at startup). Absent until an anchor exists.",
+		func() (float64, bool) { return sinceNano(auditAnchorLastNano.Load()) })
 )
 
 func sinceNano(nano int64) (float64, bool) {
@@ -569,6 +600,52 @@ func RecordAuditExportLag(sink string, cursor, head int64) {
 		lag = 0
 	}
 	AuditExportLag.Set(float64(lag), sink)
+}
+
+// AnchorSkipped is the AuditAnchors result label for a run that found nothing
+// new to anchor.
+const AnchorSkipped = "skipped"
+
+// RecordAuditAnchorSuccess records a persisted anchor covering seq at time at:
+// the pending tail drops to zero by construction (the anchored seq WAS the
+// head when the token was requested).
+func RecordAuditAnchorSuccess(seq int64, at time.Time) {
+	AuditAnchors.Inc(ResultSuccess)
+	AuditAnchorLastSuccess.Set(float64(at.Unix()))
+	AuditAnchorHeadSeq.Set(float64(seq))
+	AuditAnchorPending.Set(0)
+	auditAnchorLastNano.Store(at.UnixNano())
+}
+
+// RecordAuditAnchorSkipped records an anchor run that found nothing new:
+// anchoredSeq is the newest anchored sequence (0 when none), head the current
+// log tail. The pending gauge still refreshes so the unattested tail stays
+// observable between anchors.
+func RecordAuditAnchorSkipped(anchoredSeq, head int64) {
+	AuditAnchors.Inc(AnchorSkipped)
+	setAuditAnchorPending(anchoredSeq, head)
+}
+
+// RecordAuditAnchorFailure counts a failed anchoring attempt (token fetch or
+// persistence).
+func RecordAuditAnchorFailure() {
+	AuditAnchors.Inc(ResultError)
+}
+
+// SeedAuditAnchor initializes the last-anchor gauges from persisted state at
+// startup, so the age/head metrics reflect reality before the first new anchor.
+func SeedAuditAnchor(seq int64, at time.Time) {
+	AuditAnchorLastSuccess.Set(float64(at.Unix()))
+	AuditAnchorHeadSeq.Set(float64(seq))
+	auditAnchorLastNano.Store(at.UnixNano())
+}
+
+func setAuditAnchorPending(anchoredSeq, head int64) {
+	pending := head - anchoredSeq
+	if pending < 0 {
+		pending = 0
+	}
+	AuditAnchorPending.Set(float64(pending))
 }
 
 // Decision label values for AuthzDecisions.
