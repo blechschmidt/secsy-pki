@@ -172,6 +172,9 @@ func (a *API) SignSSHCert(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		metrics.SSHCertificates.Inc(certType, metrics.ResultError)
 		a.recordEvent(r, audit.ActionSSHSign, caID, "", audit.ResultError, err.Error())
+		if writeTenantLimitError(w, err) { // suspension → 403, quota → 429 + Retry-After
+			return
+		}
 		writeError(w, http.StatusBadRequest, "failed to sign certificate: %v", err)
 		return
 	}

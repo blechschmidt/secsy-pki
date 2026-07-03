@@ -644,14 +644,17 @@ func main() {
 	// (authenticated) client. Individual handlers may impose tighter limits.
 	handler := limitRequestBody(mux, maxRequestBodyBytes)
 
-	// Rate limiting, per-account/IP/global quotas, and a bounded in-flight
-	// concurrency guard protecting the HSM on the public endpoints (ACME, OCSP,
-	// CRL, SCEP/EST). Sits inside the observability layer so shed requests are
-	// still logged and metered, and outside the body cap so it runs before any
-	// per-handler work. No-op when rate_limit.enabled is false.
-	if rlmw := buildRateLimit(cfg); rlmw != nil && rlmw.Active() {
+	// Rate limiting, per-account/IP/global/per-tenant quotas, and a bounded
+	// in-flight concurrency guard protecting the HSM on the public endpoints
+	// (ACME, OCSP, CRL, SCEP/EST/CMP). Sits inside the observability layer so
+	// shed requests are still logged and metered, and outside the body cap so it
+	// runs before any per-handler work. Even with rate_limit.enabled false the
+	// middleware is installed for its tenant enrollment gate (Task 61): a
+	// suspended tenant's enrollment protocol surfaces answer 403 outright, while
+	// OCSP/CRL for its already-issued certificates keep flowing.
+	if rlmw := buildRateLimit(cfg, db); rlmw != nil && rlmw.Active() {
 		handler = rlmw.Handler(handler)
-		log.Printf("Rate limiting enabled for public endpoints (ACME/OCSP/CRL/SCEP/EST)")
+		log.Printf("Public-endpoint protection enabled (rate limiting: %v; tenant enrollment gate: on)", cfg.RateLimit.Enabled)
 	}
 
 	// Outermost middleware: assign a correlation ID to every request, record HTTP
@@ -1336,25 +1339,30 @@ func dedupRoles(roles []rbac.Role) []string {
 }
 
 // buildRateLimit constructs the public-endpoint rate-limit middleware from the
-// configuration, or returns nil when rate limiting is disabled. Unset knobs
+// configuration, or returns nil when nothing would be enforced. Unset knobs
 // fall back to safe defaults, and the concurrency guard's ceiling defaults to
-// the PKCS#11 session pool size so it tracks the backend it protects.
-func buildRateLimit(cfg *config.Config) *ratelimit.Middleware {
+// the PKCS#11 session pool size so it tracks the backend it protects. The
+// limiter and guard obey rate_limit.enabled; the tenant enrollment gate
+// (suspension blocking + per-tenant overrides, Task 61) is always wired when a
+// store is available, since tenant lifecycle enforcement must not depend on
+// rate limiting being turned on.
+func buildRateLimit(cfg *config.Config, db *database.DB) *ratelimit.Middleware {
 	rl := cfg.RateLimit
-	if !rl.Enabled {
-		return nil
+
+	var limiter *ratelimit.TieredLimiter
+	var guard *ratelimit.Guard
+	if rl.Enabled {
+		limiter = ratelimit.NewTieredLimiter(ratelimit.LimiterConfig{
+			Global:     ratelimit.Rate{Rate: rl.Global.Rate, Burst: rl.Global.Burst},
+			PerIP:      ratelimit.Rate{Rate: rl.PerIP.Rate, Burst: rl.PerIP.Burst},
+			PerAccount: ratelimit.Rate{Rate: rl.PerAccount.Rate, Burst: rl.PerAccount.Burst},
+			PerTenant:  ratelimit.Rate{Rate: rl.PerTenant.Rate, Burst: rl.PerTenant.Burst},
+			MaxKeys:    rl.MaxKeys,
+			IdleTTL:    time.Duration(rl.IdleTTLSeconds) * time.Second,
+		})
 	}
 
-	limiter := ratelimit.NewTieredLimiter(ratelimit.LimiterConfig{
-		Global:     ratelimit.Rate{Rate: rl.Global.Rate, Burst: rl.Global.Burst},
-		PerIP:      ratelimit.Rate{Rate: rl.PerIP.Rate, Burst: rl.PerIP.Burst},
-		PerAccount: ratelimit.Rate{Rate: rl.PerAccount.Rate, Burst: rl.PerAccount.Burst},
-		MaxKeys:    rl.MaxKeys,
-		IdleTTL:    time.Duration(rl.IdleTTLSeconds) * time.Second,
-	})
-
-	var guard *ratelimit.Guard
-	if rl.Concurrency.GuardEnabled(true) {
+	if rl.Enabled && rl.Concurrency.GuardEnabled(true) {
 		maxInFlight := rl.Concurrency.MaxInFlight
 		if maxInFlight <= 0 {
 			// Track the session pool: bounding in-flight requests to the number of
@@ -1402,7 +1410,146 @@ func buildRateLimit(cfg *config.Config) *ratelimit.Middleware {
 		pref.Sign = "/api/sign"
 	}
 
-	return ratelimit.New(ratelimit.Options{Limiter: limiter, Guard: guard, Prefixes: pref})
+	var tenantState func(*http.Request, string) *ratelimit.TenantState
+	if db != nil {
+		tenantState = newTenantStateSource(db, cfg).Resolve
+	}
+	if limiter == nil && guard == nil && tenantState == nil {
+		return nil
+	}
+	return ratelimit.New(ratelimit.Options{Limiter: limiter, Guard: guard, Prefixes: pref, TenantState: tenantState})
+}
+
+// tenantStateTTL bounds how stale the middleware's view of a tenant's
+// lifecycle/rate override may be. Suspension therefore reaches the public
+// enrollment surfaces within a few seconds without a per-request DB hit; the
+// authoritative fail-closed gate inside the CA manager always reads fresh
+// state.
+const tenantStateTTL = 3 * time.Second
+
+// tenantStateSource resolves, for the rate-limit middleware, which tenant owns
+// each public enrollment protocol (via the protocol instance's bound CA) and
+// that tenant's current lifecycle/rate-override state. A protocol's CA→tenant
+// binding is immutable, so it is resolved lazily once; the tenant state itself
+// is cached for tenantStateTTL.
+type tenantStateSource struct {
+	db  *database.DB
+	cfg *config.Config
+
+	mu            sync.Mutex
+	tenantByProto map[string]string
+	stateByTenant map[string]cachedTenantState
+}
+
+type cachedTenantState struct {
+	state   ratelimit.TenantState
+	expires time.Time
+}
+
+func newTenantStateSource(db *database.DB, cfg *config.Config) *tenantStateSource {
+	return &tenantStateSource{
+		db:            db,
+		cfg:           cfg,
+		tenantByProto: make(map[string]string),
+		stateByTenant: make(map[string]cachedTenantState),
+	}
+}
+
+// Resolve maps a classified endpoint (e.g. "acme_finalize", "est_enroll") to
+// its protocol's tenant state. Endpoints that are not tenant-scoped, and
+// protocols whose CA cannot (yet) be resolved, return nil — the middleware then
+// applies no tenant handling and the CA-manager gate remains the enforcement
+// point.
+func (s *tenantStateSource) Resolve(_ *http.Request, endpoint string) *ratelimit.TenantState {
+	var proto string
+	switch {
+	case strings.HasPrefix(endpoint, "acme"):
+		proto = "acme"
+	case strings.HasPrefix(endpoint, "est"):
+		proto = "est"
+	case strings.HasPrefix(endpoint, "scep"):
+		proto = "scep"
+	case endpoint == "cmp":
+		proto = "cmp"
+	default:
+		return nil
+	}
+	tenantID := s.tenantForProtocol(proto)
+	if tenantID == "" {
+		return nil
+	}
+	return s.stateFor(tenantID)
+}
+
+// tenantForProtocol resolves (once) the tenant that owns the protocol's bound
+// CA. An unresolvable CA (e.g. not created yet) is retried on the next request
+// rather than cached.
+func (s *tenantStateSource) tenantForProtocol(proto string) string {
+	s.mu.Lock()
+	if id, ok := s.tenantByProto[proto]; ok {
+		s.mu.Unlock()
+		return id
+	}
+	s.mu.Unlock()
+
+	var caID, caLabel string
+	switch proto {
+	case "acme":
+		caID, caLabel = s.cfg.ACME.CAID, s.cfg.ACME.CALabel
+	case "est":
+		caID, caLabel = s.cfg.EST.CAID, s.cfg.EST.CALabel
+	case "scep":
+		caID, caLabel = s.cfg.SCEP.CAID, s.cfg.SCEP.CALabel
+	case "cmp":
+		caID, caLabel = s.cfg.CMP.CAID, s.cfg.CMP.CALabel
+	}
+	var caRec *models.CA
+	var err error
+	switch {
+	case caID != "":
+		caRec, err = s.db.GetCA(caID)
+	case caLabel != "":
+		caRec, err = s.db.GetCAByLabel(caLabel)
+	}
+	if err != nil || caRec == nil {
+		return ""
+	}
+	tenantID := caRec.TenantID
+	if tenantID == "" {
+		tenantID = models.DefaultTenantID
+	}
+	s.mu.Lock()
+	s.tenantByProto[proto] = tenantID
+	s.mu.Unlock()
+	return tenantID
+}
+
+// stateFor returns the tenant's current middleware-relevant state, cached for
+// tenantStateTTL. A read failure yields nil (no middleware-level handling)
+// rather than blocking traffic: the CA manager's gate is the fail-closed
+// authority, while this front gate is best-effort protocol-surface hygiene.
+func (s *tenantStateSource) stateFor(tenantID string) *ratelimit.TenantState {
+	now := time.Now()
+	s.mu.Lock()
+	if e, ok := s.stateByTenant[tenantID]; ok && now.Before(e.expires) {
+		s.mu.Unlock()
+		st := e.state
+		return &st
+	}
+	s.mu.Unlock()
+
+	t, err := s.db.GetTenant(tenantID)
+	if err != nil || t == nil {
+		return nil
+	}
+	st := ratelimit.TenantState{ID: t.ID, Suspended: t.Status != models.TenantStatusActive}
+	if t.Quotas.RateLimitPerSecond > 0 && t.Quotas.RateLimitBurst > 0 {
+		st.Limit = &ratelimit.Rate{Rate: t.Quotas.RateLimitPerSecond, Burst: t.Quotas.RateLimitBurst}
+	}
+	s.mu.Lock()
+	s.stateByTenant[tenantID] = cachedTenantState{state: st, expires: now.Add(tenantStateTTL)}
+	s.mu.Unlock()
+	return &st
 }
 
 // orDefaultPath returns p when non-empty (after trimming), else the default.

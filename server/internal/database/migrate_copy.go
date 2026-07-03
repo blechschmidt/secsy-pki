@@ -20,6 +20,8 @@ var migrationTables = []string{
 	// Tenants are the top-level isolation boundary; cas and restriction_sets
 	// reference them, so they must be copied first to satisfy the FK.
 	"tenants",
+	// Per-tenant daily usage counters (Task 61) reference tenants.
+	"tenant_usage",
 	// Authorities and the subjects/policy that reference them.
 	"cas",
 	"restriction_sets",

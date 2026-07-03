@@ -309,6 +309,7 @@ function switchView(name) {
   if (name === 'discovery') loadDiscovery();
   if (name === 'compliance') loadCompliance();
   if (name === 'bundle') loadBundle();
+  if (name === 'tenants') loadTenants();
 }
 document.querySelectorAll('header nav button').forEach(b =>
   b.onclick = () => switchView(b.dataset.view));
@@ -796,6 +797,146 @@ $('decBtn').onclick = async () => {
     $('decOut').value = new TextDecoder().decode(unb64(res.plaintext));
   } catch (e) { alert('Decrypt failed: ' + e.message); }
 };
+
+// ---- Tenant administration (Task 61) --------------------------------------
+// Lifecycle (suspend/reactivate), per-tenant quotas, and the usage report.
+// Everything is enforced server-side; this page is platform-admin territory
+// (the list endpoint answers 403 for everyone else).
+let tenants = [];
+let quotaTarget = null;
+
+// limitCell renders a quota value, where 0 means unlimited.
+function limitCell(v) { return v > 0 ? String(v) : '∞'; }
+
+async function loadTenants() {
+  const rows = $('tenantRows');
+  try {
+    tenants = await api('GET', '/api/tenants');
+    $('tenantsDenied').classList.add('hidden');
+  } catch (e) {
+    tenants = [];
+    rows.innerHTML = '';
+    showError($('tenantsDenied'), 'Listing tenants failed: ' + e.message);
+    return;
+  }
+  if (!tenants.length) { rows.innerHTML = emptyRow('No tenants.'); return; }
+  rows.innerHTML = tenants.map(t => {
+    const q = t.quotas || {};
+    const suspended = t.status === 'suspended';
+    const rate = q.rate_limit_per_second > 0 ? `${q.rate_limit_per_second}/s ×${q.rate_limit_burst}` : 'default';
+    const toggle = t.id === 'default' ? '' :
+      `<button class="btn ${suspended ? '' : 'danger'} sm" data-act="${suspended ? 'activate' : 'suspend'}" data-id="${t.id}">${suspended ? 'Reactivate' : 'Suspend'}</button>`;
+    return `<tr${suspended ? ' style="opacity:.6"' : ''}>
+      <td>${escapeHTML(t.slug)}</td>
+      <td>${escapeHTML(t.name)}</td>
+      <td>${suspended ? '<span class="badge revoked">suspended</span>' : '<span class="badge ok">active</span>'}</td>
+      <td>${limitCell(q.max_certs_per_day)}</td>
+      <td>${limitCell(q.max_active_certs)}</td>
+      <td>${limitCell(q.max_secret_ops_per_day)}</td>
+      <td>${escapeHTML(rate)}</td>
+      <td style="white-space:nowrap">
+        <button class="btn ghost sm" data-act="usage" data-id="${t.id}">usage</button>
+        <button class="btn ghost sm" data-act="quotas" data-id="${t.id}">quotas</button>
+        ${toggle}
+      </td>
+    </tr>`;
+  }).join('');
+  rows.querySelectorAll('button[data-act]').forEach(b => {
+    const t = tenants.find(x => x.id === b.dataset.id);
+    if (!t) return;
+    if (b.dataset.act === 'usage') b.onclick = () => loadTenantUsage(t);
+    if (b.dataset.act === 'quotas') b.onclick = () => openQuotaModal(t);
+    if (b.dataset.act === 'suspend' || b.dataset.act === 'activate') {
+      b.onclick = () => setTenantStatus(t, b.dataset.act === 'suspend' ? 'suspended' : 'active');
+    }
+  });
+}
+$('refreshTenants').onclick = loadTenants;
+
+async function setTenantStatus(t, status) {
+  if (status === 'suspended' &&
+      !confirm(`Suspend tenant "${t.slug}"?\n\nAll enrollment (ACME/SCEP/EST/CMP/gRPC/REST/SSH) and secret operations will be refused. OCSP/CRL for its existing certificates keep working, and revocation stays possible.`)) {
+    return;
+  }
+  try {
+    await api('PUT', `/api/tenants/${encodeURIComponent(t.id)}/status`, { status });
+    await loadTenants();
+  } catch (e) {
+    showError($('globalError'), `Updating tenant ${t.slug}: ${e.message}`);
+  }
+}
+
+$('tenantCreateBtn').onclick = async () => {
+  const err = $('tenantCreateError');
+  err.classList.add('hidden');
+  const body = {
+    slug: $('tenantSlug').value.trim(),
+    name: $('tenantName').value.trim(),
+    kek_label: $('tenantKEK').value.trim(),
+  };
+  if (!body.slug) { showError(err, 'A slug is required.'); return; }
+  try {
+    await api('POST', '/api/tenants', body);
+    $('tenantSlug').value = $('tenantName').value = $('tenantKEK').value = '';
+    await loadTenants();
+  } catch (e) { showError(err, e.message); }
+};
+
+function openQuotaModal(t) {
+  quotaTarget = t;
+  const q = t.quotas || {};
+  $('quotaTenantLabel').textContent = t.slug;
+  $('quotaCertsDay').value = q.max_certs_per_day || 0;
+  $('quotaActive').value = q.max_active_certs || 0;
+  $('quotaSecretOps').value = q.max_secret_ops_per_day || 0;
+  $('quotaRate').value = q.rate_limit_per_second || 0;
+  $('quotaBurst').value = q.rate_limit_burst || 0;
+  $('quotaError').classList.add('hidden');
+  $('quotaModal').classList.remove('hidden');
+}
+$('quotaCancel').onclick = () => { $('quotaModal').classList.add('hidden'); quotaTarget = null; };
+$('quotaSave').onclick = async () => {
+  if (!quotaTarget) return;
+  const num = (id) => { const v = Number($(id).value); return isFinite(v) && v >= 0 ? v : 0; };
+  const quotas = {
+    max_certs_per_day: Math.floor(num('quotaCertsDay')),
+    max_active_certs: Math.floor(num('quotaActive')),
+    max_secret_ops_per_day: Math.floor(num('quotaSecretOps')),
+    rate_limit_per_second: num('quotaRate'),
+    rate_limit_burst: num('quotaBurst'),
+  };
+  try {
+    await api('PUT', `/api/tenants/${encodeURIComponent(quotaTarget.id)}`, { quotas });
+    $('quotaModal').classList.add('hidden');
+    quotaTarget = null;
+    await loadTenants();
+  } catch (e) { showError($('quotaError'), e.message); }
+};
+
+async function loadTenantUsage(t) {
+  $('usageTenantLabel').textContent = '— ' + t.slug;
+  try {
+    const u = await api('GET', `/api/tenants/${encodeURIComponent(t.id)}/usage?days=14`);
+    $('tenantUsageEmpty').classList.add('hidden');
+    $('tenantUsageBox').classList.remove('hidden');
+    const q = u.quotas || {};
+    const cap = (v, max) => max > 0 ? `${v} / ${max}` : String(v);
+    $('tenantUsageSummary').innerHTML =
+      `CAs: <b>${u.cas}</b> &nbsp; active certs: <b>${escapeHTML(cap(u.active_certs, q.max_active_certs))}</b> ` +
+      `&nbsp; issued (lifetime): <b>${u.total_issued}</b> &nbsp; revoked: <b>${u.total_revoked}</b> ` +
+      `&nbsp; <span class="muted">as of ${escapeHTML(fmtTime(u.generated_at))}</span>`;
+    $('tenantUsageRows').innerHTML = (u.days || []).map(d => `<tr>
+      <td>${escapeHTML(d.day)}</td>
+      <td>${escapeHTML(cap(d.certs_issued, q.max_certs_per_day))}</td>
+      <td>${d.certs_revoked}</td>
+      <td>${escapeHTML(cap(d.secret_ops, q.max_secret_ops_per_day))}</td>
+    </tr>`).join('') || emptyRow('No usage recorded.');
+  } catch (e) {
+    $('tenantUsageEmpty').classList.remove('hidden');
+    $('tenantUsageBox').classList.add('hidden');
+    $('tenantUsageEmpty').textContent = 'Usage unavailable: ' + e.message;
+  }
+}
 
 // ---- Helpers -------------------------------------------------------------
 function emptyRow(msg) { return `<tr><td colspan="6" class="muted">${escapeHTML(msg)}</td></tr>`; }

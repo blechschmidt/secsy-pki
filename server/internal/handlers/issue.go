@@ -69,6 +69,9 @@ func (a *API) IssueCertificate(w http.ResponseWriter, r *http.Request) {
 	metrics.RecordCertificate("issue", err)
 	if err != nil {
 		a.recordEvent(r, audit.ActionCertIssue, caID, "", audit.ResultError, err.Error())
+		if writeTenantLimitError(w, err) { // suspension → 403, quota → 429 + Retry-After
+			return
+		}
 		writeError(w, http.StatusBadRequest, "failed to issue certificate: %v", err)
 		return
 	}
@@ -119,6 +122,9 @@ func (a *API) RenewCertificate(w http.ResponseWriter, r *http.Request) {
 	metrics.RecordCertificate("renew", err)
 	if err != nil {
 		a.recordEvent(r, audit.ActionCertRenew, caID, req.Serial, audit.ResultError, err.Error())
+		if writeTenantLimitError(w, err) { // suspension → 403, quota → 429 + Retry-After
+			return
+		}
 		writeError(w, http.StatusBadRequest, "failed to renew certificate: %v", err)
 		return
 	}

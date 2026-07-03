@@ -192,6 +192,14 @@ rbac:
 # audit trail; a principal may only reach a tenant it is a member of. The
 # top-level rbac block above grants PLATFORM-wide roles (spanning all tenants,
 # for platform operators); a tenant's rbac block grants roles ONLY within it.
+#
+# Lifecycle & quotas (Task 61): tenants can be suspended (blocks all
+# certificate issuance across every enrollment protocol plus secret operations,
+# while OCSP/CRL for existing certificates keeps serving) and carry per-tenant
+# quotas — certs/day, active-cert ceiling, secret-ops/day, and a rate-limit
+# override — managed at runtime via `secsy-ca tenant quota|suspend|activate|
+# usage`, PUT /api/tenants/{id}, and the console's Tenants page. Enforcement is
+# fail-closed with 429/quota_exceeded semantics; see docs/multi-tenancy.md.
 tenants: []
 #   - id: acme-corp                 # stable, immutable internal id
 #     slug: acme                    # URL/CLI-friendly unique identifier
@@ -458,6 +466,15 @@ rate_limit:
   per_account:                   # per ACME account / EST user
     rate: 50
     burst: 100
+  # per_tenant caps one tenant's aggregate rate across its public enrollment
+  # endpoints (ACME/EST/SCEP/CMP, resolved from the protocol's bound CA). This
+  # is the deployment-wide default; a tenant's own rate_limit_per_second /
+  # rate_limit_burst quota fields (secsy-ca tenant quota, PUT /api/tenants/{id})
+  # override it per tenant, applied live. OCSP/CRL are never metered per tenant,
+  # so relying parties can always check revocation status.
+  # per_tenant:
+  #   rate: 50
+  #   burst: 100
   # max_keys: 100000             # bound on distinct per-IP/per-account buckets
   # idle_ttl_seconds: 600        # idle bucket eviction window
   concurrency:                   # in-flight guard in front of the HSM session pool

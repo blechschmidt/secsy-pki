@@ -12,6 +12,8 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 
+	// Aliased because Sign's local variable for the CA record is named "ca".
+	capkg "github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -168,7 +170,7 @@ type SignResult struct {
 // Sign validates a request against its profile, allocates the next serial from
 // the CA's monotonic counter, and signs the certificate with the CA's
 // HSM-held key.
-func (a *Authority) Sign(ctx context.Context, req SignRequest) (*SignResult, error) {
+func (a *Authority) Sign(ctx context.Context, req SignRequest) (_ *SignResult, err error) {
 	ca, err := a.db.GetCA(req.CAID)
 	if err != nil {
 		return nil, fmt.Errorf("loading CA: %w", err)
@@ -179,6 +181,13 @@ func (a *Authority) Sign(ctx context.Context, req SignRequest) (*SignResult, err
 	if ca.Status != "" && ca.Status != models.CAStatusActive {
 		return nil, fmt.Errorf("CA %q is %s and no longer signs certificates", ca.Label, ca.Status)
 	}
+	// SSH certificates mint from the same tenant-owned CA records as X.509, so
+	// they pass the same tenant lifecycle + daily-quota gate (Task 61).
+	gateDone, err := capkg.GateTenantIssuance(a.db, ca, req.RequestedBy)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { gateDone(err) }()
 
 	certType := req.CertType
 	if certType == "" {

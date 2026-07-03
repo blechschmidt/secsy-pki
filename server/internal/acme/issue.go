@@ -6,9 +6,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	jose "github.com/go-jose/go-jose/v4"
@@ -17,6 +20,34 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
+
+// issuanceProblem maps an issuance failure to its ACME problem document:
+// tenant quota exhaustion is an RFC 8555 rateLimited problem (429), a
+// suspended tenant is unauthorized (403), anything else stays a server error.
+func issuanceProblem(err error) *Problem {
+	var quota *models.QuotaExceededError
+	if errors.As(err, &quota) {
+		return newProblem(probRateLimited, http.StatusTooManyRequests, err.Error())
+	}
+	var susp *models.TenantSuspendedError
+	if errors.As(err, &susp) {
+		return newProblem(probUnauthorized, http.StatusForbidden, err.Error())
+	}
+	return newProblem(probServerInternal, http.StatusInternalServerError, "certificate issuance failed: "+err.Error())
+}
+
+// setQuotaRetryAfter adds a Retry-After header when err is a daily-quota
+// exhaustion, so compliant ACME clients back off until the window resets.
+func setQuotaRetryAfter(w http.ResponseWriter, err error) {
+	var quota *models.QuotaExceededError
+	if errors.As(err, &quota) && quota.RetryAfter > 0 {
+		secs := int(math.Ceil(quota.RetryAfter.Seconds()))
+		if secs < 1 {
+			secs = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+	}
+}
 
 // handleFinalize issues the certificate for a ready order from a client CSR.
 func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
@@ -88,9 +119,19 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		RequestedBy: "acme:" + acct.rec.ID,
 	})
 	if err != nil {
-		prob := newProblem(probServerInternal, http.StatusInternalServerError, "certificate issuance failed: "+err.Error())
-		s.markOrderInvalid(order.ID, prob)
+		prob := issuanceProblem(err)
+		// Quota exhaustion is transient (the window resets at UTC midnight), so
+		// the order stays ready and the client may retry finalize after the
+		// Retry-After; any other failure invalidates the order as before.
+		var quota *models.QuotaExceededError
+		if !errors.As(err, &quota) {
+			s.markOrderInvalid(order.ID, prob)
+		} else {
+			_ = s.db.UpdateACMEOrderStatus(order.ID, models.ACMEOrderStatusReady, "")
+			order.Status = models.ACMEOrderStatusReady
+		}
 		s.recordEvent(r, acct.rec.ID, audit.ActionACMEOrderFinalize, order.ID, audit.ResultError, err.Error())
+		setQuotaRetryAfter(w, err)
 		s.writeProblem(w, prob)
 		return
 	}

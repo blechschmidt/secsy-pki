@@ -31,19 +31,41 @@ type Prefixes struct {
 	Sign string // e.g. "/api/sign" (authenticated, but HSM-bound per request)
 }
 
+// TenantState is what the middleware needs to know about the tenant behind a
+// public enrollment request (Task 61): whether the tenant may enroll at all,
+// and its per-tenant rate override, if any.
+type TenantState struct {
+	// ID is the tenant identifier, used as the per-tenant bucket key.
+	ID string
+	// Suspended blocks the tenant's enrollment endpoints outright (403). The
+	// OCSP/CRL classes are never tenant-blocked: relying parties must keep
+	// validating a suspended tenant's already-issued certificates.
+	Suspended bool
+	// Limit optionally overrides the deployment-wide per-tenant rate for this
+	// tenant. nil inherits the configured default.
+	Limit *Rate
+}
+
 // Options configures the rate-limit middleware.
 type Options struct {
 	Limiter  *TieredLimiter
 	Guard    *Guard
 	Prefixes Prefixes
+	// TenantState resolves the tenant behind a public enrollment request, keyed
+	// by the endpoint class the middleware assigned (e.g. "acme_new_order",
+	// "est_enroll"). Enrollment protocol instances are each bound to one CA and
+	// therefore one tenant, so the resolution is per protocol, not per caller.
+	// nil (or a nil result) disables tenant-aware handling for the request.
+	TenantState func(r *http.Request, endpoint string) *TenantState
 }
 
 // Middleware applies tiered rate limiting and the HSM concurrency guard to the
 // public-facing endpoints, passing every other request through untouched.
 type Middleware struct {
-	limiter  *TieredLimiter
-	guard    *Guard
-	prefixes Prefixes
+	limiter     *TieredLimiter
+	guard       *Guard
+	prefixes    Prefixes
+	tenantState func(r *http.Request, endpoint string) *TenantState
 }
 
 // New builds the middleware. Path prefixes are normalized (leading slash, no
@@ -51,8 +73,9 @@ type Middleware struct {
 // configured.
 func New(opts Options) *Middleware {
 	return &Middleware{
-		limiter: opts.Limiter,
-		guard:   opts.Guard,
+		limiter:     opts.Limiter,
+		guard:       opts.Guard,
+		tenantState: opts.TenantState,
 		prefixes: Prefixes{
 			ACME: normalizePrefix(opts.Prefixes.ACME),
 			EST:  normalizePrefix(opts.Prefixes.EST),
@@ -70,7 +93,9 @@ func (m *Middleware) Active() bool {
 	if m == nil {
 		return false
 	}
-	return (m.limiter != nil && m.limiter.Enabled()) || (m.guard != nil && m.guard.Enabled())
+	return (m.limiter != nil && m.limiter.Enabled()) ||
+		(m.guard != nil && m.guard.Enabled()) ||
+		m.tenantState != nil
 }
 
 func normalizePrefix(p string) string {
@@ -87,6 +112,13 @@ type class struct {
 	hsmBound bool   // gate behind the concurrency guard (signing/enrollment)
 	acme     bool   // emit RFC 8555 problem+json on rejection
 	account  func(*http.Request) string
+	// tenantScoped marks the enrollment protocol surfaces that belong to one
+	// tenant (via the protocol instance's bound CA): they honor the per-tenant
+	// rate tier and are blocked outright while the tenant is suspended. The
+	// OCSP/CRL and TSA classes deliberately stay false — revocation status for
+	// already-issued certificates must keep flowing to relying parties, and the
+	// timestamp authority is deployment-scoped.
+	tenantScoped bool
 }
 
 // Handler wraps next with rate limiting and the HSM concurrency guard for the
@@ -100,8 +132,30 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		if m.limiter != nil && m.limiter.Enabled() {
+		// Resolve the tenant behind a tenant-scoped enrollment endpoint. A
+		// suspended tenant's enrollment surface is refused outright — one 403
+		// wall in front of the whole protocol — while OCSP/CRL (never
+		// tenant-scoped) keep serving its already-issued certificates. This
+		// complements the fail-closed gate inside the CA manager, which holds
+		// even when this middleware is not installed.
+		var tenant *TenantState
+		if c.tenantScoped && m.tenantState != nil {
+			tenant = m.tenantState(r, c.name)
+			if tenant != nil && tenant.Suspended {
+				metrics.TenantDenied.Inc(metrics.TenantLabel(tenant.ID), "suspended")
+				writeTenantSuspended(w, c)
+				return
+			}
+		}
+
+		limiterActive := m.limiter != nil && (m.limiter.Enabled() ||
+			(tenant != nil && tenant.Limit != nil))
+		if limiterActive {
 			keys := Keys{IP: clientIP(r)}
+			if tenant != nil {
+				keys.Tenant = tenant.ID
+				keys.TenantLimit = tenant.Limit
+			}
 			if c.account != nil {
 				keys.Account = c.account(r)
 				// Namespace the per-account bucket by tenant so accounts of
@@ -117,6 +171,9 @@ func (m *Middleware) Handler(next http.Handler) http.Handler {
 			}
 			if d := m.limiter.Allow(keys); !d.Allowed {
 				metrics.RateLimitThrottled.Inc(c.name, d.Tier)
+				if d.Tier == TierPerTenant && tenant != nil {
+					metrics.TenantDenied.Inc(metrics.TenantLabel(tenant.ID), "rate_limit")
+				}
 				writeThrottled(w, c, d.RetryAfter)
 				return
 			}
@@ -158,17 +215,17 @@ func (m *Middleware) classify(r *http.Request) *class {
 	if p := m.prefixes.ACME; p != "" && underPrefix(path, p) {
 		switch {
 		case strings.HasSuffix(path, "/new-account"):
-			return &class{name: "acme_new_account", acme: true}
+			return &class{name: "acme_new_account", acme: true, tenantScoped: true}
 		case strings.HasSuffix(path, "/new-order"):
-			return &class{name: "acme_new_order", acme: true, account: acmeAccount}
+			return &class{name: "acme_new_order", acme: true, account: acmeAccount, tenantScoped: true}
 		case strings.HasSuffix(path, "/finalize"):
-			return &class{name: "acme_finalize", hsmBound: true, acme: true, account: acmeAccount}
+			return &class{name: "acme_finalize", hsmBound: true, acme: true, account: acmeAccount, tenantScoped: true}
 		case strings.Contains(path, "/renewal-info"):
 			// ARI (draft-ietf-acme-ari): an unauthenticated GET carrying no JWS, so
 			// it is metered by the global and per-IP tiers only (no account key).
-			return &class{name: "acme_renewal_info", acme: true}
+			return &class{name: "acme_renewal_info", acme: true, tenantScoped: true}
 		default:
-			return &class{name: "acme_other", acme: true, account: acmeAccount}
+			return &class{name: "acme_other", acme: true, account: acmeAccount, tenantScoped: true}
 		}
 	}
 
@@ -177,17 +234,17 @@ func (m *Middleware) classify(r *http.Request) *class {
 		case strings.HasSuffix(path, "/simpleenroll"),
 			strings.HasSuffix(path, "/simplereenroll"),
 			strings.HasSuffix(path, "/serverkeygen"):
-			return &class{name: "est_enroll", hsmBound: true, account: estAccount}
+			return &class{name: "est_enroll", hsmBound: true, account: estAccount, tenantScoped: true}
 		default:
-			return &class{name: "est_other"}
+			return &class{name: "est_other", tenantScoped: true}
 		}
 	}
 
 	if p := m.prefixes.SCEP; p != "" && (path == p || path == p+"/pkiclient.exe") {
 		if r.Method == http.MethodPost && strings.EqualFold(r.URL.Query().Get("operation"), "PKIOperation") {
-			return &class{name: "scep_enroll", hsmBound: true}
+			return &class{name: "scep_enroll", hsmBound: true, tenantScoped: true}
 		}
-		return &class{name: "scep_other"}
+		return &class{name: "scep_other", tenantScoped: true}
 	}
 
 	// RFC 3161 time-stamping signs on the HSM, so gate it behind the concurrency
@@ -199,7 +256,7 @@ func (m *Middleware) classify(r *http.Request) *class {
 	// Lightweight CMP (RFC 9483) issues/revokes on the HSM, so gate it behind the
 	// concurrency guard like the other signing endpoints.
 	if p := m.prefixes.CMP; p != "" && path == p {
-		return &class{name: "cmp", hsmBound: true}
+		return &class{name: "cmp", hsmBound: true, tenantScoped: true}
 	}
 
 	// Artifact signing. POST /api/sign signs on the HSM, so it is both metered
@@ -236,6 +293,21 @@ func writeThrottled(w http.ResponseWriter, c *class, retryAfter time.Duration) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusTooManyRequests)
 	io.WriteString(w, "429 Too Many Requests: rate limit exceeded\n")
+}
+
+// writeTenantSuspended refuses an enrollment request because its tenant is
+// suspended. Unlike a throttle this is not retryable, so no Retry-After is
+// sent; ACME clients get an RFC 8555 unauthorized problem.
+func writeTenantSuspended(w http.ResponseWriter, c *class) {
+	if c.acme {
+		writeACMEProblem(w, http.StatusForbidden,
+			"urn:ietf:params:acme:error:unauthorized",
+			"the tenant behind this enrollment endpoint is suspended")
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusForbidden)
+	io.WriteString(w, "403 Forbidden: tenant is suspended; enrollment is disabled\n")
 }
 
 // writeGuardRejected responds when the HSM concurrency guard sheds a request.

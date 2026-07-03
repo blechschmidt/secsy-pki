@@ -105,6 +105,9 @@ func (a *API) IssueSVID(w http.ResponseWriter, r *http.Request) {
 	metrics.RecordCertificate("svid_issue", err)
 	if err != nil {
 		a.recordEvent(r, audit.ActionSVIDIssue, caID, id.String(), audit.ResultError, err.Error())
+		if writeTenantLimitError(w, err) { // suspension → 403, quota → 429 + Retry-After
+			return
+		}
 		writeError(w, http.StatusBadRequest, "failed to issue SVID: %v", err)
 		return
 	}

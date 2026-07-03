@@ -421,13 +421,22 @@ func mapAuthzError(err error) error {
 // mapIssueError maps a manager issuance/renewal/revocation error to a gRPC
 // status. The REST handlers return HTTP 400 for these; the closest gRPC code is
 // InvalidArgument for client-caused failures (bad CSR, profile, policy/lint/CAA
-// rejection), with a context cancellation surfaced faithfully.
+// rejection), with a context cancellation surfaced faithfully. Tenant gate
+// refusals (Task 61) map to their own codes, mirroring REST's 429/403.
 func mapIssueError(err error) error {
+	var quota *models.QuotaExceededError
+	var susp *models.TenantSuspendedError
 	switch {
 	case errors.Is(err, context.Canceled):
 		return status.Error(codes.Canceled, err.Error())
 	case errors.Is(err, context.DeadlineExceeded):
 		return status.Error(codes.DeadlineExceeded, err.Error())
+	case errors.As(err, &quota):
+		// ResourceExhausted is gRPC's equivalent of HTTP 429; clients should
+		// back off until the daily window resets.
+		return status.Error(codes.ResourceExhausted, err.Error())
+	case errors.As(err, &susp):
+		return status.Error(codes.PermissionDenied, err.Error())
 	default:
 		return status.Error(codes.InvalidArgument, err.Error())
 	}

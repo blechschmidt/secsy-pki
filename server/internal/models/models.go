@@ -1,6 +1,7 @@
 package models
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
@@ -40,6 +41,101 @@ type Tenant struct {
 	// separable from another's.
 	KEKLabel  string    `json:"kek_label,omitempty" db:"kek_label"`
 	CreatedAt time.Time `json:"created_at" db:"created_at"`
+	// Quotas caps this tenant's consumption (Task 61). The zero value means
+	// "unlimited" for every dimension, preserving pre-quota behavior.
+	Quotas TenantQuotas `json:"quotas"`
+}
+
+// TenantQuotas bounds a tenant's resource consumption. Every field treats zero
+// (or negative) as unlimited so existing tenants are unaffected until an
+// operator explicitly sets a ceiling. Enforcement is fail-closed: when quota
+// state cannot be read the operation is refused, never silently admitted.
+type TenantQuotas struct {
+	// MaxCertsPerDay caps how many certificates (X.509 leaves and SSH
+	// certificates) the tenant may have issued per UTC day, across all its CAs
+	// and every enrollment protocol (REST, ACME, SCEP, EST, CMP, gRPC).
+	MaxCertsPerDay int64 `json:"max_certs_per_day,omitempty" db:"max_certs_per_day"`
+	// MaxActiveCerts caps the tenant's inventory of unexpired, unrevoked X.509
+	// certificates. New issuance is refused while the ceiling is reached;
+	// revocation or expiry frees room.
+	MaxActiveCerts int64 `json:"max_active_certs,omitempty" db:"max_active_certs"`
+	// MaxSecretOpsPerDay caps envelope encrypt/decrypt operations per UTC day.
+	MaxSecretOpsPerDay int64 `json:"max_secret_ops_per_day,omitempty" db:"max_secret_ops_per_day"`
+	// RateLimitPerSecond / RateLimitBurst override the deployment-wide
+	// per-tenant request rate tier for this tenant's public enrollment
+	// endpoints. Zero inherits the rate_limit.per_tenant configuration.
+	RateLimitPerSecond float64 `json:"rate_limit_per_second,omitempty" db:"rate_limit_per_second"`
+	RateLimitBurst     float64 `json:"rate_limit_burst,omitempty" db:"rate_limit_burst"`
+}
+
+// Quota kinds, used as the QuotaExceededError discriminator, the audit-event
+// detail, and the "quota" metric label. Bounded set — safe as a label.
+const (
+	QuotaCertsPerDay     = "certs_per_day"
+	QuotaActiveCerts     = "active_certs"
+	QuotaSecretOpsPerDay = "secret_ops_per_day"
+)
+
+// TenantSuspendedError reports that an operation was refused because the
+// owning tenant is suspended. Protocol layers map it to HTTP 403 (or the
+// protocol's equivalent) while leaving OCSP/CRL service for already-issued
+// certificates untouched.
+type TenantSuspendedError struct {
+	TenantID string
+}
+
+func (e *TenantSuspendedError) Error() string {
+	return fmt.Sprintf("tenant %q is suspended; new issuance and secret operations are disabled", e.TenantID)
+}
+
+// QuotaExceededError reports that a per-tenant quota is exhausted. Protocol
+// layers map it to HTTP 429 with a Retry-After of RetryAfter (the time until
+// the daily window resets; zero for inventory ceilings, where retrying only
+// helps after certificates are revoked or expire).
+type QuotaExceededError struct {
+	TenantID string
+	// Quota is one of the Quota* kind constants.
+	Quota string
+	// Limit is the configured ceiling that was hit.
+	Limit int64
+	// RetryAfter suggests when capacity may be available again (daily windows
+	// reset at UTC midnight). Zero means "not time-based".
+	RetryAfter time.Duration
+}
+
+func (e *QuotaExceededError) Error() string {
+	return fmt.Sprintf("tenant %q quota %s exceeded (limit %d)", e.TenantID, e.Quota, e.Limit)
+}
+
+// TenantUsageDay is one UTC day's accounted consumption for a tenant.
+type TenantUsageDay struct {
+	Day          string `json:"day" db:"day"` // UTC date, YYYY-MM-DD
+	CertsIssued  int64  `json:"certs_issued" db:"certs_issued"`
+	CertsRevoked int64  `json:"certs_revoked" db:"certs_revoked"`
+	SecretOps    int64  `json:"secret_ops" db:"secret_ops"`
+}
+
+// TenantUsageReport is the operator-facing usage summary served by
+// GET /api/tenants/{id}/usage: point-in-time inventory counts plus a rolling
+// window of daily accounting rows.
+type TenantUsageReport struct {
+	TenantID string `json:"tenant_id"`
+	Slug     string `json:"slug"`
+	Status   string `json:"status"`
+	// ActiveCerts / TotalIssued / TotalRevoked are inventory counts across all
+	// the tenant's CAs (X.509; SSH certificates are accounted in the daily
+	// counters but carry their own inventory).
+	ActiveCerts  int64 `json:"active_certs"`
+	TotalIssued  int64 `json:"total_issued"`
+	TotalRevoked int64 `json:"total_revoked"`
+	CAs          int   `json:"cas"`
+	// Today is the current UTC day's accounting (the window the daily quotas
+	// meter), also present in Days.
+	Today TenantUsageDay `json:"today"`
+	// Days is the rolling usage window, most recent day first.
+	Days        []TenantUsageDay `json:"days"`
+	Quotas      TenantQuotas     `json:"quotas"`
+	GeneratedAt time.Time        `json:"generated_at"`
 }
 
 type Permission string

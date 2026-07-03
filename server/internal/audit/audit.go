@@ -45,9 +45,14 @@ const (
 	ActionTenantCreate = "tenant.create"
 	ActionTenantUpdate = "tenant.update"
 	ActionTenantDelete = "tenant.delete"
-	ActionCertIssue    = "cert.issue"
-	ActionCertRenew    = "cert.renew"
-	ActionCertRevoke   = "cert.revoke"
+	// ActionTenantQuota records the fail-closed per-tenant issuance/secret gate
+	// (Task 61) refusing an operation: ResultDenied with a detail naming the
+	// exhausted quota (certs_per_day|active_certs|secret_ops_per_day) or the
+	// suspended lifecycle state.
+	ActionTenantQuota = "tenant.quota"
+	ActionCertIssue   = "cert.issue"
+	ActionCertRenew   = "cert.renew"
+	ActionCertRevoke  = "cert.revoke"
 	// ActionSVIDIssue records the minting of a SPIFFE X.509-SVID. The detail
 	// carries the spiffe:// identity, trust domain, and profile.
 	ActionSVIDIssue = "svid.issue"

@@ -226,7 +226,14 @@ func (m *Manager) buildHybridCACert(ctx context.Context, label, keyType, altKeyT
 // (from a PQC CSR) and the issuer signature are both ML-DSA. Certificate
 // Transparency does not apply (these are not submitted to public CT logs), but
 // the pre-issuance lint gate still runs.
-func (m *Manager) issuePQCLeaf(ctx context.Context, spec IssueSpec, issuerCA *models.CA, issuerCert *x509.Certificate, profile Profile) (*IssueResult, error) {
+func (m *Manager) issuePQCLeaf(ctx context.Context, spec IssueSpec, issuerCA *models.CA, issuerCert *x509.Certificate, profile Profile) (_ *IssueResult, err error) {
+	// Same tenant lifecycle + quota gate as the classical issueLeaf path.
+	gateDone, err := m.gateTenantIssuance(ctx, issuerCA, spec.RequestedBy)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { gateDone(err) }()
+
 	csrDER, err := decodeCSRPEM(spec.CSRPEM)
 	if err != nil {
 		return nil, err
@@ -269,7 +276,14 @@ func (m *Manager) issuePQCLeaf(ctx context.Context, spec IssueSpec, issuerCA *mo
 // CSR: a classical primary signature plus a parallel ML-DSA alternative
 // signature. It requires a hybrid issuing CA (classical primary key plus an
 // ML-DSA alternative key stored under altKeyLabel).
-func (m *Manager) issueHybridLeaf(ctx context.Context, spec IssueSpec, issuerCA *models.CA, issuerCert *x509.Certificate, profile Profile) (*IssueResult, error) {
+func (m *Manager) issueHybridLeaf(ctx context.Context, spec IssueSpec, issuerCA *models.CA, issuerCert *x509.Certificate, profile Profile) (_ *IssueResult, err error) {
+	// Same tenant lifecycle + quota gate as the classical issueLeaf path.
+	gateDone, err := m.gateTenantIssuance(ctx, issuerCA, spec.RequestedBy)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { gateDone(err) }()
+
 	csrDER, err := decodeCSRPEM(spec.CSRPEM)
 	if err != nil {
 		return nil, err

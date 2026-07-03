@@ -213,6 +213,14 @@ func (m *Manager) issueLeaf(ctx context.Context, issuerCA *models.CA, issuerCert
 		attribute.String("ca.profile", profile.Name))
 	defer func() { tracing.End(span, err) }()
 
+	// Tenant lifecycle + quota gate (fail-closed), before any HSM work. The
+	// reservation it takes is committed or released by the final issuance error.
+	gateDone, err := m.gateTenantIssuance(ctx, issuerCA, requestedBy)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { gateDone(err) }()
+
 	keyUsage, err := profile.keyUsage()
 	if err != nil {
 		return nil, err
@@ -321,11 +329,19 @@ type RenewSpec struct {
 // and validity window, reusing the original subject/SANs/profile (and public
 // key, unless a fresh CSR is supplied). The original certificate is left intact;
 // callers may revoke it separately.
-func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (*IssueResult, error) {
+func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (_ *IssueResult, err error) {
 	issuerCA, issuerCert, err := m.loadIssuer(spec.CAID)
 	if err != nil {
 		return nil, err
 	}
+	// Renewal mints a new certificate, so it passes the same tenant lifecycle +
+	// quota gate as first-time issuance (fail-closed, reservation released on
+	// any later failure).
+	gateDone, err := m.gateTenantIssuance(ctx, issuerCA, spec.RequestedBy)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { gateDone(err) }()
 	if spec.Serial == "" {
 		return nil, fmt.Errorf("serial is required to renew a certificate")
 	}
@@ -483,7 +499,13 @@ func (m *Manager) RevokeCertificate(ctx context.Context, caID, serial, reasonNam
 	if err != nil {
 		return false, err
 	}
-	return m.db.RevokeCertificate(caID, serial, reason, time.Now())
+	applied, err := m.db.RevokeCertificate(caID, serial, reason, time.Now())
+	if err == nil && applied {
+		// Usage accounting only — revocation is never quota-gated, and a
+		// suspended tenant's certificates must remain revocable.
+		m.accountTenantRevocation(caID)
+	}
+	return applied, err
 }
 
 // GenerateCRL builds and signs a fresh CRL for the CA covering all recorded

@@ -22,10 +22,13 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -170,7 +173,7 @@ func (s *Server) handleEnroll(reenroll bool) http.HandlerFunc {
 		leaf, err := s.issue(r, csr, profile, actor)
 		if err != nil {
 			s.recordEvent(r, actor, action, csr.Subject.CommonName, audit.ResultError, err.Error())
-			http.Error(w, "issuance failed", http.StatusInternalServerError)
+			writeIssuanceError(w, err)
 			log.Printf("est: issuance failed: %v", err)
 			return
 		}
@@ -227,7 +230,7 @@ func (s *Server) handleServerKeygen(w http.ResponseWriter, r *http.Request) {
 	leaf, err := s.issue(r, newCSR, profile, actor)
 	if err != nil {
 		s.recordEvent(r, actor, audit.ActionESTServerKeyGen, csr.Subject.CommonName, audit.ResultError, err.Error())
-		http.Error(w, "issuance failed", http.StatusInternalServerError)
+		writeIssuanceError(w, err)
 		return
 	}
 	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
@@ -243,6 +246,30 @@ func (s *Server) handleServerKeygen(w http.ResponseWriter, r *http.Request) {
 	s.recordEvent(r, actor, audit.ActionESTServerKeyGen, leaf.Subject.CommonName, audit.ResultSuccess,
 		"serial="+leaf.SerialNumber.String()+" profile="+profile)
 	writeServerKeygen(w, keyDER, p7)
+}
+
+// writeIssuanceError maps an issuance failure to EST's HTTP semantics: a
+// suspended tenant is 403, tenant quota exhaustion is 429 with a Retry-After
+// when the daily window resets, anything else stays an opaque 500.
+func writeIssuanceError(w http.ResponseWriter, err error) {
+	var susp *models.TenantSuspendedError
+	if errors.As(err, &susp) {
+		http.Error(w, "tenant is suspended; enrollment is disabled", http.StatusForbidden)
+		return
+	}
+	var quota *models.QuotaExceededError
+	if errors.As(err, &quota) {
+		if quota.RetryAfter > 0 {
+			secs := int(math.Ceil(quota.RetryAfter.Seconds()))
+			if secs < 1 {
+				secs = 1
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(secs))
+		}
+		http.Error(w, "tenant issuance quota exceeded", http.StatusTooManyRequests)
+		return
+	}
+	http.Error(w, "issuance failed", http.StatusInternalServerError)
 }
 
 // issue signs a CSR through the shared HSM-backed ca.Manager.

@@ -58,10 +58,14 @@ func (a *API) InitRootCA(w http.ResponseWriter, r *http.Request) {
 		tenantID = models.DefaultTenantID
 	}
 	middleware.SetTenant(r.Context(), tenantID)
-	// The tenant must exist, and the caller must hold ca:manage WITHIN it. A
-	// tenant admin can only create CAs in its own tenant.
-	if t, err := a.db.GetTenant(tenantID); err != nil {
-		writeError(w, http.StatusInternalServerError, "tenant lookup failed: %v", err)
+	// The tenant must exist and be active (a suspended tenant cannot grow its
+	// CA hierarchy), and the caller must hold ca:manage WITHIN it. A tenant
+	// admin can only create CAs in its own tenant.
+	if t, err := a.requireActiveTenant(tenantID); err != nil {
+		if writeTenantLimitError(w, err) { // suspension → 403
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
 	} else if t == nil {
 		writeError(w, http.StatusBadRequest, "unknown tenant %q", tenantID)
@@ -132,6 +136,15 @@ func (a *API) IssueIntermediateCA(w http.ResponseWriter, r *http.Request) {
 	if !a.canInTenant(user, tenantID, rbac.ActionManageCA) {
 		a.recordEvent(r, audit.ActionCAIssueIntermediate, parentID, "", audit.ResultDenied, "ca:manage capability required")
 		writeError(w, http.StatusForbidden, "ca:manage capability required for tenant %q", tenantID)
+		return
+	}
+	// A suspended tenant cannot grow its CA hierarchy (its existing CAs keep
+	// serving OCSP/CRL for already-issued certificates).
+	if _, err := a.requireActiveTenant(tenantID); err != nil {
+		if writeTenantLimitError(w, err) { // suspension → 403
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
 	}
 

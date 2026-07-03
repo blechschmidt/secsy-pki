@@ -132,3 +132,94 @@ tenant and backfills existing rows to it. Both SQLite and PostgreSQL are
 supported, and `secsy-ca db migrate` copies the `tenants` table first so foreign
 keys from `cas`/`restriction_sets` are satisfied. See
 [persistence.md](persistence.md).
+
+## Tenant lifecycle, quotas, and usage (Task 61)
+
+### Lifecycle
+
+`active` and `suspended` are the two lifecycle states. Suspension freezes a
+tenant without destroying anything:
+
+- **Blocked while suspended:** every certificate-minting path — REST
+  issue/renew, ACME, SCEP, EST, CMP, gRPC, SVID, the SSH CA, and the legacy
+  sign endpoint — plus secret envelope encrypt/decrypt and new CA creation.
+  The check lives inside the CA manager (`ca.GateTenantIssuance`), so it holds
+  for every protocol without per-protocol code, and it is **fail-closed**: if
+  tenant state cannot be read, issuance is refused. When the public-endpoint
+  middleware is installed it additionally answers `403` on the whole
+  enrollment surface of a suspended tenant's protocols (cached ~3 s).
+- **Still working while suspended:** OCSP and CRL for already-issued
+  certificates (relying parties keep validating), certificate revocation (the
+  operator can still withdraw credentials), and all read APIs. Reactivate with
+  `secsy-ca tenant activate <slug>` or `PUT /api/tenants/{id}/status`.
+
+The default tenant can never be suspended or deleted.
+
+### Quotas
+
+Per-tenant ceilings live on the tenant record (`quotas`); zero means
+unlimited. Enforcement is fail-closed on the same paths as suspension:
+
+| Quota | Meters | Exhaustion answer |
+|---|---|---|
+| `max_certs_per_day` | Certificates issued per UTC day (X.509 + SSH), all protocols | `429`, `code=quota_exceeded`, `Retry-After` until UTC midnight |
+| `max_active_certs` | Unexpired, unrevoked X.509 inventory | `429`, `code=quota_exceeded` (revoke/expiry frees room) |
+| `max_secret_ops_per_day` | Envelope encrypt/decrypt per UTC day | `429`, `code=quota_exceeded`, `Retry-After` |
+| `rate_limit_per_second` / `rate_limit_burst` | Request rate on public enrollment endpoints | `429` from the rate limiter (`tier=per_tenant`) |
+
+Protocol mappings: ACME returns an RFC 8555 `rateLimited` problem (quota) or
+`unauthorized` (suspended); EST returns 429/403; SCEP returns a CertRep
+failure with a distinguishing `failInfoText`; CMP returns `systemUnavail`
+(quota) or `notAuthorized` (suspended); gRPC returns `RESOURCE_EXHAUSTED` /
+`PERMISSION_DENIED`.
+
+The daily counter is reservation-style: it is consumed atomically **before**
+the HSM signs (a single conditional `UPDATE`, correct under concurrency on
+both SQLite and PostgreSQL) and released if issuance later fails, so failed
+signings never burn quota. Revocations are accounted but never gated.
+
+```console
+# Show, then set quotas (0 clears back to unlimited)
+secsy-ca tenant quota acme
+secsy-ca tenant quota acme -certs-per-day 500 -active-certs 2000 -secret-ops-per-day 10000 -rate 25 -burst 50
+
+# Usage report: inventory counts + rolling daily window
+secsy-ca tenant usage acme -days 14
+```
+
+Or over the API (platform admin): `PUT /api/tenants/{id}` with a `quotas`
+object, and `GET /api/tenants/{id}/usage?days=N` for the report (tenant
+members may read their own tenant's report). The console has a **Tenants**
+page for the same operations.
+
+### Per-tenant rate-limit tier
+
+`rate_limit.per_tenant` sets the deployment-wide default request rate for one
+tenant's enrollment endpoints (ACME/EST/SCEP/CMP, resolved from the protocol's
+bound CA); a tenant's `rate_limit_per_second`/`rate_limit_burst` quota fields
+override it per tenant, applied live without a restart. OCSP/CRL are never
+metered per tenant.
+
+```yaml
+rate_limit:
+  enabled: true
+  per_tenant: { rate: 50, burst: 100 }
+```
+
+### Usage accounting and metrics
+
+Usage is accounted in the `tenant_usage` table — one row per (tenant, UTC
+day) with `certs_issued`, `certs_revoked`, `secret_ops` — on both the SQLite
+file store and PostgreSQL, and included in `secsy-ca db migrate`. Inventory
+counts (active/total/revoked) are computed live from `issued_certificates`.
+
+Prometheus metrics carry a **cardinality-guarded** `tenant` label (first 100
+distinct tenants; the rest fold into `_other_`):
+
+- `secsy_tenant_certificates_issued_total{tenant}`
+- `secsy_tenant_secret_ops_total{tenant,operation}`
+- `secsy_tenant_denied_total{tenant,reason}` with `reason` one of
+  `suspended|certs_per_day|active_certs|secret_ops_per_day|rate_limit`
+
+Every gate refusal is also an audit event (`tenant.quota`, `ResultDenied`)
+bound into the hash chain.

@@ -45,6 +45,7 @@
         <button data-view="compliance">Compliance</button>
         <button data-view="bundle">Trust Bundle</button>
         <button data-view="secrets">Secrets</button>
+        <button data-view="tenants">Tenants</button>
       </nav>
       <span class="user" id="userBox"></span>
       <button class="btn ghost sm hidden" id="passkeyBtn" title="Register a WebAuthn passkey for step-up on high-risk operations">Register passkey</button>
@@ -307,7 +308,88 @@
           </div>
         </div>
       </section>
+
+      <!-- Tenant administration (Task 61) -->
+      <section class="view" id="view-tenants">
+        <h2>Tenants</h2>
+        <p class="sub">Lifecycle, per-tenant quotas, and usage for the isolated organizations this deployment serves. Platform-admin only; suspension blocks all enrollment while OCSP/CRL for existing certificates keeps working.</p>
+        <div id="tenantsDenied" class="notice err hidden">Listing tenants requires a platform-admin role.</div>
+        <div class="toolbar">
+          <div class="spacer"></div>
+          <button class="btn ghost sm" id="refreshTenants">Refresh</button>
+        </div>
+        <div class="panel">
+          <table>
+            <thead><tr><th>Slug</th><th>Name</th><th>Status</th><th>Certs/day</th><th>Active max</th><th>Secret ops/day</th><th>Rate</th><th></th></tr></thead>
+            <tbody id="tenantRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="row" style="align-items:stretch;margin-top:14px">
+          <div class="panel" style="flex:1;min-width:300px">
+            <h2 style="font-size:15px">Create tenant</h2>
+            <div id="tenantCreateError" class="notice err hidden"></div>
+            <div class="field">
+              <label for="tenantSlug">Slug (unique, [a-z0-9-])</label>
+              <input id="tenantSlug" placeholder="acme">
+            </div>
+            <div class="field">
+              <label for="tenantName">Display name</label>
+              <input id="tenantName" placeholder="ACME Corporation">
+            </div>
+            <div class="field">
+              <label for="tenantKEK">Secret KEK label (optional)</label>
+              <input id="tenantKEK" placeholder="kek-acme">
+            </div>
+            <button class="btn" id="tenantCreateBtn">Create tenant</button>
+          </div>
+          <div class="panel" style="flex:2;min-width:380px">
+            <h2 style="font-size:15px">Usage <span class="muted" id="usageTenantLabel"></span></h2>
+            <div id="tenantUsageEmpty" class="muted">Select “usage” on a tenant to see its report.</div>
+            <div id="tenantUsageBox" class="hidden">
+              <div id="tenantUsageSummary" class="muted" style="margin-bottom:10px"></div>
+              <table>
+                <thead><tr><th>Day (UTC)</th><th>Issued</th><th>Revoked</th><th>Secret ops</th></tr></thead>
+                <tbody id="tenantUsageRows"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
     </main>
+  </div>
+
+  <!-- Tenant quota modal -->
+  <div id="quotaModal" class="modal hidden">
+    <div class="card">
+      <h2 style="font-size:16px;margin-top:0">Quotas — <span id="quotaTenantLabel"></span></h2>
+      <p class="sub">0 means unlimited. Daily quotas reset at UTC midnight; enforcement is fail-closed with HTTP 429 on exhaustion.</p>
+      <div id="quotaError" class="notice err hidden"></div>
+      <div class="field">
+        <label for="quotaCertsDay">Max certificates / day</label>
+        <input id="quotaCertsDay" type="number" min="0" step="1">
+      </div>
+      <div class="field">
+        <label for="quotaActive">Max active certificates</label>
+        <input id="quotaActive" type="number" min="0" step="1">
+      </div>
+      <div class="field">
+        <label for="quotaSecretOps">Max secret operations / day</label>
+        <input id="quotaSecretOps" type="number" min="0" step="1">
+      </div>
+      <div class="field">
+        <label for="quotaRate">Enrollment rate limit (req/s, 0 = deployment default)</label>
+        <input id="quotaRate" type="number" min="0" step="0.1">
+      </div>
+      <div class="field">
+        <label for="quotaBurst">Enrollment burst</label>
+        <input id="quotaBurst" type="number" min="0" step="1">
+      </div>
+      <div class="row" style="justify-content:flex-end;gap:8px;margin-top:8px">
+        <button class="btn ghost sm" id="quotaCancel">Cancel</button>
+        <button class="btn sm" id="quotaSave">Save quotas</button>
+      </div>
+    </div>
   </div>
 
   <!-- Revocation modal -->

@@ -279,7 +279,9 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/tenants", protected(http.HandlerFunc(a.ListTenants)))
 	mux.Handle("POST /api/tenants", protected(http.HandlerFunc(a.CreateTenant)))
 	mux.Handle("GET /api/tenants/{id}", protected(http.HandlerFunc(a.GetTenant)))
+	mux.Handle("PUT /api/tenants/{id}", protected(http.HandlerFunc(a.UpdateTenant)))
 	mux.Handle("PUT /api/tenants/{id}/status", protected(http.HandlerFunc(a.SetTenantStatus)))
+	mux.Handle("GET /api/tenants/{id}/usage", protected(http.HandlerFunc(a.TenantUsage)))
 	mux.Handle("DELETE /api/tenants/{id}", protected(http.HandlerFunc(a.DeleteTenant)))
 
 	// HSM-backed X.509 certificate-authority setup. Root/intermediate creation is
@@ -818,11 +820,24 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Tenant lifecycle + quota gate (Task 61): the legacy sign endpoint mints
+	// certificates like every other issuance path, so it is gated identically.
+	gateDone, err := a.gateTenantIssuance(ca, user.Subject)
+	if err != nil {
+		a.recordEvent(r, audit.ActionCertSignSSH, caID, "", audit.ResultDenied, err.Error())
+		if writeTenantLimitError(w, err) { // suspension → 403, quota → 429 + Retry-After
+			return
+		}
+		writeError(w, http.StatusServiceUnavailable, "%v", err)
+		return
+	}
+
 	// Consume pending HSM logs to free space before signing
 	a.consumeHSMAuditLogs("")
 
 	signer, err := a.keyProvider.Signer(r.Context(), keyRefForCA(ca))
 	if err != nil {
+		gateDone(err)
 		writeError(w, http.StatusInternalServerError, "failed to open signer: %v", err)
 		return
 	}
@@ -839,6 +854,7 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 		req.Extensions,
 		req.CriticalOptions,
 	)
+	gateDone(err)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to sign certificate: %v", err)
 		return

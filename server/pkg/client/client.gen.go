@@ -205,6 +205,12 @@ const (
 	TenantStatusRequestStatusSuspended TenantStatusRequestStatus = "suspended"
 )
 
+// Defines values for TenantUsageReportStatus.
+const (
+	Active    TenantUsageReportStatus = "active"
+	Suspended TenantUsageReportStatus = "suspended"
+)
+
 // Defines values for ListExpiringCertificatesParamsSeverity.
 const (
 	ListExpiringCertificatesParamsSeverityCritical ListExpiringCertificatesParamsSeverity = "critical"
@@ -1395,6 +1401,9 @@ type Tenant struct {
 	KekLabel *string `json:"kek_label,omitempty"`
 	Name     *string `json:"name,omitempty"`
 
+	// Quotas Per-tenant consumption ceilings. Zero (or omitted) means unlimited for that dimension. Daily quotas meter per UTC day and reset at UTC midnight; exhaustion is reported as HTTP 429 with code quota_exceeded and, for daily windows, a Retry-After header.
+	Quotas *TenantQuotas `json:"quotas,omitempty"`
+
 	// Slug URL/CLI-friendly unique identifier.
 	Slug   *string       `json:"slug,omitempty"`
 	Status *TenantStatus `json:"status,omitempty"`
@@ -1403,6 +1412,24 @@ type Tenant struct {
 // TenantStatus defines model for Tenant.Status.
 type TenantStatus string
 
+// TenantQuotas Per-tenant consumption ceilings. Zero (or omitted) means unlimited for that dimension. Daily quotas meter per UTC day and reset at UTC midnight; exhaustion is reported as HTTP 429 with code quota_exceeded and, for daily windows, a Retry-After header.
+type TenantQuotas struct {
+	// MaxActiveCerts Ceiling on unexpired, unrevoked X.509 certificates; revocation or expiry frees room.
+	MaxActiveCerts *int64 `json:"max_active_certs,omitempty"`
+
+	// MaxCertsPerDay Max certificates issued per UTC day (X.509 and SSH), across all the tenant's CAs and every enrollment protocol.
+	MaxCertsPerDay *int64 `json:"max_certs_per_day,omitempty"`
+
+	// MaxSecretOpsPerDay Max envelope encrypt/decrypt operations per UTC day.
+	MaxSecretOpsPerDay *int64 `json:"max_secret_ops_per_day,omitempty"`
+
+	// RateLimitBurst Burst capacity accompanying rate_limit_per_second.
+	RateLimitBurst *float64 `json:"rate_limit_burst,omitempty"`
+
+	// RateLimitPerSecond Per-tenant request rate override for public enrollment endpoints (0 inherits rate_limit.per_tenant).
+	RateLimitPerSecond *float64 `json:"rate_limit_per_second,omitempty"`
+}
+
 // TenantStatusRequest defines model for TenantStatusRequest.
 type TenantStatusRequest struct {
 	Status TenantStatusRequestStatus `json:"status"`
@@ -1410,6 +1437,50 @@ type TenantStatusRequest struct {
 
 // TenantStatusRequestStatus defines model for TenantStatusRequest.Status.
 type TenantStatusRequestStatus string
+
+// TenantUsageDay One UTC day's accounted consumption.
+type TenantUsageDay struct {
+	CertsIssued  *int64 `json:"certs_issued,omitempty"`
+	CertsRevoked *int64 `json:"certs_revoked,omitempty"`
+
+	// Day UTC date, YYYY-MM-DD.
+	Day       *string `json:"day,omitempty"`
+	SecretOps *int64  `json:"secret_ops,omitempty"`
+}
+
+// TenantUsageReport Point-in-time inventory counts plus a rolling window of daily usage accounting for one tenant.
+type TenantUsageReport struct {
+	// ActiveCerts Unexpired, unrevoked X.509 certificates across the tenant's CAs.
+	ActiveCerts *int64 `json:"active_certs,omitempty"`
+	Cas         *int   `json:"cas,omitempty"`
+
+	// Days Rolling usage window, most recent day first; days without activity are zero rows.
+	Days        *[]TenantUsageDay `json:"days,omitempty"`
+	GeneratedAt *time.Time        `json:"generated_at,omitempty"`
+
+	// Quotas Per-tenant consumption ceilings. Zero (or omitted) means unlimited for that dimension. Daily quotas meter per UTC day and reset at UTC midnight; exhaustion is reported as HTTP 429 with code quota_exceeded and, for daily windows, a Retry-After header.
+	Quotas   *TenantQuotas            `json:"quotas,omitempty"`
+	Slug     *string                  `json:"slug,omitempty"`
+	Status   *TenantUsageReportStatus `json:"status,omitempty"`
+	TenantId *string                  `json:"tenant_id,omitempty"`
+
+	// Today One UTC day's accounted consumption.
+	Today        *TenantUsageDay `json:"today,omitempty"`
+	TotalIssued  *int64          `json:"total_issued,omitempty"`
+	TotalRevoked *int64          `json:"total_revoked,omitempty"`
+}
+
+// TenantUsageReportStatus defines model for TenantUsageReport.Status.
+type TenantUsageReportStatus string
+
+// UpdateTenantRequest Partial update: absent fields are left unchanged. quotas, when present, replaces the whole quota set.
+type UpdateTenantRequest struct {
+	KekLabel *string `json:"kek_label,omitempty"`
+	Name     *string `json:"name,omitempty"`
+
+	// Quotas Per-tenant consumption ceilings. Zero (or omitted) means unlimited for that dimension. Daily quotas meter per UTC day and reset at UTC midnight; exhaustion is reported as HTTP 429 with code quota_exceeded and, for daily windows, a Retry-After header.
+	Quotas *TenantQuotas `json:"quotas,omitempty"`
+}
 
 // UserInfo defines model for UserInfo.
 type UserInfo struct {
@@ -1578,6 +1649,12 @@ type EncryptSecretParams struct {
 	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
 }
 
+// GetTenantUsageParams defines parameters for GetTenantUsage.
+type GetTenantUsageParams struct {
+	// Days Size of the rolling usage window in UTC days.
+	Days *int `form:"days,omitempty" json:"days,omitempty"`
+}
+
 // InitRootCAJSONRequestBody defines body for InitRootCA for application/json ContentType.
 type InitRootCAJSONRequestBody = CAInitRootRequest
 
@@ -1664,6 +1741,9 @@ type SignSSHCertJSONRequestBody = SSHSignRequest
 
 // CreateTenantJSONRequestBody defines body for CreateTenant for application/json ContentType.
 type CreateTenantJSONRequestBody = CreateTenantRequest
+
+// UpdateTenantJSONRequestBody defines body for UpdateTenant for application/json ContentType.
+type UpdateTenantJSONRequestBody = UpdateTenantRequest
 
 // SetTenantStatusJSONRequestBody defines body for SetTenantStatus for application/json ContentType.
 type SetTenantStatusJSONRequestBody = TenantStatusRequest
@@ -2060,10 +2140,18 @@ type ClientInterface interface {
 	// GetTenant request
 	GetTenant(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// UpdateTenantWithBody request with any body
+	UpdateTenantWithBody(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	UpdateTenant(ctx context.Context, id string, body UpdateTenantJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// SetTenantStatusWithBody request with any body
 	SetTenantStatusWithBody(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	SetTenantStatus(ctx context.Context, id string, body SetTenantStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetTenantUsage request
+	GetTenantUsage(ctx context.Context, id string, params *GetTenantUsageParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetLiveness request
 	GetLiveness(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3473,6 +3561,30 @@ func (c *Client) GetTenant(ctx context.Context, id string, reqEditors ...Request
 	return c.Client.Do(req)
 }
 
+func (c *Client) UpdateTenantWithBody(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateTenantRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdateTenant(ctx context.Context, id string, body UpdateTenantJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateTenantRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) SetTenantStatusWithBody(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewSetTenantStatusRequestWithBody(c.Server, id, contentType, body)
 	if err != nil {
@@ -3487,6 +3599,18 @@ func (c *Client) SetTenantStatusWithBody(ctx context.Context, id string, content
 
 func (c *Client) SetTenantStatus(ctx context.Context, id string, body SetTenantStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewSetTenantStatusRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetTenantUsage(ctx context.Context, id string, params *GetTenantUsageParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetTenantUsageRequest(c.Server, id, params)
 	if err != nil {
 		return nil, err
 	}
@@ -7160,6 +7284,53 @@ func NewGetTenantRequest(server string, id string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewUpdateTenantRequest calls the generic UpdateTenant builder with application/json body
+func NewUpdateTenantRequest(server string, id string, body UpdateTenantJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewUpdateTenantRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewUpdateTenantRequestWithBody generates requests for UpdateTenant with any type of body
+func NewUpdateTenantRequestWithBody(server string, id string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/tenants/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("PUT", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewSetTenantStatusRequest calls the generic SetTenantStatus builder with application/json body
 func NewSetTenantStatusRequest(server string, id string, body SetTenantStatusJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -7203,6 +7374,62 @@ func NewSetTenantStatusRequestWithBody(server string, id string, contentType str
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGetTenantUsageRequest generates requests for GetTenantUsage
+func NewGetTenantUsageRequest(server string, id string, params *GetTenantUsageParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/tenants/%s/usage", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Days != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "days", runtime.ParamLocationQuery, *params.Days); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
 
 	return req, nil
 }
@@ -7704,10 +7931,18 @@ type ClientWithResponsesInterface interface {
 	// GetTenantWithResponse request
 	GetTenantWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*GetTenantResponse, error)
 
+	// UpdateTenantWithBodyWithResponse request with any body
+	UpdateTenantWithBodyWithResponse(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateTenantResponse, error)
+
+	UpdateTenantWithResponse(ctx context.Context, id string, body UpdateTenantJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateTenantResponse, error)
+
 	// SetTenantStatusWithBodyWithResponse request with any body
 	SetTenantStatusWithBodyWithResponse(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetTenantStatusResponse, error)
 
 	SetTenantStatusWithResponse(ctx context.Context, id string, body SetTenantStatusJSONRequestBody, reqEditors ...RequestEditorFn) (*SetTenantStatusResponse, error)
+
+	// GetTenantUsageWithResponse request
+	GetTenantUsageWithResponse(ctx context.Context, id string, params *GetTenantUsageParams, reqEditors ...RequestEditorFn) (*GetTenantUsageResponse, error)
 
 	// GetLivenessWithResponse request
 	GetLivenessWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetLivenessResponse, error)
@@ -9708,6 +9943,31 @@ func (r GetTenantResponse) StatusCode() int {
 	return 0
 }
 
+type UpdateTenantResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *Tenant
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r UpdateTenantResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r UpdateTenantResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type SetTenantStatusResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -9727,6 +9987,30 @@ func (r SetTenantStatusResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r SetTenantStatusResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetTenantUsageResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *TenantUsageReport
+	JSON400      *BadRequest
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetTenantUsageResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetTenantUsageResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -10858,6 +11142,23 @@ func (c *ClientWithResponses) GetTenantWithResponse(ctx context.Context, id stri
 	return ParseGetTenantResponse(rsp)
 }
 
+// UpdateTenantWithBodyWithResponse request with arbitrary body returning *UpdateTenantResponse
+func (c *ClientWithResponses) UpdateTenantWithBodyWithResponse(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateTenantResponse, error) {
+	rsp, err := c.UpdateTenantWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateTenantResponse(rsp)
+}
+
+func (c *ClientWithResponses) UpdateTenantWithResponse(ctx context.Context, id string, body UpdateTenantJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateTenantResponse, error) {
+	rsp, err := c.UpdateTenant(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateTenantResponse(rsp)
+}
+
 // SetTenantStatusWithBodyWithResponse request with arbitrary body returning *SetTenantStatusResponse
 func (c *ClientWithResponses) SetTenantStatusWithBodyWithResponse(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetTenantStatusResponse, error) {
 	rsp, err := c.SetTenantStatusWithBody(ctx, id, contentType, body, reqEditors...)
@@ -10873,6 +11174,15 @@ func (c *ClientWithResponses) SetTenantStatusWithResponse(ctx context.Context, i
 		return nil, err
 	}
 	return ParseSetTenantStatusResponse(rsp)
+}
+
+// GetTenantUsageWithResponse request returning *GetTenantUsageResponse
+func (c *ClientWithResponses) GetTenantUsageWithResponse(ctx context.Context, id string, params *GetTenantUsageParams, reqEditors ...RequestEditorFn) (*GetTenantUsageResponse, error) {
+	rsp, err := c.GetTenantUsage(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetTenantUsageResponse(rsp)
 }
 
 // GetLivenessWithResponse request returning *GetLivenessResponse
@@ -13614,6 +13924,53 @@ func ParseGetTenantResponse(rsp *http.Response) (*GetTenantResponse, error) {
 	return response, nil
 }
 
+// ParseUpdateTenantResponse parses an HTTP response from a UpdateTenantWithResponse call
+func ParseUpdateTenantResponse(rsp *http.Response) (*UpdateTenantResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &UpdateTenantResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest Tenant
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseSetTenantStatusResponse parses an HTTP response from a SetTenantStatusWithResponse call
 func ParseSetTenantStatusResponse(rsp *http.Response) (*SetTenantStatusResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -13648,6 +14005,46 @@ func ParseSetTenantStatusResponse(rsp *http.Response) (*SetTenantStatusResponse,
 			return nil, err
 		}
 		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetTenantUsageResponse parses an HTTP response from a GetTenantUsageWithResponse call
+func ParseGetTenantUsageResponse(rsp *http.Response) (*GetTenantUsageResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetTenantUsageResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest TenantUsageReport
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
 		var dest NotFound

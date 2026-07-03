@@ -281,8 +281,25 @@ func (db *DB) migrate() error {
 			name TEXT NOT NULL,
 			status TEXT NOT NULL DEFAULT 'active',
 			kek_label TEXT,
-			created_at %s
+			created_at %s,
+			max_certs_per_day INTEGER NOT NULL DEFAULT 0,
+			max_active_certs INTEGER NOT NULL DEFAULT 0,
+			max_secret_ops_per_day INTEGER NOT NULL DEFAULT 0,
+			rate_limit_per_second REAL NOT NULL DEFAULT 0,
+			rate_limit_burst REAL NOT NULL DEFAULT 0
 		)`, currentTimestamp),
+		// Per-tenant, per-UTC-day usage counters (Task 61). One row per tenant
+		// per day, upserted atomically on the issuance/secret paths; the daily
+		// quotas (max_certs_per_day, max_secret_ops_per_day) meter against the
+		// current day's row, and the usage report reads a rolling window of rows.
+		`CREATE TABLE IF NOT EXISTS tenant_usage (
+			tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+			day TEXT NOT NULL,
+			certs_issued INTEGER NOT NULL DEFAULT 0,
+			certs_revoked INTEGER NOT NULL DEFAULT 0,
+			secret_ops INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (tenant_id, day)
+		)`,
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS cas (
 			id TEXT PRIMARY KEY,
 			tenant_id TEXT NOT NULL DEFAULT 'default' REFERENCES tenants(id),
@@ -672,6 +689,13 @@ func (db *DB) migrate() error {
 		db.conn.Exec("ALTER TABLE groups_ ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'")
 		db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN IF NOT EXISTS tenant_id TEXT")
 		db.conn.Exec("ALTER TABLE event_log ADD COLUMN IF NOT EXISTS tenant TEXT")
+		// Per-tenant quotas (Task 61). Zero means unlimited, so existing tenants
+		// are unaffected by the upgrade.
+		db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_certs_per_day INTEGER NOT NULL DEFAULT 0")
+		db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_active_certs INTEGER NOT NULL DEFAULT 0")
+		db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_secret_ops_per_day INTEGER NOT NULL DEFAULT 0")
+		db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS rate_limit_per_second REAL NOT NULL DEFAULT 0")
+		db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS rate_limit_burst REAL NOT NULL DEFAULT 0")
 	} else {
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_ssh_restriction_set_id TEXT")
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_x509_restriction_set_id TEXT")
@@ -703,6 +727,13 @@ func (db *DB) migrate() error {
 		db.conn.Exec("ALTER TABLE groups_ ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
 		db.conn.Exec("ALTER TABLE restriction_sets ADD COLUMN tenant_id TEXT")
 		db.conn.Exec("ALTER TABLE event_log ADD COLUMN tenant TEXT")
+		// Per-tenant quotas (Task 61). Zero means unlimited, so existing tenants
+		// are unaffected by the upgrade.
+		db.conn.Exec("ALTER TABLE tenants ADD COLUMN max_certs_per_day INTEGER NOT NULL DEFAULT 0")
+		db.conn.Exec("ALTER TABLE tenants ADD COLUMN max_active_certs INTEGER NOT NULL DEFAULT 0")
+		db.conn.Exec("ALTER TABLE tenants ADD COLUMN max_secret_ops_per_day INTEGER NOT NULL DEFAULT 0")
+		db.conn.Exec("ALTER TABLE tenants ADD COLUMN rate_limit_per_second REAL NOT NULL DEFAULT 0")
+		db.conn.Exec("ALTER TABLE tenants ADD COLUMN rate_limit_burst REAL NOT NULL DEFAULT 0")
 	}
 
 	// ACME (RFC 8555) server tables.

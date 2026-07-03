@@ -7,6 +7,7 @@ const (
 	TierGlobal     = "global"
 	TierPerIP      = "per_ip"
 	TierPerAccount = "per_account"
+	TierPerTenant  = "per_tenant"
 )
 
 // Rate describes a single token-bucket configuration: a sustained rate in
@@ -46,6 +47,11 @@ type TieredLimiter struct {
 	global  *tier
 	perIP   *tier
 	perAcct *tier
+	// The per-tenant tier keeps its bucket store unconditionally (its default
+	// rate may be disabled while individual tenants carry enabled overrides);
+	// the effective rate is resolved per request in Allow.
+	perTenantDefault Rate
+	perTenantBuckets *keyedBuckets
 }
 
 // LimiterConfig configures a TieredLimiter.
@@ -53,8 +59,13 @@ type LimiterConfig struct {
 	Global     Rate
 	PerIP      Rate
 	PerAccount Rate
-	// MaxKeys bounds the number of distinct per-IP / per-account buckets kept
-	// in memory before idle eviction kicks in.
+	// PerTenant is the deployment-wide default rate for a single tenant's
+	// public enrollment endpoints (Task 61). Individual tenants may carry their
+	// own override, supplied per request via Keys.TenantLimit. The tier is
+	// evaluated only for requests that resolve to a tenant.
+	PerTenant Rate
+	// MaxKeys bounds the number of distinct per-IP / per-account / per-tenant
+	// buckets kept in memory before idle eviction kicks in.
 	MaxKeys int
 	// IdleTTL is how long a fully-replenished bucket may sit unused before it
 	// becomes eligible for eviction.
@@ -85,10 +96,12 @@ func NewTieredLimiter(cfg LimiterConfig) *TieredLimiter {
 		return &tier{name: name, buckets: newKeyedBuckets(r.Rate, r.Burst, maxKeys, idle, now)}
 	}
 	return &TieredLimiter{
-		now:     now,
-		global:  mk(TierGlobal, cfg.Global),
-		perIP:   mk(TierPerIP, cfg.PerIP),
-		perAcct: mk(TierPerAccount, cfg.PerAccount),
+		now:              now,
+		global:           mk(TierGlobal, cfg.Global),
+		perIP:            mk(TierPerIP, cfg.PerIP),
+		perAcct:          mk(TierPerAccount, cfg.PerAccount),
+		perTenantDefault: cfg.PerTenant,
+		perTenantBuckets: newKeyedBuckets(cfg.PerTenant.Rate, cfg.PerTenant.Burst, maxKeys, idle, now),
 	}
 }
 
@@ -98,6 +111,14 @@ func NewTieredLimiter(cfg LimiterConfig) *TieredLimiter {
 type Keys struct {
 	IP      string
 	Account string
+	// Tenant keys the per-tenant tier; empty skips it (requests that do not
+	// resolve to a tenant, e.g. OCSP/CRL fetches by relying parties).
+	Tenant string
+	// TenantLimit optionally overrides the configured per-tenant default for
+	// this tenant (an operator-set quota on the tenant record). nil inherits
+	// the LimiterConfig.PerTenant rate. A non-nil disabled rate (zero) exempts
+	// the tenant from the tier entirely.
+	TenantLimit *Rate
 }
 
 // globalKey is the shared key for the single global bucket.
@@ -137,14 +158,39 @@ func (l *TieredLimiter) Allow(keys Keys) Decision {
 	if ok, d := check(l.perIP, keys.IP); !ok {
 		return d
 	}
+
+	// Per-tenant tier: the effective rate is the tenant's own override when
+	// supplied, else the deployment default; a disabled effective rate exempts
+	// the request from this tier.
+	if keys.Tenant != "" {
+		eff := l.perTenantDefault
+		if keys.TenantLimit != nil {
+			eff = *keys.TenantLimit
+		}
+		if eff.enabled() {
+			b := l.perTenantBuckets.bucketForRate(keys.Tenant, eff.Rate, eff.Burst, now)
+			ok, ra := b.take(now)
+			if !ok {
+				for _, h := range consumed {
+					h.b.refund(now)
+				}
+				return Decision{Allowed: false, Tier: TierPerTenant, RetryAfter: ra}
+			}
+			consumed = append(consumed, held{b})
+		}
+	}
+
 	if ok, d := check(l.perAcct, keys.Account); !ok {
 		return d
 	}
 	return Decision{Allowed: true}
 }
 
-// Enabled reports whether any tier is active. When false the limiter admits
-// every request and callers may skip installing it.
+// Enabled reports whether any statically configured tier is active. When false
+// the limiter admits every request and callers may skip it — except that a
+// request carrying an explicit per-tenant override (Keys.TenantLimit) is still
+// enforced by Allow, so middleware should also consult that override when
+// deciding whether to consult the limiter.
 func (l *TieredLimiter) Enabled() bool {
-	return l.global != nil || l.perIP != nil || l.perAcct != nil
+	return l.global != nil || l.perIP != nil || l.perAcct != nil || l.perTenantDefault.enabled()
 }

@@ -211,6 +211,29 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Tenant" }
         "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      operationId: updateTenant
+      tags: [Tenants]
+      summary: Update a tenant's name, KEK label, or quotas (platform admin only)
+      description: >-
+        Partial update; absent fields are unchanged. Quota changes take effect
+        on the next issuance/secret operation — enforcement is fail-closed on
+        the issuance (REST/ACME/SCEP/EST/CMP/gRPC/SSH) and secret paths, where
+        exhaustion answers 429 with code quota_exceeded.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateTenantRequest" }
+      responses:
+        "200":
+          description: The updated tenant.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tenant" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
     delete:
       operationId: deleteTenant
       tags: [Tenants]
@@ -251,6 +274,36 @@ paths:
               schema: { $ref: "#/components/schemas/StatusResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/tenants/{id}/usage:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: Tenant id.
+      - name: days
+        in: query
+        required: false
+        schema: { type: integer, minimum: 1, maximum: 90, default: 7 }
+        description: Size of the rolling usage window in UTC days.
+    get:
+      operationId: getTenantUsage
+      tags: [Tenants]
+      summary: Per-tenant usage report
+      description: >-
+        Live inventory counts (active/total/revoked certificates, CAs) plus a
+        rolling window of daily usage accounting (certificates issued/revoked,
+        secret operations). Readable by platform operators and by members of
+        the tenant; other tenants receive 404.
+      responses:
+        "200":
+          description: The usage report.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TenantUsageReport" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/keys/{id}:
@@ -2082,6 +2135,36 @@ components:
         status: { type: string, enum: [active, suspended] }
         kek_label: { type: string, description: Optional per-tenant secret KEK. }
         created_at: { type: string, format: date-time }
+        quotas: { $ref: "#/components/schemas/TenantQuotas" }
+
+    TenantQuotas:
+      type: object
+      description: >-
+        Per-tenant consumption ceilings. Zero (or omitted) means unlimited for
+        that dimension. Daily quotas meter per UTC day and reset at UTC
+        midnight; exhaustion is reported as HTTP 429 with code quota_exceeded
+        and, for daily windows, a Retry-After header.
+      properties:
+        max_certs_per_day:
+          type: integer
+          format: int64
+          description: Max certificates issued per UTC day (X.509 and SSH), across all the tenant's CAs and every enrollment protocol.
+        max_active_certs:
+          type: integer
+          format: int64
+          description: Ceiling on unexpired, unrevoked X.509 certificates; revocation or expiry frees room.
+        max_secret_ops_per_day:
+          type: integer
+          format: int64
+          description: Max envelope encrypt/decrypt operations per UTC day.
+        rate_limit_per_second:
+          type: number
+          format: double
+          description: Per-tenant request rate override for public enrollment endpoints (0 inherits rate_limit.per_tenant).
+        rate_limit_burst:
+          type: number
+          format: double
+          description: Burst capacity accompanying rate_limit_per_second.
 
     CreateTenantRequest:
       type: object
@@ -2091,11 +2174,54 @@ components:
         name: { type: string }
         kek_label: { type: string }
 
+    UpdateTenantRequest:
+      type: object
+      description: >-
+        Partial update: absent fields are left unchanged. quotas, when present,
+        replaces the whole quota set.
+      properties:
+        name: { type: string }
+        kek_label: { type: string }
+        quotas: { $ref: "#/components/schemas/TenantQuotas" }
+
     TenantStatusRequest:
       type: object
       required: [status]
       properties:
         status: { type: string, enum: [active, suspended] }
+
+    TenantUsageDay:
+      type: object
+      description: One UTC day's accounted consumption.
+      properties:
+        day: { type: string, description: "UTC date, YYYY-MM-DD." }
+        certs_issued: { type: integer, format: int64 }
+        certs_revoked: { type: integer, format: int64 }
+        secret_ops: { type: integer, format: int64 }
+
+    TenantUsageReport:
+      type: object
+      description: >-
+        Point-in-time inventory counts plus a rolling window of daily usage
+        accounting for one tenant.
+      properties:
+        tenant_id: { type: string }
+        slug: { type: string }
+        status: { type: string, enum: [active, suspended] }
+        active_certs:
+          type: integer
+          format: int64
+          description: Unexpired, unrevoked X.509 certificates across the tenant's CAs.
+        total_issued: { type: integer, format: int64 }
+        total_revoked: { type: integer, format: int64 }
+        cas: { type: integer }
+        today: { $ref: "#/components/schemas/TenantUsageDay" }
+        days:
+          type: array
+          description: Rolling usage window, most recent day first; days without activity are zero rows.
+          items: { $ref: "#/components/schemas/TenantUsageDay" }
+        quotas: { $ref: "#/components/schemas/TenantQuotas" }
+        generated_at: { type: string, format: date-time }
 
     CAIssueIntermediateRequest:
       type: object

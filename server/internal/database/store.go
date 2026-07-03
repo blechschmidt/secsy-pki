@@ -51,8 +51,22 @@ type TenantStore interface {
 	GetTenantBySlug(slug string) (*models.Tenant, error)
 	ListTenants() ([]models.Tenant, error)
 	SetTenantStatus(id, status string) error
+	UpdateTenant(t *models.Tenant) error
 	DeleteTenant(id string) error
 	CountCAsForTenant(tenantID string) (int, error)
+
+	// Usage accounting and quota consumption (Task 61). Daily counters live in
+	// tenant_usage keyed by (tenant, UTC day); ConsumeTenantDailyQuota is an
+	// atomic take-if-below-ceiling so per-tenant quotas hold under concurrent
+	// issuance on both SQLite and PostgreSQL, and ReleaseTenantDailyQuota is the
+	// compensating credit when an operation fails after its reservation.
+	AddTenantUsage(tenantID, day, counter string, delta int64) error
+	ConsumeTenantDailyQuota(tenantID, day, counter string, limit int64) (bool, error)
+	ReleaseTenantDailyQuota(tenantID, day, counter string) error
+	GetTenantUsageDay(tenantID, day string) (models.TenantUsageDay, error)
+	ListTenantUsageDays(tenantID, sinceDay string) ([]models.TenantUsageDay, error)
+	CountActiveCertificatesForTenant(tenantID string, now time.Time) (int64, error)
+	TenantCertificateTotals(tenantID string) (total, revoked int64, err error)
 }
 
 // Lifecycle covers connection management and health/identity introspection.

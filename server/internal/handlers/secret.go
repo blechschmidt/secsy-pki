@@ -28,40 +28,52 @@ func (a *API) secretEnabled() bool { return a.secretKEKLabel != "" }
 // the deployment-wide KEK) is used, preserving single-tenant behavior.
 const TenantHeader = "X-Secsy-Tenant"
 
-// resolveSecretTenant maps the request's tenant selector to (tenantID, kekLabel).
-// A tenant with its own KEK label seals its secrets under a tenant-specific key,
-// keeping one tenant's envelopes cryptographically separable from another's; a
-// tenant without one falls back to the deployment KEK. An unknown/suspended
-// tenant is an error. The resolved tenant is stamped on the request context for
-// auditing.
-func (a *API) resolveSecretTenant(r *http.Request) (tenantID, kekLabel string, err error) {
+// resolveSecretTenant maps the request's tenant selector to its tenant record
+// and effective KEK label. A tenant with its own KEK label seals its secrets
+// under a tenant-specific key, keeping one tenant's envelopes cryptographically
+// separable from another's; a tenant without one falls back to the deployment
+// KEK. An unknown tenant is an error, and a suspended tenant is refused with
+// the typed gate error (mapped to 403). The resolved tenant is stamped on the
+// request context for auditing. The record is always loaded — default tenant
+// included — because its quotas drive the secret-op accounting.
+func (a *API) resolveSecretTenant(r *http.Request) (tenant *models.Tenant, kekLabel string, err error) {
 	sel := r.Header.Get(TenantHeader)
 	if sel == "" {
-		middleware.SetTenant(r.Context(), models.DefaultTenantID)
-		return models.DefaultTenantID, a.secretKEKLabel, nil
+		sel = models.DefaultTenantID
 	}
 	// Accept either the tenant ID or its slug.
 	t, err := a.db.GetTenant(sel)
 	if err != nil {
-		return "", "", err
+		return nil, "", err
 	}
 	if t == nil {
 		if t, err = a.db.GetTenantBySlug(sel); err != nil {
-			return "", "", err
+			return nil, "", err
 		}
 	}
 	if t == nil {
-		return "", "", fmt.Errorf("unknown tenant %q", sel)
+		return nil, "", fmt.Errorf("unknown tenant %q", sel)
 	}
 	if t.Status != models.TenantStatusActive {
-		return "", "", fmt.Errorf("tenant %q is %s", t.Slug, t.Status)
+		metrics.TenantDenied.Inc(metrics.TenantLabel(t.ID), "suspended")
+		return nil, "", &models.TenantSuspendedError{TenantID: t.ID}
 	}
 	middleware.SetTenant(r.Context(), t.ID)
 	label := t.KEKLabel
 	if label == "" {
 		label = a.secretKEKLabel
 	}
-	return t.ID, label, nil
+	return t, label, nil
+}
+
+// writeSecretTenantError maps a tenant-resolution failure on the secret path:
+// suspension keeps its 403 gate semantics; anything else (unknown tenant,
+// malformed selector) stays a 400 as before.
+func writeSecretTenantError(w http.ResponseWriter, err error) {
+	if writeTenantLimitError(w, err) {
+		return
+	}
+	writeError(w, http.StatusBadRequest, "%v", err)
 }
 
 // secretService builds a Service bound to the configured KEK for this request.
@@ -116,15 +128,15 @@ type encryptResponse struct {
 
 // EncryptSecret seals a caller-supplied plaintext into a versioned envelope.
 func (a *API) EncryptSecret(w http.ResponseWriter, r *http.Request) {
-	tenantID, kekLabel, err := a.resolveSecretTenant(r)
+	tenant, kekLabel, err := a.resolveSecretTenant(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "%v", err)
+		writeSecretTenantError(w, err)
 		return
 	}
-	if !a.canInTenant(middleware.GetUserInfo(r.Context()), tenantID, rbac.ActionEncrypt) {
+	if !a.canInTenant(middleware.GetUserInfo(r.Context()), tenant.ID, rbac.ActionEncrypt) {
 		metrics.Envelope.Inc("encrypt", metrics.ResultDenied)
 		a.recordEvent(r, audit.ActionSecretEncrypt, kekLabel, "", audit.ResultDenied, "secret:encrypt capability required")
-		writeError(w, http.StatusForbidden, "secret:encrypt capability required for tenant %q", tenantID)
+		writeError(w, http.StatusForbidden, "secret:encrypt capability required for tenant %q", tenant.ID)
 		return
 	}
 
@@ -178,10 +190,23 @@ func (a *API) EncryptSecret(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Daily secret-op quota (fail-closed), reserved only after the request has
+	// fully validated so malformed requests never burn quota.
+	quotaDone, err := a.consumeSecretOpQuota(r, tenant, "encrypt")
+	if err != nil {
+		metrics.Envelope.Inc("encrypt", metrics.ResultDenied)
+		if writeTenantLimitError(w, err) { // quota → 429 + Retry-After
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+
 	// Consume pending HSM audit logs to free space, mirroring the signing path.
 	a.consumeHSMAuditLogs("")
 	blob, err := svc.EncryptWithEscrowToJSON(plaintext, context, escrowPolicy)
 	a.consumeHSMAuditLogs("")
+	quotaDone(err)
 	metrics.RecordEnvelope("encrypt", err)
 	if err != nil {
 		a.recordEvent(r, audit.ActionSecretEncrypt, a.secretKEKLabel, "", audit.ResultError, err.Error())
@@ -212,15 +237,15 @@ type decryptResponse struct {
 // DecryptSecret recovers plaintext from an envelope. The KEK (HSM) performs the
 // unwrap; a failure returns a generic 400 to avoid acting as an oracle.
 func (a *API) DecryptSecret(w http.ResponseWriter, r *http.Request) {
-	tenantID, kekLabel, err := a.resolveSecretTenant(r)
+	tenant, kekLabel, err := a.resolveSecretTenant(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "%v", err)
+		writeSecretTenantError(w, err)
 		return
 	}
-	if !a.canInTenant(middleware.GetUserInfo(r.Context()), tenantID, rbac.ActionDecrypt) {
+	if !a.canInTenant(middleware.GetUserInfo(r.Context()), tenant.ID, rbac.ActionDecrypt) {
 		metrics.Envelope.Inc("decrypt", metrics.ResultDenied)
 		a.recordEvent(r, audit.ActionSecretDecrypt, kekLabel, "", audit.ResultDenied, "secret:decrypt capability required")
-		writeError(w, http.StatusForbidden, "secret:decrypt capability required for tenant %q", tenantID)
+		writeError(w, http.StatusForbidden, "secret:decrypt capability required for tenant %q", tenant.ID)
 		return
 	}
 
@@ -248,9 +273,22 @@ func (a *API) DecryptSecret(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Daily secret-op quota (fail-closed), reserved only after the request has
+	// fully validated so malformed requests never burn quota.
+	quotaDone, err := a.consumeSecretOpQuota(r, tenant, "decrypt")
+	if err != nil {
+		metrics.Envelope.Inc("decrypt", metrics.ResultDenied)
+		if writeTenantLimitError(w, err) { // quota → 429 + Retry-After
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+
 	a.consumeHSMAuditLogs("")
 	plaintext, err := svc.DecryptJSON(req.Envelope, context)
 	a.consumeHSMAuditLogs("")
+	quotaDone(err)
 	metrics.RecordEnvelope("decrypt", err)
 	if err != nil {
 		// Generic client error with NO underlying detail: wrong key/context or a

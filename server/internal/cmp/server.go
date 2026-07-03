@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -172,7 +173,7 @@ func (s *Server) handleCertRequest(w http.ResponseWriter, r *http.Request, msg *
 	result, err := s.issue(r.Context(), reqMsg.req, profile, actor)
 	if err != nil {
 		s.recordEvent(r, actor, action, reqMsg.req.subject.CommonName, audit.ResultError, err.Error())
-		s.writeError(w, r, msg, nil, failSystemFailure, "issuance failed", "", action)
+		s.writeIssuanceError(w, r, msg, err, action)
 		log.Printf("cmp: issuance failed: %v", err)
 		return
 	}
@@ -245,7 +246,7 @@ func (s *Server) handleKeyUpdate(w http.ResponseWriter, r *http.Request, msg *me
 	result, err := s.issue(r.Context(), req, s.cfg.Profile, actor)
 	if err != nil {
 		s.recordEvent(r, actor, action, req.subject.CommonName, audit.ResultError, err.Error())
-		s.writeError(w, r, msg, nil, failSystemFailure, "issuance failed", "", action)
+		s.writeIssuanceError(w, r, msg, err, action)
 		log.Printf("cmp: kur issuance failed: %v", err)
 		return
 	}
@@ -359,6 +360,24 @@ func (s *Server) singleRequest(msg *message) (certReqMsg, error) {
 		return certReqMsg{}, fmt.Errorf("expected exactly one CertReqMsg, got %d", len(reqs))
 	}
 	return reqs[0], nil
+}
+
+// writeIssuanceError maps an issuance failure to its CMP error body: a
+// suspended tenant is notAuthorized, tenant quota exhaustion is the transient
+// systemUnavail (retry after the daily window resets), anything else stays an
+// opaque systemFailure.
+func (s *Server) writeIssuanceError(w http.ResponseWriter, r *http.Request, msg *message, err error, action string) {
+	var susp *models.TenantSuspendedError
+	if errors.As(err, &susp) {
+		s.writeError(w, r, msg, nil, failNotAuthorized, "tenant is suspended; enrollment is disabled", "", action)
+		return
+	}
+	var quota *models.QuotaExceededError
+	if errors.As(err, &quota) {
+		s.writeError(w, r, msg, nil, failSystemUnavail, "tenant issuance quota exceeded", "", action)
+		return
+	}
+	s.writeError(w, r, msg, nil, failSystemFailure, "issuance failed", "", action)
 }
 
 // issue signs a parsed CertTemplate through the shared HSM-backed ca.Manager.

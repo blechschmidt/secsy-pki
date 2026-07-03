@@ -46,6 +46,7 @@ const (
 	failBadRequest       = 2
 	failSignerNotTrusted = 18
 	failNotAuthorized    = 23
+	failSystemUnavail    = 24
 	failSystemFailure    = 25
 )
 

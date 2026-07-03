@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -251,7 +252,18 @@ func (s *Server) handlePKIOperation(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.recordEvent(r, actor, enrollAction(isRenewal), csrCN(msg.CSR), audit.ResultError, err.Error())
-		s.writeFailure(w, r, caCert, msg, failInfoBadRequest, "issuance failed")
+		// SCEP's failInfo vocabulary has no throttling value, so tenant gate
+		// refusals stay badRequest with a distinguishing failInfoText.
+		failMsg := "issuance failed"
+		var susp *models.TenantSuspendedError
+		var quota *models.QuotaExceededError
+		switch {
+		case errors.As(err, &susp):
+			failMsg = "tenant is suspended; enrollment is disabled"
+		case errors.As(err, &quota):
+			failMsg = "tenant issuance quota exceeded"
+		}
+		s.writeFailure(w, r, caCert, msg, failInfoBadRequest, failMsg)
 		log.Printf("scep: issuance failed: %v", err)
 		return
 	}

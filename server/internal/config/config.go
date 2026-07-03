@@ -618,6 +618,13 @@ type RateLimitConfig struct {
 	Global     RateConfig `yaml:"global"`
 	PerIP      RateConfig `yaml:"per_ip"`
 	PerAccount RateConfig `yaml:"per_account"`
+	// PerTenant caps a single tenant's aggregate request rate across its public
+	// enrollment endpoints (ACME/EST/SCEP/CMP), keyed by the tenant that owns
+	// the protocol instance's CA (Task 61). This is the deployment-wide default;
+	// a tenant's own rate_limit_per_second/rate_limit_burst quota fields
+	// override it per tenant. OCSP/CRL are never metered per tenant, so relying
+	// parties can always check revocation status.
+	PerTenant RateConfig `yaml:"per_tenant"`
 	// MaxKeys bounds the number of distinct per-IP / per-account buckets held in
 	// memory before idle eviction. Defaults to 100000.
 	MaxKeys int `yaml:"max_keys"`
@@ -1766,6 +1773,7 @@ func (c *Config) validateRateLimit() error {
 		{"global", rl.Global},
 		{"per_ip", rl.PerIP},
 		{"per_account", rl.PerAccount},
+		{"per_tenant", rl.PerTenant},
 	}
 	anyTier := false
 	for _, t := range tiers {

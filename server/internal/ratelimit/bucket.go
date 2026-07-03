@@ -73,6 +73,28 @@ func (b *tokenBucket) take(now time.Time) (ok bool, retryAfter time.Duration) {
 	return false, ra
 }
 
+// retune adjusts a live bucket's rate and capacity, used when an operator
+// changes a tenant's rate-limit override: the next request simply carries the
+// new numbers and the existing bucket adapts without losing its state. Grown
+// capacity is credited immediately (raising a tenant's burst takes effect on
+// the very next request); shrunk capacity clamps the balance.
+func (b *tokenBucket) retune(rate, burst float64, now time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.rate == rate && b.burst == burst {
+		return
+	}
+	b.advance(now)
+	if grow := burst - b.burst; grow > 0 {
+		b.tokens += grow
+	}
+	b.rate = rate
+	b.burst = burst
+	if b.tokens > burst {
+		b.tokens = burst
+	}
+}
+
 // refund returns one previously-taken token, capped at the bucket capacity.
 // It is used to keep multi-tier admission all-or-nothing: when a later tier
 // rejects a request, the tokens already consumed from earlier tiers are handed
@@ -173,6 +195,25 @@ func (k *keyedBuckets) evictLocked(now time.Time) {
 	for i := 0; i < drop; i++ {
 		delete(k.buckets, entries[i].key)
 	}
+}
+
+// bucketForRate returns the bucket for key like bucketFor, but with an
+// explicit per-key rate: the bucket is created with (rate, burst) and an
+// existing bucket is retuned if its configured numbers changed. It backs the
+// per-tenant tier, where each tenant may carry its own override.
+func (k *keyedBuckets) bucketForRate(key string, rate, burst float64, now time.Time) *tokenBucket {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if b, ok := k.buckets[key]; ok {
+		b.retune(rate, burst, now)
+		return b
+	}
+	if len(k.buckets) >= k.maxKeys {
+		k.evictLocked(now)
+	}
+	b := newTokenBucket(rate, burst, now)
+	k.buckets[key] = b
+	return b
 }
 
 // take consumes a token from the bucket for key, creating the bucket on first

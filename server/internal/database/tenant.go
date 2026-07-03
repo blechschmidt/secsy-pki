@@ -9,13 +9,17 @@ import (
 
 // tenantColumns is the canonical column list for tenant reads; keep it in sync
 // with scanTenant.
-const tenantColumns = `id, slug, name, status, kek_label, created_at`
+const tenantColumns = `id, slug, name, status, kek_label, created_at,
+	max_certs_per_day, max_active_certs, max_secret_ops_per_day,
+	rate_limit_per_second, rate_limit_burst`
 
 // scanTenant reads one tenants row selected with tenantColumns.
 func scanTenant(s caScanner) (*models.Tenant, error) {
 	var t models.Tenant
 	var kekLabel sql.NullString
-	if err := s.Scan(&t.ID, &t.Slug, &t.Name, &t.Status, &kekLabel, &t.CreatedAt); err != nil {
+	if err := s.Scan(&t.ID, &t.Slug, &t.Name, &t.Status, &kekLabel, &t.CreatedAt,
+		&t.Quotas.MaxCertsPerDay, &t.Quotas.MaxActiveCerts, &t.Quotas.MaxSecretOpsPerDay,
+		&t.Quotas.RateLimitPerSecond, &t.Quotas.RateLimitBurst); err != nil {
 		return nil, err
 	}
 	t.KEKLabel = kekLabel.String
@@ -37,8 +41,30 @@ func (db *DB) CreateTenant(t *models.Tenant) error {
 		created = time.Now().UTC()
 	}
 	_, err := db.exec(
-		`INSERT INTO tenants (id, slug, name, status, kek_label, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO tenants (id, slug, name, status, kek_label, created_at,
+			max_certs_per_day, max_active_certs, max_secret_ops_per_day,
+			rate_limit_per_second, rate_limit_burst)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Slug, t.Name, status, nullString(t.KEKLabel), created,
+		t.Quotas.MaxCertsPerDay, t.Quotas.MaxActiveCerts, t.Quotas.MaxSecretOpsPerDay,
+		t.Quotas.RateLimitPerSecond, t.Quotas.RateLimitBurst,
+	)
+	return err
+}
+
+// UpdateTenant persists a tenant's mutable fields: display name, KEK label, and
+// quotas. Identity (id, slug), lifecycle status, and created_at are managed by
+// their dedicated operations and left untouched.
+func (db *DB) UpdateTenant(t *models.Tenant) error {
+	_, err := db.exec(
+		`UPDATE tenants SET name = ?, kek_label = ?,
+			max_certs_per_day = ?, max_active_certs = ?, max_secret_ops_per_day = ?,
+			rate_limit_per_second = ?, rate_limit_burst = ?
+		 WHERE id = ?`,
+		t.Name, nullString(t.KEKLabel),
+		t.Quotas.MaxCertsPerDay, t.Quotas.MaxActiveCerts, t.Quotas.MaxSecretOpsPerDay,
+		t.Quotas.RateLimitPerSecond, t.Quotas.RateLimitBurst,
+		t.ID,
 	)
 	return err
 }
