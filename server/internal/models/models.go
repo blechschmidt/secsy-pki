@@ -999,6 +999,118 @@ type WebAuthnCredential struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// Token scope values (Task 86). A tenant-scoped token exercises its roles only
+// within its owning tenant; a platform-scoped token holds them across all
+// tenants and may only be minted by a platform administrator.
+const (
+	TokenScopeTenant   = "tenant"
+	TokenScopePlatform = "platform"
+)
+
+// APIToken is a native, revocable, scoped long-lived credential for
+// machine-to-machine callers — a service account (Task 86). The opaque secret
+// (secsy_pat_<random>) is shown to the operator exactly once at creation and is
+// NEVER persisted; only its one-way hash (TokenHash) is stored, so a database
+// disclosure cannot reveal a usable credential. A token is bound to a set of
+// RBAC roles and a tenant scope, with an optional expiry and best-effort
+// last-used tracking, and is verified in the same Authenticate/AuthenticateRPC
+// paths as the other credential types.
+type APIToken struct {
+	// ID is the token's stable identifier (a UUID), used as the audit target and
+	// as the principal subject ("token:<id>") of requests it authenticates.
+	ID string `json:"id"`
+	// TenantID is the token's owning/home tenant. For a tenant-scoped token it is
+	// the single tenant its roles apply within; for a platform-scoped token it is
+	// informational (the roles span all tenants).
+	TenantID string `json:"tenant_id"`
+	// Name is an operator-supplied label (e.g. "ci-cert-issuer", "backup-agent").
+	Name string `json:"name"`
+	// Description is optional free-form context for the credential.
+	Description string `json:"description,omitempty"`
+	// Prefix is the non-secret leading fragment of the token (secsy_pat_XXXX…),
+	// retained for display so an operator can recognize a listed token without
+	// ever seeing the full secret again.
+	Prefix string `json:"prefix"`
+	// TokenHash is the at-rest one-way hash of the full secret (hex SHA-256). It
+	// is the lookup key on the verify path and is never serialized to clients.
+	TokenHash string `json:"-"`
+	// Roles are the RBAC roles the token grants. For a tenant-scoped token they
+	// are exercised within TenantID; for a platform-scoped token, platform-wide.
+	Roles []string `json:"roles"`
+	// Scope is TokenScopeTenant or TokenScopePlatform.
+	Scope string `json:"scope"`
+	// CreatedBy / CreatedByName identify the principal that minted the token.
+	CreatedBy     string `json:"created_by,omitempty"`
+	CreatedByName string `json:"created_by_name,omitempty"`
+	// CreatedAt is when the token was minted (UTC).
+	CreatedAt time.Time `json:"created_at"`
+	// ExpiresAt bounds the token's validity; nil means it never expires.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// LastUsedAt / LastUsedIP record the most recent successful verification,
+	// updated best-effort (and throttled) so listing a token shows recent use
+	// without a write on every request.
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	LastUsedIP string     `json:"last_used_ip,omitempty"`
+	// RevokedAt / RevokedBy record an explicit revocation. A revoked token fails
+	// closed on every subsequent verification.
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	RevokedBy string     `json:"revoked_by,omitempty"`
+}
+
+// IsPlatform reports whether the token's roles span all tenants.
+func (t *APIToken) IsPlatform() bool { return t.Scope == TokenScopePlatform }
+
+// Revoked reports whether the token has been explicitly revoked.
+func (t *APIToken) Revoked() bool { return t != nil && t.RevokedAt != nil }
+
+// Active reports whether the token may authenticate at the given instant: not
+// revoked and not past its expiry.
+func (t *APIToken) Active(now time.Time) bool {
+	if t == nil || t.RevokedAt != nil {
+		return false
+	}
+	if t.ExpiresAt != nil && !t.ExpiresAt.After(now) {
+		return false
+	}
+	return true
+}
+
+// Status renders a human-facing lifecycle state for listings.
+func (t *APIToken) Status(now time.Time) string {
+	switch {
+	case t.RevokedAt != nil:
+		return "revoked"
+	case t.ExpiresAt != nil && !t.ExpiresAt.After(now):
+		return "expired"
+	default:
+		return "active"
+	}
+}
+
+// Principal builds the request principal a verified token authenticates as. A
+// tenant-scoped token carries its roles under TenantRoles[tenant] (so the same
+// cross-tenant isolation checks that confine an OIDC operator apply); a
+// platform-scoped token carries them as platform-wide Roles. The token is never
+// the built-in root superuser.
+func (t *APIToken) Principal() *UserInfo {
+	info := &UserInfo{
+		Subject: "token:" + t.ID,
+		Name:    t.Name,
+		IsRoot:  false,
+	}
+	roles := append([]string(nil), t.Roles...)
+	if t.IsPlatform() {
+		info.Roles = roles
+	} else {
+		tenant := t.TenantID
+		if tenant == "" {
+			tenant = DefaultTenantID
+		}
+		info.TenantRoles = map[string][]string{tenant: roles}
+	}
+	return info
+}
+
 // ---------------------------------------------------------------------------
 // ACME (RFC 8555) persistence records.
 //

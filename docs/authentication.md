@@ -1,4 +1,4 @@
-# Operator authentication — OIDC SSO, mutual-TLS, and WebAuthn step-up
+# Operator authentication — OIDC SSO, mutual-TLS, WebAuthn step-up, and API tokens
 
 The [RBAC layer](rbac-and-audit.md) decides **what** a principal may do. This
 document covers **who** a caller is: how the console and API authenticate
@@ -15,11 +15,12 @@ callers — keep working unchanged, so nothing here is a breaking change.
 | **OIDC/OAuth2 login** | Console operators | Interactive SSO → server-side session cookie | `auth.oidc` |
 | **Mutual-TLS** | Machine / API callers | Client certificate bound to a principal | `auth.mtls` |
 | **WebAuthn step-up** | Console operators, high-risk ops | Passkey assertion | `auth.webauthn` |
+| **API token** | Machine / service accounts | Native, revocable, role/tenant-scoped secret | always on; `auth.api_tokens` tunes lifetime |
 | Basic-auth (root) | Break-glass / bootstrap | `root_user` password | `policy.allow_root_basic_auth` |
 | Bearer token | API scripting | OIDC access/id token | `oidc` |
 
-The middleware tries credentials in order: **basic-auth → Bearer → session
-cookie → mutual-TLS**, then rejects with `401`.
+The middleware tries credentials in order: **basic-auth → API token → Bearer
+(OIDC) → session cookie → mutual-TLS**, then rejects with `401`.
 
 ---
 
@@ -135,6 +136,97 @@ Step-up gates **session** (console) callers. A caller authenticated by a strong
 non-interactive credential — root basic-auth, a bearer token, or a bound mutual-
 TLS certificate — already presented a strong credential and is not gated.
 
+## 4. Native scoped API tokens (service accounts)
+
+Machine callers no longer have to share the single `root` basic credential or
+depend on an external OIDC IdP. A **native API token** is a first-class,
+revocable, long-lived credential bound to a set of RBAC roles and a tenant
+scope, with an optional expiry.
+
+A token is an opaque, high-entropy secret of the form `secsy_pat_<random>`
+(256 bits of CSPRNG entropy). It is presented under a **distinct Authorization
+scheme** so it never conflates with OIDC Bearer verification:
+
+```
+Authorization: Token secsy_pat_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+```
+
+Clients that can only emit `Bearer` may use `Authorization: Bearer secsy_pat_…`
+— the `secsy_pat_` prefix unambiguously routes it to token verification (an
+OIDC JWT never carries that prefix). Verification is **fail-closed**: an
+unknown, malformed, expired, or revoked token is rejected with no
+distinguishing detail.
+
+### At-rest storage — a deliberate security decision
+
+The plaintext secret is returned **exactly once** at creation and is **never
+persisted**. Only a one-way hash — `hex(SHA-256(secret))` — is stored
+(`api_tokens.token_hash`, UNIQUE-indexed). A fast hash, not argon2/bcrypt, is
+the correct choice here:
+
+- the secret carries 256 bits of entropy and cannot be brute-forced offline, so
+  the password-hardening KDFs that exist to slow guessing of *low*-entropy
+  passwords add nothing; and
+- a deterministic, unsalted hash is what makes the O(1) indexed lookup on the
+  hot verification path possible.
+
+This matches how GitHub/GitLab personal access tokens are stored. A database
+disclosure therefore cannot yield a usable credential.
+
+### Scope, roles, and privilege
+
+- A **tenant-scoped** token (`scope: tenant`, the default) exercises its roles
+  only within its owning tenant — the same cross-tenant isolation that confines
+  a tenant OIDC operator applies.
+- A **platform-scoped** token (`scope: platform`) holds its roles across all
+  tenants and may only be minted by a platform administrator.
+
+Managing tokens is an administrative capability (`token:manage`, admin-only): a
+token can carry any role, so allowing a lesser role to mint tokens would let it
+escalate its own privilege. Tenant admins may mint tenant-scoped tokens within
+their tenant; platform tokens require a platform admin.
+
+When the [four-eyes gate](four-eyes-approvals.md) is enabled, minting a token
+with a **sensitive grant** — any privileged role (anything beyond read-only
+`auditor`) or platform scope — is held for approval (`token.create` class,
+`202` response) and minted only after the approver threshold is met. Revocation
+is deliberately **not** gated: it removes access and must stay fast for incident
+response.
+
+### Lifecycle surfaces
+
+REST (`token:manage`; create returns the secret once):
+
+```
+GET    /api/tokens                 — list tokens the caller may manage (?tenant=)
+POST   /api/tokens                 — mint a token (201 with secret, or 202 pending approval)
+DELETE /api/tokens/{id}            — revoke a token
+```
+
+CLI (platform-operator level; direct store access):
+
+```
+secsy-ca token create -name ci-issuer -roles issuer -tenant acme -expires-days 90
+secsy-ca token create -name platform-bot -roles admin -scope platform
+secsy-ca token list [-tenant acme]
+secsy-ca token revoke <id>
+```
+
+Console: an **API Tokens** page lists tokens, mints them (revealing the secret
+once with a copy button), and revokes them.
+
+Optional lifetime policy — cap how long a token may live (0/omitted = no cap,
+non-expiring tokens allowed):
+
+```yaml
+auth:
+  api_tokens:
+    max_lifetime_days: 365   # a create request must expire within a year
+```
+
+Each successful verification updates a throttled **last-used** timestamp and
+client IP, so a stale or leaked token is easy to spot and revoke.
+
 ## Sessions & CSRF
 
 Interactive logins (OIDC and password) create a server-side session referenced
@@ -155,11 +247,14 @@ Every login, logout, and step-up is written to the tamper-evident
 [event log](rbac-and-audit.md):
 
 `auth.login`, `auth.login_failed`, `auth.logout`, `auth.step_up`,
-`auth.step_up_denied`, `webauthn.register`, `webauthn.remove`.
+`auth.step_up_denied`, `webauthn.register`, `webauthn.remove`, `token.create`,
+`token.revoke` (the token id is the event target; the secret is never logged).
 
 Prometheus metrics: `secsy_auth_logins_total{method,result}`,
-`secsy_auth_logouts_total`, `secsy_auth_step_ups_total{result}`, and
-`secsy_auth_sessions_active`.
+`secsy_auth_logouts_total`, `secsy_auth_step_ups_total{result}`,
+`secsy_auth_sessions_active`, `secsy_auth_token_operations_total{operation,result}`,
+`secsy_auth_token_verifications_total{result}` (result ∈
+success|expired|revoked|unknown|error), and `secsy_auth_tokens_active`.
 
 ## Security notes
 

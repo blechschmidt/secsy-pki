@@ -202,6 +202,8 @@ func run(args []string) error {
 		return cmdInitRoot(db, mgr, cmdArgs)
 	case "tenant":
 		return cmdTenant(db, cmdArgs)
+	case "token":
+		return cmdToken(db, cfg, cmdArgs)
 	case "issue-intermediate":
 		return cmdIssueIntermediate(db, mgr, cmdArgs)
 	case "ca":
@@ -398,6 +400,8 @@ Commands:
   db                  Persistence administration (migrate SQLite file store → PostgreSQL)
   doctor              Read-only preflight diagnostics (config, HSM/KMS, keys, DB,
                       audit chain, expiry, CRL freshness, clock, TLS); exit 0/1/2
+  token               Manage native scoped API tokens / service accounts
+                      (create/list/revoke); create prints the secret once
 
 Run "secsy-ca <command> -h" for command-specific flags.
 `)

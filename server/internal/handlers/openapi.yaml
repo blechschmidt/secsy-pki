@@ -37,6 +37,11 @@ tags:
     description: Health, auth discovery, and current-user endpoints.
   - name: Tenants
     description: Multi-tenant isolation boundaries (platform administration).
+  - name: API Tokens
+    description: >-
+      Native scoped API tokens / service accounts for machine-to-machine auth:
+      revocable long-lived credentials bound to RBAC roles and a tenant scope.
+      Create returns the opaque secret exactly once.
   - name: Certificate Authorities
     description: HSM-backed CA key management and root/intermediate setup.
   - name: Certificate Lifecycle
@@ -308,6 +313,91 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/TenantUsageReport" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/tokens:
+    get:
+      operationId: listTokens
+      tags: [API Tokens]
+      summary: List API tokens / service accounts
+      description: >-
+        Lists the tokens the caller may manage. A platform administrator sees
+        all tokens (optionally filtered by ?tenant=); a tenant admin sees only
+        the tokens of tenants it administers. Secrets and at-rest hashes are
+        never included.
+      parameters:
+        - name: tenant
+          in: query
+          required: false
+          schema: { type: string }
+          description: Restrict the listing to a single tenant id.
+      responses:
+        "200":
+          description: The tokens the caller may manage.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/APIToken" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      operationId: createToken
+      tags: [API Tokens]
+      summary: Mint an API token (returns the secret once)
+      description: >-
+        Creates a scoped API token bound to a set of RBAC roles and a tenant
+        scope. Managing tokens is an administrative capability (token:manage,
+        admin-only): tenant admins may mint tenant-scoped tokens within their
+        tenant, while platform-scoped (cross-tenant) tokens require a platform
+        administrator. When the four-eyes gate is enabled, a sensitive grant (a
+        privileged role or platform scope) is held for approval and answered
+        with 202; re-run the identical request once approved. The response
+        carries the opaque secret exactly once — it is stored only as a one-way
+        hash and cannot be recovered.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateTokenRequest" }
+      responses:
+        "201":
+          description: The created token, including its one-time secret.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/APITokenWithSecret" }
+        "202":
+          description: >-
+            The grant is sensitive and is held for four-eyes approval. Re-run the
+            identical request once the approver threshold is met.
+          headers:
+            X-Secsy-Approval-Id:
+              schema: { type: string }
+              description: Id of the pending approval request.
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/tokens/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+        description: Token id.
+    delete:
+      operationId: revokeToken
+      tags: [API Tokens]
+      summary: Revoke an API token
+      description: >-
+        Revokes a token by id (fail-closed on every subsequent use). Revocation
+        is not four-eyes gated — it removes access and must stay fast for
+        incident response.
+      responses:
+        "200":
+          description: The token was revoked (or was already revoked).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/keys/{id}:
@@ -2862,6 +2952,61 @@ components:
       required: [status]
       properties:
         status: { type: string, enum: [active, suspended] }
+
+    APIToken:
+      type: object
+      description: >-
+        A native scoped API token / service account. The opaque secret is never
+        included here — only in the create response, once.
+      properties:
+        id: { type: string }
+        tenant_id: { type: string, description: "Owning tenant (the scope for a tenant-scoped token)." }
+        name: { type: string }
+        description: { type: string }
+        prefix: { type: string, description: "Non-secret leading fragment (secsy_pat_…) for recognition in listings." }
+        roles:
+          type: array
+          items: { type: string, enum: [admin, issuer, signer, auditor, approver] }
+          description: RBAC roles the token grants.
+        scope: { type: string, enum: [tenant, platform], description: "tenant = roles apply within tenant_id; platform = cross-tenant." }
+        created_by: { type: string }
+        created_by_name: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time, description: "Absent when the token never expires." }
+        last_used_at: { type: string, format: date-time }
+        last_used_ip: { type: string }
+        revoked_at: { type: string, format: date-time }
+        revoked_by: { type: string }
+
+    APITokenWithSecret:
+      allOf:
+        - { $ref: "#/components/schemas/APIToken" }
+        - type: object
+          properties:
+            secret:
+              type: string
+              description: >-
+                The opaque bearer secret (secsy_pat_…), returned exactly once at
+                creation and never recoverable. Present it as
+                "Authorization: Token <secret>".
+
+    CreateTokenRequest:
+      type: object
+      required: [name, roles]
+      properties:
+        name: { type: string, description: Human-readable token name. }
+        description: { type: string }
+        roles:
+          type: array
+          items: { type: string, enum: [admin, issuer, signer, auditor, approver] }
+          description: RBAC roles to grant (at least one).
+        tenant_id: { type: string, description: "Owning tenant id or slug for a tenant-scoped token (default: the default tenant)." }
+        scope: { type: string, enum: [tenant, platform], default: tenant }
+        expires_in_days:
+          type: integer
+          description: >-
+            Days until expiry. Omit for the policy default; 0 means never
+            (only permitted when no maximum lifetime is configured).
 
     TenantUsageDay:
       type: object

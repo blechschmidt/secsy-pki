@@ -117,6 +117,10 @@ type AuthMiddleware struct {
 	// stepUpOps is the set of high-risk operation names that require an active
 	// WebAuthn step-up for session-authenticated (console) callers.
 	stepUpOps map[string]bool
+	// tokens, when set, enables native scoped API-token (service-account)
+	// authentication for machine callers (Task 86). Tokens are presented under a
+	// distinct Authorization scheme from OIDC Bearer and verified fail-closed.
+	tokens *authn.TokenAuthenticator
 }
 
 func NewAuthMiddleware(oidcProvider TokenVerifier, rootUsername, rootPassword string) *AuthMiddleware {
@@ -159,6 +163,12 @@ func (am *AuthMiddleware) SetCertBinder(b *authn.CertBinder) {
 	am.binder = b
 }
 
+// SetTokenAuthenticator enables native scoped API-token (service-account)
+// authentication for machine callers.
+func (am *AuthMiddleware) SetTokenAuthenticator(t *authn.TokenAuthenticator) {
+	am.tokens = t
+}
+
 // SetStepUpOperations declares the high-risk operation names that require an
 // active WebAuthn step-up for console (session) callers.
 func (am *AuthMiddleware) SetStepUpOperations(ops []string) {
@@ -197,8 +207,30 @@ func (am *AuthMiddleware) Authenticate(next http.Handler) http.Handler {
 			return
 		}
 
-		// Try Bearer token (OIDC access/id token, for machine/API callers).
 		authHeader := r.Header.Get("Authorization")
+
+		// Try a native scoped API token / service account (Task 86). It is carried
+		// under a distinct Authorization scheme from OIDC Bearer, so the two verify
+		// paths never conflate: the canonical "Token <secret>" form, plus a
+		// "Bearer secsy_pat_…" convenience for clients that can only emit Bearer
+		// (the prefix makes it unambiguously a token, never an OIDC JWT).
+		// Verification is fail-closed: a presented-but-invalid token is rejected
+		// outright rather than falling through to another mechanism. When the
+		// feature is not installed the scheme is simply unrecognized and falls
+		// through to the generic 401 below.
+		if am.tokens != nil {
+			if secret, ok := apiTokenCredential(authHeader); ok {
+				info, err := am.tokens.Verify(secret, clientIP(r))
+				if err != nil {
+					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid api token"})
+					return
+				}
+				am.serveAs(w, r, next, info, nil)
+				return
+			}
+		}
+
+		// Try Bearer token (OIDC access/id token, for machine/API callers).
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			token := strings.TrimPrefix(authHeader, "Bearer ")
 			if am.oidcProvider == nil {
@@ -327,6 +359,19 @@ func (am *AuthMiddleware) AuthenticateRPC(ctx context.Context, authorization str
 		return nil, ErrInvalidCredentials
 	}
 
+	// Native scoped API token / service account (Task 86), under a distinct
+	// scheme from OIDC Bearer. Mirrors the HTTP path and fails closed: a
+	// presented-but-invalid token is rejected rather than falling through.
+	if am.tokens != nil {
+		if secret, ok := apiTokenCredential(authorization); ok {
+			info, err := am.tokens.Verify(secret, "")
+			if err != nil {
+				return nil, ErrInvalidCredentials
+			}
+			return info, nil
+		}
+	}
+
 	// Bearer token (OIDC access/ID token for machine/API callers).
 	if strings.HasPrefix(authorization, "Bearer ") {
 		token := strings.TrimPrefix(authorization, "Bearer ")
@@ -367,6 +412,38 @@ func (am *AuthMiddleware) AuthenticateRPC(ctx context.Context, authorization str
 	}
 
 	return nil, ErrNoCredentials
+}
+
+// apiTokenCredential extracts a native API-token secret from an Authorization
+// header value, or reports ok=false when the value is not a token. It accepts
+// the canonical distinct scheme "Token <secret>" and, as a convenience for
+// clients that can only send Bearer, a "Bearer <secret>" whose secret carries
+// the self-identifying secsy_pat_ prefix (which an OIDC JWT never does), so the
+// two verification paths stay cleanly separated regardless of the scheme word.
+func apiTokenCredential(authorization string) (secret string, ok bool) {
+	scheme, cred, split := splitAuthScheme(authorization)
+	if !split {
+		return "", false
+	}
+	if strings.EqualFold(scheme, authn.TokenAuthScheme) {
+		return cred, true
+	}
+	if strings.EqualFold(scheme, "Bearer") && authn.LooksLikeToken(cred) {
+		return cred, true
+	}
+	return "", false
+}
+
+// splitAuthScheme splits an Authorization value into its scheme and credential
+// (e.g. "Token abc" -> ("Token", "abc", true)). It returns ok=false when there
+// is no scheme/credential separator.
+func splitAuthScheme(authorization string) (scheme, credential string, ok bool) {
+	authorization = strings.TrimSpace(authorization)
+	i := strings.IndexByte(authorization, ' ')
+	if i <= 0 {
+		return "", "", false
+	}
+	return authorization[:i], strings.TrimSpace(authorization[i+1:]), true
 }
 
 // parseBasicAuth decodes a "Basic base64(user:pass)" Authorization value. It

@@ -101,6 +101,10 @@ type API struct {
 	// when the gate is disabled, in which case guarded operations execute
 	// immediately as before. Non-nil installs the fail-closed chokepoint.
 	approvals *approval.Engine
+	// apiTokenMaxLifetime caps the expiry of a native scoped API token (Task 86);
+	// 0 means unbounded (non-expiring tokens are permitted). Set from
+	// auth.api_tokens.max_lifetime_days.
+	apiTokenMaxLifetime time.Duration
 }
 
 // LeaderInfo is the read-only view of the multi-replica coordination elector
@@ -120,6 +124,10 @@ func (a *API) SetLeaderInfo(li LeaderInfo) { a.leaderInfo = li }
 // operations (CA creation/rotation/retirement, bulk revocation) into fail-closed
 // chokepoints. A nil engine leaves them ungated.
 func (a *API) SetApprovals(e *approval.Engine) { a.approvals = e }
+
+// SetAPITokenMaxLifetime installs the maximum lifetime for native scoped API
+// tokens (Task 86). A zero duration leaves token lifetimes unbounded.
+func (a *API) SetAPITokenMaxLifetime(d time.Duration) { a.apiTokenMaxLifetime = d }
 
 // AuthInfo describes the operator-authentication mechanisms enabled on the
 // server, surfaced to the console through /api/auth/config.
@@ -329,6 +337,13 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("PUT /api/tenants/{id}/status", protected(http.HandlerFunc(a.SetTenantStatus)))
 	mux.Handle("GET /api/tenants/{id}/usage", protected(http.HandlerFunc(a.TenantUsage)))
 	mux.Handle("DELETE /api/tenants/{id}", protected(http.HandlerFunc(a.DeleteTenant)))
+
+	// Native scoped API tokens / service accounts (Task 86). Machine credentials
+	// bound to RBAC roles + tenant scope. Management is admin-gated (token:manage);
+	// creation returns the opaque secret exactly once and never again.
+	mux.Handle("GET /api/tokens", protected(http.HandlerFunc(a.ListTokens)))
+	mux.Handle("POST /api/tokens", protected(http.HandlerFunc(a.CreateToken)))
+	mux.Handle("DELETE /api/tokens/{id}", protected(http.HandlerFunc(a.RevokeToken)))
 
 	// HSM-backed X.509 certificate-authority setup. Root/intermediate creation is
 	// a key ceremony — gated behind WebAuthn step-up when enabled.

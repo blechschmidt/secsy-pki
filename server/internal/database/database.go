@@ -797,6 +797,32 @@ func (db *DB) migrate() error {
 			UNIQUE (approval_id, approver)
 		)`, autoIncPK),
 		`CREATE INDEX IF NOT EXISTS idx_approval_decisions_approval ON approval_decisions(approval_id)`,
+
+		// Native scoped API tokens / service accounts (Task 86). Only the one-way
+		// hash of the opaque secret is stored (token_hash) — never the secret
+		// itself — and its UNIQUE index is the O(1) lookup key on the verify path.
+		// roles is a comma-separated RBAC role list; scope is 'tenant' or
+		// 'platform'. created_at is written explicitly in UTC (no DEFAULT) so
+		// ordering and the nullable lifecycle timestamps round-trip across backends.
+		`CREATE TABLE IF NOT EXISTS api_tokens (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'default' REFERENCES tenants(id),
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			prefix TEXT NOT NULL DEFAULT '',
+			token_hash TEXT NOT NULL UNIQUE,
+			roles TEXT NOT NULL DEFAULT '',
+			scope TEXT NOT NULL DEFAULT 'tenant',
+			created_by TEXT NOT NULL DEFAULT '',
+			created_by_name TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL,
+			expires_at TIMESTAMP,
+			last_used_at TIMESTAMP,
+			last_used_ip TEXT NOT NULL DEFAULT '',
+			revoked_at TIMESTAMP,
+			revoked_by TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_api_tokens_tenant ON api_tokens(tenant_id)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.exec(stmt); err != nil {

@@ -77,6 +77,9 @@ var migrationTables = []string{
 	// pending_approvals, so they come last.
 	"pending_approvals",
 	"approval_decisions",
+	// Native scoped API tokens / service accounts (Task 86). References tenants,
+	// so copied after them; no children of its own.
+	"api_tokens",
 }
 
 // tableCopyOrder pins the read order for tables whose rows have intra-table

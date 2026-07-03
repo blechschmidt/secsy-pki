@@ -40,6 +40,22 @@ type Store interface {
 	RBACStore
 	SecretStore
 	ApprovalStore
+	APITokenStore
+}
+
+// APITokenStore persists native scoped API tokens / service accounts (Task 86):
+// the opaque credential's one-way hash, its RBAC-role/tenant-scope binding, and
+// its lifecycle (expiry, last-used, revocation). The plaintext secret is never
+// stored; GetAPITokenByHash is the O(1) verification lookup, and revocation is
+// idempotent (RevokeAPIToken applies only while the token is un-revoked).
+type APITokenStore interface {
+	CreateAPIToken(t *models.APIToken) error
+	GetAPITokenByHash(hash string) (*models.APIToken, error)
+	GetAPIToken(id string) (*models.APIToken, error)
+	ListAPITokens(tenantID string) ([]models.APIToken, error)
+	RevokeAPIToken(id, by string, at time.Time) (bool, error)
+	TouchAPIToken(id string, at time.Time, ip string) error
+	CountActiveAPITokens() (int, error)
 }
 
 // ApprovalStore persists the four-eyes / maker-checker approval workflow (Task

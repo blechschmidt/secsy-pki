@@ -30,6 +30,36 @@ const (
 	Ip  ACMEIdentifierType = "ip"
 )
 
+// Defines values for APITokenRoles.
+const (
+	APITokenRolesAdmin    APITokenRoles = "admin"
+	APITokenRolesApprover APITokenRoles = "approver"
+	APITokenRolesAuditor  APITokenRoles = "auditor"
+	APITokenRolesIssuer   APITokenRoles = "issuer"
+	APITokenRolesSigner   APITokenRoles = "signer"
+)
+
+// Defines values for APITokenScope.
+const (
+	APITokenScopePlatform APITokenScope = "platform"
+	APITokenScopeTenant   APITokenScope = "tenant"
+)
+
+// Defines values for APITokenWithSecretRoles.
+const (
+	APITokenWithSecretRolesAdmin    APITokenWithSecretRoles = "admin"
+	APITokenWithSecretRolesApprover APITokenWithSecretRoles = "approver"
+	APITokenWithSecretRolesAuditor  APITokenWithSecretRoles = "auditor"
+	APITokenWithSecretRolesIssuer   APITokenWithSecretRoles = "issuer"
+	APITokenWithSecretRolesSigner   APITokenWithSecretRoles = "signer"
+)
+
+// Defines values for APITokenWithSecretScope.
+const (
+	APITokenWithSecretScopePlatform APITokenWithSecretScope = "platform"
+	APITokenWithSecretScopeTenant   APITokenWithSecretScope = "tenant"
+)
+
 // Defines values for ApprovalDecisionDecision.
 const (
 	Approve ApprovalDecisionDecision = "approve"
@@ -70,6 +100,21 @@ const (
 	CertItemSeverityExpired  CertItemSeverity = "expired"
 	CertItemSeverityOk       CertItemSeverity = "ok"
 	CertItemSeverityWarning  CertItemSeverity = "warning"
+)
+
+// Defines values for CreateTokenRequestRoles.
+const (
+	Admin    CreateTokenRequestRoles = "admin"
+	Approver CreateTokenRequestRoles = "approver"
+	Auditor  CreateTokenRequestRoles = "auditor"
+	Issuer   CreateTokenRequestRoles = "issuer"
+	Signer   CreateTokenRequestRoles = "signer"
+)
+
+// Defines values for CreateTokenRequestScope.
+const (
+	CreateTokenRequestScopePlatform CreateTokenRequestScope = "platform"
+	CreateTokenRequestScopeTenant   CreateTokenRequestScope = "tenant"
 )
 
 // Defines values for CrossSignSource.
@@ -372,6 +417,79 @@ type ACMEOrder struct {
 	NotBefore   *time.Time        `json:"not_before,omitempty"`
 	Status      *string           `json:"status,omitempty"`
 }
+
+// APIToken A native scoped API token / service account. The opaque secret is never included here — only in the create response, once.
+type APIToken struct {
+	CreatedAt     *time.Time `json:"created_at,omitempty"`
+	CreatedBy     *string    `json:"created_by,omitempty"`
+	CreatedByName *string    `json:"created_by_name,omitempty"`
+	Description   *string    `json:"description,omitempty"`
+
+	// ExpiresAt Absent when the token never expires.
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	Id         *string    `json:"id,omitempty"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	LastUsedIp *string    `json:"last_used_ip,omitempty"`
+	Name       *string    `json:"name,omitempty"`
+
+	// Prefix Non-secret leading fragment (secsy_pat_…) for recognition in listings.
+	Prefix    *string    `json:"prefix,omitempty"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	RevokedBy *string    `json:"revoked_by,omitempty"`
+
+	// Roles RBAC roles the token grants.
+	Roles *[]APITokenRoles `json:"roles,omitempty"`
+
+	// Scope tenant = roles apply within tenant_id; platform = cross-tenant.
+	Scope *APITokenScope `json:"scope,omitempty"`
+
+	// TenantId Owning tenant (the scope for a tenant-scoped token).
+	TenantId *string `json:"tenant_id,omitempty"`
+}
+
+// APITokenRoles defines model for APIToken.Roles.
+type APITokenRoles string
+
+// APITokenScope tenant = roles apply within tenant_id; platform = cross-tenant.
+type APITokenScope string
+
+// APITokenWithSecret defines model for APITokenWithSecret.
+type APITokenWithSecret struct {
+	CreatedAt     *time.Time `json:"created_at,omitempty"`
+	CreatedBy     *string    `json:"created_by,omitempty"`
+	CreatedByName *string    `json:"created_by_name,omitempty"`
+	Description   *string    `json:"description,omitempty"`
+
+	// ExpiresAt Absent when the token never expires.
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	Id         *string    `json:"id,omitempty"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	LastUsedIp *string    `json:"last_used_ip,omitempty"`
+	Name       *string    `json:"name,omitempty"`
+
+	// Prefix Non-secret leading fragment (secsy_pat_…) for recognition in listings.
+	Prefix    *string    `json:"prefix,omitempty"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	RevokedBy *string    `json:"revoked_by,omitempty"`
+
+	// Roles RBAC roles the token grants.
+	Roles *[]APITokenWithSecretRoles `json:"roles,omitempty"`
+
+	// Scope tenant = roles apply within tenant_id; platform = cross-tenant.
+	Scope *APITokenWithSecretScope `json:"scope,omitempty"`
+
+	// Secret The opaque bearer secret (secsy_pat_…), returned exactly once at creation and never recoverable. Present it as "Authorization: Token <secret>".
+	Secret *string `json:"secret,omitempty"`
+
+	// TenantId Owning tenant (the scope for a tenant-scoped token).
+	TenantId *string `json:"tenant_id,omitempty"`
+}
+
+// APITokenWithSecretRoles defines model for APITokenWithSecret.Roles.
+type APITokenWithSecretRoles string
+
+// APITokenWithSecretScope tenant = roles apply within tenant_id; platform = cross-tenant.
+type APITokenWithSecretScope string
 
 // AccessLogEntry defines model for AccessLogEntry.
 type AccessLogEntry struct {
@@ -954,6 +1072,30 @@ type CreateTenantRequest struct {
 	// Slug URL/CLI-friendly unique identifier ([a-z0-9-]).
 	Slug string `json:"slug"`
 }
+
+// CreateTokenRequest defines model for CreateTokenRequest.
+type CreateTokenRequest struct {
+	Description *string `json:"description,omitempty"`
+
+	// ExpiresInDays Days until expiry. Omit for the policy default; 0 means never (only permitted when no maximum lifetime is configured).
+	ExpiresInDays *int `json:"expires_in_days,omitempty"`
+
+	// Name Human-readable token name.
+	Name string `json:"name"`
+
+	// Roles RBAC roles to grant (at least one).
+	Roles []CreateTokenRequestRoles `json:"roles"`
+	Scope *CreateTokenRequestScope  `json:"scope,omitempty"`
+
+	// TenantId Owning tenant id or slug for a tenant-scoped token (default: the default tenant).
+	TenantId *string `json:"tenant_id,omitempty"`
+}
+
+// CreateTokenRequestRoles defines model for CreateTokenRequest.Roles.
+type CreateTokenRequestRoles string
+
+// CreateTokenRequestScope defines model for CreateTokenRequest.Scope.
+type CreateTokenRequestScope string
 
 // CrossSign A persisted cross-signing relationship.
 type CrossSign struct {
@@ -2374,6 +2516,12 @@ type GetTenantUsageParams struct {
 	Days *int `form:"days,omitempty" json:"days,omitempty"`
 }
 
+// ListTokensParams defines parameters for ListTokens.
+type ListTokensParams struct {
+	// Tenant Restrict the listing to a single tenant id.
+	Tenant *string `form:"tenant,omitempty" json:"tenant,omitempty"`
+}
+
 // ApproveApprovalJSONRequestBody defines body for ApproveApproval for application/json ContentType.
 type ApproveApprovalJSONRequestBody = ApprovalDecisionRequest
 
@@ -2493,6 +2641,9 @@ type UpdateTenantJSONRequestBody = UpdateTenantRequest
 
 // SetTenantStatusJSONRequestBody defines body for SetTenantStatus for application/json ContentType.
 type SetTenantStatusJSONRequestBody = TenantStatusRequest
+
+// CreateTokenJSONRequestBody defines body for CreateToken for application/json ContentType.
+type CreateTokenJSONRequestBody = CreateTokenRequest
 
 // RequestEditorFn  is the function signature for the RequestEditor callback function
 type RequestEditorFn func(ctx context.Context, req *http.Request) error
@@ -2976,6 +3127,17 @@ type ClientInterface interface {
 
 	// GetTenantUsage request
 	GetTenantUsage(ctx context.Context, id string, params *GetTenantUsageParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListTokens request
+	ListTokens(ctx context.Context, params *ListTokensParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateTokenWithBody request with any body
+	CreateTokenWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreateToken(ctx context.Context, body CreateTokenJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RevokeToken request
+	RevokeToken(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetLiveness request
 	GetLiveness(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4783,6 +4945,54 @@ func (c *Client) SetTenantStatus(ctx context.Context, id string, body SetTenantS
 
 func (c *Client) GetTenantUsage(ctx context.Context, id string, params *GetTenantUsageParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetTenantUsageRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListTokens(ctx context.Context, params *ListTokensParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListTokensRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateTokenWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateTokenRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateToken(ctx context.Context, body CreateTokenJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateTokenRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RevokeToken(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRevokeTokenRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -9750,6 +9960,129 @@ func NewGetTenantUsageRequest(server string, id string, params *GetTenantUsagePa
 	return req, nil
 }
 
+// NewListTokensRequest generates requests for ListTokens
+func NewListTokensRequest(server string, params *ListTokensParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/tokens")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Tenant != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "tenant", runtime.ParamLocationQuery, *params.Tenant); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewCreateTokenRequest calls the generic CreateToken builder with application/json body
+func NewCreateTokenRequest(server string, body CreateTokenJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateTokenRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewCreateTokenRequestWithBody generates requests for CreateToken with any type of body
+func NewCreateTokenRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/tokens")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewRevokeTokenRequest generates requests for RevokeToken
+func NewRevokeTokenRequest(server string, id string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/tokens/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("DELETE", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewGetLivenessRequest generates requests for GetLiveness
 func NewGetLivenessRequest(server string) (*http.Request, error) {
 	var err error
@@ -10337,6 +10670,17 @@ type ClientWithResponsesInterface interface {
 
 	// GetTenantUsageWithResponse request
 	GetTenantUsageWithResponse(ctx context.Context, id string, params *GetTenantUsageParams, reqEditors ...RequestEditorFn) (*GetTenantUsageResponse, error)
+
+	// ListTokensWithResponse request
+	ListTokensWithResponse(ctx context.Context, params *ListTokensParams, reqEditors ...RequestEditorFn) (*ListTokensResponse, error)
+
+	// CreateTokenWithBodyWithResponse request with any body
+	CreateTokenWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateTokenResponse, error)
+
+	CreateTokenWithResponse(ctx context.Context, body CreateTokenJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateTokenResponse, error)
+
+	// RevokeTokenWithResponse request
+	RevokeTokenWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*RevokeTokenResponse, error)
 
 	// GetLivenessWithResponse request
 	GetLivenessWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetLivenessResponse, error)
@@ -12887,6 +13231,77 @@ func (r GetTenantUsageResponse) StatusCode() int {
 	return 0
 }
 
+type ListTokensResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *[]APIToken
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListTokensResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListTokensResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type CreateTokenResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *APITokenWithSecret
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateTokenResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateTokenResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type RevokeTokenResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *StatusResponse
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r RevokeTokenResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RevokeTokenResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type GetLivenessResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -14305,6 +14720,41 @@ func (c *ClientWithResponses) GetTenantUsageWithResponse(ctx context.Context, id
 		return nil, err
 	}
 	return ParseGetTenantUsageResponse(rsp)
+}
+
+// ListTokensWithResponse request returning *ListTokensResponse
+func (c *ClientWithResponses) ListTokensWithResponse(ctx context.Context, params *ListTokensParams, reqEditors ...RequestEditorFn) (*ListTokensResponse, error) {
+	rsp, err := c.ListTokens(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListTokensResponse(rsp)
+}
+
+// CreateTokenWithBodyWithResponse request with arbitrary body returning *CreateTokenResponse
+func (c *ClientWithResponses) CreateTokenWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateTokenResponse, error) {
+	rsp, err := c.CreateTokenWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateTokenResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreateTokenWithResponse(ctx context.Context, body CreateTokenJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateTokenResponse, error) {
+	rsp, err := c.CreateToken(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateTokenResponse(rsp)
+}
+
+// RevokeTokenWithResponse request returning *RevokeTokenResponse
+func (c *ClientWithResponses) RevokeTokenWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*RevokeTokenResponse, error) {
+	rsp, err := c.RevokeToken(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRevokeTokenResponse(rsp)
 }
 
 // GetLivenessWithResponse request returning *GetLivenessResponse
@@ -17915,6 +18365,119 @@ func ParseGetTenantUsageResponse(rsp *http.Response) (*GetTenantUsageResponse, e
 			return nil, err
 		}
 		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListTokensResponse parses an HTTP response from a ListTokensWithResponse call
+func ParseListTokensResponse(rsp *http.Response) (*ListTokensResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListTokensResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest []APIToken
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateTokenResponse parses an HTTP response from a CreateTokenWithResponse call
+func ParseCreateTokenResponse(rsp *http.Response) (*CreateTokenResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateTokenResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest APITokenWithSecret
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRevokeTokenResponse parses an HTTP response from a RevokeTokenWithResponse call
+func ParseRevokeTokenResponse(rsp *http.Response) (*RevokeTokenResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RevokeTokenResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest StatusResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
 		var dest NotFound

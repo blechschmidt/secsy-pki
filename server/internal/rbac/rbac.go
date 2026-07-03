@@ -108,6 +108,13 @@ const (
 	// maker from checker is the whole point of the control, and the gate further
 	// denies self-approval by identity.
 	ActionApprove Action = "approval:approve"
+	// ActionManageTokens covers minting, listing, and revoking native scoped API
+	// tokens / service accounts (Task 86). It is an administrative capability held
+	// by admins only (no non-admin role grants it), because a token can carry any
+	// role: allowing a lesser role to mint tokens would let it escalate its own
+	// privilege. Tenant admins may manage tokens WITHIN their tenant; platform
+	// (cross-tenant) tokens require a platform administrator.
+	ActionManageTokens Action = "token:manage"
 )
 
 // roleActions is the static capability grant per role. admin is handled
@@ -156,6 +163,39 @@ func Can(roles []Role, action Action) bool {
 func HasRole(roles []Role, want Role) bool {
 	for _, r := range roles {
 		if r == want {
+			return true
+		}
+	}
+	return false
+}
+
+// IsPrivilegedRole reports whether a role grants any capability beyond read-only
+// oversight. It is derived from the capability model rather than a hardcoded
+// list, so it stays correct as roles evolve: admin is always privileged; a role
+// is privileged if it grants any action other than the read-only audit:read /
+// approval:read capabilities. Used to decide when minting a token requires
+// four-eyes approval (Task 86) — a token granting a privileged role, or platform
+// (cross-tenant) scope, is a meaningful privilege escalation and can be gated.
+func IsPrivilegedRole(role Role) bool {
+	if role == RoleAdmin {
+		return true
+	}
+	for action := range roleActions[role] {
+		switch action {
+		case ActionReadAudit, ActionReadApproval:
+			// read-only oversight, not privileged on its own
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// AnyPrivilegedRole reports whether the set contains at least one privileged
+// role (see IsPrivilegedRole).
+func AnyPrivilegedRole(roles []Role) bool {
+	for _, r := range roles {
+		if IsPrivilegedRole(r) {
 			return true
 		}
 	}

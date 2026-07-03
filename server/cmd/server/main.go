@@ -21,6 +21,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/approval"
 	"github.com/blechschmidt/secsy-pki/server/internal/attestation"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
+	"github.com/blechschmidt/secsy-pki/server/internal/authn"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/caa"
 	"github.com/blechschmidt/secsy-pki/server/internal/canary"
@@ -210,6 +211,11 @@ func main() {
 	if !cfg.Policy.RootBasicAuthEnabled() {
 		log.Printf("Built-in root basic-auth login is DISABLED (policy.allow_root_basic_auth=false)")
 	}
+
+	// Native scoped API tokens / service accounts (Task 86): install the token
+	// authenticator so machine callers can authenticate with a revocable,
+	// role/tenant-scoped credential under a distinct Authorization scheme.
+	authMw.SetTokenAuthenticator(authn.NewTokenAuthenticator(db))
 	if !rbacAssignments.Empty() {
 		log.Printf("RBAC role assignments loaded (subjects=%d, groups=%d)", len(cfg.RBAC.Subjects), len(cfg.RBAC.Groups))
 	}
@@ -435,6 +441,12 @@ func main() {
 	// transport that triggered it (including the background expiry sweep below).
 	approvalEngine.SetTerminalHook(issueapproval.NewTerminalHook(db))
 	api.SetApprovals(approvalEngine)
+	// Native scoped API tokens (Task 86): apply the lifetime policy and seed the
+	// active-token gauge from the store so the metric is correct from startup.
+	api.SetAPITokenMaxLifetime(cfg.Auth.APITokenMaxLifetime())
+	if n, err := db.CountActiveAPITokens(); err == nil {
+		metrics.SetAuthTokensActive(n)
+	}
 	// Expire stale approval requests on a leader-elected background loop (a
 	// singleton job, like the other periodic sweeps). Expiry is also enforced
 	// fail-closed at read time in the engine, so this is hygiene, not correctness.

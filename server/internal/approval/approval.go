@@ -63,6 +63,14 @@ const (
 	// once the approver threshold is met. Automated protocol flows
 	// (ACME/EST/SCEP/CMP) do not go through this class — they issue directly.
 	ClassCertIssue = "cert.issue"
+	// ClassTokenCreate guards minting a native scoped API token / service account
+	// (Task 86) whose grant is sensitive — it carries a privileged role or
+	// platform (cross-tenant) scope. Like the admin-op classes, the create request
+	// is simply re-run by the maker after the approver threshold is met (the
+	// fingerprint pins the exact grant: name, roles, scope, tenant, and expiry),
+	// so an approval cannot be reused to mint a differently-scoped token. Read-only
+	// (auditor-only) and tenant-scoped grants are not sensitive and are not gated.
+	ClassTokenCreate = "token.create"
 )
 
 // Classes is the set of recognized operation classes, in a stable order for
@@ -70,6 +78,7 @@ const (
 var Classes = []string{
 	ClassCACreate, ClassCARotate, ClassCARetire, ClassProfileChange,
 	ClassBulkRevoke, ClassEscrowPolicy, ClassKEKRotate, ClassCertIssue,
+	ClassTokenCreate,
 }
 
 var classTitles = map[string]string{
@@ -81,6 +90,7 @@ var classTitles = map[string]string{
 	ClassEscrowPolicy:  "escrow-policy change",
 	ClassKEKRotate:     "secret KEK rotation",
 	ClassCertIssue:     "certificate issuance",
+	ClassTokenCreate:   "API token creation",
 }
 
 // ValidClass reports whether c names a recognized operation class.

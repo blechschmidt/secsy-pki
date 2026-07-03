@@ -397,6 +397,23 @@ var (
 		"secsy_auth_sessions_active",
 		"Number of live operator console sessions.")
 
+	// Native scoped API tokens / service accounts (Task 86). AuthTokenOps counts
+	// token lifecycle operations (create|revoke) by result; AuthTokenVerifications
+	// counts machine authentication attempts by outcome
+	// (success|expired|revoked|unknown|error); AuthTokensActive tracks the number
+	// of currently valid (unrevoked, unexpired) tokens.
+	AuthTokenOps = NewCounter(Default,
+		"secsy_auth_token_operations_total",
+		"Scoped API token lifecycle operations, partitioned by operation and result.",
+		"operation", "result")
+	AuthTokenVerifications = NewCounter(Default,
+		"secsy_auth_token_verifications_total",
+		"Scoped API token verification attempts, partitioned by outcome.",
+		"result")
+	AuthTokensActive = NewGauge(Default,
+		"secsy_auth_tokens_active",
+		"Number of currently valid (unrevoked, unexpired) scoped API tokens.")
+
 	// Rate limiting for the public endpoints. Throttled counts requests rejected
 	// by a token-bucket tier, partitioned by endpoint class (acme_new_order,
 	// ocsp, enroll, ...) and the tier that rejected it (global|per_ip|
@@ -824,3 +841,33 @@ func RecordAuthLogin(method string, ok bool) {
 // RecordAuthStepUp records the outcome of a WebAuthn step-up. result is one of
 // success|error|denied.
 func RecordAuthStepUp(result string) { AuthStepUps.Inc(result) }
+
+// Token verification outcome labels (Task 86).
+const (
+	TokenVerifySuccess = "success"
+	TokenVerifyExpired = "expired"
+	TokenVerifyRevoked = "revoked"
+	TokenVerifyUnknown = "unknown"
+	TokenVerifyError   = "error"
+)
+
+// RecordAuthTokenOp records a scoped API token lifecycle operation by name
+// (create|revoke) and success.
+func RecordAuthTokenOp(operation string, ok bool) {
+	if ok {
+		AuthTokenOps.Inc(operation, ResultSuccess)
+	} else {
+		AuthTokenOps.Inc(operation, ResultError)
+	}
+}
+
+// RecordAuthTokenOpDenied records a token lifecycle operation rejected by
+// authorization or the approval gate.
+func RecordAuthTokenOpDenied(operation string) { AuthTokenOps.Inc(operation, ResultDenied) }
+
+// RecordAuthTokenVerify records the outcome of an API token verification. result
+// is one of the TokenVerify* constants.
+func RecordAuthTokenVerify(result string) { AuthTokenVerifications.Inc(result) }
+
+// SetAuthTokensActive publishes the current count of valid API tokens.
+func SetAuthTokensActive(n int) { AuthTokensActive.Set(float64(n)) }

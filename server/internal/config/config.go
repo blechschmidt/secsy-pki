@@ -164,9 +164,11 @@ type ApprovalsConfig struct {
 	DefaultThreshold int `yaml:"default_threshold"`
 	// Thresholds overrides the required approver count per operation class, keyed
 	// by class id: ca.create, ca.rotate, ca.retire, profile.change,
-	// revocation.bulk, escrow.policy, secret.kek_rotate, cert.issue. A value of 0
-	// leaves that class ungated even while approvals are enabled. cert.issue only
-	// takes effect for profiles whose require_approval flag is set (Task 84).
+	// revocation.bulk, escrow.policy, secret.kek_rotate, cert.issue, token.create.
+	// A value of 0 leaves that class ungated even while approvals are enabled.
+	// cert.issue only takes effect for profiles whose require_approval flag is set
+	// (Task 84); token.create gates minting an API token with a sensitive grant
+	// (a privileged role or platform scope, Task 86).
 	Thresholds map[string]int `yaml:"thresholds"`
 	// RequestTTLHours bounds how long a pending request stays actionable before
 	// it expires. Defaults to 72 (three days) when unset.
@@ -421,6 +423,29 @@ type AuthConfig struct {
 	MTLS MTLSConfig `yaml:"mtls"`
 	// WebAuthn configures passkey step-up for high-risk operations.
 	WebAuthn WebAuthnConfig `yaml:"webauthn"`
+	// APITokens configures native scoped API tokens / service accounts (Task 86).
+	APITokens APITokenConfig `yaml:"api_tokens"`
+}
+
+// APITokenConfig configures native scoped API tokens / service accounts. The
+// feature is always available (tokens are created and verified through the
+// API/CLI); this block only tunes lifetime policy.
+type APITokenConfig struct {
+	// MaxLifetimeDays caps how far in the future a token's expiry may be set. 0
+	// (the default) imposes no cap, allowing non-expiring tokens. When positive,
+	// a create request must specify an expiry within the cap, and an unspecified
+	// expiry defaults to the cap — so a deployment can forbid immortal
+	// credentials by policy.
+	MaxLifetimeDays int `yaml:"max_lifetime_days"`
+}
+
+// APITokenMaxLifetime returns the configured maximum token lifetime, or 0 when
+// unbounded.
+func (c AuthConfig) APITokenMaxLifetime() time.Duration {
+	if c.APITokens.MaxLifetimeDays <= 0 {
+		return 0
+	}
+	return time.Duration(c.APITokens.MaxLifetimeDays) * 24 * time.Hour
 }
 
 // SessionConfig configures console sessions.
@@ -1923,6 +1948,9 @@ func (c *Config) validatePresignPublish() error {
 // to turn on. Role names in mappings/bindings are checked against the known set.
 func (c *Config) validateAuth() error {
 	a := &c.Auth
+	if a.APITokens.MaxLifetimeDays < 0 {
+		return fmt.Errorf("auth.api_tokens.max_lifetime_days must not be negative")
+	}
 	validRole := func(where, r string) error {
 		switch r {
 		case "admin", "issuer", "signer", "auditor":
@@ -2453,7 +2481,7 @@ var validRoleNames = map[string]bool{"admin": true, "issuer": true, "signer": tr
 var validApprovalClasses = map[string]bool{
 	"ca.create": true, "ca.rotate": true, "ca.retire": true, "profile.change": true,
 	"revocation.bulk": true, "escrow.policy": true, "secret.kek_rotate": true,
-	"cert.issue": true,
+	"cert.issue": true, "token.create": true,
 }
 
 // validateApprovals sanity-checks the four-eyes approval configuration when
@@ -2478,7 +2506,7 @@ func (c *Config) validateApprovals() error {
 	guarded := a.ApprovalDefaultThreshold() > 0
 	for class, n := range a.Thresholds {
 		if !validApprovalClasses[class] {
-			return fmt.Errorf("approvals.thresholds[%q]: unknown operation class (valid: ca.create, ca.rotate, ca.retire, profile.change, revocation.bulk, escrow.policy, secret.kek_rotate, cert.issue)", class)
+			return fmt.Errorf("approvals.thresholds[%q]: unknown operation class (valid: ca.create, ca.rotate, ca.retire, profile.change, revocation.bulk, escrow.policy, secret.kek_rotate, cert.issue, token.create)", class)
 		}
 		if n < 0 {
 			return fmt.Errorf("approvals.thresholds[%q]: threshold must not be negative", class)

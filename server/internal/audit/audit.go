@@ -290,6 +290,15 @@ const (
 	ActionWebAuthnRegister = "webauthn.register" // a passkey was enrolled
 	ActionWebAuthnRemove   = "webauthn.remove"   // a passkey was removed
 
+	// Native scoped API tokens / service accounts (Task 86). ActionTokenCreate
+	// records minting a token (Detail carries the granted roles, scope, and
+	// expiry; the secret is never logged); ActionTokenRevoke records revoking one.
+	// The token id is the Target so a token and its lifecycle events correlate.
+	// Verification failures are surfaced via metrics rather than the audit log to
+	// avoid unbounded, actor-less noise from probing.
+	ActionTokenCreate = "token.create" // an API token / service account was minted
+	ActionTokenRevoke = "token.revoke" // an API token was revoked
+
 	// Four-eyes / maker-checker approval workflow (Task 81). ActionApprovalRequest
 	// records a guarded operation being held at the gate (a request created);
 	// ActionApprovalApprove and ActionApprovalReject record each approver's

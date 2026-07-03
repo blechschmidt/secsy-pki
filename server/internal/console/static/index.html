@@ -53,6 +53,7 @@
         <button data-view="bundle">Trust Bundle</button>
         <button data-view="secrets">Secrets</button>
         <button data-view="tenants">Tenants</button>
+        <button data-view="tokens">API Tokens</button>
       </nav>
       <span class="user" id="userBox"></span>
       <button class="btn ghost sm hidden" id="passkeyBtn" title="Register a WebAuthn passkey for step-up on high-risk operations">Register passkey</button>
@@ -944,6 +945,77 @@
                 <thead><tr><th>Day (UTC)</th><th>Issued</th><th>Revoked</th><th>Secret ops</th></tr></thead>
                 <tbody id="tenantUsageRows"></tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-tokens">
+        <h2>API Tokens</h2>
+        <p class="sub">Native scoped service-account credentials for machine-to-machine callers. A token is bound to RBAC roles and a tenant scope, with an optional expiry. The opaque secret (<code>secsy_pat_…</code>) is shown once at creation and stored only as a one-way hash. Present it as <code>Authorization: Token &lt;secret&gt;</code>. Managing tokens requires an admin role.</p>
+        <div id="tokensDenied" class="notice err hidden">Managing API tokens requires an admin role.</div>
+        <div class="toolbar">
+          <div class="spacer"></div>
+          <button class="btn ghost sm" id="refreshTokens">Refresh</button>
+        </div>
+        <div class="panel">
+          <table>
+            <thead><tr><th>Name</th><th>Scope</th><th>Tenant</th><th>Roles</th><th>Status</th><th>Expires</th><th>Last used</th><th>Prefix</th><th></th></tr></thead>
+            <tbody id="tokenRows"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="row" style="align-items:stretch;margin-top:14px">
+          <div class="panel" style="flex:1;min-width:320px">
+            <h2 style="font-size:15px">Create token</h2>
+            <div id="tokenCreateError" class="notice err hidden"></div>
+            <div class="field">
+              <label for="tokenName">Name</label>
+              <input id="tokenName" placeholder="ci-cert-issuer">
+            </div>
+            <div class="field">
+              <label>Roles</label>
+              <div id="tokenRoles" style="display:flex;flex-wrap:wrap;gap:12px">
+                <label class="muted"><input type="checkbox" value="issuer"> issuer</label>
+                <label class="muted"><input type="checkbox" value="signer"> signer</label>
+                <label class="muted"><input type="checkbox" value="auditor"> auditor</label>
+                <label class="muted"><input type="checkbox" value="approver"> approver</label>
+                <label class="muted"><input type="checkbox" value="admin"> admin</label>
+              </div>
+            </div>
+            <div class="field">
+              <label for="tokenScope">Scope</label>
+              <select id="tokenScope">
+                <option value="tenant" selected>tenant (roles apply within one tenant)</option>
+                <option value="platform">platform (cross-tenant; platform admin only)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="tokenTenant">Tenant (id or slug, for tenant scope)</label>
+              <input id="tokenTenant" placeholder="default">
+            </div>
+            <div class="field">
+              <label for="tokenExpires">Expires in days (blank = policy default / never)</label>
+              <input id="tokenExpires" type="number" min="1" placeholder="90">
+            </div>
+            <div class="field">
+              <label for="tokenDesc">Description (optional)</label>
+              <input id="tokenDesc" placeholder="issues device certs from CI">
+            </div>
+            <button class="btn" id="tokenCreateBtn">Create token</button>
+          </div>
+          <div class="panel" style="flex:1;min-width:320px">
+            <h2 style="font-size:15px">New token secret</h2>
+            <div id="tokenSecretEmpty" class="muted">Create a token to reveal its secret here — once.</div>
+            <div id="tokenSecretBox" class="hidden">
+              <div class="notice" style="background:#1b2b1b;border-color:#2f5d2f">
+                Copy this secret now. It is shown <strong>once</strong> and cannot be recovered.
+              </div>
+              <div class="field">
+                <label id="tokenSecretMeta" class="muted"></label>
+                <textarea id="tokenSecretValue" readonly rows="3" style="width:100%;font-family:monospace"></textarea>
+              </div>
+              <button class="btn ghost sm" id="tokenSecretCopy">Copy</button>
             </div>
           </div>
         </div>

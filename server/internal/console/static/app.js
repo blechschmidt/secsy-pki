@@ -316,6 +316,7 @@ function switchView(name) {
   if (name === 'compliance') loadCompliance();
   if (name === 'bundle') loadBundle();
   if (name === 'tenants') loadTenants();
+  if (name === 'tokens') loadTokens();
 }
 document.querySelectorAll('header nav button').forEach(b =>
   b.onclick = () => switchView(b.dataset.view));
@@ -1343,6 +1344,105 @@ async function loadTenantUsage(t) {
     $('tenantUsageEmpty').textContent = 'Usage unavailable: ' + e.message;
   }
 }
+
+// ---- API tokens / service accounts (Task 86) -------------------------------
+async function loadTokens() {
+  const rows = $('tokenRows');
+  let tokens;
+  try {
+    tokens = await api('GET', '/api/tokens');
+    $('tokensDenied').classList.add('hidden');
+  } catch (e) {
+    rows.innerHTML = '';
+    showError($('tokensDenied'), 'Listing tokens failed: ' + e.message);
+    return;
+  }
+  if (!tokens.length) { rows.innerHTML = '<tr><td colspan="9" class="muted">No API tokens.</td></tr>'; return; }
+  const badge = (s) => s === 'active' ? '<span class="badge ok">active</span>'
+    : `<span class="badge revoked">${escapeHTML(s)}</span>`;
+  rows.innerHTML = tokens.map(t => {
+    const active = (t.status || tokenStatus(t)) === 'active';
+    return `<tr${active ? '' : ' style="opacity:.6"'}>
+      <td>${escapeHTML(t.name)}</td>
+      <td>${escapeHTML(t.scope)}</td>
+      <td>${escapeHTML(t.tenant_id)}</td>
+      <td>${escapeHTML((t.roles || []).join(', '))}</td>
+      <td>${badge(t.status || tokenStatus(t))}</td>
+      <td>${t.expires_at ? escapeHTML(fmtTime(t.expires_at)) : 'never'}</td>
+      <td>${t.last_used_at ? escapeHTML(fmtTime(t.last_used_at)) : '—'}</td>
+      <td><code>${escapeHTML(t.prefix || '')}</code></td>
+      <td style="white-space:nowrap">${active ? `<button class="btn danger sm" data-id="${t.id}">Revoke</button>` : ''}</td>
+    </tr>`;
+  }).join('');
+  rows.querySelectorAll('button[data-id]').forEach(b => {
+    const t = tokens.find(x => x.id === b.dataset.id);
+    b.onclick = () => revokeToken(t);
+  });
+}
+$('refreshTokens').onclick = loadTokens;
+
+// tokenStatus derives a lifecycle label if the server did not send one.
+function tokenStatus(t) {
+  if (t.revoked_at) return 'revoked';
+  if (t.expires_at && new Date(t.expires_at) <= new Date()) return 'expired';
+  return 'active';
+}
+
+async function revokeToken(t) {
+  if (!confirm(`Revoke API token "${t.name}"?\n\nAny caller using it will immediately fail authentication.`)) return;
+  try {
+    await api('DELETE', `/api/tokens/${encodeURIComponent(t.id)}`);
+    await loadTokens();
+  } catch (e) { showError($('globalError'), `Revoking token ${t.name}: ${e.message}`); }
+}
+
+$('tokenCreateBtn').onclick = async () => {
+  const err = $('tokenCreateError');
+  err.classList.add('hidden');
+  const roles = Array.from($('tokenRoles').querySelectorAll('input:checked')).map(c => c.value);
+  if (!$('tokenName').value.trim()) { showError(err, 'A name is required.'); return; }
+  if (!roles.length) { showError(err, 'Select at least one role.'); return; }
+  const body = {
+    name: $('tokenName').value.trim(),
+    roles,
+    scope: $('tokenScope').value,
+    description: $('tokenDesc').value.trim(),
+  };
+  const tenant = $('tokenTenant').value.trim();
+  if (body.scope === 'tenant' && tenant) body.tenant_id = tenant;
+  const days = parseInt($('tokenExpires').value, 10);
+  if (!isNaN(days) && days > 0) body.expires_in_days = days;
+  try {
+    const res = await api('POST', '/api/tokens', body, true); // raw: create may 202 (approval) or 201
+    let created;
+    try { created = JSON.parse(res); } catch (_) { created = {}; }
+    if (!created.secret) {
+      // A 202 (four-eyes) has no body/secret; surface the pending-approval note.
+      showError(err, 'Held for four-eyes approval — an approver must sign off, then re-submit. See the Approvals page.');
+      await loadTokens();
+      return;
+    }
+    revealTokenSecret(created);
+    // Reset the form.
+    $('tokenName').value = $('tokenTenant').value = $('tokenDesc').value = $('tokenExpires').value = '';
+    $('tokenRoles').querySelectorAll('input:checked').forEach(c => { c.checked = false; });
+    await loadTokens();
+  } catch (e) { showError(err, e.message); }
+};
+
+function revealTokenSecret(tok) {
+  $('tokenSecretEmpty').classList.add('hidden');
+  $('tokenSecretBox').classList.remove('hidden');
+  $('tokenSecretMeta').textContent = `${tok.name} — ${tok.scope} scope, roles: ${(tok.roles || []).join(', ')}`;
+  $('tokenSecretValue').value = tok.secret;
+}
+$('tokenSecretCopy').onclick = async () => {
+  const v = $('tokenSecretValue');
+  v.select();
+  try { await navigator.clipboard.writeText(v.value); } catch (_) { document.execCommand('copy'); }
+  $('tokenSecretCopy').textContent = 'Copied';
+  setTimeout(() => { $('tokenSecretCopy').textContent = 'Copy'; }, 1500);
+};
 
 // ---- Authorities view (Task 62: CLI parity) --------------------------------
 // CA lifecycle: create roots/intermediates, rotate/retire intermediate signing

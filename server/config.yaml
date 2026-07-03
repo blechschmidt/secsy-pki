@@ -110,6 +110,16 @@ auth:
     step_up_ttl_minutes: 5
     # step_up_operations defaults to a safe set when omitted.
     step_up_operations: ["cert.revoke", "ca.init_root", "ca.issue_intermediate", "ca.cross_sign", "ca.manage", "hsm.factory_reset"]
+  api_tokens:
+    # Native scoped API tokens / service accounts are always available (create
+    # them via `secsy-ca token create`, POST /api/tokens, or the console). This
+    # block only tunes lifetime policy.
+    # max_lifetime_days caps how far in the future a token's expiry may be set;
+    # 0 (the default) imposes no cap and permits non-expiring tokens. When
+    # positive, a create request must specify an expiry within the cap (and an
+    # unspecified expiry defaults to it), so a deployment can forbid immortal
+    # credentials by policy.
+    max_lifetime_days: 0
 
 root_user:
   username: "root"
@@ -628,7 +638,8 @@ approvals:
   # thresholds overrides the approver count per operation class. A value of 0
   # leaves that class ungated even while approvals are enabled. Classes:
   #   ca.create, ca.rotate, ca.retire, revocation.bulk, secret.kek_rotate,
-  #   profile.change, escrow.policy, and cert.issue (Task 84).
+  #   profile.change, escrow.policy, cert.issue (Task 84), and token.create
+  #   (Task 86: minting an API token with a privileged role or platform scope).
   #
   # cert.issue guards operator/API leaf issuance, but ONLY for profiles whose
   # require_approval flag is set (see the profiles block). Automated protocol
@@ -639,4 +650,5 @@ approvals:
   thresholds: {}
   #   cert.issue: 2
   #   ca.create: 2
+  #   token.create: 2
   #   revocation.bulk: 3
