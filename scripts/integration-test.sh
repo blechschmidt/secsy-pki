@@ -62,7 +62,7 @@ fi
 cd "$SERVER_DIR"
 
 # Default target: the dedicated end-to-end flow plus the HSM-backed unit suites.
-DEFAULT_PKGS=(./internal/e2e/... ./internal/ca/... ./internal/secret/... ./internal/keyprovider/... ./internal/scep/... ./internal/est/... ./internal/cms/...)
+DEFAULT_PKGS=(./internal/e2e/... ./internal/ca/... ./internal/secret/... ./internal/keyprovider/... ./internal/scep/... ./internal/est/... ./internal/cms/... ./internal/sshca/... ./internal/handlers/...)
 
 log "Running end-to-end integration tests against SoftHSM..."
 set -x

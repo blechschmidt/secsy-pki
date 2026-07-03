@@ -34,6 +34,7 @@ type Store interface {
 	DiscoveryStore
 	RevocationStore
 	CRLStore
+	SSHStore
 	ACMEStore
 	AuditStore
 	RBACStore
@@ -140,6 +141,27 @@ type RevocationStore interface {
 type CRLStore interface {
 	GetPublishedCRL(caID, scope, kind string) (*PublishedCRL, error)
 	UpsertPublishedCRL(c *PublishedCRL) error
+}
+
+// SSHStore persists the SSH certificate authority's state (Task 57): the record
+// of every OpenSSH certificate signed and the revocations published to relying
+// hosts as a KRL. SSH serials draw from the same per-CA AllocateSerial counter
+// as X.509 issuance, so no separate allocator is needed here.
+type SSHStore interface {
+	RecordSSHCertificate(c *models.SSHCertificate) error
+	GetSSHCertificate(caID, serial string) (*models.SSHCertificate, error)
+	ListSSHCertificates(caID string) ([]models.SSHCertificate, error)
+	// RevokeSSHCertificate records a revocation by serial or key ID and reports
+	// whether it is newly effective (false when the target was already revoked).
+	RevokeSSHCertificate(rev *models.SSHRevocation) (bool, error)
+	GetSSHRevocationBySerial(caID, serial string) (*models.SSHRevocation, error)
+	// IsSSHCertificateRevoked reports whether a certificate is revoked, by
+	// serial or through a key-ID revocation.
+	IsSSHCertificateRevoked(caID, serial, keyID string) (bool, error)
+	ListSSHRevocations(caID string) ([]models.SSHRevocation, error)
+	// CountSSHRevocations doubles as the monotonic KRL version: revocations are
+	// only ever added.
+	CountSSHRevocations(caID string) (int64, error)
 }
 
 // ACMEStore persists ACME account, order, authorization, and challenge state so

@@ -535,6 +535,45 @@ func (db *DB) migrate() error {
 		)`, currentTimestamp),
 		`CREATE INDEX IF NOT EXISTS idx_discovered_certs_tenant ON discovered_certificates(tenant_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_discovered_certs_rogue ON discovered_certificates(rogue)`,
+
+		// OpenSSH certificates signed by an HSM-backed SSH CA (Task 57). Serials
+		// come from the CA's ca_serial_counters allocator, so (ca_id, serial) is
+		// the natural key. tenant_id mirrors the issuing CA's tenant so inventory
+		// queries stay tenant-scoped without a join.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS ssh_certificates (
+			ca_id TEXT NOT NULL REFERENCES cas(id) ON DELETE CASCADE,
+			serial TEXT NOT NULL,
+			tenant_id TEXT NOT NULL DEFAULT 'default' REFERENCES tenants(id),
+			cert_type TEXT NOT NULL,
+			key_id TEXT NOT NULL,
+			principals TEXT NOT NULL DEFAULT '',
+			profile TEXT NOT NULL DEFAULT '',
+			public_key_fingerprint TEXT NOT NULL DEFAULT '',
+			certificate TEXT NOT NULL,
+			valid_after TIMESTAMP NOT NULL,
+			valid_before TIMESTAMP NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			issued_by TEXT NOT NULL DEFAULT '',
+			created_at %s,
+			PRIMARY KEY (ca_id, serial)
+		)`, currentTimestamp),
+		`CREATE INDEX IF NOT EXISTS idx_ssh_certs_tenant ON ssh_certificates(tenant_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_ssh_certs_status ON ssh_certificates(ca_id, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_ssh_certs_key_id ON ssh_certificates(ca_id, key_id)`,
+
+		// SSH revocation store (Task 57), published to relying hosts as an OpenSSH
+		// KRL. A row revokes either one certificate serial or every certificate
+		// bearing a key ID; the unused half is stored as '' (not NULL) so the
+		// composite primary key enforces idempotence on both drivers.
+		`CREATE TABLE IF NOT EXISTS ssh_revocations (
+			ca_id TEXT NOT NULL REFERENCES cas(id) ON DELETE CASCADE,
+			serial TEXT NOT NULL DEFAULT '',
+			key_id TEXT NOT NULL DEFAULT '',
+			reason TEXT NOT NULL DEFAULT '',
+			revoked_by TEXT NOT NULL DEFAULT '',
+			revoked_at TIMESTAMP NOT NULL,
+			PRIMARY KEY (ca_id, serial, key_id)
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.exec(stmt); err != nil {

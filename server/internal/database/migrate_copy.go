@@ -54,6 +54,10 @@ var migrationTables = []string{
 	// Discovered external certificates (Task 54). Tenant-scoped; references
 	// tenants, so copied after it.
 	"discovered_certificates",
+	// SSH certificate authority state (Task 57). Both reference cas (and
+	// ssh_certificates references tenants), so they are copied after those.
+	"ssh_certificates",
+	"ssh_revocations",
 }
 
 // tableCopyOrder pins the read order for tables whose rows have intra-table

@@ -44,6 +44,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
 	"github.com/blechschmidt/secsy-pki/server/internal/siem"
 	"github.com/blechschmidt/secsy-pki/server/internal/spiffe"
+	"github.com/blechschmidt/secsy-pki/server/internal/sshca"
 	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
 	"github.com/blechschmidt/secsy-pki/server/internal/tsa"
 )
@@ -229,6 +230,19 @@ func main() {
 		log.Printf("Loaded %d custom certificate profile(s)", len(profiles))
 	}
 
+	// Install any operator-defined SSH signing profiles (Task 57), layered over
+	// the built-in user-default/host-default profiles.
+	if len(cfg.SSH.Profiles) > 0 {
+		sshProfiles, err := sshProfilesFromConfig(cfg.SSH.Profiles)
+		if err != nil {
+			log.Fatalf("Invalid ssh profile: %v", err)
+		}
+		if err := sshca.SetCustomProfiles(sshProfiles); err != nil {
+			log.Fatalf("Invalid ssh profile: %v", err)
+		}
+		log.Printf("Loaded %d custom SSH signing profile(s)", len(sshProfiles))
+	}
+
 	// Install the DNS resolver backing the CAA pre-issuance gate when any profile
 	// enables it. The resolver is wrapped in a TTL cache shared across requests. A
 	// profile enforcing CAA cannot run without a resolver, so a resolver-build
@@ -332,6 +346,7 @@ func main() {
 	// Discovery API endpoints (/api/discovery, /api/discovery/scan) use the
 	// configured targets/expiry window and share the monitor's notification sinks.
 	api.SetDiscoveryConfig(cfg.Discovery, cfg.Monitor)
+	api.SetSSHConfig(cfg.SSH.KRLComment)
 	// OCSP response cache TTL: 0 keeps the server default, a negative value
 	// disables caching, and a positive value sets an explicit TTL.
 	if cfg.Server.OCSPCacheTTLSeconds != 0 {

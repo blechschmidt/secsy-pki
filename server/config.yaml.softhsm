@@ -22,6 +22,23 @@ grpc:
   address: ":9443"
   # mtls: true   # request + bind mutual-TLS client certs (requires auth.mtls)
 
+# SSH certificate authority (Task 57): HSM-backed OpenSSH user/host certificate
+# signing with KRL revocation. The /api/ssh endpoints and `secsy-ca ssh`
+# commands work out of the box with the built-in user-default/host-default
+# profiles; this block only customizes them. See docs/ssh-ca.md.
+# ssh:
+#   krl_comment: "corp ops CA"           # stamped into generated KRLs
+#   profiles:
+#     - name: ci-deploy
+#       cert_type: user                  # user | host
+#       default_validity: 1h             # Go duration, or 30d / 12w
+#       max_validity: 24h                # longer requests are clamped
+#       allowed_principals: ["deploy-*"] # glob patterns; empty = any
+#       max_principals: 2
+#       default_extensions:
+#         permit-pty: ""
+#       allowed_critical_options: ["source-address"]
+
 database:
   driver: "sqlite"
   dsn: "secsy-pki.db"

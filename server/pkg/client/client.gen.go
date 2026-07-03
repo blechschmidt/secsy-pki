@@ -139,8 +139,39 @@ const (
 
 // Defines values for RevokeResultStatus.
 const (
-	AlreadyRevoked RevokeResultStatus = "already-revoked"
-	Revoked        RevokeResultStatus = "revoked"
+	RevokeResultStatusAlreadyRevoked RevokeResultStatus = "already-revoked"
+	RevokeResultStatusRevoked        RevokeResultStatus = "revoked"
+)
+
+// Defines values for SSHCertificateCertType.
+const (
+	SSHCertificateCertTypeHost SSHCertificateCertType = "host"
+	SSHCertificateCertTypeUser SSHCertificateCertType = "user"
+)
+
+// Defines values for SSHCertificateStatus.
+const (
+	SSHCertificateStatusExpired SSHCertificateStatus = "expired"
+	SSHCertificateStatusRevoked SSHCertificateStatus = "revoked"
+	SSHCertificateStatusValid   SSHCertificateStatus = "valid"
+)
+
+// Defines values for SSHProfileCertType.
+const (
+	SSHProfileCertTypeHost SSHProfileCertType = "host"
+	SSHProfileCertTypeUser SSHProfileCertType = "user"
+)
+
+// Defines values for SSHSignRequestCertType.
+const (
+	SSHSignRequestCertTypeHost SSHSignRequestCertType = "host"
+	SSHSignRequestCertTypeUser SSHSignRequestCertType = "user"
+)
+
+// Defines values for SSHSignResponseCertType.
+const (
+	SSHSignResponseCertTypeHost SSHSignResponseCertType = "host"
+	SSHSignResponseCertTypeUser SSHSignResponseCertType = "user"
 )
 
 // Defines values for SetDefaultRestrictionSetRequestType.
@@ -486,6 +517,18 @@ type CreateCARequest struct {
 // CreateGroupRequest defines model for CreateGroupRequest.
 type CreateGroupRequest struct {
 	Name string `json:"name"`
+}
+
+// CreateSSHCARequest defines model for CreateSSHCARequest.
+type CreateSSHCARequest struct {
+	// KeyType Key-provider key type (default: ed25519).
+	KeyType *string `json:"key_type,omitempty"`
+
+	// Label CA label; doubles as the provider key label.
+	Label string `json:"label"`
+
+	// TenantId Owning tenant (default: the default tenant).
+	TenantId *string `json:"tenant_id,omitempty"`
 }
 
 // CreateTenantRequest defines model for CreateTenantRequest.
@@ -1000,6 +1043,136 @@ type RevokedCertificate struct {
 	Serial    *string    `json:"serial,omitempty"`
 }
 
+// SSHCertificate defines model for SSHCertificate.
+type SSHCertificate struct {
+	CaId        *string                 `json:"ca_id,omitempty"`
+	CertType    *SSHCertificateCertType `json:"cert_type,omitempty"`
+	Certificate *string                 `json:"certificate,omitempty"`
+	CreatedAt   *time.Time              `json:"created_at,omitempty"`
+	IssuedBy    *string                 `json:"issued_by,omitempty"`
+	KeyId       *string                 `json:"key_id,omitempty"`
+	Principals  *[]string               `json:"principals,omitempty"`
+	Profile     *string                 `json:"profile,omitempty"`
+
+	// PublicKeyFingerprint SHA256:… fingerprint of the certified key.
+	PublicKeyFingerprint *string               `json:"public_key_fingerprint,omitempty"`
+	Serial               *string               `json:"serial,omitempty"`
+	Status               *SSHCertificateStatus `json:"status,omitempty"`
+	TenantId             *string               `json:"tenant_id,omitempty"`
+	ValidAfter           *time.Time            `json:"valid_after,omitempty"`
+	ValidBefore          *time.Time            `json:"valid_before,omitempty"`
+}
+
+// SSHCertificateCertType defines model for SSHCertificate.CertType.
+type SSHCertificateCertType string
+
+// SSHCertificateStatus defines model for SSHCertificate.Status.
+type SSHCertificateStatus string
+
+// SSHProfile defines model for SSHProfile.
+type SSHProfile struct {
+	AllowEmptyPrincipals   *bool     `json:"allow_empty_principals,omitempty"`
+	AllowedCriticalOptions *[]string `json:"allowed_critical_options,omitempty"`
+	AllowedExtensions      *[]string `json:"allowed_extensions,omitempty"`
+
+	// AllowedPrincipals Glob patterns; empty permits any principal.
+	AllowedPrincipals      *[]string           `json:"allowed_principals,omitempty"`
+	CertType               *SSHProfileCertType `json:"cert_type,omitempty"`
+	DefaultCriticalOptions *map[string]string  `json:"default_critical_options,omitempty"`
+	DefaultExtensions      *map[string]string  `json:"default_extensions,omitempty"`
+	DefaultValiditySecs    *int64              `json:"default_validity_secs,omitempty"`
+	Description            *string             `json:"description,omitempty"`
+	MaxPrincipals          *int                `json:"max_principals,omitempty"`
+	MaxValiditySecs        *int64              `json:"max_validity_secs,omitempty"`
+	Name                   *string             `json:"name,omitempty"`
+}
+
+// SSHProfileCertType defines model for SSHProfile.CertType.
+type SSHProfileCertType string
+
+// SSHRevocation defines model for SSHRevocation.
+type SSHRevocation struct {
+	CaId *string `json:"ca_id,omitempty"`
+
+	// KeyId Empty for serial revocations.
+	KeyId     *string    `json:"key_id,omitempty"`
+	Reason    *string    `json:"reason,omitempty"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	RevokedBy *string    `json:"revoked_by,omitempty"`
+
+	// Serial Empty for key-ID revocations.
+	Serial *string `json:"serial,omitempty"`
+}
+
+// SSHRevokeRequest defines model for SSHRevokeRequest.
+type SSHRevokeRequest struct {
+	// KeyId Revoke every certificate bearing this key ID instead.
+	KeyId  *string `json:"key_id,omitempty"`
+	Reason *string `json:"reason,omitempty"`
+
+	// Serial Certificate serial to revoke (exactly one of serial/key_id).
+	Serial *string `json:"serial,omitempty"`
+}
+
+// SSHRevokeResponse defines model for SSHRevokeResponse.
+type SSHRevokeResponse struct {
+	KeyId *string `json:"key_id,omitempty"`
+
+	// NewlyRevoked False when the target was already revoked (reason/time updated).
+	NewlyRevoked *bool      `json:"newly_revoked,omitempty"`
+	Revoked      *bool      `json:"revoked,omitempty"`
+	RevokedAt    *time.Time `json:"revoked_at,omitempty"`
+	Serial       *string    `json:"serial,omitempty"`
+}
+
+// SSHSignRequest defines model for SSHSignRequest.
+type SSHSignRequest struct {
+	CertType *SSHSignRequestCertType `json:"cert_type,omitempty"`
+
+	// CriticalOptions Replaces the profile defaults; keys must be permitted.
+	CriticalOptions *map[string]string `json:"critical_options,omitempty"`
+
+	// Extensions Replaces the profile defaults; keys must be permitted.
+	Extensions *map[string]string `json:"extensions,omitempty"`
+
+	// KeyId Certificate key ID (default: the caller's subject).
+	KeyId *string `json:"key_id,omitempty"`
+
+	// Principals User names (user certs) or host names (host certs).
+	Principals *[]string `json:"principals,omitempty"`
+
+	// Profile Signing profile (default: user-default / host-default by type).
+	Profile *string `json:"profile,omitempty"`
+
+	// PublicKey authorized_keys line of the key to certify.
+	PublicKey string `json:"public_key"`
+
+	// ValiditySeconds Requested lifetime; zero applies the profile default, values beyond the profile maximum are clamped.
+	ValiditySeconds *int64 `json:"validity_seconds,omitempty"`
+}
+
+// SSHSignRequestCertType defines model for SSHSignRequest.CertType.
+type SSHSignRequestCertType string
+
+// SSHSignResponse defines model for SSHSignResponse.
+type SSHSignResponse struct {
+	// CaPublicKey The CA's authorized_keys line (the trust anchor).
+	CaPublicKey *string                  `json:"ca_public_key,omitempty"`
+	CertType    *SSHSignResponseCertType `json:"cert_type,omitempty"`
+
+	// Certificate authorized_keys line of the signed certificate (-cert.pub content).
+	Certificate *string    `json:"certificate,omitempty"`
+	KeyId       *string    `json:"key_id,omitempty"`
+	Principals  *[]string  `json:"principals,omitempty"`
+	Profile     *string    `json:"profile,omitempty"`
+	Serial      *string    `json:"serial,omitempty"`
+	ValidAfter  *time.Time `json:"valid_after,omitempty"`
+	ValidBefore *time.Time `json:"valid_before,omitempty"`
+}
+
+// SSHSignResponseCertType defines model for SSHSignResponse.CertType.
+type SSHSignResponseCertType string
+
 // SVIDRequest A SPIFFE X.509-SVID request. Provide the identity either as a full spiffe_id or as trust_domain + path. Only the CSR's public key is used; its subject and SANs are ignored.
 type SVIDRequest struct {
 	// Csr PEM PKCS#10 CSR (public-key source)
@@ -1374,6 +1547,15 @@ type DecryptSecretJSONRequestBody = DecryptRequest
 // EncryptSecretJSONRequestBody defines body for EncryptSecret for application/json ContentType.
 type EncryptSecretJSONRequestBody = EncryptRequest
 
+// CreateSSHCAJSONRequestBody defines body for CreateSSHCA for application/json ContentType.
+type CreateSSHCAJSONRequestBody = CreateSSHCARequest
+
+// RevokeSSHCertJSONRequestBody defines body for RevokeSSHCert for application/json ContentType.
+type RevokeSSHCertJSONRequestBody = SSHRevokeRequest
+
+// SignSSHCertJSONRequestBody defines body for SignSSHCert for application/json ContentType.
+type SignSSHCertJSONRequestBody = SSHSignRequest
+
 // CreateTenantJSONRequestBody defines body for CreateTenant for application/json ContentType.
 type CreateTenantJSONRequestBody = CreateTenantRequest
 
@@ -1714,6 +1896,36 @@ type ClientInterface interface {
 
 	// GetSecretInfo request
 	GetSecretInfo(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateSSHCAWithBody request with any body
+	CreateSSHCAWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreateSSHCA(ctx context.Context, body CreateSSHCAJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListSSHCertificates request
+	ListSSHCertificates(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetSSHKRL request
+	GetSSHKRL(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetSSHCAPublicKey request
+	GetSSHCAPublicKey(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListSSHRevocations request
+	ListSSHRevocations(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RevokeSSHCertWithBody request with any body
+	RevokeSSHCertWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	RevokeSSHCert(ctx context.Context, id CAId, body RevokeSSHCertJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SignSSHCertWithBody request with any body
+	SignSSHCertWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	SignSSHCert(ctx context.Context, id CAId, body SignSSHCertJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListSSHProfiles request
+	ListSSHProfiles(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListTenants request
 	ListTenants(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -2880,6 +3092,138 @@ func (c *Client) EncryptSecret(ctx context.Context, params *EncryptSecretParams,
 
 func (c *Client) GetSecretInfo(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetSecretInfoRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateSSHCAWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateSSHCARequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateSSHCA(ctx context.Context, body CreateSSHCAJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateSSHCARequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListSSHCertificates(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListSSHCertificatesRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetSSHKRL(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSSHKRLRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetSSHCAPublicKey(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSSHCAPublicKeyRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListSSHRevocations(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListSSHRevocationsRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RevokeSSHCertWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRevokeSSHCertRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RevokeSSHCert(ctx context.Context, id CAId, body RevokeSSHCertJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRevokeSSHCertRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SignSSHCertWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSignSSHCertRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SignSSHCert(ctx context.Context, id CAId, body SignSSHCertJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSignSSHCertRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListSSHProfiles(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListSSHProfilesRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -6098,6 +6442,303 @@ func NewGetSecretInfoRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewCreateSSHCARequest calls the generic CreateSSHCA builder with application/json body
+func NewCreateSSHCARequest(server string, body CreateSSHCAJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateSSHCARequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewCreateSSHCARequestWithBody generates requests for CreateSSHCA with any type of body
+func NewCreateSSHCARequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ssh/cas")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewListSSHCertificatesRequest generates requests for ListSSHCertificates
+func NewListSSHCertificatesRequest(server string, id CAId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ssh/cas/%s/certificates", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetSSHKRLRequest generates requests for GetSSHKRL
+func NewGetSSHKRLRequest(server string, id CAId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ssh/cas/%s/krl", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetSSHCAPublicKeyRequest generates requests for GetSSHCAPublicKey
+func NewGetSSHCAPublicKeyRequest(server string, id CAId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ssh/cas/%s/public", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewListSSHRevocationsRequest generates requests for ListSSHRevocations
+func NewListSSHRevocationsRequest(server string, id CAId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ssh/cas/%s/revocations", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewRevokeSSHCertRequest calls the generic RevokeSSHCert builder with application/json body
+func NewRevokeSSHCertRequest(server string, id CAId, body RevokeSSHCertJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRevokeSSHCertRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewRevokeSSHCertRequestWithBody generates requests for RevokeSSHCert with any type of body
+func NewRevokeSSHCertRequestWithBody(server string, id CAId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ssh/cas/%s/revoke", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewSignSSHCertRequest calls the generic SignSSHCert builder with application/json body
+func NewSignSSHCertRequest(server string, id CAId, body SignSSHCertJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSignSSHCertRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewSignSSHCertRequestWithBody generates requests for SignSSHCert with any type of body
+func NewSignSSHCertRequestWithBody(server string, id CAId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ssh/cas/%s/sign", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewListSSHProfilesRequest generates requests for ListSSHProfiles
+func NewListSSHProfilesRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ssh/profiles")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewListTenantsRequest generates requests for ListTenants
 func NewListTenantsRequest(server string) (*http.Request, error) {
 	var err error
@@ -6719,6 +7360,36 @@ type ClientWithResponsesInterface interface {
 
 	// GetSecretInfoWithResponse request
 	GetSecretInfoWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSecretInfoResponse, error)
+
+	// CreateSSHCAWithBodyWithResponse request with any body
+	CreateSSHCAWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateSSHCAResponse, error)
+
+	CreateSSHCAWithResponse(ctx context.Context, body CreateSSHCAJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateSSHCAResponse, error)
+
+	// ListSSHCertificatesWithResponse request
+	ListSSHCertificatesWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*ListSSHCertificatesResponse, error)
+
+	// GetSSHKRLWithResponse request
+	GetSSHKRLWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetSSHKRLResponse, error)
+
+	// GetSSHCAPublicKeyWithResponse request
+	GetSSHCAPublicKeyWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetSSHCAPublicKeyResponse, error)
+
+	// ListSSHRevocationsWithResponse request
+	ListSSHRevocationsWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*ListSSHRevocationsResponse, error)
+
+	// RevokeSSHCertWithBodyWithResponse request with any body
+	RevokeSSHCertWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RevokeSSHCertResponse, error)
+
+	RevokeSSHCertWithResponse(ctx context.Context, id CAId, body RevokeSSHCertJSONRequestBody, reqEditors ...RequestEditorFn) (*RevokeSSHCertResponse, error)
+
+	// SignSSHCertWithBodyWithResponse request with any body
+	SignSSHCertWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SignSSHCertResponse, error)
+
+	SignSSHCertWithResponse(ctx context.Context, id CAId, body SignSSHCertJSONRequestBody, reqEditors ...RequestEditorFn) (*SignSSHCertResponse, error)
+
+	// ListSSHProfilesWithResponse request
+	ListSSHProfilesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListSSHProfilesResponse, error)
 
 	// ListTenantsWithResponse request
 	ListTenantsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListTenantsResponse, error)
@@ -8382,6 +9053,193 @@ func (r GetSecretInfoResponse) StatusCode() int {
 	return 0
 }
 
+type CreateSSHCAResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *CA
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateSSHCAResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateSSHCAResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListSSHCertificatesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *[]SSHCertificate
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r ListSSHCertificatesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListSSHCertificatesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetSSHKRLResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetSSHKRLResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetSSHKRLResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetSSHCAPublicKeyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetSSHCAPublicKeyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetSSHCAPublicKeyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListSSHRevocationsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *[]SSHRevocation
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r ListSSHRevocationsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListSSHRevocationsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type RevokeSSHCertResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *SSHRevokeResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r RevokeSSHCertResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RevokeSSHCertResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type SignSSHCertResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *SSHSignResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r SignSSHCertResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SignSSHCertResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListSSHProfilesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *[]SSHProfile
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListSSHProfilesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListSSHProfilesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type ListTenantsResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -9443,6 +10301,102 @@ func (c *ClientWithResponses) GetSecretInfoWithResponse(ctx context.Context, req
 		return nil, err
 	}
 	return ParseGetSecretInfoResponse(rsp)
+}
+
+// CreateSSHCAWithBodyWithResponse request with arbitrary body returning *CreateSSHCAResponse
+func (c *ClientWithResponses) CreateSSHCAWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateSSHCAResponse, error) {
+	rsp, err := c.CreateSSHCAWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateSSHCAResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreateSSHCAWithResponse(ctx context.Context, body CreateSSHCAJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateSSHCAResponse, error) {
+	rsp, err := c.CreateSSHCA(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateSSHCAResponse(rsp)
+}
+
+// ListSSHCertificatesWithResponse request returning *ListSSHCertificatesResponse
+func (c *ClientWithResponses) ListSSHCertificatesWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*ListSSHCertificatesResponse, error) {
+	rsp, err := c.ListSSHCertificates(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListSSHCertificatesResponse(rsp)
+}
+
+// GetSSHKRLWithResponse request returning *GetSSHKRLResponse
+func (c *ClientWithResponses) GetSSHKRLWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetSSHKRLResponse, error) {
+	rsp, err := c.GetSSHKRL(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetSSHKRLResponse(rsp)
+}
+
+// GetSSHCAPublicKeyWithResponse request returning *GetSSHCAPublicKeyResponse
+func (c *ClientWithResponses) GetSSHCAPublicKeyWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetSSHCAPublicKeyResponse, error) {
+	rsp, err := c.GetSSHCAPublicKey(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetSSHCAPublicKeyResponse(rsp)
+}
+
+// ListSSHRevocationsWithResponse request returning *ListSSHRevocationsResponse
+func (c *ClientWithResponses) ListSSHRevocationsWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*ListSSHRevocationsResponse, error) {
+	rsp, err := c.ListSSHRevocations(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListSSHRevocationsResponse(rsp)
+}
+
+// RevokeSSHCertWithBodyWithResponse request with arbitrary body returning *RevokeSSHCertResponse
+func (c *ClientWithResponses) RevokeSSHCertWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RevokeSSHCertResponse, error) {
+	rsp, err := c.RevokeSSHCertWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRevokeSSHCertResponse(rsp)
+}
+
+func (c *ClientWithResponses) RevokeSSHCertWithResponse(ctx context.Context, id CAId, body RevokeSSHCertJSONRequestBody, reqEditors ...RequestEditorFn) (*RevokeSSHCertResponse, error) {
+	rsp, err := c.RevokeSSHCert(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRevokeSSHCertResponse(rsp)
+}
+
+// SignSSHCertWithBodyWithResponse request with arbitrary body returning *SignSSHCertResponse
+func (c *ClientWithResponses) SignSSHCertWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SignSSHCertResponse, error) {
+	rsp, err := c.SignSSHCertWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSignSSHCertResponse(rsp)
+}
+
+func (c *ClientWithResponses) SignSSHCertWithResponse(ctx context.Context, id CAId, body SignSSHCertJSONRequestBody, reqEditors ...RequestEditorFn) (*SignSSHCertResponse, error) {
+	rsp, err := c.SignSSHCert(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSignSSHCertResponse(rsp)
+}
+
+// ListSSHProfilesWithResponse request returning *ListSSHProfilesResponse
+func (c *ClientWithResponses) ListSSHProfilesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListSSHProfilesResponse, error) {
+	rsp, err := c.ListSSHProfiles(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListSSHProfilesResponse(rsp)
 }
 
 // ListTenantsWithResponse request returning *ListTenantsResponse
@@ -11667,6 +12621,291 @@ func ParseGetSecretInfoResponse(rsp *http.Response) (*GetSecretInfoResponse, err
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateSSHCAResponse parses an HTTP response from a CreateSSHCAWithResponse call
+func ParseCreateSSHCAResponse(rsp *http.Response) (*CreateSSHCAResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateSSHCAResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest CA
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListSSHCertificatesResponse parses an HTTP response from a ListSSHCertificatesWithResponse call
+func ParseListSSHCertificatesResponse(rsp *http.Response) (*ListSSHCertificatesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListSSHCertificatesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest []SSHCertificate
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetSSHKRLResponse parses an HTTP response from a GetSSHKRLWithResponse call
+func ParseGetSSHKRLResponse(rsp *http.Response) (*GetSSHKRLResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetSSHKRLResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetSSHCAPublicKeyResponse parses an HTTP response from a GetSSHCAPublicKeyWithResponse call
+func ParseGetSSHCAPublicKeyResponse(rsp *http.Response) (*GetSSHCAPublicKeyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetSSHCAPublicKeyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListSSHRevocationsResponse parses an HTTP response from a ListSSHRevocationsWithResponse call
+func ParseListSSHRevocationsResponse(rsp *http.Response) (*ListSSHRevocationsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListSSHRevocationsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest []SSHRevocation
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRevokeSSHCertResponse parses an HTTP response from a RevokeSSHCertWithResponse call
+func ParseRevokeSSHCertResponse(rsp *http.Response) (*RevokeSSHCertResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RevokeSSHCertResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SSHRevokeResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseSignSSHCertResponse parses an HTTP response from a SignSSHCertWithResponse call
+func ParseSignSSHCertResponse(rsp *http.Response) (*SignSSHCertResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SignSSHCertResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest SSHSignResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListSSHProfilesResponse parses an HTTP response from a ListSSHProfilesWithResponse call
+func ParseListSSHProfilesResponse(rsp *http.Response) (*ListSSHProfilesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListSSHProfilesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest []SSHProfile
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
 
 	}
 

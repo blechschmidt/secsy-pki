@@ -83,10 +83,20 @@ const (
 	// ActionCertDiscover records a completed external certificate discovery scan
 	// (Task 54). The detail carries the endpoint/stored/rogue/expiring counts.
 	ActionCertDiscover = "cert.discover"
-	ActionCertSignSSH    = "cert.sign_ssh"
-	ActionCertSignX509   = "cert.sign_x509"
-	ActionSecretEncrypt  = "secret.encrypt"
-	ActionSecretDecrypt  = "secret.decrypt"
+	ActionCertSignSSH  = "cert.sign_ssh"
+	ActionCertSignX509 = "cert.sign_x509"
+
+	// SSH certificate authority (Task 57). ActionSSHCAInit records creation of
+	// an HSM-backed SSH CA. ActionSSHSign records an OpenSSH user/host
+	// certificate signed under a profile (target: CA; detail: serial, type, key
+	// ID, principals). ActionSSHRevoke records a revocation by serial or key ID
+	// — the entries a generated KRL publishes to relying hosts.
+	ActionSSHCAInit = "ssh.ca_init"
+	ActionSSHSign   = "ssh.sign"
+	ActionSSHRevoke = "ssh.revoke"
+
+	ActionSecretEncrypt = "secret.encrypt"
+	ActionSecretDecrypt = "secret.decrypt"
 	// ActionSecretEscrow records that a secret was sealed with an M-of-N key
 	// escrow (the DEK Shamir-split across recovery agents). The target is the KEK
 	// label; the detail records the threshold, agent count, and agent IDs.

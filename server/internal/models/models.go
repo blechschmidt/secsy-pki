@@ -337,6 +337,48 @@ type RevokedCertificate struct {
 	Reason    int       `json:"reason" db:"reason"`
 }
 
+// SSHCertificate is the authoritative record of an OpenSSH certificate signed by
+// an HSM-backed SSH CA (Task 57). Serials are allocated from the CA's monotonic
+// serial counter, so (ca_id, serial) uniquely identifies a certificate and is
+// the revocation key a KRL serial entry refers to.
+type SSHCertificate struct {
+	CAID string `json:"ca_id" db:"ca_id"`
+	// TenantID mirrors the issuing CA's tenant so inventory queries can be
+	// tenant-scoped without a join.
+	TenantID string `json:"tenant_id" db:"tenant_id"`
+	Serial   string `json:"serial" db:"serial"`       // decimal uint64
+	CertType string `json:"cert_type" db:"cert_type"` // "user" or "host"
+	KeyID    string `json:"key_id" db:"key_id"`
+	// Principals are the user names (user certs) or host names (host certs) the
+	// certificate is valid for.
+	Principals []string `json:"principals,omitempty" db:"-"`
+	Profile    string   `json:"profile" db:"profile"`
+	// PublicKeyFingerprint is the SHA256:… fingerprint of the certified subject
+	// key, for correlating a certificate with the key it certifies.
+	PublicKeyFingerprint string `json:"public_key_fingerprint" db:"public_key_fingerprint"`
+	// Certificate is the single-line authorized_keys encoding of the signed
+	// certificate (e.g. "ssh-ed25519-cert-v01@openssh.com AAAA…").
+	Certificate string     `json:"certificate" db:"certificate"`
+	ValidAfter  time.Time  `json:"valid_after" db:"valid_after"`
+	ValidBefore time.Time  `json:"valid_before" db:"valid_before"`
+	Status      CertStatus `json:"status" db:"status"`
+	IssuedBy    string     `json:"issued_by,omitempty" db:"issued_by"`
+	CreatedAt   time.Time  `json:"created_at" db:"created_at"`
+}
+
+// SSHRevocation is one entry in an SSH CA's revocation store, published to
+// relying hosts as an OpenSSH KRL. A revocation targets either a certificate
+// serial (the common case) or a certificate key ID (revoking every certificate
+// issued for an identity); exactly one of Serial and KeyID is set.
+type SSHRevocation struct {
+	CAID      string    `json:"ca_id" db:"ca_id"`
+	Serial    string    `json:"serial,omitempty" db:"serial"` // decimal uint64; "" for key-ID revocations
+	KeyID     string    `json:"key_id,omitempty" db:"key_id"` // "" for serial revocations
+	Reason    string    `json:"reason,omitempty" db:"reason"`
+	RevokedBy string    `json:"revoked_by,omitempty" db:"revoked_by"`
+	RevokedAt time.Time `json:"revoked_at" db:"revoked_at"`
+}
+
 // IssueCertRequest asks a CA to sign a CSR into an end-entity certificate under
 // a named profile. SANs and subject fields are taken from the CSR; the profile
 // governs key usage, extended key usage, and validity bounds.

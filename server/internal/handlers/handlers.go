@@ -74,6 +74,9 @@ type API struct {
 	// request-supplied targets and no alerting.
 	discoveryCfg config.DiscoveryConfig
 	monitorCfg   config.MonitorConfig
+	// sshKRLComment is stamped into the header of every generated SSH Key
+	// Revocation List (Task 57); empty is fine.
+	sshKRLComment string
 }
 
 // AuthInfo describes the operator-authentication mechanisms enabled on the
@@ -300,6 +303,21 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	// probes endpoints and records to the inventory).
 	mux.Handle("GET /api/discovery", protected(http.HandlerFunc(a.ListDiscoveredCertificates)))
 	mux.Handle("POST /api/discovery/scan", protected(http.HandlerFunc(a.RunDiscoveryScan)))
+
+	// HSM-backed SSH certificate authority (Task 57). CA creation is a key
+	// ceremony (step-up gated like X.509 root init); signing and revocation
+	// require the CA's issue capability, mirroring X.509 issuance. The CA public
+	// key and the KRL are public: relying hosts pin the former as a trust anchor
+	// and poll the latter for their sshd RevokedKeys option, exactly like TLS
+	// relying parties fetch the CRL.
+	mux.Handle("POST /api/ssh/cas", protectStepUp("ssh.ca_init", http.HandlerFunc(a.CreateSSHCA)))
+	mux.Handle("GET /api/ssh/profiles", protected(http.HandlerFunc(a.ListSSHProfiles)))
+	mux.Handle("POST /api/ssh/cas/{id}/sign", protected(http.HandlerFunc(a.SignSSHCert)))
+	mux.Handle("POST /api/ssh/cas/{id}/revoke", protectStepUp("ssh.revoke", http.HandlerFunc(a.RevokeSSHCert)))
+	mux.Handle("GET /api/ssh/cas/{id}/certificates", protected(http.HandlerFunc(a.ListSSHCertificates)))
+	mux.Handle("GET /api/ssh/cas/{id}/revocations", protected(http.HandlerFunc(a.ListSSHRevocations)))
+	mux.HandleFunc("GET /api/ssh/cas/{id}/public", a.GetSSHCAPublicKey)
+	mux.HandleFunc("GET /api/ssh/cas/{id}/krl", a.GetSSHKRL)
 
 	// Public revocation endpoints — relying parties fetch these without auth.
 	// The complete/base CRL, its delta, and — when partitioning is enabled — the

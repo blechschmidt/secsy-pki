@@ -47,6 +47,10 @@ tags:
     description: Certificate-expiry reporting and on-demand scans.
   - name: Discovery
     description: External TLS certificate discovery/scanning and rogue-cert inventory.
+  - name: SSH CA
+    description: >-
+      HSM-backed OpenSSH certificate authority: user/host certificate signing
+      under profiles, revocation, and public KRL distribution.
   - name: RBAC
     description: Groups, memberships, and per-CA permission grants.
   - name: Restrictions
@@ -963,6 +967,179 @@ paths:
               schema: { $ref: "#/components/schemas/DiscoveryScanReport" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ---------------------------------------------------------------------------
+  # SSH certificate authority (Task 57)
+  # ---------------------------------------------------------------------------
+  /api/ssh/cas:
+    post:
+      operationId: createSSHCA
+      tags: [SSH CA]
+      summary: Initialize an HSM-backed SSH certificate authority
+      description: >-
+        Generates an SSH CA signing key inside the configured key provider and
+        persists the CA record. The returned public key is the trust anchor
+        relying hosts pin via TrustedUserCAKeys (user certificates) or a
+        @cert-authority known_hosts entry (host certificates). Requires the
+        ca:manage capability in the target tenant.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateSSHCARequest" }
+      responses:
+        "201":
+          description: The created SSH CA.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CA" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ssh/profiles:
+    get:
+      operationId: listSSHProfiles
+      tags: [SSH CA]
+      summary: List the effective SSH signing profiles
+      description: >-
+        Returns the built-in profiles (user-default, host-default) overlaid with
+        any operator-defined profiles from configuration.
+      responses:
+        "200":
+          description: SSH signing profiles.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SSHProfile" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ssh/cas/{id}/sign:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: signSSHCert
+      tags: [SSH CA]
+      summary: Sign an OpenSSH user or host certificate
+      description: >-
+        Validates the request against its signing profile (principals,
+        validity bounds, extensions, critical options), allocates the next
+        serial from the CA's monotonic counter, and signs the certificate with
+        the CA's HSM-held key. Requires the CA's issue capability, exactly like
+        X.509 issuance.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SSHSignRequest" }
+      responses:
+        "201":
+          description: The signed certificate.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SSHSignResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ssh/cas/{id}/revoke:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: revokeSSHCert
+      tags: [SSH CA]
+      summary: Revoke an SSH certificate by serial or key ID
+      description: >-
+        Records a revocation for one certificate serial, or for every
+        certificate bearing a key ID. The change is published to relying hosts
+        through the CA's KRL. Idempotent; re-revoking updates the reason/time.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SSHRevokeRequest" }
+      responses:
+        "200":
+          description: Revocation outcome.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SSHRevokeResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ssh/cas/{id}/certificates:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    get:
+      operationId: listSSHCertificates
+      tags: [SSH CA]
+      summary: List SSH certificates signed by a CA
+      responses:
+        "200":
+          description: SSH certificate inventory, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SSHCertificate" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/ssh/cas/{id}/revocations:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    get:
+      operationId: listSSHRevocations
+      tags: [SSH CA]
+      summary: List a CA's SSH revocation records
+      responses:
+        "200":
+          description: Revocation records (the entries the KRL publishes).
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SSHRevocation" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/ssh/cas/{id}/public:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    get:
+      operationId: getSSHCAPublicKey
+      tags: [SSH CA]
+      summary: Fetch a CA's public key (authorized_keys line)
+      description: >-
+        Public, unauthenticated trust-anchor distribution — the line to install
+        as TrustedUserCAKeys or a @cert-authority known_hosts entry.
+      security: []
+      responses:
+        "200":
+          description: The CA public key.
+          content:
+            text/plain:
+              schema: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/ssh/cas/{id}/krl:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    get:
+      operationId: getSSHKRL
+      tags: [SSH CA]
+      summary: Fetch a CA's OpenSSH Key Revocation List (KRL)
+      description: >-
+        Public, unauthenticated revocation distribution, generated fresh from
+        the revocation store — point sshd's RevokedKeys option at this
+        artifact, exactly like TLS relying parties fetch the CRL.
+      security: []
+      responses:
+        "200":
+          description: The binary KRL.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   # ---------------------------------------------------------------------------
   # RBAC
@@ -2490,6 +2667,148 @@ components:
         findings:
           type: array
           items: { $ref: "#/components/schemas/DiscoveryFinding" }
+
+    CreateSSHCARequest:
+      type: object
+      required: [label]
+      properties:
+        label: { type: string, description: "CA label; doubles as the provider key label." }
+        tenant_id: { type: string, description: "Owning tenant (default: the default tenant)." }
+        key_type:
+          type: string
+          description: "Key-provider key type (default: ed25519)."
+          example: ed25519
+
+    SSHProfile:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string }
+        cert_type: { type: string, enum: [user, host] }
+        default_validity_secs: { type: integer, format: int64 }
+        max_validity_secs: { type: integer, format: int64 }
+        allowed_principals:
+          type: array
+          items: { type: string }
+          description: Glob patterns; empty permits any principal.
+        allow_empty_principals: { type: boolean }
+        max_principals: { type: integer }
+        default_extensions:
+          type: object
+          additionalProperties: { type: string }
+        allowed_extensions:
+          type: array
+          items: { type: string }
+        default_critical_options:
+          type: object
+          additionalProperties: { type: string }
+        allowed_critical_options:
+          type: array
+          items: { type: string }
+
+    SSHSignRequest:
+      type: object
+      required: [public_key]
+      properties:
+        public_key:
+          type: string
+          description: authorized_keys line of the key to certify.
+        cert_type: { type: string, enum: [user, host], default: user }
+        profile:
+          type: string
+          description: "Signing profile (default: user-default / host-default by type)."
+        key_id:
+          type: string
+          description: "Certificate key ID (default: the caller's subject)."
+        principals:
+          type: array
+          items: { type: string }
+          description: User names (user certs) or host names (host certs).
+        validity_seconds:
+          type: integer
+          format: int64
+          description: >-
+            Requested lifetime; zero applies the profile default, values beyond
+            the profile maximum are clamped.
+        extensions:
+          type: object
+          additionalProperties: { type: string }
+          description: Replaces the profile defaults; keys must be permitted.
+        critical_options:
+          type: object
+          additionalProperties: { type: string }
+          description: Replaces the profile defaults; keys must be permitted.
+
+    SSHSignResponse:
+      type: object
+      properties:
+        certificate:
+          type: string
+          description: authorized_keys line of the signed certificate (-cert.pub content).
+        serial: { type: string }
+        cert_type: { type: string, enum: [user, host] }
+        key_id: { type: string }
+        principals:
+          type: array
+          items: { type: string }
+        profile: { type: string }
+        valid_after: { type: string, format: date-time }
+        valid_before: { type: string, format: date-time }
+        ca_public_key:
+          type: string
+          description: The CA's authorized_keys line (the trust anchor).
+
+    SSHRevokeRequest:
+      type: object
+      properties:
+        serial:
+          type: string
+          description: Certificate serial to revoke (exactly one of serial/key_id).
+        key_id:
+          type: string
+          description: Revoke every certificate bearing this key ID instead.
+        reason: { type: string }
+
+    SSHRevokeResponse:
+      type: object
+      properties:
+        revoked: { type: boolean }
+        newly_revoked:
+          type: boolean
+          description: False when the target was already revoked (reason/time updated).
+        serial: { type: string }
+        key_id: { type: string }
+        revoked_at: { type: string, format: date-time }
+
+    SSHCertificate:
+      type: object
+      properties:
+        ca_id: { type: string }
+        tenant_id: { type: string }
+        serial: { type: string }
+        cert_type: { type: string, enum: [user, host] }
+        key_id: { type: string }
+        principals:
+          type: array
+          items: { type: string }
+        profile: { type: string }
+        public_key_fingerprint: { type: string, description: "SHA256:… fingerprint of the certified key." }
+        certificate: { type: string }
+        valid_after: { type: string, format: date-time }
+        valid_before: { type: string, format: date-time }
+        status: { type: string, enum: [valid, revoked, expired] }
+        issued_by: { type: string }
+        created_at: { type: string, format: date-time }
+
+    SSHRevocation:
+      type: object
+      properties:
+        ca_id: { type: string }
+        serial: { type: string, description: "Empty for key-ID revocations." }
+        key_id: { type: string, description: "Empty for serial revocations." }
+        reason: { type: string }
+        revoked_by: { type: string }
+        revoked_at: { type: string, format: date-time }
 
     SecretInfo:
       type: object

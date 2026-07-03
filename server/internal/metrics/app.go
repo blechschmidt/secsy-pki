@@ -106,6 +106,23 @@ var (
 		"Enrollments denied because a required key attestation was missing or invalid, by protocol.",
 		"protocol")
 
+	// SSH certificate authority (Task 57). SSHCertificates counts signing
+	// operations by certificate "type" (user|host) and "result"; SSHRevocations
+	// counts revocation operations by result; SSHKRLRequests counts KRL builds/
+	// fetches by result, tracking how relying hosts consume revocation data.
+	SSHCertificates = NewCounter(Default,
+		"secsy_ssh_certificates_total",
+		"SSH certificate signing operations, partitioned by certificate type and result.",
+		"type", "result")
+	SSHRevocations = NewCounter(Default,
+		"secsy_ssh_revocations_total",
+		"SSH certificate revocations, partitioned by result.",
+		"result")
+	SSHKRLRequests = NewCounter(Default,
+		"secsy_ssh_krl_requests_total",
+		"SSH key-revocation-list (KRL) generations and fetches, partitioned by result.",
+		"result")
+
 	// Revocation-data serving.
 	OCSPRequests = NewCounter(Default,
 		"secsy_ocsp_requests_total",

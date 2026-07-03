@@ -103,6 +103,47 @@ type Config struct {
 	// unless grpc.enabled is true. It reuses the server's TLS certificate and, when
 	// mTLS operator-auth is configured, the same client-CA pool.
 	GRPC GRPCConfig `yaml:"grpc"`
+	// SSH configures the HSM-backed SSH certificate authority (Task 57): custom
+	// signing profiles layered over the built-in user-default/host-default
+	// profiles, and the comment stamped into generated KRLs. The /api/ssh
+	// endpoints and `secsy-ca ssh` commands work with the built-ins regardless.
+	SSH SSHCAConfig `yaml:"ssh"`
+}
+
+// SSHCAConfig configures the SSH certificate authority (Task 57).
+type SSHCAConfig struct {
+	// KRLComment is an optional human-readable note stamped into the header of
+	// every generated Key Revocation List.
+	KRLComment string `yaml:"krl_comment"`
+	// Profiles defines custom SSH signing profiles, overlaid by name over the
+	// built-in user-default and host-default profiles.
+	Profiles []SSHProfileConfig `yaml:"profiles"`
+}
+
+// SSHProfileConfig is one operator-defined SSH signing profile. Validity fields
+// accept a Go duration ("12h") or a day/week suffix ("30d", "12w").
+type SSHProfileConfig struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	// CertType is "user" or "host".
+	CertType string `yaml:"cert_type"`
+	// DefaultValidity applies when a request names none; MaxValidity clamps
+	// longer requests.
+	DefaultValidity string `yaml:"default_validity"`
+	MaxValidity     string `yaml:"max_validity"`
+	// AllowedPrincipals restricts principals to these glob patterns (empty =
+	// any); AllowEmptyPrincipals permits certificates naming no principal at
+	// all (valid for EVERY user/host — off by default for a reason).
+	AllowedPrincipals    []string `yaml:"allowed_principals"`
+	AllowEmptyPrincipals bool     `yaml:"allow_empty_principals"`
+	MaxPrincipals        int      `yaml:"max_principals"`
+	// DefaultExtensions/DefaultCriticalOptions apply when a request supplies
+	// none; Allowed* additionally permit request-supplied keys. Host profiles
+	// must leave all four empty.
+	DefaultExtensions      map[string]string `yaml:"default_extensions"`
+	AllowedExtensions      []string          `yaml:"allowed_extensions"`
+	DefaultCriticalOptions map[string]string `yaml:"default_critical_options"`
+	AllowedCriticalOptions []string          `yaml:"allowed_critical_options"`
 }
 
 // GRPCConfig configures the gRPC listener (Task 56). When enabled, the server

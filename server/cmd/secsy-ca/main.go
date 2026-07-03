@@ -58,6 +58,13 @@ func run(args []string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
+	// Install the operator-defined SSH signing profiles up front (they are pure
+	// config, needing neither the database nor the key provider) so every ssh
+	// subcommand — and the profile listing — sees the server's effective set.
+	if err := installSSHProfiles(cfg); err != nil {
+		return fmt.Errorf("loading ssh profiles: %w", err)
+	}
+
 	// Certificate linting is fully offline (no database or key provider): dispatch
 	// it before opening either, so an operator can lint a certificate anywhere.
 	if command == "lint" {
@@ -181,6 +188,8 @@ func run(args []string) error {
 		return cmdCrossSign(db, mgr, cmdArgs)
 	case "list-cross-signs":
 		return cmdListCrossSigns(db, mgr, cmdArgs)
+	case "ssh":
+		return cmdSSH(db, provider, cmdArgs)
 	case "tsa-key":
 		// The TSA signing key lives on the TSA-role backend, which may differ from
 		// the CA. Build a dedicated provider when the roles resolve differently;
@@ -243,6 +252,7 @@ Commands:
   cross-sign          Cross-sign a subject key under an issuer CA (bridge/root-transition)
   list-cross-signs    List a CA's cross-sign relationships or alternate chains
   tsa-key             Provision an RFC 3161 TSA signing key + certificate
+  ssh                 SSH certificate authority (ca-init, sign-user, sign-host, revoke, krl)
   backup              Export CA metadata + a DR manifest (no private keys)
   restore             Restore/verify CA metadata against the key provider
   audit               Verify the audit hash-chain, or export it for SIEM
