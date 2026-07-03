@@ -22,6 +22,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -38,6 +39,12 @@ import (
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
+		// A child spawned by `exec` determines our exit status directly; its
+		// own output already went to the terminal.
+		var exit exitCodeError
+		if errors.As(err, &exit) {
+			os.Exit(exit.code)
+		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -72,6 +79,14 @@ func run(args []string) error {
 		return cmdKEKVersions(cfg, cmdArgs)
 	case "list-secrets":
 		return cmdListSecrets(cfg, cmdArgs)
+	case "versions":
+		return cmdVersions(cfg, cmdArgs)
+	case "rollback":
+		// A rollback copies ciphertext between versions; no key material is
+		// touched, so it works even while the HSM is unavailable.
+		return cmdRollback(cfg, cmdArgs)
+	case "lifecycle":
+		return cmdLifecycle(cfg, cmdArgs)
 	}
 
 	provider, err := buildProvider(cfg)
@@ -87,6 +102,12 @@ func run(args []string) error {
 		return cmdEncrypt(cfg, provider, cmdArgs)
 	case "decrypt":
 		return cmdDecrypt(cfg, provider, cmdArgs)
+	case "put":
+		return cmdPut(cfg, provider, cmdArgs)
+	case "get":
+		return cmdGet(cfg, provider, cmdArgs)
+	case "exec":
+		return cmdExec(cfg, provider, cmdArgs)
 	case "kek-info":
 		return cmdKEKInfo(cfg, provider, cmdArgs)
 	case "rotate-kek":
@@ -124,6 +145,17 @@ Commands:
   decrypt            Decrypt a ciphertext envelope back to plaintext
                      (accepts envelopes on any non-retired KEK version; -id decrypts
                      a stored secret from the registry)
+  put                Create or update a named stored secret; every put appends a
+                     new value version (-ttl-days / -rotate-every-days arm reminders)
+  get                Decrypt a stored secret by name (-version N for older values)
+  versions           Show a stored secret's value history
+  rollback           Make an older value version current again (appends a copy;
+                     history is never rewritten; works without the HSM)
+  lifecycle          Show stored secrets due for TTL/rotation attention
+  exec               Decrypt secrets into a child process environment and run it:
+                     secsy-secret exec -secret db-pass:PGPASSWORD -- psql ...
+                     ({{secret:NAME}} templating in argv and -env VAR=value; env
+                     injection is preferred — argv is visible in /proc)
   kek-info           Show metadata about the configured KEK
   rotate-kek         Generate the next versioned KEK in the HSM and make it active
                      (existing envelopes keep decrypting under the retiring version)
@@ -205,12 +237,17 @@ func cmdEncrypt(cfg *config.Config, provider keyprovider.Provider, args []string
 	store := fs.Bool("store", false, "persist the envelope in the stored-secret registry (requires -name and the database)")
 	name := fs.String("name", "", "tenant-unique name for the stored secret (with -store)")
 	tenant := fs.String("tenant", models.DefaultTenantID, "owning tenant for the stored secret (with -store)")
+	ttlDays := fs.Int("ttl-days", 0, "TTL for the stored secret: expiry reminder after this many days (with -store; 0 = none)")
+	rotateEvery := fs.Int("rotate-every-days", 0, "rotation-reminder period for the stored secret in days (with -store; 0 = none)")
 	operator := fs.String("operator", "", "operator identity recorded in the escrow audit event (default: OS user)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *store && *name == "" {
 		return fmt.Errorf("-store requires -name")
+	}
+	if *ttlDays < 0 || *rotateEvery < 0 {
+		return fmt.Errorf("-ttl-days and -rotate-every-days must be >= 0")
 	}
 	if *store && *label != "" {
 		return fmt.Errorf("-store seals under the family's active KEK version; it cannot be combined with an explicit -kek")
@@ -271,7 +308,8 @@ func cmdEncrypt(cfg *config.Config, provider keyprovider.Provider, args []string
 			return err
 		}
 		defer db.Close()
-		stored, err := storeEncryptedSecret(db, *tenant, *name, family, ring, blob, *context_ != "", policy != nil)
+		stored, err := storeEncryptedSecret(db, *tenant, *name, family, ring, blob, *context_ != "", policy != nil,
+			storeSecretSpec{ttlDays: *ttlDays, rotateEveryDays: *rotateEvery, operator: operatorActor(*operator)})
 		if err != nil {
 			return err
 		}

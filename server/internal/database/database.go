@@ -704,11 +704,38 @@ func (db *DB) migrate() error {
 			kek_version INTEGER NOT NULL DEFAULT 1,
 			context_bound %s,
 			escrowed %s,
+			current_version INTEGER NOT NULL DEFAULT 1,
+			expires_at TIMESTAMP,
+			rotate_every_days INTEGER NOT NULL DEFAULT 0,
 			created_at TIMESTAMP NOT NULL,
 			updated_at TIMESTAMP NOT NULL,
+			value_changed_at TIMESTAMP,
 			UNIQUE (tenant_id, name)
 		)`, boolType, boolType),
 		`CREATE INDEX IF NOT EXISTS idx_stored_secrets_kek ON stored_secrets(kek_family, kek_label)`,
+
+		// Stored-secret value history (Task 73). Every put appends the new
+		// envelope as the next version; a rollback appends a copy of an older
+		// version rather than rewriting history. Rows are ciphertext only.
+		// The (secret_id, current_version) row always mirrors the parent's
+		// envelope, and re-wrap batches migrate historical envelopes onto the
+		// active KEK so old versions stay decryptable across KEK rotations
+		// (the KEK retire guard counts historical rows too).
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS stored_secret_versions (
+			secret_id TEXT NOT NULL REFERENCES stored_secrets(id),
+			version INTEGER NOT NULL,
+			envelope TEXT NOT NULL,
+			kek_family TEXT NOT NULL,
+			kek_label TEXT NOT NULL,
+			kek_version INTEGER NOT NULL DEFAULT 1,
+			context_bound %s,
+			escrowed %s,
+			created_by TEXT NOT NULL DEFAULT '',
+			comment TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL,
+			PRIMARY KEY (secret_id, version)
+		)`, boolType, boolType),
+		`CREATE INDEX IF NOT EXISTS idx_stored_secret_versions_kek ON stored_secret_versions(kek_family, kek_label)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.exec(stmt); err != nil {
@@ -760,6 +787,11 @@ func (db *DB) migrate() error {
 		db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS max_secret_ops_per_day INTEGER NOT NULL DEFAULT 0")
 		db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS rate_limit_per_second REAL NOT NULL DEFAULT 0")
 		db.conn.Exec("ALTER TABLE tenants ADD COLUMN IF NOT EXISTS rate_limit_burst REAL NOT NULL DEFAULT 0")
+		// Secret lifecycle: value versioning + TTL/rotation reminders (Task 73).
+		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS current_version INTEGER NOT NULL DEFAULT 1")
+		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
+		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS rotate_every_days INTEGER NOT NULL DEFAULT 0")
+		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS value_changed_at TIMESTAMP")
 	} else {
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_ssh_restriction_set_id TEXT")
 		db.conn.Exec("ALTER TABLE cas ADD COLUMN default_x509_restriction_set_id TEXT")
@@ -804,7 +836,25 @@ func (db *DB) migrate() error {
 		db.conn.Exec("ALTER TABLE tenants ADD COLUMN max_secret_ops_per_day INTEGER NOT NULL DEFAULT 0")
 		db.conn.Exec("ALTER TABLE tenants ADD COLUMN rate_limit_per_second REAL NOT NULL DEFAULT 0")
 		db.conn.Exec("ALTER TABLE tenants ADD COLUMN rate_limit_burst REAL NOT NULL DEFAULT 0")
+		// Secret lifecycle: value versioning + TTL/rotation reminders (Task 73).
+		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN current_version INTEGER NOT NULL DEFAULT 1")
+		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN expires_at TIMESTAMP")
+		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN rotate_every_days INTEGER NOT NULL DEFAULT 0")
+		db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN value_changed_at TIMESTAMP")
 	}
+
+	// Backfill for stored secrets that predate value versioning (Task 73):
+	// their rotation-reminder clock starts at the last envelope write, and
+	// their current envelope becomes version-history entry 1 so history,
+	// rollback, and the version-aware KEK retire guard see every secret.
+	db.exec(`UPDATE stored_secrets SET value_changed_at = updated_at WHERE value_changed_at IS NULL`)
+	db.exec(`INSERT INTO stored_secret_versions
+			(secret_id, version, envelope, kek_family, kek_label, kek_version,
+			 context_bound, escrowed, created_by, comment, created_at)
+		 SELECT s.id, s.current_version, s.envelope, s.kek_family, s.kek_label, s.kek_version,
+			 s.context_bound, s.escrowed, '', 'backfilled from pre-versioning registry', s.updated_at
+		 FROM stored_secrets s
+		 WHERE NOT EXISTS (SELECT 1 FROM stored_secret_versions v WHERE v.secret_id = s.id)`)
 
 	// ACME (RFC 8555) server tables.
 	if err := db.migrateACME(); err != nil {

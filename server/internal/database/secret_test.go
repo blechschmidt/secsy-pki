@@ -96,7 +96,7 @@ func TestKEKVersionLineage(t *testing.T) {
 	if err := db.CreateStoredSecret(&models.StoredSecret{
 		ID: "s-fam", TenantID: models.DefaultTenantID, Name: "s-fam", Envelope: "{}",
 		KEKFamily: "kek-b", KEKLabel: "kek-b", KEKVersion: 1,
-	}); err != nil {
+	}, "tester", "initial"); err != nil {
 		t.Fatal(err)
 	}
 	fams, err := db.ListKEKFamilies()
@@ -120,7 +120,7 @@ func TestStoredSecretCRUD(t *testing.T) {
 			ID: id, TenantID: models.DefaultTenantID, Name: name, Envelope: `{"v":"` + id + `"}`,
 			KEKFamily: "kek", KEKLabel: label, KEKVersion: version,
 			ContextBound: true, Escrowed: name == "with-escrow",
-		}); err != nil {
+		}, "tester", "initial"); err != nil {
 			t.Fatalf("CreateStoredSecret(%s): %v", id, err)
 		}
 	}
@@ -132,7 +132,7 @@ func TestStoredSecretCRUD(t *testing.T) {
 	if err := db.CreateStoredSecret(&models.StoredSecret{
 		ID: "s4", TenantID: models.DefaultTenantID, Name: "db-password", Envelope: "{}",
 		KEKFamily: "kek", KEKLabel: "kek", KEKVersion: 1,
-	}); err == nil {
+	}, "tester", "initial"); err == nil {
 		t.Fatal("duplicate tenant-scoped name must fail")
 	}
 

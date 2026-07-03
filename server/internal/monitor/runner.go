@@ -36,6 +36,10 @@ type Runner struct {
 	// rotation gauges (secsy_secret_on_old_kek and friends) and returns warning
 	// lines for secrets lingering on superseded KEK versions (Task 63).
 	secretKEKCheck func(ctx context.Context) ([]string, error)
+	// secretLifecycle, when set, scans stored-secret TTL/rotation schedules
+	// each tick and dispatches storm-filtered reminders through the same
+	// notification sinks (Task 73).
+	secretLifecycle *SecretLifecycleScanner
 }
 
 // NewRunner assembles a Runner from the application monitor config. The Monitor
@@ -78,6 +82,15 @@ func (r *Runner) WithRotation(rotator Rotator, auditSink AuditSink) *Runner {
 // secret.RefreshKEKMetrics and the store.
 func (r *Runner) WithSecretKEKCheck(check func(ctx context.Context) ([]string, error)) *Runner {
 	r.secretKEKCheck = check
+	return r
+}
+
+// WithSecretLifecycle wires stored-secret TTL/rotation reminder scanning into
+// the scan loop. Findings that pass the scanner's storm filter are delivered
+// through the runner's notification sinks, honoring each sink's minimum
+// severity like certificate-expiry warnings.
+func (r *Runner) WithSecretLifecycle(scanner *SecretLifecycleScanner) *Runner {
+	r.secretLifecycle = scanner
 	return r
 }
 
@@ -131,6 +144,7 @@ func (r *Runner) Run(ctx context.Context) {
 func (r *Runner) runOnce(ctx context.Context) {
 	r.rotateOnce(ctx)
 	r.checkSecretKEK(ctx)
+	r.scanSecretLifecycle(ctx)
 
 	report, err := r.monitor.Scan(ctx, ScanRequest{AutoRenew: r.autoRenew, RequestedBy: "monitor"})
 	if err != nil {
@@ -138,6 +152,45 @@ func (r *Runner) runOnce(ctx context.Context) {
 		return
 	}
 	r.monitor.Dispatch(ctx, report, r.bindings)
+}
+
+// scanSecretLifecycle runs the stored-secret TTL/rotation scan and dispatches
+// the storm-filtered findings through the notification sinks, each binding
+// filtered by its minimum severity. Failures are logged, not fatal: the scan
+// reruns on the next tick.
+func (r *Runner) scanSecretLifecycle(ctx context.Context) {
+	if r.secretLifecycle == nil {
+		return
+	}
+	items, err := r.secretLifecycle.Scan(ctx)
+	if err != nil {
+		r.logger.Printf("cert-expiry monitor: secret lifecycle scan failed: %v", err)
+		return
+	}
+	due := r.secretLifecycle.FilterForNotify(items)
+	if len(due) == 0 {
+		return
+	}
+	for _, b := range r.bindings {
+		var filtered []SecretItem
+		for _, it := range due {
+			if it.Severity.atLeast(b.minSeverity) {
+				filtered = append(filtered, it)
+			}
+		}
+		if len(filtered) == 0 {
+			continue
+		}
+		n := Notification{
+			GeneratedAt:    time.Now(),
+			MinSeverity:    b.minSeverity,
+			Counts:         map[Severity]int{},
+			SecretWarnings: filtered,
+		}
+		if err := b.sink.Notify(ctx, n); err != nil {
+			r.logger.Printf("cert-expiry monitor: notification sink %s failed: %v", b.sink.Name(), err)
+		}
+	}
 }
 
 // checkSecretKEK refreshes the secret-layer KEK rotation gauges and logs any

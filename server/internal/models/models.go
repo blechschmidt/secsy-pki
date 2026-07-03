@@ -1084,10 +1084,57 @@ type StoredSecret struct {
 	// encryption context (which is deliberately not stored).
 	ContextBound bool `json:"context_bound,omitempty" db:"context_bound"`
 	// Escrowed records that the envelope carries an M-of-N recovery block.
-	Escrowed  bool      `json:"escrowed,omitempty" db:"escrowed"`
-	CreatedAt time.Time `json:"created_at" db:"created_at"`
-	// UpdatedAt advances on every envelope rewrite (i.e. each re-wrap).
+	Escrowed bool `json:"escrowed,omitempty" db:"escrowed"`
+	// CurrentVersion is the value-history version the envelope corresponds to
+	// (Task 73). Every put advances it by one; a rollback appends a new version
+	// whose envelope is copied from an older one.
+	CurrentVersion int `json:"current_version" db:"current_version"`
+	// ExpiresAt is the secret's optional TTL deadline. Past it the secret is
+	// reported as expired by the lifecycle monitor; decryption still works
+	// (expiry is an operational reminder, not a cryptographic revocation).
+	ExpiresAt *time.Time `json:"expires_at,omitempty" db:"expires_at"`
+	// RotateEveryDays is the optional rotation-reminder period: the lifecycle
+	// monitor flags the secret once more than this many days have passed since
+	// its value last changed. Zero disables the reminder.
+	RotateEveryDays int       `json:"rotate_every_days,omitempty" db:"rotate_every_days"`
+	CreatedAt       time.Time `json:"created_at" db:"created_at"`
+	// UpdatedAt advances on every envelope rewrite (each put and each re-wrap).
 	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
+	// ValueChangedAt advances only when the secret's VALUE changes (put or
+	// rollback), not on re-wraps — it is the reference point for rotation
+	// reminders, so a KEK migration never masks an overdue rotation.
+	ValueChangedAt time.Time `json:"value_changed_at" db:"value_changed_at"`
+}
+
+// StoredSecretVersion is one immutable entry in a stored secret's value
+// history (Task 73): the envelope that was current at that version, plus the
+// wrap bookkeeping needed to keep historical versions decryptable across KEK
+// rotations (re-wrap batches migrate historical envelopes too). Version
+// numbers start at 1 and only grow; a rollback appends a new version rather
+// than rewriting history.
+type StoredSecretVersion struct {
+	SecretID string `json:"secret_id" db:"secret_id"`
+	Version  int    `json:"version" db:"version"`
+	// Envelope is the version's ciphertext envelope. Omitted from list
+	// responses; fetched per version.
+	Envelope     string `json:"envelope,omitempty" db:"envelope"`
+	KEKFamily    string `json:"kek_family" db:"kek_family"`
+	KEKLabel     string `json:"kek_label" db:"kek_label"`
+	KEKVersion   int    `json:"kek_version" db:"kek_version"`
+	ContextBound bool   `json:"context_bound,omitempty" db:"context_bound"`
+	Escrowed     bool   `json:"escrowed,omitempty" db:"escrowed"`
+	// CreatedBy is the operator/API principal that wrote the version.
+	CreatedBy string `json:"created_by,omitempty" db:"created_by"`
+	// Comment is a free-form note ("initial", "rollback to version 2", ...).
+	Comment   string    `json:"comment,omitempty" db:"comment"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
+}
+
+// SecretVersionRef addresses one stored-secret history entry — the work-list
+// unit for re-wrapping historical envelopes after a KEK rotation.
+type SecretVersionRef struct {
+	SecretID string `json:"secret_id"`
+	Version  int    `json:"version"`
 }
 
 // KEKUsage summarizes how many stored secrets are wrapped under one KEK

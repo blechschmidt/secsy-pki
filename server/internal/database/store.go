@@ -58,12 +58,18 @@ type SecretStore interface {
 	// Server-held envelopes. UpdateStoredSecretEnvelope is optimistic (applies
 	// only while the row still carries the expected KEK label) so concurrent
 	// re-wraps never clobber newer ciphertext.
-	CreateStoredSecret(s *models.StoredSecret) error
+	CreateStoredSecret(s *models.StoredSecret, createdBy, comment string) error
 	GetStoredSecret(id string) (*models.StoredSecret, error)
 	GetStoredSecretByName(tenantID, name string) (*models.StoredSecret, error)
 	ListStoredSecrets(tenantID string) ([]models.StoredSecret, error)
+	ListStoredSecretsWithSchedule() ([]models.StoredSecret, error)
+	PutStoredSecretVersion(p *PutSecretVersion) (*models.StoredSecret, error)
+	ListStoredSecretVersions(secretID string) ([]models.StoredSecretVersion, error)
+	GetStoredSecretVersion(secretID string, version int) (*models.StoredSecretVersion, error)
 	ListStoredSecretIDsForRewrap(family, activeLabel string) ([]string, error)
 	UpdateStoredSecretEnvelope(id, envelope, kekLabel string, kekVersion int, expectKEKLabel string) (bool, error)
+	ListStoredSecretVersionRefsForRewrap(family, activeLabel string) ([]models.SecretVersionRef, error)
+	UpdateStoredSecretVersionEnvelope(secretID string, version int, envelope, kekLabel string, kekVersion int, expectKEKLabel string) (bool, error)
 	DeleteStoredSecret(id string) (bool, error)
 	CountStoredSecretsOnKEK(label string) (int64, error)
 	CountStoredSecretsByKEKLabel(family string) (map[string]int64, error)

@@ -144,6 +144,17 @@ const (
 	// itself is additionally recorded as secret.encrypt).
 	ActionSecretStore       = "secret.store"
 	ActionSecretStoreDelete = "secret.store_delete"
+	// Stored-secret value lifecycle (Task 73). ActionSecretPut records a new
+	// value version being written (target: KEK family; target name: secret
+	// name; detail: id and new version). ActionSecretRollback records the
+	// current value being reverted to an earlier version — implemented as an
+	// append, so the detail carries both the source and the new version.
+	// ActionSecretExec records secrets being decrypted for injection into a
+	// child process environment via `secsy-secret exec`; the detail lists the
+	// secret NAMES and the command, never any plaintext.
+	ActionSecretPut      = "secret.put"
+	ActionSecretRollback = "secret.rollback"
+	ActionSecretExec     = "secret.exec"
 	ActionPermissionGrant   = "permission.grant"
 	ActionPermissionRevoke  = "permission.revoke"
 	ActionGroupCreate       = "group.create"

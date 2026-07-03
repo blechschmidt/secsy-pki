@@ -850,6 +850,11 @@ type MonitorConfig struct {
 	// RotateBeforeDays is the remaining-validity threshold at or below which an
 	// active intermediate CA is auto-rotated. Defaults to WarningDays when unset.
 	RotateBeforeDays int `yaml:"rotate_before_days"`
+	// SecretRenotifyHours is how long a still-due secret TTL/rotation reminder
+	// (Task 73) stays quiet after a notification before it is re-sent
+	// (severity escalations and value changes always break through).
+	// Defaults to 24 hours.
+	SecretRenotifyHours int `yaml:"secret_renotify_hours"`
 	// Notifications lists the sinks expiry warnings are dispatched to.
 	Notifications []NotificationConfig `yaml:"notifications"`
 }

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -24,6 +25,15 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
 )
+
+// requestActor derives the audit/version-history actor string from the
+// request principal.
+func requestActor(r *http.Request) string {
+	if u := middleware.GetUserInfo(r.Context()); u != nil {
+		return u.Subject
+	}
+	return ""
+}
 
 // refreshKEKGauges updates the per-family rotation gauges after an operation
 // that changed the rotation posture. Failures only log-worthy — the expiry
@@ -215,42 +225,63 @@ func (a *API) RewrapSecrets(w http.ResponseWriter, r *http.Request) {
 
 // storeSecretRequest encrypts and persists a named secret in one step. The
 // plaintext is sealed exactly like /api/secret/encrypt; only the resulting
-// envelope is stored.
+// envelope is stored. TTLDays/RotateEveryDays configure the lifecycle
+// schedule (Task 73): a TTL sets expires_at TTLDays from now, and
+// RotateEveryDays arms the rotation reminder.
 type storeSecretRequest struct {
 	Name      string `json:"name"`
 	Plaintext string `json:"plaintext"`         // base64
 	Context   string `json:"context,omitempty"` // base64, optional (not stored)
 	Escrow    bool   `json:"escrow,omitempty"`
+	// TTLDays, when > 0, sets the secret's expiry to now + TTLDays.
+	TTLDays int `json:"ttl_days,omitempty"`
+	// RotateEveryDays, when > 0, requests a rotation reminder once the value
+	// is older than this many days.
+	RotateEveryDays int `json:"rotate_every_days,omitempty"`
+	// Comment annotates version 1 in the value history.
+	Comment string `json:"comment,omitempty"`
 }
 
 // storedSecretResponse is the metadata view of a stored secret (list/create);
 // the envelope itself is included only by GetStoredSecret.
 type storedSecretResponse struct {
-	ID           string          `json:"id"`
-	Name         string          `json:"name"`
-	TenantID     string          `json:"tenant_id"`
-	KEKFamily    string          `json:"kek_family"`
-	KEKLabel     string          `json:"kek_label"`
-	KEKVersion   int             `json:"kek_version"`
-	ContextBound bool            `json:"context_bound,omitempty"`
-	Escrowed     bool            `json:"escrowed,omitempty"`
-	CreatedAt    string          `json:"created_at"`
-	UpdatedAt    string          `json:"updated_at"`
-	Envelope     json.RawMessage `json:"envelope,omitempty"`
+	ID              string          `json:"id"`
+	Name            string          `json:"name"`
+	TenantID        string          `json:"tenant_id"`
+	KEKFamily       string          `json:"kek_family"`
+	KEKLabel        string          `json:"kek_label"`
+	KEKVersion      int             `json:"kek_version"`
+	ContextBound    bool            `json:"context_bound,omitempty"`
+	Escrowed        bool            `json:"escrowed,omitempty"`
+	CurrentVersion  int             `json:"current_version"`
+	ExpiresAt       string          `json:"expires_at,omitempty"`
+	RotateEveryDays int             `json:"rotate_every_days,omitempty"`
+	CreatedAt       string          `json:"created_at"`
+	UpdatedAt       string          `json:"updated_at"`
+	ValueChangedAt  string          `json:"value_changed_at,omitempty"`
+	Envelope        json.RawMessage `json:"envelope,omitempty"`
 }
 
 func storedSecretView(s *models.StoredSecret, withEnvelope bool) storedSecretResponse {
 	out := storedSecretResponse{
-		ID:           s.ID,
-		Name:         s.Name,
-		TenantID:     s.TenantID,
-		KEKFamily:    s.KEKFamily,
-		KEKLabel:     s.KEKLabel,
-		KEKVersion:   s.KEKVersion,
-		ContextBound: s.ContextBound,
-		Escrowed:     s.Escrowed,
-		CreatedAt:    s.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
-		UpdatedAt:    s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+		ID:              s.ID,
+		Name:            s.Name,
+		TenantID:        s.TenantID,
+		KEKFamily:       s.KEKFamily,
+		KEKLabel:        s.KEKLabel,
+		KEKVersion:      s.KEKVersion,
+		ContextBound:    s.ContextBound,
+		Escrowed:        s.Escrowed,
+		CurrentVersion:  s.CurrentVersion,
+		RotateEveryDays: s.RotateEveryDays,
+		CreatedAt:       s.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:       s.UpdatedAt.UTC().Format(time.RFC3339),
+	}
+	if s.ExpiresAt != nil {
+		out.ExpiresAt = s.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	if !s.ValueChangedAt.IsZero() {
+		out.ValueChangedAt = s.ValueChangedAt.UTC().Format(time.RFC3339)
 	}
 	if withEnvelope {
 		out.Envelope = json.RawMessage(s.Envelope)
@@ -283,6 +314,10 @@ func (a *API) StoreSecret(w http.ResponseWriter, r *http.Request) {
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" || len(req.Name) > 256 {
 		writeError(w, http.StatusBadRequest, "name is required (at most 256 characters)")
+		return
+	}
+	if req.TTLDays < 0 || req.RotateEveryDays < 0 {
+		writeError(w, http.StatusBadRequest, "ttl_days and rotate_every_days must be >= 0")
 		return
 	}
 	plaintext, err := base64.StdEncoding.DecodeString(req.Plaintext)
@@ -352,17 +387,26 @@ func (a *API) StoreSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stored := &models.StoredSecret{
-		ID:           uuid.New().String(),
-		TenantID:     tenant.ID,
-		Name:         req.Name,
-		Envelope:     string(blob),
-		KEKFamily:    family,
-		KEKLabel:     ring.ActiveLabel(),
-		KEKVersion:   ring.ActiveVersion(),
-		ContextBound: len(context) > 0,
-		Escrowed:     escrowPolicy != nil,
+		ID:              uuid.New().String(),
+		TenantID:        tenant.ID,
+		Name:            req.Name,
+		Envelope:        string(blob),
+		KEKFamily:       family,
+		KEKLabel:        ring.ActiveLabel(),
+		KEKVersion:      ring.ActiveVersion(),
+		ContextBound:    len(context) > 0,
+		Escrowed:        escrowPolicy != nil,
+		RotateEveryDays: req.RotateEveryDays,
 	}
-	if err := a.db.CreateStoredSecret(stored); err != nil {
+	if req.TTLDays > 0 {
+		exp := time.Now().UTC().AddDate(0, 0, req.TTLDays)
+		stored.ExpiresAt = &exp
+	}
+	comment := req.Comment
+	if comment == "" {
+		comment = "initial version"
+	}
+	if err := a.db.CreateStoredSecret(stored, requestActor(r), comment); err != nil {
 		a.recordEvent(r, audit.ActionSecretStore, family, req.Name, audit.ResultError, err.Error())
 		writeError(w, http.StatusInternalServerError, "storing secret failed: %v", err)
 		return
@@ -377,7 +421,9 @@ func (a *API) StoreSecret(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, storedSecretView(stored, false))
 }
 
-// ListStoredSecrets returns the tenant's stored-secret metadata (no envelopes).
+// ListStoredSecrets returns the tenant's stored-secret metadata (no
+// envelopes). An optional ?name= filter resolves a single secret by its
+// tenant-scoped name (still a list response, with zero or one element).
 //
 //	GET /api/secret/store
 func (a *API) ListStoredSecrets(w http.ResponseWriter, r *http.Request) {
@@ -390,8 +436,18 @@ func (a *API) ListStoredSecrets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "secret:decrypt capability required for tenant %q", tenant.ID)
 		return
 	}
-	secrets, err := a.db.ListStoredSecrets(tenant.ID)
-	if err != nil {
+	var secrets []models.StoredSecret
+	if name := r.URL.Query().Get("name"); name != "" {
+		s, err := a.db.GetStoredSecretByName(tenant.ID, name)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "%v", err)
+			return
+		}
+		if s != nil {
+			s.Envelope = ""
+			secrets = []models.StoredSecret{*s}
+		}
+	} else if secrets, err = a.db.ListStoredSecrets(tenant.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "%v", err)
 		return
 	}

@@ -332,6 +332,25 @@ var (
 		"Active KEK rotation version of a family, by KEK family.",
 		"family")
 
+	// Secret lifecycle (Task 73). SecretsLifecycleDue is the number of stored
+	// secrets currently in each lifecycle state (expiring|expired|rotation_due),
+	// refreshed on every monitor tick; SecretLifecycleNotifications counts
+	// reminder notifications actually dispatched (post storm-filtering).
+	// SecretStoreOps counts stored-secret registry mutations
+	// (put|rollback|delete) by result.
+	SecretsLifecycleDue = NewGauge(Default,
+		"secsy_secrets_lifecycle_due",
+		"Stored secrets in each lifecycle state (expiring|expired|rotation_due).",
+		"state")
+	SecretLifecycleNotifications = NewCounter(Default,
+		"secsy_secret_lifecycle_notifications_total",
+		"Secret TTL/rotation reminder notifications dispatched, by state.",
+		"state")
+	SecretStoreOps = NewCounter(Default,
+		"secsy_secret_store_operations_total",
+		"Stored-secret registry mutations, by operation (put|rollback|delete) and result.",
+		"operation", "result")
+
 	// RBAC authorization decisions. "action" is the coarse capability checked;
 	// "decision" is allow|deny.
 	AuthzDecisions = NewCounter(Default,

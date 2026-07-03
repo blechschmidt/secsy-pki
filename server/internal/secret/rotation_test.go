@@ -147,6 +147,21 @@ func (f *fakeKEKStore) UpdateStoredSecretEnvelope(id, envelope, kekLabel string,
 	return true, nil
 }
 
+// This in-memory stand-in models each secret as a single current envelope with
+// no separate value-history rows, so the version-history re-wrap surface has
+// nothing to enumerate or update.
+func (f *fakeKEKStore) ListStoredSecretVersionRefsForRewrap(family, activeLabel string) ([]models.SecretVersionRef, error) {
+	return nil, nil
+}
+
+func (f *fakeKEKStore) GetStoredSecretVersion(secretID string, version int) (*models.StoredSecretVersion, error) {
+	return nil, nil
+}
+
+func (f *fakeKEKStore) UpdateStoredSecretVersionEnvelope(secretID string, version int, envelope, kekLabel string, kekVersion int, expectKEKLabel string) (bool, error) {
+	return false, nil
+}
+
 // rotationFixture provisions a software-backed family KEK and rotates it once,
 // returning the provider, store, and a Ring for the post-rotation lineage.
 func rotationFixture(t *testing.T) (keyprovider.Provider, *fakeKEKStore, *Ring, *RotationResult) {

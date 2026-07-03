@@ -493,6 +493,13 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 		mux.Handle("GET /api/secret/store", protected(http.HandlerFunc(a.ListStoredSecrets)))
 		mux.Handle("GET /api/secret/store/{id}", protected(http.HandlerFunc(a.GetStoredSecret)))
 		mux.Handle("DELETE /api/secret/store/{id}", protected(http.HandlerFunc(a.DeleteStoredSecret)))
+		// Stored-secret value lifecycle (Task 73): version history, rollback,
+		// and the TTL/rotation lifecycle report.
+		mux.Handle("PUT /api/secret/store/{id}", protected(http.HandlerFunc(a.PutStoredSecret)))
+		mux.Handle("GET /api/secret/store/{id}/versions", protected(http.HandlerFunc(a.ListStoredSecretVersions)))
+		mux.Handle("GET /api/secret/store/{id}/versions/{version}", protected(http.HandlerFunc(a.GetStoredSecretVersion)))
+		mux.Handle("POST /api/secret/store/{id}/rollback", protected(http.HandlerFunc(a.RollbackStoredSecret)))
+		mux.Handle("GET /api/secret/lifecycle", protected(http.HandlerFunc(a.SecretLifecycleReport)))
 	}
 
 	if a.hsmEnabled() {

@@ -37,6 +37,10 @@ type Notification struct {
 	// They are delivered through the same sinks as expiry warnings and are set
 	// only on canary-originated notifications (never on expiry-scan ones).
 	CanaryFailures []CanaryFailure `json:"canary_failures,omitempty"`
+	// SecretWarnings lists stored secrets due for TTL/rotation attention
+	// (Task 73), already storm-filtered. Set only on secret-lifecycle
+	// notifications.
+	SecretWarnings []SecretItem `json:"secret_warnings,omitempty"`
 }
 
 // CanaryFailure describes one failed synthetic issuance-canary probe for
@@ -69,12 +73,16 @@ func NewLogSink(logger *log.Logger) *LogSink {
 func (s *LogSink) Name() string { return "log" }
 
 func (s *LogSink) Notify(_ context.Context, n Notification) error {
-	if len(n.Warnings) == 0 && len(n.Renewed) == 0 && len(n.CanaryFailures) == 0 {
+	if len(n.Warnings) == 0 && len(n.Renewed) == 0 && len(n.CanaryFailures) == 0 && len(n.SecretWarnings) == 0 {
 		return nil
 	}
 	for _, f := range n.CanaryFailures {
 		s.logger.Printf("issuance-canary: FAILURE ca=%s (%s) stage=%s serial=%s error=%s",
 			f.CALabel, f.CAID, f.Stage, f.Serial, f.Error)
+	}
+	for _, w := range n.SecretWarnings {
+		s.logger.Printf("secret-lifecycle: [%s] %s tenant=%s name=%q id=%s version=%d: %s",
+			w.Severity, w.State, w.TenantID, w.Name, w.ID, w.CurrentVersion, w.Detail)
 	}
 	if len(n.Warnings) == 0 && len(n.Renewed) == 0 {
 		return nil
@@ -117,7 +125,7 @@ func NewWebhookSink(url string, headers map[string]string, timeout time.Duration
 func (s *WebhookSink) Name() string { return "webhook(" + s.url + ")" }
 
 func (s *WebhookSink) Notify(ctx context.Context, n Notification) error {
-	if len(n.Warnings) == 0 && len(n.Renewed) == 0 && len(n.CanaryFailures) == 0 {
+	if len(n.Warnings) == 0 && len(n.Renewed) == 0 && len(n.CanaryFailures) == 0 && len(n.SecretWarnings) == 0 {
 		return nil // nothing to report; don't spam the endpoint
 	}
 	body, err := json.Marshal(n)

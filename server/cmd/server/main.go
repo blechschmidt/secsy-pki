@@ -574,6 +574,9 @@ func main() {
 		runner.WithSecretKEKCheck(func(context.Context) ([]string, error) {
 			return secret.RefreshKEKMetrics(db, cfg.Secret.KEKLabel)
 		})
+		// Stored-secret TTL / rotation reminders (Task 73), delivered through
+		// the same notification sinks with storm prevention.
+		runner.WithSecretLifecycle(monitor.NewSecretLifecycleScanner(db, cfg.Monitor))
 		elector.Register("expiry-monitor", runner.Run)
 	}
 

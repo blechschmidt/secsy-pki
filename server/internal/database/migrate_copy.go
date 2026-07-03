@@ -64,9 +64,11 @@ var migrationTables = []string{
 	"ssh_certificates",
 	"ssh_revocations",
 	// Secret-layer KEK rotation state (Task 63). kek_versions is standalone;
-	// stored_secrets references tenants, so it is copied after them.
+	// stored_secrets references tenants, so it is copied after them, and the
+	// value-history rows (Task 73) reference stored_secrets, so they come last.
 	"kek_versions",
 	"stored_secrets",
+	"stored_secret_versions",
 }
 
 // tableCopyOrder pins the read order for tables whose rows have intra-table

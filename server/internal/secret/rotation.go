@@ -65,12 +65,17 @@ type KEKStore interface {
 	CountStoredSecretsOnKEK(label string) (int64, error)
 }
 
-// Vault is the stored-secret access a fleet re-wrap needs. *database.DB
-// satisfies it.
+// Vault is the stored-secret access a fleet re-wrap needs: the current
+// registry envelopes plus the value-history entries (Task 73), which must
+// migrate too so old versions stay decryptable (and retirable KEKs actually
+// drain). *database.DB satisfies it.
 type Vault interface {
 	GetStoredSecret(id string) (*models.StoredSecret, error)
 	ListStoredSecretIDsForRewrap(family, activeLabel string) ([]string, error)
 	UpdateStoredSecretEnvelope(id, envelope, kekLabel string, kekVersion int, expectKEKLabel string) (bool, error)
+	ListStoredSecretVersionRefsForRewrap(family, activeLabel string) ([]models.SecretVersionRef, error)
+	GetStoredSecretVersion(secretID string, version int) (*models.StoredSecretVersion, error)
+	UpdateStoredSecretVersionEnvelope(secretID string, version int, envelope, kekLabel string, kekVersion int, expectKEKLabel string) (bool, error)
 }
 
 // Ring is a KEK family's working set during (and outside) a rotation window:
@@ -462,13 +467,19 @@ func RetireKEK(store KEKStore, family string, version int, force bool) (*models.
 	return target, nil
 }
 
-// RewrapReport summarizes a stored-secret re-wrap batch.
+// RewrapReport summarizes a stored-secret re-wrap batch. Counts are in
+// ENVELOPES: each current registry envelope and each historical value-history
+// entry is one work item, matching how the KEK status report counts what must
+// drain before a version can retire.
 type RewrapReport struct {
 	Family        string `json:"family"`
 	ActiveVersion int    `json:"active_version"`
 	ActiveLabel   string `json:"active_label"`
-	// Total is the number of secrets in the work list.
+	// Total is the number of envelopes in the work list.
 	Total int `json:"total"`
+	// HistoryEnvelopes is how many of Total were historical version entries
+	// (the remainder are current registry envelopes).
+	HistoryEnvelopes int `json:"history_envelopes,omitempty"`
 	// Rewrapped were migrated onto the active KEK and persisted.
 	Rewrapped int `json:"rewrapped"`
 	// Skipped were already on the active KEK (nothing to do).
@@ -487,67 +498,101 @@ type RewrapReport struct {
 const maxRewrapErrors = 20
 
 // RewrapStoredSecrets re-wraps stored secrets onto the ring's active KEK
-// version. With ids nil, it processes every stored secret of the family not
-// already on the active KEK (a fleet migration); with explicit ids it
-// processes exactly those, refusing secrets that belong to a different family.
-// Individual failures don't abort the batch — the report carries the counts —
-// and each persisted update is optimistic, so a batch racing another writer
-// records a conflict rather than clobbering newer ciphertext.
+// version. With ids nil, it processes every envelope of the family not
+// already on the active KEK — current registry envelopes AND historical
+// value-history entries (a fleet migration); with explicit ids it processes
+// exactly those secrets (again including their history), refusing secrets
+// that belong to a different family. Individual failures don't abort the
+// batch — the report carries the counts — and each persisted update is
+// optimistic, so a batch racing another writer records a conflict rather than
+// clobbering newer ciphertext.
 func RewrapStoredSecrets(ctx context.Context, ring *Ring, vault Vault, ids []string) (*RewrapReport, error) {
 	report := &RewrapReport{
 		Family:        ring.Family(),
 		ActiveVersion: ring.ActiveVersion(),
 		ActiveLabel:   ring.ActiveLabel(),
 	}
-	if ids == nil {
+	explicit := ids != nil
+	if !explicit {
 		var err error
 		ids, err = vault.ListStoredSecretIDsForRewrap(ring.Family(), ring.ActiveLabel())
 		if err != nil {
 			return nil, fmt.Errorf("secret: listing secrets for re-wrap: %w", err)
 		}
 	}
-	report.Total = len(ids)
-	metrics.SecretRewrapPending.Set(float64(len(ids)), ring.Family())
-	defer metrics.SecretRewrapPending.Set(0, ring.Family())
+	// Historical version entries on old KEKs. In explicit mode the family-wide
+	// list is filtered down to the selected secrets.
+	refs, err := vault.ListStoredSecretVersionRefsForRewrap(ring.Family(), ring.ActiveLabel())
+	if err != nil {
+		return nil, fmt.Errorf("secret: listing history entries for re-wrap: %w", err)
+	}
+	if explicit {
+		selected := make(map[string]bool, len(ids))
+		for _, id := range ids {
+			selected[id] = true
+		}
+		kept := refs[:0]
+		for _, ref := range refs {
+			if selected[ref.SecretID] {
+				kept = append(kept, ref)
+			}
+		}
+		refs = kept
+	}
 
-	fail := func(id, reason string) {
+	report.Total = len(ids) + len(refs)
+	report.HistoryEnvelopes = len(refs)
+	remaining := report.Total
+	metrics.SecretRewrapPending.Set(float64(remaining), ring.Family())
+	defer metrics.SecretRewrapPending.Set(0, ring.Family())
+	done := func() {
+		remaining--
+		metrics.SecretRewrapPending.Set(float64(remaining), ring.Family())
+	}
+
+	fail := func(what, reason string) {
 		report.Failed++
 		metrics.SecretRewrap.Inc("error")
 		if len(report.Errors) < maxRewrapErrors {
-			report.Errors = append(report.Errors, id+": "+reason)
+			report.Errors = append(report.Errors, what+": "+reason)
 		}
 	}
 	for i, id := range ids {
 		if err := ctx.Err(); err != nil {
-			return report, fmt.Errorf("secret: re-wrap batch interrupted after %d of %d secrets: %w", i, len(ids), err)
+			return report, fmt.Errorf("secret: re-wrap batch interrupted after %d of %d envelopes: %w", i, report.Total, err)
 		}
 		s, err := vault.GetStoredSecret(id)
 		if err != nil {
 			fail(id, err.Error())
+			done()
 			continue
 		}
 		if s == nil {
 			fail(id, "no such stored secret")
+			done()
 			continue
 		}
 		if s.KEKFamily != ring.Family() {
 			fail(id, fmt.Sprintf("belongs to KEK family %q, not %q", s.KEKFamily, ring.Family()))
+			done()
 			continue
 		}
 		oldLabel := s.KEKLabel
 		blob, changed, err := ring.RewrapJSON(ctx, []byte(s.Envelope))
 		if err != nil {
 			fail(id, err.Error())
+			done()
 			continue
 		}
 		if !changed {
 			report.Skipped++
-			metrics.SecretRewrapPending.Set(float64(len(ids)-i-1), ring.Family())
+			done()
 			continue
 		}
 		ok, err := vault.UpdateStoredSecretEnvelope(id, string(blob), ring.ActiveLabel(), ring.ActiveVersion(), oldLabel)
 		if err != nil {
 			fail(id, err.Error())
+			done()
 			continue
 		}
 		if !ok {
@@ -557,7 +602,56 @@ func RewrapStoredSecrets(ctx context.Context, ring *Ring, vault Vault, ids []str
 			report.Rewrapped++
 			metrics.SecretRewrap.Inc("ok")
 		}
-		metrics.SecretRewrapPending.Set(float64(len(ids)-i-1), ring.Family())
+		done()
+	}
+
+	for i, ref := range refs {
+		if err := ctx.Err(); err != nil {
+			return report, fmt.Errorf("secret: re-wrap batch interrupted after %d of %d envelopes: %w", len(ids)+i, report.Total, err)
+		}
+		what := fmt.Sprintf("%s@v%d", ref.SecretID, ref.Version)
+		v, err := vault.GetStoredSecretVersion(ref.SecretID, ref.Version)
+		if err != nil {
+			fail(what, err.Error())
+			done()
+			continue
+		}
+		if v == nil {
+			fail(what, "no such stored-secret version")
+			done()
+			continue
+		}
+		if v.KEKFamily != ring.Family() {
+			fail(what, fmt.Sprintf("belongs to KEK family %q, not %q", v.KEKFamily, ring.Family()))
+			done()
+			continue
+		}
+		oldLabel := v.KEKLabel
+		blob, changed, err := ring.RewrapJSON(ctx, []byte(v.Envelope))
+		if err != nil {
+			fail(what, err.Error())
+			done()
+			continue
+		}
+		if !changed {
+			report.Skipped++
+			done()
+			continue
+		}
+		ok, err := vault.UpdateStoredSecretVersionEnvelope(ref.SecretID, ref.Version, string(blob), ring.ActiveLabel(), ring.ActiveVersion(), oldLabel)
+		if err != nil {
+			fail(what, err.Error())
+			done()
+			continue
+		}
+		if !ok {
+			report.Conflicts++
+			metrics.SecretRewrap.Inc("conflict")
+		} else {
+			report.Rewrapped++
+			metrics.SecretRewrap.Inc("ok")
+		}
+		done()
 	}
 	return report, nil
 }

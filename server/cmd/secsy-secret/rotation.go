@@ -368,20 +368,39 @@ func cmdListSecrets(cfg *config.Config, args []string) error {
 	return nil
 }
 
-// storeEncryptedSecret persists an envelope produced by cmdEncrypt -store.
-func storeEncryptedSecret(db *database.DB, tenantID, name, family string, ring *secret.Ring, blob []byte, contextBound, escrowed bool) (*models.StoredSecret, error) {
+// storeSecretSpec carries the optional lifecycle schedule and provenance for
+// a newly stored secret (Task 73).
+type storeSecretSpec struct {
+	ttlDays         int
+	rotateEveryDays int
+	operator        string
+	comment         string
+}
+
+// storeEncryptedSecret persists an envelope produced by cmdEncrypt -store or
+// cmdPut, recording version 1 of its value history.
+func storeEncryptedSecret(db *database.DB, tenantID, name, family string, ring *secret.Ring, blob []byte, contextBound, escrowed bool, spec storeSecretSpec) (*models.StoredSecret, error) {
 	stored := &models.StoredSecret{
-		ID:           newSecretID(),
-		TenantID:     tenantID,
-		Name:         name,
-		Envelope:     strings.TrimSpace(string(blob)),
-		KEKFamily:    family,
-		KEKLabel:     ring.ActiveLabel(),
-		KEKVersion:   ring.ActiveVersion(),
-		ContextBound: contextBound,
-		Escrowed:     escrowed,
+		ID:              newSecretID(),
+		TenantID:        tenantID,
+		Name:            name,
+		Envelope:        strings.TrimSpace(string(blob)),
+		KEKFamily:       family,
+		KEKLabel:        ring.ActiveLabel(),
+		KEKVersion:      ring.ActiveVersion(),
+		ContextBound:    contextBound,
+		Escrowed:        escrowed,
+		RotateEveryDays: spec.rotateEveryDays,
 	}
-	if err := db.CreateStoredSecret(stored); err != nil {
+	if spec.ttlDays > 0 {
+		exp := time.Now().UTC().AddDate(0, 0, spec.ttlDays)
+		stored.ExpiresAt = &exp
+	}
+	comment := spec.comment
+	if comment == "" {
+		comment = "initial version"
+	}
+	if err := db.CreateStoredSecret(stored, spec.operator, comment); err != nil {
 		return nil, fmt.Errorf("storing secret: %w", err)
 	}
 	return stored, nil
