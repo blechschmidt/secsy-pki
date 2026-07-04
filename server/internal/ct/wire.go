@@ -220,16 +220,27 @@ func (s *SCT) verify(pub crypto.PublicKey, issuerKeyHash [32]byte, tbs []byte) e
 	if err != nil {
 		return err
 	}
+	if err := verifyDigitallySigned(pub, s.Signature, input); err != nil {
+		return fmt.Errorf("SCT %w", err)
+	}
+	return nil
+}
 
-	sig := cryptobyte.String(s.Signature)
+// verifyDigitallySigned checks a TLS digitally-signed structure (dsBytes: a
+// SignatureAndHashAlgorithm followed by an opaque<0..2^16-1> signature, RFC 5246
+// §4.7) over input against pub. It is shared by SCT signature verification and
+// Signed-Tree-Head signature verification, both of which sign a SHA-256 digest
+// with the log's ECDSA or RSA key.
+func verifyDigitallySigned(pub crypto.PublicKey, dsBytes []byte, input []byte) error {
+	sig := cryptobyte.String(dsBytes)
 	var hashAlg, sigAlg uint8
 	var sigBytes cryptobyte.String
 	if !sig.ReadUint8(&hashAlg) || !sig.ReadUint8(&sigAlg) ||
 		!sig.ReadUint16LengthPrefixed(&sigBytes) || !sig.Empty() {
-		return fmt.Errorf("malformed SCT digitally-signed structure")
+		return fmt.Errorf("malformed digitally-signed structure")
 	}
 	if hashAlg != hashAlgSHA256 {
-		return fmt.Errorf("unsupported SCT hash algorithm %d (only SHA-256 supported)", hashAlg)
+		return fmt.Errorf("unsupported hash algorithm %d (only SHA-256 supported)", hashAlg)
 	}
 	digest := sha256.Sum256(input)
 
@@ -237,21 +248,21 @@ func (s *SCT) verify(pub crypto.PublicKey, issuerKeyHash [32]byte, tbs []byte) e
 	case sigAlgECDSA:
 		epub, ok := pub.(*ecdsa.PublicKey)
 		if !ok {
-			return fmt.Errorf("SCT declares ECDSA but log key is %T", pub)
+			return fmt.Errorf("declares ECDSA but log key is %T", pub)
 		}
 		if !ecdsa.VerifyASN1(epub, digest[:], sigBytes) {
-			return fmt.Errorf("SCT ECDSA signature verification failed")
+			return fmt.Errorf("ECDSA signature verification failed")
 		}
 	case sigAlgRSA:
 		rpub, ok := pub.(*rsa.PublicKey)
 		if !ok {
-			return fmt.Errorf("SCT declares RSA but log key is %T", pub)
+			return fmt.Errorf("declares RSA but log key is %T", pub)
 		}
 		if err := rsa.VerifyPKCS1v15(rpub, crypto.SHA256, digest[:], sigBytes); err != nil {
-			return fmt.Errorf("SCT RSA signature verification failed: %w", err)
+			return fmt.Errorf("RSA signature verification failed: %w", err)
 		}
 	default:
-		return fmt.Errorf("unsupported SCT signature algorithm %d", sigAlg)
+		return fmt.Errorf("unsupported signature algorithm %d", sigAlg)
 	}
 	return nil
 }

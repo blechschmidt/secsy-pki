@@ -173,6 +173,14 @@ func run(args []string) error {
 		return cmdVerifySignature(db, cmdArgs)
 	}
 
+	// CT SCT inclusion monitoring (Task 93) verifies that CT logs honored the
+	// SCTs embedded at issuance — HTTP fetches plus public-key Merkle-proof
+	// verification, reading/writing only the store. It never touches the HSM, so
+	// dispatch it before the key provider is constructed.
+	if command == "ct" {
+		return cmdCT(db, cfg, cmdArgs)
+	}
+
 	// Publishing constructs the key provider lazily so `publish -verify` (a pure
 	// manifest/digest audit of the published snapshot) works during an HSM
 	// outage — exactly when an operator most wants to prove the static artifacts
@@ -396,6 +404,9 @@ Commands:
   audit               Verify the audit hash-chain (incl. RFC 3161 anchors),
                       anchor the chain head, or export events for SIEM
   discover            Scan external TLS endpoints; flag expiring/weak/rogue certs
+  ct                  Certificate Transparency inclusion monitoring:
+                      verify-inclusion (verify embedded SCTs against the logs'
+                      Merkle proofs) / inclusion-status (show recorded state)
   publish             Publish CRLs/chains/pre-signed OCSP as static artifacts (CDN offload)
   db                  Persistence administration (migrate SQLite file store → PostgreSQL)
   doctor              Read-only preflight diagnostics (config, HSM/KMS, keys, DB,

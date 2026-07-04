@@ -307,6 +307,7 @@ function switchView(name) {
   if (name === 'monitor') loadMonitor();
   if (name === 'inventory') loadInventory();
   if (name === 'discovery') loadDiscovery();
+  if (name === 'ct') loadCT();
   if (name === 'cas') loadAuthorities();
   if (name === 'ssh') loadSSH();
   if (name === 'signing') loadSigning();
@@ -870,6 +871,57 @@ function shortName(dn) {
   if (!dn) return '—';
   const m = dn.match(/CN=([^,]+)/);
   return m ? m[1] : (dn.length > 40 ? dn.slice(0, 39) + '…' : dn);
+}
+
+// ---- CT SCT inclusion view (Task 93) -------------------------------------
+$('ctRefresh').onclick = () => loadCT();
+$('ctStatus').onchange = () => loadCT();
+
+// loadCT lists the recorded SCT inclusion-proof state: whether the CT logs
+// honored the SCTs embedded at issuance. "failed" rows are highlighted — they
+// are the mis-issuance / log-misbehavior signal.
+async function loadCT() {
+  const tbody = $('ctRows');
+  tbody.innerHTML = '<tr><td colspan="9" class="muted">Loading…</td></tr>';
+  try {
+    const p = new URLSearchParams();
+    const status = $('ctStatus').value;
+    if (status) p.set('status', status);
+    p.set('limit', '500');
+    const rep = await api('GET', '/api/ct/inclusion?' + p.toString());
+    const c = rep.counts || {};
+    $('ctCounts').innerHTML =
+      `${rep.total || 0} SCT(s): ` +
+      `<span class="badge ${(c.failed || 0) ? 'critical' : 'ok'}">failed ${c.failed || 0}</span> ` +
+      `<span class="badge warning">pending ${c.pending || 0}</span> ` +
+      `<span class="badge ok">included ${c.included || 0}</span> ` +
+      `unknown-log ${c.unknown_log || 0}`;
+    const items = rep.items || [];
+    const rows = items.map(ctRowHTML).join('');
+    tbody.innerHTML = rows || '<tr><td colspan="9" class="muted">No SCT inclusion state matches.</td></tr>';
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="muted">${escapeHTML(e.message)}</td></tr>`;
+    $('ctCounts').textContent = '';
+  }
+}
+
+// ctRowHTML renders one SCT inclusion row; failed rows carry a critical badge.
+function ctRowHTML(r) {
+  const sev = r.status === 'failed' ? 'critical'
+    : r.status === 'included' ? 'ok'
+    : r.status === 'pending' ? 'warning' : '';
+  const logName = r.log_name || (r.log_id ? r.log_id.slice(0, 12) : '—');
+  return `<tr>
+    <td><span class="badge ${sev}">${escapeHTML(r.status || '')}</span></td>
+    <td class="mono">${escapeHTML(r.ca_id || '')}</td>
+    <td class="mono">${escapeHTML(r.serial || '')}</td>
+    <td title="${escapeHTML(r.log_id || '')}">${escapeHTML(logName)}</td>
+    <td>${fmtTime(r.sct_timestamp)}</td>
+    <td>${r.tree_size || 0}</td>
+    <td>${r.leaf_index || 0}</td>
+    <td>${r.last_checked_at ? fmtTime(r.last_checked_at) : '—'}</td>
+    <td class="muted">${escapeHTML(r.last_error || '')}</td>
+  </tr>`;
 }
 
 // ---- Inventory view ------------------------------------------------------

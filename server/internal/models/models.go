@@ -460,6 +460,66 @@ type IssuedCertificate struct {
 	Marker string `json:"marker,omitempty" db:"marker"`
 }
 
+// SCT inclusion-proof verification states (Task 93). Recorded per embedded SCT
+// by the CT inclusion monitor once a log's Maximum Merge Delay has elapsed.
+const (
+	// SCTInclusionPending means the SCT has been recorded but not yet confirmed
+	// included: either the log's MMD has not elapsed, or a verification attempt
+	// has not yet succeeded (a transient fetch error is still being retried).
+	SCTInclusionPending = "pending"
+	// SCTInclusionIncluded means the log served a valid Merkle audit path for the
+	// SCT's precertificate entry, verified against a signature-checked Signed Tree
+	// Head. Terminal success.
+	SCTInclusionIncluded = "included"
+	// SCTInclusionFailed means that after the log's MMD elapsed the log did not
+	// honor the SCT — no inclusion proof, or a proof that did not chain to the
+	// log's signed root. A genuine mis-issuance / log-misbehavior signal.
+	SCTInclusionFailed = "failed"
+	// SCTInclusionUnknownLog means the SCT names a log id not present in the
+	// configured registry (or a log with no public key), so inclusion cannot be
+	// cryptographically verified. A configuration gap, not misbehavior.
+	SCTInclusionUnknownLog = "unknown_log"
+)
+
+// SCTInclusion records the Certificate Transparency inclusion-proof state of one
+// SCT embedded in an issued certificate (Task 93): one row per (issuing CA,
+// certificate serial, log id). Task 26 embeds SCTs at issuance — a log's signed
+// promise to publicly log the certificate within its Maximum Merge Delay; this
+// row is the audited answer to whether the log kept that promise. The inclusion
+// monitor upserts it each time it checks (fetching the log's STH and the
+// get-proof-by-hash Merkle audit path and verifying the path against the SCT's
+// log id and timestamp). A Status of SCTInclusionFailed is the alert signal.
+type SCTInclusion struct {
+	CAID string `json:"ca_id" db:"ca_id"`
+	// Serial is the issued certificate's serial (decimal string); (CAID, Serial)
+	// join back to issued_certificates.
+	Serial string `json:"serial" db:"serial"`
+	// LogID is the hex-encoded SHA-256 of the log's SubjectPublicKeyInfo — the
+	// same id the SCT carries.
+	LogID string `json:"log_id" db:"log_id"`
+	// LogName is the operator-facing log name resolved from the registry (empty
+	// when the log id is unknown).
+	LogName string `json:"log_name,omitempty" db:"log_name"`
+	// SCTTimestamp is the SCT's asserted time; the MMD deadline is measured from it.
+	SCTTimestamp time.Time `json:"sct_timestamp" db:"sct_timestamp"`
+	// Status is one of the SCTInclusion* constants.
+	Status string `json:"status" db:"status"`
+	// TreeSize / LeafIndex describe the successful inclusion proof (0 until included).
+	TreeSize  int64 `json:"tree_size,omitempty" db:"tree_size"`
+	LeafIndex int64 `json:"leaf_index,omitempty" db:"leaf_index"`
+	// Checks counts verification attempts made against this SCT.
+	Checks int `json:"checks" db:"checks"`
+	// LastError is the most recent verification error (empty on success).
+	LastError string `json:"last_error,omitempty" db:"last_error"`
+	// FirstCheckedAt / LastCheckedAt / IncludedAt track the verification timeline.
+	FirstCheckedAt *time.Time `json:"first_checked_at,omitempty" db:"first_checked_at"`
+	LastCheckedAt  *time.Time `json:"last_checked_at,omitempty" db:"last_checked_at"`
+	IncludedAt     *time.Time `json:"included_at,omitempty" db:"included_at"`
+	// Alerted records that a log-misbehavior alert has already been dispatched for
+	// this SCT, so a persistent failure alerts once rather than every scan.
+	Alerted bool `json:"alerted" db:"alerted"`
+}
+
 // DiscoveredCertificate is the persisted record of a certificate observed on an
 // external TLS endpoint by the discovery scanner (Task 54). Unlike an
 // IssuedCertificate — the authority's own copy of something it minted — a

@@ -32,6 +32,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/cmp"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/ct"
+	"github.com/blechschmidt/secsy-pki/server/internal/ctmonitor"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/discovery"
 	"github.com/blechschmidt/secsy-pki/server/internal/est"
@@ -644,6 +645,31 @@ func main() {
 			log.Fatalf("Issuance canary configuration error: %v", err)
 		}
 		elector.Register("issuance-canary", prober.Run)
+	}
+
+	// CT SCT inclusion monitor (Task 93): the post-issuance half of Certificate
+	// Transparency. Once a log's Maximum Merge Delay has elapsed for a certificate's
+	// embedded SCTs it fetches the log's signed tree head and the get-proof-by-hash
+	// Merkle audit path, verifies inclusion, and records per-SCT state; any SCT a
+	// log fails to honor (never included after MMD, or an invalid proof) is a
+	// mis-issuance / log-misbehavior signal, alerted through the monitor sinks and
+	// counted in a dedicated metric. Leader-gated: one replica verifies at a time
+	// (the per-SCT state is shared) and a handover is idempotent (the next scan
+	// simply re-verifies). No HSM: reads certificates, fetches over HTTP, verifies
+	// with the logs' public keys.
+	if cfg.CertificateTransparency.InclusionMonitor.Enabled {
+		if ctSubmitter == nil {
+			log.Fatalf("certificate_transparency.inclusion_monitor.enabled is set but no certificate_transparency.logs are configured")
+		}
+		notifier, err := monitor.NewNotifier(cfg.Monitor, log.Default())
+		if err != nil {
+			log.Fatalf("CT inclusion monitor notification configuration error: %v", err)
+		}
+		ctMon, err := ctmonitor.New(db, ctSubmitter, cfg.CertificateTransparency.InclusionMonitor, notifier, log.Default())
+		if err != nil {
+			log.Fatalf("CT inclusion monitor configuration error: %v", err)
+		}
+		elector.Register("ct-inclusion-monitor", ctMon.Run)
 	}
 
 	// External certificate discovery scanner (Task 54): periodically probes the
@@ -2007,7 +2033,7 @@ func buildCTSubmitter(cfg config.CTConfig) (*ct.Submitter, error) {
 			}
 			pubPEM = string(data)
 		}
-		logs = append(logs, ct.LogConfig{Name: l.Name, URL: l.URL, PublicKeyPEM: pubPEM})
+		logs = append(logs, ct.LogConfig{Name: l.Name, URL: l.URL, PublicKeyPEM: pubPEM, MMD: l.MMD()})
 	}
 	// A dedicated HTTP client with a conservative overall timeout; per-attempt
 	// timeouts are applied by the submitter from each profile's policy.

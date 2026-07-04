@@ -650,6 +650,42 @@ var (
 		"Unix timestamp (seconds) of the last successful scheduled backup.")
 )
 
+// CT SCT inclusion-proof monitoring (Task 93). The leader-elected monitor
+// verifies that logs honor the SCTs embedded at issuance (Task 26): once a log's
+// Maximum Merge Delay has elapsed it fetches the log's signed tree head and a
+// get-proof-by-hash Merkle audit path and verifies the entry is in the tree.
+//
+// CTLogMisbehavior is the primary alert signal — an SCT a log failed to honor
+// (never included after MMD, or an inclusion proof that did not chain to the
+// log's signed root), which is a mis-issuance / log-misbehavior event, by log.
+// CTInclusionChecks counts every per-SCT check by outcome; CTInclusionPending /
+// CTInclusionFailed are the live backlog gauges refreshed each scan; and
+// CTMonitorRuns / CTMonitorLastRun plus the staleness FuncGauge expose scan
+// liveness so an alert can fire if the monitor stops running.
+var (
+	CTInclusionChecks = NewCounter(Default,
+		"secsy_ct_inclusion_checks_total",
+		"Certificate Transparency SCT inclusion-proof checks, partitioned by log and outcome (included|pending|failed|error|unknown_log).",
+		"log", "result")
+	CTLogMisbehavior = NewCounter(Default,
+		"secsy_ct_log_misbehavior_total",
+		"Certificate Transparency SCTs a log failed to honor by its Maximum Merge Delay (never included, or an invalid inclusion proof) — a mis-issuance / log-misbehavior signal, by log.",
+		"log")
+	CTInclusionPending = NewGauge(Default,
+		"secsy_ct_inclusion_pending",
+		"Embedded SCTs still awaiting a verified inclusion proof as of the last CT inclusion-monitor scan.")
+	CTInclusionFailed = NewGauge(Default,
+		"secsy_ct_inclusion_failed",
+		"Embedded SCTs a log has failed to honor as of the last CT inclusion-monitor scan (log misbehavior).")
+	CTMonitorRuns = NewCounter(Default,
+		"secsy_ct_inclusion_monitor_runs_total",
+		"CT inclusion-monitor scan cycles, partitioned by result (success|error).",
+		"result")
+	CTMonitorLastRun = NewGauge(Default,
+		"secsy_ct_inclusion_monitor_last_run_timestamp_seconds",
+		"Unix timestamp (seconds) of the last completed CT inclusion-monitor scan.")
+)
+
 // BatchBuckets covers background batch work (pre-signing, publishing), which
 // runs from well under a second on small deployments to minutes on large ones —
 // a range DefBuckets (tuned for per-request latency) tops out far below.
@@ -666,6 +702,7 @@ var (
 	publishLastSuccessNano     atomic.Int64
 	auditAnchorLastNano        atomic.Int64
 	backupLastSuccessNano      atomic.Int64
+	ctMonitorLastRunNano       atomic.Int64
 
 	_ = NewFuncGauge(Default,
 		"secsy_ocsp_presign_staleness_seconds",
@@ -683,6 +720,10 @@ var (
 		"secsy_audit_anchor_age_seconds",
 		"Seconds since the most recent audit-chain anchor was persisted (seeded from the store at startup). Absent until an anchor exists.",
 		func() (float64, bool) { return sinceNano(auditAnchorLastNano.Load()) })
+	_ = NewFuncGauge(Default,
+		"secsy_ct_inclusion_monitor_staleness_seconds",
+		"Seconds since the last completed CT inclusion-monitor scan. Absent until the first scan completes.",
+		func() (float64, bool) { return sinceNano(ctMonitorLastRunNano.Load()) })
 )
 
 func sinceNano(nano int64) (float64, bool) {
@@ -749,6 +790,29 @@ func RecordBackupRun(start time.Time, artifactBytes, retained int, err error) {
 	BackupLastSuccess.Set(float64(now.Unix()))
 	backupLastSuccessNano.Store(now.UnixNano())
 }
+
+// RecordCTMonitorRun records a completed CT inclusion-monitor scan: it refreshes
+// the pending/failed backlog gauges (always, so they reflect the store even on a
+// failed run) and, on success, stamps the last-run instants the timestamp and
+// staleness gauges derive from. A run that surfaced log misbehavior is counted
+// as an error so the failure series and staleness both drive alerts.
+func RecordCTMonitorRun(start time.Time, pending, failed int, err error) {
+	CTInclusionPending.Set(float64(pending))
+	CTInclusionFailed.Set(float64(failed))
+	if err != nil {
+		CTMonitorRuns.Inc(ResultError)
+		return
+	}
+	CTMonitorRuns.Inc(ResultSuccess)
+	now := time.Now()
+	CTMonitorLastRun.Set(float64(now.Unix()))
+	ctMonitorLastRunNano.Store(now.UnixNano())
+}
+
+// RecordCTLogMisbehavior counts one SCT a log failed to honor (never included
+// after MMD, or an invalid inclusion proof) — the dedicated log-misbehavior
+// signal — by log name.
+func RecordCTLogMisbehavior(log string) { CTLogMisbehavior.Inc(log) }
 
 // Export result label values for AuditExportEvents.
 const (

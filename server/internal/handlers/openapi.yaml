@@ -52,6 +52,10 @@ tags:
     description: Certificate-expiry reporting and on-demand scans.
   - name: Discovery
     description: External TLS certificate discovery/scanning and rogue-cert inventory.
+  - name: Certificate Transparency
+    description: >-
+      Post-issuance CT SCT inclusion-proof monitoring: verifying that logs merged
+      the certificates they issued SCTs for, and surfacing log misbehavior.
   - name: SSH CA
     description: >-
       HSM-backed OpenSSH certificate authority: user/host certificate signing
@@ -1463,6 +1467,51 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DiscoveryScanReport" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ---------------------------------------------------------------------------
+  # Certificate Transparency SCT inclusion monitoring (Task 93)
+  # ---------------------------------------------------------------------------
+  /api/ct/inclusion:
+    get:
+      operationId: listSCTInclusion
+      tags: [Certificate Transparency]
+      summary: List Certificate Transparency SCT inclusion-proof state
+      description: >-
+        Returns the post-issuance CT inclusion-verification state recorded by the
+        inclusion monitor: a per-status count summary plus the per-SCT rows. A
+        "failed" row is a mis-issuance / log-misbehavior signal — a log that did
+        not include a certificate it issued an SCT for within its Maximum Merge
+        Delay. Filter the rows with ?status, or pass ?ca and ?serial together to
+        list one certificate's per-log rows.
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Filter rows to one inclusion state.
+          schema: { type: string, enum: [included, pending, failed, unknown_log] }
+        - name: ca
+          in: query
+          required: false
+          description: CA id (with serial) to list one certificate's per-log rows.
+          schema: { type: string }
+        - name: serial
+          in: query
+          required: false
+          description: Certificate serial (with ca) to list one certificate's rows.
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          description: Maximum rows to return (default 200, capped at 1000).
+          schema: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: SCT inclusion state summary and rows.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SCTInclusionList" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
@@ -4123,6 +4172,49 @@ components:
           type: array
           description: Deprecated alias of items, retained for older clients.
           items: { $ref: "#/components/schemas/DiscoveredCertificate" }
+
+    SCTInclusion:
+      type: object
+      description: >-
+        The CT inclusion-proof state of one SCT embedded in an issued certificate
+        (Task 93). One record per (issuing CA, certificate serial, log id).
+      properties:
+        ca_id: { type: string }
+        serial: { type: string }
+        log_id:
+          type: string
+          description: Hex SHA-256 of the log's SubjectPublicKeyInfo (the SCT log id).
+        log_name: { type: string }
+        sct_timestamp: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [included, pending, failed, unknown_log]
+          description: >-
+            included = a valid Merkle proof against a signed tree head; pending =
+            not yet verified (MMD not elapsed, or a transient error); failed = the
+            log did not honor the SCT after its MMD (mis-issuance / log
+            misbehavior); unknown_log = the SCT names a log not in the registry.
+        tree_size: { type: integer, format: int64 }
+        leaf_index: { type: integer, format: int64 }
+        checks: { type: integer }
+        last_error: { type: string }
+        first_checked_at: { type: string, format: date-time }
+        last_checked_at: { type: string, format: date-time }
+        included_at: { type: string, format: date-time }
+        alerted: { type: boolean }
+
+    SCTInclusionList:
+      type: object
+      description: A CT SCT inclusion-state summary and the matching per-SCT rows.
+      properties:
+        counts:
+          type: object
+          additionalProperties: { type: integer }
+          description: Number of recorded SCTs in each status.
+        total: { type: integer }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/SCTInclusion" }
 
     DiscoveryScanRequest:
       type: object

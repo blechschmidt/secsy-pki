@@ -41,6 +41,24 @@ type Notification struct {
 	// (Task 73), already storm-filtered. Set only on secret-lifecycle
 	// notifications.
 	SecretWarnings []SecretItem `json:"secret_warnings,omitempty"`
+	// CTMisbehavior lists Certificate Transparency SCTs a log failed to honor
+	// after its Maximum Merge Delay (Task 93). Each is a mis-issuance /
+	// log-misbehavior signal; set only on CT-inclusion-monitor notifications.
+	CTMisbehavior []CTMisbehavior `json:"ct_misbehavior,omitempty"`
+}
+
+// CTMisbehavior describes one embedded SCT that a CT log failed to honor: after
+// the log's Maximum Merge Delay elapsed it served no inclusion proof for the
+// certificate (or a proof that did not verify), despite having issued an SCT
+// promising to log it. This is a genuine mis-issuance / log-misbehavior signal,
+// so it is treated as critical severity for sink filtering.
+type CTMisbehavior struct {
+	CAID    string    `json:"ca_id"`
+	Serial  string    `json:"serial"`
+	LogName string    `json:"log_name"`
+	LogID   string    `json:"log_id"`
+	Reason  string    `json:"reason"`
+	At      time.Time `json:"at"`
 }
 
 // CanaryFailure describes one failed synthetic issuance-canary probe for
@@ -73,12 +91,17 @@ func NewLogSink(logger *log.Logger) *LogSink {
 func (s *LogSink) Name() string { return "log" }
 
 func (s *LogSink) Notify(_ context.Context, n Notification) error {
-	if len(n.Warnings) == 0 && len(n.Renewed) == 0 && len(n.CanaryFailures) == 0 && len(n.SecretWarnings) == 0 {
+	if len(n.Warnings) == 0 && len(n.Renewed) == 0 && len(n.CanaryFailures) == 0 &&
+		len(n.SecretWarnings) == 0 && len(n.CTMisbehavior) == 0 {
 		return nil
 	}
 	for _, f := range n.CanaryFailures {
 		s.logger.Printf("issuance-canary: FAILURE ca=%s (%s) stage=%s serial=%s error=%s",
 			f.CALabel, f.CAID, f.Stage, f.Serial, f.Error)
+	}
+	for _, m := range n.CTMisbehavior {
+		s.logger.Printf("ct-inclusion: LOG MISBEHAVIOR log=%s serial=%s ca=%s reason=%s",
+			m.LogName, m.Serial, m.CAID, m.Reason)
 	}
 	for _, w := range n.SecretWarnings {
 		s.logger.Printf("secret-lifecycle: [%s] %s tenant=%s name=%q id=%s version=%d: %s",
@@ -125,7 +148,8 @@ func NewWebhookSink(url string, headers map[string]string, timeout time.Duration
 func (s *WebhookSink) Name() string { return "webhook(" + s.url + ")" }
 
 func (s *WebhookSink) Notify(ctx context.Context, n Notification) error {
-	if len(n.Warnings) == 0 && len(n.Renewed) == 0 && len(n.CanaryFailures) == 0 && len(n.SecretWarnings) == 0 {
+	if len(n.Warnings) == 0 && len(n.Renewed) == 0 && len(n.CanaryFailures) == 0 &&
+		len(n.SecretWarnings) == 0 && len(n.CTMisbehavior) == 0 {
 		return nil // nothing to report; don't spam the endpoint
 	}
 	body, err := json.Marshal(n)
@@ -201,6 +225,31 @@ func (n *Notifier) NotifyCanaryFailures(ctx context.Context, failures []CanaryFa
 		}
 		if err := b.sink.Notify(ctx, payload); err != nil {
 			n.logger.Printf("canary: notification sink %s failed: %v", b.sink.Name(), err)
+		}
+	}
+}
+
+// NotifyCTMisbehavior delivers Certificate Transparency log-misbehavior events
+// (SCTs a log failed to honor after its Maximum Merge Delay, Task 93) to every
+// sink whose minimum severity is at or below critical. A log that fails to log a
+// certificate it issued an SCT for is always at least critical. Sink errors are
+// logged and do not abort delivery to the others.
+func (n *Notifier) NotifyCTMisbehavior(ctx context.Context, events []CTMisbehavior) {
+	if len(events) == 0 {
+		return
+	}
+	payload := Notification{
+		GeneratedAt:   time.Now(),
+		MinSeverity:   SeverityCritical,
+		Counts:        map[Severity]int{},
+		CTMisbehavior: events,
+	}
+	for _, b := range n.bindings {
+		if !SeverityCritical.atLeast(b.minSeverity) {
+			continue
+		}
+		if err := b.sink.Notify(ctx, payload); err != nil {
+			n.logger.Printf("ct-inclusion: notification sink %s failed: %v", b.sink.Name(), err)
 		}
 	}
 }

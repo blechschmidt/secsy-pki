@@ -41,6 +41,21 @@ type Store interface {
 	SecretStore
 	ApprovalStore
 	APITokenStore
+	CTInclusionStore
+}
+
+// CTInclusionStore persists the Certificate Transparency SCT inclusion-proof
+// verification state (Task 93): one row per embedded SCT, upserted by the
+// leader-elected inclusion monitor each time it checks whether a log has honored
+// an SCT it issued. A 'failed' row is the mis-issuance / log-misbehavior signal
+// surfaced through the read API, the doctor check, and the alert sinks.
+type CTInclusionStore interface {
+	UpsertSCTInclusion(r *models.SCTInclusion) error
+	GetSCTInclusion(caID, serial, logID string) (*models.SCTInclusion, error)
+	ListSCTInclusionForCert(caID, serial string) ([]models.SCTInclusion, error)
+	ListSCTInclusionByStatus(status string, limit int) ([]models.SCTInclusion, error)
+	CountSCTInclusionByStatus() (map[string]int, error)
+	ListCertificatesPendingInclusion(limit int) ([]models.IssuedCertificate, error)
 }
 
 // APITokenStore persists native scoped API tokens / service accounts (Task 86):

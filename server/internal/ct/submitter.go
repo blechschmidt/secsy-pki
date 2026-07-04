@@ -53,6 +53,31 @@ func (s *Submitter) Has(name string) bool {
 	return ok
 }
 
+// LogByID returns the registered log whose SHA-256 log id matches id, if any.
+// The inclusion monitor uses it to resolve the log an embedded SCT names (SCTs
+// carry the log id, not the operator's log name) so it can fetch that log's
+// signed tree head and inclusion proofs. Only logs with a configured public key
+// have a known id, so count-only logs are never returned here.
+func (s *Submitter) LogByID(id [32]byte) (*Log, bool) {
+	for _, l := range s.logs {
+		if l.hasID && l.LogID == id {
+			return l, true
+		}
+	}
+	return nil, false
+}
+
+// Logs returns every registered log, sorted by name, for the inclusion monitor
+// and diagnostics. The returned slice is a fresh copy; the pointers are shared
+// (logs are immutable after construction).
+func (s *Submitter) Logs() []*Log {
+	out := make([]*Log, 0, len(s.logs))
+	for _, name := range s.LogNames() {
+		out = append(out, s.logs[name])
+	}
+	return out
+}
+
 // SubmitRequest describes one precertificate submission across a set of logs.
 type SubmitRequest struct {
 	// Logs names the logs to submit to. Empty means every registered log.

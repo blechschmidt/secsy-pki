@@ -40,6 +40,9 @@ var migrationTables = []string{
 	// Released certificateHold records (Task 82) retained for delta-CRL
 	// removeFromCRL generation; references cas, so copied after it.
 	"released_holds",
+	// CT SCT inclusion-proof verification state (Task 93); references cas, so
+	// copied after it.
+	"sct_inclusion",
 	// Cross-signing relationships reference tenants and cas (issuer/subject), so
 	// they are copied after both.
 	"cross_signs",

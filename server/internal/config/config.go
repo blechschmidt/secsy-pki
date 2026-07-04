@@ -824,19 +824,84 @@ type CAAGlobalConfig struct {
 type CTConfig struct {
 	// Logs is the set of known CT logs, keyed by name.
 	Logs []CTLogConfig `yaml:"logs"`
+	// InclusionMonitor configures the post-issuance SCT inclusion-proof monitor
+	// (Task 93): a leader-elected background job that verifies logs actually merge
+	// the certificates they issued SCTs for, and alerts on any that they don't.
+	InclusionMonitor CTInclusionMonitorConfig `yaml:"inclusion_monitor"`
 }
 
 // CTLogConfig configures a single CT log endpoint.
 type CTLogConfig struct {
 	// Name is the identifier profiles reference and audit records display.
 	Name string `yaml:"name"`
-	// URL is the log's base URL; the RFC 6962 add-pre-chain path is appended.
+	// URL is the log's base URL; the RFC 6962 ct/v1/* paths are appended.
 	URL string `yaml:"url"`
 	// PublicKey is the log's public key as a PEM SubjectPublicKeyInfo block. When
 	// set, returned SCT signatures are cryptographically verified against it (and
-	// the SCT's log id must match). PublicKeyFile is an alternative source.
+	// the SCT's log id must match). PublicKeyFile is an alternative source. The
+	// inclusion monitor also requires the key to verify the log's signed tree head.
 	PublicKey     string `yaml:"public_key"`
 	PublicKeyFile string `yaml:"public_key_file"`
+	// MMDHours is the log's Maximum Merge Delay in hours: the deadline by which
+	// the log promises to merge a certificate it issued an SCT for. The inclusion
+	// monitor only treats a missing inclusion proof as misbehavior once this has
+	// elapsed since the SCT's timestamp. Zero defaults to 24 (the value the major
+	// public logs advertise).
+	MMDHours int `yaml:"mmd_hours"`
+}
+
+// MMD returns the log's resolved Maximum Merge Delay (default 24h).
+func (c CTLogConfig) MMD() time.Duration {
+	if c.MMDHours <= 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(c.MMDHours) * time.Hour
+}
+
+// CTInclusionMonitorConfig configures the CT SCT inclusion-proof monitor (Task
+// 93). When enabled, a leader-elected loop periodically scans issued
+// certificates carrying embedded SCTs; once a log's Maximum Merge Delay has
+// elapsed it fetches the log's signed tree head and a get-proof-by-hash Merkle
+// audit path, verifies inclusion, records the per-SCT state, and raises an alert
+// on any SCT a log failed to honor.
+type CTInclusionMonitorConfig struct {
+	// Enabled starts the leader-elected inclusion-monitor loop in the server. It
+	// requires at least one configured CT log (with a public key).
+	Enabled bool `yaml:"enabled"`
+	// IntervalMinutes is how often the monitor scans. Defaults to 60. A scan runs
+	// once immediately on leadership gain, then every interval.
+	IntervalMinutes int `yaml:"interval_minutes"`
+	// MaxCertsPerRun bounds how many certificates with unresolved SCTs a single
+	// scan processes (oldest-issued first). Defaults to 500; 0 keeps the built-in
+	// default. Certificates not reached this scan are picked up on the next.
+	MaxCertsPerRun int `yaml:"max_certs_per_run"`
+	// TimeoutSeconds bounds each individual log HTTP request (get-sth /
+	// get-proof-by-hash). Defaults to 15.
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+}
+
+// Interval returns the resolved scan interval (default 60m).
+func (c CTInclusionMonitorConfig) Interval() time.Duration {
+	if c.IntervalMinutes <= 0 {
+		return 60 * time.Minute
+	}
+	return time.Duration(c.IntervalMinutes) * time.Minute
+}
+
+// MaxCerts returns the resolved per-scan certificate bound (default 500).
+func (c CTInclusionMonitorConfig) MaxCerts() int {
+	if c.MaxCertsPerRun <= 0 {
+		return 500
+	}
+	return c.MaxCertsPerRun
+}
+
+// Timeout returns the resolved per-request HTTP timeout (default 15s).
+func (c CTInclusionMonitorConfig) Timeout() time.Duration {
+	if c.TimeoutSeconds <= 0 {
+		return 15 * time.Second
+	}
+	return time.Duration(c.TimeoutSeconds) * time.Second
 }
 
 // ProfileCTConfig is a profile's per-issuance Certificate Transparency policy.
@@ -2024,6 +2089,10 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateCT(); err != nil {
+		return nil, err
+	}
+
 	if err := cfg.validateEnrollment(); err != nil {
 		return nil, err
 	}
@@ -2730,6 +2799,43 @@ func (c *Config) validateCanary() error {
 	}
 	if cn.Timeout() >= cn.Interval() {
 		return fmt.Errorf("canary.timeout_seconds (%s) must be shorter than canary.interval_minutes (%s)", cn.Timeout(), cn.Interval())
+	}
+	return nil
+}
+
+// validateCT sanity-checks the Certificate Transparency configuration. Log
+// entries must name a URL; MMD must be non-negative. The inclusion monitor (Task
+// 93) additionally requires at least one configured log — there is nothing to
+// verify inclusion against otherwise — and a scan interval that leaves room for
+// its per-request timeout.
+func (c *Config) validateCT() error {
+	ct := &c.CertificateTransparency
+	for i, l := range ct.Logs {
+		if strings.TrimSpace(l.Name) == "" {
+			return fmt.Errorf("certificate_transparency.logs[%d]: name is required", i)
+		}
+		if strings.TrimSpace(l.URL) == "" {
+			return fmt.Errorf("certificate_transparency.logs[%d] (%s): url is required", i, l.Name)
+		}
+		if l.MMDHours < 0 {
+			return fmt.Errorf("certificate_transparency.logs[%d] (%s): mmd_hours must not be negative", i, l.Name)
+		}
+	}
+	im := ct.InclusionMonitor
+	if !im.Enabled {
+		return nil
+	}
+	if len(ct.Logs) == 0 {
+		return fmt.Errorf("certificate_transparency.inclusion_monitor.enabled is true but no certificate_transparency.logs are configured")
+	}
+	if im.IntervalMinutes < 0 {
+		return fmt.Errorf("certificate_transparency.inclusion_monitor.interval_minutes must not be negative")
+	}
+	if im.MaxCertsPerRun < 0 {
+		return fmt.Errorf("certificate_transparency.inclusion_monitor.max_certs_per_run must not be negative")
+	}
+	if im.TimeoutSeconds < 0 {
+		return fmt.Errorf("certificate_transparency.inclusion_monitor.timeout_seconds must not be negative")
 	}
 	return nil
 }

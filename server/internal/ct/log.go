@@ -27,19 +27,29 @@ const maxSCTResponseBytes = 1 << 20 // 1 MiB
 type Log struct {
 	// Name is the operator-facing identifier used in profiles and audit records.
 	Name string
-	// URL is the log's base URL (the add-pre-chain path is appended to it).
+	// URL is the log's base URL (the RFC 6962 ct/v1/* paths are appended to it).
 	URL string
 	// PublicKey, when set, is the log's public key. It enables verification of
 	// returned SCT signatures and identification of the expected log id.
 	PublicKey crypto.PublicKey
 	// LogID is the SHA-256 of the log's SubjectPublicKeyInfo, derived from
 	// PublicKey when present. A returned SCT's log id must match it.
-	LogID   [32]byte
+	LogID [32]byte
+	// mmd is the log's Maximum Merge Delay: the deadline by which the log
+	// promises to incorporate a certificate it issued an SCT for into its
+	// Merkle tree (RFC 6962 §3). The inclusion monitor only expects a proof
+	// once mmd has elapsed since the SCT's timestamp.
+	mmd     time.Duration
 	hasKey  bool
 	hasID   bool
 	httpDo  func(*http.Request) (*http.Response, error)
-	baseURL string
+	rootURL string // trimmed base URL, e.g. "https://ct.example/log"
+	baseURL string // add-pre-chain endpoint
 }
+
+// defaultMMD is the standard Maximum Merge Delay assumed when a log's config
+// does not set one; 24 hours is the value the major public logs advertise.
+const defaultMMD = 24 * time.Hour
 
 // LogConfig configures a single CT log.
 type LogConfig struct {
@@ -49,6 +59,8 @@ type LogConfig struct {
 	// Optional: when empty, SCT signatures from this log are accepted without
 	// cryptographic verification (count-only policy).
 	PublicKeyPEM string
+	// MMD is the log's Maximum Merge Delay. Zero uses defaultMMD (24h).
+	MMD time.Duration
 }
 
 // NewLog builds a Log from its configuration, validating the URL and (when
@@ -63,10 +75,17 @@ func NewLog(cfg LogConfig, client *http.Client) (*Log, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
+	mmd := cfg.MMD
+	if mmd <= 0 {
+		mmd = defaultMMD
+	}
+	rootURL := strings.TrimRight(cfg.URL, "/")
 	l := &Log{
 		Name:    cfg.Name,
 		URL:     cfg.URL,
-		baseURL: strings.TrimRight(cfg.URL, "/") + "/" + addPreChainPath,
+		mmd:     mmd,
+		rootURL: rootURL,
+		baseURL: rootURL + "/" + addPreChainPath,
 		httpDo:  client.Do,
 	}
 	if pemStr := strings.TrimSpace(cfg.PublicKeyPEM); pemStr != "" {
@@ -85,6 +104,13 @@ func NewLog(cfg LogConfig, client *http.Client) (*Log, error) {
 	}
 	return l, nil
 }
+
+// MMD returns the log's Maximum Merge Delay.
+func (l *Log) MMD() time.Duration { return l.mmd }
+
+// HasKey reports whether the log's public key is configured, i.e. whether SCT
+// and STH signatures from it can be cryptographically verified.
+func (l *Log) HasKey() bool { return l.hasKey }
 
 // addPreChainRequest is the JSON body of an add-pre-chain call: the
 // precertificate followed by the issuing chain, each base64 DER (RFC 6962 §4.2).

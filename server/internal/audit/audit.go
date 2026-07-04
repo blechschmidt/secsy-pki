@@ -120,7 +120,17 @@ const (
 	// the probed serial, per-stage timings, and (on error) the failed stage.
 	// `secsy-ca doctor` reads the newest of these to surface the last canary
 	// outcome.
-	ActionCanaryProbe  = "canary.probe"
+	ActionCanaryProbe = "canary.probe"
+	// ActionCTInclusion records one Certificate Transparency SCT inclusion-proof
+	// verification scan (Task 93): the monitor fetches each log's signed tree head
+	// and the get-proof-by-hash Merkle audit path for embedded SCTs whose log
+	// Maximum Merge Delay has elapsed, and verifies inclusion against the SCT's
+	// log id and timestamp. Result is success when the scan completed with no log
+	// misbehavior, or error when a log failed to honor an SCT it issued (never
+	// included, or an inclusion proof that did not verify — a mis-issuance
+	// signal). The detail carries the checked/included/pending/failed counts.
+	// `secsy-ca doctor` reads the newest to surface inclusion-monitor freshness.
+	ActionCTInclusion  = "ct.inclusion"
 	ActionCertSignSSH  = "cert.sign_ssh"
 	ActionCertSignX509 = "cert.sign_x509"
 	// ActionCertPKCS12 records a server-side-keygen PKCS#12 (.p12/.pfx) export

@@ -216,7 +216,7 @@ func Run(ctx context.Context, opts Options) *Report {
 		for _, name := range []string{
 			"db.connectivity", "db.schema", "keyprovider.ca", "keys.ca",
 			"audit.chain_head", "certs.ca_expiry", "crl.freshness",
-			"canary.last_probe", "clock.skew", "listener.tls",
+			"canary.last_probe", "ct.inclusion", "clock.skew", "listener.tls",
 			"fips.mode", "fips.store_keys", "fips.secret_oaep",
 		} {
 			r.skip(name, "config did not load")
@@ -255,6 +255,9 @@ func Run(ctx context.Context, opts Options) *Report {
 
 	// 7c. Scheduled encrypted backup: freshness of the newest backup.run.
 	checkBackup(r, cfg, db, schemaOK)
+
+	// 7d. CT SCT inclusion monitor: standing inclusion state and scan freshness.
+	checkCTInclusion(r, cfg, db, schemaOK)
 
 	// 8. Clock-skew sanity against the database host and the audit head.
 	checkClockSkew(ctx, r, db, schemaOK, opts)

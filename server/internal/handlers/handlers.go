@@ -420,6 +420,12 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/discovery", protected(http.HandlerFunc(a.ListDiscoveredCertificates)))
 	mux.Handle("POST /api/discovery/scan", protected(http.HandlerFunc(a.RunDiscoveryScan)))
 
+	// Certificate Transparency SCT inclusion-proof state (Task 93): the
+	// post-issuance monitor's recorded verification of whether the CT logs
+	// honored the SCTs embedded at issuance. Read-gated; "failed" rows are the
+	// mis-issuance / log-misbehavior signal.
+	mux.Handle("GET /api/ct/inclusion", protected(http.HandlerFunc(a.ListSCTInclusion)))
+
 	// HSM-backed SSH certificate authority (Task 57). CA creation is a key
 	// ceremony (step-up gated like X.509 root init); signing and revocation
 	// require the CA's issue capability, mirroring X.509 issuance. The CA public

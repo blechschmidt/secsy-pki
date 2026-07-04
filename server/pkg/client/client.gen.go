@@ -277,6 +277,14 @@ const (
 	RevokeResultStatusRevoked        RevokeResultStatus = "revoked"
 )
 
+// Defines values for SCTInclusionStatus.
+const (
+	SCTInclusionStatusFailed     SCTInclusionStatus = "failed"
+	SCTInclusionStatusIncluded   SCTInclusionStatus = "included"
+	SCTInclusionStatusPending    SCTInclusionStatus = "pending"
+	SCTInclusionStatusUnknownLog SCTInclusionStatus = "unknown_log"
+)
+
 // Defines values for SSHCertificateCertType.
 const (
 	SSHCertificateCertTypeHost SSHCertificateCertType = "host"
@@ -357,10 +365,18 @@ const (
 
 // Defines values for ListIssuedCertificatesParamsStatus.
 const (
-	ListIssuedCertificatesParamsStatusExpired ListIssuedCertificatesParamsStatus = "expired"
-	ListIssuedCertificatesParamsStatusHeld    ListIssuedCertificatesParamsStatus = "held"
-	ListIssuedCertificatesParamsStatusRevoked ListIssuedCertificatesParamsStatus = "revoked"
-	ListIssuedCertificatesParamsStatusValid   ListIssuedCertificatesParamsStatus = "valid"
+	Expired ListIssuedCertificatesParamsStatus = "expired"
+	Held    ListIssuedCertificatesParamsStatus = "held"
+	Revoked ListIssuedCertificatesParamsStatus = "revoked"
+	Valid   ListIssuedCertificatesParamsStatus = "valid"
+)
+
+// Defines values for ListSCTInclusionParamsStatus.
+const (
+	Failed     ListSCTInclusionParamsStatus = "failed"
+	Included   ListSCTInclusionParamsStatus = "included"
+	Pending    ListSCTInclusionParamsStatus = "pending"
+	UnknownLog ListSCTInclusionParamsStatus = "unknown_log"
 )
 
 // Defines values for ExportEventLogParamsFormat.
@@ -1898,6 +1914,39 @@ type RotationStatus struct {
 	Successor    *CA   `json:"successor,omitempty"`
 }
 
+// SCTInclusion The CT inclusion-proof state of one SCT embedded in an issued certificate (Task 93). One record per (issuing CA, certificate serial, log id).
+type SCTInclusion struct {
+	Alerted        *bool      `json:"alerted,omitempty"`
+	CaId           *string    `json:"ca_id,omitempty"`
+	Checks         *int       `json:"checks,omitempty"`
+	FirstCheckedAt *time.Time `json:"first_checked_at,omitempty"`
+	IncludedAt     *time.Time `json:"included_at,omitempty"`
+	LastCheckedAt  *time.Time `json:"last_checked_at,omitempty"`
+	LastError      *string    `json:"last_error,omitempty"`
+	LeafIndex      *int64     `json:"leaf_index,omitempty"`
+
+	// LogId Hex SHA-256 of the log's SubjectPublicKeyInfo (the SCT log id).
+	LogId        *string    `json:"log_id,omitempty"`
+	LogName      *string    `json:"log_name,omitempty"`
+	SctTimestamp *time.Time `json:"sct_timestamp,omitempty"`
+	Serial       *string    `json:"serial,omitempty"`
+
+	// Status included = a valid Merkle proof against a signed tree head; pending = not yet verified (MMD not elapsed, or a transient error); failed = the log did not honor the SCT after its MMD (mis-issuance / log misbehavior); unknown_log = the SCT names a log not in the registry.
+	Status   *SCTInclusionStatus `json:"status,omitempty"`
+	TreeSize *int64              `json:"tree_size,omitempty"`
+}
+
+// SCTInclusionStatus included = a valid Merkle proof against a signed tree head; pending = not yet verified (MMD not elapsed, or a transient error); failed = the log did not honor the SCT after its MMD (mis-issuance / log misbehavior); unknown_log = the SCT names a log not in the registry.
+type SCTInclusionStatus string
+
+// SCTInclusionList A CT SCT inclusion-state summary and the matching per-SCT rows.
+type SCTInclusionList struct {
+	// Counts Number of recorded SCTs in each status.
+	Counts *map[string]int `json:"counts,omitempty"`
+	Items  *[]SCTInclusion `json:"items,omitempty"`
+	Total  *int            `json:"total,omitempty"`
+}
+
 // SSHCertificate defines model for SSHCertificate.
 type SSHCertificate struct {
 	CaId        *string                 `json:"ca_id,omitempty"`
@@ -2434,6 +2483,24 @@ type ListRevokedCertificatesParams struct {
 	SerialPrefix *CertSerialPrefix `form:"serial_prefix,omitempty" json:"serial_prefix,omitempty"`
 }
 
+// ListSCTInclusionParams defines parameters for ListSCTInclusion.
+type ListSCTInclusionParams struct {
+	// Status Filter rows to one inclusion state.
+	Status *ListSCTInclusionParamsStatus `form:"status,omitempty" json:"status,omitempty"`
+
+	// Ca CA id (with serial) to list one certificate's per-log rows.
+	Ca *string `form:"ca,omitempty" json:"ca,omitempty"`
+
+	// Serial Certificate serial (with ca) to list one certificate's rows.
+	Serial *string `form:"serial,omitempty" json:"serial,omitempty"`
+
+	// Limit Maximum rows to return (default 200, capped at 1000).
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// ListSCTInclusionParamsStatus defines parameters for ListSCTInclusion.
+type ListSCTInclusionParamsStatus string
+
 // ListDiscoveredCertificatesParams defines parameters for ListDiscoveredCertificates.
 type ListDiscoveredCertificatesParams struct {
 	// Limit Page size (1–500).
@@ -2882,6 +2949,9 @@ type ClientInterface interface {
 
 	// GetSVIDBundle request
 	GetSVIDBundle(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListSCTInclusion request
+	ListSCTInclusion(ctx context.Context, params *ListSCTInclusionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListDiscoveredCertificates request
 	ListDiscoveredCertificates(ctx context.Context, params *ListDiscoveredCertificatesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3838,6 +3908,18 @@ func (c *Client) IssueSVID(ctx context.Context, id CAId, body IssueSVIDJSONReque
 
 func (c *Client) GetSVIDBundle(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetSVIDBundleRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListSCTInclusion(ctx context.Context, params *ListSCTInclusionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListSCTInclusionRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -7199,6 +7281,103 @@ func NewGetSVIDBundleRequest(server string, id CAId) (*http.Request, error) {
 	return req, nil
 }
 
+// NewListSCTInclusionRequest generates requests for ListSCTInclusion
+func NewListSCTInclusionRequest(server string, params *ListSCTInclusionParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ct/inclusion")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Status != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "status", runtime.ParamLocationQuery, *params.Status); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Ca != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "ca", runtime.ParamLocationQuery, *params.Ca); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Serial != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "serial", runtime.ParamLocationQuery, *params.Serial); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "limit", runtime.ParamLocationQuery, *params.Limit); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewListDiscoveredCertificatesRequest generates requests for ListDiscoveredCertificates
 func NewListDiscoveredCertificatesRequest(server string, params *ListDiscoveredCertificatesParams) (*http.Request, error) {
 	var err error
@@ -10426,6 +10605,9 @@ type ClientWithResponsesInterface interface {
 	// GetSVIDBundleWithResponse request
 	GetSVIDBundleWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetSVIDBundleResponse, error)
 
+	// ListSCTInclusionWithResponse request
+	ListSCTInclusionWithResponse(ctx context.Context, params *ListSCTInclusionParams, reqEditors ...RequestEditorFn) (*ListSCTInclusionResponse, error)
+
 	// ListDiscoveredCertificatesWithResponse request
 	ListDiscoveredCertificatesWithResponse(ctx context.Context, params *ListDiscoveredCertificatesParams, reqEditors ...RequestEditorFn) (*ListDiscoveredCertificatesResponse, error)
 
@@ -11663,6 +11845,30 @@ func (r GetSVIDBundleResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetSVIDBundleResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListSCTInclusionResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *SCTInclusionList
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListSCTInclusionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListSCTInclusionResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -13919,6 +14125,15 @@ func (c *ClientWithResponses) GetSVIDBundleWithResponse(ctx context.Context, id 
 	return ParseGetSVIDBundleResponse(rsp)
 }
 
+// ListSCTInclusionWithResponse request returning *ListSCTInclusionResponse
+func (c *ClientWithResponses) ListSCTInclusionWithResponse(ctx context.Context, params *ListSCTInclusionParams, reqEditors ...RequestEditorFn) (*ListSCTInclusionResponse, error) {
+	rsp, err := c.ListSCTInclusion(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListSCTInclusionResponse(rsp)
+}
+
 // ListDiscoveredCertificatesWithResponse request returning *ListDiscoveredCertificatesResponse
 func (c *ClientWithResponses) ListDiscoveredCertificatesWithResponse(ctx context.Context, params *ListDiscoveredCertificatesParams, reqEditors ...RequestEditorFn) (*ListDiscoveredCertificatesResponse, error) {
 	rsp, err := c.ListDiscoveredCertificates(ctx, params, reqEditors...)
@@ -16103,6 +16318,46 @@ func ParseGetSVIDBundleResponse(rsp *http.Response) (*GetSVIDBundleResponse, err
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListSCTInclusionResponse parses an HTTP response from a ListSCTInclusionWithResponse call
+func ParseListSCTInclusionResponse(rsp *http.Response) (*ListSCTInclusionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListSCTInclusionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SCTInclusionList
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
 
 	}
 

@@ -823,6 +823,32 @@ func (db *DB) migrate() error {
 			revoked_by TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_api_tokens_tenant ON api_tokens(tenant_id)`,
+		// Certificate Transparency SCT inclusion-proof verification state (Task 93).
+		// One row per embedded SCT: (issuing CA, certificate serial, log id). The
+		// leader-elected inclusion monitor upserts a row each time it checks whether
+		// the log that issued the SCT has honored it — merged the precertificate
+		// entry into its Merkle tree within the log's Maximum Merge Delay. sct_timestamp
+		// is the SCT's asserted time, from which the MMD deadline is measured; a
+		// status of 'failed' is a mis-issuance / log-misbehavior signal. Scoped to a
+		// CA (and thus a tenant) through ca_id; deleting the CA cascades.
+		`CREATE TABLE IF NOT EXISTS sct_inclusion (
+			ca_id TEXT NOT NULL REFERENCES cas(id) ON DELETE CASCADE,
+			serial TEXT NOT NULL,
+			log_id TEXT NOT NULL,
+			log_name TEXT NOT NULL DEFAULT '',
+			sct_timestamp TIMESTAMP NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			tree_size INTEGER NOT NULL DEFAULT 0,
+			leaf_index INTEGER NOT NULL DEFAULT 0,
+			checks INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT NOT NULL DEFAULT '',
+			first_checked_at TIMESTAMP,
+			last_checked_at TIMESTAMP,
+			included_at TIMESTAMP,
+			alerted ` + boolType + `,
+			PRIMARY KEY (ca_id, serial, log_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_sct_inclusion_status ON sct_inclusion(status)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.exec(stmt); err != nil {

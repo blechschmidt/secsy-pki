@@ -41,6 +41,7 @@
         <button data-view="inventory">Inventory</button>
         <button data-view="monitor">Expiry Monitor</button>
         <button data-view="discovery">Discovery</button>
+        <button data-view="ct">CT Inclusion</button>
         <button data-view="issue">Issue</button>
         <button data-view="p12">PKCS#12</button>
         <button data-view="cas">Authorities</button>
@@ -275,6 +276,32 @@
             <span id="discCount" class="muted"></span>
             <button class="btn ghost sm hidden" id="discLoadMore">Load more</button>
           </div>
+        </div>
+      </section>
+
+      <!-- CT SCT inclusion monitoring (Task 93) -->
+      <section class="view" id="view-ct">
+        <h2>Certificate Transparency — SCT inclusion</h2>
+        <p class="sub">Post-issuance verification that the CT logs actually merged the certificates they issued SCTs for. Once a log's Maximum Merge Delay elapses, the monitor fetches its signed tree head and inclusion proof and verifies the Merkle audit path. A <strong>failed</strong> SCT — a log that never included a certificate it promised to log — is a mis-issuance / log-misbehavior signal.</p>
+        <div class="toolbar">
+          <div class="field" style="margin:0">
+            <label for="ctStatus">Status</label>
+            <select id="ctStatus">
+              <option value="">all</option>
+              <option value="failed">failed (misbehavior)</option>
+              <option value="pending">pending</option>
+              <option value="included">included</option>
+              <option value="unknown_log">unknown log</option>
+            </select>
+          </div>
+          <button class="btn ghost sm" id="ctRefresh" style="margin-top:16px">Refresh</button>
+        </div>
+        <div id="ctCounts" class="muted" style="margin-bottom:12px"></div>
+        <div class="panel">
+          <table>
+            <thead><tr><th>Status</th><th>CA</th><th>Serial</th><th>Log</th><th>SCT time</th><th>Tree size</th><th>Leaf</th><th>Last check</th><th>Detail</th></tr></thead>
+            <tbody id="ctRows"><tr><td colspan="9" class="muted">No SCT inclusion state recorded yet.</td></tr></tbody>
+          </table>
         </div>
       </section>
 

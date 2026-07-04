@@ -917,6 +917,76 @@ func checkBackup(r *Report, cfg *config.Config, db dbHandle, schemaOK bool) {
 	})
 }
 
+// --- 7d. CT inclusion monitoring ---------------------------------------------
+
+// checkCTInclusion surfaces the Certificate Transparency SCT inclusion monitor's
+// state (Task 93): it FAILS when any embedded SCT is in the 'failed' state — a
+// log that did not honor an SCT it issued (mis-issuance / log-misbehavior) — read
+// directly from the sct_inclusion table, and warns when the monitor is enabled
+// but silent (no scan recorded) or stalled (last scan older than three
+// intervals). The audit log supplies scan freshness; the table supplies the
+// standing pass/fail counts. Both are offline reads, so doctor works without a
+// running server or a metrics scrape.
+func checkCTInclusion(r *Report, cfg *config.Config, db dbHandle, schemaOK bool) {
+	r.run("ct.inclusion", func() (Status, string) {
+		if db == nil || !schemaOK {
+			return StatusSkip, "store unavailable or schema incomplete"
+		}
+		enabled := cfg.CertificateTransparency.InclusionMonitor.Enabled
+		counts, err := db.CountSCTInclusionByStatus()
+		if err != nil {
+			return StatusFail, fmt.Sprintf("reading SCT inclusion state: %v", err)
+		}
+		total := 0
+		for _, n := range counts {
+			total += n
+		}
+		if total == 0 {
+			if enabled {
+				return StatusWarn, "CT inclusion monitor is enabled but no SCT has been verified yet (server not started, or this replica never led?)"
+			}
+			return StatusSkip, "CT inclusion monitor disabled and no SCT inclusion state on record"
+		}
+
+		included := counts[models.SCTInclusionIncluded]
+		pending := counts[models.SCTInclusionPending]
+		failed := counts[models.SCTInclusionFailed]
+		unknown := counts[models.SCTInclusionUnknownLog]
+		summary := fmt.Sprintf("%d SCT(s): %d included, %d pending, %d failed, %d unknown-log",
+			total, included, pending, failed, unknown)
+
+		// A failed SCT is the primary signal: a log did not include a certificate
+		// it issued an SCT for.
+		if failed > 0 {
+			return StatusFail, summary + " — a CT log FAILED to honor an embedded SCT (mis-issuance / log-misbehavior); inspect `secsy-ca ct verify-inclusion`"
+		}
+
+		// Freshness of the newest scan (only meaningful while enabled).
+		events, _, err := db.ListEvents(audit.ActionCTInclusion, "", "", 1, 0)
+		if err != nil {
+			return StatusWarn, summary + fmt.Sprintf("; could not read scan freshness: %v", err)
+		}
+		if enabled {
+			if len(events) == 0 {
+				return StatusWarn, summary + "; monitor enabled but no scan recorded yet"
+			}
+			newest := events[0]
+			age := humanDuration(time.Since(newest.Timestamp))
+			if newest.Result != audit.ResultSuccess {
+				return StatusWarn, summary + fmt.Sprintf("; last scan reported an issue %s ago (%s)", age, newest.Detail)
+			}
+			if time.Since(newest.Timestamp) > 3*cfg.CertificateTransparency.InclusionMonitor.Interval() {
+				return StatusWarn, summary + fmt.Sprintf("; monitor stalled — last scan %s ago exceeds 3x the %s interval",
+					age, cfg.CertificateTransparency.InclusionMonitor.Interval())
+			}
+		}
+		if unknown > 0 {
+			return StatusWarn, summary + " — some SCTs reference logs not in the registry (configure their public keys to verify inclusion)"
+		}
+		return StatusPass, summary
+	})
+}
+
 // --- 8. clock skew ---------------------------------------------------------------
 
 // checkClockSkew sanity-checks this host's clock. Against PostgreSQL it
