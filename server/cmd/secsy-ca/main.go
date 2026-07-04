@@ -1211,6 +1211,25 @@ func buildProvider(cfg *config.Config, role string) (keyprovider.Provider, error
 			Region:    cfg.KeyProvider.KMS.Region,
 			KeyPrefix: cfg.KeyProvider.KMS.KeyPrefix,
 			VaultURL:  cfg.KeyProvider.KMS.VaultURL,
+			Vault:     vaultSettings(cfg.KeyProvider.KMS.Vault),
 		},
 	})
+}
+
+// vaultSettings maps the config's HashiCorp Vault block onto the keyprovider
+// settings type (mirrors the same helper in cmd/server).
+func vaultSettings(v config.VaultProviderConfig) keyprovider.VaultSettings {
+	return keyprovider.VaultSettings{
+		Address:     v.Address,
+		Mount:       v.Mount,
+		Namespace:   v.Namespace,
+		AuthMethod:  v.AuthMethod,
+		Token:       v.Token,
+		RoleID:      v.RoleID,
+		SecretID:    v.SecretID,
+		AppRolePath: v.AppRolePath,
+		CACertFile:  v.CACertFile,
+		Insecure:    v.Insecure,
+		Timeout:     time.Duration(v.TimeoutSeconds) * time.Second,
+	}
 }

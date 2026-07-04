@@ -128,8 +128,8 @@ root_user:
 # key_provider selects the backend used to generate and sign with CA keys.
 #   type: "pkcs11"  -> keys live on an HSM / PKCS#11 token (see the pkcs11 block)
 #   type: "software" -> keys live in an on-disk keystore (see software.keystore_dir)
-#   type: "kms"     -> keys live in a cloud KMS (AWS KMS / Azure Key Vault; see
-#                      the kms block and docs/cloud-kms.md)
+#   type: "kms"     -> keys live in a cloud KMS or HashiCorp Vault Transit (see
+#                      the kms block, docs/cloud-kms.md and docs/vault-transit.md)
 # If omitted, the type defaults to "pkcs11" when pkcs11.module_path is set, to
 # "kms" when kms.backend is set, otherwise "software". These may be overridden by
 # the SECSY_* environment variables emitted by scripts/setup-softhsm.sh --export-env.
@@ -137,14 +137,30 @@ key_provider:
   type: "pkcs11"
   software:
     keystore_dir: "keystore"
-  # Cloud KMS backend. Credentials are never taken from config — they come from
-  # the cloud SDK's default chain (AWS: env/instance role/IRSA; Azure: env/
-  # workload/managed identity). See docs/cloud-kms.md for IAM/RBAC requirements.
+  # Cloud KMS / Vault backend. Cloud credentials are never taken from config —
+  # AWS/Azure use the SDK default chain (env/instance role/IRSA; env/workload/
+  # managed identity). Vault credentials come from vault.token/VAULT_TOKEN or the
+  # AppRole pair. See docs/cloud-kms.md and docs/vault-transit.md.
   kms:
-    backend: ""            # "aws" | "azure" | "fake" (empty disables the kms backend)
+    backend: ""            # "aws" | "azure" | "vault" | "fake" (empty disables kms)
     region: ""             # AWS region, e.g. "eu-central-1" (AWS backend)
-    key_prefix: "secsy/"   # namespaces this deployment's keys (AWS alias / Azure key name)
-    vault_url: ""          # https://<vault>.vault.azure.net/ (Azure backend)
+    key_prefix: "secsy/"   # namespaces keys (AWS alias / Azure key name / Vault key name)
+    vault_url: ""          # https://<vault>.vault.azure.net/ (Azure backend; NOT HashiCorp Vault)
+    # HashiCorp Vault Transit backend (backend: vault). Signing keys and KEKs live
+    # inside Vault's Transit engine and never leave the server, mirroring the HSM
+    # non-extractability invariant. See docs/vault-transit.md.
+    vault:
+      address: ""          # https://vault.example.com:8200 (or VAULT_ADDR)
+      mount: "transit"     # Transit secrets-engine mount path
+      namespace: ""        # Vault Enterprise namespace (X-Vault-Namespace); empty for OSS
+      auth_method: "token" # "token" | "approle"
+      token: ""            # token auth; prefer VAULT_TOKEN from a Secret over config
+      role_id: ""          # approle auth
+      secret_id: ""        # approle auth; prefer SECSY_VAULT_SECRET_ID from a Secret
+      approle_path: "approle"
+      ca_cert_file: ""     # PEM bundle to verify Vault's TLS cert (private CA)
+      insecure: false      # disable Vault TLS verification (development only)
+      timeout_seconds: 30
   # Optional per-role backend selection. Each role, when set, must name a
   # configured backend type ("pkcs11" | "software" | "kms"); unset falls back to
   # key_provider.type. OCSP follows the "ca" role (the CA manager owns its keys).

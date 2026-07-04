@@ -2099,7 +2099,27 @@ func keyProviderConfigForRole(cfg *config.Config, role string) keyprovider.Confi
 			Region:    cfg.KeyProvider.KMS.Region,
 			KeyPrefix: cfg.KeyProvider.KMS.KeyPrefix,
 			VaultURL:  cfg.KeyProvider.KMS.VaultURL,
+			Vault:     vaultSettings(cfg.KeyProvider.KMS.Vault),
 		},
+	}
+}
+
+// vaultSettings maps the config's HashiCorp Vault block onto the keyprovider
+// settings type. It is shared by the server and (in cmd/secsy-ca) the CLI so both
+// wire identical Vault Transit parameters.
+func vaultSettings(v config.VaultProviderConfig) keyprovider.VaultSettings {
+	return keyprovider.VaultSettings{
+		Address:     v.Address,
+		Mount:       v.Mount,
+		Namespace:   v.Namespace,
+		AuthMethod:  v.AuthMethod,
+		Token:       v.Token,
+		RoleID:      v.RoleID,
+		SecretID:    v.SecretID,
+		AppRolePath: v.AppRolePath,
+		CACertFile:  v.CACertFile,
+		Insecure:    v.Insecure,
+		Timeout:     time.Duration(v.TimeoutSeconds) * time.Second,
 	}
 }
 

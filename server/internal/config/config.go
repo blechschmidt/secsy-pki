@@ -1815,21 +1815,62 @@ type SoftwareProviderConfig struct {
 	KeystoreDir string `yaml:"keystore_dir"`
 }
 
-// KMSProviderConfig configures the cloud-KMS backend. Backend selects the cloud
-// service ("aws" or "azure"; "fake" is an in-memory emulation used only by
-// tests). See docs/cloud-kms.md for IAM/permissions requirements.
+// KMSProviderConfig configures the cloud-KMS backend. Backend selects the service
+// ("aws", "azure", or "vault"; "fake" is an in-memory emulation used only by
+// tests). See docs/cloud-kms.md and docs/vault-transit.md for the per-backend
+// credential / permission requirements.
 type KMSProviderConfig struct {
-	// Backend is "aws", "azure", or "fake".
+	// Backend is "aws", "azure", "vault", or "fake".
 	Backend string `yaml:"backend"`
 	// Region is the AWS region (AWS backend). When empty the AWS SDK default
 	// resolution (AWS_REGION / shared config) applies.
 	Region string `yaml:"region"`
 	// KeyPrefix namespaces this deployment's keys within the account/vault. It is
-	// prepended to the key label to form the AWS alias / Azure key name.
+	// prepended to the key label to form the AWS alias / Azure key name / Vault
+	// Transit key name.
 	KeyPrefix string `yaml:"key_prefix"`
 	// VaultURL is the Azure Key Vault base URL (Azure backend), e.g.
-	// "https://my-vault.vault.azure.net/".
+	// "https://my-vault.vault.azure.net/". This is distinct from the HashiCorp
+	// Vault backend below, which is configured under the "vault" key.
 	VaultURL string `yaml:"vault_url"`
+	// Vault configures the HashiCorp Vault Transit backend (Backend == "vault").
+	Vault VaultProviderConfig `yaml:"vault"`
+}
+
+// VaultProviderConfig configures the HashiCorp Vault Transit backend. Signing
+// keys and KEKs live inside Vault's Transit engine and never leave the server,
+// mirroring the HSM non-extractability invariant. Only the Vault address, mount,
+// and auth parameters live here; the actual keys are addressed by label. See
+// docs/vault-transit.md.
+type VaultProviderConfig struct {
+	// Address is the Vault API base URL, e.g. "https://vault.example.com:8200".
+	// When empty the VAULT_ADDR environment variable is used.
+	Address string `yaml:"address"`
+	// Mount is the Transit secrets-engine mount path (default "transit").
+	Mount string `yaml:"mount"`
+	// Namespace is the Vault Enterprise namespace (X-Vault-Namespace); empty for
+	// Vault OSS / the root namespace.
+	Namespace string `yaml:"namespace"`
+	// AuthMethod is "token" (default) or "approle".
+	AuthMethod string `yaml:"auth_method"`
+	// Token is the Vault token for token auth. A credential: prefer injecting it
+	// via the VAULT_TOKEN environment variable (a Kubernetes Secret) over a config
+	// file. Ignored for AppRole auth.
+	Token string `yaml:"token"`
+	// RoleID / SecretID authenticate via the AppRole method (both required when
+	// auth_method is "approle"). The secret_id is a credential; inject it via
+	// SECSY_VAULT_SECRET_ID from a Secret rather than committing it.
+	RoleID   string `yaml:"role_id"`
+	SecretID string `yaml:"secret_id"`
+	// AppRolePath is the AppRole auth-method mount path (default "approle").
+	AppRolePath string `yaml:"approle_path"`
+	// CACertFile is an optional PEM bundle to verify Vault's TLS certificate when
+	// it is signed by a private CA.
+	CACertFile string `yaml:"ca_cert_file"`
+	// Insecure disables Vault TLS verification (development only).
+	Insecure bool `yaml:"insecure"`
+	// TimeoutSeconds bounds each Transit REST call (default 30).
+	TimeoutSeconds int `yaml:"timeout_seconds"`
 }
 
 // KeyProviderRoles overrides the backend type per signing role. Each value, when
@@ -2848,6 +2889,25 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SECSY_KMS_VAULT_URL"); v != "" {
 		cfg.KeyProvider.KMS.VaultURL = v
 	}
+	// HashiCorp Vault Transit backend. The address and namespace are non-secret;
+	// the token and AppRole secret-id are credentials and are sourced from the
+	// environment (VAULT_TOKEN and the standard names Vault tooling already sets,
+	// plus SECSY_VAULT_* for the AppRole pair) rather than a config file.
+	if v := os.Getenv("VAULT_ADDR"); v != "" {
+		cfg.KeyProvider.KMS.Vault.Address = v
+	}
+	if v := os.Getenv("VAULT_NAMESPACE"); v != "" {
+		cfg.KeyProvider.KMS.Vault.Namespace = v
+	}
+	if v := os.Getenv("VAULT_TOKEN"); v != "" {
+		cfg.KeyProvider.KMS.Vault.Token = v
+	}
+	if v := os.Getenv("SECSY_VAULT_ROLE_ID"); v != "" {
+		cfg.KeyProvider.KMS.Vault.RoleID = v
+	}
+	if v := os.Getenv("SECSY_VAULT_SECRET_ID"); v != "" {
+		cfg.KeyProvider.KMS.Vault.SecretID = v
+	}
 	if v := os.Getenv("SECSY_KEY_PROVIDER_CA"); v != "" {
 		cfg.KeyProvider.Roles.CA = v
 	}
@@ -3008,13 +3068,41 @@ func (c *Config) validateProviderType(providerType, field string) error {
 			if c.KeyProvider.KMS.VaultURL == "" {
 				return fmt.Errorf("key_provider.kms.vault_url is required for the azure kms backend")
 			}
+		case "vault":
+			if err := c.validateVaultProvider(); err != nil {
+				return err
+			}
 		case "":
-			return fmt.Errorf("key_provider.kms.backend is required for the kms provider (aws, azure, or fake)")
+			return fmt.Errorf("key_provider.kms.backend is required for the kms provider (aws, azure, vault, or fake)")
 		default:
-			return fmt.Errorf("key_provider.kms.backend %q is invalid (must be \"aws\", \"azure\", or \"fake\")", c.KeyProvider.KMS.Backend)
+			return fmt.Errorf("key_provider.kms.backend %q is invalid (must be \"aws\", \"azure\", \"vault\", or \"fake\")", c.KeyProvider.KMS.Backend)
 		}
 	default:
 		return fmt.Errorf("%s %q is invalid (must be \"pkcs11\", \"software\", or \"kms\")", field, providerType)
+	}
+	return nil
+}
+
+// validateVaultProvider checks the HashiCorp Vault Transit backend settings. The
+// address may come from VAULT_ADDR (applied before validation); credentials are
+// resolved at construction (VAULT_TOKEN / the AppRole pair), so only the shape is
+// checked here — a missing address or credential surfaces a clear error.
+func (c *Config) validateVaultProvider() error {
+	v := c.KeyProvider.KMS.Vault
+	if v.Address == "" {
+		return fmt.Errorf("key_provider.kms.vault.address is required for the vault backend (or set VAULT_ADDR)")
+	}
+	switch strings.ToLower(strings.TrimSpace(v.AuthMethod)) {
+	case "", "token":
+		if v.Token == "" {
+			return fmt.Errorf("key_provider.kms.vault.token is required for token auth (or set VAULT_TOKEN)")
+		}
+	case "approle":
+		if v.RoleID == "" || v.SecretID == "" {
+			return fmt.Errorf("key_provider.kms.vault.role_id and secret_id are required for approle auth (secret_id may come from SECSY_VAULT_SECRET_ID)")
+		}
+	default:
+		return fmt.Errorf("key_provider.kms.vault.auth_method %q is invalid (must be \"token\" or \"approle\")", v.AuthMethod)
 	}
 	return nil
 }

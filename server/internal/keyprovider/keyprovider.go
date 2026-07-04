@@ -214,9 +214,29 @@ type DecrypterProvider interface {
 	Decrypter(ctx context.Context, ref KeyRef) (Decrypter, error)
 }
 
+// KeyWrapper is an optional capability implemented by providers whose keys can
+// wrap and unwrap opaque data (a data-encryption key) with a key-encryption key
+// that never leaves the backend — a symmetric KEK. It differs from
+// DecrypterProvider: DecrypterProvider models an asymmetric RSA-OAEP KEK exposed
+// as a crypto.Decrypter, whereas KeyWrapper models a backend-native symmetric
+// wrap where the ciphertext is an opaque, backend-defined blob and only the same
+// backend key can unwrap it. The Vault Transit backend implements it via the
+// transit encrypt/decrypt endpoints. Callers type-assert a Provider to it.
+type KeyWrapper interface {
+	// WrapKey seals plaintext under the referenced KEK, returning an opaque
+	// ciphertext. The KEK must have been generated with KeyUsageDecrypt.
+	WrapKey(ctx context.Context, ref KeyRef, plaintext []byte) (ciphertext []byte, err error)
+	// UnwrapKey opens a ciphertext produced by WrapKey under the same KEK.
+	UnwrapKey(ctx context.Context, ref KeyRef, ciphertext []byte) (plaintext []byte, err error)
+}
+
 // ErrKeyNotFound is returned (wrapped) by FindKey / Signer / PublicKey when no
 // key matches the supplied reference.
 var ErrKeyNotFound = fmt.Errorf("keyprovider: key not found")
+
+// ErrWrapUnsupported is returned by KeyWrapper methods when the underlying
+// backend cannot wrap keys (every backend except Vault Transit).
+var ErrWrapUnsupported = fmt.Errorf("keyprovider: key wrapping not supported by this backend")
 
 // ErrProbeUnsupported is returned by a wrapper's Ping when the wrapped provider
 // does not implement Prober. Readiness checks treat it as "cannot probe" rather

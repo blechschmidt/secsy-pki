@@ -34,11 +34,15 @@ const (
 	// real cloud KMS does (no private-key export), so unit and integration tests
 	// exercise the KMSProvider code paths without cloud credentials.
 	KMSBackendFake = "fake"
+	// KMSBackendVault uses the HashiCorp Vault Transit secrets engine. Keys are
+	// addressed by a name derived from the label; signing, public-key export, and
+	// wrap/unwrap all go through the Transit REST API. Defined in kms_vault.go.
+	// (KMSBackendVault is declared there alongside the backend implementation.)
 )
 
 // KMSSettings configures the cloud-KMS backend.
 type KMSSettings struct {
-	// Backend selects the cloud provider: "aws", "azure", or "fake".
+	// Backend selects the provider: "aws", "azure", "vault", or "fake".
 	Backend string
 	// Region is the AWS region (e.g. "eu-central-1"). Required for the AWS
 	// backend; ignored otherwise. When empty the AWS SDK's default resolution
@@ -52,6 +56,8 @@ type KMSSettings struct {
 	// VaultURL is the Azure Key Vault base URL
 	// (e.g. "https://my-vault.vault.azure.net/"). Required for the Azure backend.
 	VaultURL string
+	// Vault configures the HashiCorp Vault Transit backend (Backend == "vault").
+	Vault VaultSettings
 }
 
 // KMSBackend is the narrow interface the KMSProvider needs from a concrete cloud
@@ -62,7 +68,7 @@ type KMSSettings struct {
 //
 // Implementations must be safe for concurrent use.
 type KMSBackend interface {
-	// BackendName identifies the concrete backend ("aws", "azure", "fake").
+	// BackendName identifies the concrete backend ("aws", "azure", "vault", "fake").
 	BackendName() string
 	// CreateKey provisions a new asymmetric signing key of the given canonical
 	// key type, addressable later by label. It fails if a key with the same label
@@ -133,12 +139,30 @@ func newKMSBackend(cfg KMSSettings) (KMSBackend, error) {
 		return newAWSKMSBackend(cfg)
 	case KMSBackendAzure:
 		return newAzureKeyVaultBackend(cfg)
+	case KMSBackendVault:
+		return newVaultTransitBackend(cfg)
 	case "":
-		return nil, fmt.Errorf("keyprovider: kms backend is required (aws, azure, or fake)")
+		return nil, fmt.Errorf("keyprovider: kms backend is required (aws, azure, vault, or fake)")
 	default:
-		return nil, fmt.Errorf("keyprovider: unknown kms backend %q (supported: %s, %s, %s)",
-			cfg.Backend, KMSBackendAWS, KMSBackendAzure, KMSBackendFake)
+		return nil, fmt.Errorf("keyprovider: unknown kms backend %q (supported: %s, %s, %s, %s)",
+			cfg.Backend, KMSBackendAWS, KMSBackendAzure, KMSBackendVault, KMSBackendFake)
 	}
+}
+
+// kmsWrapBackend is an optional capability a KMSBackend may implement when it can
+// wrap and unwrap opaque data (a data-encryption key) with a key-encryption key
+// that never leaves the backend — a symmetric KEK. Only the Vault Transit backend
+// implements it; AWS KMS and Azure Key Vault expose no such symmetric operation
+// for these roles. The KMSProvider surfaces it via the KeyWrapper interface.
+type kmsWrapBackend interface {
+	// CreateWrappingKey provisions a new symmetric KEK addressable by label. It
+	// fails if a key with the same label already exists.
+	CreateWrappingKey(ctx context.Context, label string) (*RemoteKey, error)
+	// WrapKey seals plaintext (a DEK) under the label's KEK, returning an opaque,
+	// backend-defined ciphertext blob.
+	WrapKey(ctx context.Context, label string, plaintext []byte) ([]byte, error)
+	// UnwrapKey opens a blob produced by WrapKey under the same KEK.
+	UnwrapKey(ctx context.Context, label string, ciphertext []byte) ([]byte, error)
 }
 
 func (p *KMSProvider) Name() string { return string(ProviderKMS) }
@@ -148,13 +172,29 @@ func (p *KMSProvider) Close() error { return p.backend.Close() }
 // Ping delegates to the backend's reachability probe, satisfying Prober.
 func (p *KMSProvider) Ping(ctx context.Context) error { return p.backend.Ping(ctx) }
 
-// GenerateKey provisions a new signing key in the cloud KMS. Cloud KMS backends
-// support ECDSA (P-256/384/521) and RSA (2048/4096) signing keys. Ed25519 and
-// post-quantum key types are rejected, since neither AWS KMS nor Azure Key Vault
-// offers them for the CA/TSA/OCSP signing roles this backend serves.
+// GenerateKey provisions a new key in the cloud KMS. For signing keys (the
+// default usage) cloud KMS backends support ECDSA (P-256/384/521) and RSA
+// (2048/4096); Ed25519 and post-quantum key types are rejected, since no cloud
+// KMS offers them for the CA/TSA/OCSP signing roles this backend serves. For a
+// key-encryption key (KeyUsageDecrypt) the backend must support wrapping (only
+// the Vault Transit backend does), in which case a symmetric KEK is provisioned.
 func (p *KMSProvider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInfo, error) {
 	if spec.Label == "" {
 		return nil, fmt.Errorf("keyprovider: key label is required")
+	}
+	if spec.Usage == KeyUsageDecrypt {
+		wb, ok := p.backend.(kmsWrapBackend)
+		if !ok {
+			return nil, fmt.Errorf("keyprovider: kms backend %q does not support key-encryption (KEK) keys", p.backend.BackendName())
+		}
+		rk, err := wb.CreateWrappingKey(ctx, spec.Label)
+		if err != nil {
+			return nil, err
+		}
+		return keyInfoFromRemote(rk, spec.ID)
+	}
+	if spec.Usage != "" && spec.Usage != KeyUsageSign {
+		return nil, fmt.Errorf("keyprovider: kms backend supports only sign or decrypt usage, not %q", spec.Usage)
 	}
 	keyType, err := NormalizeKeyType(spec.KeyType)
 	if err != nil {
@@ -162,9 +202,6 @@ func (p *KMSProvider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInfo, 
 	}
 	if err := fips.CheckKeyType(keyType); err != nil {
 		return nil, fmt.Errorf("keyprovider: %w", err)
-	}
-	if spec.Usage != "" && spec.Usage != KeyUsageSign {
-		return nil, fmt.Errorf("keyprovider: kms backend supports only signing keys, not usage %q", spec.Usage)
 	}
 	if err := kmsSupportsKeyType(keyType); err != nil {
 		return nil, err
@@ -174,6 +211,36 @@ func (p *KMSProvider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInfo, 
 		return nil, err
 	}
 	return keyInfoFromRemote(rk, spec.ID)
+}
+
+// WrapKey seals plaintext (a data-encryption key) under the referenced KEK,
+// returning an opaque backend ciphertext. It requires a backend that supports
+// wrapping (Vault Transit); other backends return ErrWrapUnsupported. It
+// satisfies KeyWrapper.
+func (p *KMSProvider) WrapKey(ctx context.Context, ref KeyRef, plaintext []byte) ([]byte, error) {
+	wb, ok := p.backend.(kmsWrapBackend)
+	if !ok {
+		return nil, ErrWrapUnsupported
+	}
+	label, err := ref.resolve()
+	if err != nil {
+		return nil, err
+	}
+	return wb.WrapKey(ctx, label, plaintext)
+}
+
+// UnwrapKey opens a blob produced by WrapKey under the referenced KEK. It
+// requires a wrapping-capable backend and satisfies KeyWrapper.
+func (p *KMSProvider) UnwrapKey(ctx context.Context, ref KeyRef, ciphertext []byte) ([]byte, error) {
+	wb, ok := p.backend.(kmsWrapBackend)
+	if !ok {
+		return nil, ErrWrapUnsupported
+	}
+	label, err := ref.resolve()
+	if err != nil {
+		return nil, err
+	}
+	return wb.UnwrapKey(ctx, label, ciphertext)
 }
 
 func (p *KMSProvider) FindKey(ctx context.Context, ref KeyRef) (*KeyInfo, error) {
@@ -328,8 +395,9 @@ func kmsURI(backend string, k RemoteKey) string {
 }
 
 var (
-	_ Provider  = (*KMSProvider)(nil)
-	_ Prober    = (*KMSProvider)(nil)
-	_ KeyLister = (*KMSProvider)(nil)
-	_ Signer    = (*kmsSigner)(nil)
+	_ Provider   = (*KMSProvider)(nil)
+	_ Prober     = (*KMSProvider)(nil)
+	_ KeyLister  = (*KMSProvider)(nil)
+	_ KeyWrapper = (*KMSProvider)(nil)
+	_ Signer     = (*kmsSigner)(nil)
 )

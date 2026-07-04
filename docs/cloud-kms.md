@@ -11,6 +11,11 @@ interface (`keyprovider.KMSBackend`) deliberately exposes **no operation that
 returns a private key**. This preserves the project's key non-extractability
 invariant (see [security review](security-review.md)) at the type level.
 
+> A third `kms` backend, **HashiCorp Vault Transit** (`kms.backend: vault`),
+> shares this abstraction and is documented separately in
+> [vault-transit.md](vault-transit.md). It adds wrap/unwrap (KEK) support on top
+> of signing.
+
 ## When to use it
 
 | Backend | Where keys live | Use for |
@@ -34,7 +39,7 @@ software or PKCS#11 backend for those.
 key_provider:
   type: kms                 # pkcs11 | software | kms
   kms:
-    backend: aws            # aws | azure | fake
+    backend: aws            # aws | azure | vault | fake  (vault: see vault-transit.md)
     region: eu-central-1    # AWS region (AWS backend; optional, SDK-resolved when empty)
     key_prefix: "secsy/"    # namespaces this deployment's keys within the account/vault
     vault_url: ""           # https://<vault>.vault.azure.net/ (Azure backend, required)

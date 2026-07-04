@@ -217,6 +217,87 @@ key_provider:
 	}
 }
 
+func TestKeyProviderKMSVault(t *testing.T) {
+	clearProviderEnv(t)
+	cfg := writeAndLoad(t, `
+root_user:
+  password: secret
+key_provider:
+  type: kms
+  kms:
+    backend: vault
+    key_prefix: secsy/
+    vault:
+      address: https://vault.example.com:8200
+      mount: transit
+      auth_method: approle
+      role_id: abc
+      secret_id: def
+`)
+	if cfg.KeyProvider.Type != "kms" {
+		t.Errorf("type = %q, want kms", cfg.KeyProvider.Type)
+	}
+	v := cfg.KeyProvider.KMS.Vault
+	if cfg.KeyProvider.KMS.Backend != "vault" || v.Address != "https://vault.example.com:8200" ||
+		v.AuthMethod != "approle" || v.RoleID != "abc" || v.SecretID != "def" {
+		t.Errorf("vault config = %+v (backend %q)", v, cfg.KeyProvider.KMS.Backend)
+	}
+}
+
+func TestKeyProviderKMSVaultRequiresAddress(t *testing.T) {
+	clearProviderEnv(t)
+	if _, err := loadContent(t, `
+root_user:
+  password: secret
+key_provider:
+  type: kms
+  kms:
+    backend: vault
+    vault:
+      token: s.abc
+`); err == nil {
+		t.Fatal("expected error: vault backend without address")
+	}
+}
+
+func TestKeyProviderKMSVaultTokenFromEnv(t *testing.T) {
+	clearProviderEnv(t)
+	t.Setenv("VAULT_ADDR", "https://vault.internal:8200")
+	t.Setenv("VAULT_TOKEN", "s.env-token")
+	cfg := writeAndLoad(t, `
+root_user:
+  password: secret
+key_provider:
+  type: kms
+  kms:
+    backend: vault
+`)
+	if cfg.KeyProvider.KMS.Vault.Address != "https://vault.internal:8200" {
+		t.Errorf("address = %q, want env override", cfg.KeyProvider.KMS.Vault.Address)
+	}
+	if cfg.KeyProvider.KMS.Vault.Token != "s.env-token" {
+		t.Errorf("token = %q, want env override", cfg.KeyProvider.KMS.Vault.Token)
+	}
+}
+
+func TestKeyProviderKMSVaultApproleRequiresSecret(t *testing.T) {
+	clearProviderEnv(t)
+	if _, err := loadContent(t, `
+root_user:
+  password: secret
+key_provider:
+  type: kms
+  kms:
+    backend: vault
+    vault:
+      address: https://vault:8200
+      auth_method: approle
+      role_id: only-role
+`); err == nil {
+		t.Fatal("expected error: approle auth without secret_id")
+	}
+}
+
 func TestKeyProviderPerRoleSelection(t *testing.T) {
 	clearProviderEnv(t)
 	cfg := writeAndLoad(t, `
@@ -289,6 +370,8 @@ func clearProviderEnv(t *testing.T) {
 		"SECSY_USER_PIN", "SECSY_SOFTWARE_KEYSTORE_DIR",
 		"SECSY_KMS_BACKEND", "SECSY_KMS_REGION", "SECSY_KMS_KEY_PREFIX",
 		"SECSY_KMS_VAULT_URL", "SECSY_KEY_PROVIDER_CA", "SECSY_KEY_PROVIDER_TSA",
+		"VAULT_ADDR", "VAULT_TOKEN", "VAULT_NAMESPACE",
+		"SECSY_VAULT_ROLE_ID", "SECSY_VAULT_SECRET_ID",
 	} {
 		t.Setenv(k, "")
 	}

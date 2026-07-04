@@ -18,10 +18,14 @@ import (
 // decryption (DecrypterProvider), the wrapper does too — so envelope decryption
 // continues to work through the same type assertion callers already use.
 //
-// Metric operation labels: generate, find, signer, public_key, sign, decrypt.
-// "signer"/"sign" are distinct because obtaining a Signer (which may open a
-// PKCS#11 session and locate the key) and performing the actual C_Sign are
-// separately interesting latencies on an HSM.
+// Metric operation labels: generate, find, signer, public_key, sign, decrypt,
+// wrap, unwrap. "signer"/"sign" are distinct because obtaining a Signer (which
+// may open a PKCS#11 session and locate the key) and performing the actual
+// C_Sign are separately interesting latencies on an HSM.
+//
+// DecrypterProvider (software/pkcs11, RSA-OAEP KEK) and KeyWrapper (Vault
+// Transit, symmetric KEK) are mutually exclusive in practice — no provider
+// implements both — so the wrapper selects at most one capability extension.
 func Instrument(p Provider) Provider {
 	if p == nil {
 		return nil
@@ -29,6 +33,9 @@ func Instrument(p Provider) Provider {
 	ip := &instrumentedProvider{Provider: p}
 	if _, ok := p.(DecrypterProvider); ok {
 		return &instrumentedDecrypterProvider{instrumentedProvider: ip}
+	}
+	if _, ok := p.(KeyWrapper); ok {
+		return &instrumentedKeyWrapperProvider{instrumentedProvider: ip}
 	}
 	return ip
 }
@@ -191,6 +198,41 @@ func (d *instrumentedDecrypter) Decrypt(rand io.Reader, msg []byte, opts crypto.
 	start := time.Now()
 	pt, err := d.Decrypter.Decrypt(rand, msg, opts)
 	metrics.ObserveHSM("decrypt", start, err)
+	tracing.RecordError(ctx, err)
+	return pt, err
+}
+
+// instrumentedKeyWrapperProvider adds the KeyWrapper capability to the
+// instrumented wrapper, timing the wrap/unwrap operations (the Vault Transit
+// encrypt/decrypt round-trips) under the "wrap"/"unwrap" operation labels.
+type instrumentedKeyWrapperProvider struct {
+	*instrumentedProvider
+}
+
+func (p *instrumentedKeyWrapperProvider) WrapKey(ctx context.Context, ref KeyRef, plaintext []byte) ([]byte, error) {
+	kw := p.Provider.(KeyWrapper)
+	ctx, span := tracing.Start(ctx, "hsm.wrap",
+		attribute.String("hsm.operation", "wrap"),
+		attribute.String("hsm.key.label", ref.Label),
+		attribute.String("hsm.provider", p.Name()))
+	defer span.End()
+	start := time.Now()
+	ct, err := kw.WrapKey(ctx, ref, plaintext)
+	metrics.ObserveHSM("wrap", start, err)
+	tracing.RecordError(ctx, err)
+	return ct, err
+}
+
+func (p *instrumentedKeyWrapperProvider) UnwrapKey(ctx context.Context, ref KeyRef, ciphertext []byte) ([]byte, error) {
+	kw := p.Provider.(KeyWrapper)
+	ctx, span := tracing.Start(ctx, "hsm.unwrap",
+		attribute.String("hsm.operation", "unwrap"),
+		attribute.String("hsm.key.label", ref.Label),
+		attribute.String("hsm.provider", p.Name()))
+	defer span.End()
+	start := time.Now()
+	pt, err := kw.UnwrapKey(ctx, ref, ciphertext)
+	metrics.ObserveHSM("unwrap", start, err)
 	tracing.RecordError(ctx, err)
 	return pt, err
 }

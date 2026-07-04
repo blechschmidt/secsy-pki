@@ -26,12 +26,14 @@ key_provider:
 |------------|-----------------|---------|
 | `pkcs11`   | An HSM / PKCS#11 token (YubiHSM, SoftHSM, network HSM) | Production, staging, HSM tests |
 | `software` | On-disk PKCS#8 keystore under `keystore_dir` | Local development without any HSM |
-| `kms`      | AWS KMS or Azure Key Vault | Cloud deployments without a dedicated HSM — see [Cloud KMS backend](cloud-kms.md) |
+| `kms`      | AWS KMS, Azure Key Vault, or HashiCorp Vault Transit | Cloud/enterprise deployments without a dedicated HSM — see [Cloud KMS backend](cloud-kms.md) and [Vault Transit backend](vault-transit.md) |
 
 If `type` is omitted it defaults to `pkcs11` when `pkcs11.module_path` is set,
 to `kms` when `key_provider.kms.backend` is set, and to `software` otherwise. The
 `kms` backend and per-role backend selection are documented in
-[Cloud KMS backend (AWS KMS / Azure Key Vault)](cloud-kms.md).
+[Cloud KMS backend (AWS KMS / Azure Key Vault)](cloud-kms.md); the HashiCorp
+Vault Transit variant (`kms.backend: vault`, with wrap/unwrap KEK support) is in
+[Vault Transit backend](vault-transit.md).
 
 **In both backends, private keys are never exported.** The software provider
 generates keys on disk and signs with them in-process; the PKCS#11 provider
