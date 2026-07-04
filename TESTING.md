@@ -209,6 +209,32 @@ access to fetch a pinned `acme.sh`. Coverage: ACME http-01 / tls-alpn-01 / dns-0
 the RFC 3161 TSA. The suite records the client tool versions it used and exits
 non-zero on any conformance failure.
 
+## Static analysis (lint & vet)
+
+An **HSM-free static-analysis gate** runs `go vet` and
+[`golangci-lint`](https://golangci-lint.run/) over the server module. Run it
+locally with the same targets CI uses:
+
+```bash
+make vet     # go vet -tags sqlite ./...
+make lint    # golangci-lint run  (config: server/.golangci.yml)
+make lint-fix  # golangci-lint run --fix — gofmt/goimports + safe autofixes
+```
+
+Both build with the `sqlite` tag so the SQLite persistence driver and everything
+that depends on it type-check without an HSM present, and neither touches a
+token — the gate is pure source analysis. `golangci-lint` is **version-pinned**
+(`GOLANGCI_LINT_VERSION` in the root `Makefile`); if it is not already on `PATH`
+the pinned version runs via `go run`, so `make lint` and CI can never drift. The
+enabled linters and per-rule exclusions live in
+[`server/.golangci.yml`](server/.golangci.yml); triaged suppressions carry an
+inline `//nolint:<linter> // <reason>` explaining why.
+
+In CI this is the **Static analysis** job in
+`.github/workflows/enterprise-ci.yaml` — a required, no-HSM gate that runs
+`make vet` then `make lint`. Keep the workflow's `GOLANGCI_LINT_VERSION` in
+lockstep with the Makefile.
+
 ## CI
 
 The GitHub Actions workflow (`.github/workflows/test.yaml`) installs

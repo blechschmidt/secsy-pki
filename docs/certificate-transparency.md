@@ -158,6 +158,77 @@ To point at a real test log instead, register it under
 `certificate_transparency.logs` with its public key and reference it from a
 profile.
 
+## Inclusion-proof monitoring (post-issuance)
+
+An SCT is only a **promise**: the log signs "I will merge this certificate into
+my Merkle tree within my Maximum Merge Delay (MMD)". A misbehaving or compromised
+log can hand out an SCT and then never include the certificate. Embedding SCTs
+proves the promise was made; it does not prove the promise was kept.
+
+The optional **inclusion monitor** (a leader-elected background job, so it runs
+once across a multi-replica deployment) closes that gap. Once a certificate's SCT
+is older than the log's MMD, the monitor:
+
+1. fetches the log's **signed tree head** (`get-sth`) and verifies its signature
+   against the configured log public key;
+2. requests a **Merkle audit path** (`get-proof-by-hash`) for the certificate's
+   leaf hash and verifies the inclusion proof reconstructs the signed tree-head
+   root;
+3. records the per-SCT outcome (`included` / `pending` / `failed` / `unknown_log`)
+   in the `sct_inclusion` table;
+4. **alerts on any SCT a log failed to honor** — a missing inclusion proof past
+   MMD is treated as log misbehavior / possible mis-issuance and raised on the
+   monitor's notification sinks (log/webhook) with a `secsy_ct_inclusion_failed`
+   metric and a `ct.inclusion` doctor finding.
+
+### Enabling it
+
+The monitor requires each watched log to have a **public key** (it must verify
+the signed tree head) and reuses the same `certificate_transparency.logs`
+registry. Add an `mmd_hours` to each log (the deadline it advertises; default 24)
+and an `inclusion_monitor` block:
+
+```yaml
+certificate_transparency:
+  logs:
+    - name: prod-log
+      url: "https://ct.googleapis.com/logs/us1/argon2025h1"
+      public_key_file: /etc/secsy-pki/ct/argon2025h1.pem   # REQUIRED for monitoring
+      mmd_hours: 24            # log's Maximum Merge Delay; misbehavior is only
+                              # flagged once an SCT is older than this
+  inclusion_monitor:
+    enabled: true
+    interval_minutes: 60      # scan cadence (default 60); runs once on leadership gain
+    max_certs_per_run: 500    # oldest-unresolved certs processed per scan (default 500)
+    timeout_seconds: 15       # per get-sth / get-proof-by-hash request (default 15)
+```
+
+Enabling the monitor with no configured logs, or with a log missing a public
+key, is rejected at startup.
+
+### Observing inclusion
+
+- **CLI.** `secsy-ca ct inclusion-status` lists the recorded state (filter with
+  `-status included|pending|failed|unknown_log`, `-ca`/`-serial`, `-limit`,
+  `-json`). `secsy-ca ct verify-inclusion` triggers an on-demand scan now
+  (`-max`, `-json`) instead of waiting for the background loop — useful after
+  issuing a batch or when investigating an alert.
+- **API / console.** `GET /api/ct/inclusion` returns the state with per-status
+  counts; the console **CT** page renders it as a filterable table (status badge,
+  log name, tree size, leaf index), with `failed` rows highlighted.
+- **Doctor.** `secsy-ca doctor` runs a `ct.inclusion` check: `FAIL` if any SCT is
+  in the `failed` state (a log broke its MMD promise), `WARN` if the monitor is
+  enabled but has verified nothing yet.
+- **Metrics.** `secsy_ct_inclusion_checks_total{result}`,
+  `secsy_ct_inclusion_pending`, `secsy_ct_inclusion_failed`,
+  `secsy_ct_inclusion_monitor_runs_total{result}`, and
+  `secsy_ct_inclusion_monitor_staleness_seconds`. Alert on
+  `secsy_ct_inclusion_failed > 0` (log misbehavior) and on rising staleness (the
+  monitor stopped running — check leader election).
+
+The operator response to a firing inclusion alert is in the
+[runbook](RUNBOOK.md#ct-inclusion-monitoring-log-misbehavior).
+
 ## Notes & limitations
 
 - CT applies to the X.509 leaf issuance path (`/api/ca/{id}/issue`, `/renew`,

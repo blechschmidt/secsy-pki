@@ -13,8 +13,15 @@ The **enterprise edition** (this branch) extends the base CA into a full HSM-bac
 - **Revocation services** — signed CRLs (RFC 5280 CRL numbers) and a public OCSP responder.
 - **HSM-backed secret encryption** — envelope-encrypt passwords and small secrets under an RSA KEK whose private half stays on the HSM.
 - **RBAC** — organization-wide roles (`admin`, `issuer`, `auditor`) layered over the existing per-CA permission matrix.
-- **Tamper-evident audit log** — an append-only, hash-chained event log recording who did what, when, and with what result — including denied attempts.
+- **Tamper-evident audit log** — an append-only, hash-chained event log recording who did what, when, and with what result — including denied attempts, with RFC 3161 anchoring and SIEM export.
 - **Centralized configuration** — RBAC assignments, issuance policy guardrails, and custom certificate profiles in one YAML file.
+- **Automated enrollment** — ACME (RFC 8555, with ARI, client-selectable Profiles, http-01/dns-01/tls-alpn-01, EAB), SCEP, EST, CMP (RFC 9483), and BRSKI (RFC 8995) zero-touch onboarding, plus a host auto-enrollment agent.
+- **SSH certificate authority** — HSM-backed OpenSSH user/host certificates with KRL revocation, and DANE TLSA / SSHFP DNS pinning-record generation.
+- **Governance & strong auth** — four-eyes/maker-checker approvals for sensitive operations, OIDC SSO + mTLS + WebAuthn step-up, native scoped API tokens/service accounts, and multi-tenant isolation with per-tenant quotas.
+- **Assurance & compliance** — pre-issuance CA/B-Forum linting (hand-rolled + optional zlint), Certificate Transparency (SCT embedding + inclusion-proof monitoring), CAA (RFC 8659/8657), Name Constraints & certificate policies, FIPS 140-3 build mode, and PQC/hybrid (ML-DSA) certificates.
+- **Operations** — Prometheus metrics + Grafana/alerts, OpenTelemetry tracing, expiry monitoring + auto-renewal, an issuance canary, external certificate discovery, scheduled encrypted backups with restore-verification, and leader-elected background jobs for multi-replica HA.
+
+See the [architecture overview](ARCHITECTURE.md) and the full guide index in [`docs/`](docs/README.md) for everything below.
 
 ### Enterprise documentation
 
@@ -33,6 +40,10 @@ Comprehensive deployment and operations guides live in [`docs/`](docs/README.md)
 | [Host auto-enrollment agent](docs/agent.md) | `secsy-agent`: client-side EST/ACME renewal daemon with atomic installs and reload hooks |
 | [Password / secret encryption](docs/password-encryption.md) | HSM-backed envelope encryption |
 | [RBAC, audit logging & config](docs/rbac-and-audit.md) | Roles, event log, centralized policy |
+| [Operator authentication](docs/authentication.md) | OIDC SSO + mTLS + WebAuthn step-up, and native scoped API tokens / service accounts |
+| [Four-eyes / maker-checker approvals](docs/approvals.md) | Dual-control gate for CA lifecycle, bulk revoke, KEK rotation, and per-profile issuance |
+| [DANE TLSA & SSHFP DNS records](docs/dns-records.md) | Zone-file pinning records for TLS services and SSH hosts the PKI issues |
+| [Scheduled backups & restore verification](docs/backup.md) | Leader-elected encrypted DR backups with an automated restore-verification drill |
 | [Observability](docs/observability.md) | Prometheus `/metrics`, health/readiness probes, structured logs |
 | [Rate limiting & abuse protection](docs/rate-limiting.md) | Tiered rate limits + HSM concurrency guard for public ACME/OCSP/CRL/SCEP/EST endpoints |
 | [Kubernetes deployment](docs/kubernetes.md) | Container image, Helm chart, cert-manager ACME issuer, kind/SoftHSM smoke test |

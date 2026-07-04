@@ -15,6 +15,7 @@ supersedes the old one rather than editing history.
 | [0003](0003-fail-closed-security-gates.md) | Pre-issuance and transport gates fail closed | Accepted |
 | [0004](0004-dual-chain-rotation-overlap.md) | Intermediate-CA rotation via dual-chain overlap | Accepted |
 | [0005](0005-pqc-hybrid-algorithm-choice.md) | ML-DSA (FIPS 204) for post-quantum and catalyst-hybrid certs | Accepted |
+| [0006](0006-four-eyes-approval-gate.md) | Four-eyes (maker-checker) approval for sensitive operations | Accepted |
 
 ## Related documentation
 

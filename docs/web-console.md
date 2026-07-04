@@ -14,20 +14,25 @@ SSO, or stateless basic auth/bearer tokens for scripting parity.
 
 | Page | What it covers | Backing endpoints |
 |---|---|---|
-| **Certificates** | Browse a CA's issued certificates as a **paged, filtered table** (search over subject/CN/SAN, status and profile filters, server-side keyset pagination with a **Load more** action), revoke (RFC 5280 reason picker), **renew** with a fresh serial, download base/delta CRLs and per-shard partition CRLs, CRL freshness strip, and the **bulk revocation (incident response)** panel — filters (profile / CN-SAN glob / issuance window / serial list), dry-run preview, mandatory typed confirmation of the previewed count, result summary (see [incident-response.md](incident-response.md)) | `/api/ca/{id}/certificates`, `/revoked`, `/renew`, `/revoke`, `/revocations:bulk`, `/crl[...]`, `/crl/status` |
+| **Certificates** | Browse a CA's issued certificates as a **paged, filtered table** (search over subject/CN/SAN, status and profile filters incl. **held**, server-side keyset pagination with a **Load more** action), revoke (RFC 5280 reason picker), **suspend** (reversible `certificateHold`) and **release** a held certificate, **renew** with a fresh serial, download base/delta CRLs and per-shard partition CRLs, CRL freshness strip, and the **bulk revocation (incident response)** panel — filters (profile / CN-SAN glob / issuance window / serial list), dry-run preview, mandatory typed confirmation of the previewed count, result summary (see [incident-response.md](incident-response.md)) | `/api/ca/{id}/certificates`, `/revoked`, `/renew`, `/revoke`, `/certificates/{serial}:suspend`, `:release`, `/revocations:bulk`, `/crl[...]`, `/crl/status` |
 | **Inventory** | Cross-CA certificate inventory with search/status/profile filters, CT and lint verdicts, CSV export | `/api/report/inventory` |
 | **Expiry Monitor** | Certificates ranked by remaining validity; on-demand scan with auto-renewal | `/api/monitor/expiring`, `/api/monitor/scan` |
 | **Discovery** | External TLS endpoint scanning; flags expiring/weak/SHA-1/self-signed/mismatched/rogue certificates; **paged, searchable** stored-inventory table with a **Load more** action | `/api/discovery`, `/api/discovery/scan` |
+| **CT Inclusion** | Certificate Transparency SCT **inclusion-proof** state recorded by the [inclusion monitor](certificate-transparency.md#inclusion-proof-monitoring-post-issuance): status badges (included / pending / failed / unknown-log), log name, tree size and leaf index, filterable by status; `failed` rows flag a log that broke its merge promise | `/api/ct/inclusion` |
 | **Issue** | Sign a PKCS#10 CSR under a profile (with the selected profile's policy summary) | `/api/ca/{id}/issue`, `/api/profiles` |
 | **PKCS#12** | Server-side keygen + issue + download a password-protected `.p12` (key + leaf + full chain) for S/MIME / device enrollment; subject/SANs, key type, encoder, and optional M-of-N escrow of the subject key | `/api/ca/{id}/pkcs12`, `/api/profiles` |
 | **Authorities** | CA hierarchy table with rollover state; **create root**, **issue intermediate**, **external subordinate CA** (generate HSM key + PKCS#10 CSR for an offline/third-party parent, download/re-download the CSR, import the signed certificate + external chain with validation warnings), **rotate** an intermediate's signing key (dual-chain overlap), **retire** a drained superseded key, **cross-sign** (local CA or external cert/CSR) with alternate-chain downloads, and the **HSM key inventory** (non-extractability verdict, admin-only) | `/api/ca/init-root`, `/api/ca/{id}/issue-intermediate`, `/api/ca/csr`, `/api/ca/{id}/csr`, `/api/ca/{id}/import-cert`, `/api/rotations`, `/api/ca/{id}/rotation`, `/rotate`, `/retire`, `/cross-signs`, `/api/inventory/keys` |
 | **SSH CA** | Create SSH CAs, sign user/host public keys under profiles, browse/revoke signed certificates, download the CA public key and the KRL | `/api/ssh/cas[...]`, `/api/ssh/profiles` |
 | **Signing** | Artifact code-signing: configured signer list, detached CMS signature over an uploaded file or a digest (optionally RFC 3161 countersigned), and signature verification against the PKI's anchors | `/api/sign`, `/api/sign/verify`, `/api/sign/signers` |
+| **ACME** | The [ACME server](acme.md) at a glance: the offered challenge types (http-01 / dns-01 / tls-alpn-01), and browse of ACME accounts and orders | `/api/acme/accounts`, `/api/acme/orders` |
 | **Audit** | The tamper-evident event log with action/actor filters and paging, hash-chain verification, and SIEM exports (NDJSON, CEF, RFC 5424 syslog) | `/api/events`, `/api/events/verify`, `/api/events/export` |
+| **Approvals** | The [four-eyes / maker-checker](approvals.md) queue: pending sensitive operations (CA create/rotate/retire, bulk revoke, KEK rotation, token create) and the per-profile manual **issuance** gate; **approve**/**reject** with a distinct approver, and **fetch the issued certificate** once an issuance approval clears | `/api/approvals`, `/api/approvals/{id}/approve`, `/reject`, `/certificate` |
 | **Compliance** | CA/B-Forum conformance evidence (lint split, blocked issuance, audit-chain status) plus an **ad-hoc lint** panel for any pasted certificate | `/api/report/compliance`, `/api/lint` |
 | **Trust Bundle** | Issuer chain (AIA bundle, key-rollover aware), SPIFFE trust bundle (JWKS), and **X.509-SVID minting** when SPIFFE issuance is enabled | `/api/ca/{id}/chain`, `/svid/bundle`, `/svid` |
+| **DNS Records** | Generate [DANE TLSA and SSHFP](dns-records.md) pinning records in zone-file format for material this PKI issues: a TLSA panel (CA + host/port, optional leaf serial) and an SSHFP panel (SSH CA + serial, or a pasted host public key) | `/api/ca/{id}/dns-records/tlsa`, `/api/ssh/cas/{id}/dns-records/sshfp` |
 | **Secrets** | HSM-backed envelope encryption/decryption, KEK metadata, and — when configured — M-of-N **escrow on encrypt** with the policy shape displayed | `/api/secret/info`, `/encrypt`, `/decrypt` |
 | **Tenants** | Tenant lifecycle (create/suspend/reactivate), per-tenant quotas, and usage reports (platform-admin only) | `/api/tenants[...]` |
+| **API Tokens** | Native scoped [API tokens / service accounts](authentication.md#4-native-scoped-api-tokens-service-accounts): create a `secsy_pat_` token (name, roles, tenant/platform scope, expiry) with the secret shown **once**, list tokens with status, and revoke | `/api/tokens`, `/api/tokens/{id}` |
 
 ## CLI ↔ console parity
 
@@ -38,8 +43,13 @@ CLIs expose reachable from the console as well. The mapping:
 |---|---|
 | `init-root`, `issue-intermediate`, `list` | Authorities page |
 | `issue`, `renew`, `revoke`, `revoke-bulk`, `gen-crl` (incl. delta/shards) | Issue + Certificates pages (bulk revocation panel with dry-run count confirmation) |
+| `suspend`, `release` (reversible `certificateHold`) | Certificates page (Suspend / Release actions; **held** status filter) |
 | `export-p12` | PKCS#12 page |
-| `list-certs`, `expiring`, `monitor-run`, `profiles` | Certificates, Inventory, Expiry Monitor, Issue pages |
+| `list-certs` (incl. `-status`/`-profile`/`-q` filters + keyset paging), `expiring`, `monitor-run`, `profiles` | Certificates, Inventory, Expiry Monitor, Issue pages |
+| `approvals list/approve/reject/certificate` | Approvals page (queue, approve/reject, fetch issued cert) |
+| `token create/list/revoke` | API Tokens page |
+| `ct inclusion-status` (read) / `ct verify-inclusion` (on-demand scan, CLI-only) | CT Inclusion page (status table) |
+| `dns-records tlsa`, `dns-records sshfp` | DNS Records page |
 | `rotate-intermediate`, `rotation-status`, `list-rotations`, `retire-intermediate`, `publish-chain` | Authorities page (rotate/retire actions, status badges) + Trust Bundle chain download |
 | `cross-sign`, `list-cross-signs` | Authorities page (cross-signing panels) |
 | `ca csr`, `ca import-cert` | Authorities page (external subordinate CA panel; CSR / Import cert actions on pending rows) |

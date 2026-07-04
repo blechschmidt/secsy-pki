@@ -18,13 +18,16 @@ The design decisions behind these procedures are recorded in
 3. [Endpoint troubleshooting (ACME / SCEP / EST / TSA / CMP)](#endpoint-troubleshooting)
 4. [Rate-limit and HSM-concurrency tuning](#rate-limit-and-hsm-concurrency-tuning)
 5. [CT log outage](#ct-log-outage)
-6. [CA key rotation and retirement](#ca-key-rotation-and-retirement)
-7. [Disaster-recovery drill](#disaster-recovery-drill)
-8. [Observability: dashboards & alerts](#observability-dashboards--alerts)
-9. [Audit-chain anchoring](#audit-chain-anchoring)
-10. [Supply-chain / image verification failure](#supply-chain--image-verification-failure)
-11. [Preflight diagnostics (`secsy-ca doctor`)](#preflight-diagnostics-secsy-ca-doctor)
-12. [First-response quick reference](#first-response-quick-reference)
+6. [CT inclusion monitoring (log misbehavior)](#ct-inclusion-monitoring-log-misbehavior)
+7. [CA key rotation and retirement](#ca-key-rotation-and-retirement)
+8. [Governance: approvals, suspend/hold & API tokens](#governance-approvals-suspendhold--api-tokens)
+9. [Disaster-recovery drill](#disaster-recovery-drill)
+10. [Scheduled backups & restore verification](#scheduled-backups--restore-verification)
+11. [Observability: dashboards & alerts](#observability-dashboards--alerts)
+12. [Audit-chain anchoring](#audit-chain-anchoring)
+13. [Supply-chain / image verification failure](#supply-chain--image-verification-failure)
+14. [Preflight diagnostics (`secsy-ca doctor`)](#preflight-diagnostics-secsy-ca-doctor)
+15. [First-response quick reference](#first-response-quick-reference)
 
 ---
 
@@ -405,6 +408,51 @@ profiles:
 
 ---
 
+## CT inclusion monitoring (log misbehavior)
+
+The [inclusion monitor](certificate-transparency.md#inclusion-proof-monitoring-post-issuance)
+verifies that CT logs actually **merged** the certificates they issued SCTs for.
+A firing `secsy_ct_inclusion_failed > 0` (or the `ct.inclusion` doctor check
+going `FAIL`, or a webhook alert from the monitor's notification sink) means a
+log handed out an SCT and then failed to include the certificate before its
+Maximum Merge Delay — a serious signal: either the log is misbehaving/compromised,
+or a certificate is being mis-attributed.
+
+### Triage
+
+```bash
+# List the failed SCTs — which certificate, which log:
+secsy-ca -config config.yaml ct inclusion-status -status failed -json
+
+# Re-run the check now (don't wait for the hourly loop) to rule out a transient
+# log/network blip before declaring misbehavior:
+secsy-ca -config config.yaml ct verify-inclusion -json
+```
+
+1. **Confirm it is not transient.** A single failing scan can be a log outage or
+   a slow merge that is still within a generous MMD. Re-run `verify-inclusion`;
+   if the SCT is only *just* past MMD, give the log one more interval. A
+   persistent failure well past MMD is real misbehavior.
+2. **Identify scope.** Is it one log across many certificates (log-wide problem —
+   the log is down, purged, or violating its MMD) or one certificate across its
+   logs (that specific submission was never merged)? `inclusion-status` shows the
+   log name and leaf index per row.
+3. **Respond to a misbehaving log.** Stop relying on it: remove or replace it in
+   `certificate_transparency.logs` and in any profile's `ct.logs` list, so future
+   issuance targets healthy logs and `min_scts` is met without it. If the log is
+   formally distrusted by browsers, re-issue affected public-TLS leaves so they
+   carry SCTs from currently-trusted logs (browsers will stop accepting the old
+   SCTs). Use [renewal](#ca-key-rotation-and-retirement)/re-issuance, not
+   revocation, unless the certificate itself is suspect.
+4. **Respond to an unexpected certificate.** If a `failed` (or any) inclusion row
+   names a certificate you did not expect to exist, treat it as a possible
+   mis-issuance and pivot to [CA-key compromise](#suspected-ca-key-compromise):
+   walk the audit chain (`secsy-ca audit verify`) and the HSM bijection proof.
+
+The monitor is **leader-elected**; if `secsy_ct_inclusion_monitor_staleness_seconds`
+is climbing, the loop stopped running — check leader election
+([high availability](high-availability.md)), not the logs.
+
 ## CA key rotation and retirement
 
 The normal (non-compromise) rollover of an **intermediate** signing key uses a
@@ -462,6 +510,75 @@ premature-retirement refusal. Keep the workspace for inspection with
 `ROT_KEEP=1 ./scripts/rotation-drill.sh`.
 
 ---
+
+## Governance: approvals, suspend/hold & API tokens
+
+Day-2 handling of the maker-checker, reversible-hold, and machine-credential
+controls.
+
+### Four-eyes approvals (stuck or blocking queue)
+
+Sensitive operations — CA create/rotate/retire, bulk revocation, KEK rotation,
+API-token create, and per-profile manual issuance — can be gated behind a
+[four-eyes approval](approvals.md): the *maker* submits (the operation parks with
+`202` + an approval id) and a **distinct** *approver* must clear it. If operators
+report an action "hanging", it is almost always parked, not failed.
+
+```bash
+secsy-ca -config config.yaml approvals list -state pending        # what is waiting
+secsy-ca -config config.yaml approvals approve -id <approval-id>   # as a different operator
+secsy-ca -config config.yaml approvals reject  -id <approval-id> -reason "…"
+```
+
+- **Self-approval is refused.** The approver must be a different principal than
+  the maker; a lone operator cannot both request and approve. In a genuine
+  break-glass with only one operator, an admin can lower the class's required
+  approver count in config and restart — record the exception.
+- **A parked issuance** returns its certificate only *after* approval: the client
+  polls `GET /api/approvals/{id}/certificate` (or the console Approvals page
+  "Certificate" button). ACME/EST/SCEP/CMP enrollment **bypass** the gate by
+  design — automated protocols cannot block on a human — so a stuck queue never
+  affects them.
+- Approvals are audited (`*.pending` / `*.approved` / `*.rejected`); read them to
+  see who requested and who cleared each action.
+
+### Suspend / hold & release (reversible revocation)
+
+A **hold** takes a certificate out of service *reversibly* (RFC 5280
+`certificateHold`) — for a lost-but-recoverable device, a policy review, or a
+suspected-unconfirmed compromise — without burning the serial:
+
+```bash
+secsy-ca -config config.yaml suspend -ca <ca> -serial <serial>   # OCSP → revoked(certificateHold), on CRL
+secsy-ca -config config.yaml release -ca <ca> -serial <serial>   # OCSP → good, removed via delta (removeFromCRL)
+```
+
+Prefer a hold over a permanent revoke when the outcome is uncertain — release is
+instant, whereas a `keyCompromise` revoke is final. **Escalation:** if a hold is
+later confirmed as compromise, revoke it properly (`revoke … -reason
+keyCompromise`) — do **not** just leave it held. Release publishes a
+`removeFromCRL` (reason 8) entry on the **delta** CRL, so relying parties that
+consume deltas see the un-revocation; ensure delta CRLs are served
+([OCSP/CRL outage](#ocsp--crl-outage)). Held certificates show under the `held`
+status filter in `list-certs`/the console Certificates page.
+
+### API tokens / service accounts
+
+Native `secsy_pat_` tokens ([authentication](authentication.md#4-native-scoped-api-tokens-service-accounts))
+are machine credentials, hashed at rest. On suspected leak of a token, revoke it
+immediately — revocation is instant and needs no restart:
+
+```bash
+secsy-ca -config config.yaml token list                     # find the id / see scope & expiry
+secsy-ca -config config.yaml token revoke -id <token-id>     # kill it now
+secsy-ca -config config.yaml token create -name ci -roles issuer -expires-days 90   # mint a replacement
+```
+
+The secret is shown **once** at creation (store it in the consuming system's
+secret manager, never in the repo). Scope every token to the least role/tenant it
+needs; a leaked `issuer` token can request certificates until revoked, so short
+`-expires-days` limits the blast radius. Token *creation* can itself be
+four-eyes-gated (above). Rotate on a schedule and on staff changes.
 
 ## Disaster-recovery drill
 
@@ -609,6 +726,36 @@ that would break a restore are caught before release, not during an incident.
    issuance stop.
 
 ---
+
+## Scheduled backups & restore verification
+
+The [scheduled-backup job](backup.md) is a leader-elected loop that periodically
+produces the DR artifact (logical DB dump + config + public CA material + audit
+head fingerprint), envelope-encrypts it under the secret KEK, and writes it to a
+directory/S3 destination with keep-N/max-age retention. The
+[restore-verification drill](backup.md#restore-verification-an-untested-backup-is-not-a-backup) closes the loop by
+periodically proving the newest artifact actually restores and passes the
+integrity gate — *an untested backup is not a backup.*
+
+Three alerts cover this pipeline (all routed to
+[observability alert response](#observability-alert-response)):
+
+| Alert | Metric | Meaning & action |
+|-------|--------|------------------|
+| `SecsyPKIBackupStale` | `secsy_backup_staleness_seconds` high | No fresh backup in ~2 days. Check the leader is elected (the job is leader-gated), the destination (dir writable / S3 creds), and the KEK (`backup.kek_label` / `secret.kek_label`) is provisioned. Force one: it runs on the next leader tick, or take a manual `secsy-ca backup -out …`. |
+| `SecsyPKIBackupRestoreVerificationFailing` | `secsy_backup_verify_total{result="error"}` > 0 | A backup **failed to restore** — the DR artifact may be corrupt or the schema drifted. Treat as a DR-readiness incident: run `secsy-ca backup verify-restore` by hand to see the failure, and do not trust the untested artifact. |
+| `SecsyPKIBackupRestoreVerificationStale` | `secsy_backup_restore_verified_staleness_seconds` high | Verification stopped running (leader/`backup.verify` disabled, or PostgreSQL scratch-DB perms missing — the PG path needs `pg_restore`/`psql` and CREATE/DROP). |
+
+On-demand verification (always available, no schedule needed):
+
+```bash
+secsy-ca -config config.yaml backup verify-restore          # pull newest → decrypt → restore to scratch DB → db verify
+```
+
+It restores into an **isolated scratch database** (a SQLite temp file, or a
+throwaway PostgreSQL database that is always dropped), so it never touches the
+live store. The doctor `backup.freshness` and `backup.restore-verified` checks
+surface the same state at preflight time.
 
 ## Observability: dashboards & alerts
 
@@ -948,6 +1095,11 @@ exit 1), or age a persisted CRL and expect `crl.freshness` WARN, exit 2.
 | Clients getting `503` | Raise `rate_limit.concurrency.max_in_flight` + `pkcs11.session_pool_size` |
 | OCSP overloading HSM | Raise `server.ocsp_cache_ttl_seconds` |
 | CT log down, issuance stopped | Per-profile `logs`/`min_scts`/`fail_open` (see [CT outage](#ct-log-outage)) |
+| CT inclusion alert (log misbehavior) | `secsy-ca ct inclusion-status -status failed` → [investigate](#ct-inclusion-monitoring-log-misbehavior) |
+| An admin action "hangs" | It's parked for four-eyes: `secsy-ca approvals list -state pending` |
+| Take a cert out of service (reversibly) | `secsy-ca suspend -ca <ca> -serial <s>` (undo: `release`) |
+| Leaked API token | `secsy-ca token revoke -id <id>` (instant, no restart) |
+| Backup failing to restore | `secsy-ca backup verify-restore` ([DR readiness](#scheduled-backups--restore-verification)) |
 | Rotate an intermediate | `rotate-intermediate` → `publish-chain` → (drain) → `retire-intermediate` |
 | Rehearse DR | `./scripts/dr-drill.sh` |
 | Image signature/policy rejected | Verify by digest with pinned identity; treat a bad signature as tampering ([supply-chain](#supply-chain--image-verification-failure)) |

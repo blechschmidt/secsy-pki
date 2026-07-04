@@ -1,10 +1,181 @@
-# secsy-pki — Architecture & Gap Analysis
+# secsy-pki — Architecture
 
-> Status of this document: audit of the codebase as of the `enterprise` branch
-> starting point (commit `32d368c`, 2026-07-02). It captures the **current**
-> design and a gap analysis toward the project goal: a full-featured,
-> **HSM-backed enterprise PKI and password/data encryption solution**, tested
-> against SoftHSM.
+> This document has two parts:
+>
+> - **[Part I — Current architecture](#part-i--current-architecture)** describes
+>   the enterprise system as it stands on the `enterprise` branch: an HSM-backed
+>   X.509 + SSH certificate authority with envelope-based secret encryption,
+>   multi-protocol enrollment, governance, and multi-tenant/HA operation.
+> - **[Part II — Original starting-point audit](#part-ii--original-starting-point-audit-historical)**
+>   preserves the day-one gap analysis (commit `32d368c`, 2026-07-02) that scoped
+>   the work. Every "gap" it lists has since been built; it is kept for historical
+>   context only and is **not** an accurate description of the current code.
+>
+> The load-bearing design decisions are recorded as
+> [Architecture Decision Records](docs/adr/README.md); day-2 procedures are in the
+> [operator runbook](docs/RUNBOOK.md); per-feature guides are in
+> [`docs/`](docs/README.md).
+
+---
+
+# Part I — Current architecture
+
+## What secsy-pki is today
+
+secsy-pki is a **full-featured, HSM-backed enterprise PKI and secret-encryption
+platform**. CA (and TSA, OCSP-delegate, SSH-CA, code-signing) private keys are
+generated **on-device and never extractable** ([ADR 0002](docs/adr/0002-hsm-non-extractability-invariants.md));
+every key operation is routed through a backend-agnostic **key-provider
+abstraction** ([ADR 0001](docs/adr/0001-key-provider-abstraction.md)) that speaks
+PKCS#11 (SoftHSM/YubiHSM/network HSM), a cloud KMS (AWS KMS / Azure Key Vault),
+HashiCorp Vault Transit, or an on-disk software keystore for dev. Everything sits
+behind RBAC, a hash-chained tamper-evident audit log, and fail-closed
+pre-issuance policy gates ([ADR 0003](docs/adr/0003-fail-closed-security-gates.md)).
+
+It delivers, in one deployment:
+
+- **X.509 lifecycle** — root/intermediate hierarchy, profile-driven issuance,
+  renewal/rekey, revocation, reversible suspend/hold, CRL (base/delta/sharded),
+  and OCSP (nonce, delegated responder, pre-signing/CDN offload).
+- **Enrollment protocols** — ACME (RFC 8555, incl. ARI, Profiles, http-01/dns-01/
+  tls-alpn-01, EAB, device-attest), SCEP, EST, CMP (RFC 9483), and BRSKI
+  (RFC 8995) zero-touch onboarding.
+- **SSH CA** — HSM-backed OpenSSH user/host certificates with KRL revocation.
+- **Secret encryption** — HSM-backed envelope encryption of passwords/secrets,
+  with KEK rotation, versioning/TTL, and M-of-N key escrow/recovery.
+- **Governance** — organization RBAC, four-eyes/maker-checker approvals
+  ([ADR 0006](docs/adr/0006-four-eyes-approval-gate.md)), strong operator authn
+  (OIDC + mTLS + WebAuthn step-up), native scoped API tokens, multi-tenant
+  isolation with per-tenant quotas, and SIEM audit export + RFC 3161 audit
+  anchoring.
+- **Assurance & compliance** — pre-issuance CA/B-Forum linting (hand-rolled +
+  optional zlint), Certificate Transparency (SCT embedding **and** inclusion-proof
+  monitoring), CAA (RFC 8659 + 8657), Name Constraints / certificate policies,
+  FIPS 140-3 build mode, and PQC/hybrid (ML-DSA) certificates.
+- **Operations** — Prometheus metrics + Grafana/alerts, health/readiness probes,
+  OpenTelemetry tracing, expiry monitoring + auto-renewal, an issuance canary,
+  external cert discovery, scheduled encrypted backups + restore-verification,
+  leader-elected background jobs for multi-replica HA, and a `secsy-ca doctor`
+  preflight.
+
+Core value proposition, unchanged since day one but now realized end-to-end:
+*auditable certificate and secret operations where you can prove, cryptographically,
+that the signing key was born on hardware, never left it, and was used only as the
+tamper-evident log records.*
+
+## Module layout
+
+```
+server/
+  cmd/
+    server/       HTTP/gRPC API server + embedded console (main entrypoint)
+    secsy-ca      CA + certificate/SSH/TSA/signing lifecycle CLI
+    secsy-secret  HSM-backed secret encryption + escrow CLI
+    secsy-agent   Host auto-enrollment daemon (EST/ACME client)
+    secsy-ssh     OIDC SSH client wrapper (login → sign → exec ssh)
+    verify        Offline HSM audit-log / bijection verifier
+  internal/
+    Crypto & keys:  pki, keyprovider, hsm, fips
+    CA & issuance:  ca, certlint, caa, nameconstraints, certpolicy, ct, ctmonitor,
+                    pqc, spiffe, pkcs12
+    Revocation:     (ca/crl, ca/ocsp), publish
+    Secret layer:   secret
+    Enrollment:     acme, scep, est, cmp, brski, cms, attestation
+    SSH CA:         sshca
+    Signing/time:   tsa, signing, anchor
+    Governance:     rbac, authn, auth, approval, issueapproval, multi-tenancy (in
+                    ca/models/database), middleware
+    Persistence:    database, models
+    Operations:     monitor, canary, discovery, backup, leader, ratelimit,
+                    metrics, tracing, doctor, siem, report, dnsrecords
+    API & UI:       handlers, grpcapi, console
+    Test harness:   e2e, chaos, interop
+  web/static/       Legacy Bootstrap SPA (Keys/Sign/HSM);  the enterprise console
+                    is internal/console (embedded at /console/)
+terraform/          HSM key provisioning via terraform-provider-pkcs11
+deploy/, Dockerfile Helm chart, container image, Grafana/Prometheus assets
+docs/               Per-feature guides, operator runbook, ADRs
+```
+
+## Subsystem map
+
+| Subsystem | Packages | Guide |
+|---|---|---|
+| Key handling (HSM/KMS/Vault/software) | `keyprovider`, `pki`, `hsm` | [HSM config](docs/hsm-configuration.md) · [Cloud KMS](docs/cloud-kms.md) · [Vault Transit](docs/vault-transit.md) |
+| CA hierarchy & issuance | `ca`, `models` | [Certificate authority](docs/certificate-authority.md) |
+| Pre-issuance policy gates (fail-closed) | `certlint`, `caa`, `nameconstraints`, `certpolicy` | [certlint](docs/certlint.md) · [CAA](docs/caa.md) · [Name constraints](docs/name-constraints.md) |
+| Transparency | `ct` (embedding), `ctmonitor` (inclusion) | [Certificate Transparency](docs/certificate-transparency.md) |
+| Revocation (CRL/OCSP + offload) | `ca` (crl/ocsp), `publish` | [CA](docs/certificate-authority.md) · [OCSP presign/publish](docs/ocsp-presign-publish.md) |
+| Secret encryption + escrow | `secret` | [Password/secret encryption](docs/password-encryption.md) |
+| Enrollment protocols | `acme`, `scep`, `est`, `cmp`, `brski`, `cms`, `attestation` | [ACME](docs/acme.md) · [SCEP/EST](docs/enrollment.md) · [CMP](docs/RUNBOOK.md#cmp) · [BRSKI](docs/brski.md) |
+| SSH CA | `sshca` | [SSH CA](docs/ssh-ca.md) |
+| Time / signing / anchoring | `tsa`, `signing`, `anchor` | [Timestamping](docs/timestamping.md) · [Artifact signing](docs/artifact-signing.md) |
+| Governance (RBAC/authn/approvals/tenancy) | `rbac`, `authn`, `auth`, `approval`, `issueapproval` | [RBAC & audit](docs/rbac-and-audit.md) · [Authentication](docs/authentication.md) · [Approvals](docs/approvals.md) · [Multi-tenancy](docs/multi-tenancy.md) |
+| Audit & SIEM | `audit` (in database), `siem`, `anchor` | [SIEM export](docs/audit-siem-export.md) |
+| Persistence | `database`, `models` | [Persistence](docs/persistence.md) |
+| Multi-replica HA | `leader` + leader-gated jobs | [High availability](docs/high-availability.md) |
+| Operations & observability | `monitor`, `canary`, `discovery`, `backup`, `ratelimit`, `metrics`, `tracing`, `doctor`, `report`, `dnsrecords` | [Observability](docs/observability.md) · [Expiry](docs/expiry-monitoring.md) · [Canary](docs/canary.md) · [Backup](docs/backup.md) · [Rate limiting](docs/rate-limiting.md) · [DANE/SSHFP](docs/dns-records.md) |
+| API & console | `handlers`, `grpcapi`, `console` | [gRPC](docs/grpc-api.md) · [Web console](docs/web-console.md) |
+| Assurance modes | `fips`, `pqc` | [FIPS](docs/fips.md) · [PQC](docs/pqc.md) |
+
+## Cross-cutting invariants
+
+These hold across every path and are the things not to regress (see
+[security review](docs/security-review.md) and the ADRs):
+
+1. **HSM key non-extractability** — private keys are generated on-device and never
+   exported; the software/PQC paths are the explicit, documented exceptions.
+   ([ADR 0002](docs/adr/0002-hsm-non-extractability-invariants.md))
+2. **Every key op goes through `keyprovider`** — no direct PKCS#11 in feature code;
+   this is what makes HSM/KMS/Vault/software interchangeable.
+   ([ADR 0001](docs/adr/0001-key-provider-abstraction.md))
+3. **Security gates fail closed** — TLS, certlint, CAA, name constraints, and
+   attestation refuse rather than issue when they cannot confirm authorization;
+   CT is the one per-profile fail-open opt-in.
+   ([ADR 0003](docs/adr/0003-fail-closed-security-gates.md))
+4. **Tamper-evident audit** — the hash-chained `event_log` proves internal
+   consistency; RFC 3161 anchoring + SIEM export guard against truncation/rewrite.
+5. **Dual control where it matters** — sensitive admin/issuance operations route
+   through the enumerated-class four-eyes chokepoint.
+   ([ADR 0006](docs/adr/0006-four-eyes-approval-gate.md))
+6. **Tenant isolation** — CAs, profiles, revocation, secrets, RBAC, and audit are
+   tenant-scoped; cross-tenant access is denied.
+7. **Multi-replica singleton jobs are leader-gated** — every background loop
+   (monitor, rotation, presign, publish, anchoring, SIEM, discovery, CT inclusion,
+   backup/verify) runs under PostgreSQL advisory-lock leader election, never a
+   bare goroutine.
+
+## Recent additions (Tasks 79–98)
+
+Where the most recently-added capabilities live, for orientation:
+
+| Feature | Package(s) | Guide |
+|---|---|---|
+| ACME tls-alpn-01 (RFC 8737) | `acme/tlsalpn.go` | [ACME §3](docs/acme.md#3-challenge-types-http-01-dns-01-tls-alpn-01) |
+| PKCS#12 export | `pkcs12` | [PKCS#12](docs/pkcs12.md) |
+| Four-eyes approvals | `approval`, `issueapproval` | [Approvals](docs/approvals.md) · [ADR 0006](docs/adr/0006-four-eyes-approval-gate.md) |
+| Suspend/hold + release | `ca` | [CA §6](docs/certificate-authority.md) |
+| Inventory pagination/filter/search | `handlers/pagination.go`, `database/pagination.go` | [CA §4a](docs/certificate-authority.md) |
+| Per-profile issuance-approval gate | `issueapproval` | [Approvals](docs/approvals.md) |
+| Static-analysis gate | `.golangci.yml`, CI | [Testing](TESTING.md#static-analysis-lint--vet) |
+| Native API tokens | `authn` | [Authentication](docs/authentication.md#4-native-scoped-api-tokens-service-accounts) |
+| BRSKI onboarding | `brski` | [BRSKI](docs/brski.md) |
+| Optional zlint backend | `certlint` (`-tags zlint`) | [certlint](docs/certlint.md) |
+| Scheduled backups + restore-verify | `backup` | [Backup](docs/backup.md) |
+| Vault Transit keyprovider | `keyprovider` (kms/vault) | [Vault Transit](docs/vault-transit.md) |
+| CT inclusion monitoring | `ctmonitor` | [CT §inclusion](docs/certificate-transparency.md#inclusion-proof-monitoring-post-issuance) |
+| RFC 8657 CAA (accounturi/methods) | `caa` | [CAA](docs/caa.md) |
+| Shared ACME nonce store | `acme` | [ACME §nonces](docs/acme.md) |
+| DANE TLSA / SSHFP records | `dnsrecords` | [DANE/SSHFP](docs/dns-records.md) |
+
+---
+
+# Part II — Original starting-point audit (historical)
+
+> The remainder of this document is the **day-one audit** (commit `32d368c`,
+> 2026-07-02) preserved verbatim. It scoped the enterprise work as a gap analysis;
+> **every gap below has since been built** (see Part I). Read it as history, not as
+> a description of the current system.
 
 ---
 

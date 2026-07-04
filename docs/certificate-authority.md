@@ -221,6 +221,45 @@ curl -sk -u root:password -X POST \
         {"ref":"dev-2","csr":"-----BEGIN CERTIFICATE REQUEST-----\n...","profile":"server"}]}'
 ```
 
+## 4a. List, filter & search issued certificates
+
+The issued-certificate list endpoints are **paginated, filtered, and searchable**
+server-side, so a CA with a large inventory returns a bounded page instead of the
+whole table:
+
+```
+GET /api/ca/{id}/certificates?status=valid&profile=tls-server&q=example.com&limit=100&cursor=<opaque>
+GET /api/ca/{id}/revoked?...          # same parameters, revoked-only
+GET /api/discovery?...                # same parameters over the discovery inventory
+```
+
+| Parameter | Effect |
+|---|---|
+| `status` | `valid` / `revoked` / `expired` / `held` (the suspend/hold state) |
+| `profile` | exact issuance-profile name |
+| `q` | case-insensitive substring over subject / CN / SANs |
+| `serial_prefix` | serials beginning with this hex prefix |
+| `expires_before` | RFC 3339 timestamp or `YYYY-MM-DD` — certificates expiring before it (find soon-to-expire certs) |
+| `limit` | page size; default **100**, hard-capped at **500** (a larger request is clamped and logged) |
+| `cursor` | the opaque `next_cursor` from the previous page (keyset pagination — stable under concurrent inserts, unlike offset paging) |
+
+The response envelope is `{ "items": [...], "next_cursor": "...", "total": N,
+"has_more": true|false }`. Follow `next_cursor` until `has_more` is false to walk
+the full set. When a response is truncated (client asked for more than 500, or
+more rows remain), the server logs a page-truncation line so a partial view is
+never silent.
+
+The **CLI** exposes the same filters:
+
+```bash
+secsy-ca -config config.yaml list-certs -ca "Issuing CA" -status valid -profile tls-server -q example.com
+```
+
+The console **Certificates** page drives these parameters directly: a search box
+(subject/CN/SAN), status and profile dropdowns, and a **Load more** button that
+follows `next_cursor`. The **Inventory** page offers the same cross-CA filters
+for reporting/CSV export.
+
 ## 5. Renew a certificate
 
 Renewal issues a fresh certificate (new serial, new validity window) for an
