@@ -87,6 +87,7 @@ func (s *service) IssueCertificate(ctx context.Context, req *pkiv1.IssueCertific
 		Profile:     req.GetProfile(),
 		Validity:    daysToDuration(s.api.CapValidityDays(int(req.GetValidityDays()))),
 		RequestedBy: user.Subject,
+		MustStaple:  req.MustStaple,
 	})
 	s.api.ConsumeHSMAuditLogs("")
 	metrics.RecordCertificate("issue", err)

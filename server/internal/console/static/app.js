@@ -382,6 +382,7 @@ function renderIssueProfileInfo() {
   if (p.algorithm) bits.push('algorithm: ' + p.algorithm);
   if (p.ct && p.ct.enabled) bits.push('CT submission');
   if (p.caa && p.caa.mode && p.caa.mode !== 'off') bits.push('CAA ' + p.caa.mode);
+  if (p.must_staple) bits.push('OCSP Must-Staple' + (p.allow_must_staple_override ? ' (override allowed)' : ''));
   if (p.lint && p.lint.public) bits.push('CA/B public lint rules');
   $('issueProfileInfo').textContent = bits.length ? 'Profile policy: ' + bits.join(' · ') : '';
 }

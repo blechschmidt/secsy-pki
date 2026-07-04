@@ -87,6 +87,7 @@ to the profile maximum *and* to the issuer's `notAfter`.
 | Profile | Key usages | Ext key usages | Default / max validity |
 |---------|-----------|----------------|------------------------|
 | `server` | digitalSignature, keyEncipherment | serverAuth | 397 d / 397 d |
+| `server-muststaple` | digitalSignature, keyEncipherment | serverAuth | 397 d / 397 d |
 | `client` | digitalSignature | clientAuth | 365 d / 730 d |
 | `server-client` | digitalSignature, keyEncipherment | serverAuth, clientAuth | 397 d / 397 d |
 | `code-signing` | digitalSignature | codeSigning | 3 y / 3 y |
@@ -99,6 +100,28 @@ secsy-ca profiles            # or: GET /api/profiles
 Operators can add custom profiles or override a built-in (by reusing its name)
 via the `profiles:` config block — see
 [RBAC & config](rbac-and-audit.md#3-centralized-configuration).
+
+### OCSP Must-Staple (RFC 7633)
+
+Setting `must_staple: true` on a profile stamps the RFC 7633 **TLS Feature**
+extension (`id-pe-tlsfeature`, OID `1.3.6.1.5.5.7.1.24`) on every leaf: a
+non-critical `SEQUENCE OF INTEGER` carrying `status_request(5)`. A relying party
+that honors it aborts a TLS handshake in which the server does not staple a valid
+OCSP response, so the certificate cannot be used soft-fail. The built-in
+`server-muststaple` profile enables it out of the box; `openssl x509 -text`
+renders it as `TLS Feature: status_request`.
+
+- **Per-request override.** With `allow_must_staple_override: true` on the
+  profile, a REST/gRPC issue request may set `must_staple` per certificate (turn
+  it on or off); without it the profile default is authoritative and any
+  per-request value is ignored.
+- **Preserved on renewal and rotation.** A renewal keeps a Must-Staple
+  commitment the original certificate carried (including one applied via a
+  per-request override), and issuance after a CA key rotation keeps stamping it.
+- **Lint safety net.** `lint.require_must_staple: true` flags (warn by default) a
+  serverAuth leaf that ends up *without* Must-Staple — useful to catch a profile
+  that forgot to set the knob. `secsy-ca lint -require-must-staple <cert>` runs
+  the same check ad hoc.
 
 ## 4. Issue an end-entity certificate
 

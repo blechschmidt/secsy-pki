@@ -1749,6 +1749,16 @@ type ProfileConfig struct {
 	// domain allowlists before signing, and the CA/B Forum S/MIME Baseline
 	// Requirements lint rules apply. See ProfileSMIMEConfig.
 	SMIME ProfileSMIMEConfig `yaml:"smime"`
+	// MustStaple stamps the RFC 7633 TLS Feature / OCSP Must-Staple extension
+	// (id-pe-tlsfeature: status_request) on every leaf issued under the profile.
+	// A relying party that honors it must abort a TLS handshake in which the
+	// server does not staple a valid OCSP response. Opt-in; pair it with a
+	// serverAuth profile.
+	MustStaple bool `yaml:"must_staple"`
+	// AllowMustStapleOverride lets a REST/gRPC issue request override the Must-
+	// Staple decision per certificate (on or off). When false the profile default
+	// is authoritative and any per-request value is ignored.
+	AllowMustStapleOverride bool `yaml:"allow_must_staple_override"`
 	// RequireApproval routes operator/API-driven leaf issuance under this profile
 	// through the four-eyes / maker-checker approval gate (Task 84) instead of
 	// issuing immediately. Use it for high-assurance, wildcard, or otherwise
@@ -1824,6 +1834,11 @@ type ProfileLintConfig struct {
 	// Public applies public-trust rules (SAN required, CN in SAN, no internal
 	// names / reserved IPs, 398-day TLS cap).
 	Public bool `yaml:"public"`
+	// RequireMustStaple flags a serverAuth certificate issued under the profile
+	// that omits the RFC 7633 OCSP Must-Staple TLS feature (status_request).
+	// Advisory (warn) by default; pair it with the profile's must_staple knob to
+	// satisfy the check, or escalate via mode/overrides.
+	RequireMustStaple bool `yaml:"require_must_staple"`
 	// Overrides sets the mode ("enforce"|"warn") for individual checks by code.
 	Overrides map[string]string `yaml:"overrides"`
 	// ZLint optionally enables the industry-standard github.com/zmap/zlint

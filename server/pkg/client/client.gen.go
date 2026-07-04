@@ -1641,7 +1641,10 @@ type HoldResultStatus string
 // IssueCertRequest defines model for IssueCertRequest.
 type IssueCertRequest struct {
 	// Csr PEM PKCS#10 CSR
-	Csr          string  `json:"csr"`
+	Csr string `json:"csr"`
+
+	// MustStaple Optional per-request override of the profile's RFC 7633 OCSP Must-Staple default (true stamps the id-pe-tlsfeature extension with status_request; false suppresses it). Honored only when the profile sets allow_must_staple_override; omitted uses the profile default.
+	MustStaple   *bool   `json:"must_staple,omitempty"`
 	Profile      *string `json:"profile,omitempty"`
 	ValidityDays *int    `json:"validity_days,omitempty"`
 }
@@ -1957,14 +1960,19 @@ type PermissionGrantEntityType string
 
 // Profile defines model for Profile.
 type Profile struct {
-	DefaultValidityDays *int      `json:"default_validity_days,omitempty"`
-	Description         *string   `json:"description,omitempty"`
-	ExtKeyUsages        *[]string `json:"ext_key_usages,omitempty"`
-	IsCa                *bool     `json:"is_ca,omitempty"`
-	KeyUsages           *[]string `json:"key_usages,omitempty"`
-	MaxPathLen          *int      `json:"max_path_len,omitempty"`
-	MaxValidityDays     *int      `json:"max_validity_days,omitempty"`
-	Name                *string   `json:"name,omitempty"`
+	// AllowMustStapleOverride When true, a per-request must_staple value on the issue request overrides the profile default (on or off); otherwise it is ignored.
+	AllowMustStapleOverride *bool     `json:"allow_must_staple_override,omitempty"`
+	DefaultValidityDays     *int      `json:"default_validity_days,omitempty"`
+	Description             *string   `json:"description,omitempty"`
+	ExtKeyUsages            *[]string `json:"ext_key_usages,omitempty"`
+	IsCa                    *bool     `json:"is_ca,omitempty"`
+	KeyUsages               *[]string `json:"key_usages,omitempty"`
+	MaxPathLen              *int      `json:"max_path_len,omitempty"`
+	MaxValidityDays         *int      `json:"max_validity_days,omitempty"`
+
+	// MustStaple When true, every leaf issued under this profile carries the RFC 7633 TLS Feature / OCSP Must-Staple extension (id-pe-tlsfeature: status_request).
+	MustStaple *bool   `json:"must_staple,omitempty"`
+	Name       *string `json:"name,omitempty"`
 
 	// RequireApproval When true, operator/API issuance under this profile is routed through the four-eyes manual approval gate (Task 84) instead of issuing immediately. Automated protocol flows (ACME/EST/SCEP/CMP) bypass it.
 	RequireApproval *bool `json:"require_approval,omitempty"`

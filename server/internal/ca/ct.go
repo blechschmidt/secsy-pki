@@ -127,7 +127,7 @@ func (s *CTStatus) succeededLogNames() []string {
 // poison extension, (2) submits it to the configured logs, (3) enforces the
 // min-SCT / fail-open policy, and (4) HSM-signs the final certificate with the
 // SCT list extension in place of the poison.
-func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA *models.CA, issuerCert *x509.Certificate, base pki.LeafCertRequest, profile Profile, requestedBy string, caaCtx caa.RequestContext) ([]byte, *CTStatus, error) {
+func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA *models.CA, issuerCert *x509.Certificate, base pki.LeafCertRequest, profile Profile, requestedBy string, caaCtx caa.RequestContext, mustStaple bool) ([]byte, *CTStatus, error) {
 	ctx, span := tracing.Start(ctx, "ca.build_leaf",
 		attribute.String("ca.id", issuerCA.ID),
 		attribute.String("ca.profile", profile.Name))
@@ -169,6 +169,13 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 	if len(policyExts) > 0 {
 		base.ExtraExtensions = appendExts(base.ExtraExtensions, policyExts)
 	}
+
+	// Stamp the RFC 7633 TLS Feature / OCSP Must-Staple extension when the
+	// resolved decision (profile default, possibly overridden per request) is on.
+	// Appended before linting and before the CT poison/SCT split so the lint gate
+	// (and the zlint backend, which encodes the full leaf) sees it and so the
+	// precertificate and final certificate carry it identically.
+	base = applyMustStaple(base, mustStaple)
 
 	// Fail-closed pre-issuance lint gate: run CA/Browser-Forum Baseline
 	// Requirements checks on the to-be-signed template BEFORE any HSM signature.
@@ -323,6 +330,39 @@ func (m *Manager) issuerChainDER(issuerCA *models.CA, issuerCert *x509.Certifica
 		cur = parent
 	}
 	return chain, nil
+}
+
+// applyMustStaple appends the RFC 7633 TLS Feature / OCSP Must-Staple extension
+// to a leaf request when mustStaple is true, returning the (possibly updated)
+// request. It is a no-op when false, and never mutates the caller's extension
+// slice. Shared by the classical buildLeaf path and the PQC/hybrid issuance
+// paths so the extension is stamped identically regardless of algorithm.
+func applyMustStaple(base pki.LeafCertRequest, mustStaple bool) pki.LeafCertRequest {
+	if mustStaple {
+		base.ExtraExtensions = appendExt(base.ExtraExtensions, pki.MustStapleExtension())
+	}
+	return base
+}
+
+// certHasMustStaple reports whether a parsed certificate carries the RFC 7633
+// TLS Feature extension asserting status_request (OCSP Must-Staple). It is used
+// on the renewal path to preserve a Must-Staple commitment made at first
+// issuance, including one applied via a per-request override.
+func certHasMustStaple(cert *x509.Certificate) bool {
+	if cert == nil {
+		return false
+	}
+	for _, ext := range cert.Extensions {
+		if !ext.Id.Equal(pki.OIDTLSFeature) {
+			continue
+		}
+		features, err := pki.ParseTLSFeature(ext.Value)
+		if err != nil {
+			return false
+		}
+		return pki.TLSFeatureListed(features, pki.TLSFeatureStatusRequest)
+	}
+	return false
 }
 
 // appendExt returns a fresh slice with ext appended, never mutating base.

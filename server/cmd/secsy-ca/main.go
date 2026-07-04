@@ -988,6 +988,7 @@ func cmdLint(cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("lint", flag.ContinueOnError)
 	profileName := fs.String("profile", "", "apply the named profile's lint policy (default: baseline)")
 	public := fs.Bool("public", false, "apply CA/Browser-Forum public-trust rules (overrides profile)")
+	requireMustStaple := fs.Bool("require-must-staple", false, "flag a serverAuth certificate that omits the RFC 7633 OCSP Must-Staple TLS feature")
 	mode := fs.String("mode", "", "override the enforcement mode for all checks: enforce|warn")
 	maxDays := fs.Int("max-validity-days", 0, "cap the validity period in days (0 = from profile)")
 	zlintOn := fs.Bool("zlint", false, "also run the zlint backend (requires a binary built with -tags zlint)")
@@ -1030,6 +1031,9 @@ func cmdLint(cfg *config.Config, args []string) error {
 	if *public {
 		policy.Public = true
 	}
+	if *requireMustStaple {
+		policy.RequireMustStaple = true
+	}
 	if *mode != "" {
 		if *mode != string(certlint.ModeEnforce) && *mode != string(certlint.ModeWarn) {
 			return fmt.Errorf("invalid -mode %q (want enforce or warn)", *mode)
@@ -1063,8 +1067,8 @@ func cmdLint(cfg *config.Config, args []string) error {
 	}
 	fmt.Printf("Certificate: subject=%q serial=%s not_after=%s\n",
 		cert.Subject.String(), cert.SerialNumber, cert.NotAfter.UTC().Format(time.RFC3339))
-	fmt.Printf("Policy: mode=%s public=%t max_validity=%s zlint=%s\n",
-		effMode, policy.Public, policy.MaxValidity, zlintStatus(policy.ZLint != nil))
+	fmt.Printf("Policy: mode=%s public=%t require_must_staple=%t max_validity=%s zlint=%s\n",
+		effMode, policy.Public, policy.RequireMustStaple, policy.MaxValidity, zlintStatus(policy.ZLint != nil))
 	if res.OK() {
 		fmt.Println("Result: PASS (no findings)")
 		return nil
@@ -1103,18 +1107,21 @@ func installConfigProfiles(cfg *config.Config) error {
 	profiles := make([]ca.Profile, 0, len(cfg.Profiles))
 	for _, p := range cfg.Profiles {
 		prof := ca.Profile{
-			Name:                p.Name,
-			Description:         p.Description,
-			KeyUsages:           p.KeyUsages,
-			ExtKeyUsages:        p.ExtKeyUsages,
-			DefaultValidityDays: p.DefaultValidityDays,
-			MaxValidityDays:     p.MaxValidityDays,
+			Name:                    p.Name,
+			Description:             p.Description,
+			KeyUsages:               p.KeyUsages,
+			ExtKeyUsages:            p.ExtKeyUsages,
+			DefaultValidityDays:     p.DefaultValidityDays,
+			MaxValidityDays:         p.MaxValidityDays,
+			MustStaple:              p.MustStaple,
+			AllowMustStapleOverride: p.AllowMustStapleOverride,
 			Lint: &ca.LintConfig{
-				Disabled:  p.Lint.Disabled,
-				Mode:      p.Lint.Mode,
-				Public:    p.Lint.Public,
-				Overrides: p.Lint.Overrides,
-				ZLint:     zlintConfigFromConfig(p.Lint.ZLint),
+				Disabled:          p.Lint.Disabled,
+				Mode:              p.Lint.Mode,
+				Public:            p.Lint.Public,
+				RequireMustStaple: p.Lint.RequireMustStaple,
+				Overrides:         p.Lint.Overrides,
+				ZLint:             zlintConfigFromConfig(p.Lint.ZLint),
 			},
 		}
 		if mode := strings.ToLower(strings.TrimSpace(p.CAA.Mode)); mode != "" && mode != "off" {

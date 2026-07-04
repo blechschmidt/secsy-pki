@@ -339,6 +339,26 @@ profiles: []
 #     # enrollment is rejected fail-closed. "permissive" audits but never blocks.
 #     attestation:
 #       mode: require          # off (default) | permissive (audit only) | require
+#   - name: server-muststaple
+#     description: "TLS server certificate with OCSP Must-Staple (RFC 7633)"
+#     key_usages: [digitalSignature, keyEncipherment]
+#     ext_key_usages: [serverAuth]
+#     default_validity_days: 90
+#     max_validity_days: 397
+#     # must_staple stamps the RFC 7633 TLS Feature / OCSP Must-Staple extension
+#     # (id-pe-tlsfeature: status_request, a non-critical SEQUENCE OF INTEGER) on
+#     # every leaf. A relying party that honors it aborts a TLS handshake in which
+#     # the server does not staple a valid OCSP response, so the certificate cannot
+#     # be used soft-fail. (A built-in "server-muststaple" profile is also provided.)
+#     must_staple: true
+#     # allow_must_staple_override lets a REST/gRPC issue request set must_staple
+#     # per certificate (on or off); without it the profile default is fixed.
+#     allow_must_staple_override: true
+#     # lint.require_must_staple additionally flags (warn by default) any serverAuth
+#     # leaf under this profile that ends up WITHOUT Must-Staple — a compliance
+#     # safety net that catches a profile which forgot to set must_staple.
+#     lint:
+#       require_must_staple: true
 
 # caa holds the deployment-wide CAA settings. Enforcement is opt-in per profile
 # (see a profile's `caa` block above); this section supplies the CA identifier a

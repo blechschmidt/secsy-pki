@@ -53,6 +53,19 @@ type Profile struct {
 	// CA/B Forum S/MIME Baseline Requirements lint rules apply. See SMIMEConfig.
 	SMIME *SMIMEConfig `json:"smime,omitempty"`
 
+	// MustStaple stamps the RFC 7633 TLS Feature / OCSP Must-Staple extension
+	// (id-pe-tlsfeature, OID 1.3.6.1.5.5.7.1.24) on every leaf issued under this
+	// profile: a non-critical SEQUENCE OF INTEGER containing status_request(5).
+	// A relying party that honors it must abort a TLS handshake in which the
+	// server does not staple a valid OCSP response, so the certificate cannot be
+	// used soft-fail. It is opt-in and typically paired with a serverAuth profile.
+	MustStaple bool `json:"must_staple,omitempty"`
+	// AllowMustStapleOverride lets an operator/API issue request override the
+	// profile's MustStaple default per certificate (turning it on or off). When
+	// false the profile default is authoritative and any per-request value is
+	// ignored — the "where policy permits" gate on the override.
+	AllowMustStapleOverride bool `json:"allow_must_staple_override,omitempty"`
+
 	// Algorithm selects the signature scheme family for certificates issued under
 	// this profile: classical (default), pure post-quantum ML-DSA, or hybrid
 	// (classical primary + ML-DSA alternative signature). See the pqc package.
@@ -105,6 +118,16 @@ func (p Profile) pqcKeyType() string {
 	return defaultPQCKeyType
 }
 
+// resolveMustStaple returns the effective RFC 7633 Must-Staple decision for one
+// issuance. A non-nil override (from the REST/gRPC issue request) wins only when
+// the profile allows per-request overrides; otherwise the profile default holds.
+func (p Profile) resolveMustStaple(override *bool) bool {
+	if override != nil && p.AllowMustStapleOverride {
+		return *override
+	}
+	return p.MustStaple
+}
+
 // day is a convenience unit for profile validity periods.
 const day = 24 * time.Hour
 
@@ -134,6 +157,21 @@ var builtinProfiles = map[string]Profile{
 		ExtKeyUsages:    []string{"serverAuth", "clientAuth"},
 		DefaultValidity: 397 * day,
 		MaxValidity:     397 * day,
+	},
+	// server-muststaple is server with the RFC 7633 OCSP Must-Staple commitment
+	// (id-pe-tlsfeature: status_request) stamped on every leaf, so the certificate
+	// cannot be used without a stapled OCSP response. It permits a per-request
+	// override so an operator can opt an individual certificate out (e.g. for a
+	// host that cannot yet staple) without defining a second profile.
+	"server-muststaple": {
+		Name:                    "server-muststaple",
+		Description:             "TLS server certificate with OCSP Must-Staple (RFC 7633 status_request)",
+		KeyUsages:               []string{"digitalSignature", "keyEncipherment"},
+		ExtKeyUsages:            []string{"serverAuth"},
+		DefaultValidity:         397 * day,
+		MaxValidity:             397 * day,
+		MustStaple:              true,
+		AllowMustStapleOverride: true,
 	},
 	"code-signing": {
 		Name:            "code-signing",

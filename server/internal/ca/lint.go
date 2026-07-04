@@ -29,6 +29,11 @@ type LintConfig struct {
 	// Public applies CA/Browser-Forum public-trust rules (SAN required, CN in
 	// SAN, no internal names / reserved IPs, 398-day TLS cap). Off by default.
 	Public bool `json:"public,omitempty"`
+	// RequireMustStaple flags a serverAuth certificate issued under this profile
+	// that omits the RFC 7633 OCSP Must-Staple TLS feature (status_request). It is
+	// advisory (warn) by default; pair it with the profile's must_staple knob to
+	// satisfy the check, or escalate it to enforce via Mode/Overrides.
+	RequireMustStaple bool `json:"require_must_staple,omitempty"`
 	// Overrides sets the mode ("enforce"|"warn") for individual checks by code,
 	// overriding Mode.
 	Overrides map[string]string `json:"overrides,omitempty"`
@@ -75,6 +80,7 @@ func (p Profile) LintPolicy() certlint.Policy {
 	}
 	if p.Lint != nil {
 		pol.Public = p.Lint.Public
+		pol.RequireMustStaple = p.Lint.RequireMustStaple
 		if p.Lint.Mode != "" {
 			pol.Mode = certlint.Mode(p.Lint.Mode)
 		}

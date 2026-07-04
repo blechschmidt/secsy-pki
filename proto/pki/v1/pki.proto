@@ -118,6 +118,11 @@ message IssueCertificateRequest {
   // it is always clamped to the profile maximum, the CA expiry, and any global
   // policy cap.
   int32 validity_days = 4;
+  // must_staple optionally overrides the profile's RFC 7633 OCSP Must-Staple
+  // default for this certificate (true stamps id-pe-tlsfeature: status_request;
+  // false suppresses it). Honored only when the profile permits per-request
+  // overrides (allow_must_staple_override); omitted uses the profile default.
+  optional bool must_staple = 5;
 }
 
 message RenewCertificateRequest {

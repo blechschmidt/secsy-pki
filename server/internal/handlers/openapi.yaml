@@ -3593,6 +3593,17 @@ components:
             When true, operator/API issuance under this profile is routed through
             the four-eyes manual approval gate (Task 84) instead of issuing
             immediately. Automated protocol flows (ACME/EST/SCEP/CMP) bypass it.
+        must_staple:
+          type: boolean
+          description: >-
+            When true, every leaf issued under this profile carries the RFC 7633
+            TLS Feature / OCSP Must-Staple extension (id-pe-tlsfeature:
+            status_request).
+        allow_must_staple_override:
+          type: boolean
+          description: >-
+            When true, a per-request must_staple value on the issue request
+            overrides the profile default (on or off); otherwise it is ignored.
 
     IssueCertRequest:
       type: object
@@ -3601,6 +3612,13 @@ components:
         csr: { type: string, description: PEM PKCS#10 CSR }
         profile: { type: string }
         validity_days: { type: integer }
+        must_staple:
+          type: boolean
+          description: >-
+            Optional per-request override of the profile's RFC 7633 OCSP
+            Must-Staple default (true stamps the id-pe-tlsfeature extension with
+            status_request; false suppresses it). Honored only when the profile
+            sets allow_must_staple_override; omitted uses the profile default.
 
     IssueCertResponse:
       type: object

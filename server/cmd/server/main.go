@@ -247,13 +247,15 @@ func main() {
 		profiles := make([]ca.Profile, 0, len(cfg.Profiles))
 		for _, p := range cfg.Profiles {
 			prof := ca.Profile{
-				Name:                p.Name,
-				Description:         p.Description,
-				KeyUsages:           p.KeyUsages,
-				ExtKeyUsages:        p.ExtKeyUsages,
-				DefaultValidityDays: p.DefaultValidityDays,
-				MaxValidityDays:     p.MaxValidityDays,
-				RequireApproval:     p.RequireApproval,
+				Name:                    p.Name,
+				Description:             p.Description,
+				KeyUsages:               p.KeyUsages,
+				ExtKeyUsages:            p.ExtKeyUsages,
+				DefaultValidityDays:     p.DefaultValidityDays,
+				MaxValidityDays:         p.MaxValidityDays,
+				RequireApproval:         p.RequireApproval,
+				MustStaple:              p.MustStaple,
+				AllowMustStapleOverride: p.AllowMustStapleOverride,
 			}
 			if p.CT.Enabled {
 				if ctSubmitter == nil {
@@ -274,11 +276,12 @@ func main() {
 				}
 			}
 			prof.Lint = &ca.LintConfig{
-				Disabled:  p.Lint.Disabled,
-				Mode:      p.Lint.Mode,
-				Public:    p.Lint.Public,
-				Overrides: p.Lint.Overrides,
-				ZLint:     zlintConfig(p.Lint.ZLint),
+				Disabled:          p.Lint.Disabled,
+				Mode:              p.Lint.Mode,
+				Public:            p.Lint.Public,
+				RequireMustStaple: p.Lint.RequireMustStaple,
+				Overrides:         p.Lint.Overrides,
+				ZLint:             zlintConfig(p.Lint.ZLint),
 			}
 			if p.Lint.ZLint.Enabled && !certlint.ZLintAvailable() {
 				log.Printf("WARNING: profile %q enables the zlint backend, but this binary was not built with -tags zlint; "+

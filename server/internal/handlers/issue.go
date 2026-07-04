@@ -84,6 +84,7 @@ func (a *API) IssueCertificate(w http.ResponseWriter, r *http.Request) {
 		Profile:     req.Profile,
 		Validity:    daysToDuration(a.capValidityDays(req.ValidityDays)),
 		RequestedBy: user.Subject,
+		MustStaple:  req.MustStaple,
 	})
 	a.consumeHSMAuditLogs("")
 	metrics.RecordCertificate("issue", err)

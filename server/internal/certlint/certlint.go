@@ -17,6 +17,8 @@ package certlint
 
 import (
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"fmt"
 	"net"
 	"net/url"
@@ -55,6 +57,14 @@ const (
 	CheckInternalName     = "internal_name"
 	CheckReservedIP       = "reserved_ip"
 	CheckWildcard         = "wildcard"
+	// CheckTLSFeature flags a malformed RFC 7633 id-pe-tlsfeature extension (one
+	// whose value is not a well-formed SEQUENCE OF INTEGER).
+	CheckTLSFeature = "tls_feature"
+	// CheckMustStaple flags a serverAuth certificate that omits the RFC 7633 OCSP
+	// Must-Staple TLS feature (status_request). It fires only under the opt-in
+	// RequireMustStaple policy and defaults to warn (Must-Staple is optional under
+	// the Baseline Requirements).
+	CheckMustStaple = "must_staple"
 )
 
 const (
@@ -96,6 +106,14 @@ type Policy struct {
 	// syntax, EKU exclusivity, key-usage split, class validity caps). See
 	// SMIMEPolicy.
 	SMIME *SMIMEPolicy
+	// RequireMustStaple, when true, makes the linter flag a serverAuth (TLS
+	// server) certificate that omits the RFC 7633 TLS Feature / OCSP Must-Staple
+	// extension (status_request). It is an opt-in compliance check for deployments
+	// that mandate stapling; the finding defaults to warn (Must-Staple is optional
+	// under the Baseline Requirements) but can be escalated to enforce via Mode or
+	// an Overrides[CheckMustStaple] entry. It never fires for non-serverAuth
+	// certificates.
+	RequireMustStaple bool
 	// ZLint, when non-nil, additionally runs the optional github.com/zmap/zlint
 	// industry-standard lint suite and folds its findings into the same
 	// enforce/warn gate. It is only effective in a binary built with the "zlint"
@@ -113,6 +131,12 @@ func (p Policy) modeFor(code string) Mode {
 	}
 	if p.Mode != "" {
 		return p.Mode
+	}
+	if code == CheckMustStaple {
+		// Must-Staple is optional under the Baseline Requirements, so a serverAuth
+		// profile that omits it is advisory by default. An operator who wants it
+		// fail-closed sets Mode or an Overrides[CheckMustStaple] entry to enforce.
+		return ModeWarn
 	}
 	return ModeEnforce
 }
@@ -228,6 +252,7 @@ func Lint(cert *x509.Certificate, policy Policy) Result {
 	checkBasicConstraints(cert, add)
 	checkKeyUsage(cert, policy, add)
 	checkEKUKUConsistency(cert, add)
+	checkTLSFeature(cert, policy, add)
 	if policy.Public {
 		checkSAN(cert, add)
 		checkCNInSAN(cert, add)
@@ -285,6 +310,10 @@ func CertificateFromLeaf(req pki.LeafCertRequest) (*x509.Certificate, error) {
 		URIs:                  uris,
 		IsCA:                  req.IsCA,
 		BasicConstraintsValid: true,
+		// Carry the request's extra extensions so field-agnostic checks (e.g. the
+		// RFC 7633 TLS Feature / Must-Staple check) can inspect them on the
+		// to-be-signed template, exactly as they would on a parsed certificate.
+		ExtraExtensions: req.ExtraExtensions,
 	}
 	return cert, nil
 }
@@ -376,6 +405,58 @@ func checkEKUKUConsistency(cert *x509.Certificate, add adder) {
 			}
 		}
 	}
+}
+
+// checkTLSFeature validates any RFC 7633 id-pe-tlsfeature extension the
+// certificate carries and, under the opt-in RequireMustStaple policy, flags a
+// serverAuth certificate that omits the OCSP Must-Staple feature
+// (status_request). Recognizing the extension keeps it from being treated as an
+// opaque/unknown extension: a malformed value is reported as CheckTLSFeature.
+func checkTLSFeature(cert *x509.Certificate, policy Policy, add adder) {
+	ext, present := findExtension(cert, pki.OIDTLSFeature)
+	hasStatusRequest := false
+	if present {
+		features, err := pki.ParseTLSFeature(ext.Value)
+		if err != nil {
+			add(CheckTLSFeature, "id-pe-tlsfeature extension value is malformed (expected a SEQUENCE OF INTEGER): %v", err)
+		} else {
+			hasStatusRequest = pki.TLSFeatureListed(features, pki.TLSFeatureStatusRequest)
+		}
+	}
+	if policy.RequireMustStaple && isServerAuth(cert) && !hasStatusRequest {
+		add(CheckMustStaple,
+			"serverAuth certificate omits the RFC 7633 OCSP Must-Staple TLS feature (status_request); "+
+				"set the profile's must_staple knob to stamp id-pe-tlsfeature")
+	}
+}
+
+// isServerAuth reports whether the certificate asserts the TLS serverAuth
+// extended key usage (directly or via anyExtendedKeyUsage).
+func isServerAuth(cert *x509.Certificate) bool {
+	for _, eku := range cert.ExtKeyUsage {
+		if eku == x509.ExtKeyUsageServerAuth || eku == x509.ExtKeyUsageAny {
+			return true
+		}
+	}
+	return false
+}
+
+// findExtension locates an extension by OID, looking in both the parsed
+// Extensions (an already-issued certificate) and ExtraExtensions (a to-be-signed
+// template built by CertificateFromLeaf), so the same check works pre- and
+// post-issuance.
+func findExtension(cert *x509.Certificate, oid asn1.ObjectIdentifier) (pkix.Extension, bool) {
+	for _, ext := range cert.Extensions {
+		if ext.Id.Equal(oid) {
+			return ext, true
+		}
+	}
+	for _, ext := range cert.ExtraExtensions {
+		if ext.Id.Equal(oid) {
+			return ext, true
+		}
+	}
+	return pkix.Extension{}, false
 }
 
 // checkSAN requires at least one subjectAltName (public policy).

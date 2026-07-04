@@ -244,7 +244,12 @@ type IssueCertificateRequest struct {
 	// validity_days overrides the profile default. Non-positive uses the default;
 	// it is always clamped to the profile maximum, the CA expiry, and any global
 	// policy cap.
-	ValidityDays  int32 `protobuf:"varint,4,opt,name=validity_days,json=validityDays,proto3" json:"validity_days,omitempty"`
+	ValidityDays int32 `protobuf:"varint,4,opt,name=validity_days,json=validityDays,proto3" json:"validity_days,omitempty"`
+	// must_staple optionally overrides the profile's RFC 7633 OCSP Must-Staple
+	// default for this certificate (true stamps id-pe-tlsfeature: status_request;
+	// false suppresses it). Honored only when the profile permits per-request
+	// overrides (allow_must_staple_override); omitted uses the profile default.
+	MustStaple    *bool `protobuf:"varint,5,opt,name=must_staple,json=mustStaple,proto3,oneof" json:"must_staple,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -305,6 +310,13 @@ func (x *IssueCertificateRequest) GetValidityDays() int32 {
 		return x.ValidityDays
 	}
 	return 0
+}
+
+func (x *IssueCertificateRequest) GetMustStaple() bool {
+	if x != nil && x.MustStaple != nil {
+		return *x.MustStaple
+	}
+	return false
 }
 
 type RenewCertificateRequest struct {
@@ -1638,12 +1650,15 @@ const file_pki_v1_pki_proto_rawDesc = "" +
 	"\bembedded\x18\x02 \x01(\bR\bembedded\x12\x1b\n" +
 	"\tsct_count\x18\x03 \x01(\x05R\bsctCount\x12\x16\n" +
 	"\x06status\x18\x04 \x01(\tR\x06status\x12.\n" +
-	"\x04logs\x18\x05 \x03(\v2\x1a.secsy.pki.v1.CTLogOutcomeR\x04logs\"\x86\x01\n" +
+	"\x04logs\x18\x05 \x03(\v2\x1a.secsy.pki.v1.CTLogOutcomeR\x04logs\"\xbc\x01\n" +
 	"\x17IssueCertificateRequest\x12\x13\n" +
 	"\x05ca_id\x18\x01 \x01(\tR\x04caId\x12\x17\n" +
 	"\acsr_pem\x18\x02 \x01(\tR\x06csrPem\x12\x18\n" +
 	"\aprofile\x18\x03 \x01(\tR\aprofile\x12#\n" +
-	"\rvalidity_days\x18\x04 \x01(\x05R\fvalidityDays\"\x84\x01\n" +
+	"\rvalidity_days\x18\x04 \x01(\x05R\fvalidityDays\x12$\n" +
+	"\vmust_staple\x18\x05 \x01(\bH\x00R\n" +
+	"mustStaple\x88\x01\x01B\x0e\n" +
+	"\f_must_staple\"\x84\x01\n" +
 	"\x17RenewCertificateRequest\x12\x13\n" +
 	"\x05ca_id\x18\x01 \x01(\tR\x04caId\x12\x16\n" +
 	"\x06serial\x18\x02 \x01(\tR\x06serial\x12\x17\n" +
@@ -1862,6 +1877,7 @@ func file_pki_v1_pki_proto_init() {
 	if File_pki_v1_pki_proto != nil {
 		return
 	}
+	file_pki_v1_pki_proto_msgTypes[2].OneofWrappers = []any{}
 	file_pki_v1_pki_proto_msgTypes[18].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

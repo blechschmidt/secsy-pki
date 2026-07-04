@@ -633,6 +633,11 @@ type IssueCertRequest struct {
 	CSR          string `json:"csr"`     // PEM-encoded PKCS#10 CSR
 	Profile      string `json:"profile"` // profile name; empty = default
 	ValidityDays int    `json:"validity_days,omitempty"`
+	// MustStaple optionally overrides the profile's RFC 7633 OCSP Must-Staple
+	// default for this certificate (true stamps id-pe-tlsfeature: status_request;
+	// false suppresses it). Honored only when the profile sets
+	// allow_must_staple_override; omitted (null) uses the profile default.
+	MustStaple *bool `json:"must_staple,omitempty"`
 }
 
 // IssueCertResponse returns a freshly issued end-entity certificate.

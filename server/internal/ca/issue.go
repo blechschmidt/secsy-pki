@@ -60,6 +60,12 @@ type IssueSpec struct {
 	// satisfied it.
 	ACMEAccountURI    string
 	ValidationMethods map[string]string
+
+	// MustStaple optionally overrides the profile's RFC 7633 OCSP Must-Staple
+	// default for this one certificate. It is honored only when the profile sets
+	// allow_must_staple_override; nil (the common case) uses the profile default.
+	// Set by the REST/gRPC issue paths from an optional per-request field.
+	MustStaple *bool
 }
 
 // IssueResult is the outcome of issuing an end-entity certificate.
@@ -149,6 +155,7 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 			AccountURI:        spec.ACMEAccountURI,
 			ValidationMethods: spec.ValidationMethods,
 		},
+		mustStaple: spec.MustStaple,
 	}, spec.Validity, spec.RequestedBy)
 }
 
@@ -172,6 +179,10 @@ type TemplateIssueSpec struct {
 	Validity time.Duration
 	// RequestedBy records who requested the certificate (for audit).
 	RequestedBy string
+	// MustStaple optionally overrides the profile's RFC 7633 Must-Staple default
+	// (honored only when the profile permits per-request overrides). Nil uses the
+	// profile default.
+	MustStaple *bool
 }
 
 // IssueCertificateFromTemplate signs a subject/public-key template into an
@@ -210,6 +221,7 @@ func (m *Manager) IssueCertificateFromTemplate(ctx context.Context, spec Templat
 		IPAddresses:    spec.IPAddresses,
 		EmailAddresses: spec.EmailAddresses,
 		URIs:           spec.URIs,
+		mustStaple:     spec.MustStaple,
 	}, spec.Validity, spec.RequestedBy)
 }
 
@@ -229,6 +241,10 @@ type leafParts struct {
 	// account URI and per-identifier validation method) into buildLeaf's CAA gate.
 	// It is the zero value for every non-ACME issuance path.
 	caaContext caa.RequestContext
+	// mustStaple optionally overrides the profile's RFC 7633 Must-Staple default
+	// (honored only when the profile permits per-request overrides). Nil uses the
+	// profile default.
+	mustStaple *bool
 }
 
 // issueLeaf is the shared classical end-entity issuance path: it resolves the
@@ -296,7 +312,7 @@ func (m *Manager) issueLeaf(ctx context.Context, issuerCA *models.CA, issuerCert
 		EmailAddresses:        parts.EmailAddresses,
 		URIs:                  parts.URIs,
 		CRLDistributionPoints: leafCRLDistributionPoints(issuerCA.ID, serial),
-	}, profile, requestedBy, parts.caaContext)
+	}, profile, requestedBy, parts.caaContext, profile.resolveMustStaple(parts.mustStaple))
 	if err != nil {
 		return nil, fmt.Errorf("creating certificate: %w", err)
 	}
@@ -461,6 +477,12 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (_ *Issu
 	}
 	defer signer.Close()
 
+	// Preserve the RFC 7633 Must-Staple commitment across renewal: stamp it when
+	// the profile now requires it OR the certificate being renewed already carried
+	// it (e.g. via a per-request override at first issuance). Renewal never drops a
+	// Must-Staple commitment the subscriber already relies on.
+	mustStaple := profile.MustStaple || certHasMustStaple(priorCert)
+
 	der, ctStatus, err := m.buildLeaf(ctx, signer, issuerCA, issuerCert, pki.LeafCertRequest{
 		Subject:               subject,
 		PublicKey:             publicKey,
@@ -474,7 +496,7 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (_ *Issu
 		EmailAddresses:        emails,
 		URIs:                  uris,
 		CRLDistributionPoints: leafCRLDistributionPoints(issuerCA.ID, serial),
-	}, profile, spec.RequestedBy, caa.RequestContext{})
+	}, profile, spec.RequestedBy, caa.RequestContext{}, mustStaple)
 	if err != nil {
 		return nil, fmt.Errorf("creating renewed certificate: %w", err)
 	}
