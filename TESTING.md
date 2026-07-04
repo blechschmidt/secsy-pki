@@ -145,6 +145,20 @@ cd server
 go test -tags sqlite -count=1 ./internal/...
 ```
 
+Authorization & tenant-isolation regression matrix (no HSM; software provider).
+Drives every REST route and gRPC RPC through the real auth middleware and
+asserts unauthenticated→401, no-capability→403, cross-tenant→refused, and
+capable→success — and **fails if a newly registered route has no declared
+RBAC/tenant intent**:
+
+```bash
+cd server
+go test -tags sqlite -run 'AuthzMatrix|AuthenticateRPC' ./internal/handlers/ ./internal/grpcapi/
+```
+
+See [authz-regression-matrix.md](docs/authz-regression-matrix.md) for how to add
+a route to the matrix.
+
 Integration tests (spins up KeyCloak via Docker Compose, starts the server,
 then runs the tagged tests):
 

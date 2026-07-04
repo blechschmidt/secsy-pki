@@ -150,11 +150,16 @@ type crlStatusResponse struct {
 // CRLs and parsing them. Read-gated: relying parties fetch the CRL bytes
 // unauthenticated from /crl, but the operator status view is inventory data.
 func (a *API) CRLStatus(w http.ResponseWriter, r *http.Request) {
-	if !a.canRead(middleware.GetUserInfo(r.Context())) {
-		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+	// Read the CRL operator-status view under the shared per-CA read guard: an
+	// assigned role PLUS membership in the CA's tenant. Gating on canRead alone
+	// would let any role-holder read another tenant's CRL freshness/revocation
+	// counts (the CRL bytes are public, but this status view is tenant-scoped
+	// operator metadata, like the rest of the CA inventory).
+	caRec, ok := a.authorizeCARead(w, r, r.PathValue("id"))
+	if !ok {
 		return
 	}
-	caID := r.PathValue("id")
+	caID := caRec.ID
 	mgr := ca.NewManager(a.db, a.keyProvider)
 
 	resp := crlStatusResponse{

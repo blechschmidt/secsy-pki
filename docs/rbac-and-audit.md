@@ -149,3 +149,12 @@ See `server/config.yaml` for a fully-commented example.
 - **Fail-safe logging.** A failure to append an audit event is logged as a
   warning but never silently changes an authorization decision; the chain's
   integrity is independent of any single external side effect.
+- **Systematic authorization coverage.** A table-driven regression matrix
+  (`server/internal/handlers/authz_matrix_test.go` and the gRPC mirror
+  `server/internal/grpcapi/authz_matrix_test.go`) asserts, for **every**
+  registered route/RPC, that an unauthenticated caller gets `401`, a
+  capability-lacking principal gets `403`, a cross-tenant principal is refused
+  with no data leak, and a correctly-capable principal succeeds. The suite fails
+  the build if a newly registered route has no declared RBAC/tenant intent, so
+  access-control coverage cannot silently regress. See
+  [authz-regression-matrix.md](authz-regression-matrix.md).
