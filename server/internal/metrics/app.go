@@ -314,6 +314,20 @@ var (
 		"ACME challenge validation attempts, by challenge type and result (valid|invalid).",
 		"type", "result")
 
+	// ACMENonces tracks the shared/durable anti-replay nonce store (Task 97) by
+	// "result": issued (a nonce minted), valid (a nonce consumed on its first use),
+	// replayed (rejected because it was already consumed — the multi-replica
+	// correctness signal a per-instance map could not surface), expired (rejected
+	// as past its TTL), invalid (rejected as malformed or bearing a bad HMAC —
+	// forged or signed with a foreign/rotated secret), or error (a store failure,
+	// which fails closed to badNonce). A rising "replayed" or "invalid" rate points
+	// at genuine replay/attack; a rising "expired" rate at slow clients or clock
+	// skew across replicas.
+	ACMENonces = NewCounter(Default,
+		"secsy_acme_nonces_total",
+		"ACME anti-replay nonce store operations, by result (issued|valid|replayed|expired|invalid|error).",
+		"result")
+
 	// HSM / key-provider operations. The "operation" label is sign|decrypt|
 	// generate|find|public_key; "result" is success|error.
 	HSMOperations = NewCounter(Default,

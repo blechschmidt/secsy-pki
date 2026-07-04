@@ -1,6 +1,8 @@
 package acme
 
 import (
+	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -81,6 +83,14 @@ type Config struct {
 	// server offers a device-attest-01 challenge and validates the returned
 	// WebAuthn attestation object. A nil verifier disables the challenge.
 	Attestation *attestation.Verifier
+
+	// NonceSecret optionally pins the shared secret used to sign self-
+	// authenticating anti-replay nonces (Task 97). When empty (the default), the
+	// server loads — or generates once and persists — a durable shared secret from
+	// the store, so every replica sharing the store agrees without configuration.
+	// Set it (identically on every replica, at least nonceMinSecretLen bytes) to
+	// skip the startup store read or to rotate the signing key. It is never logged.
+	NonceSecret []byte
 }
 
 // withDefaults returns a copy of the config with zero-valued fields filled in.
@@ -131,10 +141,33 @@ func New(db *database.DB, provider keyprovider.Provider, cfg Config) *Server {
 		provider:  provider,
 		caMgr:     ca.NewManager(db, provider),
 		cfg:       cfg,
-		nonces:    newNonceStore(time.Now),
+		nonces:    newNonceStore(db, resolveNonceSecret(db, cfg.NonceSecret), time.Now),
 		validator: newValidator(cfg.HTTP01Port, cfg.TLSALPN01Port),
 		now:       time.Now,
 	}
+}
+
+// resolveNonceSecret returns the shared secret used to sign anti-replay nonces.
+// An explicit secret from config wins; otherwise it loads (or generates once)
+// the durable shared secret from the store, so every replica sharing the store
+// signs and verifies nonces with the same key. If the store is unreachable it
+// falls back to a per-instance random secret so the server still starts — nonces
+// are simply not shared across replicas until the store is reachable, matching
+// the pre-Task-97 per-instance behavior rather than failing startup outright.
+func resolveNonceSecret(db *database.DB, explicit []byte) []byte {
+	if len(explicit) >= nonceMinSecretLen {
+		return explicit
+	}
+	if secret, err := db.GetOrCreateACMENonceSecret(); err == nil && len(secret) >= nonceMinSecretLen {
+		return secret
+	} else if err != nil {
+		log.Printf("acme: could not load shared nonce secret (%v); falling back to a per-instance secret", err)
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		panic("acme: crypto/rand failed generating nonce secret: " + err.Error())
+	}
+	return buf
 }
 
 // SetValidator overrides the challenge validator. Used by tests to inject a
@@ -145,6 +178,35 @@ func (s *Server) SetValidator(v *Validator) { s.validator = v }
 func (s *Server) SetClock(now func() time.Time) {
 	s.now = now
 	s.nonces.now = now
+}
+
+// nonceGCInterval is how often RunNonceGC prunes expired consumed-nonce records.
+// It is well under the nonce TTL so the consumed-set stays small; the exact
+// cadence is not correctness-critical, because an expired nonce is rejected by
+// its embedded timestamp before the consumed-set is ever consulted.
+const nonceGCInterval = 5 * time.Minute
+
+// RunNonceGC periodically evicts expired consumed-nonce records until ctx is
+// cancelled. Register it as a leader-elected background job (like the other
+// periodic sweeps) so one replica prunes the shared consumed-set; the sweep is
+// idempotent, so a redundant run on another replica is harmless. It runs one
+// sweep immediately, then on each tick, and returns promptly on ctx
+// cancellation.
+func (s *Server) RunNonceGC(ctx context.Context) {
+	t := time.NewTicker(nonceGCInterval)
+	defer t.Stop()
+	for {
+		if n, err := s.nonces.gc(); err != nil {
+			log.Printf("acme: nonce GC: %v", err)
+		} else if n > 0 {
+			log.Printf("acme: nonce GC evicted %d expired consumed nonce(s)", n)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 // DirectoryURL returns the absolute URL of the directory resource for a request.

@@ -116,3 +116,13 @@ enforces its own buckets, so set per-replica tiers with the replica count in
 mind, or terminate at a shared ingress limiter for a strict global cap. The
 per-instance HSM guard is already correct per replica, since each replica has
 its own session pool.
+
+This per-replica limiter is a **known follow-up** for full multi-replica
+parity: the effective global limit is roughly `configured_rate × replica_count`,
+and a client pinned to one replica sees only that replica's bucket. It is not a
+correctness bug — over-admitting requests only weakens abuse protection, it never
+mis-issues — which is why it is deferred. By contrast the ACME anti-replay
+**nonce store is shared** across replicas (a correctness requirement: an
+unshared nonce would cause spurious `badNonce` rejections and, worse, could let a
+replay slip through on a different replica). See
+[High availability → shared vs per-replica request state](high-availability.md#shared-vs-per-replica-request-state).

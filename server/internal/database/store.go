@@ -36,12 +36,37 @@ type Store interface {
 	CRLStore
 	SSHStore
 	ACMEStore
+	ACMENonceStore
 	AuditStore
 	RBACStore
 	SecretStore
 	ApprovalStore
 	APITokenStore
 	CTInclusionStore
+}
+
+// ACMENonceStore persists the shared, durable anti-replay nonce state (Task 97)
+// so the ACME server is correct across replicas. It holds two pieces of shared
+// state: the server-wide HMAC secret every replica uses to mint and verify
+// self-authenticating nonces, and the consumed-set that enforces true single use
+// — a nonce minted by one replica is accepted by another exactly once, and any
+// later replay (on any replica) is rejected. The consumed-set is the only durable
+// write on the nonce path; issuance and every rejected (malformed/forged/expired)
+// nonce are validated in-process without touching the store.
+type ACMENonceStore interface {
+	// GetOrCreateACMENonceSecret returns the shared nonce-signing secret,
+	// generating a fresh random one on first use. Concurrent callers across
+	// replicas converge on a single value (insert-if-absent, then read).
+	GetOrCreateACMENonceSecret() ([]byte, error)
+	// ConsumeACMENonce atomically records a nonce as consumed, returning true the
+	// first time it is seen (valid, single use) and false if it was already
+	// present (replay). expiresAt bounds how long the record is retained for GC.
+	ConsumeACMENonce(nonceHash string, expiresAt time.Time) (bool, error)
+	// GCACMENonces deletes consumed-nonce records whose expiry has passed and
+	// reports how many were removed. Pruning an expired record is safe: an expired
+	// nonce is rejected by its embedded-timestamp check before the consumed-set is
+	// consulted.
+	GCACMENonces(now time.Time) (int64, error)
 }
 
 // CTInclusionStore persists the Certificate Transparency SCT inclusion-proof

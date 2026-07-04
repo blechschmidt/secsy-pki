@@ -22,6 +22,10 @@ func (db *DB) migrateACME() error {
 	if db.isPostgres() {
 		boolType = "BOOLEAN NOT NULL DEFAULT FALSE"
 	}
+	blob := "BLOB"
+	if db.isPostgres() {
+		blob = "BYTEA"
+	}
 
 	stmts := []string{
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS acme_accounts (
@@ -74,6 +78,33 @@ func (db *DB) migrateACME() error {
 			created_at %s
 		)`, currentTimestamp),
 		`CREATE INDEX IF NOT EXISTS idx_acme_chall_authz ON acme_challenges(authz_id)`,
+		// Shared/durable anti-replay nonce state (Task 97). Two tables back the
+		// multi-replica-correct nonce design:
+		//
+		//   acme_nonces is the consumed-set: one row per nonce that has been spent.
+		//   The ACME server mints self-authenticating (HMAC-signed) nonces without
+		//   writing here; only a successful Consume inserts a row, so a replay — on
+		//   this or any other replica sharing the store — finds the row and is
+		//   rejected. Rows are keyed by the nonce's SHA-256 (fixed length; the raw
+		//   token is not stored) and carry an expiry so the background GC can prune
+		//   them. Pruning is safe: an expired nonce is rejected by its embedded
+		//   timestamp before this set is ever consulted.
+		//
+		//   acme_nonce_secret holds the single server-wide HMAC key that lets any
+		//   replica verify a nonce minted by any other. It is generated once on
+		//   first use (insert-if-absent) and read by every replica, so no
+		//   configuration is required for multi-replica correctness (an operator may
+		//   still pin the key via config to skip the read or to rotate it).
+		`CREATE TABLE IF NOT EXISTS acme_nonces (
+			nonce_hash TEXT PRIMARY KEY,
+			expires_at TIMESTAMP NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_acme_nonces_expires ON acme_nonces(expires_at)`,
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS acme_nonce_secret (
+			name TEXT PRIMARY KEY,
+			secret %s NOT NULL,
+			created_at %s
+		)`, blob, currentTimestamp),
 	}
 	for _, stmt := range stmts {
 		if _, err := db.exec(stmt); err != nil {

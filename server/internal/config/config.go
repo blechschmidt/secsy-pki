@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"encoding/asn1"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -1262,6 +1263,14 @@ type ACMEConfig struct {
 	// RenewalExplanationURL is returned in every renewalInfo response, pointing at
 	// a page explaining an active mass-renewal event.
 	RenewalExplanationURL string `yaml:"renewal_explanation_url"`
+
+	// NonceHMACKey optionally pins the shared secret used to sign self-
+	// authenticating anti-replay nonces (Task 97), base64-encoded and at least 16
+	// bytes when decoded. Leave empty (the default) to have the server generate a
+	// random secret once and persist it in the shared store, so every replica
+	// agrees without configuration. Set the same value on every replica to skip
+	// the startup store read or to rotate the signing key.
+	NonceHMACKey string `yaml:"nonce_hmac_key"`
 }
 
 // SCEPConfig configures the SCEP (RFC 8894) enrollment server. When enabled, a
@@ -2892,6 +2901,15 @@ func (c *Config) validateACME() error {
 	}
 	if c.ACME.RequireEAB && len(c.ACME.EABHMACKeys) == 0 {
 		return fmt.Errorf("acme.require_eab is true but no acme.eab_hmac_keys are configured")
+	}
+	if c.ACME.NonceHMACKey != "" {
+		key, err := base64.StdEncoding.DecodeString(c.ACME.NonceHMACKey)
+		if err != nil {
+			return fmt.Errorf("acme.nonce_hmac_key: invalid base64: %w", err)
+		}
+		if len(key) < 16 {
+			return fmt.Errorf("acme.nonce_hmac_key must decode to at least 16 bytes, got %d", len(key))
+		}
 	}
 	return nil
 }

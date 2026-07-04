@@ -60,6 +60,13 @@ var migrationTables = []string{
 	"acme_orders",
 	"acme_authorizations",
 	"acme_challenges",
+	// Shared anti-replay nonce state (Task 97): the consumed-set and the
+	// server-wide signing secret. Both are standalone (no foreign keys). The
+	// consumed-set is ephemeral (rows expire within the nonce TTL), so copying it
+	// is harmless; the secret is copied so nonces minted before a store migration
+	// still verify after it.
+	"acme_nonces",
+	"acme_nonce_secret",
 	// Operator WebAuthn credentials (standalone; no foreign keys).
 	"webauthn_credentials",
 	// Discovered external certificates (Task 54). Tenant-scoped; references

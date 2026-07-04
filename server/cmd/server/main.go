@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"flag"
 	"fmt"
@@ -752,6 +753,12 @@ func main() {
 		acmeCfg.Attestation = attestVerifier
 		acmeSrv := acme.New(db, provider, acmeCfg)
 		acmeSrv.Register(mux)
+		// Prune expired consumed-nonce records on a leader-elected background loop
+		// (Task 97), like the other periodic sweeps. Correctness does not depend on
+		// it — an expired nonce is rejected by its embedded timestamp before the
+		// shared consumed-set is consulted — so this is hygiene that bounds the
+		// set's growth.
+		elector.Register("acme-nonce-gc", acmeSrv.RunNonceGC)
 	}
 
 	// SCEP (RFC 8894) device-enrollment server. Like ACME it authenticates
@@ -1169,6 +1176,18 @@ func buildACMEConfig(db *database.DB, cfg *config.Config) (acme.Config, error) {
 		ac.RenewalPollInterval = time.Duration(cfg.ACME.RenewalPollHours) * time.Hour
 	}
 	ac.ExplanationURL = cfg.ACME.RenewalExplanationURL
+
+	// Optional operator-pinned shared secret for signing anti-replay nonces
+	// (Task 97). Validated in config.validateACME; decode it here into the raw key
+	// the server uses. When unset, the server derives a durable shared secret from
+	// the store instead, so multi-replica correctness needs no configuration.
+	if cfg.ACME.NonceHMACKey != "" {
+		key, err := base64.StdEncoding.DecodeString(cfg.ACME.NonceHMACKey)
+		if err != nil {
+			return acme.Config{}, fmt.Errorf("acme.nonce_hmac_key: %w", err)
+		}
+		ac.NonceSecret = key
+	}
 	return ac, nil
 }
 

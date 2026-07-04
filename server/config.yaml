@@ -430,6 +430,11 @@ acme:
   # renewal_window_width_hours: 360       # window width (0 = half the renew-before span)
   # renewal_poll_hours: 6                 # advertised Retry-After cadence
   # renewal_explanation_url: "https://pki.example.com/notices/mass-renewal"
+  # Shared anti-replay nonce signing key (base64, >=16 bytes). Leave unset to have
+  # the server generate one and persist it in the store so every replica agrees;
+  # set it identically on every replica only to pin/rotate the key. Multi-replica
+  # correctness does NOT require it.
+  # nonce_hmac_key: "base64-encoded-32-byte-secret"
 
 # tsa exposes an RFC 3161 Time-Stamp Authority at /tsa (application/timestamp-
 # query). Disabled by default; see docs/timestamping.md. Provision the signing

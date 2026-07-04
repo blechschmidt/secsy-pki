@@ -327,9 +327,23 @@ To compute a CertID from a certificate you hold, use `acme.CertID(*x509.Certific
 - **Reachability.** For http-01 the server must reach the client on port 80, for
   tls-alpn-01 on port 443 (negotiating `acme-tls/1`), and for dns-01 it must
   resolve public DNS. In split-horizon networks, prefer dns-01.
-- **Nonces** are held in memory and are single-use; a restart simply forces
-  clients to fetch a fresh one (`badNonce` → automatic retry). No configuration
-  needed.
+- **Nonces** are single-use anti-replay tokens (RFC 8555 §6.5) and are correct
+  across replicas. Each is *self-authenticating* — an HMAC over a timestamp and
+  random bytes, keyed by a server-wide secret shared through the store — so a
+  nonce minted by one replica is accepted by any other behind a load balancer
+  (no more spurious `badNonce` on a round-robin request). Single use is enforced
+  by a shared consumed-set in the store, so a replay is rejected everywhere.
+  Expiry (30 min TTL) and forged/malformed nonces are rejected in-process before
+  the store is touched, keeping the fast path cheap; a leader-elected sweep prunes
+  the consumed-set. **No configuration is needed** — the shared secret is
+  generated once and persisted automatically. Operators who prefer to pin or
+  rotate the key may set `acme.nonce_hmac_key` (base64, ≥16 bytes) identically on
+  every replica. The `secsy_acme_nonces_total{result}` metric breaks nonce
+  outcomes down by `issued|valid|replayed|expired|invalid|error`.
+  > **Known follow-up:** rate-limit token buckets remain **per-replica** (each
+  > replica meters independently), so effective public-endpoint limits scale with
+  > the replica count. Only the anti-replay nonce store is shared today; see
+  > [Rate limiting](rate-limiting.md) and [High availability](high-availability.md).
 - **Revocation** is authorized either by the account that placed the order or by
   the certificate's own key pair, and flows through the standard revocation store
   → it appears in the CA's CRL and OCSP responses.

@@ -60,10 +60,33 @@ before. This is also why the Helm chart refuses `replicaCount > 1` on SQLite.
 | SIEM export | the per-sink cursor is shared state | delivery is at-least-once from the durable cursor; a handover at worst redelivers the last unacknowledged batch |
 | Discovery scanner | N replicas would probe every external endpoint N times | inventory records are upserted by fingerprint |
 | Issuance canary | N replicas would multiply HSM probe load and tenant quota consumption | each probe is self-contained (issue → verify → revoke); a handover simply probes again on the new leader's schedule |
+| ACME nonce GC | N replicas would each scan the shared consumed-set | the sweep is a plain `DELETE … WHERE expires_at < now` — idempotent, so a redundant run on another replica is harmless (an expired nonce is already rejected by its embedded timestamp before the set is consulted) |
 
 Per-instance loops are deliberately **not** gated: the TLS OCSP staple
 refresher (each replica staples its own listener certificate) and the gRPC/HTTP
 listeners themselves.
+
+## Shared vs per-replica request state
+
+API traffic is served by every replica, so any state a public request touches
+must either live in the shared store or be safe to keep per-replica:
+
+- **ACME anti-replay nonces are shared** (correctness). Nonces are
+  self-authenticating (HMAC over a timestamp + random bytes, keyed by a
+  store-shared secret), and single use is enforced by a shared consumed-set, so
+  a nonce minted by one replica is accepted — exactly once — by any other behind
+  a load balancer. Before this, an in-process nonce map produced spurious
+  `badNonce` retries on round-robin traffic. No configuration is required (the
+  secret is generated once and persisted); see [ACME](acme.md#9-operational-notes).
+- **Rate-limit token buckets remain per-replica** (known follow-up). Each
+  replica meters ACME/OCSP/CRL/SCEP/EST traffic against its own in-memory
+  buckets, so the effective global limit is roughly `configured_rate ×
+  replica_count`, and a client pinned to one replica sees that replica's bucket.
+  Size the per-replica limits accordingly, or terminate rate limiting at a shared
+  ingress/gateway in front of the fleet. A future shared/distributed limiter
+  would remove this caveat; see [Rate limiting](rate-limiting.md). The bounded
+  HSM-concurrency guard is likewise per-replica by design (it protects each
+  replica's own token sessions).
 
 **Follower OCSP behavior.** Pre-signing fills an in-memory cache, so follower
 replicas answer OCSP from their own per-request signing path and TTL cache
