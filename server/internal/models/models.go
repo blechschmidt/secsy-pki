@@ -640,6 +640,27 @@ type IssueCertRequest struct {
 	MustStaple *bool `json:"must_staple,omitempty"`
 }
 
+// PreviewCertRequest asks a CA to validate a would-be issuance through the full
+// pre-issuance gate stack WITHOUT signing, persisting, or consuming a serial
+// (Task 113): POST /api/ca/{id}/certificates:preview. Supply either a CSR (its
+// subject/public key/SANs are previewed exactly as issuance would take them) or
+// the explicit identity fields (common_name + SANs), in which case a throwaway
+// subject key is synthesized only to resolve the extension layout.
+type PreviewCertRequest struct {
+	CSR          string `json:"csr,omitempty"`     // PEM PKCS#10 CSR (optional)
+	Profile      string `json:"profile,omitempty"` // profile name; empty = default
+	ValidityDays int    `json:"validity_days,omitempty"`
+	// MustStaple optionally overrides the profile's RFC 7633 default, honored only
+	// where the profile permits per-request overrides.
+	MustStaple *bool `json:"must_staple,omitempty"`
+	// The explicit-identity fields are used only when CSR is empty.
+	CommonName     string   `json:"common_name,omitempty"`
+	DNSNames       []string `json:"dns_names,omitempty"`
+	IPAddresses    []string `json:"ip_addresses,omitempty"`
+	EmailAddresses []string `json:"email_addresses,omitempty"`
+	URIs           []string `json:"uris,omitempty"`
+}
+
 // IssueCertResponse returns a freshly issued end-entity certificate.
 type IssueCertResponse struct {
 	Certificate string `json:"certificate"` // PEM leaf certificate

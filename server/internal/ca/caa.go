@@ -82,51 +82,84 @@ func (p Profile) CAAPolicy() caa.Policy {
 // accounturi/validationmethods parameter is unsatisfiable and blocks in enforce
 // mode.
 func (m *Manager) checkCAA(ctx context.Context, base pki.LeafCertRequest, profile Profile, issuerCA *models.CA, requestedBy string, reqCtx caa.RequestContext) error {
-	if !profile.caaEnabled() {
+	res, policy, decision := m.evaluateCAA(ctx, base, profile, reqCtx)
+	switch decision {
+	case caaDisabled:
 		return nil
-	}
-	if len(base.DNSNames) == 0 {
+	case caaSkipped:
 		metrics.CertificateCAAChecks.Inc("skip")
 		return nil
-	}
-
-	policy := profile.CAAPolicy()
-
-	// A resolver is mandatory once CAA is enabled. Missing one leaves every name
-	// undetermined: fail closed under enforce, warn-and-continue under permissive.
-	if caaResolver == nil {
+	case caaNoResolver:
+		// A resolver is mandatory once CAA is enabled. Missing one leaves every name
+		// undetermined: fail closed under enforce, warn-and-continue under permissive.
 		metrics.CertificateCAAChecks.Inc("error")
-		res := caa.Result{Findings: []caa.Finding{{Reason: caa.ReasonLookupError, Detail: "no CAA resolver configured"}}}
 		m.recordCAAEvent(base, profile, issuerCA, requestedBy, res, policy.Mode == caa.ModeEnforce)
 		if policy.Mode == caa.ModeEnforce {
 			return fmt.Errorf("pre-issuance CAA check failed for profile %q: no DNS resolver configured", profile.Name)
 		}
 		log.Printf("WARNING: CAA permissive gate for profile %q has no resolver; allowing issuance", profile.Name)
 		return nil
-	}
+	default: // caaChecked
+		switch {
+		case res.Forbidden():
+			metrics.CertificateCAAChecks.Inc("fail")
+		default:
+			metrics.CertificateCAAChecks.Inc("pass")
+		}
+		for _, f := range res.Findings {
+			metrics.CertificateCAAFindings.Inc(string(f.Reason))
+		}
 
-	res := policy.Check(ctx, caaResolver, base.DNSNames, reqCtx)
+		// Audit only when there is something to report, mirroring the lint gate.
+		blocking := res.Forbidden() && policy.Mode == caa.ModeEnforce
+		if res.Forbidden() {
+			m.recordCAAEvent(base, profile, issuerCA, requestedBy, res, blocking)
+		}
+		if blocking {
+			return fmt.Errorf("pre-issuance CAA check failed for profile %q: %s", profile.Name, res.Summary())
+		}
+		return nil
+	}
+}
 
-	switch {
-	case res.Forbidden():
-		metrics.CertificateCAAChecks.Inc("fail")
-	default:
-		metrics.CertificateCAAChecks.Inc("pass")
-	}
-	for _, f := range res.Findings {
-		metrics.CertificateCAAFindings.Inc(string(f.Reason))
-	}
+// caaDecision names which branch the pure CAA evaluation took, so the issuance
+// path (checkCAA) and the non-mutating preview can each map it to their own
+// side effects and reporting.
+type caaDecision int
 
-	// Audit only when there is something to report, mirroring the lint gate.
-	blocking := res.Forbidden() && policy.Mode == caa.ModeEnforce
-	if res.Forbidden() {
-		m.recordCAAEvent(base, profile, issuerCA, requestedBy, res, blocking)
-	}
+const (
+	// caaDisabled: the profile does not enable the CAA gate.
+	caaDisabled caaDecision = iota
+	// caaSkipped: the gate is enabled but the certificate has no DNS-name SANs,
+	// so there is nothing to check.
+	caaSkipped
+	// caaNoResolver: the gate is enabled and the certificate has DNS names, but no
+	// process-wide DNS resolver is installed (authorization is undetermined).
+	caaNoResolver
+	// caaChecked: the CAA RRset was resolved and evaluated; res carries the result.
+	caaChecked
+)
 
-	if blocking {
-		return fmt.Errorf("pre-issuance CAA check failed for profile %q: %s", profile.Name, res.Summary())
+// evaluateCAA is the pure core of the pre-issuance CAA gate: it resolves and
+// evaluates the CAA RRset for the certificate's DNS names, returning the result,
+// the effective policy, and which branch was taken — WITHOUT recording metrics
+// or audit events, and WITHOUT deciding fail-open vs fail-closed (that is the
+// caller's mode-dependent choice). checkCAA wraps it for the issuance path;
+// PreviewIssuance consumes the verdict directly. The DNS lookups it performs are
+// read-only.
+func (m *Manager) evaluateCAA(ctx context.Context, base pki.LeafCertRequest, profile Profile, reqCtx caa.RequestContext) (caa.Result, caa.Policy, caaDecision) {
+	if !profile.caaEnabled() {
+		return caa.Result{}, caa.Policy{}, caaDisabled
 	}
-	return nil
+	policy := profile.CAAPolicy()
+	if len(base.DNSNames) == 0 {
+		return caa.Result{}, policy, caaSkipped
+	}
+	if caaResolver == nil {
+		res := caa.Result{Findings: []caa.Finding{{Reason: caa.ReasonLookupError, Detail: "no CAA resolver configured"}}}
+		return res, policy, caaNoResolver
+	}
+	return policy.Check(ctx, caaResolver, base.DNSNames, reqCtx), policy, caaChecked
 }
 
 // recordCAAEvent appends a tamper-evident audit event describing a CAA check

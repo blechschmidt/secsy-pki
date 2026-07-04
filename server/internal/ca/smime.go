@@ -133,16 +133,52 @@ var oidEmailAddress = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 1}
 // lint gate's smime_san_present check, so operators grade it enforce/warn per
 // profile like every other structural rule.
 func (m *Manager) applySMIMEPolicy(base pki.LeafCertRequest, profile Profile, issuerCA *models.CA, requestedBy string) (pki.LeafCertRequest, error) {
-	if profile.SMIME == nil {
+	ev := m.evaluateSMIMEPolicy(base, profile, issuerCA)
+	if !ev.applicable {
 		return base, nil
 	}
-
-	fail := func(reason, format string, args ...interface{}) (pki.LeafCertRequest, error) {
+	if !ev.ok {
 		metrics.CertificateSMIMEChecks.Inc("fail")
-		metrics.CertificateSMIMEFindings.Inc(reason)
-		err := fmt.Errorf(format, args...)
-		m.recordSMIMEEvent(base, profile, issuerCA, requestedBy, err)
-		return base, fmt.Errorf("pre-issuance S/MIME check failed for profile %q: %w", profile.Name, err)
+		metrics.CertificateSMIMEFindings.Inc(ev.reason)
+		m.recordSMIMEEvent(base, profile, issuerCA, requestedBy, ev.err)
+		return base, fmt.Errorf("pre-issuance S/MIME check failed for profile %q: %w", profile.Name, ev.err)
+	}
+	metrics.CertificateSMIMEChecks.Inc("pass")
+	return ev.base, nil
+}
+
+// smimeEvaluation is the side-effect-free outcome of the S/MIME gate: whether it
+// applied to the profile, whether the request passed, the (mailbox-normalized)
+// request on success, and — on failure — the finding-reason code and the error.
+// It carries no metrics or audit effects so the same decision can back both the
+// issuance path (applySMIMEPolicy) and the non-mutating issuance preview
+// (PreviewIssuance).
+type smimeEvaluation struct {
+	// applicable is true when the profile is an S/MIME profile (has an SMIMEConfig).
+	applicable bool
+	// ok reports the gate passed (meaningful only when applicable).
+	ok bool
+	// base is the request with mailbox SANs normalized and the optional PKCS#9
+	// emailAddress attribute applied (valid only when ok).
+	base pki.LeafCertRequest
+	// reason is the finding code on failure ("syntax", "config", "domain").
+	reason string
+	// err is the failure detail (nil on success).
+	err error
+}
+
+// evaluateSMIMEPolicy is the pure core of the pre-issuance S/MIME gate. It
+// validates and normalizes every rfc822Name SAN and enforces the profile and
+// tenant e-mail-domain allowlists, returning the normalized request on success —
+// without recording any metric or audit event. applySMIMEPolicy wraps it for the
+// issuance path; PreviewIssuance consumes the verdict directly.
+func (m *Manager) evaluateSMIMEPolicy(base pki.LeafCertRequest, profile Profile, issuerCA *models.CA) smimeEvaluation {
+	if profile.SMIME == nil {
+		return smimeEvaluation{base: base, applicable: false}
+	}
+
+	fail := func(reason, format string, args ...interface{}) smimeEvaluation {
+		return smimeEvaluation{base: base, applicable: true, ok: false, reason: reason, err: fmt.Errorf(format, args...)}
 	}
 
 	mailboxes, err := smime.NormalizeAll(base.EmailAddresses)
@@ -182,8 +218,7 @@ func (m *Manager) applySMIMEPolicy(base pki.LeafCertRequest, profile Profile, is
 		base.Subject.ExtraNames = appendSubjectEmail(base.Subject.ExtraNames, normalized[0])
 	}
 
-	metrics.CertificateSMIMEChecks.Inc("pass")
-	return base, nil
+	return smimeEvaluation{base: base, applicable: true, ok: true}
 }
 
 // appendSubjectEmail adds the PKCS#9 emailAddress attribute unless one is

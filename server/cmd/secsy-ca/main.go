@@ -657,6 +657,7 @@ func cmdIssue(db *database.DB, mgr *ca.Manager, args []string) error {
 	validityDays := fs.Int("validity-days", 0, "validity in days (0 = profile default)")
 	out := fs.String("out", "", "write the issued certificate PEM here (default: stdout)")
 	chain := fs.Bool("chain", false, "include the issuing CA certificate in the output")
+	dryRun := fs.Bool("dry-run", false, "validate the request through the full pre-issuance gate stack and print the result WITHOUT issuing (no HSM signature, no serial, no record); exits non-zero if the request would be rejected")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -671,6 +672,28 @@ func cmdIssue(db *database.DB, mgr *ca.Manager, args []string) error {
 	csrPEM, err := readInput(*csrPath)
 	if err != nil {
 		return fmt.Errorf("reading CSR: %w", err)
+	}
+
+	// Non-mutating dry-run / validation preview (Task 113): run every fail-closed
+	// pre-issuance gate and print the verdicts without signing. The CLI path calls
+	// ca.Manager directly, so — like `issue` itself — it bypasses the four-eyes
+	// manual-approval gate; the approval verdict reflects only the profile's intent.
+	if *dryRun {
+		preview, err := mgr.PreviewIssuance(context.Background(), ca.PreviewSpec{
+			CAID:        caID,
+			CSRPEM:      csrPEM,
+			Profile:     *profile,
+			Validity:    daysToDuration(*validityDays),
+			RequestedBy: "secsy-ca-cli",
+		})
+		if err != nil {
+			return err
+		}
+		printIssuePreview(os.Stdout, preview)
+		if !preview.WouldIssue {
+			return fmt.Errorf("issuance preview: request would be REJECTED by a pre-issuance gate")
+		}
+		return nil
 	}
 
 	result, err := mgr.IssueCertificate(context.Background(), ca.IssueSpec{

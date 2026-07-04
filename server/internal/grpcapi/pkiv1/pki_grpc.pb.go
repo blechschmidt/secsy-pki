@@ -34,6 +34,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	PKIService_IssueCertificate_FullMethodName     = "/secsy.pki.v1.PKIService/IssueCertificate"
+	PKIService_PreviewCertificate_FullMethodName   = "/secsy.pki.v1.PKIService/PreviewCertificate"
 	PKIService_RenewCertificate_FullMethodName     = "/secsy.pki.v1.PKIService/RenewCertificate"
 	PKIService_RevokeCertificate_FullMethodName    = "/secsy.pki.v1.PKIService/RevokeCertificate"
 	PKIService_SuspendCertificate_FullMethodName   = "/secsy.pki.v1.PKIService/SuspendCertificate"
@@ -61,6 +62,15 @@ type PKIServiceClient interface {
 	// or malformed CSR / bad profile), NOT_FOUND (unknown CA), INTERNAL (signing
 	// failure).
 	IssueCertificate(ctx context.Context, in *IssueCertificateRequest, opts ...grpc.CallOption) (*CertificateResponse, error)
+	// PreviewCertificate validates a would-be issuance through the full fail-closed
+	// pre-issuance gate stack (certlint, CAA, name constraints, certificate policy,
+	// S/MIME policy, validity caps, attestation posture, and the manual-approval
+	// would-park signal) WITHOUT calling the HSM to sign, allocating a durable
+	// serial, persisting anything, appending an audit event, or taking a rate-limit
+	// slot. It returns the resolved leaf extensions plus each gate's verdict so an
+	// operator or CI can validate a request before a real, HSM-consuming issuance.
+	// Requires the same issue capability as IssueCertificate.
+	PreviewCertificate(ctx context.Context, in *PreviewCertificateRequest, opts ...grpc.CallOption) (*PreviewCertificateResponse, error)
 	// RenewCertificate reissues a previously issued certificate with a fresh
 	// serial and validity window, optionally rekeying from a supplied CSR.
 	RenewCertificate(ctx context.Context, in *RenewCertificateRequest, opts ...grpc.CallOption) (*CertificateResponse, error)
@@ -112,6 +122,16 @@ func (c *pKIServiceClient) IssueCertificate(ctx context.Context, in *IssueCertif
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CertificateResponse)
 	err := c.cc.Invoke(ctx, PKIService_IssueCertificate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pKIServiceClient) PreviewCertificate(ctx context.Context, in *PreviewCertificateRequest, opts ...grpc.CallOption) (*PreviewCertificateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PreviewCertificateResponse)
+	err := c.cc.Invoke(ctx, PKIService_PreviewCertificate_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -224,6 +244,15 @@ type PKIServiceServer interface {
 	// or malformed CSR / bad profile), NOT_FOUND (unknown CA), INTERNAL (signing
 	// failure).
 	IssueCertificate(context.Context, *IssueCertificateRequest) (*CertificateResponse, error)
+	// PreviewCertificate validates a would-be issuance through the full fail-closed
+	// pre-issuance gate stack (certlint, CAA, name constraints, certificate policy,
+	// S/MIME policy, validity caps, attestation posture, and the manual-approval
+	// would-park signal) WITHOUT calling the HSM to sign, allocating a durable
+	// serial, persisting anything, appending an audit event, or taking a rate-limit
+	// slot. It returns the resolved leaf extensions plus each gate's verdict so an
+	// operator or CI can validate a request before a real, HSM-consuming issuance.
+	// Requires the same issue capability as IssueCertificate.
+	PreviewCertificate(context.Context, *PreviewCertificateRequest) (*PreviewCertificateResponse, error)
 	// RenewCertificate reissues a previously issued certificate with a fresh
 	// serial and validity window, optionally rekeying from a supplied CSR.
 	RenewCertificate(context.Context, *RenewCertificateRequest) (*CertificateResponse, error)
@@ -273,6 +302,9 @@ type UnimplementedPKIServiceServer struct{}
 
 func (UnimplementedPKIServiceServer) IssueCertificate(context.Context, *IssueCertificateRequest) (*CertificateResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method IssueCertificate not implemented")
+}
+func (UnimplementedPKIServiceServer) PreviewCertificate(context.Context, *PreviewCertificateRequest) (*PreviewCertificateResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PreviewCertificate not implemented")
 }
 func (UnimplementedPKIServiceServer) RenewCertificate(context.Context, *RenewCertificateRequest) (*CertificateResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RenewCertificate not implemented")
@@ -336,6 +368,24 @@ func _PKIService_IssueCertificate_Handler(srv interface{}, ctx context.Context, 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(PKIServiceServer).IssueCertificate(ctx, req.(*IssueCertificateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PKIService_PreviewCertificate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PreviewCertificateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PKIServiceServer).PreviewCertificate(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PKIService_PreviewCertificate_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PKIServiceServer).PreviewCertificate(ctx, req.(*PreviewCertificateRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -512,6 +562,10 @@ var PKIService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "IssueCertificate",
 			Handler:    _PKIService_IssueCertificate_Handler,
+		},
+		{
+			MethodName: "PreviewCertificate",
+			Handler:    _PKIService_PreviewCertificate_Handler,
 		},
 		{
 			MethodName: "RenewCertificate",

@@ -8,7 +8,10 @@ package grpcapi
 
 import (
 	"context"
+	"crypto/x509/pkix"
 	"errors"
+	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -99,6 +102,39 @@ func (s *service) IssueCertificate(ctx context.Context, req *pkiv1.IssueCertific
 	s.audit(ctx, audit.ActionCertIssue, caID, result.Serial.String(), audit.ResultSuccess,
 		"profile="+result.Profile+" "+result.CT.Summary())
 	return certificateResponse(result), nil
+}
+
+// PreviewCertificate validates a would-be issuance through the full fail-closed
+// pre-issuance gate stack without signing, persisting, or consuming a serial
+// (Task 113). It reuses the same authorization and transport-agnostic preview
+// core (api.PreviewIssuance) as the REST endpoint, so both surfaces enforce
+// identical semantics. It records no audit event and no metric — the preview is
+// a pure read.
+func (s *service) PreviewCertificate(ctx context.Context, req *pkiv1.PreviewCertificateRequest) (*pkiv1.PreviewCertificateResponse, error) {
+	user := middleware.GetUserInfo(ctx)
+	caID := req.GetCaId()
+
+	ok, err := s.api.AuthorizeIssueOn(ctx, user, caID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "permission check failed: %v", err)
+	}
+	if !ok {
+		metrics.Certificates.Inc("issue", metrics.ResultDenied)
+		return nil, status.Error(codes.PermissionDenied, "no SIGN_CERTIFICATE permission on this CA")
+	}
+	if err := s.requireCA(caID); err != nil {
+		return nil, err
+	}
+
+	spec, berr := previewSpecFromGRPC(caID, req, user)
+	if berr != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "%v", berr)
+	}
+	result, err := s.api.PreviewIssuance(ctx, spec)
+	if err != nil {
+		return nil, mapIssueError(err)
+	}
+	return previewResponse(result), nil
 }
 
 // RenewCertificate reissues a certificate with a fresh serial and validity.
@@ -465,6 +501,76 @@ func scopeName(shard int) string {
 		return "full"
 	}
 	return "partition:" + strconv.Itoa(shard)
+}
+
+// previewSpecFromGRPC builds a ca.PreviewSpec from a PreviewCertificate request.
+// The requested validity is passed through raw (not globally capped) so the
+// validity gate can report a request that exceeds the profile maximum.
+func previewSpecFromGRPC(caID string, req *pkiv1.PreviewCertificateRequest, user *models.UserInfo) (ca.PreviewSpec, error) {
+	spec := ca.PreviewSpec{
+		CAID:        caID,
+		CSRPEM:      []byte(req.GetCsrPem()),
+		Profile:     req.GetProfile(),
+		Validity:    daysToDuration(int(req.GetValidityDays())),
+		RequestedBy: user.Subject,
+		MustStaple:  req.MustStaple,
+	}
+	if strings.TrimSpace(req.GetCsrPem()) == "" {
+		spec.Subject = pkix.Name{CommonName: req.GetCommonName()}
+		spec.DNSNames = req.GetDnsNames()
+		spec.EmailAddresses = req.GetEmailAddresses()
+		spec.URIs = req.GetUris()
+		for _, ip := range req.GetIpAddresses() {
+			parsed := net.ParseIP(ip)
+			if parsed == nil {
+				return ca.PreviewSpec{}, fmt.Errorf("invalid ip_addresses entry %q", ip)
+			}
+			spec.IPAddresses = append(spec.IPAddresses, parsed)
+		}
+	}
+	return spec, nil
+}
+
+// previewResponse renders a ca.PreviewResult as the gRPC preview response.
+func previewResponse(r *ca.PreviewResult) *pkiv1.PreviewCertificateResponse {
+	resp := &pkiv1.PreviewCertificateResponse{
+		CaId:                  r.CAID,
+		CaLabel:               r.CALabel,
+		Profile:               r.Profile,
+		Decision:              r.Decision,
+		WouldIssue:            r.WouldIssue,
+		WouldPark:             r.WouldPark,
+		RequiresApproval:      r.RequiresApproval,
+		Subject:               r.Subject,
+		Sans:                  r.SANs,
+		KeyUsages:             r.KeyUsages,
+		ExtKeyUsages:          r.ExtKeyUsages,
+		NotBefore:             timestamppb.New(r.NotBefore),
+		NotAfter:              timestamppb.New(r.NotAfter),
+		ValidityDays:          int32(r.ValidityDays),
+		RequestedValidityDays: int32(r.RequestedValidityDays),
+		MaxValidityDays:       int32(r.MaxValidityDays),
+		SubjectKeyId:          r.SubjectKeyID,
+		AuthorityKeyId:        r.AuthorityKeyID,
+		SubjectKeyProvided:    r.SubjectKeyProvided,
+		MustStaple:            r.MustStaple,
+	}
+	for _, e := range r.Extensions {
+		resp.Extensions = append(resp.Extensions, &pkiv1.PreviewExtension{
+			Oid:      e.OID,
+			Name:     e.Name,
+			Critical: e.Critical,
+		})
+	}
+	for _, g := range r.Gates {
+		resp.Gates = append(resp.Gates, &pkiv1.PreviewGate{
+			Name:     g.Name,
+			Status:   string(g.Status),
+			Reason:   g.Reason,
+			Findings: g.Findings,
+		})
+	}
+	return resp
 }
 
 // certificateResponse renders an issuance result as the gRPC response.

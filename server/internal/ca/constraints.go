@@ -75,18 +75,57 @@ func preservedCAExtensions(cert *x509.Certificate) []pkix.Extension {
 // issuer carries name constraints — a CA cannot opt out of honoring the limits
 // encoded in its own certificate.
 func (m *Manager) checkNameConstraints(base pki.LeafCertRequest, profile Profile, issuerCA *models.CA, issuerCert *x509.Certificate, requestedBy string) error {
-	constraints, ok, err := nameconstraints.FromExtensions(issuerCert.Extensions)
-	if err != nil {
+	ev := m.evaluateNameConstraints(base, issuerCert)
+	if ev.parseErr != nil {
 		// The issuer's own extension failed to parse. Fail closed: we cannot prove
 		// the leaf is in scope, so refuse rather than mis-issue.
 		metrics.CertificateNameConstraintChecks.Inc("error")
-		return fmt.Errorf("pre-issuance name-constraint check failed for CA %q: %w", issuerCA.Label, err)
+		return fmt.Errorf("pre-issuance name-constraint check failed for CA %q: %w", issuerCA.Label, ev.parseErr)
 	}
-	if !ok {
+	if !ev.applicable {
 		// Issuer imposes no name constraints; nothing to enforce.
 		return nil
 	}
+	if ev.res.Permitted() {
+		metrics.CertificateNameConstraintChecks.Inc("pass")
+		return nil
+	}
 
+	metrics.CertificateNameConstraintChecks.Inc("fail")
+	for _, v := range ev.res.Violations {
+		metrics.CertificateNameConstraintViolations.Inc(v.Type + ":" + v.Reason)
+	}
+	m.recordNameConstraintEvent(base, profile, issuerCA, requestedBy, ev.res)
+	return fmt.Errorf("pre-issuance name-constraint check failed for CA %q: %s", issuerCA.Label, ev.res.Summary())
+}
+
+// nameConstraintEvaluation is the side-effect-free outcome of the Name
+// Constraints gate: whether the issuer imposes constraints, the validation
+// result, or a parse error on the issuer's own extension (which fails closed).
+type nameConstraintEvaluation struct {
+	// applicable is true when the issuing CA certificate carries name constraints.
+	applicable bool
+	// res is the validation of the candidate leaf's names against them (valid only
+	// when applicable and parseErr is nil).
+	res nameconstraints.Result
+	// parseErr is non-nil when the issuer's own name-constraint extension could
+	// not be parsed; the gate then fails closed.
+	parseErr error
+}
+
+// evaluateNameConstraints is the pure core of the pre-issuance Name Constraints
+// gate: it validates the candidate leaf's subject and SANs against the issuing
+// CA's RFC 5280 §4.2.1.10 constraints, WITHOUT recording metrics or audit
+// events. checkNameConstraints wraps it for the issuance path; PreviewIssuance
+// consumes the verdict directly.
+func (m *Manager) evaluateNameConstraints(base pki.LeafCertRequest, issuerCert *x509.Certificate) nameConstraintEvaluation {
+	constraints, ok, err := nameconstraints.FromExtensions(issuerCert.Extensions)
+	if err != nil {
+		return nameConstraintEvaluation{applicable: true, parseErr: err}
+	}
+	if !ok {
+		return nameConstraintEvaluation{applicable: false}
+	}
 	id := nameconstraints.Identity{
 		DNSNames: base.DNSNames,
 		IPs:      base.IPAddresses,
@@ -94,18 +133,7 @@ func (m *Manager) checkNameConstraints(base pki.LeafCertRequest, profile Profile
 		URIs:     base.URIs,
 		Subject:  base.Subject,
 	}
-	res := constraints.Validate(id)
-	if res.Permitted() {
-		metrics.CertificateNameConstraintChecks.Inc("pass")
-		return nil
-	}
-
-	metrics.CertificateNameConstraintChecks.Inc("fail")
-	for _, v := range res.Violations {
-		metrics.CertificateNameConstraintViolations.Inc(v.Type + ":" + v.Reason)
-	}
-	m.recordNameConstraintEvent(base, profile, issuerCA, requestedBy, res)
-	return fmt.Errorf("pre-issuance name-constraint check failed for CA %q: %s", issuerCA.Label, res.Summary())
+	return nameConstraintEvaluation{applicable: true, res: constraints.Validate(id)}
 }
 
 // recordNameConstraintEvent appends a tamper-evident audit event for a leaf

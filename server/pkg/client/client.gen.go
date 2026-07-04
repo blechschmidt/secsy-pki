@@ -62,8 +62,8 @@ const (
 
 // Defines values for ApprovalDecisionDecision.
 const (
-	Approve ApprovalDecisionDecision = "approve"
-	Reject  ApprovalDecisionDecision = "reject"
+	ApprovalDecisionDecisionApprove ApprovalDecisionDecision = "approve"
+	ApprovalDecisionDecisionReject  ApprovalDecisionDecision = "reject"
 )
 
 // Defines values for ArtifactSignResponseDigestAlgorithm.
@@ -266,13 +266,28 @@ const (
 	PermissionGrantEntityTypeUser  PermissionGrantEntityType = "user"
 )
 
+// Defines values for PreviewCertResultDecision.
+const (
+	PreviewCertResultDecisionAccept PreviewCertResultDecision = "accept"
+	PreviewCertResultDecisionPark   PreviewCertResultDecision = "park"
+	PreviewCertResultDecisionReject PreviewCertResultDecision = "reject"
+)
+
+// Defines values for PreviewGateStatus.
+const (
+	PreviewGateStatusFail    PreviewGateStatus = "fail"
+	PreviewGateStatusPass    PreviewGateStatus = "pass"
+	PreviewGateStatusSkipped PreviewGateStatus = "skipped"
+	PreviewGateStatusWarn    PreviewGateStatus = "warn"
+)
+
 // Defines values for ReadinessComponentsStatus.
 const (
-	Down     ReadinessComponentsStatus = "down"
-	Follower ReadinessComponentsStatus = "follower"
-	Leader   ReadinessComponentsStatus = "leader"
-	Skipped  ReadinessComponentsStatus = "skipped"
-	Up       ReadinessComponentsStatus = "up"
+	ReadinessComponentsStatusDown     ReadinessComponentsStatus = "down"
+	ReadinessComponentsStatusFollower ReadinessComponentsStatus = "follower"
+	ReadinessComponentsStatusLeader   ReadinessComponentsStatus = "leader"
+	ReadinessComponentsStatusSkipped  ReadinessComponentsStatus = "skipped"
+	ReadinessComponentsStatusUp       ReadinessComponentsStatus = "up"
 )
 
 // Defines values for ReadinessStatus.
@@ -1958,6 +1973,88 @@ type PermissionGrant struct {
 // PermissionGrantEntityType defines model for PermissionGrant.EntityType.
 type PermissionGrantEntityType string
 
+// PreviewCertRequest A would-be issuance to validate through the pre-issuance gate stack without signing (Task 113). Supply either csr or the explicit-identity fields (common_name + SANs).
+type PreviewCertRequest struct {
+	// CommonName Subject CN when no CSR is supplied
+	CommonName *string `json:"common_name,omitempty"`
+
+	// Csr PEM PKCS#10 CSR (optional)
+	Csr            *string   `json:"csr,omitempty"`
+	DnsNames       *[]string `json:"dns_names,omitempty"`
+	EmailAddresses *[]string `json:"email_addresses,omitempty"`
+	IpAddresses    *[]string `json:"ip_addresses,omitempty"`
+
+	// MustStaple Optional per-request override of the profile's RFC 7633 Must-Staple default (honored only where the profile permits overrides).
+	MustStaple *bool `json:"must_staple,omitempty"`
+
+	// Profile Profile name; empty = default
+	Profile *string   `json:"profile,omitempty"`
+	Uris    *[]string `json:"uris,omitempty"`
+
+	// ValidityDays Requested validity (0 = profile default). The validity gate reports a request exceeding the profile maximum.
+	ValidityDays *int `json:"validity_days,omitempty"`
+}
+
+// PreviewCertResult The outcome of a non-mutating issuance preview.
+type PreviewCertResult struct {
+	AuthorityKeyId *string `json:"authority_key_id,omitempty"`
+	CaId           *string `json:"ca_id,omitempty"`
+	CaLabel        *string `json:"ca_label,omitempty"`
+
+	// Decision accept (would issue immediately), park (would be held for four-eyes approval), or reject (a fail-closed gate would refuse it).
+	Decision              *PreviewCertResultDecision `json:"decision,omitempty"`
+	ExtKeyUsages          *[]string                  `json:"ext_key_usages,omitempty"`
+	Extensions            *[]PreviewExtension        `json:"extensions,omitempty"`
+	Gates                 *[]PreviewGate             `json:"gates,omitempty"`
+	KeyUsages             *[]string                  `json:"key_usages,omitempty"`
+	MaxValidityDays       *int                       `json:"max_validity_days,omitempty"`
+	MustStaple            *bool                      `json:"must_staple,omitempty"`
+	NotAfter              *time.Time                 `json:"not_after,omitempty"`
+	NotBefore             *time.Time                 `json:"not_before,omitempty"`
+	Profile               *string                    `json:"profile,omitempty"`
+	RequestedValidityDays *int                       `json:"requested_validity_days,omitempty"`
+	RequiresApproval      *bool                      `json:"requires_approval,omitempty"`
+	Sans                  *[]string                  `json:"sans,omitempty"`
+	Subject               *string                    `json:"subject,omitempty"`
+	SubjectKeyId          *string                    `json:"subject_key_id,omitempty"`
+
+	// SubjectKeyProvided Whether a real subject key was supplied (via a CSR). When false the subject_key_id is derived from a throwaway key and is indicative.
+	SubjectKeyProvided *bool `json:"subject_key_provided,omitempty"`
+	ValidityDays       *int  `json:"validity_days,omitempty"`
+
+	// WouldIssue True when no gate would reject the request.
+	WouldIssue *bool `json:"would_issue,omitempty"`
+
+	// WouldPark True when issuance would be held for manual approval.
+	WouldPark *bool `json:"would_park,omitempty"`
+}
+
+// PreviewCertResultDecision accept (would issue immediately), park (would be held for four-eyes approval), or reject (a fail-closed gate would refuse it).
+type PreviewCertResultDecision string
+
+// PreviewExtension One resolved leaf extension the certificate would carry.
+type PreviewExtension struct {
+	Critical *bool `json:"critical,omitempty"`
+
+	// Name Human-readable name for well-known OIDs
+	Name *string `json:"name,omitempty"`
+	Oid  *string `json:"oid,omitempty"`
+}
+
+// PreviewGate One pre-issuance gate's verdict in a preview.
+type PreviewGate struct {
+	// Findings Per-check detail (lint codes, name-constraint violations, …).
+	Findings *[]string `json:"findings,omitempty"`
+
+	// Name Gate identifier (smime, certificate_policy, must_staple, lint, caa, name_constraints, validity, approval, attestation).
+	Name   *string            `json:"name,omitempty"`
+	Reason *string            `json:"reason,omitempty"`
+	Status *PreviewGateStatus `json:"status,omitempty"`
+}
+
+// PreviewGateStatus defines model for PreviewGate.Status.
+type PreviewGateStatus string
+
 // Profile defines model for Profile.
 type Profile struct {
 	// AllowMustStapleOverride When true, a per-request must_staple value on the issue request overrides the profile default (on or off); otherwise it is ignored.
@@ -2899,6 +2996,9 @@ type InitRootCAJSONRequestBody = CAInitRootRequest
 // BulkIssueCertificatesJSONRequestBody defines body for BulkIssueCertificates for application/json ContentType.
 type BulkIssueCertificatesJSONRequestBody = BulkIssueRequest
 
+// PreviewCertificateJSONRequestBody defines body for PreviewCertificate for application/json ContentType.
+type PreviewCertificateJSONRequestBody = PreviewCertRequest
+
 // CreateCrossSignJSONRequestBody defines body for CreateCrossSign for application/json ContentType.
 type CreateCrossSignJSONRequestBody = CACrossSignRequest
 
@@ -3152,6 +3252,11 @@ type ClientInterface interface {
 	BulkIssueCertificatesWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	BulkIssueCertificates(ctx context.Context, id CAId, body BulkIssueCertificatesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PreviewCertificateWithBody request with any body
+	PreviewCertificateWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PreviewCertificate(ctx context.Context, id CAId, body PreviewCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetChain request
 	GetChain(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3816,6 +3921,30 @@ func (c *Client) BulkIssueCertificatesWithBody(ctx context.Context, id CAId, con
 
 func (c *Client) BulkIssueCertificates(ctx context.Context, id CAId, body BulkIssueCertificatesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewBulkIssueCertificatesRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PreviewCertificateWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPreviewCertificateRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PreviewCertificate(ctx context.Context, id CAId, body PreviewCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPreviewCertificateRequest(c.Server, id, body)
 	if err != nil {
 		return nil, err
 	}
@@ -6556,6 +6685,53 @@ func NewBulkIssueCertificatesRequestWithBody(server string, id CAId, contentType
 	}
 
 	operationPath := fmt.Sprintf("/api/ca/%s/certificates:bulk", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewPreviewCertificateRequest calls the generic PreviewCertificate builder with application/json body
+func NewPreviewCertificateRequest(server string, id CAId, body PreviewCertificateJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPreviewCertificateRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewPreviewCertificateRequestWithBody generates requests for PreviewCertificate with any type of body
+func NewPreviewCertificateRequestWithBody(server string, id CAId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/certificates:preview", pathParam0)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -11231,6 +11407,11 @@ type ClientWithResponsesInterface interface {
 
 	BulkIssueCertificatesWithResponse(ctx context.Context, id CAId, body BulkIssueCertificatesJSONRequestBody, reqEditors ...RequestEditorFn) (*BulkIssueCertificatesResponse, error)
 
+	// PreviewCertificateWithBodyWithResponse request with any body
+	PreviewCertificateWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PreviewCertificateResponse, error)
+
+	PreviewCertificateWithResponse(ctx context.Context, id CAId, body PreviewCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*PreviewCertificateResponse, error)
+
 	// GetChainWithResponse request
 	GetChainWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetChainResponse, error)
 
@@ -12034,6 +12215,31 @@ func (r BulkIssueCertificatesResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r BulkIssueCertificatesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PreviewCertificateResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *PreviewCertResult
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r PreviewCertificateResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PreviewCertificateResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -14693,6 +14899,23 @@ func (c *ClientWithResponses) BulkIssueCertificatesWithResponse(ctx context.Cont
 	return ParseBulkIssueCertificatesResponse(rsp)
 }
 
+// PreviewCertificateWithBodyWithResponse request with arbitrary body returning *PreviewCertificateResponse
+func (c *ClientWithResponses) PreviewCertificateWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PreviewCertificateResponse, error) {
+	rsp, err := c.PreviewCertificateWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePreviewCertificateResponse(rsp)
+}
+
+func (c *ClientWithResponses) PreviewCertificateWithResponse(ctx context.Context, id CAId, body PreviewCertificateJSONRequestBody, reqEditors ...RequestEditorFn) (*PreviewCertificateResponse, error) {
+	rsp, err := c.PreviewCertificate(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePreviewCertificateResponse(rsp)
+}
+
 // GetChainWithResponse request returning *GetChainResponse
 func (c *ClientWithResponses) GetChainWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetChainResponse, error) {
 	rsp, err := c.GetChain(ctx, id, reqEditors...)
@@ -16518,6 +16741,53 @@ func ParseBulkIssueCertificatesResponse(rsp *http.Response) (*BulkIssueCertifica
 			return nil, err
 		}
 		response.JSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePreviewCertificateResponse parses an HTTP response from a PreviewCertificateWithResponse call
+func ParsePreviewCertificateResponse(rsp *http.Response) (*PreviewCertificateResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PreviewCertificateResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PreviewCertResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
 
 	}
 

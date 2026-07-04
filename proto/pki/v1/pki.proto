@@ -32,6 +32,16 @@ service PKIService {
   // failure).
   rpc IssueCertificate(IssueCertificateRequest) returns (CertificateResponse);
 
+  // PreviewCertificate validates a would-be issuance through the full fail-closed
+  // pre-issuance gate stack (certlint, CAA, name constraints, certificate policy,
+  // S/MIME policy, validity caps, attestation posture, and the manual-approval
+  // would-park signal) WITHOUT calling the HSM to sign, allocating a durable
+  // serial, persisting anything, appending an audit event, or taking a rate-limit
+  // slot. It returns the resolved leaf extensions plus each gate's verdict so an
+  // operator or CI can validate a request before a real, HSM-consuming issuance.
+  // Requires the same issue capability as IssueCertificate.
+  rpc PreviewCertificate(PreviewCertificateRequest) returns (PreviewCertificateResponse);
+
   // RenewCertificate reissues a previously issued certificate with a fresh
   // serial and validity window, optionally rekeying from a supplied CSR.
   rpc RenewCertificate(RenewCertificateRequest) returns (CertificateResponse);
@@ -143,6 +153,85 @@ message CertificateResponse {
   google.protobuf.Timestamp not_before = 5;
   google.protobuf.Timestamp not_after = 6;
   CTInfo ct = 7;
+}
+
+// PreviewCertificateRequest validates a would-be issuance without signing.
+// Supply either csr_pem (its subject/public key/SANs are previewed exactly as
+// issuance would take them) or the explicit-identity fields (a throwaway subject
+// key is synthesized only to resolve the extension layout).
+message PreviewCertificateRequest {
+  string ca_id = 1;
+  // csr_pem is a PEM PKCS#10 CSR (optional).
+  string csr_pem = 2;
+  // profile is the certificate profile name; empty selects the default profile.
+  string profile = 3;
+  // validity_days is the requested validity (non-positive uses the profile
+  // default). The validity gate reports a request exceeding the profile maximum.
+  int32 validity_days = 4;
+  // must_staple optionally overrides the profile's RFC 7633 default, honored only
+  // where the profile permits per-request overrides.
+  optional bool must_staple = 5;
+  // The explicit-identity fields are used only when csr_pem is empty.
+  string common_name = 6;
+  repeated string dns_names = 7;
+  repeated string ip_addresses = 8;
+  repeated string email_addresses = 9;
+  repeated string uris = 10;
+}
+
+// PreviewGate is one pre-issuance gate's verdict in a preview.
+message PreviewGate {
+  // name is the gate identifier (smime, certificate_policy, must_staple, lint,
+  // caa, name_constraints, validity, approval, attestation).
+  string name = 1;
+  // status is "pass", "fail", "warn", or "skipped".
+  string status = 2;
+  // reason is a human-readable explanation of the disposition.
+  string reason = 3;
+  // findings carries per-check detail (individual lint codes, name-constraint
+  // violations, …) when the gate produced several.
+  repeated string findings = 4;
+}
+
+// PreviewExtension describes one resolved leaf extension the certificate would
+// carry, read back from a faithful throwaway-signed synthesis of the leaf.
+message PreviewExtension {
+  string oid = 1;
+  string name = 2;
+  bool critical = 3;
+}
+
+// PreviewCertificateResponse is the outcome of a non-mutating issuance preview.
+message PreviewCertificateResponse {
+  string ca_id = 1;
+  string ca_label = 2;
+  string profile = 3;
+  // decision is "accept", "park" (held for four-eyes approval), or "reject".
+  string decision = 4;
+  // would_issue is true when no gate would reject the request.
+  bool would_issue = 5;
+  // would_park is true when a real operator/API issuance would be held for
+  // manual approval instead of issued immediately.
+  bool would_park = 6;
+  bool requires_approval = 7;
+  string subject = 8;
+  repeated string sans = 9;
+  repeated string key_usages = 10;
+  repeated string ext_key_usages = 11;
+  google.protobuf.Timestamp not_before = 12;
+  google.protobuf.Timestamp not_after = 13;
+  int32 validity_days = 14;
+  int32 requested_validity_days = 15;
+  int32 max_validity_days = 16;
+  string subject_key_id = 17;
+  string authority_key_id = 18;
+  // subject_key_provided reports whether a real subject key was supplied (via a
+  // CSR). When false the subject_key_id is derived from a throwaway key and is
+  // indicative rather than the value a real certificate would carry.
+  bool subject_key_provided = 19;
+  bool must_staple = 20;
+  repeated PreviewExtension extensions = 21;
+  repeated PreviewGate gates = 22;
 }
 
 message RevokeCertificateRequest {

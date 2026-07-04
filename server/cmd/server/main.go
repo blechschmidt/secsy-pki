@@ -753,6 +753,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Attestation configuration error: %v", err)
 	}
+	// Share it with the issuance-preview endpoint (Task 113) so a dry-run reports a
+	// profile's attestation posture. Nil (attestation disabled) leaves the preview's
+	// attestation gate inert.
+	api.SetAttestationVerifier(attestVerifier)
 
 	// ACME (RFC 8555) automated-issuance server. Its endpoints authenticate
 	// clients via JWS account keys (not OIDC/basic auth) and are therefore

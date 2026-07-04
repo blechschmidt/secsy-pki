@@ -137,27 +137,9 @@ func (m *Manager) lintLeaf(base pki.LeafCertRequest, profile Profile, issuerCA *
 		return nil
 	}
 
-	policy := profile.LintPolicy()
-	tbs, err := certlint.CertificateFromLeaf(base)
+	res, err := m.lintResult(base, profile, issuerCert)
 	if err != nil {
-		return fmt.Errorf("building certificate for linting: %w", err)
-	}
-	res := certlint.Lint(tbs, policy)
-
-	// Optional zlint backend on the to-be-signed template. The template carries no
-	// DER (nothing is signed yet), so synthesize a faithful linting certificate —
-	// same TBSCertificate, throwaway signature — and lint its DER. Only classical
-	// profiles are supported (zlint does not understand ML-DSA); a synthesis
-	// failure is logged and skipped rather than blocking issuance, since it is an
-	// infrastructure fault, not a certificate-policy violation. When the backend
-	// is not compiled in, ZLintAvailable is false and this block is skipped (the
-	// startup profile check warns the operator once).
-	if policy.ZLint != nil && certlint.ZLintAvailable() && profile.Algorithm == AlgClassical && issuerCert != nil {
-		if der, serr := pki.LintCertificateDER(issuerCert, base); serr != nil {
-			log.Printf("WARNING: zlint enabled for profile %q but linting certificate could not be synthesized (skipping zlint): %v", profile.Name, serr)
-		} else {
-			res.Findings = append(res.Findings, certlint.ZLintFindings(der, *policy.ZLint)...)
-		}
+		return err
 	}
 
 	// Metrics: one outcome per run, plus one per finding for fine-grained alerts.
@@ -183,6 +165,40 @@ func (m *Manager) lintLeaf(base pki.LeafCertRequest, profile Profile, issuerCA *
 		return fmt.Errorf("pre-issuance lint failed for profile %q: %s", profile.Name, res.Err())
 	}
 	return nil
+}
+
+// lintResult runs the profile's pre-issuance lint checks (the hand-rolled
+// certlint rules, plus the optional zlint backend on a synthesized linting
+// certificate) on the to-be-signed template and returns the raw findings,
+// WITHOUT recording any metric or audit event. lintLeaf wraps it for the
+// issuance path (adding metrics, an audit event, and the fail-closed error);
+// PreviewIssuance consumes the Result directly. A non-nil error is an
+// infrastructure fault — the template could not be assembled for linting — not a
+// certificate-policy violation.
+func (m *Manager) lintResult(base pki.LeafCertRequest, profile Profile, issuerCert *x509.Certificate) (certlint.Result, error) {
+	policy := profile.LintPolicy()
+	tbs, err := certlint.CertificateFromLeaf(base)
+	if err != nil {
+		return certlint.Result{}, fmt.Errorf("building certificate for linting: %w", err)
+	}
+	res := certlint.Lint(tbs, policy)
+
+	// Optional zlint backend on the to-be-signed template. The template carries no
+	// DER (nothing is signed yet), so synthesize a faithful linting certificate —
+	// same TBSCertificate, throwaway signature — and lint its DER. Only classical
+	// profiles are supported (zlint does not understand ML-DSA); a synthesis
+	// failure is logged and skipped rather than blocking issuance, since it is an
+	// infrastructure fault, not a certificate-policy violation. When the backend
+	// is not compiled in, ZLintAvailable is false and this block is skipped (the
+	// startup profile check warns the operator once).
+	if policy.ZLint != nil && certlint.ZLintAvailable() && profile.Algorithm == AlgClassical && issuerCert != nil {
+		if der, serr := pki.LintCertificateDER(issuerCert, base); serr != nil {
+			log.Printf("WARNING: zlint enabled for profile %q but linting certificate could not be synthesized (skipping zlint): %v", profile.Name, serr)
+		} else {
+			res.Findings = append(res.Findings, certlint.ZLintFindings(der, *policy.ZLint)...)
+		}
+	}
+	return res, nil
 }
 
 // recordLintEvent appends a tamper-evident audit event describing a lint result

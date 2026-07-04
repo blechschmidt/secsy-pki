@@ -118,6 +118,10 @@ func grpcAuthzMatrix() []grpcCase {
 			_, err := s.IssueCertificate(ctx, &pkiv1.IssueCertificateRequest{CaId: "ca-a", CsrPem: "bad"})
 			return err
 		}),
+		issueCase("PreviewCertificate", func(ctx context.Context, s *service) error {
+			_, err := s.PreviewCertificate(ctx, &pkiv1.PreviewCertificateRequest{CaId: "ca-a", CsrPem: "bad"})
+			return err
+		}),
 		issueCase("RenewCertificate", func(ctx context.Context, s *service) error {
 			_, err := s.RenewCertificate(ctx, &pkiv1.RenewCertificateRequest{CaId: "ca-a", Serial: "01"})
 			return err

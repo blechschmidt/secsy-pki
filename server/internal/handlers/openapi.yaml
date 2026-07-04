@@ -1058,6 +1058,47 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/BulkIssueConflict" }
 
+  /api/ca/{id}/certificates:preview:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: previewCertificate
+      tags: [Certificate Lifecycle]
+      summary: Preview / dry-run a single issuance through the pre-issuance gates
+      description: >
+        Non-mutating pre-issuance dry-run / validation preview (Task 113).
+        Validates a single would-be issuance through the full fail-closed
+        pre-issuance gate stack — certlint, CAA (RFC 8659/8657), Name
+        Constraints & certificate policy, S/MIME policy, validity caps, the
+        attestation posture, and the manual-approval would-park signal —
+        WITHOUT calling the HSM to sign, allocating a durable serial, persisting
+        a record, appending an audit event, or taking a rate-limit / tenant
+        reservation. Returns the resolved leaf (subject, SANs, key usages,
+        SKI/AKI, validity, and the exact extension layout) plus each gate's
+        pass/fail/warn/skipped verdict, so an operator or CI can validate a
+        request before a real, HSM-consuming issuance. Supply either a CSR (its
+        subject/public key/SANs are previewed exactly as issuance would take
+        them) or the explicit identity fields (common_name + SANs), in which
+        case a throwaway subject key is synthesized only to resolve the
+        extension layout. Requires the same issue capability as POST /issue and
+        is tenant-scoped. Gate failures are reported inside the 200 body (with
+        decision "reject"); the endpoint answers 400 only for a malformed
+        request (unknown CA/profile, unparseable CSR).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PreviewCertRequest" }
+      responses:
+        "200":
+          description: The preview verdict (decision, resolved leaf, and per-gate results).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PreviewCertResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/ca/{id}/certificates:
     parameters:
       - $ref: "#/components/parameters/CAId"
@@ -3634,6 +3675,95 @@ components:
           description: >-
             Certificate Transparency (RFC 6962) handling for this issuance.
             Present only when the profile requested CT.
+
+    PreviewCertRequest:
+      type: object
+      description: >-
+        A would-be issuance to validate through the pre-issuance gate stack
+        without signing (Task 113). Supply either csr or the explicit-identity
+        fields (common_name + SANs).
+      properties:
+        csr: { type: string, description: PEM PKCS#10 CSR (optional) }
+        profile: { type: string, description: "Profile name; empty = default" }
+        validity_days:
+          type: integer
+          description: >-
+            Requested validity (0 = profile default). The validity gate reports
+            a request exceeding the profile maximum.
+        must_staple:
+          type: boolean
+          description: >-
+            Optional per-request override of the profile's RFC 7633 Must-Staple
+            default (honored only where the profile permits overrides).
+        common_name: { type: string, description: Subject CN when no CSR is supplied }
+        dns_names: { type: array, items: { type: string } }
+        ip_addresses: { type: array, items: { type: string } }
+        email_addresses: { type: array, items: { type: string } }
+        uris: { type: array, items: { type: string } }
+
+    PreviewGate:
+      type: object
+      description: One pre-issuance gate's verdict in a preview.
+      properties:
+        name:
+          type: string
+          description: >-
+            Gate identifier (smime, certificate_policy, must_staple, lint, caa,
+            name_constraints, validity, approval, attestation).
+        status: { type: string, enum: [pass, fail, warn, skipped] }
+        reason: { type: string }
+        findings:
+          type: array
+          items: { type: string }
+          description: Per-check detail (lint codes, name-constraint violations, …).
+
+    PreviewExtension:
+      type: object
+      description: One resolved leaf extension the certificate would carry.
+      properties:
+        oid: { type: string }
+        name: { type: string, description: Human-readable name for well-known OIDs }
+        critical: { type: boolean }
+
+    PreviewCertResult:
+      type: object
+      description: The outcome of a non-mutating issuance preview.
+      properties:
+        ca_id: { type: string }
+        ca_label: { type: string }
+        profile: { type: string }
+        decision:
+          type: string
+          enum: [accept, park, reject]
+          description: >-
+            accept (would issue immediately), park (would be held for four-eyes
+            approval), or reject (a fail-closed gate would refuse it).
+        would_issue: { type: boolean, description: True when no gate would reject the request. }
+        would_park: { type: boolean, description: True when issuance would be held for manual approval. }
+        requires_approval: { type: boolean }
+        subject: { type: string }
+        sans: { type: array, items: { type: string } }
+        key_usages: { type: array, items: { type: string } }
+        ext_key_usages: { type: array, items: { type: string } }
+        not_before: { type: string, format: date-time }
+        not_after: { type: string, format: date-time }
+        validity_days: { type: integer }
+        requested_validity_days: { type: integer }
+        max_validity_days: { type: integer }
+        subject_key_id: { type: string }
+        authority_key_id: { type: string }
+        subject_key_provided:
+          type: boolean
+          description: >-
+            Whether a real subject key was supplied (via a CSR). When false the
+            subject_key_id is derived from a throwaway key and is indicative.
+        must_staple: { type: boolean }
+        extensions:
+          type: array
+          items: { $ref: "#/components/schemas/PreviewExtension" }
+        gates:
+          type: array
+          items: { $ref: "#/components/schemas/PreviewGate" }
 
     ExportPKCS12Request:
       type: object

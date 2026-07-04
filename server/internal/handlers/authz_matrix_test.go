@@ -325,6 +325,7 @@ func authzMatrix() []rc {
 		iss("POST", "/api/ca/{id}/revoke", "/api/ca/ca-a/revoke", `{"serial":"01"}`),
 		caMg("POST", "/api/ca/{id}/revocations:bulk", "/api/ca/ca-a/revocations:bulk", `{}`),
 		iss("POST", "/api/ca/{id}/certificates:bulk", "/api/ca/ca-a/certificates:bulk", `{}`),
+		iss("POST", "/api/ca/{id}/certificates:preview", "/api/ca/ca-a/certificates:preview", `{"csr":"bogus"}`),
 		caRd("GET", "/api/ca/{id}/certificates", "/api/ca/ca-a/certificates"),
 		caRd("GET", "/api/ca/{id}/revoked", "/api/ca/ca-a/revoked"),
 		iss("POST", "/api/ca/{id}/certificates/{action}", "/api/ca/ca-a/certificates/01:suspend", `{}`),

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/approval"
+	"github.com/blechschmidt/secsy-pki/server/internal/attestation"
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
@@ -117,6 +118,11 @@ type API struct {
 	// database.DB.AppendEvent's hook to events.Publish so every hash-chained event
 	// is fanned out identically from every append site.
 	events *eventstream.Publisher
+	// attestationVerifier is the enrollment key-attestation verifier (Task 49),
+	// shared with the EST/SCEP/ACME enrollment paths. The single-request issuance
+	// preview (Task 113) consults it to report a profile's attestation posture; nil
+	// (attestation disabled) makes the preview's attestation gate a no-op.
+	attestationVerifier *attestation.Verifier
 }
 
 // LeaderInfo is the read-only view of the multi-replica coordination elector
@@ -140,6 +146,14 @@ func (a *API) SetApprovals(e *approval.Engine) { a.approvals = e }
 // SetAPITokenMaxLifetime installs the maximum lifetime for native scoped API
 // tokens (Task 86). A zero duration leaves token lifetimes unbounded.
 func (a *API) SetAPITokenMaxLifetime(d time.Duration) { a.apiTokenMaxLifetime = d }
+
+// SetAttestationVerifier installs the enrollment key-attestation verifier
+// (Task 49) so the single-request issuance preview (Task 113) can report a
+// profile's attestation requirement. A nil verifier leaves the preview's
+// attestation gate inert (attestation is not enforced on the direct CSR issue
+// path — it is an EST/SCEP/ACME enrollment concern — so the preview reports it as
+// informational).
+func (a *API) SetAttestationVerifier(v *attestation.Verifier) { a.attestationVerifier = v }
 
 // AuthInfo describes the operator-authentication mechanisms enabled on the
 // server, surfaced to the console through /api/auth/config.
@@ -423,6 +437,11 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	// the per-profile approval gate protect against accidental mass issuance. It
 	// is step-up eligible (inert unless declared) but never requires ca:manage.
 	mux.Handle("POST /api/ca/{id}/certificates:bulk", protectStepUp("cert.issue_bulk", http.HandlerFunc(a.BulkIssueCertificates)))
+	// Non-mutating pre-issuance dry-run / validation preview (Task 113): validate a
+	// single request through the full fail-closed gate stack without signing,
+	// persisting, or consuming a serial. Gated by the same issue capability as
+	// /issue (it discloses only what a real issuance would produce), tenant-scoped.
+	mux.Handle("POST /api/ca/{id}/certificates:preview", protected(http.HandlerFunc(a.PreviewCertificate)))
 	mux.Handle("GET /api/ca/{id}/certificates", protected(http.HandlerFunc(a.ListIssuedCertificates)))
 	mux.Handle("GET /api/ca/{id}/revoked", protected(http.HandlerFunc(a.ListRevokedCertificates)))
 	// Reversible certificate suspend (RFC 5280 certificateHold) and release
