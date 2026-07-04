@@ -42,7 +42,11 @@ rbac:
 
 Endpoints check a coarse capability (`cert:issue`, `audit:read`, `ca:manage`,
 `ca:configure`, `rbac:manage`, `hsm:manage`, `secret:encrypt`,
-`secret:decrypt`). `admin`/root satisfy all of them. For **signing** endpoints,
+`secret:decrypt`, `token:manage`, `server:profile`). `admin`/root satisfy all of
+them. `token:manage` (mint/revoke API tokens) and `server:profile` (capture
+runtime pprof profiles — a raw dump of process memory, so as sensitive as
+`hsm:manage`) are **admin-only**: no lesser role grants them. For **signing**
+endpoints,
 access is granted by *either* the org-wide `cert:issue` capability *or* a per-CA
 `SIGN_CERTIFICATE` grant — so existing per-CA delegation keeps working
 unchanged, and an org-wide `issuer` no longer needs a grant on every CA.

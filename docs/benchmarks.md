@@ -8,6 +8,7 @@ pool size** and the **OCSP response cache TTL**.
 - [What is measured](#what-is-measured)
 - [The session pool](#the-session-pool-why-throughput-scales)
 - [Running the suite](#running-the-suite)
+- [Benchmark regression gate](#benchmark-regression-gate)
 - [Baseline results](#baseline-results-softhsm)
 - [Tuning knobs](#tuning-knobs)
 - [Security invariants](#security-invariants)
@@ -79,6 +80,66 @@ go test -run '^$' -bench 'PKCS11' -benchmem ./server/internal/keyprovider/
 `scripts/loadtest.sh` sets up the SoftHSM env automatically if it is not already
 exported, sweeps the session-pool size for each concurrent benchmark, and
 optionally writes the raw results to a file for `benchstat`.
+
+## Benchmark regression gate
+
+The benchmarks above skip without a token, which makes them the right tool for
+tuning a *specific* HSM but a poor fit for a CI regression gate. So the suite has
+a second, **HSM-free** half — the `…Software…` benchmarks in
+`server/internal/{keyprovider,secret,ca}/bench_software_test.go` — that exercises
+the same hot paths (signing, end-to-end issuance, OCSP, CRL, envelope seal/open)
+through the on-disk **software key provider**. A software signature is pure
+Go/asm on the CPU with no token in the loop, so those numbers are deterministic
+and portable enough for `benchstat` to flag a genuine algorithmic or allocation
+regression. They need no HSM and run anywhere.
+
+A committed baseline lives at **`bench/baseline.txt`**. Three Makefile targets
+drive the gate:
+
+```sh
+make bench           # run the HSM-free set -> dist/bench-new.txt
+make bench-compare   # run it and diff against bench/baseline.txt with benchstat,
+                     # failing on a significant regression (advisory in CI)
+make bench-baseline  # regenerate bench/baseline.txt (commit it to move the gate)
+```
+
+`bench-compare` (via `scripts/bench-compare.sh`) fails only when benchstat reports
+a **statistically significant** slowdown or allocation increase at or above
+`BENCH_REGRESS_PCT` (default 10%). benchstat prints `~` for a difference
+indistinguishable from noise, so run-to-run jitter does not trip the gate — only a
+real, repeatable regression does. Improvements never fail it. Knobs (all
+overrideable on the `make` line): `BENCH_COUNT` (samples, default 8), `BENCH_TIME`
+(`-benchtime`, default `300ms`), `BENCH_REGRESS_PCT`, and `BENCHSTAT_VERSION`
+(pinned so the output format cannot drift).
+
+### CI job
+
+The advisory (non-required) `benchmark-regression` job in
+`.github/workflows/enterprise-ci.yaml` runs `make bench-compare` on every push and
+PR — no SoftHSM — and writes the full benchstat table to the GitHub **step
+summary** so a regression is visible at a glance on the PR. It is
+`continue-on-error: true`: a red run is a signal to investigate, not a merge
+blocker, because the GitHub-hosted runners are noisier than a dedicated box (the
+gate stays honest by only failing on *significant* deltas).
+
+### Refreshing the baseline
+
+Absolute ns/op is machine-dependent, so the committed baseline is an
+apples-to-apples reference **only when it was generated on the same machine class
+the gate runs on** (GitHub `ubuntu-latest`). Refresh it whenever an intended
+change moves the numbers, or when the runner class changes:
+
+- **On the CI runner (authoritative):** trigger the workflow manually from the
+  Actions tab (`workflow_dispatch`) with **`refresh_baseline: true`**. The job runs
+  `make bench-baseline` on the runner and uploads `bench/baseline.txt` as a
+  build **artifact**; download it, drop it in place, and commit it.
+- **Locally (approximate):** `make bench-baseline && git add bench/baseline.txt`.
+  Fine for catching gross regressions on a quiet machine; note the numbers will
+  differ from the CI runner's.
+
+When `bench-compare` fails on an *expected* change (e.g. you deliberately traded a
+little latency for a security check), the fix is to refresh and commit the
+baseline in the same PR — the failure message says exactly this.
 
 ## Baseline results (SoftHSM)
 

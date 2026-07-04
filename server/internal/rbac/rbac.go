@@ -115,6 +115,17 @@ const (
 	// privilege. Tenant admins may manage tokens WITHIN their tenant; platform
 	// (cross-tenant) tokens require a platform administrator.
 	ActionManageTokens Action = "token:manage"
+	// ActionProfile covers capturing runtime profiles from the opt-in
+	// net/http/pprof endpoints (CPU, heap, goroutine, mutex, block) (Task 115).
+	// It is an administrative capability held by admins only (no non-admin role
+	// grants it): a heap or goroutine profile is a raw dump of process memory and
+	// stacks that can contain in-flight secrets, CSRs, and session material, so
+	// the ability to pull one is as sensitive as HSM administration. The pprof
+	// endpoints are off by default and, when mounted on the API, additionally
+	// require an authenticated principal — this capability is the authorization
+	// half of that gate. It is deliberately platform-scoped (no tenant grants it):
+	// a profile spans the whole process, not one tenant's data.
+	ActionProfile Action = "server:profile"
 )
 
 // roleActions is the static capability grant per role. admin is handled

@@ -1,0 +1,90 @@
+goos: linux
+goarch: amd64
+pkg: github.com/blechschmidt/secsy-pki/server/internal/keyprovider
+cpu: AMD EPYC-Milan Processor
+BenchmarkSoftwareSignLatency/ed25519-4         	   15332	     24256 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSoftwareSignLatency/ed25519-4         	   16099	     22381 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSoftwareSignLatency/ed25519-4         	   16022	     24161 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSoftwareSignLatency/ed25519-4         	   16069	     22596 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSoftwareSignLatency/ed25519-4         	   13556	     22237 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSoftwareSignLatency/ed25519-4         	   16140	     22931 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSoftwareSignLatency/ed25519-4         	   16135	     22266 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSoftwareSignLatency/ed25519-4         	   14673	     22935 ns/op	      64 B/op	       1 allocs/op
+BenchmarkSoftwareSignLatency/ecdsa-sha2-nistp256-4         	   10000	     56434 ns/op	    6096 B/op	      60 allocs/op
+BenchmarkSoftwareSignLatency/ecdsa-sha2-nistp256-4         	    5923	     66374 ns/op	    6096 B/op	      60 allocs/op
+BenchmarkSoftwareSignLatency/ecdsa-sha2-nistp256-4         	    4702	     70893 ns/op	    6096 B/op	      60 allocs/op
+BenchmarkSoftwareSignLatency/ecdsa-sha2-nistp256-4         	   10474	     35346 ns/op	    6096 B/op	      60 allocs/op
+BenchmarkSoftwareSignLatency/ecdsa-sha2-nistp256-4         	   10000	     64803 ns/op	    6096 B/op	      60 allocs/op
+BenchmarkSoftwareSignLatency/ecdsa-sha2-nistp256-4         	    6830	     55693 ns/op	    6096 B/op	      60 allocs/op
+BenchmarkSoftwareSignLatency/ecdsa-sha2-nistp256-4         	    6332	     57597 ns/op	    6096 B/op	      60 allocs/op
+BenchmarkSoftwareSignLatency/ecdsa-sha2-nistp256-4         	    5115	     63338 ns/op	    6096 B/op	      60 allocs/op
+BenchmarkSoftwareSignLatency/rsa-2048-4                    	     369	    977506 ns/op	     512 B/op	       2 allocs/op
+BenchmarkSoftwareSignLatency/rsa-2048-4                    	     369	    972427 ns/op	     512 B/op	       2 allocs/op
+BenchmarkSoftwareSignLatency/rsa-2048-4                    	     368	    973324 ns/op	     512 B/op	       2 allocs/op
+BenchmarkSoftwareSignLatency/rsa-2048-4                    	     368	    978241 ns/op	     512 B/op	       2 allocs/op
+BenchmarkSoftwareSignLatency/rsa-2048-4                    	     366	    974802 ns/op	     512 B/op	       2 allocs/op
+BenchmarkSoftwareSignLatency/rsa-2048-4                    	     364	    996365 ns/op	     512 B/op	       2 allocs/op
+BenchmarkSoftwareSignLatency/rsa-2048-4                    	     363	    999924 ns/op	     512 B/op	       2 allocs/op
+BenchmarkSoftwareSignLatency/rsa-2048-4                    	     368	    975226 ns/op	     512 B/op	       2 allocs/op
+BenchmarkSoftwareSignerOpen-4                              	   10711	     31914 ns/op	    2408 B/op	      35 allocs/op
+BenchmarkSoftwareSignerOpen-4                              	   10000	     32723 ns/op	    2408 B/op	      35 allocs/op
+BenchmarkSoftwareSignerOpen-4                              	   11322	     37026 ns/op	    2408 B/op	      35 allocs/op
+BenchmarkSoftwareSignerOpen-4                              	   10000	     32174 ns/op	    2408 B/op	      35 allocs/op
+BenchmarkSoftwareSignerOpen-4                              	   11188	     34088 ns/op	    2408 B/op	      35 allocs/op
+BenchmarkSoftwareSignerOpen-4                              	    9586	     35871 ns/op	    2408 B/op	      35 allocs/op
+BenchmarkSoftwareSignerOpen-4                              	   10000	     36296 ns/op	    2408 B/op	      35 allocs/op
+BenchmarkSoftwareSignerOpen-4                              	   10042	     35382 ns/op	    2408 B/op	      35 allocs/op
+PASS
+ok  	github.com/blechschmidt/secsy-pki/server/internal/keyprovider	19.082s
+goos: linux
+goarch: amd64
+pkg: github.com/blechschmidt/secsy-pki/server/internal/secret
+cpu: AMD EPYC-Milan Processor
+BenchmarkSoftwareSecretEncrypt-4   	   10000	     41772 ns/op	    3461 B/op	      24 allocs/op
+BenchmarkSoftwareSecretEncrypt-4   	   10000	     41039 ns/op	    3461 B/op	      24 allocs/op
+BenchmarkSoftwareSecretEncrypt-4   	    9984	     45033 ns/op	    3461 B/op	      24 allocs/op
+BenchmarkSoftwareSecretEncrypt-4   	    9853	     39537 ns/op	    3461 B/op	      24 allocs/op
+BenchmarkSoftwareSecretEncrypt-4   	   10000	     39235 ns/op	    3461 B/op	      24 allocs/op
+BenchmarkSoftwareSecretEncrypt-4   	   10000	     43412 ns/op	    3461 B/op	      24 allocs/op
+BenchmarkSoftwareSecretEncrypt-4   	    9996	     40350 ns/op	    3461 B/op	      24 allocs/op
+BenchmarkSoftwareSecretEncrypt-4   	   10000	     44728 ns/op	    3461 B/op	      24 allocs/op
+BenchmarkSoftwareSecretDecrypt-4   	     285	   1171133 ns/op	   14278 B/op	      87 allocs/op
+BenchmarkSoftwareSecretDecrypt-4   	     334	   1073899 ns/op	   14261 B/op	      87 allocs/op
+BenchmarkSoftwareSecretDecrypt-4   	     334	   1166481 ns/op	   14277 B/op	      87 allocs/op
+BenchmarkSoftwareSecretDecrypt-4   	     334	   1087318 ns/op	   14261 B/op	      87 allocs/op
+BenchmarkSoftwareSecretDecrypt-4   	     333	   1097244 ns/op	   14389 B/op	      89 allocs/op
+BenchmarkSoftwareSecretDecrypt-4   	     334	   1075745 ns/op	   14277 B/op	      87 allocs/op
+BenchmarkSoftwareSecretDecrypt-4   	     334	   1155250 ns/op	   14405 B/op	      89 allocs/op
+BenchmarkSoftwareSecretDecrypt-4   	     331	   1158425 ns/op	   14437 B/op	      89 allocs/op
+PASS
+ok  	github.com/blechschmidt/secsy-pki/server/internal/secret	10.778s
+goos: linux
+goarch: amd64
+pkg: github.com/blechschmidt/secsy-pki/server/internal/ca
+cpu: AMD EPYC-Milan Processor
+BenchmarkSoftwareCA_IssueCertificate-4   	     486	    781288 ns/op	   70269 B/op	    1117 allocs/op
+BenchmarkSoftwareCA_IssueCertificate-4   	     312	   1157515 ns/op	   70257 B/op	    1117 allocs/op
+BenchmarkSoftwareCA_IssueCertificate-4   	     291	   1192778 ns/op	   70245 B/op	    1117 allocs/op
+BenchmarkSoftwareCA_IssueCertificate-4   	     397	   1027176 ns/op	   70250 B/op	    1117 allocs/op
+BenchmarkSoftwareCA_IssueCertificate-4   	     488	   1052190 ns/op	   70256 B/op	    1117 allocs/op
+BenchmarkSoftwareCA_IssueCertificate-4   	     289	   1293471 ns/op	   70252 B/op	    1117 allocs/op
+BenchmarkSoftwareCA_IssueCertificate-4   	     304	    989849 ns/op	   70263 B/op	    1117 allocs/op
+BenchmarkSoftwareCA_IssueCertificate-4   	     490	    902389 ns/op	   70252 B/op	    1117 allocs/op
+BenchmarkSoftwareCA_OCSPRespond-4        	    1711	    290512 ns/op	   33228 B/op	     608 allocs/op
+BenchmarkSoftwareCA_OCSPRespond-4        	    1105	    280474 ns/op	   33228 B/op	     608 allocs/op
+BenchmarkSoftwareCA_OCSPRespond-4        	    1820	    228161 ns/op	   33297 B/op	     610 allocs/op
+BenchmarkSoftwareCA_OCSPRespond-4        	    1234	    300168 ns/op	   33301 B/op	     610 allocs/op
+BenchmarkSoftwareCA_OCSPRespond-4        	    1297	    280199 ns/op	   33282 B/op	     610 allocs/op
+BenchmarkSoftwareCA_OCSPRespond-4        	    1056	    375044 ns/op	   33210 B/op	     608 allocs/op
+BenchmarkSoftwareCA_OCSPRespond-4        	    1182	    350956 ns/op	   33298 B/op	     610 allocs/op
+BenchmarkSoftwareCA_OCSPRespond-4        	     950	    372483 ns/op	   33229 B/op	     608 allocs/op
+BenchmarkSoftwareCA_GenerateCRL-4        	    1057	    430129 ns/op	   29328 B/op	     512 allocs/op
+BenchmarkSoftwareCA_GenerateCRL-4        	     822	    382523 ns/op	   29321 B/op	     511 allocs/op
+BenchmarkSoftwareCA_GenerateCRL-4        	     954	    497269 ns/op	   29328 B/op	     512 allocs/op
+BenchmarkSoftwareCA_GenerateCRL-4        	     817	    529094 ns/op	   29307 B/op	     511 allocs/op
+BenchmarkSoftwareCA_GenerateCRL-4        	    1183	    416443 ns/op	   29309 B/op	     512 allocs/op
+BenchmarkSoftwareCA_GenerateCRL-4        	    1047	    403009 ns/op	   29305 B/op	     512 allocs/op
+BenchmarkSoftwareCA_GenerateCRL-4        	     794	    473078 ns/op	   29306 B/op	     511 allocs/op
+BenchmarkSoftwareCA_GenerateCRL-4        	     876	    466818 ns/op	   29319 B/op	     511 allocs/op
+PASS
+ok  	github.com/blechschmidt/secsy-pki/server/internal/ca	14.883s

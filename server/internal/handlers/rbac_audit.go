@@ -29,6 +29,14 @@ func userRoles(user *models.UserInfo) []rbac.Role {
 	return roles
 }
 
+// Can is the exported form of can, for callers outside the request handlers that
+// need the same platform-wide authorization decision (and its recorded metric) —
+// e.g. the profiling endpoint gate (Task 115), which authorizes an already
+// authenticated principal for the admin-only server:profile capability.
+func (a *API) Can(user *models.UserInfo, action rbac.Action) bool {
+	return a.can(user, action)
+}
+
 // can reports whether the user is authorized for a coarse-grained action. The
 // built-in root user is always a superuser; otherwise the user's RBAC roles are
 // consulted. Note this is the ORG-WIDE layer: fine-grained, per-CA permission

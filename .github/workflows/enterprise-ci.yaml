@@ -19,6 +19,11 @@ on:
     branches: [enterprise]
   # Allow manual runs from the Actions tab for debugging / re-runs.
   workflow_dispatch:
+    inputs:
+      refresh_baseline:
+        description: "Benchmark gate: regenerate bench/baseline.txt on the runner and upload it as an artifact (skips the comparison)"
+        type: boolean
+        default: false
 
 # Cancel superseded runs on the same ref to save runner minutes.
 concurrency:
@@ -535,3 +540,66 @@ jobs:
         env:
           SOFTHSM_REINIT: "1"
         run: ./scripts/interop-test.sh
+
+  benchmark-regression:
+    name: Benchmark regression gate (no HSM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # Task 115. Non-required (advisory) gate, modeled on the chaos/race jobs. It
+    # runs the HSM-FREE benchmark set — the `…Software…` benchmarks over the
+    # on-disk software key provider (signing, end-to-end issuance, OCSP, CRL, and
+    # envelope seal/open), which are CPU-bound and deterministic with no token in
+    # the loop — and diffs it against the committed baseline (bench/baseline.txt)
+    # with benchstat via `make bench-compare`. benchstat only reports a signed
+    # delta when the change is statistically significant (p < alpha), so runner
+    # noise shows as "~" rather than a false regression; the gate fails only on a
+    # significant slowdown / allocation increase >= BENCH_REGRESS_PCT (10%). The
+    # full benchstat table is written to the job step summary for at-a-glance
+    # review on the PR. Needs no SoftHSM.
+    #
+    # Absolute ns/op is machine-dependent, so an apples-to-apples baseline must be
+    # generated on THIS runner class: dispatch the workflow with
+    # refresh_baseline=true to regenerate it and upload it as an artifact to
+    # download and commit (see docs/benchmarks.md#benchmark-regression-gate).
+    # continue-on-error keeps the gate advisory until it has proven stable on the
+    # hosted runners (which are noisier than a dedicated box).
+    continue-on-error: true
+
+    env:
+      GOTOOLCHAIN: auto
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Download Go modules
+        working-directory: server
+        run: go mod download
+
+      # Manual refresh path: regenerate the baseline on this runner class and
+      # upload it as an artifact to download and commit. Does not compare.
+      - name: Regenerate baseline (manual refresh)
+        if: github.event_name == 'workflow_dispatch' && inputs.refresh_baseline
+        run: make bench-baseline
+
+      - name: Upload refreshed baseline artifact
+        if: github.event_name == 'workflow_dispatch' && inputs.refresh_baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-baseline
+          path: bench/baseline.txt
+
+      # Default path (push / PR / plain dispatch): run the HSM-free benchmarks and
+      # diff against the committed baseline. Exits non-zero on a significant
+      # regression (advisory via continue-on-error); the step summary carries the
+      # benchstat table either way.
+      - name: Compare against committed baseline (make bench-compare)
+        if: github.event_name != 'workflow_dispatch' || !inputs.refresh_baseline
+        run: make bench-compare

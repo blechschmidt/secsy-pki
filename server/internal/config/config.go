@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -1936,6 +1937,98 @@ type ServerConfig struct {
 	// OCSP holds responder-hardening options (nonce, delegated responder,
 	// stapling). Zero-valued fields fall back to safe defaults.
 	OCSP OCSPConfig `yaml:"ocsp"`
+	// PProf configures the opt-in, access-controlled net/http/pprof profiling
+	// endpoints (Task 115). Disabled by default; never exposed unauthenticated.
+	PProf PProfConfig `yaml:"pprof"`
+}
+
+// PProfConfig configures the opt-in runtime-profiling endpoints (net/http/pprof:
+// CPU, heap, goroutine, mutex, block). They are OFF by default and, when enabled,
+// are never exposed unauthenticated — the access-control model is chosen by Mode:
+//
+//   - "loopback" (default): a dedicated HTTP listener bound to a loopback address
+//     (Address, default 127.0.0.1:6060). Only reachable from the host itself
+//     (e.g. through an SSH tunnel or `kubectl port-forward`); a non-loopback
+//     Address is rejected at startup (fail-closed).
+//   - "authenticated": /debug/pprof/ is mounted on the main API listener, behind
+//     operator authentication AND the admin-only server:profile capability.
+//
+// A profile is a raw dump of process memory/stacks and can contain in-flight
+// secrets, so neither mode ever serves it anonymously off a routable interface.
+type PProfConfig struct {
+	// Enabled turns the profiling endpoints on. Off by default.
+	Enabled bool `yaml:"enabled"`
+	// Mode selects the access-control model: "loopback" (default) or
+	// "authenticated". Any other value is rejected at startup.
+	Mode string `yaml:"mode"`
+	// Address is the listen address for Mode "loopback" (default 127.0.0.1:6060).
+	// Its host must be a loopback IP; ignored in "authenticated" mode.
+	Address string `yaml:"address"`
+	// MutexProfileFraction, when > 0, enables the mutex profiler at the given
+	// sampling fraction (runtime.SetMutexProfileFraction). Off (0) by default
+	// because it adds runtime overhead; set it to capture lock contention on the
+	// PKCS#11 session pool. 1 samples every event.
+	MutexProfileFraction int `yaml:"mutex_profile_fraction"`
+	// BlockProfileRate, when > 0, enables the block profiler at the given rate in
+	// nanoseconds (runtime.SetBlockProfileRate): a blocking event lasting at least
+	// this long is sampled. Off (0) by default (overhead); set it to capture
+	// goroutines blocked on channels/locks (e.g. waiting for an HSM session).
+	BlockProfileRate int `yaml:"block_profile_rate"`
+}
+
+// PProf access-control modes.
+const (
+	PProfModeLoopback      = "loopback"
+	PProfModeAuthenticated = "authenticated"
+)
+
+// DefaultPProfAddress is the loopback listener address used when Mode is
+// "loopback" and Address is unset.
+const DefaultPProfAddress = "127.0.0.1:6060"
+
+// ResolvedMode returns the effective access-control mode, defaulting to
+// "loopback" when unset.
+func (c PProfConfig) ResolvedMode() string {
+	if strings.TrimSpace(c.Mode) == "" {
+		return PProfModeLoopback
+	}
+	return strings.ToLower(strings.TrimSpace(c.Mode))
+}
+
+// ResolvedAddress returns the effective loopback listen address, defaulting to
+// DefaultPProfAddress when unset.
+func (c PProfConfig) ResolvedAddress() string {
+	if strings.TrimSpace(c.Address) == "" {
+		return DefaultPProfAddress
+	}
+	return strings.TrimSpace(c.Address)
+}
+
+// Validate checks the profiling configuration when it is enabled: the mode must
+// be recognized and, for loopback mode, the address host must be a loopback IP so
+// a misconfiguration can never bind the (unauthenticated) loopback listener to a
+// routable interface. It is a no-op when profiling is disabled.
+func (c PProfConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	switch c.ResolvedMode() {
+	case PProfModeAuthenticated:
+		return nil
+	case PProfModeLoopback:
+		host, _, err := net.SplitHostPort(c.ResolvedAddress())
+		if err != nil {
+			return fmt.Errorf("server.pprof.address %q is not a valid host:port: %w", c.ResolvedAddress(), err)
+		}
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			return fmt.Errorf("server.pprof.address host %q must be a loopback IP (e.g. 127.0.0.1 or ::1) in loopback mode; "+
+				"use mode: authenticated to expose profiling on the API listener", host)
+		}
+		return nil
+	default:
+		return fmt.Errorf("server.pprof.mode %q is invalid (want %q or %q)", c.Mode, PProfModeLoopback, PProfModeAuthenticated)
+	}
 }
 
 // OCSPConfig configures the hardened OCSP responder (RFC 6960 / RFC 8954).
@@ -2474,6 +2567,10 @@ func Load(path string) (*Config, error) {
 	}
 
 	if err := cfg.validateFIPS(); err != nil {
+		return nil, err
+	}
+
+	if err := cfg.Server.PProf.Validate(); err != nil {
 		return nil, err
 	}
 	// Mirror the validated policy switch into the process-global enforcement

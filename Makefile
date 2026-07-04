@@ -176,6 +176,63 @@ test-race-serial: ## -race -p 1 over the SoftHSM/Postgres-backed packages (provi
 	  $$(go list -tags '$(RACE_TAGS)' ./... | grep -E '$(RACE_SERIAL_MATCH)')
 
 # ---------------------------------------------------------------------------
+# Benchmark-regression gate (Task 115)
+# ---------------------------------------------------------------------------
+# The Task 20 benchmarks split in two: the SoftHSM-backed set (skips without a
+# token; the tool for tuning a specific device) and an HSM-FREE set (the
+# `…Software…` benchmarks over the on-disk software key provider, in
+# internal/{keyprovider,secret,ca}/bench_software_test.go). The HSM-free set runs
+# on any machine and is deterministic enough for regression detection — a software
+# signature is CPU/asm only, no token in the loop.
+#
+#   make bench           run the HSM-free set -> dist/bench-new.txt
+#   make bench-compare   run it and diff against the committed baseline with
+#                        benchstat, failing on a significant regression (advisory
+#                        in CI). Surfaces the table to the GitHub step summary.
+#   make bench-baseline  regenerate the committed baseline (bench/baseline.txt)
+#
+# See docs/benchmarks.md#benchmark-regression-gate.
+BENCHSTAT_VERSION ?= v0.0.0-20260615155930-9e4b9ddef5b6
+BENCH_TAGS        ?= sqlite
+BENCH_PATTERN     ?= Software
+BENCH_PKGS        ?= ./internal/keyprovider/ ./internal/secret/ ./internal/ca/
+BENCH_COUNT       ?= 8
+BENCH_TIME        ?= 300ms
+BENCH_BASELINE    ?= bench/baseline.txt
+BENCH_NEW         := $(DIST)/bench-new.txt
+# A significant slowdown or allocation increase at/above this percent fails
+# `make bench-compare`. Overrideable, e.g. BENCH_REGRESS_PCT=20.
+BENCH_REGRESS_PCT ?= 10
+
+# Canonical benchmark invocation, reused by `bench` and `bench-baseline` so the
+# two cannot drift. $(1) is the (absolute) output file. pipefail so a compile/test
+# failure propagates through the tee.
+define run_bench
+	set -o pipefail; cd server && GOTOOLCHAIN=auto go test -tags '$(BENCH_TAGS)' \
+	  -run '^$$' -bench '$(BENCH_PATTERN)' -benchmem -benchtime=$(BENCH_TIME) \
+	  -count=$(BENCH_COUNT) $(BENCH_PKGS) | tee "$(1)"
+endef
+
+.PHONY: bench
+bench: | $(DIST) ## Run the HSM-free benchmark set -> dist/bench-new.txt
+	@echo "==> go test -bench $(BENCH_PATTERN) (-tags $(BENCH_TAGS), count=$(BENCH_COUNT), benchtime=$(BENCH_TIME))"
+	@$(call run_bench,$(CURDIR)/$(BENCH_NEW))
+
+.PHONY: bench-compare
+bench-compare: bench ## Diff fresh benchmark results against the committed baseline (benchstat)
+	@BENCHSTAT_VERSION='$(BENCHSTAT_VERSION)' BENCH_REGRESS_PCT='$(BENCH_REGRESS_PCT)' \
+	  scripts/bench-compare.sh '$(CURDIR)/$(BENCH_NEW)' '$(CURDIR)/$(BENCH_BASELINE)'
+
+.PHONY: bench-baseline
+bench-baseline: | $(DIST) ## (Re)generate the committed benchmark baseline (bench/baseline.txt)
+	@mkdir -p "$(CURDIR)/$(dir $(BENCH_BASELINE))"
+	@echo "==> regenerating baseline $(BENCH_BASELINE) (count=$(BENCH_COUNT), benchtime=$(BENCH_TIME))"
+	@$(call run_bench,$(CURDIR)/$(BENCH_BASELINE))
+	@echo "==> baseline written to $(BENCH_BASELINE) — commit it to update the regression gate."
+	@echo "    NOTE: for an apples-to-apples CI gate, regenerate on the machine class"
+	@echo "    the job runs on (GitHub ubuntu-latest), e.g. via the workflow_dispatch refresh."
+
+# ---------------------------------------------------------------------------
 # Optional zlint pre-issuance lint backend (Task 88)
 # ---------------------------------------------------------------------------
 # The industry-standard github.com/zmap/zlint suite is compiled in only under the

@@ -575,6 +575,14 @@ func main() {
 	// the network layer if needed.
 	api.RegisterObservability(mux)
 
+	// Opt-in, access-controlled net/http/pprof profiling (Task 115). Off by
+	// default; when enabled it is bound to a loopback-only listener, or mounted on
+	// the API listener behind operator auth + the admin-only server:profile
+	// capability — never exposed unauthenticated. It is the lever for capturing
+	// CPU/heap/goroutine/mutex/block profiles in production to debug HSM latency
+	// and PKCS#11 session-pool contention.
+	setupPProf(cfg, authMw, api, mux)
+
 	// gRPC API surface (Task 56): expose the core issuance/revocation/status
 	// operations over gRPC alongside REST, reusing the same handlers.API and auth
 	// middleware so authorization, tenant scoping, and audit behave identically.

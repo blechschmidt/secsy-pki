@@ -23,6 +23,24 @@ server:
     # CA that issued this server's own TLS certificate; when set, the server
     # staples a fresh OCSP response to its TLS handshake (RFC 6066).
     staple_ca_id: ""
+  # Opt-in net/http/pprof runtime profiling (CPU/heap/goroutine/mutex/block).
+  # OFF by default and never exposed unauthenticated — see docs/RUNBOOK.md
+  # "Performance profiling (pprof)". A profile is a raw dump of process memory
+  # and stacks and can contain in-flight secrets, so access is controlled by
+  # mode below.
+  pprof:
+    enabled: false
+    # "loopback" (default): a dedicated listener on a loopback address, reachable
+    #   only from the host (SSH tunnel / kubectl port-forward). A non-loopback
+    #   address is refused at startup.
+    # "authenticated": mount /debug/pprof/ on the API listener behind operator
+    #   auth PLUS the admin-only server:profile capability.
+    mode: "loopback"
+    address: "127.0.0.1:6060"     # loopback mode only; host must be a loopback IP
+    # Off (0) by default because they add runtime overhead; set >0 to diagnose
+    # PKCS#11 session-pool lock contention / goroutines blocked on an HSM session.
+    mutex_profile_fraction: 0     # 1 = sample every mutex contention event
+    block_profile_rate: 0         # nanoseconds; a block >= this is sampled
 
 database:
   # driver: "sqlite" is the embedded, single-node "file" store (default).

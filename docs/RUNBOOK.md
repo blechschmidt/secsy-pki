@@ -875,6 +875,68 @@ the exporter cursor; see [audit-siem-export.md](audit-siem-export.md).
 anchor job is not producing RFC 3161 head attestations; see
 [Audit-chain anchoring](#audit-chain-anchoring).
 
+### Performance profiling (pprof) — HSM latency & session-pool contention
+
+When issuance latency, an OCSP/CRL slowdown, or a suspected goroutine/memory leak
+needs a live look inside the process, enable the opt-in `net/http/pprof`
+endpoints. They are **off by default** and **never exposed unauthenticated** — a
+heap or goroutine profile is a raw dump of process memory and stacks and can
+contain in-flight secrets, CSRs, and session material, so access is controlled two
+ways (pick one via `server.pprof.mode`):
+
+- **`loopback` (default)** — a dedicated listener bound to a loopback address
+  (`server.pprof.address`, default `127.0.0.1:6060`). Only reachable from the host;
+  a non-loopback address is refused at startup. Reach it over an SSH tunnel or
+  `kubectl port-forward`.
+- **`authenticated`** — mounts `/debug/pprof/` on the main API listener behind
+  operator auth **plus** the admin-only `server:profile` capability. Use it when you
+  cannot get a shell/tunnel to the host.
+
+```yaml
+server:
+  pprof:
+    enabled: true
+    mode: loopback           # or: authenticated
+    address: 127.0.0.1:6060  # loopback mode only; must be a loopback IP
+    mutex_profile_fraction: 0  # set >0 to profile lock contention (adds overhead)
+    block_profile_rate: 0      # set >0 (ns) to profile blocking events
+```
+
+Capture profiles (loopback mode; add auth for `authenticated` mode — see below):
+
+```sh
+# 30s CPU profile while under load:
+go tool pprof -http=:0 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'
+# Heap (in-use memory) and full goroutine dump:
+go tool pprof   'http://127.0.0.1:6060/debug/pprof/heap'
+curl -s 'http://127.0.0.1:6060/debug/pprof/goroutine?debug=2' | less   # who is blocked, and where
+```
+
+For **HSM latency / session-pool contention** specifically:
+
+- A goroutine dump (`goroutine?debug=2`) shows how many requests are parked in the
+  session-pool `borrow()` — many goroutines blocked there means the pool is the
+  bottleneck; raise `pkcs11.session_pool_size` (see
+  [benchmarks.md](benchmarks.md)) or reduce concurrency upstream.
+- Set `mutex_profile_fraction: 1` and/or `block_profile_rate: 1` (they are off by
+  default because they add overhead), then read `/debug/pprof/mutex` and
+  `/debug/pprof/block` to see contention and blocking waits (e.g. goroutines
+  waiting on an HSM session). Turn them back off when done.
+
+In `authenticated` mode, present a credential that carries the `server:profile`
+capability (root, an admin OIDC principal, or an admin-scoped API token) — pprof
+speaks plain HTTP paths, so pass the header through:
+
+```sh
+go tool pprof 'https://pki.example.com/debug/pprof/heap' \
+  -H 'Authorization: Bearer <admin token>'
+# or basic-auth root: curl -u root:… 'https://pki.example.com/debug/pprof/heap' -o heap.out
+```
+
+`secsy-ca doctor` does not probe pprof (it is an opt-in debug surface); confirm it
+is enabled from the startup log line (`pprof profiling enabled …`). **Leave it
+disabled in normal operation** and enable it only for a debugging session.
+
 ---
 
 ## Audit-chain anchoring
