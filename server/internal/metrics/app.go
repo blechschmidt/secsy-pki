@@ -757,6 +757,41 @@ var (
 		"Unix timestamp (seconds) of the last completed CT inclusion-monitor scan.")
 )
 
+// Operator live audit-event feed (Task 90/104). The SSE endpoint
+// GET /api/events/stream fans the tamper-evident audit log out to operators
+// watching the console in real time. EventStreamSubscribers is the live count of
+// connected subscribers (a gauge, set by the Publisher as connections open and
+// close). EventStreamConnections counts every subscription opened, so a rate of
+// short-lived connections (reconnect storms) is observable distinctly from the
+// live gauge. EventStreamDropped counts audit events evicted from a slow
+// subscriber's bounded ring buffer — the liveness-over-completeness trade-off the
+// feed makes so a stalled browser can never block the audit-append hot path; a
+// rising rate means subscribers are lagging (undersized buffer, slow client, or
+// an event storm).
+var (
+	EventStreamSubscribers = NewGauge(Default,
+		"secsy_event_stream_subscribers",
+		"Operators currently connected to the live audit-event SSE feed (GET /api/events/stream).")
+	EventStreamConnections = NewCounter(Default,
+		"secsy_event_stream_connections_total",
+		"Total live audit-event SSE subscriptions opened since startup.")
+	EventStreamDropped = NewCounter(Default,
+		"secsy_event_stream_dropped_total",
+		"Audit events dropped from a slow SSE subscriber's ring buffer (subscriber lagged; the feed favors liveness over completeness).")
+)
+
+// SetEventStreamSubscribers publishes the current number of connected live
+// audit-event SSE subscribers.
+func SetEventStreamSubscribers(n int) { EventStreamSubscribers.Set(float64(n)) }
+
+// RecordEventStreamConnection counts one live audit-event SSE subscription being
+// opened.
+func RecordEventStreamConnection() { EventStreamConnections.Inc() }
+
+// RecordEventStreamDropped counts one audit event evicted from a slow
+// subscriber's bounded ring buffer (the subscriber lagged).
+func RecordEventStreamDropped() { EventStreamDropped.Inc() }
+
 // BatchBuckets covers background batch work (pre-signing, publishing), which
 // runs from well under a second on small deployments to minutes on large ones —
 // a range DefBuckets (tuned for per-request latency) tops out far below.

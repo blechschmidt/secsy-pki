@@ -2780,6 +2780,15 @@ type ExportEventLogParams struct {
 // ExportEventLogParamsFormat defines parameters for ExportEventLog.
 type ExportEventLogParamsFormat string
 
+// StreamEventLogParams defines parameters for StreamEventLog.
+type StreamEventLogParams struct {
+	// Action Restrict the stream to a single audit action (e.g. cert.issue).
+	Action *string `form:"action,omitempty" json:"action,omitempty"`
+
+	// Tenant Restrict to one tenant's events. Platform operators may set it to narrow the view; a tenant-scoped auditor is always confined to its own tenant regardless of this parameter.
+	Tenant *string `form:"tenant,omitempty" json:"tenant,omitempty"`
+}
+
 // GetMyRestrictionsParams defines parameters for GetMyRestrictions.
 type GetMyRestrictionsParams struct {
 	Format *string `form:"format,omitempty" json:"format,omitempty"`
@@ -3211,6 +3220,9 @@ type ClientInterface interface {
 
 	// ExportEventLog request
 	ExportEventLog(ctx context.Context, params *ExportEventLogParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// StreamEventLog request
+	StreamEventLog(ctx context.Context, params *StreamEventLogParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// VerifyEventLog request
 	VerifyEventLog(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4266,6 +4278,18 @@ func (c *Client) ListEventLog(ctx context.Context, params *ListEventLogParams, r
 
 func (c *Client) ExportEventLog(ctx context.Context, params *ExportEventLogParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewExportEventLogRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) StreamEventLog(ctx context.Context, params *StreamEventLogParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStreamEventLogRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -8182,6 +8206,71 @@ func NewExportEventLogRequest(server string, params *ExportEventLogParams) (*htt
 	return req, nil
 }
 
+// NewStreamEventLogRequest generates requests for StreamEventLog
+func NewStreamEventLogRequest(server string, params *StreamEventLogParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/events/stream")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Action != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "action", runtime.ParamLocationQuery, *params.Action); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Tenant != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "tenant", runtime.ParamLocationQuery, *params.Tenant); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewVerifyEventLogRequest generates requests for VerifyEventLog
 func NewVerifyEventLogRequest(server string) (*http.Request, error) {
 	var err error
@@ -11134,6 +11223,9 @@ type ClientWithResponsesInterface interface {
 	// ExportEventLogWithResponse request
 	ExportEventLogWithResponse(ctx context.Context, params *ExportEventLogParams, reqEditors ...RequestEditorFn) (*ExportEventLogResponse, error)
 
+	// StreamEventLogWithResponse request
+	StreamEventLogWithResponse(ctx context.Context, params *StreamEventLogParams, reqEditors ...RequestEditorFn) (*StreamEventLogResponse, error)
+
 	// VerifyEventLogWithResponse request
 	VerifyEventLogWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*VerifyEventLogResponse, error)
 
@@ -12532,6 +12624,29 @@ func (r ExportEventLogResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r ExportEventLogResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type StreamEventLogResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r StreamEventLogResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r StreamEventLogResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -14797,6 +14912,15 @@ func (c *ClientWithResponses) ExportEventLogWithResponse(ctx context.Context, pa
 		return nil, err
 	}
 	return ParseExportEventLogResponse(rsp)
+}
+
+// StreamEventLogWithResponse request returning *StreamEventLogResponse
+func (c *ClientWithResponses) StreamEventLogWithResponse(ctx context.Context, params *StreamEventLogParams, reqEditors ...RequestEditorFn) (*StreamEventLogResponse, error) {
+	rsp, err := c.StreamEventLog(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseStreamEventLogResponse(rsp)
 }
 
 // VerifyEventLogWithResponse request returning *VerifyEventLogResponse
@@ -17220,6 +17344,39 @@ func ParseExportEventLogResponse(rsp *http.Response) (*ExportEventLogResponse, e
 	}
 
 	response := &ExportEventLogResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseStreamEventLogResponse parses an HTTP response from a StreamEventLogWithResponse call
+func ParseStreamEventLogResponse(rsp *http.Response) (*StreamEventLogResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &StreamEventLogResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
 	}

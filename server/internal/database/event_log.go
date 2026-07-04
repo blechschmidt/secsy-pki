@@ -65,7 +65,35 @@ func (db *DB) AppendEvent(e *audit.Event) error {
 	); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// Fan the durably-committed event out to any live subscribers (the operator
+	// SSE feed). This runs while still holding eventMu — before the deferred
+	// unlock — so subscribers observe events in the same monotonic sequence they
+	// were chained in, even under concurrent appends. The hook is contractually
+	// non-blocking (drop-oldest on a slow reader), so it cannot stall the append
+	// hot path. Only committed events are published: a failed insert/commit
+	// returns above without ever reaching a subscriber. A copy is passed so a hook
+	// cannot mutate the caller's event.
+	if db.eventHook != nil {
+		db.eventHook(*e)
+	}
+	return nil
+}
+
+// SetEventHook installs a callback invoked with every audit event AFTER it is
+// sealed and durably committed. It backs the operator live audit-event feed
+// (internal/eventstream): because AppendEvent is the single audit-append
+// chokepoint, one hook fans out events from HTTP handlers, background jobs, and
+// protocol servers identically. Pass nil to remove the hook. The callback must
+// not block or re-enter the store — it runs inside the audit append critical
+// section. Intended to be called once at startup, before serving begins.
+func (db *DB) SetEventHook(hook func(audit.Event)) {
+	db.eventMu.Lock()
+	defer db.eventMu.Unlock()
+	db.eventHook = hook
 }
 
 // scanEvent reads one event_log row selected with eventColumns.

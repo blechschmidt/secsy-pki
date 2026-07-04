@@ -110,6 +110,9 @@ embedded IDs/serials).
 | `secsy_hsm_operation_duration_seconds` | histogram | `operation` | Key-provider (HSM) operation latency |
 | `secsy_envelope_operations_total` | counter | `operation` (`encrypt`/`decrypt`), `result` | HSM-backed envelope encryption operations |
 | `secsy_authz_decisions_total` | counter | `action`, `decision` (`allow`/`deny`) | RBAC authorization decisions |
+| `secsy_event_stream_subscribers` | gauge | — | Operators currently connected to the live audit-event SSE feed (`GET /api/events/stream`) |
+| `secsy_event_stream_connections_total` | counter | — | Total live audit-event SSE subscriptions opened since startup |
+| `secsy_event_stream_dropped_total` | counter | — | Audit events dropped from a slow SSE subscriber's ring buffer (subscriber lagged; the feed favors liveness over completeness) |
 | `secsy_component_up` | gauge | `component` (`database`/`hsm`) | Last readiness-probe result (1 = up) |
 | `secsy_leader_is_leader` | gauge | — | 1 on the replica leading the singleton background jobs, 0 on followers (see [high availability](high-availability.md)) |
 | `secsy_leader_transitions_total` | counter | `to` (`leader`/`follower`) | Leadership gains/losses observed by this replica |

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/ssh"
@@ -25,7 +26,18 @@ type DB struct {
 	// eventMu serializes appends to the tamper-evident event_log so the read of
 	// the previous entry's hash and the insert of the next entry are atomic with
 	// respect to each other, keeping the hash chain consistent under concurrency.
+	// It also guards eventHook so installing the hook races neither with an
+	// in-flight append nor with its invocation.
 	eventMu sync.Mutex
+	// eventHook, when non-nil, is invoked with each event AFTER it has been sealed
+	// and durably committed, from within the eventMu critical section so callbacks
+	// observe events in the same monotonic sequence they were chained in. It backs
+	// the operator live audit-event SSE feed (internal/eventstream): AppendEvent is
+	// the single audit-append chokepoint, so hooking it fans every event out
+	// identically no matter which layer (HTTP handler, background job, or protocol
+	// server) appended it. The hook must never block — the feed's Publisher is
+	// explicitly non-blocking — or it would stall the audit hot path.
+	eventHook func(audit.Event)
 }
 
 // PoolOptions tunes the underlying database/sql connection pool. Zero values

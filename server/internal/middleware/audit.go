@@ -19,6 +19,16 @@ func (sw *statusWriter) WriteHeader(code int) {
 	sw.ResponseWriter.WriteHeader(code)
 }
 
+// Flush lets streaming handlers (the operator live audit-event SSE feed) flush
+// buffered bytes through the access-log recorder to the underlying connection.
+// Without it, embedding http.ResponseWriter hides the concrete writer's Flusher,
+// and a Server-Sent Events response would never reach the client incrementally.
+func (sw *statusWriter) Flush() {
+	if f, ok := sw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func AuditLog(db *database.DB) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

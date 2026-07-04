@@ -2307,6 +2307,50 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/events/stream:
+    get:
+      operationId: streamEventLog
+      tags: [Audit]
+      summary: Live audit-event feed (Server-Sent Events)
+      description: >-
+        Streams the tamper-evident audit log as it grows over Server-Sent Events
+        (`text/event-stream`) — the real-time companion to `GET /api/events`.
+        Every hash-chained event appended anywhere in the system (HTTP handlers,
+        background jobs, protocol servers) is fanned out as it is sealed.
+        Authorization and tenant scoping are identical to the listing endpoint:
+        audit:read is required, a platform operator sees every tenant (optionally
+        narrowed with `tenant`), and a tenant-scoped principal is confined to its
+        own tenant's events.
+
+
+        Each event is delivered as an SSE frame with `event: audit`, an `id:`
+        carrying the event's chain sequence number, and a `data:` payload that is
+        one `EventEntry` object as JSON. Periodic `: heartbeat` comment lines keep
+        the connection alive. If a slow client falls behind, the server drops its
+        oldest undelivered events and emits an `event: lag` frame whose data names
+        how many were dropped (the feed favors liveness over completeness and
+        never blocks the audit-append path).
+      parameters:
+        - name: action
+          in: query
+          description: Restrict the stream to a single audit action (e.g. cert.issue).
+          schema: { type: string }
+        - name: tenant
+          in: query
+          description: >-
+            Restrict to one tenant's events. Platform operators may set it to
+            narrow the view; a tenant-scoped auditor is always confined to its
+            own tenant regardless of this parameter.
+          schema: { type: string }
+      responses:
+        "200":
+          description: An open Server-Sent Events stream of audit events.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   # ---------------------------------------------------------------------------
   # Diagnostics
   # ---------------------------------------------------------------------------

@@ -431,6 +431,12 @@ func main() {
 	}
 
 	api := handlers.NewAPI(db, provider, oidcProvider, hsmCfg, cfg.YubiHSM.SuppressAuditWarning, cfg.Secret.KEKLabel)
+	// Wire the operator live audit-event feed (Task 90/104): the audit-append
+	// chokepoint fans every hash-chained event out to the SSE subscribers so the
+	// console live-tail sees events from HTTP handlers, background jobs, and
+	// protocol servers alike. The Publisher is non-blocking (drop-oldest on a slow
+	// reader), so this cannot stall the append hot path.
+	db.SetEventHook(api.EventPublisher().Publish)
 	api.SetPolicy(handlers.Policy{
 		RequireReason:       cfg.Policy.RequireReason,
 		MaxCertValidityDays: cfg.Policy.MaxCertValidityDays,

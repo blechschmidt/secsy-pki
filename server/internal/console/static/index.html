@@ -778,6 +778,19 @@
           <button class="btn ghost sm" id="auditRefresh" style="margin-top:16px">Refresh</button>
         </div>
         <div id="auditVerify" class="notice hidden" style="margin-bottom:12px"></div>
+        <!-- Live tail: stream new events over Server-Sent Events as they are sealed. -->
+        <div class="toolbar" style="margin-bottom:6px">
+          <button class="btn ghost sm" id="auditLiveToggle" title="Stream new audit events in real time as they are appended to the chain">▶ Live tail</button>
+          <span class="muted" id="auditLiveStatus" style="margin-top:6px"></span>
+          <div class="spacer"></div>
+          <button class="btn ghost sm hidden" id="auditLiveClear" style="margin-top:0">Clear</button>
+        </div>
+        <div class="panel hidden" id="auditLivePanel" style="margin-bottom:12px">
+          <table>
+            <thead><tr><th>Time</th><th>Action</th><th>Actor</th><th>Tenant</th><th>Target</th><th>Result</th><th>Detail</th></tr></thead>
+            <tbody id="auditLiveRows"></tbody>
+          </table>
+        </div>
         <div id="auditCounts" class="muted" style="margin-bottom:12px"></div>
         <div class="panel">
           <table>

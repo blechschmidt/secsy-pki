@@ -145,6 +145,17 @@ func rdG(m, pat, path, b string) rc {
 	return rc{method: m, pattern: pat, path: path, body: b, capable: subjAuditorA, denied: den403}
 }
 
+// rdGStream: global read (canRead) for a STREAMING endpoint (Server-Sent Events).
+// Same gate as rdG, but the (d) reachability probe is skipped: a streaming
+// handler never returns from ServeHTTP synchronously (it blocks until the client
+// disconnects), so driving it with a capable principal would hang the harness.
+// The unauthenticated-401 and roleless-403 checks still run and prove the gate.
+func rdGStream(m, pat, path string) rc {
+	c := rdG(m, pat, path, "")
+	c.skipReach = true
+	return c
+}
+
 // caRd: per-CA read (authorizeCARead) — roleless -> 403, cross member -> 404.
 func caRd(m, pat, path string) rc {
 	return rc{method: m, pattern: pat, path: path, capable: subjAuditorA, denied: den403,
@@ -409,6 +420,9 @@ func authzMatrix() []rc {
 		rdG("GET", "/api/events", "/api/events", ""),
 		platRd("GET", "/api/events/verify", "/api/events/verify"),
 		platRd("GET", "/api/events/export", "/api/events/export"),
+		// Live audit-event feed (SSE): read-gated like /api/events; streaming, so
+		// the reachability probe is skipped (see rdGStream).
+		rdGStream("GET", "/api/events/stream", "/api/events/stream"),
 
 		// Four-eyes approval workflow (engine enabled in the harness).
 		aprRd("GET", "/api/approvals", "/api/approvals"),
@@ -670,6 +684,13 @@ func TestAuthzMatrix(t *testing.T) {
 				if b := rec.Body.String(); strings.Contains(b, `"pkcs11:object=ca-a"`) || strings.Contains(b, `"tenant_id":"a"`) {
 					t.Errorf("(c) cross-tenant response leaked tenant-a data; body=%s", snippet(rec))
 				}
+			}
+			if c.skipReach {
+				// A streaming endpoint (the SSE audit feed) never returns from
+				// ServeHTTP synchronously — once past the gate it blocks until the
+				// client disconnects — so the reachability probe below would hang.
+				// (a) unauthenticated and (b) roleless above already prove the gate.
+				return
 			}
 			// (d) a correctly-capable principal -> authorized (not 401/403).
 			if rec := h.do(c, c.capable); rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {

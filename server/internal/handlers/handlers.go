@@ -18,6 +18,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/console"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
+	"github.com/blechschmidt/secsy-pki/server/internal/eventstream"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
@@ -105,6 +106,12 @@ type API struct {
 	// 0 means unbounded (non-expiring tokens are permitted). Set from
 	// auth.api_tokens.max_lifetime_days.
 	apiTokenMaxLifetime time.Duration
+	// events fans the tamper-evident audit log out to operators watching the
+	// console live over Server-Sent Events (Task 90/104). It is always non-nil
+	// (created in NewAPI); StreamEventLog subscribes to it, and the server wires
+	// database.DB.AppendEvent's hook to events.Publish so every hash-chained event
+	// is fanned out identically from every append site.
+	events *eventstream.Publisher
 }
 
 // LeaderInfo is the read-only view of the multi-replica coordination elector
@@ -193,8 +200,15 @@ func NewAPI(db *database.DB, keyProvider keyprovider.Provider, oidcProvider *aut
 		suppressAuditWarning: suppressAuditWarning,
 		secretKEKLabel:       secretKEKLabel,
 		ocspCache:            ca.NewOCSPCache(DefaultOCSPCacheTTL),
+		events:               eventstream.NewPublisher(0),
 	}
 }
+
+// EventPublisher returns the live audit-event fan-out publisher (never nil). The
+// server wires it to the audit-append chokepoint with
+// db.SetEventHook(api.EventPublisher().Publish) so every hash-chained event
+// reaches the operator SSE feed; tests use it to drive the stream directly.
+func (a *API) EventPublisher() *eventstream.Publisher { return a.events }
 
 // SetPolicy installs the centrally-configured issuance policy.
 func (a *API) SetPolicy(p Policy) { a.policy = p }
@@ -516,6 +530,9 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/events", protected(http.HandlerFunc(a.ListEventLog)))
 	mux.Handle("GET /api/events/verify", protected(http.HandlerFunc(a.VerifyEventLog)))
 	mux.Handle("GET /api/events/export", protected(http.HandlerFunc(a.ExportEventLog)))
+	// Live audit-event feed (Server-Sent Events): the tenant/RBAC-scoped, real-time
+	// companion to GET /api/events, fed from the audit-append chokepoint.
+	mux.Handle("GET /api/events/stream", protected(http.HandlerFunc(a.StreamEventLog)))
 
 	// Four-eyes / maker-checker approval workflow (Task 81). Read is gated by the
 	// endpoints themselves (approval:read); approve/reject enforce approval:approve

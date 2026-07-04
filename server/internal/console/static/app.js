@@ -300,6 +300,9 @@ async function completeOIDC(code) {
 
 // ---- View routing --------------------------------------------------------
 function switchView(name) {
+  // Tear down the live audit tail when navigating away so the SSE connection and
+  // its server-side subscriber are released rather than leaking in the background.
+  if (name !== 'audit' && typeof auditLiveController !== 'undefined' && auditLiveController) stopLiveTail();
   document.querySelectorAll('header nav button').forEach(b =>
     b.classList.toggle('active', b.dataset.view === name));
   document.querySelectorAll('.view').forEach(v =>
@@ -2345,6 +2348,116 @@ async function exportAudit(format, filename) {
 $('auditExportJSON').onclick = () => exportAudit('json', 'audit-export.ndjson');
 $('auditExportCEF').onclick = () => exportAudit('cef', 'audit-export.cef.log');
 $('auditExportSyslog').onclick = () => exportAudit('rfc5424', 'audit-export.syslog.log');
+
+// ---- Live audit-event tail (Server-Sent Events) -----------------------------
+// The live feed streams every hash-chained audit event as it is sealed,
+// tenant/RBAC-scoped on the server identically to the paged log. It consumes the
+// stream with fetch() + a ReadableStream reader rather than the native
+// EventSource so the operator's Authorization header (basic root / bearer token)
+// rides along — EventSource can only carry cookies. The ?action= filter is shared
+// with the paged view; tenant scoping is enforced server-side.
+let auditLiveController = null;   // AbortController for the in-flight stream, or null
+const AUDIT_LIVE_MAX = 300;       // cap the live table so a long session can't grow unbounded
+
+function auditLiveActive() { return auditLiveController !== null; }
+
+$('auditLiveToggle').onclick = () => auditLiveActive() ? stopLiveTail() : startLiveTail();
+$('auditLiveClear').onclick = () => { $('auditLiveRows').innerHTML = ''; };
+
+function auditLiveRow(e) {
+  const badge = e.result === 'success' ? 'valid' : (e.result === 'denied' ? 'revoked' : 'warning');
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td style="white-space:nowrap">${fmtTime(e.timestamp)}</td>
+    <td class="mono">${escapeHTML(e.action || '')}</td>
+    <td title="${escapeHTML(e.actor_roles || '')}">${escapeHTML(e.actor_name || e.actor || '')}</td>
+    <td>${escapeHTML(e.tenant || '')}</td>
+    <td class="mono" title="${escapeHTML(e.target || '')}">${escapeHTML(e.target_name || shortSerial(e.target))}</td>
+    <td><span class="badge ${badge}">${escapeHTML(e.result || '')}</span></td>
+    <td class="muted" title="${escapeHTML(e.detail || '')}">${escapeHTML((e.detail || '').slice(0, 80))}</td>`;
+  return tr;
+}
+
+function auditLiveNoticeRow(text) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td colspan="7" class="muted" style="text-align:center">${escapeHTML(text)}</td>`;
+  return tr;
+}
+
+function auditLiveStatus(html) { $('auditLiveStatus').innerHTML = html; }
+
+async function startLiveTail() {
+  if (auditLiveActive()) return;
+  const p = new URLSearchParams();
+  if ($('auditAction').value.trim()) p.set('action', $('auditAction').value.trim());
+  const url = '/api/events/stream' + (p.toString() ? '?' + p.toString() : '');
+  const controller = new AbortController();
+  auditLiveController = controller;
+  $('auditLiveToggle').textContent = '■ Stop';
+  $('auditLiveClear').classList.remove('hidden');
+  $('auditLivePanel').classList.remove('hidden');
+  auditLiveStatus('<span style="color:var(--warn)">●</span> connecting…');
+  const headers = { 'Accept': 'text/event-stream' };
+  if (store.auth) headers['Authorization'] = store.auth;
+  try {
+    const res = await fetch(url, { headers, credentials: 'same-origin', signal: controller.signal });
+    if (res.status === 401) { logout(); throw new Error('authentication required'); }
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { const j = JSON.parse(await res.text()); if (j.error) msg = j.error; } catch (_) { /* keep msg */ }
+      throw new Error(msg);
+    }
+    auditLiveStatus('<span style="color:var(--ok)">●</span> streaming — new events appear at the top');
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      // SSE frames are separated by a blank line.
+      let sep;
+      while ((sep = buf.indexOf('\n\n')) >= 0) {
+        handleAuditSSEFrame(buf.slice(0, sep));
+        buf = buf.slice(sep + 2);
+      }
+    }
+    if (auditLiveActive()) auditLiveStatus('<span class="muted">○</span> stream closed by server');
+  } catch (e) {
+    if (e.name === 'AbortError') return;   // operator stopped it; finally resets the UI
+    auditLiveStatus(`<span style="color:var(--crit)">●</span> ${escapeHTML(e.message)}`);
+  } finally {
+    if (auditLiveController === controller) {
+      auditLiveController = null;
+      $('auditLiveToggle').textContent = '▶ Live tail';
+    }
+  }
+}
+
+function handleAuditSSEFrame(frame) {
+  let event = 'message', data = '';
+  for (const line of frame.split('\n')) {
+    if (line === '' || line.startsWith(':')) continue;   // blank or comment (heartbeat)
+    if (line.startsWith('event:')) event = line.slice(6).trim();
+    else if (line.startsWith('data:')) data += line.slice(5).trim();
+  }
+  if (!data) return;
+  let payload;
+  try { payload = JSON.parse(data); } catch (_) { return; }
+  const tbody = $('auditLiveRows');
+  if (event === 'audit') {
+    tbody.insertBefore(auditLiveRow(payload), tbody.firstChild);
+    while (tbody.children.length > AUDIT_LIVE_MAX) tbody.removeChild(tbody.lastChild);
+  } else if (event === 'lag') {
+    tbody.insertBefore(auditLiveNoticeRow('⚠ ' + (payload.message || `dropped ${payload.dropped} event(s)`)), tbody.firstChild);
+  }
+}
+
+function stopLiveTail() {
+  if (auditLiveController) { auditLiveController.abort(); auditLiveController = null; }
+  $('auditLiveToggle').textContent = '▶ Live tail';
+  auditLiveStatus('<span class="muted">○</span> stopped');
+}
 
 // ---- Four-eyes / maker-checker approvals ------------------------------------
 async function loadApprovals() {

@@ -92,9 +92,38 @@ and validated by `secsy-ca audit verify`. See the
 | Method & path | Purpose |
 |---------------|---------|
 | `GET /api/events` | Paginated event log (newest first); `?action=` and `?actor=` filters |
+| `GET /api/events/stream` | **Live feed** of new events over Server-Sent Events; `?action=` and `?tenant=` filters |
 | `GET /api/events/verify` | Verify chain integrity; returns `200` if intact, `409` if tampered |
 | `GET /api/audit-log` | Legacy per-signature certificate audit log |
 | `GET /api/access-log` | HTTP access log |
+
+### Live event feed (Server-Sent Events)
+
+`GET /api/events/stream` is the real-time companion to `GET /api/events`: instead
+of paging the historical log, it streams each event **as it is sealed**. Because
+every event — from HTTP handlers, background jobs, and the ACME/EST/SCEP/CMP
+protocol servers alike — is appended through the single chokepoint
+`database.DB.AppendEvent`, a hook there fans **every** hash-chained event out to
+connected subscribers identically. The operator console's **Audit → Live tail**
+view consumes it.
+
+- **Scope.** Authorization and tenant scoping are identical to `GET /api/events`:
+  `audit:read` is required, a platform operator sees every tenant (optionally
+  narrowed with `?tenant=`), and a tenant-scoped auditor is confined to its own
+  tenant's events — the same isolation guarantee, enforced by the subscriber
+  filter rather than a SQL `WHERE` clause. `?action=` narrows to one audit action.
+- **Wire format.** `Content-Type: text/event-stream`. Each event is one SSE frame
+  with `event: audit`, an `id:` carrying the event's chain sequence number, and a
+  `data:` payload holding the same event object the listing endpoint returns.
+  `: heartbeat` comment lines are sent periodically to keep the connection alive.
+- **Liveness over completeness.** The feed targets humans watching the console,
+  not durable machine delivery (that is the SIEM export below). A subscriber that
+  cannot keep up has its **oldest** undelivered events dropped and receives an
+  `event: lag` frame naming how many were dropped, rather than ever blocking the
+  audit-append hot path. For a guaranteed-complete, at-least-once copy of the log,
+  use the SIEM export; to fill a gap the live feed reported, refresh
+  `GET /api/events`. Drops are counted by the `secsy_event_stream_dropped_total`
+  metric (see [Observability](observability.md)).
 
 ### Exporting the log to a SIEM
 
