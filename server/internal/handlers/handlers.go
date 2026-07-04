@@ -441,6 +441,9 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/ssh/cas/{id}/revocations", protected(http.HandlerFunc(a.ListSSHRevocations)))
 	mux.HandleFunc("GET /api/ssh/cas/{id}/public", a.GetSSHCAPublicKey)
 	mux.HandleFunc("GET /api/ssh/cas/{id}/krl", a.GetSSHKRL)
+	// SSHFP (RFC 4255) pinning-record generation (Task 98): for a stored host
+	// certificate (by serial) or a supplied host key. Read-gated public material.
+	mux.Handle("POST /api/ssh/cas/{id}/dns-records/sshfp", protected(http.HandlerFunc(a.DNSRecordsSSHFP)))
 
 	// Artifact code-signing service (Task 60). Signing needs the artifact:sign
 	// capability (signer role) within the signer's tenant and signs on the HSM
@@ -460,6 +463,11 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/ca/{id}/crl/status", protected(http.HandlerFunc(a.CRLStatus)))
 	mux.HandleFunc("GET /api/ca/{id}/crl/partition/{shard}", a.GetShardCRL)
 	mux.HandleFunc("GET /api/ca/{id}/crl/partition/{shard}/delta", a.GetShardDeltaCRL)
+	// DANE TLSA (RFC 6698) pinning-record generation (Task 98). Read-gated public
+	// certificate material: emits zone-file records for the CA (PKIX-CA/DANE-TA)
+	// and, with ?serial, a leaf it issued (DANE-EE).
+	mux.Handle("GET /api/ca/{id}/dns-records/tlsa", protected(http.HandlerFunc(a.DNSRecordsTLSA)))
+
 	// Combined overlap chain (AIA/bundle) for a CA, covering key-rollover overlap.
 	mux.HandleFunc("GET /api/ca/{id}/chain", a.GetChain)
 	mux.HandleFunc("POST /api/ca/{id}/ocsp", a.OCSPResponder)

@@ -181,6 +181,14 @@ func run(args []string) error {
 		return cmdCT(db, cfg, cmdArgs)
 	}
 
+	// DNS pinning-record generation (Task 98) hashes stored public certificate
+	// and SSH-key material — it never touches the HSM — so dispatch it before the
+	// key provider is constructed. This lets an operator mint DANE/SSHFP records
+	// during an HSM outage.
+	if command == "dns-records" {
+		return cmdDNSRecords(db, cmdArgs)
+	}
+
 	// Publishing constructs the key provider lazily so `publish -verify` (a pure
 	// manifest/digest audit of the published snapshot) works during an HSM
 	// outage — exactly when an operator most wants to prove the static artifacts

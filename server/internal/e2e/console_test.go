@@ -231,7 +231,7 @@ func TestConsoleFlow(t *testing.T) {
 		if status != http.StatusOK {
 			t.Fatalf("GET /console/ = %d, want 200", status)
 		}
-		for _, want := range []string{"Operator Console", "app.js", "style.css"} {
+		for _, want := range []string{"Operator Console", "app.js", "style.css", "DNS Records"} {
 			if !strings.Contains(string(body), want) {
 				t.Errorf("console index missing %q", want)
 			}
@@ -247,8 +247,10 @@ func TestConsoleFlow(t *testing.T) {
 		if !strings.Contains(ctype, "javascript") {
 			t.Errorf("app.js content-type = %q, want javascript", ctype)
 		}
-		if !bytes.Contains(body, []byte("bootAuth")) {
-			t.Error("app.js does not contain expected console code")
+		for _, want := range []string{"bootAuth", "loadDNS"} {
+			if !bytes.Contains(body, []byte(want)) {
+				t.Errorf("app.js does not contain expected console code %q", want)
+			}
 		}
 
 		if status, _, _ := env.getPublic(t, "/console/style.css"); status != http.StatusOK {
@@ -330,6 +332,55 @@ func TestConsoleFlow(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("issued serial %s not in listing", serial)
+		}
+	})
+
+	// --- 5b. DNS pinning records: DANE TLSA for the CA + issued leaf. ---
+	t.Run("DNSRecordsTLSA", func(t *testing.T) {
+		if serial == "" {
+			t.Skip("no leaf issued")
+		}
+		status, body := env.req(t, "GET",
+			"/api/ca/"+env.interID+"/dns-records/tlsa?host=console.e2e.example.com&port=443&serial="+serial, nil)
+		if status != http.StatusOK {
+			t.Fatalf("dns-records tlsa = %d: %s", status, body)
+		}
+		var bundle struct {
+			TLSA []struct {
+				Usage        int    `json:"usage"`
+				Selector     int    `json:"selector"`
+				MatchingType int    `json:"matching_type"`
+				Data         string `json:"data"`
+				Zone         string `json:"zone"`
+			} `json:"tlsa"`
+			Zone string `json:"zone"`
+		}
+		if err := json.Unmarshal(body, &bundle); err != nil {
+			t.Fatalf("decode tlsa bundle: %v", err)
+		}
+		// 4 DANE-EE (leaf) + 8 issuer (PKIX-CA + DANE-TA) records.
+		if len(bundle.TLSA) != 12 {
+			t.Fatalf("got %d TLSA records, want 12", len(bundle.TLSA))
+		}
+		// The recommended DANE-EE 3 1 1 record: SPKI/SHA-256, 64 hex chars.
+		var found311 bool
+		for _, r := range bundle.TLSA {
+			if r.Usage == 3 && r.Selector == 1 && r.MatchingType == 1 {
+				found311 = true
+				if len(r.Data) != 64 {
+					t.Errorf("3 1 1 data length = %d, want 64 (SHA-256 hex)", len(r.Data))
+				}
+				want := "_443._tcp.console.e2e.example.com. IN TLSA 3 1 1 " + r.Data
+				if r.Zone != want {
+					t.Errorf("3 1 1 zone = %q, want %q", r.Zone, want)
+				}
+			}
+		}
+		if !found311 {
+			t.Error("missing DANE-EE 3 1 1 record")
+		}
+		if !strings.Contains(bundle.Zone, "IN TLSA 0 ") || !strings.Contains(bundle.Zone, "IN TLSA 2 ") {
+			t.Errorf("zone missing issuer PKIX-CA/DANE-TA records: %s", bundle.Zone)
 		}
 	})
 

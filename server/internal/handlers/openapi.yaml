@@ -60,6 +60,11 @@ tags:
     description: >-
       HSM-backed OpenSSH certificate authority: user/host certificate signing
       under profiles, revocation, and public KRL distribution.
+  - name: DNS Records
+    description: >-
+      DNS pinning-record generation for material this PKI issues: DANE TLSA
+      (RFC 6698) records for TLS services and their issuing CA, and SSHFP
+      (RFC 4255) records for SSH host keys — in zone-file presentation format.
   - name: Artifact Signing
     description: >-
       HSM-backed code/artifact signing: CMS (PKCS#7, RFC 5652) detached
@@ -1278,6 +1283,52 @@ paths:
             application/x-pem-file:
               schema: { type: string }
 
+  /api/ca/{id}/dns-records/tlsa:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    get:
+      operationId: generateTLSARecords
+      tags: [DNS Records]
+      summary: Generate DANE TLSA records for a CA (and optionally a leaf)
+      description: >-
+        Generates RFC 6698 DANE TLSA resource records in zone-file presentation
+        format for a TLS service reachable at host:port. Always emits records for
+        the issuing CA under usages PKIX-CA(0) and DANE-TA(2); with ?serial — a
+        leaf this CA issued — it additionally emits the leaf's DANE-EE(3) records.
+        Each certificate is covered across selector 0/1 (full certificate /
+        SubjectPublicKeyInfo) and matching type 1 (SHA-256) and 0 (verbatim).
+        Read-gated public certificate material.
+      parameters:
+        - name: host
+          in: query
+          required: true
+          description: Service hostname the records are published under.
+          schema: { type: string }
+        - name: port
+          in: query
+          required: false
+          description: TLS service port (default 443).
+          schema: { type: integer, default: 443, minimum: 1, maximum: 65535 }
+        - name: protocol
+          in: query
+          required: false
+          description: Transport protocol for the DANE owner name (default tcp).
+          schema: { type: string, default: tcp }
+        - name: serial
+          in: query
+          required: false
+          description: Serial of a leaf issued by this CA; adds its DANE-EE records.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The generated TLSA records plus the combined zone text.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DNSRecordBundle" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   # ---------------------------------------------------------------------------
   # SPIFFE X.509-SVID workload identity
   # ---------------------------------------------------------------------------
@@ -1703,6 +1754,35 @@ paths:
           content:
             application/octet-stream:
               schema: { type: string, format: binary }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/ssh/cas/{id}/dns-records/sshfp:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: generateSSHFPRecords
+      tags: [DNS Records]
+      summary: Generate SSHFP records for an SSH host key or stored host cert
+      description: >-
+        Generates RFC 4255 SSHFP resource records in zone-file presentation
+        format for an SSH host key, covering fingerprint types 1 (SHA-1) and 2
+        (SHA-256). Supply either serial — a host certificate this SSH CA issued —
+        or public_key, a host key/certificate in authorized_keys format. When a
+        stored certificate carries a principal it is used as the default host.
+        Read-gated public key material.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SSHFPGenerateRequest" }
+      responses:
+        "200":
+          description: The generated SSHFP records plus the combined zone text.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DNSRecordBundle" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   # ---------------------------------------------------------------------------
@@ -4503,6 +4583,52 @@ components:
         reason: { type: string }
         revoked_by: { type: string }
         revoked_at: { type: string, format: date-time }
+
+    TLSARecord:
+      type: object
+      description: One RFC 6698 DANE TLSA resource record.
+      required: [name, usage, selector, matching_type, data, zone]
+      properties:
+        name: { type: string, description: "Owner FQDN, e.g. _443._tcp.host.example.com." }
+        usage: { type: integer, description: "Certificate usage: 0 PKIX-CA, 1 PKIX-EE, 2 DANE-TA, 3 DANE-EE." }
+        selector: { type: integer, description: "0 full certificate, 1 SubjectPublicKeyInfo." }
+        matching_type: { type: integer, description: "0 verbatim, 1 SHA-256, 2 SHA-512." }
+        data: { type: string, description: "Lowercase-hex certificate-association data." }
+        zone: { type: string, description: "Full zone-file presentation-format line." }
+
+    SSHFPRecord:
+      type: object
+      description: One RFC 4255 SSHFP resource record.
+      required: [name, algorithm, fptype, data, zone]
+      properties:
+        name: { type: string, description: "Owner FQDN, e.g. host.example.com." }
+        algorithm: { type: integer, description: "1 RSA, 2 DSA, 3 ECDSA, 4 Ed25519." }
+        fptype: { type: integer, description: "1 SHA-1, 2 SHA-256." }
+        data: { type: string, description: "Lowercase-hex fingerprint." }
+        zone: { type: string, description: "Full zone-file presentation-format line." }
+
+    DNSRecordBundle:
+      type: object
+      description: Generated DNS pinning records plus the combined zone-file text.
+      required: [zone]
+      properties:
+        tlsa:
+          type: array
+          items: { $ref: "#/components/schemas/TLSARecord" }
+        sshfp:
+          type: array
+          items: { $ref: "#/components/schemas/SSHFPRecord" }
+        zone: { type: string, description: "The copy-and-paste zone-file block (records joined by newlines)." }
+
+    SSHFPGenerateRequest:
+      type: object
+      description: >-
+        Request to generate SSHFP records. Supply exactly one of serial or
+        public_key.
+      properties:
+        host: { type: string, description: "Hostname the records are published under (defaults to the stored certificate's first principal)." }
+        serial: { type: string, description: "Serial of a host certificate this SSH CA issued." }
+        public_key: { type: string, description: "An SSH host key or certificate in authorized_keys format." }
 
     SecretInfo:
       type: object

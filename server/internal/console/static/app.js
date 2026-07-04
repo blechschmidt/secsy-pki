@@ -316,6 +316,7 @@ function switchView(name) {
   if (name === 'approvals') loadApprovals();
   if (name === 'compliance') loadCompliance();
   if (name === 'bundle') loadBundle();
+  if (name === 'dns') loadDNS();
   if (name === 'tenants') loadTenants();
   if (name === 'tokens') loadTokens();
 }
@@ -1106,6 +1107,70 @@ $('svidMintBtn').onclick = async () => {
   } catch (e) { showError(err, e.message); }
   finally { $('svidMintBtn').disabled = false; }
 };
+
+// ---- DNS pinning records (DANE TLSA / SSHFP) -----------------------------
+async function loadDNS() {
+  // TLSA targets any X.509 CA (already loaded in x509CAs).
+  const x = x509CAs.map(c => `<option value="${c.id}">${escapeHTML(c.label)}</option>`).join('');
+  $('dnsTlsaCA').innerHTML = x || '<option value="">— no CAs —</option>';
+  // SSHFP targets an SSH CA; reuse the SSH page's list, loading it on demand.
+  try {
+    if (!sshCAs.length) sshCAs = await api('GET', '/api/ssh/cas');
+  } catch (_) { /* read-gated or none configured */ }
+  $('dnsSshfpCA').innerHTML = sshCAs.length
+    ? sshCAs.map(c => `<option value="${c.id}">${escapeHTML(c.label)}</option>`).join('')
+    : '<option value="">— no SSH CAs —</option>';
+}
+
+function dnsShowOut(boxId, outId, zone) {
+  $(outId).value = zone;
+  $(boxId).classList.remove('hidden');
+}
+
+$('dnsTlsaBtn').onclick = async () => {
+  const msg = $('dnsMsg'); msg.className = 'notice hidden';
+  const id = $('dnsTlsaCA').value, host = $('dnsTlsaHost').value.trim();
+  if (!id || !host) { notice(msg, 'err', 'Select a CA and enter a host.'); return; }
+  const port = $('dnsTlsaPort').value || '443';
+  const serial = $('dnsTlsaSerial').value.trim();
+  let q = `?host=${encodeURIComponent(host)}&port=${encodeURIComponent(port)}`;
+  if (serial) q += `&serial=${encodeURIComponent(serial)}`;
+  try {
+    const b = await api('GET', `/api/ca/${id}/dns-records/tlsa${q}`);
+    dnsShowOut('dnsTlsaOutBox', 'dnsTlsaOut', b.zone || '');
+    notice(msg, 'ok', `${(b.tlsa || []).length} TLSA record(s) generated.`);
+  } catch (e) { notice(msg, 'err', 'TLSA generation failed: ' + e.message); }
+};
+
+$('dnsSshfpBtn').onclick = async () => {
+  const msg = $('dnsMsg'); msg.className = 'notice hidden';
+  const id = $('dnsSshfpCA').value;
+  if (!id) { notice(msg, 'err', 'Select an SSH CA.'); return; }
+  const host = $('dnsSshfpHost').value.trim();
+  const serial = $('dnsSshfpSerial').value.trim();
+  const key = $('dnsSshfpKey').value.trim();
+  if ((serial === '') === (key === '')) {
+    notice(msg, 'err', 'Provide either a host cert serial or a public key, not both.');
+    return;
+  }
+  const body = {};
+  if (host) body.host = host;
+  if (serial) body.serial = serial; else body.public_key = key;
+  try {
+    const b = await api('POST', `/api/ssh/cas/${id}/dns-records/sshfp`, body);
+    dnsShowOut('dnsSshfpOutBox', 'dnsSshfpOut', b.zone || '');
+    notice(msg, 'ok', `${(b.sshfp || []).length} SSHFP record(s) generated.`);
+  } catch (e) { notice(msg, 'err', 'SSHFP generation failed: ' + e.message); }
+};
+
+function dnsCopy(outId, btnId) {
+  const v = $(outId); v.select();
+  navigator.clipboard.writeText(v.value).catch(() => document.execCommand('copy'));
+  $(btnId).textContent = 'Copied';
+  setTimeout(() => { $(btnId).textContent = 'Copy'; }, 1500);
+}
+$('dnsTlsaCopy').onclick = () => dnsCopy('dnsTlsaOut', 'dnsTlsaCopy');
+$('dnsSshfpCopy').onclick = () => dnsCopy('dnsSshfpOut', 'dnsSshfpCopy');
 
 // downloadBlob saves text content as a file via a transient object URL.
 function downloadBlob(content, filename, type) {

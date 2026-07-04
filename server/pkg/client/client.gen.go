@@ -1152,6 +1152,15 @@ type CrossSignResult struct {
 	CrossSign *CrossSign `json:"cross_sign,omitempty"`
 }
 
+// DNSRecordBundle Generated DNS pinning records plus the combined zone-file text.
+type DNSRecordBundle struct {
+	Sshfp *[]SSHFPRecord `json:"sshfp,omitempty"`
+	Tlsa  *[]TLSARecord  `json:"tlsa,omitempty"`
+
+	// Zone The copy-and-paste zone-file block (records joined by newlines).
+	Zone string `json:"zone"`
+}
+
 // DecryptRequest defines model for DecryptRequest.
 type DecryptRequest struct {
 	// Context base64-encoded optional AAD
@@ -1973,6 +1982,36 @@ type SSHCertificateCertType string
 // SSHCertificateStatus defines model for SSHCertificate.Status.
 type SSHCertificateStatus string
 
+// SSHFPGenerateRequest Request to generate SSHFP records. Supply exactly one of serial or public_key.
+type SSHFPGenerateRequest struct {
+	// Host Hostname the records are published under (defaults to the stored certificate's first principal).
+	Host *string `json:"host,omitempty"`
+
+	// PublicKey An SSH host key or certificate in authorized_keys format.
+	PublicKey *string `json:"public_key,omitempty"`
+
+	// Serial Serial of a host certificate this SSH CA issued.
+	Serial *string `json:"serial,omitempty"`
+}
+
+// SSHFPRecord One RFC 4255 SSHFP resource record.
+type SSHFPRecord struct {
+	// Algorithm 1 RSA, 2 DSA, 3 ECDSA, 4 Ed25519.
+	Algorithm int `json:"algorithm"`
+
+	// Data Lowercase-hex fingerprint.
+	Data string `json:"data"`
+
+	// Fptype 1 SHA-1, 2 SHA-256.
+	Fptype int `json:"fptype"`
+
+	// Name Owner FQDN, e.g. host.example.com.
+	Name string `json:"name"`
+
+	// Zone Full zone-file presentation-format line.
+	Zone string `json:"zone"`
+}
+
 // SSHProfile defines model for SSHProfile.
 type SSHProfile struct {
 	AllowEmptyPrincipals   *bool     `json:"allow_empty_principals,omitempty"`
@@ -2197,6 +2236,27 @@ type StatusMessage struct {
 // StatusResponse defines model for StatusResponse.
 type StatusResponse struct {
 	Status *string `json:"status,omitempty"`
+}
+
+// TLSARecord One RFC 6698 DANE TLSA resource record.
+type TLSARecord struct {
+	// Data Lowercase-hex certificate-association data.
+	Data string `json:"data"`
+
+	// MatchingType 0 verbatim, 1 SHA-256, 2 SHA-512.
+	MatchingType int `json:"matching_type"`
+
+	// Name Owner FQDN, e.g. _443._tcp.host.example.com.
+	Name string `json:"name"`
+
+	// Selector 0 full certificate, 1 SubjectPublicKeyInfo.
+	Selector int `json:"selector"`
+
+	// Usage Certificate usage: 0 PKIX-CA, 1 PKIX-EE, 2 DANE-TA, 3 DANE-EE.
+	Usage int `json:"usage"`
+
+	// Zone Full zone-file presentation-format line.
+	Zone string `json:"zone"`
 }
 
 // Tenant defines model for Tenant.
@@ -2471,6 +2531,21 @@ type GetShardDeltaCRLParams struct {
 	Format *string `form:"format,omitempty" json:"format,omitempty"`
 }
 
+// GenerateTLSARecordsParams defines parameters for GenerateTLSARecords.
+type GenerateTLSARecordsParams struct {
+	// Host Service hostname the records are published under.
+	Host string `form:"host" json:"host"`
+
+	// Port TLS service port (default 443).
+	Port *int `form:"port,omitempty" json:"port,omitempty"`
+
+	// Protocol Transport protocol for the DANE owner name (default tcp).
+	Protocol *string `form:"protocol,omitempty" json:"protocol,omitempty"`
+
+	// Serial Serial of a leaf issued by this CA; adds its DANE-EE records.
+	Serial *string `form:"serial,omitempty" json:"serial,omitempty"`
+}
+
 // ListRevokedCertificatesParams defines parameters for ListRevokedCertificates.
 type ListRevokedCertificatesParams struct {
 	// Limit Page size (1–500).
@@ -2703,6 +2778,9 @@ type VerifyArtifactSignatureJSONRequestBody = ArtifactVerifyRequest
 // CreateSSHCAJSONRequestBody defines body for CreateSSHCA for application/json ContentType.
 type CreateSSHCAJSONRequestBody = CreateSSHCARequest
 
+// GenerateSSHFPRecordsJSONRequestBody defines body for GenerateSSHFPRecords for application/json ContentType.
+type GenerateSSHFPRecordsJSONRequestBody = SSHFPGenerateRequest
+
 // RevokeSSHCertJSONRequestBody defines body for RevokeSSHCert for application/json ContentType.
 type RevokeSSHCertJSONRequestBody = SSHRevokeRequest
 
@@ -2884,6 +2962,9 @@ type ClientInterface interface {
 
 	// GetExternalCACSR request
 	GetExternalCACSR(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GenerateTLSARecords request
+	GenerateTLSARecords(ctx context.Context, id CAId, params *GenerateTLSARecordsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ImportExternalCACertWithBody request with any body
 	ImportExternalCACertWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3157,6 +3238,11 @@ type ClientInterface interface {
 
 	// ListSSHCertificates request
 	ListSSHCertificates(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GenerateSSHFPRecordsWithBody request with any body
+	GenerateSSHFPRecordsWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	GenerateSSHFPRecords(ctx context.Context, id CAId, body GenerateSSHFPRecordsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetSSHKRL request
 	GetSSHKRL(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3608,6 +3694,18 @@ func (c *Client) GetCrossSignChain(ctx context.Context, id CAId, csid string, re
 
 func (c *Client) GetExternalCACSR(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetExternalCACSRRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GenerateTLSARecords(ctx context.Context, id CAId, params *GenerateTLSARecordsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGenerateTLSARecordsRequest(c.Server, id, params)
 	if err != nil {
 		return nil, err
 	}
@@ -4820,6 +4918,30 @@ func (c *Client) CreateSSHCA(ctx context.Context, body CreateSSHCAJSONRequestBod
 
 func (c *Client) ListSSHCertificates(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListSSHCertificatesRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GenerateSSHFPRecordsWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGenerateSSHFPRecordsRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GenerateSSHFPRecords(ctx context.Context, id CAId, body GenerateSSHFPRecordsJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGenerateSSHFPRecordsRequest(c.Server, id, body)
 	if err != nil {
 		return nil, err
 	}
@@ -6568,6 +6690,106 @@ func NewGetExternalCACSRRequest(server string, id CAId) (*http.Request, error) {
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGenerateTLSARecordsRequest generates requests for GenerateTLSARecords
+func NewGenerateTLSARecordsRequest(server string, id CAId, params *GenerateTLSARecordsParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/dns-records/tlsa", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "host", runtime.ParamLocationQuery, params.Host); err != nil {
+			return nil, err
+		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+			return nil, err
+		} else {
+			for k, v := range parsed {
+				for _, v2 := range v {
+					queryValues.Add(k, v2)
+				}
+			}
+		}
+
+		if params.Port != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "port", runtime.ParamLocationQuery, *params.Port); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Protocol != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "protocol", runtime.ParamLocationQuery, *params.Protocol); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Serial != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "serial", runtime.ParamLocationQuery, *params.Serial); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
 	}
 
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
@@ -9640,6 +9862,53 @@ func NewListSSHCertificatesRequest(server string, id CAId) (*http.Request, error
 	return req, nil
 }
 
+// NewGenerateSSHFPRecordsRequest calls the generic GenerateSSHFPRecords builder with application/json body
+func NewGenerateSSHFPRecordsRequest(server string, id CAId, body GenerateSSHFPRecordsJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewGenerateSSHFPRecordsRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewGenerateSSHFPRecordsRequestWithBody generates requests for GenerateSSHFPRecords with any type of body
+func NewGenerateSSHFPRecordsRequestWithBody(server string, id CAId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ssh/cas/%s/dns-records/sshfp", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewGetSSHKRLRequest generates requests for GetSSHKRL
 func NewGetSSHKRLRequest(server string, id CAId) (*http.Request, error) {
 	var err error
@@ -10540,6 +10809,9 @@ type ClientWithResponsesInterface interface {
 	// GetExternalCACSRWithResponse request
 	GetExternalCACSRWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetExternalCACSRResponse, error)
 
+	// GenerateTLSARecordsWithResponse request
+	GenerateTLSARecordsWithResponse(ctx context.Context, id CAId, params *GenerateTLSARecordsParams, reqEditors ...RequestEditorFn) (*GenerateTLSARecordsResponse, error)
+
 	// ImportExternalCACertWithBodyWithResponse request with any body
 	ImportExternalCACertWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ImportExternalCACertResponse, error)
 
@@ -10812,6 +11084,11 @@ type ClientWithResponsesInterface interface {
 
 	// ListSSHCertificatesWithResponse request
 	ListSSHCertificatesWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*ListSSHCertificatesResponse, error)
+
+	// GenerateSSHFPRecordsWithBodyWithResponse request with any body
+	GenerateSSHFPRecordsWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*GenerateSSHFPRecordsResponse, error)
+
+	GenerateSSHFPRecordsWithResponse(ctx context.Context, id CAId, body GenerateSSHFPRecordsJSONRequestBody, reqEditors ...RequestEditorFn) (*GenerateSSHFPRecordsResponse, error)
 
 	// GetSSHKRLWithResponse request
 	GetSSHKRLWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetSSHKRLResponse, error)
@@ -11489,6 +11766,31 @@ func (r GetExternalCACSRResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetExternalCACSRResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GenerateTLSARecordsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *DNSRecordBundle
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GenerateTLSARecordsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GenerateTLSARecordsResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -13137,6 +13439,31 @@ func (r ListSSHCertificatesResponse) StatusCode() int {
 	return 0
 }
 
+type GenerateSSHFPRecordsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *DNSRecordBundle
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GenerateSSHFPRecordsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GenerateSSHFPRecordsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type GetSSHKRLResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -13908,6 +14235,15 @@ func (c *ClientWithResponses) GetExternalCACSRWithResponse(ctx context.Context, 
 		return nil, err
 	}
 	return ParseGetExternalCACSRResponse(rsp)
+}
+
+// GenerateTLSARecordsWithResponse request returning *GenerateTLSARecordsResponse
+func (c *ClientWithResponses) GenerateTLSARecordsWithResponse(ctx context.Context, id CAId, params *GenerateTLSARecordsParams, reqEditors ...RequestEditorFn) (*GenerateTLSARecordsResponse, error) {
+	rsp, err := c.GenerateTLSARecords(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGenerateTLSARecordsResponse(rsp)
 }
 
 // ImportExternalCACertWithBodyWithResponse request with arbitrary body returning *ImportExternalCACertResponse
@@ -14787,6 +15123,23 @@ func (c *ClientWithResponses) ListSSHCertificatesWithResponse(ctx context.Contex
 		return nil, err
 	}
 	return ParseListSSHCertificatesResponse(rsp)
+}
+
+// GenerateSSHFPRecordsWithBodyWithResponse request with arbitrary body returning *GenerateSSHFPRecordsResponse
+func (c *ClientWithResponses) GenerateSSHFPRecordsWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*GenerateSSHFPRecordsResponse, error) {
+	rsp, err := c.GenerateSSHFPRecordsWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGenerateSSHFPRecordsResponse(rsp)
+}
+
+func (c *ClientWithResponses) GenerateSSHFPRecordsWithResponse(ctx context.Context, id CAId, body GenerateSSHFPRecordsJSONRequestBody, reqEditors ...RequestEditorFn) (*GenerateSSHFPRecordsResponse, error) {
+	rsp, err := c.GenerateSSHFPRecords(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGenerateSSHFPRecordsResponse(rsp)
 }
 
 // GetSSHKRLWithResponse request returning *GetSSHKRLResponse
@@ -15758,6 +16111,53 @@ func ParseGetExternalCACSRResponse(rsp *http.Response) (*GetExternalCACSRRespons
 	}
 
 	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGenerateTLSARecordsResponse parses an HTTP response from a GenerateTLSARecordsWithResponse call
+func ParseGenerateTLSARecordsResponse(rsp *http.Response) (*GenerateTLSARecordsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GenerateTLSARecordsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest DNSRecordBundle
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
 		var dest NotFound
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -18123,6 +18523,53 @@ func ParseListSSHCertificatesResponse(rsp *http.Response) (*ListSSHCertificatesR
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGenerateSSHFPRecordsResponse parses an HTTP response from a GenerateSSHFPRecordsWithResponse call
+func ParseGenerateSSHFPRecordsResponse(rsp *http.Response) (*GenerateSSHFPRecordsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GenerateSSHFPRecordsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest DNSRecordBundle
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
 		var dest Forbidden

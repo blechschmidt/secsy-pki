@@ -52,6 +52,7 @@
         <button data-view="approvals">Approvals</button>
         <button data-view="compliance">Compliance</button>
         <button data-view="bundle">Trust Bundle</button>
+        <button data-view="dns">DNS Records</button>
         <button data-view="secrets">Secrets</button>
         <button data-view="tenants">Tenants</button>
         <button data-view="tokens">API Tokens</button>
@@ -891,6 +892,50 @@
           <div class="field hidden" id="svidOutBox" style="margin-top:12px">
             <label>SVID certificate + chain (PEM)</label>
             <textarea id="svidOut" readonly style="min-height:120px"></textarea>
+          </div>
+        </div>
+      </section>
+
+      <!-- DNS pinning records (DANE TLSA / SSHFP) -->
+      <section class="view" id="view-dns">
+        <h2>DNS pinning records</h2>
+        <p class="sub">Generate DANE TLSA (RFC 6698) and SSHFP (RFC 4255) records in zone-file presentation format for material this PKI issues, then paste the snippet into your zone.</p>
+        <div id="dnsMsg" class="notice hidden" style="margin-bottom:12px"></div>
+
+        <div class="panel">
+          <h2 style="font-size:15px">DANE TLSA</h2>
+          <p class="sub">Pin a TLS service certificate (DANE-EE) and its issuing CA (PKIX-CA / DANE-TA) across selector 0/1 (full cert / SPKI) and matching type 1 (SHA-256) and 0 (verbatim). Add a leaf serial to include the end-entity records.</p>
+          <div class="row">
+            <div class="field" style="flex:2;min-width:200px"><label for="dnsTlsaCA">Issuing CA</label><select id="dnsTlsaCA"></select></div>
+            <div class="field" style="flex:2;min-width:200px"><label for="dnsTlsaHost">Host</label><input id="dnsTlsaHost" placeholder="host.example.com"></div>
+            <div class="field" style="width:100px"><label for="dnsTlsaPort">Port</label><input id="dnsTlsaPort" type="number" min="1" max="65535" value="443"></div>
+            <div class="field" style="flex:1;min-width:150px"><label for="dnsTlsaSerial">Leaf serial (optional)</label><input id="dnsTlsaSerial" placeholder="adds DANE-EE"></div>
+          </div>
+          <button class="btn" id="dnsTlsaBtn">Generate TLSA</button>
+          <div class="field hidden" id="dnsTlsaOutBox" style="margin-top:12px">
+            <label>Zone records</label>
+            <textarea id="dnsTlsaOut" readonly style="min-height:150px;font-family:monospace"></textarea>
+            <button class="btn ghost sm" id="dnsTlsaCopy" style="margin-top:8px">Copy</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2 style="font-size:15px">SSHFP</h2>
+          <p class="sub">Pin an SSH host key — from a host certificate this SSH CA signed (by serial) or a pasted public key — across fingerprint types 1 (SHA-1) and 2 (SHA-256).</p>
+          <div class="row">
+            <div class="field" style="flex:2;min-width:200px"><label for="dnsSshfpCA">SSH CA</label><select id="dnsSshfpCA"></select></div>
+            <div class="field" style="flex:2;min-width:200px"><label for="dnsSshfpHost">Host</label><input id="dnsSshfpHost" placeholder="host.example.com (or cert principal)"></div>
+            <div class="field" style="flex:1;min-width:150px"><label for="dnsSshfpSerial">Host cert serial</label><input id="dnsSshfpSerial" placeholder="stored host cert"></div>
+          </div>
+          <div class="field">
+            <label for="dnsSshfpKey">…or paste an SSH host public key</label>
+            <textarea id="dnsSshfpKey" placeholder="ssh-ed25519 AAAA… host" style="min-height:60px"></textarea>
+          </div>
+          <button class="btn" id="dnsSshfpBtn">Generate SSHFP</button>
+          <div class="field hidden" id="dnsSshfpOutBox" style="margin-top:12px">
+            <label>Zone records</label>
+            <textarea id="dnsSshfpOut" readonly style="min-height:110px;font-family:monospace"></textarea>
+            <button class="btn ghost sm" id="dnsSshfpCopy" style="margin-top:8px">Copy</button>
           </div>
         </div>
       </section>
