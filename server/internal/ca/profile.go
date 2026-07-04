@@ -66,6 +66,13 @@ type Profile struct {
 	// blocklist); see KeyCheckConfig.
 	KeyChecks *KeyCheckConfig `json:"key_checks,omitempty"`
 
+	// QCStatements assigns EU qualified-certificate semantics (eIDAS / ETSI EN
+	// 319 412-5) to every leaf issued under this profile: the non-critical
+	// id-pe-qcStatements extension (OID 1.3.6.1.5.5.7.1.3) carrying QcCompliance,
+	// QcType, QcSSCD, QcRetentionPeriod, QcPDS, and/or the ETSI TS 119 495 PSD2
+	// QcStatement. Nil emits no such extension. See QCStatementsConfig.
+	QCStatements *QCStatementsConfig `json:"qcstatements,omitempty"`
+
 	// MustStaple stamps the RFC 7633 TLS Feature / OCSP Must-Staple extension
 	// (id-pe-tlsfeature, OID 1.3.6.1.5.5.7.1.24) on every leaf issued under this
 	// profile: a non-critical SEQUENCE OF INTEGER containing status_request(5).
@@ -315,6 +322,55 @@ var builtinProfiles = map[string]Profile{
 		Algorithm:       AlgHybrid,
 		PQCKeyType:      "ml-dsa-65",
 	},
+	// The qualified-* profiles issue EU qualified certificates (eIDAS, Regulation
+	// (EU) No 910/2014) carrying the ETSI EN 319 412-5 id-pe-qcStatements
+	// extension. qualified-esign is a Qualified Certificate for Electronic
+	// Signature (natural person): keyUsage contentCommitment (non-repudiation),
+	// asserting QcCompliance, QcType=esign, and QcSSCD (key in a QSCD).
+	"qualified-esign": {
+		Name:            "qualified-esign",
+		Description:     "eIDAS qualified certificate for electronic signature (QcCompliance + QcType esign + QcSSCD)",
+		KeyUsages:       []string{"contentCommitment"},
+		DefaultValidity: 3 * 365 * day,
+		MaxValidity:     3 * 365 * day,
+		QCStatements: &QCStatementsConfig{
+			Compliance: true,
+			Type:       "esign",
+			SSCD:       true,
+		},
+	},
+	// qualified-eseal is a Qualified Certificate for Electronic Seal (legal
+	// person): the same shape as qualified-esign with QcType=eseal.
+	"qualified-eseal": {
+		Name:            "qualified-eseal",
+		Description:     "eIDAS qualified certificate for electronic seal (QcCompliance + QcType eseal + QcSSCD)",
+		KeyUsages:       []string{"contentCommitment"},
+		DefaultValidity: 3 * 365 * day,
+		MaxValidity:     3 * 365 * day,
+		QCStatements: &QCStatementsConfig{
+			Compliance: true,
+			Type:       "eseal",
+			SSCD:       true,
+		},
+	},
+	// qualified-web is a Qualified Website Authentication Certificate (QWAC): a
+	// TLS serverAuth leaf asserting QcCompliance and QcType=web. It permits a
+	// per-request PSD2 QcStatement override (ETSI TS 119 495) so a single profile
+	// can serve payment service providers whose roles and authorizing NCA differ
+	// per certificate.
+	"qualified-web": {
+		Name:            "qualified-web",
+		Description:     "eIDAS qualified website-authentication certificate / QWAC (QcCompliance + QcType web; PSD2 override permitted)",
+		KeyUsages:       []string{"digitalSignature", "keyEncipherment"},
+		ExtKeyUsages:    []string{"serverAuth", "clientAuth"},
+		DefaultValidity: 365 * day,
+		MaxValidity:     397 * day,
+		QCStatements: &QCStatementsConfig{
+			Compliance:        true,
+			Type:              "web",
+			AllowPSD2Override: true,
+		},
+	},
 	// canary is the dedicated profile for the synthetic issuance canary
 	// (internal/canary, Task 71). Its certificates are short-lived operational
 	// self-test artifacts: minted, chain/OCSP/CRL-checked, and revoked within a
@@ -380,6 +436,11 @@ func SetCustomProfiles(profiles []Profile) error {
 		}
 		if p.UPN != nil {
 			if err := p.UPN.validate(p.Name); err != nil {
+				return err
+			}
+		}
+		if p.QCStatements != nil {
+			if err := p.QCStatements.validate(p.Name); err != nil {
 				return err
 			}
 		}

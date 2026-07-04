@@ -92,6 +92,7 @@ func (s *service) IssueCertificate(ctx context.Context, req *pkiv1.IssueCertific
 		RequestedBy: user.Subject,
 		MustStaple:  req.MustStaple,
 		UPNs:        req.GetUpns(),
+		PSD2:        psd2FromGRPC(req.GetPsd2()),
 	})
 	s.api.ConsumeHSMAuditLogs("")
 	metrics.RecordCertificate("issue", err)
@@ -516,6 +517,7 @@ func previewSpecFromGRPC(caID string, req *pkiv1.PreviewCertificateRequest, user
 		RequestedBy: user.Subject,
 		MustStaple:  req.MustStaple,
 		UPNs:        req.GetUpns(),
+		PSD2:        psd2FromGRPC(req.GetPsd2()),
 	}
 	if strings.TrimSpace(req.GetCsrPem()) == "" {
 		spec.Subject = pkix.Name{CommonName: req.GetCommonName()}
@@ -531,6 +533,20 @@ func previewSpecFromGRPC(caID string, req *pkiv1.PreviewCertificateRequest, user
 		}
 	}
 	return spec, nil
+}
+
+// psd2FromGRPC converts the gRPC PSD2 QcStatement message into the models
+// override consumed by the issuance/preview paths, returning nil when no PSD2
+// authorization was supplied (so the CA treats it as absent, not empty).
+func psd2FromGRPC(p *pkiv1.PSD2QCStatement) *models.PSD2QCStatement {
+	if p == nil {
+		return nil
+	}
+	return &models.PSD2QCStatement{
+		Roles:   p.GetRoles(),
+		NCAName: p.GetNcaName(),
+		NCAID:   p.GetNcaId(),
+	}
 }
 
 // previewResponse renders a ca.PreviewResult as the gRPC preview response.

@@ -86,6 +86,7 @@ func (a *API) IssueCertificate(w http.ResponseWriter, r *http.Request) {
 		RequestedBy: user.Subject,
 		MustStaple:  req.MustStaple,
 		UPNs:        req.UPNs,
+		PSD2:        req.PSD2,
 	})
 	a.consumeHSMAuditLogs("")
 	metrics.RecordCertificate("issue", err)

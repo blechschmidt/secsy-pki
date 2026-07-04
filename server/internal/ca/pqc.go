@@ -262,6 +262,11 @@ func (m *Manager) issuePQCLeaf(ctx context.Context, spec IssueSpec, issuerCA *mo
 	// Stamp the RFC 7633 Must-Staple extension before linting, mirroring the
 	// classical buildLeaf path (post-quantum server profiles are serverAuth too).
 	base = applyMustStaple(base, profile.resolveMustStaple(spec.MustStaple))
+	// Stamp the eIDAS QCStatements extension (ETSI EN 319 412-5, Task 128) before
+	// linting, mirroring the classical path.
+	if base, err = applyQCStatements(base, profile, spec.PSD2); err != nil {
+		return nil, err
+	}
 	if err := m.lintLeaf(base, profile, issuerCA, issuerCert, spec.RequestedBy); err != nil {
 		return nil, err
 	}
@@ -325,6 +330,11 @@ func (m *Manager) issueHybridLeaf(ctx context.Context, spec IssueSpec, issuerCA 
 	// Stamp the RFC 7633 Must-Staple extension before linting, mirroring the
 	// classical buildLeaf path (hybrid server profiles are serverAuth too).
 	base = applyMustStaple(base, profile.resolveMustStaple(spec.MustStaple))
+	// Stamp the eIDAS QCStatements extension (ETSI EN 319 412-5, Task 128) before
+	// linting, mirroring the classical path.
+	if base, err = applyQCStatements(base, profile, spec.PSD2); err != nil {
+		return nil, err
+	}
 	if err := m.lintLeaf(base, profile, issuerCA, issuerCert, spec.RequestedBy); err != nil {
 		return nil, err
 	}

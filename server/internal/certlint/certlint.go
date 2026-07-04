@@ -65,6 +65,11 @@ const (
 	// RequireMustStaple policy and defaults to warn (Must-Staple is optional under
 	// the Baseline Requirements).
 	CheckMustStaple = "must_staple"
+	// CheckQCStatements flags a malformed ETSI EN 319 412-5 id-pe-qcStatements
+	// extension (one whose value is not a well-formed SEQUENCE OF QCStatement) or
+	// one incorrectly marked critical (the standard requires it be non-critical).
+	// Recognizing the extension keeps it from being treated as opaque/unknown.
+	CheckQCStatements = "qcstatements"
 )
 
 const (
@@ -253,6 +258,7 @@ func Lint(cert *x509.Certificate, policy Policy) Result {
 	checkKeyUsage(cert, policy, add)
 	checkEKUKUConsistency(cert, add)
 	checkTLSFeature(cert, policy, add)
+	checkQCStatements(cert, add)
 	if policy.Public {
 		checkSAN(cert, add)
 		checkCNInSAN(cert, add)
@@ -452,6 +458,24 @@ func checkTLSFeature(cert *x509.Certificate, policy Policy, add adder) {
 		add(CheckMustStaple,
 			"serverAuth certificate omits the RFC 7633 OCSP Must-Staple TLS feature (status_request); "+
 				"set the profile's must_staple knob to stamp id-pe-tlsfeature")
+	}
+}
+
+// checkQCStatements validates any ETSI EN 319 412-5 id-pe-qcStatements extension
+// the certificate carries: it must decode as a well-formed SEQUENCE OF
+// QCStatement and, per §4 of the standard, must not be marked critical.
+// Recognizing the extension keeps it from being treated as an opaque/unknown
+// extension (and lets the pre-issuance gate reject a corrupt one before signing).
+func checkQCStatements(cert *x509.Certificate, add adder) {
+	ext, present := findExtension(cert, pki.OIDQCStatements)
+	if !present {
+		return
+	}
+	if ext.Critical {
+		add(CheckQCStatements, "id-pe-qcStatements extension is marked critical; ETSI EN 319 412-5 §4 requires it be non-critical")
+	}
+	if _, err := pki.ParseQCStatements(ext.Value); err != nil {
+		add(CheckQCStatements, "id-pe-qcStatements extension value is malformed (expected a SEQUENCE OF QCStatement): %v", err)
 	}
 }
 

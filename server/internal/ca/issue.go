@@ -73,6 +73,13 @@ type IssueSpec struct {
 	// that declares UPN support (smartcard-logon / pkinit-client / a custom UPN
 	// profile) and are validated and realm-allowlist-checked before signing.
 	UPNs []string
+
+	// PSD2 optionally supplies the ETSI TS 119 495 PSD2 authorization (roles +
+	// NCA) for the eIDAS QCStatements extension (Task 128). It is honored only
+	// under a profile whose qcstatements block enables PSD2 overrides
+	// (allow_psd2_override); on any other profile it is a hard error. Set by the
+	// REST/gRPC/CLI issue paths from an optional per-request field.
+	PSD2 *models.PSD2QCStatement
 }
 
 // IssueResult is the outcome of issuing an end-entity certificate.
@@ -165,6 +172,7 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 		EmailAddresses: csr.EmailAddresses,
 		URIs:           uris,
 		UPNs:           spec.UPNs,
+		psd2:           spec.PSD2,
 		Marker:         spec.Marker,
 		caaContext: caa.RequestContext{
 			AccountURI:        spec.ACMEAccountURI,
@@ -201,6 +209,10 @@ type TemplateIssueSpec struct {
 	// UPNs are User Principal Name otherName SANs to emit (Task 122), honored only
 	// under a UPN-enabled profile.
 	UPNs []string
+	// PSD2 optionally supplies the ETSI TS 119 495 PSD2 authorization for the
+	// eIDAS QCStatements extension (Task 128), honored only under a QC-enabled
+	// profile that permits per-request PSD2 overrides.
+	PSD2 *models.PSD2QCStatement
 	// Marker tags the stored record as synthetic (e.g. models.CertMarkerServingTLS
 	// for the self-managed serving-TLS certificate) so monitoring and reports can
 	// exclude it. It is internal plumbing; the REST/gRPC layers never set it.
@@ -244,6 +256,7 @@ func (m *Manager) IssueCertificateFromTemplate(ctx context.Context, spec Templat
 		EmailAddresses: spec.EmailAddresses,
 		URIs:           spec.URIs,
 		UPNs:           spec.UPNs,
+		psd2:           spec.PSD2,
 		Marker:         spec.Marker,
 		mustStaple:     spec.MustStaple,
 	}, spec.Validity, spec.RequestedBy)
@@ -261,7 +274,10 @@ type leafParts struct {
 	EmailAddresses []string
 	URIs           []string
 	// UPNs are Microsoft/Kerberos User Principal Name otherName SANs (Task 122).
-	UPNs   []string
+	UPNs []string
+	// psd2 is the per-request ETSI TS 119 495 PSD2 authorization override for the
+	// eIDAS QCStatements extension (Task 128), if any.
+	psd2   *models.PSD2QCStatement
 	Marker string
 	// caaContext carries the RFC 8657 CAA-binding facts of the request (ACME
 	// account URI and per-identifier validation method) into buildLeaf's CAA gate.
@@ -325,7 +341,7 @@ func (m *Manager) issueLeaf(ctx context.Context, issuerCA *models.CA, issuerCert
 	}
 	defer signer.Close()
 
-	der, ctStatus, err := m.buildLeaf(ctx, signer, issuerCA, issuerCert, pki.LeafCertRequest{
+	base := pki.LeafCertRequest{
 		Subject:               parts.Subject,
 		PublicKey:             parts.PublicKey,
 		Serial:                serial,
@@ -340,7 +356,20 @@ func (m *Manager) issueLeaf(ctx context.Context, issuerCA *models.CA, issuerCert
 		URIs:                  parts.URIs,
 		UPNs:                  parts.UPNs,
 		CRLDistributionPoints: leafCRLDistributionPoints(issuerCA.ID, serial),
-	}, profile, requestedBy, parts.caaContext, profile.resolveMustStaple(parts.mustStaple))
+	}
+
+	// Stamp the eIDAS QCStatements extension (ETSI EN 319 412-5, Task 128) when
+	// the profile is QC-enabled, merging any per-request PSD2 override. Applied
+	// before buildLeaf so it is present for the pre-issuance lint gate and, being
+	// part of base.ExtraExtensions, is carried identically by the precertificate
+	// and the final certificate (keeping the TBSCertificates aligned for CT).
+	base, err = applyQCStatements(base, profile, parts.psd2)
+	if err != nil {
+		return nil, err
+	}
+
+	der, ctStatus, err := m.buildLeaf(ctx, signer, issuerCA, issuerCert, base,
+		profile, requestedBy, parts.caaContext, profile.resolveMustStaple(parts.mustStaple))
 	if err != nil {
 		return nil, fmt.Errorf("creating certificate: %w", err)
 	}

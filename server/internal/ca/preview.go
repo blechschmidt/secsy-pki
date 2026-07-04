@@ -15,6 +15,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/caa"
 	"github.com/blechschmidt/secsy-pki/server/internal/certlint"
 	"github.com/blechschmidt/secsy-pki/server/internal/keycheck"
+	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/nameconstraints"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
@@ -66,6 +67,7 @@ const (
 	GateUPN             = "upn"
 	GateCertPolicy      = "certificate_policy"
 	GateMustStaple      = "must_staple"
+	GateQCStatements    = "qcstatements"
 	GateLint            = "lint"
 	GateCAA             = "caa"
 	GateNameConstraints = "name_constraints"
@@ -131,6 +133,11 @@ type PreviewSpec struct {
 	// MustStaple optionally overrides the profile's RFC 7633 default (honored only
 	// where the profile permits per-request overrides).
 	MustStaple *bool
+	// PSD2 optionally supplies the ETSI TS 119 495 PSD2 authorization for the eIDAS
+	// QCStatements extension (Task 128), previewed through the same QC resolution
+	// the issuance path enforces (honored only under a QC-enabled profile that
+	// permits per-request PSD2 overrides).
+	PSD2 *models.PSD2QCStatement
 	// ACMEAccountURI / ValidationMethods carry the RFC 8657 CAA-binding facts of an
 	// ACME-driven request into the CAA gate; the zero value on every other path.
 	ACMEAccountURI    string
@@ -366,6 +373,22 @@ func (m *Manager) PreviewIssuance(ctx context.Context, spec PreviewSpec) (_ *Pre
 		result.Gates = append(result.Gates, skippedGate(GateMustStaple, "OCSP Must-Staple not requested for this certificate"))
 	}
 
+	// 3b. eIDAS QCStatements (ETSI EN 319 412-5) — the profile's qualified-
+	// certificate semantics plus any per-request PSD2 override, resolved through
+	// the same path the issuance flow enforces so the preview cannot drift.
+	if qc, present, qcErr := profile.qcStatements(parts.psd2); qcErr != nil {
+		result.Gates = append(result.Gates, failGate(GateQCStatements, qcErr.Error()))
+	} else if present {
+		var qerr error
+		if base, qerr = applyQCStatements(base, profile, parts.psd2); qerr != nil {
+			result.Gates = append(result.Gates, failGate(GateQCStatements, qerr.Error()))
+		} else {
+			result.Gates = append(result.Gates, passGate(GateQCStatements, describeQCStatements(qc)))
+		}
+	} else {
+		result.Gates = append(result.Gates, skippedGate(GateQCStatements, "profile assigns no eIDAS QC statements"))
+	}
+
 	// 4. Pre-issuance lint (certlint + optional zlint) on the to-be-signed template.
 	if profile.lintEnabled() {
 		res, lerr := m.lintResult(base, profile, issuerCert)
@@ -492,6 +515,7 @@ func previewLeafParts(spec PreviewSpec) (parts leafParts, keyProvided bool, err 
 			EmailAddresses: csr.EmailAddresses,
 			URIs:           uris,
 			UPNs:           append(pki.UPNsFromCSR(csr), spec.UPNs...),
+			psd2:           spec.PSD2,
 		}, true, nil
 	}
 	if spec.Subject.CommonName == "" && len(spec.DNSNames) == 0 && len(spec.UPNs) == 0 &&
@@ -513,6 +537,7 @@ func previewLeafParts(spec PreviewSpec) (parts leafParts, keyProvided bool, err 
 		EmailAddresses: spec.EmailAddresses,
 		URIs:           spec.URIs,
 		UPNs:           spec.UPNs,
+		psd2:           spec.PSD2,
 	}, false, nil
 }
 
@@ -656,6 +681,7 @@ var previewExtensionNames = map[string]string{
 	"2.5.29.36":               "policyConstraints",
 	"2.5.29.37":               "extKeyUsage",
 	"1.3.6.1.5.5.7.1.1":       "authorityInfoAccess",
+	"1.3.6.1.5.5.7.1.3":       "qcStatements",
 	"1.3.6.1.5.5.7.1.24":      "tlsFeature",
 	"1.3.6.1.4.1.11129.2.4.2": "ctSignedCertificateTimestampList",
 	"1.3.6.1.4.1.11129.2.4.3": "ctPoison",

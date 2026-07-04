@@ -131,6 +131,20 @@ message CTInfo {
   repeated CTLogOutcome logs = 5;
 }
 
+// PSD2QCStatement is the ETSI TS 119 495 PSD2 authorization carried in the eIDAS
+// QCStatements extension (id-pe-qcStatements, ETSI EN 319 412-5): the payment
+// service provider's roles and its National Competent Authority (NCA). It is
+// honored only under a QC-enabled profile that permits per-request PSD2 overrides
+// (qcstatements.allow_psd2_override).
+message PSD2QCStatement {
+  // roles are the PSP roles: PSP_AS, PSP_PI, PSP_AI, PSP_IC.
+  repeated string roles = 1;
+  // nca_name is the competent authority's human-readable name.
+  string nca_name = 2;
+  // nca_id is the NCA identifier (e.g. GB-FCA).
+  string nca_id = 3;
+}
+
 message IssueCertificateRequest {
   // ca_id identifies the issuing CA. It must be an X.509 issuer.
   string ca_id = 1;
@@ -152,6 +166,10 @@ message IssueCertificateRequest {
   // honored only under a UPN-enabled profile (smartcard-logon / pkinit-client / a
   // custom UPN profile) and are validated and realm-allowlist-checked before signing.
   repeated string upns = 6;
+  // psd2 optionally supplies the ETSI TS 119 495 PSD2 authorization for the eIDAS
+  // QCStatements extension (Task 128). Honored only under a QC-enabled profile
+  // that permits per-request PSD2 overrides.
+  PSD2QCStatement psd2 = 7;
 }
 
 message RenewCertificateRequest {
@@ -200,6 +218,10 @@ message PreviewCertificateRequest {
   // previewed through the same UPN gate the issuance path enforces. When csr_pem
   // is supplied, any UPN in its SAN is previewed in addition to these.
   repeated string upns = 11;
+  // psd2 optionally supplies the ETSI TS 119 495 PSD2 authorization for the eIDAS
+  // QCStatements extension (Task 128), previewed through the same QC resolution
+  // the issuance path enforces.
+  PSD2QCStatement psd2 = 12;
 }
 
 // PreviewGate is one pre-issuance gate's verdict in a preview.

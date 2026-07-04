@@ -686,9 +686,20 @@ func cmdIssue(db *database.DB, mgr *ca.Manager, args []string) error {
 	chain := fs.Bool("chain", false, "include the issuing CA certificate in the output")
 	var upns multiFlag
 	fs.Var(&upns, "upn", "Microsoft/Kerberos User Principal Name to emit as an id-ms-UPN otherName SAN, e.g. user@EXAMPLE.COM (repeatable; requires a smartcard-logon/pkinit-client profile)")
+	var psd2Roles multiFlag
+	fs.Var(&psd2Roles, "psd2-role", "PSD2 payment-service-provider role for the eIDAS QCStatements extension: PSP_AS, PSP_PI, PSP_AI, or PSP_IC (repeatable; requires a QC profile with allow_psd2_override)")
+	psd2NCAName := fs.String("psd2-nca-name", "", "PSD2 National Competent Authority name (e.g. \"Financial Conduct Authority\"); required with -psd2-role")
+	psd2NCAID := fs.String("psd2-nca-id", "", "PSD2 National Competent Authority identifier (e.g. GB-FCA); required with -psd2-role")
 	dryRun := fs.Bool("dry-run", false, "validate the request through the full pre-issuance gate stack and print the result WITHOUT issuing (no HSM signature, no serial, no record); exits non-zero if the request would be rejected")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	// Assemble the optional per-request PSD2 authorization override (Task 128). It
+	// is sent only when any PSD2 field is supplied; the server rejects it unless
+	// the selected profile is QC-enabled and permits per-request PSD2 overrides.
+	var psd2 *models.PSD2QCStatement
+	if len(psd2Roles) > 0 || *psd2NCAName != "" || *psd2NCAID != "" {
+		psd2 = &models.PSD2QCStatement{Roles: psd2Roles, NCAName: *psd2NCAName, NCAID: *psd2NCAID}
 	}
 	if *caRef == "" || *csrPath == "" {
 		fs.Usage()
@@ -715,6 +726,7 @@ func cmdIssue(db *database.DB, mgr *ca.Manager, args []string) error {
 			Validity:    daysToDuration(*validityDays),
 			RequestedBy: "secsy-ca-cli",
 			UPNs:        upns,
+			PSD2:        psd2,
 		})
 		if err != nil {
 			return err
@@ -733,6 +745,7 @@ func cmdIssue(db *database.DB, mgr *ca.Manager, args []string) error {
 		Validity:    daysToDuration(*validityDays),
 		RequestedBy: "secsy-ca-cli",
 		UPNs:        upns,
+		PSD2:        psd2,
 	})
 	if err != nil {
 		return err
@@ -1211,9 +1224,37 @@ func installConfigProfiles(cfg *config.Config) error {
 				MinRSABits:       p.KeyChecks.MinRSABits,
 			}
 		}
+		if p.QCStatements != nil {
+			prof.QCStatements = qcStatementsConfigFromConfig(p.QCStatements)
+		}
 		profiles = append(profiles, prof)
 	}
 	return ca.SetCustomProfiles(profiles)
+}
+
+// qcStatementsConfigFromConfig converts a profile's eIDAS QCStatements
+// configuration (ETSI EN 319 412-5, Task 128) into the ca.QCStatementsConfig
+// consumed by the issuance path. Field validation is deferred to
+// ca.SetCustomProfiles (which reuses the same build path as issuance).
+func qcStatementsConfigFromConfig(c *config.ProfileQCStatementsConfig) *ca.QCStatementsConfig {
+	out := &ca.QCStatementsConfig{
+		Compliance:        c.Compliance,
+		Type:              c.Type,
+		SSCD:              c.SSCD,
+		RetentionYears:    c.RetentionYears,
+		AllowPSD2Override: c.AllowPSD2Override,
+	}
+	for _, l := range c.PDS {
+		out.PDS = append(out.PDS, ca.QCPDSLocation{URL: l.URL, Language: l.Language})
+	}
+	if c.PSD2 != nil {
+		out.PSD2 = &ca.QCPSD2Config{
+			Roles:   c.PSD2.Roles,
+			NCAName: c.PSD2.NCAName,
+			NCAID:   c.PSD2.NCAID,
+		}
+	}
+	return out
 }
 
 // zlintConfigFromConfig converts a profile's zlint configuration into the

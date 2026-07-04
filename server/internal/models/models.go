@@ -676,6 +676,26 @@ type IssueCertRequest struct {
 	// custom UPN profile) and are validated and realm-allowlist-checked before
 	// signing. Any UPN in the CSR SAN is ignored on this path; supply it here.
 	UPNs []string `json:"upns,omitempty"`
+	// PSD2 optionally supplies the ETSI TS 119 495 PSD2 authorization (payment
+	// service provider roles + the National Competent Authority name and id) for
+	// the eIDAS QCStatements extension (id-pe-qcStatements, ETSI EN 319 412-5). It
+	// is honored only under a profile whose qcstatements block enables PSD2
+	// overrides (allow_psd2_override); on any other profile it is rejected. The
+	// per-request block is the natural home for this data because a payment
+	// institution's roles and authorizing NCA differ per certificate.
+	PSD2 *PSD2QCStatement `json:"psd2,omitempty"`
+}
+
+// PSD2QCStatement is the per-request ETSI TS 119 495 PSD2 QcStatement content:
+// the roles of the payment service provider and the name and identifier of the
+// National Competent Authority (NCA) that authorized it. It rides inside the
+// eIDAS QCStatements extension. Roles are the fixed tokens "PSP_AS" (account
+// servicing), "PSP_PI" (payment initiation), "PSP_AI" (account information), and
+// "PSP_IC" (issuing of card-based payment instruments).
+type PSD2QCStatement struct {
+	Roles   []string `json:"roles,omitempty"`
+	NCAName string   `json:"nca_name,omitempty"`
+	NCAID   string   `json:"nca_id,omitempty"`
 }
 
 // PreviewCertRequest asks a CA to validate a would-be issuance through the full
@@ -701,6 +721,10 @@ type PreviewCertRequest struct {
 	// previewed through the same UPN gate the issuance path enforces. When a CSR
 	// is supplied, any UPN in its SAN is previewed in addition to these.
 	UPNs []string `json:"upns,omitempty"`
+	// PSD2 optionally supplies the ETSI TS 119 495 PSD2 authorization for the eIDAS
+	// QCStatements extension (Task 128), previewed through the same QC resolution
+	// the issuance path enforces.
+	PSD2 *PSD2QCStatement `json:"psd2,omitempty"`
 }
 
 // IssueCertResponse returns a freshly issued end-entity certificate.

@@ -1933,6 +1933,11 @@ type ProfileConfig struct {
 	// nil/zero block runs enforce mode with the standard checks); see
 	// ProfileKeyChecksConfig.
 	KeyChecks ProfileKeyChecksConfig `yaml:"key_checks"`
+	// QCStatements assigns EU qualified-certificate semantics (eIDAS / ETSI EN 319
+	// 412-5, Task 128) to every leaf issued under the profile via the non-critical
+	// id-pe-qcStatements extension. Nil emits no such extension. See
+	// ProfileQCStatementsConfig.
+	QCStatements *ProfileQCStatementsConfig `yaml:"qcstatements"`
 }
 
 // ProfileKeyChecksConfig is a profile's pre-issuance key-quality policy (Task
@@ -1992,6 +1997,50 @@ type ProfileUPNConfig struct {
 	// RequireUPN makes issuance fail when no UPN SAN is supplied (a smartcard-logon
 	// certificate is useless without one).
 	RequireUPN bool `yaml:"require_upn"`
+}
+
+// ProfileQCStatementsConfig is a profile's ETSI EN 319 412-5 QCStatements policy
+// (Task 128): the EU qualified-certificate semantics (eIDAS) stamped in the
+// non-critical id-pe-qcStatements extension on every leaf issued under the
+// profile. A block with at least one statement enabled turns the feature on.
+type ProfileQCStatementsConfig struct {
+	// Compliance stamps id-etsi-qcs-QcCompliance (the certificate is an EU
+	// qualified certificate).
+	Compliance bool `yaml:"compliance"`
+	// Type is the qualified-certificate type in id-etsi-qcs-QcType: "esign",
+	// "eseal", or "web". Empty emits no QcType statement.
+	Type string `yaml:"type"`
+	// SSCD stamps id-etsi-qcs-QcSSCD (private key in a qualified signature/seal
+	// creation device).
+	SSCD bool `yaml:"sscd"`
+	// RetentionYears, when > 0, stamps id-etsi-qcs-QcRetentionPeriod.
+	RetentionYears int `yaml:"retention_years"`
+	// PDS lists PKI Disclosure Statement locations for id-etsi-qcs-QcPDS.
+	PDS []ProfileQCPDSConfig `yaml:"pds"`
+	// PSD2 stamps the ETSI TS 119 495 PSD2 QcStatement (payment service provider
+	// roles + authorizing NCA) as the profile default.
+	PSD2 *ProfilePSD2Config `yaml:"psd2"`
+	// AllowPSD2Override lets a REST/gRPC/CLI issue request supply or replace the
+	// PSD2 authorization per certificate. When false a per-request PSD2 override is
+	// rejected and the profile block (if any) is authoritative.
+	AllowPSD2Override bool `yaml:"allow_psd2_override"`
+}
+
+// ProfileQCPDSConfig is one QcPDS location: a disclosure-statement URL and its
+// ISO 639-1 (two-letter) language code.
+type ProfileQCPDSConfig struct {
+	URL      string `yaml:"url"`
+	Language string `yaml:"language"`
+}
+
+// ProfilePSD2Config is a profile's default PSD2 QcStatement (ETSI TS 119 495).
+type ProfilePSD2Config struct {
+	// Roles are the PSP roles: PSP_AS, PSP_PI, PSP_AI, PSP_IC.
+	Roles []string `yaml:"roles"`
+	// NCAName is the competent authority's human-readable name.
+	NCAName string `yaml:"nca_name"`
+	// NCAID is the NCA identifier (e.g. "GB-FCA").
+	NCAID string `yaml:"nca_id"`
 }
 
 // ProfilePolicyConfig is a profile's certificate-policy assignment. When oids is

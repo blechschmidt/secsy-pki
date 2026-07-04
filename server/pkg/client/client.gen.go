@@ -1712,6 +1712,9 @@ type IssueCertRequest struct {
 	MustStaple *bool   `json:"must_staple,omitempty"`
 	Profile    *string `json:"profile,omitempty"`
 
+	// Psd2 The ETSI TS 119 495 PSD2 QcStatement content carried inside the eIDAS QCStatements extension: the payment service provider's roles and the name and identifier of its National Competent Authority (NCA).
+	Psd2 *PSD2QCStatement `json:"psd2,omitempty"`
+
 	// Upns Microsoft/Kerberos User Principal Names ("user@REALM") to emit as id-ms-UPN (1.3.6.1.4.1.311.20.2.3) otherName SANs for smartcard-logon / PKINIT (Task 122). Honored only under a UPN-enabled profile (smartcard-logon / pkinit-client / a custom UPN profile) and validated and realm-allowlist-checked before signing. Any UPN in the CSR SAN is ignored on this path; supply it here.
 	Upns         *[]string `json:"upns,omitempty"`
 	ValidityDays *int      `json:"validity_days,omitempty"`
@@ -1937,6 +1940,18 @@ type PKCS12EscrowInfo struct {
 	Threshold *int         `json:"threshold,omitempty"`
 }
 
+// PSD2QCStatement The ETSI TS 119 495 PSD2 QcStatement content carried inside the eIDAS QCStatements extension: the payment service provider's roles and the name and identifier of its National Competent Authority (NCA).
+type PSD2QCStatement struct {
+	// NcaId NCA identifier (e.g. GB-FCA)
+	NcaId *string `json:"nca_id,omitempty"`
+
+	// NcaName Competent authority name (e.g. "Financial Conduct Authority")
+	NcaName *string `json:"nca_name,omitempty"`
+
+	// Roles PSP roles: PSP_AS (account servicing), PSP_PI (payment initiation), PSP_AI (account information), PSP_IC (issuing of card-based payment instruments).
+	Roles *[]string `json:"roles,omitempty"`
+}
+
 // ParseCSRRequest defines model for ParseCSRRequest.
 type ParseCSRRequest struct {
 	Csr string `json:"csr"`
@@ -2042,6 +2057,9 @@ type PreviewCertRequest struct {
 
 	// Profile Profile name; empty = default
 	Profile *string `json:"profile,omitempty"`
+
+	// Psd2 The ETSI TS 119 495 PSD2 QcStatement content carried inside the eIDAS QCStatements extension: the payment service provider's roles and the name and identifier of its National Competent Authority (NCA).
+	Psd2 *PSD2QCStatement `json:"psd2,omitempty"`
 
 	// Upns Microsoft/Kerberos User Principal Name otherName SANs (Task 122), previewed through the same UPN gate the issuance path enforces. When a CSR is supplied, any UPN in its SAN is previewed in addition to these.
 	Upns *[]string `json:"upns,omitempty"`
