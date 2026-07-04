@@ -131,6 +131,7 @@ est:
 Endpoints are served under `/.well-known/est`:
 
 - `GET  /.well-known/est/cacerts` — CA chain as a base64 certs-only PKCS#7 (unauthenticated).
+- `GET  /.well-known/est/csrattrs` — advertised CSR attributes for the profile (unauthenticated; RFC 7030 §4.5).
 - `POST /.well-known/est/simpleenroll` — initial enrollment (Basic auth or TLS client cert).
 - `POST /.well-known/est/simplereenroll` — renewal.
 - `POST /.well-known/est/serverkeygen` — server-side key generation (optional).
@@ -151,6 +152,53 @@ generated private key (PKCS#8) and the issued certificate (certs-only PKCS#7).
 The private key is generated **in memory on the server** and returned to the
 client — it is intentionally *not* an HSM key, since the private key must leave
 the server. The CA signature is still produced on the HSM.
+
+### CSR Attributes (`/csrattrs`)
+
+`GET /csrattrs` advertises, as a base64 DER `SEQUENCE OF AttrOrOID` (media type
+`application/csrattrs`), the attributes/extensions a client should include in its
+CSR for the configured profile ([RFC 7030 §4.5](https://www.rfc-editor.org/rfc/rfc7030#section-4.5)).
+Like `/cacerts` it is unauthenticated; a request that presents valid EST
+credentials is tailored to that credential's profile. A profile with nothing to
+advertise returns `204 No Content`.
+
+By default the advertisement is **derived from the resolved issuance profile**:
+
+- the expected **subject public-key algorithm** — `rsaEncryption` for profiles
+  that need key transport (`keyEncipherment`), an `id-ecPublicKey` hint carrying a
+  named curve otherwise, or the ML-DSA parameter-set OID for post-quantum profiles;
+- the **keyUsage** and **extended key usage** the CA will stamp on the leaf;
+- for attestation-required profiles, the private **attestation-statement OID** so a
+  client knows it must carry hardware key-attestation evidence in the CSR.
+
+An operator can instead declare an explicit list per profile, advertised verbatim
+in place of the derived set:
+
+```yaml
+est:
+  enabled: true
+  ca_label: "Secsy Issuing CA"
+  profile: "client"
+  csr_attr_ec_curve: "p-384"          # curve advertised with the derived EC hint (p-256 default)
+  csr_attrs:                          # explicit per-profile override
+    client:
+      - oid: "1.2.840.113549.1.9.7"                 # require a challengePassword (bare OID)
+      - oid: "1.2.840.10045.2.1"                    # id-ecPublicKey ...
+        values: ["1.3.132.0.34"]                    # ... on secp384r1 (P-384)
+```
+
+Only profiles listed under `csr_attrs` are overridden; every other profile keeps
+the derived set. Override values are OBJECT IDENTIFIERs, which covers what EST
+clients act on (curves, key-purpose OIDs, signature algorithms, extension types).
+
+The bundled [`secsy-agent`](agent.md) EST client fetches `/csrattrs` before
+enrolling and honors it: with `key_type: "auto"` it adopts the advertised key
+type/curve, and it reflects the advertised extended key usages into its CSR.
+
+```sh
+curl -s https://pki.example.com/.well-known/est/csrattrs | \
+  base64 -d | openssl asn1parse -inform DER
+```
 
 ### Client example (`curl`)
 
@@ -240,6 +288,7 @@ Every enrollment appends an entry to the hash-chained
 | `scep.get_ca_cert` | SCEP GetCACert |
 | `scep.enroll` / `scep.renew` | SCEP PKIOperation (initial / renewal) |
 | `est.cacerts` | EST cacerts |
+| `est.csrattrs` | EST CSR-attributes advertisement |
 | `est.simpleenroll` / `est.simplereenroll` | EST enrollment / renewal |
 | `est.serverkeygen` | EST server-side key generation |
 | `cmp.ir` / `cmp.cr` | CMP initialization / certification request |
@@ -282,6 +331,7 @@ Denied enrollments are recorded with result `denied`; issuance failures with
 | GET | `/scep?operation=GetCACert` | none | CA + RA certificates (PKCS#7) |
 | GET/POST | `/scep?operation=PKIOperation` | challenge / issued cert | Enroll / renew (`pkiMessage`) |
 | GET | `/.well-known/est/cacerts` | none | CA chain (PKCS#7) |
+| GET | `/.well-known/est/csrattrs` | none | Advertised CSR attributes (RFC 7030 §4.5) |
 | POST | `/.well-known/est/simpleenroll` | Basic / client cert | Initial enrollment |
 | POST | `/.well-known/est/simplereenroll` | Basic / client cert | Renewal |
 | POST | `/.well-known/est/serverkeygen` | Basic / client cert | Server-side key generation |

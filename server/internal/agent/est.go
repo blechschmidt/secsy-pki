@@ -90,6 +90,41 @@ func (c *estClient) Enroll(ctx context.Context, csrDER []byte, reenroll bool, cl
 	return certs, nil
 }
 
+// CSRAttrs fetches the server's advertised CSR attributes from /csrattrs
+// (RFC 7030 §4.5) and parses them. A 204/404 (no attributes) returns (nil, nil).
+// The bootstrap credential is presented so the server can tailor the response to
+// this client's issuance profile.
+func (c *estClient) CSRAttrs(ctx context.Context) ([]csrAttr, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/csrattrs", nil)
+	if err != nil {
+		return nil, fmt.Errorf("building csrattrs request: %w", err)
+	}
+	if c.username != "" {
+		req.SetBasicAuth(c.username, c.password)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("EST csrattrs: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxESTResponseBytes))
+	if err != nil {
+		return nil, fmt.Errorf("reading csrattrs response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("EST csrattrs returned %s: %s", resp.Status, summarizeBody(raw))
+	}
+	compact := strings.Join(strings.Fields(string(raw)), "")
+	der, err := base64.StdEncoding.DecodeString(compact)
+	if err != nil {
+		der = raw
+	}
+	return parseCSRAttrs(der)
+}
+
 // CACerts fetches the server's CA chain from /cacerts.
 func (c *estClient) CACerts(ctx context.Context) ([]*x509.Certificate, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/cacerts", nil)

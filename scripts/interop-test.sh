@@ -438,6 +438,17 @@ else
   bad "EST /simpleenroll (HTTP $EST_CODE)"
 fi
 
+# csrattrs: base64 DER SEQUENCE OF AttrOrOID advertising the profile's expected
+# CSR attributes. The interop CA uses the "client" profile, so the advertisement
+# derives an id-ecPublicKey key-type hint and a clientAuth extended key usage.
+if "${CURL[@]}" "$BASEURL/.well-known/est/csrattrs" -o "$WORK/est-csrattrs.b64" 2>/dev/null &&
+   tr -d '\r\n' < "$WORK/est-csrattrs.b64" | openssl base64 -d -A 2>/dev/null > "$WORK/est-csrattrs.der" &&
+   openssl asn1parse -inform DER -in "$WORK/est-csrattrs.der" 2>/dev/null | grep -q "id-ecPublicKey"; then
+  ok "EST /csrattrs advertises CSR attributes (RFC 7030 §4.5)"
+else
+  bad "EST /csrattrs"
+fi
+
 # ===========================================================================
 # CMP (RFC 9483) — openssl cmp
 # ===========================================================================

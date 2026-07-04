@@ -52,7 +52,8 @@ certificates:
   - name: web
     enroll: est
     dns_names: [web.example.com]
-    key_type: ecdsa-p256                    # ecdsa-p256|ecdsa-p384|rsa-2048|rsa-3072|rsa-4096
+    key_type: ecdsa-p256                    # ecdsa-p256|ecdsa-p384|rsa-2048|rsa-3072|rsa-4096|auto
+                                            # "auto" adopts the EST server's /csrattrs key-type hint (RFC 7030 §4.5)
     key_file: /etc/nginx/tls/web.key
     cert_file: /etc/nginx/tls/web.crt
     fullchain_file: /etc/nginx/tls/web-fullchain.crt

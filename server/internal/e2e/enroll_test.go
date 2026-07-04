@@ -165,6 +165,30 @@ func TestESTEnrollHSM(t *testing.T) {
 		t.Fatal("EST cacerts did not return the HSM CA certificate")
 	}
 
+	// csrattrs advertises the client profile's derived attributes (RFC 7030
+	// §4.5): an id-ecPublicKey key-type hint (OID 1.2.840.10045.2.1) and a
+	// clientAuth extended key usage (OID 1.3.6.1.5.5.7.3.2).
+	caResp, err := http.Get(ts.URL + "/.well-known/est/csrattrs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ct := caResp.Header.Get("Content-Type"); !strings.Contains(ct, "application/csrattrs") {
+		t.Fatalf("csrattrs content-type = %q", ct)
+	}
+	caBody, _ := io.ReadAll(caResp.Body)
+	caResp.Body.Close()
+	caDER, err := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(string(caBody)), ""))
+	if err != nil {
+		t.Fatalf("decode csrattrs: %v", err)
+	}
+	caStr := string(caDER)
+	if !strings.Contains(caStr, string([]byte{0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01})) {
+		t.Error("csrattrs did not advertise id-ecPublicKey for the client profile")
+	}
+	if !strings.Contains(caStr, string([]byte{0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02})) {
+		t.Error("csrattrs did not advertise the clientAuth extended key usage")
+	}
+
 	// simpleenroll over Basic auth; the leaf is signed on the token.
 	csrDER := makeCSRDER(t, "est-hsm-device")
 	req, _ := http.NewRequest("POST", ts.URL+"/.well-known/est/simpleenroll",

@@ -237,6 +237,11 @@ func (m *Middleware) classify(r *http.Request) *class {
 			strings.HasSuffix(path, "/simplereenroll"),
 			strings.HasSuffix(path, "/serverkeygen"):
 			return &class{name: "est_enroll", hsmBound: true, account: estAccount, tenantScoped: true}
+		case strings.HasSuffix(path, "/cacerts"),
+			strings.HasSuffix(path, "/csrattrs"):
+			// Read-only discovery endpoints: metered by the global/per-IP tiers but
+			// not gated on the HSM concurrency guard (they never sign).
+			return &class{name: "est_other", tenantScoped: true}
 		default:
 			return &class{name: "est_other", tenantScoped: true}
 		}

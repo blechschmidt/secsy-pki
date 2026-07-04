@@ -206,7 +206,9 @@ type CertSpec struct {
 	DNSNames    []string `yaml:"dns_names"`
 	IPAddresses []string `yaml:"ip_addresses"`
 	// KeyType of the locally generated key: ecdsa-p256 (default), ecdsa-p384,
-	// rsa-2048, rsa-3072, or rsa-4096.
+	// rsa-2048, rsa-3072, or rsa-4096. "auto" defers the choice to the EST
+	// server's /csrattrs advertisement (RFC 7030 §4.5), falling back to
+	// ecdsa-p256 when none is advertised.
 	KeyType string `yaml:"key_type"`
 	// Validity, when set, is requested as the ACME order's notAfter. The server
 	// profile may cap it. EST ignores it (the server profile decides).
@@ -464,8 +466,10 @@ func (c *Config) validateSpec(spec *CertSpec) error {
 	if len(spec.DNSNames) == 0 && len(spec.IPAddresses) == 0 {
 		return fmt.Errorf("at least one of dns_names or ip_addresses is required")
 	}
-	if _, err := parseKeyType(spec.KeyType); err != nil {
-		return err
+	if !isAutoKeyType(spec.KeyType) {
+		if _, err := parseKeyType(spec.KeyType); err != nil {
+			return err
+		}
 	}
 	if spec.KeyFile == "" || spec.CertFile == "" {
 		return fmt.Errorf("key_file and cert_file are required")

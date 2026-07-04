@@ -85,6 +85,15 @@ type Config struct {
 	// BRSKI registrar (which implements this interface) authorizes that exact
 	// device to enroll its operational LDevID. Nil disables the handoff (Task 87).
 	PledgeAuthorizer PledgeAuthorizer
+	// CSRAttrs optionally overrides, per profile name, the attributes advertised
+	// at GET /csrattrs (RFC 7030 §4.5). When a resolved profile has an entry here
+	// its explicit list is advertised verbatim; otherwise attributes are derived
+	// from the profile (expected key type/curve, key usages, extended key usages,
+	// and an attestation requirement). Nil advertises the derived set everywhere.
+	CSRAttrs map[string][]CSRAttr
+	// CSRAttrECCurve is the named curve advertised with the derived id-ecPublicKey
+	// key-type hint for non-RSA classical profiles (default "p-256").
+	CSRAttrECCurve string
 }
 
 // PledgeAuthorizer authorizes a device whose manufacturer IDevID — presented as
@@ -137,6 +146,7 @@ func (s *Server) SetClock(now func() time.Time) { s.now = now }
 func (s *Server) Register(mux *http.ServeMux) {
 	p := s.cfg.BasePath
 	mux.HandleFunc("GET "+p+"/cacerts", s.handleCACerts)
+	mux.HandleFunc("GET "+p+"/csrattrs", s.handleCSRAttrs)
 	mux.HandleFunc("POST "+p+"/simpleenroll", s.handleEnroll(false))
 	mux.HandleFunc("POST "+p+"/simplereenroll", s.handleEnroll(true))
 	if s.cfg.EnableServerKeygen {
@@ -161,6 +171,60 @@ func (s *Server) handleCACerts(w http.ResponseWriter, r *http.Request) {
 	}
 	s.recordEvent(r, "est:anonymous", audit.ActionESTCACerts, s.cfg.CAID, audit.ResultSuccess, "")
 	writePKCS7(w, p7)
+}
+
+// handleCSRAttrs advertises the CSR attributes/extensions a client should
+// include for the resolved profile (RFC 7030 §4.5). Like cacerts it is
+// unauthenticated and advertises the server's default profile; a request that
+// carries valid EST credentials is tailored to that credential's profile. The
+// response is a base64 DER SEQUENCE OF AttrOrOID (media type
+// application/csrattrs); a profile with nothing to advertise yields 204.
+func (s *Server) handleCSRAttrs(w http.ResponseWriter, r *http.Request) {
+	profileName := s.cfg.Profile
+	actor := "est:anonymous"
+	if p, a, ok := s.authenticate(r, false); ok {
+		profileName, actor = p, a
+	}
+
+	attrs, err := s.csrAttrs(profileName)
+	if err != nil {
+		http.Error(w, "csrattrs unavailable", http.StatusInternalServerError)
+		log.Printf("est: csrattrs for profile %q: %v", profileName, err)
+		return
+	}
+	if len(attrs) == 0 {
+		// RFC 7030 §4.5.2: no attributes to advertise.
+		s.recordEvent(r, actor, audit.ActionESTCSRAttrs, profileName, audit.ResultSuccess, "empty")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	der, err := encodeCsrAttrs(attrs)
+	if err != nil {
+		http.Error(w, "encoding csrattrs", http.StatusInternalServerError)
+		log.Printf("est: encoding csrattrs: %v", err)
+		return
+	}
+	s.recordEvent(r, actor, audit.ActionESTCSRAttrs, profileName, audit.ResultSuccess, "attrs="+strconv.Itoa(len(attrs)))
+	writeCSRAttrs(w, der)
+}
+
+// csrAttrs resolves the attribute set advertised for a profile: an operator
+// override when one is configured for that profile, otherwise the set derived
+// from the resolved issuance profile and its EST attestation mode.
+func (s *Server) csrAttrs(profileName string) ([]attrOrOID, error) {
+	if specs, ok := s.cfg.CSRAttrs[profileName]; ok {
+		return buildOverrideAttrs(specs)
+	}
+	prof, err := ca.LookupProfile(profileName)
+	if err != nil {
+		return nil, err
+	}
+	curve, err := resolveECCurve(s.cfg.CSRAttrECCurve)
+	if err != nil {
+		return nil, err
+	}
+	attestRequired := s.cfg.Attestation.Mode(profileName) == attestation.ModeRequire
+	return deriveCsrAttrs(prof, attestRequired, curve)
 }
 
 // handleEnroll services simpleenroll and simplereenroll. Both take a base64
@@ -535,6 +599,14 @@ func reCSR(orig *x509.CertificateRequest, priv crypto.Signer, _ crypto.PublicKey
 // writePKCS7 writes a base64 certs-only PKCS#7 response (RFC 7030 §4.1.3/§4.2.3).
 func writePKCS7(w http.ResponseWriter, der []byte) {
 	w.Header().Set("Content-Type", "application/pkcs7-mime; smime-type=certs-only")
+	w.Header().Set("Content-Transfer-Encoding", "base64")
+	w.WriteHeader(http.StatusOK)
+	writeBase64(w, der)
+}
+
+// writeCSRAttrs writes a base64 application/csrattrs response (RFC 7030 §4.5.2).
+func writeCSRAttrs(w http.ResponseWriter, der []byte) {
+	w.Header().Set("Content-Type", "application/csrattrs")
 	w.Header().Set("Content-Transfer-Encoding", "base64")
 	w.WriteHeader(http.StatusOK)
 	writeBase64(w, der)

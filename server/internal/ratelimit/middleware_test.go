@@ -200,6 +200,65 @@ func TestMiddlewareESTAccountFromBasicAuth(t *testing.T) {
 	}
 }
 
+// TestMiddlewareESTCSRAttrsMetered confirms the RFC 7030 §4.5 /csrattrs
+// discovery endpoint is covered by the rate-limit middleware (classified and
+// metered by the per-IP tier), not passed through unmetered.
+func TestMiddlewareESTCSRAttrsMetered(t *testing.T) {
+	clk := newFakeClock()
+	l := NewTieredLimiter(LimiterConfig{PerIP: Rate{Rate: 1, Burst: 1}, Now: clk.now})
+	m := New(Options{Limiter: l, Prefixes: testPrefixes()})
+	h := m.Handler(&okHandler{})
+
+	get := func() int {
+		rr := httptest.NewRecorder()
+		r := httptest.NewRequest("GET", "/.well-known/est/csrattrs", nil)
+		r.RemoteAddr = "7.7.7.7:1"
+		h.ServeHTTP(rr, r)
+		return rr.Code
+	}
+	if code := get(); code != http.StatusOK {
+		t.Fatalf("first csrattrs = %d, want 200", code)
+	}
+	if code := get(); code != http.StatusTooManyRequests {
+		t.Fatalf("second csrattrs = %d, want 429 (per-IP metered)", code)
+	}
+}
+
+// TestMiddlewareCSRAttrsBypassesGuard confirms /csrattrs, being a read-only
+// discovery endpoint, is not gated by the HSM concurrency guard: it succeeds
+// even while the single guard slot is held by an in-flight enrollment.
+func TestMiddlewareCSRAttrsBypassesGuard(t *testing.T) {
+	guard := NewGuard(GuardConfig{MaxInFlight: 1, MaxQueue: 0})
+	m := New(Options{Guard: guard, Prefixes: testPrefixes()})
+
+	block := make(chan struct{})
+	reached := make(chan struct{})
+	h := m.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/simpleenroll") {
+			close(reached)
+			<-block // hold the only guard slot
+		}
+		w.WriteHeader(200)
+	}))
+
+	go func() {
+		rr := httptest.NewRecorder()
+		r := httptest.NewRequest("POST", "/.well-known/est/simpleenroll", strings.NewReader("csr"))
+		r.RemoteAddr = "8.8.8.8:1"
+		h.ServeHTTP(rr, r)
+	}()
+	<-reached
+
+	rr := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/.well-known/est/csrattrs", nil)
+	r.RemoteAddr = "8.8.8.9:1"
+	h.ServeHTTP(rr, r)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("csrattrs while guard saturated = %d, want 200 (not HSM-gated)", rr.Code)
+	}
+	close(block)
+}
+
 // TestMiddlewareGuardShedsEnrollment verifies HSM-bound enrollment endpoints are
 // gated by the concurrency guard: when the guard is saturated with no queue,
 // further enrollments are shed with 503 + Retry-After while the slot is held.

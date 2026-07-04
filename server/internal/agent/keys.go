@@ -36,26 +36,63 @@ func parseKeyType(name string) (keyGenerator, error) {
 	}
 }
 
+// autoKeyType is the sentinel key_type that defers the choice to the EST server's
+// /csrattrs advertisement, falling back to defaultKeyType.
+const autoKeyType = "auto"
+
+// isAutoKeyType reports whether a spec defers its key type to the server's
+// /csrattrs advertisement (or, absent one, the default).
+func isAutoKeyType(keyType string) bool {
+	return keyType == "" || keyType == autoKeyType
+}
+
+// resolveKeyType collapses the unset/"auto" sentinel to the concrete default.
+func resolveKeyType(keyType string) string {
+	return chooseKeyType(keyType, "")
+}
+
+// chooseKeyType decides the key type to generate. An explicit spec type is
+// authoritative; the unset/"auto" sentinel adopts the server-advertised hint (an
+// EST /csrattrs key-type advertisement) and, absent one, the default.
+func chooseKeyType(specKeyType, hint string) string {
+	if !isAutoKeyType(specKeyType) {
+		return specKeyType
+	}
+	if hint != "" {
+		return hint
+	}
+	return defaultKeyType
+}
+
 // generateKey creates the spec's private key locally. It never leaves the
 // host: enrollment sends only a CSR.
 func generateKey(spec *CertSpec) (crypto.Signer, error) {
-	gen, err := parseKeyType(spec.KeyType)
+	return generateKeyOfType(resolveKeyType(spec.KeyType))
+}
+
+// generateKeyOfType mints a fresh private key of the named type. It is used when
+// the effective key type is resolved dynamically (e.g. honoring an EST
+// /csrattrs key-type hint) rather than taken verbatim from the spec.
+func generateKeyOfType(keyType string) (crypto.Signer, error) {
+	gen, err := parseKeyType(keyType)
 	if err != nil {
 		return nil, err
 	}
 	key, err := gen()
 	if err != nil {
-		return nil, fmt.Errorf("generating %s key: %w", spec.KeyType, err)
+		return nil, fmt.Errorf("generating %s key: %w", keyType, err)
 	}
 	return key, nil
 }
 
-// buildCSR creates a PKCS#10 request carrying exactly the spec's subject and
-// SANs, signed by key.
-func buildCSR(spec *CertSpec, key crypto.Signer) ([]byte, error) {
+// buildCSR creates a PKCS#10 request carrying the spec's subject and SANs, plus
+// any extra extensions (e.g. an extended key usage advertised by the EST server
+// at /csrattrs), signed by key.
+func buildCSR(spec *CertSpec, key crypto.Signer, extraExts ...pkix.Extension) ([]byte, error) {
 	tmpl := &x509.CertificateRequest{
-		Subject:  pkix.Name{CommonName: spec.CommonName},
-		DNSNames: append([]string(nil), spec.DNSNames...),
+		Subject:         pkix.Name{CommonName: spec.CommonName},
+		DNSNames:        append([]string(nil), spec.DNSNames...),
+		ExtraExtensions: extraExts,
 	}
 	for _, raw := range spec.IPAddresses {
 		ip := net.ParseIP(raw)

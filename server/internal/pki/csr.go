@@ -122,12 +122,15 @@ func marshalBasicConstraints(maxPathLen *int) (pkix.Extension, error) {
 	return pkix.Extension{Id: oidExtensionBasicConstraints, Critical: true, Value: val}, nil
 }
 
-// marshalKeyUsage encodes a critical keyUsage extension. X.509 key-usage bits
+// KeyUsageBitString encodes an x509.KeyUsage bitmask as the DER BIT STRING that
+// forms the value of the keyUsage extension (2.5.29.15). X.509 key-usage bits
 // are numbered from the most significant bit of the BIT STRING, so the
-// x509.KeyUsage bitmask (bit 0 = digitalSignature) is bit-reversed per byte,
-// and trailing zero bits are trimmed from the BIT STRING length as DER
-// requires.
-func marshalKeyUsage(ku x509.KeyUsage) (pkix.Extension, error) {
+// x509.KeyUsage bitmask (bit 0 = digitalSignature) is bit-reversed per byte, and
+// trailing zero bits are trimmed from the BIT STRING length as DER requires. It
+// is exported so protocol layers (e.g. the EST /csrattrs advertisement) can
+// encode the exact keyUsage value a profile mandates without duplicating this
+// bit-ordering logic.
+func KeyUsageBitString(ku x509.KeyUsage) ([]byte, error) {
 	buf := [2]byte{reverseBits(byte(ku)), reverseBits(byte(ku >> 8))}
 	octets := 1
 	if buf[1] != 0 {
@@ -137,7 +140,12 @@ func marshalKeyUsage(ku x509.KeyUsage) (pkix.Extension, error) {
 	for bits > 0 && buf[(bits-1)/8]&(1<<(7-(bits-1)%8)) == 0 {
 		bits--
 	}
-	val, err := asn1.Marshal(asn1.BitString{Bytes: buf[:octets], BitLength: bits})
+	return asn1.Marshal(asn1.BitString{Bytes: buf[:octets], BitLength: bits})
+}
+
+// marshalKeyUsage encodes a critical keyUsage extension.
+func marshalKeyUsage(ku x509.KeyUsage) (pkix.Extension, error) {
+	val, err := KeyUsageBitString(ku)
 	if err != nil {
 		return pkix.Extension{}, fmt.Errorf("encoding key usage: %w", err)
 	}

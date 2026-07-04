@@ -285,6 +285,7 @@ const (
 	ActionSCEPEnroll      = "scep.enroll"
 	ActionSCEPRenew       = "scep.renew"
 	ActionESTCACerts      = "est.cacerts"
+	ActionESTCSRAttrs     = "est.csrattrs"
 	ActionESTEnroll       = "est.simpleenroll"
 	ActionESTReenroll     = "est.simplereenroll"
 	ActionESTServerKeyGen = "est.serverkeygen"

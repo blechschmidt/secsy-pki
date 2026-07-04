@@ -1438,6 +1438,20 @@ func buildESTConfig(db *database.DB, cfg *config.Config) (est.Config, error) {
 	for name, u := range cfg.EST.Users {
 		users[name] = est.User{Password: u.Password, Profile: u.Profile}
 	}
+	var csrAttrs map[string][]est.CSRAttr
+	if len(cfg.EST.CSRAttrs) > 0 {
+		csrAttrs = make(map[string][]est.CSRAttr, len(cfg.EST.CSRAttrs))
+		for profile, specs := range cfg.EST.CSRAttrs {
+			attrs := make([]est.CSRAttr, len(specs))
+			for i, s := range specs {
+				attrs[i] = est.CSRAttr{OID: s.OID, Values: s.Values}
+			}
+			csrAttrs[profile] = attrs
+		}
+	}
+	if err := est.ValidateCSRAttrConfig(cfg.EST.CSRAttrECCurve, csrAttrs); err != nil {
+		return est.Config{}, err
+	}
 	return est.Config{
 		BasePath:               cfg.EST.BasePath,
 		CAID:                   caID,
@@ -1446,6 +1460,8 @@ func buildESTConfig(db *database.DB, cfg *config.Config) (est.Config, error) {
 		AllowTLSClientReenroll: cfg.EST.AllowTLSClientReenroll,
 		EnableServerKeygen:     cfg.EST.EnableServerKeygen,
 		ServerKeygenKeyType:    cfg.EST.ServerKeygenKeyType,
+		CSRAttrECCurve:         cfg.EST.CSRAttrECCurve,
+		CSRAttrs:               csrAttrs,
 	}, nil
 }
 

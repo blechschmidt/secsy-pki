@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"fmt"
 	"log"
 	"net/http"
@@ -250,11 +251,33 @@ func (a *Agent) renew(ctx context.Context, spec *CertSpec, _ *certState, now tim
 	if err != nil {
 		return "", err
 	}
-	key, err := generateKey(spec)
+	// For EST, consult the server's advertised CSR attributes (RFC 7030 §4.5) so
+	// the local key type/curve and CSR honor what the issuing profile expects.
+	var hint string
+	var extraExts []pkix.Extension
+	if spec.Enroll == EnrollEST && a.est != nil {
+		if attrs, err := a.est.CSRAttrs(ctx); err != nil {
+			log.Printf("agent: %s: fetching csrattrs (advisory): %v", spec.Name, err)
+		} else if len(attrs) > 0 {
+			hint = keyTypeFromCSRAttrs(attrs)
+			if exts, err := csrExtensionsFromCSRAttrs(attrs); err != nil {
+				log.Printf("agent: %s: applying csrattrs (advisory): %v", spec.Name, err)
+			} else {
+				extraExts = exts
+			}
+			if requiresAttestation(attrs) {
+				log.Printf("agent: %s: EST csrattrs require hardware attestation the agent cannot provide [%s]", spec.Name, summarizeCSRAttrs(attrs))
+			} else {
+				log.Printf("agent: %s: honoring EST csrattrs [%s]", spec.Name, summarizeCSRAttrs(attrs))
+			}
+		}
+	}
+
+	key, err := generateKeyOfType(chooseKeyType(spec.KeyType, hint))
 	if err != nil {
 		return "", err
 	}
-	csrDER, err := buildCSR(spec, key)
+	csrDER, err := buildCSR(spec, key, extraExts...)
 	if err != nil {
 		return "", err
 	}

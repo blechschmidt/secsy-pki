@@ -1570,12 +1570,31 @@ type ESTConfig struct {
 	EnableServerKeygen bool `yaml:"enable_server_keygen"`
 	// ServerKeygenKeyType selects the generated key type (default rsa-2048).
 	ServerKeygenKeyType string `yaml:"server_keygen_key_type"`
+	// CSRAttrECCurve is the named curve (p-256 default, or p-384/p-521) advertised
+	// with the derived id-ecPublicKey key-type hint at GET /csrattrs (RFC 7030
+	// §4.5) for non-RSA profiles.
+	CSRAttrECCurve string `yaml:"csr_attr_ec_curve"`
+	// CSRAttrs optionally overrides the /csrattrs advertisement per profile name.
+	// When a profile is listed its attributes are advertised verbatim in place of
+	// the set derived from the profile. Each attribute is an OID (bare, e.g. a
+	// required challengePassword) or an OID with a list of OID values (e.g.
+	// id-ecPublicKey with a curve, or extKeyUsage with key purposes).
+	CSRAttrs map[string][]ESTCSRAttr `yaml:"csr_attrs"`
 }
 
 // ESTUserConfig is one EST Basic-auth credential.
 type ESTUserConfig struct {
 	Password string `yaml:"password"`
 	Profile  string `yaml:"profile"`
+}
+
+// ESTCSRAttr is one operator-declared CSR-attributes advertisement entry
+// (RFC 7030 §4.5). OID is a dotted object identifier; Values, when present, are
+// dotted OIDs forming the attribute's SET OF value (an empty Values advertises a
+// bare OID).
+type ESTCSRAttr struct {
+	OID    string   `yaml:"oid"`
+	Values []string `yaml:"values"`
 }
 
 // BRSKIConfig configures the RFC 8995 BRSKI registrar for zero-touch device
