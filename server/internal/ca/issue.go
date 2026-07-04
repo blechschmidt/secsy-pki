@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/caa"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
@@ -46,6 +47,19 @@ type IssueSpec struct {
 	// so monitoring and reports can exclude it. It is internal plumbing for
 	// system probes and is never settable through the API layers.
 	Marker string
+
+	// ACMEAccountURI and ValidationMethods carry the RFC 8657 CAA-binding facts of
+	// an ACME-driven issuance, threaded into the pre-issuance CAA gate. They are
+	// set only by the ACME finalize path (see internal/acme); every other caller
+	// leaves them empty, and an empty value makes a record's accounturi/
+	// validationmethods parameter unsatisfiable (blocking under CAA enforce mode).
+	//
+	// ACMEAccountURI is the requesting ACME account's URL. ValidationMethods maps a
+	// normalized DNS identifier (lowercased, trailing dot and "*." stripped) to the
+	// validation method (challenge type: "http-01", "dns-01", "tls-alpn-01") that
+	// satisfied it.
+	ACMEAccountURI    string
+	ValidationMethods map[string]string
 }
 
 // IssueResult is the outcome of issuing an end-entity certificate.
@@ -131,6 +145,10 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 		EmailAddresses: csr.EmailAddresses,
 		URIs:           uris,
 		Marker:         spec.Marker,
+		caaContext: caa.RequestContext{
+			AccountURI:        spec.ACMEAccountURI,
+			ValidationMethods: spec.ValidationMethods,
+		},
 	}, spec.Validity, spec.RequestedBy)
 }
 
@@ -207,6 +225,10 @@ type leafParts struct {
 	EmailAddresses []string
 	URIs           []string
 	Marker         string
+	// caaContext carries the RFC 8657 CAA-binding facts of the request (ACME
+	// account URI and per-identifier validation method) into buildLeaf's CAA gate.
+	// It is the zero value for every non-ACME issuance path.
+	caaContext caa.RequestContext
 }
 
 // issueLeaf is the shared classical end-entity issuance path: it resolves the
@@ -274,7 +296,7 @@ func (m *Manager) issueLeaf(ctx context.Context, issuerCA *models.CA, issuerCert
 		EmailAddresses:        parts.EmailAddresses,
 		URIs:                  parts.URIs,
 		CRLDistributionPoints: leafCRLDistributionPoints(issuerCA.ID, serial),
-	}, profile, requestedBy)
+	}, profile, requestedBy, parts.caaContext)
 	if err != nil {
 		return nil, fmt.Errorf("creating certificate: %w", err)
 	}
@@ -452,7 +474,7 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (_ *Issu
 		EmailAddresses:        emails,
 		URIs:                  uris,
 		CRLDistributionPoints: leafCRLDistributionPoints(issuerCA.ID, serial),
-	}, profile, spec.RequestedBy)
+	}, profile, spec.RequestedBy, caa.RequestContext{})
 	if err != nil {
 		return nil, fmt.Errorf("creating renewed certificate: %w", err)
 	}

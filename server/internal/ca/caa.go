@@ -75,7 +75,13 @@ func (p Profile) CAAPolicy() caa.Policy {
 // the caller aborts before signing (fail-closed); under permissive mode the same
 // is audited but never blocks. Certificates with no DNS-name SANs (e.g. IP-only)
 // skip the check.
-func (m *Manager) checkCAA(ctx context.Context, base pki.LeafCertRequest, profile Profile, issuerCA *models.CA, requestedBy string) error {
+//
+// reqCtx carries the RFC 8657 binding facts (the requesting ACME account URI and
+// the per-identifier validation method) supplied by the ACME finalize path; on
+// every other issuance path it is the zero value, under which a record's
+// accounturi/validationmethods parameter is unsatisfiable and blocks in enforce
+// mode.
+func (m *Manager) checkCAA(ctx context.Context, base pki.LeafCertRequest, profile Profile, issuerCA *models.CA, requestedBy string, reqCtx caa.RequestContext) error {
 	if !profile.caaEnabled() {
 		return nil
 	}
@@ -99,7 +105,7 @@ func (m *Manager) checkCAA(ctx context.Context, base pki.LeafCertRequest, profil
 		return nil
 	}
 
-	res := policy.Check(ctx, caaResolver, base.DNSNames)
+	res := policy.Check(ctx, caaResolver, base.DNSNames, reqCtx)
 
 	switch {
 	case res.Forbidden():

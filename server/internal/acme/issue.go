@@ -111,12 +111,18 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	_ = s.db.UpdateACMEOrderStatus(order.ID, models.ACMEOrderStatusProcessing, "")
 	order.Status = models.ACMEOrderStatusProcessing
 
+	// Thread the RFC 8657 CAA-binding facts of this ACME request into issuance so
+	// the CA's pre-issuance CAA gate can honor accounturi/validationmethods
+	// parameters: the requesting account's URI and, per identifier, the challenge
+	// type that satisfied it.
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
 	result, err := s.caMgr.IssueCertificate(r.Context(), ca.IssueSpec{
-		CAID:        s.cfg.CAID,
-		CSRPEM:      csrPEM,
-		Profile:     s.cfg.Profile,
-		RequestedBy: "acme:" + acct.rec.ID,
+		CAID:              s.cfg.CAID,
+		CSRPEM:            csrPEM,
+		Profile:           s.cfg.Profile,
+		RequestedBy:       "acme:" + acct.rec.ID,
+		ACMEAccountURI:    s.accountURL(r, acct.rec.ID),
+		ValidationMethods: s.validationMethods(authzs),
 	})
 	if err != nil {
 		prob := issuanceProblem(err)
@@ -151,6 +157,37 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Location", s.orderURL(r, order.ID))
 	s.writeOrder(w, r, order)
+}
+
+// validationMethods maps each DNS identifier in a finalized order to the ACME
+// validation method (challenge type) that satisfied its authorization, keyed by
+// the normalized identifier the CAA gate uses (lowercased base domain, wildcard
+// prefix already stripped on the authorization). It underpins RFC 8657
+// "validationmethods" enforcement: the CA checks that the method used to validate
+// each name is permitted by that name's CAA record. A finalizable order has a
+// valid challenge per authorization; any authorization without one (or a non-DNS
+// identifier) is simply omitted. Best-effort — a store error skips that name
+// rather than failing issuance, and the CAA gate then treats it as an unrecorded
+// method (blocking only if that name's record actually restricts methods).
+func (s *Server) validationMethods(authzs []models.ACMEAuthorization) map[string]string {
+	methods := make(map[string]string, len(authzs))
+	for i := range authzs {
+		a := &authzs[i]
+		if a.IdentifierType != "dns" {
+			continue // CAA governs DNS names only
+		}
+		challs, err := s.db.ListACMEChallengesByAuthz(a.ID)
+		if err != nil {
+			continue
+		}
+		for j := range challs {
+			if challs[j].Status == models.ACMEChallengeStatusValid {
+				methods[strings.ToLower(strings.TrimSuffix(a.IdentifierValue, "."))] = challs[j].Type
+				break
+			}
+		}
+	}
+	return methods
 }
 
 // handleCertificate serves the issued certificate chain (POST-as-GET).

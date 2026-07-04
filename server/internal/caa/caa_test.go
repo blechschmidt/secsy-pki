@@ -42,6 +42,7 @@ func TestCheck(t *testing.T) {
 		policy     Policy
 		resolver   *fakeResolver
 		names      []string
+		reqCtx     RequestContext // RFC 8657 binding facts (zero = non-ACME request)
 		wantOK     bool
 		wantReason Reason // expected reason of the first finding when !wantOK
 		wantIodef  int
@@ -84,11 +85,107 @@ func TestCheck(t *testing.T) {
 			wantOK:   true,
 		},
 		{
-			name:     "issue value with parameters still matches",
+			name:     "unrecognized issue parameter is ignored",
 			policy:   Policy{Identifier: caID},
-			resolver: &fakeResolver{caa: map[string][]Record{"example.com": {{Tag: TagIssue, Value: caID + "; account=12345; validationmethods=dns-01"}}}},
+			resolver: &fakeResolver{caa: map[string][]Record{"example.com": {{Tag: TagIssue, Value: caID + "; account=12345; policy=ev"}}}},
 			names:    []string{"host.example.com"},
 			wantOK:   true,
+		},
+
+		// ---- RFC 8657 accounturi binding -----------------------------------
+		{
+			name:     "accounturi matches the requesting ACME account",
+			policy:   Policy{Identifier: caID},
+			resolver: &fakeResolver{caa: map[string][]Record{"example.com": {{Tag: TagIssue, Value: caID + "; accounturi=https://acme.example/acct/1"}}}},
+			names:    []string{"host.example.com"},
+			reqCtx:   RequestContext{AccountURI: "https://acme.example/acct/1"},
+			wantOK:   true,
+		},
+		{
+			name:       "accounturi does not match the requesting account",
+			policy:     Policy{Identifier: caID},
+			resolver:   &fakeResolver{caa: map[string][]Record{"example.com": {{Tag: TagIssue, Value: caID + "; accounturi=https://acme.example/acct/1"}}}},
+			names:      []string{"host.example.com"},
+			reqCtx:     RequestContext{AccountURI: "https://acme.example/acct/2"},
+			wantOK:     false,
+			wantReason: ReasonAccountMismatch,
+		},
+		{
+			name:       "accounturi is unsatisfiable on a non-ACME request",
+			policy:     Policy{Identifier: caID},
+			resolver:   &fakeResolver{caa: map[string][]Record{"example.com": {{Tag: TagIssue, Value: caID + "; accounturi=https://acme.example/acct/1"}}}},
+			names:      []string{"host.example.com"},
+			wantOK:     false,
+			wantReason: ReasonAccountMismatch,
+		},
+		{
+			name:   "unrestricted record authorizes even when a parameterized one fails",
+			policy: Policy{Identifier: caID},
+			resolver: &fakeResolver{caa: map[string][]Record{"example.com": {
+				{Tag: TagIssue, Value: caID + "; accounturi=https://acme.example/acct/1"},
+				{Tag: TagIssue, Value: caID},
+			}}},
+			names:  []string{"host.example.com"},
+			reqCtx: RequestContext{AccountURI: "https://acme.example/acct/2"},
+			wantOK: true,
+		},
+
+		// ---- RFC 8657 validationmethods binding ----------------------------
+		{
+			name:     "validationmethods permits the method that was used",
+			policy:   Policy{Identifier: caID},
+			resolver: &fakeResolver{caa: map[string][]Record{"example.com": {{Tag: TagIssue, Value: caID + "; validationmethods=dns-01,http-01"}}}},
+			names:    []string{"host.example.com"},
+			reqCtx:   RequestContext{ValidationMethods: map[string]string{"host.example.com": "http-01"}},
+			wantOK:   true,
+		},
+		{
+			name:       "validationmethods forbids the method that was used",
+			policy:     Policy{Identifier: caID},
+			resolver:   &fakeResolver{caa: map[string][]Record{"example.com": {{Tag: TagIssue, Value: caID + "; validationmethods=dns-01"}}}},
+			names:      []string{"host.example.com"},
+			reqCtx:     RequestContext{ValidationMethods: map[string]string{"host.example.com": "http-01"}},
+			wantOK:     false,
+			wantReason: ReasonValidationMethod,
+		},
+		{
+			name:       "validationmethods is unsatisfiable without a recorded method",
+			policy:     Policy{Identifier: caID},
+			resolver:   &fakeResolver{caa: map[string][]Record{"example.com": {{Tag: TagIssue, Value: caID + "; validationmethods=dns-01"}}}},
+			names:      []string{"host.example.com"},
+			wantOK:     false,
+			wantReason: ReasonValidationMethod,
+		},
+		{
+			name:     "issuewild validationmethods permits dns-01 for a wildcard",
+			policy:   Policy{Identifier: caID},
+			resolver: &fakeResolver{caa: map[string][]Record{"example.com": {{Tag: TagIssueWild, Value: caID + "; validationmethods=dns-01"}}}},
+			names:    []string{"*.example.com"},
+			reqCtx:   RequestContext{ValidationMethods: map[string]string{"example.com": "dns-01"}},
+			wantOK:   true,
+		},
+		{
+			name:     "accounturi and validationmethods both satisfied",
+			policy:   Policy{Identifier: caID},
+			resolver: &fakeResolver{caa: map[string][]Record{"example.com": {{Tag: TagIssue, Value: caID + "; accounturi=https://acme.example/acct/1; validationmethods=dns-01"}}}},
+			names:    []string{"host.example.com"},
+			reqCtx: RequestContext{
+				AccountURI:        "https://acme.example/acct/1",
+				ValidationMethods: map[string]string{"host.example.com": "dns-01"},
+			},
+			wantOK: true,
+		},
+		{
+			name:       "combined binding blocks when only the account matches",
+			policy:     Policy{Identifier: caID},
+			resolver:   &fakeResolver{caa: map[string][]Record{"example.com": {{Tag: TagIssue, Value: caID + "; accounturi=https://acme.example/acct/1; validationmethods=dns-01"}}}},
+			names:      []string{"host.example.com"},
+			reqCtx: RequestContext{
+				AccountURI:        "https://acme.example/acct/1",
+				ValidationMethods: map[string]string{"host.example.com": "http-01"},
+			},
+			wantOK:     false,
+			wantReason: ReasonValidationMethod,
 		},
 		{
 			name:   "closest CAA set wins over ancestor",
@@ -183,7 +280,7 @@ func TestCheck(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			res := tc.policy.Check(context.Background(), tc.resolver, tc.names)
+			res := tc.policy.Check(context.Background(), tc.resolver, tc.names, tc.reqCtx)
 			if tc.wantOK {
 				if !res.OK() {
 					t.Fatalf("expected OK, got findings: %s", res.Summary())
@@ -206,7 +303,7 @@ func TestCheck(t *testing.T) {
 // TestCheckDeduplicatesNames proves repeated SANs are evaluated once.
 func TestCheckDeduplicatesNames(t *testing.T) {
 	r := &fakeResolver{caa: map[string][]Record{"example.com": {issue(caID)}}}
-	res := Policy{Identifier: caID}.Check(context.Background(), r, []string{"host.example.com", "HOST.example.com.", "host.example.com"})
+	res := Policy{Identifier: caID}.Check(context.Background(), r, []string{"host.example.com", "HOST.example.com.", "host.example.com"}, RequestContext{})
 	if len(res.Checked) != 1 {
 		t.Fatalf("expected 1 checked name after dedup, got %d: %v", len(res.Checked), res.Checked)
 	}
@@ -237,6 +334,45 @@ func TestCNAMECycleTerminates(t *testing.T) {
 	}
 	if set != nil {
 		t.Fatalf("expected empty set, got %v", set)
+	}
+}
+
+// TestParseIssueParams proves the RFC 8657 parameter parser tolerates the
+// whitespace RFC 8659 §4.2 permits, lowercases keys for case-insensitive
+// matching, keeps the last value on a duplicate key, and skips malformed fields.
+func TestParseIssueParams(t *testing.T) {
+	got := parseIssueParams("  AccountURI = https://acme.example/acct/1 ;validationmethods=dns-01,http-01; bare ; =noKey; account=1; account=2")
+	want := map[string]string{
+		"accounturi":        "https://acme.example/acct/1",
+		"validationmethods": "dns-01,http-01",
+		"account":           "2",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("parsed %d params, want %d: %#v", len(got), len(want), got)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("param %q = %q, want %q", k, got[k], v)
+		}
+	}
+	if _, ok := got["bare"]; ok {
+		t.Fatalf("a field without '=' must be skipped, got %#v", got)
+	}
+}
+
+// TestValidationMethodAllowed proves membership testing trims whitespace, is
+// case-insensitive on the method labels, and never matches an empty method.
+func TestValidationMethodAllowed(t *testing.T) {
+	const list = "dns-01, HTTP-01 ,tls-alpn-01"
+	for _, m := range []string{"dns-01", "http-01", "TLS-ALPN-01", " dns-01 "} {
+		if !validationMethodAllowed(m, list) {
+			t.Fatalf("method %q should be permitted by %q", m, list)
+		}
+	}
+	for _, m := range []string{"", "email-reply-00", "http"} {
+		if validationMethodAllowed(m, list) {
+			t.Fatalf("method %q should not be permitted by %q", m, list)
+		}
 	}
 }
 

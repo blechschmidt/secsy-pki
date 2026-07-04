@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/caa"
 	"github.com/blechschmidt/secsy-pki/server/internal/ct"
 	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -126,7 +127,7 @@ func (s *CTStatus) succeededLogNames() []string {
 // poison extension, (2) submits it to the configured logs, (3) enforces the
 // min-SCT / fail-open policy, and (4) HSM-signs the final certificate with the
 // SCT list extension in place of the poison.
-func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA *models.CA, issuerCert *x509.Certificate, base pki.LeafCertRequest, profile Profile, requestedBy string) ([]byte, *CTStatus, error) {
+func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA *models.CA, issuerCert *x509.Certificate, base pki.LeafCertRequest, profile Profile, requestedBy string, caaCtx caa.RequestContext) ([]byte, *CTStatus, error) {
 	ctx, span := tracing.Start(ctx, "ca.build_leaf",
 		attribute.String("ca.id", issuerCA.ID),
 		attribute.String("ca.profile", profile.Name))
@@ -185,7 +186,7 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 	// Under enforce mode a CAA set that does not authorize this CA rejects the
 	// request here, before any HSM signature.
 	if err := traceGate(ctx, "ca.gate.caa", func() error {
-		return m.checkCAA(ctx, base, profile, issuerCA, requestedBy)
+		return m.checkCAA(ctx, base, profile, issuerCA, requestedBy, caaCtx)
 	}); err != nil {
 		return nil, nil, err
 	}

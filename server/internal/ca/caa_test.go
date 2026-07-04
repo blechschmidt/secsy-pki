@@ -93,11 +93,16 @@ func runCAAGate(t *testing.T, mgr *Manager, tag string) {
 		},
 	})
 
+	const acctURI = "https://acme.example/acct/known"
 	// A CAA RRset that authorizes a *different* CA forbids issuance for us.
 	withCAAResolver(t, fakeCAAResolver{caa: map[string][]caa.Record{
 		"forbidden.example.com": {{Tag: caa.TagIssue, Value: "other-ca.example.net"}},
 		// authorized.example.com publishes an issue record naming this CA.
 		"authorized.example.com": {{Tag: caa.TagIssue, Value: caIdent}},
+		// RFC 8657: acct.example.com binds issuance to a specific ACME account,
+		// method.example.com restricts the validation method to dns-01.
+		"acct.example.com":   {{Tag: caa.TagIssue, Value: caIdent + "; accounturi=" + acctURI}},
+		"method.example.com": {{Tag: caa.TagIssue, Value: caIdent + "; validationmethods=dns-01"}},
 	}})
 
 	// --- Fail-closed: a forbidden name under an enforce profile is rejected.
@@ -182,5 +187,93 @@ func runCAAGate(t *testing.T, mgr *Manager, tag string) {
 	}
 	if got := countCAAEvents(t, mgr, audit.ResultSuccess); got != warnBefore+1 {
 		t.Fatalf("expected one new permissive cert.caa event, got %d (was %d)", got, warnBefore)
+	}
+
+	// --- RFC 8657 accounturi: issuance from the pinned account is authorized.
+	acctCSR := makeCSR(t, "acct.example.com", []string{"acct.example.com"})
+	if _, err := mgr.IssueCertificate(ctx, IssueSpec{
+		CAID:           root.ID,
+		CSRPEM:         acctCSR,
+		Profile:        "caa-enforce",
+		RequestedBy:    "acme:known",
+		ACMEAccountURI: acctURI,
+	}); err != nil {
+		t.Fatalf("accounturi-matched issuance should succeed: %v", err)
+	}
+
+	// --- RFC 8657 accounturi: a different account is blocked under enforce, and
+	// the specific reason is recorded in the CAA finding.
+	acctMismatchErr := countCAAEvents(t, mgr, audit.ResultError)
+	badAcctCSR := makeCSR(t, "acct.example.com", []string{"acct.example.com"})
+	_, err = mgr.IssueCertificate(ctx, IssueSpec{
+		CAID:           root.ID,
+		CSRPEM:         badAcctCSR,
+		Profile:        "caa-enforce",
+		RequestedBy:    "acme:other",
+		ACMEAccountURI: "https://acme.example/acct/other",
+	})
+	if err == nil {
+		t.Fatal("expected accounturi mismatch to block issuance under enforce")
+	}
+	if !strings.Contains(err.Error(), string(caa.ReasonAccountMismatch)) {
+		t.Fatalf("error should name the account_mismatch reason, got: %v", err)
+	}
+	if got := countCAAEvents(t, mgr, audit.ResultError); got != acctMismatchErr+1 {
+		t.Fatalf("expected one new CAA error event for account mismatch, got %d (was %d)", got, acctMismatchErr)
+	}
+
+	// --- A non-ACME request (no account URI) cannot satisfy accounturi: blocked.
+	nonACMECSR := makeCSR(t, "acct.example.com", []string{"acct.example.com"})
+	if _, err := mgr.IssueCertificate(ctx, IssueSpec{
+		CAID:        root.ID,
+		CSRPEM:      nonACMECSR,
+		Profile:     "caa-enforce",
+		RequestedBy: "operator",
+	}); err == nil || !strings.Contains(err.Error(), string(caa.ReasonAccountMismatch)) {
+		t.Fatalf("non-ACME issuance against an accounturi record should be blocked, got: %v", err)
+	}
+
+	// --- Permissive mode records the accounturi mismatch but does not block.
+	permAcctBefore := countCAAEvents(t, mgr, audit.ResultSuccess)
+	permAcctCSR := makeCSR(t, "acct.example.com", []string{"acct.example.com"})
+	if _, err := mgr.IssueCertificate(ctx, IssueSpec{
+		CAID:           root.ID,
+		CSRPEM:         permAcctCSR,
+		Profile:        "caa-permissive",
+		RequestedBy:    "acme:other",
+		ACMEAccountURI: "https://acme.example/acct/other",
+	}); err != nil {
+		t.Fatalf("permissive accounturi mismatch should not block: %v", err)
+	}
+	if got := countCAAEvents(t, mgr, audit.ResultSuccess); got != permAcctBefore+1 {
+		t.Fatalf("expected one new permissive cert.caa event for account mismatch, got %d (was %d)", got, permAcctBefore)
+	}
+
+	// --- RFC 8657 validationmethods: the permitted method (dns-01) is authorized.
+	methodOKCSR := makeCSR(t, "method.example.com", []string{"method.example.com"})
+	if _, err := mgr.IssueCertificate(ctx, IssueSpec{
+		CAID:              root.ID,
+		CSRPEM:            methodOKCSR,
+		Profile:           "caa-enforce",
+		RequestedBy:       "acme:known",
+		ValidationMethods: map[string]string{"method.example.com": "dns-01"},
+	}); err != nil {
+		t.Fatalf("validationmethods-permitted issuance should succeed: %v", err)
+	}
+
+	// --- A method outside the list (http-01) is blocked under enforce.
+	methodBadCSR := makeCSR(t, "method.example.com", []string{"method.example.com"})
+	_, err = mgr.IssueCertificate(ctx, IssueSpec{
+		CAID:              root.ID,
+		CSRPEM:            methodBadCSR,
+		Profile:           "caa-enforce",
+		RequestedBy:       "acme:known",
+		ValidationMethods: map[string]string{"method.example.com": "http-01"},
+	})
+	if err == nil {
+		t.Fatal("expected validationmethods violation to block issuance under enforce")
+	}
+	if !strings.Contains(err.Error(), string(caa.ReasonValidationMethod)) {
+		t.Fatalf("error should name the validation_method reason, got: %v", err)
 	}
 }

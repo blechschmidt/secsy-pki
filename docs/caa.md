@@ -1,7 +1,8 @@
-# CAA record checking (RFC 8659)
+# CAA record checking (RFC 8659 + RFC 8657)
 
 secsy-pki can enforce DNS **Certification Authority Authorization** (CAA, [RFC
-8659](https://www.rfc-editor.org/rfc/rfc8659), with the property-tag semantics of
+8659](https://www.rfc-editor.org/rfc/rfc8659), with the account-URI and
+validation-method binding parameters of
 [RFC 8657](https://www.rfc-editor.org/rfc/rfc8657)) as a **pre-issuance gate**.
 Before the HSM signs any certificate carrying DNS-name SANs, the CA resolves the
 CAA RRset governing each name and, under enforce mode, refuses to issue when the
@@ -32,13 +33,49 @@ For each DNS-name SAN (IP-only certificates are skipped) the CA:
    over `issue`, falling back to `issue` when no `issuewild` is present. A set
    that authorizes some CA but not this one **forbids** issuance; an `issue ";"`
    (empty value) authorizes no CA at all.
-4. **Honors the critical flag**: a record with the Issuer-Critical bit set and a
+4. **Enforces the RFC 8657 binding parameters** (`accounturi`,
+   `validationmethods`) carried by an authorizing record — see below.
+5. **Honors the critical flag**: a record with the Issuer-Critical bit set and a
    property tag the CA does not understand forbids issuance (RFC 8659 §4.1).
-5. **Collects `iodef`** incident-reporting endpoints from the governing set into
+6. **Collects `iodef`** incident-reporting endpoints from the governing set into
    the audit detail so operators can honor RFC 8659 §4.4 reporting.
 
 A name with **no CAA policy anywhere** in its tree is permitted — CAA restricts
 issuance only where a domain owner has published a record.
+
+## RFC 8657 account and validation-method binding
+
+A domain owner can narrow an authorizing `issue`/`issuewild` record with
+parameters that pin *who* may request issuance and *how* domain control must be
+proven:
+
+```
+# Only the named ACME account may obtain certificates, and only via dns-01/http-01.
+example.com.  IN  CAA 0 issue "pki.example.com; accounturi=https://acme.example.com/acme/acct/42; validationmethods=dns-01,http-01"
+```
+
+A record authorizes issuance only when its issuer domain names this CA **and**
+every parameter it carries is satisfied by the request:
+
+- **`accounturi`** ([RFC 8657 §3](https://www.rfc-editor.org/rfc/rfc8657#section-3))
+  — the requesting **ACME account URI** must equal the parameter value (exact
+  string comparison). The ACME finalize path threads the account URI into the
+  gate automatically.
+- **`validationmethods`**
+  ([RFC 8657 §4](https://www.rfc-editor.org/rfc/rfc8657#section-4)) — the
+  validation method (ACME challenge type, e.g. `dns-01`, `http-01`,
+  `tls-alpn-01`) that satisfied that identifier must appear in the comma-separated
+  allowlist. The ACME path records, per identifier, which challenge validated it.
+
+Because these facts only exist for ACME-driven issuance, a record carrying
+`accounturi` or `validationmethods` is **unsatisfiable on any non-ACME path**
+(REST API, SCEP/EST, CMP, auto-renewal): such a request cannot present a matching
+account URI or a recorded validation method, so under **enforce** mode the record
+does not authorize it and issuance is blocked (fail-closed). Publish an
+unparameterized `issue` record as well if a CA must also serve non-ACME clients
+for that name. If a name is governed by several `issue` records, **any one**
+fully-authorizing record permits issuance, so a parameterized and an
+unparameterized record can coexist.
 
 ## Configuration
 
@@ -96,8 +133,10 @@ fails; a permissive profile logs a warning and continues (allowing issuance).
 - **Metrics** —
   `secsy_certificate_caa_checks_total{result="pass|fail|skip|error"}` counts
   every run (`skip` = no DNS-name SANs), and
-  `secsy_certificate_caa_findings_total{reason="forbidden|critical_unknown|lookup_error"}`
-  counts individual forbidding names for fine-grained alerting.
+  `secsy_certificate_caa_findings_total{reason="forbidden|critical_unknown|lookup_error|account_mismatch|validation_method"}`
+  counts individual forbidding names for fine-grained alerting. The
+  `account_mismatch` and `validation_method` reasons pinpoint an RFC 8657
+  `accounturi` / `validationmethods` binding failure.
 
 ## Notes & caveats
 

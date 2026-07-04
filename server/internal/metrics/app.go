@@ -75,7 +75,9 @@ var (
 	// pass|fail|skip|error (fail = a forbidding CAA set blocked signing under
 	// enforce mode, skip = the certificate had no DNS-name SANs, error = a lookup
 	// or configuration failure). CertificateCAAFindings counts individual
-	// forbidding names by "reason" (forbidden|critical_unknown|lookup_error).
+	// forbidding names by "reason" (forbidden|critical_unknown|lookup_error|
+	// account_mismatch|validation_method — the last two are RFC 8657 accounturi/
+	// validationmethods binding failures).
 	CertificateCAAChecks = NewCounter(Default,
 		"secsy_certificate_caa_checks_total",
 		"Pre-issuance CAA checks, partitioned by outcome (pass|fail|skip|error).",
