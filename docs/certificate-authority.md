@@ -482,6 +482,30 @@ an out-of-range nonce is answered `malformed`. Nonce echoing is on by default
 (`server.ocsp.nonce_enabled`), with a short validity window
 (`server.ocsp.nonce_max_age_seconds`, default 60 s).
 
+#### HTTP caching (RFC 5019)
+
+A signed OCSP response is valid until its `nextUpdate`, so the responder emits the
+[RFC 5019](https://www.rfc-editor.org/rfc/rfc5019) Lightweight-Profile caching
+headers on the **GET** form so CDNs and clients can cache and revalidate it,
+keeping the HSM off the public hot path (complementing pre-signing / static
+publishing):
+
+- `Cache-Control: public, max-age=<n>, no-transform` and `Expires`, derived from
+  `nextUpdate` and bounded to a sane maximum (24 h for OCSP).
+- `Last-Modified` from `thisUpdate`, and a strong `ETag` over the response bytes.
+- Conditional requests are honored: `If-None-Match` / `If-Modified-Since` return
+  **304 Not Modified** with no body.
+
+A **nonce-bearing response is never cacheable** — it is bound to a single request
+(RFC 8954) and is returned with `Cache-Control: no-store` and no validators, on
+both the GET and POST forms.
+
+The CRL and delta-CRL handlers apply the same semantics: `Cache-Control`/`Expires`
+from the CRL `nextUpdate` (bounded to the base-CRL validity), `Last-Modified` from
+`thisUpdate`, a strong `ETag` folding in the CRL number, and 304 conditional
+handling — so a base CRL can be cached for its full validity while short-lived
+deltas surface new revocations quickly.
+
 #### Delegated responder certificate
 
 Instead of signing OCSP responses with the CA key directly, the responder can use

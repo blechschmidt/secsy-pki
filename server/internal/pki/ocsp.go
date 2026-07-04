@@ -168,6 +168,21 @@ func OCSPResponseNextUpdate(der []byte) (time.Time, bool) {
 	return resp.NextUpdate, true
 }
 
+// OCSPResponseValidity parses a signed OCSP response (without verifying its
+// signature) and returns both its ThisUpdate and NextUpdate. It is used by the
+// public HTTP responder to derive RFC 5019 §6.2 lightweight-profile caching
+// headers: Last-Modified from ThisUpdate, and Cache-Control max-age / Expires
+// from NextUpdate. It reports false if the response cannot be parsed. A response
+// with no NextUpdate still reports ok (with a zero NextUpdate) so the caller can
+// emit Last-Modified while omitting Expires.
+func OCSPResponseValidity(der []byte) (thisUpdate, nextUpdate time.Time, ok bool) {
+	resp, err := ocsp.ParseResponse(der, nil)
+	if err != nil {
+		return time.Time{}, time.Time{}, false
+	}
+	return resp.ThisUpdate, resp.NextUpdate, true
+}
+
 // OCSPResponseNonce returns the nonce echoed in a signed OCSP response's
 // response-level responseExtensions (RFC 6960 §4.4.1), or nil if none is
 // present. It is the response-side counterpart of ExtractOCSPNonce and lets a

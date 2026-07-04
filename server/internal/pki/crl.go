@@ -254,6 +254,20 @@ func EncodeCRLPEM(der []byte) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "X509 CRL", Bytes: der})
 }
 
+// CRLValidity parses a DER-encoded CRL (without verifying its signature) and
+// returns its CRL number, ThisUpdate, and NextUpdate. The public CRL HTTP
+// handlers use it to derive caching metadata: a strong ETag from the CRL number,
+// Last-Modified from ThisUpdate, and Cache-Control max-age / Expires from
+// NextUpdate. It reports false if the CRL cannot be parsed, so callers serve the
+// bytes without cache metadata rather than guessing.
+func CRLValidity(der []byte) (number *big.Int, thisUpdate, nextUpdate time.Time, ok bool) {
+	rl, err := x509.ParseRevocationList(der)
+	if err != nil {
+		return nil, time.Time{}, time.Time{}, false
+	}
+	return rl.Number, rl.ThisUpdate, rl.NextUpdate, true
+}
+
 // RFC 5280 §5.3.1 CRL reason codes.
 const (
 	RevocationReasonUnspecified          = 0

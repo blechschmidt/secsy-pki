@@ -337,14 +337,38 @@ func (a *API) serveCRL(w http.ResponseWriter, r *http.Request, shard int, delta 
 	}
 	metrics.CRLRequests.Inc(metrics.ResultSuccess)
 
-	if r.URL.Query().Get("format") == "pem" {
+	// Serve the DER by default, PEM on ?format=pem. A CRL is a signed object valid
+	// until its nextUpdate, so it is publicly cacheable; derive the caching
+	// metadata (RFC 5019 §6.2-style semantics) from the CRL's own validity window.
+	pemFormat := r.URL.Query().Get("format") == "pem"
+	body := der
+	if pemFormat {
+		body = pki.EncodeCRLPEM(der)
 		w.Header().Set("Content-Type", "application/x-pem-file")
-		_, _ = w.Write(pki.EncodeCRLPEM(der))
-		return
+	} else {
+		w.Header().Set("Content-Type", "application/pkix-crl")
+		w.Header().Set("Content-Disposition", "attachment; filename="+filename)
 	}
-	w.Header().Set("Content-Type", "application/pkix-crl")
-	w.Header().Set("Content-Disposition", "attachment; filename="+filename)
-	_, _ = w.Write(der)
+
+	// The ETag folds in the CRL number so a re-signed CRL that happens to carry an
+	// identical entry set but a new (monotonic) number still validates as a
+	// distinct version; the served bytes make it a strong validator.
+	if number, thisUpdate, nextUpdate, ok := pki.CRLValidity(der); ok {
+		var numBytes []byte
+		if number != nil {
+			numBytes = number.Bytes()
+		}
+		if applyCacheHeaders(w, r, cacheableResponse{
+			thisUpdate: thisUpdate,
+			nextUpdate: nextUpdate,
+			etag:       strongETag(numBytes, body),
+			maxAge:     maxCRLCacheAge,
+		}) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+	_, _ = w.Write(body)
 }
 
 // GetChain returns the combined overlap chain (AIA/bundle) for a CA: the active
@@ -447,8 +471,7 @@ func (a *API) OCSPResponder(w http.ResponseWriter, r *http.Request) {
 			if len(nonce) == 0 && a.ocspCache.Enabled() {
 				if cached, hit := a.ocspCache.Get(caID, cacheSerial); hit {
 					metrics.OCSPRequests.Inc(metrics.ResultSuccess)
-					w.Header().Set("Content-Type", "application/ocsp-response")
-					_, _ = w.Write(cached)
+					a.writeOCSPResponse(w, r, cached, false)
 					return
 				}
 			}
@@ -493,7 +516,39 @@ func (a *API) OCSPResponder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	metrics.OCSPRequests.Inc(metrics.ResultSuccess)
+	a.writeOCSPResponse(w, r, respDER, len(nonce) > 0)
+}
+
+// writeOCSPResponse writes a signed OCSP response with the correct HTTP caching
+// semantics (RFC 5019 §6.2 Lightweight OCSP Profile).
+//
+// A response that echoes a nonce is bound to a single request and MUST NOT be
+// reused by a shared cache (RFC 8954), so it is marked Cache-Control: no-store on
+// every method and carries no validators. A nonce-less GET/HEAD response is the
+// cacheable lightweight-profile path: it advertises Cache-Control/Expires/
+// Last-Modified and a strong ETag derived from its own thisUpdate/nextUpdate and
+// response bytes, and honors conditional requests with 304 Not Modified. A POST
+// response is left with only its Content-Type (HTTP intermediaries do not reuse
+// POST responses), preserving prior behavior. hasNonce reflects whether the
+// response echoes a request nonce.
+func (a *API) writeOCSPResponse(w http.ResponseWriter, r *http.Request, respDER []byte, hasNonce bool) {
 	w.Header().Set("Content-Type", "application/ocsp-response")
+	switch {
+	case hasNonce:
+		w.Header().Set("Cache-Control", "no-store")
+	case r.Method == http.MethodGet || r.Method == http.MethodHead:
+		if thisUpdate, nextUpdate, ok := pki.OCSPResponseValidity(respDER); ok {
+			if applyCacheHeaders(w, r, cacheableResponse{
+				thisUpdate: thisUpdate,
+				nextUpdate: nextUpdate,
+				etag:       strongETag(respDER),
+				maxAge:     maxOCSPCacheAge,
+			}) {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+		}
+	}
 	_, _ = w.Write(respDER)
 }
 
