@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -237,6 +238,117 @@ func describeBackend(cfg *config.Config, ptype string) string {
 	}
 }
 
+// --- 2c. PKCS#11 URI addressing ----------------------------------------------
+
+// checkPKCS11URIs parses and resolves every configured RFC 7512 pkcs11: URI: the
+// optional module/token URIs in the pkcs11 config block, and the URI stored with
+// each CA (which addresses that CA's signing key). It fails on a malformed URI,
+// warns on an embedded plaintext pin-value or an unrecognized attribute (a likely
+// typo), and — when a live PKCS#11 provider is available — confirms each CA URI's
+// key actually resolves on the token, honoring the full object=/id=/token
+// addressing rather than only the CKA_LABEL.
+func checkPKCS11URIs(ctx context.Context, r *Report, cfg *config.Config, db dbHandle, schemaOK bool, providers *roleProviders) {
+	r.run("pkcs11.uris", func() (Status, string) {
+		type namedURI struct {
+			name string // human source, e.g. "pkcs11.uri" or "CA <label>"
+			uri  string
+		}
+		var uris []namedURI
+		if cfg.PKCS11.URI != "" {
+			uris = append(uris, namedURI{name: "pkcs11.uri", uri: cfg.PKCS11.URI})
+		}
+		for i, t := range cfg.PKCS11.Tokens {
+			if t.URI == "" {
+				continue
+			}
+			src := fmt.Sprintf("pkcs11.tokens[%d].uri", i)
+			if t.Name != "" {
+				src = fmt.Sprintf("pkcs11.tokens[%s].uri", t.Name)
+			}
+			uris = append(uris, namedURI{name: src, uri: t.URI})
+		}
+
+		// CA signing-key URIs from the store (only those that are pkcs11: URIs).
+		var cas []models.CA
+		if db != nil && schemaOK {
+			if list, err := db.ListCAs(); err == nil {
+				cas = list
+			}
+		}
+		for i := range cas {
+			if isPKCS11URI(cas[i].PKCS11URI) {
+				uris = append(uris, namedURI{name: "CA " + cas[i].Label, uri: cas[i].PKCS11URI})
+			}
+		}
+
+		if len(uris) == 0 {
+			return StatusSkip, "no pkcs11: URIs configured (config block or CA store)"
+		}
+
+		var failures, warnings []string
+		parsed := 0
+		for _, nu := range uris {
+			p, err := pki.ParsePKCS11URI(nu.uri)
+			if err != nil {
+				failures = append(failures, fmt.Sprintf("%s: %v", nu.name, err))
+				continue
+			}
+			parsed++
+			if p.PinValue != "" {
+				warnings = append(warnings, fmt.Sprintf("%s: embeds a plaintext pin-value (prefer pin_source)", nu.name))
+			}
+			if len(p.Unknown) > 0 {
+				warnings = append(warnings, fmt.Sprintf("%s: unrecognized attribute(s) %s (typo?)", nu.name, strings.Join(sortedStringKeys(p.Unknown), ", ")))
+			}
+		}
+		if len(failures) > 0 {
+			return StatusFail, fmt.Sprintf("%d/%d pkcs11: URI(s) malformed: %s", len(failures), len(uris), strings.Join(failures, "; "))
+		}
+
+		// Best-effort live resolution of CA keys addressed by their URI, proving the
+		// full object/id/token addressing lands on a real token object. keys.ca is
+		// the authoritative sign/verify gate, so a resolution miss here is a warning.
+		resolved := 0
+		if caProv := providers.get("ca"); caProv != nil && caProv.Name() == string(keyprovider.ProviderPKCS11) {
+			for i := range cas {
+				c := &cas[i]
+				if c.Status == models.CAStatusRetired || !isPKCS11URI(c.PKCS11URI) {
+					continue
+				}
+				if _, err := caProv.FindKey(ctx, ca.KeyRefForCA(c)); err != nil {
+					warnings = append(warnings, fmt.Sprintf("CA %s: key did not resolve on token (%v)", c.Label, err))
+				} else {
+					resolved++
+				}
+			}
+		}
+
+		msg := fmt.Sprintf("%d pkcs11: URI(s) parsed", parsed)
+		if resolved > 0 {
+			msg += fmt.Sprintf("; %d CA key(s) resolved on token", resolved)
+		}
+		if len(warnings) > 0 {
+			return StatusWarn, msg + "; " + strings.Join(warnings, "; ")
+		}
+		return StatusPass, msg
+	})
+}
+
+// isPKCS11URI reports whether s is (case-insensitively) an RFC 7512 pkcs11: URI.
+func isPKCS11URI(s string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(s)), "pkcs11:")
+}
+
+// sortedStringKeys returns the keys of m in deterministic order.
+func sortedStringKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // --- 3. database --------------------------------------------------------------
 
 // checkDatabase opens the configured store WITHOUT running migrations
@@ -353,7 +465,7 @@ func checkRoleKeys(ctx context.Context, r *Report, cfg *config.Config, db dbHand
 			if cfg.TSA.KeyLabel == "" {
 				return StatusFail, "tsa.enabled is set but tsa.key_label is empty"
 			}
-			if err := selfTestSign(ctx, p, keyprovider.KeyRef{Label: cfg.TSA.KeyLabel}, nil); err != nil {
+			if err := selfTestSign(ctx, p, keyprovider.KeyRefFor(cfg.TSA.KeyLabel), nil); err != nil {
 				return StatusFail, fmt.Sprintf("%s: %v", cfg.TSA.KeyLabel, err)
 			}
 			return StatusPass, fmt.Sprintf("%s signed and verified on %s", cfg.TSA.KeyLabel, p.Name())
@@ -371,7 +483,7 @@ func checkRoleKeys(ctx context.Context, r *Report, cfg *config.Config, db dbHand
 			}
 			var problems []string
 			for _, s := range cfg.Signing.Signers {
-				if err := selfTestSign(ctx, p, keyprovider.KeyRef{Label: s.KeyLabel}, nil); err != nil {
+				if err := selfTestSign(ctx, p, keyprovider.KeyRefFor(s.KeyLabel), nil); err != nil {
 					problems = append(problems, fmt.Sprintf("%s (%s): %v", s.Name, s.KeyLabel, err))
 				}
 			}

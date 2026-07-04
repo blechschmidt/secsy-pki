@@ -120,7 +120,7 @@ func TestChaosOAEPHashMismatchFailsClosed(t *testing.T) {
 	if _, err := pool.GenerateRSAKEK(ctx, label, 2048); err != nil {
 		t.Fatalf("GenerateRSAKEK: %v", err)
 	}
-	rawPub, _, _, err := pool.PublicKey(ctx, label)
+	rawPub, _, _, err := pool.PublicKey(ctx, pki.LabelLocator(label))
 	if err != nil {
 		t.Fatalf("PublicKey: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestChaosOAEPHashMismatchFailsClosed(t *testing.T) {
 	// SoftHSM this is SHA-1; on a richer HSM it may also be SHA-256.
 	supported := crypto.Hash(0)
 	for _, h := range []crypto.Hash{crypto.SHA256, crypto.SHA1} {
-		out, derr := pool.Decrypt(ctx, label, oaep(h), &rsa.OAEPOptions{Hash: h})
+		out, derr := pool.Decrypt(ctx, pki.LabelLocator(label), oaep(h), &rsa.OAEPOptions{Hash: h})
 		if derr == nil && string(out) == string(probe) {
 			supported = h
 			break
@@ -177,13 +177,13 @@ func TestChaosOAEPHashMismatchFailsClosed(t *testing.T) {
 		wrong = crypto.SHA256
 	}
 	ct := oaep(supported)
-	out, derr := pool.Decrypt(ctx, label, ct, &rsa.OAEPOptions{Hash: wrong})
+	out, derr := pool.Decrypt(ctx, pki.LabelLocator(label), ct, &rsa.OAEPOptions{Hash: wrong})
 	if derr == nil && string(out) == string(probe) {
 		t.Fatalf("OAEP hash mismatch (%v ciphertext, %v opts) returned the plaintext; must fail closed", supported, wrong)
 	}
 
 	// And the supported hash still round-trips exactly (the negotiated path).
-	out, derr = pool.Decrypt(ctx, label, ct, &rsa.OAEPOptions{Hash: supported})
+	out, derr = pool.Decrypt(ctx, pki.LabelLocator(label), ct, &rsa.OAEPOptions{Hash: supported})
 	if derr != nil {
 		t.Fatalf("Decrypt with supported hash %v: %v", supported, derr)
 	}

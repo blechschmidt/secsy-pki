@@ -1970,16 +1970,18 @@ func (a *API) checkPermission(user *models.UserInfo, caID string, perm models.Pe
 	return a.db.HasPermission(caID, user.Subject, perm, groupIDs)
 }
 
-// keyRefForCA resolves the provider key reference for a CA. When the CA's URI
-// is a pkcs11: URI its object= label is authoritative (it may differ from the
-// CA label when an operator imported a pre-existing key); otherwise — e.g. for
-// software: URIs — the CA label is the key label.
+// keyRefForCA resolves the provider key reference for a CA from its stored
+// PKCS#11 URI, honoring the full RFC 7512 addressing (object=/id= object
+// selectors and token/serial/slot-id token selectors) rather than only the
+// object= label. It falls back to the CA label when the URI is a bare label, a
+// software: URI, or a pkcs11: URI that names no object. It mirrors
+// ca.KeyRefForCA so the API and issuance layers address the same key.
 func keyRefForCA(ca *models.CA) keyprovider.KeyRef {
-	label := pki.ExtractKeyLabel(ca.PKCS11URI)
-	if label == "" {
-		label = ca.Label
+	ref, err := keyprovider.KeyRefFromURI(ca.PKCS11URI)
+	if err != nil || (ref.Label == "" && ref.ID == "") {
+		return keyprovider.KeyRef{Label: ca.Label}
 	}
-	return keyprovider.KeyRef{Label: label}
+	return ref
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {

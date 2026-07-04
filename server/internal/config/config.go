@@ -16,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/fips"
+	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 )
 
 type Config struct {
@@ -2609,6 +2610,13 @@ type KeyProviderRoles struct {
 
 type PKCS11Config struct {
 	ModulePath string `yaml:"module_path"`
+	// URI is an optional RFC 7512 pkcs11: URI that backfills any of module_path,
+	// token_label / token_serial / token_manufacturer, and the user PIN
+	// (pin-value / pin-source) left unset above — so an operator can point at an
+	// HSM with a single self-describing string. Explicit fields always take
+	// precedence over the URI. Any embedded pin-value is redacted from dumped
+	// config. See docs/hsm-configuration.md.
+	URI string `yaml:"uri"`
 	// Pin is the inline user PIN. It is a plaintext-at-rest credential: prefer
 	// PinSource below to source it from a credential store instead. When PinSource
 	// is unset the inline pin (or SECSY_USER_PIN) is used, with a deprecation
@@ -2655,6 +2663,11 @@ type PKCS11TokenConfig struct {
 	// Name is a stable identifier used in per-token health and failover metrics
 	// and in logs. Defaults to token_label when empty.
 	Name string `yaml:"name"`
+	// URI is an optional per-token RFC 7512 pkcs11: URI that backfills this token's
+	// unset label/serial/manufacturer and PIN — the natural way to address a
+	// specific replica by serial in an HA set where replicas share a CKA_LABEL.
+	// Any embedded pin-value is redacted from dumped config.
+	URI string `yaml:"uri"`
 	// TokenLabel / TokenSerial / TokenManufacturer address the token.
 	TokenLabel        string `yaml:"token_label"`
 	TokenSerial       string `yaml:"token_serial"`
@@ -2768,16 +2781,36 @@ func (p PKCS11Config) redacted() PKCS11Config {
 	cp := p
 	cp.Pin = redactSecret(p.Pin)
 	cp.PinSource = p.PinSource.redacted()
+	cp.URI = redactURIPIN(p.URI)
 	if len(p.Tokens) > 0 {
 		toks := make([]PKCS11TokenConfig, len(p.Tokens))
 		for i, t := range p.Tokens {
 			t.Pin = redactSecret(t.Pin)
 			t.PinSource = t.PinSource.redacted()
+			t.URI = redactURIPIN(t.URI)
 			toks[i] = t
 		}
 		cp.Tokens = toks
 	}
 	return cp
+}
+
+// redactURIPIN masks any pin-value embedded in an RFC 7512 pkcs11: URI so a
+// dumped config never leaks the PIN. A URI that carries no pin-value is returned
+// unchanged; one that fails to parse but mentions "pin-value" is masked wholesale
+// (fail closed), since it may still carry a credential.
+func redactURIPIN(uri string) string {
+	if uri == "" {
+		return ""
+	}
+	u, err := pki.ParsePKCS11URI(uri)
+	if err != nil {
+		if strings.Contains(strings.ToLower(uri), "pin-value") {
+			return redactedSecret
+		}
+		return uri
+	}
+	return u.RedactedString()
 }
 
 // redacted masks the credential fields a pin_source may carry (the embedded Vault

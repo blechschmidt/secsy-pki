@@ -2361,6 +2361,7 @@ func pkcs11TokenSettings(tokens []config.PKCS11TokenConfig) []keyprovider.TokenS
 	for _, t := range tokens {
 		out = append(out, keyprovider.TokenSettings{
 			Name:              t.Name,
+			URI:               t.URI,
 			TokenLabel:        t.TokenLabel,
 			TokenSerial:       t.TokenSerial,
 			TokenManufacturer: t.TokenManufacturer,
@@ -2398,6 +2399,7 @@ func keyProviderConfigForRole(cfg *config.Config, role string) keyprovider.Confi
 		Type: keyprovider.ProviderType(cfg.KeyProviderTypeForRole(role)),
 		PKCS11: keyprovider.PKCS11Settings{
 			ModulePath:        cfg.PKCS11.ModulePath,
+			URI:               cfg.PKCS11.URI,
 			Pin:               cfg.PKCS11.Pin,
 			PinSource:         pinSourceSettings(cfg.PKCS11.PinSource),
 			TokenLabel:        cfg.PKCS11.TokenLabel,

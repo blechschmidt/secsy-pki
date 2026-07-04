@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/pqc"
 )
 
@@ -56,15 +57,68 @@ const (
 )
 
 // KeyRef identifies an existing key within a provider. A key is addressed
-// primarily by its Label; ID is an optional secondary identifier (a hex CKA_ID
-// for PKCS#11, or an alternate keystore name for the software provider). At
-// least one of Label or ID must be set.
+// primarily by its Label; ID is an optional secondary identifier (a hex-encoded
+// CKA_ID for PKCS#11, or an alternate keystore name for the software / KMS
+// providers). At least one of Label or ID must be set.
+//
+// Token optionally pins a PKCS#11 operation to a specific token within a
+// high-availability set, using RFC 7512 token/slot addressing (serial, slot-id,
+// model, ...). It is populated by KeyRefFromURI from a pkcs11: URI's token path
+// attributes and is ignored by the software and KMS backends.
 type KeyRef struct {
 	Label string
 	ID    string
+	Token TokenSelector
 }
 
-// resolve returns the primary identifier for the reference, preferring Label.
+// TokenSelector pins a PKCS#11 key operation to a specific token within a
+// high-availability set, using RFC 7512 token/slot path attributes. Every field
+// is optional; each set field must match the token for it to be selected. It is
+// advisory for the single-token backend (which has exactly one token) and
+// authoritative for the HA backend, which routes only to member tokens matching
+// every set field — the unambiguous way to address a specific replica when
+// replicas deliberately share a CKA_LABEL.
+type TokenSelector struct {
+	Label        string // token= (CK_TOKEN_INFO.label)
+	Serial       string // serial= (CK_TOKEN_INFO.serialNumber)
+	Model        string // model= (CK_TOKEN_INFO.model)
+	Manufacturer string // manufacturer= (CK_TOKEN_INFO.manufacturerID)
+	SlotID       *uint  // slot-id= (CK_SLOT_ID)
+}
+
+// IsZero reports whether the selector pins nothing (matches any token).
+func (s TokenSelector) IsZero() bool {
+	return s.Label == "" && s.Serial == "" && s.Model == "" && s.Manufacturer == "" && s.SlotID == nil
+}
+
+// Describe renders the selector for error messages.
+func (s TokenSelector) Describe() string {
+	var parts []string
+	if s.Label != "" {
+		parts = append(parts, fmt.Sprintf("token=%q", s.Label))
+	}
+	if s.Serial != "" {
+		parts = append(parts, fmt.Sprintf("serial=%q", s.Serial))
+	}
+	if s.Model != "" {
+		parts = append(parts, fmt.Sprintf("model=%q", s.Model))
+	}
+	if s.Manufacturer != "" {
+		parts = append(parts, fmt.Sprintf("manufacturer=%q", s.Manufacturer))
+	}
+	if s.SlotID != nil {
+		parts = append(parts, fmt.Sprintf("slot-id=%d", *s.SlotID))
+	}
+	if len(parts) == 0 {
+		return "(any token)"
+	}
+	return strings.Join(parts, " ")
+}
+
+// resolve returns the primary identifier for the reference, preferring Label. It
+// is used by the software and KMS backends, whose ID is an alternate name rather
+// than a binary CKA_ID. The PKCS#11 backend does not use it — it addresses keys
+// by a pki.KeyLocator (label and/or CKA_ID) instead; see locatorFor.
 func (r KeyRef) resolve() (string, error) {
 	if r.Label != "" {
 		return r.Label, nil
@@ -73,6 +127,116 @@ func (r KeyRef) resolve() (string, error) {
 		return r.ID, nil
 	}
 	return "", fmt.Errorf("keyprovider: key reference has neither label nor ID")
+}
+
+// KeyRefFromURI builds a KeyRef from a stored key-reference string, accepting the
+// three forms the codebase uses so callers no longer have to pull out only the
+// CKA_LABEL:
+//
+//   - "pkcs11:…"          a full RFC 7512 URI. The object= / id= object selectors
+//     become Label / ID (hex CKA_ID); the token / serial / model / manufacturer /
+//     slot-id path attributes become the Token selector so the operation can be
+//     pinned to a specific token in a high-availability set.
+//   - "software:<label>"  the software provider's URI shorthand → Label.
+//   - "<label>"           a bare label (historical shorthand) → Label.
+//
+// It returns an error only for a malformed pkcs11: URI. An empty string is
+// rejected; a well-formed URI that names no object (neither object= nor id=)
+// yields a KeyRef with an empty Label/ID that the caller may fall back from
+// (e.g. to the CA label).
+func KeyRefFromURI(ref string) (KeyRef, error) {
+	trimmed := strings.TrimSpace(ref)
+	if trimmed == "" {
+		return KeyRef{}, fmt.Errorf("keyprovider: empty key reference")
+	}
+	if rest, ok := strings.CutPrefix(trimmed, "software:"); ok {
+		return KeyRef{Label: rest}, nil
+	}
+	if len(trimmed) >= len("pkcs11:") && strings.EqualFold(trimmed[:len("pkcs11:")], "pkcs11:") {
+		u, err := pki.ParsePKCS11URI(trimmed)
+		if err != nil {
+			return KeyRef{}, err
+		}
+		return keyRefFromParsedURI(u), nil
+	}
+	// Bare-label shorthand.
+	return KeyRef{Label: trimmed}, nil
+}
+
+// KeyRefFor builds a KeyRef from a configured key reference that may be a bare
+// label (the common case), a "software:<label>" URI, or a full RFC 7512 pkcs11:
+// URI. A bare label — or any value that does not resolve to an object selector —
+// yields KeyRef{Label: ref} unchanged, so existing bare-label configuration keeps
+// working; a pkcs11: URI additionally enables addressing the key by CKA_ID or by
+// token serial/slot-id (e.g. pinning a TSA signing key to a specific replica in
+// an HA set). It never errors: an unparseable value falls back to a bare label,
+// matching how the CA path resolves its stored URI.
+func KeyRefFor(ref string) KeyRef {
+	r, err := KeyRefFromURI(ref)
+	if err != nil || (r.Label == "" && r.ID == "") {
+		return KeyRef{Label: ref}
+	}
+	return r
+}
+
+// keyRefFromParsedURI maps a parsed RFC 7512 URI onto a KeyRef.
+func keyRefFromParsedURI(u *pki.PKCS11URI) KeyRef {
+	ref := KeyRef{Label: u.Object, ID: u.IDHex()}
+	ref.Token = TokenSelector{
+		Label:        u.Token,
+		Serial:       u.Serial,
+		Model:        u.Model,
+		Manufacturer: u.Manufacturer,
+	}
+	if u.SlotID != nil && *u.SlotID >= 0 {
+		s := uint(*u.SlotID)
+		ref.Token.SlotID = &s
+	}
+	return ref
+}
+
+// PinSourceFromURI maps the pin-value / pin-source query attributes of a parsed
+// RFC 7512 pkcs11: URI onto the Task 111 external-PIN-sourcing settings, wiring a
+// self-describing URI into the credential-store machinery. pin-value yields an
+// inline PIN (a plaintext-at-rest credential); pin-source is treated as a file
+// reference (p11-kit's convention — a bare path or a file: URI). It returns
+// ok=false when the URI carries neither, so the caller keeps its existing PIN
+// configuration.
+func PinSourceFromURI(u *pki.PKCS11URI) (settings PinSourceSettings, inlinePIN string, ok bool, err error) {
+	if u == nil {
+		return PinSourceSettings{}, "", false, nil
+	}
+	if u.PinValue != "" {
+		return PinSourceSettings{}, u.PinValue, true, nil
+	}
+	if u.PinSource == "" {
+		return PinSourceSettings{}, "", false, nil
+	}
+	path, perr := pinSourceFilePath(u.PinSource)
+	if perr != nil {
+		return PinSourceSettings{}, "", false, perr
+	}
+	return PinSourceSettings{Type: "file", File: FilePinSourceSettings{Path: path}}, "", true, nil
+}
+
+// pinSourceFilePath extracts a filesystem path from an RFC 7512 pin-source value.
+// It accepts a bare path and the "file:" / "file://" URI forms; anything else
+// (e.g. an exec "|program" or an unsupported scheme) is rejected rather than
+// silently mishandled.
+func pinSourceFilePath(src string) (string, error) {
+	s := strings.TrimSpace(src)
+	switch {
+	case strings.HasPrefix(s, "file://"):
+		return strings.TrimPrefix(s, "file://"), nil
+	case strings.HasPrefix(s, "file:"):
+		return strings.TrimPrefix(s, "file:"), nil
+	case strings.Contains(s, "://"):
+		return "", fmt.Errorf("keyprovider: unsupported pin-source scheme in %q (only file: is supported)", src)
+	case strings.HasPrefix(s, "|"):
+		return "", fmt.Errorf("keyprovider: exec pin-source %q is not supported", src)
+	default:
+		return s, nil
+	}
 }
 
 // Key usage identifiers. A key is generated either for signing (the default,
@@ -248,6 +412,13 @@ var ErrProbeUnsupported = fmt.Errorf("keyprovider: connectivity probe not suppor
 // import the pki package directly.
 type PKCS11Settings struct {
 	ModulePath string
+	// URI, when set, is a self-describing RFC 7512 pkcs11: URI that backfills any
+	// module/token/PIN field left unset above: its module-path fills ModulePath;
+	// its token / serial / manufacturer fill the token selectors; and its
+	// pin-value / pin-source fill the PIN (inline PIN or a file PinSource) when no
+	// other PIN is configured. Explicit fields always win over the URI. It lets an
+	// operator point at an HSM with a single string instead of a block of fields.
+	URI string
 	// Pin is the inline user PIN (config pkcs11.pin / SECSY_USER_PIN). It is used
 	// only when PinSource selects the inline source (the default). Prefer an
 	// external PinSource so the PIN is not stored in plaintext at rest.
@@ -296,6 +467,11 @@ type TokenSettings struct {
 	// metrics and in logs. When empty it defaults to TokenLabel (then to a
 	// positional token-N name).
 	Name string
+	// URI, when set, is a per-token RFC 7512 pkcs11: URI that backfills this
+	// token's unset label/serial/manufacturer and PIN, exactly as PKCS11Settings.URI
+	// does for the single-token backend. It is the natural way to address a
+	// specific replica by serial in an HA set where replicas share a CKA_LABEL.
+	URI string
 	// TokenLabel / TokenSerial / TokenManufacturer address the token, exactly as
 	// on the single-token PKCS11Settings.
 	TokenLabel        string

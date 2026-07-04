@@ -76,6 +76,51 @@ generating a second key with an existing label. Choose one label per CA / KEK
 and keep it stable — it is also how the CA is referenced everywhere else in the
 system.
 
+### Addressing keys with RFC 7512 `pkcs11:` URIs
+
+Every CA stores an [RFC 7512](https://www.rfc-editor.org/rfc/rfc7512) `pkcs11:`
+URI describing its signing key, and both the config `pkcs11.uri` field and each
+CA's stored URI are parsed with a complete RFC 7512 parser. A key can therefore
+be addressed by any combination of:
+
+- **object attributes** — `object=` (the `CKA_LABEL`), `id=` (the `CKA_ID`, as
+  percent-encoded bytes), and `type=` (`private`/`public`/`cert`/…);
+- **token attributes** — `token=`, `serial=`, `model=`, `manufacturer=`, and
+  `slot-id=`;
+- **library attributes** — `library-description=`, `library-manufacturer=`,
+  `library-version=`;
+- **query attributes** — `module-path=` / `module-name=`, and
+  `pin-value=` / `pin-source=`.
+
+Addressing by `id=` (`CKA_ID`) or by `serial=` / `slot-id=` matters in a
+[high-availability set](#high-availability-across-multiple-tokens): replicas
+deliberately share one `CKA_LABEL`, so the `CKA_ID` or the token serial is the
+only unambiguous way to pin an operation to a specific replica. When a stored CA
+URI names a token by serial/slot-id, issuance is routed only to the matching
+token; a URI that matches no token in the set fails closed rather than signing on
+the wrong replica.
+
+The optional `pkcs11.uri` field lets you point at an HSM with a single
+self-describing string instead of a block of fields. It **backfills only the
+fields left unset** — explicit `module_path` / `token_*` / `pin` always win — and
+its `pin-value` / `pin-source` feed the same
+[PIN sourcing](#sourcing-the-user-pin-from-a-credential-store-pin_source) as the
+structured `pin_source` block (`pin-source=file:/path` becomes a `file` source).
+Any embedded `pin-value` is **redacted** from a dumped or logged config.
+
+```yaml
+pkcs11:
+  # A single self-describing URI. Equivalent to setting module_path + token_label
+  # + a file pin_source below.
+  uri: "pkcs11:token=secsy-pki-root?module-path=/usr/lib/softhsm/libsofthsm2.so&pin-source=file:/etc/secsy/hsm.pin"
+```
+
+`secsy-ca doctor` includes a `pkcs11.uris` check that parses every configured
+`pkcs11:` URI (the config `uri` fields and each CA's stored key URI), warns on an
+embedded plaintext `pin-value` or an unrecognized attribute, and — against a live
+token — confirms each CA key actually resolves under its full object/id/token
+addressing.
+
 ### Sourcing the user PIN from a credential store (`pin_source`)
 
 Storing the PKCS#11 user PIN as plaintext — in `pkcs11.pin` or the

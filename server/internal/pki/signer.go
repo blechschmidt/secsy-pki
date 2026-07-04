@@ -134,7 +134,7 @@ func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {
 	}
 	loggedIn = true
 
-	ko, err := findKeyObjects(ctx, session, keyLabel)
+	ko, err := findKeyObjects(ctx, session, LabelLocator(keyLabel))
 	if err != nil {
 		return nil, err
 	}
@@ -152,6 +152,58 @@ func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {
 	return signer, nil
 }
 
+// KeyLocator addresses a key-pair object on a token by CKA_LABEL and/or CKA_ID —
+// the two object selectors of an RFC 7512 pkcs11: URI. At least one must be set.
+// When only Label is set the lookup is exactly the historical label-only lookup;
+// when ID is set the FindObjects template additionally constrains on CKA_ID, so a
+// key can be addressed by id alone or by the (label, id) pair. Addressing by
+// CKA_ID matters for multi-token HA deployments where replicas deliberately share
+// a CKA_LABEL: the id (and token serial/slot-id) is what disambiguates them.
+type KeyLocator struct {
+	// Label is the CKA_LABEL to match (empty means "do not constrain on label").
+	Label string
+	// ID is the raw CKA_ID bytes to match (empty means "do not constrain on id").
+	ID []byte
+}
+
+// LabelLocator is a convenience for the common label-only lookup.
+func LabelLocator(label string) KeyLocator { return KeyLocator{Label: label} }
+
+// IsZero reports whether the locator constrains on nothing (neither label nor id).
+func (l KeyLocator) IsZero() bool { return l.Label == "" && len(l.ID) == 0 }
+
+// Describe renders the locator for error messages and logs.
+func (l KeyLocator) Describe() string {
+	switch {
+	case l.Label != "" && len(l.ID) > 0:
+		return fmt.Sprintf("label %q id %x", l.Label, l.ID)
+	case l.Label != "":
+		return fmt.Sprintf("label %q", l.Label)
+	case len(l.ID) > 0:
+		return fmt.Sprintf("id %x", l.ID)
+	default:
+		return "(no label or id)"
+	}
+}
+
+// cacheKey is the per-session object-cache key. Label and ID are unambiguously
+// separated so distinct (label, id) combinations never collide.
+func (l KeyLocator) cacheKey() string {
+	return fmt.Sprintf("%d:%s|%x", len(l.Label), l.Label, l.ID)
+}
+
+// appendMatch adds the label/id constraint attributes for the locator to a
+// FindObjects template.
+func (l KeyLocator) appendMatch(tmpl []*pkcs11.Attribute) []*pkcs11.Attribute {
+	if l.Label != "" {
+		tmpl = append(tmpl, pkcs11.NewAttribute(pkcs11.CKA_LABEL, l.Label))
+	}
+	if len(l.ID) > 0 {
+		tmpl = append(tmpl, pkcs11.NewAttribute(pkcs11.CKA_ID, l.ID))
+	}
+	return tmpl
+}
+
 // keyObjects holds the token handles and parsed public key for one key pair,
 // resolved on a specific session. Object handles are only valid within the
 // session they were obtained on, so callers must keep a keyObjects value paired
@@ -161,18 +213,25 @@ type keyObjects struct {
 	pubKey  crypto.PublicKey
 	keyType string
 	isEdDSA bool
+	// label / id are the resolved object's actual CKA_LABEL / CKA_ID, read back so
+	// a key addressed by id alone still reports its label (and vice versa) to
+	// inventory and URI construction. Both are best-effort.
+	label string
+	id    []byte
 }
 
-// findKeyObjects locates the private/public key objects labeled keyLabel on the
-// given (already logged-in) session and parses the public key. It is the shared
-// lookup used by both the one-shot NewPKCS11Signer and the pooled signer, so
-// that both resolve keys identically. The session must already be authenticated.
-func findKeyObjects(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, keyLabel string) (keyObjects, error) {
-	// Find private key
-	tmpl := []*pkcs11.Attribute{
-		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PRIVATE_KEY),
-		pkcs11.NewAttribute(pkcs11.CKA_LABEL, keyLabel),
+// findKeyObjects locates the private/public key objects matching loc on the given
+// (already logged-in) session and parses the public key. It is the shared lookup
+// used by the one-shot NewPKCS11Signer and the pooled signer, so both resolve
+// keys identically. The session must already be authenticated.
+func findKeyObjects(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, loc KeyLocator) (keyObjects, error) {
+	if loc.IsZero() {
+		return keyObjects{}, fmt.Errorf("key locator has neither label nor id")
 	}
+	// Find private key
+	tmpl := loc.appendMatch([]*pkcs11.Attribute{
+		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PRIVATE_KEY),
+	})
 	if err := ctx.FindObjectsInit(session, tmpl); err != nil {
 		return keyObjects{}, fmt.Errorf("find init: %w", err)
 	}
@@ -182,14 +241,13 @@ func findKeyObjects(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, keyLabel stri
 	}
 	ctx.FindObjectsFinal(session)
 	if len(objs) == 0 {
-		return keyObjects{}, fmt.Errorf("private key %q not found", keyLabel)
+		return keyObjects{}, fmt.Errorf("private key %s not found", loc.Describe())
 	}
 
 	// Find public key
-	pubTmpl := []*pkcs11.Attribute{
+	pubTmpl := loc.appendMatch([]*pkcs11.Attribute{
 		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PUBLIC_KEY),
-		pkcs11.NewAttribute(pkcs11.CKA_LABEL, keyLabel),
-	}
+	})
 	if err := ctx.FindObjectsInit(session, pubTmpl); err != nil {
 		return keyObjects{}, fmt.Errorf("find pub init: %w", err)
 	}
@@ -199,7 +257,29 @@ func findKeyObjects(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, keyLabel stri
 	}
 	ctx.FindObjectsFinal(session)
 
-	ko := keyObjects{priv: objs[0]}
+	ko := keyObjects{priv: objs[0], label: loc.Label, id: loc.ID}
+
+	// Read back the resolved object's actual identifiers so an id-addressed key
+	// reports its CKA_LABEL (and a label-addressed key reports its CKA_ID). This is
+	// best-effort: a token that refuses the attribute leaves the locator's own
+	// values in place.
+	if idAttrs, aerr := ctx.GetAttributeValue(session, objs[0], []*pkcs11.Attribute{
+		pkcs11.NewAttribute(pkcs11.CKA_LABEL, nil),
+		pkcs11.NewAttribute(pkcs11.CKA_ID, nil),
+	}); aerr == nil {
+		for _, a := range idAttrs {
+			switch a.Type {
+			case pkcs11.CKA_LABEL:
+				if len(a.Value) > 0 {
+					ko.label = string(a.Value)
+				}
+			case pkcs11.CKA_ID:
+				if len(a.Value) > 0 {
+					ko.id = append([]byte(nil), a.Value...)
+				}
+			}
+		}
+	}
 
 	if len(pubObjs) > 0 {
 		// Try EC attributes first

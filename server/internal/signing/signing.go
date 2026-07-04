@@ -262,7 +262,9 @@ func (s *Service) Sign(ctx context.Context, req SignRequest) (*SignResult, error
 		return nil, errors.New("signing: timestamping requested but no TSA is configured (enable tsa in config)")
 	}
 
-	signer, err := s.provider.Signer(ctx, keyprovider.KeyRef{Label: sc.KeyLabel})
+	// KeyLabel may be a bare label or a full RFC 7512 pkcs11: URI (addressing by
+	// CKA_ID or token serial/slot-id); KeyRefFor handles both.
+	signer, err := s.provider.Signer(ctx, keyprovider.KeyRefFor(sc.KeyLabel))
 	if err != nil {
 		return nil, fmt.Errorf("signing: opening signing key %q: %v: %w", sc.KeyLabel, err, ErrUnavailable)
 	}

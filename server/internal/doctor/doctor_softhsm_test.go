@@ -153,6 +153,7 @@ tsa:
 			"db.schema":        doctor.StatusPass,
 			"keys.ca":          doctor.StatusPass,
 			"keys.tsa":         doctor.StatusPass,
+			"pkcs11.uris":      doctor.StatusPass,
 			"audit.chain_head": doctor.StatusPass,
 			"db.integrity":     doctor.StatusPass,
 			"certs.ca_expiry":  doctor.StatusPass,
@@ -168,6 +169,11 @@ tsa:
 		// The CA self-test must have signed on the PKCS#11 backend.
 		if c := findCheck(t, r, "keys.ca"); !strings.Contains(c.Detail, "pkcs11") {
 			t.Errorf("keys.ca detail %q does not attribute the self-test to pkcs11", c.Detail)
+		}
+		// The pkcs11.uris check must have resolved the CA key on the token,
+		// exercising the full URI-addressing path end to end.
+		if c := findCheck(t, r, "pkcs11.uris"); !strings.Contains(c.Detail, "resolved on token") {
+			t.Errorf("pkcs11.uris detail %q does not show a CA key resolved on the token", c.Detail)
 		}
 	})
 

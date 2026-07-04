@@ -197,7 +197,7 @@ func TestChaosSessionPoolSaturationAndRecovery(t *testing.T) {
 	if _, err := pool.GenerateSignKey(ctx, label, keyprovider.KeyTypeECDSAP256); err != nil {
 		t.Fatalf("GenerateSignKey: %v", err)
 	}
-	rawPub, _, _, err := pool.PublicKey(ctx, label)
+	rawPub, _, _, err := pool.PublicKey(ctx, pki.LabelLocator(label))
 	if err != nil {
 		t.Fatalf("PublicKey: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestChaosSessionPoolSaturationAndRecovery(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < perG; i++ {
 				digest := sha256.Sum256([]byte{seed, byte(i)})
-				sig, err := pool.Sign(ctx, label, digest[:], crypto.SHA256)
+				sig, err := pool.Sign(ctx, pki.LabelLocator(label), digest[:], crypto.SHA256)
 				if err != nil {
 					errs <- fmt.Errorf("sign under saturation: %w", err)
 					return
@@ -246,7 +246,7 @@ func TestChaosSessionPoolSaturationAndRecovery(t *testing.T) {
 	digest := sha256.Sum256([]byte("canceled"))
 	shed := 0
 	for i := 0; i < 8; i++ {
-		sig, err := pool.Sign(cctx, label, digest[:], crypto.SHA256)
+		sig, err := pool.Sign(cctx, pki.LabelLocator(label), digest[:], crypto.SHA256)
 		if err != nil {
 			shed++ // clean shed — acceptable
 			continue
@@ -258,7 +258,7 @@ func TestChaosSessionPoolSaturationAndRecovery(t *testing.T) {
 	t.Logf("canceled-context Sign: %d/8 shed cleanly, remainder returned valid signatures", shed)
 
 	// Recovery: the pool is immediately usable again with a live context.
-	sig, err := pool.Sign(ctx, label, digest[:], crypto.SHA256)
+	sig, err := pool.Sign(ctx, pki.LabelLocator(label), digest[:], crypto.SHA256)
 	if err != nil {
 		t.Fatalf("post-cancellation Sign: %v", err)
 	}

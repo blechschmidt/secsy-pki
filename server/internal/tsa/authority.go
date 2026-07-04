@@ -247,7 +247,10 @@ func (a *Authority) Stamp(ctx context.Context, reqDER []byte) (*Result, error) {
 		return nil, err
 	}
 
-	signer, err := a.provider.Signer(ctx, keyprovider.KeyRef{Label: a.cfg.KeyLabel})
+	// KeyLabel may be a bare label (the common case) or a full RFC 7512 pkcs11:
+	// URI addressing the key by CKA_ID or by token serial/slot-id — the latter
+	// pins the TSA key to a specific replica in an HA set.
+	signer, err := a.provider.Signer(ctx, keyprovider.KeyRefFor(a.cfg.KeyLabel))
 	if err != nil {
 		return nil, fmt.Errorf("tsa: opening signing key %q: %w", a.cfg.KeyLabel, err)
 	}

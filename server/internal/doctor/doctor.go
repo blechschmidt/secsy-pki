@@ -221,7 +221,7 @@ func Run(ctx context.Context, opts Options) *Report {
 		// Without a loadable config nothing else can be diagnosed; emit the
 		// remaining checks as skips so the report shape is stable for CI.
 		for _, name := range []string{
-			"db.connectivity", "db.schema", "keyprovider.ca", "pin.source", "keys.ca",
+			"db.connectivity", "db.schema", "keyprovider.ca", "pin.source", "pkcs11.uris", "keys.ca",
 			"audit.chain_head", "certs.ca_expiry", "crl.freshness",
 			"canary.last_probe", "ct.inclusion", "webhook.dead_letters",
 			"keychecks.blocklist", "keychecks.profiles", "clock.skew",
@@ -249,6 +249,11 @@ func Run(ctx context.Context, opts Options) *Report {
 	if db != nil {
 		defer func() { _ = db.Close() }()
 	}
+
+	// 3b. PKCS#11 URI addressing: parse every configured RFC 7512 pkcs11: URI (the
+	// config module/token URIs and each CA's stored key URI) and resolve each CA
+	// key on the token, validating full object/id/token addressing.
+	checkPKCS11URIs(ctx, r, cfg, db, schemaOK, providers)
 
 	// 4. Role keys: a sign/verify self-test per configured key, against the
 	// exact provider and label the runtime would use.

@@ -82,6 +82,14 @@ type haMember struct {
 	name     string
 	provider *PKCS11Provider
 
+	// cfgLabel / cfgSerial / cfgManufacturer are the token's configured selectors
+	// (post URI-backfill). They seed identity() before the session pool is built;
+	// once it is built the token's actual identity (which also carries model and
+	// slot-id) takes precedence. Immutable after construction.
+	cfgLabel        string
+	cfgSerial       string
+	cfgManufacturer string
+
 	mu      sync.Mutex
 	healthy bool
 	fails   int // consecutive health-affecting failures
@@ -92,6 +100,101 @@ type haMember struct {
 	// and exists so the SoftHSM failover test can pull a token out mid-load
 	// deterministically and concurrency-safely.
 	unreachable atomic.Bool
+}
+
+// tokenIdentity is a member token's known identity for RFC 7512 token/slot
+// matching: configured selectors overlaid with the token's actual identity once
+// its session pool is built. An empty string / slotKnown=false means "unknown",
+// which never contradicts a selector (see selectorMatch).
+type tokenIdentity struct {
+	label, serial, model, manufacturer string
+	slotID                             uint
+	slotKnown                          bool
+}
+
+// identity returns the member's known token identity — configured selectors,
+// with the token's actual (post-login) identity overlaid where available.
+func (m *haMember) identity() tokenIdentity {
+	id := tokenIdentity{
+		label:        m.cfgLabel,
+		serial:       m.cfgSerial,
+		manufacturer: m.cfgManufacturer,
+	}
+	if m.provider == nil {
+		return id
+	}
+	if act, ok := m.provider.tokenIdentity(); ok {
+		if act.Label != "" {
+			id.label = act.Label
+		}
+		if act.Serial != "" {
+			id.serial = act.Serial
+		}
+		if act.Model != "" {
+			id.model = act.Model
+		}
+		if act.Manufacturer != "" {
+			id.manufacturer = act.Manufacturer
+		}
+		id.slotID = act.SlotID
+		id.slotKnown = true
+	}
+	return id
+}
+
+// matchResult grades how a member's identity relates to a token selector.
+type matchResult int
+
+const (
+	matchNo       matchResult = iota // a set selector field contradicts the token
+	matchPossible                    // nothing contradicts, but some field is unknown
+	matchExact                       // every set selector field is known-and-equal
+)
+
+// selectorMatch grades the member against a token selector. An unknown member
+// attribute never contradicts (we cannot prove a mismatch before the token is
+// live), but it downgrades an otherwise-exact match to "possible" so the router
+// prefers a token that is known to match.
+func (m *haMember) selectorMatch(sel TokenSelector) matchResult {
+	id := m.identity()
+	exact := true
+	// check reports whether a known/unknown member attribute is compatible with a
+	// wanted value, tracking whether the match was exact.
+	check := func(have, want string) bool {
+		switch {
+		case want == "":
+			return true // selector does not constrain this attribute
+		case have == "":
+			exact = false // unknown — cannot disprove, but not an exact match
+			return true
+		default:
+			return have == want
+		}
+	}
+	if !check(id.label, sel.Label) {
+		return matchNo
+	}
+	if !check(id.serial, sel.Serial) {
+		return matchNo
+	}
+	if !check(id.model, sel.Model) {
+		return matchNo
+	}
+	if !check(id.manufacturer, sel.Manufacturer) {
+		return matchNo
+	}
+	if sel.SlotID != nil {
+		switch {
+		case id.slotKnown && id.slotID != *sel.SlotID:
+			return matchNo
+		case !id.slotKnown:
+			exact = false
+		}
+	}
+	if exact {
+		return matchExact
+	}
+	return matchPossible
 }
 
 func (m *haMember) isHealthy() bool {
@@ -166,6 +269,12 @@ func NewPKCS11HAProvider(s PKCS11Settings) (*PKCS11HAProvider, error) {
 	if len(s.Tokens) == 0 {
 		return nil, fmt.Errorf("keyprovider: pkcs11 HA provider requires at least one token")
 	}
+	// Backfill the set-level module path and shared PIN from a top-level RFC 7512
+	// URI, if one was given, before requiring a module path.
+	s, err := applyPKCS11URI(s)
+	if err != nil {
+		return nil, err
+	}
 	if s.ModulePath == "" {
 		return nil, fmt.Errorf("keyprovider: pkcs11 module_path is required")
 	}
@@ -211,6 +320,7 @@ func NewPKCS11HAProvider(s PKCS11Settings) (*PKCS11HAProvider, error) {
 		pinSource, pin := effectiveTokenPin(s, tok)
 		member, err := NewPKCS11Provider(PKCS11Settings{
 			ModulePath:        s.ModulePath,
+			URI:               tok.URI,
 			Pin:               pin,
 			PinSource:         pinSource,
 			TokenLabel:        tok.TokenLabel,
@@ -221,7 +331,16 @@ func NewPKCS11HAProvider(s PKCS11Settings) (*PKCS11HAProvider, error) {
 		if err != nil {
 			return nil, fmt.Errorf("keyprovider: configuring token %q: %w", name, err)
 		}
-		members = append(members, &haMember{name: name, provider: member, healthy: true})
+		// Seed the member's configured selectors from its effective (post URI-backfill)
+		// config so serial/label token pinning works even before the token is live.
+		members = append(members, &haMember{
+			name:            name,
+			provider:        member,
+			healthy:         true,
+			cfgLabel:        member.cfg.TokenLabel,
+			cfgSerial:       member.cfg.TokenSerial,
+			cfgManufacturer: member.cfg.TokenManufacturer,
+		})
 		// Start optimistic: pools are built lazily, so a token is assumed healthy
 		// until an operation or probe proves otherwise.
 		metrics.SetHSMTokenUp(name, true)
@@ -266,14 +385,50 @@ func (p *PKCS11HAProvider) route() []*haMember {
 	return append(healthy, unhealthy...)
 }
 
+// selectMatching filters routed members down to those addressed by a token
+// selector, preserving the routed (health/policy) order. Members whose identity
+// is known to match are returned in preference to members that merely cannot be
+// disproven; an empty result (no token matches) is an error so a pinned operation
+// never runs on the wrong replica.
+func selectMatching(members []*haMember, sel TokenSelector) ([]*haMember, error) {
+	var exact, possible []*haMember
+	for _, m := range members {
+		switch m.selectorMatch(sel) {
+		case matchExact:
+			exact = append(exact, m)
+		case matchPossible:
+			possible = append(possible, m)
+		}
+	}
+	if len(exact) > 0 {
+		return exact, nil
+	}
+	if len(possible) > 0 {
+		return possible, nil
+	}
+	return nil, fmt.Errorf("keyprovider: no PKCS#11 token in the HA set matches %s", sel.Describe())
+}
+
 // withFailover runs fn against routed members in order, returning on the first
 // success. A health-affecting failure (anything other than a logical
 // key-not-found) charges the member's health and, if another candidate remains,
 // counts a failover. It returns the last error when every candidate fails.
-func (p *PKCS11HAProvider) withFailover(ctx context.Context, op string, fn func(m *haMember) error) error {
+//
+// When sel is non-nil and constrains something, candidates are restricted to the
+// member tokens matching it (RFC 7512 token/slot pinning): a token known to match
+// is preferred over one that merely cannot be disproven, and an operation that
+// matches no token fails closed rather than silently running on the wrong replica.
+func (p *PKCS11HAProvider) withFailover(ctx context.Context, op string, sel *TokenSelector, fn func(m *haMember) error) error {
 	members := p.route()
 	if len(members) == 0 {
 		return fmt.Errorf("keyprovider: no PKCS#11 tokens configured")
+	}
+	if sel != nil && !sel.IsZero() {
+		selected, err := selectMatching(members, *sel)
+		if err != nil {
+			return err
+		}
+		members = selected
 	}
 	var lastErr error
 	for i, m := range members {
@@ -360,10 +515,12 @@ func (p *PKCS11HAProvider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyI
 	return info, nil
 }
 
-// FindKey locates the key on any healthy token holding a replica.
+// FindKey locates the key on any healthy token holding a replica. When the ref
+// pins a token (RFC 7512 serial/slot-id/... addressing) the search is restricted
+// to the matching member(s).
 func (p *PKCS11HAProvider) FindKey(ctx context.Context, ref KeyRef) (*KeyInfo, error) {
 	var info *KeyInfo
-	err := p.withFailover(ctx, "find", func(m *haMember) error {
+	err := p.withFailover(ctx, "find", &ref.Token, func(m *haMember) error {
 		got, e := m.provider.FindKey(ctx, ref)
 		if e != nil {
 			return e
@@ -385,37 +542,43 @@ func (p *PKCS11HAProvider) PublicKey(ctx context.Context, ref KeyRef) (crypto.Pu
 
 // Signer returns a failover-aware signer for the referenced key. The public key
 // and type are resolved from a healthy replica up front; each Sign re-selects a
-// healthy token, so the signer keeps working across a token failing mid-use.
+// healthy token (honoring any token pin on the ref), so the signer keeps working
+// across a token failing mid-use.
 func (p *PKCS11HAProvider) Signer(ctx context.Context, ref KeyRef) (Signer, error) {
-	label, err := ref.resolve()
-	if err != nil {
-		return nil, err
-	}
 	info, err := p.FindKey(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
-	return &haSigner{p: p, ctx: ctx, label: label, pub: info.PublicKey, keyType: info.KeyType}, nil
+	return &haSigner{p: p, ctx: ctx, ref: ref, pub: info.PublicKey, keyType: info.KeyType}, nil
 }
 
-// signWithFailover signs digest for label, retrying across tokens on failure.
-func (p *PKCS11HAProvider) signWithFailover(ctx context.Context, label string, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+// signWithFailover signs digest for the referenced key, retrying across tokens
+// (restricted to any pinned token) on failure.
+func (p *PKCS11HAProvider) signWithFailover(ctx context.Context, ref KeyRef, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	loc, err := locatorFor(ref)
+	if err != nil {
+		return nil, err
+	}
 	var sig []byte
-	err := p.withFailover(ctx, "sign", func(m *haMember) error {
+	err = p.withFailover(ctx, "sign", &ref.Token, func(m *haMember) error {
 		var e error
-		sig, e = m.provider.signOp(ctx, label, digest, opts)
+		sig, e = m.provider.signOp(ctx, loc, digest, opts)
 		return e
 	})
 	return sig, err
 }
 
-// decryptWithFailover unwraps ciphertext for the labeled KEK, retrying across
-// tokens on failure.
-func (p *PKCS11HAProvider) decryptWithFailover(ctx context.Context, label string, ciphertext []byte, opts crypto.DecrypterOpts) ([]byte, error) {
+// decryptWithFailover unwraps ciphertext for the referenced KEK, retrying across
+// tokens (restricted to any pinned token) on failure.
+func (p *PKCS11HAProvider) decryptWithFailover(ctx context.Context, ref KeyRef, ciphertext []byte, opts crypto.DecrypterOpts) ([]byte, error) {
+	loc, err := locatorFor(ref)
+	if err != nil {
+		return nil, err
+	}
 	var pt []byte
-	err := p.withFailover(ctx, "decrypt", func(m *haMember) error {
+	err = p.withFailover(ctx, "decrypt", &ref.Token, func(m *haMember) error {
 		var e error
-		pt, e = m.provider.decryptOp(ctx, label, ciphertext, opts)
+		pt, e = m.provider.decryptOp(ctx, loc, ciphertext, opts)
 		return e
 	})
 	return pt, err
@@ -423,24 +586,21 @@ func (p *PKCS11HAProvider) decryptWithFailover(ctx context.Context, label string
 
 // Decrypter returns a failover-aware decrypter for the referenced RSA KEK.
 func (p *PKCS11HAProvider) Decrypter(ctx context.Context, ref KeyRef) (Decrypter, error) {
-	label, err := ref.resolve()
-	if err != nil {
-		return nil, err
-	}
 	info, err := p.FindKey(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
 	if _, ok := info.PublicKey.(*rsa.PublicKey); !ok {
-		return nil, fmt.Errorf("keyprovider: key %q is not an RSA key and cannot be used for decryption", label)
+		loc, _ := locatorFor(ref)
+		return nil, fmt.Errorf("keyprovider: key %s is not an RSA key and cannot be used for decryption", loc.Describe())
 	}
-	return &haDecrypter{p: p, ctx: ctx, label: label, pub: info.PublicKey}, nil
+	return &haDecrypter{p: p, ctx: ctx, ref: ref, pub: info.PublicKey}, nil
 }
 
 // ListKeys enumerates keys from any healthy token (the tokens are replicas).
 func (p *PKCS11HAProvider) ListKeys(ctx context.Context) ([]KeyDescriptor, error) {
 	var keys []KeyDescriptor
-	err := p.withFailover(ctx, "list", func(m *haMember) error {
+	err := p.withFailover(ctx, "list", nil, func(m *haMember) error {
 		got, e := m.provider.ListKeys(ctx)
 		if e != nil {
 			return e
@@ -520,7 +680,7 @@ func (p *PKCS11HAProvider) Close() error {
 type haSigner struct {
 	p       *PKCS11HAProvider
 	ctx     context.Context
-	label   string
+	ref     KeyRef
 	pub     crypto.PublicKey
 	keyType string
 
@@ -538,7 +698,7 @@ func (s *haSigner) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]b
 	if closed {
 		return nil, fmt.Errorf("keyprovider: signer is closed")
 	}
-	return s.p.signWithFailover(s.ctx, s.label, digest, opts)
+	return s.p.signWithFailover(s.ctx, s.ref, digest, opts)
 }
 
 func (s *haSigner) Close() error {
@@ -551,10 +711,10 @@ func (s *haSigner) Close() error {
 // haDecrypter is a failover-aware Decrypter, mirroring haSigner for RSA-OAEP /
 // PKCS#1v1.5 unwrap on a replicated KEK.
 type haDecrypter struct {
-	p     *PKCS11HAProvider
-	ctx   context.Context
-	label string
-	pub   crypto.PublicKey
+	p   *PKCS11HAProvider
+	ctx context.Context
+	ref KeyRef
+	pub crypto.PublicKey
 
 	mu     sync.Mutex
 	closed bool
@@ -569,7 +729,7 @@ func (d *haDecrypter) Decrypt(_ io.Reader, ciphertext []byte, opts crypto.Decryp
 	if closed {
 		return nil, fmt.Errorf("keyprovider: decrypter is closed")
 	}
-	return d.p.decryptWithFailover(d.ctx, d.label, ciphertext, opts)
+	return d.p.decryptWithFailover(d.ctx, d.ref, ciphertext, opts)
 }
 
 func (d *haDecrypter) Close() error {

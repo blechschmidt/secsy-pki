@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/rsa"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -56,6 +57,12 @@ type PKCS11Provider struct {
 // module path is configured but defers opening the module until first use, so
 // that a server can start even if the HSM is temporarily unreachable.
 func NewPKCS11Provider(s PKCS11Settings) (*PKCS11Provider, error) {
+	// Backfill any module/token/PIN fields left unset from a self-describing
+	// RFC 7512 URI before validating that a module path is present.
+	s, err := applyPKCS11URI(s)
+	if err != nil {
+		return nil, err
+	}
 	if s.ModulePath == "" {
 		return nil, fmt.Errorf("keyprovider: pkcs11 module_path is required")
 	}
@@ -112,6 +119,21 @@ func (p *PKCS11Provider) getPool(ctx context.Context) (*pki.SessionPool, error) 
 	}
 	p.pool = pool
 	return pool, nil
+}
+
+// tokenIdentity returns the token's actual identity (label/serial/model/
+// manufacturer/slot-id) if the session pool has already been built. It returns
+// ok=false when the pool is not yet built — the pool is lazy and this must not
+// force a login just to answer a token-match query. The HA layer uses it to pin
+// an operation to a specific token by RFC 7512 serial/slot-id addressing.
+func (p *PKCS11Provider) tokenIdentity() (pki.TokenIdentity, bool) {
+	p.mu.Lock()
+	pool := p.pool
+	p.mu.Unlock()
+	if pool == nil {
+		return pki.TokenIdentity{}, false
+	}
+	return pool.Identity(), true
 }
 
 // Close releases the session pool (closing every session, logging out, and
@@ -211,7 +233,7 @@ func (p *PKCS11Provider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInf
 }
 
 func (p *PKCS11Provider) FindKey(ctx context.Context, ref KeyRef) (*KeyInfo, error) {
-	label, err := ref.resolve()
+	loc, err := locatorFor(ref)
 	if err != nil {
 		return nil, err
 	}
@@ -219,25 +241,25 @@ func (p *PKCS11Provider) FindKey(ctx context.Context, ref KeyRef) (*KeyInfo, err
 	if err != nil {
 		return nil, err
 	}
-	pub, _, _, err := pool.PublicKey(ctx, label)
+	rk, err := pool.Resolve(ctx, loc)
 	if err != nil {
-		return nil, wrapNotFound(label, err)
+		return nil, wrapNotFound(loc.Describe(), err)
 	}
-	keyType, err := keyTypeOf(pub)
+	keyType, err := keyTypeOf(rk.Public)
 	if err != nil {
-		return nil, fmt.Errorf("keyprovider: key %q: %w", label, err)
+		return nil, fmt.Errorf("keyprovider: key %s: %w", loc.Describe(), err)
 	}
-	sshPub, err := ssh.NewPublicKey(pub)
+	sshPub, err := ssh.NewPublicKey(rk.Public)
 	if err != nil {
-		return nil, fmt.Errorf("keyprovider: key %q: %w", label, err)
+		return nil, fmt.Errorf("keyprovider: key %s: %w", loc.Describe(), err)
 	}
 
 	return &KeyInfo{
-		Label:        label,
-		ID:           ref.ID,
+		Label:        rk.Label,
+		ID:           hex.EncodeToString(rk.ID),
 		KeyType:      keyType,
-		PublicKey:    pub,
-		URI:          pki.BuildPKCS11URI(p.cfg, label),
+		PublicKey:    rk.Public,
+		URI:          p.buildKeyURI(rk.Label, rk.ID),
 		SSHPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub))),
 	}, nil
 }
@@ -251,7 +273,7 @@ func (p *PKCS11Provider) PublicKey(ctx context.Context, ref KeyRef) (crypto.Publ
 }
 
 func (p *PKCS11Provider) Signer(ctx context.Context, ref KeyRef) (Signer, error) {
-	label, err := ref.resolve()
+	loc, err := locatorFor(ref)
 	if err != nil {
 		return nil, err
 	}
@@ -259,39 +281,112 @@ func (p *PKCS11Provider) Signer(ctx context.Context, ref KeyRef) (Signer, error)
 	if err != nil {
 		return nil, err
 	}
-	pub, _, _, err := pool.PublicKey(ctx, label)
+	rk, err := pool.Resolve(ctx, loc)
 	if err != nil {
-		return nil, wrapNotFound(label, err)
+		return nil, wrapNotFound(loc.Describe(), err)
 	}
-	keyType, err := keyTypeOf(pub)
+	keyType, err := keyTypeOf(rk.Public)
 	if err != nil {
-		return nil, fmt.Errorf("keyprovider: key %q: %w", label, err)
+		return nil, fmt.Errorf("keyprovider: key %s: %w", loc.Describe(), err)
 	}
-	return &pkcs11Signer{pool: pool, ctx: ctx, label: label, pub: pub, keyType: keyType}, nil
+	return &pkcs11Signer{pool: pool, ctx: ctx, loc: loc, pub: rk.Public, keyType: keyType}, nil
 }
 
-// signOp performs a signing operation for the labeled key on this token's
-// session pool. It is the per-token signing core the HA provider
-// (PKCS11HAProvider) composes with failover; the public pooled Signer path
-// reaches the same pool.Sign, so single-token and multi-token deployments sign
-// identically.
-func (p *PKCS11Provider) signOp(ctx context.Context, label string, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+// signOp performs a signing operation for the located key on this token's session
+// pool. It is the per-token signing core the HA provider (PKCS11HAProvider)
+// composes with failover; the public pooled Signer path reaches the same
+// pool.Sign, so single-token and multi-token deployments sign identically.
+func (p *PKCS11Provider) signOp(ctx context.Context, loc pki.KeyLocator, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
 	pool, err := p.getPool(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return pool.Sign(ctx, label, digest, opts)
+	return pool.Sign(ctx, loc, digest, opts)
 }
 
-// decryptOp performs an on-device unwrap for the labeled KEK on this token's
+// decryptOp performs an on-device unwrap for the located KEK on this token's
 // session pool. Like signOp it is the per-token core the HA provider composes
 // with failover.
-func (p *PKCS11Provider) decryptOp(ctx context.Context, label string, ciphertext []byte, opts crypto.DecrypterOpts) ([]byte, error) {
+func (p *PKCS11Provider) decryptOp(ctx context.Context, loc pki.KeyLocator, ciphertext []byte, opts crypto.DecrypterOpts) ([]byte, error) {
 	pool, err := p.getPool(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return pool.Decrypt(ctx, label, ciphertext, opts)
+	return pool.Decrypt(ctx, loc, ciphertext, opts)
+}
+
+// buildKeyURI renders the RFC 7512 URI for a resolved key. A label-only key keeps
+// the historical token;object;type ordering (BuildPKCS11URI); an id-bearing key
+// additionally carries the id= object selector.
+func (p *PKCS11Provider) buildKeyURI(label string, id []byte) string {
+	if len(id) == 0 {
+		return pki.BuildPKCS11URI(p.cfg, label)
+	}
+	u := &pki.PKCS11URI{
+		Token:        p.cfg.TokenLabel,
+		Serial:       p.cfg.TokenSerial,
+		Manufacturer: p.cfg.TokenManufacturer,
+		Object:       label,
+		ID:           id,
+		Type:         pki.PKCS11TypePrivate,
+	}
+	return u.String()
+}
+
+// locatorFor builds the pki key locator (CKA_LABEL and/or CKA_ID) for a KeyRef.
+// The KeyRef's ID is a hex-encoded CKA_ID, decoded here to the raw bytes the
+// token matches on. At least one of label / id must be present.
+func locatorFor(ref KeyRef) (pki.KeyLocator, error) {
+	loc := pki.KeyLocator{Label: ref.Label}
+	if ref.ID != "" {
+		raw, err := hex.DecodeString(ref.ID)
+		if err != nil {
+			return pki.KeyLocator{}, fmt.Errorf("keyprovider: invalid CKA_ID %q (want hex): %w", ref.ID, err)
+		}
+		loc.ID = raw
+	}
+	if loc.IsZero() {
+		return pki.KeyLocator{}, fmt.Errorf("keyprovider: key reference has neither label nor CKA_ID")
+	}
+	return loc, nil
+}
+
+// applyPKCS11URI backfills any module/token/PIN field of s left unset from its
+// self-describing RFC 7512 URI (s.URI). Explicit fields always take precedence;
+// the URI only fills gaps. It performs no I/O.
+func applyPKCS11URI(s PKCS11Settings) (PKCS11Settings, error) {
+	if strings.TrimSpace(s.URI) == "" {
+		return s, nil
+	}
+	u, err := pki.ParsePKCS11URI(s.URI)
+	if err != nil {
+		return s, fmt.Errorf("keyprovider: parsing pkcs11 uri: %w", err)
+	}
+	if s.ModulePath == "" {
+		s.ModulePath = u.ModulePath
+	}
+	if s.TokenLabel == "" {
+		s.TokenLabel = u.Token
+	}
+	if s.TokenSerial == "" {
+		s.TokenSerial = u.Serial
+	}
+	if s.TokenManufacturer == "" {
+		s.TokenManufacturer = u.Manufacturer
+	}
+	// Derive the PIN from the URI only when nothing else configures it, so an
+	// explicit pin / pin_source always wins.
+	if s.PinSource.Type == "" && s.Pin == "" {
+		ps, inline, ok, perr := PinSourceFromURI(u)
+		if perr != nil {
+			return s, perr
+		}
+		if ok {
+			s.PinSource = ps
+			s.Pin = inline
+		}
+	}
+	return s, nil
 }
 
 // wrapNotFound maps a "not found" error from the pki layer onto ErrKeyNotFound
@@ -323,7 +418,7 @@ func publicKeyFromSSH(authorizedKey string) (crypto.PublicKey, error) {
 type pkcs11Signer struct {
 	pool    *pki.SessionPool
 	ctx     context.Context
-	label   string
+	loc     pki.KeyLocator
 	pub     crypto.PublicKey
 	keyType string
 	closed  bool
@@ -335,7 +430,7 @@ func (s *pkcs11Signer) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) 
 	if s.closed {
 		return nil, fmt.Errorf("keyprovider: signer is closed")
 	}
-	return s.pool.Sign(s.ctx, s.label, digest, opts)
+	return s.pool.Sign(s.ctx, s.loc, digest, opts)
 }
 
 func (s *pkcs11Signer) KeyType() string { return s.keyType }
@@ -375,7 +470,7 @@ func (p *PKCS11Provider) ListKeys(ctx context.Context) ([]KeyDescriptor, error) 
 // Decrypter returns a Decrypter for the referenced RSA KEK. The private key
 // never leaves the token; unwrapping happens on the device via C_Decrypt.
 func (p *PKCS11Provider) Decrypter(ctx context.Context, ref KeyRef) (Decrypter, error) {
-	label, err := ref.resolve()
+	loc, err := locatorFor(ref)
 	if err != nil {
 		return nil, err
 	}
@@ -383,14 +478,14 @@ func (p *PKCS11Provider) Decrypter(ctx context.Context, ref KeyRef) (Decrypter, 
 	if err != nil {
 		return nil, err
 	}
-	pub, _, _, err := pool.PublicKey(ctx, label)
+	rk, err := pool.Resolve(ctx, loc)
 	if err != nil {
-		return nil, wrapNotFound(label, err)
+		return nil, wrapNotFound(loc.Describe(), err)
 	}
-	if _, ok := pub.(*rsa.PublicKey); !ok {
-		return nil, fmt.Errorf("keyprovider: key %q is not an RSA key and cannot be used for decryption", label)
+	if _, ok := rk.Public.(*rsa.PublicKey); !ok {
+		return nil, fmt.Errorf("keyprovider: key %s is not an RSA key and cannot be used for decryption", loc.Describe())
 	}
-	return &pkcs11Decrypter{pool: pool, ctx: ctx, label: label, pub: pub}, nil
+	return &pkcs11Decrypter{pool: pool, ctx: ctx, loc: loc, pub: rk.Public}, nil
 }
 
 // pkcs11Decrypter is a keyprovider.Decrypter bound to a pooled session backend.
@@ -399,7 +494,7 @@ func (p *PKCS11Provider) Decrypter(ctx context.Context, ref KeyRef) (Decrypter, 
 type pkcs11Decrypter struct {
 	pool   *pki.SessionPool
 	ctx    context.Context
-	label  string
+	loc    pki.KeyLocator
 	pub    crypto.PublicKey
 	closed bool
 }
@@ -410,7 +505,7 @@ func (d *pkcs11Decrypter) Decrypt(_ io.Reader, ciphertext []byte, opts crypto.De
 	if d.closed {
 		return nil, fmt.Errorf("keyprovider: decrypter is closed")
 	}
-	return d.pool.Decrypt(d.ctx, d.label, ciphertext, opts)
+	return d.pool.Decrypt(d.ctx, d.loc, ciphertext, opts)
 }
 
 func (d *pkcs11Decrypter) Close() error {

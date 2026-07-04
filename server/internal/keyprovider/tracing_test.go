@@ -42,7 +42,7 @@ func TestFailoverEmitsSpanEvents(t *testing.T) {
 
 	ctx, span := otel.Tracer("test").Start(context.Background(), "hsm.op")
 	transportErr := errors.New("pkcs11: session handle invalid")
-	err := p.withFailover(ctx, "sign", func(m *haMember) error {
+	err := p.withFailover(ctx, "sign", nil, func(m *haMember) error {
 		if m.name == "tok-a" {
 			return transportErr // primary fails → charge health, fail over
 		}
@@ -107,7 +107,7 @@ func TestNoFailoverEmitsNoFailoverEvent(t *testing.T) {
 
 	p := newBareHA(PolicyPrimaryBackup, 1, "tok-a", "tok-b")
 	ctx, span := otel.Tracer("test").Start(context.Background(), "hsm.op")
-	err := p.withFailover(ctx, "sign", func(m *haMember) error { return nil })
+	err := p.withFailover(ctx, "sign", nil, func(m *haMember) error { return nil })
 	span.End()
 	if err != nil {
 		t.Fatalf("withFailover returned %v, want nil", err)

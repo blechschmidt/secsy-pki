@@ -301,14 +301,18 @@ func caPublicKeyString(keyInfo *keyprovider.KeyInfo) string {
 	return keyInfo.KeyType // last-resort non-null marker
 }
 
-// keyRefForCA resolves the provider key reference for a CA, preferring the
-// object= label embedded in its PKCS#11 URI and falling back to its label.
+// keyRefForCA resolves the provider key reference for a CA from its stored
+// PKCS#11 URI, honoring the full RFC 7512 addressing: the object= / id= object
+// selectors and the token / serial / slot-id token selectors (so a CA key on a
+// specific replica in an HA set is addressed unambiguously). It falls back to the
+// CA label when the URI is a bare label, a software: URI without a label, or a
+// pkcs11: URI that names no object.
 func keyRefForCA(ca *models.CA) keyprovider.KeyRef {
-	label := pki.ExtractKeyLabel(ca.PKCS11URI)
-	if label == "" {
-		label = ca.Label
+	ref, err := keyprovider.KeyRefFromURI(ca.PKCS11URI)
+	if err != nil || (ref.Label == "" && ref.ID == "") {
+		return keyprovider.KeyRef{Label: ca.Label}
 	}
-	return keyprovider.KeyRef{Label: label}
+	return ref
 }
 
 // KeyRefForCA exposes the provider key reference the manager uses for a CA's

@@ -80,6 +80,41 @@ func TestConfigRedactedMasksSecrets(t *testing.T) {
 	}
 }
 
+// TestRedactedMasksURIPinValue asserts that a pin-value embedded in an RFC 7512
+// pkcs11: URI (top-level or per-token) is stripped from a redacted config, while
+// the URI's non-secret attributes survive.
+func TestRedactedMasksURIPinValue(t *testing.T) {
+	c := &Config{
+		PKCS11: PKCS11Config{
+			URI: "pkcs11:token=softtoken?module-path=/lib/p11.so&pin-value=topsecret",
+			Tokens: []PKCS11TokenConfig{
+				{Name: "t1", URI: "pkcs11:serial=SER-1?pin-value=tokensecret"},
+			},
+		},
+	}
+
+	red := c.Redacted()
+
+	// Original untouched.
+	if !strings.Contains(c.PKCS11.URI, "topsecret") || !strings.Contains(c.PKCS11.Tokens[0].URI, "tokensecret") {
+		t.Fatal("Redacted mutated the original URI")
+	}
+
+	dump := marshalYAML(t, red.PKCS11)
+	for _, secret := range []string{"topsecret", "tokensecret"} {
+		if strings.Contains(dump, secret) {
+			t.Errorf("redacted pkcs11 dump leaks URI pin-value %q:\n%s", secret, dump)
+		}
+	}
+	// Non-secret URI attributes survive.
+	if !strings.Contains(red.PKCS11.URI, "softtoken") || !strings.Contains(red.PKCS11.URI, "/lib/p11.so") {
+		t.Errorf("redaction dropped non-secret URI attributes: %q", red.PKCS11.URI)
+	}
+	if !strings.Contains(red.PKCS11.Tokens[0].URI, "SER-1") {
+		t.Errorf("redaction dropped non-secret token URI attributes: %q", red.PKCS11.Tokens[0].URI)
+	}
+}
+
 func marshalYAML(t *testing.T, v any) string {
 	t.Helper()
 	out, err := yaml.Marshal(v)

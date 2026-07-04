@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"crypto/rsa"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -110,17 +111,19 @@ type pooledSession struct {
 	keys   map[string]keyObjects
 }
 
-// keyObjectsFor returns the cached key objects for label on this session,
-// resolving and caching them on first use.
-func (s *pooledSession) keyObjectsFor(ctx *pkcs11.Ctx, label string) (keyObjects, error) {
-	if ko, ok := s.keys[label]; ok {
+// keyObjectsFor returns the cached key objects for the locator on this session,
+// resolving and caching them on first use. The cache is keyed by the locator so a
+// label lookup and an id lookup (or a combined one) are distinct cache entries.
+func (s *pooledSession) keyObjectsFor(ctx *pkcs11.Ctx, loc KeyLocator) (keyObjects, error) {
+	key := loc.cacheKey()
+	if ko, ok := s.keys[key]; ok {
 		return ko, nil
 	}
-	ko, err := findKeyObjects(ctx, s.handle, label)
+	ko, err := findKeyObjects(ctx, s.handle, loc)
 	if err != nil {
 		return keyObjects{}, err
 	}
-	s.keys[label] = ko
+	s.keys[key] = ko
 	return ko, nil
 }
 
@@ -132,8 +135,25 @@ type SessionPool struct {
 	free chan *pooledSession
 	size int
 
+	// identity is the resolved token's actual identity (label/serial/model/
+	// manufacturer/slot-id), captured once at construction. It lets the HA layer
+	// pin an operation to a specific token by serial or slot-id (RFC 7512
+	// addressing) even when the token was configured only by label.
+	identity TokenIdentity
+
 	mu     sync.Mutex
 	closed bool
+}
+
+// TokenIdentity is the actual identity of a resolved PKCS#11 token, as reported
+// by the token itself (not merely what was configured). It backs RFC 7512
+// serial/slot-id/model token addressing.
+type TokenIdentity struct {
+	SlotID       uint
+	Label        string
+	Serial       string
+	Model        string
+	Manufacturer string
 }
 
 // NewSessionPool loads (or reuses) the configured module, opens `size`
@@ -167,11 +187,24 @@ func NewSessionPool(cfg PKCS11Config, size int) (_ *SessionPool, err error) {
 		return nil, err
 	}
 
+	// Capture the resolved token's actual identity so callers (the HA layer) can
+	// pin operations to it by serial/slot-id/model. Best-effort: a token that
+	// refuses GetTokenInfo still yields a usable pool (identity carries only the
+	// slot id).
+	identity := TokenIdentity{SlotID: slotID}
+	if info, terr := ctx.GetTokenInfo(slotID); terr == nil {
+		identity.Label = strings.TrimRight(info.Label, " ")
+		identity.Serial = strings.TrimRight(info.SerialNumber, " ")
+		identity.Model = strings.TrimRight(info.Model, " ")
+		identity.Manufacturer = strings.TrimRight(info.ManufacturerID, " ")
+	}
+
 	p := &SessionPool{
-		cfg:  cfg,
-		ctx:  ctx,
-		free: make(chan *pooledSession, size),
-		size: size,
+		cfg:      cfg,
+		ctx:      ctx,
+		free:     make(chan *pooledSession, size),
+		size:     size,
+		identity: identity,
 	}
 
 	// Open and log in every session up front. Cleanup on partial failure so we
@@ -246,50 +279,79 @@ func (p *SessionPool) borrow(ctx context.Context) (*pooledSession, func(), error
 	}
 }
 
+// Identity returns the resolved token's actual identity (label/serial/model/
+// manufacturer/slot-id). It is populated at construction from the live token.
+func (p *SessionPool) Identity() TokenIdentity { return p.identity }
+
+// ResolvedKey is the public half plus the resolved object's actual identifiers,
+// returned by Resolve so an id-addressed lookup can still report the key's label.
+type ResolvedKey struct {
+	Public  crypto.PublicKey
+	KeyType string
+	IsEdDSA bool
+	Label   string
+	ID      []byte
+}
+
+// Resolve resolves the key matching loc and returns its public half and actual
+// identifiers, borrowing a session for the lookup.
+func (p *SessionPool) Resolve(ctx context.Context, loc KeyLocator) (ResolvedKey, error) {
+	s, release, err := p.borrow(ctx)
+	if err != nil {
+		return ResolvedKey{}, err
+	}
+	defer release()
+	ko, err := s.keyObjectsFor(p.ctx, loc)
+	if err != nil {
+		return ResolvedKey{}, err
+	}
+	return ResolvedKey{Public: ko.pubKey, KeyType: ko.keyType, IsEdDSA: ko.isEdDSA, Label: ko.label, ID: ko.id}, nil
+}
+
 // PublicKey resolves and returns the public key, canonical SSH key-type name,
-// and whether the key is Ed25519, for the labeled key.
-func (p *SessionPool) PublicKey(ctx context.Context, label string) (crypto.PublicKey, string, bool, error) {
+// and whether the key is Ed25519, for the key matching loc.
+func (p *SessionPool) PublicKey(ctx context.Context, loc KeyLocator) (crypto.PublicKey, string, bool, error) {
 	s, release, err := p.borrow(ctx)
 	if err != nil {
 		return nil, "", false, err
 	}
 	defer release()
-	ko, err := s.keyObjectsFor(p.ctx, label)
+	ko, err := s.keyObjectsFor(p.ctx, loc)
 	if err != nil {
 		return nil, "", false, err
 	}
 	return ko.pubKey, ko.keyType, ko.isEdDSA, nil
 }
 
-// Sign performs an on-device signing operation for the labeled key, borrowing a
-// session for the duration of the call.
-func (p *SessionPool) Sign(ctx context.Context, label string, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+// Sign performs an on-device signing operation for the key matching loc,
+// borrowing a session for the duration of the call.
+func (p *SessionPool) Sign(ctx context.Context, loc KeyLocator, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
 	s, release, err := p.borrow(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	ko, err := s.keyObjectsFor(p.ctx, label)
+	ko, err := s.keyObjectsFor(p.ctx, loc)
 	if err != nil {
 		return nil, err
 	}
 	return signOnSession(p.ctx, s.handle, ko.priv, ko.pubKey, ko.isEdDSA, digest, opts)
 }
 
-// Decrypt performs an on-device RSA-OAEP unwrap for the labeled KEK, borrowing a
-// session for the duration of the call.
-func (p *SessionPool) Decrypt(ctx context.Context, label string, ciphertext []byte, opts crypto.DecrypterOpts) ([]byte, error) {
+// Decrypt performs an on-device RSA-OAEP unwrap for the KEK matching loc,
+// borrowing a session for the duration of the call.
+func (p *SessionPool) Decrypt(ctx context.Context, loc KeyLocator, ciphertext []byte, opts crypto.DecrypterOpts) ([]byte, error) {
 	s, release, err := p.borrow(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	ko, err := s.keyObjectsFor(p.ctx, label)
+	ko, err := s.keyObjectsFor(p.ctx, loc)
 	if err != nil {
 		return nil, err
 	}
 	if _, ok := ko.pubKey.(*rsa.PublicKey); !ok {
-		return nil, fmt.Errorf("pkcs11 decrypt: key %q is not RSA (type %T)", label, ko.pubKey)
+		return nil, fmt.Errorf("pkcs11 decrypt: key %s is not RSA (type %T)", loc.Describe(), ko.pubKey)
 	}
 	if _, ok := opts.(*rsa.PKCS1v15DecryptOptions); ok {
 		return decryptPKCS1v15OnSession(p.ctx, s.handle, ko.priv, ciphertext)

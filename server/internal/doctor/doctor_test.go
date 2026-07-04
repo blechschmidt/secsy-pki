@@ -312,6 +312,52 @@ func TestDoctorHealthyDeployment(t *testing.T) {
 	}
 }
 
+func TestDoctorPKCS11URIs(t *testing.T) {
+	cases := []struct {
+		name       string
+		extra      string
+		want       doctor.Status
+		wantDetail string
+	}{
+		{
+			name:  "none configured",
+			extra: "",
+			want:  doctor.StatusSkip,
+		},
+		{
+			name:  "valid module uri",
+			extra: "pkcs11:\n  uri: \"pkcs11:token=softtoken?module-path=/usr/lib/p11.so\"\n",
+			want:  doctor.StatusPass,
+		},
+		{
+			name:       "malformed uri fails",
+			extra:      "pkcs11:\n  uri: \"pkcs11:type=bogus\"\n",
+			want:       doctor.StatusFail,
+			wantDetail: "malformed",
+		},
+		{
+			name:       "plaintext pin-value warns",
+			extra:      "pkcs11:\n  uri: \"pkcs11:token=t?module-path=/usr/lib/p11.so&pin-value=1234\"\n",
+			want:       doctor.StatusWarn,
+			wantDetail: "pin-value",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, tc.extra)
+			r := f.run(t, doctor.Options{})
+			c := assertStatus(t, r, "pkcs11.uris", tc.want)
+			if tc.wantDetail != "" && !strings.Contains(c.Detail, tc.wantDetail) {
+				t.Errorf("pkcs11.uris detail = %q, want containing %q", c.Detail, tc.wantDetail)
+			}
+			// A plaintext pin-value in config must never appear in the report detail.
+			if strings.Contains(c.Detail, "1234") {
+				t.Errorf("pkcs11.uris detail leaked a pin-value: %q", c.Detail)
+			}
+		})
+	}
+}
+
 func TestDoctorConfigParseFailure(t *testing.T) {
 	isolateEnv(t)
 	dir := t.TempDir()

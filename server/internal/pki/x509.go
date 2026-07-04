@@ -103,20 +103,24 @@ func SignX509Certificate(signer crypto.Signer, csrPEM []byte, validBefore time.T
 	return certPEM, serial.String(), nil
 }
 
-// ExtractKeyLabel returns the object= label from a PKCS#11 URI (RFC 7512), or
-// the empty string if the URI has no object attribute. It also accepts the
-// software provider's "software:<label>" URIs.
+// ExtractKeyLabel returns the object= label (CKA_LABEL) from a PKCS#11 URI
+// (RFC 7512), percent-decoded, or the empty string if the URI has no object
+// attribute or is not a parseable pkcs11: URI. It also accepts the software
+// provider's "software:<label>" URIs.
+//
+// It is retained for callers that only need the label. Callers that must also
+// honor CKA_ID, token serial, or slot-id addressing should parse the full URI
+// with ParsePKCS11URI (or go through keyprovider.KeyRefFromURI), which this
+// helper now delegates to.
 func ExtractKeyLabel(uri string) string {
-	if strings.HasPrefix(uri, "software:") {
-		return strings.TrimPrefix(uri, "software:")
+	if rest, ok := strings.CutPrefix(uri, "software:"); ok {
+		return rest
 	}
-	uri = strings.TrimPrefix(uri, "pkcs11:")
-	for _, part := range strings.Split(uri, ";") {
-		if strings.HasPrefix(part, "object=") {
-			return strings.TrimPrefix(part, "object=")
-		}
+	u, err := ParsePKCS11URI(uri)
+	if err != nil {
+		return ""
 	}
-	return ""
+	return u.Object
 }
 
 // ParseSANs extracts DNS names, IPs, and emails from a comma-separated list.
