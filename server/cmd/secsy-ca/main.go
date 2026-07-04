@@ -229,6 +229,8 @@ func run(args []string) error {
 		return cmdList(db)
 	case "issue":
 		return cmdIssue(db, mgr, cmdArgs)
+	case "issue-bulk":
+		return cmdIssueBulk(db, mgr, cmdArgs)
 	case "export-p12":
 		return cmdExportP12(db, mgr, provider, cfg, cmdArgs)
 	case "renew":
@@ -372,6 +374,9 @@ Commands:
   list                List configured CAs
   version             Print version, Go runtime, and FIPS 140-3 mode
   issue               Sign a CSR into an end-entity certificate (by profile)
+  issue-bulk          Mass-issue certificates from a manifest for fleet
+                      provisioning (dry-run preview, confirm-count, bounded
+                      concurrency, per-item results)
   export-p12          Generate a subject key + issue a leaf, and export a
                       password-protected PKCS#12 (.p12/.pfx) bundle (key + leaf +
                       chain); optionally escrow the subject key (M-of-N)

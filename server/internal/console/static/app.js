@@ -1221,6 +1221,106 @@ $('issueBtn').onclick = async () => {
   } finally { $('issueBtn').disabled = false; }
 };
 
+// ---- Bulk / batch issuance (Task 101, fleet provisioning) -----------------
+// Same two-phase confirm-the-count contract as bulk revocation: Preview posts
+// {dry_run:true} and renders the per-item plan; Execute is armed only while the
+// typed count equals the previewed item count and echoes it as confirm_count.
+// Each item is issued independently — the result carries a per-item status
+// (issued / pending-for-approval / failed) so a partial failure is visible.
+let bulkIssuePlan = null;
+
+function parseBulkIssueItems() {
+  const raw = $('bulkIssueItems').value.trim();
+  if (!raw) throw new Error('Paste a JSON array of items first.');
+  let items;
+  try { items = JSON.parse(raw); }
+  catch (e) { throw new Error('Items is not valid JSON: ' + e.message); }
+  if (!Array.isArray(items) || items.length === 0) throw new Error('Items must be a non-empty JSON array.');
+  return items;
+}
+
+function resetBulkIssuePlan() {
+  bulkIssuePlan = null;
+  $('bulkIssuePlanBox').classList.add('hidden');
+  $('bulkIssueResultBox').classList.add('hidden');
+  $('bulkIssueError').classList.add('hidden');
+  $('bulkIssueConfirmCount').value = '';
+  $('bulkIssueExecute').disabled = true;
+  $('bulkIssueProgress').textContent = '';
+}
+$('issueCA').addEventListener('change', resetBulkIssuePlan);
+
+$('bulkIssuePreview').onclick = async () => {
+  const id = $('issueCA').value;
+  if (!id) { showError($('bulkIssueError'), 'Select a CA first.'); return; }
+  resetBulkIssuePlan();
+  $('bulkIssuePreview').disabled = true;
+  try {
+    const items = parseBulkIssueItems();
+    bulkIssuePlan = await api('POST', `/api/ca/${id}/certificates:bulk`, { dry_run: true, items });
+    const p = bulkIssuePlan;
+    const bits = [`<b>${p.valid}</b> of ${p.requested} item(s) will be issued`];
+    if (p.need_approval) bits.push(`${p.need_approval} require manual approval and will be parked (fetch from Approvals once signed off)`);
+    if (p.invalid) bits.push(`<span class="badge fail">${p.invalid} invalid</span> and will not be issued`);
+    $('bulkIssuePlanSummary').innerHTML = bits.join('<br>');
+    $('bulkIssuePlanRows').innerHTML = (p.items || []).map(it => `
+      <tr>
+        <td>${escapeHTML(it.ref)}</td>
+        <td>${it.valid ? escapeHTML(it.subject || (it.sans || []).join(', ')) : '<span class="muted">' + escapeHTML(it.error || '') + '</span>'}</td>
+        <td>${escapeHTML(it.profile || '')}</td>
+        <td>${it.valid ? (it.requires_approval ? '<span class="badge warn">needs approval</span>' : '<span class="badge ok">ready</span>') : '<span class="badge fail">invalid</span>'}</td>
+      </tr>`).join('') || emptyRow('No items.');
+    $('bulkIssueExpectedCount').textContent = p.requested;
+    $('bulkIssuePlanBox').classList.remove('hidden');
+  } catch (e) { showError($('bulkIssueError'), e.message); }
+  finally { $('bulkIssuePreview').disabled = false; }
+};
+
+// Arm only while the typed count equals the previewed item count.
+$('bulkIssueConfirmCount').addEventListener('input', () => {
+  const armed = bulkIssuePlan && bulkIssuePlan.requested > 0 &&
+    $('bulkIssueConfirmCount').value.trim() === String(bulkIssuePlan.requested);
+  $('bulkIssueExecute').disabled = !armed;
+});
+
+$('bulkIssueExecute').onclick = async () => {
+  const id = $('issueCA').value;
+  if (!id || !bulkIssuePlan) return;
+  const confirmed = parseInt($('bulkIssueConfirmCount').value.trim(), 10);
+  if (confirmed !== bulkIssuePlan.requested) return;
+  $('bulkIssueExecute').disabled = true;
+  $('bulkIssueProgress').textContent = `Issuing ${bulkIssuePlan.requested} certificate(s)…`;
+  try {
+    const items = parseBulkIssueItems();
+    const result = await api('POST', `/api/ca/${id}/certificates:bulk`, {
+      items, confirm_count: confirmed, operation_id: bulkIssuePlan.operation_id,
+    });
+    $('bulkIssueResultSummary').innerHTML =
+      `Batch complete: <b>${result.issued}</b> issued, ${result.pending} pending approval, `
+      + `${result.failed} failed of ${result.requested} `
+      + `(${Number(result.duration_seconds || 0).toFixed(2)}s, operation <span class="mono">${escapeHTML(result.operation_id)}</span>)`;
+    $('bulkIssueResultRows').innerHTML = (result.items || []).map(it => {
+      let detail = '', badge = 'ok';
+      if (it.status === 'issued') { detail = shortSerial(it.serial); }
+      else if (it.status === 'pending') { detail = `approval ${escapeHTML(it.approval_id)} (needs ${it.required_approvals})`; badge = 'warn'; }
+      else { detail = `[${escapeHTML(it.error_code || '')}] ${escapeHTML(it.error || '')}`; badge = 'fail'; }
+      return `<tr><td>${escapeHTML(it.ref)}</td><td><span class="badge ${badge}">${escapeHTML(it.status)}</span></td><td class="mono">${detail}</td></tr>`;
+    }).join('') || emptyRow('No items.');
+    $('bulkIssueResultBox').classList.remove('hidden');
+    $('bulkIssuePlanBox').classList.add('hidden');
+    bulkIssuePlan = null;
+    if (result.pending > 0) loadApprovals();
+    if (selectedCertCA() === id) loadCerts();
+  } catch (e) {
+    showError($('bulkIssueError'), e.message);
+    $('bulkIssuePlanBox').classList.add('hidden');
+    bulkIssuePlan = null;
+  } finally {
+    $('bulkIssueProgress').textContent = '';
+    $('bulkIssueConfirmCount').value = '';
+  }
+};
+
 // ---- PKCS#12 export view -------------------------------------------------
 // Split a comma-separated input into trimmed, non-empty values.
 function csvList(v) {

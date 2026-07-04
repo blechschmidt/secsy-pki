@@ -79,6 +79,22 @@ const (
 	AuditLogEntryCertFormatX509 AuditLogEntryCertFormat = "x509"
 )
 
+// Defines values for BulkIssueItemResultErrorCode.
+const (
+	GateError       BulkIssueItemResultErrorCode = "gate_error"
+	InvalidRequest  BulkIssueItemResultErrorCode = "invalid_request"
+	IssuanceError   BulkIssueItemResultErrorCode = "issuance_error"
+	QuotaExceeded   BulkIssueItemResultErrorCode = "quota_exceeded"
+	TenantSuspended BulkIssueItemResultErrorCode = "tenant_suspended"
+)
+
+// Defines values for BulkIssueItemResultStatus.
+const (
+	BulkIssueItemResultStatusFailed  BulkIssueItemResultStatus = "failed"
+	BulkIssueItemResultStatusIssued  BulkIssueItemResultStatus = "issued"
+	BulkIssueItemResultStatusPending BulkIssueItemResultStatus = "pending"
+)
+
 // Defines values for CAStatus.
 const (
 	CAStatusActive     CAStatus = "active"
@@ -365,10 +381,10 @@ const (
 
 // Defines values for ListIssuedCertificatesParamsStatus.
 const (
-	Expired ListIssuedCertificatesParamsStatus = "expired"
-	Held    ListIssuedCertificatesParamsStatus = "held"
-	Revoked ListIssuedCertificatesParamsStatus = "revoked"
-	Valid   ListIssuedCertificatesParamsStatus = "valid"
+	ListIssuedCertificatesParamsStatusExpired ListIssuedCertificatesParamsStatus = "expired"
+	ListIssuedCertificatesParamsStatusHeld    ListIssuedCertificatesParamsStatus = "held"
+	ListIssuedCertificatesParamsStatusRevoked ListIssuedCertificatesParamsStatus = "revoked"
+	ListIssuedCertificatesParamsStatusValid   ListIssuedCertificatesParamsStatus = "valid"
 )
 
 // Defines values for ListSCTInclusionParamsStatus.
@@ -719,6 +735,140 @@ type AuthConfig struct {
 
 	// WebauthnEnabled WebAuthn/passkey step-up is configured for high-risk operations.
 	WebauthnEnabled *bool `json:"webauthn_enabled,omitempty"`
+}
+
+// BulkIssueConflict confirm_count did not equal the number of items; nothing was issued.
+type BulkIssueConflict struct {
+	ActualCount  *int    `json:"actual_count,omitempty"`
+	ConfirmCount *int    `json:"confirm_count,omitempty"`
+	Error        *string `json:"error,omitempty"`
+}
+
+// BulkIssueItemRequest One certificate request in a batch-issuance body (Task 101).
+type BulkIssueItemRequest struct {
+	// Csr PEM-encoded PKCS#10 certificate signing request.
+	Csr string `json:"csr"`
+
+	// Profile Certificate profile name (empty = default profile).
+	Profile *string `json:"profile,omitempty"`
+
+	// Ref Opaque client correlation reference echoed back in the item's result (defaults to the item's zero-based index).
+	Ref *string `json:"ref,omitempty"`
+
+	// ValidityDays Override the profile default validity (0 = profile default).
+	ValidityDays *int `json:"validity_days,omitempty"`
+}
+
+// BulkIssueItemResult Per-item outcome of a batch issuance. Exactly one field group is populated per status (issued | pending | failed).
+type BulkIssueItemResult struct {
+	// ApprovalId Pending only — the parked four-eyes approval to fetch the certificate from.
+	ApprovalId *string `json:"approval_id,omitempty"`
+
+	// ApprovalsCount Pending only.
+	ApprovalsCount *int `json:"approvals_count,omitempty"`
+
+	// Certificate PEM leaf (issued only).
+	Certificate *string `json:"certificate,omitempty"`
+
+	// Chain PEM leaf + issuer (issued only).
+	Chain *string `json:"chain,omitempty"`
+
+	// Error Failed only.
+	Error *string `json:"error,omitempty"`
+
+	// ErrorCode Failed only — structured class (invalid_request | quota_exceeded | tenant_suspended | gate_error | issuance_error).
+	ErrorCode *BulkIssueItemResultErrorCode `json:"error_code,omitempty"`
+	Index     *int                          `json:"index,omitempty"`
+
+	// NotAfter Issued only.
+	NotAfter *time.Time `json:"not_after,omitempty"`
+
+	// NotBefore Issued only.
+	NotBefore *time.Time `json:"not_before,omitempty"`
+	Profile   *string    `json:"profile,omitempty"`
+	Ref       *string    `json:"ref,omitempty"`
+
+	// RequiredApprovals Pending only.
+	RequiredApprovals *int `json:"required_approvals,omitempty"`
+
+	// Serial Issued only.
+	Serial *string                    `json:"serial,omitempty"`
+	Status *BulkIssueItemResultStatus `json:"status,omitempty"`
+}
+
+// BulkIssueItemResultErrorCode Failed only — structured class (invalid_request | quota_exceeded | tenant_suspended | gate_error | issuance_error).
+type BulkIssueItemResultErrorCode string
+
+// BulkIssueItemResultStatus defines model for BulkIssueItemResult.Status.
+type BulkIssueItemResultStatus string
+
+// BulkIssuePlan Dry-run preview of a batch issuance.
+type BulkIssuePlan struct {
+	CaId    *string `json:"ca_id,omitempty"`
+	CaLabel *string `json:"ca_label,omitempty"`
+
+	// Invalid Malformed items that would not be issued.
+	Invalid *int                    `json:"invalid,omitempty"`
+	Items   *[]BulkIssuePreviewItem `json:"items,omitempty"`
+
+	// NeedApproval Valid items whose profile requires manual approval.
+	NeedApproval *int    `json:"need_approval,omitempty"`
+	OperationId  *string `json:"operation_id,omitempty"`
+
+	// Requested Item count (the number to confirm).
+	Requested *int `json:"requested,omitempty"`
+
+	// Valid Well-formed items that would be issued.
+	Valid *int `json:"valid,omitempty"`
+}
+
+// BulkIssuePreviewItem defines model for BulkIssuePreviewItem.
+type BulkIssuePreviewItem struct {
+	// Error Why the item is invalid (when valid is false).
+	Error   *string `json:"error,omitempty"`
+	Index   *int    `json:"index,omitempty"`
+	Profile *string `json:"profile,omitempty"`
+	Ref     *string `json:"ref,omitempty"`
+
+	// RequiresApproval The item's profile is configured to require manual four-eyes approval.
+	RequiresApproval *bool     `json:"requires_approval,omitempty"`
+	Sans             *[]string `json:"sans,omitempty"`
+	Subject          *string   `json:"subject,omitempty"`
+
+	// Valid The CSR parsed and the profile resolved.
+	Valid *bool `json:"valid,omitempty"`
+}
+
+// BulkIssueRequest Body of POST /api/ca/{id}/certificates:bulk. Each item is issued independently; a per-item failure never aborts the batch, and an item whose profile requires manual approval is parked (pending).
+type BulkIssueRequest struct {
+	// Concurrency Items issued in parallel (bounded server-side; 0 = default).
+	Concurrency *int `json:"concurrency,omitempty"`
+
+	// ConfirmCount Operator-confirmed item count (required unless dry_run). Must equal the number of items exactly (409 otherwise) — the guard against accidental mass issuance.
+	ConfirmCount *int `json:"confirm_count,omitempty"`
+
+	// DryRun Validate each item and return the plan without issuing or parking anything.
+	DryRun *bool `json:"dry_run,omitempty"`
+
+	// Items The certificate requests (at least one; count bounded server-side).
+	Items []BulkIssueItemRequest `json:"items"`
+
+	// OperationId Correlates the per-item audit events with the summary event (generated when empty).
+	OperationId *string `json:"operation_id,omitempty"`
+}
+
+// BulkIssueResult Outcome of an executed batch issuance (partial success).
+type BulkIssueResult struct {
+	CaId            *string                `json:"ca_id,omitempty"`
+	DurationSeconds *float32               `json:"duration_seconds,omitempty"`
+	Failed          *int                   `json:"failed,omitempty"`
+	Issued          *int                   `json:"issued,omitempty"`
+	Items           *[]BulkIssueItemResult `json:"items,omitempty"`
+	OperationId     *string                `json:"operation_id,omitempty"`
+
+	// Pending Items parked for manual approval.
+	Pending   *int `json:"pending,omitempty"`
+	Requested *int `json:"requested,omitempty"`
 }
 
 // BulkRevokeConflict confirm_count did not match the live selection; nothing was revoked.
@@ -2691,6 +2841,9 @@ type CreateExternalCACSRJSONRequestBody = CAExternalCSRRequest
 // InitRootCAJSONRequestBody defines body for InitRootCA for application/json ContentType.
 type InitRootCAJSONRequestBody = CAInitRootRequest
 
+// BulkIssueCertificatesJSONRequestBody defines body for BulkIssueCertificates for application/json ContentType.
+type BulkIssueCertificatesJSONRequestBody = BulkIssueRequest
+
 // CreateCrossSignJSONRequestBody defines body for CreateCrossSign for application/json ContentType.
 type CreateCrossSignJSONRequestBody = CACrossSignRequest
 
@@ -2936,6 +3089,11 @@ type ClientInterface interface {
 
 	// SuspendCertificate request
 	SuspendCertificate(ctx context.Context, id CAId, serial CertSerial, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// BulkIssueCertificatesWithBody request with any body
+	BulkIssueCertificatesWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	BulkIssueCertificates(ctx context.Context, id CAId, body BulkIssueCertificatesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetChain request
 	GetChain(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3568,6 +3726,30 @@ func (c *Client) ReleaseCertificate(ctx context.Context, id CAId, serial CertSer
 
 func (c *Client) SuspendCertificate(ctx context.Context, id CAId, serial CertSerial, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewSuspendCertificateRequest(c.Server, id, serial)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) BulkIssueCertificatesWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewBulkIssueCertificatesRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) BulkIssueCertificates(ctx context.Context, id CAId, body BulkIssueCertificatesJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewBulkIssueCertificatesRequest(c.Server, id, body)
 	if err != nil {
 		return nil, err
 	}
@@ -6240,6 +6422,53 @@ func NewSuspendCertificateRequest(server string, id CAId, serial CertSerial) (*h
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewBulkIssueCertificatesRequest calls the generic BulkIssueCertificates builder with application/json body
+func NewBulkIssueCertificatesRequest(server string, id CAId, body BulkIssueCertificatesJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewBulkIssueCertificatesRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewBulkIssueCertificatesRequestWithBody generates requests for BulkIssueCertificates with any type of body
+func NewBulkIssueCertificatesRequestWithBody(server string, id CAId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/certificates:bulk", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -10783,6 +11012,11 @@ type ClientWithResponsesInterface interface {
 	// SuspendCertificateWithResponse request
 	SuspendCertificateWithResponse(ctx context.Context, id CAId, serial CertSerial, reqEditors ...RequestEditorFn) (*SuspendCertificateResponse, error)
 
+	// BulkIssueCertificatesWithBodyWithResponse request with any body
+	BulkIssueCertificatesWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*BulkIssueCertificatesResponse, error)
+
+	BulkIssueCertificatesWithResponse(ctx context.Context, id CAId, body BulkIssueCertificatesJSONRequestBody, reqEditors ...RequestEditorFn) (*BulkIssueCertificatesResponse, error)
+
 	// GetChainWithResponse request
 	GetChainWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetChainResponse, error)
 
@@ -11550,6 +11784,34 @@ func (r SuspendCertificateResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r SuspendCertificateResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type BulkIssueCertificatesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *struct {
+		union json.RawMessage
+	}
+	JSON400 *BadRequest
+	JSON403 *Forbidden
+	JSON404 *NotFound
+	JSON409 *BulkIssueConflict
+}
+
+// Status returns HTTPResponse.Status
+func (r BulkIssueCertificatesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r BulkIssueCertificatesResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -14145,6 +14407,23 @@ func (c *ClientWithResponses) SuspendCertificateWithResponse(ctx context.Context
 	return ParseSuspendCertificateResponse(rsp)
 }
 
+// BulkIssueCertificatesWithBodyWithResponse request with arbitrary body returning *BulkIssueCertificatesResponse
+func (c *ClientWithResponses) BulkIssueCertificatesWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*BulkIssueCertificatesResponse, error) {
+	rsp, err := c.BulkIssueCertificatesWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseBulkIssueCertificatesResponse(rsp)
+}
+
+func (c *ClientWithResponses) BulkIssueCertificatesWithResponse(ctx context.Context, id CAId, body BulkIssueCertificatesJSONRequestBody, reqEditors ...RequestEditorFn) (*BulkIssueCertificatesResponse, error) {
+	rsp, err := c.BulkIssueCertificates(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseBulkIssueCertificatesResponse(rsp)
+}
+
 // GetChainWithResponse request returning *GetChainResponse
 func (c *ClientWithResponses) GetChainWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetChainResponse, error) {
 	rsp, err := c.GetChain(ctx, id, reqEditors...)
@@ -15888,6 +16167,62 @@ func ParseSuspendCertificateResponse(rsp *http.Response) (*SuspendCertificateRes
 			return nil, err
 		}
 		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseBulkIssueCertificatesResponse parses an HTTP response from a BulkIssueCertificatesWithResponse call
+func ParseBulkIssueCertificatesResponse(rsp *http.Response) (*BulkIssueCertificatesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &BulkIssueCertificatesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest struct {
+			union json.RawMessage
+		}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest BulkIssueConflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
 
 	}
 

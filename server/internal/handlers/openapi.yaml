@@ -1009,6 +1009,55 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/BulkRevokeConflict" }
 
+  /api/ca/{id}/certificates:bulk:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: bulkIssueCertificates
+      tags: [Certificate Lifecycle]
+      summary: Batch-issue certificates (mass provisioning)
+      description: >
+        Batch / bulk issuance for mass device/service provisioning (Task 101),
+        the issuance counterpart of bulk revocation. Accepts an array of
+        independent issue requests (CSR + profile + validity) and issues each
+        under the CA's HSM key with bounded concurrency, returning a per-item
+        result so a partial failure never discards the successes. Every item
+        passes the full per-issuance gate stack individually (lint, CAA, name
+        constraints, certificate policies, the policy-as-code CEL gate, CT, and
+        the tenant lifecycle + daily quota); an item that trips a gate fails
+        only itself, and an item whose profile requires manual approval is
+        parked (status "pending") rather than failing the batch — fetch its
+        certificate later from /api/approvals/{approval_id}/certificate once
+        approvers sign off. A dry_run body validates each item and returns the
+        plan without issuing anything; a real run must set confirm_count to the
+        number of items (guard against accidental mass issuance) and is refused
+        with 409 on a mismatch. Requires the same issue capability as a single
+        POST /issue call (not ca:manage).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BulkIssueRequest" }
+      responses:
+        "200":
+          description: The dry-run plan, or the executed operation's per-item result.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/BulkIssuePlan"
+                  - $ref: "#/components/schemas/BulkIssueResult"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: >
+            confirm_count does not equal the number of items submitted. Nothing
+            was issued; re-confirm the correct count.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BulkIssueConflict" }
+
   /api/ca/{id}/certificates:
     parameters:
       - $ref: "#/components/parameters/CAId"
@@ -3710,6 +3759,118 @@ components:
     BulkRevokeConflict:
       type: object
       description: confirm_count did not match the live selection; nothing was revoked.
+      properties:
+        error: { type: string }
+        confirm_count: { type: integer }
+        actual_count: { type: integer }
+
+    BulkIssueItemRequest:
+      type: object
+      description: One certificate request in a batch-issuance body (Task 101).
+      required: [csr]
+      properties:
+        ref:
+          type: string
+          description: >
+            Opaque client correlation reference echoed back in the item's
+            result (defaults to the item's zero-based index).
+        csr: { type: string, description: PEM-encoded PKCS#10 certificate signing request. }
+        profile: { type: string, description: Certificate profile name (empty = default profile). }
+        validity_days: { type: integer, description: Override the profile default validity (0 = profile default). }
+
+    BulkIssueRequest:
+      type: object
+      description: >
+        Body of POST /api/ca/{id}/certificates:bulk. Each item is issued
+        independently; a per-item failure never aborts the batch, and an item
+        whose profile requires manual approval is parked (pending).
+      required: [items]
+      properties:
+        dry_run: { type: boolean, description: Validate each item and return the plan without issuing or parking anything. }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/BulkIssueItemRequest" }
+          description: The certificate requests (at least one; count bounded server-side).
+        confirm_count:
+          type: integer
+          description: >
+            Operator-confirmed item count (required unless dry_run). Must equal
+            the number of items exactly (409 otherwise) — the guard against
+            accidental mass issuance.
+        operation_id: { type: string, description: Correlates the per-item audit events with the summary event (generated when empty). }
+        concurrency: { type: integer, description: Items issued in parallel (bounded server-side; 0 = default). }
+
+    BulkIssuePreviewItem:
+      type: object
+      properties:
+        ref: { type: string }
+        index: { type: integer }
+        valid: { type: boolean, description: The CSR parsed and the profile resolved. }
+        subject: { type: string }
+        sans: { type: array, items: { type: string } }
+        profile: { type: string }
+        requires_approval: { type: boolean, description: The item's profile is configured to require manual four-eyes approval. }
+        error: { type: string, description: Why the item is invalid (when valid is false). }
+
+    BulkIssuePlan:
+      type: object
+      description: Dry-run preview of a batch issuance.
+      properties:
+        operation_id: { type: string }
+        ca_id: { type: string }
+        ca_label: { type: string }
+        requested: { type: integer, description: Item count (the number to confirm). }
+        valid: { type: integer, description: Well-formed items that would be issued. }
+        invalid: { type: integer, description: Malformed items that would not be issued. }
+        need_approval: { type: integer, description: Valid items whose profile requires manual approval. }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/BulkIssuePreviewItem" }
+
+    BulkIssueItemResult:
+      type: object
+      description: >
+        Per-item outcome of a batch issuance. Exactly one field group is
+        populated per status (issued | pending | failed).
+      properties:
+        ref: { type: string }
+        index: { type: integer }
+        status: { type: string, enum: [issued, pending, failed] }
+        profile: { type: string }
+        serial: { type: string, description: Issued only. }
+        not_before: { type: string, format: date-time, description: Issued only. }
+        not_after: { type: string, format: date-time, description: Issued only. }
+        certificate: { type: string, description: PEM leaf (issued only). }
+        chain: { type: string, description: PEM leaf + issuer (issued only). }
+        approval_id: { type: string, description: Pending only — the parked four-eyes approval to fetch the certificate from. }
+        required_approvals: { type: integer, description: Pending only. }
+        approvals_count: { type: integer, description: Pending only. }
+        error: { type: string, description: Failed only. }
+        error_code:
+          type: string
+          description: >
+            Failed only — structured class (invalid_request | quota_exceeded |
+            tenant_suspended | gate_error | issuance_error).
+          enum: [invalid_request, quota_exceeded, tenant_suspended, gate_error, issuance_error]
+
+    BulkIssueResult:
+      type: object
+      description: Outcome of an executed batch issuance (partial success).
+      properties:
+        operation_id: { type: string }
+        ca_id: { type: string }
+        requested: { type: integer }
+        issued: { type: integer }
+        pending: { type: integer, description: Items parked for manual approval. }
+        failed: { type: integer }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/BulkIssueItemResult" }
+        duration_seconds: { type: number }
+
+    BulkIssueConflict:
+      type: object
+      description: confirm_count did not equal the number of items; nothing was issued.
       properties:
         error: { type: string }
         confirm_count: { type: integer }

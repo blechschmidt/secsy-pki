@@ -266,6 +266,28 @@ var (
 		"End-to-end duration of bulk-revocation operations in seconds.",
 		BatchBuckets)
 
+	// Batch / bulk issuance (Task 101, mass device/service provisioning).
+	// IssuanceBulk counts batch-issuance operations by result (success|error|
+	// denied); a "success" is a completed operation regardless of how many of its
+	// items individually failed. Like bulk revocation, batch items are tracked on
+	// this dedicated pair rather than the per-operation secsy_certificates_total
+	// counter: IssuanceBulkCertificates counts the certificates actually issued
+	// across these operations (excludes items parked for approval or failed).
+	// IssuanceBulkDuration times the whole operation — the approval-gate pass plus
+	// the bounded-concurrency issuance of every item — so operators can size
+	// batches against provisioning windows.
+	IssuanceBulk = NewCounter(Default,
+		"secsy_issuance_bulk_total",
+		"Batch-issuance operations, partitioned by result (success|error).",
+		"result")
+	IssuanceBulkCertificates = NewCounter(Default,
+		"secsy_issuance_bulk_certificates_total",
+		"Certificates issued by batch-issuance operations (excludes parked/failed items).")
+	IssuanceBulkDuration = NewHistogram(Default,
+		"secsy_issuance_bulk_duration_seconds",
+		"End-to-end duration of batch-issuance operations in seconds.",
+		BatchBuckets)
+
 	// RFC 3161 time-stamping. "result" is granted|rejected|error; the token is
 	// signed on the HSM, so this tracks TSA demand and rejection rates.
 	TimestampRequests = NewCounter(Default,

@@ -59,6 +59,13 @@ const (
 	// cert.revoke event carrying the same operation id in its detail, so the
 	// full set is reconstructable from the log.
 	ActionCertRevokeBulk = "cert.revoke_bulk"
+	// ActionCertIssueBulk records the summary of a batch-issuance operation
+	// (Task 101): the operation id and the requested/issued/pending/failed
+	// counts. Each certificate issued by the operation additionally gets its own
+	// cert.issue event carrying the same operation id (bulk_op) in its detail, so
+	// the full set is reconstructable from the log — exactly as bulk revocation
+	// pairs cert.revoke_bulk with per-certificate cert.revoke events.
+	ActionCertIssueBulk = "cert.issue_bulk"
 	// ActionCertSuspend records a reversible certificate hold (RFC 5280
 	// certificateHold, Task 82): the certificate is revoked with reason
 	// certificateHold and can be returned to service with a release.

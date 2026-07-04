@@ -827,6 +827,46 @@ type BulkRevokeRequest struct {
 	BatchSize int `json:"batch_size,omitempty"`
 }
 
+// BulkIssueItemRequest is one certificate request in a batch-issuance body
+// (Task 101). The subject and SANs are taken from the CSR, exactly as in single
+// issuance; ref is an opaque client correlation tag echoed back in the result.
+type BulkIssueItemRequest struct {
+	// Ref is an opaque client-supplied reference echoed back in the item's
+	// result so the caller can match results to requests regardless of ordering.
+	// Empty defaults to the item's zero-based index.
+	Ref string `json:"ref,omitempty"`
+	// CSR is a PEM-encoded PKCS#10 certificate signing request (required).
+	CSR string `json:"csr"`
+	// Profile is the certificate profile name (empty = default profile).
+	Profile string `json:"profile,omitempty"`
+	// ValidityDays overrides the profile default validity (0 = profile default).
+	ValidityDays int `json:"validity_days,omitempty"`
+}
+
+// BulkIssueRequest is the body of POST /api/ca/{id}/certificates:bulk. Every
+// item is issued independently through the full per-issuance gate stack; a
+// per-item failure never aborts the batch, and an item whose profile requires
+// manual approval is parked (reported "pending") rather than failing. The
+// confirm_count guard against accidental mass issuance must equal the number of
+// items unless dry_run.
+type BulkIssueRequest struct {
+	// DryRun validates each item (CSR + profile) and reports what would happen
+	// without issuing or parking anything.
+	DryRun bool `json:"dry_run,omitempty"`
+	// Items are the certificate requests. At least one is required; the count is
+	// bounded server-side (ca.MaxBulkIssueItems).
+	Items []BulkIssueItemRequest `json:"items"`
+	// ConfirmCount is the operator-confirmed item count (required unless
+	// dry_run). It must equal len(items) exactly (409 otherwise).
+	ConfirmCount *int `json:"confirm_count,omitempty"`
+	// OperationID correlates the per-item audit events with the summary event
+	// (optional; generated when empty).
+	OperationID string `json:"operation_id,omitempty"`
+	// Concurrency overrides how many items are issued in parallel (bounded
+	// server-side; 0 = default).
+	Concurrency int `json:"concurrency,omitempty"`
+}
+
 type Group struct {
 	ID string `json:"id" db:"id"`
 	// TenantID scopes the group to a tenant so a group name may be reused across

@@ -168,6 +168,59 @@ leaf, and returns a password-protected `.p12` (key + leaf + full chain), with
 optional M-of-N escrow of the subject key (`secsy-ca export-p12`, `POST
 /api/ca/{id}/pkcs12`).
 
+### Batch issuance (mass provisioning)
+
+For fleet roll-outs, `secsy-ca issue-bulk` / `POST /api/ca/{id}/certificates:bulk`
+issue an array of certificates in one operation — the issuance counterpart of
+`revoke-bulk`. Each item is issued **independently through the same gate stack as
+a single issuance** (lint, CAA, name constraints, certificate policies, the
+policy-as-code CEL gate, CT, tenant lifecycle + daily quota), with bounded
+concurrency over the HSM session pool. Semantics:
+
+- **Partial success.** An item that trips a gate (a lint failure, a CAA denial,
+  an exhausted tenant quota) fails only itself with a structured
+  `error_code` (`invalid_request` | `quota_exceeded` | `tenant_suspended` |
+  `gate_error` | `issuance_error`); the rest of the batch still issues. The
+  response is a per-item result array (`status` = `issued` | `pending` |
+  `failed`).
+- **Approval parking.** An item under a `require_approval` profile (see
+  [approvals](approvals.md)) is **parked** and reported `pending` with an
+  `approval_id` rather than failing the batch; fetch its certificate from
+  `GET /api/approvals/{approval_id}/certificate` once approvers sign off. (The
+  CLI, like `secsy-ca issue`, calls the CA directly and so bypasses the manual
+  gate.)
+- **Confirm-count guard.** A `dry_run` validates every item and returns the
+  plan; a real run must set `confirm_count` to the number of items (a mismatch is
+  refused with 409), guarding against an accidentally doubled input. One
+  `cert.issue` audit event is written per issued item, plus one `cert.issue_bulk`
+  summary tying them together by operation id.
+
+Unlike bulk *revocation* (a CA-management, `ca:manage` operation), bulk issuance
+requires only the ordinary **issue** capability, so a provisioning service
+account can drive it.
+
+CLI — a JSON manifest of `{ref, csr, profile, validity_days}` items (the `csr`
+paths are resolved relative to the manifest):
+
+```bash
+secsy-ca -config config.yaml issue-bulk \
+  -ca "Issuing CA" \
+  -manifest fleet.json \
+  -out-dir ./issued \
+  -confirm 200          # must equal the item count (or -dry-run to preview)
+```
+
+API — an array of `{ref, csr, profile, validity_days}` items:
+
+```bash
+curl -sk -u root:password -X POST \
+  https://localhost:8443/api/ca/{ca_id}/certificates:bulk \
+  -H 'Content-Type: application/json' \
+  -d '{"confirm_count":2,"items":[
+        {"ref":"dev-1","csr":"-----BEGIN CERTIFICATE REQUEST-----\n...","profile":"server"},
+        {"ref":"dev-2","csr":"-----BEGIN CERTIFICATE REQUEST-----\n...","profile":"server"}]}'
+```
+
 ## 5. Renew a certificate
 
 Renewal issues a fresh certificate (new serial, new validity window) for an

@@ -533,6 +533,75 @@ func TestConsoleFlow(t *testing.T) {
 		}
 	})
 
+	// --- 8c. Bulk / batch issuance (Task 101): the console's fleet-provisioning
+	// panel drives the dry-run → confirm-count → execute contract through the real
+	// route table (proving the "certificates:bulk" pattern) against the HSM, with
+	// per-item results and partial success.
+	t.Run("BulkIssue", func(t *testing.T) {
+		items := []map[string]any{
+			{"ref": "fleet-1", "csr": string(makeCSR(t, "fleet-1.example.com", []string{"fleet-1.example.com"})), "profile": "server"},
+			{"ref": "fleet-2", "csr": string(makeCSR(t, "fleet-2.example.com", []string{"fleet-2.example.com"})), "profile": "server"},
+			{"ref": "bad", "csr": "not a csr", "profile": "server"},
+		}
+
+		// Dry run: two well-formed items, one malformed.
+		status, body := env.req(t, "POST", "/api/ca/"+env.interID+"/certificates:bulk", map[string]any{
+			"dry_run": true, "items": items,
+		})
+		if status != http.StatusOK {
+			t.Fatalf("bulk issue dry run = %d: %s", status, body)
+		}
+		var plan struct {
+			OperationID string `json:"operation_id"`
+			Requested   int    `json:"requested"`
+			Valid       int    `json:"valid"`
+			Invalid     int    `json:"invalid"`
+		}
+		if err := json.Unmarshal(body, &plan); err != nil {
+			t.Fatalf("decode plan: %v", err)
+		}
+		if plan.Requested != 3 || plan.Valid != 2 || plan.Invalid != 1 {
+			t.Fatalf("plan = requested %d valid %d invalid %d, want 3/2/1: %s", plan.Requested, plan.Valid, plan.Invalid, body)
+		}
+
+		// A wrong confirm count is refused with 409 and no side effects.
+		status, body = env.req(t, "POST", "/api/ca/"+env.interID+"/certificates:bulk", map[string]any{
+			"items": items, "confirm_count": 2,
+		})
+		if status != http.StatusConflict {
+			t.Fatalf("wrong confirm = %d: %s, want 409", status, body)
+		}
+
+		// The confirmed batch issues the two valid items and reports the third
+		// failed — partial success, HTTP 200.
+		status, body = env.req(t, "POST", "/api/ca/"+env.interID+"/certificates:bulk", map[string]any{
+			"items": items, "confirm_count": 3, "operation_id": plan.OperationID,
+		})
+		if status != http.StatusOK {
+			t.Fatalf("bulk issue execute = %d: %s", status, body)
+		}
+		var result struct {
+			Issued int `json:"issued"`
+			Failed int `json:"failed"`
+			Items  []struct {
+				Ref, Status, Serial, Certificate string
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			t.Fatalf("decode result: %v", err)
+		}
+		if result.Issued != 2 || result.Failed != 1 {
+			t.Fatalf("bulk issue result = issued %d failed %d, want 2/1: %s", result.Issued, result.Failed, body)
+		}
+		for _, it := range result.Items {
+			if it.Status == "issued" {
+				if it.Serial == "" || !strings.Contains(it.Certificate, "BEGIN CERTIFICATE") {
+					t.Errorf("issued item %s missing serial/cert", it.Ref)
+				}
+			}
+		}
+	})
+
 	// --- 9. Certificate inventory (Inventory view): JSON + CSV export. ---
 	t.Run("Inventory", func(t *testing.T) {
 		if serial == "" {

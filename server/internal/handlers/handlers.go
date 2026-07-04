@@ -388,6 +388,12 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	// the public rate-limit classes and tenant quota gates: mass revocation
 	// must never be throttled during the CA/B 24-hour response window.
 	mux.Handle("POST /api/ca/{id}/revocations:bulk", protectStepUp("cert.revoke_bulk", http.HandlerFunc(a.BulkRevokeCertificates)))
+	// Batch / bulk issuance for mass device/service provisioning (Task 101).
+	// Unlike bulk revocation, this requires only the issue capability (each item
+	// passes the same gates as a single /issue call); the confirm-count guard and
+	// the per-profile approval gate protect against accidental mass issuance. It
+	// is step-up eligible (inert unless declared) but never requires ca:manage.
+	mux.Handle("POST /api/ca/{id}/certificates:bulk", protectStepUp("cert.issue_bulk", http.HandlerFunc(a.BulkIssueCertificates)))
 	mux.Handle("GET /api/ca/{id}/certificates", protected(http.HandlerFunc(a.ListIssuedCertificates)))
 	mux.Handle("GET /api/ca/{id}/revoked", protected(http.HandlerFunc(a.ListRevokedCertificates)))
 	// Reversible certificate suspend (RFC 5280 certificateHold) and release
