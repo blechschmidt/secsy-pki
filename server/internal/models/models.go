@@ -684,6 +684,11 @@ type IssueCertRequest struct {
 	// per-request block is the natural home for this data because a payment
 	// institution's roles and authorizing NCA differ per certificate.
 	PSD2 *PSD2QCStatement `json:"psd2,omitempty"`
+	// PrivateKeyUsagePeriod optionally overrides the profile's RFC 5280
+	// id-ce-privateKeyUsagePeriod window (Task 132) for this certificate. Honored
+	// only under a profile whose private_key_usage_period block permits overrides
+	// (allow_override); on any other profile it is rejected.
+	PrivateKeyUsagePeriod *PrivateKeyUsagePeriod `json:"private_key_usage_period,omitempty"`
 }
 
 // PSD2QCStatement is the per-request ETSI TS 119 495 PSD2 QcStatement content:
@@ -696,6 +701,21 @@ type PSD2QCStatement struct {
 	Roles   []string `json:"roles,omitempty"`
 	NCAName string   `json:"nca_name,omitempty"`
 	NCAID   string   `json:"nca_id,omitempty"`
+}
+
+// PrivateKeyUsagePeriod is a per-request override of a profile's RFC 5280 §4.2.1
+// private-key usage period (id-ce-privateKeyUsagePeriod, OID 2.5.29.16): the
+// window during which the certified private key may be used to produce
+// signatures. It is honored only under a profile whose private_key_usage_period
+// block permits per-request overrides (allow_override); on any other profile it
+// is rejected. Supply exactly one form: a Duration (the window length from the
+// certificate's notBefore, e.g. "365d" or "8760h") or explicit absolute RFC 3339
+// instants in NotBefore/NotAfter. The resolved window is always clamped to the
+// certificate's own validity.
+type PrivateKeyUsagePeriod struct {
+	Duration  string `json:"duration,omitempty"`
+	NotBefore string `json:"not_before,omitempty"`
+	NotAfter  string `json:"not_after,omitempty"`
 }
 
 // PreviewCertRequest asks a CA to validate a would-be issuance through the full
@@ -725,6 +745,10 @@ type PreviewCertRequest struct {
 	// QCStatements extension (Task 128), previewed through the same QC resolution
 	// the issuance path enforces.
 	PSD2 *PSD2QCStatement `json:"psd2,omitempty"`
+	// PrivateKeyUsagePeriod optionally overrides the profile's RFC 5280
+	// id-ce-privateKeyUsagePeriod window (Task 132), previewed through the same
+	// resolution the issuance path enforces.
+	PrivateKeyUsagePeriod *PrivateKeyUsagePeriod `json:"private_key_usage_period,omitempty"`
 }
 
 // IssueCertResponse returns a freshly issued end-entity certificate.

@@ -3824,6 +3824,31 @@ components:
             extension (id-pe-qcStatements, ETSI EN 319 412-5; Task 128). Honored
             only under a QC-enabled profile that permits per-request PSD2 overrides
             (qcstatements.allow_psd2_override); rejected otherwise.
+        private_key_usage_period:
+          $ref: "#/components/schemas/PrivateKeyUsagePeriod"
+          description: >-
+            Optional per-request override of the profile's RFC 5280
+            id-ce-privateKeyUsagePeriod window (2.5.29.16; Task 132). Honored only
+            under a profile whose private_key_usage_period block permits overrides
+            (allow_override); rejected otherwise.
+
+    PrivateKeyUsagePeriod:
+      type: object
+      description: >-
+        A per-request RFC 5280 §4.2.1 private-key usage period
+        (id-ce-privateKeyUsagePeriod): the window during which the certified
+        private key may be used to produce signatures, which can be narrower than
+        the certificate's validity. Supply exactly one form — a duration (the
+        window length from the certificate notBefore) or explicit absolute RFC 3339
+        instants. The resolved window is always clamped to the certificate validity.
+      properties:
+        duration:
+          type: string
+          description: >-
+            Usage-period length from the certificate notBefore, as a flexible
+            duration (e.g. "365d", "52w", "8760h", "1y").
+        not_before: { type: string, description: "Explicit usage-period notBefore (RFC 3339)" }
+        not_after: { type: string, description: "Explicit usage-period notAfter (RFC 3339)" }
 
     PSD2QCStatement:
       type: object
@@ -3894,6 +3919,12 @@ components:
             Optional ETSI TS 119 495 PSD2 authorization for the eIDAS QCStatements
             extension (Task 128), previewed through the same QC resolution the
             issuance path enforces.
+        private_key_usage_period:
+          $ref: "#/components/schemas/PrivateKeyUsagePeriod"
+          description: >-
+            Optional per-request override of the profile's RFC 5280
+            id-ce-privateKeyUsagePeriod window (Task 132), previewed through the
+            same resolution the issuance path enforces.
 
     PreviewGate:
       type: object

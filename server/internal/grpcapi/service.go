@@ -85,14 +85,15 @@ func (s *service) IssueCertificate(ctx context.Context, req *pkiv1.IssueCertific
 	mgr := s.newManager()
 	s.api.ConsumeHSMAuditLogs("")
 	result, err := mgr.IssueCertificate(ctx, ca.IssueSpec{
-		CAID:        caID,
-		CSRPEM:      []byte(req.GetCsrPem()),
-		Profile:     req.GetProfile(),
-		Validity:    daysToDuration(s.api.CapValidityDays(int(req.GetValidityDays()))),
-		RequestedBy: user.Subject,
-		MustStaple:  req.MustStaple,
-		UPNs:        req.GetUpns(),
-		PSD2:        psd2FromGRPC(req.GetPsd2()),
+		CAID:                  caID,
+		CSRPEM:                []byte(req.GetCsrPem()),
+		Profile:               req.GetProfile(),
+		Validity:              daysToDuration(s.api.CapValidityDays(int(req.GetValidityDays()))),
+		RequestedBy:           user.Subject,
+		MustStaple:            req.MustStaple,
+		UPNs:                  req.GetUpns(),
+		PSD2:                  psd2FromGRPC(req.GetPsd2()),
+		PrivateKeyUsagePeriod: pkupFromGRPC(req.GetPrivateKeyUsagePeriod()),
 	})
 	s.api.ConsumeHSMAuditLogs("")
 	metrics.RecordCertificate("issue", err)
@@ -510,14 +511,15 @@ func scopeName(shard int) string {
 // validity gate can report a request that exceeds the profile maximum.
 func previewSpecFromGRPC(caID string, req *pkiv1.PreviewCertificateRequest, user *models.UserInfo) (ca.PreviewSpec, error) {
 	spec := ca.PreviewSpec{
-		CAID:        caID,
-		CSRPEM:      []byte(req.GetCsrPem()),
-		Profile:     req.GetProfile(),
-		Validity:    daysToDuration(int(req.GetValidityDays())),
-		RequestedBy: user.Subject,
-		MustStaple:  req.MustStaple,
-		UPNs:        req.GetUpns(),
-		PSD2:        psd2FromGRPC(req.GetPsd2()),
+		CAID:                  caID,
+		CSRPEM:                []byte(req.GetCsrPem()),
+		Profile:               req.GetProfile(),
+		Validity:              daysToDuration(int(req.GetValidityDays())),
+		RequestedBy:           user.Subject,
+		MustStaple:            req.MustStaple,
+		UPNs:                  req.GetUpns(),
+		PSD2:                  psd2FromGRPC(req.GetPsd2()),
+		PrivateKeyUsagePeriod: pkupFromGRPC(req.GetPrivateKeyUsagePeriod()),
 	}
 	if strings.TrimSpace(req.GetCsrPem()) == "" {
 		spec.Subject = pkix.Name{CommonName: req.GetCommonName()}
@@ -546,6 +548,23 @@ func psd2FromGRPC(p *pkiv1.PSD2QCStatement) *models.PSD2QCStatement {
 		Roles:   p.GetRoles(),
 		NCAName: p.GetNcaName(),
 		NCAID:   p.GetNcaId(),
+	}
+}
+
+// pkupFromGRPC converts the gRPC PrivateKeyUsagePeriod message into the models
+// override consumed by the issuance/preview paths (Task 132), returning nil when
+// no window was supplied (so the CA treats it as absent, not empty).
+func pkupFromGRPC(p *pkiv1.PrivateKeyUsagePeriod) *models.PrivateKeyUsagePeriod {
+	if p == nil {
+		return nil
+	}
+	if p.GetDuration() == "" && p.GetNotBefore() == "" && p.GetNotAfter() == "" {
+		return nil
+	}
+	return &models.PrivateKeyUsagePeriod{
+		Duration:  p.GetDuration(),
+		NotBefore: p.GetNotBefore(),
+		NotAfter:  p.GetNotAfter(),
 	}
 }
 

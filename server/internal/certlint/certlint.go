@@ -70,6 +70,12 @@ const (
 	// one incorrectly marked critical (the standard requires it be non-critical).
 	// Recognizing the extension keeps it from being treated as opaque/unknown.
 	CheckQCStatements = "qcstatements"
+	// CheckPrivateKeyUsagePeriod flags a malformed RFC 5280 §4.2.1
+	// id-ce-privateKeyUsagePeriod extension (one whose value is not a well-formed
+	// SEQUENCE of the optional [0]/[1] GeneralizedTime bounds) or one incorrectly
+	// marked critical (RFC 5280 defines it as non-critical). Recognizing the
+	// extension keeps it from being treated as opaque/unknown.
+	CheckPrivateKeyUsagePeriod = "private_key_usage_period"
 )
 
 const (
@@ -259,6 +265,7 @@ func Lint(cert *x509.Certificate, policy Policy) Result {
 	checkEKUKUConsistency(cert, add)
 	checkTLSFeature(cert, policy, add)
 	checkQCStatements(cert, add)
+	checkPrivateKeyUsagePeriod(cert, add)
 	if policy.Public {
 		checkSAN(cert, add)
 		checkCNInSAN(cert, add)
@@ -476,6 +483,26 @@ func checkQCStatements(cert *x509.Certificate, add adder) {
 	}
 	if _, err := pki.ParseQCStatements(ext.Value); err != nil {
 		add(CheckQCStatements, "id-pe-qcStatements extension value is malformed (expected a SEQUENCE OF QCStatement): %v", err)
+	}
+}
+
+// checkPrivateKeyUsagePeriod validates any RFC 5280 §4.2.1
+// id-ce-privateKeyUsagePeriod extension the certificate carries: it must decode
+// as a well-formed SEQUENCE of the optional [0]/[1] GeneralizedTime bounds (at
+// least one present, notBefore not after notAfter) and, per RFC 5280, must not be
+// marked critical. Recognizing the extension keeps it from being treated as an
+// opaque/unknown extension (and lets the pre-issuance gate reject a corrupt one
+// before signing).
+func checkPrivateKeyUsagePeriod(cert *x509.Certificate, add adder) {
+	ext, present := findExtension(cert, pki.OIDPrivateKeyUsagePeriod)
+	if !present {
+		return
+	}
+	if ext.Critical {
+		add(CheckPrivateKeyUsagePeriod, "id-ce-privateKeyUsagePeriod extension is marked critical; RFC 5280 §4.2.1 defines it as non-critical")
+	}
+	if _, err := pki.ParsePrivateKeyUsagePeriod(ext.Value); err != nil {
+		add(CheckPrivateKeyUsagePeriod, "id-ce-privateKeyUsagePeriod extension value is malformed: %v", err)
 	}
 }
 

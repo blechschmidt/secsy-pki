@@ -73,6 +73,14 @@ type Profile struct {
 	// QcStatement. Nil emits no such extension. See QCStatementsConfig.
 	QCStatements *QCStatementsConfig `json:"qcstatements,omitempty"`
 
+	// PrivateKeyUsagePeriod stamps the RFC 5280 id-ce-privateKeyUsagePeriod
+	// extension (OID 2.5.29.16) on every leaf issued under this profile: the window
+	// during which the certified private key may be used to produce signatures,
+	// which can be narrower than the certificate's own validity. It pairs naturally
+	// with signing profiles (the qualified-* profiles, code-signing). Nil emits no
+	// such extension. See PrivateKeyUsagePeriodConfig.
+	PrivateKeyUsagePeriod *PrivateKeyUsagePeriodConfig `json:"private_key_usage_period,omitempty"`
+
 	// MustStaple stamps the RFC 7633 TLS Feature / OCSP Must-Staple extension
 	// (id-pe-tlsfeature, OID 1.3.6.1.5.5.7.1.24) on every leaf issued under this
 	// profile: a non-critical SEQUENCE OF INTEGER containing status_request(5).
@@ -338,6 +346,12 @@ var builtinProfiles = map[string]Profile{
 			Type:       "esign",
 			SSCD:       true,
 		},
+		// A qualified electronic-signature key is the classic case for an RFC 5280
+		// private-key usage period (the signing key retires before the certificate
+		// expires while signatures it already made stay verifiable). No default
+		// window is imposed — the deployment supplies one per request (-pkup) where
+		// its policy requires it (Task 132).
+		PrivateKeyUsagePeriod: &PrivateKeyUsagePeriodConfig{AllowOverride: true},
 	},
 	// qualified-eseal is a Qualified Certificate for Electronic Seal (legal
 	// person): the same shape as qualified-esign with QcType=eseal.
@@ -352,6 +366,8 @@ var builtinProfiles = map[string]Profile{
 			Type:       "eseal",
 			SSCD:       true,
 		},
+		// Per-request private-key usage period, as for qualified-esign (Task 132).
+		PrivateKeyUsagePeriod: &PrivateKeyUsagePeriodConfig{AllowOverride: true},
 	},
 	// qualified-web is a Qualified Website Authentication Certificate (QWAC): a
 	// TLS serverAuth leaf asserting QcCompliance and QcType=web. It permits a
@@ -441,6 +457,11 @@ func SetCustomProfiles(profiles []Profile) error {
 		}
 		if p.QCStatements != nil {
 			if err := p.QCStatements.validate(p.Name); err != nil {
+				return err
+			}
+		}
+		if p.PrivateKeyUsagePeriod != nil {
+			if err := p.PrivateKeyUsagePeriod.validate(p.Name); err != nil {
 				return err
 			}
 		}

@@ -1709,8 +1709,11 @@ type IssueCertRequest struct {
 	Csr string `json:"csr"`
 
 	// MustStaple Optional per-request override of the profile's RFC 7633 OCSP Must-Staple default (true stamps the id-pe-tlsfeature extension with status_request; false suppresses it). Honored only when the profile sets allow_must_staple_override; omitted uses the profile default.
-	MustStaple *bool   `json:"must_staple,omitempty"`
-	Profile    *string `json:"profile,omitempty"`
+	MustStaple *bool `json:"must_staple,omitempty"`
+
+	// PrivateKeyUsagePeriod A per-request RFC 5280 §4.2.1 private-key usage period (id-ce-privateKeyUsagePeriod): the window during which the certified private key may be used to produce signatures, which can be narrower than the certificate's validity. Supply exactly one form — a duration (the window length from the certificate notBefore) or explicit absolute RFC 3339 instants. The resolved window is always clamped to the certificate validity.
+	PrivateKeyUsagePeriod *PrivateKeyUsagePeriod `json:"private_key_usage_period,omitempty"`
+	Profile               *string                `json:"profile,omitempty"`
 
 	// Psd2 The ETSI TS 119 495 PSD2 QcStatement content carried inside the eIDAS QCStatements extension: the payment service provider's roles and the name and identifier of its National Competent Authority (NCA).
 	Psd2 *PSD2QCStatement `json:"psd2,omitempty"`
@@ -2055,6 +2058,9 @@ type PreviewCertRequest struct {
 	// MustStaple Optional per-request override of the profile's RFC 7633 Must-Staple default (honored only where the profile permits overrides).
 	MustStaple *bool `json:"must_staple,omitempty"`
 
+	// PrivateKeyUsagePeriod A per-request RFC 5280 §4.2.1 private-key usage period (id-ce-privateKeyUsagePeriod): the window during which the certified private key may be used to produce signatures, which can be narrower than the certificate's validity. Supply exactly one form — a duration (the window length from the certificate notBefore) or explicit absolute RFC 3339 instants. The resolved window is always clamped to the certificate validity.
+	PrivateKeyUsagePeriod *PrivateKeyUsagePeriod `json:"private_key_usage_period,omitempty"`
+
 	// Profile Profile name; empty = default
 	Profile *string `json:"profile,omitempty"`
 
@@ -2128,6 +2134,18 @@ type PreviewGate struct {
 
 // PreviewGateStatus defines model for PreviewGate.Status.
 type PreviewGateStatus string
+
+// PrivateKeyUsagePeriod A per-request RFC 5280 §4.2.1 private-key usage period (id-ce-privateKeyUsagePeriod): the window during which the certified private key may be used to produce signatures, which can be narrower than the certificate's validity. Supply exactly one form — a duration (the window length from the certificate notBefore) or explicit absolute RFC 3339 instants. The resolved window is always clamped to the certificate validity.
+type PrivateKeyUsagePeriod struct {
+	// Duration Usage-period length from the certificate notBefore, as a flexible duration (e.g. "365d", "52w", "8760h", "1y").
+	Duration *string `json:"duration,omitempty"`
+
+	// NotAfter Explicit usage-period notAfter (RFC 3339)
+	NotAfter *string `json:"not_after,omitempty"`
+
+	// NotBefore Explicit usage-period notBefore (RFC 3339)
+	NotBefore *string `json:"not_before,omitempty"`
+}
 
 // Profile defines model for Profile.
 type Profile struct {

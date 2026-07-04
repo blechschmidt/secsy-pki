@@ -1938,6 +1938,12 @@ type ProfileConfig struct {
 	// id-pe-qcStatements extension. Nil emits no such extension. See
 	// ProfileQCStatementsConfig.
 	QCStatements *ProfileQCStatementsConfig `yaml:"qcstatements"`
+	// PrivateKeyUsagePeriod stamps the RFC 5280 id-ce-privateKeyUsagePeriod
+	// extension (OID 2.5.29.16) on every leaf issued under this profile: the window
+	// during which the certified private key may be used to produce signatures,
+	// narrower than the certificate validity (Task 132). See
+	// ProfilePrivateKeyUsagePeriodConfig.
+	PrivateKeyUsagePeriod *ProfilePrivateKeyUsagePeriodConfig `yaml:"private_key_usage_period"`
 }
 
 // ProfileKeyChecksConfig is a profile's pre-issuance key-quality policy (Task
@@ -2041,6 +2047,29 @@ type ProfilePSD2Config struct {
 	NCAName string `yaml:"nca_name"`
 	// NCAID is the NCA identifier (e.g. "GB-FCA").
 	NCAID string `yaml:"nca_id"`
+}
+
+// ProfilePrivateKeyUsagePeriodConfig is a profile's RFC 5280 §4.2.1 private-key
+// usage period policy (Task 132): the window during which the certified private
+// key may be used to produce signatures, stamped in the non-critical
+// id-ce-privateKeyUsagePeriod extension (OID 2.5.29.16). Set exactly one of the
+// three default forms (or none, with allow_override, for an override-only policy).
+type ProfilePrivateKeyUsagePeriodConfig struct {
+	// Duration is the usage-period length from the certificate notBefore, as a
+	// flexible duration string (e.g. "365d", "52w", "8760h", "1y"). Mutually
+	// exclusive with fraction and explicit not_before/not_after.
+	Duration string `yaml:"duration"`
+	// Fraction is the usage-period length as a fraction (0,1] of the certificate's
+	// validity. Mutually exclusive with duration and explicit not_before/not_after.
+	Fraction float64 `yaml:"fraction"`
+	// NotBefore / NotAfter are explicit absolute RFC 3339 instants (either or both).
+	// Mutually exclusive with duration and fraction.
+	NotBefore string `yaml:"not_before"`
+	NotAfter  string `yaml:"not_after"`
+	// AllowOverride lets a REST/gRPC/CLI issue request supply or replace the
+	// usage-period window per certificate. When false a per-request override is
+	// rejected and the profile default (if any) is authoritative.
+	AllowOverride bool `yaml:"allow_override"`
 }
 
 // ProfilePolicyConfig is a profile's certificate-policy assignment. When oids is

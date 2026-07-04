@@ -301,6 +301,78 @@ func (x *PSD2QCStatement) GetNcaId() string {
 	return ""
 }
 
+// PrivateKeyUsagePeriod is a per-request override of a profile's RFC 5280 §4.2.1
+// private-key usage period (id-ce-privateKeyUsagePeriod, OID 2.5.29.16): the
+// window during which the certified private key may be used to produce
+// signatures, which can be narrower than the certificate's validity. It is
+// honored only under a profile whose private_key_usage_period block permits
+// per-request overrides (allow_override). Supply exactly one form: a duration or
+// explicit absolute RFC 3339 instants.
+type PrivateKeyUsagePeriod struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// duration is the usage-period length from the certificate notBefore, as a
+	// flexible duration string ("365d", "52w", "8760h", "1y"). Mutually exclusive
+	// with the explicit instants below.
+	Duration string `protobuf:"bytes,1,opt,name=duration,proto3" json:"duration,omitempty"`
+	// not_before / not_after are explicit RFC 3339 instants (alternative to
+	// duration). Either or both may be set.
+	NotBefore     string `protobuf:"bytes,2,opt,name=not_before,json=notBefore,proto3" json:"not_before,omitempty"`
+	NotAfter      string `protobuf:"bytes,3,opt,name=not_after,json=notAfter,proto3" json:"not_after,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PrivateKeyUsagePeriod) Reset() {
+	*x = PrivateKeyUsagePeriod{}
+	mi := &file_pki_v1_pki_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PrivateKeyUsagePeriod) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PrivateKeyUsagePeriod) ProtoMessage() {}
+
+func (x *PrivateKeyUsagePeriod) ProtoReflect() protoreflect.Message {
+	mi := &file_pki_v1_pki_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PrivateKeyUsagePeriod.ProtoReflect.Descriptor instead.
+func (*PrivateKeyUsagePeriod) Descriptor() ([]byte, []int) {
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *PrivateKeyUsagePeriod) GetDuration() string {
+	if x != nil {
+		return x.Duration
+	}
+	return ""
+}
+
+func (x *PrivateKeyUsagePeriod) GetNotBefore() string {
+	if x != nil {
+		return x.NotBefore
+	}
+	return ""
+}
+
+func (x *PrivateKeyUsagePeriod) GetNotAfter() string {
+	if x != nil {
+		return x.NotAfter
+	}
+	return ""
+}
+
 type IssueCertificateRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// ca_id identifies the issuing CA. It must be an X.509 issuer.
@@ -326,14 +398,19 @@ type IssueCertificateRequest struct {
 	// psd2 optionally supplies the ETSI TS 119 495 PSD2 authorization for the eIDAS
 	// QCStatements extension (Task 128). Honored only under a QC-enabled profile
 	// that permits per-request PSD2 overrides.
-	Psd2          *PSD2QCStatement `protobuf:"bytes,7,opt,name=psd2,proto3" json:"psd2,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Psd2 *PSD2QCStatement `protobuf:"bytes,7,opt,name=psd2,proto3" json:"psd2,omitempty"`
+	// private_key_usage_period optionally overrides the profile's RFC 5280
+	// id-ce-privateKeyUsagePeriod window (Task 132). Honored only under a profile
+	// whose private_key_usage_period block permits per-request overrides
+	// (allow_override).
+	PrivateKeyUsagePeriod *PrivateKeyUsagePeriod `protobuf:"bytes,8,opt,name=private_key_usage_period,json=privateKeyUsagePeriod,proto3" json:"private_key_usage_period,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *IssueCertificateRequest) Reset() {
 	*x = IssueCertificateRequest{}
-	mi := &file_pki_v1_pki_proto_msgTypes[3]
+	mi := &file_pki_v1_pki_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -345,7 +422,7 @@ func (x *IssueCertificateRequest) String() string {
 func (*IssueCertificateRequest) ProtoMessage() {}
 
 func (x *IssueCertificateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[3]
+	mi := &file_pki_v1_pki_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -358,7 +435,7 @@ func (x *IssueCertificateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IssueCertificateRequest.ProtoReflect.Descriptor instead.
 func (*IssueCertificateRequest) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{3}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *IssueCertificateRequest) GetCaId() string {
@@ -410,6 +487,13 @@ func (x *IssueCertificateRequest) GetPsd2() *PSD2QCStatement {
 	return nil
 }
 
+func (x *IssueCertificateRequest) GetPrivateKeyUsagePeriod() *PrivateKeyUsagePeriod {
+	if x != nil {
+		return x.PrivateKeyUsagePeriod
+	}
+	return nil
+}
+
 type RenewCertificateRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	CaId  string                 `protobuf:"bytes,1,opt,name=ca_id,json=caId,proto3" json:"ca_id,omitempty"`
@@ -424,7 +508,7 @@ type RenewCertificateRequest struct {
 
 func (x *RenewCertificateRequest) Reset() {
 	*x = RenewCertificateRequest{}
-	mi := &file_pki_v1_pki_proto_msgTypes[4]
+	mi := &file_pki_v1_pki_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -436,7 +520,7 @@ func (x *RenewCertificateRequest) String() string {
 func (*RenewCertificateRequest) ProtoMessage() {}
 
 func (x *RenewCertificateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[4]
+	mi := &file_pki_v1_pki_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -449,7 +533,7 @@ func (x *RenewCertificateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenewCertificateRequest.ProtoReflect.Descriptor instead.
 func (*RenewCertificateRequest) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{4}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *RenewCertificateRequest) GetCaId() string {
@@ -496,7 +580,7 @@ type CertificateResponse struct {
 
 func (x *CertificateResponse) Reset() {
 	*x = CertificateResponse{}
-	mi := &file_pki_v1_pki_proto_msgTypes[5]
+	mi := &file_pki_v1_pki_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -508,7 +592,7 @@ func (x *CertificateResponse) String() string {
 func (*CertificateResponse) ProtoMessage() {}
 
 func (x *CertificateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[5]
+	mi := &file_pki_v1_pki_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -521,7 +605,7 @@ func (x *CertificateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertificateResponse.ProtoReflect.Descriptor instead.
 func (*CertificateResponse) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{5}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *CertificateResponse) GetCertificatePem() string {
@@ -603,14 +687,18 @@ type PreviewCertificateRequest struct {
 	// psd2 optionally supplies the ETSI TS 119 495 PSD2 authorization for the eIDAS
 	// QCStatements extension (Task 128), previewed through the same QC resolution
 	// the issuance path enforces.
-	Psd2          *PSD2QCStatement `protobuf:"bytes,12,opt,name=psd2,proto3" json:"psd2,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Psd2 *PSD2QCStatement `protobuf:"bytes,12,opt,name=psd2,proto3" json:"psd2,omitempty"`
+	// private_key_usage_period optionally overrides the profile's RFC 5280
+	// id-ce-privateKeyUsagePeriod window (Task 132), previewed through the same
+	// resolution the issuance path enforces.
+	PrivateKeyUsagePeriod *PrivateKeyUsagePeriod `protobuf:"bytes,13,opt,name=private_key_usage_period,json=privateKeyUsagePeriod,proto3" json:"private_key_usage_period,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *PreviewCertificateRequest) Reset() {
 	*x = PreviewCertificateRequest{}
-	mi := &file_pki_v1_pki_proto_msgTypes[6]
+	mi := &file_pki_v1_pki_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -622,7 +710,7 @@ func (x *PreviewCertificateRequest) String() string {
 func (*PreviewCertificateRequest) ProtoMessage() {}
 
 func (x *PreviewCertificateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[6]
+	mi := &file_pki_v1_pki_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -635,7 +723,7 @@ func (x *PreviewCertificateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreviewCertificateRequest.ProtoReflect.Descriptor instead.
 func (*PreviewCertificateRequest) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{6}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *PreviewCertificateRequest) GetCaId() string {
@@ -722,6 +810,13 @@ func (x *PreviewCertificateRequest) GetPsd2() *PSD2QCStatement {
 	return nil
 }
 
+func (x *PreviewCertificateRequest) GetPrivateKeyUsagePeriod() *PrivateKeyUsagePeriod {
+	if x != nil {
+		return x.PrivateKeyUsagePeriod
+	}
+	return nil
+}
+
 // PreviewGate is one pre-issuance gate's verdict in a preview.
 type PreviewGate struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -741,7 +836,7 @@ type PreviewGate struct {
 
 func (x *PreviewGate) Reset() {
 	*x = PreviewGate{}
-	mi := &file_pki_v1_pki_proto_msgTypes[7]
+	mi := &file_pki_v1_pki_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -753,7 +848,7 @@ func (x *PreviewGate) String() string {
 func (*PreviewGate) ProtoMessage() {}
 
 func (x *PreviewGate) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[7]
+	mi := &file_pki_v1_pki_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -766,7 +861,7 @@ func (x *PreviewGate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreviewGate.ProtoReflect.Descriptor instead.
 func (*PreviewGate) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{7}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *PreviewGate) GetName() string {
@@ -810,7 +905,7 @@ type PreviewExtension struct {
 
 func (x *PreviewExtension) Reset() {
 	*x = PreviewExtension{}
-	mi := &file_pki_v1_pki_proto_msgTypes[8]
+	mi := &file_pki_v1_pki_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -822,7 +917,7 @@ func (x *PreviewExtension) String() string {
 func (*PreviewExtension) ProtoMessage() {}
 
 func (x *PreviewExtension) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[8]
+	mi := &file_pki_v1_pki_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -835,7 +930,7 @@ func (x *PreviewExtension) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreviewExtension.ProtoReflect.Descriptor instead.
 func (*PreviewExtension) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{8}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *PreviewExtension) GetOid() string {
@@ -897,7 +992,7 @@ type PreviewCertificateResponse struct {
 
 func (x *PreviewCertificateResponse) Reset() {
 	*x = PreviewCertificateResponse{}
-	mi := &file_pki_v1_pki_proto_msgTypes[9]
+	mi := &file_pki_v1_pki_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -909,7 +1004,7 @@ func (x *PreviewCertificateResponse) String() string {
 func (*PreviewCertificateResponse) ProtoMessage() {}
 
 func (x *PreviewCertificateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[9]
+	mi := &file_pki_v1_pki_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -922,7 +1017,7 @@ func (x *PreviewCertificateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreviewCertificateResponse.ProtoReflect.Descriptor instead.
 func (*PreviewCertificateResponse) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{9}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *PreviewCertificateResponse) GetCaId() string {
@@ -1099,7 +1194,7 @@ type ValidateChainRequest struct {
 
 func (x *ValidateChainRequest) Reset() {
 	*x = ValidateChainRequest{}
-	mi := &file_pki_v1_pki_proto_msgTypes[10]
+	mi := &file_pki_v1_pki_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1111,7 +1206,7 @@ func (x *ValidateChainRequest) String() string {
 func (*ValidateChainRequest) ProtoMessage() {}
 
 func (x *ValidateChainRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[10]
+	mi := &file_pki_v1_pki_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1124,7 +1219,7 @@ func (x *ValidateChainRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateChainRequest.ProtoReflect.Descriptor instead.
 func (*ValidateChainRequest) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{10}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ValidateChainRequest) GetCaId() string {
@@ -1170,7 +1265,7 @@ type ValidationRevocation struct {
 
 func (x *ValidationRevocation) Reset() {
 	*x = ValidationRevocation{}
-	mi := &file_pki_v1_pki_proto_msgTypes[11]
+	mi := &file_pki_v1_pki_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1182,7 +1277,7 @@ func (x *ValidationRevocation) String() string {
 func (*ValidationRevocation) ProtoMessage() {}
 
 func (x *ValidationRevocation) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[11]
+	mi := &file_pki_v1_pki_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1195,7 +1290,7 @@ func (x *ValidationRevocation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidationRevocation.ProtoReflect.Descriptor instead.
 func (*ValidationRevocation) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{11}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ValidationRevocation) GetState() string {
@@ -1266,7 +1361,7 @@ type ValidatedCertificate struct {
 
 func (x *ValidatedCertificate) Reset() {
 	*x = ValidatedCertificate{}
-	mi := &file_pki_v1_pki_proto_msgTypes[12]
+	mi := &file_pki_v1_pki_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1278,7 +1373,7 @@ func (x *ValidatedCertificate) String() string {
 func (*ValidatedCertificate) ProtoMessage() {}
 
 func (x *ValidatedCertificate) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[12]
+	mi := &file_pki_v1_pki_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1291,7 +1386,7 @@ func (x *ValidatedCertificate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidatedCertificate.ProtoReflect.Descriptor instead.
 func (*ValidatedCertificate) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{12}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ValidatedCertificate) GetPosition() int32 {
@@ -1478,7 +1573,7 @@ type ValidationCheck struct {
 
 func (x *ValidationCheck) Reset() {
 	*x = ValidationCheck{}
-	mi := &file_pki_v1_pki_proto_msgTypes[13]
+	mi := &file_pki_v1_pki_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1490,7 +1585,7 @@ func (x *ValidationCheck) String() string {
 func (*ValidationCheck) ProtoMessage() {}
 
 func (x *ValidationCheck) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[13]
+	mi := &file_pki_v1_pki_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1503,7 +1598,7 @@ func (x *ValidationCheck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidationCheck.ProtoReflect.Descriptor instead.
 func (*ValidationCheck) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{13}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ValidationCheck) GetName() string {
@@ -1559,7 +1654,7 @@ type ValidateChainResponse struct {
 
 func (x *ValidateChainResponse) Reset() {
 	*x = ValidateChainResponse{}
-	mi := &file_pki_v1_pki_proto_msgTypes[14]
+	mi := &file_pki_v1_pki_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1571,7 +1666,7 @@ func (x *ValidateChainResponse) String() string {
 func (*ValidateChainResponse) ProtoMessage() {}
 
 func (x *ValidateChainResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[14]
+	mi := &file_pki_v1_pki_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1584,7 +1679,7 @@ func (x *ValidateChainResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateChainResponse.ProtoReflect.Descriptor instead.
 func (*ValidateChainResponse) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{14}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ValidateChainResponse) GetCaId() string {
@@ -1691,7 +1786,7 @@ type RevokeCertificateRequest struct {
 
 func (x *RevokeCertificateRequest) Reset() {
 	*x = RevokeCertificateRequest{}
-	mi := &file_pki_v1_pki_proto_msgTypes[15]
+	mi := &file_pki_v1_pki_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1703,7 +1798,7 @@ func (x *RevokeCertificateRequest) String() string {
 func (*RevokeCertificateRequest) ProtoMessage() {}
 
 func (x *RevokeCertificateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[15]
+	mi := &file_pki_v1_pki_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1716,7 +1811,7 @@ func (x *RevokeCertificateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeCertificateRequest.ProtoReflect.Descriptor instead.
 func (*RevokeCertificateRequest) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{15}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *RevokeCertificateRequest) GetCaId() string {
@@ -1752,7 +1847,7 @@ type RevokeCertificateResponse struct {
 
 func (x *RevokeCertificateResponse) Reset() {
 	*x = RevokeCertificateResponse{}
-	mi := &file_pki_v1_pki_proto_msgTypes[16]
+	mi := &file_pki_v1_pki_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1764,7 +1859,7 @@ func (x *RevokeCertificateResponse) String() string {
 func (*RevokeCertificateResponse) ProtoMessage() {}
 
 func (x *RevokeCertificateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[16]
+	mi := &file_pki_v1_pki_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1777,7 +1872,7 @@ func (x *RevokeCertificateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevokeCertificateResponse.ProtoReflect.Descriptor instead.
 func (*RevokeCertificateResponse) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{16}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *RevokeCertificateResponse) GetSerial() string {
@@ -1804,7 +1899,7 @@ type SuspendCertificateRequest struct {
 
 func (x *SuspendCertificateRequest) Reset() {
 	*x = SuspendCertificateRequest{}
-	mi := &file_pki_v1_pki_proto_msgTypes[17]
+	mi := &file_pki_v1_pki_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1816,7 +1911,7 @@ func (x *SuspendCertificateRequest) String() string {
 func (*SuspendCertificateRequest) ProtoMessage() {}
 
 func (x *SuspendCertificateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[17]
+	mi := &file_pki_v1_pki_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1829,7 +1924,7 @@ func (x *SuspendCertificateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SuspendCertificateRequest.ProtoReflect.Descriptor instead.
 func (*SuspendCertificateRequest) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{17}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *SuspendCertificateRequest) GetCaId() string {
@@ -1858,7 +1953,7 @@ type SuspendCertificateResponse struct {
 
 func (x *SuspendCertificateResponse) Reset() {
 	*x = SuspendCertificateResponse{}
-	mi := &file_pki_v1_pki_proto_msgTypes[18]
+	mi := &file_pki_v1_pki_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1870,7 +1965,7 @@ func (x *SuspendCertificateResponse) String() string {
 func (*SuspendCertificateResponse) ProtoMessage() {}
 
 func (x *SuspendCertificateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[18]
+	mi := &file_pki_v1_pki_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1883,7 +1978,7 @@ func (x *SuspendCertificateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SuspendCertificateResponse.ProtoReflect.Descriptor instead.
 func (*SuspendCertificateResponse) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{18}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *SuspendCertificateResponse) GetSerial() string {
@@ -1910,7 +2005,7 @@ type ReleaseCertificateRequest struct {
 
 func (x *ReleaseCertificateRequest) Reset() {
 	*x = ReleaseCertificateRequest{}
-	mi := &file_pki_v1_pki_proto_msgTypes[19]
+	mi := &file_pki_v1_pki_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1922,7 +2017,7 @@ func (x *ReleaseCertificateRequest) String() string {
 func (*ReleaseCertificateRequest) ProtoMessage() {}
 
 func (x *ReleaseCertificateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[19]
+	mi := &file_pki_v1_pki_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1935,7 +2030,7 @@ func (x *ReleaseCertificateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseCertificateRequest.ProtoReflect.Descriptor instead.
 func (*ReleaseCertificateRequest) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{19}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ReleaseCertificateRequest) GetCaId() string {
@@ -1963,7 +2058,7 @@ type ReleaseCertificateResponse struct {
 
 func (x *ReleaseCertificateResponse) Reset() {
 	*x = ReleaseCertificateResponse{}
-	mi := &file_pki_v1_pki_proto_msgTypes[20]
+	mi := &file_pki_v1_pki_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1975,7 +2070,7 @@ func (x *ReleaseCertificateResponse) String() string {
 func (*ReleaseCertificateResponse) ProtoMessage() {}
 
 func (x *ReleaseCertificateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[20]
+	mi := &file_pki_v1_pki_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1988,7 +2083,7 @@ func (x *ReleaseCertificateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReleaseCertificateResponse.ProtoReflect.Descriptor instead.
 func (*ReleaseCertificateResponse) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{20}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ReleaseCertificateResponse) GetSerial() string {
@@ -2028,7 +2123,7 @@ type CertificateInfo struct {
 
 func (x *CertificateInfo) Reset() {
 	*x = CertificateInfo{}
-	mi := &file_pki_v1_pki_proto_msgTypes[21]
+	mi := &file_pki_v1_pki_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2040,7 +2135,7 @@ func (x *CertificateInfo) String() string {
 func (*CertificateInfo) ProtoMessage() {}
 
 func (x *CertificateInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[21]
+	mi := &file_pki_v1_pki_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2053,7 +2148,7 @@ func (x *CertificateInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertificateInfo.ProtoReflect.Descriptor instead.
 func (*CertificateInfo) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{21}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *CertificateInfo) GetCaId() string {
@@ -2164,7 +2259,7 @@ type GetCertificateRequest struct {
 
 func (x *GetCertificateRequest) Reset() {
 	*x = GetCertificateRequest{}
-	mi := &file_pki_v1_pki_proto_msgTypes[22]
+	mi := &file_pki_v1_pki_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2176,7 +2271,7 @@ func (x *GetCertificateRequest) String() string {
 func (*GetCertificateRequest) ProtoMessage() {}
 
 func (x *GetCertificateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[22]
+	mi := &file_pki_v1_pki_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2189,7 +2284,7 @@ func (x *GetCertificateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCertificateRequest.ProtoReflect.Descriptor instead.
 func (*GetCertificateRequest) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{22}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *GetCertificateRequest) GetCaId() string {
@@ -2215,7 +2310,7 @@ type GetCertificateResponse struct {
 
 func (x *GetCertificateResponse) Reset() {
 	*x = GetCertificateResponse{}
-	mi := &file_pki_v1_pki_proto_msgTypes[23]
+	mi := &file_pki_v1_pki_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2227,7 +2322,7 @@ func (x *GetCertificateResponse) String() string {
 func (*GetCertificateResponse) ProtoMessage() {}
 
 func (x *GetCertificateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[23]
+	mi := &file_pki_v1_pki_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2240,7 +2335,7 @@ func (x *GetCertificateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCertificateResponse.ProtoReflect.Descriptor instead.
 func (*GetCertificateResponse) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{23}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *GetCertificateResponse) GetCertificate() *CertificateInfo {
@@ -2260,7 +2355,7 @@ type GetCertificateStatusRequest struct {
 
 func (x *GetCertificateStatusRequest) Reset() {
 	*x = GetCertificateStatusRequest{}
-	mi := &file_pki_v1_pki_proto_msgTypes[24]
+	mi := &file_pki_v1_pki_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2272,7 +2367,7 @@ func (x *GetCertificateStatusRequest) String() string {
 func (*GetCertificateStatusRequest) ProtoMessage() {}
 
 func (x *GetCertificateStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[24]
+	mi := &file_pki_v1_pki_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2285,7 +2380,7 @@ func (x *GetCertificateStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCertificateStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetCertificateStatusRequest) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{24}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *GetCertificateStatusRequest) GetCaId() string {
@@ -2313,7 +2408,7 @@ type GetCertificateStatusResponse struct {
 
 func (x *GetCertificateStatusResponse) Reset() {
 	*x = GetCertificateStatusResponse{}
-	mi := &file_pki_v1_pki_proto_msgTypes[25]
+	mi := &file_pki_v1_pki_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2325,7 +2420,7 @@ func (x *GetCertificateStatusResponse) String() string {
 func (*GetCertificateStatusResponse) ProtoMessage() {}
 
 func (x *GetCertificateStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[25]
+	mi := &file_pki_v1_pki_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2338,7 +2433,7 @@ func (x *GetCertificateStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCertificateStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetCertificateStatusResponse) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{25}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *GetCertificateStatusResponse) GetStatus() CertificateStatus {
@@ -2387,7 +2482,7 @@ type ListCertificatesRequest struct {
 
 func (x *ListCertificatesRequest) Reset() {
 	*x = ListCertificatesRequest{}
-	mi := &file_pki_v1_pki_proto_msgTypes[26]
+	mi := &file_pki_v1_pki_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2399,7 +2494,7 @@ func (x *ListCertificatesRequest) String() string {
 func (*ListCertificatesRequest) ProtoMessage() {}
 
 func (x *ListCertificatesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[26]
+	mi := &file_pki_v1_pki_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2412,7 +2507,7 @@ func (x *ListCertificatesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCertificatesRequest.ProtoReflect.Descriptor instead.
 func (*ListCertificatesRequest) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{26}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ListCertificatesRequest) GetCaId() string {
@@ -2486,7 +2581,7 @@ type ListCertificatesResponse struct {
 
 func (x *ListCertificatesResponse) Reset() {
 	*x = ListCertificatesResponse{}
-	mi := &file_pki_v1_pki_proto_msgTypes[27]
+	mi := &file_pki_v1_pki_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2498,7 +2593,7 @@ func (x *ListCertificatesResponse) String() string {
 func (*ListCertificatesResponse) ProtoMessage() {}
 
 func (x *ListCertificatesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[27]
+	mi := &file_pki_v1_pki_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2511,7 +2606,7 @@ func (x *ListCertificatesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCertificatesResponse.ProtoReflect.Descriptor instead.
 func (*ListCertificatesResponse) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{27}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ListCertificatesResponse) GetCertificates() []*CertificateInfo {
@@ -2554,7 +2649,7 @@ type GetCRLMetadataRequest struct {
 
 func (x *GetCRLMetadataRequest) Reset() {
 	*x = GetCRLMetadataRequest{}
-	mi := &file_pki_v1_pki_proto_msgTypes[28]
+	mi := &file_pki_v1_pki_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2566,7 +2661,7 @@ func (x *GetCRLMetadataRequest) String() string {
 func (*GetCRLMetadataRequest) ProtoMessage() {}
 
 func (x *GetCRLMetadataRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[28]
+	mi := &file_pki_v1_pki_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2579,7 +2674,7 @@ func (x *GetCRLMetadataRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCRLMetadataRequest.ProtoReflect.Descriptor instead.
 func (*GetCRLMetadataRequest) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{28}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *GetCRLMetadataRequest) GetCaId() string {
@@ -2618,7 +2713,7 @@ type GetCRLMetadataResponse struct {
 
 func (x *GetCRLMetadataResponse) Reset() {
 	*x = GetCRLMetadataResponse{}
-	mi := &file_pki_v1_pki_proto_msgTypes[29]
+	mi := &file_pki_v1_pki_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2630,7 +2725,7 @@ func (x *GetCRLMetadataResponse) String() string {
 func (*GetCRLMetadataResponse) ProtoMessage() {}
 
 func (x *GetCRLMetadataResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[29]
+	mi := &file_pki_v1_pki_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2643,7 +2738,7 @@ func (x *GetCRLMetadataResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCRLMetadataResponse.ProtoReflect.Descriptor instead.
 func (*GetCRLMetadataResponse) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{29}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *GetCRLMetadataResponse) GetScope() string {
@@ -2732,7 +2827,7 @@ type GetOCSPMetadataRequest struct {
 
 func (x *GetOCSPMetadataRequest) Reset() {
 	*x = GetOCSPMetadataRequest{}
-	mi := &file_pki_v1_pki_proto_msgTypes[30]
+	mi := &file_pki_v1_pki_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2744,7 +2839,7 @@ func (x *GetOCSPMetadataRequest) String() string {
 func (*GetOCSPMetadataRequest) ProtoMessage() {}
 
 func (x *GetOCSPMetadataRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[30]
+	mi := &file_pki_v1_pki_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2757,7 +2852,7 @@ func (x *GetOCSPMetadataRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetOCSPMetadataRequest.ProtoReflect.Descriptor instead.
 func (*GetOCSPMetadataRequest) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{30}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *GetOCSPMetadataRequest) GetCaId() string {
@@ -2783,7 +2878,7 @@ type GetOCSPMetadataResponse struct {
 
 func (x *GetOCSPMetadataResponse) Reset() {
 	*x = GetOCSPMetadataResponse{}
-	mi := &file_pki_v1_pki_proto_msgTypes[31]
+	mi := &file_pki_v1_pki_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2795,7 +2890,7 @@ func (x *GetOCSPMetadataResponse) String() string {
 func (*GetOCSPMetadataResponse) ProtoMessage() {}
 
 func (x *GetOCSPMetadataResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[31]
+	mi := &file_pki_v1_pki_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2808,7 +2903,7 @@ func (x *GetOCSPMetadataResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetOCSPMetadataResponse.ProtoReflect.Descriptor instead.
 func (*GetOCSPMetadataResponse) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{31}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *GetOCSPMetadataResponse) GetOcspUrls() []string {
@@ -2861,7 +2956,7 @@ type StreamEventsRequest struct {
 
 func (x *StreamEventsRequest) Reset() {
 	*x = StreamEventsRequest{}
-	mi := &file_pki_v1_pki_proto_msgTypes[32]
+	mi := &file_pki_v1_pki_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2873,7 +2968,7 @@ func (x *StreamEventsRequest) String() string {
 func (*StreamEventsRequest) ProtoMessage() {}
 
 func (x *StreamEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[32]
+	mi := &file_pki_v1_pki_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2886,7 +2981,7 @@ func (x *StreamEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamEventsRequest.ProtoReflect.Descriptor instead.
 func (*StreamEventsRequest) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{32}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *StreamEventsRequest) GetAction() string {
@@ -2944,7 +3039,7 @@ type AuditEvent struct {
 
 func (x *AuditEvent) Reset() {
 	*x = AuditEvent{}
-	mi := &file_pki_v1_pki_proto_msgTypes[33]
+	mi := &file_pki_v1_pki_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2956,7 +3051,7 @@ func (x *AuditEvent) String() string {
 func (*AuditEvent) ProtoMessage() {}
 
 func (x *AuditEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[33]
+	mi := &file_pki_v1_pki_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2969,7 +3064,7 @@ func (x *AuditEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuditEvent.ProtoReflect.Descriptor instead.
 func (*AuditEvent) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{33}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *AuditEvent) GetSeq() int64 {
@@ -3098,7 +3193,7 @@ type EventHeartbeat struct {
 
 func (x *EventHeartbeat) Reset() {
 	*x = EventHeartbeat{}
-	mi := &file_pki_v1_pki_proto_msgTypes[34]
+	mi := &file_pki_v1_pki_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3110,7 +3205,7 @@ func (x *EventHeartbeat) String() string {
 func (*EventHeartbeat) ProtoMessage() {}
 
 func (x *EventHeartbeat) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[34]
+	mi := &file_pki_v1_pki_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3123,7 +3218,7 @@ func (x *EventHeartbeat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventHeartbeat.ProtoReflect.Descriptor instead.
 func (*EventHeartbeat) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{34}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *EventHeartbeat) GetTime() *timestamppb.Timestamp {
@@ -3153,7 +3248,7 @@ type EventLag struct {
 
 func (x *EventLag) Reset() {
 	*x = EventLag{}
-	mi := &file_pki_v1_pki_proto_msgTypes[35]
+	mi := &file_pki_v1_pki_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3165,7 +3260,7 @@ func (x *EventLag) String() string {
 func (*EventLag) ProtoMessage() {}
 
 func (x *EventLag) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[35]
+	mi := &file_pki_v1_pki_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3178,7 +3273,7 @@ func (x *EventLag) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventLag.ProtoReflect.Descriptor instead.
 func (*EventLag) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{35}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *EventLag) GetDropped() uint64 {
@@ -3211,7 +3306,7 @@ type StreamEventsResponse struct {
 
 func (x *StreamEventsResponse) Reset() {
 	*x = StreamEventsResponse{}
-	mi := &file_pki_v1_pki_proto_msgTypes[36]
+	mi := &file_pki_v1_pki_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3223,7 +3318,7 @@ func (x *StreamEventsResponse) String() string {
 func (*StreamEventsResponse) ProtoMessage() {}
 
 func (x *StreamEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pki_v1_pki_proto_msgTypes[36]
+	mi := &file_pki_v1_pki_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3236,7 +3331,7 @@ func (x *StreamEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamEventsResponse.ProtoReflect.Descriptor instead.
 func (*StreamEventsResponse) Descriptor() ([]byte, []int) {
-	return file_pki_v1_pki_proto_rawDescGZIP(), []int{36}
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *StreamEventsResponse) GetPayload() isStreamEventsResponse_Payload {
@@ -3313,7 +3408,12 @@ const file_pki_v1_pki_proto_rawDesc = "" +
 	"\x0fPSD2QCStatement\x12\x14\n" +
 	"\x05roles\x18\x01 \x03(\tR\x05roles\x12\x19\n" +
 	"\bnca_name\x18\x02 \x01(\tR\ancaName\x12\x15\n" +
-	"\x06nca_id\x18\x03 \x01(\tR\x05ncaId\"\x83\x02\n" +
+	"\x06nca_id\x18\x03 \x01(\tR\x05ncaId\"o\n" +
+	"\x15PrivateKeyUsagePeriod\x12\x1a\n" +
+	"\bduration\x18\x01 \x01(\tR\bduration\x12\x1d\n" +
+	"\n" +
+	"not_before\x18\x02 \x01(\tR\tnotBefore\x12\x1b\n" +
+	"\tnot_after\x18\x03 \x01(\tR\bnotAfter\"\xe1\x02\n" +
 	"\x17IssueCertificateRequest\x12\x13\n" +
 	"\x05ca_id\x18\x01 \x01(\tR\x04caId\x12\x17\n" +
 	"\acsr_pem\x18\x02 \x01(\tR\x06csrPem\x12\x18\n" +
@@ -3322,7 +3422,8 @@ const file_pki_v1_pki_proto_rawDesc = "" +
 	"\vmust_staple\x18\x05 \x01(\bH\x00R\n" +
 	"mustStaple\x88\x01\x01\x12\x12\n" +
 	"\x04upns\x18\x06 \x03(\tR\x04upns\x121\n" +
-	"\x04psd2\x18\a \x01(\v2\x1d.secsy.pki.v1.PSD2QCStatementR\x04psd2B\x0e\n" +
+	"\x04psd2\x18\a \x01(\v2\x1d.secsy.pki.v1.PSD2QCStatementR\x04psd2\x12\\\n" +
+	"\x18private_key_usage_period\x18\b \x01(\v2#.secsy.pki.v1.PrivateKeyUsagePeriodR\x15privateKeyUsagePeriodB\x0e\n" +
 	"\f_must_staple\"\x84\x01\n" +
 	"\x17RenewCertificateRequest\x12\x13\n" +
 	"\x05ca_id\x18\x01 \x01(\tR\x04caId\x12\x16\n" +
@@ -3337,7 +3438,7 @@ const file_pki_v1_pki_proto_rawDesc = "" +
 	"\n" +
 	"not_before\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tnotBefore\x127\n" +
 	"\tnot_after\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\bnotAfter\x12$\n" +
-	"\x02ct\x18\a \x01(\v2\x14.secsy.pki.v1.CTInfoR\x02ct\"\xa3\x03\n" +
+	"\x02ct\x18\a \x01(\v2\x14.secsy.pki.v1.CTInfoR\x02ct\"\x81\x04\n" +
 	"\x19PreviewCertificateRequest\x12\x13\n" +
 	"\x05ca_id\x18\x01 \x01(\tR\x04caId\x12\x17\n" +
 	"\acsr_pem\x18\x02 \x01(\tR\x06csrPem\x12\x18\n" +
@@ -3353,7 +3454,8 @@ const file_pki_v1_pki_proto_rawDesc = "" +
 	"\x04uris\x18\n" +
 	" \x03(\tR\x04uris\x12\x12\n" +
 	"\x04upns\x18\v \x03(\tR\x04upns\x121\n" +
-	"\x04psd2\x18\f \x01(\v2\x1d.secsy.pki.v1.PSD2QCStatementR\x04psd2B\x0e\n" +
+	"\x04psd2\x18\f \x01(\v2\x1d.secsy.pki.v1.PSD2QCStatementR\x04psd2\x12\\\n" +
+	"\x18private_key_usage_period\x18\r \x01(\v2#.secsy.pki.v1.PrivateKeyUsagePeriodR\x15privateKeyUsagePeriodB\x0e\n" +
 	"\f_must_staple\"m\n" +
 	"\vPreviewGate\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
@@ -3630,118 +3732,121 @@ func file_pki_v1_pki_proto_rawDescGZIP() []byte {
 }
 
 var file_pki_v1_pki_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pki_v1_pki_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
+var file_pki_v1_pki_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
 var file_pki_v1_pki_proto_goTypes = []any{
 	(CertificateStatus)(0),               // 0: secsy.pki.v1.CertificateStatus
 	(*CTLogOutcome)(nil),                 // 1: secsy.pki.v1.CTLogOutcome
 	(*CTInfo)(nil),                       // 2: secsy.pki.v1.CTInfo
 	(*PSD2QCStatement)(nil),              // 3: secsy.pki.v1.PSD2QCStatement
-	(*IssueCertificateRequest)(nil),      // 4: secsy.pki.v1.IssueCertificateRequest
-	(*RenewCertificateRequest)(nil),      // 5: secsy.pki.v1.RenewCertificateRequest
-	(*CertificateResponse)(nil),          // 6: secsy.pki.v1.CertificateResponse
-	(*PreviewCertificateRequest)(nil),    // 7: secsy.pki.v1.PreviewCertificateRequest
-	(*PreviewGate)(nil),                  // 8: secsy.pki.v1.PreviewGate
-	(*PreviewExtension)(nil),             // 9: secsy.pki.v1.PreviewExtension
-	(*PreviewCertificateResponse)(nil),   // 10: secsy.pki.v1.PreviewCertificateResponse
-	(*ValidateChainRequest)(nil),         // 11: secsy.pki.v1.ValidateChainRequest
-	(*ValidationRevocation)(nil),         // 12: secsy.pki.v1.ValidationRevocation
-	(*ValidatedCertificate)(nil),         // 13: secsy.pki.v1.ValidatedCertificate
-	(*ValidationCheck)(nil),              // 14: secsy.pki.v1.ValidationCheck
-	(*ValidateChainResponse)(nil),        // 15: secsy.pki.v1.ValidateChainResponse
-	(*RevokeCertificateRequest)(nil),     // 16: secsy.pki.v1.RevokeCertificateRequest
-	(*RevokeCertificateResponse)(nil),    // 17: secsy.pki.v1.RevokeCertificateResponse
-	(*SuspendCertificateRequest)(nil),    // 18: secsy.pki.v1.SuspendCertificateRequest
-	(*SuspendCertificateResponse)(nil),   // 19: secsy.pki.v1.SuspendCertificateResponse
-	(*ReleaseCertificateRequest)(nil),    // 20: secsy.pki.v1.ReleaseCertificateRequest
-	(*ReleaseCertificateResponse)(nil),   // 21: secsy.pki.v1.ReleaseCertificateResponse
-	(*CertificateInfo)(nil),              // 22: secsy.pki.v1.CertificateInfo
-	(*GetCertificateRequest)(nil),        // 23: secsy.pki.v1.GetCertificateRequest
-	(*GetCertificateResponse)(nil),       // 24: secsy.pki.v1.GetCertificateResponse
-	(*GetCertificateStatusRequest)(nil),  // 25: secsy.pki.v1.GetCertificateStatusRequest
-	(*GetCertificateStatusResponse)(nil), // 26: secsy.pki.v1.GetCertificateStatusResponse
-	(*ListCertificatesRequest)(nil),      // 27: secsy.pki.v1.ListCertificatesRequest
-	(*ListCertificatesResponse)(nil),     // 28: secsy.pki.v1.ListCertificatesResponse
-	(*GetCRLMetadataRequest)(nil),        // 29: secsy.pki.v1.GetCRLMetadataRequest
-	(*GetCRLMetadataResponse)(nil),       // 30: secsy.pki.v1.GetCRLMetadataResponse
-	(*GetOCSPMetadataRequest)(nil),       // 31: secsy.pki.v1.GetOCSPMetadataRequest
-	(*GetOCSPMetadataResponse)(nil),      // 32: secsy.pki.v1.GetOCSPMetadataResponse
-	(*StreamEventsRequest)(nil),          // 33: secsy.pki.v1.StreamEventsRequest
-	(*AuditEvent)(nil),                   // 34: secsy.pki.v1.AuditEvent
-	(*EventHeartbeat)(nil),               // 35: secsy.pki.v1.EventHeartbeat
-	(*EventLag)(nil),                     // 36: secsy.pki.v1.EventLag
-	(*StreamEventsResponse)(nil),         // 37: secsy.pki.v1.StreamEventsResponse
-	(*timestamppb.Timestamp)(nil),        // 38: google.protobuf.Timestamp
+	(*PrivateKeyUsagePeriod)(nil),        // 4: secsy.pki.v1.PrivateKeyUsagePeriod
+	(*IssueCertificateRequest)(nil),      // 5: secsy.pki.v1.IssueCertificateRequest
+	(*RenewCertificateRequest)(nil),      // 6: secsy.pki.v1.RenewCertificateRequest
+	(*CertificateResponse)(nil),          // 7: secsy.pki.v1.CertificateResponse
+	(*PreviewCertificateRequest)(nil),    // 8: secsy.pki.v1.PreviewCertificateRequest
+	(*PreviewGate)(nil),                  // 9: secsy.pki.v1.PreviewGate
+	(*PreviewExtension)(nil),             // 10: secsy.pki.v1.PreviewExtension
+	(*PreviewCertificateResponse)(nil),   // 11: secsy.pki.v1.PreviewCertificateResponse
+	(*ValidateChainRequest)(nil),         // 12: secsy.pki.v1.ValidateChainRequest
+	(*ValidationRevocation)(nil),         // 13: secsy.pki.v1.ValidationRevocation
+	(*ValidatedCertificate)(nil),         // 14: secsy.pki.v1.ValidatedCertificate
+	(*ValidationCheck)(nil),              // 15: secsy.pki.v1.ValidationCheck
+	(*ValidateChainResponse)(nil),        // 16: secsy.pki.v1.ValidateChainResponse
+	(*RevokeCertificateRequest)(nil),     // 17: secsy.pki.v1.RevokeCertificateRequest
+	(*RevokeCertificateResponse)(nil),    // 18: secsy.pki.v1.RevokeCertificateResponse
+	(*SuspendCertificateRequest)(nil),    // 19: secsy.pki.v1.SuspendCertificateRequest
+	(*SuspendCertificateResponse)(nil),   // 20: secsy.pki.v1.SuspendCertificateResponse
+	(*ReleaseCertificateRequest)(nil),    // 21: secsy.pki.v1.ReleaseCertificateRequest
+	(*ReleaseCertificateResponse)(nil),   // 22: secsy.pki.v1.ReleaseCertificateResponse
+	(*CertificateInfo)(nil),              // 23: secsy.pki.v1.CertificateInfo
+	(*GetCertificateRequest)(nil),        // 24: secsy.pki.v1.GetCertificateRequest
+	(*GetCertificateResponse)(nil),       // 25: secsy.pki.v1.GetCertificateResponse
+	(*GetCertificateStatusRequest)(nil),  // 26: secsy.pki.v1.GetCertificateStatusRequest
+	(*GetCertificateStatusResponse)(nil), // 27: secsy.pki.v1.GetCertificateStatusResponse
+	(*ListCertificatesRequest)(nil),      // 28: secsy.pki.v1.ListCertificatesRequest
+	(*ListCertificatesResponse)(nil),     // 29: secsy.pki.v1.ListCertificatesResponse
+	(*GetCRLMetadataRequest)(nil),        // 30: secsy.pki.v1.GetCRLMetadataRequest
+	(*GetCRLMetadataResponse)(nil),       // 31: secsy.pki.v1.GetCRLMetadataResponse
+	(*GetOCSPMetadataRequest)(nil),       // 32: secsy.pki.v1.GetOCSPMetadataRequest
+	(*GetOCSPMetadataResponse)(nil),      // 33: secsy.pki.v1.GetOCSPMetadataResponse
+	(*StreamEventsRequest)(nil),          // 34: secsy.pki.v1.StreamEventsRequest
+	(*AuditEvent)(nil),                   // 35: secsy.pki.v1.AuditEvent
+	(*EventHeartbeat)(nil),               // 36: secsy.pki.v1.EventHeartbeat
+	(*EventLag)(nil),                     // 37: secsy.pki.v1.EventLag
+	(*StreamEventsResponse)(nil),         // 38: secsy.pki.v1.StreamEventsResponse
+	(*timestamppb.Timestamp)(nil),        // 39: google.protobuf.Timestamp
 }
 var file_pki_v1_pki_proto_depIdxs = []int32{
 	1,  // 0: secsy.pki.v1.CTInfo.logs:type_name -> secsy.pki.v1.CTLogOutcome
 	3,  // 1: secsy.pki.v1.IssueCertificateRequest.psd2:type_name -> secsy.pki.v1.PSD2QCStatement
-	38, // 2: secsy.pki.v1.CertificateResponse.not_before:type_name -> google.protobuf.Timestamp
-	38, // 3: secsy.pki.v1.CertificateResponse.not_after:type_name -> google.protobuf.Timestamp
-	2,  // 4: secsy.pki.v1.CertificateResponse.ct:type_name -> secsy.pki.v1.CTInfo
-	3,  // 5: secsy.pki.v1.PreviewCertificateRequest.psd2:type_name -> secsy.pki.v1.PSD2QCStatement
-	38, // 6: secsy.pki.v1.PreviewCertificateResponse.not_before:type_name -> google.protobuf.Timestamp
-	38, // 7: secsy.pki.v1.PreviewCertificateResponse.not_after:type_name -> google.protobuf.Timestamp
-	9,  // 8: secsy.pki.v1.PreviewCertificateResponse.extensions:type_name -> secsy.pki.v1.PreviewExtension
-	8,  // 9: secsy.pki.v1.PreviewCertificateResponse.gates:type_name -> secsy.pki.v1.PreviewGate
-	38, // 10: secsy.pki.v1.ValidationRevocation.revoked_at:type_name -> google.protobuf.Timestamp
-	38, // 11: secsy.pki.v1.ValidatedCertificate.not_before:type_name -> google.protobuf.Timestamp
-	38, // 12: secsy.pki.v1.ValidatedCertificate.not_after:type_name -> google.protobuf.Timestamp
-	12, // 13: secsy.pki.v1.ValidatedCertificate.revocation:type_name -> secsy.pki.v1.ValidationRevocation
-	38, // 14: secsy.pki.v1.ValidateChainResponse.evaluated_at:type_name -> google.protobuf.Timestamp
-	38, // 15: secsy.pki.v1.ValidateChainResponse.valid_from:type_name -> google.protobuf.Timestamp
-	38, // 16: secsy.pki.v1.ValidateChainResponse.valid_until:type_name -> google.protobuf.Timestamp
-	13, // 17: secsy.pki.v1.ValidateChainResponse.chain:type_name -> secsy.pki.v1.ValidatedCertificate
-	14, // 18: secsy.pki.v1.ValidateChainResponse.checks:type_name -> secsy.pki.v1.ValidationCheck
-	38, // 19: secsy.pki.v1.CertificateInfo.not_before:type_name -> google.protobuf.Timestamp
-	38, // 20: secsy.pki.v1.CertificateInfo.not_after:type_name -> google.protobuf.Timestamp
-	0,  // 21: secsy.pki.v1.CertificateInfo.status:type_name -> secsy.pki.v1.CertificateStatus
-	38, // 22: secsy.pki.v1.CertificateInfo.revoked_at:type_name -> google.protobuf.Timestamp
-	38, // 23: secsy.pki.v1.CertificateInfo.created_at:type_name -> google.protobuf.Timestamp
-	22, // 24: secsy.pki.v1.GetCertificateResponse.certificate:type_name -> secsy.pki.v1.CertificateInfo
-	0,  // 25: secsy.pki.v1.GetCertificateStatusResponse.status:type_name -> secsy.pki.v1.CertificateStatus
-	38, // 26: secsy.pki.v1.GetCertificateStatusResponse.revoked_at:type_name -> google.protobuf.Timestamp
-	38, // 27: secsy.pki.v1.ListCertificatesRequest.expires_before:type_name -> google.protobuf.Timestamp
-	22, // 28: secsy.pki.v1.ListCertificatesResponse.certificates:type_name -> secsy.pki.v1.CertificateInfo
-	38, // 29: secsy.pki.v1.GetCRLMetadataResponse.this_update:type_name -> google.protobuf.Timestamp
-	38, // 30: secsy.pki.v1.GetCRLMetadataResponse.next_update:type_name -> google.protobuf.Timestamp
-	38, // 31: secsy.pki.v1.GetCRLMetadataResponse.delta_this_update:type_name -> google.protobuf.Timestamp
-	38, // 32: secsy.pki.v1.GetCRLMetadataResponse.delta_next_update:type_name -> google.protobuf.Timestamp
-	38, // 33: secsy.pki.v1.AuditEvent.timestamp:type_name -> google.protobuf.Timestamp
-	38, // 34: secsy.pki.v1.EventHeartbeat.time:type_name -> google.protobuf.Timestamp
-	34, // 35: secsy.pki.v1.StreamEventsResponse.event:type_name -> secsy.pki.v1.AuditEvent
-	35, // 36: secsy.pki.v1.StreamEventsResponse.heartbeat:type_name -> secsy.pki.v1.EventHeartbeat
-	36, // 37: secsy.pki.v1.StreamEventsResponse.lag:type_name -> secsy.pki.v1.EventLag
-	4,  // 38: secsy.pki.v1.PKIService.IssueCertificate:input_type -> secsy.pki.v1.IssueCertificateRequest
-	7,  // 39: secsy.pki.v1.PKIService.PreviewCertificate:input_type -> secsy.pki.v1.PreviewCertificateRequest
-	11, // 40: secsy.pki.v1.PKIService.ValidateChain:input_type -> secsy.pki.v1.ValidateChainRequest
-	5,  // 41: secsy.pki.v1.PKIService.RenewCertificate:input_type -> secsy.pki.v1.RenewCertificateRequest
-	16, // 42: secsy.pki.v1.PKIService.RevokeCertificate:input_type -> secsy.pki.v1.RevokeCertificateRequest
-	18, // 43: secsy.pki.v1.PKIService.SuspendCertificate:input_type -> secsy.pki.v1.SuspendCertificateRequest
-	20, // 44: secsy.pki.v1.PKIService.ReleaseCertificate:input_type -> secsy.pki.v1.ReleaseCertificateRequest
-	23, // 45: secsy.pki.v1.PKIService.GetCertificate:input_type -> secsy.pki.v1.GetCertificateRequest
-	25, // 46: secsy.pki.v1.PKIService.GetCertificateStatus:input_type -> secsy.pki.v1.GetCertificateStatusRequest
-	27, // 47: secsy.pki.v1.PKIService.ListCertificates:input_type -> secsy.pki.v1.ListCertificatesRequest
-	29, // 48: secsy.pki.v1.PKIService.GetCRLMetadata:input_type -> secsy.pki.v1.GetCRLMetadataRequest
-	31, // 49: secsy.pki.v1.PKIService.GetOCSPMetadata:input_type -> secsy.pki.v1.GetOCSPMetadataRequest
-	33, // 50: secsy.pki.v1.PKIService.StreamEvents:input_type -> secsy.pki.v1.StreamEventsRequest
-	6,  // 51: secsy.pki.v1.PKIService.IssueCertificate:output_type -> secsy.pki.v1.CertificateResponse
-	10, // 52: secsy.pki.v1.PKIService.PreviewCertificate:output_type -> secsy.pki.v1.PreviewCertificateResponse
-	15, // 53: secsy.pki.v1.PKIService.ValidateChain:output_type -> secsy.pki.v1.ValidateChainResponse
-	6,  // 54: secsy.pki.v1.PKIService.RenewCertificate:output_type -> secsy.pki.v1.CertificateResponse
-	17, // 55: secsy.pki.v1.PKIService.RevokeCertificate:output_type -> secsy.pki.v1.RevokeCertificateResponse
-	19, // 56: secsy.pki.v1.PKIService.SuspendCertificate:output_type -> secsy.pki.v1.SuspendCertificateResponse
-	21, // 57: secsy.pki.v1.PKIService.ReleaseCertificate:output_type -> secsy.pki.v1.ReleaseCertificateResponse
-	24, // 58: secsy.pki.v1.PKIService.GetCertificate:output_type -> secsy.pki.v1.GetCertificateResponse
-	26, // 59: secsy.pki.v1.PKIService.GetCertificateStatus:output_type -> secsy.pki.v1.GetCertificateStatusResponse
-	28, // 60: secsy.pki.v1.PKIService.ListCertificates:output_type -> secsy.pki.v1.ListCertificatesResponse
-	30, // 61: secsy.pki.v1.PKIService.GetCRLMetadata:output_type -> secsy.pki.v1.GetCRLMetadataResponse
-	32, // 62: secsy.pki.v1.PKIService.GetOCSPMetadata:output_type -> secsy.pki.v1.GetOCSPMetadataResponse
-	37, // 63: secsy.pki.v1.PKIService.StreamEvents:output_type -> secsy.pki.v1.StreamEventsResponse
-	51, // [51:64] is the sub-list for method output_type
-	38, // [38:51] is the sub-list for method input_type
-	38, // [38:38] is the sub-list for extension type_name
-	38, // [38:38] is the sub-list for extension extendee
-	0,  // [0:38] is the sub-list for field type_name
+	4,  // 2: secsy.pki.v1.IssueCertificateRequest.private_key_usage_period:type_name -> secsy.pki.v1.PrivateKeyUsagePeriod
+	39, // 3: secsy.pki.v1.CertificateResponse.not_before:type_name -> google.protobuf.Timestamp
+	39, // 4: secsy.pki.v1.CertificateResponse.not_after:type_name -> google.protobuf.Timestamp
+	2,  // 5: secsy.pki.v1.CertificateResponse.ct:type_name -> secsy.pki.v1.CTInfo
+	3,  // 6: secsy.pki.v1.PreviewCertificateRequest.psd2:type_name -> secsy.pki.v1.PSD2QCStatement
+	4,  // 7: secsy.pki.v1.PreviewCertificateRequest.private_key_usage_period:type_name -> secsy.pki.v1.PrivateKeyUsagePeriod
+	39, // 8: secsy.pki.v1.PreviewCertificateResponse.not_before:type_name -> google.protobuf.Timestamp
+	39, // 9: secsy.pki.v1.PreviewCertificateResponse.not_after:type_name -> google.protobuf.Timestamp
+	10, // 10: secsy.pki.v1.PreviewCertificateResponse.extensions:type_name -> secsy.pki.v1.PreviewExtension
+	9,  // 11: secsy.pki.v1.PreviewCertificateResponse.gates:type_name -> secsy.pki.v1.PreviewGate
+	39, // 12: secsy.pki.v1.ValidationRevocation.revoked_at:type_name -> google.protobuf.Timestamp
+	39, // 13: secsy.pki.v1.ValidatedCertificate.not_before:type_name -> google.protobuf.Timestamp
+	39, // 14: secsy.pki.v1.ValidatedCertificate.not_after:type_name -> google.protobuf.Timestamp
+	13, // 15: secsy.pki.v1.ValidatedCertificate.revocation:type_name -> secsy.pki.v1.ValidationRevocation
+	39, // 16: secsy.pki.v1.ValidateChainResponse.evaluated_at:type_name -> google.protobuf.Timestamp
+	39, // 17: secsy.pki.v1.ValidateChainResponse.valid_from:type_name -> google.protobuf.Timestamp
+	39, // 18: secsy.pki.v1.ValidateChainResponse.valid_until:type_name -> google.protobuf.Timestamp
+	14, // 19: secsy.pki.v1.ValidateChainResponse.chain:type_name -> secsy.pki.v1.ValidatedCertificate
+	15, // 20: secsy.pki.v1.ValidateChainResponse.checks:type_name -> secsy.pki.v1.ValidationCheck
+	39, // 21: secsy.pki.v1.CertificateInfo.not_before:type_name -> google.protobuf.Timestamp
+	39, // 22: secsy.pki.v1.CertificateInfo.not_after:type_name -> google.protobuf.Timestamp
+	0,  // 23: secsy.pki.v1.CertificateInfo.status:type_name -> secsy.pki.v1.CertificateStatus
+	39, // 24: secsy.pki.v1.CertificateInfo.revoked_at:type_name -> google.protobuf.Timestamp
+	39, // 25: secsy.pki.v1.CertificateInfo.created_at:type_name -> google.protobuf.Timestamp
+	23, // 26: secsy.pki.v1.GetCertificateResponse.certificate:type_name -> secsy.pki.v1.CertificateInfo
+	0,  // 27: secsy.pki.v1.GetCertificateStatusResponse.status:type_name -> secsy.pki.v1.CertificateStatus
+	39, // 28: secsy.pki.v1.GetCertificateStatusResponse.revoked_at:type_name -> google.protobuf.Timestamp
+	39, // 29: secsy.pki.v1.ListCertificatesRequest.expires_before:type_name -> google.protobuf.Timestamp
+	23, // 30: secsy.pki.v1.ListCertificatesResponse.certificates:type_name -> secsy.pki.v1.CertificateInfo
+	39, // 31: secsy.pki.v1.GetCRLMetadataResponse.this_update:type_name -> google.protobuf.Timestamp
+	39, // 32: secsy.pki.v1.GetCRLMetadataResponse.next_update:type_name -> google.protobuf.Timestamp
+	39, // 33: secsy.pki.v1.GetCRLMetadataResponse.delta_this_update:type_name -> google.protobuf.Timestamp
+	39, // 34: secsy.pki.v1.GetCRLMetadataResponse.delta_next_update:type_name -> google.protobuf.Timestamp
+	39, // 35: secsy.pki.v1.AuditEvent.timestamp:type_name -> google.protobuf.Timestamp
+	39, // 36: secsy.pki.v1.EventHeartbeat.time:type_name -> google.protobuf.Timestamp
+	35, // 37: secsy.pki.v1.StreamEventsResponse.event:type_name -> secsy.pki.v1.AuditEvent
+	36, // 38: secsy.pki.v1.StreamEventsResponse.heartbeat:type_name -> secsy.pki.v1.EventHeartbeat
+	37, // 39: secsy.pki.v1.StreamEventsResponse.lag:type_name -> secsy.pki.v1.EventLag
+	5,  // 40: secsy.pki.v1.PKIService.IssueCertificate:input_type -> secsy.pki.v1.IssueCertificateRequest
+	8,  // 41: secsy.pki.v1.PKIService.PreviewCertificate:input_type -> secsy.pki.v1.PreviewCertificateRequest
+	12, // 42: secsy.pki.v1.PKIService.ValidateChain:input_type -> secsy.pki.v1.ValidateChainRequest
+	6,  // 43: secsy.pki.v1.PKIService.RenewCertificate:input_type -> secsy.pki.v1.RenewCertificateRequest
+	17, // 44: secsy.pki.v1.PKIService.RevokeCertificate:input_type -> secsy.pki.v1.RevokeCertificateRequest
+	19, // 45: secsy.pki.v1.PKIService.SuspendCertificate:input_type -> secsy.pki.v1.SuspendCertificateRequest
+	21, // 46: secsy.pki.v1.PKIService.ReleaseCertificate:input_type -> secsy.pki.v1.ReleaseCertificateRequest
+	24, // 47: secsy.pki.v1.PKIService.GetCertificate:input_type -> secsy.pki.v1.GetCertificateRequest
+	26, // 48: secsy.pki.v1.PKIService.GetCertificateStatus:input_type -> secsy.pki.v1.GetCertificateStatusRequest
+	28, // 49: secsy.pki.v1.PKIService.ListCertificates:input_type -> secsy.pki.v1.ListCertificatesRequest
+	30, // 50: secsy.pki.v1.PKIService.GetCRLMetadata:input_type -> secsy.pki.v1.GetCRLMetadataRequest
+	32, // 51: secsy.pki.v1.PKIService.GetOCSPMetadata:input_type -> secsy.pki.v1.GetOCSPMetadataRequest
+	34, // 52: secsy.pki.v1.PKIService.StreamEvents:input_type -> secsy.pki.v1.StreamEventsRequest
+	7,  // 53: secsy.pki.v1.PKIService.IssueCertificate:output_type -> secsy.pki.v1.CertificateResponse
+	11, // 54: secsy.pki.v1.PKIService.PreviewCertificate:output_type -> secsy.pki.v1.PreviewCertificateResponse
+	16, // 55: secsy.pki.v1.PKIService.ValidateChain:output_type -> secsy.pki.v1.ValidateChainResponse
+	7,  // 56: secsy.pki.v1.PKIService.RenewCertificate:output_type -> secsy.pki.v1.CertificateResponse
+	18, // 57: secsy.pki.v1.PKIService.RevokeCertificate:output_type -> secsy.pki.v1.RevokeCertificateResponse
+	20, // 58: secsy.pki.v1.PKIService.SuspendCertificate:output_type -> secsy.pki.v1.SuspendCertificateResponse
+	22, // 59: secsy.pki.v1.PKIService.ReleaseCertificate:output_type -> secsy.pki.v1.ReleaseCertificateResponse
+	25, // 60: secsy.pki.v1.PKIService.GetCertificate:output_type -> secsy.pki.v1.GetCertificateResponse
+	27, // 61: secsy.pki.v1.PKIService.GetCertificateStatus:output_type -> secsy.pki.v1.GetCertificateStatusResponse
+	29, // 62: secsy.pki.v1.PKIService.ListCertificates:output_type -> secsy.pki.v1.ListCertificatesResponse
+	31, // 63: secsy.pki.v1.PKIService.GetCRLMetadata:output_type -> secsy.pki.v1.GetCRLMetadataResponse
+	33, // 64: secsy.pki.v1.PKIService.GetOCSPMetadata:output_type -> secsy.pki.v1.GetOCSPMetadataResponse
+	38, // 65: secsy.pki.v1.PKIService.StreamEvents:output_type -> secsy.pki.v1.StreamEventsResponse
+	53, // [53:66] is the sub-list for method output_type
+	40, // [40:53] is the sub-list for method input_type
+	40, // [40:40] is the sub-list for extension type_name
+	40, // [40:40] is the sub-list for extension extendee
+	0,  // [0:40] is the sub-list for field type_name
 }
 
 func init() { file_pki_v1_pki_proto_init() }
@@ -3749,10 +3854,10 @@ func file_pki_v1_pki_proto_init() {
 	if File_pki_v1_pki_proto != nil {
 		return
 	}
-	file_pki_v1_pki_proto_msgTypes[3].OneofWrappers = []any{}
-	file_pki_v1_pki_proto_msgTypes[6].OneofWrappers = []any{}
-	file_pki_v1_pki_proto_msgTypes[28].OneofWrappers = []any{}
-	file_pki_v1_pki_proto_msgTypes[36].OneofWrappers = []any{
+	file_pki_v1_pki_proto_msgTypes[4].OneofWrappers = []any{}
+	file_pki_v1_pki_proto_msgTypes[7].OneofWrappers = []any{}
+	file_pki_v1_pki_proto_msgTypes[29].OneofWrappers = []any{}
+	file_pki_v1_pki_proto_msgTypes[37].OneofWrappers = []any{
 		(*StreamEventsResponse_Event)(nil),
 		(*StreamEventsResponse_Heartbeat)(nil),
 		(*StreamEventsResponse_Lag)(nil),
@@ -3763,7 +3868,7 @@ func file_pki_v1_pki_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pki_v1_pki_proto_rawDesc), len(file_pki_v1_pki_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   37,
+			NumMessages:   38,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

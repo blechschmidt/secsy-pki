@@ -690,6 +690,9 @@ func cmdIssue(db *database.DB, mgr *ca.Manager, args []string) error {
 	fs.Var(&psd2Roles, "psd2-role", "PSD2 payment-service-provider role for the eIDAS QCStatements extension: PSP_AS, PSP_PI, PSP_AI, or PSP_IC (repeatable; requires a QC profile with allow_psd2_override)")
 	psd2NCAName := fs.String("psd2-nca-name", "", "PSD2 National Competent Authority name (e.g. \"Financial Conduct Authority\"); required with -psd2-role")
 	psd2NCAID := fs.String("psd2-nca-id", "", "PSD2 National Competent Authority identifier (e.g. GB-FCA); required with -psd2-role")
+	pkup := fs.String("pkup", "", "private-key usage period as a duration from notBefore (e.g. 365d, 8760h): the id-ce-privateKeyUsagePeriod window during which the key may sign; requires a profile with private_key_usage_period.allow_override")
+	pkupNotBefore := fs.String("pkup-not-before", "", "explicit private-key usage period notBefore (RFC 3339); alternative to -pkup")
+	pkupNotAfter := fs.String("pkup-not-after", "", "explicit private-key usage period notAfter (RFC 3339); alternative to -pkup")
 	dryRun := fs.Bool("dry-run", false, "validate the request through the full pre-issuance gate stack and print the result WITHOUT issuing (no HSM signature, no serial, no record); exits non-zero if the request would be rejected")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -700,6 +703,14 @@ func cmdIssue(db *database.DB, mgr *ca.Manager, args []string) error {
 	var psd2 *models.PSD2QCStatement
 	if len(psd2Roles) > 0 || *psd2NCAName != "" || *psd2NCAID != "" {
 		psd2 = &models.PSD2QCStatement{Roles: psd2Roles, NCAName: *psd2NCAName, NCAID: *psd2NCAID}
+	}
+	// Assemble the optional per-request private-key usage period override (Task
+	// 132). Sent only when a field is supplied; the server rejects it unless the
+	// selected profile permits per-request overrides (private_key_usage_period.
+	// allow_override).
+	var pkupOverride *models.PrivateKeyUsagePeriod
+	if *pkup != "" || *pkupNotBefore != "" || *pkupNotAfter != "" {
+		pkupOverride = &models.PrivateKeyUsagePeriod{Duration: *pkup, NotBefore: *pkupNotBefore, NotAfter: *pkupNotAfter}
 	}
 	if *caRef == "" || *csrPath == "" {
 		fs.Usage()
@@ -720,13 +731,14 @@ func cmdIssue(db *database.DB, mgr *ca.Manager, args []string) error {
 	// manual-approval gate; the approval verdict reflects only the profile's intent.
 	if *dryRun {
 		preview, err := mgr.PreviewIssuance(context.Background(), ca.PreviewSpec{
-			CAID:        caID,
-			CSRPEM:      csrPEM,
-			Profile:     *profile,
-			Validity:    daysToDuration(*validityDays),
-			RequestedBy: "secsy-ca-cli",
-			UPNs:        upns,
-			PSD2:        psd2,
+			CAID:                  caID,
+			CSRPEM:                csrPEM,
+			Profile:               *profile,
+			Validity:              daysToDuration(*validityDays),
+			RequestedBy:           "secsy-ca-cli",
+			UPNs:                  upns,
+			PSD2:                  psd2,
+			PrivateKeyUsagePeriod: pkupOverride,
 		})
 		if err != nil {
 			return err
@@ -739,13 +751,14 @@ func cmdIssue(db *database.DB, mgr *ca.Manager, args []string) error {
 	}
 
 	result, err := mgr.IssueCertificate(context.Background(), ca.IssueSpec{
-		CAID:        caID,
-		CSRPEM:      csrPEM,
-		Profile:     *profile,
-		Validity:    daysToDuration(*validityDays),
-		RequestedBy: "secsy-ca-cli",
-		UPNs:        upns,
-		PSD2:        psd2,
+		CAID:                  caID,
+		CSRPEM:                csrPEM,
+		Profile:               *profile,
+		Validity:              daysToDuration(*validityDays),
+		RequestedBy:           "secsy-ca-cli",
+		UPNs:                  upns,
+		PSD2:                  psd2,
+		PrivateKeyUsagePeriod: pkupOverride,
 	})
 	if err != nil {
 		return err
@@ -1227,6 +1240,9 @@ func installConfigProfiles(cfg *config.Config) error {
 		if p.QCStatements != nil {
 			prof.QCStatements = qcStatementsConfigFromConfig(p.QCStatements)
 		}
+		if p.PrivateKeyUsagePeriod != nil {
+			prof.PrivateKeyUsagePeriod = pkupConfigFromConfig(p.PrivateKeyUsagePeriod)
+		}
 		profiles = append(profiles, prof)
 	}
 	return ca.SetCustomProfiles(profiles)
@@ -1255,6 +1271,21 @@ func qcStatementsConfigFromConfig(c *config.ProfileQCStatementsConfig) *ca.QCSta
 		}
 	}
 	return out
+}
+
+// pkupConfigFromConfig converts a profile's RFC 5280 private-key usage period
+// configuration (id-ce-privateKeyUsagePeriod, Task 132) into the
+// ca.PrivateKeyUsagePeriodConfig consumed by the issuance path. Field validation
+// is deferred to ca.SetCustomProfiles (which reuses the same resolve path as
+// issuance).
+func pkupConfigFromConfig(c *config.ProfilePrivateKeyUsagePeriodConfig) *ca.PrivateKeyUsagePeriodConfig {
+	return &ca.PrivateKeyUsagePeriodConfig{
+		Duration:      c.Duration,
+		Fraction:      c.Fraction,
+		NotBefore:     c.NotBefore,
+		NotAfter:      c.NotAfter,
+		AllowOverride: c.AllowOverride,
+	}
 }
 
 // zlintConfigFromConfig converts a profile's zlint configuration into the

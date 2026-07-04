@@ -79,14 +79,15 @@ func (a *API) IssueCertificate(w http.ResponseWriter, r *http.Request) {
 
 	a.consumeHSMAuditLogs("")
 	result, err := mgr.IssueCertificate(r.Context(), ca.IssueSpec{
-		CAID:        caID,
-		CSRPEM:      []byte(req.CSR),
-		Profile:     req.Profile,
-		Validity:    daysToDuration(a.capValidityDays(req.ValidityDays)),
-		RequestedBy: user.Subject,
-		MustStaple:  req.MustStaple,
-		UPNs:        req.UPNs,
-		PSD2:        req.PSD2,
+		CAID:                  caID,
+		CSRPEM:                []byte(req.CSR),
+		Profile:               req.Profile,
+		Validity:              daysToDuration(a.capValidityDays(req.ValidityDays)),
+		RequestedBy:           user.Subject,
+		MustStaple:            req.MustStaple,
+		UPNs:                  req.UPNs,
+		PSD2:                  req.PSD2,
+		PrivateKeyUsagePeriod: req.PrivateKeyUsagePeriod,
 	})
 	a.consumeHSMAuditLogs("")
 	metrics.RecordCertificate("issue", err)

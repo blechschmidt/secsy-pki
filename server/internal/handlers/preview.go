@@ -143,14 +143,15 @@ func (a *API) attestationPreviewGate(profileName string) ca.GateVerdict {
 // gate can report a request that exceeds the profile maximum.
 func previewSpecFromRequest(caID string, req models.PreviewCertRequest, user *models.UserInfo) (ca.PreviewSpec, error) {
 	spec := ca.PreviewSpec{
-		CAID:        caID,
-		CSRPEM:      []byte(req.CSR),
-		Profile:     req.Profile,
-		Validity:    daysToDuration(req.ValidityDays),
-		RequestedBy: user.Subject,
-		MustStaple:  req.MustStaple,
-		UPNs:        req.UPNs,
-		PSD2:        req.PSD2,
+		CAID:                  caID,
+		CSRPEM:                []byte(req.CSR),
+		Profile:               req.Profile,
+		Validity:              daysToDuration(req.ValidityDays),
+		RequestedBy:           user.Subject,
+		MustStaple:            req.MustStaple,
+		UPNs:                  req.UPNs,
+		PSD2:                  req.PSD2,
+		PrivateKeyUsagePeriod: req.PrivateKeyUsagePeriod,
 	}
 	if req.CSR == "" {
 		spec.Subject = pkix.Name{CommonName: req.CommonName}

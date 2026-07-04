@@ -267,6 +267,11 @@ func (m *Manager) issuePQCLeaf(ctx context.Context, spec IssueSpec, issuerCA *mo
 	if base, err = applyQCStatements(base, profile, spec.PSD2); err != nil {
 		return nil, err
 	}
+	// Stamp the RFC 5280 private-key usage period (id-ce-privateKeyUsagePeriod,
+	// Task 132) before linting, mirroring the classical path.
+	if base, err = applyPrivateKeyUsagePeriod(base, profile, spec.PrivateKeyUsagePeriod); err != nil {
+		return nil, err
+	}
 	if err := m.lintLeaf(base, profile, issuerCA, issuerCert, spec.RequestedBy); err != nil {
 		return nil, err
 	}
@@ -333,6 +338,11 @@ func (m *Manager) issueHybridLeaf(ctx context.Context, spec IssueSpec, issuerCA 
 	// Stamp the eIDAS QCStatements extension (ETSI EN 319 412-5, Task 128) before
 	// linting, mirroring the classical path.
 	if base, err = applyQCStatements(base, profile, spec.PSD2); err != nil {
+		return nil, err
+	}
+	// Stamp the RFC 5280 private-key usage period (id-ce-privateKeyUsagePeriod,
+	// Task 132) before linting, mirroring the classical path.
+	if base, err = applyPrivateKeyUsagePeriod(base, profile, spec.PrivateKeyUsagePeriod); err != nil {
 		return nil, err
 	}
 	if err := m.lintLeaf(base, profile, issuerCA, issuerCert, spec.RequestedBy); err != nil {

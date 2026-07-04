@@ -80,6 +80,13 @@ type IssueSpec struct {
 	// (allow_psd2_override); on any other profile it is a hard error. Set by the
 	// REST/gRPC/CLI issue paths from an optional per-request field.
 	PSD2 *models.PSD2QCStatement
+
+	// PrivateKeyUsagePeriod optionally overrides the profile's RFC 5280
+	// id-ce-privateKeyUsagePeriod window (Task 132) for this one certificate. It is
+	// honored only under a profile whose private_key_usage_period block permits
+	// overrides (allow_override); on any other profile it is a hard error. Set by
+	// the REST/gRPC/CLI issue paths from an optional per-request field.
+	PrivateKeyUsagePeriod *models.PrivateKeyUsagePeriod
 }
 
 // IssueResult is the outcome of issuing an end-entity certificate.
@@ -173,6 +180,7 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 		URIs:           uris,
 		UPNs:           spec.UPNs,
 		psd2:           spec.PSD2,
+		pkup:           spec.PrivateKeyUsagePeriod,
 		Marker:         spec.Marker,
 		caaContext: caa.RequestContext{
 			AccountURI:        spec.ACMEAccountURI,
@@ -213,6 +221,10 @@ type TemplateIssueSpec struct {
 	// eIDAS QCStatements extension (Task 128), honored only under a QC-enabled
 	// profile that permits per-request PSD2 overrides.
 	PSD2 *models.PSD2QCStatement
+	// PrivateKeyUsagePeriod optionally overrides the profile's RFC 5280
+	// id-ce-privateKeyUsagePeriod window (Task 132), honored only under a profile
+	// whose private_key_usage_period block permits per-request overrides.
+	PrivateKeyUsagePeriod *models.PrivateKeyUsagePeriod
 	// Marker tags the stored record as synthetic (e.g. models.CertMarkerServingTLS
 	// for the self-managed serving-TLS certificate) so monitoring and reports can
 	// exclude it. It is internal plumbing; the REST/gRPC layers never set it.
@@ -257,6 +269,7 @@ func (m *Manager) IssueCertificateFromTemplate(ctx context.Context, spec Templat
 		URIs:           spec.URIs,
 		UPNs:           spec.UPNs,
 		psd2:           spec.PSD2,
+		pkup:           spec.PrivateKeyUsagePeriod,
 		Marker:         spec.Marker,
 		mustStaple:     spec.MustStaple,
 	}, spec.Validity, spec.RequestedBy)
@@ -277,7 +290,10 @@ type leafParts struct {
 	UPNs []string
 	// psd2 is the per-request ETSI TS 119 495 PSD2 authorization override for the
 	// eIDAS QCStatements extension (Task 128), if any.
-	psd2   *models.PSD2QCStatement
+	psd2 *models.PSD2QCStatement
+	// pkup is the per-request RFC 5280 private-key usage period override
+	// (id-ce-privateKeyUsagePeriod, Task 132), if any.
+	pkup   *models.PrivateKeyUsagePeriod
 	Marker string
 	// caaContext carries the RFC 8657 CAA-binding facts of the request (ACME
 	// account URI and per-identifier validation method) into buildLeaf's CAA gate.
@@ -364,6 +380,17 @@ func (m *Manager) issueLeaf(ctx context.Context, issuerCA *models.CA, issuerCert
 	// part of base.ExtraExtensions, is carried identically by the precertificate
 	// and the final certificate (keeping the TBSCertificates aligned for CT).
 	base, err = applyQCStatements(base, profile, parts.psd2)
+	if err != nil {
+		return nil, err
+	}
+
+	// Stamp the RFC 5280 private-key usage period (id-ce-privateKeyUsagePeriod,
+	// Task 132) when the profile configures one, merging any per-request override.
+	// Resolved against this leaf's validity window (base.NotBefore/NotAfter) so a
+	// duration/fraction is computed from the actual window, and applied here — like
+	// QCStatements — so it is present for the pre-issuance lint gate and carried
+	// identically by the precertificate and the final certificate.
+	base, err = applyPrivateKeyUsagePeriod(base, profile, parts.pkup)
 	if err != nil {
 		return nil, err
 	}
@@ -546,7 +573,7 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (_ *Issu
 	// Must-Staple commitment the subscriber already relies on.
 	mustStaple := profile.MustStaple || certHasMustStaple(priorCert)
 
-	der, ctStatus, err := m.buildLeaf(ctx, signer, issuerCA, issuerCert, pki.LeafCertRequest{
+	renewBase := pki.LeafCertRequest{
 		Subject:               subject,
 		PublicKey:             publicKey,
 		Serial:                serial,
@@ -561,7 +588,18 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (_ *Issu
 		URIs:                  uris,
 		UPNs:                  upns,
 		CRLDistributionPoints: leafCRLDistributionPoints(issuerCA.ID, serial),
-	}, profile, spec.RequestedBy, caa.RequestContext{}, mustStaple)
+	}
+	// Re-apply the profile's RFC 5280 private-key usage period (Task 132) on
+	// renewal, recomputed against the new validity window (a duration/fraction must
+	// be measured from the fresh notBefore/notAfter, so copying the prior cert's
+	// absolute bounds would be wrong). Renewal takes no per-request override.
+	renewBase, err = applyPrivateKeyUsagePeriod(renewBase, profile, nil)
+	if err != nil {
+		return nil, fmt.Errorf("applying private-key usage period: %w", err)
+	}
+
+	der, ctStatus, err := m.buildLeaf(ctx, signer, issuerCA, issuerCert, renewBase,
+		profile, spec.RequestedBy, caa.RequestContext{}, mustStaple)
 	if err != nil {
 		return nil, fmt.Errorf("creating renewed certificate: %w", err)
 	}

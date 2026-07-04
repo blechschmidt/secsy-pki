@@ -68,6 +68,7 @@ const (
 	GateCertPolicy      = "certificate_policy"
 	GateMustStaple      = "must_staple"
 	GateQCStatements    = "qcstatements"
+	GatePrivateKeyUsage = "private_key_usage_period"
 	GateLint            = "lint"
 	GateCAA             = "caa"
 	GateNameConstraints = "name_constraints"
@@ -138,6 +139,11 @@ type PreviewSpec struct {
 	// the issuance path enforces (honored only under a QC-enabled profile that
 	// permits per-request PSD2 overrides).
 	PSD2 *models.PSD2QCStatement
+	// PrivateKeyUsagePeriod optionally overrides the profile's RFC 5280
+	// id-ce-privateKeyUsagePeriod window (Task 132), previewed through the same
+	// resolution the issuance path enforces (honored only under a profile that
+	// permits per-request overrides).
+	PrivateKeyUsagePeriod *models.PrivateKeyUsagePeriod
 	// ACMEAccountURI / ValidationMethods carry the RFC 8657 CAA-binding facts of an
 	// ACME-driven request into the CAA gate; the zero value on every other path.
 	ACMEAccountURI    string
@@ -389,6 +395,22 @@ func (m *Manager) PreviewIssuance(ctx context.Context, spec PreviewSpec) (_ *Pre
 		result.Gates = append(result.Gates, skippedGate(GateQCStatements, "profile assigns no eIDAS QC statements"))
 	}
 
+	// 3c. RFC 5280 private-key usage period (id-ce-privateKeyUsagePeriod, Task 132) —
+	// the profile's configured signing window plus any per-request override,
+	// resolved against this leaf's validity exactly as the issuance path does.
+	if pk, present, pkErr := profile.privateKeyUsagePeriod(parts.pkup, base.NotBefore, base.NotAfter); pkErr != nil {
+		result.Gates = append(result.Gates, failGate(GatePrivateKeyUsage, pkErr.Error()))
+	} else if present {
+		var aerr error
+		if base, aerr = applyPrivateKeyUsagePeriod(base, profile, parts.pkup); aerr != nil {
+			result.Gates = append(result.Gates, failGate(GatePrivateKeyUsage, aerr.Error()))
+		} else {
+			result.Gates = append(result.Gates, passGate(GatePrivateKeyUsage, describePrivateKeyUsagePeriod(pk)))
+		}
+	} else {
+		result.Gates = append(result.Gates, skippedGate(GatePrivateKeyUsage, "profile assigns no private-key usage period"))
+	}
+
 	// 4. Pre-issuance lint (certlint + optional zlint) on the to-be-signed template.
 	if profile.lintEnabled() {
 		res, lerr := m.lintResult(base, profile, issuerCert)
@@ -516,6 +538,7 @@ func previewLeafParts(spec PreviewSpec) (parts leafParts, keyProvided bool, err 
 			URIs:           uris,
 			UPNs:           append(pki.UPNsFromCSR(csr), spec.UPNs...),
 			psd2:           spec.PSD2,
+			pkup:           spec.PrivateKeyUsagePeriod,
 		}, true, nil
 	}
 	if spec.Subject.CommonName == "" && len(spec.DNSNames) == 0 && len(spec.UPNs) == 0 &&
@@ -538,6 +561,7 @@ func previewLeafParts(spec PreviewSpec) (parts leafParts, keyProvided bool, err 
 		URIs:           spec.URIs,
 		UPNs:           spec.UPNs,
 		psd2:           spec.PSD2,
+		pkup:           spec.PrivateKeyUsagePeriod,
 	}, false, nil
 }
 
@@ -681,6 +705,7 @@ var previewExtensionNames = map[string]string{
 	"2.5.29.36":               "policyConstraints",
 	"2.5.29.37":               "extKeyUsage",
 	"1.3.6.1.5.5.7.1.1":       "authorityInfoAccess",
+	"2.5.29.16":               "privateKeyUsagePeriod",
 	"1.3.6.1.5.5.7.1.3":       "qcStatements",
 	"1.3.6.1.5.5.7.1.24":      "tlsFeature",
 	"1.3.6.1.4.1.11129.2.4.2": "ctSignedCertificateTimestampList",
