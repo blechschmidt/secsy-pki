@@ -676,3 +676,41 @@ approvals:
   #   ca.create: 2
   #   token.create: 2
   #   revocation.bulk: 3
+
+# Scheduled encrypted backups (Task 89): a leader-elected background job that
+# periodically produces the disaster-recovery backup artifact — a logical
+# database dump (SQLite VACUUM INTO snapshot, or pg_dump for PostgreSQL), the
+# running config, the public CA material, and the audit-chain head fingerprint —
+# envelope-encrypts it under the HSM-backed secret KEK, and writes it to a local
+# directory or S3-compatible store with an atomic swap, a manifest, and keep-N /
+# max-age retention. It never blocks issuance and is a no-op on non-leader
+# replicas. Disabled unless backup.enabled is set. See docs/backup.md.
+backup:
+  enabled: false
+  schedule:
+    interval_hours: 24          # how often a backup runs (default 24); one runs
+                                # immediately on leadership gain, then per interval
+  # kek_label is the secret-layer KEK the artifact is encrypted under. Empty
+  # inherits secret.kek_label; at least one must be set when enabled.
+  kek_label: ""
+  # include_config bundles this config file into the (encrypted) artifact so a
+  # restore has the exact configuration. Default true.
+  include_config: true
+  retention:
+    keep: 7                     # keep the N most-recent backups (default 7)
+    max_age_days: 30            # also delete backups older than this (0 = no age
+                                # limit); the current backup is always kept
+  # Destination — reuses the publish backends. Setting s3.bucket selects S3,
+  # otherwise the local directory is used.
+  dir:
+    path: "/var/lib/secsy-pki/backups"
+    # keep_snapshots is derived from retention.keep.
+  s3:
+    bucket: ""                  # set to enable the S3 backend
+    region: "us-east-1"
+    endpoint: ""                # e.g. http://minio:9000 for S3-compatible stores
+    prefix: "secsy-backups"
+    access_key_id: ""           # empty uses the default AWS credential chain
+    secret_access_key: ""
+    # NOTE: an S3 destination keeps only the latest backup (fixed keys); use
+    # bucket versioning + lifecycle rules for keep-N / max-age history.

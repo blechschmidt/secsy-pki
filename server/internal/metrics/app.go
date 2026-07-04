@@ -624,6 +624,32 @@ var (
 		"backend")
 )
 
+// Backup* track the scheduled encrypted-backup job (Task 89): BackupRuns counts
+// completed runs by result; BackupDuration times them; BackupArtifactBytes is
+// the size of the most recent encrypted artifact; BackupRetainedSnapshots is
+// how many backups the destination held after the last retention pass;
+// BackupLastSuccess plus the staleness FuncGauge expose how long since a backup
+// last succeeded.
+var (
+	BackupRuns = NewCounter(Default,
+		"secsy_backup_runs_total",
+		"Scheduled encrypted-backup runs, partitioned by result (success|error).",
+		"result")
+	BackupDuration = NewHistogram(Default,
+		"secsy_backup_duration_seconds",
+		"Duration of scheduled encrypted-backup runs in seconds.",
+		BatchBuckets)
+	BackupArtifactBytes = NewGauge(Default,
+		"secsy_backup_artifact_bytes",
+		"Size in bytes of the most recent successful encrypted backup artifact.")
+	BackupRetainedSnapshots = NewGauge(Default,
+		"secsy_backup_retained_snapshots",
+		"Number of backups retained at the destination after the last successful retention pass.")
+	BackupLastSuccess = NewGauge(Default,
+		"secsy_backup_last_success_timestamp_seconds",
+		"Unix timestamp (seconds) of the last successful scheduled backup.")
+)
+
 // BatchBuckets covers background batch work (pre-signing, publishing), which
 // runs from well under a second on small deployments to minutes on large ones —
 // a range DefBuckets (tuned for per-request latency) tops out far below.
@@ -639,6 +665,7 @@ var (
 	ocspPresignLastSuccessNano atomic.Int64
 	publishLastSuccessNano     atomic.Int64
 	auditAnchorLastNano        atomic.Int64
+	backupLastSuccessNano      atomic.Int64
 
 	_ = NewFuncGauge(Default,
 		"secsy_ocsp_presign_staleness_seconds",
@@ -648,6 +675,10 @@ var (
 		"secsy_publish_staleness_seconds",
 		"Seconds since the last successful static artifact publish (any backend). Absent until the first publish succeeds.",
 		func() (float64, bool) { return sinceNano(publishLastSuccessNano.Load()) })
+	_ = NewFuncGauge(Default,
+		"secsy_backup_staleness_seconds",
+		"Seconds since the last successful scheduled encrypted backup. Absent until the first backup succeeds.",
+		func() (float64, bool) { return sinceNano(backupLastSuccessNano.Load()) })
 	_ = NewFuncGauge(Default,
 		"secsy_audit_anchor_age_seconds",
 		"Seconds since the most recent audit-chain anchor was persisted (seeded from the store at startup). Absent until an anchor exists.",
@@ -696,6 +727,27 @@ func RecordPublishRun(backend string, start time.Time, err error) {
 	now := time.Now()
 	PublishLastSuccess.Set(float64(now.Unix()), backend)
 	publishLastSuccessNano.Store(now.UnixNano())
+}
+
+// RecordBackupRun records a completed scheduled-backup run: its duration and
+// result, and — on success — the artifact size, the retained-backup count, and
+// the last-success instants the timestamp and staleness gauges derive from. A
+// failed run leaves the last-success gauges untouched so the staleness gauge
+// keeps climbing, which is the operator's alert signal.
+func RecordBackupRun(start time.Time, artifactBytes, retained int, err error) {
+	BackupDuration.Observe(time.Since(start).Seconds())
+	if err != nil {
+		BackupRuns.Inc(ResultError)
+		return
+	}
+	BackupRuns.Inc(ResultSuccess)
+	if artifactBytes > 0 {
+		BackupArtifactBytes.Set(float64(artifactBytes))
+	}
+	BackupRetainedSnapshots.Set(float64(retained))
+	now := time.Now()
+	BackupLastSuccess.Set(float64(now.Unix()))
+	backupLastSuccessNano.Store(now.UnixNano())
 }
 
 // Export result label values for AuditExportEvents.

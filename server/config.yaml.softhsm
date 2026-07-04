@@ -108,3 +108,19 @@ est:
     device01:
       password: "change-me"
       profile: "client"
+
+# Scheduled encrypted backups (Task 89). Leader-elected; encrypts the DR backup
+# artifact under the secret KEK and writes it to a directory (or S3) with
+# atomic swap + manifest + keep-N/max-age retention. Enable and point `dir.path`
+# at a durable location to turn it on. See docs/backup.md.
+backup:
+  enabled: false
+  schedule:
+    interval_hours: 24
+  kek_label: ""            # inherits secret.kek_label when empty
+  include_config: true
+  retention:
+    keep: 7
+    max_age_days: 30
+  dir:
+    path: "./backups"

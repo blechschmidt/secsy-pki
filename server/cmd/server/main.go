@@ -683,6 +683,13 @@ func main() {
 		api.SetOCSPPresigner(presigner)
 	}
 
+	// Scheduled encrypted backups (Task 89): a leader-elected loop that
+	// periodically produces the DR backup artifact (logical DB dump + config +
+	// public CA material + audit-chain head fingerprint), envelope-encrypts it
+	// under the HSM-backed KEK, and writes it to a directory or S3 store with
+	// atomic swap, manifest, and keep-N/max-age retention. Never blocks issuance.
+	setupBackup(cfg, db, provider, *cfgPath, elector)
+
 	// Audit-log SIEM export: a background worker per sink streams the
 	// tamper-evident event log to external syslog/CEF/webhook collectors from a
 	// durable per-sink cursor. At-least-once, backpressured, and lossless across

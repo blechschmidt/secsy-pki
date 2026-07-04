@@ -154,6 +154,14 @@ type Config struct {
 	// true, in which case guarded operations cannot execute until the configured
 	// number of distinct approvers sign off. See ApprovalsConfig.
 	Approvals ApprovalsConfig `yaml:"approvals"`
+	// Backup configures the scheduled encrypted-backup job (Task 89): a
+	// leader-elected loop that periodically produces the disaster-recovery backup
+	// artifact (logical DB dump + config + public CA material + audit-chain head
+	// fingerprint), encrypts it with the HSM-backed secret/envelope layer, and
+	// writes it to a directory or S3-compatible store with atomic swap, manifest,
+	// and keep-N / max-age retention. Disabled unless backup.enabled is true. See
+	// BackupConfig and docs/backup.md.
+	Backup BackupConfig `yaml:"backup"`
 }
 
 // ApprovalsConfig configures the four-eyes / maker-checker approval workflow.
@@ -316,6 +324,96 @@ func (c PublishConfig) Interval(presign OCSPPresignConfig) time.Duration {
 		return presign.Refresh()
 	}
 	return time.Hour
+}
+
+// BackupConfig configures the scheduled encrypted-backup job (Task 89). It
+// reuses the publish backends (dir/s3) for the destination and the secret-layer
+// KEK for encryption. The destination is selected exactly like publishing:
+// setting s3.bucket picks the S3 backend, otherwise the local directory.
+type BackupConfig struct {
+	// Enabled starts the leader-elected background backup loop in the server.
+	Enabled bool `yaml:"enabled"`
+	// Schedule controls how often a backup is produced.
+	Schedule BackupScheduleConfig `yaml:"schedule"`
+	// KEKLabel is the secret-layer KEK the artifact is envelope-encrypted under.
+	// Empty inherits secret.kek_label (the deployment-wide KEK); backups require
+	// a KEK, so at least one of the two must be set when enabled.
+	KEKLabel string `yaml:"kek_label"`
+	// IncludeConfig bundles the running config file into the (encrypted) artifact
+	// so a restore has the exact configuration alongside the data. Nil defaults
+	// to enabled. The artifact is always encrypted, so config secrets are
+	// protected at rest.
+	IncludeConfig *bool `yaml:"include_config"`
+	// Retention bounds how many backups the destination keeps.
+	Retention BackupRetentionConfig `yaml:"retention"`
+	// Dir configures the local-directory backend. Used when s3.bucket is unset.
+	Dir PublishDirConfig `yaml:"dir"`
+	// S3 configures the S3-compatible backend; setting s3.bucket selects it.
+	S3 PublishS3Config `yaml:"s3"`
+}
+
+// BackupScheduleConfig is the backup.schedule block.
+type BackupScheduleConfig struct {
+	// IntervalHours is how often a backup runs. Defaults to 24 when unset. A
+	// backup runs once immediately on leadership gain, then every interval.
+	IntervalHours int `yaml:"interval_hours"`
+}
+
+// BackupRetentionConfig bounds retained backups by count and age.
+type BackupRetentionConfig struct {
+	// Keep is the number of most-recent backups to retain (default 7). The
+	// current backup is always kept regardless.
+	Keep int `yaml:"keep"`
+	// MaxAgeDays deletes backups older than this many days (0 disables age-based
+	// pruning). The current backup is never deleted, even past max age.
+	MaxAgeDays int `yaml:"max_age_days"`
+}
+
+// Interval returns the resolved backup interval (default 24h).
+func (c BackupConfig) Interval() time.Duration {
+	if c.Schedule.IntervalHours <= 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(c.Schedule.IntervalHours) * time.Hour
+}
+
+// Backend reports which destination backend the configuration selects.
+func (c BackupConfig) Backend() string {
+	if c.S3.Bucket != "" {
+		return "s3"
+	}
+	return "dir"
+}
+
+// IncludeConfigEnabled reports whether the running config is bundled into the
+// artifact.
+func (c BackupConfig) IncludeConfigEnabled() bool {
+	return c.IncludeConfig == nil || *c.IncludeConfig
+}
+
+// Keep returns the resolved keep-N retention count (default 7).
+func (c BackupConfig) Keep() int {
+	if c.Retention.Keep <= 0 {
+		return 7
+	}
+	return c.Retention.Keep
+}
+
+// MaxAge returns the resolved max-age retention window (0 = no age limit).
+func (c BackupConfig) MaxAge() time.Duration {
+	if c.Retention.MaxAgeDays <= 0 {
+		return 0
+	}
+	return time.Duration(c.Retention.MaxAgeDays) * 24 * time.Hour
+}
+
+// EffectiveKEKLabel resolves the KEK label to use: the backup-specific override
+// if set, otherwise the deployment-wide secret KEK label.
+func (c BackupConfig) EffectiveKEKLabel(secretKEKLabel string) string {
+	if c.KEKLabel != "" {
+		return c.KEKLabel
+	}
+	return secretKEKLabel
 }
 
 // SSHCAConfig configures the SSH certificate authority (Task 57).

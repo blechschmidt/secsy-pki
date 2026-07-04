@@ -209,6 +209,10 @@ const (
 	ActionCeremonyAbort           = "ceremony.abort"
 	ActionHSMBackup               = "hsm.backup"
 	ActionHSMRestore              = "hsm.restore"
+	// Scheduled encrypted-backup job (Task 89): one backup.run event per
+	// completed cycle of the leader-elected backup loop, recording the driver,
+	// artifact size, audit-chain head, and retention outcome (or the failure).
+	ActionBackupRun = "backup.run"
 	// Intermediate-CA key rotation / rollover (Task 24). Rotate records a new key
 	// being cross-signed under the parent and the old key entering the overlap
 	// window; Retire records the old key being revoked under its parent after the

@@ -865,6 +865,50 @@ func checkCanary(r *Report, cfg *config.Config, db dbHandle, schemaOK bool) {
 	})
 }
 
+// checkBackup surfaces the scheduled encrypted-backup job's freshness (Task 89)
+// from the backup.run audit trail: a fail when the newest run errored or the
+// last successful backup is older than the retention max age (a real data-loss
+// window), a warn when the job looks stalled (enabled but silent beyond three
+// intervals), and the last-success age otherwise. The audit log is the offline
+// source of truth here — doctor runs out-of-process and cannot read the runner's
+// in-memory state or metrics.
+func checkBackup(r *Report, cfg *config.Config, db dbHandle, schemaOK bool) {
+	r.run("backup.freshness", func() (Status, string) {
+		if db == nil || !schemaOK {
+			return StatusSkip, "store unavailable or schema incomplete"
+		}
+		events, _, err := db.ListEvents(audit.ActionBackupRun, "", "", 20, 0)
+		if err != nil {
+			return StatusFail, fmt.Sprintf("listing backup.run audit events: %v", err)
+		}
+		if len(events) == 0 {
+			if cfg.Backup.Enabled {
+				return StatusWarn, "backup.enabled is set but no backup has been recorded yet (server not started, or this replica never led?)"
+			}
+			return StatusSkip, "scheduled backup disabled (backup.enabled) and no backups on record"
+		}
+
+		newest := events[0] // newest first
+		now := time.Now()
+		age := humanDuration(now.Sub(newest.Timestamp))
+		if newest.Result != audit.ResultSuccess {
+			return StatusFail, fmt.Sprintf("last backup FAILED %s ago (%s)", age, newest.Detail)
+		}
+		if !cfg.Backup.Enabled {
+			return StatusPass, fmt.Sprintf("last backup ok %s ago (scheduled backup currently disabled)", age)
+		}
+		elapsed := now.Sub(newest.Timestamp)
+		if maxAge := cfg.Backup.MaxAge(); maxAge > 0 && elapsed > maxAge {
+			return StatusFail, fmt.Sprintf("last successful backup was %s ago, exceeding the %s retention max age — backups are stale and may already have been pruned",
+				age, humanDuration(maxAge))
+		}
+		if elapsed > 3*cfg.Backup.Interval() {
+			return StatusWarn, fmt.Sprintf("last backup ok but stalled — %s ago exceeds 3x the %s interval", age, cfg.Backup.Interval())
+		}
+		return StatusPass, fmt.Sprintf("last backup ok %s ago", age)
+	})
+}
+
 // --- 8. clock skew ---------------------------------------------------------------
 
 // checkClockSkew sanity-checks this host's clock. Against PostgreSQL it

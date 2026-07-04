@@ -253,6 +253,9 @@ func Run(ctx context.Context, opts Options) *Report {
 	// 7b. Issuance canary: the newest canary.probe outcome per probed CA.
 	checkCanary(r, cfg, db, schemaOK)
 
+	// 7c. Scheduled encrypted backup: freshness of the newest backup.run.
+	checkBackup(r, cfg, db, schemaOK)
+
 	// 8. Clock-skew sanity against the database host and the audit head.
 	checkClockSkew(ctx, r, db, schemaOK, opts)
 
