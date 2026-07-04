@@ -16,6 +16,13 @@ password; EST HTTP Basic / TLS client certificate; CMP shared-secret MAC or a
 signature from a previously-issued certificate) rather than OIDC, so they mount
 **outside** the OIDC auth middleware — exactly like ACME.
 
+For **zero-touch** onboarding of factory-fresh IoT/network devices — where there
+is no shared secret to provision at all — layer **BRSKI**
+([RFC 8995](https://www.rfc-editor.org/rfc/rfc8995)) on top of EST: the device's
+manufacturer birth certificate (IDevID) and a manufacturer-signed voucher stand
+in for the enrollment credential, and the operational certificate is then issued
+over EST `simpleenroll`. See **[BRSKI: zero-touch device onboarding](brski.md)**.
+
 - [1. When to use SCEP vs EST](#1-when-to-use-scep-vs-est)
 - [2. SCEP (RFC 8894)](#2-scep-rfc-8894)
 - [3. EST (RFC 7030)](#3-est-rfc-7030)
@@ -238,6 +245,7 @@ Every enrollment appends an entry to the hash-chained
 | `cmp.ir` / `cmp.cr` | CMP initialization / certification request |
 | `cmp.kur` | CMP key-update (rekey) request |
 | `cmp.rr` | CMP revocation request |
+| `cert.brski` | BRSKI voucher exchange / status telemetry (see [brski.md](brski.md)) |
 
 Denied enrollments are recorded with result `denied`; issuance failures with
 `error`.
@@ -277,3 +285,6 @@ Denied enrollments are recorded with result `denied`; issuance failures with
 | POST | `/.well-known/est/simplereenroll` | Basic / client cert | Renewal |
 | POST | `/.well-known/est/serverkeygen` | Basic / client cert | Server-side key generation |
 | POST | `/cmp` | shared-secret MAC / signature | CMP ir / cr / kur / rr (`application/pkixcmp`) |
+| POST | `/.well-known/brski/requestvoucher` | IDevID-signed request | BRSKI voucher exchange ([brski.md](brski.md)) |
+| POST | `/.well-known/brski/voucher_status` | (over pledge TLS) | BRSKI voucher telemetry |
+| POST | `/.well-known/brski/enrollstatus` | (over pledge TLS) | BRSKI enrollment telemetry |

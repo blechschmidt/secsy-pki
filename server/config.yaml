@@ -464,6 +464,30 @@ cmp:
   #     secret: "change-me-shared-secret"   # the PBM shared secret
   #     profile: client                     # optional per-secret profile override
 
+# brski enables the RFC 8995 (BRSKI) registrar for zero-touch onboarding of
+# IoT/network devices: validate the pledge's manufacturer IDevID against the
+# trusted manufacturer roots (reused from `attestation`), obtain a signed voucher
+# from a MASA, and hand the pledge off to EST for the HSM-backed LDevID. Requires
+# est.enabled. Disabled by default; see docs/brski.md.
+brski:
+  enabled: false
+  # base_path: /.well-known/brski           # registrar endpoints prefix
+  # ca_label: "Secsy Issuing CA"            # or ca_id; the domain CA (defaults to the EST CA)
+  # profile: client                         # issuance profile a pledge enrolls under
+  # registrar_key_label: brski-registrar    # HSM key that signs voucher-requests
+  # registrar_cert_file: /etc/secsy/brski/registrar.pem   # its certificate (+chain)
+  # domain_cert_file: /etc/secsy/tls/server.pem           # cert the pledge pins (defaults to registrar cert)
+  # trust_anchor_files:                     # extra IDevID manufacturer roots (supplements attestation roots)
+  #   - /etc/secsy/brski/manufacturer-roots.pem
+  # require_proximity: true                 # enforce the pledge pinned THIS registrar (recommended)
+  # pledge_ttl_minutes: 10                  # post-voucher EST enrollment window
+  masa:
+    # url: https://masa.example.com/.well-known/brski   # external MASA, OR:
+    builtin: false                          # run the minimal in-process MASA
+    # key_label: brski-masa                 # HSM key that signs vouchers (built-in)
+    # cert_file: /etc/secsy/brski/masa.pem  # MASA cert the pledge trusts (built-in)
+    # voucher_validity_hours: 24            # bounds nonceless vouchers
+
 # audit.export streams the tamper-evident event log to external SIEM systems.
 # Disabled by default; see docs/audit-siem-export.md. Each sink has its own
 # durable cursor, so delivery is at-least-once and lossless across restarts.

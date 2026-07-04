@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/attestation"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/authn"
+	"github.com/blechschmidt/secsy-pki/server/internal/brski"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/caa"
 	"github.com/blechschmidt/secsy-pki/server/internal/canary"
@@ -726,6 +728,22 @@ func main() {
 		scep.New(db, provider, scepCfg).Register(mux)
 	}
 
+	// BRSKI (RFC 8995) zero-touch onboarding registrar (Task 87). Built before EST
+	// so the EST server can adopt it as the pledge authorizer for the post-voucher
+	// enrollment handoff. It validates the pledge's IDevID against the trusted
+	// manufacturer roots (reused from the attestation config), relays the voucher
+	// request to the MASA, returns the signed voucher, and authorizes the pledge to
+	// EST-enroll its operational LDevID.
+	var brskiRegistrar *brski.Registrar
+	if cfg.BRSKI.Enabled {
+		reg, err := buildBRSKIRegistrar(db, provider, cfg)
+		if err != nil {
+			log.Fatalf("BRSKI configuration error: %v", err)
+		}
+		reg.Register(mux)
+		brskiRegistrar = reg
+	}
+
 	// EST (RFC 7030) device-enrollment server. Authenticates via HTTP Basic or a
 	// TLS client certificate; mounted outside the OIDC middleware.
 	if cfg.EST.Enabled {
@@ -734,6 +752,9 @@ func main() {
 			log.Fatalf("EST configuration error: %v", err)
 		}
 		estCfg.Attestation = attestVerifier
+		if brskiRegistrar != nil {
+			estCfg.PledgeAuthorizer = brskiRegistrar
+		}
 		est.New(db, provider, estCfg).Register(mux)
 	}
 
@@ -1189,6 +1210,220 @@ func buildESTConfig(db *database.DB, cfg *config.Config) (est.Config, error) {
 	}, nil
 }
 
+// buildBRSKIRegistrar assembles the RFC 8995 BRSKI registrar (Task 87): its
+// domain CA (for the LDevID handoff), the HSM-backed registrar signing identity,
+// the domain/provisioning certificate the pledge pins, the trusted manufacturer
+// roots the pledge IDevID must chain to (reused from the attestation config plus
+// any brski-specific anchors), and the MASA client (external HTTPS or the minimal
+// built-in in-process MASA).
+func buildBRSKIRegistrar(db *database.DB, provider keyprovider.Provider, cfg *config.Config) (*brski.Registrar, error) {
+	// Domain issuing CA for the LDevID handoff (defaults to the EST CA).
+	caID, caLabel := cfg.BRSKI.CAID, cfg.BRSKI.CALabel
+	if caID == "" && caLabel == "" {
+		caID, caLabel = cfg.EST.CAID, cfg.EST.CALabel
+	}
+	resolvedCA, err := resolveCAID(db, caID, caLabel, "brski")
+	if err != nil {
+		return nil, err
+	}
+
+	// Registrar voucher-request signing identity (typically HSM-backed).
+	regSigner, err := newProviderBackedSigner(provider, cfg.BRSKI.RegistrarKeyLabel)
+	if err != nil {
+		return nil, fmt.Errorf("brski.registrar_key_label: %w", err)
+	}
+	regChain, err := loadCertChainFile(cfg.BRSKI.RegistrarCertFile)
+	if err != nil {
+		return nil, fmt.Errorf("brski.registrar_cert_file: %w", err)
+	}
+
+	// Domain (provisioning/TLS) certificate the pledge pins; defaults to the
+	// registrar signing certificate (a single registrar identity).
+	domainCert := regChain[0]
+	if cfg.BRSKI.DomainCertFile != "" {
+		domainChain, err := loadCertChainFile(cfg.BRSKI.DomainCertFile)
+		if err != nil {
+			return nil, fmt.Errorf("brski.domain_cert_file: %w", err)
+		}
+		domainCert = domainChain[0]
+	}
+
+	// IDevID manufacturer trust: reuse the attestation trusted roots plus any
+	// brski-specific trust anchors.
+	roots, intermediates, err := buildBRSKIIDevIDTrust(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if len(roots.Subjects()) == 0 { //nolint:staticcheck // emptiness check
+		return nil, fmt.Errorf("brski.enabled requires trusted IDevID manufacturer roots (set attestation.trusted_root_files or brski.trust_anchor_files)")
+	}
+
+	profile := cfg.BRSKI.Profile
+	if profile == "" {
+		profile = orDefaultPath(cfg.EST.Profile, "client")
+	}
+
+	masaClient, err := buildBRSKIMASA(provider, cfg, roots, intermediates)
+	if err != nil {
+		return nil, err
+	}
+
+	proximity := cfg.BRSKI.RequireProximityEnabled()
+	return brski.New(db, brski.Config{
+		BasePath:            cfg.BRSKI.BasePath,
+		CAID:                resolvedCA,
+		Profile:             profile,
+		EnabledProfiles:     brskiEnabledProfiles(cfg),
+		DomainCert:          domainCert,
+		RegistrarKey:        regSigner,
+		RegistrarCert:       regChain[0],
+		RegistrarChain:      regChain[1:],
+		IDevIDRoots:         roots,
+		IDevIDIntermediates: intermediates,
+		MASA:                masaClient,
+		RequireProximity:    &proximity,
+		PledgeTTL:           time.Duration(cfg.BRSKI.PledgeTTLMinutes) * time.Minute,
+	})
+}
+
+// buildBRSKIMASA selects the MASA client: an external HTTPS MASA when brski.masa.url
+// is set, otherwise the minimal built-in in-process MASA signing with an
+// HSM-backed key.
+func buildBRSKIMASA(provider keyprovider.Provider, cfg *config.Config, roots *x509.CertPool, intermediates []*x509.Certificate) (brski.MASAClient, error) {
+	if cfg.BRSKI.MASA.URL != "" {
+		return brski.HTTPMASA{BaseURL: cfg.BRSKI.MASA.URL}, nil
+	}
+	masaSigner, err := newProviderBackedSigner(provider, cfg.BRSKI.MASA.KeyLabel)
+	if err != nil {
+		return nil, fmt.Errorf("brski.masa.key_label: %w", err)
+	}
+	masaChain, err := loadCertChainFile(cfg.BRSKI.MASA.CertFile)
+	if err != nil {
+		return nil, fmt.Errorf("brski.masa.cert_file: %w", err)
+	}
+	svc, err := brski.NewService(brski.ServiceConfig{
+		Signer:              masaSigner,
+		Cert:                masaChain[0],
+		Chain:               masaChain[1:],
+		IDevIDRoots:         roots,
+		IDevIDIntermediates: intermediates,
+		VoucherValidity:     time.Duration(cfg.BRSKI.MASA.VoucherValidityHours) * time.Hour,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return brski.InProcessMASA{Service: svc}, nil
+}
+
+// buildBRSKIIDevIDTrust loads the manufacturer trust anchors the pledge IDevID is
+// validated against: the attestation trusted roots (reused) plus any BRSKI-
+// specific trust anchors. Self-signed certificates become roots; the rest are
+// path-building intermediates — the same classification the attestation gate uses.
+func buildBRSKIIDevIDTrust(cfg *config.Config) (*x509.CertPool, []*x509.Certificate, error) {
+	roots := x509.NewCertPool()
+	var intermediates []*x509.Certificate
+	add := func(certs []*x509.Certificate) {
+		for _, c := range certs {
+			if isSelfSigned(c) {
+				roots.AddCert(c)
+			} else {
+				intermediates = append(intermediates, c)
+			}
+		}
+	}
+	files := append([]string{}, cfg.Attestation.TrustedRootFiles...)
+	files = append(files, cfg.BRSKI.TrustAnchorFiles...)
+	for _, path := range files {
+		pemBytes, err := os.ReadFile(path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("reading BRSKI IDevID trust anchor %q: %w", path, err)
+		}
+		certs, err := parseCertChainPEM(pemBytes)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parsing BRSKI IDevID trust anchor %q: %w", path, err)
+		}
+		add(certs)
+	}
+	for _, inline := range []string{cfg.Attestation.TrustedRootsPEM, cfg.BRSKI.TrustAnchorsPEM} {
+		if strings.TrimSpace(inline) == "" {
+			continue
+		}
+		certs, err := parseCertChainPEM([]byte(inline))
+		if err != nil {
+			return nil, nil, fmt.Errorf("parsing inline BRSKI IDevID trust anchors: %w", err)
+		}
+		add(certs)
+	}
+	return roots, intermediates, nil
+}
+
+// brskiEnabledProfiles returns the set of issuance profiles marked BRSKI-enabled
+// (profiles[].brski.enabled). When no profile sets the flag it returns nil, which
+// the registrar treats as "the configured profile is implicitly allowed".
+func brskiEnabledProfiles(cfg *config.Config) map[string]bool {
+	var enabled map[string]bool
+	for _, p := range cfg.Profiles {
+		if p.BRSKI.Enabled {
+			if enabled == nil {
+				enabled = make(map[string]bool)
+			}
+			enabled[p.Name] = true
+		}
+	}
+	return enabled
+}
+
+// loadCertChainFile reads a PEM file and returns its certificates (leaf first),
+// erroring when the file holds none.
+func loadCertChainFile(path string) ([]*x509.Certificate, error) {
+	pemBytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading %q: %w", path, err)
+	}
+	chain, err := parseCertChainPEM(pemBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parsing %q: %w", path, err)
+	}
+	if len(chain) == 0 {
+		return nil, fmt.Errorf("%q contains no certificates", path)
+	}
+	return chain, nil
+}
+
+// providerBackedSigner adapts a keyprovider key to a long-lived crypto.Signer
+// that acquires a fresh provider signer (and its HSM session) per Sign call and
+// releases it immediately. A long-lived component (the BRSKI registrar/MASA) can
+// hold one of these for the server's lifetime while still signing through the
+// bounded session pool, since the infrequent onboarding signatures never pin a
+// session between operations.
+type providerBackedSigner struct {
+	provider keyprovider.Provider
+	ref      keyprovider.KeyRef
+	pub      crypto.PublicKey
+}
+
+func newProviderBackedSigner(provider keyprovider.Provider, label string) (*providerBackedSigner, error) {
+	if label == "" {
+		return nil, fmt.Errorf("key label is empty")
+	}
+	pub, err := provider.PublicKey(context.Background(), keyprovider.KeyRef{Label: label})
+	if err != nil {
+		return nil, fmt.Errorf("loading public key for %q: %w", label, err)
+	}
+	return &providerBackedSigner{provider: provider, ref: keyprovider.KeyRef{Label: label}, pub: pub}, nil
+}
+
+func (s *providerBackedSigner) Public() crypto.PublicKey { return s.pub }
+
+func (s *providerBackedSigner) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	signer, err := s.provider.Signer(context.Background(), s.ref)
+	if err != nil {
+		return nil, err
+	}
+	defer signer.Close()
+	return signer.Sign(rand, digest, opts)
+}
+
 // buildCMPConfig assembles the cmp.Config from the application config.
 func buildCMPConfig(db *database.DB, cfg *config.Config) (cmp.Config, error) {
 	caID, err := resolveCAID(db, cfg.CMP.CAID, cfg.CMP.CALabel, "cmp")
@@ -1554,6 +1789,9 @@ func buildRateLimit(cfg *config.Config, db *database.DB) *ratelimit.Middleware {
 	}
 	if cfg.EST.Enabled {
 		pref.EST = orDefaultPath(cfg.EST.BasePath, "/.well-known/est")
+	}
+	if cfg.BRSKI.Enabled {
+		pref.BRSKI = orDefaultPath(cfg.BRSKI.BasePath, "/.well-known/brski")
 	}
 	if cfg.SCEP.Enabled {
 		pref.SCEP = orDefaultPath(cfg.SCEP.DirectoryPath, "/scep")

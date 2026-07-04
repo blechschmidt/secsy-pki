@@ -23,12 +23,13 @@ import (
 // middleware can classify a request from its path alone, without duplicating
 // the routing tables. Empty fields disable classification for that protocol.
 type Prefixes struct {
-	ACME string // e.g. "/acme"
-	EST  string // e.g. "/.well-known/est"
-	SCEP string // e.g. "/scep"
-	TSA  string // e.g. "/tsa"
-	CMP  string // e.g. "/cmp"
-	Sign string // e.g. "/api/sign" (authenticated, but HSM-bound per request)
+	ACME  string // e.g. "/acme"
+	EST   string // e.g. "/.well-known/est"
+	SCEP  string // e.g. "/scep"
+	TSA   string // e.g. "/tsa"
+	CMP   string // e.g. "/cmp"
+	Sign  string // e.g. "/api/sign" (authenticated, but HSM-bound per request)
+	BRSKI string // e.g. "/.well-known/brski" (RFC 8995 registrar)
 }
 
 // TenantState is what the middleware needs to know about the tenant behind a
@@ -77,12 +78,13 @@ func New(opts Options) *Middleware {
 		guard:       opts.Guard,
 		tenantState: opts.TenantState,
 		prefixes: Prefixes{
-			ACME: normalizePrefix(opts.Prefixes.ACME),
-			EST:  normalizePrefix(opts.Prefixes.EST),
-			SCEP: normalizePrefix(opts.Prefixes.SCEP),
-			TSA:  normalizePrefix(opts.Prefixes.TSA),
-			CMP:  normalizePrefix(opts.Prefixes.CMP),
-			Sign: normalizePrefix(opts.Prefixes.Sign),
+			ACME:  normalizePrefix(opts.Prefixes.ACME),
+			EST:   normalizePrefix(opts.Prefixes.EST),
+			SCEP:  normalizePrefix(opts.Prefixes.SCEP),
+			TSA:   normalizePrefix(opts.Prefixes.TSA),
+			CMP:   normalizePrefix(opts.Prefixes.CMP),
+			Sign:  normalizePrefix(opts.Prefixes.Sign),
+			BRSKI: normalizePrefix(opts.Prefixes.BRSKI),
 		},
 	}
 }
@@ -238,6 +240,17 @@ func (m *Middleware) classify(r *http.Request) *class {
 		default:
 			return &class{name: "est_other", tenantScoped: true}
 		}
+	}
+
+	// BRSKI (RFC 8995) registrar. The voucher exchange signs a registrar
+	// voucher-request on the HSM and relays it to the MASA, so meter it and gate
+	// it behind the concurrency guard; the status-telemetry endpoints are cheap
+	// and metered only.
+	if p := m.prefixes.BRSKI; p != "" && underPrefix(path, p) {
+		if strings.HasSuffix(path, "/requestvoucher") {
+			return &class{name: "brski_voucher", hsmBound: true}
+		}
+		return &class{name: "brski_status"}
 	}
 
 	if p := m.prefixes.SCEP; p != "" && (path == p || path == p+"/pkiclient.exe") {

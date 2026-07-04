@@ -44,6 +44,11 @@ type Config struct {
 	// Disabled unless their .enabled is true.
 	SCEP SCEPConfig `yaml:"scep"`
 	EST  ESTConfig  `yaml:"est"`
+	// BRSKI configures the RFC 8995 voucher-based zero-touch onboarding registrar
+	// (Task 87), layered on EST for the LDevID issuance and on the attestation
+	// trust anchors for IDevID validation. Disabled unless brski.enabled is true;
+	// requires est.enabled.
+	BRSKI BRSKIConfig `yaml:"brski"`
 	// TSA configures the RFC 3161 Time-Stamp Authority. Disabled unless
 	// tsa.enabled is true.
 	TSA TSAConfig `yaml:"tsa"`
@@ -586,6 +591,14 @@ type ProfileAttestationConfig struct {
 	Mode string `yaml:"mode"`
 }
 
+// ProfileBRSKIConfig is a profile's RFC 8995 zero-touch onboarding policy.
+type ProfileBRSKIConfig struct {
+	// Enabled permits BRSKI onboarding to issue LDevIDs under this profile. When
+	// any profile sets it, the BRSKI registrar's configured profile must be one
+	// that has it set (the per-profile enable gate).
+	Enabled bool `yaml:"enabled"`
+}
+
 // TracingConfig configures OpenTelemetry distributed tracing over the OTLP
 // exporter. It maps onto tracing.Config in the internal/tracing package. Tracing
 // is off by default: with Enabled=false the server installs a no-op tracer and
@@ -1118,6 +1131,76 @@ type ESTUserConfig struct {
 	Profile  string `yaml:"profile"`
 }
 
+// BRSKIConfig configures the RFC 8995 BRSKI registrar for zero-touch device
+// onboarding. The registrar validates a pledge's manufacturer IDevID against the
+// trusted manufacturer roots (shared with the attestation gate), relays a voucher
+// request to a MASA, returns the signed voucher, and then authorizes the pledge
+// to enroll its operational LDevID over EST (which performs the HSM-backed
+// issuance). BRSKI therefore requires est.enabled.
+type BRSKIConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// BasePath is the URL prefix for the registrar endpoints (default
+	// /.well-known/brski).
+	BasePath string `yaml:"base_path"`
+	// CAID / CALabel identify the domain issuing CA whose chain the pledge's LDevID
+	// is issued from (via the EST handoff). Optional — defaults to the EST CA.
+	CAID    string `yaml:"ca_id"`
+	CALabel string `yaml:"ca_label"`
+	// Profile is the issuance profile a bootstrapped pledge enrolls under (default
+	// the EST default profile). It must be BRSKI-enabled (profiles[].brski.enabled)
+	// when any profile marks the flag.
+	Profile string `yaml:"profile"`
+	// RegistrarKeyLabel is the provider label of the registrar's voucher-request
+	// signing key (typically HSM-backed). Required.
+	RegistrarKeyLabel string `yaml:"registrar_key_label"`
+	// RegistrarCertFile is a PEM file holding the registrar signing certificate
+	// (first) and any issuer chain. Required.
+	RegistrarCertFile string `yaml:"registrar_cert_file"`
+	// DomainCertFile is a PEM file holding the registrar's provisioning/TLS
+	// certificate — the certificate the pledge pins as proximity-registrar-cert and
+	// the MASA pins as pinned-domain-cert. Optional; defaults to the registrar
+	// signing certificate (a single registrar identity).
+	DomainCertFile string `yaml:"domain_cert_file"`
+	// TrustAnchorFiles / TrustAnchorsPEM supply additional manufacturer roots and
+	// intermediates the pledge IDevID may chain to, supplementing the attestation
+	// trusted roots (which are reused automatically).
+	TrustAnchorFiles []string `yaml:"trust_anchor_files"`
+	TrustAnchorsPEM  string   `yaml:"trust_anchors_pem"`
+	// RequireProximity enforces the RFC 8995 proximity assertion — the pledge must
+	// have pinned this registrar's domain certificate. Defaults to true.
+	RequireProximity *bool `yaml:"require_proximity"`
+	// PledgeTTLMinutes bounds how long a bootstrapped pledge stays authorized to
+	// EST-enroll (default 10 minutes).
+	PledgeTTLMinutes int `yaml:"pledge_ttl_minutes"`
+	// MASA configures how the registrar obtains vouchers.
+	MASA BRSKIMASAConfig `yaml:"masa"`
+}
+
+// RequireProximityEnabled reports whether the proximity assertion is enforced.
+// Defaults to true.
+func (b BRSKIConfig) RequireProximityEnabled() bool {
+	return b.RequireProximity == nil || *b.RequireProximity
+}
+
+// BRSKIMASAConfig selects and configures the MASA. Set URL for an external MASA,
+// or builtin: true to run the minimal in-process MASA (single-binary/test
+// deployments). Exactly one must be selected.
+type BRSKIMASAConfig struct {
+	// URL is the base URL of an external RFC 8995 MASA (its /requestvoucher lives
+	// under this path). When set, the registrar uses an HTTPS MASA client.
+	URL string `yaml:"url"`
+	// Builtin runs the minimal in-process MASA. Requires KeyLabel and CertFile.
+	Builtin bool `yaml:"builtin"`
+	// KeyLabel is the provider label of the built-in MASA's voucher-signing key.
+	KeyLabel string `yaml:"key_label"`
+	// CertFile is a PEM file holding the built-in MASA signing certificate (first)
+	// and any chain the pledge trusts via its pre-installed MASA anchor.
+	CertFile string `yaml:"cert_file"`
+	// VoucherValidityHours bounds nonceless vouchers issued by the built-in MASA
+	// (default 24h). Ignored for nonceful vouchers.
+	VoucherValidityHours int `yaml:"voucher_validity_hours"`
+}
+
 // CMPConfig configures the Lightweight CMP (RFC 9483) server. When enabled a
 // /cmp endpoint accepts PKIMessage flows (ir/cr/kur/rr) with shared-secret
 // (PasswordBasedMac) or signature-based message protection.
@@ -1314,6 +1397,11 @@ type ProfileConfig struct {
 	// present a valid hardware attestation bound to the enrolled key. Empty mode
 	// inherits attestation.default_mode.
 	Attestation ProfileAttestationConfig `yaml:"attestation"`
+	// BRSKI marks the profile as usable for RFC 8995 zero-touch onboarding (Task
+	// 87). When any profile sets brski.enabled, the BRSKI registrar refuses to
+	// onboard under a profile that does not — the per-profile enable gate. When no
+	// profile sets it, the registrar's configured profile is implicitly allowed.
+	BRSKI ProfileBRSKIConfig `yaml:"brski"`
 	// SMIME marks the profile as an S/MIME (emailProtection) profile: rfc822Name
 	// SANs are validated, normalized (punycode domains), and checked against the
 	// domain allowlists before signing, and the CA/B Forum S/MIME Baseline
@@ -2308,6 +2396,30 @@ func (c *Config) validateEnrollment() error {
 			if s.Secret == "" {
 				return fmt.Errorf("cmp.secrets[%d]: secret must not be empty", i)
 			}
+		}
+	}
+	if c.BRSKI.Enabled {
+		if !c.EST.Enabled {
+			return fmt.Errorf("brski.enabled is true but est.enabled is false (BRSKI hands off to EST for LDevID issuance)")
+		}
+		if c.BRSKI.RegistrarKeyLabel == "" {
+			return fmt.Errorf("brski.enabled is true but brski.registrar_key_label is not set")
+		}
+		if c.BRSKI.RegistrarCertFile == "" {
+			return fmt.Errorf("brski.enabled is true but brski.registrar_cert_file is not set")
+		}
+		switch {
+		case c.BRSKI.MASA.URL == "" && !c.BRSKI.MASA.Builtin:
+			return fmt.Errorf("brski.enabled is true but no MASA is configured (set brski.masa.url or brski.masa.builtin)")
+		case c.BRSKI.MASA.URL != "" && c.BRSKI.MASA.Builtin:
+			return fmt.Errorf("brski.masa: set exactly one of masa.url or masa.builtin, not both")
+		case c.BRSKI.MASA.Builtin:
+			if c.BRSKI.MASA.KeyLabel == "" || c.BRSKI.MASA.CertFile == "" {
+				return fmt.Errorf("brski.masa.builtin requires masa.key_label and masa.cert_file")
+			}
+		}
+		if c.BRSKI.PledgeTTLMinutes < 0 {
+			return fmt.Errorf("brski.pledge_ttl_minutes must not be negative")
 		}
 	}
 	if err := c.Secret.Escrow.validate(); err != nil {

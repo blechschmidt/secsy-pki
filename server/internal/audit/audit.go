@@ -98,6 +98,14 @@ const (
 	// attestation was missing or failed to verify and enrollment was blocked
 	// fail-closed. The detail carries the format, manufacturer, and device serial.
 	ActionCertAttestation = "cert.attestation"
+	// ActionCertBRSKI records a BRSKI (RFC 8995) zero-touch onboarding event on
+	// the registrar: ResultSuccess when a voucher was issued and the pledge
+	// authorized to EST-enroll, ResultDenied when the pledge's IDevID was
+	// untrusted / the proximity or serial assertion failed, ResultError when the
+	// request was malformed or the MASA declined. voucher_status / enrollstatus
+	// telemetry reports are logged under the same action. The detail carries the
+	// pledge serial, profile, and the specific reason. Actor is "brski-pledge:<serial>".
+	ActionCertBRSKI = "cert.brski"
 	// ActionCertAutoRenew records a certificate reissued automatically by the
 	// expiry monitor (actor "monitor"), ahead of its expiry.
 	ActionCertAutoRenew = "cert.auto_renew"

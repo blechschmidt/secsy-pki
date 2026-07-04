@@ -79,6 +79,21 @@ type Config struct {
 	// the enrollment CSR before issuance, per the profile's attestation mode
 	// (Task 49). A nil verifier disables the gate (attestation off everywhere).
 	Attestation *attestation.Verifier
+	// PledgeAuthorizer, when set, authorizes the EST enrollment that follows BRSKI
+	// (RFC 8995) bootstrapping: a pledge that completed the voucher exchange
+	// presents its manufacturer IDevID as the TLS client certificate, and the
+	// BRSKI registrar (which implements this interface) authorizes that exact
+	// device to enroll its operational LDevID. Nil disables the handoff (Task 87).
+	PledgeAuthorizer PledgeAuthorizer
+}
+
+// PledgeAuthorizer authorizes a device whose manufacturer IDevID — presented as
+// the TLS client certificate on the post-BRSKI EST connection — completed the
+// RFC 8995 voucher exchange, mapping it to the issuance profile recorded at
+// voucher time. The IDevID is a manufacturer certificate, not one this CA issued,
+// so it is authorized through this hook rather than through validClientCert.
+type PledgeAuthorizer interface {
+	AuthorizePledge(clientCert *x509.Certificate) (profile, actor string, ok bool)
 }
 
 func (c Config) withDefaults() Config {
@@ -295,6 +310,17 @@ func (s *Server) authenticate(r *http.Request, _ bool) (profile, actor string, o
 	if s.cfg.AllowTLSClientReenroll && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
 		if cert := s.validClientCert(r.TLS.PeerCertificates[0]); cert != nil {
 			return s.cfg.Profile, "est-cert:" + cert.Subject.CommonName, true
+		}
+	}
+
+	// BRSKI (RFC 8995) handoff: a pledge that completed the voucher exchange
+	// presents its manufacturer IDevID as the TLS client certificate. The
+	// registrar authorizes that exact device to enroll its LDevID under the
+	// profile recorded at voucher time. Checked here because the IDevID is a
+	// manufacturer certificate, not one this CA issued.
+	if s.cfg.PledgeAuthorizer != nil && r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+		if profile, actor, ok := s.cfg.PledgeAuthorizer.AuthorizePledge(r.TLS.PeerCertificates[0]); ok {
+			return profile, actor, true
 		}
 	}
 

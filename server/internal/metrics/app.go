@@ -137,6 +137,32 @@ var (
 		"Enrollments denied because a required key attestation was missing or invalid, by protocol.",
 		"protocol")
 
+	// BRSKI (RFC 8995) zero-touch device onboarding (Task 87). VoucherRequests
+	// counts registrar /requestvoucher outcomes by "result" (success|denied|
+	// error); denied is a fail-closed policy refusal (untrusted IDevID, failed
+	// proximity/serial assertion), error is a malformed request or a MASA that
+	// declined. VouchersIssued counts vouchers minted by the built-in MASA.
+	// StatusReports counts pledge voucher_status/enrollstatus telemetry by "kind"
+	// (voucher|enroll) and reported "status" (success|failure). EnrollAuthorized
+	// counts EST-handoff authorization checks by whether the presenter was a
+	// currently-bootstrapped pledge.
+	BRSKIVoucherRequests = NewCounter(Default,
+		"secsy_brski_voucher_requests_total",
+		"BRSKI registrar voucher requests, partitioned by result.",
+		"result")
+	BRSKIVouchersIssued = NewCounter(Default,
+		"secsy_brski_vouchers_issued_total",
+		"BRSKI vouchers issued by the built-in MASA, partitioned by result.",
+		"result")
+	BRSKIStatusReports = NewCounter(Default,
+		"secsy_brski_status_reports_total",
+		"BRSKI pledge status-telemetry reports, partitioned by kind and reported status.",
+		"kind", "status")
+	BRSKIEnrollAuthorized = NewCounter(Default,
+		"secsy_brski_enroll_authorized_total",
+		"BRSKI EST-handoff authorization checks, partitioned by result.",
+		"result")
+
 	// SSH certificate authority (Task 57). SSHCertificates counts signing
 	// operations by certificate "type" (user|host) and "result"; SSHRevocations
 	// counts revocation operations by result; SSHKRLRequests counts KRL builds/
@@ -871,3 +897,26 @@ func RecordAuthTokenVerify(result string) { AuthTokenVerifications.Inc(result) }
 
 // SetAuthTokensActive publishes the current count of valid API tokens.
 func SetAuthTokensActive(n int) { AuthTokensActive.Set(float64(n)) }
+
+// BRSKI result / status labels (Task 87).
+const (
+	BRSKIResultSuccess = "success"
+	BRSKIResultDenied  = "denied"
+	BRSKIResultError   = "error"
+	BRSKIStatusSuccess = "success"
+	BRSKIStatusFailure = "failure"
+)
+
+// RecordBRSKIVoucherRequest records a registrar voucher-request outcome. result
+// is one of the BRSKIResult* constants.
+func RecordBRSKIVoucherRequest(result string) { BRSKIVoucherRequests.Inc(result) }
+
+// RecordBRSKIVoucherIssued records a built-in-MASA voucher issuance outcome.
+func RecordBRSKIVoucherIssued(err error) { BRSKIVouchersIssued.Inc(resultLabel(err)) }
+
+// RecordBRSKIStatusReport records a pledge status-telemetry report. kind is
+// "voucher" or "enroll"; status is one of the BRSKIStatus* constants.
+func RecordBRSKIStatusReport(kind, status string) { BRSKIStatusReports.Inc(kind, status) }
+
+// RecordBRSKIEnrollAuthorized records an EST-handoff authorization check outcome.
+func RecordBRSKIEnrollAuthorized(result string) { BRSKIEnrollAuthorized.Inc(result) }
