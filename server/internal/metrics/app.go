@@ -650,6 +650,30 @@ var (
 		"Unix timestamp (seconds) of the last successful scheduled backup.")
 )
 
+// BackupVerify* track the automated backup restore-verification drill (Task 94):
+// the leader-elected verifier (and the `secsy-ca backup verify-restore` CLI)
+// pulls the newest published backup artifact, decrypts it, restores the DB dump
+// into an isolated scratch database, runs the HSM-independent integrity gate,
+// and matches the restored audit-head fingerprint against the manifest. An
+// untested backup is not a backup, so a failure here is the operator's signal
+// that recovery would not actually work. BackupVerifyRuns is the verified/failed
+// counter; BackupVerifyDuration times each drill; BackupVerifyLastSuccess plus
+// the restore-verified staleness FuncGauge expose how long since a backup was
+// last proven restorable.
+var (
+	BackupVerifyRuns = NewCounter(Default,
+		"secsy_backup_verify_total",
+		"Automated backup restore-verification drills, partitioned by result (success|error).",
+		"result")
+	BackupVerifyDuration = NewHistogram(Default,
+		"secsy_backup_verify_duration_seconds",
+		"Duration of backup restore-verification drills in seconds.",
+		BatchBuckets)
+	BackupVerifyLastSuccess = NewGauge(Default,
+		"secsy_backup_verify_last_success_timestamp_seconds",
+		"Unix timestamp (seconds) of the last successfully verified backup restore.")
+)
+
 // CT SCT inclusion-proof monitoring (Task 93). The leader-elected monitor
 // verifies that logs honor the SCTs embedded at issuance (Task 26): once a log's
 // Maximum Merge Delay has elapsed it fetches the log's signed tree head and a
@@ -698,11 +722,12 @@ var BatchBuckets = []float64{
 // absent (header only) until the first successful run, so alerts can key on
 // their existence.
 var (
-	ocspPresignLastSuccessNano atomic.Int64
-	publishLastSuccessNano     atomic.Int64
-	auditAnchorLastNano        atomic.Int64
-	backupLastSuccessNano      atomic.Int64
-	ctMonitorLastRunNano       atomic.Int64
+	ocspPresignLastSuccessNano  atomic.Int64
+	publishLastSuccessNano      atomic.Int64
+	auditAnchorLastNano         atomic.Int64
+	backupLastSuccessNano       atomic.Int64
+	backupVerifyLastSuccessNano atomic.Int64
+	ctMonitorLastRunNano        atomic.Int64
 
 	_ = NewFuncGauge(Default,
 		"secsy_ocsp_presign_staleness_seconds",
@@ -716,6 +741,10 @@ var (
 		"secsy_backup_staleness_seconds",
 		"Seconds since the last successful scheduled encrypted backup. Absent until the first backup succeeds.",
 		func() (float64, bool) { return sinceNano(backupLastSuccessNano.Load()) })
+	_ = NewFuncGauge(Default,
+		"secsy_backup_restore_verified_staleness_seconds",
+		"Seconds since a backup was last proven restorable by the restore-verification drill (Task 94). Absent until the first verification succeeds.",
+		func() (float64, bool) { return sinceNano(backupVerifyLastSuccessNano.Load()) })
 	_ = NewFuncGauge(Default,
 		"secsy_audit_anchor_age_seconds",
 		"Seconds since the most recent audit-chain anchor was persisted (seeded from the store at startup). Absent until an anchor exists.",
@@ -789,6 +818,24 @@ func RecordBackupRun(start time.Time, artifactBytes, retained int, err error) {
 	now := time.Now()
 	BackupLastSuccess.Set(float64(now.Unix()))
 	backupLastSuccessNano.Store(now.UnixNano())
+}
+
+// RecordBackupVerify records a completed backup restore-verification drill: its
+// duration and result, and — on success — the last-success instants the
+// timestamp and restore-verified staleness gauges derive from. A failed drill
+// leaves the last-success gauges untouched so the staleness gauge keeps climbing,
+// which is the operator's alert signal that recovery is unproven. A skipped drill
+// (nothing published to verify yet) records nothing.
+func RecordBackupVerify(start time.Time, err error) {
+	BackupVerifyDuration.Observe(time.Since(start).Seconds())
+	if err != nil {
+		BackupVerifyRuns.Inc(ResultError)
+		return
+	}
+	BackupVerifyRuns.Inc(ResultSuccess)
+	now := time.Now()
+	BackupVerifyLastSuccess.Set(float64(now.Unix()))
+	backupVerifyLastSuccessNano.Store(now.UnixNano())
 }
 
 // RecordCTMonitorRun records a completed CT inclusion-monitor scan: it refreshes

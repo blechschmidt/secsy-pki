@@ -917,6 +917,53 @@ func checkBackup(r *Report, cfg *config.Config, db dbHandle, schemaOK bool) {
 	})
 }
 
+// checkBackupRestoreVerified surfaces the automated restore-verification drill's
+// freshness (Task 94) from the backup.verify audit trail: a fail when the newest
+// drill failed (a published backup that could not be proven restorable — an
+// untested backup is not a backup) or when the last successful verification is
+// older than the retention max age (the verified backup may already have been
+// pruned, so nothing current is proven restorable), a warn when the drill looks
+// stalled (enabled but silent beyond three verify intervals), and the
+// last-verified age otherwise. Like checkBackup, the audit log is the offline
+// source of truth — doctor cannot read the verifier's in-memory state.
+func checkBackupRestoreVerified(r *Report, cfg *config.Config, db dbHandle, schemaOK bool) {
+	r.run("backup.restore-verified", func() (Status, string) {
+		if db == nil || !schemaOK {
+			return StatusSkip, "store unavailable or schema incomplete"
+		}
+		enabled := cfg.Backup.Enabled && cfg.Backup.VerifyEnabled()
+		events, _, err := db.ListEvents(audit.ActionBackupVerify, "", "", 20, 0)
+		if err != nil {
+			return StatusFail, fmt.Sprintf("listing backup.verify audit events: %v", err)
+		}
+		if len(events) == 0 {
+			if enabled {
+				return StatusWarn, "backup.verify.enabled is set but no restore-verification has been recorded yet (server not started, or this replica never led?)"
+			}
+			return StatusSkip, "automated restore-verification disabled (backup.verify.enabled) and no drills on record"
+		}
+
+		newest := events[0] // newest first
+		now := time.Now()
+		age := humanDuration(now.Sub(newest.Timestamp))
+		if newest.Result != audit.ResultSuccess {
+			return StatusFail, fmt.Sprintf("last restore-verification FAILED %s ago (%s) — recovery is unproven", age, newest.Detail)
+		}
+		if !enabled {
+			return StatusPass, fmt.Sprintf("last restore-verification ok %s ago (automated verification currently disabled)", age)
+		}
+		elapsed := now.Sub(newest.Timestamp)
+		if maxAge := cfg.Backup.MaxAge(); maxAge > 0 && elapsed > maxAge {
+			return StatusFail, fmt.Sprintf("last successful restore-verification was %s ago, exceeding the %s retention max age — the verified backup may already be pruned, so no current backup is proven restorable",
+				age, humanDuration(maxAge))
+		}
+		if elapsed > 3*cfg.Backup.VerifyInterval() {
+			return StatusWarn, fmt.Sprintf("last restore-verification ok but stalled — %s ago exceeds 3x the %s verify interval", age, cfg.Backup.VerifyInterval())
+		}
+		return StatusPass, fmt.Sprintf("last restore-verification ok %s ago (backup proven restorable)", age)
+	})
+}
+
 // --- 7d. CT inclusion monitoring ---------------------------------------------
 
 // checkCTInclusion surfaces the Certificate Transparency SCT inclusion monitor's

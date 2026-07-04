@@ -63,6 +63,9 @@ backup:
     region: us-east-1
     endpoint: ""              # e.g. http://minio:9000 for S3-compatible stores
     prefix: secsy-backups
+  verify:                     # automated restore-verification drill (Task 94)
+    enabled: false            # opt-in: PG path needs psql + CREATE/DROP scratch DB
+    interval_hours: 0         # 0 = same cadence as the backup schedule
 ```
 
 A KEK is **required** when backups are enabled (a backup that could not be
@@ -108,16 +111,74 @@ Metrics (Prometheus):
 | `secsy_backup_staleness_seconds` | Seconds since the last success (absent until the first — alert on its **existence** and value) |
 | `secsy_backup_artifact_bytes` | Size of the most recent encrypted artifact |
 | `secsy_backup_retained_snapshots` | Backups retained after the last retention pass |
+| `secsy_backup_verify_total{result}` | Restore-verification drills by result (`success`/`error`) |
+| `secsy_backup_verify_duration_seconds` | Restore-verification drill duration histogram |
+| `secsy_backup_verify_last_success_timestamp_seconds` | Unix time of the last verified restore |
+| `secsy_backup_restore_verified_staleness_seconds` | Seconds since a backup was last proven restorable (absent until the first — alert on its **existence** and value) |
 
 Audit: each cycle appends one `backup.run` event (actor `backup`, `system`
 role) recording the backend, driver, artifact size, retained count — or the
-failure. It is part of the same hash-chained, tamper-evident log.
+failure; each restore-verification drill appends one `backup.verify` event
+(actor `backup-verify`) recording the driver, integrity result, and
+fingerprint-match — or the stage it failed at. Both are part of the same
+hash-chained, tamper-evident log.
 
 Doctor: `secsy-ca doctor` runs a **`backup.freshness`** check that reads the
 newest `backup.run` event offline and **fails** when the last run errored or the
 last successful backup is older than `retention.max_age_days` (a real data-loss
 window), **warns** when the job is stalled (enabled but silent beyond three
-intervals), and passes with the last-success age otherwise.
+intervals), and passes with the last-success age otherwise. A companion
+**`backup.restore-verified`** check applies the same logic to the newest
+`backup.verify` event — it fails when a backup could not be proven restorable
+(or the last proof is older than the retention window, so nothing current is
+verified) and warns when verification is stalled.
+
+## Restore-verification (an untested backup is not a backup)
+
+Producing artifacts is only half the loop: nothing proves those artifacts can
+actually be restored until someone tries. Task 94 adds an automated
+**restore-verification drill** — a second leader-elected background job (and the
+`secsy-ca backup verify-restore` CLI) that periodically:
+
+1. pulls the newest artifact from the backup destination and checks it against
+   the published outer-manifest digest;
+2. decrypts it via the secret-envelope layer (binding the same KEK) and opens
+   the archive, re-checksumming every member;
+3. restores the DB dump into an **isolated scratch database** — a SQLite temp
+   file, or a throwaway PostgreSQL database created on the configured server and
+   **always dropped** afterward (`DROP DATABASE … WITH (FORCE)`), never touching
+   the live store;
+4. runs the HSM-independent integrity gate (the same `secsy-ca db verify`
+   invariants) against the restored store;
+5. confirms the restored **audit-head fingerprint** matches the artifact
+   manifest.
+
+A failure at any stage means disaster recovery would silently fail, so it is
+**metered** (`secsy_backup_verify_total{result="error"}`), **audited**
+(`backup.verify`), and **alerted** through the same
+[monitor notification sinks](certificate-monitoring.md) the expiry monitor uses
+(critical severity). Success resets the restore-verified staleness gauge. The
+drill is off by default (`backup.verify.enabled`) because the PostgreSQL path
+needs `psql` on `PATH` and permission to create/drop a scratch database.
+
+Run it on demand any time — as a DR drill, a cron job, or a CI step:
+
+```console
+$ secsy-ca backup verify-restore
+Restore-verification of the sqlite backup on dir:
+  artifact:      backup.tar.enc (740728 bytes, sha256 5fc962e1097…)
+  ✓ audit_chain             …
+  ✓ serial_monotonicity     …
+  restored head: 6d60b1a792d1…
+  manifest head: 6d60b1a792d1…
+
+Backup restore-verification OK: the newest backup decrypts, restores into a
+scratch database, passes the integrity gate, and its audit head matches the
+manifest.
+```
+
+It exits non-zero if the backup could not be proven restorable (or none is
+published yet), so a pipeline can trip on it. Add `-json` for machine output.
 
 ## Restore
 
@@ -134,6 +195,9 @@ The bundled `config.yaml`, `cas.json`, and `events.json` provide the running
 configuration and an engine-agnostic fallback. Then restore the **HSM token
 state** separately and confirm the keys with `secsy-ca restore` / the
 [DR runbook](key-ceremony.md). The `internal/backup` package exposes
-`Decrypt` → `OpenArchive` → `RestoreSQLite` for programmatic restore, exercised
-end-to-end by `internal/backup` tests (produce a scheduled backup, then decrypt
-and verify it restores to a fingerprint-matching store).
+`Decrypt` → `OpenArchive` → `RestoreSQLite` for programmatic restore and a
+`Verifier` that automates the whole round-trip (fetch → decrypt → restore into a
+scratch DB → integrity gate → fingerprint match), both exercised end-to-end by
+`internal/backup` tests (produce a scheduled backup, then verify it restores to a
+fingerprint-matching store — for SQLite hermetically, and for PostgreSQL against
+a real server when `SECSY_TEST_PG_DSN` is set).

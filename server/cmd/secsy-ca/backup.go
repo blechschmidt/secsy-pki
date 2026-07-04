@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
+	"github.com/blechschmidt/secsy-pki/server/internal/backup"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
@@ -61,7 +62,13 @@ type backupManifest struct {
 // exported — only public certificates, key identifiers, and the audit trail.
 // The HSM token state (encrypted key blobs) must be backed up separately with
 // the token's own tooling; the DR runbook documents this.
-func cmdBackup(db *database.DB, _ *config.Config, provider keyprovider.Provider, args []string) error {
+func cmdBackup(db *database.DB, cfg *config.Config, provider keyprovider.Provider, args []string) error {
+	// "backup verify-restore" is the automated restore-verification drill (Task
+	// 94), a distinct operation from the metadata-bundle export below.
+	if len(args) > 0 && args[0] == "verify-restore" {
+		return cmdBackupVerifyRestore(db, cfg, provider, args[1:])
+	}
+
 	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
 	outDir := fs.String("out", "", "output directory for the backup bundle (required)")
 	if err := fs.Parse(args); err != nil {
@@ -174,6 +181,91 @@ func cmdBackup(db *database.DB, _ *config.Config, provider keyprovider.Provider,
 	}
 	fmt.Println("\nReminder: back up the HSM token state separately (see docs/key-ceremony.md). Private keys are never exported.")
 	return nil
+}
+
+// cmdBackupVerifyRestore runs the automated restore-verification drill (Task 94)
+// on demand: it pulls the newest backup artifact from the configured backup
+// destination, decrypts it via the secret-envelope layer, restores the DB dump
+// into an isolated scratch database (always torn down), runs the HSM-independent
+// integrity gate (the same one `secsy-ca db verify` uses), and confirms the
+// restored audit-head fingerprint matches the artifact manifest. It records a
+// backup.verify audit event and the verify metrics, and exits non-zero if the
+// backup could not be proven restorable — so a DR drill, cron job, or CI step
+// can trip on it. An untested backup is not a backup.
+func cmdBackupVerifyRestore(db *database.DB, cfg *config.Config, provider keyprovider.Provider, args []string) error {
+	fs := flag.NewFlagSet("backup verify-restore", flag.ContinueOnError)
+	asJSON := fs.Bool("json", false, "emit the full verification result as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	bc := cfg.Backup
+	kekLabel := bc.EffectiveKEKLabel(cfg.Secret.KEKLabel)
+	if kekLabel == "" {
+		return fmt.Errorf("backup verify-restore: no KEK configured (set backup.kek_label or secret.kek_label)")
+	}
+	store, err := backup.NewStore(bc)
+	if err != nil {
+		return fmt.Errorf("backup verify-restore: %w", err)
+	}
+	src := backup.Source{DB: db, Provider: provider, DSN: cfg.Database.DSN}
+	// No notifier for the on-demand CLI path: the exit code and printed result are
+	// the operator's signal (the leader-elected background job does the alerting).
+	verifier, err := backup.NewVerifier(src, store, bc, kekLabel, nil, nil)
+	if err != nil {
+		return fmt.Errorf("backup verify-restore: %w", err)
+	}
+
+	res := verifier.VerifyOnce(context.Background())
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(res); err != nil {
+			return err
+		}
+	} else {
+		printVerifyResult(res)
+	}
+
+	if res.Skipped {
+		return fmt.Errorf("no backup available to verify at %s", store.Name())
+	}
+	if res.Err != nil {
+		return fmt.Errorf("restore-verification failed at stage %q: %v", res.Stage, res.Err)
+	}
+	return nil
+}
+
+// printVerifyResult renders a restore-verification result for humans.
+func printVerifyResult(res *backup.VerifyResult) {
+	if res.Skipped {
+		fmt.Printf("No backup available to verify at %s.\n  %s\n", res.Backend, res.ErrMsg)
+		return
+	}
+	fmt.Printf("Restore-verification of the %s backup on %s:\n", res.Driver, res.Backend)
+	if res.ArtifactSize > 0 {
+		fmt.Printf("  artifact:      %s (%d bytes, sha256 %s)\n", res.ArtifactFile, res.ArtifactSize, shortHash(res.ArtifactSHA256))
+	}
+	if !res.CreatedAt.IsZero() {
+		fmt.Printf("  backed up at:  %s\n", res.CreatedAt.Format(time.RFC3339))
+	}
+	for _, c := range res.Checks {
+		mark := "✓"
+		if !c.OK {
+			mark = "✗"
+		}
+		fmt.Printf("  %s %-24s %s\n", mark, c.Name, c.Detail)
+	}
+	if res.RestoredHead != "" || res.ManifestHead != "" {
+		fmt.Printf("  restored head: %s\n", shortHash(res.RestoredHead))
+		fmt.Printf("  manifest head: %s\n", shortHash(res.ManifestHead))
+	}
+	if res.Err != nil {
+		fmt.Printf("\nRESTORE-VERIFICATION FAILED at stage %q: %v\n", res.Stage, res.Err)
+		return
+	}
+	fmt.Println("\nBackup restore-verification OK: the newest backup decrypts, restores into a scratch database, passes the integrity gate, and its audit head matches the manifest.")
 }
 
 // cmdRestore verifies recovered CA metadata against the key provider and audit

@@ -128,12 +128,12 @@ func (f *fakeLog) addFiller(n int) {
 }
 
 func (f *fakeLog) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	switch {
-	case r.URL.Path == "/ct/v1/add-pre-chain":
+	switch r.URL.Path {
+	case "/ct/v1/add-pre-chain":
 		f.serveAddPreChain(w, r)
-	case r.URL.Path == "/ct/v1/get-sth":
+	case "/ct/v1/get-sth":
 		f.serveGetSTH(w, r)
-	case r.URL.Path == "/ct/v1/get-proof-by-hash":
+	case "/ct/v1/get-proof-by-hash":
 		f.serveGetProof(w, r)
 	default:
 		http.Error(w, "not found", http.StatusNotFound)

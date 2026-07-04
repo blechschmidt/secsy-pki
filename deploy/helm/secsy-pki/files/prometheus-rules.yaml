@@ -435,3 +435,55 @@ groups:
           summary: "Issuance canary stalled for {{ $labels.ca }} ({{ $labels.job }})"
           description: "No fully successful canary probe for CA {{ $labels.ca }} in >1h (4x the 15m default interval). The issuance path has stopped being continuously proven healthy. Check the canary job (leader election, server logs) and `secsy-ca doctor`; adjust the threshold if canary.interval_minutes differs."
           runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#observability-alert-response"
+
+  # --- Backup & restore-verification -----------------------------------------
+  - name: secsy-pki.backup
+    rules:
+      - alert: SecsyPKIBackupStale
+        # The scheduled encrypted backup (Task 89) has not succeeded in over 2
+        # days — 2x the default 24h interval. Either every run is failing or the
+        # backup job is not running anywhere (no leader — see SecsyPKINoJobLeader).
+        # Fires only where a backup has succeeded before (the gauge is absent
+        # otherwise); tune the threshold if backup.schedule.interval_hours differs.
+        expr: max by (job) (secsy_backup_staleness_seconds) > 172800
+        for: 30m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "Scheduled backup stale ({{ $labels.job }})"
+          description: "The last successful scheduled backup was {{ $value | humanizeDuration }} ago (>2d). The off-box DR copy is aging; check the backup job (leader election, destination reachability) and `secsy-ca doctor` (backup.freshness). See docs/backup.md."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#observability-alert-response"
+
+      - alert: SecsyPKIBackupRestoreVerificationFailing
+        # A restore-verification drill (Task 94) failed: the newest published
+        # backup could not be decrypted, restored, integrity-checked, or its
+        # audit-head fingerprint did not match the manifest. An untested backup is
+        # not a backup — this means disaster recovery would silently fail. The 26h
+        # window spans one default (24h) verify interval so a daily failure keeps
+        # firing until the next drill succeeds.
+        expr: sum by (job) (increase(secsy_backup_verify_total{result="error"}[26h])) > 0
+        for: 10m
+        labels:
+          severity: critical
+          service: secsy-pki
+        annotations:
+          summary: "Backup restore-verification failing ({{ $labels.job }})"
+          description: "A backup restore-verification drill failed — the newest backup could not be proven restorable, so recovery would fail when it is needed. Run `secsy-ca backup verify-restore`, inspect the backup.verify audit events (they name the failing stage), and check the backup destination and KEK. See docs/backup.md."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#observability-alert-response"
+
+      - alert: SecsyPKIBackupRestoreVerificationStale
+        # Restore-verification has succeeded before (the gauge exists) but has not
+        # proven a backup restorable in over 2 days (2x the default cadence). The
+        # backups may be fine but are no longer continuously proven recoverable —
+        # either the verify job is not running (no leader) or every drill errors
+        # (SecsyPKIBackupRestoreVerificationFailing will also fire).
+        expr: max by (job) (secsy_backup_restore_verified_staleness_seconds) > 172800
+        for: 30m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "Backup restore-verification stalled ({{ $labels.job }})"
+          description: "No backup has been proven restorable in {{ $value | humanizeDuration }} (>2d). Backups are no longer continuously verified. Check the backup-verify job (leader election, server logs) and `secsy-ca doctor` (backup.restore-verified); adjust the threshold if backup.verify.interval_hours differs. See docs/backup.md."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#observability-alert-response"

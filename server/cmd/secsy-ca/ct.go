@@ -100,7 +100,7 @@ func cmdCTVerifyInclusion(db *database.DB, cfg *config.Config, args []string) er
 // cmdCTInclusionStatus prints the recorded SCT inclusion state from the store,
 // either the whole set (optionally filtered by status) or the per-log rows of
 // one certificate.
-func cmdCTInclusionStatus(db *database.DB, cfg *config.Config, args []string) error {
+func cmdCTInclusionStatus(db *database.DB, _ *config.Config, args []string) error {
 	fs := flag.NewFlagSet("ct inclusion-status", flag.ContinueOnError)
 	status := fs.String("status", "", "filter by status (included|pending|failed|unknown_log)")
 	caRef := fs.String("ca", "", "restrict to a CA id or label (requires -serial)")

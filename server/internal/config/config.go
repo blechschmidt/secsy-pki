@@ -350,6 +350,30 @@ type BackupConfig struct {
 	Dir PublishDirConfig `yaml:"dir"`
 	// S3 configures the S3-compatible backend; setting s3.bucket selects it.
 	S3 PublishS3Config `yaml:"s3"`
+	// Verify configures the automated restore-verification drill (Task 94): a
+	// leader-elected loop that periodically proves the newest published backup
+	// can actually be decrypted, restored, and integrity-checked. An untested
+	// backup is not a backup.
+	Verify BackupVerifyConfig `yaml:"verify"`
+}
+
+// BackupVerifyConfig configures the automated backup restore-verification drill
+// (Task 94). When enabled, a leader-elected loop periodically pulls the newest
+// published backup artifact, decrypts it via the secret-envelope layer, restores
+// the DB dump into an isolated scratch database (a SQLite temp file, or a
+// throwaway PostgreSQL database that is always dropped), runs the HSM-independent
+// integrity gate, and confirms the restored audit-head fingerprint matches the
+// artifact manifest — closing the loop on the scheduled backup job.
+type BackupVerifyConfig struct {
+	// Enabled starts the leader-elected restore-verification loop in the server.
+	// It is off by default: the PostgreSQL path needs pg_restore/psql on PATH and
+	// permission to CREATE/DROP a scratch database, so verification is opt-in. The
+	// `secsy-ca backup verify-restore` CLI is always available for on-demand runs.
+	Enabled bool `yaml:"enabled"`
+	// IntervalHours is how often a drill runs. Defaults to the backup interval
+	// (verify each new backup at the cadence it is produced) when unset. A drill
+	// runs once immediately on leadership gain, then every interval.
+	IntervalHours int `yaml:"interval_hours"`
 }
 
 // BackupScheduleConfig is the backup.schedule block.
@@ -414,6 +438,19 @@ func (c BackupConfig) EffectiveKEKLabel(secretKEKLabel string) string {
 		return c.KEKLabel
 	}
 	return secretKEKLabel
+}
+
+// VerifyEnabled reports whether the automated restore-verification loop is on.
+func (c BackupConfig) VerifyEnabled() bool { return c.Verify.Enabled }
+
+// VerifyInterval returns the resolved restore-verification interval. Unset, it
+// defaults to the backup interval so each new backup is verified at the cadence
+// it is produced.
+func (c BackupConfig) VerifyInterval() time.Duration {
+	if c.Verify.IntervalHours <= 0 {
+		return c.Interval()
+	}
+	return time.Duration(c.Verify.IntervalHours) * time.Hour
 }
 
 // SSHCAConfig configures the SSH certificate authority (Task 57).

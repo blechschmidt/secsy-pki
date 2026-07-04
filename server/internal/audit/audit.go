@@ -223,6 +223,12 @@ const (
 	// completed cycle of the leader-elected backup loop, recording the driver,
 	// artifact size, audit-chain head, and retention outcome (or the failure).
 	ActionBackupRun = "backup.run"
+	// Automated backup restore-verification (Task 94): one backup.verify event
+	// per restore-verification drill — the newest published backup artifact is
+	// decrypted, restored into an isolated scratch database, integrity-checked,
+	// and its restored audit-head fingerprint matched against the manifest. The
+	// result is success or error (an unrestorable / tampered backup).
+	ActionBackupVerify = "backup.verify"
 	// Intermediate-CA key rotation / rollover (Task 24). Rotate records a new key
 	// being cross-signed under the parent and the old key entering the overlap
 	// window; Retire records the old key being revoked under its parent after the

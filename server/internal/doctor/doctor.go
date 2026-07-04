@@ -256,6 +256,11 @@ func Run(ctx context.Context, opts Options) *Report {
 	// 7c. Scheduled encrypted backup: freshness of the newest backup.run.
 	checkBackup(r, cfg, db, schemaOK)
 
+	// 7c′. Automated restore-verification: freshness of the newest backup.verify —
+	// proof the newest backup can actually be restored (an untested backup is not
+	// a backup).
+	checkBackupRestoreVerified(r, cfg, db, schemaOK)
+
 	// 7d. CT SCT inclusion monitor: standing inclusion state and scan freshness.
 	checkCTInclusion(r, cfg, db, schemaOK)
 

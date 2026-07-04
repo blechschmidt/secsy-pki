@@ -399,7 +399,9 @@ Commands:
   sign                Sign a release artifact (file or digest) as CMS/PKCS#7, optionally RFC 3161 timestamped
   verify-signature    Verify a CMS artifact signature (file or digest) against the PKI trust anchors
   ssh                 SSH certificate authority (ca-init, sign-user, sign-host, revoke, krl)
-  backup              Export CA metadata + a DR manifest (no private keys)
+  backup              Export CA metadata + a DR manifest (no private keys), or
+                      "backup verify-restore" to prove the newest scheduled
+                      encrypted backup can actually be restored (Task 94)
   restore             Restore/verify CA metadata against the key provider
   audit               Verify the audit hash-chain (incl. RFC 3161 anchors),
                       anchor the chain head, or export events for SIEM

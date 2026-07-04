@@ -45,6 +45,12 @@ type Notification struct {
 	// after its Maximum Merge Delay (Task 93). Each is a mis-issuance /
 	// log-misbehavior signal; set only on CT-inclusion-monitor notifications.
 	CTMisbehavior []CTMisbehavior `json:"ct_misbehavior,omitempty"`
+	// BackupVerifyFailures lists automated backup restore-verification drills that
+	// failed (Task 94): a published backup that could not be decrypted, restored,
+	// integrity-checked, or whose restored audit-head fingerprint did not match
+	// the manifest. An untested backup is not a backup, so each is a critical
+	// data-recovery signal; set only on restore-verification notifications.
+	BackupVerifyFailures []BackupVerifyFailure `json:"backup_verify_failures,omitempty"`
 }
 
 // CTMisbehavior describes one embedded SCT that a CT log failed to honor: after
@@ -59,6 +65,21 @@ type CTMisbehavior struct {
 	LogID   string    `json:"log_id"`
 	Reason  string    `json:"reason"`
 	At      time.Time `json:"at"`
+}
+
+// BackupVerifyFailure describes one failed backup restore-verification drill
+// (Task 94): the newest published backup artifact could not be proven
+// restorable. Stage names where it broke (fetch, decrypt, open, restore,
+// integrity, or fingerprint) and Reason carries the underlying error. An
+// unrestorable backup means disaster recovery would silently fail, so it is
+// treated as critical severity for sink filtering.
+type BackupVerifyFailure struct {
+	Backend        string    `json:"backend"`
+	Driver         string    `json:"driver,omitempty"`
+	ArtifactSHA256 string    `json:"artifact_sha256,omitempty"`
+	Stage          string    `json:"stage"`
+	Reason         string    `json:"reason"`
+	At             time.Time `json:"at"`
 }
 
 // CanaryFailure describes one failed synthetic issuance-canary probe for
@@ -92,12 +113,16 @@ func (s *LogSink) Name() string { return "log" }
 
 func (s *LogSink) Notify(_ context.Context, n Notification) error {
 	if len(n.Warnings) == 0 && len(n.Renewed) == 0 && len(n.CanaryFailures) == 0 &&
-		len(n.SecretWarnings) == 0 && len(n.CTMisbehavior) == 0 {
+		len(n.SecretWarnings) == 0 && len(n.CTMisbehavior) == 0 && len(n.BackupVerifyFailures) == 0 {
 		return nil
 	}
 	for _, f := range n.CanaryFailures {
 		s.logger.Printf("issuance-canary: FAILURE ca=%s (%s) stage=%s serial=%s error=%s",
 			f.CALabel, f.CAID, f.Stage, f.Serial, f.Error)
+	}
+	for _, f := range n.BackupVerifyFailures {
+		s.logger.Printf("backup-verify: RESTORE-VERIFICATION FAILED backend=%s driver=%s stage=%s reason=%s",
+			f.Backend, f.Driver, f.Stage, f.Reason)
 	}
 	for _, m := range n.CTMisbehavior {
 		s.logger.Printf("ct-inclusion: LOG MISBEHAVIOR log=%s serial=%s ca=%s reason=%s",
@@ -149,7 +174,7 @@ func (s *WebhookSink) Name() string { return "webhook(" + s.url + ")" }
 
 func (s *WebhookSink) Notify(ctx context.Context, n Notification) error {
 	if len(n.Warnings) == 0 && len(n.Renewed) == 0 && len(n.CanaryFailures) == 0 &&
-		len(n.SecretWarnings) == 0 && len(n.CTMisbehavior) == 0 {
+		len(n.SecretWarnings) == 0 && len(n.CTMisbehavior) == 0 && len(n.BackupVerifyFailures) == 0 {
 		return nil // nothing to report; don't spam the endpoint
 	}
 	body, err := json.Marshal(n)
@@ -250,6 +275,31 @@ func (n *Notifier) NotifyCTMisbehavior(ctx context.Context, events []CTMisbehavi
 		}
 		if err := b.sink.Notify(ctx, payload); err != nil {
 			n.logger.Printf("ct-inclusion: notification sink %s failed: %v", b.sink.Name(), err)
+		}
+	}
+}
+
+// NotifyBackupVerifyFailure delivers automated backup restore-verification
+// failures (Task 94) to every sink whose minimum severity is at or below
+// critical. A backup that cannot be proven restorable means disaster recovery
+// would silently fail, so it is always at least critical. Sink errors are logged
+// and do not abort delivery to the others.
+func (n *Notifier) NotifyBackupVerifyFailure(ctx context.Context, failures []BackupVerifyFailure) {
+	if len(failures) == 0 {
+		return
+	}
+	payload := Notification{
+		GeneratedAt:          time.Now(),
+		MinSeverity:          SeverityCritical,
+		Counts:               map[Severity]int{},
+		BackupVerifyFailures: failures,
+	}
+	for _, b := range n.bindings {
+		if !SeverityCritical.atLeast(b.minSeverity) {
+			continue
+		}
+		if err := b.sink.Notify(ctx, payload); err != nil {
+			n.logger.Printf("backup-verify: notification sink %s failed: %v", b.sink.Name(), err)
 		}
 	}
 }
