@@ -27,6 +27,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/caa"
 	"github.com/blechschmidt/secsy-pki/server/internal/canary"
+	"github.com/blechschmidt/secsy-pki/server/internal/certlint"
 	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/cmp"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
@@ -273,6 +274,11 @@ func main() {
 				Mode:      p.Lint.Mode,
 				Public:    p.Lint.Public,
 				Overrides: p.Lint.Overrides,
+				ZLint:     zlintConfig(p.Lint.ZLint),
+			}
+			if p.Lint.ZLint.Enabled && !certlint.ZLintAvailable() {
+				log.Printf("WARNING: profile %q enables the zlint backend, but this binary was not built with -tags zlint; "+
+					"only the hand-rolled Baseline Requirements checks will run", p.Name)
 			}
 			if mode := strings.ToLower(strings.TrimSpace(p.CAA.Mode)); mode != "" && mode != "off" {
 				identifier := p.CAA.Identifier
@@ -1355,6 +1361,26 @@ func buildBRSKIIDevIDTrust(cfg *config.Config) (*x509.CertPool, []*x509.Certific
 		add(certs)
 	}
 	return roots, intermediates, nil
+}
+
+// zlintConfig converts a profile's zlint configuration into the ca.ZLintConfig
+// consumed by the pre-issuance lint gate. It returns nil when zlint is not
+// enabled for the profile so the gate skips the backend entirely.
+func zlintConfig(c config.ProfileZLintConfig) *ca.ZLintConfig {
+	if !c.Enabled {
+		return nil
+	}
+	return &ca.ZLintConfig{
+		Enabled:        true,
+		ErrorMode:      c.ErrorMode,
+		WarnMode:       c.WarnMode,
+		NoticeMode:     c.NoticeMode,
+		IncludeSources: c.IncludeSources,
+		ExcludeSources: c.ExcludeSources,
+		IncludeNames:   c.IncludeNames,
+		ExcludeNames:   c.ExcludeNames,
+		Overrides:      c.Overrides,
+	}
 }
 
 // brskiEnabledProfiles returns the set of issuance profiles marked BRSKI-enabled

@@ -1,6 +1,7 @@
 package ca
 
 import (
+	"crypto/x509"
 	"fmt"
 	"log"
 
@@ -31,6 +32,37 @@ type LintConfig struct {
 	// Overrides sets the mode ("enforce"|"warn") for individual checks by code,
 	// overriding Mode.
 	Overrides map[string]string `json:"overrides,omitempty"`
+	// ZLint optionally enables the industry-standard github.com/zmap/zlint
+	// backend alongside the hand-rolled checks. It is only effective in a binary
+	// built with the "zlint" build tag; otherwise it is ignored (a warning is
+	// logged at startup). Nil leaves zlint disabled.
+	ZLint *ZLintConfig `json:"zlint,omitempty"`
+}
+
+// ZLintConfig is a profile's optional zlint backend configuration. It maps the
+// zlint severity levels (error/warn/notice) onto this package's enforce/warn/
+// ignore dispositions and optionally restricts which lints run.
+type ZLintConfig struct {
+	// Enabled turns the zlint backend on for the profile. When false the rest of
+	// this struct is ignored.
+	Enabled bool `json:"enabled,omitempty"`
+	// ErrorMode / WarnMode / NoticeMode map the corresponding zlint severity
+	// levels to "enforce", "warn", or "ignore". Empty uses the defaults: error →
+	// enforce, warn → warn, notice → ignore.
+	ErrorMode  string `json:"error_mode,omitempty"`
+	WarnMode   string `json:"warn_mode,omitempty"`
+	NoticeMode string `json:"notice_mode,omitempty"`
+	// IncludeSources / ExcludeSources restrict the lint registry by source
+	// (e.g. "CABF_BR", "RFC5280", "CABF_SMIME_BR", "Mozilla").
+	IncludeSources []string `json:"include_sources,omitempty"`
+	ExcludeSources []string `json:"exclude_sources,omitempty"`
+	// IncludeNames / ExcludeNames restrict the registry to / from individual lint
+	// names.
+	IncludeNames []string `json:"include_names,omitempty"`
+	ExcludeNames []string `json:"exclude_names,omitempty"`
+	// Overrides sets the disposition ("enforce"|"warn"|"ignore") for an
+	// individual lint by name, overriding the level mapping.
+	Overrides map[string]string `json:"overrides,omitempty"`
 }
 
 // LintPolicy resolves the profile's effective certlint.Policy, folding in the
@@ -52,6 +84,30 @@ func (p Profile) LintPolicy() certlint.Policy {
 				pol.Overrides[code] = certlint.Mode(mode)
 			}
 		}
+		if z := p.Lint.ZLint; z != nil && z.Enabled {
+			pol.ZLint = zlintPolicy(z)
+		}
+	}
+	return pol
+}
+
+// zlintPolicy translates a profile's ZLintConfig into the certlint.ZLintPolicy
+// consumed by the linter.
+func zlintPolicy(z *ZLintConfig) *certlint.ZLintPolicy {
+	pol := &certlint.ZLintPolicy{
+		ErrorMode:      certlint.Mode(z.ErrorMode),
+		WarnMode:       certlint.Mode(z.WarnMode),
+		NoticeMode:     certlint.Mode(z.NoticeMode),
+		IncludeSources: z.IncludeSources,
+		ExcludeSources: z.ExcludeSources,
+		IncludeNames:   z.IncludeNames,
+		ExcludeNames:   z.ExcludeNames,
+	}
+	if len(z.Overrides) > 0 {
+		pol.Overrides = make(map[string]certlint.Mode, len(z.Overrides))
+		for name, mode := range z.Overrides {
+			pol.Overrides[name] = certlint.Mode(mode)
+		}
 	}
 	return pol
 }
@@ -65,16 +121,38 @@ func (p Profile) lintEnabled() bool {
 // records metrics for every run and, when there are findings, an audit event.
 // It returns a non-nil error (fail-closed) when an enforce-mode check fails, so
 // the caller aborts before the HSM signs anything. Warnings never block.
-func (m *Manager) lintLeaf(base pki.LeafCertRequest, profile Profile, issuerCA *models.CA, requestedBy string) error {
+//
+// issuerCert is the parsed issuing CA certificate; it is used only when the
+// optional zlint backend is enabled and compiled in, to synthesize a faithful
+// DER encoding of the to-be-signed leaf (a throwaway "linting certificate")
+// without invoking the HSM.
+func (m *Manager) lintLeaf(base pki.LeafCertRequest, profile Profile, issuerCA *models.CA, issuerCert *x509.Certificate, requestedBy string) error {
 	if !profile.lintEnabled() {
 		return nil
 	}
 
+	policy := profile.LintPolicy()
 	tbs, err := certlint.CertificateFromLeaf(base)
 	if err != nil {
 		return fmt.Errorf("building certificate for linting: %w", err)
 	}
-	res := certlint.Lint(tbs, profile.LintPolicy())
+	res := certlint.Lint(tbs, policy)
+
+	// Optional zlint backend on the to-be-signed template. The template carries no
+	// DER (nothing is signed yet), so synthesize a faithful linting certificate —
+	// same TBSCertificate, throwaway signature — and lint its DER. Only classical
+	// profiles are supported (zlint does not understand ML-DSA); a synthesis
+	// failure is logged and skipped rather than blocking issuance, since it is an
+	// infrastructure fault, not a certificate-policy violation. When the backend
+	// is not compiled in, ZLintAvailable is false and this block is skipped (the
+	// startup profile check warns the operator once).
+	if policy.ZLint != nil && certlint.ZLintAvailable() && profile.Algorithm == AlgClassical && issuerCert != nil {
+		if der, serr := pki.LintCertificateDER(issuerCert, base); serr != nil {
+			log.Printf("WARNING: zlint enabled for profile %q but linting certificate could not be synthesized (skipping zlint): %v", profile.Name, serr)
+		} else {
+			res.Findings = append(res.Findings, certlint.ZLintFindings(der, *policy.ZLint)...)
+		}
+	}
 
 	// Metrics: one outcome per run, plus one per finding for fine-grained alerts.
 	switch {

@@ -2217,11 +2217,14 @@ $('lintBtn').onclick = async () => {
   if ($('lintProfile').value) body.profile = $('lintProfile').value;
   if ($('lintPublic').checked) body.public = true;
   if ($('lintMode').value) body.mode = $('lintMode').value;
+  if ($('lintZlint').checked) body.zlint = true;
   $('lintBtn').disabled = true;
   try {
     const res = await api('POST', '/api/lint', body);
-    if (res.pass) {
-      notice(out, 'ok', `✓ PASS — ${shortName(res.subject)} (serial ${shortSerial(res.serial)}) raised no findings under ${res.profile || 'the'} ${res.mode} policy${res.public ? ' with CA/B public rules' : ''}.`);
+    if (body.zlint && !res.zlint_available) {
+      notice(out, 'warn', 'zlint requested but this server was not built with -tags zlint; showing hand-rolled checks only.');
+    } else if (res.pass) {
+      notice(out, 'ok', `✓ PASS — ${shortName(res.subject)} (serial ${shortSerial(res.serial)}) raised no findings under ${res.profile || 'the'} ${res.mode} policy${res.public ? ' with CA/B public rules' : ''}${res.zlint ? ' + zlint' : ''}.`);
     } else {
       notice(out, res.errors ? 'err' : 'warn',
         `${res.errors ? '✗' : '⚠'} ${res.errors} error(s), ${res.warnings} warning(s) for ${shortName(res.subject)} — ${res.summary}`);

@@ -194,6 +194,25 @@ directive in [`server/go.mod`](../server/go.mod). When `govulncheck` flags a new
 stdlib CVE, bump that directive to the fixed patch release; for module CVEs,
 `go get` the fixed dependency version.
 
+### The optional `zlint` backend
+
+The industry-standard `github.com/zmap/zlint` pre-issuance lint backend (see
+[certlint.md](certlint.md)) is compiled in **only under the `zlint` build tag**.
+Its modules (`zmap/zlint`, `zmap/zcrypto`, and two transitive deps) appear in
+`go.mod` — `go mod tidy` records any import reachable under *any* build tag — but
+they are **not linked into, or reachable from, the default/FIPS/supply-chain
+builds**. Consequently the default `make govulncheck` (`-tags sqlite`) neither
+analyzes nor is affected by them. To scan the zlint dependency tree, run the
+reachability check *with* the tag:
+
+```bash
+make govulncheck-zlint          # cd server && govulncheck -tags 'sqlite zlint' ./...
+```
+
+Pipelines that ship a `-tags zlint` build should add this scan. The module SBOM
+(`cyclonedx-gomod mod`) lists the zmap modules because they are in the module
+graph; a per-binary SBOM of a default build does not.
+
 ---
 
 ## 5. How it fits together in CI

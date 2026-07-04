@@ -951,17 +951,21 @@ func cmdProfiles() error {
 }
 
 // cmdLint runs the pre-issuance lint checks against an existing certificate for
-// ad-hoc checking. It parses a PEM certificate (from a file or stdin), resolves
-// the lint policy from an optional named profile plus flag overrides, prints the
-// findings, and exits non-zero when an enforce-mode check fails.
+// ad-hoc checking. It parses a certificate (PEM or DER, from a file or stdin),
+// resolves the lint policy from an optional named profile plus flag overrides,
+// prints the findings, and exits non-zero when an enforce-mode check fails. With
+// -zlint (and a binary built with -tags zlint) it additionally runs the
+// industry-standard github.com/zmap/zlint suite.
 func cmdLint(cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("lint", flag.ContinueOnError)
 	profileName := fs.String("profile", "", "apply the named profile's lint policy (default: baseline)")
 	public := fs.Bool("public", false, "apply CA/Browser-Forum public-trust rules (overrides profile)")
 	mode := fs.String("mode", "", "override the enforcement mode for all checks: enforce|warn")
 	maxDays := fs.Int("max-validity-days", 0, "cap the validity period in days (0 = from profile)")
+	zlintOn := fs.Bool("zlint", false, "also run the zlint backend (requires a binary built with -tags zlint)")
+	zlintSources := fs.String("zlint-sources", "", "restrict zlint to these comma-separated sources (e.g. CABF_BR,RFC5280)")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: secsy-ca lint [flags] <cert.pem>   (use - to read from stdin)")
+		fmt.Fprintln(os.Stderr, "Usage: secsy-ca lint [flags] <cert>   (PEM or DER; use - to read from stdin)")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -973,11 +977,11 @@ func cmdLint(cfg *config.Config, args []string) error {
 		return fmt.Errorf("a certificate path is required (use - for stdin)")
 	}
 
-	certPEM, err := readInput(path)
+	certBytes, err := readInput(path)
 	if err != nil {
 		return fmt.Errorf("reading certificate: %w", err)
 	}
-	cert, err := pki.ParseCertificatePEM(certPEM)
+	cert, err := pki.ParseCertificatePEMOrDER(certBytes)
 	if err != nil {
 		return fmt.Errorf("parsing certificate: %w", err)
 	}
@@ -1007,6 +1011,21 @@ func cmdLint(cfg *config.Config, args []string) error {
 	if *maxDays > 0 {
 		policy.MaxValidity = time.Duration(*maxDays) * 24 * time.Hour
 	}
+	// -zlint turns the backend on (with default level mapping) even when the
+	// profile does not; -zlint-sources narrows the registry. When a profile
+	// already enables zlint, these flags refine that policy.
+	if *zlintOn || *zlintSources != "" {
+		if policy.ZLint == nil {
+			policy.ZLint = &certlint.ZLintPolicy{}
+		}
+		if *zlintSources != "" {
+			policy.ZLint.IncludeSources = splitCSV(*zlintSources)
+		}
+	}
+	if policy.ZLint != nil && !certlint.ZLintAvailable() {
+		fmt.Fprintln(os.Stderr, "note: zlint requested but this binary was not built with -tags zlint; "+
+			"reporting hand-rolled checks only")
+	}
 
 	res := certlint.Lint(cert, policy)
 
@@ -1016,7 +1035,8 @@ func cmdLint(cfg *config.Config, args []string) error {
 	}
 	fmt.Printf("Certificate: subject=%q serial=%s not_after=%s\n",
 		cert.Subject.String(), cert.SerialNumber, cert.NotAfter.UTC().Format(time.RFC3339))
-	fmt.Printf("Policy: mode=%s public=%t max_validity=%s\n", effMode, policy.Public, policy.MaxValidity)
+	fmt.Printf("Policy: mode=%s public=%t max_validity=%s zlint=%s\n",
+		effMode, policy.Public, policy.MaxValidity, zlintStatus(policy.ZLint != nil))
 	if res.OK() {
 		fmt.Println("Result: PASS (no findings)")
 		return nil
@@ -1029,6 +1049,19 @@ func cmdLint(cfg *config.Config, args []string) error {
 		return fmt.Errorf("lint failed: %d enforce-mode finding(s)", len(res.Errors()))
 	}
 	return nil
+}
+
+// zlintStatus renders the zlint column of the lint policy line: whether the
+// backend is requested and whether it is actually compiled into this binary.
+func zlintStatus(requested bool) string {
+	switch {
+	case !requested:
+		return "off"
+	case certlint.ZLintAvailable():
+		return "on"
+	default:
+		return "requested(not-compiled-in)"
+	}
 }
 
 // installConfigProfiles registers the operator-defined certificate profiles from
@@ -1053,6 +1086,7 @@ func installConfigProfiles(cfg *config.Config) error {
 				Mode:      p.Lint.Mode,
 				Public:    p.Lint.Public,
 				Overrides: p.Lint.Overrides,
+				ZLint:     zlintConfigFromConfig(p.Lint.ZLint),
 			},
 		}
 		if mode := strings.ToLower(strings.TrimSpace(p.CAA.Mode)); mode != "" && mode != "off" {
@@ -1077,6 +1111,25 @@ func installConfigProfiles(cfg *config.Config) error {
 		profiles = append(profiles, prof)
 	}
 	return ca.SetCustomProfiles(profiles)
+}
+
+// zlintConfigFromConfig converts a profile's zlint configuration into the
+// ca.ZLintConfig consumed by the lint gate, or nil when zlint is not enabled.
+func zlintConfigFromConfig(c config.ProfileZLintConfig) *ca.ZLintConfig {
+	if !c.Enabled {
+		return nil
+	}
+	return &ca.ZLintConfig{
+		Enabled:        true,
+		ErrorMode:      c.ErrorMode,
+		WarnMode:       c.WarnMode,
+		NoticeMode:     c.NoticeMode,
+		IncludeSources: c.IncludeSources,
+		ExcludeSources: c.ExcludeSources,
+		IncludeNames:   c.IncludeNames,
+		ExcludeNames:   c.ExcludeNames,
+		Overrides:      c.Overrides,
+	}
 }
 
 // daysToDuration converts validity-in-days to a Duration (0 = profile default).

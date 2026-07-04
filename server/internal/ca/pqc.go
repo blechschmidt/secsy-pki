@@ -258,7 +258,7 @@ func (m *Manager) issuePQCLeaf(ctx context.Context, spec IssueSpec, issuerCA *mo
 	if base, err = m.applySMIMEPolicy(base, profile, issuerCA, spec.RequestedBy); err != nil {
 		return nil, err
 	}
-	if err := m.lintLeaf(base, profile, issuerCA, spec.RequestedBy); err != nil {
+	if err := m.lintLeaf(base, profile, issuerCA, issuerCert, spec.RequestedBy); err != nil {
 		return nil, err
 	}
 
@@ -318,7 +318,7 @@ func (m *Manager) issueHybridLeaf(ctx context.Context, spec IssueSpec, issuerCA 
 	if base, err = m.applySMIMEPolicy(base, profile, issuerCA, spec.RequestedBy); err != nil {
 		return nil, err
 	}
-	if err := m.lintLeaf(base, profile, issuerCA, spec.RequestedBy); err != nil {
+	if err := m.lintLeaf(base, profile, issuerCA, issuerCert, spec.RequestedBy); err != nil {
 		return nil, err
 	}
 

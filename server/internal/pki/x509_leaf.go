@@ -87,11 +87,36 @@ func CreateLeafCertificate(signer crypto.Signer, issuer *x509.Certificate, req L
 	if err := fips.CheckIssuance(signer.Public(), req.PublicKey); err != nil {
 		return nil, err
 	}
-	if !req.NotAfter.After(req.NotBefore) {
-		return nil, fmt.Errorf("leaf certificate not_after (%s) must be after not_before (%s)", req.NotAfter, req.NotBefore)
-	}
 	if req.NotAfter.After(issuer.NotAfter) {
 		return nil, fmt.Errorf("leaf certificate not_after (%s) exceeds issuer expiry (%s)", req.NotAfter, issuer.NotAfter)
+	}
+
+	template, err := leafTemplate(req)
+	if err != nil {
+		return nil, err
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, issuer, req.PublicKey, signer)
+	if err != nil {
+		return nil, fmt.Errorf("creating leaf certificate: %w", err)
+	}
+	return der, nil
+}
+
+// leafTemplate assembles the crypto/x509 template for a leaf certificate from a
+// LeafCertRequest, computing the subject key identifier and parsing URI SANs. It
+// is the single source of truth for the leaf template so both the real
+// (HSM-signed) certificate and the throwaway linting certificate (see
+// LintCertificateDER) share an identical TBSCertificate structure.
+func leafTemplate(req LeafCertRequest) (*x509.Certificate, error) {
+	if req.Serial == nil || req.Serial.Sign() <= 0 {
+		return nil, fmt.Errorf("leaf certificate serial must be a positive integer")
+	}
+	if req.PublicKey == nil {
+		return nil, fmt.Errorf("leaf certificate requires a subject public key")
+	}
+	if !req.NotAfter.After(req.NotBefore) {
+		return nil, fmt.Errorf("leaf certificate not_after (%s) must be after not_before (%s)", req.NotAfter, req.NotBefore)
 	}
 
 	ski, err := subjectKeyID(req.PublicKey)
@@ -133,12 +158,7 @@ func CreateLeafCertificate(signer crypto.Signer, issuer *x509.Certificate, req L
 			template.MaxPathLenZero = *req.MaxPathLen == 0
 		}
 	}
-
-	der, err := x509.CreateCertificate(rand.Reader, template, issuer, req.PublicKey, signer)
-	if err != nil {
-		return nil, fmt.Errorf("creating leaf certificate: %w", err)
-	}
-	return der, nil
+	return template, nil
 }
 
 // subjectKeyID derives an RFC 5280 §4.2.1.2 (method 1) subject key identifier:

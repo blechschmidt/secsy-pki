@@ -96,6 +96,12 @@ type Policy struct {
 	// syntax, EKU exclusivity, key-usage split, class validity caps). See
 	// SMIMEPolicy.
 	SMIME *SMIMEPolicy
+	// ZLint, when non-nil, additionally runs the optional github.com/zmap/zlint
+	// industry-standard lint suite and folds its findings into the same
+	// enforce/warn gate. It is only effective in a binary built with the "zlint"
+	// build tag (ZLintAvailable reports whether that is the case); otherwise it is
+	// a no-op and the hand-rolled checks alone apply. See ZLintPolicy.
+	ZLint *ZLintPolicy
 }
 
 // modeFor resolves the effective enforcement mode for a check code.
@@ -238,6 +244,16 @@ func Lint(cert *x509.Certificate, policy Policy) Result {
 			Mode:        policy.modeFor(is.code),
 			Description: is.desc,
 		})
+	}
+
+	// Optional zlint backend: run the industry-standard suite over the DER
+	// encoding when the policy enables it and the certificate carries its raw
+	// bytes (an already-encoded certificate, e.g. from `secsy-ca lint`). A
+	// to-be-signed template has no DER yet; the pre-issuance gate synthesizes one
+	// and calls ZLintFindings directly (see ca.lintLeaf). zlint findings arrive
+	// with their enforcement Mode already resolved from the level mapping.
+	if policy.ZLint != nil && len(cert.Raw) > 0 {
+		res.Findings = append(res.Findings, ZLintFindings(cert.Raw, *policy.ZLint)...)
 	}
 	return res
 }

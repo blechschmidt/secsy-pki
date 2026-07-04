@@ -131,6 +131,28 @@ lint-fix: ## Run golangci-lint with --fix (gofmt/goimports + safe autofixes)
 	cd server && GOTOOLCHAIN=auto $(GOLANGCI_LINT) run --fix
 
 # ---------------------------------------------------------------------------
+# Optional zlint pre-issuance lint backend (Task 88)
+# ---------------------------------------------------------------------------
+# The industry-standard github.com/zmap/zlint suite is compiled in only under the
+# `zlint` build tag, so the default/FIPS/supply-chain builds stay free of the
+# zmap dependency surface. See docs/certlint.md. `zmap` is in go.mod regardless
+# of tag but is linked (and reachable to govulncheck) only with -tags zlint.
+ZLINT_OUT := $(DIST)/zlint
+
+.PHONY: build-zlint
+build-zlint: | $(DIST) ## Build the server + secsy-ca with the zlint backend linked in
+	@echo "==> building with the zlint backend (-tags 'sqlite zlint') -> $(ZLINT_OUT)"
+	@mkdir -p "$(CURDIR)/$(ZLINT_OUT)"
+	cd server && GOTOOLCHAIN=auto go build -tags 'sqlite zlint' -o "$(CURDIR)/$(ZLINT_OUT)/secsy-pki-server" ./cmd/server
+	cd server && GOTOOLCHAIN=auto go build -tags 'sqlite zlint' -o "$(CURDIR)/$(ZLINT_OUT)/secsy-ca"         ./cmd/secsy-ca
+	@echo "==> done. Run '$(ZLINT_OUT)/secsy-ca lint -zlint <cert>' to exercise it."
+
+.PHONY: govulncheck-zlint
+govulncheck-zlint: ## Reachability scan including the zlint dependency tree (-tags 'sqlite zlint')
+	@echo "==> govulncheck (source mode, -tags 'sqlite zlint')"
+	cd server && GOTOOLCHAIN=auto $(GOVULNCHECK) -tags 'sqlite zlint' ./...
+
+# ---------------------------------------------------------------------------
 # FIPS 140-3 build (Task 65)
 # ---------------------------------------------------------------------------
 # GOFIPS140 selects the Go Cryptographic Module the binaries are built against:

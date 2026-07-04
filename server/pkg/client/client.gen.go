@@ -1558,6 +1558,9 @@ type LintRequest struct {
 
 	// Public Apply the CA/Browser-Forum public-trust rules.
 	Public *bool `json:"public,omitempty"`
+
+	// Zlint Additionally run the industry-standard zlint backend. Effective only when the server was built with the "zlint" build tag (see zlint_available in the response).
+	Zlint *bool `json:"zlint,omitempty"`
 }
 
 // LintRequestMode Override the enforcement mode of every check.
@@ -1575,6 +1578,12 @@ type LintResponse struct {
 	Subject  *string        `json:"subject,omitempty"`
 	Summary  *string        `json:"summary,omitempty"`
 	Warnings *int           `json:"warnings,omitempty"`
+
+	// Zlint Whether the zlint backend was requested for this run.
+	Zlint *bool `json:"zlint,omitempty"`
+
+	// ZlintAvailable Whether the zlint backend is compiled into this server binary. When zlint is true but zlint_available is false, only the hand-rolled checks ran.
+	ZlintAvailable *bool `json:"zlint_available,omitempty"`
 }
 
 // Liveness defines model for Liveness.

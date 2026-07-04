@@ -27,6 +27,10 @@ type LintRequest struct {
 	Mode string `json:"mode,omitempty"`
 	// MaxValidityDays caps the permitted validity period (0 = from profile).
 	MaxValidityDays int `json:"max_validity_days,omitempty"`
+	// ZLint additionally runs the industry-standard zlint backend (effective only
+	// when the server was built with -tags zlint; see ZLintAvailable in the
+	// response).
+	ZLint bool `json:"zlint,omitempty"`
 }
 
 // LintResponse reports the lint verdict and its findings.
@@ -37,6 +41,11 @@ type LintResponse struct {
 	// Mode and Public echo the effective policy applied.
 	Mode   string `json:"mode"`
 	Public bool   `json:"public"`
+	// ZLint reports whether the zlint backend was requested, and ZLintAvailable
+	// whether it is compiled into this server binary. When ZLint is true but
+	// ZLintAvailable is false, only the hand-rolled checks ran.
+	ZLint          bool `json:"zlint"`
+	ZLintAvailable bool `json:"zlint_available"`
 	// Pass is true when no findings were raised at all.
 	Pass     bool               `json:"pass"`
 	Errors   int                `json:"errors"`
@@ -92,6 +101,9 @@ func (a *API) LintCertificate(w http.ResponseWriter, r *http.Request) {
 	if req.MaxValidityDays > 0 {
 		policy.MaxValidity = time.Duration(req.MaxValidityDays) * 24 * time.Hour
 	}
+	if req.ZLint && policy.ZLint == nil {
+		policy.ZLint = &certlint.ZLintPolicy{}
+	}
 
 	res := certlint.Lint(cert, policy)
 	effMode := policy.Mode
@@ -99,15 +111,17 @@ func (a *API) LintCertificate(w http.ResponseWriter, r *http.Request) {
 		effMode = certlint.ModeEnforce
 	}
 	writeJSON(w, http.StatusOK, LintResponse{
-		Subject:  cert.Subject.String(),
-		Serial:   cert.SerialNumber.String(),
-		NotAfter: cert.NotAfter.UTC().Format(time.RFC3339),
-		Mode:     string(effMode),
-		Public:   policy.Public,
-		Pass:     res.OK(),
-		Errors:   len(res.Errors()),
-		Warnings: len(res.Warnings()),
-		Summary:  res.Summary(),
-		Findings: res.Findings,
+		Subject:        cert.Subject.String(),
+		Serial:         cert.SerialNumber.String(),
+		NotAfter:       cert.NotAfter.UTC().Format(time.RFC3339),
+		Mode:           string(effMode),
+		Public:         policy.Public,
+		ZLint:          policy.ZLint != nil,
+		ZLintAvailable: certlint.ZLintAvailable(),
+		Pass:           res.OK(),
+		Errors:         len(res.Errors()),
+		Warnings:       len(res.Warnings()),
+		Summary:        res.Summary(),
+		Findings:       res.Findings,
 	})
 }

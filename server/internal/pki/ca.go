@@ -135,6 +135,28 @@ func ParseCertificatePEM(pemBytes []byte) (*x509.Certificate, error) {
 	return cert, nil
 }
 
+// ParseCertificatePEMOrDER decodes an X.509 certificate supplied either as PEM
+// (a CERTIFICATE block) or as raw DER, so callers such as `secsy-ca lint` accept
+// a certificate file in either encoding. It tries PEM first and falls back to a
+// direct DER parse.
+func ParseCertificatePEMOrDER(data []byte) (*x509.Certificate, error) {
+	if block, _ := pem.Decode(data); block != nil {
+		if block.Type != "CERTIFICATE" {
+			return nil, fmt.Errorf("invalid PEM: expected CERTIFICATE block, got %q", block.Type)
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parsing certificate: %w", err)
+		}
+		return cert, nil
+	}
+	cert, err := x509.ParseCertificate(data)
+	if err != nil {
+		return nil, fmt.Errorf("parsing certificate (tried PEM and DER): %w", err)
+	}
+	return cert, nil
+}
+
 // ParseCertificateChainPEM decodes every CERTIFICATE block in a PEM bundle, in
 // order. Non-CERTIFICATE blocks are ignored so a bundle with interleaved
 // comments or keys still parses. It errors only when a CERTIFICATE block fails

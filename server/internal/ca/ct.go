@@ -155,13 +155,27 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 		return nil, nil, err
 	}
 
+	// Assign the profile's certificate-policy OIDs before linting so the lint gate
+	// (in particular the optional zlint backend, which lints the fully-encoded
+	// certificate) sees the certificatePolicies extension the leaf will carry.
+	// These are appended to the base template so they participate identically in
+	// the precertificate and the final certificate (keeping the TBSCertificate
+	// aligned for SCT).
+	policyExts, err := profile.policyExtensions()
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(policyExts) > 0 {
+		base.ExtraExtensions = appendExts(base.ExtraExtensions, policyExts)
+	}
+
 	// Fail-closed pre-issuance lint gate: run CA/Browser-Forum Baseline
 	// Requirements checks on the to-be-signed template BEFORE any HSM signature.
 	// A violating template is rejected here — neither the precertificate nor the
 	// final certificate is ever signed. Each pre-issuance gate is its own span so
 	// a rejection (and its latency) is attributable in the trace.
 	if err := traceGate(ctx, "ca.gate.lint", func() error {
-		return m.lintLeaf(base, profile, issuerCA, requestedBy)
+		return m.lintLeaf(base, profile, issuerCA, issuerCert, requestedBy)
 	}); err != nil {
 		return nil, nil, err
 	}
@@ -183,17 +197,6 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 		return m.checkNameConstraints(base, profile, issuerCA, issuerCert, requestedBy)
 	}); err != nil {
 		return nil, nil, err
-	}
-
-	// Assign the profile's certificate-policy OIDs to the leaf. These are appended
-	// to the base template so they participate identically in the precertificate
-	// and the final certificate (keeping the TBSCertificate aligned for SCT).
-	policyExts, err := profile.policyExtensions()
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(policyExts) > 0 {
-		base.ExtraExtensions = appendExts(base.ExtraExtensions, policyExts)
 	}
 
 	cfg := profile.CT

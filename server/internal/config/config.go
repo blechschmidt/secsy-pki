@@ -1484,6 +1484,38 @@ type ProfileLintConfig struct {
 	Public bool `yaml:"public"`
 	// Overrides sets the mode ("enforce"|"warn") for individual checks by code.
 	Overrides map[string]string `yaml:"overrides"`
+	// ZLint optionally enables the industry-standard github.com/zmap/zlint
+	// backend alongside the hand-rolled checks. It is only effective in a binary
+	// built with the "zlint" build tag; the default, FIPS, and supply-chain
+	// builds ignore it (and log a warning at startup if a profile requests it).
+	ZLint ProfileZLintConfig `yaml:"zlint"`
+}
+
+// ProfileZLintConfig configures the optional zlint pre-issuance lint backend for
+// a profile. The zlint suite (~hundreds of RFC 5280 / CA/Browser Forum lints)
+// supplements the dependency-free hand-rolled checks; its severity levels are
+// mapped onto the fail-closed enforce/warn gate. Effective only in a binary
+// built with `-tags zlint`.
+type ProfileZLintConfig struct {
+	// Enabled turns the zlint backend on for the profile.
+	Enabled bool `yaml:"enabled"`
+	// ErrorMode / WarnMode / NoticeMode map the corresponding zlint severity
+	// levels to "enforce", "warn", or "ignore". Defaults: error→enforce,
+	// warn→warn, notice→ignore.
+	ErrorMode  string `yaml:"error_mode"`
+	WarnMode   string `yaml:"warn_mode"`
+	NoticeMode string `yaml:"notice_mode"`
+	// IncludeSources / ExcludeSources restrict the lint registry by source (e.g.
+	// "CABF_BR", "RFC5280", "CABF_SMIME_BR", "Mozilla"). Empty include = all.
+	IncludeSources []string `yaml:"include_sources"`
+	ExcludeSources []string `yaml:"exclude_sources"`
+	// IncludeNames / ExcludeNames restrict the registry to / from individual lint
+	// names.
+	IncludeNames []string `yaml:"include_names"`
+	ExcludeNames []string `yaml:"exclude_names"`
+	// Overrides sets the disposition ("enforce"|"warn"|"ignore") for an
+	// individual lint by name, overriding the level mapping.
+	Overrides map[string]string `yaml:"overrides"`
 }
 
 // SecretConfig configures the HSM-backed envelope-encryption feature. KEKLabel
