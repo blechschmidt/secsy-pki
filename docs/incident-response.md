@@ -60,6 +60,15 @@ profile, or take the enrollment endpoints down — see the
 [runbook](RUNBOOK.md#suspected-ca-key-compromise)). Containment also freezes
 the selection, which keeps the dry-run count stable for Step 3.
 
+When a **specific subject key** is compromised, also add it to the
+[compromised-key blocklist](key-checks.md#operator-compromised-key-blocklist) so
+it can never be re-certified (on any surface), even after the affected
+certificates are revoked:
+
+```console
+secsy-ca blocked-keys add -cert leaked.pem -reason "key compromise, IR-2026-042"
+```
+
 ## Step 1 — record the incident parameters
 
 Pick an **operation id** (ticket number, e.g. `IR-2026-042`) and pass it to

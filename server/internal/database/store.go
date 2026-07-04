@@ -44,6 +44,23 @@ type Store interface {
 	APITokenStore
 	CTInclusionStore
 	WebhookStore
+	BlockedKeyStore
+}
+
+// BlockedKeyStore persists the operator-managed compromised-key blocklist (Task
+// 120): public keys the CA must never certify again, keyed by their
+// SubjectPublicKeyInfo SHA-256 fingerprint. It holds no key material. IsKeyBlocked
+// is the O(1) lookup on the fail-closed pre-issuance path; AddBlockedKey and
+// RemoveBlockedKey report whether they changed anything so blocking/un-blocking is
+// idempotent and auditable. DistinctSubjectsForKeyFingerprint (on InventoryStore)
+// backs the companion duplicate/reused-subject-key detection.
+type BlockedKeyStore interface {
+	AddBlockedKey(k *models.BlockedKey) (bool, error)
+	GetBlockedKey(fingerprint string) (*models.BlockedKey, error)
+	IsKeyBlocked(fingerprint string) (bool, error)
+	ListBlockedKeys() ([]models.BlockedKey, error)
+	RemoveBlockedKey(fingerprint string) (bool, error)
+	CountBlockedKeys() (int, error)
 }
 
 // WebhookStore persists durable outbound webhook subscriptions and their
@@ -273,6 +290,10 @@ type InventoryStore interface {
 	// monitoring, rotation).
 	PageIssuedCertificates(caID string, f CertFilter, p CertPageRequest) (IssuedCertPage, error)
 	MarkExpiredCertificates(caID string, now time.Time) (int64, error)
+	// DistinctSubjectsForKeyFingerprint returns the distinct subject DNs certified
+	// under a subject public-key fingerprint (excluding one serial), backing the
+	// pre-issuance gate's duplicate/reused-subject-key detection (Task 120).
+	DistinctSubjectsForKeyFingerprint(fingerprint, excludeSerial string) ([]string, error)
 }
 
 // DiscoveryStore persists certificates observed on external TLS endpoints by the

@@ -370,8 +370,10 @@ func (db *DB) migrate() error {
 			ct_status TEXT NOT NULL DEFAULT 'none',
 			sct_count INTEGER NOT NULL DEFAULT 0,
 			marker TEXT NOT NULL DEFAULT '',
+			public_key_fingerprint TEXT NOT NULL DEFAULT '',
 			UNIQUE(ca_id, serial)
 		)`, currentTimestamp),
+		`CREATE INDEX IF NOT EXISTS idx_issued_certs_keyfp ON issued_certificates(public_key_fingerprint)`,
 		`CREATE INDEX IF NOT EXISTS idx_issued_certs_ca ON issued_certificates(ca_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_issued_certs_status ON issued_certificates(ca_id, status)`,
 		// Authoritative revocation store read by CRL/OCSP generation. Kept
@@ -914,6 +916,19 @@ func (db *DB) migrate() error {
 			PRIMARY KEY (ca_id, serial, log_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_sct_inclusion_status ON sct_inclusion(status)`,
+		// Operator-managed compromised-key blocklist (Task 120). One row per public
+		// key the CA must never certify again, keyed by its SubjectPublicKeyInfo
+		// SHA-256 fingerprint ("SHA256:<base64>"). It holds no key material and is
+		// deployment-global (a compromised key is compromised for every tenant), so
+		// it has no tenant scope or foreign key. Consulted by the fail-closed
+		// pre-issuance key-quality gate on every issuance surface.
+		`CREATE TABLE IF NOT EXISTS blocked_keys (
+			fingerprint TEXT PRIMARY KEY,
+			reason TEXT NOT NULL DEFAULT '',
+			source TEXT NOT NULL DEFAULT '',
+			added_by TEXT NOT NULL DEFAULT '',
+			added_at TIMESTAMP NOT NULL
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.exec(stmt); err != nil {
@@ -952,6 +967,10 @@ func (db *DB) migrate() error {
 		// Synthetic-certificate marker (Task 71): tags issuance-canary probes so
 		// monitoring and reports can exclude them.
 		_, _ = db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN IF NOT EXISTS marker TEXT NOT NULL DEFAULT ''")
+		// Certified subject public-key fingerprint (Task 120): drives the pre-issuance
+		// key-quality gate's duplicate-subject-key detection and locating a compromised
+		// key across the inventory. Existing rows backfill to empty.
+		_, _ = db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN IF NOT EXISTS public_key_fingerprint TEXT NOT NULL DEFAULT ''")
 		// Multi-tenant isolation (Task 43). Existing rows backfill to the default
 		// tenant so the upgrade is transparent for single-organization installs.
 		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default'")
@@ -1007,6 +1026,9 @@ func (db *DB) migrate() error {
 		// Synthetic-certificate marker (Task 71): tags issuance-canary probes so
 		// monitoring and reports can exclude them.
 		_, _ = db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN marker TEXT NOT NULL DEFAULT ''")
+		// Certified subject public-key fingerprint (Task 120): drives the pre-issuance
+		// key-quality gate's duplicate-subject-key detection.
+		_, _ = db.conn.Exec("ALTER TABLE issued_certificates ADD COLUMN public_key_fingerprint TEXT NOT NULL DEFAULT ''")
 		// Multi-tenant isolation (Task 43). SQLite ADD COLUMN is idempotently
 		// retried; errors for already-present columns are ignored. Existing rows
 		// backfill to the default tenant.

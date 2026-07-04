@@ -222,6 +222,8 @@ func run(args []string) error {
 		return cmdToken(db, cfg, cmdArgs)
 	case "webhook":
 		return cmdWebhook(db, cfg, cmdArgs)
+	case "blocked-keys":
+		return cmdBlockedKeys(db, cmdArgs)
 	case "issue-intermediate":
 		return cmdIssueIntermediate(db, mgr, cmdArgs)
 	case "ca":
@@ -432,6 +434,8 @@ Commands:
                       audit chain, expiry, CRL freshness, clock, TLS); exit 0/1/2
   token               Manage native scoped API tokens / service accounts
                       (create/list/revoke); create prints the secret once
+  blocked-keys        Manage the compromised-key blocklist (add/list/remove);
+                      blocked subject keys are rejected fail-closed at issuance
 
 Run "secsy-ca <command> -h" for command-specific flags.
 `)
@@ -1166,6 +1170,14 @@ func installConfigProfiles(cfg *config.Config) error {
 				BRProfile:      p.SMIME.BRProfile,
 				AllowedDomains: p.SMIME.AllowedDomains,
 				SubjectEmail:   p.SMIME.SubjectEmail,
+			}
+		}
+		if p.KeyChecks != (config.ProfileKeyChecksConfig{}) {
+			prof.KeyChecks = &ca.KeyCheckConfig{
+				Disabled:         p.KeyChecks.Disabled,
+				Mode:             p.KeyChecks.Mode,
+				DetectDuplicates: p.KeyChecks.DetectDuplicates,
+				MinRSABits:       p.KeyChecks.MinRSABits,
 			}
 		}
 		profiles = append(profiles, prof)

@@ -117,6 +117,21 @@ var (
 		"Pre-issuance name-constraint violations that forbid issuance, partitioned by kind.",
 		"kind")
 
+	// Pre-issuance key-quality checking (Task 120, CA/Browser Forum BR §6.1.1.3
+	// weak/compromised-key gate). CertificateKeyChecks counts every run by outcome:
+	// "result" is pass|warn|fail (fail = an enforce-mode finding blocked signing).
+	// CertificateKeyCheckFindings counts individual findings by check "code" (roca,
+	// weak_exponent, small_modulus, even_modulus, debian_weak_key, blocked_key,
+	// duplicate_key) and "mode" (enforce|warn) for fine-grained alerting.
+	CertificateKeyChecks = NewCounter(Default,
+		"secsy_certificate_key_checks_total",
+		"Pre-issuance subject public-key quality checks, partitioned by outcome (pass|warn|fail).",
+		"result")
+	CertificateKeyCheckFindings = NewCounter(Default,
+		"secsy_certificate_key_check_findings_total",
+		"Pre-issuance key-quality findings, partitioned by check code and mode.",
+		"code", "mode")
+
 	// Enrollment key-attestation checking (Task 49 gate on the EST/SCEP/ACME
 	// device-enrollment paths). AttestationChecks counts every check by protocol
 	// ("est"|"scep"|"acme"), the applied "mode" (off|permissive|require), and the

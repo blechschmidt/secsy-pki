@@ -68,7 +68,7 @@ software cannot discharge, the row says so plainly.
 | **AIA (OCSP + caIssuers) & CDP present** (BR §7.1.2.7.7) | AIA/CDP stamped on leaves; chain endpoint for caIssuers; CDP for CRL/shard. `internal/ca`, `internal/pki`; `GET /api/ca/{id}/chain` | ⚙️ | Operator must set the externally-reachable AIA/CDP base URLs so the stamped URLs resolve. |
 | **Precertificate + SCTs / Certificate Transparency** (browser CT policy) | RFC 6962 precert submission + SCT embedding; inclusion-proof monitoring. `internal/ct`, `internal/ctmonitor` | ⚙️ | Per-profile; **fail-open is a supported opt-in** ([ADR 0003](adr/0003-fail-closed-security-gates.md)). Operator must configure qualified logs and enough SCTs to meet current browser CT policy — the software does not track browser-specific log-diversity rules. |
 | **Pre-issuance linting** (industry best practice; misissuance prevention) | Hand-rolled BR checks always on; optional `zlint` suite under `-tags zlint`. `internal/certlint`, `internal/certlint/zlint.go` | ✅ / ⚙️ | The always-on checks are a **curated subset**, not the full zlint corpus. For maximal coverage build with `-tags zlint` and set the profile `lint.zlint` level. |
-| **Reject known-weak keys (ROCA, Debian, small factors)** (BR §4.9.1.1(4), §6.1.1.3) | External discovery scanner flags weak keys post-hoc (`internal/discovery`). No **pre-issuance** blocklist. | ⛔ | **Gap:** no pre-issuance ROCA/Debian-weak-key/Fermat blocklist. Operator should reject compromised keys via an external check or accept the residual risk in the CP/CPS. |
+| **Reject known-weak keys (ROCA, Debian, small factors)** (BR §4.9.1.1(4), §6.1.1.3) | Fail-closed **pre-issuance** key-quality gate on every issuance surface (REST/ACME/EST/SCEP/CMP/SPIFFE) and the dry-run preview: ROCA/CVE-2017-15361 fingerprint, RSA exponent (e≥65537, odd) and modulus (odd, ≥2048-bit) checks, optional Debian OpenSSL weak-key blocklist, and an operator-managed compromised-key blocklist. `internal/keycheck`, `internal/ca/keycheck.go`; [key-checks](key-checks.md) | ✅ / ⚙️ | Per-profile enforce/warn. The Debian weak-key list is **operator-supplied** (no blob vendored); load it via `keychecks.weak_key_blocklist_paths`. Small-factor/Fermat cofactor scanning is not performed (structural ROCA + blocklists only). |
 
 ### 1.4 Revocation & certificate status
 
@@ -155,8 +155,11 @@ or unimplemented items, **not** claims the software makes and fails.
 
 1. **MPIC (BR §3.2.2.9) is not implemented** — validation is single-vantage.
    Required for public trust after its effective date.
-2. **No pre-issuance weak-key blocklist** (ROCA/Debian/Fermat). Only the
-   *external discovery scanner* flags weak keys after the fact.
+2. **Weak-key rejection is structural, not full-factoring** — the pre-issuance
+   gate ([key-checks](key-checks.md)) covers ROCA/CVE-2017-15361, RSA
+   exponent/modulus policy, the Debian OpenSSL weak-key list, and an operator
+   compromised-key blocklist, but does not scan for small factors / Fermat-close
+   primes / shared-factor (batch-GCD) weaknesses.
 3. **Validity-cap phased reductions (SC-081)** are not date-driven — the cap is
    398 days unless the operator tightens the profile.
 4. **CT can be configured fail-open** per profile, and browser-specific log

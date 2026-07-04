@@ -207,6 +207,16 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 		return nil, nil, err
 	}
 
+	// Fail-closed pre-issuance key-quality gate (Task 120, CA/Browser Forum BR
+	// §6.1.1.3): a weak (ROCA / weak-exponent / small-or-even-modulus / Debian) or
+	// known-compromised (operator-blocklisted / reused-subject) subject public key
+	// is rejected here, before any HSM signature.
+	if err := traceGate(ctx, "ca.gate.keycheck", func() error {
+		return m.checkKeyQuality(base, profile, issuerCA, requestedBy)
+	}); err != nil {
+		return nil, nil, err
+	}
+
 	cfg := profile.CT
 	if cfg == nil || !cfg.Enabled || ctSubmitter == nil {
 		der, err := m.signLeaf(ctx, signer, issuerCert, base, "final")

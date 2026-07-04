@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,7 +83,10 @@ func TestFIPSIssuanceGates(t *testing.T) {
 		t.Errorf("Ed25519 leaf: want ErrNotApproved, got %v", err)
 	}
 
-	// RSA-1024 subject key: rejected at the pki issuance gate.
+	// RSA-1024 subject key: refused fail-closed. The pre-issuance key-quality gate
+	// (Task 120) catches a sub-2048-bit modulus (small_modulus) before the pki-layer
+	// FIPS key gate would, so under this policy RSA-1024 is rejected as a weak key —
+	// defense in depth: it is refused with or without the FIPS policy.
 	smallRSA, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
 		t.Skipf("cannot generate RSA-1024 probe key in this mode: %v", err)
@@ -92,8 +96,8 @@ func TestFIPSIssuanceGates(t *testing.T) {
 		CSRPEM:  csrFromKey(t, smallRSA, "small.example.com"),
 		Profile: "server",
 	})
-	if !errors.Is(err, fips.ErrNotApproved) {
-		t.Errorf("RSA-1024 leaf: want ErrNotApproved, got %v", err)
+	if err == nil || (!errors.Is(err, fips.ErrNotApproved) && !strings.Contains(err.Error(), "small_modulus")) {
+		t.Errorf("RSA-1024 leaf: want a fail-closed weak/non-approved-key rejection, got %v", err)
 	}
 
 	// PQC / hybrid profiles: rejected before their dedicated signing paths run.

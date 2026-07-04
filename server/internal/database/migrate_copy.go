@@ -97,6 +97,9 @@ var migrationTables = []string{
 	"webhook_subscriptions",
 	"webhook_deliveries",
 	"webhook_fanout_cursor",
+	// Operator-managed compromised-key blocklist (Task 120). Deployment-global; no
+	// foreign keys, so it can be copied at any point.
+	"blocked_keys",
 }
 
 // tableCopyOrder pins the read order for tables whose rows have intra-table

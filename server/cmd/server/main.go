@@ -43,6 +43,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/issueapproval"
+	"github.com/blechschmidt/secsy-pki/server/internal/keycheck"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/leader"
 	"github.com/blechschmidt/secsy-pki/server/internal/mailtransport"
@@ -243,6 +244,19 @@ func main() {
 			len(ctSubmitter.LogNames()), ctSubmitter.LogNames())
 	}
 
+	// Install the optional Debian OpenSSL / operator weak-key blocklist consulted
+	// by the fail-closed pre-issuance key-quality gate (Task 120). A configured
+	// path that cannot be loaded is fatal, so a typo fails closed at startup rather
+	// than silently disabling the check.
+	if paths := cfg.KeyChecks.WeakKeyBlocklistPaths; len(paths) > 0 {
+		bl, err := keycheck.LoadBlocklist(paths...)
+		if err != nil {
+			log.Fatalf("Invalid keychecks.weak_key_blocklist_paths: %v", err)
+		}
+		ca.SetWeakKeyBlocklist(bl)
+		log.Printf("Weak-key blocklist loaded: %d fingerprint(s) from %d source(s)", bl.Len(), len(bl.Sources()))
+	}
+
 	// Install any operator-defined certificate profiles, layered over built-ins.
 	if len(cfg.Profiles) > 0 {
 		profiles := make([]ca.Profile, 0, len(cfg.Profiles))
@@ -318,6 +332,7 @@ func main() {
 					SubjectEmail:   p.SMIME.SubjectEmail,
 				}
 			}
+			prof.KeyChecks = keyChecksConfig(p.KeyChecks)
 			profiles = append(profiles, prof)
 		}
 		if err := ca.SetCustomProfiles(profiles); err != nil {
@@ -1657,6 +1672,23 @@ func zlintConfig(c config.ProfileZLintConfig) *ca.ZLintConfig {
 		IncludeNames:   c.IncludeNames,
 		ExcludeNames:   c.ExcludeNames,
 		Overrides:      c.Overrides,
+	}
+}
+
+// keyChecksConfig converts a profile's key-quality configuration into the
+// ca.KeyCheckConfig consumed by the pre-issuance gate (Task 120). The zero value
+// maps to nil — the default (enforce mode, standard structural checks + operator
+// blocklist) — so a profile that omits the block gets the safe default rather
+// than an inert one.
+func keyChecksConfig(c config.ProfileKeyChecksConfig) *ca.KeyCheckConfig {
+	if c == (config.ProfileKeyChecksConfig{}) {
+		return nil
+	}
+	return &ca.KeyCheckConfig{
+		Disabled:         c.Disabled,
+		Mode:             c.Mode,
+		DetectDuplicates: c.DetectDuplicates,
+		MinRSABits:       c.MinRSABits,
 	}
 }
 

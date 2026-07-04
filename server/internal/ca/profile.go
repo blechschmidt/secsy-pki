@@ -52,6 +52,12 @@ type Profile struct {
 	// are validated, normalized, and allowlist-checked before signing, and the
 	// CA/B Forum S/MIME Baseline Requirements lint rules apply. See SMIMEConfig.
 	SMIME *SMIMEConfig `json:"smime,omitempty"`
+	// KeyChecks is the profile's pre-issuance key-quality policy (Task 120,
+	// CA/Browser Forum BR §6.1.1.3): the fail-closed weak-key (ROCA / exponent /
+	// modulus / Debian) and compromised-key (operator blocklist / reused-subject)
+	// gate. Nil applies the default (enforce mode, standard structural checks +
+	// blocklist); see KeyCheckConfig.
+	KeyChecks *KeyCheckConfig `json:"key_checks,omitempty"`
 
 	// MustStaple stamps the RFC 7633 TLS Feature / OCSP Must-Staple extension
 	// (id-pe-tlsfeature, OID 1.3.6.1.5.5.7.1.24) on every leaf issued under this

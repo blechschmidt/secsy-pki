@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/caa"
+	"github.com/blechschmidt/secsy-pki/server/internal/keycheck"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
@@ -330,19 +331,20 @@ func (m *Manager) issueLeaf(ctx context.Context, issuerCA *models.CA, issuerCert
 	chainPEM := append(append([]byte{}, leafPEM...), []byte(issuerCA.Certificate)...)
 
 	record := &models.IssuedCertificate{
-		ID:          uuid.New().String(),
-		CAID:        issuerCA.ID,
-		Serial:      serial.String(),
-		Subject:     cert.Subject.String(),
-		CommonName:  cert.Subject.CommonName,
-		SANs:        sanStrings(cert),
-		Profile:     profile.Name,
-		Certificate: string(leafPEM),
-		NotBefore:   cert.NotBefore,
-		NotAfter:    cert.NotAfter,
-		Status:      models.CertStatusValid,
-		RequestedBy: requestedBy,
-		Marker:      parts.Marker,
+		ID:                   uuid.New().String(),
+		CAID:                 issuerCA.ID,
+		Serial:               serial.String(),
+		Subject:              cert.Subject.String(),
+		CommonName:           cert.Subject.CommonName,
+		SANs:                 sanStrings(cert),
+		Profile:              profile.Name,
+		Certificate:          string(leafPEM),
+		NotBefore:            cert.NotBefore,
+		NotAfter:             cert.NotAfter,
+		Status:               models.CertStatusValid,
+		RequestedBy:          requestedBy,
+		Marker:               parts.Marker,
+		PublicKeyFingerprint: subjectKeyFingerprint(cert.PublicKey),
 	}
 	applyCTToRecord(record, ctStatus)
 	span.SetAttributes(attribute.String("cert.serial", serial.String()))
@@ -527,7 +529,8 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (_ *Issu
 		Status:      models.CertStatusValid,
 		RequestedBy: spec.RequestedBy,
 		// A renewal of a synthetic certificate is itself synthetic.
-		Marker: prior.Marker,
+		Marker:               prior.Marker,
+		PublicKeyFingerprint: subjectKeyFingerprint(cert.PublicKey),
 	}
 	applyCTToRecord(record, ctStatus)
 	if err := m.db.RecordIssuedCertificate(record); err != nil {
@@ -745,6 +748,19 @@ func newSerial() (*big.Int, error) {
 			return n, nil
 		}
 	}
+}
+
+// subjectKeyFingerprint returns the "SHA256:<base64>" SubjectPublicKeyInfo
+// fingerprint of a certified public key for the inventory record, or "" when the
+// key cannot be marshaled (e.g. an ML-DSA subject on a PQC path). It is the key by
+// which the pre-issuance gate detects a reused subject key and by which a
+// compromised key can be located across the inventory.
+func subjectKeyFingerprint(pub crypto.PublicKey) string {
+	fp, err := keycheck.Fingerprint(pub)
+	if err != nil {
+		return ""
+	}
+	return fp
 }
 
 // sanStrings renders a certificate's subject alternative names as a flat list of

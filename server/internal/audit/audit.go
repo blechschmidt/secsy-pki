@@ -101,6 +101,20 @@ const (
 	// email-protection leaf whose rfc822Name SANs are malformed or whose e-mail
 	// domains fall outside the profile or tenant allowlists (fail-closed).
 	ActionCertSMIME = "cert.smime"
+	// ActionCertKeyCheck records the outcome of the pre-issuance key-quality gate
+	// (Task 120, CA/Browser Forum BR §6.1.1.3) when it produces findings: ResultError
+	// when an enforce-mode check blocked issuance (fail-closed) — a weak (ROCA /
+	// weak-exponent / small-or-even-modulus) or known-compromised (Debian weak-key /
+	// operator-blocked / reused) subject key — ResultSuccess when a warn-mode check
+	// reported findings without blocking. The detail carries the profile, the
+	// key-fingerprint, and the finding codes.
+	ActionCertKeyCheck = "cert.keycheck"
+	// ActionKeyBlock / ActionKeyUnblock record operator management of the
+	// compromised-key blocklist (Task 120): adding a public key the CA must never
+	// certify again, or removing one. The target is the key fingerprint; the detail
+	// carries the reason.
+	ActionKeyBlock   = "key.block"
+	ActionKeyUnblock = "key.unblock"
 	// ActionCertAttestation records the outcome of the enrollment key-attestation
 	// gate (Task 49) on the EST/SCEP/ACME device-enrollment paths: ResultSuccess
 	// when a hardware attestation verified (or a permissive-mode check let a

@@ -223,7 +223,8 @@ func Run(ctx context.Context, opts Options) *Report {
 		for _, name := range []string{
 			"db.connectivity", "db.schema", "keyprovider.ca", "pin.source", "keys.ca",
 			"audit.chain_head", "certs.ca_expiry", "crl.freshness",
-			"canary.last_probe", "ct.inclusion", "webhook.dead_letters", "clock.skew",
+			"canary.last_probe", "ct.inclusion", "webhook.dead_letters",
+			"keychecks.blocklist", "keychecks.profiles", "clock.skew",
 			"serving.self_issued", "listener.tls",
 			"fips.mode", "fips.store_keys", "fips.secret_oaep",
 		} {
@@ -280,6 +281,11 @@ func Run(ctx context.Context, opts Options) *Report {
 	// 7e. Outbound webhook dead-letters: deliveries that exhausted their retry
 	// budget and need operator triage (a paused endpoint, a wrong URL/secret).
 	checkWebhookDeadLetters(r, cfg, db, schemaOK)
+
+	// 7f. Pre-issuance key-quality gate (Task 120): the Debian weak-key blocklist
+	// loads, the operator compromised-key blocklist size, and any profile that has
+	// weakened the fail-closed gate.
+	checkKeyChecks(r, cfg, db, schemaOK)
 
 	// 8. Clock-skew sanity against the database host and the audit head.
 	checkClockSkew(ctx, r, db, schemaOK, opts)

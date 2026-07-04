@@ -465,6 +465,31 @@ type IssuedCertificate struct {
 	// Marker tags synthetic certificates (e.g. CertMarkerCanary). Empty for
 	// ordinary certificates.
 	Marker string `json:"marker,omitempty" db:"marker"`
+	// PublicKeyFingerprint is the "SHA256:<base64>" fingerprint of the certified
+	// subject public key (SubjectPublicKeyInfo SHA-256). It is recorded so the
+	// pre-issuance key-quality gate can detect a subject key reused across distinct
+	// subjects and so a compromised key can be located across the inventory. Empty
+	// for records whose key could not be marshaled (e.g. ML-DSA subjects).
+	PublicKeyFingerprint string `json:"public_key_fingerprint,omitempty" db:"public_key_fingerprint"`
+}
+
+// BlockedKey is one entry in the operator-managed compromised-key blocklist
+// (Task 120). It records a public key the CA must never certify again, keyed by
+// its SubjectPublicKeyInfo fingerprint ("SHA256:<base64>", the same textual form
+// as an OpenSSH SHA-256 fingerprint). The blocklist holds no key material — only
+// the fingerprint — so it is safe to replicate and export. It is consulted by the
+// fail-closed pre-issuance key-quality gate on every issuance surface.
+type BlockedKey struct {
+	// Fingerprint is the SubjectPublicKeyInfo SHA-256 fingerprint and primary key.
+	Fingerprint string `json:"fingerprint" db:"fingerprint"`
+	// Reason is the operator's justification (e.g. "key compromise, INC-1234").
+	Reason string `json:"reason,omitempty" db:"reason"`
+	// Source records where the block originated (e.g. "cli", "incident-response").
+	Source string `json:"source,omitempty" db:"source"`
+	// AddedBy is the principal that added the entry.
+	AddedBy string `json:"added_by,omitempty" db:"added_by"`
+	// AddedAt is when the entry was recorded (UTC).
+	AddedAt time.Time `json:"added_at" db:"added_at"`
 }
 
 // SCT inclusion-proof verification states (Task 93). Recorded per embedded SCT

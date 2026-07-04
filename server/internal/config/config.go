@@ -172,6 +172,30 @@ type Config struct {
 	// works regardless of this block; the DELIVERY worker runs only when
 	// webhook.enabled is true. See WebhookConfig and docs/webhooks.md.
 	Webhook WebhookConfig `yaml:"webhook"`
+	// KeyChecks configures the deployment-wide inputs to the pre-issuance
+	// key-quality gate (Task 120, CA/Browser Forum BR §6.1.1.3): notably the
+	// optional Debian OpenSSL weak-key blocklist file(s)/dir(s). No blocklist is
+	// vendored; an operator supplies the well-known fingerprint lists. The
+	// structural checks (ROCA, RSA exponent/modulus) and the operator-managed
+	// compromised-key blocklist store always run; per-profile enforce/warn mode is
+	// set in each profile's `key_checks` block. See KeyChecksConfig.
+	KeyChecks KeyChecksConfig `yaml:"keychecks"`
+}
+
+// KeyChecksConfig holds the deployment-wide inputs to the pre-issuance
+// key-quality gate. It is intentionally small: the fingerprint-level policy lives
+// per-profile (ProfileKeyChecksConfig), and the operator compromised-key blocklist
+// is a persisted store managed with `secsy-ca blocked-keys`.
+type KeyChecksConfig struct {
+	// WeakKeyBlocklistPaths are files or directories of known-weak public-key
+	// fingerprints — primarily the Debian OpenSSL predictable-key set
+	// (CVE-2008-0166) — loaded once at startup. Each line is a hex SHA-256/SHA-1 of
+	// the DER SubjectPublicKeyInfo, or a "SHA256:<base64>" fingerprint; '#' comments
+	// and blank lines are ignored. A configured path that does not exist is a
+	// fatal startup error, so a typo fails closed rather than silently disabling
+	// the check. Empty leaves the file-based blocklist off (the structural and
+	// operator-blocklist checks still run).
+	WeakKeyBlocklistPaths []string `yaml:"weak_key_blocklist_paths"`
 }
 
 // ApprovalsConfig configures the four-eyes / maker-checker approval workflow.
@@ -1891,6 +1915,32 @@ type ProfileConfig struct {
 	// approvals.thresholds[cert.issue] > 0); when the gate is off the flag is
 	// inert. Automated protocol flows (ACME/EST/SCEP/CMP) always bypass it.
 	RequireApproval bool `yaml:"require_approval"`
+	// KeyChecks is the profile's pre-issuance key-quality policy (Task 120): the
+	// fail-closed weak/compromised subject-key gate. The gate is ON by default (a
+	// nil/zero block runs enforce mode with the standard checks); see
+	// ProfileKeyChecksConfig.
+	KeyChecks ProfileKeyChecksConfig `yaml:"key_checks"`
+}
+
+// ProfileKeyChecksConfig is a profile's pre-issuance key-quality policy (Task
+// 120, CA/Browser Forum BR §6.1.1.3). The gate runs on every classical issuance
+// under the profile and rejects weak (ROCA / weak-exponent / small-or-even-
+// modulus / Debian-weak) and known-compromised (operator-blocklisted / reused-
+// subject) subject public keys. The zero value runs the gate in enforce mode with
+// the standard structural checks and the operator compromised-key blocklist.
+type ProfileKeyChecksConfig struct {
+	// Disabled turns the key-quality gate off for the profile (strongly
+	// discouraged; removes the BR §6.1.1.3 safety net).
+	Disabled bool `yaml:"disabled"`
+	// Mode is the enforcement mode: "enforce" (default, blocks issuance on any
+	// finding) or "warn" (records the finding but issues anyway).
+	Mode string `yaml:"mode"`
+	// DetectDuplicates opts into duplicate/reused subject-key detection: a request
+	// whose subject public key was already certified for a different subject is
+	// flagged. Off by default (an indexed inventory lookup per issuance).
+	DetectDuplicates bool `yaml:"detect_duplicates"`
+	// MinRSABits overrides the minimum RSA modulus bit length (0 = 2048 default).
+	MinRSABits int `yaml:"min_rsa_bits"`
 }
 
 // ProfileSMIMEConfig is a profile's S/MIME issuance policy. Enabled switches

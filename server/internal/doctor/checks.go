@@ -22,6 +22,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/fips"
+	"github.com/blechschmidt/secsy-pki/server/internal/keycheck"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
@@ -1153,6 +1154,65 @@ func checkWebhookDeadLetters(r *Report, cfg *config.Config, db dbHandle, schemaO
 		}
 		return StatusWarn, fmt.Sprintf("%s — oldest dead-letter is %s old (inspect `secsy-ca webhook deliveries -status dead`)",
 			summary, humanDuration(age))
+	})
+}
+
+// --- 7f. pre-issuance key-quality gate (Task 120) --------------------------------
+
+// checkKeyChecks reports on the fail-closed pre-issuance key-quality gate
+// (CA/Browser Forum BR §6.1.1.3). keychecks.blocklist proves the optional Debian
+// weak-key blocklist file(s) load (a configured-but-unloadable path is fatal —
+// the server would refuse to start) and reports the operator compromised-key
+// blocklist size. keychecks.profiles flags any custom profile that has weakened
+// the gate (disabled or set to warn mode), which reopens the weak/compromised-key
+// hole for that profile.
+func checkKeyChecks(r *Report, cfg *config.Config, db dbHandle, schemaOK bool) {
+	r.run("keychecks.blocklist", func() (Status, string) {
+		var loaded int
+		if paths := cfg.KeyChecks.WeakKeyBlocklistPaths; len(paths) > 0 {
+			bl, err := keycheck.LoadBlocklist(paths...)
+			if err != nil {
+				// The server treats this as fatal at startup; surface it as a failure.
+				return StatusFail, fmt.Sprintf("weak-key blocklist (keychecks.weak_key_blocklist_paths) failed to load: %v — the server would refuse to start", err)
+			}
+			loaded = bl.Len()
+		}
+		opCount := -1
+		if db != nil && schemaOK {
+			n, err := db.CountBlockedKeys()
+			if err != nil {
+				return StatusFail, fmt.Sprintf("reading the compromised-key blocklist: %v", err)
+			}
+			opCount = n
+		}
+		opDetail := "unknown (store unavailable)"
+		if opCount >= 0 {
+			opDetail = fmt.Sprintf("%d key%s", opCount, plural(opCount))
+		}
+		detail := fmt.Sprintf("weak-key file blocklist: %d fingerprint(s); operator compromised-key blocklist: %s", loaded, opDetail)
+		if loaded == 0 && len(cfg.KeyChecks.WeakKeyBlocklistPaths) == 0 {
+			// The structural checks (ROCA / exponent / modulus) and the operator
+			// blocklist still run; the Debian file blocklist is simply not configured.
+			return StatusPass, detail + " (no Debian weak-key blocklist configured; structural checks still enforce)"
+		}
+		return StatusPass, detail
+	})
+
+	r.run("keychecks.profiles", func() (Status, string) {
+		var weakened []string
+		for _, p := range cfg.Profiles {
+			switch {
+			case p.KeyChecks.Disabled:
+				weakened = append(weakened, p.Name+"=disabled")
+			case strings.EqualFold(strings.TrimSpace(p.KeyChecks.Mode), "warn"):
+				weakened = append(weakened, p.Name+"=warn")
+			}
+		}
+		if len(weakened) == 0 {
+			return StatusPass, fmt.Sprintf("key-quality gate is enforced on all %d custom profile(s) (and every built-in)", len(cfg.Profiles))
+		}
+		return StatusWarn, fmt.Sprintf("%d profile(s) have weakened the key-quality gate: %s — weak/compromised subject keys will not be blocked there",
+			len(weakened), strings.Join(weakened, ", "))
 	})
 }
 

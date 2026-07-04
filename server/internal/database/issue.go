@@ -36,13 +36,44 @@ func (db *DB) RecordIssuedCertificate(c *models.IssuedCertificate) error {
 	_, err := db.exec(
 		`INSERT INTO issued_certificates
 			(id, ca_id, serial, subject, common_name, sans, profile, certificate,
-			 not_before, not_after, status, requested_by, ct_status, sct_count, marker, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 not_before, not_after, status, requested_by, ct_status, sct_count, marker,
+			 public_key_fingerprint, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.CAID, c.Serial, c.Subject, c.CommonName, string(sans), c.Profile,
 		c.Certificate, c.NotBefore, c.NotAfter, string(status), nullString(c.RequestedBy),
-		string(ctStatus), c.SCTCount, c.Marker, c.CreatedAt,
+		string(ctStatus), c.SCTCount, c.Marker, c.PublicKeyFingerprint, c.CreatedAt,
 	)
 	return err
+}
+
+// DistinctSubjectsForKeyFingerprint returns the distinct subject DNs that have
+// been certified under a given subject public-key fingerprint, excluding the
+// certificate identified by excludeSerial (so a renewal — same key, same subject,
+// new serial — does not count itself, and a re-key preview against an already
+// issued serial does not self-match). It backs the pre-issuance key-quality gate's
+// duplicate/reused-subject-key detection: a fingerprint bound to more than one
+// subject is a key shared across identities. An empty fingerprint returns nothing.
+func (db *DB) DistinctSubjectsForKeyFingerprint(fingerprint, excludeSerial string) ([]string, error) {
+	if fingerprint == "" {
+		return nil, nil
+	}
+	rows, err := db.query(
+		`SELECT DISTINCT subject FROM issued_certificates
+		  WHERE public_key_fingerprint = ? AND serial <> ? ORDER BY subject`,
+		fingerprint, excludeSerial)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var subject sql.NullString
+		if err := rows.Scan(&subject); err != nil {
+			return nil, err
+		}
+		out = append(out, subject.String)
+	}
+	return out, rows.Err()
 }
 
 // issuedCertColumns is the canonical column list for issued-certificate reads.

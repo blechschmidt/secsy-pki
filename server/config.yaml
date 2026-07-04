@@ -378,6 +378,16 @@ profiles: []
 #     # enrollment is rejected fail-closed. "permissive" audits but never blocks.
 #     attestation:
 #       mode: require          # off (default) | permissive (audit only) | require
+#     # key_checks configures the pre-issuance key-quality gate (CA/Browser Forum
+#     # BR §6.1.1.3). It rejects weak (ROCA/CVE-2017-15361, weak RSA exponent,
+#     # small/even modulus, Debian-weak) and known-compromised (operator-blocklisted,
+#     # reused-subject) subject public keys BEFORE the HSM signs. The gate is ON for
+#     # every profile by default in enforce mode; the block below is optional.
+#     key_checks:
+#       disabled: false        # true turns the gate off for this profile (discouraged)
+#       mode: enforce          # enforce (default, blocks) | warn (audit only)
+#       detect_duplicates: true  # flag a subject key already certified for another subject
+#       min_rsa_bits: 2048     # minimum RSA modulus bit length (0 = 2048 default)
 #   - name: server-muststaple
 #     description: "TLS server certificate with OCSP Must-Staple (RFC 7633)"
 #     key_usages: [digitalSignature, keyEncipherment]
@@ -408,6 +418,21 @@ caa:
   # profile running caa.mode: enforce.
   identifier: ""
   cache_ttl_seconds: 300   # how long resolved CAA/CNAME answers are reused (0 = 300)
+
+# keychecks holds the deployment-wide inputs to the pre-issuance key-quality gate
+# (BR §6.1.1.3). Per-profile enforce/warn is set in each profile's `key_checks`
+# block above; this section supplies the optional Debian OpenSSL / operator
+# weak-key blocklist. The structural checks (ROCA, RSA exponent/modulus) and the
+# operator compromised-key blocklist (secsy-ca blocked-keys) always run.
+keychecks:
+  # weak_key_blocklist_paths are files or directories of known-weak public-key
+  # fingerprints (primarily the Debian predictable-key set, CVE-2008-0166). No
+  # blob is vendored; supply the well-known lists yourself. Each line is a hex
+  # SHA-256/SHA-1 of the DER SubjectPublicKeyInfo, or a "SHA256:<base64>"
+  # fingerprint; '#' comments and blank lines are ignored. A configured path that
+  # does not exist is a FATAL startup error (fail-closed).
+  weak_key_blocklist_paths: []
+  #  - /etc/secsy-pki/weak-keys/
 
 # attestation configures hardware key-attestation verification on the device
 # enrollment paths (EST/SCEP/ACME, Task 49). Enforcement is opt-in per profile

@@ -14,6 +14,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/caa"
 	"github.com/blechschmidt/secsy-pki/server/internal/certlint"
+	"github.com/blechschmidt/secsy-pki/server/internal/keycheck"
 	"github.com/blechschmidt/secsy-pki/server/internal/nameconstraints"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
@@ -67,6 +68,7 @@ const (
 	GateLint            = "lint"
 	GateCAA             = "caa"
 	GateNameConstraints = "name_constraints"
+	GateKeyCheck        = "keycheck"
 	GateValidity        = "validity"
 	GateApproval        = "approval"
 	// GateAttestation is populated by the serving layer (handlers), which owns the
@@ -151,17 +153,17 @@ type PreviewResult struct {
 	RequiresApproval bool `json:"requires_approval"`
 
 	// Resolved leaf fields (what the certificate would carry).
-	Subject               string             `json:"subject"`
-	SANs                  []string           `json:"sans,omitempty"`
-	KeyUsages             []string           `json:"key_usages,omitempty"`
-	ExtKeyUsages          []string           `json:"ext_key_usages,omitempty"`
-	NotBefore             time.Time          `json:"not_before"`
-	NotAfter              time.Time          `json:"not_after"`
-	ValidityDays          int                `json:"validity_days"`
-	RequestedValidityDays int                `json:"requested_validity_days"`
-	MaxValidityDays       int                `json:"max_validity_days"`
-	SubjectKeyID          string             `json:"subject_key_id,omitempty"`
-	AuthorityKeyID        string             `json:"authority_key_id,omitempty"`
+	Subject               string    `json:"subject"`
+	SANs                  []string  `json:"sans,omitempty"`
+	KeyUsages             []string  `json:"key_usages,omitempty"`
+	ExtKeyUsages          []string  `json:"ext_key_usages,omitempty"`
+	NotBefore             time.Time `json:"not_before"`
+	NotAfter              time.Time `json:"not_after"`
+	ValidityDays          int       `json:"validity_days"`
+	RequestedValidityDays int       `json:"requested_validity_days"`
+	MaxValidityDays       int       `json:"max_validity_days"`
+	SubjectKeyID          string    `json:"subject_key_id,omitempty"`
+	AuthorityKeyID        string    `json:"authority_key_id,omitempty"`
 	// SubjectKeyProvided reports whether a real subject public key was supplied (via
 	// a CSR). When false the subject key identifier above is derived from a
 	// throwaway key synthesized only to resolve the extension layout, and is
@@ -397,10 +399,27 @@ func (m *Manager) PreviewIssuance(ctx context.Context, spec PreviewSpec) (_ *Pre
 		result.Gates = append(result.Gates, GateVerdict{Name: GateNameConstraints, Status: GateFail, Reason: ncev.res.Summary(), Findings: ncViolationStrings(ncev.res)})
 	}
 
-	// 7. Validity caps (profile maximum and CA expiry).
-	result.Gates = append(result.Gates, validityGate(requested, effective, profile, notAfter, cappedByCA, issuerCert))
+	// 7. Key quality (Task 120, CA/Browser Forum BR §6.1.1.3): weak (ROCA /
+	// exponent / modulus / Debian) and compromised (operator-blocklisted / reused-
+	// subject) subject-key rejection. Uses the same evaluator as the issuance path.
+	kcev := m.evaluateKeyChecks(base, profile)
+	switch {
+	case !kcev.applicable:
+		result.Gates = append(result.Gates, skippedGate(GateKeyCheck, "key-quality gate disabled for the profile"))
+	case kcev.err != nil:
+		result.Gates = append(result.Gates, failGate(GateKeyCheck, kcev.err.Error()))
+	case kcev.res.OK():
+		result.Gates = append(result.Gates, passGate(GateKeyCheck, "subject public key passed every weak/compromised-key check"))
+	case kcev.enforce:
+		result.Gates = append(result.Gates, GateVerdict{Name: GateKeyCheck, Status: GateFail, Reason: kcev.res.Summary(), Findings: keyCheckFindingStrings(kcev.res)})
+	default:
+		result.Gates = append(result.Gates, GateVerdict{Name: GateKeyCheck, Status: GateWarn, Reason: "warn: " + kcev.res.Summary(), Findings: keyCheckFindingStrings(kcev.res)})
+	}
 
-	// 8. Manual-approval "would-park" signal (profile intent; refined by the
+	// 8. Validity caps (profile maximum and CA expiry).
+	result.Gates = append(result.Gates, validityGate(requested, effective, profile, cappedByCA, issuerCert))
+
+	// 9. Manual-approval "would-park" signal (profile intent; refined by the
 	// serving layer with the four-eyes engine state).
 	if profile.RequireApproval {
 		result.Gates = append(result.Gates, warnGate(GateApproval,
@@ -502,7 +521,7 @@ func (m *Manager) resolvePreviewLeaf(result *PreviewResult, issuerCert *x509.Cer
 // maximum and the issuing CA's own expiry. An over-maximum request is a
 // fail-closed reject for the preview (real issuance would silently clamp it); a
 // window that only overruns the CA's expiry is a non-blocking warning.
-func validityGate(requested, effective time.Duration, profile Profile, notAfter time.Time, cappedByCA bool, issuerCert *x509.Certificate) GateVerdict {
+func validityGate(requested, effective time.Duration, profile Profile, cappedByCA bool, issuerCert *x509.Certificate) GateVerdict {
 	if profile.MaxValidity > 0 && requested > profile.MaxValidity {
 		return failGate(GateValidity, fmt.Sprintf(
 			"requested validity %dd exceeds the profile maximum %dd (real issuance would clamp it to the maximum)",
@@ -534,6 +553,15 @@ func caaFindingStrings(res caa.Result) []string {
 			s += ": " + f.Detail
 		}
 		out = append(out, s)
+	}
+	return out
+}
+
+// keyCheckFindingStrings renders key-quality findings as "code: detail" lines.
+func keyCheckFindingStrings(res keycheck.Result) []string {
+	out := make([]string, 0, len(res.Findings))
+	for _, f := range res.Findings {
+		out = append(out, f.Code+": "+f.Detail)
 	}
 	return out
 }
