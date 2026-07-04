@@ -77,6 +77,9 @@ const (
 	// ActionSVIDIssue records the minting of a SPIFFE X.509-SVID. The detail
 	// carries the spiffe:// identity, trust domain, and profile.
 	ActionSVIDIssue = "svid.issue"
+	// ActionSVIDIssueJWT records the minting of a SPIFFE JWT-SVID. The detail
+	// carries the spiffe:// identity, trust domain, audience, and kid.
+	ActionSVIDIssueJWT = "svid.issue_jwt"
 	// ActionCRLPublish records the HSM-signed generation of a base or delta CRL
 	// for a CA scope (full or a partition shard). The detail carries the scope,
 	// kind, CRL number, and entry count.

@@ -57,8 +57,10 @@ func TestBuildAndParseBundle(t *testing.T) {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatalf("bundle is not valid JSON: %v", err)
 	}
-	if len(doc.Keys) != 2 {
-		t.Fatalf("bundle has %d keys, want 2", len(doc.Keys))
+	// Each authority is emitted twice: an x509-svid entry (with x5c) and a
+	// jwt-svid entry (bare public key with a kid). Two authorities => four keys.
+	if len(doc.Keys) != 4 {
+		t.Fatalf("bundle has %d keys, want 4 (x509-svid + jwt-svid per authority)", len(doc.Keys))
 	}
 	if doc.RefreshHint == nil || *doc.RefreshHint != 90 {
 		t.Errorf("spiffe_refresh_hint = %v, want 90", doc.RefreshHint)
@@ -66,13 +68,28 @@ func TestBuildAndParseBundle(t *testing.T) {
 	if doc.Sequence == nil || *doc.Sequence != 7 {
 		t.Errorf("spiffe_sequence = %v, want 7", doc.Sequence)
 	}
+	var x509Count, jwtCount int
 	for i, k := range doc.Keys {
-		if k["use"] != "x509-svid" {
-			t.Errorf("key %d use = %v, want x509-svid", i, k["use"])
+		switch k["use"] {
+		case "x509-svid":
+			x509Count++
+			if _, ok := k["x5c"]; !ok {
+				t.Errorf("x509-svid key %d missing x5c", i)
+			}
+		case "jwt-svid":
+			jwtCount++
+			if _, ok := k["kid"]; !ok {
+				t.Errorf("jwt-svid key %d missing kid", i)
+			}
+			if _, ok := k["x5c"]; ok {
+				t.Errorf("jwt-svid key %d should not carry x5c", i)
+			}
+		default:
+			t.Errorf("key %d has unexpected use %v", i, k["use"])
 		}
-		if _, ok := k["x5c"]; !ok {
-			t.Errorf("key %d missing x5c", i)
-		}
+	}
+	if x509Count != 2 || jwtCount != 2 {
+		t.Errorf("got %d x509-svid and %d jwt-svid keys, want 2 and 2", x509Count, jwtCount)
 	}
 
 	// Round-trip: the parsed authorities must match the inputs.

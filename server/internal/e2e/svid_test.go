@@ -163,3 +163,120 @@ func TestSPIFFESVIDHSM(t *testing.T) {
 		t.Fatalf("SVID does not verify against the trust bundle: %v", err)
 	}
 }
+
+// TestSPIFFEJWTSVIDHSM exercises the JWT-SVID path end-to-end against an
+// HSM-backed CA: the CA's HSM key signs a compact JWS, the JWKS trust bundle
+// publishes the same key as a jwt-svid entry, and the server-side validator
+// verifies the signature and claims. Signing on the HSM through go-jose's
+// opaque-signer bridge is the part that can only be proven with a real token —
+// the ECDSA raw-R||S encoding a JWS requires must round-trip through the device.
+func TestSPIFFEJWTSVIDHSM(t *testing.T) {
+	ctx := context.Background()
+	provider := hsmProvider(t)
+	mgr := newManager(t, provider)
+
+	root, err := mgr.InitRoot(ctx, ca.RootSpec{
+		Label:    uniqueLabel(t, "jwtsvid-root"),
+		KeyType:  keyprovider.KeyTypeECDSAP256,
+		Subject:  ca.PKIXName(models.CASubject{CommonName: "Secsy JWT-SVID Root CA", Organization: "Secsy"}),
+		Validity: 10 * 365 * 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("InitRoot: %v", err)
+	}
+	inter, err := mgr.IssueIntermediate(ctx, ca.IntermediateSpec{
+		ParentID:   root.ID,
+		Label:      uniqueLabel(t, "jwtsvid-inter"),
+		KeyType:    keyprovider.KeyTypeECDSAP256,
+		Subject:    ca.PKIXName(models.CASubject{CommonName: "Secsy JWT-SVID Intermediate CA"}),
+		Validity:   5 * 365 * 24 * time.Hour,
+		MaxPathLen: intPtr(0),
+	})
+	if err != nil {
+		t.Fatalf("IssueIntermediate: %v", err)
+	}
+
+	const spiffeID = "spiffe://prod.example.org/ns/prod/sa/api"
+	const audience = "spiffe://prod.example.org/ns/prod/sa/db"
+
+	result, err := mgr.IssueJWTSVID(ctx, ca.JWTSVIDSpec{
+		CAID:        inter.ID,
+		SPIFFEID:    spiffeID,
+		Audience:    []string{audience},
+		TTL:         30 * time.Minute,
+		RequestedBy: "e2e",
+	})
+	if err != nil {
+		t.Fatalf("IssueJWTSVID: %v", err)
+	}
+	if result.SPIFFEID != spiffeID {
+		t.Errorf("token sub = %q, want %q", result.SPIFFEID, spiffeID)
+	}
+	if result.Algorithm != "ES256" {
+		t.Errorf("token alg = %q, want ES256 (P-256 CA key)", result.Algorithm)
+	}
+	if result.Expiry.Sub(result.IssuedAt) > 31*time.Minute {
+		t.Errorf("token lifetime %s exceeds the requested TTL", result.Expiry.Sub(result.IssuedAt))
+	}
+
+	// Build the JWKS trust bundle the relying party would fetch.
+	authorities, err := mgr.TrustBundleAuthorities(inter.ID)
+	if err != nil {
+		t.Fatalf("TrustBundleAuthorities: %v", err)
+	}
+	bundle, err := spiffe.BuildBundle(authorities, 60*time.Second, 1)
+	if err != nil {
+		t.Fatalf("BuildBundle: %v", err)
+	}
+
+	// The token's kid must resolve to a jwt-svid key in the bundle (the active
+	// issuer, the intermediate, whose HSM key signed the token).
+	jwtKeys, err := spiffe.ParseJWTBundleKeys(bundle)
+	if err != nil {
+		t.Fatalf("ParseJWTBundleKeys: %v", err)
+	}
+	if _, ok := jwtKeys[result.KeyID]; !ok {
+		t.Fatalf("bundle has no jwt-svid key for the token kid %q", result.KeyID)
+	}
+
+	// --- Happy path: the HSM-signed token validates against the bundle. ---
+	verified, err := spiffe.ValidateJWTSVID(result.Token, bundle, spiffe.JWTValidationOptions{
+		Audience:     audience,
+		TrustDomains: []string{"prod.example.org"},
+	})
+	if err != nil {
+		t.Fatalf("ValidateJWTSVID (HSM-signed): %v", err)
+	}
+	if verified.SPIFFEID != spiffeID || verified.TrustDomain != "prod.example.org" {
+		t.Errorf("verified identity = %q/%q, want %q/prod.example.org", verified.SPIFFEID, verified.TrustDomain, spiffeID)
+	}
+
+	// --- Rejections: wrong audience, and a foreign trust domain. ---
+	if _, err := spiffe.ValidateJWTSVID(result.Token, bundle, spiffe.JWTValidationOptions{
+		Audience:     "spiffe://prod.example.org/ns/prod/sa/other",
+		TrustDomains: []string{"prod.example.org"},
+	}); err == nil {
+		t.Error("validation should reject the wrong audience")
+	}
+	if _, err := spiffe.ValidateJWTSVID(result.Token, bundle, spiffe.JWTValidationOptions{
+		Audience:     audience,
+		TrustDomains: []string{"other.example.net"},
+	}); err == nil {
+		t.Error("validation should reject a trust domain outside the allowlist")
+	}
+
+	// --- Rejection: an expired token (past exp, HSM-signed). ---
+	expired, err := mgr.IssueJWTSVID(ctx, ca.JWTSVIDSpec{
+		CAID: inter.ID, SPIFFEID: spiffeID, Audience: []string{audience}, TTL: time.Nanosecond,
+	})
+	if err != nil {
+		t.Fatalf("IssueJWTSVID (expired): %v", err)
+	}
+	if _, err := spiffe.ValidateJWTSVID(expired.Token, bundle, spiffe.JWTValidationOptions{
+		Audience:     audience,
+		TrustDomains: []string{"prod.example.org"},
+		Now:          time.Now().Add(time.Hour), // well past the (nanosecond) exp, beyond leeway
+	}); err == nil {
+		t.Error("validation should reject an expired token")
+	}
+}

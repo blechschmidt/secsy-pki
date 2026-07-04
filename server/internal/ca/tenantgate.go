@@ -124,6 +124,28 @@ func (m *Manager) gateTenantIssuance(_ context.Context, issuerCA *models.CA, req
 	return GateTenantIssuance(m.db, issuerCA, requestedBy)
 }
 
+// ensureTenantActive checks only the issuing CA's tenant lifecycle state,
+// fail-closed, without reserving any quota. It is used by issuance paths that
+// mint ephemeral, non-inventory credentials (JWT-SVIDs) which must still be
+// frozen for a suspended tenant but must not consume the certificate quota.
+func (m *Manager) ensureTenantActive(issuerCA *models.CA) error {
+	tenantID := issuerCA.TenantID
+	if tenantID == "" {
+		tenantID = models.DefaultTenantID
+	}
+	tenant, err := m.db.GetTenant(tenantID)
+	if err != nil {
+		return fmt.Errorf("tenant state unavailable, refusing issuance (fail-closed): %w", err)
+	}
+	if tenant == nil {
+		return fmt.Errorf("tenant %q of CA %q not found, refusing issuance (fail-closed)", tenantID, issuerCA.Label)
+	}
+	if tenant.Status != models.TenantStatusActive {
+		return &models.TenantSuspendedError{TenantID: tenantID}
+	}
+	return nil
+}
+
 // accountTenantRevocation records a revocation in the tenant's daily usage
 // counters. Pure accounting — revocation is never quota-gated (a suspended or
 // over-quota tenant must always be able to revoke).

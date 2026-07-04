@@ -378,11 +378,14 @@ crl:
   delta_interval_minutes: 60   # how long a delta CRL is served before re-signing
   base_validity_hours: 168     # base CRL validity window (default 7 days)
 
-# spiffe enables SPIFFE X.509-SVID workload-identity issuance. When enabled, the
-# POST /api/ca/{id}/svid endpoint mints short-lived SVIDs (a single spiffe:// URI
-# SAN as the sole identity, CA:false, digitalSignature) restricted to the
+# spiffe enables SPIFFE SVID workload-identity issuance. When enabled, the
+# POST /api/ca/{id}/svid endpoint mints short-lived X.509-SVIDs (a single
+# spiffe:// URI SAN as the sole identity, CA:false, digitalSignature), the
+# POST /api/ca/{id}/svid/jwt endpoint mints HSM-signed JWT-SVIDs (bearer tokens
+# with the SPIFFE ID in `sub` and a required `aud`), both restricted to the
 # trust-domain allowlist below, and GET /api/ca/{id}/svid/bundle serves the CA's
-# X.509 authorities as a JWKS-style SPIFFE trust bundle. See docs/spiffe.md.
+# authorities as a JWKS-style SPIFFE trust bundle carrying both the x509-svid and
+# jwt-svid verification keys. See docs/spiffe.md.
 # spiffe:
 #   enabled: true
 #   trust_domains:               # global allowlist (fail-closed: empty = none)
@@ -390,10 +393,14 @@ crl:
 #     - prod.example.org
 #   # subject_trust_domains:     # optional per-subject grants (RBAC-keyed)
 #   #   "oidc-subject-or-verified-email": [team.example.net]
-#   profile: spiffe-svid         # SVID issuance profile (built-in default)
+#   profile: spiffe-svid         # X.509-SVID issuance profile (built-in default)
 #   default_ca_id: ""            # CA used when a request omits one
 #   refresh_hint_seconds: 300    # advertised in the trust bundle (spiffe_refresh_hint)
 #   renew_fraction: 0.5          # monitor auto-renews an SVID at 50% of its lifetime
+#   # --- JWT-SVID ---
+#   jwt_default_audience: []     # applied when a request omits aud (empty = aud required)
+#   jwt_default_ttl_seconds: 3600  # JWT-SVID lifetime when a request omits one (default 1h)
+#   jwt_max_ttl_seconds: 86400   # hard ceiling on a JWT-SVID lifetime (default 24h)
 
 # certificate_transparency registers the RFC 6962 CT logs available to issuance
 # profiles (referenced by name from a profile's `ct.logs`). Supplying a log's

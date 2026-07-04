@@ -944,6 +944,24 @@
             <textarea id="svidOut" readonly style="min-height:120px"></textarea>
           </div>
         </div>
+        <div class="panel hidden" id="svidJWTPanel">
+          <h2 style="font-size:15px">Mint a JWT-SVID</h2>
+          <p class="sub">Issue a short-lived SPIFFE JWT-SVID — an HSM-signed JWS bearer token whose subject is the spiffe:// URI. No CSR: the token carries no workload key. The audience is required; the token's kid resolves to a jwt-svid key in the trust bundle above.</p>
+          <div id="svidJWTError" class="notice err hidden"></div>
+          <div class="row">
+            <div class="field" style="flex:2;min-width:220px"><label for="svidJWTID">SPIFFE ID</label><input id="svidJWTID" placeholder="spiffe://example.org/workload/api"></div>
+            <div class="field" style="width:140px"><label for="svidJWTTTL">TTL (seconds)</label><input id="svidJWTTTL" type="number" min="1" placeholder="server default"></div>
+          </div>
+          <div class="field">
+            <label for="svidJWTAud">Audience (comma-separated)</label>
+            <input id="svidJWTAud" placeholder="spiffe://example.org/server, https://api.example.org">
+          </div>
+          <button class="btn" id="svidJWTMintBtn">Mint JWT-SVID</button>
+          <div class="field hidden" id="svidJWTOutBox" style="margin-top:12px">
+            <label>JWT-SVID (compact JWS)</label>
+            <textarea id="svidJWTOut" readonly style="min-height:100px"></textarea>
+          </div>
+        </div>
       </section>
 
       <!-- DNS pinning records (DANE TLSA / SSHFP) -->

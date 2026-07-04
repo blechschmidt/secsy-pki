@@ -1707,6 +1707,44 @@ type IssuedCertificatePage struct {
 	Total *int `json:"total,omitempty"`
 }
 
+// JWTSVIDRequest A SPIFFE JWT-SVID request. Provide the identity either as a full spiffe_id or as trust_domain + path. The audience is required unless the server configures a default. No CSR: a JWT-SVID carries no workload key.
+type JWTSVIDRequest struct {
+	// Audience intended audience set (aud); at least one required unless a server default is configured
+	Audience *[]string `json:"audience,omitempty"`
+
+	// Path workload path, e.g. /ns/prod/sa/web
+	Path *string `json:"path,omitempty"`
+
+	// SpiffeId full spiffe:// URI (overrides trust_domain/path)
+	SpiffeId *string `json:"spiffe_id,omitempty"`
+
+	// TrustDomain SPIFFE trust domain, e.g. example.org
+	TrustDomain *string `json:"trust_domain,omitempty"`
+
+	// TtlSeconds token lifetime override in seconds (clamped to the server max)
+	TtlSeconds *int `json:"ttl_seconds,omitempty"`
+}
+
+// JWTSVIDResponse defines model for JWTSVIDResponse.
+type JWTSVIDResponse struct {
+	// Alg JWS signature algorithm (e.g. ES256)
+	Alg      *string   `json:"alg,omitempty"`
+	Audience *[]string `json:"audience,omitempty"`
+
+	// Bundle SPIFFE trust bundle (JWKS JSON) with JWT verification keys
+	Bundle    *string `json:"bundle,omitempty"`
+	ExpiresAt *string `json:"expires_at,omitempty"`
+	IssuedAt  *string `json:"issued_at,omitempty"`
+
+	// Kid token key id; resolves to a jwt-svid key in the bundle
+	Kid      *string `json:"kid,omitempty"`
+	SpiffeId *string `json:"spiffe_id,omitempty"`
+
+	// Token compact-serialized signed JWT-SVID
+	Token       *string `json:"token,omitempty"`
+	TrustDomain *string `json:"trust_domain,omitempty"`
+}
+
 // KeyInventoryResponse defines model for KeyInventoryResponse.
 type KeyInventoryResponse struct {
 	ExtractableCount *int                `json:"extractable_count,omitempty"`
@@ -2886,6 +2924,9 @@ type RotateIntermediateCAJSONRequestBody = RotateCARequest
 // IssueSVIDJSONRequestBody defines body for IssueSVID for application/json ContentType.
 type IssueSVIDJSONRequestBody = SVIDRequest
 
+// IssueJWTSVIDJSONRequestBody defines body for IssueJWTSVID for application/json ContentType.
+type IssueJWTSVIDJSONRequestBody = JWTSVIDRequest
+
 // RunDiscoveryScanJSONRequestBody defines body for RunDiscoveryScan for application/json ContentType.
 type RunDiscoveryScanJSONRequestBody = DiscoveryScanRequest
 
@@ -3203,6 +3244,11 @@ type ClientInterface interface {
 
 	// GetSVIDBundle request
 	GetSVIDBundle(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// IssueJWTSVIDWithBody request with any body
+	IssueJWTSVIDWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	IssueJWTSVID(ctx context.Context, id CAId, body IssueJWTSVIDJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListSCTInclusion request
 	ListSCTInclusion(ctx context.Context, params *ListSCTInclusionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4206,6 +4252,30 @@ func (c *Client) IssueSVID(ctx context.Context, id CAId, body IssueSVIDJSONReque
 
 func (c *Client) GetSVIDBundle(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetSVIDBundleRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) IssueJWTSVIDWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewIssueJWTSVIDRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) IssueJWTSVID(ctx context.Context, id CAId, body IssueJWTSVIDJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewIssueJWTSVIDRequest(c.Server, id, body)
 	if err != nil {
 		return nil, err
 	}
@@ -7762,6 +7832,53 @@ func NewGetSVIDBundleRequest(server string, id CAId) (*http.Request, error) {
 	return req, nil
 }
 
+// NewIssueJWTSVIDRequest calls the generic IssueJWTSVID builder with application/json body
+func NewIssueJWTSVIDRequest(server string, id CAId, body IssueJWTSVIDJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewIssueJWTSVIDRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewIssueJWTSVIDRequestWithBody generates requests for IssueJWTSVID with any type of body
+func NewIssueJWTSVIDRequestWithBody(server string, id CAId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/svid/jwt", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewListSCTInclusionRequest generates requests for ListSCTInclusion
 func NewListSCTInclusionRequest(server string, params *ListSCTInclusionParams) (*http.Request, error) {
 	var err error
@@ -11206,6 +11323,11 @@ type ClientWithResponsesInterface interface {
 	// GetSVIDBundleWithResponse request
 	GetSVIDBundleWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetSVIDBundleResponse, error)
 
+	// IssueJWTSVIDWithBodyWithResponse request with any body
+	IssueJWTSVIDWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*IssueJWTSVIDResponse, error)
+
+	IssueJWTSVIDWithResponse(ctx context.Context, id CAId, body IssueJWTSVIDJSONRequestBody, reqEditors ...RequestEditorFn) (*IssueJWTSVIDResponse, error)
+
 	// ListSCTInclusionWithResponse request
 	ListSCTInclusionWithResponse(ctx context.Context, params *ListSCTInclusionParams, reqEditors ...RequestEditorFn) (*ListSCTInclusionResponse, error)
 
@@ -12507,6 +12629,30 @@ func (r GetSVIDBundleResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetSVIDBundleResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type IssueJWTSVIDResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *JWTSVIDResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r IssueJWTSVIDResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r IssueJWTSVIDResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -14861,6 +15007,23 @@ func (c *ClientWithResponses) GetSVIDBundleWithResponse(ctx context.Context, id 
 	return ParseGetSVIDBundleResponse(rsp)
 }
 
+// IssueJWTSVIDWithBodyWithResponse request with arbitrary body returning *IssueJWTSVIDResponse
+func (c *ClientWithResponses) IssueJWTSVIDWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*IssueJWTSVIDResponse, error) {
+	rsp, err := c.IssueJWTSVIDWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseIssueJWTSVIDResponse(rsp)
+}
+
+func (c *ClientWithResponses) IssueJWTSVIDWithResponse(ctx context.Context, id CAId, body IssueJWTSVIDJSONRequestBody, reqEditors ...RequestEditorFn) (*IssueJWTSVIDResponse, error) {
+	rsp, err := c.IssueJWTSVID(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseIssueJWTSVIDResponse(rsp)
+}
+
 // ListSCTInclusionWithResponse request returning *ListSCTInclusionResponse
 func (c *ClientWithResponses) ListSCTInclusionWithResponse(ctx context.Context, params *ListSCTInclusionParams, reqEditors ...RequestEditorFn) (*ListSCTInclusionResponse, error) {
 	rsp, err := c.ListSCTInclusion(ctx, params, reqEditors...)
@@ -17183,6 +17346,46 @@ func ParseGetSVIDBundleResponse(rsp *http.Response) (*GetSVIDBundleResponse, err
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseIssueJWTSVIDResponse parses an HTTP response from a IssueJWTSVIDWithResponse call
+func ParseIssueJWTSVIDResponse(rsp *http.Response) (*IssueJWTSVIDResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &IssueJWTSVIDResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest JWTSVIDResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
 
 	}
 

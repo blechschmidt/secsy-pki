@@ -1409,6 +1409,35 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/ca/{id}/svid/jwt:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: issueJWTSVID
+      tags: [Certificate Lifecycle]
+      summary: Mint a SPIFFE JWT-SVID
+      description: >
+        Issues a short-lived SPIFFE JWT-SVID: an HSM-signed JWS bearer token whose
+        subject (sub) is the spiffe:// identity, with a required audience (aud),
+        iat/exp, and a kid that resolves to the CA's key in the JWKS trust bundle.
+        Unlike an X.509-SVID there is no CSR — the token carries no workload key.
+        The requested trust domain must be permitted by the SVID trust-domain
+        allowlist (on top of the CA's issue capability). Available only when SPIFFE
+        issuance is enabled.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JWTSVIDRequest" }
+      responses:
+        "201":
+          description: The signed JWT-SVID and the JWKS trust bundle.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JWTSVIDResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /api/ca/{id}/svid/bundle:
     parameters:
       - $ref: "#/components/parameters/CAId"
@@ -1417,9 +1446,12 @@ paths:
       tags: [Certificate Lifecycle]
       summary: Download a CA's SPIFFE trust bundle (JWKS)
       description: >
-        Returns the trust domain's X.509 authorities (the CA's combined overlap
-        chain) as a JWKS-style SPIFFE trust bundle, consumable directly by SPIRE
-        and go-spiffe clients. Public, like the CRL/OCSP/chain endpoints.
+        Returns the trust domain's authorities (the CA's combined overlap chain)
+        as a JWKS-style SPIFFE trust bundle, consumable directly by SPIRE and
+        go-spiffe clients. Each authority is published twice: as an x509-svid key
+        (full certificate in x5c, anchoring X.509-SVIDs) and as a jwt-svid key
+        (bare public key with a kid, verifying JWT-SVIDs). Public, like the
+        CRL/OCSP/chain endpoints.
       security: []
       responses:
         "200":
@@ -3669,6 +3701,37 @@ components:
         profile: { type: string }
         not_before: { type: string }
         not_after: { type: string }
+
+    JWTSVIDRequest:
+      type: object
+      description: >
+        A SPIFFE JWT-SVID request. Provide the identity either as a full spiffe_id
+        or as trust_domain + path. The audience is required unless the server
+        configures a default. No CSR: a JWT-SVID carries no workload key.
+      properties:
+        spiffe_id: { type: string, description: "full spiffe:// URI (overrides trust_domain/path)" }
+        trust_domain: { type: string, description: "SPIFFE trust domain, e.g. example.org" }
+        path: { type: string, description: "workload path, e.g. /ns/prod/sa/web" }
+        audience:
+          type: array
+          items: { type: string }
+          description: "intended audience set (aud); at least one required unless a server default is configured"
+        ttl_seconds: { type: integer, description: "token lifetime override in seconds (clamped to the server max)" }
+
+    JWTSVIDResponse:
+      type: object
+      properties:
+        token: { type: string, description: compact-serialized signed JWT-SVID }
+        spiffe_id: { type: string }
+        trust_domain: { type: string }
+        audience:
+          type: array
+          items: { type: string }
+        kid: { type: string, description: "token key id; resolves to a jwt-svid key in the bundle" }
+        alg: { type: string, description: "JWS signature algorithm (e.g. ES256)" }
+        issued_at: { type: string }
+        expires_at: { type: string }
+        bundle: { type: string, description: SPIFFE trust bundle (JWKS JSON) with JWT verification keys }
 
     CTResponse:
       type: object

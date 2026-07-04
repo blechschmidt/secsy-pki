@@ -254,7 +254,7 @@ func run(args []string) error {
 	case "profiles":
 		return cmdProfiles()
 	case "svid":
-		return cmdSVID(db, mgr, cmdArgs)
+		return cmdSVID(db, mgr, cfg, cmdArgs)
 	case "svid-bundle":
 		return cmdSVIDBundle(db, mgr, cfg, cmdArgs)
 	case "inventory":
@@ -394,7 +394,9 @@ Commands:
   monitor-run         Run one expiry-monitor scan (optionally auto-renewing)
   profiles            List the available certificate profiles
   svid                Mint a SPIFFE X.509-SVID (spiffe:// URI SAN, short-lived)
-  svid-bundle         Emit a CA's SPIFFE trust bundle (JWKS) of X.509 authorities
+  svid jwt            Mint a SPIFFE JWT-SVID (HSM-signed JWS bearer token)
+  svid jwt-verify     Validate a JWT-SVID against a JWKS trust bundle
+  svid-bundle         Emit a CA's SPIFFE trust bundle (JWKS): X.509 + JWT keys
   lint                Lint a certificate against a profile's policy (CA/B BR)
   cmp                 CMP (RFC 9483) client: enroll (ir) against a /cmp endpoint
   grpc                gRPC client: issue/renew/revoke/status over the PKIService API

@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
@@ -135,6 +136,123 @@ func (a *API) IssueSVID(w http.ResponseWriter, r *http.Request) {
 		Profile:     result.Profile,
 		NotBefore:   result.Certificate.NotBefore.Format(time.RFC3339),
 		NotAfter:    result.Certificate.NotAfter.Format(time.RFC3339),
+	})
+}
+
+// IssueJWTSVID mints a SPIFFE JWT-SVID under a CA: a short-lived, HSM-signed JWS
+// bearer token whose subject is the SPIFFE ID. Authorization is identical to
+// X.509-SVID issuance — the caller must hold the CA's issue capability
+// (canIssueOn, which also scopes to the CA's tenant) and the requested trust
+// domain must be permitted by the SVID trust-domain allowlist. The audience is
+// required (from the request, or the server default); the token carries no
+// workload key, so no CSR is involved.
+func (a *API) IssueJWTSVID(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserInfo(r.Context())
+	caID := r.PathValue("id")
+
+	ok, err := a.canIssueOn(r.Context(), user, caID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "permission check failed: %v", err)
+		return
+	}
+	if !ok {
+		metrics.Certificates.Inc("svid_jwt_issue", metrics.ResultDenied)
+		a.recordEvent(r, audit.ActionSVIDIssueJWT, caID, "", audit.ResultDenied, "no SIGN_CERTIFICATE permission on this CA")
+		writeError(w, http.StatusForbidden, "no SIGN_CERTIFICATE permission on this CA")
+		return
+	}
+
+	var req models.IssueJWTSVIDRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+
+	// Resolve the SPIFFE identity from either the full URI or trust-domain + path.
+	var id spiffe.ID
+	if req.SpiffeID != "" {
+		id, err = spiffe.ParseID(req.SpiffeID)
+	} else {
+		id, err = spiffe.MakeID(req.TrustDomain, req.Path)
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid SPIFFE identity: %v", err)
+		return
+	}
+
+	// Trust-domain allowlist enforcement (layered on top of the RBAC issue gate),
+	// exactly as for X.509-SVID.
+	if !a.spiffePolicy.Allowed(requesterIdentities(user), id.TrustDomain()) {
+		metrics.Certificates.Inc("svid_jwt_issue", metrics.ResultDenied)
+		a.recordEvent(r, audit.ActionSVIDIssueJWT, caID, id.String(), audit.ResultDenied,
+			"trust domain "+id.TrustDomain()+" not permitted")
+		writeError(w, http.StatusForbidden, "trust domain %q is not permitted for this requester", id.TrustDomain())
+		return
+	}
+
+	// The audience is mandatory: from the request, or the configured default.
+	audience := req.Audience
+	if len(audience) == 0 {
+		audience = a.spiffeJWTAudience
+	}
+	if len(audience) == 0 {
+		writeError(w, http.StatusBadRequest, "at least one audience is required")
+		return
+	}
+
+	// Resolve the token lifetime: request TTL, else the configured default, then
+	// clamp to the configured ceiling (the CA layer clamps to a hard max too).
+	ttl := time.Duration(req.TTLSeconds) * time.Second
+	if ttl <= 0 {
+		ttl = a.spiffeJWTDefaultTTL
+	}
+	if a.spiffeJWTMaxTTL > 0 && ttl > a.spiffeJWTMaxTTL {
+		ttl = a.spiffeJWTMaxTTL
+	}
+
+	mgr := ca.NewManager(a.db, a.keyProvider)
+
+	a.consumeHSMAuditLogs("")
+	result, err := mgr.IssueJWTSVID(r.Context(), ca.JWTSVIDSpec{
+		CAID:        caID,
+		SPIFFEID:    id.String(),
+		Audience:    audience,
+		TTL:         ttl,
+		RequestedBy: user.Subject,
+	})
+	a.consumeHSMAuditLogs("")
+	metrics.RecordCertificate("svid_jwt_issue", err)
+	if err != nil {
+		a.recordEvent(r, audit.ActionSVIDIssueJWT, caID, id.String(), audit.ResultError, err.Error())
+		if writeTenantLimitError(w, err) { // suspended tenant → 403
+			return
+		}
+		writeError(w, http.StatusBadRequest, "failed to issue JWT-SVID: %v", err)
+		return
+	}
+
+	// Include the JWKS trust bundle so a relying party gets the verification keys
+	// in the same call. A bundle-build failure is non-fatal: the token is minted.
+	bundle := ""
+	if authorities, berr := mgr.TrustBundleAuthorities(caID); berr == nil {
+		if b, berr := spiffe.BuildBundle(authorities, a.spiffePolicy.RefreshHint(), 0); berr == nil {
+			bundle = string(b)
+		}
+	}
+
+	a.recordEvent(r, audit.ActionSVIDIssueJWT, caID, id.String(), audit.ResultSuccess,
+		"spiffe_id="+id.String()+" aud="+strings.Join(result.Audience, ",")+" kid="+result.KeyID+" alg="+result.Algorithm)
+
+	writeJSON(w, http.StatusCreated, models.IssueJWTSVIDResponse{
+		Token:       result.Token,
+		SpiffeID:    result.SPIFFEID,
+		TrustDomain: result.TrustDomain,
+		Audience:    result.Audience,
+		KeyID:       result.KeyID,
+		Algorithm:   result.Algorithm,
+		IssuedAt:    result.IssuedAt.UTC().Format(time.RFC3339),
+		ExpiresAt:   result.Expiry.UTC().Format(time.RFC3339),
+		Bundle:      bundle,
 	})
 }
 

@@ -329,8 +329,11 @@ func authzMatrix() []rc {
 		caRd("GET", "/api/ca/{id}/revoked", "/api/ca/ca-a/revoked"),
 		iss("POST", "/api/ca/{id}/certificates/{action}", "/api/ca/ca-a/certificates/01:suspend", `{}`),
 
-		// SPIFFE X.509-SVID (registered because SPIFFE is enabled in the harness).
+		// SPIFFE X.509-SVID + JWT-SVID (registered because SPIFFE is enabled in the
+		// harness). Both mint an identity, so both are gated by canIssueOn + the
+		// trust-domain allowlist and are tenant-scoped.
 		iss("POST", "/api/ca/{id}/svid", "/api/ca/ca-a/svid", `{}`),
+		iss("POST", "/api/ca/{id}/svid/jwt", "/api/ca/ca-a/svid/jwt", `{}`),
 		pub("GET", "/api/ca/{id}/svid/bundle", "/api/ca/ca-a/svid/bundle"),
 
 		// Expiry monitoring.

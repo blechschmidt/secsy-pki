@@ -798,6 +798,32 @@ type SPIFFEConfig struct {
 	// auto-renewed. Defaults to 0.5 (renew at the halfway point). Ignored unless
 	// monitor.auto_renew is on.
 	RenewFraction float64 `yaml:"renew_fraction"`
+	// JWTDefaultAudience is the audience set applied to a JWT-SVID request that
+	// omits its own audience. Empty means an audience is mandatory in every
+	// request (fail-closed: a JWT-SVID always has an aud).
+	JWTDefaultAudience []string `yaml:"jwt_default_audience"`
+	// JWTDefaultTTLSeconds is the JWT-SVID lifetime when a request omits a TTL.
+	// Defaults to 3600 (1 hour) when unset.
+	JWTDefaultTTLSeconds int `yaml:"jwt_default_ttl_seconds"`
+	// JWTMaxTTLSeconds is the hard ceiling on a JWT-SVID lifetime; a larger
+	// requested or default TTL is clamped to it. Defaults to 86400 (24 hours).
+	JWTMaxTTLSeconds int `yaml:"jwt_max_ttl_seconds"`
+}
+
+// JWTDefaultTTL returns the default JWT-SVID lifetime, defaulting to one hour.
+func (c SPIFFEConfig) JWTDefaultTTL() time.Duration {
+	if c.JWTDefaultTTLSeconds > 0 {
+		return time.Duration(c.JWTDefaultTTLSeconds) * time.Second
+	}
+	return time.Hour
+}
+
+// JWTMaxTTL returns the JWT-SVID lifetime ceiling, defaulting to 24 hours.
+func (c SPIFFEConfig) JWTMaxTTL() time.Duration {
+	if c.JWTMaxTTLSeconds > 0 {
+		return time.Duration(c.JWTMaxTTLSeconds) * time.Second
+	}
+	return 24 * time.Hour
 }
 
 // SVIDProfileName returns the effective SVID issuance profile name.
@@ -2479,6 +2505,16 @@ func (c *Config) validateSPIFFE() error {
 				return fmt.Errorf("spiffe.subject_trust_domains[%q]: %w", subject, err)
 			}
 		}
+	}
+	if s.JWTDefaultTTLSeconds < 0 {
+		return fmt.Errorf("spiffe.jwt_default_ttl_seconds must be non-negative, got %d", s.JWTDefaultTTLSeconds)
+	}
+	if s.JWTMaxTTLSeconds < 0 {
+		return fmt.Errorf("spiffe.jwt_max_ttl_seconds must be non-negative, got %d", s.JWTMaxTTLSeconds)
+	}
+	if s.JWTDefaultTTLSeconds > 0 && s.JWTMaxTTLSeconds > 0 && s.JWTDefaultTTLSeconds > s.JWTMaxTTLSeconds {
+		return fmt.Errorf("spiffe.jwt_default_ttl_seconds (%d) must not exceed spiffe.jwt_max_ttl_seconds (%d)",
+			s.JWTDefaultTTLSeconds, s.JWTMaxTTLSeconds)
 	}
 	return nil
 }

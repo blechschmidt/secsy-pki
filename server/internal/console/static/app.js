@@ -1080,13 +1080,15 @@ async function loadBundle() {
     showError(msg, 'Chain unavailable: ' + e.message); msg.className = 'notice err';
   }
   // The SPIFFE trust bundle exists only when SPIFFE issuance is enabled; a 404
-  // just hides the panel (and the mint form with it).
+  // just hides the panel (and the mint forms with it).
   $('svidMintPanel').classList.add('hidden');
+  $('svidJWTPanel').classList.add('hidden');
   try {
     const bundle = await api('GET', `/api/ca/${id}/svid/bundle`, undefined, true);
     $('svidBundle').value = bundle;
     $('svidPanel').classList.remove('hidden');
     $('svidMintPanel').classList.remove('hidden');
+    $('svidJWTPanel').classList.remove('hidden');
   } catch (_) { /* SPIFFE not enabled for this server */ }
 }
 
@@ -1109,6 +1111,29 @@ $('svidMintBtn').onclick = async () => {
     $('svidOutBox').classList.remove('hidden');
   } catch (e) { showError(err, e.message); }
   finally { $('svidMintBtn').disabled = false; }
+};
+
+// Mint a JWT-SVID under the selected CA (SPIFFE workload identity as a signed JWS
+// bearer token). The audience is required and no CSR is involved.
+$('svidJWTMintBtn').onclick = async () => {
+  const id = $('bundleCA').value;
+  const err = $('svidJWTError');
+  err.classList.add('hidden');
+  $('svidJWTOutBox').classList.add('hidden');
+  const spiffeID = $('svidJWTID').value.trim();
+  const aud = $('svidJWTAud').value.split(',').map(s => s.trim()).filter(Boolean);
+  if (!spiffeID) { showError(err, 'A SPIFFE ID is required.'); return; }
+  if (!aud.length) { showError(err, 'At least one audience is required.'); return; }
+  const body = { spiffe_id: spiffeID, audience: aud };
+  const ttl = parseInt($('svidJWTTTL').value, 10);
+  if (ttl > 0) body.ttl_seconds = ttl;
+  $('svidJWTMintBtn').disabled = true;
+  try {
+    const res = await api('POST', `/api/ca/${id}/svid/jwt`, body);
+    $('svidJWTOut').value = res.token;
+    $('svidJWTOutBox').classList.remove('hidden');
+  } catch (e) { showError(err, e.message); }
+  finally { $('svidJWTMintBtn').disabled = false; }
 };
 
 // ---- DNS pinning records (DANE TLSA / SSHFP) -----------------------------

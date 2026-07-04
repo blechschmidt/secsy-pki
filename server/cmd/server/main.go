@@ -548,7 +548,8 @@ func main() {
 			DefaultCAID:         cfg.SPIFFE.DefaultCAID,
 		})
 		api.SetSPIFFE(policy, cfg.SPIFFE.SVIDProfileName())
-		log.Printf("SPIFFE X.509-SVID issuance enabled (profile %q, trust domains %v)",
+		api.SetSPIFFEJWT(cfg.SPIFFE.JWTDefaultAudience, cfg.SPIFFE.JWTDefaultTTL(), cfg.SPIFFE.JWTMaxTTL())
+		log.Printf("SPIFFE X.509-SVID + JWT-SVID issuance enabled (profile %q, trust domains %v)",
 			cfg.SPIFFE.SVIDProfileName(), policy.AllowedTrustDomains())
 	}
 

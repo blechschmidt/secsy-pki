@@ -775,6 +775,40 @@ type IssueSVIDResponse struct {
 	NotAfter    string `json:"not_after"`
 }
 
+// IssueJWTSVIDRequest asks a CA to mint a SPIFFE JWT-SVID: a short-lived signed
+// JWS bearer token whose subject is the SPIFFE ID. The identity is given either
+// as a full spiffe:// URI (SpiffeID) or as trust domain plus workload path, and
+// the trust domain must be permitted by the SVID trust-domain allowlist. Unlike
+// an X.509-SVID there is no CSR — the token carries no workload key.
+type IssueJWTSVIDRequest struct {
+	// SpiffeID is the full spiffe:// URI. When set it takes precedence over
+	// TrustDomain/Path.
+	SpiffeID string `json:"spiffe_id,omitempty"`
+	// TrustDomain and Path build the SPIFFE ID when SpiffeID is not given.
+	TrustDomain string `json:"trust_domain,omitempty"`
+	Path        string `json:"path,omitempty"`
+	// Audience is the token's intended audience set ("aud"). At least one value is
+	// required unless the server configures a default audience.
+	Audience []string `json:"audience,omitempty"`
+	// TTLSeconds overrides the default token lifetime (clamped to the server max).
+	TTLSeconds int `json:"ttl_seconds,omitempty"`
+}
+
+// IssueJWTSVIDResponse returns a freshly minted SPIFFE JWT-SVID.
+type IssueJWTSVIDResponse struct {
+	Token       string   `json:"token"` // compact-serialized signed JWT-SVID
+	SpiffeID    string   `json:"spiffe_id"`
+	TrustDomain string   `json:"trust_domain"`
+	Audience    []string `json:"audience"`
+	KeyID       string   `json:"kid"` // token kid; resolves to a jwt-svid key in the bundle
+	Algorithm   string   `json:"alg"` // JWS signature algorithm (e.g. ES256)
+	IssuedAt    string   `json:"issued_at"`
+	ExpiresAt   string   `json:"expires_at"`
+	// Bundle is the SPIFFE trust bundle (JWKS) with the JWT verification keys, so a
+	// relying party can validate the token from a single call. Best-effort.
+	Bundle string `json:"bundle,omitempty"`
+}
+
 // RenewCertRequest renews a previously issued certificate identified by serial
 // (or by supplying a fresh CSR for the same subject). A new serial and validity
 // window are produced; the original is left untouched (and may be revoked

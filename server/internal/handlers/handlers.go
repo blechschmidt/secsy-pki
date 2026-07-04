@@ -76,6 +76,11 @@ type API struct {
 	// issuance profile used for SVIDs.
 	spiffePolicy  *spiffe.Policy
 	spiffeProfile string
+	// spiffeJWT* configure JWT-SVID issuance: the default audience applied when a
+	// request omits one, the default token lifetime, and the hard TTL ceiling.
+	spiffeJWTAudience   []string
+	spiffeJWTDefaultTTL time.Duration
+	spiffeJWTMaxTTL     time.Duration
 	// authInfo advertises the enabled operator-authentication mechanisms to the
 	// console via /api/auth/config, so the SPA can render the right login options
 	// (server-side SSO redirect, password login, and WebAuthn step-up).
@@ -305,6 +310,16 @@ func (a *API) SetSPIFFE(policy *spiffe.Policy, profile string) {
 	a.spiffeProfile = profile
 }
 
+// SetSPIFFEJWT configures JWT-SVID issuance defaults: the audience applied when a
+// request omits one (empty means an audience is mandatory per request), the
+// default token lifetime, and the hard TTL ceiling. Intended to be called once
+// at startup, alongside SetSPIFFE.
+func (a *API) SetSPIFFEJWT(defaultAudience []string, defaultTTL, maxTTL time.Duration) {
+	a.spiffeJWTAudience = defaultAudience
+	a.spiffeJWTDefaultTTL = defaultTTL
+	a.spiffeJWTMaxTTL = maxTTL
+}
+
 // spiffeEnabled reports whether SPIFFE SVID issuance is configured.
 func (a *API) spiffeEnabled() bool { return a.spiffePolicy != nil }
 
@@ -421,6 +436,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	// without authenticating, like the CRL/OCSP/chain endpoints.
 	if a.spiffeEnabled() {
 		mux.Handle("POST /api/ca/{id}/svid", protected(http.HandlerFunc(a.IssueSVID)))
+		mux.Handle("POST /api/ca/{id}/svid/jwt", protected(http.HandlerFunc(a.IssueJWTSVID)))
 		mux.HandleFunc("GET /api/ca/{id}/svid/bundle", a.GetSVIDBundle)
 	}
 
