@@ -317,6 +317,9 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+p+"/authz/{id}", s.handleAuthz)
 	mux.HandleFunc("POST "+p+"/chall/{id}", s.handleChallenge)
 	mux.HandleFunc("POST "+p+"/cert/{id}", s.handleCertificate)
+	// Alternate certificate chains (RFC 8555 §7.4.2): the same leaf served with a
+	// differently-rooted trust path, one per cross-sign of the issuing CA (Task 47).
+	mux.HandleFunc("POST "+p+"/cert/{id}/{n}", s.handleAlternateCertificate)
 	mux.HandleFunc("POST "+p+"/acct/{id}", s.handleAccount)
 	mux.HandleFunc("POST "+p+"/acct/{id}/orders", s.handleAccountOrders)
 	mux.HandleFunc("POST "+p+"/revoke-cert", s.handleRevokeCert)
@@ -369,6 +372,12 @@ func (s *Server) orderURL(r *http.Request, id string) string   { return s.link(r
 func (s *Server) authzURL(r *http.Request, id string) string   { return s.link(r, "/authz/"+id) }
 func (s *Server) challURL(r *http.Request, id string) string   { return s.link(r, "/chall/"+id) }
 func (s *Server) certURL(r *http.Request, id string) string    { return s.link(r, "/cert/"+id) }
+
+// altCertURL returns the URL of the n-th (1-based) alternate certificate chain
+// for an order, per RFC 8555 §7.4.2. Index 0 is the default chain at certURL.
+func (s *Server) altCertURL(r *http.Request, id string, n int) string {
+	return s.link(r, fmt.Sprintf("/cert/%s/%d", id, n))
+}
 
 // renewalInfoURL returns the base URL of the ARI renewalInfo resource. Clients
 // append "/<certID>" to it.

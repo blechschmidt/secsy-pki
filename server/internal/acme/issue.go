@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"sort"
@@ -217,31 +218,149 @@ func (s *Server) validationMethods(authzs []models.ACMEAuthorization) map[string
 	return methods
 }
 
-// handleCertificate serves the issued certificate chain (POST-as-GET).
+// handleCertificate serves the default (primary) issued certificate chain
+// (POST-as-GET). When cross-signing (Task 47) has produced additional,
+// differently-rooted trust paths for the issuing CA, each is advertised on this
+// response with a Link rel="alternate" header per RFC 8555 §7.4.2, letting a
+// standard ACME client select whichever root a relying party trusts.
 func (s *Server) handleCertificate(w http.ResponseWriter, r *http.Request) {
-	acct, _, prob := s.authAccount(r)
+	order, prob := s.loadDownloadableOrder(r)
 	if prob != nil {
 		s.writeProblem(w, prob)
 		return
 	}
-	// The certificate URL reuses the order id.
+	chains := s.orderChains(order)
+	// Advertise every alternate chain (indices 1..len-1) on the primary resource.
+	s.writeCertLinks(w, r, order.ID, len(chains)-1)
+	s.writeCertChain(w, chains[0])
+}
+
+// handleAlternateCertificate serves one of the differently-rooted alternate
+// certificate chains linked from the primary certificate resource (RFC 8555
+// §7.4.2). The trailing "{n}" path segment selects the 1-based alternate index;
+// index 0 (the default chain) is served by handleCertificate. Alternate indices
+// are stable for a given order: they mirror the native-first ordering of
+// ca.Manager.AlternateChains, so a client can re-fetch the same URL and get the
+// same chain.
+func (s *Server) handleAlternateCertificate(w http.ResponseWriter, r *http.Request) {
+	order, prob := s.loadDownloadableOrder(r)
+	if prob != nil {
+		s.writeProblem(w, prob)
+		return
+	}
+	n, err := strconv.Atoi(r.PathValue("n"))
+	if err != nil || n < 1 {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusNotFound, "alternate certificate chain not found"))
+		return
+	}
+	chains := s.orderChains(order)
+	if n >= len(chains) {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusNotFound, "alternate certificate chain not found"))
+		return
+	}
+	// Alternate resources carry only the rel="index" pointer; alternates are
+	// discovered from the primary resource per RFC 8555 §7.4.2.
+	s.writeCertLinks(w, r, order.ID, 0)
+	s.writeCertChain(w, chains[n])
+}
+
+// loadDownloadableOrder authenticates a POST-as-GET certificate download and
+// returns the finalized order whose certificate the account is entitled to. The
+// certificate URL reuses the order id. It enforces account ownership and that a
+// certificate is actually available, mapping each failure to its ACME problem.
+func (s *Server) loadDownloadableOrder(r *http.Request) (*models.ACMEOrder, *Problem) {
+	acct, _, prob := s.authAccount(r)
+	if prob != nil {
+		return nil, prob
+	}
 	order, err := s.db.GetACMEOrder(r.PathValue("id"))
 	if err != nil {
-		s.writeProblem(w, newProblem(probServerInternal, http.StatusInternalServerError, "order lookup failed"))
-		return
+		return nil, newProblem(probServerInternal, http.StatusInternalServerError, "order lookup failed")
 	}
 	if order == nil || order.AccountID != acct.rec.ID {
-		s.writeProblem(w, newProblem(probUnauthorized, http.StatusUnauthorized, "certificate not found for this account"))
-		return
+		return nil, newProblem(probUnauthorized, http.StatusUnauthorized, "certificate not found for this account")
 	}
 	if order.Status != models.ACMEOrderStatusValid || order.Certificate == "" {
-		s.writeProblem(w, newProblem(probMalformed, http.StatusNotFound, "certificate is not available for this order"))
-		return
+		return nil, newProblem(probMalformed, http.StatusNotFound, "certificate is not available for this order")
 	}
+	return order, nil
+}
+
+// orderChains returns the downloadable certificate chains for a finalized order,
+// primary first, then each differently-rooted alternate. The primary is the chain
+// stored on the order at finalize (leaf + issuing CA), so its bytes are unchanged
+// from before alternate chains existed. Each alternate is the same leaf followed
+// by an alternate path the issuing CA's key was cross-signed onto (Task 47),
+// terminating at a different trust anchor.
+//
+// Enumeration is best-effort: if the cross-sign lookup fails, only the primary
+// chain is returned so certificate download never breaks. The order preserves
+// ca.Manager.AlternateChains' native-first, creation-ordered sequence, so a given
+// alternate keeps a stable index (and therefore a stable URL) across requests.
+func (s *Server) orderChains(order *models.ACMEOrder) []string {
+	chains := []string{order.Certificate}
+
+	leaf := firstPEMCertificate(order.Certificate)
+	if leaf == "" {
+		return chains
+	}
+	caID := order.CAID
+	if caID == "" {
+		caID = s.cfg.CAID
+	}
+	alts, err := s.caMgr.AlternateChains(caID)
+	if err != nil {
+		log.Printf("acme: enumerating alternate chains for CA %q (order %s): %v", caID, order.ID, err)
+		return chains
+	}
+	for i := range alts {
+		// The native path is already served as the primary chain; only the
+		// cross-signed, differently-rooted paths are alternates.
+		if alts[i].Native {
+			continue
+		}
+		chains = append(chains, leaf+alts[i].PEM)
+	}
+	return chains
+}
+
+// firstPEMCertificate returns the first CERTIFICATE block of a PEM bundle,
+// re-encoded canonically (with a trailing newline) so it concatenates cleanly
+// with a following chain. It returns "" when the bundle carries no certificate.
+func firstPEMCertificate(bundle string) string {
+	rest := []byte(bundle)
+	for {
+		block, remaining := pem.Decode(rest)
+		if block == nil {
+			return ""
+		}
+		rest = remaining
+		if block.Type == "CERTIFICATE" {
+			return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: block.Bytes}))
+		}
+	}
+}
+
+// writeCertLinks emits the Link headers for a certificate response: the
+// RFC 8555-recommended rel="index" pointer back to the directory, plus one
+// rel="alternate" header per alternate chain (§7.4.2). alternates is the count of
+// alternate chains to advertise — non-zero only on the primary resource, where
+// alternate i is reachable at /cert/{id}/{i}.
+func (s *Server) writeCertLinks(w http.ResponseWriter, r *http.Request, orderID string, alternates int) {
+	w.Header().Add("Link", fmt.Sprintf("<%s>;rel=\"index\"", s.DirectoryURL(r)))
+	for i := 1; i <= alternates; i++ {
+		w.Header().Add("Link", fmt.Sprintf("<%s>;rel=\"alternate\"", s.altCertURL(r, orderID, i)))
+	}
+}
+
+// writeCertChain writes a PEM certificate-chain body with a fresh anti-replay
+// nonce and the ACME chain content type, preserving the no-store caching behavior
+// every ACME response carries.
+func (s *Server) writeCertChain(w http.ResponseWriter, chain string) {
 	s.addNonce(w)
 	w.Header().Set("Content-Type", "application/pem-certificate-chain")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(order.Certificate))
+	_, _ = w.Write([]byte(chain))
 }
 
 // handleRevokeCert revokes a previously issued certificate (RFC 8555 §7.6).
