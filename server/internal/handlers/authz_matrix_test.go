@@ -451,6 +451,10 @@ func authzMatrix() []rc {
 
 		// Ad-hoc lint + provider key inventory.
 		rdG("POST", "/api/lint", "/api/lint", `{}`),
+		// Chain validation is read-gated but tenant-scoped on the body's CA
+		// reference: a cross-tenant auditor referencing tenant-a's CA gets a
+		// non-disclosing 404 (caRdBody), a capable auditor reaches the handler.
+		caRdBody("POST", "/api/validate", "/api/validate", `{"ca":"ca-a"}`),
 		hsmMg("GET", "/api/inventory/keys", "/api/inventory/keys", ""),
 
 		// ACME operator visibility.

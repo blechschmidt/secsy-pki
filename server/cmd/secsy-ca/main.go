@@ -178,6 +178,14 @@ func run(args []string) error {
 		return cmdDiscover(db, cfg, cmdArgs)
 	}
 
+	// Certificate chain/path validation (Task 123) reads only the store (a CA's
+	// trust anchors and the revocation status) and never touches the HSM, so
+	// dispatch it before the key provider is constructed — a chain can be
+	// validated during an HSM outage.
+	if command == "validate-cert" {
+		return cmdValidateCert(db, cmdArgs)
+	}
+
 	// Signature verification is public-key only (trust anchors come from the
 	// store or a PEM file), so dispatch it before the key provider too — a
 	// release can be verified anywhere, without the HSM.
@@ -414,6 +422,7 @@ Commands:
   svid jwt-verify     Validate a JWT-SVID against a JWKS trust bundle
   svid-bundle         Emit a CA's SPIFFE trust bundle (JWKS): X.509 + JWT keys
   lint                Lint a certificate against a profile's policy (CA/B BR)
+  validate-cert       Validate a leaf+chain against a CA's trust anchors (verdict)
   cmp                 CMP (RFC 9483) client: enroll (ir) against a /cmp endpoint
   grpc                gRPC client: issue/renew/revoke/status over the PKIService API
   inventory           List keys held by the key provider (HSM/software)

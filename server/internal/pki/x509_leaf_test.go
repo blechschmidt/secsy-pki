@@ -161,3 +161,37 @@ func TestParseRevocationReason(t *testing.T) {
 		t.Error("expected error for unknown reason")
 	}
 }
+
+// TestRevocationReasonName checks the code->name rendering, including that every
+// named reason round-trips through ParseRevocationReason and an unknown code
+// renders as reason(N).
+func TestRevocationReasonName(t *testing.T) {
+	cases := map[int]string{
+		RevocationReasonUnspecified:          "unspecified",
+		RevocationReasonKeyCompromise:        "keyCompromise",
+		RevocationReasonCACompromise:         "cACompromise",
+		RevocationReasonAffiliationChanged:   "affiliationChanged",
+		RevocationReasonSuperseded:           "superseded",
+		RevocationReasonCessationOfOperation: "cessationOfOperation",
+		RevocationReasonCertificateHold:      "certificateHold",
+		RevocationReasonRemoveFromCRL:        "removeFromCRL",
+		RevocationReasonPrivilegeWithdrawn:   "privilegeWithdrawn",
+		RevocationReasonAACompromise:         "aACompromise",
+	}
+	for code, want := range cases {
+		if got := RevocationReasonName(code); got != want {
+			t.Errorf("RevocationReasonName(%d) = %q, want %q", code, got, want)
+		}
+		// removeFromCRL (8) is never a valid revocation *request* reason, so it does
+		// not round-trip through ParseRevocationReason; the other names must.
+		if code == RevocationReasonRemoveFromCRL {
+			continue
+		}
+		if back, err := ParseRevocationReason(want); err != nil || back != code {
+			t.Errorf("round-trip ParseRevocationReason(%q) = %d, %v; want %d", want, back, err, code)
+		}
+	}
+	if got := RevocationReasonName(4242); got != "reason(4242)" {
+		t.Errorf("RevocationReasonName(4242) = %q, want reason(4242)", got)
+	}
+}

@@ -614,6 +614,12 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("POST /api/lint", protected(http.HandlerFunc(a.LintCertificate)))
 	mux.Handle("GET /api/inventory/keys", protected(http.HandlerFunc(a.ListProviderKeys)))
 
+	// Certificate chain/path validation (Task 123): build and validate a supplied
+	// leaf (+ optional intermediates) against a named CA's configured trust
+	// anchors and return a structured verdict. Read-gated + tenant-scoped on the
+	// referenced CA; a pure read (no HSM, no signing, no audit).
+	mux.Handle("POST /api/validate", protected(http.HandlerFunc(a.ValidateChain)))
+
 	// ACME operator visibility (the ACME protocol endpoints are mounted
 	// separately, authenticated by account keys). Read-gated like other inventory.
 	mux.Handle("GET /api/acme/accounts", protected(http.HandlerFunc(a.ListACMEAccounts)))

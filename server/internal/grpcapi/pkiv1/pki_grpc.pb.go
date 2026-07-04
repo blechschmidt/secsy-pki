@@ -35,6 +35,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	PKIService_IssueCertificate_FullMethodName     = "/secsy.pki.v1.PKIService/IssueCertificate"
 	PKIService_PreviewCertificate_FullMethodName   = "/secsy.pki.v1.PKIService/PreviewCertificate"
+	PKIService_ValidateChain_FullMethodName        = "/secsy.pki.v1.PKIService/ValidateChain"
 	PKIService_RenewCertificate_FullMethodName     = "/secsy.pki.v1.PKIService/RenewCertificate"
 	PKIService_RevokeCertificate_FullMethodName    = "/secsy.pki.v1.PKIService/RevokeCertificate"
 	PKIService_SuspendCertificate_FullMethodName   = "/secsy.pki.v1.PKIService/SuspendCertificate"
@@ -71,6 +72,19 @@ type PKIServiceClient interface {
 	// operator or CI can validate a request before a real, HSM-consuming issuance.
 	// Requires the same issue capability as IssueCertificate.
 	PreviewCertificate(ctx context.Context, in *PreviewCertificateRequest, opts ...grpc.CallOption) (*PreviewCertificateResponse, error)
+	// ValidateChain builds and validates a supplied leaf certificate (and optional
+	// intermediates) against a CA's configured trust anchors and returns a
+	// structured verdict: whether a path was built (with the resolved chain), the
+	// validity window, per-certificate live revocation status (CRL + OCSP store,
+	// including the reversible on-hold state), name-constraint and certificate-
+	// policy conformance, weak-key/weak-signature flags, and an overall pass/fail
+	// with human-readable reasons. It is a pure read: no HSM is touched, nothing is
+	// signed, no serial is allocated, and no audit event is recorded. Requires the
+	// same tenant-scoped read standing as GetCertificate on the CA.
+	//
+	// Errors: PERMISSION_DENIED (no read role), NOT_FOUND (unknown CA / not a
+	// tenant member), INVALID_ARGUMENT (missing or malformed certificate input).
+	ValidateChain(ctx context.Context, in *ValidateChainRequest, opts ...grpc.CallOption) (*ValidateChainResponse, error)
 	// RenewCertificate reissues a previously issued certificate with a fresh
 	// serial and validity window, optionally rekeying from a supplied CSR.
 	RenewCertificate(ctx context.Context, in *RenewCertificateRequest, opts ...grpc.CallOption) (*CertificateResponse, error)
@@ -132,6 +146,16 @@ func (c *pKIServiceClient) PreviewCertificate(ctx context.Context, in *PreviewCe
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PreviewCertificateResponse)
 	err := c.cc.Invoke(ctx, PKIService_PreviewCertificate_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *pKIServiceClient) ValidateChain(ctx context.Context, in *ValidateChainRequest, opts ...grpc.CallOption) (*ValidateChainResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ValidateChainResponse)
+	err := c.cc.Invoke(ctx, PKIService_ValidateChain_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -253,6 +277,19 @@ type PKIServiceServer interface {
 	// operator or CI can validate a request before a real, HSM-consuming issuance.
 	// Requires the same issue capability as IssueCertificate.
 	PreviewCertificate(context.Context, *PreviewCertificateRequest) (*PreviewCertificateResponse, error)
+	// ValidateChain builds and validates a supplied leaf certificate (and optional
+	// intermediates) against a CA's configured trust anchors and returns a
+	// structured verdict: whether a path was built (with the resolved chain), the
+	// validity window, per-certificate live revocation status (CRL + OCSP store,
+	// including the reversible on-hold state), name-constraint and certificate-
+	// policy conformance, weak-key/weak-signature flags, and an overall pass/fail
+	// with human-readable reasons. It is a pure read: no HSM is touched, nothing is
+	// signed, no serial is allocated, and no audit event is recorded. Requires the
+	// same tenant-scoped read standing as GetCertificate on the CA.
+	//
+	// Errors: PERMISSION_DENIED (no read role), NOT_FOUND (unknown CA / not a
+	// tenant member), INVALID_ARGUMENT (missing or malformed certificate input).
+	ValidateChain(context.Context, *ValidateChainRequest) (*ValidateChainResponse, error)
 	// RenewCertificate reissues a previously issued certificate with a fresh
 	// serial and validity window, optionally rekeying from a supplied CSR.
 	RenewCertificate(context.Context, *RenewCertificateRequest) (*CertificateResponse, error)
@@ -305,6 +342,9 @@ func (UnimplementedPKIServiceServer) IssueCertificate(context.Context, *IssueCer
 }
 func (UnimplementedPKIServiceServer) PreviewCertificate(context.Context, *PreviewCertificateRequest) (*PreviewCertificateResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PreviewCertificate not implemented")
+}
+func (UnimplementedPKIServiceServer) ValidateChain(context.Context, *ValidateChainRequest) (*ValidateChainResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ValidateChain not implemented")
 }
 func (UnimplementedPKIServiceServer) RenewCertificate(context.Context, *RenewCertificateRequest) (*CertificateResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RenewCertificate not implemented")
@@ -386,6 +426,24 @@ func _PKIService_PreviewCertificate_Handler(srv interface{}, ctx context.Context
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(PKIServiceServer).PreviewCertificate(ctx, req.(*PreviewCertificateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _PKIService_ValidateChain_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ValidateChainRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PKIServiceServer).ValidateChain(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PKIService_ValidateChain_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PKIServiceServer).ValidateChain(ctx, req.(*ValidateChainRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -566,6 +624,10 @@ var PKIService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PreviewCertificate",
 			Handler:    _PKIService_PreviewCertificate_Handler,
+		},
+		{
+			MethodName: "ValidateChain",
+			Handler:    _PKIService_ValidateChain_Handler,
 		},
 		{
 			MethodName: "RenewCertificate",

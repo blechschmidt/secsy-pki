@@ -42,6 +42,20 @@ service PKIService {
   // Requires the same issue capability as IssueCertificate.
   rpc PreviewCertificate(PreviewCertificateRequest) returns (PreviewCertificateResponse);
 
+  // ValidateChain builds and validates a supplied leaf certificate (and optional
+  // intermediates) against a CA's configured trust anchors and returns a
+  // structured verdict: whether a path was built (with the resolved chain), the
+  // validity window, per-certificate live revocation status (CRL + OCSP store,
+  // including the reversible on-hold state), name-constraint and certificate-
+  // policy conformance, weak-key/weak-signature flags, and an overall pass/fail
+  // with human-readable reasons. It is a pure read: no HSM is touched, nothing is
+  // signed, no serial is allocated, and no audit event is recorded. Requires the
+  // same tenant-scoped read standing as GetCertificate on the CA.
+  //
+  // Errors: PERMISSION_DENIED (no read role), NOT_FOUND (unknown CA / not a
+  // tenant member), INVALID_ARGUMENT (missing or malformed certificate input).
+  rpc ValidateChain(ValidateChainRequest) returns (ValidateChainResponse);
+
   // RenewCertificate reissues a previously issued certificate with a fresh
   // serial and validity window, optionally rekeying from a supplied CSR.
   rpc RenewCertificate(RenewCertificateRequest) returns (CertificateResponse);
@@ -241,6 +255,90 @@ message PreviewCertificateResponse {
   bool must_staple = 20;
   repeated PreviewExtension extensions = 21;
   repeated PreviewGate gates = 22;
+}
+
+// ValidateChainRequest asks the authority to validate a supplied certificate
+// path against a CA's configured trust anchors. Nothing is signed.
+message ValidateChainRequest {
+  // ca_id is the CA whose configured trust anchors the path is validated against.
+  string ca_id = 1;
+  // leaf_pem is the leaf certificate to validate, PEM-encoded. A PEM bundle whose
+  // first certificate is the leaf and remainder are intermediates is accepted.
+  string leaf_pem = 2;
+  // intermediates_pem are additional intermediate CA certificates (PEM), each a
+  // single certificate or a bundle, used to bridge the path.
+  repeated string intermediates_pem = 3;
+  // skip_revocation disables the live per-certificate revocation lookups.
+  bool skip_revocation = 4;
+}
+
+// ValidationRevocation is one certificate's live revocation status.
+message ValidationRevocation {
+  // state is "good", "revoked", "held" (reversible certificateHold), or "unknown".
+  string state = 1;
+  google.protobuf.Timestamp revoked_at = 2;
+  int32 reason = 3;
+  string reason_text = 4;
+  string source = 5;
+}
+
+// ValidatedCertificate is the analyzed view of one certificate in the path.
+message ValidatedCertificate {
+  int32 position = 1; // 0 = leaf; increases toward the anchor
+  string subject = 2;
+  string issuer = 3;
+  string serial_number = 4;
+  google.protobuf.Timestamp not_before = 5;
+  google.protobuf.Timestamp not_after = 6;
+  bool is_ca = 7;
+  bool is_trust_anchor = 8;
+  bool self_signed = 9;
+  string key_algorithm = 10;
+  int32 key_size = 11;
+  string signature_algorithm = 12;
+  string fingerprint = 13;
+  string subject_key_id = 14;
+  string authority_key_id = 15;
+  repeated string key_usage = 16;
+  repeated string ext_key_usage = 17;
+  repeated string policies = 18;
+  bool expired = 19;
+  bool not_yet_valid = 20;
+  bool weak_key = 21;
+  bool weak_signature = 22;
+  repeated string weak_key_reasons = 23;
+  ValidationRevocation revocation = 24;
+}
+
+// ValidationCheck is one validation dimension's verdict.
+message ValidationCheck {
+  // name is the dimension (chain, validity, revocation, name_constraints,
+  // certificate_policy, key_usage, weak_key, weak_signature).
+  string name = 1;
+  // status is "pass", "fail", "warn", or "skipped".
+  string status = 2;
+  string detail = 3;
+  repeated string findings = 4;
+}
+
+// ValidateChainResponse is the structured chain-validation verdict.
+message ValidateChainResponse {
+  string ca_id = 1;
+  string ca_label = 2;
+  string trust_anchor = 3;
+  // chain_built reports whether a path to a configured trust anchor was found.
+  bool chain_built = 4;
+  // valid is the overall verdict: true only when no dimension failed.
+  bool valid = 5;
+  // decision is "valid" or "invalid".
+  string decision = 6;
+  google.protobuf.Timestamp evaluated_at = 7;
+  google.protobuf.Timestamp valid_from = 8;
+  google.protobuf.Timestamp valid_until = 9;
+  repeated ValidatedCertificate chain = 10;
+  repeated ValidationCheck checks = 11;
+  repeated string reasons = 12;
+  repeated string warnings = 13;
 }
 
 message RevokeCertificateRequest {

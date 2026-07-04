@@ -118,6 +118,12 @@ const (
 	CertItemSeverityWarning  CertItemSeverity = "warning"
 )
 
+// Defines values for ChainValidationReportDecision.
+const (
+	ChainValidationReportDecisionInvalid ChainValidationReportDecision = "invalid"
+	ChainValidationReportDecisionValid   ChainValidationReportDecision = "valid"
+)
+
 // Defines values for CreateTokenRequestRoles.
 const (
 	Admin    CreateTokenRequestRoles = "admin"
@@ -375,6 +381,22 @@ const (
 const (
 	Active    TenantUsageReportStatus = "active"
 	Suspended TenantUsageReportStatus = "suspended"
+)
+
+// Defines values for ValidationCheckStatus.
+const (
+	Fail    ValidationCheckStatus = "fail"
+	Pass    ValidationCheckStatus = "pass"
+	Skipped ValidationCheckStatus = "skipped"
+	Warn    ValidationCheckStatus = "warn"
+)
+
+// Defines values for ValidationRevocationState.
+const (
+	ValidationRevocationStateGood    ValidationRevocationState = "good"
+	ValidationRevocationStateHeld    ValidationRevocationState = "held"
+	ValidationRevocationStateRevoked ValidationRevocationState = "revoked"
+	ValidationRevocationStateUnknown ValidationRevocationState = "unknown"
 )
 
 // Defines values for CertStatusFilter.
@@ -1213,6 +1235,34 @@ type CertPolicyConfig struct {
 	// RequireExplicitPolicy policyConstraints requireExplicitPolicy skipCerts.
 	RequireExplicitPolicy *int `json:"require_explicit_policy,omitempty"`
 }
+
+// ChainValidationReport The structured certificate chain-validation verdict.
+type ChainValidationReport struct {
+	CaId    *string                 `json:"ca_id,omitempty"`
+	CaLabel *string                 `json:"ca_label,omitempty"`
+	Chain   *[]ValidatedCertificate `json:"chain,omitempty"`
+
+	// ChainBuilt Whether a path to a configured trust anchor was found.
+	ChainBuilt *bool              `json:"chain_built,omitempty"`
+	Checks     *[]ValidationCheck `json:"checks,omitempty"`
+
+	// Decision The overall verdict as a single word.
+	Decision    *ChainValidationReportDecision `json:"decision,omitempty"`
+	EvaluatedAt *time.Time                     `json:"evaluated_at,omitempty"`
+
+	// Reasons Human-readable reasons the chain is not valid; empty when valid.
+	Reasons     *[]string `json:"reasons,omitempty"`
+	TrustAnchor *string   `json:"trust_anchor,omitempty"`
+
+	// Valid The overall verdict; true only when no dimension failed.
+	Valid      *bool      `json:"valid,omitempty"`
+	ValidFrom  *time.Time `json:"valid_from,omitempty"`
+	ValidUntil *time.Time `json:"valid_until,omitempty"`
+	Warnings   *[]string  `json:"warnings,omitempty"`
+}
+
+// ChainValidationReportDecision The overall verdict as a single word.
+type ChainValidationReportDecision string
 
 // CombinedAuditExport defines model for CombinedAuditExport.
 type CombinedAuditExport struct {
@@ -2664,6 +2714,83 @@ type UserInfo struct {
 	Sub           *string   `json:"sub,omitempty"`
 }
 
+// ValidateChainRequest defines model for ValidateChainRequest.
+type ValidateChainRequest struct {
+	// Ca The id or label of the CA whose configured trust anchors the path is validated against. Also scopes the request to that CA's tenant.
+	Ca string `json:"ca"`
+
+	// Certificate The leaf certificate to validate, PEM-encoded. A PEM bundle whose first certificate is the leaf and remainder are intermediates is accepted.
+	Certificate string `json:"certificate"`
+
+	// Intermediates Additional intermediate CA certificates (PEM), each a single certificate or a bundle, used to bridge the path.
+	Intermediates *[]string `json:"intermediates,omitempty"`
+
+	// SkipRevocation Disable the live per-certificate revocation (CRL/OCSP) lookups.
+	SkipRevocation *bool `json:"skip_revocation,omitempty"`
+}
+
+// ValidatedCertificate The analyzed view of one certificate in the resolved path.
+type ValidatedCertificate struct {
+	AuthorityKeyId *string   `json:"authority_key_id,omitempty"`
+	Expired        *bool     `json:"expired,omitempty"`
+	ExtKeyUsage    *[]string `json:"ext_key_usage,omitempty"`
+
+	// Fingerprint SHA-256 of the DER (sha256:<hex>).
+	Fingerprint   *string    `json:"fingerprint,omitempty"`
+	IsCa          *bool      `json:"is_ca,omitempty"`
+	IsTrustAnchor *bool      `json:"is_trust_anchor,omitempty"`
+	Issuer        *string    `json:"issuer,omitempty"`
+	KeyAlgorithm  *string    `json:"key_algorithm,omitempty"`
+	KeySize       *int       `json:"key_size,omitempty"`
+	KeyUsage      *[]string  `json:"key_usage,omitempty"`
+	NotAfter      *time.Time `json:"not_after,omitempty"`
+	NotBefore     *time.Time `json:"not_before,omitempty"`
+	NotYetValid   *bool      `json:"not_yet_valid,omitempty"`
+	Policies      *[]string  `json:"policies,omitempty"`
+
+	// Position 0 = leaf; increases toward the anchor.
+	Position *int `json:"position,omitempty"`
+
+	// Revocation One certificate's live revocation status.
+	Revocation         *ValidationRevocation `json:"revocation,omitempty"`
+	SelfSigned         *bool                 `json:"self_signed,omitempty"`
+	SerialNumber       *string               `json:"serial_number,omitempty"`
+	SignatureAlgorithm *string               `json:"signature_algorithm,omitempty"`
+	Subject            *string               `json:"subject,omitempty"`
+	SubjectKeyId       *string               `json:"subject_key_id,omitempty"`
+	WeakKey            *bool                 `json:"weak_key,omitempty"`
+	WeakKeyReasons     *[]string             `json:"weak_key_reasons,omitempty"`
+	WeakSignature      *bool                 `json:"weak_signature,omitempty"`
+}
+
+// ValidationCheck One validation dimension's verdict.
+type ValidationCheck struct {
+	Detail   *string   `json:"detail,omitempty"`
+	Findings *[]string `json:"findings,omitempty"`
+
+	// Name chain, validity, revocation, name_constraints, certificate_policy, key_usage, weak_key, or weak_signature.
+	Name   *string                `json:"name,omitempty"`
+	Status *ValidationCheckStatus `json:"status,omitempty"`
+}
+
+// ValidationCheckStatus defines model for ValidationCheck.Status.
+type ValidationCheckStatus string
+
+// ValidationRevocation One certificate's live revocation status.
+type ValidationRevocation struct {
+	// Reason RFC 5280 CRL reason code.
+	Reason     *int       `json:"reason,omitempty"`
+	ReasonText *string    `json:"reason_text,omitempty"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	Source     *string    `json:"source,omitempty"`
+
+	// State good, revoked, held (reversible RFC 5280 certificateHold), or unknown (no record for the serial under the resolved issuer).
+	State *ValidationRevocationState `json:"state,omitempty"`
+}
+
+// ValidationRevocationState good, revoked, held (reversible RFC 5280 certificateHold), or unknown (no record for the serial under the resolved issuer).
+type ValidationRevocationState string
+
 // X509SignRequest defines model for X509SignRequest.
 type X509SignRequest struct {
 	CaId *string `json:"ca_id,omitempty"`
@@ -3121,6 +3248,9 @@ type SetTenantStatusJSONRequestBody = TenantStatusRequest
 
 // CreateTokenJSONRequestBody defines body for CreateToken for application/json ContentType.
 type CreateTokenJSONRequestBody = CreateTokenRequest
+
+// ValidateChainJSONRequestBody defines body for ValidateChain for application/json ContentType.
+type ValidateChainJSONRequestBody = ValidateChainRequest
 
 // RequestEditorFn  is the function signature for the RequestEditor callback function
 type RequestEditorFn func(ctx context.Context, req *http.Request) error
@@ -3644,6 +3774,11 @@ type ClientInterface interface {
 
 	// RevokeToken request
 	RevokeToken(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ValidateChainWithBody request with any body
+	ValidateChainWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ValidateChain(ctx context.Context, body ValidateChainJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetLiveness request
 	GetLiveness(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5631,6 +5766,30 @@ func (c *Client) CreateToken(ctx context.Context, body CreateTokenJSONRequestBod
 
 func (c *Client) RevokeToken(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewRevokeTokenRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ValidateChainWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewValidateChainRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ValidateChain(ctx context.Context, body ValidateChainJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewValidateChainRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -11171,6 +11330,46 @@ func NewRevokeTokenRequest(server string, id string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewValidateChainRequest calls the generic ValidateChain builder with application/json body
+func NewValidateChainRequest(server string, body ValidateChainJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewValidateChainRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewValidateChainRequestWithBody generates requests for ValidateChain with any type of body
+func NewValidateChainRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/validate")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewGetLivenessRequest generates requests for GetLiveness
 func NewGetLivenessRequest(server string) (*http.Request, error) {
 	var err error
@@ -11798,6 +11997,11 @@ type ClientWithResponsesInterface interface {
 
 	// RevokeTokenWithResponse request
 	RevokeTokenWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*RevokeTokenResponse, error)
+
+	// ValidateChainWithBodyWithResponse request with any body
+	ValidateChainWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ValidateChainResponse, error)
+
+	ValidateChainWithResponse(ctx context.Context, body ValidateChainJSONRequestBody, reqEditors ...RequestEditorFn) (*ValidateChainResponse, error)
 
 	// GetLivenessWithResponse request
 	GetLivenessWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetLivenessResponse, error)
@@ -14593,6 +14797,31 @@ func (r RevokeTokenResponse) StatusCode() int {
 	return 0
 }
 
+type ValidateChainResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ChainValidationReport
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r ValidateChainResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ValidateChainResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type GetLivenessResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -16141,6 +16370,23 @@ func (c *ClientWithResponses) RevokeTokenWithResponse(ctx context.Context, id st
 		return nil, err
 	}
 	return ParseRevokeTokenResponse(rsp)
+}
+
+// ValidateChainWithBodyWithResponse request with arbitrary body returning *ValidateChainResponse
+func (c *ClientWithResponses) ValidateChainWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ValidateChainResponse, error) {
+	rsp, err := c.ValidateChainWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseValidateChainResponse(rsp)
+}
+
+func (c *ClientWithResponses) ValidateChainWithResponse(ctx context.Context, body ValidateChainJSONRequestBody, reqEditors ...RequestEditorFn) (*ValidateChainResponse, error) {
+	rsp, err := c.ValidateChain(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseValidateChainResponse(rsp)
 }
 
 // GetLivenessWithResponse request returning *GetLivenessResponse
@@ -20167,6 +20413,53 @@ func ParseRevokeTokenResponse(rsp *http.Response) (*RevokeTokenResponse, error) 
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseValidateChainResponse parses an HTTP response from a ValidateChainWithResponse call
+func ParseValidateChainResponse(rsp *http.Response) (*ValidateChainResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ValidateChainResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ChainValidationReport
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
 		var dest Forbidden

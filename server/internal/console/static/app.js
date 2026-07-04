@@ -348,6 +348,7 @@ async function loadCAs() {
   $('invCA').innerHTML = allOpt + opts;
   $('compCA').innerHTML = allOpt + opts;
   $('bundleCA').innerHTML = opts || empty;
+  $('validateCA').innerHTML = opts || empty;
   $('interParent').innerHTML = activeOpts || empty;
   $('csIssuer').innerHTML = activeOpts || empty;
   $('csSubject').innerHTML = '<option value="">— external (paste below) —</option>' + opts;
@@ -881,6 +882,92 @@ function shortName(dn) {
   if (!dn) return '—';
   const m = dn.match(/CN=([^,]+)/);
   return m ? m[1] : (dn.length > 40 ? dn.slice(0, 39) + '…' : dn);
+}
+
+// ---- Certificate chain validation view (Task 123) -------------------------
+$('validateBtn').onclick = runValidation;
+
+// runValidation posts the supplied leaf (+ optional intermediates) to
+// /api/validate for path validation against the selected CA's trust anchors and
+// renders the structured verdict. Nothing is signed server-side.
+async function runValidation() {
+  const ca = $('validateCA').value;
+  const cert = $('validateCert').value.trim();
+  const err = $('validateError');
+  err.classList.add('hidden');
+  if (!ca) { err.textContent = 'Select a trust-anchor CA.'; err.classList.remove('hidden'); return; }
+  if (!cert) { err.textContent = 'Paste a certificate to validate.'; err.classList.remove('hidden'); return; }
+  const inter = $('validateInter').value.trim();
+  const btn = $('validateBtn');
+  btn.disabled = true;
+  $('validateResult').innerHTML = '<p class="muted">Validating…</p>';
+  try {
+    const body = { ca, certificate: cert, skip_revocation: $('validateSkipRev').checked };
+    if (inter) body.intermediates = [inter];
+    renderValidation(await api('POST', '/api/validate', body));
+  } catch (e) {
+    $('validateResult').innerHTML = '';
+    err.textContent = e.message;
+    err.classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// renderValidation paints the verdict banner, the per-dimension checks, and the
+// resolved chain returned by /api/validate.
+function renderValidation(rep) {
+  const badge = rep.valid ? '<span class="badge pass">VALID</span>' : '<span class="badge fail">INVALID</span>';
+  const built = rep.chain_built ? 'chain built' : 'chain NOT built';
+  let html = `<div class="panel"><h2 style="font-size:15px">${badge} — ${built} against ${escapeHTML(rep.trust_anchor || rep.ca_label || '')}</h2>`;
+  if (rep.reasons && rep.reasons.length) {
+    html += '<ul style="margin:6px 0">' + rep.reasons.map(r => `<li>${escapeHTML(r)}</li>`).join('') + '</ul>';
+  }
+  if (rep.warnings && rep.warnings.length) {
+    html += '<ul class="muted" style="margin:6px 0">' + rep.warnings.map(r => `<li>⚠ ${escapeHTML(r)}</li>`).join('') + '</ul>';
+  }
+  html += '<table><thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead><tbody>';
+  (rep.checks || []).forEach(c => {
+    let detail = escapeHTML(c.detail);
+    if (c.findings && c.findings.length) {
+      detail += '<br>' + c.findings.map(f => `<span class="muted">• ${escapeHTML(f)}</span>`).join('<br>');
+    }
+    html += `<tr><td>${escapeHTML(c.name)}</td><td>${checkBadge(c.status)}</td><td>${detail}</td></tr>`;
+  });
+  html += '</tbody></table></div>';
+
+  html += '<div class="panel"><h2 style="font-size:15px">Resolved chain</h2>' +
+    '<table><thead><tr><th>#</th><th>Subject</th><th>Serial</th><th>Not after</th><th>Revocation</th><th>Flags</th></tr></thead><tbody>';
+  (rep.chain || []).forEach(ci => {
+    const flags = [];
+    if (ci.is_trust_anchor) flags.push('<span class="badge pass">anchor</span>');
+    else if (ci.is_ca) flags.push('<span class="badge">CA</span>');
+    if (ci.expired) flags.push('<span class="badge fail">expired</span>');
+    if (ci.not_yet_valid) flags.push('<span class="badge fail">not-yet-valid</span>');
+    if (ci.weak_key) flags.push('<span class="badge fail">weak-key</span>');
+    if (ci.weak_signature) flags.push('<span class="badge fail">weak-sig</span>');
+    const rev = ci.revocation ? checkBadge(revStatusClass(ci.revocation.state), ci.revocation.state) : '<span class="muted">—</span>';
+    html += `<tr><td>${ci.position}</td><td title="${escapeHTML(ci.subject)}">${escapeHTML(shortName(ci.subject))}</td>` +
+      `<td class="mono">${escapeHTML(ci.serial_number || '')}</td><td>${fmtTime(ci.not_after)}</td>` +
+      `<td>${rev}</td><td>${flags.join(' ') || '<span class="muted">—</span>'}</td></tr>`;
+  });
+  html += '</tbody></table></div>';
+  $('validateResult').innerHTML = html;
+}
+
+// checkBadge renders a coloured badge for a pass/fail/warn/skipped status, or an
+// explicit (class, label) pair for the revocation column.
+function checkBadge(statusOrClass, label) {
+  const map = { pass: 'pass', fail: 'fail', warn: 'warning', skipped: '' };
+  const cls = label !== undefined ? statusOrClass : (map[statusOrClass] ?? '');
+  return `<span class="badge ${cls}">${escapeHTML(label !== undefined ? label : statusOrClass)}</span>`;
+}
+
+// revStatusClass maps a revocation state to a badge colour class.
+function revStatusClass(state) {
+  if (state === 'good') return 'pass';
+  if (state === 'unknown') return 'warning';
+  return 'fail'; // revoked / held
 }
 
 // ---- CT SCT inclusion view (Task 93) -------------------------------------

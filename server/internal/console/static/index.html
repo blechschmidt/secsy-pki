@@ -51,6 +51,7 @@
         <button data-view="audit">Audit</button>
         <button data-view="approvals">Approvals</button>
         <button data-view="compliance">Compliance</button>
+        <button data-view="validate">Validate</button>
         <button data-view="bundle">Trust Bundle</button>
         <button data-view="dns">DNS Records</button>
         <button data-view="secrets">Secrets</button>
@@ -903,6 +904,35 @@
             <tbody id="lintRows"></tbody>
           </table>
         </div>
+      </section>
+
+      <!-- Certificate chain validation (Task 123) -->
+      <section class="view" id="view-validate">
+        <h2>Certificate chain validation</h2>
+        <p class="sub">Build and validate a supplied leaf (and optional intermediates) against a CA's configured trust anchors. Reports whether a chain was built, the validity window, live per-certificate revocation status (CRL + OCSP, including reversible on-hold), name-constraint and certificate-policy conformance, and weak key/signature flags — the counterpart of <code>secsy-ca validate-cert</code> and <code>POST /api/validate</code>. Nothing is signed.</p>
+        <div class="toolbar">
+          <div class="field" style="margin:0">
+            <label for="validateCA">Trust-anchor CA</label>
+            <select id="validateCA"></select>
+          </div>
+          <label class="muted" style="display:flex;gap:6px;align-items:center;margin-top:16px" title="Skip the live CRL/OCSP revocation lookups">
+            <input type="checkbox" id="validateSkipRev"> skip revocation
+          </label>
+          <div class="spacer"></div>
+          <button class="btn sm" id="validateBtn" style="margin-top:16px">Validate</button>
+        </div>
+        <div id="validateError" class="notice err hidden" style="margin-bottom:12px"></div>
+        <div class="row">
+          <div class="field" style="flex:1;min-width:280px">
+            <label for="validateCert">Certificate to validate (PEM; a bundle's first certificate is the leaf)</label>
+            <textarea id="validateCert" placeholder="-----BEGIN CERTIFICATE-----" style="min-height:170px"></textarea>
+          </div>
+          <div class="field" style="flex:1;min-width:280px">
+            <label for="validateInter">Additional intermediates (PEM, optional)</label>
+            <textarea id="validateInter" placeholder="-----BEGIN CERTIFICATE-----" style="min-height:170px"></textarea>
+          </div>
+        </div>
+        <div id="validateResult"></div>
       </section>
 
       <!-- Trust bundle / chain -->

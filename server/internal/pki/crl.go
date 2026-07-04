@@ -286,6 +286,35 @@ var revocationReasonNames = map[string]int{
 	"aacompromise":         RevocationReasonAACompromise,
 }
 
+// RevocationReasonName renders an RFC 5280 reason code as its canonical name —
+// the inverse of ParseRevocationReason. Unknown codes render as "reason(N)".
+func RevocationReasonName(code int) string {
+	switch code {
+	case RevocationReasonUnspecified:
+		return "unspecified"
+	case RevocationReasonKeyCompromise:
+		return "keyCompromise"
+	case RevocationReasonCACompromise:
+		return "cACompromise"
+	case RevocationReasonAffiliationChanged:
+		return "affiliationChanged"
+	case RevocationReasonSuperseded:
+		return "superseded"
+	case RevocationReasonCessationOfOperation:
+		return "cessationOfOperation"
+	case RevocationReasonCertificateHold:
+		return "certificateHold"
+	case RevocationReasonRemoveFromCRL:
+		return "removeFromCRL"
+	case RevocationReasonPrivilegeWithdrawn:
+		return "privilegeWithdrawn"
+	case RevocationReasonAACompromise:
+		return "aACompromise"
+	default:
+		return fmt.Sprintf("reason(%d)", code)
+	}
+}
+
 // ParseRevocationReason maps a reason name (case-insensitive, e.g.
 // "keyCompromise") to its RFC 5280 numeric code. An empty string maps to
 // "unspecified". Unknown names are rejected.

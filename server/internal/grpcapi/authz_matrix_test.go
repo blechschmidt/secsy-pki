@@ -158,6 +158,10 @@ func grpcAuthzMatrix() []grpcCase {
 			_, err := s.GetOCSPMetadata(ctx, &pkiv1.GetOCSPMetadataRequest{CaId: "ca-a"})
 			return err
 		}),
+		readCase("ValidateChain", func(ctx context.Context, s *service) error {
+			_, err := s.ValidateChain(ctx, &pkiv1.ValidateChainRequest{CaId: "ca-a", LeafPem: "bad"})
+			return err
+		}),
 	}
 }
 

@@ -2450,6 +2450,37 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/validate:
+    post:
+      operationId: validateChain
+      tags: [Audit]
+      summary: Validate a certificate chain against a CA's trust anchors
+      description: >-
+        Builds and validates a supplied leaf (and optional intermediates), PEM or
+        DER, against a named CA's configured trust anchors and returns a
+        structured verdict: whether a path was built (with the resolved chain),
+        the validity window, per-certificate live revocation status (CRL + OCSP
+        store, including the reversible on-hold state), name-constraint and
+        certificate-policy conformance, weak-key/weak-signature flags, and an
+        overall pass/fail with human-readable reasons — the REST counterpart of
+        `secsy-ca validate-cert`. A pure read: no HSM is touched, nothing is
+        signed, and no audit event is recorded. Read-gated and tenant-scoped on
+        the referenced CA.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ValidateChainRequest" }
+      responses:
+        "200":
+          description: The structured chain-validation verdict.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChainValidationReport" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/inventory/keys:
     get:
       operationId: listProviderKeys
@@ -3589,6 +3620,122 @@ components:
         findings:
           type: array
           items: { $ref: "#/components/schemas/LintFinding" }
+
+    ValidateChainRequest:
+      type: object
+      required: [ca, certificate]
+      properties:
+        ca:
+          type: string
+          description: >-
+            The id or label of the CA whose configured trust anchors the path is
+            validated against. Also scopes the request to that CA's tenant.
+        certificate:
+          type: string
+          description: >-
+            The leaf certificate to validate, PEM-encoded. A PEM bundle whose
+            first certificate is the leaf and remainder are intermediates is
+            accepted.
+        intermediates:
+          type: array
+          items: { type: string }
+          description: >-
+            Additional intermediate CA certificates (PEM), each a single
+            certificate or a bundle, used to bridge the path.
+        skip_revocation:
+          type: boolean
+          description: Disable the live per-certificate revocation (CRL/OCSP) lookups.
+
+    ValidationRevocation:
+      type: object
+      description: One certificate's live revocation status.
+      properties:
+        state:
+          type: string
+          enum: [good, revoked, held, unknown]
+          description: >-
+            good, revoked, held (reversible RFC 5280 certificateHold), or unknown
+            (no record for the serial under the resolved issuer).
+        revoked_at: { type: string, format: date-time }
+        reason: { type: integer, description: RFC 5280 CRL reason code. }
+        reason_text: { type: string }
+        source: { type: string }
+
+    ValidatedCertificate:
+      type: object
+      description: The analyzed view of one certificate in the resolved path.
+      properties:
+        position: { type: integer, description: "0 = leaf; increases toward the anchor." }
+        subject: { type: string }
+        issuer: { type: string }
+        serial_number: { type: string }
+        not_before: { type: string, format: date-time }
+        not_after: { type: string, format: date-time }
+        is_ca: { type: boolean }
+        is_trust_anchor: { type: boolean }
+        self_signed: { type: boolean }
+        key_algorithm: { type: string }
+        key_size: { type: integer }
+        signature_algorithm: { type: string }
+        fingerprint: { type: string, description: "SHA-256 of the DER (sha256:<hex>)." }
+        subject_key_id: { type: string }
+        authority_key_id: { type: string }
+        key_usage: { type: array, items: { type: string } }
+        ext_key_usage: { type: array, items: { type: string } }
+        policies: { type: array, items: { type: string } }
+        expired: { type: boolean }
+        not_yet_valid: { type: boolean }
+        weak_key: { type: boolean }
+        weak_signature: { type: boolean }
+        weak_key_reasons: { type: array, items: { type: string } }
+        revocation: { $ref: "#/components/schemas/ValidationRevocation" }
+
+    ValidationCheck:
+      type: object
+      description: One validation dimension's verdict.
+      properties:
+        name:
+          type: string
+          description: >-
+            chain, validity, revocation, name_constraints, certificate_policy,
+            key_usage, weak_key, or weak_signature.
+        status: { type: string, enum: [pass, fail, warn, skipped] }
+        detail: { type: string }
+        findings: { type: array, items: { type: string } }
+
+    ChainValidationReport:
+      type: object
+      description: The structured certificate chain-validation verdict.
+      properties:
+        ca_id: { type: string }
+        ca_label: { type: string }
+        trust_anchor: { type: string }
+        chain_built:
+          type: boolean
+          description: Whether a path to a configured trust anchor was found.
+        valid:
+          type: boolean
+          description: The overall verdict; true only when no dimension failed.
+        decision:
+          type: string
+          enum: [valid, invalid]
+          description: The overall verdict as a single word.
+        evaluated_at: { type: string, format: date-time }
+        valid_from: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time }
+        chain:
+          type: array
+          items: { $ref: "#/components/schemas/ValidatedCertificate" }
+        checks:
+          type: array
+          items: { $ref: "#/components/schemas/ValidationCheck" }
+        reasons:
+          type: array
+          items: { type: string }
+          description: Human-readable reasons the chain is not valid; empty when valid.
+        warnings:
+          type: array
+          items: { type: string }
 
     ProviderKeyEntry:
       type: object
