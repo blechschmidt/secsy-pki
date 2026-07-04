@@ -45,15 +45,19 @@ type Validator struct {
 // maxHTTP01Body bounds how many bytes we read from the challenge resource.
 const maxHTTP01Body = 4096
 
-// newValidator builds a Validator with sane production defaults.
-func newValidator(httpPort, tlsALPNPort int) *Validator {
+// newValidator builds a Validator with sane production defaults. dnsResolver,
+// when non-empty, is a host:port DNS server address that pins ALL challenge
+// validation to a single DNS view: dns-01 TXT lookups, the http-01 fetch's
+// A/AAAA resolution, and the tls-alpn-01 dial's A/AAAA resolution. The default
+// (empty) leaves each to the system resolver, preserving prior behavior.
+func newValidator(httpPort, tlsALPNPort int, dnsResolver string) *Validator {
 	if httpPort == 0 {
 		httpPort = 80
 	}
 	if tlsALPNPort == 0 {
 		tlsALPNPort = 443
 	}
-	return &Validator{
+	v := &Validator{
 		HTTPClient: &http.Client{
 			Timeout: 15 * time.Second,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -66,6 +70,56 @@ func newValidator(httpPort, tlsALPNPort int) *Validator {
 		Resolver:    net.DefaultResolver,
 		HTTPPort:    httpPort,
 		TLSALPNPort: tlsALPNPort,
+	}
+	// When a resolver is pinned, use it for the dns-01 TXT lookup and route the
+	// http-01 and tls-alpn-01 dials through it so a name resolves the same way for
+	// every challenge type. Used by the interop test harness (which serves the
+	// challenge targets and TXT records from one local DNS server) and by
+	// split-horizon deployments that must validate against a specific view.
+	if addr := strings.TrimSpace(dnsResolver); addr != "" {
+		res := pinnedResolver(addr)
+		v.Resolver = res
+		dial := resolvingDialContext(res)
+		v.HTTPClient.Transport = &http.Transport{
+			DialContext:         dial,
+			TLSHandshakeTimeout: 10 * time.Second,
+		}
+		v.TLSDialContext = dial
+	}
+	return v
+}
+
+// pinnedResolver returns a Go resolver that sends every query to the DNS server
+// at addr (host:port).
+func pinnedResolver(addr string) *net.Resolver {
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 10 * time.Second}
+			return d.DialContext(ctx, network, addr)
+		},
+	}
+}
+
+// resolvingDialContext returns a DialContext that resolves the target host with
+// res before connecting, so http-01 fetches and tls-alpn-01 handshakes use the
+// pinned DNS view. An address that is already an IP (as for RFC 8738 ip-type
+// identifiers) is dialed directly.
+func resolvingDialContext(res *net.Resolver) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	d := &net.Dialer{Timeout: 10 * time.Second}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil || net.ParseIP(host) != nil {
+			return d.DialContext(ctx, network, addr)
+		}
+		ips, err := res.LookupHost(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("no addresses for %s", host)
+		}
+		return d.DialContext(ctx, network, net.JoinHostPort(ips[0], port))
 	}
 }
 

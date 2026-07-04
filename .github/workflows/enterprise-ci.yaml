@@ -404,3 +404,56 @@ jobs:
         env:
           SOFTHSM_REINIT: "1"
         run: ./scripts/chaos-test.sh -v
+
+  interop-conformance:
+    name: External-client interop / conformance suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    # Non-required (advisory) gate, modeled on the chaos job. It stands up a live
+    # SoftHSM-backed server and drives it with real third-party clients — acme.sh
+    # (http-01 / tls-alpn-01 / dns-01 / EAB / ARI / IP identifiers), openssl cmp,
+    # a curl+openssl EST client, openssl ocsp, openssl crl (base + delta), and
+    # openssl ts — to catch protocol regressions that our own Go test client can
+    # miss. It depends on external tooling (a pinned acme.sh checkout from GitHub,
+    # socat, the host openssl's cmp/ts support), so a red run is a signal to
+    # investigate rather than a merge blocker: continue-on-error keeps it advisory
+    # until it has proven stable on the runners. It uses SQLite (no Postgres
+    # service needed) and only non-privileged ports.
+    continue-on-error: true
+
+    env:
+      SOFTHSM2_CONF: /tmp/softhsm2.conf
+      SOFTHSM_TOKEN_DIR: /tmp/softhsm/tokens
+      GOTOOLCHAIN: auto
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      # softhsm2 + opensc for the token; socat is required by acme.sh's
+      # standalone/alpn challenge responders; openssl (with cmp/ts) and curl are
+      # preinstalled on the runner.
+      - name: Install SoftHSM, OpenSC and socat
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends softhsm2 opensc socat
+
+      - name: Download Go modules
+        working-directory: server
+        run: go mod download
+
+      # Drives the same one-command script developers run locally. It provisions
+      # a fresh token, builds the server + CLI + interop helpers, brings up a live
+      # server, runs every external client, records the tool versions used, and
+      # exits non-zero on any conformance failure (advisory via continue-on-error).
+      - name: Run external-client interop / conformance suite
+        env:
+          SOFTHSM_REINIT: "1"
+        run: ./scripts/interop-test.sh

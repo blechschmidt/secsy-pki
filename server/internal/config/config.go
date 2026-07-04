@@ -1244,6 +1244,11 @@ type ACMEConfig struct {
 	// TLSALPN01Port overrides the tls-alpn-01 validation port (default 443; tests
 	// only).
 	TLSALPN01Port int `yaml:"tls_alpn01_port"`
+	// DNSResolver pins all challenge validation (dns-01 TXT lookups plus the
+	// http-01 / tls-alpn-01 name resolution) to a host:port DNS server instead of
+	// the system resolver. Used by the interop test harness and split-horizon
+	// deployments; empty (the default) uses the system resolver.
+	DNSResolver string `yaml:"dns_resolver"`
 	// ChallengeTypes limits the offered challenge types (default http-01, dns-01,
 	// tls-alpn-01).
 	ChallengeTypes []string `yaml:"challenge_types"`
@@ -3181,6 +3186,9 @@ func applyEnvOverrides(cfg *Config) {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.ACME.TLSALPN01Port = n
 		}
+	}
+	if v := os.Getenv("SECSY_ACME_DNS_RESOLVER"); v != "" {
+		cfg.ACME.DNSResolver = v
 	}
 	// Monitor overrides — let the SoftHSM integration harness enable the
 	// expiry monitor and auto-renewal without editing YAML.

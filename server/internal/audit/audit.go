@@ -310,6 +310,7 @@ const (
 	ActionCMPCertification  = "cmp.cr"
 	ActionCMPKeyUpdate      = "cmp.kur"
 	ActionCMPRevocation     = "cmp.rr"
+	ActionCMPCertConfirm    = "cmp.certconf"
 
 	// Operator authentication (Task 50). These record how a console/API principal
 	// authenticated and any subsequent step-up. The actor is the resolved

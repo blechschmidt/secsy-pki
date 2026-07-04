@@ -21,15 +21,17 @@ import (
 // PKIMessage body tag numbers (RFC 4210 §5.1.2). Only the flows this endpoint
 // implements are enumerated.
 const (
-	bodyIR    = 0  // initialization request
-	bodyIP    = 1  // initialization response
-	bodyCR    = 2  // certification request
-	bodyCP    = 3  // certification response
-	bodyKUR   = 7  // key update request
-	bodyKUP   = 8  // key update response
-	bodyRR    = 11 // revocation request
-	bodyRP    = 12 // revocation response
-	bodyError = 23 // error message
+	bodyIR       = 0  // initialization request
+	bodyIP       = 1  // initialization response
+	bodyCR       = 2  // certification request
+	bodyCP       = 3  // certification response
+	bodyKUR      = 7  // key update request
+	bodyKUP      = 8  // key update response
+	bodyRR       = 11 // revocation request
+	bodyRP       = 12 // revocation response
+	bodyPKIConf  = 19 // PKI confirmation (server ack of a client certConf)
+	bodyError    = 23 // error message
+	bodyCertConf = 24 // certificate confirmation (client ack of an issued cert)
 )
 
 // PKIStatus values (RFC 4210 §5.2.3).

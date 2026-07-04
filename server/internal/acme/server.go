@@ -59,6 +59,12 @@ type Config struct {
 	// TLSALPN01Port overrides the port used for tls-alpn-01 validation
 	// (default 443). Intended for tests, which cannot bind port 443.
 	TLSALPN01Port int
+	// DNSResolver, when set (host:port), pins ALL challenge validation — dns-01
+	// TXT lookups plus the http-01 / tls-alpn-01 name resolution — to that DNS
+	// server instead of the system resolver. Intended for the interop test
+	// harness (which serves the challenge targets and TXT records from one local
+	// DNS server) and for split-horizon deployments validating a specific view.
+	DNSResolver string
 	// ChallengeTypes lists the challenge types offered per authorization
 	// (default: http-01, dns-01, and tls-alpn-01).
 	ChallengeTypes []string
@@ -214,7 +220,7 @@ func New(db *database.DB, provider keyprovider.Provider, cfg Config) *Server {
 		caMgr:     ca.NewManager(db, provider),
 		cfg:       cfg,
 		nonces:    newNonceStore(db, resolveNonceSecret(db, cfg.NonceSecret), time.Now),
-		validator: newValidator(cfg.HTTP01Port, cfg.TLSALPN01Port),
+		validator: newValidator(cfg.HTTP01Port, cfg.TLSALPN01Port, cfg.DNSResolver),
 		now:       time.Now,
 	}
 }

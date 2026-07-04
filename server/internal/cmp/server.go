@@ -136,9 +136,76 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		s.handleKeyUpdate(w, r, msg)
 	case bodyRR:
 		s.handleRevocation(w, r, msg)
+	case bodyCertConf:
+		s.handleCertConfirm(w, r, msg)
 	default:
 		s.writeError(w, r, msg, nil, failBadRequest, fmt.Sprintf("unsupported PKIBody type %d", msg.bodyTag), "", audit.ActionCMPInitialization)
 	}
+}
+
+// handleCertConfirm services the certConf (PKIBody type 24) message a
+// standards-compliant client (e.g. OpenSSL `openssl cmp`, libcmp) sends after an
+// ir/cr/kur response to acknowledge the freshly issued certificate, and replies
+// with pkiConf (PKIConfirmContent ::= NULL). RFC 9483 §4.1.1 requires the server
+// to complete this exchange unless it granted implicit confirmation. The reply
+// mirrors the certConf's own protection so the client can verify it: a
+// shared-secret (PBM) certConf — following a MAC-authenticated ir/cr — is
+// answered with the same secret, and a signature-protected certConf — following
+// a kur — is answered with the CA's HSM signature. The certificate is already
+// issued at this point, so a confirmation failure does not un-issue it; it only
+// signals the client that the round-trip did not complete.
+func (s *Server) handleCertConfirm(w http.ResponseWriter, r *http.Request, msg *message) {
+	const action = audit.ActionCMPCertConfirm
+	// pkiConf carries PKIConfirmContent ::= NULL as the body.
+	nullBody := []byte{0x05, 0x00}
+
+	// Shared-secret (PBM) path: the reference value identifies the secret, exactly
+	// as for the ir/cr that preceded this confirmation.
+	if secret, ok := s.secrets[string(msg.header.SenderKID)]; ok {
+		if err := verifyPBM([]byte(secret.Secret), msg); err != nil {
+			s.recordEvent(r, actorForKID(msg.header.SenderKID), action, "", audit.ResultDenied, "MAC verification failed")
+			s.writeError(w, r, msg, nil, failBadMessageCheck, "message protection verification failed", "", action)
+			return
+		}
+		params, err := defaultPBM()
+		if err != nil {
+			s.writeError(w, r, msg, nil, failSystemFailure, "internal error", "", action)
+			return
+		}
+		prot := pbmProtector{secret: []byte(secret.Secret), params: params}
+		if err := s.respond(w, msg, bodyPKIConf, nullBody, msg.header.SenderKID, prot); err != nil {
+			log.Printf("cmp: writing pkiConf response: %v", err)
+			return
+		}
+		s.recordEvent(r, actorForKID(msg.header.SenderKID), action, "", audit.ResultSuccess, "")
+		return
+	}
+
+	// Signature-protected path: a certConf following a kur is protected by the
+	// same certificate this CA previously issued. Verify it and answer with the
+	// CA's signature.
+	if s.cfg.signatureProtectionEnabled() && len(msg.extraCerts) > 0 {
+		signerCert := msg.extraCerts[0]
+		if err := s.validateSignerCert(signerCert); err == nil {
+			if err := verifySignatureProtection(signerCert, msg); err == nil {
+				prot, chain, err := s.caSigProtector(r.Context())
+				if err != nil {
+					s.writeError(w, r, msg, nil, failSystemFailure, "internal error", "", action)
+					return
+				}
+				prot.chain = chain
+				if err := s.respond(w, msg, bodyPKIConf, nullBody, nil, prot); err != nil {
+					log.Printf("cmp: writing pkiConf response: %v", err)
+					return
+				}
+				s.recordEvent(r, actorForCert(signerCert), action, "", audit.ResultSuccess, "")
+				return
+			}
+		}
+	}
+
+	s.recordEvent(r, actorForKID(msg.header.SenderKID), action, "", audit.ResultDenied, "unauthenticated certConf")
+	s.writeError(w, r, msg, nil, failBadMessageCheck, "message protection verification failed", "", action)
 }
 
 // handleCertRequest services ir and cr: MAC-authenticated issuance from a

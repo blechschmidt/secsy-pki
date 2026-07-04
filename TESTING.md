@@ -187,6 +187,28 @@ go test ./internal/pki/ ./internal/ca/ ./internal/acme/ ./internal/secret/
 See [Fuzz & property testing](docs/fuzzing.md) for the full target inventory and
 the workflow for handling a discovered crash.
 
+External-client interop / conformance suite (stands up a live SoftHSM-backed
+server and drives it with real third-party clients — acme.sh, `openssl cmp`, a
+curl+openssl EST client, `openssl ocsp`, `openssl crl`, and `openssl ts` — to
+catch protocol regressions that our own Go test client can miss):
+
+```bash
+./scripts/interop-test.sh            # run the whole suite (self-contained)
+KEEP=1 ./scripts/interop-test.sh     # keep the work dir + client logs to inspect
+```
+
+It provisions everything it needs into a temporary directory (a root + issuing CA
+on the token, a TSA key, a self-signed TLS cert, an EAB credential, a throwaway
+config) and tears it down on exit; nothing is installed system-wide and no
+privileged ports or `/etc/hosts` edits are required. ACME challenge validation is
+made hermetic by a bundled authoritative DNS server (`internal/interop/dnsd`) the
+server is pointed at via `acme.dns_resolver`. It needs `socat` (for acme.sh's
+standalone/alpn responders), an `openssl` with `cmp`/`ts` support, and network
+access to fetch a pinned `acme.sh`. Coverage: ACME http-01 / tls-alpn-01 / dns-01
+/ EAB / ARI / IP identifiers, EST, CMP, OCSP good→revoked, base+delta CRLs, and
+the RFC 3161 TSA. The suite records the client tool versions it used and exits
+non-zero on any conformance failure.
+
 ## CI
 
 The GitHub Actions workflow (`.github/workflows/test.yaml`) installs
@@ -198,6 +220,13 @@ The enterprise workflow (`.github/workflows/enterprise-ci.yaml`) additionally
 runs a `fuzz-smoke` job: it replays the fuzz seed corpora as unit tests and then
 runs each fuzz target for a bounded `FUZZTIME`. It needs no SoftHSM (all targets
 run in software). See [Fuzz & property testing](docs/fuzzing.md).
+
+The same enterprise workflow runs an advisory (`continue-on-error`, not required
+for merge) `interop-conformance` job — modeled on the chaos job — that installs
+`softhsm2`, `opensc`, and `socat` and runs `scripts/interop-test.sh` against a
+live server. It is advisory because it depends on external tooling (a pinned
+`acme.sh` checkout from GitHub, `socat`, the host `openssl`'s cmp/ts support), so
+a red run is a signal to investigate rather than a merge blocker.
 
 ## Troubleshooting
 

@@ -422,6 +422,12 @@ acme:
   # Challenge types offered per authorization (default: all three).
   # http-01 (port 80), tls-alpn-01 (port 443, RFC 8737), dns-01 (wildcards require dns-01).
   challenge_types: ["http-01", "dns-01", "tls-alpn-01"]
+  # dns_resolver pins ALL challenge validation (dns-01 TXT lookups plus the
+  # http-01 / tls-alpn-01 name resolution) to a specific host:port DNS server
+  # instead of the system resolver. Empty (the default) uses the system resolver.
+  # Useful for split-horizon deployments that must validate against a specific
+  # DNS view; also used by scripts/interop-test.sh to make validation hermetic.
+  # dns_resolver: "10.0.0.53:53"
   # require_eab: true                     # restrict who may register (RBAC-like)
   # eab_hmac_keys:
   #   team-web: "base64url-or-base64-hmac-key"
