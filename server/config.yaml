@@ -41,6 +41,27 @@ server:
     # PKCS#11 session-pool lock contention / goroutines blocked on an HSM session.
     mutex_profile_fraction: 0     # 1 = sample every mutex contention event
     block_profile_rate: 0         # nanoseconds; a block >= this is sampled
+  # Serving-TLS options beyond the static tls_cert/tls_key pair above.
+  tls:
+    # Self-managed serving certificate (Task 118): dogfood the HTTPS listener
+    # certificate from an internal CA instead of loading a static cert/key from
+    # disk. The private key is generated in and used through the configured key
+    # provider (HSM/software) — it never touches disk — and a background loop
+    # auto-rotates the certificate before expiry, swapping it hitlessly. When
+    # enabled this supersedes tls_cert/tls_key. OFF by default.
+    self_issue:
+      enabled: false
+      ca_id: ""                    # internal CA that issues the serving cert (required)
+      profile: "server"            # serverAuth TLS-leaf profile (default: server)
+      common_name: ""              # default: first dnsname, then a stable fallback
+      dnsnames: ["localhost"]      # subject alternative names
+      ips: []                      # e.g. ["127.0.0.1"]
+      key_label: ""                # provider key label (default: serving-tls-<ca_id>)
+      key_type: "ecdsa-sha2-nistp256"
+      # Re-issue this long before NotAfter. Empty falls back to a third of the
+      # certificate's lifetime remaining (fraction-based, like the monitor).
+      renew_before: "720h"         # 30 days
+      validity_seconds: 0          # 0 = profile default (serverAuth: 397 days)
 
 database:
   # driver: "sqlite" is the embedded, single-node "file" store (default).

@@ -595,6 +595,26 @@ var (
 		"Duration of individual issuance-canary probe stages in seconds, by stage.",
 		DefBuckets, "stage")
 
+	// Self-managed serving-TLS certificate (Task 118). When server.tls.self_issue
+	// is enabled the server dogfoods its own HTTPS listener certificate from an
+	// internal CA — the private key stays in the configured key provider — and a
+	// background loop auto-rotates it before expiry, swapping it hitlessly through
+	// the tls.Config.GetCertificate hook.
+	//
+	// ServingCertExpiry is the NotAfter of the certificate currently served, as a
+	// Unix timestamp. It is the primary alert signal: `expiry - now` dropping below
+	// a threshold means rotation has stalled (the loop is wedged or issuance is
+	// failing) since a healthy loop keeps re-issuing a long-dated certificate.
+	// ServingCertRotations counts (re)issues by result so a run of errors is
+	// visible even while the last good certificate keeps being served.
+	ServingCertExpiry = NewGauge(Default,
+		"secsy_serving_cert_expiry_timestamp_seconds",
+		"NotAfter of the self-issued serving-TLS certificate currently served, as a Unix timestamp (seconds). Absent until the first successful self-issue.")
+	ServingCertRotations = NewCounter(Default,
+		"secsy_serving_cert_rotations_total",
+		"Self-issued serving-TLS certificate (re)issues, partitioned by result (success|error).",
+		"result")
+
 	// Audit-log SIEM export. Each series is partitioned by the sink name so an
 	// operator can tell which downstream (syslog/CEF/webhook) is falling behind.
 	//

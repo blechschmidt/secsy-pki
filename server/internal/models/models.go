@@ -430,6 +430,13 @@ const (
 // inventory/compliance reports exclude them by default.
 const CertMarkerCanary = "canary"
 
+// CertMarkerServingTLS marks the self-managed serving-TLS certificate the server
+// issues from an internal CA for its own HTTPS listener (Task 118). Like the
+// canary marker it flags an operational artifact rather than a user-facing
+// credential, so inventory/compliance reports exclude it; the doctor
+// serving-cert freshness check locates the newest such record by this marker.
+const CertMarkerServingTLS = "serving-tls"
+
 // IssuedCertificate records an end-entity certificate minted by a CA. It is the
 // authority's copy used for renewal, listing, and (via revocation) CRL/OCSP.
 type IssuedCertificate struct {

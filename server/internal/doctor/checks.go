@@ -1215,6 +1215,64 @@ func checkClockSkew(ctx context.Context, r *Report, db dbHandle, schemaOK bool, 
 	})
 }
 
+// --- 8f. self-issued serving certificate ------------------------------------
+
+// checkServingCert surfaces the freshness of the self-managed serving-TLS
+// certificate (Task 118) when server.tls.self_issue is enabled. The server
+// dogfoods its own HTTPS listener certificate from an internal CA and a
+// background loop rotates it before expiry. doctor runs out-of-process and
+// cannot read the loop's in-memory state, so it consults the offline source of
+// truth: the newest serving-tls-marked record in the store. A certificate
+// already inside its renew_before window (or expired) means rotation is not
+// keeping up — the process is not running, never issued one, or issuance is
+// failing.
+func checkServingCert(r *Report, cfg *config.Config, db dbHandle, schemaOK bool, opts Options) {
+	sc := cfg.Server.TLS.SelfIssue
+	if !sc.Enabled {
+		r.skip("serving.self_issued", "server.tls.self_issue disabled")
+		return
+	}
+	r.run("serving.self_issued", func() (Status, string) {
+		if db == nil || !schemaOK {
+			return StatusSkip, "store unavailable or schema incomplete"
+		}
+		cas, err := db.ListCAs()
+		if err != nil {
+			return StatusFail, fmt.Sprintf("listing CAs: %v", err)
+		}
+		var newest *models.IssuedCertificate
+		for i := range cas {
+			issued, err := db.ListIssuedCertificates(cas[i].ID)
+			if err != nil {
+				return StatusFail, fmt.Sprintf("listing issued certificates for CA %s: %v", cas[i].Label, err)
+			}
+			for j := range issued {
+				c := &issued[j]
+				if c.Marker != models.CertMarkerServingTLS {
+					continue
+				}
+				if newest == nil || c.NotAfter.After(newest.NotAfter) {
+					newest = c
+				}
+			}
+		}
+		if newest == nil {
+			return StatusWarn, "self_issue enabled but no serving-tls certificate on record yet (server not started, or it has not issued one?)"
+		}
+		now := time.Now()
+		st, msg := expiryStatus(newest.NotAfter, now, opts)
+		// A certificate already inside its renew_before window should have been
+		// rotated already; flag it even when it still has generic expiry headroom.
+		if renewBefore, derr := sc.RenewBeforeDuration(); derr == nil && renewBefore > 0 {
+			if remaining := newest.NotAfter.Sub(now); remaining > 0 && remaining <= renewBefore && st == StatusPass {
+				st = StatusWarn
+				msg = fmt.Sprintf("%s, inside the renew_before=%s window — is the rotation loop running?", msg, humanDuration(renewBefore))
+			}
+		}
+		return st, fmt.Sprintf("newest serving-tls cert (serial %s, CN=%q): %s", newest.Serial, newest.CommonName, msg)
+	})
+}
+
 // --- 9. listener TLS ---------------------------------------------------------------
 
 // checkListenerTLS validates the listener's TLS material statically
@@ -1225,6 +1283,13 @@ func checkClockSkew(ctx context.Context, r *Report, db dbHandle, schemaOK bool, 
 func checkListenerTLS(r *Report, cfg *config.Config, opts Options) {
 	r.run("listener.tls", func() (Status, string) {
 		if cfg.Server.TLSCert == "" || cfg.Server.TLSKey == "" {
+			// Self-issued serving certificate (Task 118): the server mints and
+			// rotates its own listener certificate, so there is no static cert/key
+			// pair on disk. serving.self_issued covers its store-side freshness;
+			// here we only attempt a live handshake to confirm TLS is served.
+			if cfg.Server.TLS.SelfIssue.Enabled {
+				return checkSelfIssuedListener(cfg, opts)
+			}
 			// Mirror the server's own opt-in switch (cmd/server insecureHTTPAllowed).
 			switch strings.ToLower(strings.TrimSpace(os.Getenv("SECSY_ALLOW_INSECURE_HTTP"))) {
 			case "1", "true", "yes":
@@ -1274,6 +1339,40 @@ func checkListenerTLS(r *Report, cfg *config.Config, opts Options) {
 		}
 		return worse(status, StatusWarn), detail + fmt.Sprintf("; live handshake OK on %s but the server presents a DIFFERENT certificate (restart pending after cert rotation?)", addr)
 	})
+}
+
+// checkSelfIssuedListener probes the listener when the self-issued serving
+// certificate is in use (no static cert/key pair to compare against). It reports
+// the served leaf's expiry from a live handshake; an unreachable listener is not
+// a finding, since doctor commonly runs before the server is up.
+func checkSelfIssuedListener(cfg *config.Config, opts Options) (Status, string) {
+	if opts.SkipListener {
+		return StatusPass, "self-issued serving certificate (no static key pair on disk); live probe skipped"
+	}
+	host := cfg.Server.Host
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", cfg.Server.Port))
+	conn, err := net.DialTimeout("tcp", addr, opts.DialTimeout)
+	if err != nil {
+		return StatusPass, fmt.Sprintf("self-issued serving certificate; listener %s not reachable (server not running?)", addr)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(opts.DialTimeout))
+
+	tlsConn := tls.Client(conn, &tls.Config{InsecureSkipVerify: true}) // #nosec G402 -- reads served-cert freshness, does not authenticate
+	if err := tlsConn.Handshake(); err != nil {
+		return StatusWarn, fmt.Sprintf("self-issued serving certificate; %s reachable but TLS handshake failed: %v", addr, err)
+	}
+	served := tlsConn.ConnectionState().PeerCertificates
+	if len(served) == 0 {
+		return StatusWarn, fmt.Sprintf("self-issued serving certificate; %s served no certificate", addr)
+	}
+	leaf := served[0]
+	status, msg := expiryStatus(leaf.NotAfter, time.Now(), opts)
+	return status, fmt.Sprintf("self-issued serving certificate (CN=%q): live handshake OK on %s (%s); %s",
+		leaf.Subject.CommonName, addr, tls.VersionName(tlsConn.ConnectionState().Version), msg)
 }
 
 // --- 10. FIPS 140-3 posture ---------------------------------------------------

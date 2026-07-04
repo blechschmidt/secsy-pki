@@ -2063,6 +2063,172 @@ type ServerConfig struct {
 	// PProf configures the opt-in, access-controlled net/http/pprof profiling
 	// endpoints (Task 115). Disabled by default; never exposed unauthenticated.
 	PProf PProfConfig `yaml:"pprof"`
+	// TLS holds serving-TLS options beyond the static tls_cert/tls_key pair —
+	// currently the opt-in self-issued (auto-rotating) serving certificate.
+	TLS ServerTLSConfig `yaml:"tls"`
+}
+
+// ServerTLSConfig groups serving-TLS options that go beyond the static
+// tls_cert/tls_key file pair.
+type ServerTLSConfig struct {
+	// SelfIssue configures a self-managed serving certificate issued from an
+	// internal CA (Task 118). When enabled it replaces the static tls_cert/tls_key
+	// file pair: the server issues its own HTTPS listener certificate via
+	// ca.Manager, keeps the private key in the configured key provider (HSM/
+	// software) rather than on disk, and auto-rotates it before expiry.
+	SelfIssue SelfIssueConfig `yaml:"self_issue"`
+}
+
+// SelfIssueConfig configures the self-managed serving certificate. It is opt-in
+// (Enabled) and, when on, supersedes server.tls_cert/tls_key for the HTTPS
+// listener. The private key never touches disk — it is generated in and used
+// through the configured key provider — and a background loop re-issues the
+// certificate before it expires, swapping it hitlessly.
+type SelfIssueConfig struct {
+	// Enabled turns the self-issued serving certificate on. Off by default, in
+	// which case the server uses the static tls_cert/tls_key pair (or fails closed
+	// when neither is configured).
+	Enabled bool `yaml:"enabled"`
+	// CAID is the internal CA (by id or label) that issues the serving
+	// certificate. Required when Enabled.
+	CAID string `yaml:"ca_id"`
+	// Profile is the certificate profile to issue under. Empty defaults to
+	// "server" (a serverAuth TLS leaf).
+	Profile string `yaml:"profile"`
+	// CommonName is the subject common name. Empty defaults to the first DNS name,
+	// then to "secsy serving certificate".
+	CommonName string `yaml:"common_name"`
+	// DNSNames / IPs are the subject alternative names the serving certificate
+	// asserts. At least one SAN (or a CommonName) is required when Enabled.
+	DNSNames []string `yaml:"dnsnames"`
+	IPs      []string `yaml:"ips"`
+	// KeyLabel is the provider key label under which the serving key is generated
+	// and reused across rotations. Empty defaults to "serving-tls-<ca_id>".
+	KeyLabel string `yaml:"key_label"`
+	// KeyType is the serving key algorithm (keyprovider key-type string or an
+	// alias such as "ecdsa"/"rsa"). Empty defaults to ecdsa P-256.
+	KeyType string `yaml:"key_type"`
+	// RenewBefore is a Go duration (e.g. "720h") before NotAfter at which the loop
+	// re-issues the certificate. Empty falls back to the fraction-based default: a
+	// third of the certificate's lifetime remaining (matching the monitor's
+	// fraction renewal for short-lived certificates).
+	RenewBefore string `yaml:"renew_before"`
+	// ValiditySeconds overrides the issued certificate's validity. 0 uses the
+	// profile default (a serverAuth profile defaults to the CA/Browser Forum
+	// 397-day maximum). Shorter validities pair with a shorter RenewBefore.
+	ValiditySeconds int `yaml:"validity_seconds"`
+}
+
+// ResolvedProfile returns the effective issuance profile, defaulting to
+// "server" (a serverAuth TLS leaf) when unset.
+func (c SelfIssueConfig) ResolvedProfile() string {
+	if p := strings.TrimSpace(c.Profile); p != "" {
+		return p
+	}
+	return "server"
+}
+
+// ResolvedCommonName returns the effective subject common name: the configured
+// value, else the first DNS name, else a stable fallback.
+func (c SelfIssueConfig) ResolvedCommonName() string {
+	if cn := strings.TrimSpace(c.CommonName); cn != "" {
+		return cn
+	}
+	for _, d := range c.DNSNames {
+		if d = strings.TrimSpace(d); d != "" {
+			return d
+		}
+	}
+	return "secsy serving certificate"
+}
+
+// ResolvedKeyLabel returns the provider key label the serving key is stored
+// under, defaulting to "serving-tls-<ca_id>" so it is stable and unique per CA.
+func (c SelfIssueConfig) ResolvedKeyLabel() string {
+	if l := strings.TrimSpace(c.KeyLabel); l != "" {
+		return l
+	}
+	return "serving-tls-" + strings.TrimSpace(c.CAID)
+}
+
+// RenewBeforeDuration parses the RenewBefore duration string. An empty value
+// returns (0, nil), signaling the caller to use the fraction-based default.
+func (c SelfIssueConfig) RenewBeforeDuration() (time.Duration, error) {
+	s := strings.TrimSpace(c.RenewBefore)
+	if s == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("server.tls.self_issue.renew_before %q is not a valid duration (e.g. \"720h\"): %w", c.RenewBefore, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("server.tls.self_issue.renew_before %q must not be negative", c.RenewBefore)
+	}
+	return d, nil
+}
+
+// ParsedIPs parses the configured IP SANs, rejecting any malformed entry.
+func (c SelfIssueConfig) ParsedIPs() ([]net.IP, error) {
+	if len(c.IPs) == 0 {
+		return nil, nil
+	}
+	out := make([]net.IP, 0, len(c.IPs))
+	for _, raw := range c.IPs {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		ip := net.ParseIP(raw)
+		if ip == nil {
+			return nil, fmt.Errorf("server.tls.self_issue.ips: %q is not a valid IP address", raw)
+		}
+		out = append(out, ip)
+	}
+	return out, nil
+}
+
+// Validity returns the issued-certificate validity override, or 0 for "use the
+// profile default".
+func (c SelfIssueConfig) Validity() time.Duration {
+	if c.ValiditySeconds <= 0 {
+		return 0
+	}
+	return time.Duration(c.ValiditySeconds) * time.Second
+}
+
+// Validate checks the self-issued serving-certificate configuration when it is
+// enabled: a CA must be named, the certificate must have at least one identity
+// (a common name or a SAN), and the duration/IP/key-type fields must parse. It
+// is a no-op when disabled so the block imposes nothing on deployments that use
+// the static tls_cert/tls_key pair.
+func (c SelfIssueConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(c.CAID) == "" {
+		return fmt.Errorf("server.tls.self_issue.ca_id is required when self_issue is enabled")
+	}
+	hasSAN := false
+	for _, d := range c.DNSNames {
+		if strings.TrimSpace(d) != "" {
+			hasSAN = true
+			break
+		}
+	}
+	if !hasSAN && len(c.IPs) > 0 {
+		hasSAN = true
+	}
+	if !hasSAN && strings.TrimSpace(c.CommonName) == "" {
+		return fmt.Errorf("server.tls.self_issue requires at least one identity: set common_name, dnsnames, or ips")
+	}
+	if _, err := c.RenewBeforeDuration(); err != nil {
+		return err
+	}
+	if _, err := c.ParsedIPs(); err != nil {
+		return err
+	}
+	return nil
 }
 
 // PProfConfig configures the opt-in runtime-profiling endpoints (net/http/pprof:
@@ -2694,6 +2860,9 @@ func Load(path string) (*Config, error) {
 	}
 
 	if err := cfg.Server.PProf.Validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Server.TLS.SelfIssue.Validate(); err != nil {
 		return nil, err
 	}
 	// Mirror the validated policy switch into the process-global enforcement

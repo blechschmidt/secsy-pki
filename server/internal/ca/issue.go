@@ -183,6 +183,10 @@ type TemplateIssueSpec struct {
 	// (honored only when the profile permits per-request overrides). Nil uses the
 	// profile default.
 	MustStaple *bool
+	// Marker tags the stored record as synthetic (e.g. models.CertMarkerServingTLS
+	// for the self-managed serving-TLS certificate) so monitoring and reports can
+	// exclude it. It is internal plumbing; the REST/gRPC layers never set it.
+	Marker string
 }
 
 // IssueCertificateFromTemplate signs a subject/public-key template into an
@@ -221,6 +225,7 @@ func (m *Manager) IssueCertificateFromTemplate(ctx context.Context, spec Templat
 		IPAddresses:    spec.IPAddresses,
 		EmailAddresses: spec.EmailAddresses,
 		URIs:           spec.URIs,
+		Marker:         spec.Marker,
 		mustStaple:     spec.MustStaple,
 	}, spec.Validity, spec.RequestedBy)
 }

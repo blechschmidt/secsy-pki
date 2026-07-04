@@ -223,7 +223,8 @@ func Run(ctx context.Context, opts Options) *Report {
 		for _, name := range []string{
 			"db.connectivity", "db.schema", "keyprovider.ca", "pin.source", "keys.ca",
 			"audit.chain_head", "certs.ca_expiry", "crl.freshness",
-			"canary.last_probe", "ct.inclusion", "webhook.dead_letters", "clock.skew", "listener.tls",
+			"canary.last_probe", "ct.inclusion", "webhook.dead_letters", "clock.skew",
+			"serving.self_issued", "listener.tls",
 			"fips.mode", "fips.store_keys", "fips.secret_oaep",
 		} {
 			r.skip(name, "config did not load")
@@ -282,6 +283,10 @@ func Run(ctx context.Context, opts Options) *Report {
 
 	// 8. Clock-skew sanity against the database host and the audit head.
 	checkClockSkew(ctx, r, db, schemaOK, opts)
+
+	// 8f. Self-managed serving-TLS certificate freshness (Task 118): the newest
+	// serving-tls-marked record, flagged when inside its renew_before window.
+	checkServingCert(r, cfg, db, schemaOK, opts)
 
 	// 9. Listener TLS: static certificate/key material plus, when reachable, a
 	// live handshake against the configured address.

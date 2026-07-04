@@ -55,6 +55,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 	"github.com/blechschmidt/secsy-pki/server/internal/scep"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
+	"github.com/blechschmidt/secsy-pki/server/internal/servingcert"
 	"github.com/blechschmidt/secsy-pki/server/internal/siem"
 	"github.com/blechschmidt/secsy-pki/server/internal/signing"
 	"github.com/blechschmidt/secsy-pki/server/internal/spiffe"
@@ -951,7 +952,9 @@ func main() {
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 
-	if cfg.Server.TLSCert != "" && cfg.Server.TLSKey != "" {
+	selfIssue := cfg.Server.TLS.SelfIssue.Enabled
+	haveDiskCert := cfg.Server.TLSCert != "" && cfg.Server.TLSKey != ""
+	if selfIssue || haveDiskCert {
 		tlsCfg := &tls.Config{
 			MinVersion: tls.VersionTLS12,
 		}
@@ -970,25 +973,50 @@ func main() {
 			tlsCfg.ClientAuth = tls.RequestClientCert
 			log.Printf("Mutual-TLS client-certificate authentication enabled")
 		}
-		// TLS OCSP stapling: when the operator names the CA that issued the
-		// server's own certificate, produce and periodically refresh an
-		// HSM-signed OCSP staple and serve it in the handshake so clients get
-		// revocation status without a separate responder round-trip.
-		if caID := cfg.Server.OCSP.StapleCAID; caID != "" {
-			sc, err := newStapledCertificate(cfg.Server.TLSCert, cfg.Server.TLSKey, caID, db, provider)
+
+		// certFile/keyFile stay empty in self-issue mode: the certificate is served
+		// entirely through tls.Config.GetCertificate, so ListenAndServeTLS needs no
+		// disk key pair.
+		var certFile, keyFile string
+		switch {
+		case selfIssue:
+			// Self-managed serving certificate (Task 118): the server issues its own
+			// HTTPS listener certificate from an internal CA via ca.Manager, keeps the
+			// private key in the configured key provider, and auto-rotates it before
+			// expiry — swapping it hitlessly through the same GetCertificate hook the
+			// OCSP-stapling path uses. It supersedes any static tls_cert/tls_key.
+			si, err := buildSelfIssuedServingCert(context.Background(), cfg, db, provider)
 			if err != nil {
-				log.Fatalf("configuring OCSP stapling: %v", err)
+				log.Fatalf("configuring self-issued serving certificate: %v", err)
 			}
-			tlsCfg.GetCertificate = sc.getCertificate
-			log.Printf("TLS OCSP stapling enabled for the server certificate (CA %s)", caID)
+			tlsCfg.GetCertificate = si.Holder().GetCertificate
+			go si.Run(context.Background())
+			sc := cfg.Server.TLS.SelfIssue
+			log.Printf("Self-issued serving certificate enabled (CA %s, profile %q); key kept in the %s provider, auto-rotating",
+				sc.CAID, sc.ResolvedProfile(), provider.Name())
+		case haveDiskCert:
+			certFile, keyFile = cfg.Server.TLSCert, cfg.Server.TLSKey
+			// TLS OCSP stapling: when the operator names the CA that issued the
+			// server's own certificate, produce and periodically refresh an
+			// HSM-signed OCSP staple and serve it in the handshake so clients get
+			// revocation status without a separate responder round-trip.
+			if caID := cfg.Server.OCSP.StapleCAID; caID != "" {
+				holder, err := newStapledCertificate(certFile, keyFile, caID, db, provider)
+				if err != nil {
+					log.Fatalf("configuring OCSP stapling: %v", err)
+				}
+				tlsCfg.GetCertificate = holder.GetCertificate
+				log.Printf("TLS OCSP stapling enabled for the server certificate (CA %s)", caID)
+			}
 		}
+
 		server := &http.Server{
 			Addr:      addr,
 			Handler:   handler,
 			TLSConfig: tlsCfg,
 		}
 		log.Printf("Starting HTTPS server on %s", addr)
-		if err := server.ListenAndServeTLS(cfg.Server.TLSCert, cfg.Server.TLSKey); err != nil {
+		if err := server.ListenAndServeTLS(certFile, keyFile); err != nil {
 			log.Fatalf("Server failed: %v", err)
 		}
 	} else {
@@ -2257,29 +2285,6 @@ func buildCTSubmitter(cfg config.CTConfig) (*ct.Submitter, error) {
 	return ct.NewSubmitter(logs, client)
 }
 
-// stapledCertificate holds the server's TLS certificate together with a
-// periodically refreshed OCSP staple. GetCertificate returns it for every TLS
-// handshake so clients receive the certificate_status (OCSP staple) without
-// contacting the responder themselves (RFC 6066).
-type stapledCertificate struct {
-	mu   sync.RWMutex
-	cert *tls.Certificate
-}
-
-func (s *stapledCertificate) getCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.cert, nil
-}
-
-func (s *stapledCertificate) setStaple(staple []byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	c := *s.cert
-	c.OCSPStaple = staple
-	s.cert = &c
-}
-
 // buildRoleProvider constructs the instrumented key provider for a signing role
 // ("ca" or "tsa"), selecting the backend from the per-role override or the global
 // key_provider.type. All backend sub-settings (PKCS#11 token, software keystore,
@@ -2389,8 +2394,10 @@ func vaultSettings(v config.VaultProviderConfig) keyprovider.VaultSettings {
 // newStapledCertificate loads the server's TLS key pair, produces an initial
 // OCSP staple signed under caID, and launches a background refresher. Stapling
 // is best-effort: a failure to obtain a staple is logged but does not prevent
-// the server from serving (the certificate is served without a staple).
-func newStapledCertificate(certFile, keyFile, caID string, db *database.DB, provider keyprovider.Provider) (*stapledCertificate, error) {
+// the server from serving (the certificate is served without a staple). It
+// returns the shared servingcert.Holder whose GetCertificate hook feeds the TLS
+// listener — the same hook the self-issued serving certificate rotates through.
+func newStapledCertificate(certFile, keyFile, caID string, db *database.DB, provider keyprovider.Provider) (*servingcert.Holder, error) {
 	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return nil, fmt.Errorf("loading TLS key pair: %w", err)
@@ -2400,7 +2407,7 @@ func newStapledCertificate(certFile, keyFile, caID string, db *database.DB, prov
 		return nil, fmt.Errorf("parsing TLS certificate: %w", err)
 	}
 	pair.Leaf = leaf
-	sc := &stapledCertificate{cert: &pair}
+	holder := servingcert.NewHolder(&pair)
 
 	refresh := func() time.Time {
 		mgr := ca.NewManager(db, provider)
@@ -2413,7 +2420,7 @@ func newStapledCertificate(certFile, keyFile, caID string, db *database.DB, prov
 			log.Printf("OCSP stapling: failed to refresh staple: %v", err)
 			return time.Now().Add(5 * time.Minute) // retry soon
 		}
-		sc.setStaple(staple)
+		holder.SetStaple(staple)
 		metrics.OCSPStaples.Inc(metrics.ResultSuccess)
 		// Re-staple at half the response validity to always serve a fresh staple.
 		if nextUpdate, ok := pki.OCSPResponseNextUpdate(staple); ok {
@@ -2433,5 +2440,36 @@ func newStapledCertificate(certFile, keyFile, caID string, db *database.DB, prov
 			next = refresh()
 		}
 	}()
-	return sc, nil
+	return holder, nil
+}
+
+// buildSelfIssuedServingCert wires the self-managed serving certificate (Task
+// 118) from config: it resolves the renew-before/IP/validity fields, constructs a
+// ca.Manager over the same key provider, and issues the initial certificate. It
+// returns (nil, nil) when self-issue is disabled so the caller falls back cleanly
+// to the static tls_cert/tls_key path.
+func buildSelfIssuedServingCert(ctx context.Context, cfg *config.Config, db *database.DB, provider keyprovider.Provider) (*servingcert.SelfIssuer, error) {
+	sc := cfg.Server.TLS.SelfIssue
+	if !sc.Enabled {
+		return nil, nil
+	}
+	renewBefore, err := sc.RenewBeforeDuration()
+	if err != nil {
+		return nil, err
+	}
+	ips, err := sc.ParsedIPs()
+	if err != nil {
+		return nil, err
+	}
+	return servingcert.New(ctx, ca.NewManager(db, provider), provider, servingcert.Config{
+		CAID:        sc.CAID,
+		Profile:     sc.ResolvedProfile(),
+		CommonName:  sc.ResolvedCommonName(),
+		DNSNames:    sc.DNSNames,
+		IPs:         ips,
+		KeyLabel:    sc.ResolvedKeyLabel(),
+		KeyType:     sc.KeyType,
+		RenewBefore: renewBefore,
+		Validity:    sc.Validity(),
+	}, log.Default())
 }
