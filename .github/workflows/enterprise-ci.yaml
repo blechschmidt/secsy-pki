@@ -405,6 +405,84 @@ jobs:
           SOFTHSM_REINIT: "1"
         run: ./scripts/chaos-test.sh -v
 
+  race-detector:
+    name: Data-race detector (-race)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Task 109. Non-required (advisory) gate, modeled on the chaos job. Runs the
+    # whole test suite under Go's -race detector via the same `make test-race`
+    # target developers use locally: the HSM-free packages in parallel, and the
+    # SoftHSM/PostgreSQL-backed packages (plus the end-to-end HTTP handlers)
+    # serialized with -p 1 so cross-package contention on the single token / shared
+    # database cannot flake the run. It stresses the system's concurrency hot spots
+    # against real dependencies — the bounded PKCS#11 session pool and HSM-HA
+    # failover health tracking, the rate-limit token buckets, leader-elected
+    # background jobs, the SSE audit-event fan-out, and the OCSP/CRL/metrics caches.
+    # A red run is a real data race to fix; continue-on-error keeps it advisory
+    # until it has proven stable on the runners, exactly like the chaos and interop
+    # jobs. The committed baseline is clean.
+    continue-on-error: true
+
+    env:
+      SOFTHSM2_CONF: /tmp/softhsm2.conf
+      SOFTHSM_TOKEN_DIR: /tmp/softhsm/tokens
+      GOTOOLCHAIN: auto
+      # Point the leader-election / store-integrity / connection-drop scenarios at
+      # the service Postgres so they run (rather than skip) under -race; the
+      # PG-backed packages are all in the -p 1 serial set, so this adds no
+      # cross-package database contention.
+      SECSY_TEST_PG_DSN: postgres://secsy:secsy@localhost:5432/secsy_pki?sslmode=disable
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: secsy
+          POSTGRES_PASSWORD: secsy
+          POSTGRES_DB: secsy_pki
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U secsy -d secsy_pki"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Install SoftHSM and OpenSC
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends softhsm2 opensc
+
+      - name: Download Go modules
+        working-directory: server
+        run: go mod download
+
+      - name: Provision SoftHSM token
+        env:
+          SOFTHSM_REINIT: "1"
+        run: ./scripts/setup-softhsm.sh
+
+      # Load the SECSY_* PKCS#11 env (module path, token label, PINs) so the
+      # SoftHSM-backed packages run rather than skip, then drive the same
+      # `make test-race` target developers use locally. `make` inherits the
+      # exported env, so its -p 1 serial recipe sees the token and the DSN. Any
+      # race the detector reports fails this step (advisory via continue-on-error).
+      - name: Run the suite under the -race detector
+        run: |
+          eval "$(./scripts/setup-softhsm.sh --export-env)"
+          make test-race
+
   interop-conformance:
     name: External-client interop / conformance suite
     runs-on: ubuntu-latest

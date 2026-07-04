@@ -62,12 +62,20 @@ func (c *Counter) child(values []string) *counterChild {
 
 func (c *Counter) write(b *strings.Builder) {
 	c.writeHeader(b)
+	// Snapshot the series map into a local copy under the lock. Reading c.series
+	// directly after unlocking would race a concurrent child() insertion (a new
+	// label set arriving mid-scrape) — an unsynchronized map read/write that the
+	// race detector flags and that the Go runtime turns into a "concurrent map
+	// read and map write" fatal panic under a real Prometheus scrape. The child
+	// structs carry their own synchronization (atomic value), so reading their
+	// values after the unlock is safe.
 	c.mu.Lock()
 	keys := make([]string, 0, len(c.series))
-	for k := range c.series {
+	children := make(map[string]*counterChild, len(c.series))
+	for k, ch := range c.series {
 		keys = append(keys, k)
+		children[k] = ch
 	}
-	children := c.series
 	c.mu.Unlock()
 	sort.Strings(keys)
 	if len(keys) == 0 {
@@ -155,12 +163,15 @@ func (g *Gauge) child(values []string) *gaugeChild {
 
 func (g *Gauge) write(b *strings.Builder) {
 	g.writeHeader(b)
+	// Snapshot under the lock; see Counter.write for why aliasing g.series and
+	// reading it after unlock is a data race against a concurrent child().
 	g.mu.Lock()
 	keys := make([]string, 0, len(g.series))
-	for k := range g.series {
+	children := make(map[string]*gaugeChild, len(g.series))
+	for k, ch := range g.series {
 		keys = append(keys, k)
+		children[k] = ch
 	}
-	children := g.series
 	g.mu.Unlock()
 	sort.Strings(keys)
 	if len(keys) == 0 {
@@ -300,12 +311,15 @@ func (h *Histogram) child(values []string) *histogramChild {
 
 func (h *Histogram) write(b *strings.Builder) {
 	h.writeHeader(b)
+	// Snapshot under the lock; see Counter.write for why aliasing h.series and
+	// reading it after unlock is a data race against a concurrent child().
 	h.mu.Lock()
 	keys := make([]string, 0, len(h.series))
-	for k := range h.series {
+	children := make(map[string]*histogramChild, len(h.series))
+	for k, ch := range h.series {
 		keys = append(keys, k)
+		children[k] = ch
 	}
-	children := h.series
 	h.mu.Unlock()
 	sort.Strings(keys)
 	for _, k := range keys {

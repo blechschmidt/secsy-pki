@@ -131,6 +131,51 @@ lint-fix: ## Run golangci-lint with --fix (gofmt/goimports + safe autofixes)
 	cd server && GOTOOLCHAIN=auto $(GOLANGCI_LINT) run --fix
 
 # ---------------------------------------------------------------------------
+# Data-race detector (Task 109)
+# ---------------------------------------------------------------------------
+# Runs the test suite under Go's -race detector — the standard tool for catching
+# unsynchronized concurrent memory access, which matters for a system this
+# concurrent: the bounded PKCS#11 session pool, HSM-HA failover health tracking,
+# rate-limit token buckets, leader-elected background jobs, the SSE audit-event
+# fan-out, and the OCSP/CRL/metrics caches. -race requires cgo, which is already
+# needed for the SQLite driver and the PKCS#11 module, so CGO_ENABLED=1 is set
+# explicitly in case the environment disabled it.
+#
+# Packages that exercise a *shared* external resource — the single SoftHSM token
+# or a shared PostgreSQL — are serialized with -p 1 so cross-package contention
+# on that one resource does not flake the run (a token/DB collision is not a Go
+# data race but would produce spurious failures). Everything else runs in
+# parallel. Those packages skip cleanly when no token/DSN is configured, so
+# `make test-race` is useful locally with neither; provision them to exercise
+# those code paths under the detector:
+#   eval "$$(scripts/setup-softhsm.sh --export-env)"   # SoftHSM token
+#   export SECSY_TEST_PG_DSN=postgres://user:pw@host/db # optional PostgreSQL
+RACE_TAGS ?= sqlite
+# Serialized (-p 1) set: SoftHSM-token-backed and shared-Postgres-backed
+# packages, plus the end-to-end HTTP handlers. Matched against the tail of the
+# full package import paths ($$ escapes to a literal regex end-anchor).
+RACE_SERIAL_MATCH := internal/(anchor|backup|ca|canary|chaos|cmp|config|database|doctor|e2e|handlers|keyprovider|leader|pkcs12|secret|signing|sshca|tsa)$$
+
+.PHONY: test-race
+test-race: test-race-unit test-race-serial ## Run the whole test suite under the -race detector
+
+.PHONY: test-race-unit
+test-race-unit: ## -race over the HSM-free packages (parallel)
+	@echo "==> go test -race (HSM-free packages, -tags $(RACE_TAGS))"
+	cd server && GOTOOLCHAIN=auto CGO_ENABLED=1 go test -race -tags '$(RACE_TAGS)' -count=1 \
+	  $$(go list -tags '$(RACE_TAGS)' ./... | grep -Ev '$(RACE_SERIAL_MATCH)')
+
+.PHONY: test-race-serial
+test-race-serial: ## -race -p 1 over the SoftHSM/Postgres-backed packages (provision a token/DSN to exercise them)
+	@if [ -z "$$SECSY_PKCS11_MODULE" ]; then \
+	  echo "==> note: SECSY_PKCS11_MODULE unset — SoftHSM-backed race tests will skip."; \
+	  echo "    run: eval \"\$$(scripts/setup-softhsm.sh --export-env)\" to exercise them."; \
+	fi
+	@echo "==> go test -race -p 1 (SoftHSM/Postgres-backed packages, -tags $(RACE_TAGS))"
+	cd server && GOTOOLCHAIN=auto CGO_ENABLED=1 go test -race -p 1 -tags '$(RACE_TAGS)' -count=1 \
+	  $$(go list -tags '$(RACE_TAGS)' ./... | grep -E '$(RACE_SERIAL_MATCH)')
+
+# ---------------------------------------------------------------------------
 # Optional zlint pre-issuance lint backend (Task 88)
 # ---------------------------------------------------------------------------
 # The industry-standard github.com/zmap/zlint suite is compiled in only under the

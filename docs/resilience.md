@@ -150,3 +150,54 @@ load and injected faults:
 - With two replicas on one PostgreSQL, singleton background jobs run on
   **exactly one** replica, leadership fails over when the leader stops, and a
   handover never double-renews a certificate or double-anchors the audit head.
+
+## Data-race detection (`make test-race`)
+
+The chaos suite proves the system behaves correctly under concurrent load; Go's
+**race detector** proves the concurrency itself is sound — that no two goroutines
+touch the same memory without synchronization. Given how much of the stack is
+concurrent (the bounded PKCS#11 session pool, HSM-HA failover health tracking,
+the rate-limit token buckets, leader-elected background jobs, the SSE
+audit-event fan-out, and the OCSP/CRL/metrics caches), `-race` is run across the
+whole suite:
+
+```sh
+make test-race          # whole suite: HSM-free parallel + SoftHSM/PG serial
+make test-race-unit     # HSM-free packages only (parallel, no token needed)
+make test-race-serial   # SoftHSM/PostgreSQL-backed packages (-p 1)
+```
+
+`test-race-unit` covers the HSM-free packages in parallel. `test-race-serial`
+covers the packages that exercise a shared external resource — the single
+SoftHSM token or a shared PostgreSQL — serialized with `-p 1` so cross-package
+contention on that one resource cannot flake the run (that collision is a
+test-fixture conflict, not a Go data race). Both skip cleanly when no token/DSN
+is configured, so `make test-race` is useful locally with neither; provision
+them to exercise those code paths under the detector:
+
+```sh
+eval "$(scripts/setup-softhsm.sh --export-env)"        # SoftHSM token
+export SECSY_TEST_PG_DSN=postgres://user:pw@host/db     # optional PostgreSQL
+make test-race
+```
+
+`-race` requires cgo, which the SQLite driver and the PKCS#11 module already
+need, so the target sets `CGO_ENABLED=1` explicitly. CI runs it as the
+**non-required** `race-detector` job (SoftHSM + a PostgreSQL service), alongside
+the chaos and interop jobs — a red run is a race to fix, not a merge blocker,
+until it has proven stable. The committed baseline is clean.
+
+> **Regression this gate caught.** The from-scratch Prometheus registry
+> (`internal/metrics`) rendered each metric by snapshotting its per-series map
+> *keys* under the metric's lock but then reading the map itself **after**
+> releasing the lock — an alias (`children := c.series`), not a copy. A
+> `/metrics` scrape concurrent with a request handler recording a new label set
+> was therefore an unsynchronized map read racing a map write: a data race, and
+> in the Go runtime a `fatal error: concurrent map read and map write` that would
+> crash the server mid-scrape under real load. The existing unit tests never
+> rendered while updating, so it stayed hidden until the detector ran against a
+> concurrent scrape-vs-update test (`internal/metrics/concurrency_test.go`). The
+> fix copies the series map under the lock before rendering (`Counter`, `Gauge`,
+> and `Histogram` `write`); the per-series child structs keep their own
+> synchronization (an atomic counter, a mutex-guarded gauge/histogram value), so
+> their values are still read lock-free after the snapshot.
