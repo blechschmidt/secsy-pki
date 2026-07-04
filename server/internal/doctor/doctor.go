@@ -135,6 +135,13 @@ type Options struct {
 	// here. Required.
 	BuildProvider func(cfg *config.Config, role string) (keyprovider.Provider, error)
 
+	// BuildPinSources constructs the PKCS#11 PIN source(s) from config (the shared
+	// pkcs11.pin_source plus any per-token overrides), so the "pin.source" check
+	// can probe each external source for reachability. Injected by the caller,
+	// which owns the config→keyprovider settings mapping. Optional: when nil the
+	// pin.source check is skipped.
+	BuildPinSources func(cfg *config.Config) ([]keyprovider.NamedPinSource, error)
+
 	// ExpiryWarn / ExpiryFail are the certificate-expiry headroom thresholds:
 	// a certificate expiring within ExpiryFail fails, within ExpiryWarn warns.
 	// Defaults: 7 and 30 days.
@@ -214,7 +221,7 @@ func Run(ctx context.Context, opts Options) *Report {
 		// Without a loadable config nothing else can be diagnosed; emit the
 		// remaining checks as skips so the report shape is stable for CI.
 		for _, name := range []string{
-			"db.connectivity", "db.schema", "keyprovider.ca", "keys.ca",
+			"db.connectivity", "db.schema", "keyprovider.ca", "pin.source", "keys.ca",
 			"audit.chain_head", "certs.ca_expiry", "crl.freshness",
 			"canary.last_probe", "ct.inclusion", "clock.skew", "listener.tls",
 			"fips.mode", "fips.store_keys", "fips.secret_oaep",
@@ -228,6 +235,11 @@ func Run(ctx context.Context, opts Options) *Report {
 	// PKCS#11, credentials for cloud KMS), plus per-token HA health.
 	providers := checkProviders(ctx, r, cfg, opts)
 	defer providers.closeAll()
+
+	// 2b. External PIN source: prove the credential store backing the PKCS#11 user
+	// PIN is reachable and yields a PIN, so a plaintext-free PIN configuration is
+	// verified before the HSM actually needs it.
+	checkPinSources(ctx, r, cfg, opts)
 
 	// 3. Database: connectivity without migrating, then pending-migration
 	// (missing table) detection.

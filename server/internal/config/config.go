@@ -2052,11 +2052,19 @@ type KeyProviderRoles struct {
 }
 
 type PKCS11Config struct {
-	ModulePath        string `yaml:"module_path"`
-	Pin               string `yaml:"pin"`
-	TokenLabel        string `yaml:"token_label"`
-	TokenSerial       string `yaml:"token_serial"`
-	TokenManufacturer string `yaml:"token_manufacturer"`
+	ModulePath string `yaml:"module_path"`
+	// Pin is the inline user PIN. It is a plaintext-at-rest credential: prefer
+	// PinSource below to source it from a credential store instead. When PinSource
+	// is unset the inline pin (or SECSY_USER_PIN) is used, with a deprecation
+	// warning. See docs/hsm-configuration.md.
+	Pin string `yaml:"pin"`
+	// PinSource selects an external credential source for the user PIN
+	// (env/file/vault/aws/azure) so it need not be stored in plaintext here or in
+	// SECSY_USER_PIN. When its type is empty the inline pin above is used.
+	PinSource         PinSourceConfig `yaml:"pin_source"`
+	TokenLabel        string          `yaml:"token_label"`
+	TokenSerial       string          `yaml:"token_serial"`
+	TokenManufacturer string          `yaml:"token_manufacturer"`
 	// SessionPoolSize bounds the number of concurrent PKCS#11 sessions the key
 	// provider keeps open, and therefore how many signing/decryption operations
 	// may hit the token at once. Requests beyond it queue (bounded backpressure).
@@ -2095,8 +2103,142 @@ type PKCS11TokenConfig struct {
 	TokenLabel        string `yaml:"token_label"`
 	TokenSerial       string `yaml:"token_serial"`
 	TokenManufacturer string `yaml:"token_manufacturer"`
-	// Pin is this token's user PIN; when empty the shared pkcs11.pin is used.
+	// Pin is this token's inline user PIN; when empty the shared pkcs11.pin is used.
 	Pin string `yaml:"pin"`
+	// PinSource overrides the set-level pkcs11.pin_source for this token; when its
+	// type is empty the shared pin_source (then the inline pin) is used.
+	PinSource PinSourceConfig `yaml:"pin_source"`
+}
+
+// PinSourceConfig selects and configures where the PKCS#11 user PIN is read from,
+// so it need not live in plaintext in this file or SECSY_USER_PIN. Type is one of
+// "inline" (default; use the adjacent pin), "env", "file", "vault", "aws", or
+// "azure". Only the sub-block matching Type is consulted. See
+// docs/hsm-configuration.md.
+type PinSourceConfig struct {
+	Type  string               `yaml:"type"`
+	Env   EnvPinSourceConfig   `yaml:"env"`
+	File  FilePinSourceConfig  `yaml:"file"`
+	Vault VaultPinSourceConfig `yaml:"vault"`
+	AWS   AWSPinSourceConfig   `yaml:"aws"`
+	Azure AzurePinSourceConfig `yaml:"azure"`
+}
+
+// EnvPinSourceConfig configures pin_source type "env".
+type EnvPinSourceConfig struct {
+	// Var is the environment variable holding the PIN (default SECSY_USER_PIN).
+	Var string `yaml:"var"`
+}
+
+// FilePinSourceConfig configures pin_source type "file".
+type FilePinSourceConfig struct {
+	// Path is the file whose contents are the PIN (a trailing newline is trimmed).
+	// The file must not be group/other-readable (0600 or stricter) unless
+	// AllowInsecurePerms is set.
+	Path string `yaml:"path"`
+	// AllowInsecurePerms disables the fail-closed 0600 permission check.
+	AllowInsecurePerms bool `yaml:"allow_insecure_perms"`
+}
+
+// VaultPinSourceConfig configures pin_source type "vault" (HashiCorp Vault KV). It
+// reuses the same address/auth/namespace/TLS fields as the Vault Transit
+// key-provider backend (VaultProviderConfig), so a deployment already talking to
+// Vault reuses the connection parameters.
+type VaultPinSourceConfig struct {
+	// VaultProviderConfig supplies the address/auth/namespace/TLS fields (inline).
+	// Its `mount` field here is the KV secrets-engine mount (default "secret"),
+	// not a Transit mount — for a PIN we read a KV secret.
+	VaultProviderConfig `yaml:",inline"`
+	// Path is the secret path within the mount, e.g. "hsm/prod".
+	Path string `yaml:"path"`
+	// Field is the key within the secret whose value is the PIN (default "pin").
+	Field string `yaml:"field"`
+	// KVVersion is the KV engine version, 1 or 2 (default 2).
+	KVVersion int `yaml:"kv_version"`
+}
+
+// AWSPinSourceConfig configures pin_source type "aws" (AWS Secrets Manager).
+type AWSPinSourceConfig struct {
+	// Region is the AWS region; empty uses the SDK default resolution.
+	Region string `yaml:"region"`
+	// SecretID is the secret's name or ARN (required).
+	SecretID string `yaml:"secret_id"`
+	// Field, when set, selects a key from a JSON secret value; empty uses the whole
+	// secret string as the PIN.
+	Field string `yaml:"field"`
+}
+
+// AzurePinSourceConfig configures pin_source type "azure" (Azure Key Vault).
+type AzurePinSourceConfig struct {
+	// VaultURL is the Key Vault base URL, e.g. "https://kv.vault.azure.net/".
+	VaultURL string `yaml:"vault_url"`
+	// Name is the secret name (required).
+	Name string `yaml:"name"`
+	// Version pins a specific secret version; empty uses the latest.
+	Version string `yaml:"version"`
+	// Field, when set, selects a key from a JSON secret value; empty uses the whole
+	// secret value as the PIN.
+	Field string `yaml:"field"`
+}
+
+// redactedSecret is substituted for any non-empty secret in a redacted config.
+const redactedSecret = "***redacted***"
+
+func redactSecret(s string) string {
+	if s == "" {
+		return ""
+	}
+	return redactedSecret
+}
+
+// Redacted returns a copy of the config with every credential field (PINs,
+// passwords, Vault tokens/secret-ids) masked, safe to log or dump. The original
+// is not modified. Any code that emits a config representation MUST route it
+// through Redacted first — the PKCS#11 user PIN and other secrets must never
+// appear in logs, diagnostics, or serialized config.
+func (c *Config) Redacted() *Config {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	cp.RootUser.Password = redactSecret(c.RootUser.Password)
+	cp.YubiHSM.Password = redactSecret(c.YubiHSM.Password)
+	cp.PKCS11 = c.PKCS11.redacted()
+	cp.KeyProvider = c.KeyProvider.redacted()
+	return &cp
+}
+
+func (p PKCS11Config) redacted() PKCS11Config {
+	cp := p
+	cp.Pin = redactSecret(p.Pin)
+	cp.PinSource = p.PinSource.redacted()
+	if len(p.Tokens) > 0 {
+		toks := make([]PKCS11TokenConfig, len(p.Tokens))
+		for i, t := range p.Tokens {
+			t.Pin = redactSecret(t.Pin)
+			t.PinSource = t.PinSource.redacted()
+			toks[i] = t
+		}
+		cp.Tokens = toks
+	}
+	return cp
+}
+
+// redacted masks the credential fields a pin_source may carry (the embedded Vault
+// token / AppRole secret-id). File paths, env var names, ARNs, and vault URLs are
+// not secrets and are preserved so a redacted dump remains diagnostically useful.
+func (p PinSourceConfig) redacted() PinSourceConfig {
+	cp := p
+	cp.Vault.Token = redactSecret(p.Vault.Token)
+	cp.Vault.SecretID = redactSecret(p.Vault.SecretID)
+	return cp
+}
+
+func (k KeyProviderConfig) redacted() KeyProviderConfig {
+	cp := k
+	cp.KMS.Vault.Token = redactSecret(k.KMS.Vault.Token)
+	cp.KMS.Vault.SecretID = redactSecret(k.KMS.Vault.SecretID)
+	return cp
 }
 
 type YubiHSMConfig struct {

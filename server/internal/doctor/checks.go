@@ -150,6 +150,67 @@ func checkProviders(ctx context.Context, r *Report, cfg *config.Config, opts Opt
 	return providers
 }
 
+// checkPinSources probes the external credential source(s) backing the PKCS#11
+// user PIN (pkcs11.pin_source) for reachability, so a plaintext-free PIN
+// configuration is verified before HSM login actually needs the PIN. It resolves
+// each source and confirms a non-empty PIN comes back; the value is discarded and
+// never logged (only the source Describe() and token name appear in the report).
+// An inline (plaintext) PIN has nothing to probe and is reported as a skip that
+// nudges toward externalizing it.
+func checkPinSources(ctx context.Context, r *Report, cfg *config.Config, opts Options) {
+	// Only the PKCS#11 backend has a user PIN.
+	usesPKCS11 := false
+	for _, role := range rolesInUse(cfg) {
+		if cfg.KeyProviderTypeForRole(role) == string(keyprovider.ProviderPKCS11) {
+			usesPKCS11 = true
+			break
+		}
+	}
+	if !usesPKCS11 {
+		r.skip("pin.source", "no signing role uses the PKCS#11 backend")
+		return
+	}
+	if opts.BuildPinSources == nil {
+		r.skip("pin.source", "no pin-source factory supplied")
+		return
+	}
+	sources, err := opts.BuildPinSources(cfg)
+	if err != nil {
+		r.run("pin.source", func() (Status, string) {
+			return StatusFail, fmt.Sprintf("configuring pin source: %v", err)
+		})
+		return
+	}
+	var external []keyprovider.NamedPinSource
+	for _, s := range sources {
+		if s.External {
+			external = append(external, s)
+		}
+	}
+	if len(external) == 0 {
+		r.skip("pin.source", "PIN read inline (pkcs11.pin / SECSY_USER_PIN); set pkcs11.pin_source to source it from a credential store")
+		return
+	}
+	r.run("pin.source", func() (Status, string) {
+		var failures, okDescs []string
+		for _, s := range external {
+			pin, err := s.Source.Resolve(ctx)
+			switch {
+			case err != nil:
+				failures = append(failures, fmt.Sprintf("%s (%s): %v", s.Name, s.Source.Describe(), err))
+			case pin == "":
+				failures = append(failures, fmt.Sprintf("%s (%s): returned an empty PIN", s.Name, s.Source.Describe()))
+			default:
+				okDescs = append(okDescs, fmt.Sprintf("%s→%s", s.Name, s.Source.Describe()))
+			}
+		}
+		if len(failures) > 0 {
+			return StatusFail, fmt.Sprintf("%d/%d PIN source(s) unreachable: %s", len(failures), len(external), strings.Join(failures, "; "))
+		}
+		return StatusPass, fmt.Sprintf("all %d PIN source(s) reachable, PIN retrieved (%s)", len(external), strings.Join(okDescs, ", "))
+	})
+}
+
 // describeBackend renders a short human description of a provider backend.
 func describeBackend(cfg *config.Config, ptype string) string {
 	switch ptype {

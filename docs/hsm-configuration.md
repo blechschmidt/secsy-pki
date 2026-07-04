@@ -58,8 +58,12 @@ pkcs11:
   - YubiHSM: `/usr/lib/pkcs11/yubihsm_pkcs11.so`
   - SoftHSM (Debian/Ubuntu): `/usr/lib/softhsm/libsofthsm2.so` or
     `/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so`
-- `pin` is the **user** PIN used to log into the token for signing. Keep it out
-  of the file where possible — see [Secrets and environment](#secrets-and-environment).
+- `pin` is the **user** PIN used to log into the token for signing. Storing it
+  here (or in `SECSY_USER_PIN`) leaves an HSM credential in plaintext at rest;
+  prefer an external
+  [`pin_source`](#sourcing-the-user-pin-from-a-credential-store-pin_source), which
+  fetches it lazily at login from a file, env var, Vault, or a cloud secrets
+  manager.
 - `token_label` / `token_serial` / `token_manufacturer` select *which* token to
   use when a slot exposes more than one. Label alone is enough for SoftHSM.
 
@@ -71,6 +75,144 @@ producing signatures that fail verification. The provider therefore **rejects**
 generating a second key with an existing label. Choose one label per CA / KEK
 and keep it stable — it is also how the CA is referenced everywhere else in the
 system.
+
+### Sourcing the user PIN from a credential store (`pin_source`)
+
+Storing the PKCS#11 user PIN as plaintext — in `pkcs11.pin` or the
+`SECSY_USER_PIN` environment variable — leaves an HSM credential at rest in the
+config file or the process environment. The `pkcs11.pin_source` block eliminates
+that: the PIN is fetched **lazily, at HSM login time**, from a pluggable
+credential source, is kept out of any logged or dumped config representation
+(secret fields are redacted), and — if the source is unreachable — the login
+**fails closed** with an actionable error rather than starting without a working
+credential.
+
+```yaml
+pkcs11:
+  module_path: "/usr/lib/softhsm/libsofthsm2.so"
+  token_label: "secsy-pki-root"
+  # pin: "…"           # ← omit; the PIN is sourced below instead
+  pin_source:
+    type: "file"        # inline | env | file | vault | aws | azure
+    file:
+      path: "/etc/secsy/hsm.pin"
+```
+
+Select the source with `type`; only the matching sub-block is read:
+
+| `type`   | Where the PIN comes from | Key fields |
+|----------|--------------------------|------------|
+| `inline` | `pkcs11.pin` (default; **plaintext at rest**, emits a deprecation warning) | — |
+| `env`    | An environment variable  | `env.var` (default `SECSY_USER_PIN`) |
+| `file`   | A file (enforced `0600`) | `file.path`, `file.allow_insecure_perms` |
+| `vault`  | A HashiCorp Vault KV secret | `vault.address` + auth, `vault.mount`, `vault.path`, `vault.field` |
+| `aws`    | AWS Secrets Manager      | `aws.region`, `aws.secret_id`, `aws.field` |
+| `azure`  | Azure Key Vault secret   | `azure.vault_url`, `azure.name`, `azure.field` |
+
+#### `file`
+
+```yaml
+pin_source:
+  type: "file"
+  file:
+    path: "/etc/secsy/hsm.pin"      # contents are the PIN; a trailing newline is trimmed
+    # allow_insecure_perms: false   # by default the file must be 0600
+```
+
+The file must not be readable by group or other; a looser mode fails closed with
+a `chmod 600` hint (override only with `allow_insecure_perms: true`). Mount it
+from a Kubernetes `Secret`, a tmpfs, or a systemd credential.
+
+#### `env`
+
+```yaml
+pin_source:
+  type: "env"
+  env:
+    var: "SECSY_USER_PIN"    # any variable name; defaults to SECSY_USER_PIN
+```
+
+Unlike a bare `SECSY_USER_PIN` override (which is treated as an inline PIN and
+warns), an explicit `env` source is the sanctioned way to inject the PIN from the
+environment (e.g. a Kubernetes `secretKeyRef`).
+
+#### `vault` (HashiCorp Vault KV)
+
+Reuses the same connection parameters as the
+[Vault Transit backend](vault-transit.md) — address, token / AppRole auth,
+namespace, and TLS:
+
+```yaml
+pin_source:
+  type: "vault"
+  vault:
+    address: "https://vault.example:8200"    # or the VAULT_ADDR env var
+    auth_method: "approle"                    # token | approle
+    role_id: "…"
+    secret_id: "…"
+    mount: "secret"                           # KV mount (default "secret")
+    path: "hsm/prod"                          # secret path within the mount
+    field: "pin"                              # key within the secret (default "pin")
+    kv_version: 2                             # 1 or 2 (default 2)
+```
+
+#### `aws` (AWS Secrets Manager)
+
+Uses the standard AWS credential chain (environment, shared config, IRSA /
+instance role):
+
+```yaml
+pin_source:
+  type: "aws"
+  aws:
+    region: "eu-central-1"       # optional; SDK default resolution otherwise
+    secret_id: "secsy/hsm-pin"   # secret name or ARN
+    # field: "pin"               # optional: pick a key from a JSON secret value
+```
+
+#### `azure` (Azure Key Vault)
+
+Uses `DefaultAzureCredential` (environment, workload identity, or managed
+identity):
+
+```yaml
+pin_source:
+  type: "azure"
+  azure:
+    vault_url: "https://my-vault.vault.azure.net/"
+    name: "hsm-pin"
+    # version: "…"    # optional; latest otherwise
+    # field: "pin"    # optional: pick a key from a JSON secret value
+```
+
+#### Per-token override (HA)
+
+Each token in a [high-availability set](#high-availability-across-multiple-tokens)
+may carry its own `pin_source`; when omitted it inherits the set-level
+`pkcs11.pin_source` (then the inline `pin`), exactly like the per-token `pin`
+fallback:
+
+```yaml
+pkcs11:
+  pin_source: { type: "vault", vault: { address: "…", path: "hsm/shared" } }
+  tokens:
+    - { name: "primary", token_label: "hsm-a" }        # inherits the vault source
+    - { name: "backup",  token_label: "hsm-b",
+        pin_source: { type: "file", file: { path: "/etc/secsy/hsm-b.pin" } } }
+```
+
+#### Verifying the source
+
+`secsy-ca doctor` runs a **`pin.source`** check that resolves the configured
+source(s) and confirms a PIN comes back — without ever printing it — so a
+plaintext-free configuration is verified before the HSM actually needs the PIN:
+
+```
+✓ pass  pin.source   all 1 PIN source(s) reachable, PIN retrieved (pkcs11→file /etc/secsy/hsm.pin)
+```
+
+An unreachable source, a missing secret, or an insecure file mode fails the check
+(and the HSM login) closed.
 
 ### High availability across multiple tokens
 
@@ -114,10 +256,13 @@ use it for anything you care about protecting.
 
 ## Secrets and environment
 
-The `SECSY_*` environment variables override the file-based configuration and
-are the recommended way to inject secrets (so PINs need not live in
-`config.yaml`). They also match what `scripts/setup-softhsm.sh --export-env`
-emits, so a single `eval` wires the CLIs and the test suite to a token:
+The `SECSY_*` environment variables override the file-based configuration. They
+match what `scripts/setup-softhsm.sh --export-env` emits, so a single `eval`
+wires the CLIs and the test suite to a token. Note that `SECSY_USER_PIN` sets the
+**inline** PIN (and so emits the plaintext deprecation warning); to source the
+PIN from a credential store use
+[`pkcs11.pin_source`](#sourcing-the-user-pin-from-a-credential-store-pin_source)
+instead (its `env` type reads any variable without the warning):
 
 | Variable | Overrides |
 |----------|-----------|

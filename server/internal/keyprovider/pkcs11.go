@@ -43,6 +43,10 @@ const DefaultSessionPoolSize = 8
 type PKCS11Provider struct {
 	cfg      pki.PKCS11Config
 	poolSize int
+	// pinSource resolves the user PIN lazily at login time (when the pool is first
+	// built), keeping the PIN out of cfg — and thus out of any dumped config — until
+	// it is needed for C_Login. It is never nil (the inline source wraps cfg's PIN).
+	pinSource PinSource
 
 	mu   sync.Mutex
 	pool *pki.SessionPool
@@ -59,11 +63,18 @@ func NewPKCS11Provider(s PKCS11Settings) (*PKCS11Provider, error) {
 	if size <= 0 {
 		size = DefaultSessionPoolSize
 	}
+	// Build the PIN source up front (this validates static config and constructs any
+	// backend client, but performs no I/O). The inline Pin is intentionally left out
+	// of cfg: it is resolved through pinSource at login time instead.
+	pinSource, err := newPinSource(s.PinSource, s.Pin)
+	if err != nil {
+		return nil, err
+	}
 	return &PKCS11Provider{
-		poolSize: size,
+		poolSize:  size,
+		pinSource: pinSource,
 		cfg: pki.PKCS11Config{
 			ModulePath:        s.ModulePath,
-			Pin:               s.Pin,
 			TokenLabel:        s.TokenLabel,
 			TokenSerial:       s.TokenSerial,
 			TokenManufacturer: s.TokenManufacturer,
@@ -77,13 +88,25 @@ func (p *PKCS11Provider) Name() string { return string(ProviderPKCS11) }
 // Construction (which logs in) is retried on a later call if it fails, so a
 // transient HSM outage or a not-yet-present token does not permanently wedge the
 // provider.
-func (p *PKCS11Provider) getPool(_ context.Context) (*pki.SessionPool, error) {
+func (p *PKCS11Provider) getPool(ctx context.Context) (*pki.SessionPool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.pool != nil {
 		return p.pool, nil
 	}
-	pool, err := pki.NewSessionPool(p.cfg, p.poolSize)
+	// Resolve the PIN lazily, here at first login, so an unreachable credential
+	// source fails the operation closed (with a clear error) rather than at process
+	// start, and so the PIN is fetched only when the HSM is actually used. The
+	// resolved value lives only on this local cfg copy for the login round-trip.
+	cfg := p.cfg
+	if p.pinSource != nil {
+		pin, err := p.pinSource.Resolve(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("keyprovider: resolving HSM PIN from %s: %w", p.pinSource.Describe(), err)
+		}
+		cfg.Pin = pin
+	}
+	pool, err := pki.NewSessionPool(cfg, p.poolSize)
 	if err != nil {
 		return nil, err
 	}

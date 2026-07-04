@@ -247,8 +247,15 @@ var ErrProbeUnsupported = fmt.Errorf("keyprovider: connectivity probe not suppor
 // pki.PKCS11Config; New maps it across so callers of this package need not
 // import the pki package directly.
 type PKCS11Settings struct {
-	ModulePath        string
-	Pin               string
+	ModulePath string
+	// Pin is the inline user PIN (config pkcs11.pin / SECSY_USER_PIN). It is used
+	// only when PinSource selects the inline source (the default). Prefer an
+	// external PinSource so the PIN is not stored in plaintext at rest.
+	Pin string
+	// PinSource, when its Type is set, resolves the user PIN lazily from an
+	// external credential store (env/file/vault/aws/azure) at login time instead
+	// of the inline Pin above. See pinsource.go and docs/hsm-configuration.md.
+	PinSource         PinSourceSettings
 	TokenLabel        string
 	TokenSerial       string
 	TokenManufacturer string
@@ -294,9 +301,12 @@ type TokenSettings struct {
 	TokenLabel        string
 	TokenSerial       string
 	TokenManufacturer string
-	// Pin is the user PIN for this token. When empty the shared PKCS11Settings.Pin
-	// is used (common when every token shares a PIN policy).
+	// Pin is the inline user PIN for this token. When empty the shared
+	// PKCS11Settings.Pin is used (common when every token shares a PIN policy).
 	Pin string
+	// PinSource overrides the set-level PKCS11Settings.PinSource for this token.
+	// When its Type is empty the shared pin_source (then the inline Pin) is used.
+	PinSource PinSourceSettings
 }
 
 // SoftwareSettings configures the software backend.

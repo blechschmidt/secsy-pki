@@ -1203,9 +1203,40 @@ func pkcs11TokenSettings(tokens []config.PKCS11TokenConfig) []keyprovider.TokenS
 			TokenSerial:       t.TokenSerial,
 			TokenManufacturer: t.TokenManufacturer,
 			Pin:               t.Pin,
+			PinSource:         pinSourceSettings(t.PinSource),
 		})
 	}
 	return out
+}
+
+// pinSourceSettings maps the config pin_source block onto the keyprovider settings
+// type (mirrors the same helper in cmd/secsy-secret and cmd/server). It reuses the
+// existing vaultSettings helper for the embedded Vault connection parameters.
+func pinSourceSettings(p config.PinSourceConfig) keyprovider.PinSourceSettings {
+	return keyprovider.PinSourceSettings{
+		Type: p.Type,
+		Env:  keyprovider.EnvPinSourceSettings{Var: p.Env.Var},
+		File: keyprovider.FilePinSourceSettings{Path: p.File.Path, AllowInsecurePerms: p.File.AllowInsecurePerms},
+		Vault: keyprovider.VaultPinSourceSettings{
+			VaultSettings: vaultSettings(p.Vault.VaultProviderConfig),
+			Path:          p.Vault.Path,
+			Field:         p.Vault.Field,
+			KVVersion:     p.Vault.KVVersion,
+		},
+		AWS:   keyprovider.AWSPinSourceSettings{Region: p.AWS.Region, SecretID: p.AWS.SecretID, Field: p.AWS.Field},
+		Azure: keyprovider.AzurePinSourceSettings{VaultURL: p.Azure.VaultURL, Name: p.Azure.Name, Version: p.Azure.Version, Field: p.Azure.Field},
+	}
+}
+
+// buildPinSources constructs the PKCS#11 PIN source(s) from config for the doctor
+// "pin.source" reachability check. It performs no I/O.
+func buildPinSources(cfg *config.Config) ([]keyprovider.NamedPinSource, error) {
+	return keyprovider.BuildNamedPinSources(keyprovider.PKCS11Settings{
+		ModulePath: cfg.PKCS11.ModulePath,
+		Pin:        cfg.PKCS11.Pin,
+		PinSource:  pinSourceSettings(cfg.PKCS11.PinSource),
+		Tokens:     pkcs11TokenSettings(cfg.PKCS11.Tokens),
+	})
 }
 
 func buildProvider(cfg *config.Config, role string) (keyprovider.Provider, error) {
@@ -1222,6 +1253,7 @@ func buildProvider(cfg *config.Config, role string) (keyprovider.Provider, error
 		PKCS11: keyprovider.PKCS11Settings{
 			ModulePath:        cfg.PKCS11.ModulePath,
 			Pin:               cfg.PKCS11.Pin,
+			PinSource:         pinSourceSettings(cfg.PKCS11.PinSource),
 			TokenLabel:        cfg.PKCS11.TokenLabel,
 			TokenSerial:       cfg.PKCS11.TokenSerial,
 			TokenManufacturer: cfg.PKCS11.TokenManufacturer,

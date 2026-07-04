@@ -48,13 +48,14 @@ func cmdDoctor(cfgPath string, args []string) error {
 	defer cancel()
 
 	report := doctor.Run(ctx, doctor.Options{
-		ConfigPath:    cfgPath,
-		BuildProvider: buildProvider,
-		ExpiryWarn:    time.Duration(*expiryWarnDays) * 24 * time.Hour,
-		ExpiryFail:    time.Duration(*expiryFailDays) * 24 * time.Hour,
-		AuditSample:   *auditSample,
-		SkipListener:  *noListener,
-		Deep:          *deep,
+		ConfigPath:      cfgPath,
+		BuildProvider:   buildProvider,
+		BuildPinSources: buildPinSources,
+		ExpiryWarn:      time.Duration(*expiryWarnDays) * 24 * time.Hour,
+		ExpiryFail:      time.Duration(*expiryFailDays) * 24 * time.Hour,
+		AuditSample:     *auditSample,
+		SkipListener:    *noListener,
+		Deep:            *deep,
 	})
 
 	if *asJSON {

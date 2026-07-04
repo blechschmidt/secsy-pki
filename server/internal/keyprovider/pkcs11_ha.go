@@ -205,13 +205,14 @@ func NewPKCS11HAProvider(s PKCS11Settings) (*PKCS11HAProvider, error) {
 		}
 		seen[name] = true
 
-		pin := tok.Pin
-		if pin == "" {
-			pin = s.Pin
-		}
+		// Resolve the token's effective PIN source and inline-PIN fallback (per-token
+		// override, else the set-level pin_source / shared pin). The member provider
+		// then resolves the PIN lazily at its own login time.
+		pinSource, pin := effectiveTokenPin(s, tok)
 		member, err := NewPKCS11Provider(PKCS11Settings{
 			ModulePath:        s.ModulePath,
 			Pin:               pin,
+			PinSource:         pinSource,
 			TokenLabel:        tok.TokenLabel,
 			TokenSerial:       tok.TokenSerial,
 			TokenManufacturer: tok.TokenManufacturer,
