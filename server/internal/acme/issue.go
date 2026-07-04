@@ -20,6 +20,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
+	"github.com/blechschmidt/secsy-pki/server/internal/smime"
 )
 
 // issuanceProblem maps an issuance failure to its ACME problem document:
@@ -123,6 +124,19 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	profileID := order.Profile
 	if profileID == "" {
 		profileID = s.cfg.Profile
+	}
+	// Fail-closed gate: an email (S/MIME) order must be issued under an S/MIME
+	// profile, so applySMIMEPolicy runs at issuance. newOrder already forces this,
+	// so this is defense-in-depth against a legacy/hand-crafted order whose stored
+	// profile is not S/MIME.
+	if containsEmailIdentifier(order.Identifiers) {
+		if p, err := ca.LookupProfile(profileID); err != nil || p.SMIME == nil {
+			prob := newProblem(probServerInternal, http.StatusInternalServerError,
+				"email order is not bound to an S/MIME issuance profile")
+			s.markOrderInvalid(order.ID, prob)
+			s.writeProblem(w, prob)
+			return
+		}
 	}
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
 	result, err := s.caMgr.IssueCertificate(r.Context(), ca.IssueSpec{
@@ -430,12 +444,14 @@ func (s *Server) findOrderBySerial(serial string) (*models.ACMEOrder, *Problem) 
 }
 
 // matchCSRToOrder verifies that the CSR's subject names cover exactly the order's
-// authorized identifiers — no more, no fewer (RFC 8555 §7.4).
+// authorized identifiers — no more, no fewer (RFC 8555 §7.4, RFC 8823 §3 for
+// email identifiers).
 func matchCSRToOrder(_ *models.ACMEOrder, authzs []models.ACMEAuthorization, csr *x509.CertificateRequest) *Problem {
-	// Build the expected DNS and IP name sets from the authorizations (which
-	// carry the wildcard flag).
+	// Build the expected DNS, IP, and email name sets from the authorizations
+	// (which carry the wildcard flag).
 	expectedDNS := map[string]bool{}
 	expectedIP := map[string]bool{}
+	expectedEmail := map[string]bool{}
 	for _, a := range authzs {
 		switch a.IdentifierType {
 		case "dns":
@@ -446,7 +462,35 @@ func matchCSRToOrder(_ *models.ACMEOrder, authzs []models.ACMEAuthorization, csr
 			expectedDNS[strings.ToLower(name)] = true
 		case "ip":
 			expectedIP[a.IdentifierValue] = true
+		case "email":
+			if mb, err := smime.NormalizeEmail(a.IdentifierValue); err == nil {
+				expectedEmail[strings.ToLower(mb.Address())] = true
+			}
 		}
+	}
+	emailOrder := len(expectedEmail) > 0
+
+	// SECURITY: a URI SAN is never authorized by an ACME order, and the issuance
+	// layer copies CSR SANs into the leaf, so a URI SAN would be an
+	// unauthorized-name injection.
+	if len(csr.URIs) > 0 {
+		return newProblem(probBadCSR, http.StatusBadRequest,
+			"CSR contains URI SANs that are not authorized by the order")
+	}
+
+	// rfc822Name SANs must match exactly the order's email identifiers (empty for
+	// a non-email order, so any email SAN there is rejected).
+	gotEmail := map[string]bool{}
+	for _, e := range csr.EmailAddresses {
+		mb, err := smime.NormalizeEmail(e)
+		if err != nil {
+			return newProblem(probBadCSR, http.StatusBadRequest, "CSR contains an invalid email SAN: "+err.Error())
+		}
+		gotEmail[strings.ToLower(mb.Address())] = true
+	}
+	if !sameStringSet(expectedEmail, gotEmail) {
+		return newProblem(probBadCSR, http.StatusBadRequest,
+			fmt.Sprintf("CSR email addresses %v do not match the order's identifiers %v", sortedKeys(gotEmail), sortedKeys(expectedEmail)))
 	}
 
 	gotDNS := map[string]bool{}
@@ -454,7 +498,9 @@ func matchCSRToOrder(_ *models.ACMEOrder, authzs []models.ACMEAuthorization, csr
 		gotDNS[strings.ToLower(strings.TrimSuffix(n, "."))] = true
 	}
 	// A CN that is a DNS name must also be authorized; fold it into the DNS set.
-	if cn := strings.ToLower(strings.TrimSpace(csr.Subject.CommonName)); cn != "" {
+	// Skipped for email (S/MIME) orders, whose CN is typically a display name or
+	// the mailbox rather than a host name and is governed by applySMIMEPolicy.
+	if cn := strings.ToLower(strings.TrimSpace(csr.Subject.CommonName)); cn != "" && !emailOrder {
 		if strings.Contains(cn, ".") && !strings.ContainsAny(cn, " @") {
 			gotDNS[cn] = true
 		} else if len(expectedDNS) > 0 || len(expectedIP) > 0 {
@@ -465,15 +511,6 @@ func matchCSRToOrder(_ *models.ACMEOrder, authzs []models.ACMEAuthorization, csr
 	gotIP := map[string]bool{}
 	for _, ip := range csr.IPAddresses {
 		gotIP[ip.String()] = true
-	}
-
-	// SECURITY: ACME orders authorize only dns/ip identifiers. Reject a CSR that
-	// smuggles in email or URI SANs — the issuance layer copies CSR SANs into the
-	// leaf, so an unchecked email/URI SAN would be an unauthorized-name injection
-	// (RFC 8555 §7.4 requires the CSR to request exactly the ordered identifiers).
-	if len(csr.EmailAddresses) > 0 || len(csr.URIs) > 0 {
-		return newProblem(probBadCSR, http.StatusBadRequest,
-			"CSR contains email or URI SANs that are not authorized by the order")
 	}
 
 	if !sameStringSet(expectedDNS, gotDNS) {

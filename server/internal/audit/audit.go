@@ -270,6 +270,12 @@ const (
 	// predecessor certificate via the "replaces" field.
 	ActionACMERenewalInfo   = "acme.renewal_info"
 	ActionACMEOrderReplaces = "acme.order.replaces"
+	// ActionACMEEmail records the lifecycle of an RFC 8823 email-reply-00
+	// challenge for an "email"-type identifier (S/MIME issuance via ACME): the
+	// signed challenge email being dispatched to the mailbox, and the mailbox
+	// owner's reply being validated (or rejected) against the expected
+	// key-authorization digest.
+	ActionACMEEmail = "cert.acme_email"
 
 	// SCEP (RFC 8894) and EST (RFC 7030) device-enrollment actions. The actor is
 	// the enrollment grant / authenticated principal rather than an OIDC subject,

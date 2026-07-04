@@ -154,6 +154,15 @@ The same rules run offline against any existing certificate:
 secsy-ca lint -profile smime some-smime-cert.pem
 ```
 
+## Enrollment via ACME (RFC 8823)
+
+S/MIME certificates can also be obtained through ACME using the `email-reply-00`
+challenge (RFC 8823): an `email`-type order mails a signed challenge to the
+mailbox and issues once the owner replies. Every leaf still runs through the same
+S/MIME gate (`applySMIMEPolicy` + SMBR lint). See
+[enrollment.md §7](enrollment.md#7-acme-smime-certificates-rfc-8823-email-reply-00)
+for the `acme.email` configuration and flow.
+
 ## Enrollment via EST / SCEP
 
 EST and SCEP honor S/MIME profiles like any other — point the endpoint (or a

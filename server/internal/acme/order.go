@@ -13,6 +13,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
+	"github.com/blechschmidt/secsy-pki/server/internal/smime"
 )
 
 // handleNewOrder creates a new order and its per-identifier authorizations.
@@ -60,6 +61,23 @@ func (s *Server) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 		}
 		ids = append(ids, norm)
 		wildcard = append(wildcard, isWild)
+	}
+
+	// RFC 8823 email orders (S/MIME) may not be mixed with dns/ip identifiers, and
+	// are always issued under an S/MIME profile so applySMIMEPolicy and the S/MIME
+	// Baseline-Requirements lint rules gate finalize regardless of the client's
+	// (or the default) profile selection.
+	if prob := validateEmailOrderIdentifiers(ids); prob != nil {
+		s.writeProblem(w, prob)
+		return
+	}
+	if containsEmailIdentifier(ids) {
+		emailProfile, prob := s.emailIssuanceProfile(profileID)
+		if prob != nil {
+			s.writeProblem(w, prob)
+			return
+		}
+		profileID = emailProfile
 	}
 
 	// ARI renewal linkage (draft-ietf-acme-ari §5): a "replaces" CertID ties this
@@ -110,6 +128,12 @@ func (s *Server) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 				Type:    ct,
 				Token:   newToken(),
 				Status:  models.ACMEChallengeStatusPending,
+			}
+			// email-reply-00 (RFC 8823) splits the token: Token is token-part-2
+			// (exposed over HTTPS) and EmailToken1 is token-part-1, delivered only
+			// in the challenge email's Subject.
+			if ct == models.ACMEChallengeEmailReply00 {
+				chall.EmailToken1 = newToken()
 			}
 			if err := s.db.CreateACMEChallenge(chall); err != nil {
 				s.writeProblem(w, newProblem(probServerInternal, http.StatusInternalServerError, "creating challenge"))
@@ -241,6 +265,15 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 // validateChallenge performs the outbound check for a challenge and persists the
 // resulting challenge, authorization, and order statuses.
 func (s *Server) validateChallenge(r *http.Request, acct *acmeAccount, authz *models.ACMEAuthorization, chall *models.ACMEChallenge, payload []byte) {
+	// email-reply-00 (RFC 8823) is asynchronous: responding dispatches the signed
+	// challenge email and leaves the challenge in "processing"; the inbound-mail
+	// poller completes it when the mailbox owner's reply arrives. It never
+	// validates synchronously here.
+	if chall.Type == models.ACMEChallengeEmailReply00 {
+		s.sendEmailChallenge(acct.rec.ID, authz, chall)
+		return
+	}
+
 	// Mark processing before performing the (possibly slow) network check.
 	_ = s.db.UpdateACMEChallenge(chall.ID, models.ACMEChallengeStatusProcessing, nil, "")
 
@@ -441,9 +474,50 @@ func (s *Server) normalizeIdentifier(id wireIdentifier) (models.ACMEIdentifier, 
 			return models.ACMEIdentifier{}, false, newProblem(probRejectedID, http.StatusBadRequest, "invalid IP identifier: "+id.Value)
 		}
 		return models.ACMEIdentifier{Type: "ip", Value: strings.TrimSpace(id.Value)}, false, nil
+	case "email":
+		// RFC 8823 email identifiers are only accepted when the email-reply-00
+		// challenge is fully configured (a sender and an inbound poller); without a
+		// way to validate the mailbox the identifier type is unsupported.
+		if !s.emailEnabled() {
+			return models.ACMEIdentifier{}, false, newProblem(probUnsupportedID, http.StatusBadRequest, "email identifiers are not enabled")
+		}
+		// A wildcard email address is meaningless; NormalizeEmail also rejects it.
+		mb, err := smime.NormalizeEmail(id.Value)
+		if err != nil {
+			return models.ACMEIdentifier{}, false, newProblem(probRejectedID, http.StatusBadRequest, "invalid email identifier: "+err.Error())
+		}
+		return models.ACMEIdentifier{Type: "email", Value: mb.Address()}, false, nil
 	default:
 		return models.ACMEIdentifier{}, false, newProblem(probUnsupportedID, http.StatusBadRequest, "unsupported identifier type: "+id.Type)
 	}
+}
+
+// containsEmailIdentifier reports whether any identifier is an RFC 8823 email
+// identifier.
+func containsEmailIdentifier(ids []models.ACMEIdentifier) bool {
+	for _, id := range ids {
+		if id.Type == "email" {
+			return true
+		}
+	}
+	return false
+}
+
+// validateEmailOrderIdentifiers rejects an order that mixes email identifiers
+// with dns/ip identifiers. RFC 8823 issues S/MIME certificates for one or more
+// mailboxes; blending them with server/host names in a single order would
+// straddle two different profile families and CSR-matching rules.
+func validateEmailOrderIdentifiers(ids []models.ACMEIdentifier) *Problem {
+	if !containsEmailIdentifier(ids) {
+		return nil
+	}
+	for _, id := range ids {
+		if id.Type != "email" {
+			return newProblem(probMalformed, http.StatusBadRequest,
+				"an email (S/MIME) order must contain only email identifiers")
+		}
+	}
+	return nil
 }
 
 // challengeTypesFor returns the challenge types offered for an identifier.
@@ -455,6 +529,11 @@ func (s *Server) normalizeIdentifier(id wireIdentifier) (models.ACMEIdentifier, 
 // hardware-resident key; under "permissive" it is offered alongside the standard
 // domain-validation challenges.
 func (s *Server) challengeTypesFor(id models.ACMEIdentifier, wildcard bool) []string {
+	// RFC 8823 "email" identifiers are validated solely by the email-reply-00
+	// challenge; the domain-validation and attestation challenges do not apply.
+	if id.Type == "email" {
+		return []string{models.ACMEChallengeEmailReply00}
+	}
 	mode := s.attestationMode()
 	if mode == attestation.ModeRequire {
 		return []string{models.ACMEChallengeDeviceAttest01}
@@ -566,6 +645,11 @@ func (s *Server) wireChallenge(r *http.Request, chall *models.ACMEChallenge) wir
 		Status:    chall.Status,
 		Token:     chall.Token,
 		Validated: rfc3339p(chall.Validated),
+	}
+	// email-reply-00 (RFC 8823 §5) advertises the sender the challenge email
+	// comes from so the client can validate the message's origin.
+	if chall.Type == models.ACMEChallengeEmailReply00 && s.emailEnabled() {
+		wc.From = s.email.from
 	}
 	if chall.Error != "" {
 		var p Problem

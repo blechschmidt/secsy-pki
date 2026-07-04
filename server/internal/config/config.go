@@ -1310,6 +1310,87 @@ type ACMEConfig struct {
 	// agrees without configuration. Set the same value on every replica to skip
 	// the startup store read or to rotate the signing key.
 	NonceHMACKey string `yaml:"nonce_hmac_key"`
+
+	// Email configures the RFC 8823 email-reply-00 challenge for "email"-type
+	// identifiers, enabling S/MIME certificate issuance via ACME (Task 108). It is
+	// enabled only when an outbound SMTP sink and an inbound IMAP poller are both
+	// configured.
+	Email ACMEEmailConfig `yaml:"email"`
+}
+
+// ACMEEmailConfig configures the RFC 8823 email-reply-00 challenge (Task 108).
+// When enabled, the ACME server accepts "email" identifiers, mails a signed
+// challenge to the requested mailbox, and validates the mailbox owner's reply
+// polled from an IMAP mailbox. The challenge is offered only when both the SMTP
+// sink and the IMAP poller are configured.
+type ACMEEmailConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// From is the sender mailbox challenge emails originate from; it is echoed in
+	// each challenge object's "from" field. Required when enabled.
+	From string `yaml:"from"`
+	// Profile is the internal S/MIME issuance profile applied to email orders
+	// (default "smime"). It must be a profile with an S/MIME configuration, so
+	// applySMIMEPolicy and the S/MIME Baseline-Requirements lint rules gate every
+	// ACME-issued email-protection certificate.
+	Profile string `yaml:"profile"`
+	// PollIntervalSeconds is how often the leader-elected poller reads the inbox
+	// (default 30s).
+	PollIntervalSeconds int `yaml:"poll_interval_seconds"`
+	// SubjectPrefix overrides the challenge Subject label (default "ACME:").
+	SubjectPrefix string `yaml:"subject_prefix"`
+	// SMTP is the outbound sink used to dispatch challenge emails.
+	SMTP ACMEEmailSMTP `yaml:"smtp"`
+	// IMAP is the inbound poller used to read challenge replies. Its presence is
+	// what enables (advertises) the challenge.
+	IMAP ACMEEmailIMAP `yaml:"imap"`
+	// DKIM, when configured, RSA-DKIM-signs (RFC 6376) every challenge email so
+	// the receiving mailbox can prove its authenticity (RFC 8823 §5).
+	DKIM ACMEEmailDKIM `yaml:"dkim"`
+}
+
+// ACMEEmailSMTP configures the outbound SMTP sink for challenge emails.
+type ACMEEmailSMTP struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	// TLSMode is "starttls" (default), "implicit" (SMTPS), or "none" (test only).
+	TLSMode string `yaml:"tls_mode"`
+	// InsecureSkipVerify disables server-certificate verification (test only).
+	InsecureSkipVerify bool `yaml:"insecure_skip_verify"`
+}
+
+// ACMEEmailIMAP configures the inbound IMAP poller for challenge replies.
+type ACMEEmailIMAP struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	// Mailbox is the folder polled for replies (default "INBOX").
+	Mailbox string `yaml:"mailbox"`
+	// TLSMode is "implicit" (default, IMAPS), "starttls", or "none" (test only).
+	TLSMode string `yaml:"tls_mode"`
+	// InsecureSkipVerify disables server-certificate verification (test only).
+	InsecureSkipVerify bool `yaml:"insecure_skip_verify"`
+	// MaxMessages caps how many messages one poll pulls (default 64).
+	MaxMessages int `yaml:"max_messages"`
+}
+
+// ACMEEmailDKIM configures RSA-DKIM signing of challenge emails (RFC 6376).
+type ACMEEmailDKIM struct {
+	// Domain is the SDID (d= tag); Selector names the key (s= tag).
+	Domain   string `yaml:"domain"`
+	Selector string `yaml:"selector"`
+	// PrivateKeyFile is the path to a PEM-encoded RSA private key; PrivateKeyPEM
+	// carries the key inline instead. Leave both empty to send unsigned emails.
+	PrivateKeyFile string `yaml:"private_key_file"`
+	PrivateKeyPEM  string `yaml:"private_key_pem"`
+}
+
+// Configured reports whether the email challenge is switched on and has both
+// halves of its mail transport.
+func (e ACMEEmailConfig) Configured() bool {
+	return e.Enabled && e.SMTP.Host != "" && e.IMAP.Host != "" && e.From != ""
 }
 
 // ACMEProfileConfig is one client-selectable profile in the ACME Profiles
@@ -3125,7 +3206,59 @@ func (c *Config) validateACME() error {
 			return fmt.Errorf("acme.profiles: profile name (map key) must not be empty")
 		}
 	}
+	if err := c.validateACMEEmail(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateACMEEmail sanity-checks the RFC 8823 email-reply-00 challenge block
+// (Task 108) when it is enabled: both transport halves (SMTP sink, IMAP poller)
+// and a sender address are required, the TLS modes must be recognized, and a
+// DKIM configuration must be complete if any of its fields are set. That the
+// email profile is an S/MIME profile is verified at startup in buildACMEConfig,
+// where the profile registry is available.
+func (c *Config) validateACMEEmail() error {
+	e := c.ACME.Email
+	if !e.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(e.From) == "" {
+		return fmt.Errorf("acme.email.enabled is true but acme.email.from is empty")
+	}
+	if strings.TrimSpace(e.SMTP.Host) == "" {
+		return fmt.Errorf("acme.email.enabled is true but acme.email.smtp.host is empty")
+	}
+	if strings.TrimSpace(e.IMAP.Host) == "" {
+		return fmt.Errorf("acme.email.enabled is true but acme.email.imap.host is empty (the inbound poller is required)")
+	}
+	if !validTLSMode(e.SMTP.TLSMode, "starttls", "implicit", "none") {
+		return fmt.Errorf("acme.email.smtp.tls_mode %q is invalid (want starttls, implicit, or none)", e.SMTP.TLSMode)
+	}
+	if !validTLSMode(e.IMAP.TLSMode, "implicit", "starttls", "none") {
+		return fmt.Errorf("acme.email.imap.tls_mode %q is invalid (want implicit, starttls, or none)", e.IMAP.TLSMode)
+	}
+	d := e.DKIM
+	dkimSet := d.Domain != "" || d.Selector != "" || d.PrivateKeyFile != "" || d.PrivateKeyPEM != ""
+	if dkimSet {
+		if d.Domain == "" || d.Selector == "" || (d.PrivateKeyFile == "" && d.PrivateKeyPEM == "") {
+			return fmt.Errorf("acme.email.dkim requires domain, selector, and a private key (file or inline PEM)")
+		}
+	}
+	return nil
+}
+
+// validTLSMode reports whether mode is empty (the default) or one of allowed.
+func validTLSMode(mode string, allowed ...string) bool {
+	if strings.TrimSpace(mode) == "" {
+		return true
+	}
+	for _, a := range allowed {
+		if strings.EqualFold(mode, a) {
+			return true
+		}
+	}
+	return false
 }
 
 // validRoleNames are the role identifiers accepted in the rbac config. Kept in

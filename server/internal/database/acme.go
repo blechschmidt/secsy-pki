@@ -76,6 +76,8 @@ func (db *DB) migrateACME() error {
 			status TEXT NOT NULL DEFAULT 'pending',
 			validated TIMESTAMP,
 			error TEXT,
+			email_token1 TEXT,
+			email_message_id TEXT,
 			created_at %s
 		)`, currentTimestamp),
 		`CREATE INDEX IF NOT EXISTS idx_acme_chall_authz ON acme_challenges(authz_id)`,
@@ -130,6 +132,17 @@ func (db *DB) migrateACME() error {
 		_, _ = db.conn.Exec(`ALTER TABLE acme_orders ADD COLUMN profile TEXT`)
 	}
 	_, _ = db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_acme_orders_serial ON acme_orders(serial)`)
+	// Additive migration for the RFC 8823 email-reply-00 challenge (Task 108):
+	// token-part-1 and the dispatched challenge email's Message-ID. Errors are
+	// ignored — the columns already exist on a fresh CREATE TABLE above and on a
+	// second startup.
+	if db.isPostgres() {
+		_, _ = db.conn.Exec(`ALTER TABLE acme_challenges ADD COLUMN IF NOT EXISTS email_token1 TEXT`)
+		_, _ = db.conn.Exec(`ALTER TABLE acme_challenges ADD COLUMN IF NOT EXISTS email_message_id TEXT`)
+	} else {
+		_, _ = db.conn.Exec(`ALTER TABLE acme_challenges ADD COLUMN email_token1 TEXT`)
+		_, _ = db.conn.Exec(`ALTER TABLE acme_challenges ADD COLUMN email_message_id TEXT`)
+	}
 	return nil
 }
 
@@ -425,27 +438,29 @@ func (db *DB) UpdateACMEAuthorizationStatus(id, status string) error {
 
 // ---- Challenges -----------------------------------------------------------
 
-// CreateACMEChallenge inserts a challenge.
+// CreateACMEChallenge inserts a challenge. For email-reply-00 challenges
+// (RFC 8823) the caller pre-generates token-part-1 (EmailToken1); it is stored
+// here and never exposed over HTTPS.
 func (db *DB) CreateACMEChallenge(c *models.ACMEChallenge) error {
 	status := c.Status
 	if status == "" {
 		status = models.ACMEChallengeStatusPending
 	}
 	_, err := db.exec(
-		`INSERT INTO acme_challenges (id, authz_id, type, token, status)
-		 VALUES (?, ?, ?, ?, ?)`,
-		c.ID, c.AuthzID, c.Type, c.Token, status,
+		`INSERT INTO acme_challenges (id, authz_id, type, token, status, email_token1)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		c.ID, c.AuthzID, c.Type, c.Token, status, nullString(c.EmailToken1),
 	)
 	return err
 }
 
-const acmeChallengeColumns = `id, authz_id, type, token, status, validated, error, created_at`
+const acmeChallengeColumns = `id, authz_id, type, token, status, validated, error, email_token1, email_message_id, created_at`
 
 func scanACMEChallenge(s caScanner) (*models.ACMEChallenge, error) {
 	var c models.ACMEChallenge
 	var validated sql.NullTime
-	var errStr sql.NullString
-	if err := s.Scan(&c.ID, &c.AuthzID, &c.Type, &c.Token, &c.Status, &validated, &errStr, &c.CreatedAt); err != nil {
+	var errStr, token1, messageID sql.NullString
+	if err := s.Scan(&c.ID, &c.AuthzID, &c.Type, &c.Token, &c.Status, &validated, &errStr, &token1, &messageID, &c.CreatedAt); err != nil {
 		return nil, err
 	}
 	if validated.Valid {
@@ -453,6 +468,8 @@ func scanACMEChallenge(s caScanner) (*models.ACMEChallenge, error) {
 		c.Validated = &t
 	}
 	c.Error = errStr.String
+	c.EmailToken1 = token1.String
+	c.EmailMessageID = messageID.String
 	return &c, nil
 }
 
@@ -490,6 +507,41 @@ func (db *DB) UpdateACMEChallenge(id, status string, validated *time.Time, errDo
 		status, nullTime(validated), nullString(errDoc), id,
 	)
 	return err
+}
+
+// MarkACMEChallengeEmailSent records that an email-reply-00 challenge email has
+// been dispatched: it stores the message's Message-ID (to thread the reply back
+// to this challenge) and moves the challenge to "processing" so a subsequent
+// respond is idempotent and the inbound poller picks it up.
+func (db *DB) MarkACMEChallengeEmailSent(id, messageID string) error {
+	_, err := db.exec(
+		`UPDATE acme_challenges SET status = ?, email_message_id = ? WHERE id = ?`,
+		models.ACMEChallengeStatusProcessing, messageID, id,
+	)
+	return err
+}
+
+// ListACMEChallengesByStatusType returns every challenge in the given status of
+// the given type. The inbound-mail poller uses it to enumerate email-reply-00
+// challenges awaiting a reply; the set is small (one per outstanding S/MIME
+// order) so no dedicated index is warranted.
+func (db *DB) ListACMEChallengesByStatusType(status, challengeType string) ([]models.ACMEChallenge, error) {
+	rows, err := db.query(
+		`SELECT `+acmeChallengeColumns+` FROM acme_challenges WHERE status = ? AND type = ?`,
+		status, challengeType)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []models.ACMEChallenge
+	for rows.Next() {
+		c, err := scanACMEChallenge(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *c)
+	}
+	return out, rows.Err()
 }
 
 // nullTime renders a *time.Time as a driver-friendly nullable value.

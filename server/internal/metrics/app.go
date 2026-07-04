@@ -344,6 +344,18 @@ var (
 		"secsy_acme_certificates_issued_total",
 		"Certificates issued via the ACME finalize path, by issuance profile.",
 		"profile")
+	// ACMEEmailChallenge counts RFC 8823 email-reply-00 challenge lifecycle
+	// events (S/MIME issuance via ACME), by "event": sent (a signed challenge
+	// email dispatched to the mailbox), reply_matched (an inbound reply threaded
+	// back to a pending challenge), send_error (the challenge email could not be
+	// dispatched), or no_match (an inbound reply matched no pending challenge and
+	// was discarded). The valid/invalid outcome of a matched reply is additionally
+	// recorded on ACMEChallengeValidations with type "email-reply-00", giving the
+	// challenge parity with the domain-validation challenges.
+	ACMEEmailChallenge = NewCounter(Default,
+		"secsy_acme_email_challenge_total",
+		"ACME email-reply-00 (RFC 8823) challenge lifecycle events, by event.",
+		"event")
 
 	// ACMENonces tracks the shared/durable anti-replay nonce store (Task 97) by
 	// "result": issued (a nonce minted), valid (a nonce consumed on its first use),

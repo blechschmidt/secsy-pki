@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -44,6 +45,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/issueapproval"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/leader"
+	"github.com/blechschmidt/secsy-pki/server/internal/mailtransport"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -766,6 +768,13 @@ func main() {
 		// shared consumed-set is consulted — so this is hygiene that bounds the
 		// set's growth.
 		elector.Register("acme-nonce-gc", acmeSrv.RunNonceGC)
+		// RFC 8823 email-reply-00 inbound-mail poller (Task 108): when the email
+		// challenge is configured, one replica reads the shared IMAP mailbox and
+		// validates challenge replies.
+		if acmeCfg.Email != nil {
+			elector.Register("acme-email-poller", acmeSrv.RunEmailChallengePoller)
+			log.Printf("ACME email-reply-00 (RFC 8823) challenge enabled (from=%s)", cfg.ACME.Email.From)
+		}
 	}
 
 	// SCEP (RFC 8894) device-enrollment server. Like ACME it authenticates
@@ -1221,7 +1230,124 @@ func buildACMEConfig(db *database.DB, cfg *config.Config) (acme.Config, error) {
 		}
 		ac.Profiles = profiles
 	}
+
+	// RFC 8823 email-reply-00 challenge (Task 108): wire the SMTP sink, the IMAP
+	// poller, and the optional DKIM signer for S/MIME issuance via ACME.
+	email, err := buildACMEEmailConfig(cfg)
+	if err != nil {
+		return acme.Config{}, err
+	}
+	ac.Email = email
 	return ac, nil
+}
+
+// buildACMEEmailConfig assembles the RFC 8823 email-reply-00 challenge transport
+// (Task 108) from the acme.email config block. It returns nil (the challenge
+// off) when the block is not fully configured; otherwise it constructs the SMTP
+// sender, the IMAP inbox, and (when present) the DKIM signer, and verifies the
+// email issuance profile is an S/MIME profile so applySMIMEPolicy gates finalize.
+func buildACMEEmailConfig(cfg *config.Config) (*acme.EmailChallengeConfig, error) {
+	ec := cfg.ACME.Email
+	if !ec.Configured() {
+		return nil, nil
+	}
+
+	profile := ec.Profile
+	if profile == "" {
+		profile = "smime"
+	}
+	if p, err := ca.LookupProfile(profile); err != nil {
+		return nil, fmt.Errorf("acme.email.profile: %w", err)
+	} else if p.SMIME == nil {
+		return nil, fmt.Errorf("acme.email.profile %q is not an S/MIME profile", profile)
+	}
+
+	sender, err := mailtransport.NewSMTPSender(mailtransport.SMTPConfig{
+		Host:               ec.SMTP.Host,
+		Port:               ec.SMTP.Port,
+		Username:           ec.SMTP.Username,
+		Password:           ec.SMTP.Password,
+		TLSMode:            ec.SMTP.TLSMode,
+		InsecureSkipVerify: ec.SMTP.InsecureSkipVerify,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("acme.email.smtp: %w", err)
+	}
+	inbox, err := mailtransport.NewIMAPInbox(mailtransport.IMAPConfig{
+		Host:               ec.IMAP.Host,
+		Port:               ec.IMAP.Port,
+		Username:           ec.IMAP.Username,
+		Password:           ec.IMAP.Password,
+		Mailbox:            ec.IMAP.Mailbox,
+		TLSMode:            ec.IMAP.TLSMode,
+		InsecureSkipVerify: ec.IMAP.InsecureSkipVerify,
+		MaxMessages:        ec.IMAP.MaxMessages,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("acme.email.imap: %w", err)
+	}
+
+	out := &acme.EmailChallengeConfig{
+		From:          ec.From,
+		Sender:        sender,
+		Inbox:         inbox,
+		Profile:       profile,
+		SubjectPrefix: ec.SubjectPrefix,
+	}
+	if ec.PollIntervalSeconds > 0 {
+		out.PollInterval = time.Duration(ec.PollIntervalSeconds) * time.Second
+	}
+	dkim, err := buildDKIMSigner(ec.DKIM)
+	if err != nil {
+		return nil, fmt.Errorf("acme.email.dkim: %w", err)
+	}
+	out.DKIM = dkim
+	return out, nil
+}
+
+// buildDKIMSigner loads the RSA DKIM key (from file or inline PEM) and returns a
+// signer, or nil when no key is configured (challenge emails are then unsigned).
+func buildDKIMSigner(c config.ACMEEmailDKIM) (*acme.DKIMSigner, error) {
+	pemData := strings.TrimSpace(c.PrivateKeyPEM)
+	if pemData == "" && c.PrivateKeyFile == "" {
+		return nil, nil
+	}
+	if pemData == "" {
+		b, err := os.ReadFile(c.PrivateKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading private key %q: %w", c.PrivateKeyFile, err)
+		}
+		pemData = string(b)
+	}
+	block, _ := pem.Decode([]byte(pemData))
+	if block == nil {
+		return nil, fmt.Errorf("no PEM block in DKIM private key")
+	}
+	key, err := parseRSAPrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	signer := &acme.DKIMSigner{Domain: c.Domain, Selector: c.Selector, Signer: key}
+	if err := signer.Validate(); err != nil {
+		return nil, err
+	}
+	return signer, nil
+}
+
+// parseRSAPrivateKey decodes a PKCS#1 or PKCS#8 RSA private key.
+func parseRSAPrivateKey(der []byte) (*rsa.PrivateKey, error) {
+	if k, err := x509.ParsePKCS1PrivateKey(der); err == nil {
+		return k, nil
+	}
+	k, err := x509.ParsePKCS8PrivateKey(der)
+	if err != nil {
+		return nil, fmt.Errorf("parsing DKIM private key: %w", err)
+	}
+	rsaKey, ok := k.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("DKIM private key is not an RSA key")
+	}
+	return rsaKey, nil
 }
 
 // resolveCAID resolves a configured (caID, caLabel) pair to a concrete CA id,

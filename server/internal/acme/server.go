@@ -109,6 +109,14 @@ type Config struct {
 	// Set it (identically on every replica, at least nonceMinSecretLen bytes) to
 	// skip the startup store read or to rotate the signing key. It is never logged.
 	NonceSecret []byte
+
+	// Email, when set with both a MailSender and a MailInbox, enables the RFC 8823
+	// email-reply-00 challenge for "email"-type identifiers (S/MIME issuance via
+	// ACME, Task 108). The server then accepts email orders, offers the challenge,
+	// and runs an inbound-mail poller (register RunEmailChallengePoller as a
+	// leader-elected job). Absent or half-configured, the challenge is not offered
+	// and email identifiers are rejected as unsupported.
+	Email *EmailChallengeConfig
 }
 
 // ACMEProfile is one client-selectable issuance profile exposed by the ACME
@@ -207,6 +215,7 @@ type Server struct {
 	cfg       Config
 	nonces    *nonceStore
 	validator *Validator
+	email     *emailChallenger
 	now       func() time.Time
 }
 
@@ -221,6 +230,7 @@ func New(db *database.DB, provider keyprovider.Provider, cfg Config) *Server {
 		cfg:       cfg,
 		nonces:    newNonceStore(db, resolveNonceSecret(db, cfg.NonceSecret), time.Now),
 		validator: newValidator(cfg.HTTP01Port, cfg.TLSALPN01Port, cfg.DNSResolver),
+		email:     newEmailChallenger(cfg.Email),
 		now:       time.Now,
 	}
 }

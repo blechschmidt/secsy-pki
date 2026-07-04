@@ -198,6 +198,12 @@ default offers all three. IP-address identifiers (RFC 8738) are disabled unless
 `acme.allow_ip_identifiers: true`; when enabled they may be validated with
 http-01 or tls-alpn-01.
 
+**`email-reply-00` (RFC 8823)** validates `email`-type identifiers for **S/MIME**
+issuance: the server mails a signed challenge to the mailbox and validates the
+reply. It is offered only when an inbound-mail (IMAP) poller is configured; see
+[enrollment.md §7](enrollment.md#7-acme-smime-certificates-rfc-8823-email-reply-00)
+for the `acme.email` block and full flow.
+
 ## 4. Access control: External Account Binding
 
 Because ACME clients self-register with any key pair, an open ACME server will

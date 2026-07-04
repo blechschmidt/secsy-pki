@@ -246,6 +246,7 @@ Every enrollment appends an entry to the hash-chained
 | `cmp.kur` | CMP key-update (rekey) request |
 | `cmp.rr` | CMP revocation request |
 | `cert.brski` | BRSKI voucher exchange / status telemetry (see [brski.md](brski.md)) |
+| `cert.acme_email` | ACME RFC 8823 email-reply-00 challenge dispatched / validated (§7) |
 
 Denied enrollments are recorded with result `denied`; issuance failures with
 `error`.
@@ -288,3 +289,126 @@ Denied enrollments are recorded with result `denied`; issuance failures with
 | POST | `/.well-known/brski/requestvoucher` | IDevID-signed request | BRSKI voucher exchange ([brski.md](brski.md)) |
 | POST | `/.well-known/brski/voucher_status` | (over pledge TLS) | BRSKI voucher telemetry |
 | POST | `/.well-known/brski/enrollstatus` | (over pledge TLS) | BRSKI enrollment telemetry |
+
+## 7. ACME S/MIME certificates (RFC 8823 email-reply-00)
+
+The ACME server ([acme.md](acme.md)) can also issue **S/MIME
+(id-kp-emailProtection) certificates** for `email`-type identifiers, using the
+RFC 8823 `email-reply-00` challenge. This lets standard tooling obtain
+end-user/mailbox certificates through the same account → order → challenge →
+finalize flow as a TLS certificate — no separate protocol. Issuance is gated by
+the S/MIME profile family ([smime.md](smime.md)): every leaf runs through
+`applySMIMEPolicy` (mailbox normalization + domain allowlists) and the S/MIME
+Baseline-Requirements lint rules before any HSM signature.
+
+### How the challenge proves mailbox control
+
+The token is split in two. The server generates **token-part-1** and delivers it
+only in the challenge email's Subject; **token-part-2** is the ordinary challenge
+`token`, delivered over HTTPS. The client concatenates them, computes the RFC
+8555 key authorization over the full token, and replies to the challenge email
+with `base64url(SHA-256(keyAuthorization))` between
+`-----BEGIN ACME RESPONSE-----` / `-----END ACME RESPONSE-----` markers. Because
+answering requires **both** halves (one from the mailbox, one from the account),
+a correct reply proves the account holder controls the mailbox.
+
+```
+client ──newOrder{identifier: email}──▶ server
+client ◀─authz: email-reply-00 (token = token-part-2, from = <sender>)─ server
+client ──respond (POST challenge)──────▶ server ──signed challenge email
+                                                   (Subject: "ACME: <token-part-1>")──▶ mailbox
+mailbox ──reply: -----BEGIN ACME RESPONSE----- <digest> -----END…──▶ IMAP inbox
+server (leader-elected poller) reads inbox, threads reply→challenge, validates digest
+client ──finalize(CSR with rfc822Name SAN)──▶ server ──▶ S/MIME certificate
+```
+
+The challenge email is signed with **DKIM** (RFC 6376, rsa-sha256,
+relaxed/relaxed) when a signing key is configured, so the receiving side can
+verify authenticity (RFC 8823 §5). The reply MUST come **from the mailbox being
+validated** — a reply whose `From` does not match is rejected.
+
+### Enabling it
+
+The challenge is offered **only when both an outbound SMTP sink and an inbound
+IMAP poller are configured** — without the inbox the server cannot observe
+replies, so `email` identifiers are rejected as unsupported. Add an `email`
+block under `acme`:
+
+```yaml
+acme:
+  enabled: true
+  ca_label: "Issuing CA"
+  email:
+    enabled: true
+    from: "acme-challenge@pki.example.com"   # sender; echoed as the challenge "from"
+    profile: "smime"                          # S/MIME issuance profile (must have an smime config)
+    poll_interval_seconds: 30                 # inbox poll cadence (leader-elected)
+    subject_prefix: "ACME:"                   # challenge Subject label (default)
+    smtp:
+      host: smtp.example.com
+      port: 587
+      username: acme-challenge@pki.example.com
+      password: "${SMTP_PASSWORD}"
+      tls_mode: starttls                      # starttls (default) | implicit | none
+    imap:
+      host: imap.example.com
+      port: 993
+      username: acme-challenge@pki.example.com
+      password: "${IMAP_PASSWORD}"
+      mailbox: INBOX
+      tls_mode: implicit                      # implicit (default, IMAPS) | starttls | none
+      max_messages: 64                        # cap per poll cycle
+    dkim:                                     # optional but recommended (RFC 8823 §5)
+      domain: pki.example.com
+      selector: acme                          # publish the pubkey at acme._domainkey.pki.example.com
+      private_key_file: /etc/secsy/dkim-acme.key   # PEM RSA key (or private_key_pem inline)
+```
+
+Notes:
+
+- **`profile`** must resolve to an S/MIME profile (`smime`, `smime-sign`,
+  `smime-encrypt`, or a custom profile carrying an `smime:` block); startup fails
+  otherwise. An email order is always issued under that profile even if a client
+  selects a different [ACME profile](acme.md) — unless that selection is itself
+  an S/MIME profile, in which case it is honored. Use an **RSA** subject key for
+  the dual-use `smime` profile (its `keyEncipherment` usage is invalid for an EC
+  key; use `smime-sign` for EC signing-only certificates).
+- **Order composition.** An email order must contain only `email` identifiers
+  (no mixing with `dns`/`ip`); the finalize CSR must carry exactly those
+  addresses as `rfc822Name` SANs.
+- **Multi-replica.** The inbound poller runs as a leader-elected job, so a single
+  replica consumes the shared IMAP mailbox; SMTP dispatch happens inline on
+  whichever replica handles the client's challenge response.
+- **DKIM** is optional; when omitted, challenge emails are unsigned (RFC 8823
+  recommends signing). The key may be supplied by file or inline PEM
+  (`private_key_pem`).
+
+### Client example (`acme.sh` / lego are TLS-focused)
+
+Most general-purpose ACME clients do not yet drive `email-reply-00`; the flow is
+typically used by S/MIME-aware MUAs and certificate agents. The exchange is
+plain RFC 8555 with one added step — replying to the challenge email — so a thin
+client is:
+
+1. `newOrder` with `identifiers: [{ "type": "email", "value": "user@example.com" }]`.
+2. Read the `email-reply-00` challenge's `token` (token-part-2) and `from`.
+3. `POST` the challenge to trigger the challenge email; extract token-part-1 from
+   its Subject (`ACME: <token-part-1>`).
+4. `keyAuth = (token-part-1 ‖ token-part-2) + "." + base64url(thumbprint)`.
+5. Reply to the challenge email with
+   `-----BEGIN ACME RESPONSE-----\n<base64url(SHA-256(keyAuth))>\n-----END ACME RESPONSE-----`.
+6. Poll the order to `ready`, then `finalize` with a CSR whose only SAN is the
+   `rfc822Name` for the mailbox; download the S/MIME certificate.
+
+### Security notes
+
+- **Fail-closed.** A missing/incorrect response, a reply from the wrong mailbox,
+  or an email dispatch failure marks the challenge (and the order) invalid.
+- **S/MIME gate always runs.** Email orders are pinned to an S/MIME profile at
+  both `newOrder` and `finalize`, so `applySMIMEPolicy` and the SMBR lint rules
+  cannot be bypassed by profile selection.
+- **Token entropy.** Both token halves carry ≥128 bits; token-part-1 never
+  appears over HTTPS and token-part-2 never appears in email, so neither channel
+  alone yields the key authorization.
+- **Dedicated mailbox.** Point the IMAP poller at a mailbox used only for ACME
+  challenges; processed replies are marked `\Seen` so they are not reprocessed.

@@ -188,10 +188,17 @@ type wireAuthorization struct {
 
 // wireChallenge is the challenge object (RFC 8555 §7.1.5 / §8).
 type wireChallenge struct {
-	Type      string   `json:"type"`
-	URL       string   `json:"url"`
-	Status    string   `json:"status"`
-	Token     string   `json:"token"`
+	Type   string `json:"type"`
+	URL    string `json:"url"`
+	Status string `json:"status"`
+	// Token is the challenge token. For email-reply-00 (RFC 8823) it is
+	// token-part-2; the client concatenates it with token-part-1 (delivered in
+	// the challenge email's Subject) to form the full ACME token.
+	Token string `json:"token"`
+	// From is the sender address the email-reply-00 challenge email will come
+	// from (RFC 8823 §5); the client validates the challenge email's origin
+	// against it. Present only for email-reply-00 challenges.
+	From      string   `json:"from,omitempty"`
 	Validated string   `json:"validated,omitempty"`
 	Error     *Problem `json:"error,omitempty"`
 }

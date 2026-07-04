@@ -1294,6 +1294,13 @@ const (
 	// hardware-resident key by returning a WebAuthn attestation object
 	// (Apple/TPM) committing to the challenge's key authorization.
 	ACMEChallengeDeviceAttest01 = "device-attest-01"
+	// ACMEChallengeEmailReply00 is the email-reply-00 challenge (RFC 8823) for
+	// "email"-type identifiers (S/MIME). The server mails a signed challenge to
+	// the mailbox carrying token-part-1 in the Subject; the mailbox owner replies
+	// with base64url(SHA-256(keyAuthorization)) computed over the full token
+	// (token-part-1 ‖ token-part-2), which the server matches from its inbound
+	// (IMAP) mailbox. Only offered when an inbound-mail poller is configured.
+	ACMEChallengeEmailReply00 = "email-reply-00"
 )
 
 // ACMEIdentifier is a subject the client wishes to certify (RFC 8555 §7.1.4).
@@ -1369,14 +1376,25 @@ type ACMEAuthorization struct {
 
 // ACMEChallenge is one validation method offered for an authorization.
 type ACMEChallenge struct {
-	ID        string     `json:"id"`
-	AuthzID   string     `json:"-"`
-	Type      string     `json:"type"`
+	ID      string `json:"id"`
+	AuthzID string `json:"-"`
+	Type    string `json:"type"`
+	// Token is the challenge token exposed over HTTPS. For email-reply-00 (RFC
+	// 8823) it is token-part-2; for every other challenge type it is the whole
+	// token.
 	Token     string     `json:"token"`
 	Status    string     `json:"status"`
 	Validated *time.Time `json:"validated,omitempty"`
 	Error     string     `json:"-"`
-	CreatedAt time.Time  `json:"created_at"`
+	// EmailToken1 is token-part-1 of an email-reply-00 challenge (RFC 8823 §3):
+	// the high-entropy half delivered to the mailbox in the challenge email's
+	// Subject, never exposed over HTTPS. Empty for all other challenge types.
+	EmailToken1 string `json:"-"`
+	// EmailMessageID is the Message-ID of the challenge email once it has been
+	// sent, used to match the mailbox owner's reply (via In-Reply-To/References)
+	// back to this challenge. Empty until the email has been dispatched.
+	EmailMessageID string    `json:"-"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // KEK (key-encryption-key) rotation states for the secret envelope layer
