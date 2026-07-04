@@ -14,6 +14,12 @@ handling, tuning, rotation, DR), and the
 [Architecture Decision Records](adr/README.md) for the reasoning behind the
 design.
 
+**Preparing for a WebTrust / CA-Browser-Forum audit?** Start with the
+[Certificate Policy / CPS (RFC 3647)](certificate-policy.md) and the
+[compliance control mapping](compliance-mapping.md), which trace every required
+control to the implementing code and mark the organizational gaps you must
+close.
+
 ## Guides
 
 | Guide | Covers |
@@ -21,6 +27,8 @@ design.
 | [**Operator runbook**](RUNBOOK.md) | **Day-2 operations:** CA-key-compromise incident response, OCSP/CRL outage handling, ACME/SCEP/EST/TSA/CMP endpoint troubleshooting, rate-limit & HSM-concurrency tuning, CT log outage behavior, CA key rotation/retirement, the disaster-recovery drill, and preflight diagnostics (`secsy-ca doctor`: read-only config/HSM/KMS/DB/audit-chain/expiry/CRL/clock/TLS checks with CI exit codes) |
 | [**Incident response: mass revocation**](incident-response.md) | Key-compromise bulk revocation against the CA/B 24-hour clock: scoping the selection (profile, CN/SAN glob, issuance window, serial lists incl. attacker-issued serials unknown to the inventory), the mandatory dry-run + confirmed-count contract, batched execution with resume-after-interruption, the single end-of-run CRL+delta regeneration, OCSP cache invalidation + presign refresh, per-certificate + summary audit events, and propagation verification (`secsy-ca revoke-bulk`, `POST /api/ca/{id}/revocations:bulk`, console panel) |
 | [**Architecture Decision Records**](adr/README.md) | The load-bearing design decisions: key-provider abstraction, HSM non-extractability invariants, fail-closed security gates, dual-chain rotation overlap, and the PQC/hybrid algorithm choice |
+| [**Certificate Policy / CPS (RFC 3647)**](certificate-policy.md) | The governance document WebTrust / CA-Browser-Forum audits require: an RFC 3647-structured Certificate Policy & Certification Practice Statement (all nine sections) populated from the actual implementation — HSM key generation/non-extractability, the fail-closed pre-issuance gate pipeline (lint/CAA/name-constraints/CT), revocation (CRL/delta/OCSP), tamper-evident + RFC 3161-anchored audit logging, key ceremony, DR, and trusted roles/RBAC — with explicit `[OPERATOR: …]` placeholders for the organizational/legal facts a deployment must supply |
+| [**Compliance control mapping**](compliance-mapping.md) | CA/Browser-Forum TLS Baseline Requirements, S/MIME BR, and WebTrust-for-CA principles traced to the implementing feature/package/file, each with a status (enforced / config-dependent / operator / gap) and an explicit **gaps-and-assumptions** column — verified against the code (including honestly-listed gaps: MPIC, pre-issuance weak-key blocklisting, SC-081 phased validity) |
 | [HSM / PKCS#11 configuration](hsm-configuration.md) | The key-provider abstraction, configuring a PKCS#11 HSM or the software backend, and SoftHSM for dev/CI |
 | [Cloud KMS backend (AWS KMS / Azure Key Vault)](cloud-kms.md) | Hosting CA/TSA/OCSP signing keys in AWS KMS or Azure Key Vault: `key_provider.type: kms` + backend selection, per-role backend routing (`roles.ca`/`roles.tsa`), credentials via the cloud SDK default chain, IAM/RBAC requirements, the non-extractability guarantee, and the in-memory `fake` backend for credential-free tests |
 | [HashiCorp Vault Transit backend](vault-transit.md) | Hosting CA/TSA/OCSP signing keys and KEKs in a Vault Transit engine (`kms.backend: vault`): trust/non-extractability model, token & AppRole auth with transparent re-login, least-privilege Vault policy, per-role selection, wrap/unwrap (KEK) support, the openssl-verify interop path, and the hermetic httptest fake-Vault test |

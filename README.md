@@ -31,6 +31,8 @@ Comprehensive deployment and operations guides live in [`docs/`](docs/README.md)
 |-------|-------|
 | [Operator runbook](docs/RUNBOOK.md) | Day-2 ops: incident response, outage handling, tuning, rotation, DR |
 | [Architecture Decision Records](docs/adr/README.md) | Why the key design decisions were made |
+| [Certificate Policy / CPS (RFC 3647)](docs/certificate-policy.md) | Audit-facing CP/CPS (all nine sections) populated from the implementation, with `[OPERATOR: …]` placeholders for organizational/legal content |
+| [Compliance control mapping](docs/compliance-mapping.md) | CA/Browser-Forum TLS BR, S/MIME BR & WebTrust-for-CA → implementing package/file, with an explicit gaps-and-assumptions column |
 | [HSM / PKCS#11 configuration](docs/hsm-configuration.md) | Key provider, HSM & SoftHSM setup |
 | [Cloud KMS backend (AWS KMS / Azure Key Vault)](docs/cloud-kms.md) | Cloud-hosted CA/TSA/OCSP keys, per-role backend selection, IAM/RBAC |
 | [HashiCorp Vault Transit backend](docs/vault-transit.md) | CA/TSA/OCSP keys + KEKs in Vault Transit, token/AppRole auth, wrap/unwrap, openssl interop |
