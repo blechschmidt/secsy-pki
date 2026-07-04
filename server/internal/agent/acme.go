@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net"
 	"net/http"
@@ -36,10 +37,12 @@ var errARIUnsupported = errors.New("acme server does not advertise renewalInfo")
 // EAB), http-01 solving, and the ARI renewal-info extension the stdlib client
 // lacks.
 type acmeClient struct {
-	cfg      ACMEConfig
-	stateDir string
-	http     *http.Client
-	solver   http01Solver
+	cfg       ACMEConfig
+	stateDir  string
+	http      *http.Client
+	challenge string       // "http-01" or "dns-01"
+	solver    http01Solver // set when challenge is http-01
+	dns       *dns01Solver // set when challenge is dns-01
 
 	mu         sync.Mutex
 	client     *xacme.Client
@@ -48,14 +51,23 @@ type acmeClient struct {
 	ariLooked  bool
 }
 
-func newACMEClient(cfg ACMEConfig, stateDir string, httpClient *http.Client) *acmeClient {
-	var solver http01Solver
-	if cfg.HTTP01.Webroot != "" {
-		solver = &webrootSolver{dir: cfg.HTTP01.Webroot}
-	} else {
-		solver = &listenerSolver{addr: cfg.HTTP01.Listen}
+func newACMEClient(cfg ACMEConfig, stateDir string, httpClient *http.Client) (*acmeClient, error) {
+	c := &acmeClient{cfg: cfg, stateDir: stateDir, http: httpClient, challenge: cfg.challenge()}
+	switch c.challenge {
+	case ChallengeDNS01:
+		dns, err := newDNS01Solver(cfg.DNS01)
+		if err != nil {
+			return nil, fmt.Errorf("configuring dns-01 solver: %w", err)
+		}
+		c.dns = dns
+	default:
+		if cfg.HTTP01.Webroot != "" {
+			c.solver = &webrootSolver{dir: cfg.HTTP01.Webroot}
+		} else {
+			c.solver = &listenerSolver{addr: cfg.HTTP01.Listen}
+		}
 	}
-	return &acmeClient{cfg: cfg, stateDir: stateDir, http: httpClient, solver: solver}
+	return c, nil
 }
 
 // ensureAccount lazily loads (or creates) the account key and registers the
@@ -202,8 +214,8 @@ func (c *acmeClient) Enroll(ctx context.Context, spec *CertSpec, csrDER []byte, 
 	return chain, nil
 }
 
-// solveAuthorization answers one authorization's http-01 challenge and waits
-// for the server to validate it.
+// solveAuthorization answers one authorization using the configured challenge
+// type (http-01 by default, or dns-01) and waits for the server to validate it.
 func (c *acmeClient) solveAuthorization(ctx context.Context, client *xacme.Client, authzURL string) error {
 	authz, err := client.GetAuthorization(ctx, authzURL)
 	if err != nil {
@@ -212,15 +224,27 @@ func (c *acmeClient) solveAuthorization(ctx context.Context, client *xacme.Clien
 	if authz.Status == xacme.StatusValid {
 		return nil
 	}
-	var chal *xacme.Challenge
+	if c.challenge == ChallengeDNS01 {
+		return c.solveDNS01(ctx, client, authz)
+	}
+	return c.solveHTTP01(ctx, client, authz)
+}
+
+// findChallenge returns the offered challenge of the given type, or nil.
+func findChallenge(authz *xacme.Authorization, challengeType string) *xacme.Challenge {
 	for _, ch := range authz.Challenges {
-		if ch.Type == "http-01" {
-			chal = ch
-			break
+		if ch.Type == challengeType {
+			return ch
 		}
 	}
+	return nil
+}
+
+// solveHTTP01 answers an authorization's http-01 challenge.
+func (c *acmeClient) solveHTTP01(ctx context.Context, client *xacme.Client, authz *xacme.Authorization) error {
+	chal := findChallenge(authz, "http-01")
 	if chal == nil {
-		return fmt.Errorf("authorization for %s offers no http-01 challenge (agent solves http-01 only)", authz.Identifier.Value)
+		return fmt.Errorf("authorization for %s offers no http-01 challenge", authz.Identifier.Value)
 	}
 	keyAuth, err := client.HTTP01ChallengeResponse(chal.Token)
 	if err != nil {
@@ -230,6 +254,41 @@ func (c *acmeClient) solveAuthorization(ctx context.Context, client *xacme.Clien
 		return fmt.Errorf("provisioning http-01 response: %w", err)
 	}
 	defer c.solver.cleanup(chal.Token)
+
+	if _, err := client.Accept(ctx, chal); err != nil {
+		return fmt.Errorf("accepting challenge: %w", err)
+	}
+	if _, err := client.WaitAuthorization(ctx, authz.URI); err != nil {
+		return fmt.Errorf("authorization for %s failed: %w", authz.Identifier.Value, err)
+	}
+	return nil
+}
+
+// solveDNS01 answers an authorization's dns-01 challenge: it publishes the
+// _acme-challenge TXT record through the configured DNSProvider, waits for it to
+// propagate, tells the server to validate, and withdraws the record afterwards.
+func (c *acmeClient) solveDNS01(ctx context.Context, client *xacme.Client, authz *xacme.Authorization) error {
+	chal := findChallenge(authz, "dns-01")
+	if chal == nil {
+		return fmt.Errorf("authorization for %s offers no dns-01 challenge", authz.Identifier.Value)
+	}
+	value, err := client.DNS01ChallengeRecord(chal.Token)
+	if err != nil {
+		return fmt.Errorf("computing dns-01 record value: %w", err)
+	}
+	fqdn := challengeRecordName(authz.Identifier.Value)
+	if err := c.dns.present(ctx, fqdn, value); err != nil {
+		return fmt.Errorf("provisioning dns-01 record: %w", err)
+	}
+	defer func() {
+		// Withdraw with a detached context so cleanup still runs when the
+		// enrollment context has already been cancelled.
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := c.dns.cleanup(cleanupCtx, fqdn, value); err != nil {
+			log.Printf("agent: withdrawing dns-01 record %s: %v", fqdn, err)
+		}
+	}()
 
 	if _, err := client.Accept(ctx, chal); err != nil {
 		return fmt.Errorf("accepting challenge: %w", err)

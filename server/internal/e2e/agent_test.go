@@ -34,6 +34,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/dns/dnsmessage"
+
 	acmesrv "github.com/blechschmidt/secsy-pki/server/internal/acme"
 	"github.com/blechschmidt/secsy-pki/server/internal/agent"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
@@ -57,10 +59,27 @@ type agentEnv struct {
 	cfgPath string
 }
 
+// agentEnvOpts selects how the ACME server under test validates challenges.
+type agentEnvOpts struct {
+	// solverPort, when non-zero, wires the http-01 validator to dial the agent's
+	// standalone solver on 127.0.0.1 (like a DNS A record pointing at the host).
+	solverPort int
+	// challenge is the single challenge type the ACME server offers (default
+	// "http-01"). Set to "dns-01" to exercise the agent's dns-01 solver.
+	challenge string
+	// resolver answers the server-side dns-01 TXT lookup; required for dns-01.
+	resolver acmesrv.Resolver
+}
+
 // setupAgentEnv builds root+intermediate on the HSM and mounts ACME and EST
 // servers on one httptest server. solverPort, when non-zero, wires the ACME
 // http-01 validator to dial the agent's standalone solver on 127.0.0.1.
 func setupAgentEnv(t *testing.T, solverPort int) *agentEnv {
+	return setupAgentEnvOpts(t, agentEnvOpts{solverPort: solverPort})
+}
+
+// setupAgentEnvOpts is setupAgentEnv with explicit challenge/validator control.
+func setupAgentEnvOpts(t *testing.T, opts agentEnvOpts) *agentEnv {
 	t.Helper()
 	provider := hsmProvider(t)
 
@@ -95,16 +114,20 @@ func setupAgentEnv(t *testing.T, solverPort int) *agentEnv {
 
 	mux := http.NewServeMux()
 
+	challenge := opts.challenge
+	if challenge == "" {
+		challenge = "http-01"
+	}
 	acmeServer := acmesrv.New(db, provider, acmesrv.Config{
 		CAID:           inter.ID,
 		Profile:        "server",
-		ChallengeTypes: []string{"http-01"},
+		ChallengeTypes: []string{challenge},
 	})
-	if solverPort != 0 {
+	if opts.solverPort != 0 {
 		// Validation URLs name the (unresolvable) test domain; dial them all to
 		// the agent's http-01 solver instead, like a DNS record pointing at the
 		// host would in production.
-		solverAddr := fmt.Sprintf("127.0.0.1:%d", solverPort)
+		solverAddr := fmt.Sprintf("127.0.0.1:%d", opts.solverPort)
 		acmeServer.SetValidator(&acmesrv.Validator{
 			HTTPClient: &http.Client{
 				Timeout: 10 * time.Second,
@@ -116,6 +139,11 @@ func setupAgentEnv(t *testing.T, solverPort int) *agentEnv {
 			},
 			HTTPPort: 80,
 		})
+	}
+	if opts.resolver != nil {
+		// dns-01: the server validates by reading TXT records the agent's
+		// DnsProvider published into the shared test resolver.
+		acmeServer.SetValidator(&acmesrv.Validator{Resolver: opts.resolver})
 	}
 	acmeServer.Register(mux)
 
@@ -363,6 +391,178 @@ certificates:
 	if !strings.Contains(string(prom), `secsy_agent_certificate_present{certificate="acme-web"} 1`) {
 		t.Errorf("metrics missing presence gauge:\n%s", prom)
 	}
+
+	assertNoTempFiles(t, env.dir)
+}
+
+// txtFileResolver answers dns-01 TXT lookups from a directory the agent's exec
+// DnsProvider writes into: one file per record name holding the TXT value. The
+// ACME server uses it to validate the challenge.
+type txtFileResolver struct{ dir string }
+
+func (r txtFileResolver) LookupTXT(_ context.Context, name string) ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(r.dir, strings.TrimSuffix(name, ".")))
+	if err != nil {
+		return nil, nil // NODATA
+	}
+	return []string{string(data)}, nil
+}
+
+// txtDNSServer is a minimal UDP nameserver that serves TXT records from the same
+// file store. The agent's propagation check (a pinned net.Resolver) queries it,
+// so the real dns-01 propagation-polling path is exercised end to end.
+type txtDNSServer struct {
+	dir  string
+	conn *net.UDPConn
+}
+
+func startTXTDNSServer(t *testing.T, dir string) *txtDNSServer {
+	t.Helper()
+	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	s := &txtDNSServer{dir: dir, conn: pc}
+	go s.serve()
+	t.Cleanup(func() { _ = pc.Close() })
+	return s
+}
+
+func (s *txtDNSServer) addr() string { return s.conn.LocalAddr().String() }
+
+func (s *txtDNSServer) serve() {
+	buf := make([]byte, 1500)
+	for {
+		n, src, err := s.conn.ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+		if resp := s.respond(append([]byte(nil), buf[:n]...)); resp != nil {
+			_, _ = s.conn.WriteToUDP(resp, src)
+		}
+	}
+}
+
+func (s *txtDNSServer) respond(req []byte) []byte {
+	var p dnsmessage.Parser
+	h, err := p.Start(req)
+	if err != nil {
+		return nil
+	}
+	q, err := p.Question()
+	if err != nil {
+		return nil
+	}
+	b := dnsmessage.NewBuilder(nil, dnsmessage.Header{ID: h.ID, Response: true, RecursionAvailable: true})
+	_ = b.StartQuestions()
+	_ = b.Question(q)
+	if q.Type == dnsmessage.TypeTXT {
+		name := strings.TrimSuffix(q.Name.String(), ".")
+		if data, err := os.ReadFile(filepath.Join(s.dir, name)); err == nil {
+			_ = b.StartAnswers()
+			_ = b.TXTResource(
+				dnsmessage.ResourceHeader{Name: q.Name, Class: dnsmessage.ClassINET, TTL: 1},
+				dnsmessage.TXTResource{TXT: []string{string(data)}},
+			)
+		}
+	}
+	msg, _ := b.Finish()
+	return msg
+}
+
+// TestAgentACMEDNS01Enrollment drives the agent's dns-01 solver end-to-end
+// against a real HSM-backed ACME server: the exec DnsProvider publishes the
+// _acme-challenge TXT record, the server validates it, and a later ARI-driven
+// renewal (after server-side revocation) also re-enrolls over dns-01. This is
+// the firewalled-host path — the agent never opens an inbound HTTP listener.
+func TestAgentACMEDNS01Enrollment(t *testing.T) {
+	recDir := t.TempDir()
+	env := setupAgentEnvOpts(t, agentEnvOpts{challenge: "dns-01", resolver: txtFileResolver{dir: recDir}})
+	dns := startTXTDNSServer(t, recDir)
+
+	trustPath := env.path("trust.pem")
+	rootPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: env.root.Raw})
+	if err := os.WriteFile(trustPath, rootPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The exec provider writes the value to <recDir>/<record>; the agent's
+	// propagation check polls the in-process TXT nameserver that serves the same
+	// store, and the ACME server validates through its own file resolver.
+	env.writeConfig(t, fmt.Sprintf(`
+state_dir: %[1]s/state
+trust:
+  bundle_file: %[2]s
+acme:
+  directory: %[3]s/acme/directory
+  contact: ["mailto:ops@example.test"]
+  challenge: dns-01
+  dns01:
+    provider: exec
+    propagation_timeout: 20s
+    poll_interval: 200ms
+    resolvers: ["%[5]s"]
+    exec:
+      present: 'printf "%%s" "$SECSY_DNS01_VALUE" > "%[4]s/$SECSY_DNS01_RECORD"'
+      cleanup: 'rm -f "%[4]s/$SECSY_DNS01_RECORD"'
+renewal:
+  check_interval: 1m
+certificates:
+  - name: acme-dns
+    enroll: acme
+    dns_names: [agent-dns.example.test]
+    key_type: ecdsa-p256
+    key_file: %[1]s/pki/acme-dns.key
+    cert_file: %[1]s/pki/acme-dns.crt
+    fullchain_file: %[1]s/pki/acme-dns-fullchain.crt
+    reload:
+      command: 'cp "$SECSY_CERT_FILE" %[1]s/hook-snapshot.pem && echo fired >> %[1]s/hook.log'
+`, env.dir, trustPath, env.server.URL, recDir, dns.addr()))
+
+	a := env.newAgent(t)
+	ctx := context.Background()
+
+	// Pass 1: initial enrollment over dns-01.
+	report, err := a.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if got := report.Renewed(); len(got) != 1 || got[0] != "acme-dns" {
+		t.Fatalf("pass 1 renewed %v (failures %v), want [acme-dns]", got, report.Failed())
+	}
+	certFile := env.path("pki/acme-dns.crt")
+	leaf1 := readLeaf(t, certFile)
+	if len(leaf1.DNSNames) != 1 || leaf1.DNSNames[0] != "agent-dns.example.test" {
+		t.Fatalf("issued SANs = %v", leaf1.DNSNames)
+	}
+	env.verifyToRoot(t, leaf1, env.path("pki/acme-dns-fullchain.crt"))
+	env.assertHookFired(t, 1, certFile)
+
+	// The provider withdrew the challenge record after validation.
+	if _, err := os.Stat(filepath.Join(recDir, "_acme-challenge.agent-dns.example.test")); !os.IsNotExist(err) {
+		t.Errorf("dns-01 challenge record was not cleaned up: %v", err)
+	}
+
+	// ARI-driven renewal over dns-01: revoke server-side, jump past the cached
+	// Retry-After, and the next pass re-enrolls through the dns-01 solver.
+	if applied, err := env.mgr.RevokeCertificate(ctx, env.caID, leaf1.SerialNumber.String(), "keyCompromise"); err != nil || !applied {
+		t.Fatalf("RevokeCertificate: applied=%v err=%v", applied, err)
+	}
+	a.SetClock(func() time.Time { return time.Now().Add(7 * time.Hour) })
+
+	report, err = a.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce 2: %v", err)
+	}
+	if got := report.Renewed(); len(got) != 1 {
+		t.Fatalf("post-revocation pass renewed %v (failures %v), want [acme-dns]", got, report.Failed())
+	}
+	leaf2 := readLeaf(t, certFile)
+	if leaf2.SerialNumber.Cmp(leaf1.SerialNumber) == 0 {
+		t.Fatal("certificate serial unchanged after ARI-driven dns-01 renewal")
+	}
+	env.verifyToRoot(t, leaf2, env.path("pki/acme-dns-fullchain.crt"))
+	env.assertHookFired(t, 2, certFile)
 
 	assertNoTempFiles(t, env.dir)
 }

@@ -52,7 +52,10 @@ func New(cfg *Config) (*Agent, error) {
 		now:        time.Now,
 	}
 	if cfg.ACME.Directory != "" {
-		a.acme = newACMEClient(cfg.ACME, cfg.StateDir, httpClient)
+		a.acme, err = newACMEClient(cfg.ACME, cfg.StateDir, httpClient)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if cfg.EST.URL != "" {
 		a.est, err = newESTClient(cfg.EST, httpClient)

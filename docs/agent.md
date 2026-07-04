@@ -101,9 +101,62 @@ acme:
 The standalone solver binds `http01.listen` only while challenges are
 outstanding and releases the port after each pass, so it coexists with a web
 server that is stopped/reloaded around renewals; use `webroot` when something
-is permanently listening on port 80. Wildcard names need dns-01, which the
-agent does not solve — issue those through the server-side [ACME](acme.md) or
-[monitor](expiry-monitoring.md) flows instead.
+is permanently listening on port 80.
+
+### dns-01 (firewalled hosts and wildcards)
+
+Hosts that cannot expose an inbound HTTP listener or webroot — and any
+certificate with a **wildcard** name — enroll over **dns-01** instead. Set
+`acme.challenge: dns-01` and pick a `dns01.provider`; the agent publishes the
+`_acme-challenge.<name>` TXT record, waits for it to propagate, tells the server
+to validate, and withdraws the record afterwards. Three providers ship built-in:
+
+```yaml
+acme:
+  directory: https://pki.example.com/acme/directory
+  challenge: dns-01
+  dns01:
+    provider: rfc2136              # rfc2136 | exec | route53
+    propagation_timeout: 2m        # wait for the record to become visible
+    poll_interval: 4s
+    # resolvers: ["ns1.example.com"]  # where to check propagation (default: the rfc2136 server)
+    rfc2136:                        # dynamic DNS UPDATE with TSIG (RFC 2136 / 8945)
+      server: ns1.example.com       # authoritative server accepting signed UPDATEs
+      tsig_name: acme-update.
+      tsig_secret_file: /etc/secsy/tsig.key   # base64 secret (or tsig_secret: inline)
+      tsig_algorithm: hmac-sha256   # sha1/224/256/384/512
+      # zone: example.com.          # optional; discovered via SOA otherwise
+```
+
+- **`rfc2136`** — the most portable choice: any nameserver that accepts
+  TSIG-authenticated `UPDATE` (BIND, Knot, PowerDNS, …). Built directly on the
+  standard library / `golang.org/x/net`, so it adds no DNS dependency.
+- **`exec`** — shells out to operator `present`/`cleanup` scripts (reusing the
+  reload hook's hardened process-group runner), with the record passed in the
+  environment as `SECSY_DNS01_FQDN`, `SECSY_DNS01_VALUE`, `SECSY_DNS01_RECORD`,
+  and `SECSY_DNS01_ACTION`:
+
+  ```yaml
+  dns01:
+    provider: exec
+    exec:
+      present: /etc/secsy/dns-present.sh
+      cleanup: /etc/secsy/dns-cleanup.sh
+  ```
+
+- **`route53`** — upserts/deletes the TXT record in an AWS Route 53 hosted zone
+  (credentials from the standard SDK chain; `hosted_zone_id` optional and
+  otherwise discovered):
+
+  ```yaml
+  dns01:
+    provider: route53
+    route53:
+      hosted_zone_id: Z123EXAMPLE   # optional
+  ```
+
+dns-01 works identically for initial enrollment and ARI/fraction-driven
+renewals. http-01 remains the default when `challenge` is unset.
 
 ## Renewal scheduling
 
@@ -218,8 +271,28 @@ acme:
   contact: []
   eab_kid: ""
   eab_hmac_key: ""                # or eab_hmac_key_file
+  challenge: http-01              # http-01 (default) | dns-01
   http01:
     listen: ":80"                 # or webroot: /var/www/html
+  dns01:                          # used when challenge: dns-01
+    provider: ""                  # rfc2136 | exec | route53
+    propagation_timeout: 2m
+    poll_interval: 4s
+    resolvers: []                 # propagation-check servers (default: rfc2136 server)
+    rfc2136:
+      server: ""                  # authoritative server (host[:port])
+      zone: ""                    # optional; SOA-discovered otherwise
+      tsig_name: ""
+      tsig_secret: ""             # base64 (or tsig_secret_file)
+      tsig_algorithm: hmac-sha256
+      ttl: 120
+    exec:
+      present: ""                 # required: publish script/argv
+      cleanup: ""                 # optional: withdraw script/argv
+    route53:
+      hosted_zone_id: ""          # optional; discovered otherwise
+      region: ""                  # optional; SDK chain otherwise
+      ttl: 60
 
 est:
   url: ""                         # enables EST enrollment

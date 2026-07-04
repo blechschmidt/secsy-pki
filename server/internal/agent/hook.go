@@ -49,19 +49,7 @@ func (a *Agent) runHook(spec *CertSpec, leaf *x509.Certificate) error {
 func (a *Agent) runHookCommand(spec *CertSpec, r *ReloadConfig, leaf *x509.Certificate) error {
 	ctx, cancel := context.WithTimeout(context.Background(), r.Timeout.Std())
 	defer cancel()
-	cmd := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
-	// Run the hook in its own process group and kill the whole group on
-	// timeout: otherwise a grandchild (e.g. `sh -c` spawning a service) could
-	// outlive the deadline and hold the output pipe open indefinitely.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-	cmd.WaitDelay = 3 * time.Second
-	cmd.Env = append(os.Environ(),
+	env := append(os.Environ(),
 		"SECSY_CERT_NAME="+spec.Name,
 		"SECSY_KEY_FILE="+spec.KeyFile,
 		"SECSY_CERT_FILE="+spec.CertFile,
@@ -70,17 +58,38 @@ func (a *Agent) runHookCommand(spec *CertSpec, r *ReloadConfig, leaf *x509.Certi
 		"SECSY_CERT_SERIAL="+leaf.SerialNumber.String(),
 		"SECSY_CERT_NOT_AFTER="+leaf.NotAfter.UTC().Format(time.RFC3339),
 	)
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-	err := cmd.Run()
+	output, err := runProcessGroup(ctx, r.Command, env)
 	if ctx.Err() == context.DeadlineExceeded {
 		return fmt.Errorf("command timed out after %s", r.Timeout.Std())
 	}
 	if err != nil {
-		return fmt.Errorf("command %q: %w (output: %s)", strings.Join(r.Command, " "), err, summarizeBody(output.Bytes()))
+		return fmt.Errorf("command %q: %w (output: %s)", strings.Join(r.Command, " "), err, summarizeBody(output))
 	}
 	return nil
+}
+
+// runProcessGroup executes argv (with env) in its own process group, bounded by
+// ctx, and returns the combined stdout/stderr. It is the shared hook runner
+// used by both the post-renew reload hook and the exec dns-01 provider: the
+// child runs in a fresh process group and the whole group is SIGKILLed when ctx
+// fires, so a grandchild (e.g. an `sh -c` that spawns a service) cannot outlive
+// the deadline holding the output pipe open. WaitDelay bounds the drain.
+func runProcessGroup(ctx context.Context, argv []string, env []string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = 3 * time.Second
+	cmd.Env = env
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	err := cmd.Run()
+	return output.Bytes(), err
 }
 
 // signalPIDFile sends the configured signal to the process named by the pid

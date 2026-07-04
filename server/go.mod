@@ -13,6 +13,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.27
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.26
 	github.com/aws/aws-sdk-go-v2/service/kms v1.53.6
+	github.com/aws/aws-sdk-go-v2/service/route53 v1.63.5
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.42.5
 	github.com/cloudflare/circl v1.6.3
 	github.com/coreos/go-oidc/v3 v3.17.0

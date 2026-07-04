@@ -136,8 +136,28 @@ type ACMEConfig struct {
 	EABHMACKey string `yaml:"eab_hmac_key"`
 	// EABHMACKeyFile reads the HMAC key from a file instead (trailing
 	// whitespace trimmed), keeping the secret out of the config file.
-	EABHMACKeyFile string       `yaml:"eab_hmac_key_file"`
-	HTTP01         HTTP01Config `yaml:"http01"`
+	EABHMACKeyFile string `yaml:"eab_hmac_key_file"`
+	// Challenge selects the ACME challenge the agent solves: "http-01" (the
+	// default) or "dns-01". dns-01 suits firewalled hosts that cannot expose an
+	// inbound HTTP listener or webroot, and is the only way to obtain wildcard
+	// certificates.
+	Challenge string       `yaml:"challenge"`
+	HTTP01    HTTP01Config `yaml:"http01"`
+	DNS01     DNS01Config  `yaml:"dns01"`
+}
+
+// Challenge type identifiers accepted in ACMEConfig.Challenge.
+const (
+	ChallengeHTTP01 = "http-01"
+	ChallengeDNS01  = "dns-01"
+)
+
+// challenge returns the effective (defaulted) ACME challenge type.
+func (c ACMEConfig) challenge() string {
+	if c.Challenge == ChallengeDNS01 {
+		return ChallengeDNS01
+	}
+	return ChallengeHTTP01
 }
 
 // HTTP01Config selects how the agent answers http-01 challenges. Exactly one
@@ -150,6 +170,102 @@ type HTTP01Config struct {
 	// Webroot, when set, writes key authorizations under
 	// <webroot>/.well-known/acme-challenge/ instead of listening.
 	Webroot string `yaml:"webroot"`
+}
+
+// DNS provider identifiers accepted in DNS01Config.Provider.
+const (
+	DNSProviderRFC2136 = "rfc2136"
+	DNSProviderExec    = "exec"
+	DNSProviderRoute53 = "route53"
+)
+
+// DNS01Config configures how the agent answers dns-01 challenges: it selects a
+// pluggable DNSProvider that publishes and withdraws the _acme-challenge TXT
+// record, plus propagation-polling tuning shared by every provider.
+type DNS01Config struct {
+	// Provider selects the DNSProvider plugin: "rfc2136" (dynamic DNS UPDATE
+	// with TSIG, RFC 2136), "exec" (operator Present/CleanUp scripts), or
+	// "route53" (AWS Route 53).
+	Provider string `yaml:"provider"`
+	// PropagationTimeout bounds waiting for the published TXT record to become
+	// visible before the challenge is accepted (default 2m).
+	PropagationTimeout Duration `yaml:"propagation_timeout"`
+	// PollInterval is how often propagation is re-checked (default 4s).
+	PollInterval Duration `yaml:"poll_interval"`
+	// Resolvers are the DNS servers (host or host:port, port 53 assumed) used
+	// for the propagation check. Defaults to the RFC 2136 server for the
+	// rfc2136 provider and the system resolvers otherwise.
+	Resolvers []string `yaml:"resolvers"`
+
+	RFC2136 *RFC2136Config `yaml:"rfc2136"`
+	Exec    *ExecDNSConfig `yaml:"exec"`
+	Route53 *Route53Config `yaml:"route53"`
+}
+
+// RFC2136Config configures the RFC 2136 dynamic-DNS-UPDATE provider with TSIG
+// authentication (RFC 8945). This is the most portable built-in provider: it
+// needs only a nameserver that accepts signed UPDATEs (BIND, Knot, PowerDNS, …).
+type RFC2136Config struct {
+	// Server is the authoritative nameserver accepting the UPDATE (host or
+	// host:port; port 53 assumed). Required.
+	Server string `yaml:"server"`
+	// Zone overrides the auto-discovered zone the record lives in (e.g.
+	// "example.com."). When empty the provider discovers it with an SOA query.
+	Zone string `yaml:"zone"`
+	// TSIGName is the TSIG key name (e.g. "acme-update."). Required.
+	TSIGName string `yaml:"tsig_name"`
+	// TSIGSecret is the base64-encoded TSIG shared secret. Required unless
+	// TSIGSecretFile is set.
+	TSIGSecret string `yaml:"tsig_secret"`
+	// TSIGSecretFile reads the base64 secret from a file (trailing whitespace
+	// trimmed), keeping it out of the config file.
+	TSIGSecretFile string `yaml:"tsig_secret_file"`
+	// TSIGAlgorithm is the HMAC algorithm: hmac-sha256 (default), hmac-sha512,
+	// hmac-sha384, hmac-sha224, or hmac-sha1. A trailing dot is optional.
+	TSIGAlgorithm string `yaml:"tsig_algorithm"`
+	// Timeout bounds each UPDATE/SOA exchange (default 10s).
+	Timeout Duration `yaml:"timeout"`
+	// TTL is the published TXT record's TTL in seconds (default 120).
+	TTL uint32 `yaml:"ttl"`
+	// TCP forces the exchange over TCP (default UDP with automatic TCP fallback
+	// on a truncated response).
+	TCP bool `yaml:"tcp"`
+}
+
+// ExecDNSConfig configures the manual/exec provider: operator-supplied scripts
+// invoked to publish and withdraw the TXT record. It reuses the same hardened
+// command runner as the reload hook (own process group, timeout, killed as a
+// group on deadline). The record fqdn and value are passed in the environment
+// as SECSY_DNS01_FQDN and SECSY_DNS01_VALUE (plus SECSY_DNS01_ACTION and
+// SECSY_DNS01_RECORD).
+type ExecDNSConfig struct {
+	// Present publishes the record. A YAML list is exec'd directly; a plain
+	// string runs under "sh -c". Required.
+	Present CommandLine `yaml:"present"`
+	// CleanUp withdraws the record after validation. Optional but recommended.
+	CleanUp CommandLine `yaml:"cleanup"`
+	// Timeout bounds each script invocation (default 30s).
+	Timeout Duration `yaml:"timeout"`
+}
+
+// Route53Config configures the AWS Route 53 provider. Credentials and region
+// fall back to the standard AWS SDK chain (environment, shared config,
+// instance role); the fields here are optional overrides.
+type Route53Config struct {
+	// HostedZoneID pins the target hosted zone (e.g. "Z123..."). When empty the
+	// provider discovers the most specific public zone matching the record.
+	HostedZoneID string `yaml:"hosted_zone_id"`
+	// Region overrides the AWS region (Route 53 is global, but the SDK still
+	// wants a region; defaults to the SDK chain / "us-east-1").
+	Region string `yaml:"region"`
+	// AccessKeyID / SecretAccessKey are static credentials; leave empty to use
+	// the default SDK credential chain.
+	AccessKeyID     string `yaml:"access_key_id"`
+	SecretAccessKey string `yaml:"secret_access_key"`
+	// SessionToken accompanies temporary static credentials.
+	SessionToken string `yaml:"session_token"`
+	// TTL is the created TXT record's TTL in seconds (default 60).
+	TTL int64 `yaml:"ttl"`
 }
 
 // ESTConfig configures enrollment through the server's RFC 7030 endpoint.
@@ -306,6 +422,14 @@ const (
 	defaultKeyMode       = FileMode(0o600)
 	defaultCertMode      = FileMode(0o644)
 	defaultKeyType       = "ecdsa-p256"
+
+	// dns-01 defaults.
+	defaultDNSPropagationTimeout = 2 * time.Minute
+	defaultDNSPollInterval       = 4 * time.Second
+	defaultRFC2136Timeout        = 10 * time.Second
+	defaultRFC2136TTL            = uint32(120)
+	defaultRoute53TTL            = int64(60)
+	defaultTSIGAlgorithm         = "hmac-sha256"
 )
 
 // LoadConfig reads, strictly decodes, defaults, and validates an agent
@@ -355,6 +479,7 @@ func (c *Config) applyDefaults() {
 	if c.ACME.HTTP01.Listen == "" && c.ACME.HTTP01.Webroot == "" {
 		c.ACME.HTTP01.Listen = ":80"
 	}
+	c.ACME.DNS01.applyDefaults()
 	for _, spec := range c.Certificates {
 		if spec == nil {
 			continue
@@ -408,6 +533,16 @@ func (c *Config) validate() error {
 	if c.ACME.EABHMACKey != "" && c.ACME.EABHMACKeyFile != "" {
 		return fmt.Errorf("acme: eab_hmac_key and eab_hmac_key_file are mutually exclusive")
 	}
+	if c.ACME.Challenge != "" && c.ACME.Challenge != ChallengeHTTP01 && c.ACME.Challenge != ChallengeDNS01 {
+		return fmt.Errorf("acme.challenge must be %q or %q, got %q", ChallengeHTTP01, ChallengeDNS01, c.ACME.Challenge)
+	}
+	// Validate the dns-01 provider only when it is the selected challenge and at
+	// least one certificate enrolls via ACME.
+	if c.ACME.challenge() == ChallengeDNS01 && c.hasACMECert() {
+		if err := c.ACME.DNS01.validate(); err != nil {
+			return fmt.Errorf("acme.dns01: %w", err)
+		}
+	}
 	if c.EST.Password != "" && c.EST.PasswordFile != "" {
 		return fmt.Errorf("est: password and password_file are mutually exclusive")
 	}
@@ -451,9 +586,12 @@ func (c *Config) validateSpec(spec *CertSpec) error {
 		if c.ACME.Directory == "" {
 			return fmt.Errorf("enroll is acme but acme.directory is not configured")
 		}
-		for _, d := range spec.DNSNames {
-			if strings.Contains(d, "*") {
-				return fmt.Errorf("wildcard name %q cannot be enrolled via ACME http-01", d)
+		// Wildcards are only obtainable via dns-01 (RFC 8555 §7.1.3).
+		if c.ACME.challenge() != ChallengeDNS01 {
+			for _, d := range spec.DNSNames {
+				if strings.Contains(d, "*") {
+					return fmt.Errorf("wildcard name %q requires acme.challenge: dns-01", d)
+				}
 			}
 		}
 	case EnrollEST:
@@ -511,6 +649,100 @@ func (c *Config) validateSpec(spec *CertSpec) error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// hasACMECert reports whether any configured certificate enrolls via ACME.
+func (c *Config) hasACMECert() bool {
+	for _, spec := range c.Certificates {
+		if spec != nil && spec.Enroll == EnrollACME {
+			return true
+		}
+	}
+	return false
+}
+
+// applyDefaults fills in dns-01 propagation and provider defaults.
+func (d *DNS01Config) applyDefaults() {
+	if d.PropagationTimeout == 0 {
+		d.PropagationTimeout = Duration(defaultDNSPropagationTimeout)
+	}
+	if d.PollInterval <= 0 {
+		d.PollInterval = Duration(defaultDNSPollInterval)
+	}
+	if r := d.RFC2136; r != nil {
+		if r.Timeout <= 0 {
+			r.Timeout = Duration(defaultRFC2136Timeout)
+		}
+		if r.TTL == 0 {
+			r.TTL = defaultRFC2136TTL
+		}
+		if r.TSIGAlgorithm == "" {
+			r.TSIGAlgorithm = defaultTSIGAlgorithm
+		}
+	}
+	if e := d.Exec; e != nil && e.Timeout <= 0 {
+		e.Timeout = Duration(defaultHookTimeout)
+	}
+	if r := d.Route53; r != nil && r.TTL == 0 {
+		r.TTL = defaultRoute53TTL
+	}
+}
+
+// validate checks the selected dns-01 provider is configured coherently.
+func (d *DNS01Config) validate() error {
+	switch d.Provider {
+	case DNSProviderRFC2136:
+		return d.validateRFC2136()
+	case DNSProviderExec:
+		return d.validateExec()
+	case DNSProviderRoute53:
+		// Route 53 has no strictly required fields (the SDK chain supplies
+		// credentials); nothing to validate beyond presence of the block.
+		if d.Route53 == nil {
+			d.Route53 = &Route53Config{TTL: defaultRoute53TTL}
+		}
+		return nil
+	case "":
+		return fmt.Errorf("provider is required when challenge is dns-01 (one of %q, %q, %q)",
+			DNSProviderRFC2136, DNSProviderExec, DNSProviderRoute53)
+	default:
+		return fmt.Errorf("unknown provider %q (want %q, %q, or %q)",
+			d.Provider, DNSProviderRFC2136, DNSProviderExec, DNSProviderRoute53)
+	}
+}
+
+func (d *DNS01Config) validateRFC2136() error {
+	r := d.RFC2136
+	if r == nil {
+		return fmt.Errorf("rfc2136 provider selected but the rfc2136 block is missing")
+	}
+	if strings.TrimSpace(r.Server) == "" {
+		return fmt.Errorf("rfc2136.server is required")
+	}
+	if strings.TrimSpace(r.TSIGName) == "" {
+		return fmt.Errorf("rfc2136.tsig_name is required")
+	}
+	if r.TSIGSecret == "" && r.TSIGSecretFile == "" {
+		return fmt.Errorf("rfc2136.tsig_secret or rfc2136.tsig_secret_file is required")
+	}
+	if r.TSIGSecret != "" && r.TSIGSecretFile != "" {
+		return fmt.Errorf("rfc2136.tsig_secret and rfc2136.tsig_secret_file are mutually exclusive")
+	}
+	if _, err := tsigAlgorithmName(r.TSIGAlgorithm); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (d *DNS01Config) validateExec() error {
+	e := d.Exec
+	if e == nil {
+		return fmt.Errorf("exec provider selected but the exec block is missing")
+	}
+	if len(e.Present) == 0 {
+		return fmt.Errorf("exec.present command is required")
 	}
 	return nil
 }
