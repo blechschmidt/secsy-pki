@@ -1188,6 +1188,31 @@ func buildACMEConfig(db *database.DB, cfg *config.Config) (acme.Config, error) {
 		}
 		ac.NonceSecret = key
 	}
+
+	// ACME Profiles extension (RFC 9773): translate the configured
+	// client-selectable profiles into the acme.Config, resolving each to a
+	// concrete internal issuance profile id and verifying it exists now that the
+	// custom profiles have been loaded (ca.SetCustomProfiles runs earlier in
+	// startup). A typo therefore fails at startup rather than at the first order
+	// that selects the profile.
+	if len(cfg.ACME.Profiles) > 0 {
+		defaultProfile := cfg.ACME.Profile
+		if defaultProfile == "" {
+			defaultProfile = "server"
+		}
+		profiles := make(map[string]acme.ACMEProfile, len(cfg.ACME.Profiles))
+		for name, p := range cfg.ACME.Profiles {
+			internalID := p.Profile
+			if internalID == "" {
+				internalID = defaultProfile
+			}
+			if _, err := ca.LookupProfile(internalID); err != nil {
+				return acme.Config{}, fmt.Errorf("acme.profiles[%q]: %w", name, err)
+			}
+			profiles[name] = acme.ACMEProfile{Description: p.Description, Profile: internalID}
+		}
+		ac.Profiles = profiles
+	}
 	return ac, nil
 }
 

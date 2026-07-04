@@ -405,8 +405,11 @@ type ACMEAccount struct {
 type ACMEDirectory struct {
 	KeyChange *string `json:"keyChange,omitempty"`
 	Meta      *struct {
-		ExternalAccountRequired *bool   `json:"externalAccountRequired,omitempty"`
-		TermsOfService          *string `json:"termsOfService,omitempty"`
+		ExternalAccountRequired *bool `json:"externalAccountRequired,omitempty"`
+
+		// Profiles Client-selectable issuance profiles advertised by the ACME Profiles extension (RFC 9773): a map of ACME-visible profile name to human-readable description. A client selects one via the newOrder "profile" field. Omitted when no profiles are configured.
+		Profiles       *map[string]string `json:"profiles,omitempty"`
+		TermsOfService *string            `json:"termsOfService,omitempty"`
 	} `json:"meta,omitempty"`
 	NewAccount *string `json:"newAccount,omitempty"`
 	NewNonce   *string `json:"newNonce,omitempty"`
@@ -431,7 +434,10 @@ type ACMEOrder struct {
 	Identifiers *[]ACMEIdentifier `json:"identifiers,omitempty"`
 	NotAfter    *time.Time        `json:"not_after,omitempty"`
 	NotBefore   *time.Time        `json:"not_before,omitempty"`
-	Status      *string           `json:"status,omitempty"`
+
+	// Profile Internal issuance profile the order was created under via the ACME Profiles extension (RFC 9773). Absent on orders that predate the extension (they used the server default profile).
+	Profile *string `json:"profile,omitempty"`
+	Status  *string `json:"status,omitempty"`
 }
 
 // APIToken A native scoped API token / service account. The opaque secret is never included here — only in the create response, once.

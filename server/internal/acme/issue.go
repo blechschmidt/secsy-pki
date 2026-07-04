@@ -18,6 +18,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
 
@@ -115,11 +116,19 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	// the CA's pre-issuance CAA gate can honor accounturi/validationmethods
 	// parameters: the requesting account's URI and, per identifier, the challenge
 	// type that satisfied it.
+	// Issue under the profile selected when the order was created (RFC 9773, the
+	// ACME Profiles extension), so the profile the client chose at newOrder governs
+	// linting/CAA/name-constraints/cert-policy/CT here at finalize. A legacy order
+	// predating the extension has no stored profile, so fall back to the default.
+	profileID := order.Profile
+	if profileID == "" {
+		profileID = s.cfg.Profile
+	}
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
 	result, err := s.caMgr.IssueCertificate(r.Context(), ca.IssueSpec{
 		CAID:              s.cfg.CAID,
 		CSRPEM:            csrPEM,
-		Profile:           s.cfg.Profile,
+		Profile:           profileID,
 		RequestedBy:       "acme:" + acct.rec.ID,
 		ACMEAccountURI:    s.accountURL(r, acct.rec.ID),
 		ValidationMethods: s.validationMethods(authzs),
@@ -152,6 +161,10 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	order.Serial = result.Serial.String()
 	order.CAID = s.cfg.CAID
 
+	// Per-profile issuance counter (RFC 9773): label by the resolved internal ca
+	// profile the certificate was actually issued under, so operators can break
+	// ACME issuance down by profile on the metrics endpoint.
+	metrics.ACMEIssued.Inc(result.Profile)
 	s.recordEvent(r, acct.rec.ID, audit.ActionACMEOrderFinalize, order.ID, audit.ResultSuccess,
 		"serial="+result.Serial.String()+" profile="+result.Profile)
 

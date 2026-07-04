@@ -33,6 +33,23 @@ func (s *Server) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve the client-selected issuance profile (RFC 9773, the ACME Profiles
+	// extension) against the configured allowlist. An omitted "profile" selects
+	// the server default (backward compatible); an unknown value is rejected with
+	// an invalidProfile problem naming the advertised profiles. The resolved
+	// internal profile id is persisted on the order and threaded into issuance at
+	// finalize, so every pre-issuance gate (lint/CAA/name-constraints/cert-policy/
+	// CT) uses the chosen profile.
+	profileID, ok := s.cfg.resolveProfile(req.Profile)
+	if !ok {
+		detail := fmt.Sprintf("unknown profile %q", strings.TrimSpace(req.Profile))
+		if names := s.cfg.profileNames(); len(names) > 0 {
+			detail += " (available: " + strings.Join(names, ", ") + ")"
+		}
+		s.writeProblem(w, newProblem(probInvalidProfile, http.StatusBadRequest, detail))
+		return
+	}
+
 	ids := make([]models.ACMEIdentifier, 0, len(req.Identifiers))
 	wildcard := make([]bool, 0, len(req.Identifiers))
 	for _, id := range req.Identifiers {
@@ -63,6 +80,7 @@ func (s *Server) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 		Identifiers: ids,
 		Expires:     now.Add(s.cfg.OrderValidity),
 		Replaces:    replaces,
+		Profile:     profileID,
 	}
 	if err := s.db.CreateACMEOrder(order); err != nil {
 		s.writeProblem(w, newProblem(probServerInternal, http.StatusInternalServerError, "creating order"))
@@ -101,7 +119,7 @@ func (s *Server) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.recordEvent(r, acct.rec.ID, audit.ActionACMEOrderNew, order.ID, audit.ResultSuccess,
-		"identifiers="+identifierSummary(ids))
+		"identifiers="+identifierSummary(ids)+" "+orderProfileDetail(req.Profile, profileID))
 	if replaces != "" {
 		metrics.ACMEReplaces.Inc("linked")
 		s.recordEvent(r, acct.rec.ID, audit.ActionACMEOrderReplaces, order.ID, audit.ResultSuccess,
@@ -556,6 +574,21 @@ func (s *Server) wireChallenge(r *http.Request, chall *models.ACMEChallenge) wir
 		}
 	}
 	return wc
+}
+
+// orderProfileDetail renders the selected issuance profile for an acme.order.new
+// audit event: the ACME-visible name the client chose (or "(default)" when the
+// newOrder omitted the field) alongside the internal ca profile id it resolved
+// to (RFC 9773, the ACME Profiles extension).
+func orderProfileDetail(selected, internalID string) string {
+	selected = strings.TrimSpace(selected)
+	if selected == "" {
+		return "profile=" + internalID + " (default)"
+	}
+	if selected == internalID {
+		return "profile=" + internalID
+	}
+	return "profile=" + selected + " (" + internalID + ")"
 }
 
 // identifierSummary renders identifiers compactly for audit detail.

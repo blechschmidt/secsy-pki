@@ -61,7 +61,11 @@ func (f *fakeResolver) LookupTXT(_ context.Context, name string) ([]string, erro
 	return nil, &net.DNSError{Err: "not found", Name: name, IsNotFound: true}
 }
 
-func newTestEnv(t *testing.T) *testEnv {
+// newTestEnv builds a hermetic ACME server (software provider, SQLite, in-process
+// challenge responders). Optional opts mutate the acme.Config before the server
+// is constructed — used by the ACME Profiles tests to configure a selectable
+// profile allowlist; existing callers pass none and get the single-profile server.
+func newTestEnv(t *testing.T, opts ...func(*Config)) *testEnv {
 	t.Helper()
 	provider, err := keyprovider.New(keyprovider.Config{
 		Type:     keyprovider.ProviderSoftware,
@@ -134,7 +138,11 @@ func newTestEnv(t *testing.T) *testEnv {
 	go solver.Serve(lis)
 	t.Cleanup(func() { solver.Close() })
 
-	srv := New(db, provider, Config{CAID: inter.ID, Profile: "server"})
+	cfg := Config{CAID: inter.ID, Profile: "server"}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	srv := New(db, provider, cfg)
 	srv.SetValidator(&Validator{
 		HTTPClient: &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {

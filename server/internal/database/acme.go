@@ -52,6 +52,7 @@ func (db *DB) migrateACME() error {
 			certificate TEXT,
 			finalized_at TIMESTAMP,
 			replaces TEXT,
+			profile TEXT,
 			created_at %s
 		)`, currentTimestamp),
 		`CREATE INDEX IF NOT EXISTS idx_acme_orders_account ON acme_orders(account_id)`,
@@ -119,6 +120,14 @@ func (db *DB) migrateACME() error {
 		_, _ = db.conn.Exec(`ALTER TABLE acme_orders ADD COLUMN IF NOT EXISTS replaces TEXT`)
 	} else {
 		_, _ = db.conn.Exec(`ALTER TABLE acme_orders ADD COLUMN replaces TEXT`)
+	}
+	// Additive migration for the ACME Profiles extension (RFC 9773): the internal
+	// issuance profile id selected on each order. Errors are ignored — the column
+	// already exists on a fresh CREATE TABLE above and on a second startup.
+	if db.isPostgres() {
+		_, _ = db.conn.Exec(`ALTER TABLE acme_orders ADD COLUMN IF NOT EXISTS profile TEXT`)
+	} else {
+		_, _ = db.conn.Exec(`ALTER TABLE acme_orders ADD COLUMN profile TEXT`)
 	}
 	_, _ = db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_acme_orders_serial ON acme_orders(serial)`)
 	return nil
@@ -223,26 +232,27 @@ func (db *DB) CreateACMEOrder(o *models.ACMEOrder) error {
 		status = models.ACMEOrderStatusPending
 	}
 	_, err := db.exec(
-		`INSERT INTO acme_orders (id, account_id, status, identifiers, not_before, not_after, expires, replaces)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		o.ID, o.AccountID, status, string(ids), nullTime(o.NotBefore), nullTime(o.NotAfter), o.Expires.UTC(), nullString(o.Replaces),
+		`INSERT INTO acme_orders (id, account_id, status, identifiers, not_before, not_after, expires, replaces, profile)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		o.ID, o.AccountID, status, string(ids), nullTime(o.NotBefore), nullTime(o.NotAfter), o.Expires.UTC(), nullString(o.Replaces), nullString(o.Profile),
 	)
 	return err
 }
 
 const acmeOrderColumns = `id, account_id, status, identifiers, not_before, not_after,
-	expires, error, ca_id, serial, certificate, finalized_at, replaces, created_at`
+	expires, error, ca_id, serial, certificate, finalized_at, replaces, profile, created_at`
 
 func scanACMEOrder(s caScanner) (*models.ACMEOrder, error) {
 	var o models.ACMEOrder
 	var ids string
 	var notBefore, notAfter, finalizedAt sql.NullTime
-	var errStr, caID, serial, cert, replaces sql.NullString
+	var errStr, caID, serial, cert, replaces, profile sql.NullString
 	if err := s.Scan(&o.ID, &o.AccountID, &o.Status, &ids, &notBefore, &notAfter,
-		&o.Expires, &errStr, &caID, &serial, &cert, &finalizedAt, &replaces, &o.CreatedAt); err != nil {
+		&o.Expires, &errStr, &caID, &serial, &cert, &finalizedAt, &replaces, &profile, &o.CreatedAt); err != nil {
 		return nil, err
 	}
 	o.Replaces = replaces.String
+	o.Profile = profile.String
 	_ = json.Unmarshal([]byte(ids), &o.Identifiers)
 	if notBefore.Valid {
 		t := notBefore.Time

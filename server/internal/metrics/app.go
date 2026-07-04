@@ -313,6 +313,15 @@ var (
 		"secsy_acme_challenge_validations_total",
 		"ACME challenge validation attempts, by challenge type and result (valid|invalid).",
 		"type", "result")
+	// ACMEIssued counts certificates issued through the ACME finalize path, by the
+	// internal issuance "profile" the certificate was signed under. With the ACME
+	// Profiles extension (RFC 9773) a single endpoint offers several
+	// client-selectable profiles; this label breaks issuance volume down by the
+	// profile actually used, whether the client selected it or took the default.
+	ACMEIssued = NewCounter(Default,
+		"secsy_acme_certificates_issued_total",
+		"Certificates issued via the ACME finalize path, by issuance profile.",
+		"profile")
 
 	// ACMENonces tracks the shared/durable anti-replay nonce store (Task 97) by
 	// "result": issued (a nonce minted), valid (a nonce consumed on its first use),

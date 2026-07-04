@@ -1225,9 +1225,17 @@ type ACMEConfig struct {
 	// CAID / CALabel select the issuing CA. Exactly one should be set; CAID wins.
 	CAID    string `yaml:"ca_id"`
 	CALabel string `yaml:"ca_label"`
-	// Profile is the certificate profile applied to ACME-issued certs (default
-	// "server").
+	// Profile is the default certificate profile applied to ACME-issued certs
+	// when the client does not select one (default "server"). It is the fallback
+	// for orders that omit the newOrder "profile" field.
 	Profile string `yaml:"profile"`
+	// Profiles enables the ACME Profiles extension (RFC 9773): a single ACME
+	// endpoint offering several client-selectable issuance profiles. Each map key
+	// is the ACME-visible profile name a client sets in newOrder (and that the
+	// directory advertises in meta.profiles); the value maps it to an internal
+	// issuance profile id plus a human-readable description. When empty, the
+	// extension is not advertised and every order uses Profile.
+	Profiles map[string]ACMEProfileConfig `yaml:"profiles"`
 	// TermsOfService, if set, is advertised in the directory and required on
 	// account creation.
 	TermsOfService string `yaml:"terms_of_service"`
@@ -1271,6 +1279,19 @@ type ACMEConfig struct {
 	// agrees without configuration. Set the same value on every replica to skip
 	// the startup store read or to rotate the signing key.
 	NonceHMACKey string `yaml:"nonce_hmac_key"`
+}
+
+// ACMEProfileConfig is one client-selectable profile in the ACME Profiles
+// extension (RFC 9773). The map key it is stored under is the ACME-visible
+// profile name advertised in the directory and accepted in newOrder.
+type ACMEProfileConfig struct {
+	// Description is the human-readable text advertised in the directory's
+	// meta.profiles for this profile.
+	Description string `yaml:"description"`
+	// Profile is the internal issuance profile id (a built-in or custom
+	// certificate profile) this selection maps to. When empty, the ACME server's
+	// default profile (acme.profile) is used.
+	Profile string `yaml:"profile"`
 }
 
 // SCEPConfig configures the SCEP (RFC 8894) enrollment server. When enabled, a
@@ -2909,6 +2930,16 @@ func (c *Config) validateACME() error {
 		}
 		if len(key) < 16 {
 			return fmt.Errorf("acme.nonce_hmac_key must decode to at least 16 bytes, got %d", len(key))
+		}
+	}
+	// ACME Profiles extension (RFC 9773): structurally validate each
+	// client-selectable profile. The map key is the ACME-visible name and must be
+	// non-empty; that the referenced internal issuance profile exists is checked
+	// against the loaded profile registry at startup (buildACMEConfig), where the
+	// custom profiles are available.
+	for name := range c.ACME.Profiles {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("acme.profiles: profile name (map key) must not be empty")
 		}
 	}
 	return nil

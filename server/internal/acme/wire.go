@@ -42,6 +42,10 @@ const (
 	// probBadAttestation signals that a device-attest-01 attestation object was
 	// missing, malformed, or failed verification (draft-ietf-acme-device-attest).
 	probBadAttestation = "urn:ietf:params:acme:error:badAttestationStatement"
+	// probInvalidProfile signals that a newOrder "profile" field named a profile
+	// the server does not offer (RFC 9773 — the ACME Profiles extension). The
+	// available profiles are advertised in the directory's meta.profiles.
+	probInvalidProfile = "urn:ietf:params:acme:error:invalidProfile"
 )
 
 // Problem is an RFC 7807 / RFC 8555 problem document.
@@ -103,6 +107,11 @@ type wireDirectory struct {
 type directoryMeta struct {
 	TermsOfService          string `json:"termsOfService,omitempty"`
 	ExternalAccountRequired bool   `json:"externalAccountRequired,omitempty"`
+	// Profiles advertises the client-selectable issuance profiles (RFC 9773, the
+	// ACME Profiles extension): a map of ACME-visible profile name to a
+	// human-readable description. Omitted when no profiles are configured, keeping
+	// the directory byte-for-byte compatible with the pre-extension server.
+	Profiles map[string]string `json:"profiles,omitempty"`
 }
 
 // wireAccount is the account object returned to clients (RFC 8555 §7.1.2).
@@ -134,6 +143,11 @@ type newOrderRequest struct {
 	// Replaces, when set, is the ARI CertID (draft-ietf-acme-ari §5) of the
 	// certificate this order renews, linking the renewal to its predecessor.
 	Replaces string `json:"replaces,omitempty"`
+	// Profile, when set, selects one of the server's advertised issuance profiles
+	// (RFC 9773, the ACME Profiles extension). It must be one of the ACME-visible
+	// names in the directory's meta.profiles; an unknown value is rejected with an
+	// invalidProfile problem. Omitted means the server's default profile.
+	Profile string `json:"profile,omitempty"`
 }
 
 // wireRenewalInfo is the ACME Renewal Information response body

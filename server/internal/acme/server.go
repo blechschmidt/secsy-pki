@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -35,9 +36,20 @@ type Config struct {
 	// CAID is the id of the CA that issues ACME certificates. Every ACME leaf is
 	// signed by this CA through the shared, HSM-backed ca.Manager.
 	CAID string
-	// Profile is the certificate profile applied to ACME-issued certificates
-	// (default "server").
+	// Profile is the default certificate profile applied to ACME-issued
+	// certificates when the client does not select one (default "server"). It is
+	// the fallback for orders that omit the newOrder "profile" field, so the
+	// server stays backward compatible whether or not the ACME Profiles extension
+	// is configured.
 	Profile string
+	// Profiles, when non-empty, enables the ACME Profiles extension (RFC 9773):
+	// a single ACME endpoint can offer several client-selectable issuance
+	// profiles. Each entry maps an ACME-visible profile name — advertised in the
+	// directory's meta.profiles and accepted in the newOrder "profile" field — to
+	// its internal ca issuance profile id. A newOrder that names a profile not in
+	// this allowlist is rejected with an invalidProfile problem. When empty, the
+	// extension is not advertised and every order uses Profile.
+	Profiles map[string]ACMEProfile
 	// TermsOfService, if set, is advertised in the directory metadata and clients
 	// must agree to it on account creation.
 	TermsOfService string
@@ -91,6 +103,66 @@ type Config struct {
 	// Set it (identically on every replica, at least nonceMinSecretLen bytes) to
 	// skip the startup store read or to rotate the signing key. It is never logged.
 	NonceSecret []byte
+}
+
+// ACMEProfile is one client-selectable issuance profile exposed by the ACME
+// Profiles extension (RFC 9773). It maps an ACME-visible profile name to an
+// internal ca issuance profile id, plus the human-readable description
+// advertised in the directory's meta.profiles.
+type ACMEProfile struct {
+	// Description is the human-readable text advertised in meta.profiles.
+	Description string
+	// Profile is the internal ca issuance profile id this selection maps to. When
+	// empty, the server's default Config.Profile is used.
+	Profile string
+}
+
+// profilesEnabled reports whether the ACME Profiles extension is configured.
+func (c Config) profilesEnabled() bool { return len(c.Profiles) > 0 }
+
+// resolveProfile maps a client-supplied newOrder "profile" name to the internal
+// ca issuance profile id to issue under. An empty name selects the default
+// (c.Profile), keeping omit-the-field orders backward compatible. A non-empty
+// name must be one of the configured, advertised profiles; otherwise ok is false
+// and the caller returns an invalidProfile problem (RFC 9773).
+func (c Config) resolveProfile(name string) (internalID string, ok bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return c.Profile, true
+	}
+	p, found := c.Profiles[name]
+	if !found {
+		return "", false
+	}
+	if p.Profile == "" {
+		return c.Profile, true
+	}
+	return p.Profile, true
+}
+
+// advertisedProfiles returns the directory meta.profiles map (ACME-visible name
+// → description), or nil when the extension is not configured so the field is
+// omitted from the directory entirely.
+func (c Config) advertisedProfiles() map[string]string {
+	if !c.profilesEnabled() {
+		return nil
+	}
+	out := make(map[string]string, len(c.Profiles))
+	for name, p := range c.Profiles {
+		out[name] = p.Description
+	}
+	return out
+}
+
+// profileNames returns the configured ACME-visible profile names, sorted, for
+// the invalidProfile problem detail.
+func (c Config) profileNames() []string {
+	out := make([]string, 0, len(c.Profiles))
+	for name := range c.Profiles {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // withDefaults returns a copy of the config with zero-valued fields filled in.
@@ -236,7 +308,12 @@ func (s *Server) Register(mux *http.ServeMux) {
 	// ACME Renewal Information (ARI, draft-ietf-acme-ari): an unauthenticated GET
 	// keyed by the certificate's CertID (AKI+serial).
 	mux.HandleFunc("GET "+p+"/renewal-info/{certid}", s.handleRenewalInfo)
-	log.Printf("ACME server enabled at %s/directory (CA=%s profile=%s)", p, s.cfg.CAID, s.cfg.Profile)
+	if s.cfg.profilesEnabled() {
+		log.Printf("ACME server enabled at %s/directory (CA=%s default-profile=%s selectable-profiles=%s)",
+			p, s.cfg.CAID, s.cfg.Profile, strings.Join(s.cfg.profileNames(), ","))
+	} else {
+		log.Printf("ACME server enabled at %s/directory (CA=%s profile=%s)", p, s.cfg.CAID, s.cfg.Profile)
+	}
 }
 
 // ---- URL helpers ----------------------------------------------------------
@@ -349,6 +426,7 @@ func (s *Server) handleDirectory(w http.ResponseWriter, r *http.Request) {
 		Meta: directoryMeta{
 			TermsOfService:          s.cfg.TermsOfService,
 			ExternalAccountRequired: s.cfg.RequireEAB,
+			Profiles:                s.cfg.advertisedProfiles(),
 		},
 	}
 	s.writeJSON(w, http.StatusOK, dir)

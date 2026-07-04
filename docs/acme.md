@@ -11,8 +11,9 @@ used by the REST API and CLI, and every order is written to the
 The ACME endpoints authenticate clients with their own **account key pairs**
 (JWS-signed requests, per RFC 8555 §6.2) rather than OIDC or the root user, so
 they are mounted **outside** the OIDC auth middleware. Access is governed
-instead by three deployment controls, described below: a single fixed
-issuing-CA + profile, optional External Account Binding, and per-order auditing.
+instead by three deployment controls, described below: a fixed issuing-CA with
+one or more operator-vetted profiles, optional External Account Binding, and
+per-order auditing.
 
 - [1. Enabling the ACME server](#1-enabling-the-acme-server)
 - [2. Configuring the ACME-enabled profile](#2-configuring-the-acme-enabled-profile)
@@ -64,6 +65,10 @@ $ curl -s https://pki.example.com/acme/directory | jq
 }
 ```
 
+(When the [ACME Profiles extension](#client-selectable-profiles-rfc-9773) is
+configured, `meta` additionally carries a `profiles` map of the selectable
+issuance profiles.)
+
 ## 2. Configuring the ACME-enabled profile
 
 An "ACME-enabled profile" is simply the certificate [profile](certificate-authority.md#3-certificate-profiles)
@@ -101,6 +106,61 @@ Notes:
 - The global `policy.max_cert_validity_days` does **not** apply to ACME (that cap
   governs the interactive `/issue` and `/sign` endpoints); bound ACME lifetime
   through the profile instead.
+
+### Client-selectable profiles (RFC 9773)
+
+The single `acme.profile` above fixes the shape of every ACME certificate. To
+offer **several** profiles from one ACME endpoint — for example a short-lived
+TLS-server profile and an mTLS-client profile — enable the **ACME Profiles
+extension** ([RFC 9773](https://www.rfc-editor.org/rfc/rfc9773.html)) by mapping
+each ACME-visible profile name to an internal issuance profile:
+
+```yaml
+acme:
+  enabled: true
+  ca_label: "Secsy Issuing CA"
+  profile: "server"            # default when a client selects nothing (backward compatible)
+  profiles:
+    short-lived:
+      description: "90-day TLS server certificates"
+      profile: "acme-tls"      # internal (built-in or custom) profile id
+    mtls-client:
+      description: "Client-authentication certificates"
+      profile: "client"
+```
+
+Each mapped internal profile is validated at startup (a typo fails fast, exactly
+like a bad CA reference), and the set is advertised in the directory's
+`meta.profiles`:
+
+```console
+$ curl -s https://pki.example.com/acme/directory | jq '.meta.profiles'
+{
+  "short-lived": "90-day TLS server certificates",
+  "mtls-client": "Client-authentication certificates"
+}
+```
+
+A client picks one by naming it in the `profile` field of its **newOrder**
+request. The selection is recorded on the order and governs the **whole**
+issuance path at finalize — the pre-issuance lint, CAA, name-constraints,
+certificate-policy, and CT gates all run against the chosen profile. Omitting the
+field uses `acme.profile`, so clients that predate the extension keep working
+unchanged.
+
+Naming a profile the server does not advertise is rejected with the
+`urn:ietf:params:acme:error:invalidProfile` problem (HTTP 400), whose `detail`
+lists the available names.
+
+- **Client support.** Profile selection is a recent ACME extension; use a client
+  that implements RFC 9773 (recent certbot exposes `--preferred-profile` /
+  `--required-profile`). Any client that does not send a `profile` field
+  transparently receives the default profile, so enabling the extension never
+  breaks existing automation.
+- **Selected profile is visible** on the operator inventory endpoint
+  `GET /api/acme/orders` (the `profile` field) and in the `acme.order.new` audit
+  event, and issuance is metered per profile — see
+  [§6 Auditing and operator visibility](#6-auditing-and-operator-visibility).
 
 ## 3. Challenge types (http-01, dns-01, tls-alpn-01)
 
@@ -212,7 +272,7 @@ Every ACME operation appends an entry to the [hash-chained event log](rbac-and-a
 | Action | When |
 |--------|------|
 | `acme.account.new` | An account is registered (records the EAB `kid`, if any) |
-| `acme.order.new` | An order is placed (records the identifiers) |
+| `acme.order.new` | An order is placed (records the identifiers and the selected issuance profile) |
 | `acme.challenge` | A challenge is validated or fails (the detail records the challenge type — `http-01`, `dns-01`, or `tls-alpn-01` — and identifier) |
 | `acme.order.finalize` | A certificate is issued (records the serial and profile) |
 | `acme.cert.revoke` | A certificate is revoked via ACME |
@@ -227,7 +287,11 @@ inventory and its CRL/OCSP responses just like any other certificate.
 Challenge validation is also metered: `secsy_acme_challenge_validations_total`
 counts attempts by challenge `type` (`http-01`|`dns-01`|`tls-alpn-01`) and
 `result` (`valid`|`invalid`), giving each challenge type observable parity on the
-[metrics endpoint](observability.md).
+[metrics endpoint](observability.md). Issuance is metered per profile:
+`secsy_acme_certificates_issued_total{profile}` counts certificates issued
+through finalize by the internal issuance profile they were signed under, so with
+the [ACME Profiles extension](#client-selectable-profiles-rfc-9773) an operator
+can see volume broken down by selectable profile.
 
 Operators can inspect ACME state through RBAC-gated (read: admin/issuer/auditor)
 inventory endpoints:

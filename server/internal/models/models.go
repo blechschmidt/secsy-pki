@@ -1267,7 +1267,16 @@ type ACMEOrder struct {
 	// Replaces is the ARI CertID (draft-ietf-acme-ari §5) of the certificate this
 	// order renews, when the client set the newOrder "replaces" field. It links a
 	// renewal order back to its predecessor for renewal accounting.
-	Replaces  string    `json:"replaces,omitempty"`
+	Replaces string `json:"replaces,omitempty"`
+	// Profile is the internal ca issuance profile id selected for this order via
+	// the ACME Profiles extension (RFC 9773). It is resolved from the client's
+	// newOrder "profile" field against the server's configured allowlist at order
+	// creation and threaded into issuance at finalize, so every pre-issuance gate
+	// uses the chosen profile. Empty on legacy orders predating the extension,
+	// where finalize falls back to the server's default profile. Surfaced (when
+	// set) on the operator inventory endpoint GET /api/acme/orders for visibility
+	// into the profile each order issued under.
+	Profile   string    `json:"profile,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 

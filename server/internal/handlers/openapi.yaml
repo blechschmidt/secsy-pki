@@ -4135,6 +4135,12 @@ components:
         not_before: { type: string, format: date-time }
         not_after: { type: string, format: date-time }
         expires: { type: string, format: date-time }
+        profile:
+          type: string
+          description: >-
+            Internal issuance profile the order was created under via the ACME
+            Profiles extension (RFC 9773). Absent on orders that predate the
+            extension (they used the server default profile).
         created_at: { type: string, format: date-time }
 
     ACMEDirectory:
@@ -4150,6 +4156,14 @@ components:
           properties:
             termsOfService: { type: string }
             externalAccountRequired: { type: boolean }
+            profiles:
+              type: object
+              additionalProperties: { type: string }
+              description: >-
+                Client-selectable issuance profiles advertised by the ACME
+                Profiles extension (RFC 9773): a map of ACME-visible profile name
+                to human-readable description. A client selects one via the
+                newOrder "profile" field. Omitted when no profiles are configured.
 
     CertItem:
       type: object
