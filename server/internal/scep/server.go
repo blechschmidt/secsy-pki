@@ -255,6 +255,10 @@ func (s *Server) handlePKIOperation(w http.ResponseWriter, r *http.Request) {
 		CSRPEM:      csrPEM,
 		Profile:     profile,
 		RequestedBy: actor,
+		// Thread a UPN the device placed in its CSR SAN (id-ms-UPN otherName)
+		// through for smartcard-logon / PKINIT enrollment; the profile's UPN gate
+		// validates it and rejects it under a non-UPN profile.
+		UPNs: pki.UPNsFromCSR(msg.CSR),
 	})
 	if err != nil {
 		s.recordEvent(r, actor, enrollAction(isRenewal), csrCN(msg.CSR), audit.ResultError, err.Error())

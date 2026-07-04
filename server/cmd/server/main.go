@@ -201,6 +201,18 @@ func main() {
 		log.Fatalf("Invalid tenant allowed_email_domains: %v", err)
 	}
 
+	// Per-tenant UPN realm scoping (Task 122): certificates minted by a tenant's
+	// CAs under a smartcard-logon / PKINIT profile may only certify these realms.
+	tenantUPNRealms := make(map[string][]string)
+	for _, tc := range cfg.Tenants {
+		if len(tc.AllowedUPNRealms) > 0 {
+			tenantUPNRealms[tc.ID] = tc.AllowedUPNRealms
+		}
+	}
+	if err := ca.SetTenantUPNRealms(tenantUPNRealms); err != nil {
+		log.Fatalf("Invalid tenant allowed_upn_realms: %v", err)
+	}
+
 	authMw.SetRoleResolver(func(u *models.UserInfo) []string {
 		groupIDs, _ := db.GetUserGroups(u.Subject)
 		return dedupRoles(tenantAssignments.PlatformRolesFor(u.Subject, u.Email, u.EmailVerified, groupIDs))
@@ -330,6 +342,12 @@ func main() {
 					BRProfile:      p.SMIME.BRProfile,
 					AllowedDomains: p.SMIME.AllowedDomains,
 					SubjectEmail:   p.SMIME.SubjectEmail,
+				}
+			}
+			if p.UPN.Enabled {
+				prof.UPN = &ca.UPNConfig{
+					AllowedRealms: p.UPN.AllowedRealms,
+					RequireUPN:    p.UPN.RequireUPN,
 				}
 			}
 			prof.KeyChecks = keyChecksConfig(p.KeyChecks)

@@ -1836,6 +1836,12 @@ type TenantConfig struct {
 	// subdomains). Empty means the tenant imposes no restriction of its own;
 	// profile-level allowed_domains still apply.
 	AllowedEmailDomains []string `yaml:"allowed_email_domains"`
+	// AllowedUPNRealms scopes smartcard-logon / PKINIT issuance for this tenant:
+	// certificates minted by the tenant's CAs under a UPN profile may only certify
+	// User Principal Names whose realm matches ("EXAMPLE.COM" exact, "*.example.com"
+	// subdomains; case-insensitive). Empty means the tenant imposes no restriction
+	// of its own; profile-level allowed_realms still apply.
+	AllowedUPNRealms []string `yaml:"allowed_upn_realms"`
 }
 
 // PolicyConfig holds system-wide issuance policy. These are conservative
@@ -1897,6 +1903,12 @@ type ProfileConfig struct {
 	// domain allowlists before signing, and the CA/B Forum S/MIME Baseline
 	// Requirements lint rules apply. See ProfileSMIMEConfig.
 	SMIME ProfileSMIMEConfig `yaml:"smime"`
+	// UPN marks the profile as a Microsoft smartcard-logon / Kerberos PKINIT
+	// profile: User Principal Name (id-ms-UPN) otherName SANs are validated and
+	// realm-allowlist-checked before signing, and are permitted only under such a
+	// profile. See ProfileUPNConfig. Pair it with ext_key_usages containing
+	// msSmartcardLogon and/or pkinitClientAuth alongside clientAuth.
+	UPN ProfileUPNConfig `yaml:"upn"`
 	// MustStaple stamps the RFC 7633 TLS Feature / OCSP Must-Staple extension
 	// (id-pe-tlsfeature: status_request) on every leaf issued under the profile.
 	// A relying party that honors it must abort a TLS handshake in which the
@@ -1963,6 +1975,22 @@ type ProfileSMIMEConfig struct {
 	// SubjectEmail mirrors the first rfc822Name SAN into the subject DN as a
 	// PKCS#9 emailAddress attribute for legacy relying parties.
 	SubjectEmail bool `yaml:"subject_email"`
+}
+
+// ProfileUPNConfig is a profile's Microsoft smartcard-logon / Kerberos PKINIT
+// User Principal Name policy (Task 122). Enabled switches the profile into UPN
+// mode: id-ms-UPN otherName SANs are permitted, validated, and realm-allowlist-
+// checked before signing.
+type ProfileUPNConfig struct {
+	// Enabled turns the UPN gate on for the profile (permits a UPN SAN at all).
+	Enabled bool `yaml:"enabled"`
+	// AllowedRealms restricts the UPN realms the profile may certify.
+	// "EXAMPLE.COM" matches exactly; "*.example.com" matches subdomains
+	// (case-insensitive). Empty means unrestricted (tenant allowlists still apply).
+	AllowedRealms []string `yaml:"allowed_realms"`
+	// RequireUPN makes issuance fail when no UPN SAN is supplied (a smartcard-logon
+	// certificate is useless without one).
+	RequireUPN bool `yaml:"require_upn"`
 }
 
 // ProfilePolicyConfig is a profile's certificate-policy assignment. When oids is

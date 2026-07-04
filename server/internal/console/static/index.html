@@ -332,6 +332,10 @@
             <label for="issueCSR">Certificate signing request (PEM)</label>
             <textarea id="issueCSR" placeholder="-----BEGIN CERTIFICATE REQUEST-----"></textarea>
           </div>
+          <div class="field" id="issueUPNField">
+            <label for="issueUPN">User Principal Name(s)</label>
+            <input id="issueUPN" type="text" placeholder="user@EXAMPLE.COM (comma-separated; smartcard-logon / PKINIT profiles)">
+          </div>
           <button class="btn" id="issueBtn">Issue certificate</button>
         </div>
         <div class="panel hidden" id="issueResult">

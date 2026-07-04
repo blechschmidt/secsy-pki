@@ -1659,9 +1659,12 @@ type IssueCertRequest struct {
 	Csr string `json:"csr"`
 
 	// MustStaple Optional per-request override of the profile's RFC 7633 OCSP Must-Staple default (true stamps the id-pe-tlsfeature extension with status_request; false suppresses it). Honored only when the profile sets allow_must_staple_override; omitted uses the profile default.
-	MustStaple   *bool   `json:"must_staple,omitempty"`
-	Profile      *string `json:"profile,omitempty"`
-	ValidityDays *int    `json:"validity_days,omitempty"`
+	MustStaple *bool   `json:"must_staple,omitempty"`
+	Profile    *string `json:"profile,omitempty"`
+
+	// Upns Microsoft/Kerberos User Principal Names ("user@REALM") to emit as id-ms-UPN (1.3.6.1.4.1.311.20.2.3) otherName SANs for smartcard-logon / PKINIT (Task 122). Honored only under a UPN-enabled profile (smartcard-logon / pkinit-client / a custom UPN profile) and validated and realm-allowlist-checked before signing. Any UPN in the CSR SAN is ignored on this path; supply it here.
+	Upns         *[]string `json:"upns,omitempty"`
+	ValidityDays *int      `json:"validity_days,omitempty"`
 }
 
 // IssueCertResponse defines model for IssueCertResponse.
@@ -1988,8 +1991,11 @@ type PreviewCertRequest struct {
 	MustStaple *bool `json:"must_staple,omitempty"`
 
 	// Profile Profile name; empty = default
-	Profile *string   `json:"profile,omitempty"`
-	Uris    *[]string `json:"uris,omitempty"`
+	Profile *string `json:"profile,omitempty"`
+
+	// Upns Microsoft/Kerberos User Principal Name otherName SANs (Task 122), previewed through the same UPN gate the issuance path enforces. When a CSR is supplied, any UPN in its SAN is previewed in addition to these.
+	Upns *[]string `json:"upns,omitempty"`
+	Uris *[]string `json:"uris,omitempty"`
 
 	// ValidityDays Requested validity (0 = profile default). The validity gate reports a request exceeding the profile maximum.
 	ValidityDays *int `json:"validity_days,omitempty"`

@@ -100,6 +100,18 @@ func run(args []string) error {
 		return fmt.Errorf("loading tenant allowed_email_domains: %w", err)
 	}
 
+	// Per-tenant UPN realm scoping (Task 122), likewise installed so CLI issuance
+	// enforces the same smartcard-logon / PKINIT realm allowlists as the server.
+	tenantUPNRealms := make(map[string][]string)
+	for _, tc := range cfg.Tenants {
+		if len(tc.AllowedUPNRealms) > 0 {
+			tenantUPNRealms[tc.ID] = tc.AllowedUPNRealms
+		}
+	}
+	if err := ca.SetTenantUPNRealms(tenantUPNRealms); err != nil {
+		return fmt.Errorf("loading tenant allowed_upn_realms: %w", err)
+	}
+
 	// Certificate linting is fully offline (no database or key provider): dispatch
 	// it before opening either, so an operator can lint a certificate anywhere.
 	if command == "lint" {
@@ -663,6 +675,8 @@ func cmdIssue(db *database.DB, mgr *ca.Manager, args []string) error {
 	validityDays := fs.Int("validity-days", 0, "validity in days (0 = profile default)")
 	out := fs.String("out", "", "write the issued certificate PEM here (default: stdout)")
 	chain := fs.Bool("chain", false, "include the issuing CA certificate in the output")
+	var upns multiFlag
+	fs.Var(&upns, "upn", "Microsoft/Kerberos User Principal Name to emit as an id-ms-UPN otherName SAN, e.g. user@EXAMPLE.COM (repeatable; requires a smartcard-logon/pkinit-client profile)")
 	dryRun := fs.Bool("dry-run", false, "validate the request through the full pre-issuance gate stack and print the result WITHOUT issuing (no HSM signature, no serial, no record); exits non-zero if the request would be rejected")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -691,6 +705,7 @@ func cmdIssue(db *database.DB, mgr *ca.Manager, args []string) error {
 			Profile:     *profile,
 			Validity:    daysToDuration(*validityDays),
 			RequestedBy: "secsy-ca-cli",
+			UPNs:        upns,
 		})
 		if err != nil {
 			return err
@@ -708,6 +723,7 @@ func cmdIssue(db *database.DB, mgr *ca.Manager, args []string) error {
 		Profile:     *profile,
 		Validity:    daysToDuration(*validityDays),
 		RequestedBy: "secsy-ca-cli",
+		UPNs:        upns,
 	})
 	if err != nil {
 		return err
@@ -1170,6 +1186,12 @@ func installConfigProfiles(cfg *config.Config) error {
 				BRProfile:      p.SMIME.BRProfile,
 				AllowedDomains: p.SMIME.AllowedDomains,
 				SubjectEmail:   p.SMIME.SubjectEmail,
+			}
+		}
+		if p.UPN.Enabled {
+			prof.UPN = &ca.UPNConfig{
+				AllowedRealms: p.UPN.AllowedRealms,
+				RequireUPN:    p.UPN.RequireUPN,
 			}
 		}
 		if p.KeyChecks != (config.ProfileKeyChecksConfig{}) {

@@ -13,7 +13,7 @@
 # See TESTING.md#test-coverage-gate and docs/coverage.md.
 #
 # Format: <package-or-total>\t<percent>.  Generated — do not hand-edit.
-total	62.3
+total	62.4
 internal/acme	65.7
 internal/agent	64.4
 internal/anchor	62.7
@@ -24,10 +24,10 @@ internal/auth	100.0
 internal/authn	58.8
 internal/backup	59.7
 internal/brski	63.2
-internal/ca	75.4
+internal/ca	75.5
 internal/caa	39.5
 internal/canary	77.4
-internal/certlint	83.1
+internal/certlint	83.6
 internal/certpolicy	76.8
 internal/cliout	95.2
 internal/cmp	65.5
@@ -50,9 +50,9 @@ internal/hsm	31.6
 internal/interop/acmeclient	0.0
 internal/interop/dnsd	0.0
 internal/issueapproval	66.3
-internal/keycheck	82.1
-internal/keyprovider	48.5
-internal/leader	61.7
+internal/keycheck	82.2
+internal/keyprovider	48.4
+internal/leader	61.1
 internal/mailtransport	31.6
 internal/metrics	68.1
 internal/middleware	76.6
@@ -60,7 +60,7 @@ internal/models	90.0
 internal/monitor	53.3
 internal/nameconstraints	74.2
 internal/pkcs12	78.2
-internal/pki	34.7
+internal/pki	36.6
 internal/pqc	71.2
 internal/profiling	77.8
 internal/publish	75.4
@@ -77,4 +77,5 @@ internal/spiffe	79.6
 internal/sshca	78.9
 internal/tracing	72.6
 internal/tsa	52.6
+internal/upn	88.6
 internal/webhook	59.9

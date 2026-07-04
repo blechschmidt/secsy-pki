@@ -36,12 +36,22 @@ type LeafCertRequest struct {
 	KeyUsage x509.KeyUsage
 	// ExtKeyUsage is the set of extended key usages (from a profile).
 	ExtKeyUsage []x509.ExtKeyUsage
+	// UnknownExtKeyUsage carries extended key usages that crypto/x509 has no enum
+	// constant for (the Microsoft smartcard-logon and Kerberos PKINIT client-auth
+	// EKUs). x509.CreateCertificate folds them into the same extKeyUsage extension
+	// as ExtKeyUsage.
+	UnknownExtKeyUsage []asn1.ObjectIdentifier
 
 	// Subject Alternative Names.
 	DNSNames       []string
 	IPAddresses    []net.IP
 	EmailAddresses []string
 	URIs           []string
+	// UPNs are Microsoft/Kerberos User Principal Names ("user@REALM") emitted as
+	// id-ms-UPN otherName SANs. crypto/x509 cannot encode an otherName, so when
+	// UPNs are present leafTemplate hand-rolls the entire subjectAltName extension
+	// (merging the other SAN types) and supplies it via ExtraExtensions.
+	UPNs []string
 
 	// CRLDistributionPoints and OCSPServer, when set, are embedded so relying
 	// parties can locate revocation information for the certificate.
@@ -140,6 +150,7 @@ func leafTemplate(req LeafCertRequest) (*x509.Certificate, error) {
 		NotAfter:              req.NotAfter,
 		KeyUsage:              req.KeyUsage,
 		ExtKeyUsage:           req.ExtKeyUsage,
+		UnknownExtKeyUsage:    req.UnknownExtKeyUsage,
 		BasicConstraintsValid: true,
 		SubjectKeyId:          ski,
 		DNSNames:              req.DNSNames,
@@ -151,6 +162,24 @@ func leafTemplate(req LeafCertRequest) (*x509.Certificate, error) {
 		ExtraExtensions:       req.ExtraExtensions,
 	}
 
+	// When the leaf carries a UPN, hand-roll the whole subjectAltName extension
+	// (crypto/x509 cannot emit an otherName). It merges every SAN type, is
+	// prepended to ExtraExtensions so any Certificate-Transparency poison/SCT-list
+	// extension stays the trailing one (keeping the precertificate and final
+	// certificate TBSCertificates aligned), and the typed SAN fields are cleared
+	// so x509.CreateCertificate does not also generate its own SAN extension.
+	if len(req.UPNs) > 0 {
+		sanExt, err := SubjectAltNameExtension(req.DNSNames, req.IPAddresses, req.EmailAddresses, req.URIs, req.UPNs, emptyASN1Subject(template))
+		if err != nil {
+			return nil, err
+		}
+		template.ExtraExtensions = append([]pkix.Extension{sanExt}, template.ExtraExtensions...)
+		template.DNSNames = nil
+		template.IPAddresses = nil
+		template.EmailAddresses = nil
+		template.URIs = nil
+	}
+
 	if req.IsCA {
 		template.IsCA = true
 		if req.MaxPathLen != nil {
@@ -159,6 +188,22 @@ func leafTemplate(req LeafCertRequest) (*x509.Certificate, error) {
 		}
 	}
 	return template, nil
+}
+
+// emptyASN1Subject reports whether the certificate's subject DN would encode to
+// an empty RDNSequence, mirroring crypto/x509's own rule for marking the
+// subjectAltName extension critical (RFC 5280 §4.2.1.6: SAN MUST be critical
+// when the subject is empty).
+func emptyASN1Subject(template *x509.Certificate) bool {
+	if len(template.Subject.ExtraNames) > 0 {
+		return false
+	}
+	der, err := asn1.Marshal(template.Subject.ToRDNSequence())
+	if err != nil {
+		return false
+	}
+	// An empty RDNSequence encodes as the two bytes 30 00 (SEQUENCE, length 0).
+	return len(der) == 2 && der[0] == 0x30 && der[1] == 0x00
 }
 
 // subjectKeyID derives an RFC 5280 §4.2.1.2 (method 1) subject key identifier:

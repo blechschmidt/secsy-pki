@@ -91,6 +91,7 @@ func (s *service) IssueCertificate(ctx context.Context, req *pkiv1.IssueCertific
 		Validity:    daysToDuration(s.api.CapValidityDays(int(req.GetValidityDays()))),
 		RequestedBy: user.Subject,
 		MustStaple:  req.MustStaple,
+		UPNs:        req.GetUpns(),
 	})
 	s.api.ConsumeHSMAuditLogs("")
 	metrics.RecordCertificate("issue", err)
@@ -514,6 +515,7 @@ func previewSpecFromGRPC(caID string, req *pkiv1.PreviewCertificateRequest, user
 		Validity:    daysToDuration(int(req.GetValidityDays())),
 		RequestedBy: user.Subject,
 		MustStaple:  req.MustStaple,
+		UPNs:        req.GetUpns(),
 	}
 	if strings.TrimSpace(req.GetCsrPem()) == "" {
 		spec.Subject = pkix.Name{CommonName: req.GetCommonName()}

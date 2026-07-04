@@ -63,6 +63,7 @@ const (
 // Gate names, stable identifiers shared by every transport rendering a preview.
 const (
 	GateSMIME           = "smime"
+	GateUPN             = "upn"
 	GateCertPolicy      = "certificate_policy"
 	GateMustStaple      = "must_staple"
 	GateLint            = "lint"
@@ -116,6 +117,9 @@ type PreviewSpec struct {
 	IPAddresses    []net.IP
 	EmailAddresses []string
 	URIs           []string
+	// UPNs are Microsoft/Kerberos User Principal Name otherName SANs (Task 122),
+	// previewed through the same UPN gate the issuance path enforces.
+	UPNs []string
 	// Profile is the certificate profile name (empty = default profile).
 	Profile string
 	// Validity is the requested validity (0 = profile default). The validity gate
@@ -247,7 +251,7 @@ func (m *Manager) PreviewIssuance(ctx context.Context, spec PreviewSpec) (_ *Pre
 	if err != nil {
 		return nil, err
 	}
-	extKeyUsage, err := profile.extKeyUsage()
+	extKeyUsage, unknownEKU, err := profile.extKeyUsage()
 	if err != nil {
 		return nil, err
 	}
@@ -286,10 +290,12 @@ func (m *Manager) PreviewIssuance(ctx context.Context, spec PreviewSpec) (_ *Pre
 		NotAfter:              notAfter,
 		KeyUsage:              keyUsage,
 		ExtKeyUsage:           extKeyUsage,
+		UnknownExtKeyUsage:    unknownEKU,
 		DNSNames:              parts.DNSNames,
 		IPAddresses:           parts.IPAddresses,
 		EmailAddresses:        parts.EmailAddresses,
 		URIs:                  parts.URIs,
+		UPNs:                  parts.UPNs,
 		CRLDistributionPoints: leafCRLDistributionPoints(issuerCA.ID, serial),
 	}
 
@@ -317,6 +323,24 @@ func (m *Manager) PreviewIssuance(ctx context.Context, spec PreviewSpec) (_ *Pre
 		result.Gates = append(result.Gates, passGate(GateSMIME, "mailbox SANs valid and within the allowed e-mail domains"))
 	default:
 		result.Gates = append(result.Gates, failGate(GateSMIME, smev.err.Error()))
+	}
+
+	// 1b. UPN policy gate (smartcard-logon / PKINIT): validates User Principal Name
+	// SANs and enforces the profile/tenant realm allowlists. Mutates the template
+	// (normalized UPNs) on success so the resolved SAN reflects what would be signed.
+	upnev := m.evaluateUPNPolicy(base, profile, issuerCA)
+	switch {
+	case !upnev.applicable:
+		result.Gates = append(result.Gates, skippedGate(GateUPN, "profile is not a UPN (smartcard-logon/PKINIT) profile and no UPN was requested"))
+	case upnev.ok:
+		base = upnev.base
+		if len(base.UPNs) > 0 {
+			result.Gates = append(result.Gates, passGate(GateUPN, "UPN SAN(s) valid and within the allowed realms"))
+		} else {
+			result.Gates = append(result.Gates, passGate(GateUPN, "no UPN requested"))
+		}
+	default:
+		result.Gates = append(result.Gates, failGate(GateUPN, upnev.err.Error()))
 	}
 
 	// 2. Certificate policies (certificatePolicies + any policy mappings/constraints).
@@ -467,9 +491,10 @@ func previewLeafParts(spec PreviewSpec) (parts leafParts, keyProvided bool, err 
 			IPAddresses:    csr.IPAddresses,
 			EmailAddresses: csr.EmailAddresses,
 			URIs:           uris,
+			UPNs:           append(pki.UPNsFromCSR(csr), spec.UPNs...),
 		}, true, nil
 	}
-	if spec.Subject.CommonName == "" && len(spec.DNSNames) == 0 &&
+	if spec.Subject.CommonName == "" && len(spec.DNSNames) == 0 && len(spec.UPNs) == 0 &&
 		len(spec.IPAddresses) == 0 && len(spec.EmailAddresses) == 0 && len(spec.URIs) == 0 {
 		return leafParts{}, false, fmt.Errorf("issuance preview requires a CSR, or a subject common name / at least one SAN")
 	}
@@ -487,6 +512,7 @@ func previewLeafParts(spec PreviewSpec) (parts leafParts, keyProvided bool, err 
 		IPAddresses:    spec.IPAddresses,
 		EmailAddresses: spec.EmailAddresses,
 		URIs:           spec.URIs,
+		UPNs:           spec.UPNs,
 	}, false, nil
 }
 

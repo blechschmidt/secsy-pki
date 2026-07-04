@@ -102,6 +102,21 @@ var (
 		"Pre-issuance S/MIME findings that blocked issuance, partitioned by reason.",
 		"reason")
 
+	// Pre-issuance UPN checking (Task 122, smartcard-logon / Kerberos PKINIT
+	// profiles). CertificateUPNChecks counts every run of the gate by outcome:
+	// "result" is pass|fail (fail = a malformed UPN, a realm outside the
+	// profile/tenant allowlists, a UPN on a non-UPN profile, or a missing required
+	// UPN blocked signing). CertificateUPNFindings partitions failures by "reason"
+	// (required|not_permitted|syntax|config|realm).
+	CertificateUPNChecks = NewCounter(Default,
+		"secsy_certificate_upn_checks_total",
+		"Pre-issuance UPN (smartcard-logon/PKINIT) checks, partitioned by outcome (pass|fail).",
+		"result")
+	CertificateUPNFindings = NewCounter(Default,
+		"secsy_certificate_upn_findings_total",
+		"Pre-issuance UPN findings that blocked issuance, partitioned by reason.",
+		"reason")
+
 	// Pre-issuance Name Constraints checking (RFC 5280 §4.2.1.10 gate).
 	// CertificateNameConstraintChecks counts every run by outcome: "result" is
 	// pass|fail|error (fail = the issuing CA's constraints rejected the leaf,

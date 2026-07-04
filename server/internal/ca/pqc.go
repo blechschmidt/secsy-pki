@@ -57,6 +57,7 @@ func leafTemplateFromRequest(req pki.LeafCertRequest) (*x509.Certificate, error)
 		NotAfter:              req.NotAfter,
 		KeyUsage:              req.KeyUsage,
 		ExtKeyUsage:           req.ExtKeyUsage,
+		UnknownExtKeyUsage:    req.UnknownExtKeyUsage,
 		BasicConstraintsValid: true,
 		DNSNames:              req.DNSNames,
 		IPAddresses:           req.IPAddresses,
@@ -360,7 +361,7 @@ func (m *Manager) leafBaseFromCSR(publicKey any, parsed *x509.CertificateRequest
 	if err != nil {
 		return pki.LeafCertRequest{}, err
 	}
-	extKeyUsage, err := profile.extKeyUsage()
+	extKeyUsage, unknownEKU, err := profile.extKeyUsage()
 	if err != nil {
 		return pki.LeafCertRequest{}, err
 	}
@@ -379,17 +380,18 @@ func (m *Manager) leafBaseFromCSR(publicKey any, parsed *x509.CertificateRequest
 		uris[i] = u.String()
 	}
 	return pki.LeafCertRequest{
-		Subject:        parsed.Subject,
-		PublicKey:      publicKey,
-		Serial:         serial,
-		NotBefore:      now.Add(-clockSkew),
-		NotAfter:       notAfter,
-		KeyUsage:       keyUsage,
-		ExtKeyUsage:    extKeyUsage,
-		DNSNames:       parsed.DNSNames,
-		IPAddresses:    parsed.IPAddresses,
-		EmailAddresses: parsed.EmailAddresses,
-		URIs:           uris,
+		Subject:            parsed.Subject,
+		PublicKey:          publicKey,
+		Serial:             serial,
+		NotBefore:          now.Add(-clockSkew),
+		NotAfter:           notAfter,
+		KeyUsage:           keyUsage,
+		ExtKeyUsage:        extKeyUsage,
+		UnknownExtKeyUsage: unknownEKU,
+		DNSNames:           parsed.DNSNames,
+		IPAddresses:        parsed.IPAddresses,
+		EmailAddresses:     parsed.EmailAddresses,
+		URIs:               uris,
 	}, nil
 }
 

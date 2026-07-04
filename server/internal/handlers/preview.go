@@ -149,6 +149,7 @@ func previewSpecFromRequest(caID string, req models.PreviewCertRequest, user *mo
 		Validity:    daysToDuration(req.ValidityDays),
 		RequestedBy: user.Subject,
 		MustStaple:  req.MustStaple,
+		UPNs:        req.UPNs,
 	}
 	if req.CSR == "" {
 		spec.Subject = pkix.Name{CommonName: req.CommonName}

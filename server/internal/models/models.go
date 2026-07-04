@@ -670,6 +670,12 @@ type IssueCertRequest struct {
 	// false suppresses it). Honored only when the profile sets
 	// allow_must_staple_override; omitted (null) uses the profile default.
 	MustStaple *bool `json:"must_staple,omitempty"`
+	// UPNs are Microsoft/Kerberos User Principal Names ("user@REALM") to emit as
+	// id-ms-UPN otherName SANs for smartcard-logon / PKINIT (Task 122). They are
+	// honored only under a UPN-enabled profile (smartcard-logon / pkinit-client / a
+	// custom UPN profile) and are validated and realm-allowlist-checked before
+	// signing. Any UPN in the CSR SAN is ignored on this path; supply it here.
+	UPNs []string `json:"upns,omitempty"`
 }
 
 // PreviewCertRequest asks a CA to validate a would-be issuance through the full
@@ -691,6 +697,10 @@ type PreviewCertRequest struct {
 	IPAddresses    []string `json:"ip_addresses,omitempty"`
 	EmailAddresses []string `json:"email_addresses,omitempty"`
 	URIs           []string `json:"uris,omitempty"`
+	// UPNs are Microsoft/Kerberos User Principal Name otherName SANs (Task 122),
+	// previewed through the same UPN gate the issuance path enforces. When a CSR
+	// is supplied, any UPN in its SAN is previewed in addition to these.
+	UPNs []string `json:"upns,omitempty"`
 }
 
 // IssueCertResponse returns a freshly issued end-entity certificate.

@@ -385,7 +385,11 @@ function renderIssueProfileInfo() {
   if (p.caa && p.caa.mode && p.caa.mode !== 'off') bits.push('CAA ' + p.caa.mode);
   if (p.must_staple) bits.push('OCSP Must-Staple' + (p.allow_must_staple_override ? ' (override allowed)' : ''));
   if (p.lint && p.lint.public) bits.push('CA/B public lint rules');
+  if (p.upn) bits.push('UPN SAN' + (p.upn.require_upn ? ' (required)' : ''));
   $('issueProfileInfo').textContent = bits.length ? 'Profile policy: ' + bits.join(' · ') : '';
+  // Only relevant for UPN-enabled profiles; keep the input visible but hint it.
+  const upnField = $('issueUPNField');
+  if (upnField) upnField.style.display = p.upn ? '' : 'none';
 }
 $('issueProfile').onchange = renderIssueProfileInfo;
 
@@ -1222,6 +1226,10 @@ $('issueBtn').onclick = async () => {
   const body = { csr, profile: $('issueProfile').value };
   const days = parseInt($('issueDays').value, 10);
   if (days > 0) body.validity_days = days;
+  // User Principal Name SANs (smartcard-logon / PKINIT): comma-separated,
+  // honored only under a UPN-enabled profile.
+  const upns = $('issueUPN').value.split(',').map(s => s.trim()).filter(Boolean);
+  if (upns.length) body.upns = upns;
   $('issueBtn').disabled = true;
   try {
     const res = await api('POST', `/api/ca/${id}/issue`, body);

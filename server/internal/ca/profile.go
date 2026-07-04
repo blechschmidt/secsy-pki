@@ -3,6 +3,7 @@ package ca
 import (
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"fmt"
 	"sort"
 	"time"
@@ -52,6 +53,12 @@ type Profile struct {
 	// are validated, normalized, and allowlist-checked before signing, and the
 	// CA/B Forum S/MIME Baseline Requirements lint rules apply. See SMIMEConfig.
 	SMIME *SMIMEConfig `json:"smime,omitempty"`
+	// UPN marks this as a Microsoft smartcard-logon / Kerberos PKINIT profile:
+	// User Principal Name (id-ms-UPN) otherName SANs are validated and checked
+	// against the profile/tenant realm allowlists before signing. Its presence is
+	// what permits a leaf under this profile to carry a UPN SAN at all. See
+	// UPNConfig.
+	UPN *UPNConfig `json:"upn,omitempty"`
 	// KeyChecks is the profile's pre-issuance key-quality policy (Task 120,
 	// CA/Browser Forum BR §6.1.1.3): the fail-closed weak-key (ROCA / exponent /
 	// modulus / Debian) and compromised-key (operator blocklist / reused-subject)
@@ -258,6 +265,46 @@ var builtinProfiles = map[string]Profile{
 		DefaultValidity: time.Hour,
 		MaxValidity:     24 * time.Hour,
 	},
+	// smartcard-logon issues Microsoft Windows smartcard-logon certificates for
+	// Active Directory: a User Principal Name (user@REALM) in an id-ms-UPN
+	// otherName SAN, the id-ms-smartcardLogon (1.3.6.1.4.1.311.20.2.2) EKU
+	// alongside id-kp-clientAuth for interoperable client authentication, and
+	// keyUsage digitalSignature. The UPN is validated and realm-allowlist-checked
+	// before signing (see UPNConfig); require_upn makes an omitted UPN a hard
+	// error, since a smartcard-logon certificate is useless without one.
+	"smartcard-logon": {
+		Name:            "smartcard-logon",
+		Description:     "Microsoft smartcard-logon certificate (UPN otherName SAN + msSmartcardLogon/clientAuth EKU)",
+		KeyUsages:       []string{"digitalSignature"},
+		ExtKeyUsages:    []string{"clientAuth", "msSmartcardLogon"},
+		DefaultValidity: 365 * day,
+		MaxValidity:     2 * 365 * day,
+		UPN:             &UPNConfig{RequireUPN: true},
+	},
+	// pkinit-client issues Kerberos PKINIT client-authentication certificates
+	// (RFC 4556): a UPN otherName SAN plus the id-pkinit-KPClientAuth
+	// (1.3.6.1.5.2.3.4) EKU alongside id-kp-clientAuth, keyUsage digitalSignature.
+	"pkinit-client": {
+		Name:            "pkinit-client",
+		Description:     "Kerberos PKINIT client-authentication certificate (UPN otherName SAN + pkinitClientAuth/clientAuth EKU)",
+		KeyUsages:       []string{"digitalSignature"},
+		ExtKeyUsages:    []string{"clientAuth", "pkinitClientAuth"},
+		DefaultValidity: 365 * day,
+		MaxValidity:     2 * 365 * day,
+		UPN:             &UPNConfig{RequireUPN: true},
+	},
+	// smartcard-pkinit is a combined profile carrying both the Microsoft
+	// smartcard-logon and the Kerberos PKINIT client-auth EKUs, for a single
+	// credential usable against both a Windows KDC and an MIT/Heimdal KDC.
+	"smartcard-pkinit": {
+		Name:            "smartcard-pkinit",
+		Description:     "Combined smartcard-logon + Kerberos PKINIT client certificate (UPN SAN + msSmartcardLogon/pkinitClientAuth/clientAuth EKU)",
+		KeyUsages:       []string{"digitalSignature"},
+		ExtKeyUsages:    []string{"clientAuth", "msSmartcardLogon", "pkinitClientAuth"},
+		DefaultValidity: 365 * day,
+		MaxValidity:     2 * 365 * day,
+		UPN:             &UPNConfig{RequireUPN: true},
+	},
 	"hybrid-server": {
 		Name:            "hybrid-server",
 		Description:     "Hybrid TLS server certificate (classical primary + ML-DSA alternative signature)",
@@ -323,11 +370,16 @@ func SetCustomProfiles(profiles []Profile) error {
 		if _, err := p.keyUsage(); err != nil {
 			return err
 		}
-		if _, err := p.extKeyUsage(); err != nil {
+		if _, _, err := p.extKeyUsage(); err != nil {
 			return err
 		}
 		if p.SMIME != nil {
 			if err := p.SMIME.validate(p.Name); err != nil {
+				return err
+			}
+		}
+		if p.UPN != nil {
+			if err := p.UPN.validate(p.Name); err != nil {
 				return err
 			}
 		}
@@ -421,17 +473,26 @@ func (p Profile) keyUsage() (x509.KeyUsage, error) {
 	return ku, nil
 }
 
-// extKeyUsage resolves the profile's string extended key usages.
-func (p Profile) extKeyUsage() ([]x509.ExtKeyUsage, error) {
-	out := make([]x509.ExtKeyUsage, 0, len(p.ExtKeyUsages))
+// extKeyUsage resolves the profile's string extended key usages into the
+// crypto/x509 enum constants plus the OIDs of usages crypto/x509 has no constant
+// for (the Microsoft smartcard-logon and Kerberos PKINIT client-auth EKUs). The
+// two sets are recombined into a single extKeyUsage extension by
+// x509.CreateCertificate.
+func (p Profile) extKeyUsage() ([]x509.ExtKeyUsage, []asn1.ObjectIdentifier, error) {
+	known := make([]x509.ExtKeyUsage, 0, len(p.ExtKeyUsages))
+	var unknown []asn1.ObjectIdentifier
 	for _, s := range p.ExtKeyUsages {
-		v, ok := pki.X509ExtKeyUsageFromString[s]
-		if !ok {
-			return nil, fmt.Errorf("profile %q references unknown extended key usage %q", p.Name, s)
+		if v, ok := pki.X509ExtKeyUsageFromString[s]; ok {
+			known = append(known, v)
+			continue
 		}
-		out = append(out, v)
+		if oid, ok := pki.X509ExtKeyUsageOIDFromString[s]; ok {
+			unknown = append(unknown, oid)
+			continue
+		}
+		return nil, nil, fmt.Errorf("profile %q references unknown extended key usage %q", p.Name, s)
 	}
-	return out, nil
+	return known, unknown, nil
 }
 
 // policyExtensions builds the certificate-policy extensions (certificatePolicies,

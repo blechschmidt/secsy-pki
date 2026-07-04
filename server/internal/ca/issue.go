@@ -67,6 +67,12 @@ type IssueSpec struct {
 	// allow_must_staple_override; nil (the common case) uses the profile default.
 	// Set by the REST/gRPC issue paths from an optional per-request field.
 	MustStaple *bool
+
+	// UPNs are Microsoft/Kerberos User Principal Names ("user@REALM") to emit as
+	// id-ms-UPN otherName SANs (Task 122). They are honored only under a profile
+	// that declares UPN support (smartcard-logon / pkinit-client / a custom UPN
+	// profile) and are validated and realm-allowlist-checked before signing.
+	UPNs []string
 }
 
 // IssueResult is the outcome of issuing an end-entity certificate.
@@ -122,6 +128,13 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 		return nil, err
 	}
 
+	// User Principal Name SANs (smartcard-logon / PKINIT) are a classical-only
+	// feature: the dedicated ML-DSA paths below build their own leaf and would
+	// silently drop a requested UPN, so reject the misconfiguration up front.
+	if len(spec.UPNs) > 0 && profile.Algorithm != AlgClassical {
+		return nil, fmt.Errorf("profile %q is %s; User Principal Name SANs are supported on classical profiles only", profile.Name, profile.Algorithm)
+	}
+
 	// Post-quantum and hybrid profiles take dedicated issuance paths: their CSRs
 	// carry ML-DSA keys crypto/x509 cannot parse, and their certificates are
 	// signed (wholly, or in addition to the classical signature) with ML-DSA.
@@ -151,6 +164,7 @@ func (m *Manager) IssueCertificate(ctx context.Context, spec IssueSpec) (*IssueR
 		IPAddresses:    csr.IPAddresses,
 		EmailAddresses: csr.EmailAddresses,
 		URIs:           uris,
+		UPNs:           spec.UPNs,
 		Marker:         spec.Marker,
 		caaContext: caa.RequestContext{
 			AccountURI:        spec.ACMEAccountURI,
@@ -184,6 +198,9 @@ type TemplateIssueSpec struct {
 	// (honored only when the profile permits per-request overrides). Nil uses the
 	// profile default.
 	MustStaple *bool
+	// UPNs are User Principal Name otherName SANs to emit (Task 122), honored only
+	// under a UPN-enabled profile.
+	UPNs []string
 	// Marker tags the stored record as synthetic (e.g. models.CertMarkerServingTLS
 	// for the self-managed serving-TLS certificate) so monitoring and reports can
 	// exclude it. It is internal plumbing; the REST/gRPC layers never set it.
@@ -226,6 +243,7 @@ func (m *Manager) IssueCertificateFromTemplate(ctx context.Context, spec Templat
 		IPAddresses:    spec.IPAddresses,
 		EmailAddresses: spec.EmailAddresses,
 		URIs:           spec.URIs,
+		UPNs:           spec.UPNs,
 		Marker:         spec.Marker,
 		mustStaple:     spec.MustStaple,
 	}, spec.Validity, spec.RequestedBy)
@@ -242,7 +260,9 @@ type leafParts struct {
 	IPAddresses    []net.IP
 	EmailAddresses []string
 	URIs           []string
-	Marker         string
+	// UPNs are Microsoft/Kerberos User Principal Name otherName SANs (Task 122).
+	UPNs   []string
+	Marker string
 	// caaContext carries the RFC 8657 CAA-binding facts of the request (ACME
 	// account URI and per-identifier validation method) into buildLeaf's CAA gate.
 	// It is the zero value for every non-ACME issuance path.
@@ -277,7 +297,7 @@ func (m *Manager) issueLeaf(ctx context.Context, issuerCA *models.CA, issuerCert
 	if err != nil {
 		return nil, err
 	}
-	extKeyUsage, err := profile.extKeyUsage()
+	extKeyUsage, unknownEKU, err := profile.extKeyUsage()
 	if err != nil {
 		return nil, err
 	}
@@ -313,10 +333,12 @@ func (m *Manager) issueLeaf(ctx context.Context, issuerCA *models.CA, issuerCert
 		NotAfter:              notAfter,
 		KeyUsage:              keyUsage,
 		ExtKeyUsage:           extKeyUsage,
+		UnknownExtKeyUsage:    unknownEKU,
 		DNSNames:              parts.DNSNames,
 		IPAddresses:           parts.IPAddresses,
 		EmailAddresses:        parts.EmailAddresses,
 		URIs:                  parts.URIs,
+		UPNs:                  parts.UPNs,
 		CRLDistributionPoints: leafCRLDistributionPoints(issuerCA.ID, serial),
 	}, profile, requestedBy, parts.caaContext, profile.resolveMustStaple(parts.mustStaple))
 	if err != nil {
@@ -435,17 +457,21 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (_ *Issu
 	if err != nil {
 		return nil, err
 	}
-	extKeyUsage, err := profile.extKeyUsage()
+	extKeyUsage, unknownEKU, err := profile.extKeyUsage()
 	if err != nil {
 		return nil, err
 	}
 
-	// Determine the subject/public key/SANs to carry forward.
+	// Determine the subject/public key/SANs to carry forward. The prior UPN
+	// otherName SANs are recovered from the raw subjectAltName extension (crypto/
+	// x509 surfaces no typed field for otherName) so a renewed smartcard-logon
+	// certificate keeps its User Principal Name.
 	subject := priorCert.Subject
 	publicKey := priorCert.PublicKey
 	dnsNames := priorCert.DNSNames
 	ipAddresses := priorCert.IPAddresses
 	emails := priorCert.EmailAddresses
+	upns := pki.UPNsFromCertificate(priorCert)
 	var uris []string
 	for _, u := range priorCert.URIs {
 		uris = append(uris, u.String())
@@ -460,6 +486,7 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (_ *Issu
 		dnsNames = csr.DNSNames
 		ipAddresses = csr.IPAddresses
 		emails = csr.EmailAddresses
+		upns = pki.UPNsFromCSR(csr)
 		uris = uris[:0]
 		for _, u := range csr.URIs {
 			uris = append(uris, u.String())
@@ -498,10 +525,12 @@ func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (_ *Issu
 		NotAfter:              notAfter,
 		KeyUsage:              keyUsage,
 		ExtKeyUsage:           extKeyUsage,
+		UnknownExtKeyUsage:    unknownEKU,
 		DNSNames:              dnsNames,
 		IPAddresses:           ipAddresses,
 		EmailAddresses:        emails,
 		URIs:                  uris,
+		UPNs:                  upns,
 		CRLDistributionPoints: leafCRLDistributionPoints(issuerCA.ID, serial),
 	}, profile, spec.RequestedBy, caa.RequestContext{}, mustStaple)
 	if err != nil {
@@ -764,7 +793,9 @@ func subjectKeyFingerprint(pub crypto.PublicKey) string {
 }
 
 // sanStrings renders a certificate's subject alternative names as a flat list of
-// human-readable strings for storage/audit.
+// human-readable strings for storage/audit. UPN otherName SANs (which crypto/
+// x509 surfaces on no typed field) are recovered from the raw extension and
+// rendered "upn:user@REALM" so the inventory and audit trail record them.
 func sanStrings(cert *x509.Certificate) []string {
 	var out []string
 	out = append(out, cert.DNSNames...)
@@ -774,6 +805,9 @@ func sanStrings(cert *x509.Certificate) []string {
 	out = append(out, cert.EmailAddresses...)
 	for _, u := range cert.URIs {
 		out = append(out, u.String())
+	}
+	for _, u := range pki.UPNsFromCertificate(cert) {
+		out = append(out, "upn:"+u)
 	}
 	return out
 }

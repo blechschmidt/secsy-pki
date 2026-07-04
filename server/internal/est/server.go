@@ -351,7 +351,11 @@ func writeIssuanceError(w http.ResponseWriter, err error) {
 	http.Error(w, "issuance failed", http.StatusInternalServerError)
 }
 
-// issue signs a CSR through the shared HSM-backed ca.Manager.
+// issue signs a CSR through the shared HSM-backed ca.Manager. A User Principal
+// Name the device placed in its CSR SAN (id-ms-UPN otherName) is threaded
+// through for smartcard-logon / PKINIT enrollment; the profile's UPN gate
+// validates and realm-allowlist-checks it (and rejects it under a non-UPN
+// profile), so this only surfaces what crypto/x509 otherwise discards.
 func (s *Server) issue(r *http.Request, csr *x509.CertificateRequest, profile, actor string) (*x509.Certificate, error) {
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csr.Raw})
 	result, err := s.caMgr.IssueCertificate(r.Context(), ca.IssueSpec{
@@ -359,6 +363,7 @@ func (s *Server) issue(r *http.Request, csr *x509.CertificateRequest, profile, a
 		CSRPEM:      csrPEM,
 		Profile:     profile,
 		RequestedBy: actor,
+		UPNs:        pki.UPNsFromCSR(csr),
 	})
 	if err != nil {
 		return nil, err

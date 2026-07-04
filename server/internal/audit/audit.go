@@ -101,6 +101,11 @@ const (
 	// email-protection leaf whose rfc822Name SANs are malformed or whose e-mail
 	// domains fall outside the profile or tenant allowlists (fail-closed).
 	ActionCertSMIME = "cert.smime"
+	// ActionCertUPN records the pre-issuance UPN gate (Task 122, smartcard-logon /
+	// PKINIT profiles) blocking a leaf whose User Principal Name SAN is malformed,
+	// whose realm falls outside the profile or tenant realm allowlists, that
+	// carries a UPN on a non-UPN profile, or that omits a required UPN (fail-closed).
+	ActionCertUPN = "cert.upn"
 	// ActionCertKeyCheck records the outcome of the pre-issuance key-quality gate
 	// (Task 120, CA/Browser Forum BR §6.1.1.3) when it produces findings: ResultError
 	// when an enforce-mode check blocked issuance (fail-closed) — a weak (ROCA /

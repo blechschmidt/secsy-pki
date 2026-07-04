@@ -249,7 +249,12 @@ type IssueCertificateRequest struct {
 	// default for this certificate (true stamps id-pe-tlsfeature: status_request;
 	// false suppresses it). Honored only when the profile permits per-request
 	// overrides (allow_must_staple_override); omitted uses the profile default.
-	MustStaple    *bool `protobuf:"varint,5,opt,name=must_staple,json=mustStaple,proto3,oneof" json:"must_staple,omitempty"`
+	MustStaple *bool `protobuf:"varint,5,opt,name=must_staple,json=mustStaple,proto3,oneof" json:"must_staple,omitempty"`
+	// upns are Microsoft/Kerberos User Principal Names ("user@REALM") to emit as
+	// id-ms-UPN otherName SANs for smartcard-logon / PKINIT (Task 122). They are
+	// honored only under a UPN-enabled profile (smartcard-logon / pkinit-client / a
+	// custom UPN profile) and are validated and realm-allowlist-checked before signing.
+	Upns          []string `protobuf:"bytes,6,rep,name=upns,proto3" json:"upns,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -317,6 +322,13 @@ func (x *IssueCertificateRequest) GetMustStaple() bool {
 		return *x.MustStaple
 	}
 	return false
+}
+
+func (x *IssueCertificateRequest) GetUpns() []string {
+	if x != nil {
+		return x.Upns
+	}
+	return nil
 }
 
 type RenewCertificateRequest struct {
@@ -505,8 +517,12 @@ type PreviewCertificateRequest struct {
 	IpAddresses    []string `protobuf:"bytes,8,rep,name=ip_addresses,json=ipAddresses,proto3" json:"ip_addresses,omitempty"`
 	EmailAddresses []string `protobuf:"bytes,9,rep,name=email_addresses,json=emailAddresses,proto3" json:"email_addresses,omitempty"`
 	Uris           []string `protobuf:"bytes,10,rep,name=uris,proto3" json:"uris,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// upns are Microsoft/Kerberos User Principal Name otherName SANs (Task 122),
+	// previewed through the same UPN gate the issuance path enforces. When csr_pem
+	// is supplied, any UPN in its SAN is previewed in addition to these.
+	Upns          []string `protobuf:"bytes,11,rep,name=upns,proto3" json:"upns,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PreviewCertificateRequest) Reset() {
@@ -605,6 +621,13 @@ func (x *PreviewCertificateRequest) GetEmailAddresses() []string {
 func (x *PreviewCertificateRequest) GetUris() []string {
 	if x != nil {
 		return x.Uris
+	}
+	return nil
+}
+
+func (x *PreviewCertificateRequest) GetUpns() []string {
+	if x != nil {
+		return x.Upns
 	}
 	return nil
 }
@@ -2134,14 +2157,15 @@ const file_pki_v1_pki_proto_rawDesc = "" +
 	"\bembedded\x18\x02 \x01(\bR\bembedded\x12\x1b\n" +
 	"\tsct_count\x18\x03 \x01(\x05R\bsctCount\x12\x16\n" +
 	"\x06status\x18\x04 \x01(\tR\x06status\x12.\n" +
-	"\x04logs\x18\x05 \x03(\v2\x1a.secsy.pki.v1.CTLogOutcomeR\x04logs\"\xbc\x01\n" +
+	"\x04logs\x18\x05 \x03(\v2\x1a.secsy.pki.v1.CTLogOutcomeR\x04logs\"\xd0\x01\n" +
 	"\x17IssueCertificateRequest\x12\x13\n" +
 	"\x05ca_id\x18\x01 \x01(\tR\x04caId\x12\x17\n" +
 	"\acsr_pem\x18\x02 \x01(\tR\x06csrPem\x12\x18\n" +
 	"\aprofile\x18\x03 \x01(\tR\aprofile\x12#\n" +
 	"\rvalidity_days\x18\x04 \x01(\x05R\fvalidityDays\x12$\n" +
 	"\vmust_staple\x18\x05 \x01(\bH\x00R\n" +
-	"mustStaple\x88\x01\x01B\x0e\n" +
+	"mustStaple\x88\x01\x01\x12\x12\n" +
+	"\x04upns\x18\x06 \x03(\tR\x04upnsB\x0e\n" +
 	"\f_must_staple\"\x84\x01\n" +
 	"\x17RenewCertificateRequest\x12\x13\n" +
 	"\x05ca_id\x18\x01 \x01(\tR\x04caId\x12\x16\n" +
@@ -2156,7 +2180,7 @@ const file_pki_v1_pki_proto_rawDesc = "" +
 	"\n" +
 	"not_before\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tnotBefore\x127\n" +
 	"\tnot_after\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\bnotAfter\x12$\n" +
-	"\x02ct\x18\a \x01(\v2\x14.secsy.pki.v1.CTInfoR\x02ct\"\xdc\x02\n" +
+	"\x02ct\x18\a \x01(\v2\x14.secsy.pki.v1.CTInfoR\x02ct\"\xf0\x02\n" +
 	"\x19PreviewCertificateRequest\x12\x13\n" +
 	"\x05ca_id\x18\x01 \x01(\tR\x04caId\x12\x17\n" +
 	"\acsr_pem\x18\x02 \x01(\tR\x06csrPem\x12\x18\n" +
@@ -2170,7 +2194,8 @@ const file_pki_v1_pki_proto_rawDesc = "" +
 	"\fip_addresses\x18\b \x03(\tR\vipAddresses\x12'\n" +
 	"\x0femail_addresses\x18\t \x03(\tR\x0eemailAddresses\x12\x12\n" +
 	"\x04uris\x18\n" +
-	" \x03(\tR\x04urisB\x0e\n" +
+	" \x03(\tR\x04uris\x12\x12\n" +
+	"\x04upns\x18\v \x03(\tR\x04upnsB\x0e\n" +
 	"\f_must_staple\"m\n" +
 	"\vPreviewGate\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +

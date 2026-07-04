@@ -304,6 +304,7 @@ func CertificateFromLeaf(req pki.LeafCertRequest) (*x509.Certificate, error) {
 		NotAfter:              req.NotAfter,
 		KeyUsage:              req.KeyUsage,
 		ExtKeyUsage:           req.ExtKeyUsage,
+		UnknownExtKeyUsage:    req.UnknownExtKeyUsage,
 		DNSNames:              req.DNSNames,
 		IPAddresses:           req.IPAddresses,
 		EmailAddresses:        req.EmailAddresses,
@@ -314,6 +315,18 @@ func CertificateFromLeaf(req pki.LeafCertRequest) (*x509.Certificate, error) {
 		// RFC 7633 TLS Feature / Must-Staple check) can inspect them on the
 		// to-be-signed template, exactly as they would on a parsed certificate.
 		ExtraExtensions: req.ExtraExtensions,
+	}
+	// A UPN otherName SAN is not representable on any typed x509 field, so surface
+	// it the way a parsed certificate would — as the raw subjectAltName extension —
+	// letting the SAN-presence and EKU checks account for it (Task 122). The typed
+	// SAN fields above stay populated, matching how crypto/x509 reparses a real
+	// certificate that carries both.
+	if len(req.UPNs) > 0 {
+		sanExt, err := pki.SubjectAltNameExtension(req.DNSNames, req.IPAddresses, req.EmailAddresses, req.URIs, req.UPNs, false)
+		if err != nil {
+			return nil, fmt.Errorf("synthesizing UPN subjectAltName: %w", err)
+		}
+		cert.ExtraExtensions = append(cert.ExtraExtensions, sanExt)
 	}
 	return cert, nil
 }
@@ -405,6 +418,18 @@ func checkEKUKUConsistency(cert *x509.Certificate, add adder) {
 			}
 		}
 	}
+	// Microsoft smartcard-logon and Kerberos PKINIT client-auth EKUs (Task 122)
+	// have no crypto/x509 enum constant and arrive as UnknownExtKeyUsage OIDs.
+	// Both are client-authentication usages that sign an authenticator, so they
+	// require digitalSignature — recognize them so the check neither false-negatives
+	// nor treats them as opaque.
+	for _, oid := range cert.UnknownExtKeyUsage {
+		if oid.Equal(pki.OIDExtKeyUsageMSSmartcardLogon) || oid.Equal(pki.OIDExtKeyUsagePKINITClientAuth) {
+			if ku&x509.KeyUsageDigitalSignature == 0 {
+				add(CheckEKUKUConsistency, "smartcard-logon / PKINIT client-auth EKU requires the digitalSignature key usage")
+			}
+		}
+	}
 }
 
 // checkTLSFeature validates any RFC 7633 id-pe-tlsfeature extension the
@@ -459,11 +484,31 @@ func findExtension(cert *x509.Certificate, oid asn1.ObjectIdentifier) (pkix.Exte
 	return pkix.Extension{}, false
 }
 
-// checkSAN requires at least one subjectAltName (public policy).
+// checkSAN requires at least one subjectAltName (public policy). A UPN
+// otherName (smartcard-logon / PKINIT) counts as a SAN, so a certificate whose
+// only identity is a UPN is not flagged as having none.
 func checkSAN(cert *x509.Certificate, add adder) {
-	if len(cert.DNSNames)+len(cert.IPAddresses)+len(cert.EmailAddresses)+len(cert.URIs) == 0 {
+	if len(cert.DNSNames)+len(cert.IPAddresses)+len(cert.EmailAddresses)+len(cert.URIs)+len(certUPNs(cert)) == 0 {
 		add(CheckSANPresent, "certificate must include at least one subjectAltName")
 	}
+}
+
+// certUPNs returns the id-ms-UPN otherName values a certificate carries,
+// recovered from the raw subjectAltName extension (crypto/x509 exposes them on
+// no typed field). It looks in both the parsed Extensions (an already-issued
+// certificate) and ExtraExtensions (a to-be-signed template).
+func certUPNs(cert *x509.Certificate) []string {
+	for _, exts := range [][]pkix.Extension{cert.Extensions, cert.ExtraExtensions} {
+		for _, ext := range exts {
+			if !ext.Id.Equal(pki.OIDSubjectAltName) {
+				continue
+			}
+			if upns, err := pki.UPNsFromSANValue(ext.Value); err == nil && len(upns) > 0 {
+				return upns
+			}
+		}
+	}
+	return nil
 }
 
 // checkCNInSAN requires that a DNS/IP-shaped common name also appear in the SAN

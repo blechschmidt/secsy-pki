@@ -156,6 +156,19 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 		return nil, nil, err
 	}
 
+	// Fail-closed pre-issuance UPN gate (Task 122, smartcard-logon / PKINIT
+	// profiles): validate every User Principal Name SAN and enforce the profile/
+	// tenant realm allowlists. Runs before the lint gate so linting sees the final
+	// (validated, hand-rolled otherName) SAN, and before the CT poison/SCT split so
+	// the precertificate and final certificate carry an identical subjectAltName.
+	if err := traceGate(ctx, "ca.gate.upn", func() error {
+		var gateErr error
+		base, gateErr = m.applyUPNPolicy(base, profile, issuerCA, requestedBy)
+		return gateErr
+	}); err != nil {
+		return nil, nil, err
+	}
+
 	// Assign the profile's certificate-policy OIDs before linting so the lint gate
 	// (in particular the optional zlint backend, which lints the fully-encoded
 	// certificate) sees the certificatePolicies extension the leaf will carry.
