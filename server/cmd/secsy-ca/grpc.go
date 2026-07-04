@@ -10,16 +10,23 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/grpcapi/pkiv1"
 )
@@ -34,7 +41,7 @@ import (
 func cmdGRPC(args []string) error {
 	fs := flag.NewFlagSet("grpc", flag.ContinueOnError)
 	addr := fs.String("addr", "localhost:9443", "gRPC server address host:port")
-	operation := fs.String("operation", "demo", "operation: demo|issue|renew|revoke|suspend|release|get|status|list|crl-metadata|ocsp-metadata")
+	operation := fs.String("operation", "demo", "operation: demo|issue|renew|revoke|suspend|release|get|status|list|crl-metadata|ocsp-metadata|stream-events")
 	caID := fs.String("ca", "", "issuing CA id (required for most operations)")
 	profile := fs.String("profile", "", "certificate profile (issue/renew)")
 	cn := fs.String("cn", "grpc-demo.example.com", "subject common name for the generated CSR (issue/demo)")
@@ -44,6 +51,14 @@ func cmdGRPC(args []string) error {
 	validityDays := fs.Int("validity-days", 0, "requested validity in days (0 = profile default)")
 	csrFile := fs.String("csr", "", "path to a PEM CSR to issue/renew (default: generate one)")
 	certOut := fs.String("cert-out", "", "write the issued certificate PEM to this file")
+
+	// stream-events options (live audit/lifecycle event subscription).
+	action := fs.String("action", "", "stream-events: narrow to a single audit action (e.g. cert.issue)")
+	tenant := fs.String("tenant", "", "stream-events: tenant selector (platform operator narrowing / multi-tenant principal choice)")
+	resumeFrom := fs.Int64("resume-from", 0, "stream-events: replay the durable event log from sequence numbers greater than this before the live tail (0 = live only)")
+	heartbeat := fs.Int("heartbeat", 0, "stream-events: heartbeat interval in seconds on an idle stream (0 = server default)")
+	streamJSON := fs.Bool("json", false, "stream-events: emit each frame as a single JSON line (NDJSON) instead of human-readable text")
+	duration := fs.Duration("duration", 0, "stream-events: stop after this long (0 = until interrupted)")
 
 	// Authentication (mutually exclusive; pick the one the server is configured for).
 	token := fs.String("token", "", "Bearer OIDC token for authorization")
@@ -76,16 +91,23 @@ func cmdGRPC(args []string) error {
 	defer func() { _ = conn.Close() }()
 	client := pkiv1.NewPKIServiceClient(conn)
 
-	// Build the per-call context: attach the authorization metadata and a deadline.
+	// appendAuth attaches the authorization metadata (Bearer/Basic) to a context.
+	// It is factored out so the long-lived streaming operation can carry the same
+	// credentials without a per-call deadline.
+	appendAuth := func(ctx context.Context) context.Context {
+		if *token != "" {
+			return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+*token)
+		}
+		if *basic != "" {
+			enc := base64.StdEncoding.EncodeToString([]byte(*basic))
+			return metadata.AppendToOutgoingContext(ctx, "authorization", "Basic "+enc)
+		}
+		return ctx
+	}
+	// Build the per-call context for unary RPCs: authorization metadata + deadline.
 	authCtx := func() (context.Context, context.CancelFunc) {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
-		if *token != "" {
-			ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+*token)
-		} else if *basic != "" {
-			enc := base64.StdEncoding.EncodeToString([]byte(*basic))
-			ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Basic "+enc)
-		}
-		return ctx, cancel
+		return appendAuth(ctx), cancel
 	}
 
 	switch strings.ToLower(*operation) {
@@ -269,9 +291,106 @@ func cmdGRPC(args []string) error {
 	case "demo":
 		return grpcDemo(client, authCtx, *caID, *profile, *cn, splitCSV(*dns), int32(*validityDays), *reason)
 
+	case "stream-events", "watch-events", "events":
+		return grpcStreamEvents(client, appendAuth, streamEventsOptions{
+			action:     *action,
+			tenant:     *tenant,
+			resumeFrom: *resumeFrom,
+			heartbeat:  int32(*heartbeat),
+			asJSON:     *streamJSON,
+			duration:   *duration,
+		})
+
 	default:
 		return fmt.Errorf("grpc: unknown -operation %q", *operation)
 	}
+}
+
+type streamEventsOptions struct {
+	action     string
+	tenant     string
+	resumeFrom int64
+	heartbeat  int32
+	asJSON     bool
+	duration   time.Duration
+}
+
+// grpcStreamEvents subscribes to the live audit/lifecycle event feed over the
+// StreamEvents server-streaming RPC — the gRPC peer of the REST SSE endpoint —
+// and prints each frame (event, heartbeat, or lag) until the deadline elapses,
+// the caller interrupts (Ctrl-C), or the server closes the stream. With
+// -resume-from it first replays the durable log from that sequence cursor.
+func grpcStreamEvents(client pkiv1.PKIServiceClient, appendAuth func(context.Context) context.Context, o streamEventsOptions) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if o.duration > 0 {
+		ctx, cancel = context.WithTimeout(ctx, o.duration)
+		defer cancel()
+	}
+	// Cancel cleanly on Ctrl-C / SIGTERM so the stream tears down and the server
+	// unsubscribes promptly rather than leaking the subscription until timeout.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sig)
+	go func() {
+		select {
+		case <-sig:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	stream, err := client.StreamEvents(appendAuth(ctx), &pkiv1.StreamEventsRequest{
+		Action:           o.action,
+		Tenant:           o.tenant,
+		ResumeFromSeq:    o.resumeFrom,
+		HeartbeatSeconds: o.heartbeat,
+	})
+	if err != nil {
+		return fmt.Errorf("StreamEvents: %w", err)
+	}
+	for {
+		msg, err := stream.Recv()
+		if err != nil {
+			// A clean end: server closed the stream (EOF) or we cancelled locally
+			// (deadline reached or interrupted).
+			if errors.Is(err, io.EOF) || status.Code(err) == codes.Canceled || ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("stream recv: %w", err)
+		}
+		printEventFrame(msg, o.asJSON)
+	}
+}
+
+// printEventFrame renders one stream frame. In JSON mode it emits the canonical
+// protojson of the frame (one object per line, NDJSON); otherwise it prints a
+// compact human-readable line per event, heartbeat, or lag notice.
+func printEventFrame(msg *pkiv1.StreamEventsResponse, asJSON bool) {
+	if asJSON {
+		if b, err := protojson.Marshal(msg); err == nil {
+			fmt.Println(string(b))
+		}
+		return
+	}
+	switch p := msg.GetPayload().(type) {
+	case *pkiv1.StreamEventsResponse_Event:
+		e := p.Event
+		fmt.Printf("[%s] #%d %s actor=%s tenant=%s target=%s result=%s%s\n",
+			e.GetTimestamp().AsTime().UTC().Format(time.RFC3339), e.GetSeq(), e.GetAction(),
+			e.GetActor(), orDash(e.GetTenant()), orDash(e.GetTarget()), e.GetResult(), detailSuffix(e.GetDetail()))
+	case *pkiv1.StreamEventsResponse_Heartbeat:
+		fmt.Printf(": heartbeat last_seq=%d\n", p.Heartbeat.GetLastSeq())
+	case *pkiv1.StreamEventsResponse_Lag:
+		fmt.Printf("! %s\n", p.Lag.GetMessage())
+	}
+}
+
+func detailSuffix(detail string) string {
+	if detail == "" {
+		return ""
+	}
+	return " detail=" + detail
 }
 
 // grpcDemo runs a full issue -> status -> revoke -> status round-trip over gRPC.

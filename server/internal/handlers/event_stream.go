@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,12 +11,81 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/eventstream"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
+	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
 
 // eventStreamHeartbeat is how often the SSE feed emits a comment line when no
 // events are flowing. It keeps the connection (and any intermediary proxy) from
 // idling out, and lets a client detect a dead connection promptly.
 const eventStreamHeartbeat = 15 * time.Second
+
+// ErrEventStreamTenantRequired indicates a multi-tenant principal subscribed to
+// the audit-event stream without naming which of its tenants to watch. It is a
+// bad-request condition, distinct from the ErrForbidden authorization failures,
+// so transports map it to HTTP 400 / gRPC InvalidArgument. (ErrForbidden and
+// ErrNotFound live in grpc_support.go.)
+var ErrEventStreamTenantRequired = errors.New("tenant selector required")
+
+// EventStreamScope authorizes user for the live audit-event stream and resolves
+// the subscriber filter that enforces tenant scoping (plus an optional single-
+// action narrowing). It centralizes the authorization + tenant-narrowing shared
+// by the REST Server-Sent-Events feed (StreamEventLog) and the gRPC StreamEvents
+// RPC, so both surfaces enforce identical visibility rather than duplicating the
+// rules.
+//
+// requestedTenant is the caller-supplied tenant selector (REST ?tenant=, gRPC
+// request.tenant): it lets a platform operator narrow an otherwise cross-tenant
+// view to one tenant, and lets a principal that belongs to several tenants choose
+// which one to watch. action, when non-empty, restricts the stream to a single
+// audit action.
+//
+// A platform operator (root or a platform-wide role) streams across every
+// tenant, optionally narrowed to requestedTenant. A tenant-scoped principal is
+// confined to the tenant(s) it belongs to and cannot widen the view — the same
+// confinement ListEvents applies with its tenant WHERE clause.
+//
+// Errors are typed so each transport maps them to its own status vocabulary:
+//   - ErrForbidden                 -> HTTP 403 / gRPC PermissionDenied
+//   - ErrEventStreamTenantRequired -> HTTP 400 / gRPC InvalidArgument
+func (a *API) EventStreamScope(user *models.UserInfo, action, requestedTenant string) (eventstream.Filter, error) {
+	if !a.canRead(user) {
+		return eventstream.Filter{}, fmt.Errorf("%w: audit:read capability required (admin or auditor role)", ErrForbidden)
+	}
+
+	// Tenant scoping mirrors ListEventLog exactly: a platform operator (root or a
+	// platform-wide role) streams across tenants, optionally narrowing with the
+	// requested tenant; a tenant-scoped principal is pinned to the single tenant it
+	// belongs to (or must choose among several) and cannot widen the view. canRead
+	// above already rejected a nil principal, so user is non-nil here.
+	tenantFilter := requestedTenant
+	if !user.IsRoot && len(user.Roles) == 0 {
+		member := user.TenantsWithRoles()
+		switch len(member) {
+		case 0:
+			return eventstream.Filter{}, fmt.Errorf("%w: no tenant membership", ErrForbidden)
+		case 1:
+			tenantFilter = member[0]
+		default:
+			if tenantFilter == "" {
+				return eventstream.Filter{}, fmt.Errorf("%w: this principal belongs to several tenants; name which one's events to stream", ErrEventStreamTenantRequired)
+			}
+			if len(user.TenantRoles[tenantFilter]) == 0 {
+				return eventstream.Filter{}, fmt.Errorf("%w: not a member of tenant %q", ErrForbidden, tenantFilter)
+			}
+		}
+	}
+
+	// Translate the resolved scope into a subscriber filter. An empty tenantFilter
+	// means the platform-wide view (all tenants, including platform-level events
+	// with no owning tenant); a specific tenant matches only that tenant's events.
+	filter := eventstream.Filter{Action: action}
+	if tenantFilter == "" {
+		filter.AllTenants = true
+	} else {
+		filter.Tenants = map[string]bool{tenantFilter: true}
+	}
+	return filter, nil
+}
 
 // StreamEventLog serves the tamper-evident audit event log as a live Server-Sent
 // Events feed (Task 90/104): every hash-chained event appended anywhere in the
@@ -36,35 +106,16 @@ const eventStreamHeartbeat = 15 * time.Second
 // than ever blocking the audit-append hot path.
 func (a *API) StreamEventLog(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !a.canRead(user) {
-		writeError(w, http.StatusForbidden, "audit:read capability required (admin or auditor role)")
-		return
-	}
-
-	action := r.URL.Query().Get("action")
-	// Tenant scoping mirrors ListEventLog exactly: a platform operator (root or a
-	// platform-wide role) streams across tenants, optionally narrowing with
-	// ?tenant=; a tenant-scoped principal is pinned to the single tenant it belongs
-	// to and cannot widen the view.
-	tenantFilter := r.URL.Query().Get("tenant")
-	if !user.IsRoot && len(user.Roles) == 0 {
-		member := user.TenantsWithRoles()
-		switch len(member) {
-		case 0:
-			writeError(w, http.StatusForbidden, "no tenant membership")
-			return
-		case 1:
-			tenantFilter = member[0]
-		default:
-			if tenantFilter == "" {
-				writeError(w, http.StatusBadRequest, "tenant query parameter is required")
-				return
-			}
-			if len(user.TenantRoles[tenantFilter]) == 0 {
-				writeError(w, http.StatusForbidden, "not a member of tenant %q", tenantFilter)
-				return
-			}
+	// Authorization and tenant scoping are shared with the gRPC StreamEvents RPC
+	// via EventStreamScope, so both surfaces enforce identical visibility.
+	filter, err := a.EventStreamScope(user, r.URL.Query().Get("action"), r.URL.Query().Get("tenant"))
+	if err != nil {
+		code := http.StatusForbidden
+		if errors.Is(err, ErrEventStreamTenantRequired) {
+			code = http.StatusBadRequest
 		}
+		writeError(w, code, "%s", err.Error())
+		return
 	}
 
 	// The feed streams incrementally, so the ResponseWriter must support flushing.
@@ -75,17 +126,6 @@ func (a *API) StreamEventLog(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported by this connection")
 		return
-	}
-
-	// Translate the resolved scope into a subscriber filter. An empty tenantFilter
-	// means the platform-wide view (all tenants, including platform-level events
-	// with no owning tenant); a specific tenant matches only that tenant's events —
-	// exactly the confinement ListEvents applies with its tenant WHERE clause.
-	filter := eventstream.Filter{Action: action}
-	if tenantFilter == "" {
-		filter.AllTenants = true
-	} else {
-		filter.Tenants = map[string]bool{tenantFilter: true}
 	}
 
 	sub := a.events.Subscribe(filter)

@@ -2832,6 +2832,469 @@ func (x *GetOCSPMetadataResponse) GetDelegatedResponder() bool {
 	return false
 }
 
+// StreamEventsRequest subscribes to the live audit/lifecycle event feed.
+type StreamEventsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// action, when non-empty, restricts the stream to a single audit action
+	// identifier (e.g. "cert.issue") — the same narrowing the REST feed's ?action=
+	// accepts.
+	Action string `protobuf:"bytes,1,opt,name=action,proto3" json:"action,omitempty"`
+	// tenant selects which tenant's events to stream. A platform operator may set
+	// it to narrow an otherwise cross-tenant view to one tenant; a principal that
+	// belongs to several tenants must set it to name which one (leaving it empty is
+	// an INVALID_ARGUMENT). It is ignored for a single-tenant principal, which is
+	// always pinned to its own tenant.
+	Tenant string `protobuf:"bytes,2,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	// resume_from_seq, when > 0, replays matching events from the durable event log
+	// with a sequence number strictly greater than it before switching to the live
+	// tail, so a reconnecting client resumes without a gap. Overlap between the
+	// replay and the live tail is de-duplicated by sequence number. 0 streams only
+	// events appended after the subscription.
+	ResumeFromSeq int64 `protobuf:"varint,3,opt,name=resume_from_seq,json=resumeFromSeq,proto3" json:"resume_from_seq,omitempty"`
+	// heartbeat_seconds overrides the interval between heartbeat messages on an idle
+	// stream. Non-positive uses the server default (15s); it is clamped to a sane
+	// range.
+	HeartbeatSeconds int32 `protobuf:"varint,4,opt,name=heartbeat_seconds,json=heartbeatSeconds,proto3" json:"heartbeat_seconds,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *StreamEventsRequest) Reset() {
+	*x = StreamEventsRequest{}
+	mi := &file_pki_v1_pki_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamEventsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamEventsRequest) ProtoMessage() {}
+
+func (x *StreamEventsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pki_v1_pki_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamEventsRequest.ProtoReflect.Descriptor instead.
+func (*StreamEventsRequest) Descriptor() ([]byte, []int) {
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *StreamEventsRequest) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *StreamEventsRequest) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *StreamEventsRequest) GetResumeFromSeq() int64 {
+	if x != nil {
+		return x.ResumeFromSeq
+	}
+	return 0
+}
+
+func (x *StreamEventsRequest) GetHeartbeatSeconds() int32 {
+	if x != nil {
+		return x.HeartbeatSeconds
+	}
+	return 0
+}
+
+// AuditEvent is one sealed entry of the tamper-evident audit log, mirroring the
+// JSON the REST SSE feed emits (internal/audit.Event).
+type AuditEvent struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Seq        int64                  `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
+	Id         string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
+	Timestamp  *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	Actor      string                 `protobuf:"bytes,4,opt,name=actor,proto3" json:"actor,omitempty"`
+	ActorName  string                 `protobuf:"bytes,5,opt,name=actor_name,json=actorName,proto3" json:"actor_name,omitempty"`
+	ActorRoles string                 `protobuf:"bytes,6,opt,name=actor_roles,json=actorRoles,proto3" json:"actor_roles,omitempty"`
+	Action     string                 `protobuf:"bytes,7,opt,name=action,proto3" json:"action,omitempty"`
+	// tenant is the owning tenant (empty for platform-level events).
+	Tenant        string `protobuf:"bytes,8,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	Target        string `protobuf:"bytes,9,opt,name=target,proto3" json:"target,omitempty"`
+	TargetName    string `protobuf:"bytes,10,opt,name=target_name,json=targetName,proto3" json:"target_name,omitempty"`
+	Result        string `protobuf:"bytes,11,opt,name=result,proto3" json:"result,omitempty"`
+	Detail        string `protobuf:"bytes,12,opt,name=detail,proto3" json:"detail,omitempty"`
+	Ip            string `protobuf:"bytes,13,opt,name=ip,proto3" json:"ip,omitempty"`
+	RequestId     string `protobuf:"bytes,14,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	PrevHash      string `protobuf:"bytes,15,opt,name=prev_hash,json=prevHash,proto3" json:"prev_hash,omitempty"`
+	Hash          string `protobuf:"bytes,16,opt,name=hash,proto3" json:"hash,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AuditEvent) Reset() {
+	*x = AuditEvent{}
+	mi := &file_pki_v1_pki_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AuditEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AuditEvent) ProtoMessage() {}
+
+func (x *AuditEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_pki_v1_pki_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AuditEvent.ProtoReflect.Descriptor instead.
+func (*AuditEvent) Descriptor() ([]byte, []int) {
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *AuditEvent) GetSeq() int64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+func (x *AuditEvent) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetTimestamp() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Timestamp
+	}
+	return nil
+}
+
+func (x *AuditEvent) GetActor() string {
+	if x != nil {
+		return x.Actor
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetActorName() string {
+	if x != nil {
+		return x.ActorName
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetActorRoles() string {
+	if x != nil {
+		return x.ActorRoles
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetTarget() string {
+	if x != nil {
+		return x.Target
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetTargetName() string {
+	if x != nil {
+		return x.TargetName
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetResult() string {
+	if x != nil {
+		return x.Result
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetIp() string {
+	if x != nil {
+		return x.Ip
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetRequestId() string {
+	if x != nil {
+		return x.RequestId
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetPrevHash() string {
+	if x != nil {
+		return x.PrevHash
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetHash() string {
+	if x != nil {
+		return x.Hash
+	}
+	return ""
+}
+
+// EventHeartbeat is emitted periodically on an idle stream so idle connections
+// (and any intermediary) do not time out and a client can detect a half-open
+// connection. last_seq is the highest event sequence number delivered so far, so
+// a client can persist it as its resume cursor even across quiet periods.
+type EventHeartbeat struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Time          *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=time,proto3" json:"time,omitempty"`
+	LastSeq       int64                  `protobuf:"varint,2,opt,name=last_seq,json=lastSeq,proto3" json:"last_seq,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EventHeartbeat) Reset() {
+	*x = EventHeartbeat{}
+	mi := &file_pki_v1_pki_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EventHeartbeat) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EventHeartbeat) ProtoMessage() {}
+
+func (x *EventHeartbeat) ProtoReflect() protoreflect.Message {
+	mi := &file_pki_v1_pki_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EventHeartbeat.ProtoReflect.Descriptor instead.
+func (*EventHeartbeat) Descriptor() ([]byte, []int) {
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *EventHeartbeat) GetTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Time
+	}
+	return nil
+}
+
+func (x *EventHeartbeat) GetLastSeq() int64 {
+	if x != nil {
+		return x.LastSeq
+	}
+	return 0
+}
+
+// EventLag reports that the subscriber could not keep up and its oldest undelivered
+// events were dropped, so a live viewer knows the feed is not complete and can page
+// the durable audit log for the gap.
+type EventLag struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Dropped       uint64                 `protobuf:"varint,1,opt,name=dropped,proto3" json:"dropped,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EventLag) Reset() {
+	*x = EventLag{}
+	mi := &file_pki_v1_pki_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EventLag) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EventLag) ProtoMessage() {}
+
+func (x *EventLag) ProtoReflect() protoreflect.Message {
+	mi := &file_pki_v1_pki_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EventLag.ProtoReflect.Descriptor instead.
+func (*EventLag) Descriptor() ([]byte, []int) {
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *EventLag) GetDropped() uint64 {
+	if x != nil {
+		return x.Dropped
+	}
+	return 0
+}
+
+func (x *EventLag) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+// StreamEventsResponse is one frame of the event stream: an audit event, a periodic
+// heartbeat, or a lag notice.
+type StreamEventsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Payload:
+	//
+	//	*StreamEventsResponse_Event
+	//	*StreamEventsResponse_Heartbeat
+	//	*StreamEventsResponse_Lag
+	Payload       isStreamEventsResponse_Payload `protobuf_oneof:"payload"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StreamEventsResponse) Reset() {
+	*x = StreamEventsResponse{}
+	mi := &file_pki_v1_pki_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamEventsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamEventsResponse) ProtoMessage() {}
+
+func (x *StreamEventsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pki_v1_pki_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamEventsResponse.ProtoReflect.Descriptor instead.
+func (*StreamEventsResponse) Descriptor() ([]byte, []int) {
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *StreamEventsResponse) GetPayload() isStreamEventsResponse_Payload {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *StreamEventsResponse) GetEvent() *AuditEvent {
+	if x != nil {
+		if x, ok := x.Payload.(*StreamEventsResponse_Event); ok {
+			return x.Event
+		}
+	}
+	return nil
+}
+
+func (x *StreamEventsResponse) GetHeartbeat() *EventHeartbeat {
+	if x != nil {
+		if x, ok := x.Payload.(*StreamEventsResponse_Heartbeat); ok {
+			return x.Heartbeat
+		}
+	}
+	return nil
+}
+
+func (x *StreamEventsResponse) GetLag() *EventLag {
+	if x != nil {
+		if x, ok := x.Payload.(*StreamEventsResponse_Lag); ok {
+			return x.Lag
+		}
+	}
+	return nil
+}
+
+type isStreamEventsResponse_Payload interface {
+	isStreamEventsResponse_Payload()
+}
+
+type StreamEventsResponse_Event struct {
+	Event *AuditEvent `protobuf:"bytes,1,opt,name=event,proto3,oneof"`
+}
+
+type StreamEventsResponse_Heartbeat struct {
+	Heartbeat *EventHeartbeat `protobuf:"bytes,2,opt,name=heartbeat,proto3,oneof"`
+}
+
+type StreamEventsResponse_Lag struct {
+	Lag *EventLag `protobuf:"bytes,3,opt,name=lag,proto3,oneof"`
+}
+
+func (*StreamEventsResponse_Event) isStreamEventsResponse_Payload() {}
+
+func (*StreamEventsResponse_Heartbeat) isStreamEventsResponse_Payload() {}
+
+func (*StreamEventsResponse_Lag) isStreamEventsResponse_Payload() {}
+
 var File_pki_v1_pki_proto protoreflect.FileDescriptor
 
 const file_pki_v1_pki_proto_rawDesc = "" +
@@ -3091,13 +3554,53 @@ const file_pki_v1_pki_proto_rawDesc = "" +
 	"\x17GetOCSPMetadataResponse\x12\x1b\n" +
 	"\tocsp_urls\x18\x01 \x03(\tR\bocspUrls\x12'\n" +
 	"\x0fnonce_supported\x18\x02 \x01(\bR\x0enonceSupported\x12/\n" +
-	"\x13delegated_responder\x18\x03 \x01(\bR\x12delegatedResponder*\xb5\x01\n" +
+	"\x13delegated_responder\x18\x03 \x01(\bR\x12delegatedResponder\"\x9a\x01\n" +
+	"\x13StreamEventsRequest\x12\x16\n" +
+	"\x06action\x18\x01 \x01(\tR\x06action\x12\x16\n" +
+	"\x06tenant\x18\x02 \x01(\tR\x06tenant\x12&\n" +
+	"\x0fresume_from_seq\x18\x03 \x01(\x03R\rresumeFromSeq\x12+\n" +
+	"\x11heartbeat_seconds\x18\x04 \x01(\x05R\x10heartbeatSeconds\"\xb7\x03\n" +
+	"\n" +
+	"AuditEvent\x12\x10\n" +
+	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12\x0e\n" +
+	"\x02id\x18\x02 \x01(\tR\x02id\x128\n" +
+	"\ttimestamp\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\ttimestamp\x12\x14\n" +
+	"\x05actor\x18\x04 \x01(\tR\x05actor\x12\x1d\n" +
+	"\n" +
+	"actor_name\x18\x05 \x01(\tR\tactorName\x12\x1f\n" +
+	"\vactor_roles\x18\x06 \x01(\tR\n" +
+	"actorRoles\x12\x16\n" +
+	"\x06action\x18\a \x01(\tR\x06action\x12\x16\n" +
+	"\x06tenant\x18\b \x01(\tR\x06tenant\x12\x16\n" +
+	"\x06target\x18\t \x01(\tR\x06target\x12\x1f\n" +
+	"\vtarget_name\x18\n" +
+	" \x01(\tR\n" +
+	"targetName\x12\x16\n" +
+	"\x06result\x18\v \x01(\tR\x06result\x12\x16\n" +
+	"\x06detail\x18\f \x01(\tR\x06detail\x12\x0e\n" +
+	"\x02ip\x18\r \x01(\tR\x02ip\x12\x1d\n" +
+	"\n" +
+	"request_id\x18\x0e \x01(\tR\trequestId\x12\x1b\n" +
+	"\tprev_hash\x18\x0f \x01(\tR\bprevHash\x12\x12\n" +
+	"\x04hash\x18\x10 \x01(\tR\x04hash\"[\n" +
+	"\x0eEventHeartbeat\x12.\n" +
+	"\x04time\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\x04time\x12\x19\n" +
+	"\blast_seq\x18\x02 \x01(\x03R\alastSeq\">\n" +
+	"\bEventLag\x12\x18\n" +
+	"\adropped\x18\x01 \x01(\x04R\adropped\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\xbd\x01\n" +
+	"\x14StreamEventsResponse\x120\n" +
+	"\x05event\x18\x01 \x01(\v2\x18.secsy.pki.v1.AuditEventH\x00R\x05event\x12<\n" +
+	"\theartbeat\x18\x02 \x01(\v2\x1c.secsy.pki.v1.EventHeartbeatH\x00R\theartbeat\x12*\n" +
+	"\x03lag\x18\x03 \x01(\v2\x16.secsy.pki.v1.EventLagH\x00R\x03lagB\t\n" +
+	"\apayload*\xb5\x01\n" +
 	"\x11CertificateStatus\x12\"\n" +
 	"\x1eCERTIFICATE_STATUS_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18CERTIFICATE_STATUS_VALID\x10\x01\x12\x1e\n" +
 	"\x1aCERTIFICATE_STATUS_EXPIRED\x10\x02\x12\x1e\n" +
 	"\x1aCERTIFICATE_STATUS_REVOKED\x10\x03\x12\x1e\n" +
-	"\x1aCERTIFICATE_STATUS_UNKNOWN\x10\x042\xaf\t\n" +
+	"\x1aCERTIFICATE_STATUS_UNKNOWN\x10\x042\x88\n" +
+	"\n" +
 	"\n" +
 	"PKIService\x12\\\n" +
 	"\x10IssueCertificate\x12%.secsy.pki.v1.IssueCertificateRequest\x1a!.secsy.pki.v1.CertificateResponse\x12g\n" +
@@ -3111,7 +3614,8 @@ const file_pki_v1_pki_proto_rawDesc = "" +
 	"\x14GetCertificateStatus\x12).secsy.pki.v1.GetCertificateStatusRequest\x1a*.secsy.pki.v1.GetCertificateStatusResponse\x12a\n" +
 	"\x10ListCertificates\x12%.secsy.pki.v1.ListCertificatesRequest\x1a&.secsy.pki.v1.ListCertificatesResponse\x12[\n" +
 	"\x0eGetCRLMetadata\x12#.secsy.pki.v1.GetCRLMetadataRequest\x1a$.secsy.pki.v1.GetCRLMetadataResponse\x12^\n" +
-	"\x0fGetOCSPMetadata\x12$.secsy.pki.v1.GetOCSPMetadataRequest\x1a%.secsy.pki.v1.GetOCSPMetadataResponseBGZEgithub.com/blechschmidt/secsy-pki/server/internal/grpcapi/pkiv1;pkiv1b\x06proto3"
+	"\x0fGetOCSPMetadata\x12$.secsy.pki.v1.GetOCSPMetadataRequest\x1a%.secsy.pki.v1.GetOCSPMetadataResponse\x12W\n" +
+	"\fStreamEvents\x12!.secsy.pki.v1.StreamEventsRequest\x1a\".secsy.pki.v1.StreamEventsResponse0\x01BGZEgithub.com/blechschmidt/secsy-pki/server/internal/grpcapi/pkiv1;pkiv1b\x06proto3"
 
 var (
 	file_pki_v1_pki_proto_rawDescOnce sync.Once
@@ -3126,7 +3630,7 @@ func file_pki_v1_pki_proto_rawDescGZIP() []byte {
 }
 
 var file_pki_v1_pki_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pki_v1_pki_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
+var file_pki_v1_pki_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
 var file_pki_v1_pki_proto_goTypes = []any{
 	(CertificateStatus)(0),               // 0: secsy.pki.v1.CertificateStatus
 	(*CTLogOutcome)(nil),                 // 1: secsy.pki.v1.CTLogOutcome
@@ -3161,71 +3665,83 @@ var file_pki_v1_pki_proto_goTypes = []any{
 	(*GetCRLMetadataResponse)(nil),       // 30: secsy.pki.v1.GetCRLMetadataResponse
 	(*GetOCSPMetadataRequest)(nil),       // 31: secsy.pki.v1.GetOCSPMetadataRequest
 	(*GetOCSPMetadataResponse)(nil),      // 32: secsy.pki.v1.GetOCSPMetadataResponse
-	(*timestamppb.Timestamp)(nil),        // 33: google.protobuf.Timestamp
+	(*StreamEventsRequest)(nil),          // 33: secsy.pki.v1.StreamEventsRequest
+	(*AuditEvent)(nil),                   // 34: secsy.pki.v1.AuditEvent
+	(*EventHeartbeat)(nil),               // 35: secsy.pki.v1.EventHeartbeat
+	(*EventLag)(nil),                     // 36: secsy.pki.v1.EventLag
+	(*StreamEventsResponse)(nil),         // 37: secsy.pki.v1.StreamEventsResponse
+	(*timestamppb.Timestamp)(nil),        // 38: google.protobuf.Timestamp
 }
 var file_pki_v1_pki_proto_depIdxs = []int32{
 	1,  // 0: secsy.pki.v1.CTInfo.logs:type_name -> secsy.pki.v1.CTLogOutcome
 	3,  // 1: secsy.pki.v1.IssueCertificateRequest.psd2:type_name -> secsy.pki.v1.PSD2QCStatement
-	33, // 2: secsy.pki.v1.CertificateResponse.not_before:type_name -> google.protobuf.Timestamp
-	33, // 3: secsy.pki.v1.CertificateResponse.not_after:type_name -> google.protobuf.Timestamp
+	38, // 2: secsy.pki.v1.CertificateResponse.not_before:type_name -> google.protobuf.Timestamp
+	38, // 3: secsy.pki.v1.CertificateResponse.not_after:type_name -> google.protobuf.Timestamp
 	2,  // 4: secsy.pki.v1.CertificateResponse.ct:type_name -> secsy.pki.v1.CTInfo
 	3,  // 5: secsy.pki.v1.PreviewCertificateRequest.psd2:type_name -> secsy.pki.v1.PSD2QCStatement
-	33, // 6: secsy.pki.v1.PreviewCertificateResponse.not_before:type_name -> google.protobuf.Timestamp
-	33, // 7: secsy.pki.v1.PreviewCertificateResponse.not_after:type_name -> google.protobuf.Timestamp
+	38, // 6: secsy.pki.v1.PreviewCertificateResponse.not_before:type_name -> google.protobuf.Timestamp
+	38, // 7: secsy.pki.v1.PreviewCertificateResponse.not_after:type_name -> google.protobuf.Timestamp
 	9,  // 8: secsy.pki.v1.PreviewCertificateResponse.extensions:type_name -> secsy.pki.v1.PreviewExtension
 	8,  // 9: secsy.pki.v1.PreviewCertificateResponse.gates:type_name -> secsy.pki.v1.PreviewGate
-	33, // 10: secsy.pki.v1.ValidationRevocation.revoked_at:type_name -> google.protobuf.Timestamp
-	33, // 11: secsy.pki.v1.ValidatedCertificate.not_before:type_name -> google.protobuf.Timestamp
-	33, // 12: secsy.pki.v1.ValidatedCertificate.not_after:type_name -> google.protobuf.Timestamp
+	38, // 10: secsy.pki.v1.ValidationRevocation.revoked_at:type_name -> google.protobuf.Timestamp
+	38, // 11: secsy.pki.v1.ValidatedCertificate.not_before:type_name -> google.protobuf.Timestamp
+	38, // 12: secsy.pki.v1.ValidatedCertificate.not_after:type_name -> google.protobuf.Timestamp
 	12, // 13: secsy.pki.v1.ValidatedCertificate.revocation:type_name -> secsy.pki.v1.ValidationRevocation
-	33, // 14: secsy.pki.v1.ValidateChainResponse.evaluated_at:type_name -> google.protobuf.Timestamp
-	33, // 15: secsy.pki.v1.ValidateChainResponse.valid_from:type_name -> google.protobuf.Timestamp
-	33, // 16: secsy.pki.v1.ValidateChainResponse.valid_until:type_name -> google.protobuf.Timestamp
+	38, // 14: secsy.pki.v1.ValidateChainResponse.evaluated_at:type_name -> google.protobuf.Timestamp
+	38, // 15: secsy.pki.v1.ValidateChainResponse.valid_from:type_name -> google.protobuf.Timestamp
+	38, // 16: secsy.pki.v1.ValidateChainResponse.valid_until:type_name -> google.protobuf.Timestamp
 	13, // 17: secsy.pki.v1.ValidateChainResponse.chain:type_name -> secsy.pki.v1.ValidatedCertificate
 	14, // 18: secsy.pki.v1.ValidateChainResponse.checks:type_name -> secsy.pki.v1.ValidationCheck
-	33, // 19: secsy.pki.v1.CertificateInfo.not_before:type_name -> google.protobuf.Timestamp
-	33, // 20: secsy.pki.v1.CertificateInfo.not_after:type_name -> google.protobuf.Timestamp
+	38, // 19: secsy.pki.v1.CertificateInfo.not_before:type_name -> google.protobuf.Timestamp
+	38, // 20: secsy.pki.v1.CertificateInfo.not_after:type_name -> google.protobuf.Timestamp
 	0,  // 21: secsy.pki.v1.CertificateInfo.status:type_name -> secsy.pki.v1.CertificateStatus
-	33, // 22: secsy.pki.v1.CertificateInfo.revoked_at:type_name -> google.protobuf.Timestamp
-	33, // 23: secsy.pki.v1.CertificateInfo.created_at:type_name -> google.protobuf.Timestamp
+	38, // 22: secsy.pki.v1.CertificateInfo.revoked_at:type_name -> google.protobuf.Timestamp
+	38, // 23: secsy.pki.v1.CertificateInfo.created_at:type_name -> google.protobuf.Timestamp
 	22, // 24: secsy.pki.v1.GetCertificateResponse.certificate:type_name -> secsy.pki.v1.CertificateInfo
 	0,  // 25: secsy.pki.v1.GetCertificateStatusResponse.status:type_name -> secsy.pki.v1.CertificateStatus
-	33, // 26: secsy.pki.v1.GetCertificateStatusResponse.revoked_at:type_name -> google.protobuf.Timestamp
-	33, // 27: secsy.pki.v1.ListCertificatesRequest.expires_before:type_name -> google.protobuf.Timestamp
+	38, // 26: secsy.pki.v1.GetCertificateStatusResponse.revoked_at:type_name -> google.protobuf.Timestamp
+	38, // 27: secsy.pki.v1.ListCertificatesRequest.expires_before:type_name -> google.protobuf.Timestamp
 	22, // 28: secsy.pki.v1.ListCertificatesResponse.certificates:type_name -> secsy.pki.v1.CertificateInfo
-	33, // 29: secsy.pki.v1.GetCRLMetadataResponse.this_update:type_name -> google.protobuf.Timestamp
-	33, // 30: secsy.pki.v1.GetCRLMetadataResponse.next_update:type_name -> google.protobuf.Timestamp
-	33, // 31: secsy.pki.v1.GetCRLMetadataResponse.delta_this_update:type_name -> google.protobuf.Timestamp
-	33, // 32: secsy.pki.v1.GetCRLMetadataResponse.delta_next_update:type_name -> google.protobuf.Timestamp
-	4,  // 33: secsy.pki.v1.PKIService.IssueCertificate:input_type -> secsy.pki.v1.IssueCertificateRequest
-	7,  // 34: secsy.pki.v1.PKIService.PreviewCertificate:input_type -> secsy.pki.v1.PreviewCertificateRequest
-	11, // 35: secsy.pki.v1.PKIService.ValidateChain:input_type -> secsy.pki.v1.ValidateChainRequest
-	5,  // 36: secsy.pki.v1.PKIService.RenewCertificate:input_type -> secsy.pki.v1.RenewCertificateRequest
-	16, // 37: secsy.pki.v1.PKIService.RevokeCertificate:input_type -> secsy.pki.v1.RevokeCertificateRequest
-	18, // 38: secsy.pki.v1.PKIService.SuspendCertificate:input_type -> secsy.pki.v1.SuspendCertificateRequest
-	20, // 39: secsy.pki.v1.PKIService.ReleaseCertificate:input_type -> secsy.pki.v1.ReleaseCertificateRequest
-	23, // 40: secsy.pki.v1.PKIService.GetCertificate:input_type -> secsy.pki.v1.GetCertificateRequest
-	25, // 41: secsy.pki.v1.PKIService.GetCertificateStatus:input_type -> secsy.pki.v1.GetCertificateStatusRequest
-	27, // 42: secsy.pki.v1.PKIService.ListCertificates:input_type -> secsy.pki.v1.ListCertificatesRequest
-	29, // 43: secsy.pki.v1.PKIService.GetCRLMetadata:input_type -> secsy.pki.v1.GetCRLMetadataRequest
-	31, // 44: secsy.pki.v1.PKIService.GetOCSPMetadata:input_type -> secsy.pki.v1.GetOCSPMetadataRequest
-	6,  // 45: secsy.pki.v1.PKIService.IssueCertificate:output_type -> secsy.pki.v1.CertificateResponse
-	10, // 46: secsy.pki.v1.PKIService.PreviewCertificate:output_type -> secsy.pki.v1.PreviewCertificateResponse
-	15, // 47: secsy.pki.v1.PKIService.ValidateChain:output_type -> secsy.pki.v1.ValidateChainResponse
-	6,  // 48: secsy.pki.v1.PKIService.RenewCertificate:output_type -> secsy.pki.v1.CertificateResponse
-	17, // 49: secsy.pki.v1.PKIService.RevokeCertificate:output_type -> secsy.pki.v1.RevokeCertificateResponse
-	19, // 50: secsy.pki.v1.PKIService.SuspendCertificate:output_type -> secsy.pki.v1.SuspendCertificateResponse
-	21, // 51: secsy.pki.v1.PKIService.ReleaseCertificate:output_type -> secsy.pki.v1.ReleaseCertificateResponse
-	24, // 52: secsy.pki.v1.PKIService.GetCertificate:output_type -> secsy.pki.v1.GetCertificateResponse
-	26, // 53: secsy.pki.v1.PKIService.GetCertificateStatus:output_type -> secsy.pki.v1.GetCertificateStatusResponse
-	28, // 54: secsy.pki.v1.PKIService.ListCertificates:output_type -> secsy.pki.v1.ListCertificatesResponse
-	30, // 55: secsy.pki.v1.PKIService.GetCRLMetadata:output_type -> secsy.pki.v1.GetCRLMetadataResponse
-	32, // 56: secsy.pki.v1.PKIService.GetOCSPMetadata:output_type -> secsy.pki.v1.GetOCSPMetadataResponse
-	45, // [45:57] is the sub-list for method output_type
-	33, // [33:45] is the sub-list for method input_type
-	33, // [33:33] is the sub-list for extension type_name
-	33, // [33:33] is the sub-list for extension extendee
-	0,  // [0:33] is the sub-list for field type_name
+	38, // 29: secsy.pki.v1.GetCRLMetadataResponse.this_update:type_name -> google.protobuf.Timestamp
+	38, // 30: secsy.pki.v1.GetCRLMetadataResponse.next_update:type_name -> google.protobuf.Timestamp
+	38, // 31: secsy.pki.v1.GetCRLMetadataResponse.delta_this_update:type_name -> google.protobuf.Timestamp
+	38, // 32: secsy.pki.v1.GetCRLMetadataResponse.delta_next_update:type_name -> google.protobuf.Timestamp
+	38, // 33: secsy.pki.v1.AuditEvent.timestamp:type_name -> google.protobuf.Timestamp
+	38, // 34: secsy.pki.v1.EventHeartbeat.time:type_name -> google.protobuf.Timestamp
+	34, // 35: secsy.pki.v1.StreamEventsResponse.event:type_name -> secsy.pki.v1.AuditEvent
+	35, // 36: secsy.pki.v1.StreamEventsResponse.heartbeat:type_name -> secsy.pki.v1.EventHeartbeat
+	36, // 37: secsy.pki.v1.StreamEventsResponse.lag:type_name -> secsy.pki.v1.EventLag
+	4,  // 38: secsy.pki.v1.PKIService.IssueCertificate:input_type -> secsy.pki.v1.IssueCertificateRequest
+	7,  // 39: secsy.pki.v1.PKIService.PreviewCertificate:input_type -> secsy.pki.v1.PreviewCertificateRequest
+	11, // 40: secsy.pki.v1.PKIService.ValidateChain:input_type -> secsy.pki.v1.ValidateChainRequest
+	5,  // 41: secsy.pki.v1.PKIService.RenewCertificate:input_type -> secsy.pki.v1.RenewCertificateRequest
+	16, // 42: secsy.pki.v1.PKIService.RevokeCertificate:input_type -> secsy.pki.v1.RevokeCertificateRequest
+	18, // 43: secsy.pki.v1.PKIService.SuspendCertificate:input_type -> secsy.pki.v1.SuspendCertificateRequest
+	20, // 44: secsy.pki.v1.PKIService.ReleaseCertificate:input_type -> secsy.pki.v1.ReleaseCertificateRequest
+	23, // 45: secsy.pki.v1.PKIService.GetCertificate:input_type -> secsy.pki.v1.GetCertificateRequest
+	25, // 46: secsy.pki.v1.PKIService.GetCertificateStatus:input_type -> secsy.pki.v1.GetCertificateStatusRequest
+	27, // 47: secsy.pki.v1.PKIService.ListCertificates:input_type -> secsy.pki.v1.ListCertificatesRequest
+	29, // 48: secsy.pki.v1.PKIService.GetCRLMetadata:input_type -> secsy.pki.v1.GetCRLMetadataRequest
+	31, // 49: secsy.pki.v1.PKIService.GetOCSPMetadata:input_type -> secsy.pki.v1.GetOCSPMetadataRequest
+	33, // 50: secsy.pki.v1.PKIService.StreamEvents:input_type -> secsy.pki.v1.StreamEventsRequest
+	6,  // 51: secsy.pki.v1.PKIService.IssueCertificate:output_type -> secsy.pki.v1.CertificateResponse
+	10, // 52: secsy.pki.v1.PKIService.PreviewCertificate:output_type -> secsy.pki.v1.PreviewCertificateResponse
+	15, // 53: secsy.pki.v1.PKIService.ValidateChain:output_type -> secsy.pki.v1.ValidateChainResponse
+	6,  // 54: secsy.pki.v1.PKIService.RenewCertificate:output_type -> secsy.pki.v1.CertificateResponse
+	17, // 55: secsy.pki.v1.PKIService.RevokeCertificate:output_type -> secsy.pki.v1.RevokeCertificateResponse
+	19, // 56: secsy.pki.v1.PKIService.SuspendCertificate:output_type -> secsy.pki.v1.SuspendCertificateResponse
+	21, // 57: secsy.pki.v1.PKIService.ReleaseCertificate:output_type -> secsy.pki.v1.ReleaseCertificateResponse
+	24, // 58: secsy.pki.v1.PKIService.GetCertificate:output_type -> secsy.pki.v1.GetCertificateResponse
+	26, // 59: secsy.pki.v1.PKIService.GetCertificateStatus:output_type -> secsy.pki.v1.GetCertificateStatusResponse
+	28, // 60: secsy.pki.v1.PKIService.ListCertificates:output_type -> secsy.pki.v1.ListCertificatesResponse
+	30, // 61: secsy.pki.v1.PKIService.GetCRLMetadata:output_type -> secsy.pki.v1.GetCRLMetadataResponse
+	32, // 62: secsy.pki.v1.PKIService.GetOCSPMetadata:output_type -> secsy.pki.v1.GetOCSPMetadataResponse
+	37, // 63: secsy.pki.v1.PKIService.StreamEvents:output_type -> secsy.pki.v1.StreamEventsResponse
+	51, // [51:64] is the sub-list for method output_type
+	38, // [38:51] is the sub-list for method input_type
+	38, // [38:38] is the sub-list for extension type_name
+	38, // [38:38] is the sub-list for extension extendee
+	0,  // [0:38] is the sub-list for field type_name
 }
 
 func init() { file_pki_v1_pki_proto_init() }
@@ -3236,13 +3752,18 @@ func file_pki_v1_pki_proto_init() {
 	file_pki_v1_pki_proto_msgTypes[3].OneofWrappers = []any{}
 	file_pki_v1_pki_proto_msgTypes[6].OneofWrappers = []any{}
 	file_pki_v1_pki_proto_msgTypes[28].OneofWrappers = []any{}
+	file_pki_v1_pki_proto_msgTypes[36].OneofWrappers = []any{
+		(*StreamEventsResponse_Event)(nil),
+		(*StreamEventsResponse_Heartbeat)(nil),
+		(*StreamEventsResponse_Lag)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pki_v1_pki_proto_rawDesc), len(file_pki_v1_pki_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   32,
+			NumMessages:   37,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

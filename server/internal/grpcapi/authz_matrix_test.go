@@ -23,6 +23,7 @@ import (
 	"errors"
 	"testing"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -48,6 +49,11 @@ var (
 	grpcAdminB   = tuser("admin-b", "b", "admin")
 	grpcAuditorA = tuser("auditor-a", "a", "auditor")
 	grpcAuditorB = tuser("auditor-b", "b", "auditor")
+	// grpcMultiTenant is an auditor in two tenants, neither of them "a". Because it
+	// holds a role in several tenants it must name which tenant's events to stream,
+	// and naming "a" (which it is not a member of) is denied — the StreamEvents
+	// cross-tenant case.
+	grpcMultiTenant = &models.UserInfo{Subject: "multi", TenantRoles: map[string][]string{"b": {"auditor"}, "z": {"auditor"}}}
 )
 
 func withUser(u *models.UserInfo) context.Context {
@@ -112,6 +118,35 @@ func readCase(method string, invoke func(context.Context, *service) error) grpcC
 	return grpcCase{method: method, invoke: invoke, crossUser: grpcAuditorB, crossCode: codes.NotFound, capable: grpcAuditorA}
 }
 
+// fakeEventStream is a minimal grpc.ServerStreamingServer[StreamEventsResponse]
+// for driving the StreamEvents RPC in the authorization matrix: only Context and
+// Send are exercised (the denied cases fail authorization before any Send, and
+// the capable case runs under a pre-cancelled context so it returns at once).
+type fakeEventStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (f *fakeEventStream) Context() context.Context               { return f.ctx }
+func (f *fakeEventStream) Send(*pkiv1.StreamEventsResponse) error { return nil }
+
+// streamCase captures a server-streaming RPC's authorization contract. The RPC is
+// invoked under a pre-cancelled context so a correctly-authorized principal
+// subscribes and then returns immediately at ctx.Done() (codes.Canceled — not a
+// denial) instead of blocking on the live feed, exactly as the REST rdGStream
+// class skips the reachability probe for the SSE handler.
+func streamCase(method string, req *pkiv1.StreamEventsRequest, crossUser *models.UserInfo, crossCode codes.Code, capable *models.UserInfo) grpcCase {
+	return grpcCase{
+		method: method,
+		invoke: func(ctx context.Context, s *service) error {
+			sctx, cancel := context.WithCancel(ctx)
+			cancel()
+			return s.StreamEvents(req, &fakeEventStream{ctx: sctx})
+		},
+		crossUser: crossUser, crossCode: crossCode, capable: capable,
+	}
+}
+
 func grpcAuthzMatrix() []grpcCase {
 	return []grpcCase{
 		issueCase("IssueCertificate", func(ctx context.Context, s *service) error {
@@ -162,6 +197,13 @@ func grpcAuthzMatrix() []grpcCase {
 			_, err := s.ValidateChain(ctx, &pkiv1.ValidateChainRequest{CaId: "ca-a", LeafPem: "bad"})
 			return err
 		}),
+		// StreamEvents is the audit event feed, not a per-CA RPC: audit:read is
+		// required (a roleless principal is denied), and a principal that holds roles
+		// in several tenants but names tenant "a" — which it is not a member of — is
+		// denied. A tenant-"a" auditor is authorized (and, pinned to its own tenant,
+		// sees only tenant-"a" events; the filter-level isolation itself is proved by
+		// the streaming integration test).
+		streamCase("StreamEvents", &pkiv1.StreamEventsRequest{Tenant: "a"}, grpcMultiTenant, codes.PermissionDenied, grpcAuditorA),
 	}
 }
 
@@ -187,27 +229,31 @@ func TestGRPCAuthzMatrix(t *testing.T) {
 	}
 }
 
-// TestGRPCAuthzMatrixCoversMethods forces every PKIService method to have a
-// matrix entry — the gRPC analogue of the REST route-completeness gate.
+// TestGRPCAuthzMatrixCoversMethods forces every PKIService RPC — both unary
+// methods and server-streaming RPCs (e.g. StreamEvents) — to have a matrix entry,
+// the gRPC analogue of the REST route-completeness gate. Streaming RPCs live in
+// the descriptor's Streams slice, not Methods, so both are consulted.
 func TestGRPCAuthzMatrixCoversMethods(t *testing.T) {
 	declared := map[string]bool{}
 	for _, c := range grpcAuthzMatrix() {
 		declared[c.method] = true
 	}
+
+	rpcNames := map[string]bool{}
 	for _, m := range pkiv1.PKIService_ServiceDesc.Methods {
-		if !declared[m.MethodName] {
-			t.Errorf("PKIService RPC %q has no gRPC authorization-matrix entry; declare its authz intent in grpcAuthzMatrix()", m.MethodName)
+		rpcNames[m.MethodName] = true
+	}
+	for _, st := range pkiv1.PKIService_ServiceDesc.Streams {
+		rpcNames[st.StreamName] = true
+	}
+
+	for name := range rpcNames {
+		if !declared[name] {
+			t.Errorf("PKIService RPC %q has no gRPC authorization-matrix entry; declare its authz intent in grpcAuthzMatrix()", name)
 		}
 	}
 	for name := range declared {
-		found := false
-		for _, m := range pkiv1.PKIService_ServiceDesc.Methods {
-			if m.MethodName == name {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !rpcNames[name] {
 			t.Errorf("gRPC matrix entry %q matches no PKIService RPC (stale)", name)
 		}
 	}

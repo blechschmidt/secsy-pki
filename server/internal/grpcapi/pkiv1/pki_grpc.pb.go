@@ -45,6 +45,7 @@ const (
 	PKIService_ListCertificates_FullMethodName     = "/secsy.pki.v1.PKIService/ListCertificates"
 	PKIService_GetCRLMetadata_FullMethodName       = "/secsy.pki.v1.PKIService/GetCRLMetadata"
 	PKIService_GetOCSPMetadata_FullMethodName      = "/secsy.pki.v1.PKIService/GetOCSPMetadata"
+	PKIService_StreamEvents_FullMethodName         = "/secsy.pki.v1.PKIService/StreamEvents"
 )
 
 // PKIServiceClient is the client API for PKIService service.
@@ -122,6 +123,34 @@ type PKIServiceClient interface {
 	// GetOCSPMetadata returns the OCSP responder endpoint(s) for a CA plus the
 	// responder-hardening options in effect (nonce echoing, delegated signer).
 	GetOCSPMetadata(ctx context.Context, in *GetOCSPMetadataRequest, opts ...grpc.CallOption) (*GetOCSPMetadataResponse, error)
+	// StreamEvents subscribes to the live tamper-evident audit/lifecycle event
+	// feed as a server stream — the gRPC peer of the REST Server-Sent-Events
+	// endpoint (GET /api/events/stream). Every hash-chained event appended anywhere
+	// in the system (HTTP/gRPC handlers, background jobs, protocol servers) is fanned
+	// out in real time from the same in-process publisher, so both surfaces observe
+	// an identical stream.
+	//
+	// Authorization and tenant scoping match the SSE feed exactly: audit:read is
+	// required, a platform operator sees every tenant (optionally narrowed with the
+	// request's tenant selector), and a tenant-scoped principal is confined to its
+	// own tenant's events. An optional action narrows the stream to a single audit
+	// action.
+	//
+	// resume_from_seq, when > 0, first replays the durable event log for matching
+	// events with a sequence number greater than it (from the persisted event_log
+	// cursor) before switching to the live tail, de-duplicating any overlap by
+	// sequence number — so a client that records the last seq it saw can reconnect
+	// without a gap. Periodic heartbeat messages keep idle streams and any
+	// intermediary from idling out and let a client detect a half-open connection.
+	//
+	// The feed favors liveness over completeness: a subscriber that cannot keep up
+	// is told (via a lag message) that its oldest undelivered events were dropped
+	// rather than ever blocking the audit-append hot path.
+	//
+	// Errors: PERMISSION_DENIED (no audit:read role / not a member of the requested
+	// tenant), INVALID_ARGUMENT (a multi-tenant principal that did not name a
+	// tenant), INTERNAL (event-log replay failure).
+	StreamEvents(ctx context.Context, in *StreamEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[StreamEventsResponse], error)
 }
 
 type pKIServiceClient struct {
@@ -252,6 +281,25 @@ func (c *pKIServiceClient) GetOCSPMetadata(ctx context.Context, in *GetOCSPMetad
 	return out, nil
 }
 
+func (c *pKIServiceClient) StreamEvents(ctx context.Context, in *StreamEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[StreamEventsResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &PKIService_ServiceDesc.Streams[0], PKIService_StreamEvents_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[StreamEventsRequest, StreamEventsResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type PKIService_StreamEventsClient = grpc.ServerStreamingClient[StreamEventsResponse]
+
 // PKIServiceServer is the server API for PKIService service.
 // All implementations must embed UnimplementedPKIServiceServer
 // for forward compatibility.
@@ -327,6 +375,34 @@ type PKIServiceServer interface {
 	// GetOCSPMetadata returns the OCSP responder endpoint(s) for a CA plus the
 	// responder-hardening options in effect (nonce echoing, delegated signer).
 	GetOCSPMetadata(context.Context, *GetOCSPMetadataRequest) (*GetOCSPMetadataResponse, error)
+	// StreamEvents subscribes to the live tamper-evident audit/lifecycle event
+	// feed as a server stream — the gRPC peer of the REST Server-Sent-Events
+	// endpoint (GET /api/events/stream). Every hash-chained event appended anywhere
+	// in the system (HTTP/gRPC handlers, background jobs, protocol servers) is fanned
+	// out in real time from the same in-process publisher, so both surfaces observe
+	// an identical stream.
+	//
+	// Authorization and tenant scoping match the SSE feed exactly: audit:read is
+	// required, a platform operator sees every tenant (optionally narrowed with the
+	// request's tenant selector), and a tenant-scoped principal is confined to its
+	// own tenant's events. An optional action narrows the stream to a single audit
+	// action.
+	//
+	// resume_from_seq, when > 0, first replays the durable event log for matching
+	// events with a sequence number greater than it (from the persisted event_log
+	// cursor) before switching to the live tail, de-duplicating any overlap by
+	// sequence number — so a client that records the last seq it saw can reconnect
+	// without a gap. Periodic heartbeat messages keep idle streams and any
+	// intermediary from idling out and let a client detect a half-open connection.
+	//
+	// The feed favors liveness over completeness: a subscriber that cannot keep up
+	// is told (via a lag message) that its oldest undelivered events were dropped
+	// rather than ever blocking the audit-append hot path.
+	//
+	// Errors: PERMISSION_DENIED (no audit:read role / not a member of the requested
+	// tenant), INVALID_ARGUMENT (a multi-tenant principal that did not name a
+	// tenant), INTERNAL (event-log replay failure).
+	StreamEvents(*StreamEventsRequest, grpc.ServerStreamingServer[StreamEventsResponse]) error
 	mustEmbedUnimplementedPKIServiceServer()
 }
 
@@ -372,6 +448,9 @@ func (UnimplementedPKIServiceServer) GetCRLMetadata(context.Context, *GetCRLMeta
 }
 func (UnimplementedPKIServiceServer) GetOCSPMetadata(context.Context, *GetOCSPMetadataRequest) (*GetOCSPMetadataResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetOCSPMetadata not implemented")
+}
+func (UnimplementedPKIServiceServer) StreamEvents(*StreamEventsRequest, grpc.ServerStreamingServer[StreamEventsResponse]) error {
+	return status.Errorf(codes.Unimplemented, "method StreamEvents not implemented")
 }
 func (UnimplementedPKIServiceServer) mustEmbedUnimplementedPKIServiceServer() {}
 func (UnimplementedPKIServiceServer) testEmbeddedByValue()                    {}
@@ -610,6 +689,17 @@ func _PKIService_GetOCSPMetadata_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PKIService_StreamEvents_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(StreamEventsRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(PKIServiceServer).StreamEvents(m, &grpc.GenericServerStream[StreamEventsRequest, StreamEventsResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type PKIService_StreamEventsServer = grpc.ServerStreamingServer[StreamEventsResponse]
+
 // PKIService_ServiceDesc is the grpc.ServiceDesc for PKIService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -666,6 +756,12 @@ var PKIService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _PKIService_GetOCSPMetadata_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "StreamEvents",
+			Handler:       _PKIService_StreamEvents_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "pki/v1/pki.proto",
 }

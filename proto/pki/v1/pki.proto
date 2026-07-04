@@ -101,6 +101,35 @@ service PKIService {
   // GetOCSPMetadata returns the OCSP responder endpoint(s) for a CA plus the
   // responder-hardening options in effect (nonce echoing, delegated signer).
   rpc GetOCSPMetadata(GetOCSPMetadataRequest) returns (GetOCSPMetadataResponse);
+
+  // StreamEvents subscribes to the live tamper-evident audit/lifecycle event
+  // feed as a server stream — the gRPC peer of the REST Server-Sent-Events
+  // endpoint (GET /api/events/stream). Every hash-chained event appended anywhere
+  // in the system (HTTP/gRPC handlers, background jobs, protocol servers) is fanned
+  // out in real time from the same in-process publisher, so both surfaces observe
+  // an identical stream.
+  //
+  // Authorization and tenant scoping match the SSE feed exactly: audit:read is
+  // required, a platform operator sees every tenant (optionally narrowed with the
+  // request's tenant selector), and a tenant-scoped principal is confined to its
+  // own tenant's events. An optional action narrows the stream to a single audit
+  // action.
+  //
+  // resume_from_seq, when > 0, first replays the durable event log for matching
+  // events with a sequence number greater than it (from the persisted event_log
+  // cursor) before switching to the live tail, de-duplicating any overlap by
+  // sequence number — so a client that records the last seq it saw can reconnect
+  // without a gap. Periodic heartbeat messages keep idle streams and any
+  // intermediary from idling out and let a client detect a half-open connection.
+  //
+  // The feed favors liveness over completeness: a subscriber that cannot keep up
+  // is told (via a lag message) that its oldest undelivered events were dropped
+  // rather than ever blocking the audit-append hot path.
+  //
+  // Errors: PERMISSION_DENIED (no audit:read role / not a member of the requested
+  // tenant), INVALID_ARGUMENT (a multi-tenant principal that did not name a
+  // tenant), INTERNAL (event-log replay failure).
+  rpc StreamEvents(StreamEventsRequest) returns (stream StreamEventsResponse);
 }
 
 // CertificateStatus is the coarse lifecycle state of an issued certificate.
@@ -506,4 +535,77 @@ message GetOCSPMetadataResponse {
   // delegated_responder reports whether responses are signed by a short-lived
   // delegated OCSP-signing certificate rather than the CA key.
   bool delegated_responder = 3;
+}
+
+// StreamEventsRequest subscribes to the live audit/lifecycle event feed.
+message StreamEventsRequest {
+  // action, when non-empty, restricts the stream to a single audit action
+  // identifier (e.g. "cert.issue") — the same narrowing the REST feed's ?action=
+  // accepts.
+  string action = 1;
+  // tenant selects which tenant's events to stream. A platform operator may set
+  // it to narrow an otherwise cross-tenant view to one tenant; a principal that
+  // belongs to several tenants must set it to name which one (leaving it empty is
+  // an INVALID_ARGUMENT). It is ignored for a single-tenant principal, which is
+  // always pinned to its own tenant.
+  string tenant = 2;
+  // resume_from_seq, when > 0, replays matching events from the durable event log
+  // with a sequence number strictly greater than it before switching to the live
+  // tail, so a reconnecting client resumes without a gap. Overlap between the
+  // replay and the live tail is de-duplicated by sequence number. 0 streams only
+  // events appended after the subscription.
+  int64 resume_from_seq = 3;
+  // heartbeat_seconds overrides the interval between heartbeat messages on an idle
+  // stream. Non-positive uses the server default (15s); it is clamped to a sane
+  // range.
+  int32 heartbeat_seconds = 4;
+}
+
+// AuditEvent is one sealed entry of the tamper-evident audit log, mirroring the
+// JSON the REST SSE feed emits (internal/audit.Event).
+message AuditEvent {
+  int64 seq = 1;
+  string id = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  string actor = 4;
+  string actor_name = 5;
+  string actor_roles = 6;
+  string action = 7;
+  // tenant is the owning tenant (empty for platform-level events).
+  string tenant = 8;
+  string target = 9;
+  string target_name = 10;
+  string result = 11;
+  string detail = 12;
+  string ip = 13;
+  string request_id = 14;
+  string prev_hash = 15;
+  string hash = 16;
+}
+
+// EventHeartbeat is emitted periodically on an idle stream so idle connections
+// (and any intermediary) do not time out and a client can detect a half-open
+// connection. last_seq is the highest event sequence number delivered so far, so
+// a client can persist it as its resume cursor even across quiet periods.
+message EventHeartbeat {
+  google.protobuf.Timestamp time = 1;
+  int64 last_seq = 2;
+}
+
+// EventLag reports that the subscriber could not keep up and its oldest undelivered
+// events were dropped, so a live viewer knows the feed is not complete and can page
+// the durable audit log for the gap.
+message EventLag {
+  uint64 dropped = 1;
+  string message = 2;
+}
+
+// StreamEventsResponse is one frame of the event stream: an audit event, a periodic
+// heartbeat, or a lag notice.
+message StreamEventsResponse {
+  oneof payload {
+    AuditEvent event = 1;
+    EventHeartbeat heartbeat = 2;
+    EventLag lag = 3;
+  }
 }

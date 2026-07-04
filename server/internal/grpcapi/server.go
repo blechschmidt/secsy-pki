@@ -77,12 +77,21 @@ func New(cfg Config, api *handlers.API, authMw *middleware.AuthMiddleware) (*Ser
 
 	// Interceptor order (outermost first): recovery, then context (request-ID,
 	// trace, tenant holder, span), then auth. Authentication runs innermost so it
-	// executes within the per-call span and correlation ID.
-	opts = append(opts, grpc.ChainUnaryInterceptor(
-		s.recoveryInterceptor,
-		s.contextInterceptor,
-		s.authInterceptor,
-	))
+	// executes within the per-call span and correlation ID. The streaming chain
+	// mirrors the unary one so server-streaming RPCs (StreamEvents) share the same
+	// context propagation and authentication.
+	opts = append(opts,
+		grpc.ChainUnaryInterceptor(
+			s.recoveryInterceptor,
+			s.contextInterceptor,
+			s.authInterceptor,
+		),
+		grpc.ChainStreamInterceptor(
+			s.streamRecoveryInterceptor,
+			s.streamContextInterceptor,
+			s.streamAuthInterceptor,
+		),
+	)
 
 	s.grpc = grpc.NewServer(opts...)
 	pkiv1.RegisterPKIServiceServer(s.grpc, &service{api: api})
