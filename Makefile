@@ -233,6 +233,60 @@ bench-baseline: | $(DIST) ## (Re)generate the committed benchmark baseline (benc
 	@echo "    the job runs on (GitHub ubuntu-latest), e.g. via the workflow_dispatch refresh."
 
 # ---------------------------------------------------------------------------
+# Test-coverage ratchet gate (Task 119)
+# ---------------------------------------------------------------------------
+# Mirrors the benchmark gate above, for statement coverage. `make cover` runs the
+# HSM-FREE, -tags sqlite test subset (go test ./internal/... with no token, so
+# HSM-backed tests skip cleanly) with -coverprofile, then emits shareable
+# artifacts: dist/coverage.out (raw profile), dist/coverage.html (browsable
+# report), and dist/coverage-summary.txt (per-package + total table). `make
+# cover-check` ratchets that against the committed baseline (coverage/baseline.txt)
+# via scripts/cover-check.sh — total and per-package coverage may only rise
+# (within COVER_TOLERANCE), and a real drop fails the build listing which packages
+# regressed. Refresh the baseline intentionally after adding covered code with
+# `make cover-baseline` (scripts/cover-baseline.sh), then commit it.
+#
+# Coverage is computed straight from the profile and matches Go's own per-package
+# `coverage: N%` numbers; the total is rock-stable run-to-run and the small
+# per-package jitter of the timing-sensitive packages stays under the tolerance.
+# See TESTING.md#test-coverage-gate and docs/coverage.md.
+COVER_TAGS      ?= sqlite
+COVER_PKGS      ?= ./internal/...
+# A package fails the ratchet only on a drop > this many percentage points below
+# its baseline; this absorbs the sub-1pp jitter of the few timing/goroutine-
+# sensitive packages. The total is far more stable, so it ratchets tightly.
+COVER_TOLERANCE ?= 1.0
+COVER_BASELINE  ?= coverage/baseline.txt
+COVER_PROFILE   := $(DIST)/coverage.out
+COVER_HTML      := $(DIST)/coverage.html
+COVER_SUMMARY   := $(DIST)/coverage-summary.txt
+
+# Canonical coverage invocation — the single source, reused by `cover` (and hence
+# by the baseline refresh, which runs `make cover`). $(1) is the (absolute)
+# profile path. covermode=set marks each statement covered/not: deterministic,
+# and what the per-package percentages are computed from.
+define run_cover
+	cd server && GOTOOLCHAIN=auto go test -tags '$(COVER_TAGS)' -covermode=set \
+	  -coverprofile="$(1)" -count=1 $(COVER_PKGS)
+endef
+
+.PHONY: cover
+cover: | $(DIST) ## Measure HSM-free test coverage -> dist/coverage.{out,html} + summary
+	@echo "==> go test -coverprofile (-tags $(COVER_TAGS), HSM-free) over $(COVER_PKGS)"
+	@$(call run_cover,$(CURDIR)/$(COVER_PROFILE))
+	@cd server && GOTOOLCHAIN=auto go tool cover -html="$(CURDIR)/$(COVER_PROFILE)" -o "$(CURDIR)/$(COVER_HTML)"
+	@scripts/cover-check.sh --summary "$(CURDIR)/$(COVER_PROFILE)" > "$(CURDIR)/$(COVER_SUMMARY)"
+	@echo "==> total $$(grep '^total' "$(CURDIR)/$(COVER_SUMMARY)" | cut -f2)%  (html: $(COVER_HTML), summary: $(COVER_SUMMARY))"
+
+.PHONY: cover-check
+cover-check: cover ## Ratchet current coverage against coverage/baseline.txt (fails on regression)
+	@COVER_TOLERANCE='$(COVER_TOLERANCE)' scripts/cover-check.sh "$(CURDIR)/$(COVER_PROFILE)" "$(CURDIR)/$(COVER_BASELINE)"
+
+.PHONY: cover-baseline
+cover-baseline: ## (Re)generate the committed HSM-free coverage baseline, then print how to commit it
+	@COVER_TAGS='$(COVER_TAGS)' COVER_TOLERANCE='$(COVER_TOLERANCE)' scripts/cover-baseline.sh
+
+# ---------------------------------------------------------------------------
 # Optional zlint pre-issuance lint backend (Task 88)
 # ---------------------------------------------------------------------------
 # The industry-standard github.com/zmap/zlint suite is compiled in only under the

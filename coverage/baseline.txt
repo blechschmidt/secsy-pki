@@ -1,0 +1,79 @@
+# secsy-pki test-coverage baseline (Task 119)
+#
+# Per-package + total Go statement coverage for the HSM-FREE, -tags sqlite
+# test subset:  go test -covermode=set -coverprofile ./internal/...
+#
+# The coverage gate (make cover-check / scripts/cover-check.sh, and the
+# coverage-gate CI job) ratchets against this file: total and per-package
+# coverage may only RISE (within a small tolerance that absorbs jitter). A
+# real drop fails the build and prints which packages regressed.
+#
+# Regenerate intentionally after adding covered code, then commit this file:
+#     scripts/cover-baseline.sh   (or: make cover-baseline)
+# See TESTING.md#test-coverage-gate and docs/coverage.md.
+#
+# Format: <package-or-total>\t<percent>.  Generated — do not hand-edit.
+total	62.1
+internal/acme	65.7
+internal/agent	64.4
+internal/anchor	62.7
+internal/approval	76.0
+internal/attestation	62.8
+internal/audit	71.6
+internal/auth	100.0
+internal/authn	58.8
+internal/backup	59.7
+internal/brski	63.2
+internal/ca	75.1
+internal/caa	39.5
+internal/canary	77.4
+internal/certlint	83.1
+internal/certpolicy	76.8
+internal/cliout	95.2
+internal/cmp	65.5
+internal/cms	72.8
+internal/config	55.7
+internal/console	0.0
+internal/ct	77.9
+internal/ctmonitor	68.2
+internal/database	67.4
+internal/discovery	66.1
+internal/dnsrecords	82.2
+internal/doctor	67.8
+internal/est	79.0
+internal/eventstream	97.0
+internal/fips	80.8
+internal/grpcapi	46.5
+internal/grpcapi/pkiv1	0.0
+internal/handlers	59.8
+internal/hsm	31.6
+internal/interop/acmeclient	0.0
+internal/interop/dnsd	0.0
+internal/issueapproval	66.3
+internal/keyprovider	48.4
+internal/leader	61.7
+internal/mailtransport	31.6
+internal/metrics	68.1
+internal/middleware	76.6
+internal/models	90.0
+internal/monitor	53.3
+internal/nameconstraints	74.2
+internal/pkcs12	78.2
+internal/pki	34.7
+internal/pqc	71.2
+internal/profiling	77.8
+internal/publish	75.4
+internal/ratelimit	85.0
+internal/rbac	46.0
+internal/report	50.0
+internal/scep	68.5
+internal/secret	65.9
+internal/servingcert	83.5
+internal/siem	73.1
+internal/signing	77.1
+internal/smime	98.0
+internal/spiffe	79.6
+internal/sshca	78.9
+internal/tracing	72.6
+internal/tsa	52.6
+internal/webhook	59.9

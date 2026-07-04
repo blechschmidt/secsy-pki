@@ -24,6 +24,10 @@ on:
         description: "Benchmark gate: regenerate bench/baseline.txt on the runner and upload it as an artifact (skips the comparison)"
         type: boolean
         default: false
+      refresh_coverage_baseline:
+        description: "Coverage gate: regenerate coverage/baseline.txt on the runner and upload it as an artifact (skips the ratchet)"
+        type: boolean
+        default: false
 
 # Cancel superseded runs on the same ref to save runner minutes.
 concurrency:
@@ -603,3 +607,78 @@ jobs:
       - name: Compare against committed baseline (make bench-compare)
         if: github.event_name != 'workflow_dispatch' || !inputs.refresh_baseline
         run: make bench-compare
+
+  coverage-gate:
+    name: Test-coverage ratchet gate (no HSM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # Task 119. A REQUIRED, HSM-free quality gate — the coverage analogue of the
+    # static-analysis job. `make cover-check` runs the -tags sqlite test subset
+    # WITHOUT a token (HSM-backed tests skip cleanly, contributing only their
+    # HSM-free reachable coverage) with -coverprofile, aggregates total and
+    # per-package statement coverage from the profile, and ratchets it against the
+    # committed baseline (coverage/baseline.txt): total and per-package coverage
+    # may only RISE. A real drop fails the build and prints which packages
+    # regressed; the full ratchet table is written to the job step summary. Unlike
+    # the benchmark gate (whose ns/op is genuinely machine-noise-sensitive, hence
+    # advisory), statement coverage is deterministic — the total is stable
+    # run-to-run and the sub-1pp jitter of a few timing-sensitive packages stays
+    # under COVER_TOLERANCE (1.0pp) — so this gate blocks merges. This job runs no
+    # Postgres service and installs no SoftHSM, matching exactly the environment in
+    # which the committed baseline was generated (scripts/cover-baseline.sh).
+    #
+    # If the baseline was generated on a different machine class and the runner's
+    # numbers diverge, refresh it authoritatively on THIS runner: dispatch the
+    # workflow with refresh_coverage_baseline=true to regenerate coverage/baseline.txt
+    # and upload it as an artifact to download and commit
+    # (see TESTING.md#test-coverage-gate and docs/coverage.md).
+    env:
+      GOTOOLCHAIN: auto
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Download Go modules
+        working-directory: server
+        run: go mod download
+
+      # Manual refresh path: regenerate the baseline on this runner class and
+      # upload it as an artifact to download and commit. Does not ratchet.
+      - name: Regenerate baseline (manual refresh)
+        if: github.event_name == 'workflow_dispatch' && inputs.refresh_coverage_baseline
+        run: make cover-baseline
+
+      - name: Upload refreshed baseline artifact
+        if: github.event_name == 'workflow_dispatch' && inputs.refresh_coverage_baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-baseline
+          path: coverage/baseline.txt
+
+      # Default path (push / PR / plain dispatch): run the HSM-free coverage set and
+      # ratchet against the committed baseline. Exits non-zero on a regression; the
+      # step summary carries the per-package ratchet table either way.
+      - name: Ratchet coverage against committed baseline (make cover-check)
+        if: github.event_name != 'workflow_dispatch' || !inputs.refresh_coverage_baseline
+        run: make cover-check
+
+      # Always publish the browsable HTML report + per-package summary so a drop
+      # (or an intended improvement) can be inspected line-by-line from the run,
+      # even when the ratchet step failed.
+      - name: Upload coverage report artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            dist/coverage.html
+            dist/coverage-summary.txt
+          if-no-files-found: ignore

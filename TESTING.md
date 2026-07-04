@@ -249,6 +249,69 @@ In CI this is the **Static analysis** job in
 `make vet` then `make lint`. Keep the workflow's `GOLANGCI_LINT_VERSION` in
 lockstep with the Makefile.
 
+## Test-coverage gate
+
+An **HSM-free, ratcheting coverage gate** measures Go statement coverage across
+the `-tags sqlite` test subset and enforces a committed baseline that can only
+**rise** — so coverage never silently regresses as the codebase grows. It is the
+coverage analogue of the [benchmark-regression gate](docs/benchmarks.md#benchmark-regression-gate)
+and, like it, is driven entirely from the `Makefile`:
+
+```bash
+make cover         # run the HSM-free test subset with -coverprofile and emit
+                   #   dist/coverage.out, dist/coverage.html (browsable), and
+                   #   dist/coverage-summary.txt (per-package + total table)
+make cover-check   # run `cover`, then ratchet against coverage/baseline.txt —
+                   #   FAILS the build if total or any package dropped, listing
+                   #   which packages regressed
+make cover-baseline  # regenerate coverage/baseline.txt after you add covered code
+```
+
+**How it measures.** `make cover` runs `go test -tags sqlite -covermode=set
+-coverprofile ./internal/...` **without a token**, so HSM-backed tests skip
+cleanly and each package contributes only its HSM-free reachable coverage — a
+deterministic subset. Per-package and total percentages are computed straight
+from the profile by `scripts/cover-check.sh` and match Go's own
+`coverage: N% of statements` numbers exactly. Running with a SoftHSM token loaded
+only *raises* coverage, which never trips the ratchet.
+
+**The ratchet.** `make cover-check` compares the current run against
+`coverage/baseline.txt`. A package fails the gate only when its coverage drops
+**more than `COVER_TOLERANCE` (default 1.0) percentage points** below its
+baseline entry. That small band absorbs the sub-1pp run-to-run jitter of a few
+timing/goroutine-sensitive packages — the total itself is stable — exactly as
+benchstat's `~` band absorbs benchmark noise, so the gate fails only on a real,
+repeatable drop. New packages (absent from the baseline) never fail it; removed
+packages are reported but do not fail it.
+
+**Updating the baseline when you add covered code.** When you add tests, or add
+code that your tests exercise, coverage goes *up* — refresh the baseline so the
+gate's floor moves up with the improvement, and commit it in the **same** change:
+
+```bash
+scripts/cover-baseline.sh      # or: make cover-baseline
+git add coverage/baseline.txt
+```
+
+`scripts/cover-baseline.sh` clears any SoftHSM/PKCS#11 environment before
+measuring, so the committed baseline is always the reproducible **HSM-free floor**
+regardless of what is loaded in your shell (a token would otherwise inflate it and
+make the HSM-free CI gate fail). If `make cover-check` fails on a drop you
+*intended* (e.g. you deleted dead code that happened to have tests), the fix is
+the same: refresh and commit the baseline — the failure message says so.
+
+In CI this is the required, no-HSM **Test-coverage ratchet gate** job in
+`.github/workflows/enterprise-ci.yaml`. It runs `make cover-check` on every push
+and PR (no SoftHSM, no Postgres — matching the environment the baseline is
+generated in), writes the per-package ratchet table to the GitHub **step
+summary**, and uploads the HTML report + summary as build **artifacts** (even on
+failure) so a drop can be inspected line-by-line. Because absolute coverage is
+largely machine-independent the gate blocks merges; if the runner class ever
+diverges from the committed baseline, regenerate it authoritatively on the runner
+by dispatching the workflow with **`refresh_coverage_baseline: true`** (it uploads
+the fresh `coverage/baseline.txt` as an artifact to download and commit). See
+[docs/coverage.md](docs/coverage.md) for the full reference.
+
 ## CI
 
 The GitHub Actions workflow (`.github/workflows/test.yaml`) installs

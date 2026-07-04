@@ -78,6 +78,7 @@ close.
 | [Security review & hardening](security-review.md) | The security review of the enterprise branch: findings, fixes, residual risks, and how to re-verify |
 | [Fuzz & property testing](fuzzing.md) | Native `go test -fuzz` over the untrusted-input parsers (CSR/DER, ACME JOSE/JWS, secret-envelope decrypt, OCSP/cert): targets, how to run local campaigns, CI smoke run, and handling crashes |
 | [Performance & load benchmarking](benchmarks.md) | Benchmark/load-test suite for the HSM hot paths (signing/issuance, OCSP/CRL, secret encrypt/decrypt), the bounded PKCS#11 session pool, baseline SoftHSM numbers, and the tuning knobs (session pool size, OCSP cache TTL) |
+| [Test-coverage measurement & ratchet gate](coverage.md) | HSM-free statement-coverage gate that ratchets a committed baseline (`coverage/baseline.txt`) so coverage can only rise: `make cover`/`cover-check`/`cover-baseline`, the per-package + total table, the tolerance band, HTML/summary artifacts, the required no-HSM CI job, and the baseline-refresh workflow for contributors adding covered code |
 
 Related top-level docs: [architecture](../ARCHITECTURE.md) ·
 [testing](../TESTING.md) · [operator runbook](RUNBOOK.md) ·
