@@ -220,6 +220,8 @@ func run(args []string) error {
 		return cmdTenant(db, cmdArgs)
 	case "token":
 		return cmdToken(db, cfg, cmdArgs)
+	case "webhook":
+		return cmdWebhook(db, cfg, cmdArgs)
 	case "issue-intermediate":
 		return cmdIssueIntermediate(db, mgr, cmdArgs)
 	case "ca":

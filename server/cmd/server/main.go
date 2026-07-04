@@ -737,6 +737,13 @@ func main() {
 	// atomic swap, manifest, and keep-N/max-age retention. Never blocks issuance.
 	setupBackup(cfg, db, provider, *cfgPath, elector)
 
+	// Durable outbound webhooks (Task 116): a leader-elected worker that POSTs
+	// certificate lifecycle events to operator-registered endpoints with
+	// at-least-once delivery, exponential-backoff retries, dead-lettering, and
+	// HMAC-signed bodies. Composes the audit-append hook to wake promptly on new
+	// events. The subscription-management API/CLI work regardless of webhook.enabled.
+	setupWebhook(cfg, db, api, elector)
+
 	// Audit-log SIEM export: a background worker per sink streams the
 	// tamper-evident event log to external syslog/CEF/webhook collectors from a
 	// durable per-sink cursor. At-least-once, backpressured, and lossless across

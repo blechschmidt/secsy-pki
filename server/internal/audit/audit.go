@@ -344,6 +344,19 @@ const (
 	ActionTokenCreate = "token.create" // an API token / service account was minted
 	ActionTokenRevoke = "token.revoke" // an API token was revoked
 
+	// Durable outbound webhook subscriptions (Task 116). ActionWebhookCreate
+	// records registering an external endpoint; ActionWebhookUpdate records an
+	// enable/disable toggle; ActionWebhookDelete records removing one.
+	// ActionWebhookDeliver records a terminal delivery outcome (ResultSuccess when
+	// the endpoint acknowledged the event, ResultError when the retry budget was
+	// exhausted and the delivery was dead-lettered); transient, retryable failures
+	// are not audited to avoid flooding the chain. The subscription id is the
+	// Target so a subscription and all deliveries to it correlate.
+	ActionWebhookCreate  = "webhook.create"
+	ActionWebhookUpdate  = "webhook.update"
+	ActionWebhookDelete  = "webhook.delete"
+	ActionWebhookDeliver = "webhook.deliver"
+
 	// Four-eyes / maker-checker approval workflow (Task 81). ActionApprovalRequest
 	// records a guarded operation being held at the gate (a request created);
 	// ActionApprovalApprove and ActionApprovalReject record each approver's

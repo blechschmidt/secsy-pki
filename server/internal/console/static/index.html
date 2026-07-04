@@ -56,6 +56,7 @@
         <button data-view="secrets">Secrets</button>
         <button data-view="tenants">Tenants</button>
         <button data-view="tokens">API Tokens</button>
+        <button data-view="webhooks">Webhooks</button>
       </nav>
       <span class="user" id="userBox"></span>
       <button class="btn ghost sm hidden" id="passkeyBtn" title="Register a WebAuthn passkey for step-up on high-risk operations">Register passkey</button>
@@ -1160,6 +1161,78 @@
               </div>
               <button class="btn ghost sm" id="tokenSecretCopy">Copy</button>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-webhooks">
+        <h2>Outbound Webhooks</h2>
+        <p class="sub">Durable subscriptions that POST certificate lifecycle events (issue / renew / revoke / suspend / release) to external endpoints. Delivery is at-least-once with exponential-backoff retries and dead-lettering; each request carries an <code>X-Secsy-Signature: t=&lt;unix&gt;,v1=&lt;hmac&gt;</code> header — verify it as <code>HMAC-SHA256(secret, "&lt;unix&gt;.&lt;body&gt;")</code>. The signing secret is shown once at creation. Managing webhooks requires an admin role. Delivery runs only when <code>webhook.enabled</code> is set on the server.</p>
+        <div id="webhooksDenied" class="notice err hidden">Managing webhooks requires an admin role.</div>
+        <div class="toolbar">
+          <div class="spacer"></div>
+          <button class="btn ghost sm" id="refreshWebhooks">Refresh</button>
+        </div>
+        <div class="panel">
+          <table>
+            <thead><tr><th>URL</th><th>Scope</th><th>Tenant</th><th>Events</th><th>Enabled</th><th></th></tr></thead>
+            <tbody id="webhookRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="row" style="align-items:stretch;margin-top:14px">
+          <div class="panel" style="flex:1;min-width:320px">
+            <h2 style="font-size:15px">Add webhook</h2>
+            <div id="webhookCreateError" class="notice err hidden"></div>
+            <div class="field">
+              <label for="webhookURL">Endpoint URL</label>
+              <input id="webhookURL" placeholder="https://example.com/hook" type="url">
+            </div>
+            <div class="field">
+              <label>Events (none selected = all lifecycle events)</label>
+              <div id="webhookEvents" style="display:flex;flex-wrap:wrap;gap:12px">
+                <label class="muted"><input type="checkbox" value="cert.issue"> cert.issue</label>
+                <label class="muted"><input type="checkbox" value="cert.renew"> cert.renew</label>
+                <label class="muted"><input type="checkbox" value="cert.revoke"> cert.revoke</label>
+                <label class="muted"><input type="checkbox" value="cert.suspend"> cert.suspend</label>
+                <label class="muted"><input type="checkbox" value="cert.release"> cert.release</label>
+              </div>
+            </div>
+            <div class="field">
+              <label for="webhookScope">Scope</label>
+              <select id="webhookScope">
+                <option value="tenant" selected>tenant (one tenant's events)</option>
+                <option value="platform">platform (all tenants; platform admin only)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="webhookTenant">Tenant (id or slug, for tenant scope)</label>
+              <input id="webhookTenant" placeholder="default">
+            </div>
+            <div class="field">
+              <label for="webhookSecret">Signing secret (optional; generated when blank)</label>
+              <input id="webhookSecret" placeholder="leave blank to auto-generate" type="password">
+            </div>
+            <div class="field">
+              <label for="webhookDesc">Description (optional)</label>
+              <input id="webhookDesc" placeholder="notifies the provisioning service">
+            </div>
+            <button class="btn" id="webhookCreateBtn">Add webhook</button>
+          </div>
+          <div class="panel" style="flex:1;min-width:320px">
+            <h2 style="font-size:15px">Signing secret</h2>
+            <div id="webhookSecretEmpty" class="muted">Create a webhook to reveal its signing secret here — once.</div>
+            <div id="webhookSecretBox" class="hidden">
+              <div class="notice" style="background:#1b2b1b;border-color:#2f5d2f">
+                Copy this secret now. It is shown <strong>once</strong> and cannot be recovered.
+              </div>
+              <div class="field">
+                <label id="webhookSecretMeta" class="muted"></label>
+                <textarea id="webhookSecretValue" readonly rows="2" style="width:100%;font-family:monospace"></textarea>
+              </div>
+              <button class="btn ghost sm" id="webhookSecretCopy">Copy</button>
+            </div>
+            <div id="webhookDeliveries" style="margin-top:16px"></div>
           </div>
         </div>
       </section>

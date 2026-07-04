@@ -164,6 +164,14 @@ type Config struct {
 	// and keep-N / max-age retention. Disabled unless backup.enabled is true. See
 	// BackupConfig and docs/backup.md.
 	Backup BackupConfig `yaml:"backup"`
+	// Webhook configures the durable outbound webhook / eventing system (Task
+	// 116): a leader-elected delivery worker that POSTs certificate lifecycle
+	// events (issue/renew/revoke/suspend/release) to operator-registered external
+	// endpoints with at-least-once semantics, exponential-backoff retries,
+	// dead-lettering, and HMAC-signed bodies. The subscription-management API/CLI
+	// works regardless of this block; the DELIVERY worker runs only when
+	// webhook.enabled is true. See WebhookConfig and docs/webhooks.md.
+	Webhook WebhookConfig `yaml:"webhook"`
 }
 
 // ApprovalsConfig configures the four-eyes / maker-checker approval workflow.
@@ -453,6 +461,102 @@ func (c BackupConfig) VerifyInterval() time.Duration {
 		return c.Interval()
 	}
 	return time.Duration(c.Verify.IntervalHours) * time.Hour
+}
+
+// WebhookConfig configures the durable outbound webhook delivery worker (Task
+// 116). Enabled gates only the DELIVERY worker (and its fan-out); the
+// subscription-management API/CLI work regardless. The remaining fields tune the
+// at-least-once delivery pipeline: how often it polls, how many events/deliveries
+// it processes per iteration, the per-POST timeout, the exponential-backoff
+// window, and the retry budget after which a delivery is dead-lettered.
+type WebhookConfig struct {
+	// Enabled starts the leader-elected delivery worker.
+	Enabled bool `yaml:"enabled"`
+	// PollIntervalSeconds is the fan-out/delivery poll cadence (safety net; new
+	// events also wake the fan-out immediately). Default 5.
+	PollIntervalSeconds int `yaml:"poll_interval_seconds"`
+	// BatchSize bounds events scanned and deliveries claimed per iteration.
+	// Default 100.
+	BatchSize int `yaml:"batch_size"`
+	// MaxAttempts is the retry budget: a delivery is dead-lettered after this many
+	// failed attempts. Default 8.
+	MaxAttempts int `yaml:"max_attempts"`
+	// TimeoutSeconds bounds a single delivery POST. Default 10.
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+	// BackoffBaseSeconds is the first retry delay; it doubles per attempt up to
+	// BackoffMaxSeconds. Default 30.
+	BackoffBaseSeconds int `yaml:"backoff_base_seconds"`
+	// BackoffMaxSeconds caps the retry delay. Default 3600 (1h).
+	BackoffMaxSeconds int `yaml:"backoff_max_seconds"`
+	// DeadLetterStaleHours is the age past which a dead-lettered delivery is
+	// flagged by `secsy-ca doctor` as needing triage. Default 24.
+	DeadLetterStaleHours int `yaml:"dead_letter_stale_hours"`
+	// AuditDeliveries records a webhook.deliver audit event on each terminal
+	// delivery outcome (delivered/dead-lettered). Defaults to true; set an explicit
+	// false to keep terminal deliveries out of the hash-chained log.
+	AuditDeliveries *bool `yaml:"audit_deliveries"`
+}
+
+// PollInterval returns the configured poll cadence, defaulting to 5s.
+func (c WebhookConfig) PollInterval() time.Duration {
+	if c.PollIntervalSeconds <= 0 {
+		return 5 * time.Second
+	}
+	return time.Duration(c.PollIntervalSeconds) * time.Second
+}
+
+// Batch returns the per-iteration batch size, defaulting to 100.
+func (c WebhookConfig) Batch() int {
+	if c.BatchSize <= 0 {
+		return 100
+	}
+	return c.BatchSize
+}
+
+// Attempts returns the retry budget, defaulting to 8.
+func (c WebhookConfig) Attempts() int {
+	if c.MaxAttempts <= 0 {
+		return 8
+	}
+	return c.MaxAttempts
+}
+
+// Timeout returns the per-POST timeout, defaulting to 10s.
+func (c WebhookConfig) Timeout() time.Duration {
+	if c.TimeoutSeconds <= 0 {
+		return 10 * time.Second
+	}
+	return time.Duration(c.TimeoutSeconds) * time.Second
+}
+
+// BackoffBase returns the initial retry delay, defaulting to 30s.
+func (c WebhookConfig) BackoffBase() time.Duration {
+	if c.BackoffBaseSeconds <= 0 {
+		return 30 * time.Second
+	}
+	return time.Duration(c.BackoffBaseSeconds) * time.Second
+}
+
+// BackoffMax returns the retry-delay cap, defaulting to 1h.
+func (c WebhookConfig) BackoffMax() time.Duration {
+	if c.BackoffMaxSeconds <= 0 {
+		return time.Hour
+	}
+	return time.Duration(c.BackoffMaxSeconds) * time.Second
+}
+
+// DeadLetterStale returns the dead-letter staleness threshold, defaulting to 24h.
+func (c WebhookConfig) DeadLetterStale() time.Duration {
+	if c.DeadLetterStaleHours <= 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(c.DeadLetterStaleHours) * time.Hour
+}
+
+// AuditDeliveriesEnabled reports whether terminal deliveries are audited
+// (default true; an explicit false opts out).
+func (c WebhookConfig) AuditDeliveriesEnabled() bool {
+	return c.AuditDeliveries == nil || *c.AuditDeliveries
 }
 
 // SSHCAConfig configures the SSH certificate authority (Task 57).

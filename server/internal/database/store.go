@@ -43,6 +43,39 @@ type Store interface {
 	ApprovalStore
 	APITokenStore
 	CTInclusionStore
+	WebhookStore
+}
+
+// WebhookStore persists durable outbound webhook subscriptions and their
+// delivery queue (Task 116). It is deliberately at-least-once and crash-safe:
+// the fan-out (event log → deliveries) is idempotent through
+// UNIQUE(subscription_id, event_seq) so a re-scanned range never double-enqueues,
+// and the delivery worker's terminal/retry transitions are single writes so a
+// leadership handover at worst redelivers the last unacknowledged attempt (which
+// the HMAC-signed, EventID-keyed payload lets receivers deduplicate). The fan-out
+// cursor is the shared high-water mark that makes the whole pipeline resumable.
+type WebhookStore interface {
+	CreateWebhookSubscription(s *models.WebhookSubscription) error
+	GetWebhookSubscription(id string) (*models.WebhookSubscription, error)
+	ListWebhookSubscriptions(tenantID string) ([]models.WebhookSubscription, error)
+	ListEnabledWebhookSubscriptions() ([]models.WebhookSubscription, error)
+	SetWebhookSubscriptionEnabled(id string, enabled bool) (bool, error)
+	DeleteWebhookSubscription(id string) (bool, error)
+
+	EnqueueWebhookDelivery(d *models.WebhookDelivery) error
+	GetWebhookDelivery(id string) (*models.WebhookDelivery, error)
+	ListDueWebhookDeliveries(now time.Time, limit int) ([]models.WebhookDelivery, error)
+	ListWebhookDeliveries(subscriptionID, status string, limit int) ([]models.WebhookDelivery, error)
+	MarkWebhookDeliverySucceeded(id string, at time.Time, statusCode int) error
+	MarkWebhookDeliveryRetry(id string, at, nextAttempt time.Time, statusCode int, errMsg string) error
+	MarkWebhookDeliveryDead(id string, at time.Time, statusCode int, errMsg string) error
+	CancelPendingWebhookDeliveries(subscriptionID string) (int64, error)
+	CountWebhookDeliveriesByStatus() (map[string]int, error)
+	OldestDeadWebhookDelivery() (*models.WebhookDelivery, error)
+
+	GetWebhookCursor() (int64, error)
+	WebhookCursorInitialized() (bool, error)
+	SetWebhookCursor(seq int64) error
 }
 
 // ACMENonceStore persists the shared, durable anti-replay nonce state (Task 97)

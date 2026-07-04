@@ -1177,3 +1177,95 @@ func RecordBRSKIStatusReport(kind, status string) { BRSKIStatusReports.Inc(kind,
 
 // RecordBRSKIEnrollAuthorized records an EST-handoff authorization check outcome.
 func RecordBRSKIEnrollAuthorized(result string) { BRSKIEnrollAuthorized.Inc(result) }
+
+// Durable outbound webhook subscriptions (Task 116). WebhookDeliveries counts
+// terminal/retry delivery attempt outcomes (delivered|retry|dead|canceled);
+// WebhookDeliveryDuration times each HTTP POST; WebhookQueueDepth and
+// WebhookDeadLetters expose the durable-queue backlog and the dead-letter pile
+// (the primary alert signal — an endpoint that has failed past its retry budget);
+// WebhookSubscriptionsActive is the enabled-subscription count; the staleness
+// FuncGauge (registered below) measures how long since the last acknowledged
+// delivery.
+var (
+	WebhookDeliveries = NewCounter(Default,
+		"secsy_webhook_deliveries_total",
+		"Outbound webhook delivery attempt outcomes, by result (delivered|retry|dead|canceled).",
+		"result")
+	WebhookDeliveryDuration = NewHistogram(Default,
+		"secsy_webhook_delivery_duration_seconds",
+		"Duration of outbound webhook HTTP POST attempts in seconds.",
+		DefBuckets)
+	WebhookQueueDepth = NewGauge(Default,
+		"secsy_webhook_queue_depth",
+		"Pending outbound webhook deliveries awaiting first attempt or retry.")
+	WebhookDeadLetters = NewGauge(Default,
+		"secsy_webhook_dead_letters",
+		"Outbound webhook deliveries in the dead-letter state (retry budget exhausted).")
+	WebhookSubscriptionsActive = NewGauge(Default,
+		"secsy_webhook_subscriptions_active",
+		"Configured, enabled outbound webhook subscriptions.")
+	WebhookLastSuccess = NewGauge(Default,
+		"secsy_webhook_last_success_timestamp_seconds",
+		"Unix timestamp (seconds) of the last acknowledged outbound webhook delivery.")
+)
+
+// webhookLastSuccessNano and its staleness FuncGauge follow the same
+// scrape-time-computed pattern as the backup/publish/CT staleness gauges: absent
+// until the first successful delivery, then climbing continuously.
+var (
+	webhookLastSuccessNano atomic.Int64
+
+	_ = NewFuncGauge(Default,
+		"secsy_webhook_staleness_seconds",
+		"Seconds since the last acknowledged outbound webhook delivery. Absent until the first delivery succeeds.",
+		func() (float64, bool) { return sinceNano(webhookLastSuccessNano.Load()) })
+)
+
+// Webhook delivery result label values.
+const (
+	WebhookResultDelivered = "delivered"
+	WebhookResultRetry     = "retry"
+	WebhookResultDead      = "dead"
+	WebhookResultCanceled  = "canceled"
+)
+
+// RecordWebhookDelivered records a delivery acknowledged by an endpoint: it
+// counts the outcome, observes the attempt duration, and stamps the last-success
+// instants the timestamp and staleness gauges derive from.
+func RecordWebhookDelivered(dur time.Duration) {
+	WebhookDeliveries.Inc(WebhookResultDelivered)
+	WebhookDeliveryDuration.Observe(dur.Seconds())
+	now := time.Now()
+	WebhookLastSuccess.Set(float64(now.Unix()))
+	webhookLastSuccessNano.Store(now.UnixNano())
+}
+
+// RecordWebhookRetry records a failed-but-retryable delivery attempt.
+func RecordWebhookRetry(dur time.Duration) {
+	WebhookDeliveries.Inc(WebhookResultRetry)
+	WebhookDeliveryDuration.Observe(dur.Seconds())
+}
+
+// RecordWebhookDead records a delivery moved to the dead-letter state.
+func RecordWebhookDead(dur time.Duration) {
+	WebhookDeliveries.Inc(WebhookResultDead)
+	WebhookDeliveryDuration.Observe(dur.Seconds())
+}
+
+// RecordWebhookCanceled counts a pending delivery canceled because its
+// subscription was disabled or deleted mid-flight.
+func RecordWebhookCanceled(n int) {
+	if n > 0 {
+		WebhookDeliveries.Add(uint64(n), WebhookResultCanceled)
+	}
+}
+
+// SetWebhookQueueGauges refreshes the durable-queue backlog gauges: pending
+// deliveries awaiting work and dead-lettered deliveries awaiting triage.
+func SetWebhookQueueGauges(pending, deadLetters int) {
+	WebhookQueueDepth.Set(float64(pending))
+	WebhookDeadLetters.Set(float64(deadLetters))
+}
+
+// SetWebhookSubscriptionsActive refreshes the enabled-subscription gauge.
+func SetWebhookSubscriptionsActive(n int) { WebhookSubscriptionsActive.Set(float64(n)) }

@@ -1095,6 +1095,67 @@ func checkCTInclusion(r *Report, cfg *config.Config, db dbHandle, schemaOK bool)
 	})
 }
 
+// --- 7e. outbound webhook dead-letters ------------------------------------------
+
+// checkWebhookDeadLetters reports on the durable outbound webhook queue (Task
+// 116). Dead-lettered deliveries — those that exhausted their retry budget — are
+// the operator's signal that an endpoint is misconfigured (wrong URL/secret) or
+// down: the CA kept issuing but downstream automation stopped hearing about it. A
+// stale dead-letter (older than the configured threshold) escalates to a failure;
+// a fresh one is a warning. It also flags the misconfiguration where deliveries
+// are queued but the delivery worker is disabled, so they will never be sent.
+func checkWebhookDeadLetters(r *Report, cfg *config.Config, db dbHandle, schemaOK bool) {
+	r.run("webhook.dead_letters", func() (Status, string) {
+		if db == nil || !schemaOK {
+			return StatusSkip, "store unavailable or schema incomplete"
+		}
+		counts, err := db.CountWebhookDeliveriesByStatus()
+		if err != nil {
+			return StatusFail, fmt.Sprintf("reading webhook delivery state: %v", err)
+		}
+		subs, err := db.ListEnabledWebhookSubscriptions()
+		if err != nil {
+			return StatusFail, fmt.Sprintf("reading webhook subscriptions: %v", err)
+		}
+		total := 0
+		for _, n := range counts {
+			total += n
+		}
+		if total == 0 && len(subs) == 0 {
+			return StatusSkip, "no webhook subscriptions or deliveries on record"
+		}
+
+		dead := counts[models.WebhookDeliveryDead]
+		pending := counts[models.WebhookDeliveryPending]
+		delivered := counts[models.WebhookDeliveryDelivered]
+		summary := fmt.Sprintf("%d subscription(s); deliveries: %d delivered, %d pending, %d dead-lettered",
+			len(subs), delivered, pending, dead)
+
+		// Queued work with no worker to send it is a standing misconfiguration.
+		if pending > 0 && !cfg.Webhook.Enabled {
+			return StatusWarn, summary + " — webhook.enabled is false, so the pending deliveries will not be sent until the delivery worker is enabled"
+		}
+
+		if dead == 0 {
+			return StatusPass, summary
+		}
+
+		// A dead-letter is a genuine delivery failure; escalate on staleness.
+		oldest, err := db.OldestDeadWebhookDelivery()
+		if err != nil || oldest == nil {
+			return StatusWarn, summary + " — dead-lettered deliveries need triage (inspect `secsy-ca webhook deliveries`)"
+		}
+		age := time.Since(oldest.CreatedAt)
+		threshold := cfg.Webhook.DeadLetterStale()
+		if age > threshold {
+			return StatusFail, fmt.Sprintf("%s — oldest dead-letter is %s old, exceeding the %s threshold; an endpoint is misconfigured or down (inspect `secsy-ca webhook deliveries -status dead`)",
+				summary, humanDuration(age), humanDuration(threshold))
+		}
+		return StatusWarn, fmt.Sprintf("%s — oldest dead-letter is %s old (inspect `secsy-ca webhook deliveries -status dead`)",
+			summary, humanDuration(age))
+	})
+}
+
 // --- 8. clock skew ---------------------------------------------------------------
 
 // checkClockSkew sanity-checks this host's clock. Against PostgreSQL it

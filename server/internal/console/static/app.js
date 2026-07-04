@@ -322,6 +322,7 @@ function switchView(name) {
   if (name === 'dns') loadDNS();
   if (name === 'tenants') loadTenants();
   if (name === 'tokens') loadTokens();
+  if (name === 'webhooks') loadWebhooks();
 }
 document.querySelectorAll('header nav button').forEach(b =>
   b.onclick = () => switchView(b.dataset.view));
@@ -1688,6 +1689,139 @@ $('tokenSecretCopy').onclick = async () => {
   try { await navigator.clipboard.writeText(v.value); } catch (_) { document.execCommand('copy'); }
   $('tokenSecretCopy').textContent = 'Copied';
   setTimeout(() => { $('tokenSecretCopy').textContent = 'Copy'; }, 1500);
+};
+
+// ---- Outbound Webhooks view (Task 116) -------------------------------------
+// Durable subscriptions delivering signed certificate lifecycle events.
+async function loadWebhooks() {
+  const rows = $('webhookRows');
+  let webhooks;
+  try {
+    webhooks = await api('GET', '/api/webhooks');
+    $('webhooksDenied').classList.add('hidden');
+  } catch (e) {
+    rows.innerHTML = '';
+    showError($('webhooksDenied'), 'Listing webhooks failed: ' + e.message);
+    return;
+  }
+  if (!webhooks.length) { rows.innerHTML = '<tr><td colspan="6" class="muted">No webhook subscriptions.</td></tr>'; return; }
+  rows.innerHTML = webhooks.map(w => {
+    const events = (w.event_types && w.event_types.length) ? w.event_types.join(', ') : 'all';
+    const badge = w.enabled ? '<span class="badge ok">enabled</span>' : '<span class="badge revoked">disabled</span>';
+    const toggle = w.enabled
+      ? `<button class="btn ghost sm" data-act="disable" data-id="${w.id}">Disable</button>`
+      : `<button class="btn ghost sm" data-act="enable" data-id="${w.id}">Enable</button>`;
+    return `<tr${w.enabled ? '' : ' style="opacity:.6"'}>
+      <td><code>${escapeHTML(w.url)}</code></td>
+      <td>${escapeHTML(w.scope)}</td>
+      <td>${escapeHTML(w.tenant_id)}</td>
+      <td>${escapeHTML(events)}</td>
+      <td>${badge}</td>
+      <td style="white-space:nowrap">
+        <button class="btn ghost sm" data-act="test" data-id="${w.id}">Test</button>
+        <button class="btn ghost sm" data-act="deliveries" data-id="${w.id}">Deliveries</button>
+        ${toggle}
+        <button class="btn danger sm" data-act="delete" data-id="${w.id}">Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+  rows.querySelectorAll('button[data-id]').forEach(b => {
+    const w = webhooks.find(x => x.id === b.dataset.id);
+    b.onclick = () => webhookAction(b.dataset.act, w);
+  });
+}
+$('refreshWebhooks').onclick = loadWebhooks;
+
+async function webhookAction(act, w) {
+  try {
+    if (act === 'delete') {
+      if (!confirm(`Delete webhook ${w.url}?\n\nIts delivery history is removed too.`)) return;
+      await api('DELETE', `/api/webhooks/${encodeURIComponent(w.id)}`);
+      await loadWebhooks();
+    } else if (act === 'enable' || act === 'disable') {
+      await api('POST', `/api/webhooks/${encodeURIComponent(w.id)}/${act}`);
+      await loadWebhooks();
+    } else if (act === 'test') {
+      const res = await api('POST', `/api/webhooks/${encodeURIComponent(w.id)}/test`, {});
+      const note = res && res.worker_enabled === false
+        ? ' (queued, but the delivery worker is disabled — enable webhook.enabled to send)'
+        : ' — check Deliveries for the outcome';
+      alert(`Test delivery queued for ${w.url}${note}.`);
+      await showWebhookDeliveries(w);
+    } else if (act === 'deliveries') {
+      await showWebhookDeliveries(w);
+    }
+  } catch (e) {
+    showError($('globalError'), `Webhook ${act}: ${e.message}`);
+  }
+}
+
+async function showWebhookDeliveries(w) {
+  const box = $('webhookDeliveries');
+  box.innerHTML = '<div class="muted">Loading deliveries…</div>';
+  let deliveries;
+  try {
+    deliveries = await api('GET', `/api/webhooks/${encodeURIComponent(w.id)}/deliveries?limit=50`);
+  } catch (e) {
+    box.innerHTML = `<div class="notice err">Loading deliveries failed: ${escapeHTML(e.message)}</div>`;
+    return;
+  }
+  if (!deliveries.length) {
+    box.innerHTML = `<h2 style="font-size:14px">Deliveries — ${escapeHTML(w.url)}</h2><div class="muted">No deliveries yet.</div>`;
+    return;
+  }
+  const badge = (s) => s === 'delivered' ? '<span class="badge ok">delivered</span>'
+    : s === 'dead' ? '<span class="badge revoked">dead</span>'
+    : `<span class="badge">${escapeHTML(s)}</span>`;
+  box.innerHTML = `<h2 style="font-size:14px">Deliveries — ${escapeHTML(w.url)}</h2>
+    <table><thead><tr><th>Event</th><th>Status</th><th>Attempts</th><th>Code</th><th>Last error</th></tr></thead>
+    <tbody>${deliveries.map(d => `<tr>
+      <td>${escapeHTML(d.event_type)}</td>
+      <td>${badge(d.status)}</td>
+      <td>${d.attempts}/${d.max_attempts}</td>
+      <td>${d.last_status_code || '—'}</td>
+      <td>${escapeHTML(d.last_error || '')}</td>
+    </tr>`).join('')}</tbody></table>`;
+}
+
+$('webhookCreateBtn').onclick = async () => {
+  const err = $('webhookCreateError');
+  err.classList.add('hidden');
+  const url = $('webhookURL').value.trim();
+  if (!url) { showError(err, 'An endpoint URL is required.'); return; }
+  const events = Array.from($('webhookEvents').querySelectorAll('input:checked')).map(c => c.value);
+  const body = {
+    url,
+    event_types: events,
+    scope: $('webhookScope').value,
+    description: $('webhookDesc').value.trim(),
+  };
+  const tenant = $('webhookTenant').value.trim();
+  if (body.scope === 'tenant' && tenant) body.tenant_id = tenant;
+  const secret = $('webhookSecret').value.trim();
+  if (secret) body.secret = secret;
+  try {
+    const created = await api('POST', '/api/webhooks', body);
+    revealWebhookSecret(created);
+    $('webhookURL').value = $('webhookTenant').value = $('webhookDesc').value = $('webhookSecret').value = '';
+    $('webhookEvents').querySelectorAll('input:checked').forEach(c => { c.checked = false; });
+    await loadWebhooks();
+  } catch (e) { showError(err, e.message); }
+};
+
+function revealWebhookSecret(w) {
+  $('webhookSecretEmpty').classList.add('hidden');
+  $('webhookSecretBox').classList.remove('hidden');
+  const events = (w.event_types && w.event_types.length) ? w.event_types.join(', ') : 'all events';
+  $('webhookSecretMeta').textContent = `${w.url} — ${w.scope} scope, ${events}`;
+  $('webhookSecretValue').value = w.secret || '';
+}
+$('webhookSecretCopy').onclick = async () => {
+  const v = $('webhookSecretValue');
+  v.select();
+  try { await navigator.clipboard.writeText(v.value); } catch (_) { document.execCommand('copy'); }
+  $('webhookSecretCopy').textContent = 'Copied';
+  setTimeout(() => { $('webhookSecretCopy').textContent = 'Copy'; }, 1500);
 };
 
 // ---- Authorities view (Task 62: CLI parity) --------------------------------

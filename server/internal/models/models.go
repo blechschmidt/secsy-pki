@@ -1220,6 +1220,118 @@ type APIToken struct {
 // IsPlatform reports whether the token's roles span all tenants.
 func (t *APIToken) IsPlatform() bool { return t.Scope == TokenScopePlatform }
 
+// Durable outbound webhook subscriptions and their delivery queue (Task 116).
+//
+// A subscription binds an external HTTP endpoint to a set of certificate
+// lifecycle event types and a tenant scope. When a matching event is durably
+// committed to the audit log, the leader-elected delivery worker enqueues a
+// WebhookDelivery per matching subscription and POSTs the signed payload with
+// at-least-once semantics: exponential-backoff retries, dead-lettering after a
+// bounded number of attempts, and an HMAC-SHA256 signature (over timestamp+body)
+// the receiver verifies to authenticate the sender and blunt replay.
+
+// Webhook scope values mirror the token scopes. A tenant-scoped subscription
+// receives only its owning tenant's lifecycle events; a platform-scoped
+// subscription receives every tenant's events and may only be created by a
+// platform administrator.
+const (
+	WebhookScopeTenant   = "tenant"
+	WebhookScopePlatform = "platform"
+)
+
+// Webhook delivery lifecycle states. A delivery starts pending, becomes
+// delivered on a 2xx response, or is dead-lettered once its retry budget is
+// exhausted. A delivery whose subscription is deleted or disabled mid-flight is
+// canceled (a terminal, non-alerting state distinct from a genuine failure).
+const (
+	WebhookDeliveryPending   = "pending"
+	WebhookDeliveryDelivered = "delivered"
+	WebhookDeliveryDead      = "dead"
+	WebhookDeliveryCanceled  = "canceled"
+)
+
+// WebhookSubscription is a durable, tenant-scoped registration of an external
+// endpoint that receives certificate lifecycle events. The Secret is the HMAC
+// key used to sign deliveries; it is required to compute the signature, so it is
+// stored (like the monitor webhook's headers) rather than one-way hashed, and is
+// never serialized to clients after creation (json:"-").
+type WebhookSubscription struct {
+	// ID is the subscription's stable identifier (a UUID) and the audit target.
+	ID string `json:"id"`
+	// TenantID is the owning tenant. For a tenant-scoped subscription it bounds
+	// which events are delivered; for a platform-scoped one it is informational.
+	TenantID string `json:"tenant_id"`
+	// Scope is WebhookScopeTenant or WebhookScopePlatform.
+	Scope string `json:"scope"`
+	// URL is the HTTPS endpoint each matching event is POSTed to.
+	URL string `json:"url"`
+	// Secret is the HMAC-SHA256 signing key. Never serialized to clients; the
+	// create response returns it exactly once through a dedicated wrapper.
+	Secret string `json:"-"`
+	// EventTypes filters which lifecycle events are delivered (e.g. "cert.issue",
+	// "cert.revoke"). An empty list subscribes to every supported lifecycle event.
+	EventTypes []string `json:"event_types"`
+	// Enabled gates delivery: a disabled subscription still exists (and can be
+	// re-enabled) but produces no new deliveries.
+	Enabled bool `json:"enabled"`
+	// Description is optional free-form context.
+	Description string `json:"description,omitempty"`
+	// CreatedBy identifies the principal that created the subscription.
+	CreatedBy string `json:"created_by,omitempty"`
+	// CreatedAt / UpdatedAt track the subscription's lifecycle (UTC).
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// IsPlatform reports whether the subscription receives every tenant's events.
+func (s *WebhookSubscription) IsPlatform() bool { return s.Scope == WebhookScopePlatform }
+
+// WebhookDelivery is one durable unit of work in the outbound delivery queue: a
+// single event bound for a single subscription, tracked through its retry
+// lifecycle. It survives restarts and leadership handovers, so delivery is
+// at-least-once: a redelivery of the last unacknowledged attempt is possible and
+// receivers must be idempotent on EventID.
+type WebhookDelivery struct {
+	// ID is the delivery's stable identifier (a UUID) and appears in the
+	// X-Secsy-Delivery header so a receiver can correlate retries.
+	ID string `json:"id"`
+	// SubscriptionID is the owning subscription.
+	SubscriptionID string `json:"subscription_id"`
+	// TenantID is denormalized from the subscription for scoped read queries.
+	TenantID string `json:"tenant_id"`
+	// EventID is the source audit event's id — the idempotency key a receiver
+	// should deduplicate on.
+	EventID string `json:"event_id"`
+	// EventSeq is the source audit event's monotonic sequence number. Together
+	// with SubscriptionID it forms the fan-out idempotency key (each event is
+	// enqueued at most once per subscription). Synthetic test deliveries use a
+	// negative sentinel so they never collide with real events.
+	EventSeq int64 `json:"event_seq"`
+	// EventType is the lifecycle event (audit action) that produced the delivery.
+	EventType string `json:"event_type"`
+	// Payload is the exact JSON body POSTed to the endpoint (and signed).
+	Payload string `json:"payload,omitempty"`
+	// Status is the delivery lifecycle state (see the Webhook* constants above).
+	Status string `json:"status"`
+	// Attempts counts delivery attempts made so far; MaxAttempts snapshots the
+	// configured retry budget at enqueue time so a later config change does not
+	// retroactively re-open a dead-lettered delivery.
+	Attempts    int `json:"attempts"`
+	MaxAttempts int `json:"max_attempts"`
+	// NextAttemptAt is when a pending delivery becomes due (now for the first
+	// attempt, backed off after each failure).
+	NextAttemptAt time.Time `json:"next_attempt_at"`
+	// LastAttemptAt / LastStatusCode / LastError capture the most recent attempt's
+	// outcome for operator visibility.
+	LastAttemptAt  *time.Time `json:"last_attempt_at,omitempty"`
+	LastStatusCode int        `json:"last_status_code,omitempty"`
+	LastError      string     `json:"last_error,omitempty"`
+	// CreatedAt is when the delivery was enqueued; DeliveredAt when it terminally
+	// succeeded (nil otherwise).
+	CreatedAt   time.Time  `json:"created_at"`
+	DeliveredAt *time.Time `json:"delivered_at,omitempty"`
+}
+
 // Revoked reports whether the token has been explicitly revoked.
 func (t *APIToken) Revoked() bool { return t != nil && t.RevokedAt != nil }
 

@@ -835,6 +835,59 @@ func (db *DB) migrate() error {
 			revoked_by TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_api_tokens_tenant ON api_tokens(tenant_id)`,
+		// Durable outbound webhook subscriptions (Task 116). A subscription binds an
+		// external endpoint + HMAC secret to a set of certificate lifecycle event
+		// types and a tenant scope. event_types is a comma-separated filter (empty =
+		// all supported lifecycle events); scope 'platform' receives every tenant's
+		// events. Tenant-scoped; references tenants.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS webhook_subscriptions (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'default' REFERENCES tenants(id),
+			scope TEXT NOT NULL DEFAULT 'tenant',
+			url TEXT NOT NULL,
+			secret TEXT NOT NULL DEFAULT '',
+			event_types TEXT NOT NULL DEFAULT '',
+			enabled %s,
+			description TEXT NOT NULL DEFAULT '',
+			created_by TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL
+		)`, boolType),
+		`CREATE INDEX IF NOT EXISTS idx_webhook_subs_tenant ON webhook_subscriptions(tenant_id)`,
+		// The durable outbound delivery queue (Task 116). One row per (subscription,
+		// event); the UNIQUE(subscription_id, event_seq) constraint makes the
+		// cursor-swept fan-out idempotent across restarts and re-scans. The
+		// (status, next_attempt_at) index backs the "claim due work" read of the
+		// delivery worker. References webhook_subscriptions.
+		`CREATE TABLE IF NOT EXISTS webhook_deliveries (
+			id TEXT PRIMARY KEY,
+			subscription_id TEXT NOT NULL REFERENCES webhook_subscriptions(id),
+			tenant_id TEXT NOT NULL DEFAULT 'default',
+			event_id TEXT NOT NULL DEFAULT '',
+			event_seq BIGINT NOT NULL,
+			event_type TEXT NOT NULL DEFAULT '',
+			payload TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'pending',
+			attempts INTEGER NOT NULL DEFAULT 0,
+			max_attempts INTEGER NOT NULL DEFAULT 0,
+			next_attempt_at TIMESTAMP NOT NULL,
+			last_attempt_at TIMESTAMP,
+			last_status_code INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL,
+			delivered_at TIMESTAMP,
+			UNIQUE(subscription_id, event_seq)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_due ON webhook_deliveries(status, next_attempt_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_sub ON webhook_deliveries(subscription_id)`,
+		// The webhook fan-out high-water mark (Task 116): a single-row table
+		// tracking how far the leader-elected fan-out has scanned the event log,
+		// mirroring the SIEM export cursor. Standalone (no foreign keys).
+		`CREATE TABLE IF NOT EXISTS webhook_fanout_cursor (
+			id TEXT PRIMARY KEY,
+			last_seq BIGINT NOT NULL,
+			updated_at TIMESTAMP NOT NULL
+		)`,
 		// Certificate Transparency SCT inclusion-proof verification state (Task 93).
 		// One row per embedded SCT: (issuing CA, certificate serial, log id). The
 		// leader-elected inclusion monitor upserts a row each time it checks whether

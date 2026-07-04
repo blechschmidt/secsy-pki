@@ -90,6 +90,13 @@ var migrationTables = []string{
 	// Native scoped API tokens / service accounts (Task 86). References tenants,
 	// so copied after them; no children of its own.
 	"api_tokens",
+	// Durable outbound webhook subscriptions and their delivery queue (Task 116).
+	// webhook_subscriptions references tenants, so it is copied after them; the
+	// delivery rows reference webhook_subscriptions, so they come after that; the
+	// fan-out cursor is standalone.
+	"webhook_subscriptions",
+	"webhook_deliveries",
+	"webhook_fanout_cursor",
 }
 
 // tableCopyOrder pins the read order for tables whose rows have intra-table

@@ -223,7 +223,7 @@ func Run(ctx context.Context, opts Options) *Report {
 		for _, name := range []string{
 			"db.connectivity", "db.schema", "keyprovider.ca", "pin.source", "keys.ca",
 			"audit.chain_head", "certs.ca_expiry", "crl.freshness",
-			"canary.last_probe", "ct.inclusion", "clock.skew", "listener.tls",
+			"canary.last_probe", "ct.inclusion", "webhook.dead_letters", "clock.skew", "listener.tls",
 			"fips.mode", "fips.store_keys", "fips.secret_oaep",
 		} {
 			r.skip(name, "config did not load")
@@ -275,6 +275,10 @@ func Run(ctx context.Context, opts Options) *Report {
 
 	// 7d. CT SCT inclusion monitor: standing inclusion state and scan freshness.
 	checkCTInclusion(r, cfg, db, schemaOK)
+
+	// 7e. Outbound webhook dead-letters: deliveries that exhausted their retry
+	// budget and need operator triage (a paused endpoint, a wrong URL/secret).
+	checkWebhookDeadLetters(r, cfg, db, schemaOK)
 
 	// 8. Clock-skew sanity against the database host and the audit head.
 	checkClockSkew(ctx, r, db, schemaOK, opts)

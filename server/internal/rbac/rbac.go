@@ -115,6 +115,15 @@ const (
 	// privilege. Tenant admins may manage tokens WITHIN their tenant; platform
 	// (cross-tenant) tokens require a platform administrator.
 	ActionManageTokens Action = "token:manage"
+	// ActionManageWebhooks covers creating, listing, testing, and deleting durable
+	// outbound webhook subscriptions (Task 116). Like token:manage it is an
+	// administrative capability held by admins only (no non-admin role grants it):
+	// a subscription exfiltrates certificate lifecycle events — including subject
+	// names and serials — to an operator-chosen external URL, so registering one is
+	// a data-egress decision as sensitive as token minting. Tenant admins may
+	// manage subscriptions WITHIN their tenant; a platform (all-tenant) subscription
+	// requires a platform administrator.
+	ActionManageWebhooks Action = "webhook:manage"
 	// ActionProfile covers capturing runtime profiles from the opt-in
 	// net/http/pprof endpoints (CPU, heap, goroutine, mutex, block) (Task 115).
 	// It is an administrative capability held by admins only (no non-admin role

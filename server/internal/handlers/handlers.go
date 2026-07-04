@@ -123,6 +123,13 @@ type API struct {
 	// preview (Task 113) consults it to report a profile's attestation posture; nil
 	// (attestation disabled) makes the preview's attestation gate a no-op.
 	attestationVerifier *attestation.Verifier
+	// webhookWorkerEnabled reports whether the durable webhook DELIVERY worker is
+	// running (webhook.enabled). The subscription-management endpoints work
+	// regardless; this only lets the create/test responses tell an operator whether
+	// enqueued deliveries will actually be sent. webhookMaxAttempts snapshots the
+	// configured retry budget for test deliveries. Set via SetWebhookDelivery.
+	webhookWorkerEnabled bool
+	webhookMaxAttempts   int
 }
 
 // LeaderInfo is the read-only view of the multi-replica coordination elector
@@ -137,6 +144,15 @@ type LeaderInfo interface {
 
 // SetLeaderInfo installs the coordination elector's leadership view.
 func (a *API) SetLeaderInfo(li LeaderInfo) { a.leaderInfo = li }
+
+// SetWebhookDelivery records whether the durable webhook delivery worker is
+// running and its configured retry budget, so the webhook-management handlers can
+// report delivery status and enqueue test deliveries with the right budget (Task
+// 116). The management endpoints are unaffected by enabled — only delivery is.
+func (a *API) SetWebhookDelivery(enabled bool, maxAttempts int) {
+	a.webhookWorkerEnabled = enabled
+	a.webhookMaxAttempts = maxAttempts
+}
 
 // SetApprovals installs the four-eyes approval engine, turning the guarded
 // operations (CA creation/rotation/retirement, bulk revocation) into fail-closed
@@ -387,6 +403,19 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/tokens", protected(http.HandlerFunc(a.ListTokens)))
 	mux.Handle("POST /api/tokens", protected(http.HandlerFunc(a.CreateToken)))
 	mux.Handle("DELETE /api/tokens/{id}", protected(http.HandlerFunc(a.RevokeToken)))
+
+	// Durable outbound webhook subscriptions (Task 116). Operator-registered
+	// external endpoints that receive HMAC-signed certificate lifecycle events with
+	// at-least-once delivery. Management is admin-gated (webhook:manage) and
+	// tenant-scoped; creation returns the signing secret exactly once.
+	mux.Handle("GET /api/webhooks", protected(http.HandlerFunc(a.ListWebhooks)))
+	mux.Handle("POST /api/webhooks", protected(http.HandlerFunc(a.CreateWebhook)))
+	mux.Handle("GET /api/webhooks/{id}", protected(http.HandlerFunc(a.GetWebhook)))
+	mux.Handle("DELETE /api/webhooks/{id}", protected(http.HandlerFunc(a.DeleteWebhook)))
+	mux.Handle("POST /api/webhooks/{id}/enable", protected(http.HandlerFunc(a.EnableWebhook)))
+	mux.Handle("POST /api/webhooks/{id}/disable", protected(http.HandlerFunc(a.DisableWebhook)))
+	mux.Handle("POST /api/webhooks/{id}/test", protected(http.HandlerFunc(a.TestWebhook)))
+	mux.Handle("GET /api/webhooks/{id}/deliveries", protected(http.HandlerFunc(a.ListWebhookDeliveries)))
 
 	// HSM-backed X.509 certificate-authority setup. Root/intermediate creation is
 	// a key ceremony — gated behind WebAuthn step-up when enabled.

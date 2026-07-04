@@ -296,6 +296,20 @@ func authzMatrix() []rc {
 		tokMg("POST", "/api/tokens", "/api/tokens", `{"name":"x","tenant_id":"a","scope":"tenant","roles":["auditor"]}`),
 		tokMgScoped("DELETE", "/api/tokens/{id}", "/api/tokens/tok-a"),
 
+		// Durable outbound webhook subscriptions (Task 116). webhook:manage,
+		// admin-only, tenant-scoped — the exact authorization shape as token:manage
+		// (tokMg for list/create where the tenant comes from body/query; tokMgScoped
+		// for the {id} routes, where a cross-tenant admin is denied 403). wh-a is a
+		// tenant-a subscription; wh-del a throwaway for the DELETE side-effect.
+		tokMg("GET", "/api/webhooks", "/api/webhooks", ""),
+		tokMg("POST", "/api/webhooks", "/api/webhooks", `{"url":"https://example.test/hook","tenant_id":"a","event_types":["cert.issue"]}`),
+		tokMgScoped("GET", "/api/webhooks/{id}", "/api/webhooks/wh-a"),
+		tokMgScoped("DELETE", "/api/webhooks/{id}", "/api/webhooks/wh-del"),
+		tokMgScoped("POST", "/api/webhooks/{id}/enable", "/api/webhooks/wh-a/enable"),
+		tokMgScoped("POST", "/api/webhooks/{id}/disable", "/api/webhooks/wh-a/disable"),
+		tokMgScoped("POST", "/api/webhooks/{id}/test", "/api/webhooks/wh-a/test"),
+		tokMgScoped("GET", "/api/webhooks/{id}/deliveries", "/api/webhooks/wh-a/deliveries"),
+
 		// X.509 CA setup.
 		caMgBody("POST", "/api/ca/init-root", "/api/ca/init-root", `{"tenant_id":"a","label":"authz-root",`+bogusKey+`,"subject":{"common_name":"x"}}`),
 		caMg("POST", "/api/ca/{id}/issue-intermediate", "/api/ca/ca-a/issue-intermediate", `{"label":"i",`+bogusKey+`}`),
@@ -526,6 +540,17 @@ func newAuthzHarness(t *testing.T) *authzHarness {
 	}
 	if err := db.CreateRestrictionSet(&models.RestrictionSet{ID: "rs-a", CAID: "ca-a", Name: "rs"}); err != nil {
 		t.Fatalf("CreateRestrictionSet: %v", err)
+	}
+	// Two tenant-a webhook subscriptions: wh-a for the read/manage scoped routes,
+	// wh-del as a throwaway for the DELETE case. The URL points at a refused port
+	// so any accidental delivery fails fast rather than hanging the harness.
+	for _, id := range []string{"wh-a", "wh-del"} {
+		if err := db.CreateWebhookSubscription(&models.WebhookSubscription{
+			ID: id, TenantID: "a", Scope: "tenant", URL: "http://127.0.0.1:1/hook",
+			Secret: "s", Enabled: true, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("CreateWebhookSubscription(%s): %v", id, err)
+		}
 	}
 	for _, id := range []string{"apr-get", "apr-approve", "apr-reject"} {
 		seedApproval(t, db, id, approval.ClassCARotate, "ca:ca-a")
