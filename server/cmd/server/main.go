@@ -1255,6 +1255,7 @@ func buildACMEConfig(db *database.DB, cfg *config.Config) (acme.Config, error) {
 		RequireEAB:         cfg.ACME.RequireEAB,
 		EABHMACKeys:        cfg.ACME.EABHMACKeys,
 		AllowIPIdentifiers: cfg.ACME.AllowIPIdentifiers,
+		PreAuthorization:   cfg.ACME.PreAuthorization,
 	}
 	if cfg.ACME.OrderValidityHours > 0 {
 		ac.OrderValidity = time.Duration(cfg.ACME.OrderValidityHours) * time.Hour

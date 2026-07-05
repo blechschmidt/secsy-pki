@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -56,9 +57,13 @@ func (db *DB) migrateACME() error {
 			created_at %s
 		)`, currentTimestamp),
 		`CREATE INDEX IF NOT EXISTS idx_acme_orders_account ON acme_orders(account_id)`,
+		// order_id is nullable: a standalone pre-authorization (RFC 8555 §7.4.1,
+		// created via newAuthz) exists independently of any order until an order
+		// claims it, so its order_id is NULL. Order-created authorizations carry the
+		// owning order's id and cascade-delete with it.
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS acme_authorizations (
 			id TEXT PRIMARY KEY,
-			order_id TEXT NOT NULL REFERENCES acme_orders(id) ON DELETE CASCADE,
+			order_id TEXT REFERENCES acme_orders(id) ON DELETE CASCADE,
 			account_id TEXT NOT NULL REFERENCES acme_accounts(id) ON DELETE CASCADE,
 			identifier_type TEXT NOT NULL,
 			identifier_value TEXT NOT NULL,
@@ -143,7 +148,90 @@ func (db *DB) migrateACME() error {
 		_, _ = db.conn.Exec(`ALTER TABLE acme_challenges ADD COLUMN email_token1 TEXT`)
 		_, _ = db.conn.Exec(`ALTER TABLE acme_challenges ADD COLUMN email_message_id TEXT`)
 	}
+	// Additive migration for ACME pre-authorization (Task 134, RFC 8555 §7.4.1):
+	// relax acme_authorizations.order_id from NOT NULL to nullable on databases that
+	// predate the feature, so a standalone pre-authorization (order_id NULL) can be
+	// stored. A fresh database already has the nullable column from the CREATE above.
+	db.relaxACMEAuthzOrderIDNullable()
 	return nil
+}
+
+// relaxACMEAuthzOrderIDNullable drops the NOT NULL constraint on
+// acme_authorizations.order_id for databases created before ACME pre-authorization
+// (Task 134). It is idempotent and a no-op on a fresh schema, where the column is
+// already nullable.
+func (db *DB) relaxACMEAuthzOrderIDNullable() {
+	if db.isPostgres() {
+		// DROP NOT NULL is a no-op (not an error) when the column is already
+		// nullable, so this is safe to run on every startup.
+		if _, err := db.conn.Exec(`ALTER TABLE acme_authorizations ALTER COLUMN order_id DROP NOT NULL`); err != nil {
+			log.Printf("acme: relaxing acme_authorizations.order_id nullability: %v", err)
+		}
+		return
+	}
+	// SQLite has no ALTER COLUMN, so the column constraint can only be changed by
+	// rebuilding the table. Do so only when order_id is still declared NOT NULL,
+	// detected via PRAGMA table_info, so the rebuild runs at most once (never on a
+	// fresh or already-migrated database).
+	rows, err := db.conn.Query(`PRAGMA table_info(acme_authorizations)`)
+	if err != nil {
+		log.Printf("acme: inspecting acme_authorizations schema: %v", err)
+		return
+	}
+	needsRebuild := false
+	for rows.Next() {
+		var (
+			cid, notNull, pk int
+			name, colType    string
+			dflt             sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			_ = rows.Close()
+			log.Printf("acme: inspecting acme_authorizations schema: %v", err)
+			return
+		}
+		if name == "order_id" && notNull == 1 {
+			needsRebuild = true
+		}
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil || !needsRebuild {
+		return
+	}
+	// FK-safe table rebuild. SQLite is pinned to a single connection, so toggling
+	// foreign_keys here is sequential and cannot race other statements; disabling
+	// it prevents the DROP TABLE from cascade-deleting acme_challenges rows (whose
+	// authz_id references remain valid because the rebuilt table preserves every id).
+	stmts := []string{
+		`PRAGMA foreign_keys=OFF`,
+		`CREATE TABLE acme_authorizations_new (
+			id TEXT PRIMARY KEY,
+			order_id TEXT REFERENCES acme_orders(id) ON DELETE CASCADE,
+			account_id TEXT NOT NULL REFERENCES acme_accounts(id) ON DELETE CASCADE,
+			identifier_type TEXT NOT NULL,
+			identifier_value TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			expires TIMESTAMP NOT NULL,
+			wildcard INTEGER NOT NULL DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`INSERT INTO acme_authorizations_new
+			(id, order_id, account_id, identifier_type, identifier_value, status, expires, wildcard, created_at)
+			SELECT id, order_id, account_id, identifier_type, identifier_value, status, expires, wildcard, created_at
+			FROM acme_authorizations`,
+		`DROP TABLE acme_authorizations`,
+		`ALTER TABLE acme_authorizations_new RENAME TO acme_authorizations`,
+		`CREATE INDEX IF NOT EXISTS idx_acme_authz_order ON acme_authorizations(order_id)`,
+		`PRAGMA foreign_keys=ON`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.conn.Exec(stmt); err != nil {
+			log.Printf("acme: rebuilding acme_authorizations to relax order_id: %v", err)
+			// Best-effort restore of FK enforcement before giving up.
+			_, _ = db.conn.Exec(`PRAGMA foreign_keys=ON`)
+			return
+		}
+	}
 }
 
 // ---- Accounts -------------------------------------------------------------
@@ -378,7 +466,9 @@ func (db *DB) FinalizeACMEOrder(id, caID, serial, chainPEM string, finalizedAt t
 
 // ---- Authorizations -------------------------------------------------------
 
-// CreateACMEAuthorization inserts an authorization.
+// CreateACMEAuthorization inserts an authorization. An empty OrderID stores a
+// SQL NULL, marking a standalone pre-authorization (RFC 8555 §7.4.1) that no
+// order has claimed yet.
 func (db *DB) CreateACMEAuthorization(a *models.ACMEAuthorization) error {
 	status := a.Status
 	if status == "" {
@@ -387,7 +477,7 @@ func (db *DB) CreateACMEAuthorization(a *models.ACMEAuthorization) error {
 	_, err := db.exec(
 		`INSERT INTO acme_authorizations (id, order_id, account_id, identifier_type, identifier_value, status, expires, wildcard)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.ID, a.OrderID, a.AccountID, a.IdentifierType, a.IdentifierValue, status, a.Expires.UTC(), a.Wildcard,
+		a.ID, nullString(a.OrderID), a.AccountID, a.IdentifierType, a.IdentifierValue, status, a.Expires.UTC(), a.Wildcard,
 	)
 	return err
 }
@@ -396,11 +486,54 @@ const acmeAuthzColumns = `id, order_id, account_id, identifier_type, identifier_
 
 func scanACMEAuthz(s caScanner) (*models.ACMEAuthorization, error) {
 	var a models.ACMEAuthorization
-	if err := s.Scan(&a.ID, &a.OrderID, &a.AccountID, &a.IdentifierType, &a.IdentifierValue,
+	var orderID sql.NullString
+	if err := s.Scan(&a.ID, &orderID, &a.AccountID, &a.IdentifierType, &a.IdentifierValue,
 		&a.Status, &a.Expires, &a.Wildcard, &a.CreatedAt); err != nil {
 		return nil, err
 	}
+	a.OrderID = orderID.String
 	return &a, nil
+}
+
+// FindReusableACMEPreAuthorization returns the account's newest still-usable
+// standalone pre-authorization (RFC 8555 §7.4.1) for an identifier, or (nil, nil)
+// if none exists. "Usable" means unclaimed (order_id IS NULL), matching the exact
+// identifier and wildcard flag, not yet expired, and in a status that can still
+// authorize issuance (valid) or reach it (pending). An already-valid
+// authorization is preferred so a subsequent order can skip re-validation.
+func (db *DB) FindReusableACMEPreAuthorization(accountID, idType, idValue string, wildcard bool, now time.Time) (*models.ACMEAuthorization, error) {
+	a, err := scanACMEAuthz(db.queryRow(
+		`SELECT `+acmeAuthzColumns+` FROM acme_authorizations
+		 WHERE order_id IS NULL AND account_id = ? AND identifier_type = ? AND identifier_value = ?
+		   AND wildcard = ? AND status IN (?, ?) AND expires > ?
+		 ORDER BY CASE WHEN status = ? THEN 0 ELSE 1 END, created_at DESC`,
+		accountID, idType, idValue, wildcard,
+		models.ACMEAuthzStatusValid, models.ACMEAuthzStatusPending, now.UTC(),
+		models.ACMEAuthzStatusValid,
+	))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return a, err
+}
+
+// ClaimACMEPreAuthorization links a standalone pre-authorization to an order,
+// but only while it is still unclaimed (order_id IS NULL). The conditional update
+// makes the claim atomic, so two concurrent orders for the same identifier cannot
+// both reuse the same pre-authorization. It reports whether this call won the claim.
+func (db *DB) ClaimACMEPreAuthorization(authzID, orderID string) (bool, error) {
+	res, err := db.exec(
+		`UPDATE acme_authorizations SET order_id = ? WHERE id = ? AND order_id IS NULL`,
+		orderID, authzID,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // GetACMEAuthorization looks an authorization up by id. (nil, nil) if absent.

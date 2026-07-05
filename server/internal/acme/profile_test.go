@@ -50,6 +50,7 @@ type rawDirectory struct {
 	NewNonce   string `json:"newNonce"`
 	NewAccount string `json:"newAccount"`
 	NewOrder   string `json:"newOrder"`
+	NewAuthz   string `json:"newAuthz"`
 	Meta       struct {
 		Profiles map[string]string `json:"profiles"`
 	} `json:"meta"`

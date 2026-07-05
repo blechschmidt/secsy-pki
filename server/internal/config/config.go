@@ -1413,6 +1413,11 @@ type ACMEConfig struct {
 	EABHMACKeys map[string]string `yaml:"eab_hmac_keys"`
 	// AllowIPIdentifiers permits ip-type identifiers (RFC 8738).
 	AllowIPIdentifiers bool `yaml:"allow_ip_identifiers"`
+	// PreAuthorization enables the optional ACME pre-authorization flow (RFC 8555
+	// §7.4.1): the directory advertises a newAuthz resource that creates standalone
+	// authorizations a client can validate ahead of any order, and newOrder reuses a
+	// still-valid pre-authorization for a matching identifier. Off by default.
+	PreAuthorization bool `yaml:"pre_authorization"`
 	// OrderValidityHours / AuthzValidityHours bound how long orders and
 	// authorizations remain pending (default 168h / 7 days).
 	OrderValidityHours int `yaml:"order_validity_hours"`

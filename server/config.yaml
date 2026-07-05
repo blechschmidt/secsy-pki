@@ -522,6 +522,11 @@ acme:
   # require_eab: true                     # restrict who may register (RBAC-like)
   # eab_hmac_keys:
   #   team-web: "base64url-or-base64-hmac-key"
+  # pre_authorization enables the optional ACME pre-authorization flow (RFC 8555
+  # §7.4.1): the directory advertises a newAuthz resource that lets clients
+  # authorize identifiers ahead of any order, and newOrder reuses a still-valid
+  # pre-authorization for a matching identifier. Off by default.
+  # pre_authorization: true
   # ACME Renewal Information (ARI, draft-ietf-acme-ari): advertised automatically.
   # renewal_window_days: 30               # when the suggested window opens (0 = derive)
   # renewal_window_width_hours: 360       # window width (0 = half the renew-before span)

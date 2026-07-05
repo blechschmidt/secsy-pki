@@ -61,7 +61,7 @@ func (s *Server) validateDeviceAttest01(r *http.Request, acct *acmeAccount, auth
 
 	metrics.AttestationChecks.Inc("acme", string(dec.Mode), "pass")
 	metrics.AttestationVerified.Inc(dec.Result.Format)
-	s.recordEvent(r, acct.rec.ID, audit.ActionCertAttestation, authz.OrderID, audit.ResultSuccess, dec.Detail)
+	s.recordEvent(r, acct.rec.ID, audit.ActionCertAttestation, authzTarget(authz), audit.ResultSuccess, dec.Detail)
 	return nil
 }
 
@@ -74,7 +74,7 @@ func (s *Server) recordAttestFailure(r *http.Request, acct *acmeAccount, authz *
 		label = "missing"
 	}
 	metrics.AttestationChecks.Inc("acme", string(mode), label)
-	s.recordEvent(r, acct.rec.ID, audit.ActionCertAttestation, authz.OrderID, audit.ResultDenied, detail)
+	s.recordEvent(r, acct.rec.ID, audit.ActionCertAttestation, authzTarget(authz), audit.ResultDenied, detail)
 	return newProblem(probBadAttestation, http.StatusForbidden, "device attestation failed: "+detail)
 }
 

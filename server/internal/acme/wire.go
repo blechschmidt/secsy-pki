@@ -95,6 +95,10 @@ type wireDirectory struct {
 	NewNonce   string `json:"newNonce"`
 	NewAccount string `json:"newAccount"`
 	NewOrder   string `json:"newOrder"`
+	// NewAuthz advertises the optional pre-authorization resource (RFC 8555
+	// §7.4.1). Present only when pre-authorization is enabled, so a server without
+	// it stays byte-for-byte compatible with the pre-extension directory.
+	NewAuthz   string `json:"newAuthz,omitempty"`
 	RevokeCert string `json:"revokeCert"`
 	KeyChange  string `json:"keyChange"`
 	// RenewalInfo advertises the ACME Renewal Information (ARI) resource
@@ -148,6 +152,13 @@ type newOrderRequest struct {
 	// names in the directory's meta.profiles; an unknown value is rejected with an
 	// invalidProfile problem. Omitted means the server's default profile.
 	Profile string `json:"profile,omitempty"`
+}
+
+// newAuthzRequest is the payload of a pre-authorization (newAuthz) POST
+// (RFC 8555 §7.4.1): a single identifier object the client wishes to
+// pre-authorize independently of an order.
+type newAuthzRequest struct {
+	Identifier wireIdentifier `json:"identifier"`
 }
 
 // wireRenewalInfo is the ACME Renewal Information response body

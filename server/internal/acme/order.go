@@ -107,6 +107,13 @@ func (s *Server) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 
 	// One authorization (with its challenges) per identifier.
 	for i, id := range ids {
+		// Pre-authorization reuse (RFC 8555 §7.4.1): when the account already holds a
+		// still-valid standalone authorization for this identifier, claim it into the
+		// order instead of creating a fresh one, so a pre-validated identifier need
+		// not be validated again. Only when the feature is enabled.
+		if s.cfg.PreAuthorization && s.claimPreAuthorization(order.ID, acct.rec.ID, id, wildcard[i]) {
+			continue
+		}
 		authz := &models.ACMEAuthorization{
 			ID:              newUUID(),
 			OrderID:         order.ID,
@@ -149,6 +156,12 @@ func (s *Server) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 		s.recordEvent(r, acct.rec.ID, audit.ActionACMEOrderReplaces, order.ID, audit.ResultSuccess,
 			"replaces="+replaces)
 	}
+
+	// Reusing valid pre-authorizations (RFC 8555 §7.4.1) can make an order ready the
+	// moment it is created, so recompute its status before rendering — otherwise the
+	// newOrder response would report "pending" for an order the client can finalize
+	// immediately. A no-op for the usual all-fresh-authorizations order.
+	s.refreshOrderStatus(order)
 
 	w.Header().Set("Location", s.orderURL(r, order.ID))
 	wo, prob := s.wireOrder(r, order)
@@ -301,8 +314,11 @@ func (s *Server) validateChallenge(r *http.Request, acct *acmeAccount, authz *mo
 		errDoc, _ := json.Marshal(prob)
 		_ = s.db.UpdateACMEChallenge(chall.ID, models.ACMEChallengeStatusInvalid, nil, string(errDoc))
 		_ = s.db.UpdateACMEAuthorizationStatus(authz.ID, models.ACMEAuthzStatusInvalid)
-		s.recordEvent(r, acct.rec.ID, audit.ActionACMEChallenge, authz.OrderID, audit.ResultError,
+		s.recordEvent(r, acct.rec.ID, audit.ActionACMEChallenge, authzTarget(authz), audit.ResultError,
 			fmt.Sprintf("%s %s: %s", chall.Type, authz.IdentifierValue, prob.Detail))
+		// A standalone pre-authorization has no order to invalidate (OrderID ""),
+		// so markOrderInvalid is a no-op there; an order-bound authorization fails
+		// its order.
 		s.markOrderInvalid(authz.OrderID, prob)
 		return
 	}
@@ -310,10 +326,11 @@ func (s *Server) validateChallenge(r *http.Request, acct *acmeAccount, authz *mo
 	metrics.ACMEChallengeValidations.Inc(chall.Type, "valid")
 	_ = s.db.UpdateACMEChallenge(chall.ID, models.ACMEChallengeStatusValid, &now, "")
 	_ = s.db.UpdateACMEAuthorizationStatus(authz.ID, models.ACMEAuthzStatusValid)
-	s.recordEvent(r, acct.rec.ID, audit.ActionACMEChallenge, authz.OrderID, audit.ResultSuccess,
+	s.recordEvent(r, acct.rec.ID, audit.ActionACMEChallenge, authzTarget(authz), audit.ResultSuccess,
 		fmt.Sprintf("%s %s validated", chall.Type, authz.IdentifierValue))
 
-	// Refresh the parent order — it may now be ready.
+	// Refresh the parent order — it may now be ready. A standalone pre-authorization
+	// has no order (OrderID ""), so GetACMEOrder returns nil and this is skipped.
 	if order, _ := s.db.GetACMEOrder(authz.OrderID); order != nil {
 		s.refreshOrderStatus(order)
 	}

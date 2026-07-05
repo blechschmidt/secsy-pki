@@ -220,6 +220,10 @@ func (m *Middleware) classify(r *http.Request) *class {
 			return &class{name: "acme_new_account", acme: true, tenantScoped: true}
 		case strings.HasSuffix(path, "/new-order"):
 			return &class{name: "acme_new_order", acme: true, account: acmeAccount, tenantScoped: true}
+		case strings.HasSuffix(path, "/new-authz"):
+			// Pre-authorization (RFC 8555 §7.4.1) creates authorizations like
+			// newOrder, so meter it the same way: per-account and tenant-scoped.
+			return &class{name: "acme_new_authz", acme: true, account: acmeAccount, tenantScoped: true}
 		case strings.HasSuffix(path, "/finalize"):
 			return &class{name: "acme_finalize", hsmBound: true, acme: true, account: acmeAccount, tenantScoped: true}
 		case strings.Contains(path, "/renewal-info"):

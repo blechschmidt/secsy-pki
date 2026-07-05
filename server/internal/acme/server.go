@@ -76,6 +76,14 @@ type Config struct {
 	EABHMACKeys map[string]string
 	// AllowIPIdentifiers permits "ip"-type identifiers (RFC 8738). Off by default.
 	AllowIPIdentifiers bool
+	// PreAuthorization enables the optional ACME pre-authorization flow (RFC 8555
+	// §7.4.1): a newAuthz resource is advertised in the directory and accepts an
+	// identifier object, creating a standalone Authorization the client can validate
+	// ahead of any order. A subsequent newOrder reuses a still-valid
+	// pre-authorization for a matching identifier instead of validating again. Off
+	// by default; when disabled the newAuthz resource is unadvertised and rejects
+	// requests with an ACME problem document.
+	PreAuthorization bool
 	// OrderValidity / AuthzValidity bound how long orders and authorizations
 	// remain pending before expiring.
 	OrderValidity time.Duration
@@ -312,6 +320,10 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("HEAD "+p+"/new-nonce", s.handleNewNonce)
 	mux.HandleFunc("POST "+p+"/new-account", s.handleNewAccount)
 	mux.HandleFunc("POST "+p+"/new-order", s.handleNewOrder)
+	// ACME pre-authorization (RFC 8555 §7.4.1). The route is always registered so a
+	// disabled server can answer with a proper ACME problem document (rather than a
+	// bare 404); the handler gates on Config.PreAuthorization.
+	mux.HandleFunc("POST "+p+"/new-authz", s.handleNewAuthz)
 	mux.HandleFunc("POST "+p+"/order/{id}", s.handleOrder)
 	mux.HandleFunc("POST "+p+"/order/{id}/finalize", s.handleFinalize)
 	mux.HandleFunc("POST "+p+"/authz/{id}", s.handleAuthz)
@@ -453,6 +465,11 @@ func (s *Server) handleDirectory(w http.ResponseWriter, r *http.Request) {
 			ExternalAccountRequired: s.cfg.RequireEAB,
 			Profiles:                s.cfg.advertisedProfiles(),
 		},
+	}
+	// The optional newAuthz resource (RFC 8555 §7.4.1) is advertised only when
+	// pre-authorization is enabled, so clients discover it exactly when it works.
+	if s.cfg.PreAuthorization {
+		dir.NewAuthz = s.link(r, "/new-authz")
 	}
 	s.writeJSON(w, http.StatusOK, dir)
 }

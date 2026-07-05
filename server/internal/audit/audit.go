@@ -290,8 +290,11 @@ const (
 	ActionACMEAccountNew    = "acme.account.new"
 	ActionACMEOrderNew      = "acme.order.new"
 	ActionACMEOrderFinalize = "acme.order.finalize"
-	ActionACMEChallenge     = "acme.challenge"
-	ActionACMECertRevoke    = "acme.cert.revoke"
+	// ActionACMEAuthzNew records a standalone pre-authorization created via the
+	// newAuthz endpoint (RFC 8555 §7.4.1 pre-authorization).
+	ActionACMEAuthzNew   = "acme.authz.new"
+	ActionACMEChallenge  = "acme.challenge"
+	ActionACMECertRevoke = "acme.cert.revoke"
 	// ActionACMERenewalInfo records a served ARI (draft-ietf-acme-ari) renewal-info
 	// lookup, and ActionACMEOrderReplaces records a newOrder that linked to a
 	// predecessor certificate via the "replaces" field.
