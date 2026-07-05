@@ -2637,9 +2637,18 @@ type SecretInfo struct {
 	EscrowThreshold *int    `json:"escrow_threshold,omitempty"`
 	KekLabel        *string `json:"kek_label,omitempty"`
 	KeyBits         *int    `json:"key_bits,omitempty"`
-	Provider        *string `json:"provider,omitempty"`
-	Version         *string `json:"version,omitempty"`
-	WrapAlg         *string `json:"wrap_alg,omitempty"`
+
+	// PqcHybridAvailable Whether the KEK family has post-quantum ML-KEM-1024 material provisioned, so it can OPEN hybrid envelopes (Task 137).
+	PqcHybridAvailable *bool `json:"pqc_hybrid_available,omitempty"`
+
+	// PqcHybridEnabled Whether NEW envelopes are sealed in post-quantum hybrid mode (material present AND secret.pqc_hybrid enabled). When true, "version" is 3.
+	PqcHybridEnabled *bool `json:"pqc_hybrid_enabled,omitempty"`
+
+	// PqcKem The post-quantum KEM the family uses ("ML-KEM-1024"), or empty when no ML-KEM material is provisioned.
+	PqcKem   *string `json:"pqc_kem,omitempty"`
+	Provider *string `json:"provider,omitempty"`
+	Version  *string `json:"version,omitempty"`
+	WrapAlg  *string `json:"wrap_alg,omitempty"`
 }
 
 // SetDefaultRestrictionSetRequest defines model for SetDefaultRestrictionSetRequest.

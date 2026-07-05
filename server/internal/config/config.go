@@ -2170,6 +2170,16 @@ type SecretConfig struct {
 	// Escrow optionally configures M-of-N key escrow so data keys can be
 	// recovered under dual control when the original requester loses access.
 	Escrow EscrowConfig `yaml:"escrow"`
+	// PQCHybrid enables post-quantum hybrid KEK wrapping (Task 137): new
+	// envelopes protect the data key with BOTH the classical HSM KEK wrap AND an
+	// ML-KEM-1024 (FIPS 203) encapsulation, combined via a KDF, so data at rest
+	// resists a future quantum adversary who records ciphertext today. It
+	// requires ML-KEM key material provisioned for the KEK family
+	// (`secsy-secret pqc-enable`). Existing classical envelopes keep opening
+	// unchanged, and disabling the flag never strands hybrid ciphertext (the
+	// material stays available for decryption). ML-KEM runs in software (SoftHSM
+	// has no ML-KEM mechanism); the classical KEK may still live in the HSM.
+	PQCHybrid bool `yaml:"pqc_hybrid"`
 }
 
 // EscrowConfig configures optional M-of-N key escrow for the envelope layer. At
@@ -3594,6 +3604,9 @@ func (c *Config) validateEnrollment() error {
 	if err := c.Secret.Escrow.validate(); err != nil {
 		return err
 	}
+	if c.Secret.PQCHybrid && c.Secret.KEKLabel == "" {
+		return fmt.Errorf("secret.pqc_hybrid is enabled but secret.kek_label is not set (post-quantum hybrid mode has no KEK family to attach ML-KEM material to)")
+	}
 	return nil
 }
 
@@ -4074,6 +4087,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("SECSY_SECRET_KEK_LABEL"); v != "" {
 		cfg.Secret.KEKLabel = v
+	}
+	if v := os.Getenv("SECSY_SECRET_PQC_HYBRID"); v == "1" || v == "true" {
+		cfg.Secret.PQCHybrid = true
 	}
 	// ACME overrides — convenient for the SoftHSM integration harness, which
 	// enables ACME against a freshly created CA and validates on a high port.

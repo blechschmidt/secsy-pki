@@ -240,7 +240,14 @@ func secretRingFromConfig(ctx context.Context, db *database.DB, provider keyprov
 	if err != nil {
 		return nil, fmt.Errorf("reading KEK rotation state: %w", err)
 	}
-	return secret.LoadRing(ctx, provider, family, versions)
+	// Attach the family's post-quantum ML-KEM material (Task 137) so the escrow
+	// envelope is sealed hybrid when secret.pqc_hybrid is enabled, matching the
+	// secret layer's data-at-rest protection.
+	pqcRec, err := db.GetPQCHybridKey(family)
+	if err != nil {
+		return nil, fmt.Errorf("reading post-quantum hybrid key material: %w", err)
+	}
+	return secret.LoadRingWithPQC(ctx, provider, family, versions, pqcRec, cfg.Secret.PQCHybrid)
 }
 
 // zeroCLI scrubs a byte slice holding transient key material.

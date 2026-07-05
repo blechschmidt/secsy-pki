@@ -233,7 +233,7 @@ func newServiceCommon(ctx context.Context, provider keyprovider.Provider, kekRef
 // encryption context bound into the authenticated data; if supplied, the same
 // context must be given to Decrypt. It is not stored in the envelope.
 func (s *Service) Encrypt(plaintext, context []byte) (*Envelope, error) {
-	return seal(s.wrapper, plaintext, context, nil)
+	return seal(s.wrapper, plaintext, context, nil, nil)
 }
 
 // EncryptWithEscrow is Encrypt with an additional M-of-N key-escrow policy: the
@@ -241,7 +241,7 @@ func (s *Service) Encrypt(plaintext, context []byte) (*Envelope, error) {
 // recover the plaintext under dual control if the original requester loses
 // access. A nil policy is equivalent to Encrypt.
 func (s *Service) EncryptWithEscrow(plaintext, context []byte, escrow *EscrowPolicy) (*Envelope, error) {
-	return seal(s.wrapper, plaintext, context, escrow)
+	return seal(s.wrapper, plaintext, context, escrow, nil)
 }
 
 // EncryptToJSON is Encrypt followed by Marshal, returning the serialized
@@ -266,7 +266,7 @@ func (s *Service) EncryptWithEscrowToJSON(plaintext, context []byte, escrow *Esc
 // Decrypt recovers the plaintext from an Envelope. context must match what was
 // supplied to Encrypt.
 func (s *Service) Decrypt(env *Envelope, context []byte) ([]byte, error) {
-	return open(s.wrapper, env, context)
+	return open(s.wrapper, env, context, nil)
 }
 
 // DecryptJSON parses a serialized envelope and decrypts it.

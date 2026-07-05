@@ -89,7 +89,23 @@ func (a *API) secretRing(r *http.Request, family string) (*secret.Ring, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading KEK rotation state: %w", err)
 	}
-	return secret.LoadRing(r.Context(), a.keyProvider, family, versions)
+	// Attach the family's post-quantum ML-KEM material (Task 137) if provisioned,
+	// so the ring can open hybrid envelopes; the secret.pqc_hybrid gate governs
+	// whether new envelopes are sealed hybrid.
+	pqcRec, err := a.db.GetPQCHybridKey(family)
+	if err != nil {
+		return nil, fmt.Errorf("reading post-quantum hybrid key material: %w", err)
+	}
+	return secret.LoadRingWithPQC(r.Context(), a.keyProvider, family, versions, pqcRec, a.secretPQCHybrid)
+}
+
+// pqcKEMLabel names the post-quantum KEM the ring's family uses, or "" when the
+// family has no ML-KEM material provisioned.
+func pqcKEMLabel(ring *secret.Ring) string {
+	if !ring.PQCAvailable() {
+		return ""
+	}
+	return secret.AlgMLKEM1024
 }
 
 // SecretInfo reports metadata about the configured KEK (never key material).
@@ -101,6 +117,12 @@ func (a *API) SecretInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	info := ring.Active().KEKInfo()
 	escrowAvailable, escrowThreshold, escrowAgents := a.escrowInfo()
+	// Report the envelope format new ciphertext is sealed in: v3 when the family
+	// has ML-KEM material and the hybrid gate is on, v2 otherwise (Task 137).
+	sealVersion := secret.FormatVersion2
+	if ring.HybridEnabled() {
+		sealVersion = secret.FormatVersion3
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"kek_label":   info.Label,
 		"kek_family":  ring.Family(),
@@ -109,7 +131,13 @@ func (a *API) SecretInfo(w http.ResponseWriter, r *http.Request) {
 		"key_bits":    info.KeyBits,
 		"wrap_alg":    info.WrapAlg,
 		"data_alg":    secret.AlgAES256GCM,
-		"version":     secret.FormatVersion2,
+		"version":     sealVersion,
+		// Post-quantum hybrid posture (Task 137): whether the family has ML-KEM
+		// material (so it can OPEN hybrid envelopes) and whether NEW envelopes are
+		// sealed hybrid (material present AND secret.pqc_hybrid on).
+		"pqc_hybrid_available": ring.PQCAvailable(),
+		"pqc_hybrid_enabled":   ring.HybridEnabled(),
+		"pqc_kem":              pqcKEMLabel(ring),
 		// M-of-N escrow policy shape (Task 33): whether encrypt requests may ask
 		// for escrow, and the recovery quorum. Recovery itself is a dual-control
 		// CLI operation (secsy-secret recover) and is deliberately not exposed

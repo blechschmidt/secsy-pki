@@ -77,14 +77,92 @@ the collision resistance of its hash, so the SHA-1 fallback does not expose the
 scheme to SHA-1 collision attacks — but prefer a SHA-256-capable HSM in
 production.
 
+## Post-quantum hybrid mode (ML-KEM-1024, harvest-now-decrypt-later resistance)
+
+A future adversary with a large quantum computer can record ciphertext today and
+decrypt it later once RSA is broken ("harvest now, decrypt later"). To resist
+that for data at rest, an **optional hybrid mode** protects each envelope's data
+key with **both** the classical HSM KEK wrap **and** an **ML-KEM-1024** (FIPS
+203, `crypto/mlkem`) encapsulation, combined through a KDF so an attacker must
+defeat **both** primitives:
+
+```
+ssC              = a fresh 256-bit classical shared secret
+WrappedDEK (env) = RSA-OAEP(KEK_pub, ssC)            # HSM unwraps ssC
+(ssPQ, kem_ct)   = ML-KEM-1024.Encapsulate()          # kem_ct stored in the PQC block
+wk               = HKDF-SHA256(ssC ‖ ssPQ, info)      # 256-bit wrapping key
+PQC.wrapped_dek  = AES-256-GCM(wk, DEK)               # the real DEK, sealed under wk
+```
+
+Recovering the DEK needs `ssC` (only the HSM can unwrap it) **and** `ssPQ` (only
+the ML-KEM decapsulation key produces it). Breaking RSA alone yields `ssC` but
+not `ssPQ`; breaking ML-KEM alone yields `ssPQ` but not `ssC`. A quantum
+adversary who harvests an envelope and later breaks its RSA still faces
+ML-KEM-1024 to obtain `ssPQ`.
+
+- **HSM stays in the trust path.** The ML-KEM decapsulation key is stored only as
+  a 64-byte seed **sealed under the classical HSM KEK** (RSA-OAEP), so
+  decapsulating any envelope requires an on-token unwrap. The sealed key lives
+  once in the key store, never copied into each ciphertext, so it is not part of
+  a harvested envelope.
+- **Threat-model boundary (honest).** Because that sealed decapsulation key is
+  itself protected only by the classical KEK, the harvest-now-decrypt-later
+  guarantee holds for a harvest of the **ciphertext (envelopes)**. An adversary
+  who *also* exfiltrates the single sealed decapsulation-key blob from the key
+  store and later breaks RSA degrades back to classical security. This is the
+  necessary consequence of keeping a classical HSM in the trust path (no shipping
+  HSM performs ML-KEM); the win is real for the common case where ciphertext is
+  stored/distributed far more widely than the central key store. Restrict and
+  separately protect the `pqc_hybrid_keys` material for the strongest posture.
+- **Software ML-KEM, HSM RSA.** SoftHSM/PKCS#11 tokens have no ML-KEM mechanism,
+  so (following the Task 29 ML-DSA precedent) the ML-KEM operations run in
+  software while the classical KEK may still live in the HSM.
+- **Versioned & backward compatible.** Hybrid envelopes are format **version 3**
+  and carry a `pqc` block; classical **version 1/2** envelopes open unchanged.
+  Disabling the flag never strands hybrid ciphertext — the material stays
+  available for decryption.
+- **Downgrade-resistant.** The `pqc` block is bound into the GCM AAD and the DEK
+  is committed, so the post-quantum layer cannot be stripped, tampered with, or
+  swapped to force a weaker classical-only decryption.
+- **FIPS.** ML-KEM-1024 is a FIPS 203 algorithm inside the Go Cryptographic
+  Module, so hybrid mode is FIPS-approvable (unlike CIRCL ML-DSA). Under
+  `security.fips` the only added constraint is that the classical RSA-OAEP wrap
+  use SHA-256 (no SoftHSM SHA-1 fallback).
+
+Enable it with `secret.pqc_hybrid: true` and provision ML-KEM material per KEK
+family (`init-kek` does this automatically when the flag is on; use `pqc-enable`
+for an existing family). Rotating the classical KEK re-wraps only the classical
+shared secret; run `pqc-reseal` to move the sealed ML-KEM key onto a newer KEK
+version before retiring the version that seals it.
+
+```console
+# Enable on a fresh KEK (init-kek provisions the ML-KEM material too):
+$ secsy-secret init-kek                       # with secret.pqc_hybrid: true
+
+# Or enable on an existing KEK family:
+$ secsy-secret pqc-enable
+
+# Inspect the material (metadata only; works with the HSM absent):
+$ secsy-secret pqc-info
+
+# After a classical rotate-kek, re-seal the ML-KEM decap key under the new version:
+$ secsy-secret pqc-reseal
+```
+
+> Scope: the hybrid layer covers the **secret envelope** (encrypt/decrypt, stored
+> secrets, KEK rotation/rewrap, and PKCS#12 escrow envelopes). Scheduled encrypted
+> backups (Task 89/94) keep using the classical KEK wrap and are unaffected.
+
 ## Configuration
 
 ```yaml
 secret:
   kek_label: "secsy-kek"   # RSA KEK in the configured key_provider
+  pqc_hybrid: false        # true → also protect data keys with ML-KEM-1024 (Task 137)
 ```
 
-`SECSY_SECRET_KEK_LABEL` overrides it via the environment. When empty, the
+`SECSY_SECRET_KEK_LABEL` overrides the KEK label and `SECSY_SECRET_PQC_HYBRID=1`
+the hybrid flag via the environment. When `kek_label` is empty, the
 `/api/secret/*` endpoints are disabled.
 
 ## CLI — `secsy-secret`

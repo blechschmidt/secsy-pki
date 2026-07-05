@@ -89,6 +89,14 @@ type Ring struct {
 	entries  map[string]models.KEKVersion // by label, every recorded version
 	ordered  []models.KEKVersion          // ascending by version
 
+	// pqc is the family's ML-KEM-1024 hybrid key material (Task 137), attached by
+	// LoadRingWithPQC when the family has been provisioned for post-quantum
+	// hybrid mode. When present the ring can OPEN hybrid envelopes; sealPQC
+	// additionally controls whether new envelopes are sealed hybrid (the
+	// secret.pqc_hybrid config gate). Both are nil/false for a classical family.
+	pqc     *PQCHybridKEK
+	sealPQC bool
+
 	mu       sync.Mutex
 	services map[string]*Service // lazily built decrypt-only handles, by label
 }
@@ -149,6 +157,102 @@ func LoadRing(ctx context.Context, provider keyprovider.Provider, family string,
 	}, nil
 }
 
+// LoadRingWithPQC is LoadRing with the family's post-quantum ML-KEM material
+// attached (Task 137). pqcRec is the family's stored PQC key record (nil for a
+// classical family); sealHybrid is the secret.pqc_hybrid config gate. When the
+// gate is on, pqcRec must be present (the deployment asked for hybrid sealing
+// but the material has not been provisioned — fail closed). When pqcRec is
+// present, the ring can always OPEN hybrid envelopes regardless of the gate, so
+// turning the gate off never strands existing ciphertext.
+func LoadRingWithPQC(ctx context.Context, provider keyprovider.Provider, family string, versions []models.KEKVersion, pqcRec *models.PQCHybridKey, sealHybrid bool) (*Ring, error) {
+	ring, err := LoadRing(ctx, provider, family, versions)
+	if err != nil {
+		return nil, err
+	}
+	if err := ring.attachPQC(ctx, pqcRec, sealHybrid); err != nil {
+		return nil, err
+	}
+	return ring, nil
+}
+
+// attachPQC binds the family's ML-KEM material to the ring, resolving the
+// classical KEK version that sealed the decapsulation key so it can be unwrapped
+// on the HSM at open time.
+func (r *Ring) attachPQC(ctx context.Context, pqcRec *models.PQCHybridKey, sealHybrid bool) error {
+	if pqcRec == nil {
+		if sealHybrid {
+			return fmt.Errorf("secret: secret.pqc_hybrid is enabled but KEK family %q has no ML-KEM key material; provision it with `secsy-secret pqc-enable`", r.family)
+		}
+		return nil
+	}
+	if pqcRec.Family != r.family {
+		return fmt.Errorf("secret: PQC key record belongs to family %q, not %q", pqcRec.Family, r.family)
+	}
+	sealSvc, err := r.serviceForVersion(ctx, pqcRec.SealedUnderVersion)
+	if err != nil {
+		return fmt.Errorf("secret: cannot access the KEK version that sealed the ML-KEM key for family %q (re-seal it under the active version with `secsy-secret pqc-reseal`): %w", r.family, err)
+	}
+	pqc, err := newPQCHybridKEK(pqcRec, sealSvc.wrapper)
+	if err != nil {
+		return err
+	}
+	r.pqc = pqc
+	r.sealPQC = sealHybrid
+	return nil
+}
+
+// serviceForVersion resolves the (decrypt-capable) Service for a family version
+// number, honoring the same retirement policy as serviceFor.
+func (r *Ring) serviceForVersion(ctx context.Context, version int) (*Service, error) {
+	for _, v := range r.ordered {
+		if v.Version == version {
+			return r.serviceFor(ctx, v.Label)
+		}
+	}
+	return nil, fmt.Errorf("secret: family %q has no recorded KEK version %d", r.family, version)
+}
+
+// HybridEnabled reports whether the ring seals NEW envelopes in post-quantum
+// hybrid mode (material present AND the secret.pqc_hybrid gate on).
+func (r *Ring) HybridEnabled() bool { return r.sealPQC && r.pqc != nil }
+
+// PQCAvailable reports whether the ring has ML-KEM material attached (so it can
+// OPEN hybrid envelopes), independent of the sealing gate.
+func (r *Ring) PQCAvailable() bool { return r.pqc != nil }
+
+// PQCKeyID returns the family's ML-KEM key identifier, or "" if none is
+// attached.
+func (r *Ring) PQCKeyID() string {
+	if r.pqc == nil {
+		return ""
+	}
+	return r.pqc.keyID
+}
+
+// sealPQCMaterial returns the ML-KEM material to seal new envelopes with, or nil
+// when hybrid sealing is off (so Encrypt produces classical ciphertext).
+func (r *Ring) sealPQCMaterial() *PQCHybridKEK {
+	if r.sealPQC {
+		return r.pqc
+	}
+	return nil
+}
+
+// ReSealPQC re-encrypts the family's ML-KEM decapsulation key under the active
+// classical KEK version, returning the refreshed sealed seed for persistence.
+// Run it before retiring the KEK version that currently seals the decapsulation
+// key, so retirement never strands the ML-KEM material.
+func (r *Ring) ReSealPQC() (sealedDK []byte, sealAlg string, version int, err error) {
+	if r.pqc == nil {
+		return nil, "", 0, fmt.Errorf("secret: KEK family %q has no ML-KEM key material to re-seal", r.family)
+	}
+	sealed, alg, err := r.pqc.reseal(r.active)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	return sealed, alg, r.active.wrapper.version, nil
+}
+
 // Family returns the ring's KEK family name.
 func (r *Ring) Family() string { return r.family }
 
@@ -167,22 +271,31 @@ func (r *Ring) Versions() []models.KEKVersion {
 	return append([]models.KEKVersion(nil), r.ordered...)
 }
 
-// Encrypt seals under the active KEK version, exactly like the corresponding
-// Service method (as do EncryptWithEscrow and the *ToJSON variants).
+// Encrypt seals under the active KEK version — additionally in post-quantum
+// hybrid mode when the ring has ML-KEM material and the secret.pqc_hybrid gate
+// is on (as do EncryptWithEscrow and the *ToJSON variants).
 func (r *Ring) Encrypt(plaintext, context []byte) (*Envelope, error) {
-	return r.active.Encrypt(plaintext, context)
+	return seal(r.active.wrapper, plaintext, context, nil, r.sealPQCMaterial())
 }
 
 func (r *Ring) EncryptToJSON(plaintext, context []byte) ([]byte, error) {
-	return r.active.EncryptToJSON(plaintext, context)
+	env, err := r.Encrypt(plaintext, context)
+	if err != nil {
+		return nil, err
+	}
+	return env.Marshal()
 }
 
 func (r *Ring) EncryptWithEscrow(plaintext, context []byte, escrow *EscrowPolicy) (*Envelope, error) {
-	return r.active.EncryptWithEscrow(plaintext, context, escrow)
+	return seal(r.active.wrapper, plaintext, context, escrow, r.sealPQCMaterial())
 }
 
 func (r *Ring) EncryptWithEscrowToJSON(plaintext, context []byte, escrow *EscrowPolicy) ([]byte, error) {
-	return r.active.EncryptWithEscrowToJSON(plaintext, context, escrow)
+	env, err := r.EncryptWithEscrow(plaintext, context, escrow)
+	if err != nil {
+		return nil, err
+	}
+	return env.Marshal()
 }
 
 // serviceFor resolves the Service able to unwrap an envelope sealed under
@@ -222,7 +335,12 @@ func (r *Ring) Decrypt(ctx context.Context, env *Envelope, context []byte) ([]by
 	if err != nil {
 		return nil, err
 	}
-	return svc.Decrypt(env, context)
+	// Open with the per-version classical wrapper (for the DEK or the classical
+	// shared secret) plus the family ML-KEM material (for the post-quantum
+	// layer). The material is sealed under the active version, independent of
+	// which version wrapped this envelope's classical secret, so a hybrid
+	// envelope on a still-retiring version opens throughout the rotation window.
+	return open(svc.wrapper, env, context, r.pqc)
 }
 
 // DecryptJSON parses a serialized envelope and decrypts it via Decrypt.
@@ -262,21 +380,27 @@ func (r *Ring) Rewrap(ctx context.Context, env *Envelope) (bool, error) {
 		return false, err
 	}
 
-	dek, err := src.wrapper.Unwrap(env.WrappedDEK, env.WrapAlg)
+	// The classical KEK wraps the DEK directly (classical envelope) or the
+	// classical shared secret (hybrid envelope); re-wrapping migrates that value
+	// onto the active KEK regardless, and the post-quantum block — which the DEK
+	// is actually derived from — is carried through untouched. The commitment
+	// checked is therefore classicalCommit (DEKCommit for classical, the PQC
+	// block's classical-secret commitment for hybrid).
+	classicalSecret, err := src.wrapper.Unwrap(env.WrappedDEK, env.WrapAlg)
 	if err != nil {
 		// Deliberately generic, like open(): unwrap failures must not leak
 		// padding details.
 		return false, fmt.Errorf("secret: unwrapping data key failed")
 	}
-	defer zero(dek)
-	if len(dek) != dekSize {
+	defer zero(classicalSecret)
+	if len(classicalSecret) != dekSize {
 		return false, fmt.Errorf("secret: unwrapped data key has wrong length")
 	}
-	if len(env.DEKCommit) > 0 && !subtleEqual(dekCommitment(dek), env.DEKCommit) {
+	if cc := env.classicalCommit(); len(cc) > 0 && !subtleEqual(dekCommitment(classicalSecret), cc) {
 		return false, fmt.Errorf("secret: unwrapped data key failed its commitment check")
 	}
 
-	wrapped, wrapAlg, err := r.active.wrapper.Wrap(dek)
+	wrapped, wrapAlg, err := r.active.wrapper.Wrap(classicalSecret)
 	if err != nil {
 		return false, fmt.Errorf("secret: re-wrapping data key: %w", err)
 	}
@@ -287,10 +411,12 @@ func (r *Ring) Rewrap(ctx context.Context, env *Envelope) (bool, error) {
 	if env.Version == FormatVersion1 {
 		// Freeze the original AAD inputs before the header is rewritten; the
 		// unchanged GCM tag keeps verifying against them. These fields never
-		// change again, even across further re-wraps.
+		// change again, even across further re-wraps. This upgrade only applies to
+		// classical v1 envelopes (a hybrid envelope is v3 and never reaches here),
+		// so classicalSecret is the DEK.
 		env.Origin = &OriginBinding{KEKLabel: env.KEKLabel, WrapAlg: env.WrapAlg}
 		env.Version = FormatVersion2
-		env.DEKCommit = dekCommitment(dek)
+		env.DEKCommit = dekCommitment(classicalSecret)
 	}
 	env.Provider = r.active.wrapper.ProviderName()
 	env.KEKLabel = r.active.wrapper.label

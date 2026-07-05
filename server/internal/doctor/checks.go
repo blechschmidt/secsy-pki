@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -1325,6 +1326,104 @@ func checkKeyChecks(r *Report, cfg *config.Config, db dbHandle, schemaOK bool) {
 		}
 		return StatusWarn, fmt.Sprintf("%d profile(s) have weakened the key-quality gate: %s — weak/compromised subject keys will not be blocked there",
 			len(weakened), strings.Join(weakened, ", "))
+	})
+}
+
+// checkPQCHybrid verifies the post-quantum hybrid KEK wrapping (Task 137): when
+// secret.pqc_hybrid is enabled every configured KEK family must have ML-KEM
+// material provisioned (else secret operations fail closed), and any provisioned
+// material must actually work — its decapsulation key unseals on the HSM and a
+// hybrid probe round-trips. The probe is pure crypto (no persistence), so the
+// check stays read-only.
+func checkPQCHybrid(ctx context.Context, r *Report, cfg *config.Config, db dbHandle, schemaOK bool, providers *roleProviders) {
+	r.run("pqc.hybrid", func() (Status, string) {
+		families := map[string]string{}
+		if cfg.Secret.KEKLabel != "" {
+			families[cfg.Secret.KEKLabel] = "secret.kek_label"
+		}
+		for _, t := range cfg.Tenants {
+			if t.KEKLabel != "" {
+				families[t.KEKLabel] = fmt.Sprintf("tenants[%s].kek_label", t.ID)
+			}
+		}
+		gate := cfg.Secret.PQCHybrid
+		if db == nil || !schemaOK {
+			if gate {
+				return StatusWarn, "secret.pqc_hybrid is enabled but the database is unavailable to verify ML-KEM material"
+			}
+			return StatusSkip, "database unavailable"
+		}
+		if len(families) == 0 {
+			if gate {
+				return StatusFail, "secret.pqc_hybrid is enabled but no KEK family is configured (set secret.kek_label)"
+			}
+			return StatusSkip, "secret layer not configured (no kek_label)"
+		}
+
+		prov := providers.get("ca")
+		overall := StatusPass
+		var notes []string
+		anyMaterial := false
+		for _, fam := range sortedKeys(families) {
+			rec, err := db.GetPQCHybridKey(fam)
+			if err != nil {
+				overall = worse(overall, StatusFail)
+				notes = append(notes, fmt.Sprintf("%s (%s): reading ML-KEM material: %v", fam, families[fam], err))
+				continue
+			}
+			if rec == nil {
+				if gate {
+					overall = worse(overall, StatusFail)
+					notes = append(notes, fmt.Sprintf("%s (%s): secret.pqc_hybrid on but NO ML-KEM material — encryption fails closed (run `secsy-secret pqc-enable`)", fam, families[fam]))
+				} else {
+					notes = append(notes, fmt.Sprintf("%s: classical only (no ML-KEM material)", fam))
+				}
+				continue
+			}
+			anyMaterial = true
+			if prov == nil {
+				overall = worse(overall, StatusWarn)
+				notes = append(notes, fmt.Sprintf("%s: ML-KEM %s present but key provider unavailable, not probed", fam, rec.KeyID))
+				continue
+			}
+			// Functional probe: force a hybrid seal/open (independent of the gate) to
+			// prove the decapsulation key unseals on the HSM and the combiner works.
+			versions, err := db.ListKEKVersions(fam)
+			if err != nil {
+				overall = worse(overall, StatusFail)
+				notes = append(notes, fmt.Sprintf("%s: reading KEK lineage: %v", fam, err))
+				continue
+			}
+			ring, err := secret.LoadRingWithPQC(ctx, prov, fam, versions, rec, true)
+			if err != nil {
+				if errors.Is(err, keyprovider.ErrKeyNotFound) {
+					overall = worse(overall, StatusWarn)
+					notes = append(notes, fmt.Sprintf("%s: KEK not on this provider, ML-KEM material not probed", fam))
+				} else {
+					overall = worse(overall, StatusFail)
+					notes = append(notes, fmt.Sprintf("%s: %v", fam, err))
+				}
+				continue
+			}
+			probe := []byte("doctor-pqc-probe")
+			blob, err := ring.EncryptToJSON(probe, nil)
+			if err != nil {
+				overall = worse(overall, StatusFail)
+				notes = append(notes, fmt.Sprintf("%s: hybrid seal failed: %v", fam, err))
+				continue
+			}
+			got, err := ring.DecryptJSON(ctx, blob, nil)
+			if err != nil || !bytes.Equal(got, probe) {
+				overall = worse(overall, StatusFail)
+				notes = append(notes, fmt.Sprintf("%s: hybrid round-trip failed: %v", fam, err))
+				continue
+			}
+			notes = append(notes, fmt.Sprintf("%s: ML-KEM-1024 %s sealed under KEK v%d (%s), round-trip ok", fam, rec.KeyID, rec.SealedUnderVersion, rec.SealAlg))
+		}
+		if !gate && !anyMaterial {
+			return StatusSkip, "post-quantum hybrid not enabled and no ML-KEM material provisioned"
+		}
+		return overall, strings.Join(notes, "; ")
 	})
 }
 

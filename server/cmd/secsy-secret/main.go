@@ -87,6 +87,9 @@ func run(args []string) error {
 		return cmdRollback(cfg, cmdArgs)
 	case "lifecycle":
 		return cmdLifecycle(cfg, cmdArgs)
+	case "pqc-info":
+		// Metadata-only read of the post-quantum hybrid key material.
+		return cmdPQCInfo(cfg, cmdArgs)
 	}
 
 	provider, err := buildProvider(cfg)
@@ -116,6 +119,10 @@ func run(args []string) error {
 		return cmdRetireKEK(cfg, provider, cmdArgs)
 	case "rewrap":
 		return cmdRewrap(cfg, provider, cmdArgs)
+	case "pqc-enable":
+		return cmdPQCEnable(cfg, provider, cmdArgs)
+	case "pqc-reseal":
+		return cmdPQCReseal(cfg, provider, cmdArgs)
 	case "escrow-config":
 		return cmdEscrowConfig(cfg, provider, cmdArgs)
 	case "escrow-init-agent":
@@ -163,6 +170,12 @@ Commands:
                      data ciphertext and escrow shares are untouched
   retire-kek         Withdraw a superseded KEK version (fails while secrets remain on it)
   kek-versions       Show the family's rotation lineage and per-version secret counts
+  pqc-enable         Provision ML-KEM-1024 post-quantum hybrid material for a KEK family
+                     (new envelopes also protect the data key with an ML-KEM encapsulation
+                     when secret.pqc_hybrid is enabled — harvest-now-decrypt-later resistance)
+  pqc-info           Show a family's post-quantum hybrid key material (metadata only)
+  pqc-reseal         Re-seal the ML-KEM decapsulation key under the active KEK version
+                     (run after a classical rotation, before retiring the old sealing version)
   list-secrets       List the stored-secret registry (metadata only)
   escrow-config      Show/verify the M-of-N key-escrow configuration
   escrow-init-agent  Generate an RSA recovery-agent key on the provider
@@ -205,6 +218,15 @@ func cmdInitKEK(cfg *config.Config, provider keyprovider.Provider, args []string
 	fmt.Printf("Key-encryption key created:\n")
 	printKEK(info)
 	fmt.Fprintf(os.Stderr, "\nAdd this to your config so the server and CLI can find it:\n  secret:\n    kek_label: %q\n", info.Label)
+
+	// When post-quantum hybrid mode is enabled, provision the family's ML-KEM
+	// material in the same step so the KEK is immediately usable for hybrid
+	// sealing (Task 137).
+	if cfg.Secret.PQCHybrid {
+		if err := provisionPQCForKEK(cfg, provider, svc, info.Label); err != nil {
+			return fmt.Errorf("KEK was created but provisioning post-quantum hybrid material failed (run `secsy-secret pqc-enable` once the issue is resolved): %w", err)
+		}
+	}
 	return nil
 }
 

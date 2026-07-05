@@ -292,6 +292,11 @@ func Run(ctx context.Context, opts Options) *Report {
 	// weakened the fail-closed gate.
 	checkKeyChecks(r, cfg, db, schemaOK)
 
+	// 7g. Post-quantum hybrid KEK wrapping (Task 137): when secret.pqc_hybrid is
+	// enabled every KEK family has ML-KEM material, and any provisioned material
+	// unseals and round-trips.
+	checkPQCHybrid(ctx, r, cfg, db, schemaOK, providers)
+
 	// 8. Clock-skew sanity against the database host and the audit head.
 	checkClockSkew(ctx, r, db, schemaOK, opts)
 

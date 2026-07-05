@@ -79,6 +79,16 @@ const (
 	// header rewritable for KEK rotation.
 	FormatVersion2 = 2
 
+	// FormatVersion3 marks an envelope whose data key is protected by the
+	// post-quantum HYBRID scheme (Task 137): the classical HSM KEK wrap AND an
+	// ML-KEM-1024 encapsulation, combined via a KDF so an attacker must break
+	// both primitives. A v3 envelope always carries a PQC block; it exists as a
+	// distinct version so a classical-only build refuses (rather than silently
+	// mis-parses) ciphertext it cannot open, and so the format self-documents
+	// which envelopes need the ML-KEM material. Everything else about a v3
+	// envelope matches v2 (DEK commitment binding, rewritable wrap header).
+	FormatVersion3 = 3
+
 	// AlgAES256GCM is the only supported data-encryption algorithm.
 	AlgAES256GCM = "AES-256-GCM"
 	// AlgRSAOAEPSHA256 is the preferred DEK-wrapping algorithm, used by
@@ -89,6 +99,11 @@ const (
 	// not rely on the collision resistance of its hash, so SHA-1 here does not
 	// expose the scheme to SHA-1 collision attacks; SHA-256 is still preferred.
 	AlgRSAOAEPSHA1 = "RSA-OAEP-SHA1"
+	// AlgMLKEM1024 is the ML-KEM-1024 (FIPS 203) key-encapsulation mechanism
+	// used by the post-quantum hybrid mode (see pqc.go). It names the KEM
+	// recorded in a PQCBlock; the classical wrap algorithm (WrapAlg) still names
+	// how the RSA KEK protects the classical shared secret.
+	AlgMLKEM1024 = "ML-KEM-1024"
 
 	dekSize   = 32 // AES-256
 	nonceSize = 12 // AES-GCM standard nonce
@@ -152,6 +167,48 @@ type Envelope struct {
 	// GCM AAD so it cannot be tampered with or substituted. It is optional;
 	// envelopes without escrow are unaffected.
 	Escrow *EscrowBlock `json:"escrow,omitempty"`
+	// PQC, present only on a FormatVersion3 (post-quantum hybrid) envelope,
+	// carries the ML-KEM-1024 layer (see pqc.go). When set, WrappedDEK protects a
+	// classical shared secret (not the DEK directly); the DEK is recovered only by
+	// combining that classical secret with the ML-KEM shared secret through a KDF.
+	// The block is bound into the GCM AAD so the post-quantum layer cannot be
+	// stripped or substituted. It is optional; classical envelopes leave it nil.
+	PQC *PQCBlock `json:"pqc,omitempty"`
+}
+
+// PQCBlock carries the post-quantum-hybrid layer of a FormatVersion3 envelope
+// (Task 137). It combines an ML-KEM-1024 encapsulation with the classical KEK
+// wrap so an attacker must break BOTH primitives to recover the data key —
+// giving data-at-rest resistance against a future quantum adversary who records
+// ciphertext today ("harvest now, decrypt later"). None of its fields are
+// secret on their own: the KEM ciphertext and the AES-GCM-wrapped data key are
+// useless without the ML-KEM decapsulation key (sealed under the HSM KEK) and
+// the classical shared secret (unwrapped by the HSM). []byte fields are
+// base64-encoded by encoding/json.
+type PQCBlock struct {
+	// Alg names the KEM. Only AlgMLKEM1024 is defined.
+	Alg string `json:"alg"`
+	// KeyID identifies which family ML-KEM keypair opens this envelope, so the
+	// right (possibly rotated) decapsulation key is selected.
+	KeyID string `json:"key_id"`
+	// KEMCiphertext is the ML-KEM-1024 encapsulation ciphertext (1568 bytes).
+	// Decapsulating it with the sealed decapsulation key yields the post-quantum
+	// shared secret.
+	KEMCiphertext []byte `json:"kem_ct"`
+	// WrapNonce is the AES-256-GCM nonce for WrappedDEK.
+	WrapNonce []byte `json:"wrap_nonce"`
+	// WrappedDEK is the data key sealed under the KDF-combined wrapping key
+	// (classical shared secret + ML-KEM shared secret). Recovering the DEK
+	// therefore requires BOTH the HSM-unwrapped classical secret and an ML-KEM
+	// decapsulation.
+	WrappedDEK []byte `json:"wrapped_dek"`
+	// ClassicalCommit is a SHA-256 key-commitment to the classical shared secret
+	// that the envelope's top-level WrappedDEK protects. It lets decrypt and the
+	// rewrap path verify a correct classical unwrap before the DEK is derived,
+	// and (like the v2 DEK commitment) makes a substituted classical KEK fail
+	// closed. It stands in for the top-level DEKCommit — which on a v3 envelope
+	// commits the DATA key, not the classical secret WrappedDEK holds.
+	ClassicalCommit []byte `json:"classical_commit"`
 }
 
 // OriginBinding carries the immutable AAD inputs of a v1 envelope that was
@@ -203,8 +260,11 @@ func dekCommitment(dek []byte) []byte {
 // context"); when non-empty it must be supplied identically to open. escrow is
 // an optional M-of-N key-escrow policy; when non-nil the DEK is additionally
 // split across recovery-agent-wrapped Shamir shares and the resulting escrow
-// block is bound into the AAD.
-func seal(w wrapper, plaintext, context []byte, escrow *EscrowPolicy) (*Envelope, error) {
+// block is bound into the AAD. pqc is an optional post-quantum hybrid KEK; when
+// non-nil the DEK is additionally protected by an ML-KEM-1024 encapsulation
+// combined with the classical wrap through a KDF (see pqc.go), producing a
+// FormatVersion3 envelope.
+func seal(w wrapper, plaintext, context []byte, escrow *EscrowPolicy, pqc *PQCHybridKEK) (*Envelope, error) {
 	dek := make([]byte, dekSize)
 	if _, err := io.ReadFull(rand.Reader, dek); err != nil {
 		return nil, fmt.Errorf("secret: generating data key: %w", err)
@@ -225,10 +285,33 @@ func seal(w wrapper, plaintext, context []byte, escrow *EscrowPolicy) (*Envelope
 		return nil, fmt.Errorf("secret: generating nonce: %w", err)
 	}
 
-	// Wrap the DEK first so the actual wrapping algorithm is known before it is
-	// bound into the AAD — the algorithm identifier is authenticated, so it must
-	// be finalized before the GCM seal.
-	wrapped, wrapAlg, err := w.Wrap(dek)
+	// In hybrid mode the classical KEK wraps a fresh classical shared secret
+	// (ssC), not the DEK itself; the DEK is recovered only by combining ssC with
+	// the ML-KEM shared secret. The PQC block is finalized before wrapping so its
+	// classical-secret commitment is available, and before the GCM seal so it can
+	// be bound into the authenticated data. In classical mode the DEK is wrapped
+	// directly, exactly as before.
+	version := FormatVersion2
+	classicalSecret := dek
+	var pqcBlock *PQCBlock
+	if pqc != nil {
+		ssC := make([]byte, dekSize)
+		if _, err := io.ReadFull(rand.Reader, ssC); err != nil {
+			return nil, fmt.Errorf("secret: generating classical secret: %w", err)
+		}
+		defer zero(ssC)
+		pqcBlock, err = pqc.sealDEK(ssC, dek)
+		if err != nil {
+			return nil, err
+		}
+		classicalSecret = ssC
+		version = FormatVersion3
+	}
+
+	// Wrap the classical secret first so the actual wrapping algorithm is known
+	// before it is bound into the AAD — the algorithm identifier is
+	// authenticated, so it must be finalized before the GCM seal.
+	wrapped, wrapAlg, err := w.Wrap(classicalSecret)
 	if err != nil {
 		return nil, fmt.Errorf("secret: wrapping data key: %w", err)
 	}
@@ -237,7 +320,7 @@ func seal(w wrapper, plaintext, context []byte, escrow *EscrowPolicy) (*Envelope
 	}
 
 	env := &Envelope{
-		Version:      FormatVersion2,
+		Version:      version,
 		Provider:     w.ProviderName(),
 		KEKLabel:     w.Label(),
 		KEKURI:       w.URI(),
@@ -246,6 +329,7 @@ func seal(w wrapper, plaintext, context []byte, escrow *EscrowPolicy) (*Envelope
 		DataAlg:      AlgAES256GCM,
 		WrappedDEK:   wrapped,
 		DEKCommit:    dekCommitment(dek),
+		PQC:          pqcBlock,
 		Nonce:        nonce,
 		ContextBound: len(context) > 0,
 	}
@@ -267,7 +351,9 @@ func seal(w wrapper, plaintext, context []byte, escrow *EscrowPolicy) (*Envelope
 }
 
 // open reverses seal. context must match what was supplied at encryption time.
-func open(w wrapper, env *Envelope, context []byte) ([]byte, error) {
+// pqc supplies the family's ML-KEM material; it is required to open a
+// FormatVersion3 (post-quantum hybrid) envelope and ignored for classical ones.
+func open(w wrapper, env *Envelope, context []byte, pqc *PQCHybridKEK) ([]byte, error) {
 	if err := env.validate(); err != nil {
 		return nil, err
 	}
@@ -278,7 +364,9 @@ func open(w wrapper, env *Envelope, context []byte) ([]byte, error) {
 		return nil, fmt.Errorf("secret: an encryption context was supplied but this ciphertext was not bound to one")
 	}
 
-	dek, err := w.Unwrap(env.WrappedDEK, env.WrapAlg)
+	// The classical KEK unwraps the DEK directly (classical) or the classical
+	// shared secret (hybrid) — the same HSM round-trip either way.
+	classicalSecret, err := w.Unwrap(env.WrappedDEK, env.WrapAlg)
 	if err != nil {
 		// A FIPS-policy rejection is decided from the envelope header before any
 		// decryption is attempted, so surfacing it leaks no padding details —
@@ -289,6 +377,33 @@ func open(w wrapper, env *Envelope, context []byte) ([]byte, error) {
 		}
 		// Deliberately generic: unwrap failures must not leak padding details.
 		return nil, fmt.Errorf("secret: unwrapping data key failed")
+	}
+	defer zero(classicalSecret)
+
+	if env.PQC == nil {
+		// Classical envelope: the unwrapped value is the DEK.
+		return openWithDEK(env, classicalSecret, context)
+	}
+
+	// Post-quantum hybrid envelope: the unwrapped value is the classical shared
+	// secret. Refuse to open it without the ML-KEM material — the post-quantum
+	// layer cannot be silently downgraded away.
+	if pqc == nil {
+		return nil, fmt.Errorf("secret: this ciphertext is post-quantum hybrid but no ML-KEM key material is available (the KEK family has no PQC key, or secret.pqc_hybrid material is missing)")
+	}
+	if pqc.keyID != env.PQC.KeyID {
+		return nil, fmt.Errorf("secret: this ciphertext was sealed with ML-KEM key %q but the configured key is %q", env.PQC.KeyID, pqc.keyID)
+	}
+	// Verify the classical layer before deriving the DEK: a wrong or substituted
+	// classical KEK fails closed here, as generically as a GCM failure.
+	if !subtleEqual(dekCommitment(classicalSecret), env.PQC.ClassicalCommit) {
+		return nil, fmt.Errorf("secret: decryption failed (wrong key/context or corrupted ciphertext)")
+	}
+	dek, err := pqc.recoverDEK(env.PQC, classicalSecret)
+	if err != nil {
+		// Generic, like the classical path: a broken KEM ciphertext, wrong
+		// decapsulation key, or tampered wrapped DEK are indistinguishable.
+		return nil, fmt.Errorf("secret: decryption failed (wrong key/context or corrupted ciphertext)")
 	}
 	defer zero(dek)
 	return openWithDEK(env, dek, context)
@@ -337,13 +452,16 @@ func openWithDEK(env *Envelope, dek, context []byte) ([]byte, error) {
 func (e *Envelope) validate() error {
 	switch e.Version {
 	case FormatVersion1:
-		// The legacy shape: none of the v2 fields may appear on a v1 envelope.
-		if e.KEKVersion != 0 || len(e.DEKCommit) != 0 || e.Origin != nil {
-			return fmt.Errorf("secret: version-1 envelope carries version-2 fields")
+		// The legacy shape: none of the v2/v3 fields may appear on a v1 envelope.
+		if e.KEKVersion != 0 || len(e.DEKCommit) != 0 || e.Origin != nil || e.PQC != nil {
+			return fmt.Errorf("secret: version-1 envelope carries later-version fields")
 		}
 	case FormatVersion2:
 		if e.KEKVersion < 1 {
 			return fmt.Errorf("secret: version-2 envelope is missing kek_version")
+		}
+		if e.PQC != nil {
+			return fmt.Errorf("secret: version-2 envelope carries a post-quantum block (that is version 3)")
 		}
 		if e.Origin == nil {
 			// Natively sealed v2: the commitment is mandatory (it is the
@@ -363,6 +481,25 @@ func (e *Envelope) validate() error {
 			if len(e.DEKCommit) != 0 && len(e.DEKCommit) != sha256.Size {
 				return fmt.Errorf("secret: upgraded envelope has a malformed dek_commit")
 			}
+		}
+	case FormatVersion3:
+		// Post-quantum hybrid: a v2-shaped envelope (DEK commitment binding,
+		// rewritable wrap header) with a mandatory, well-formed PQC block. It is
+		// never produced by a v1 upgrade, so Origin must be absent.
+		if e.KEKVersion < 1 {
+			return fmt.Errorf("secret: version-3 envelope is missing kek_version")
+		}
+		if e.Origin != nil {
+			return fmt.Errorf("secret: version-3 envelope cannot carry an origin block")
+		}
+		if len(e.DEKCommit) != sha256.Size {
+			return fmt.Errorf("secret: version-3 envelope has a missing or malformed dek_commit")
+		}
+		if e.PQC == nil {
+			return fmt.Errorf("secret: version-3 envelope is missing its post-quantum block")
+		}
+		if err := e.PQC.validate(); err != nil {
+			return err
 		}
 	default:
 		return fmt.Errorf("secret: unsupported envelope version %d (this build supports %d and %d)",
@@ -439,7 +576,72 @@ func (e *Envelope) aad(context []byte) []byte {
 	if e.Escrow != nil {
 		writeLP(e.Escrow.digest())
 	}
+	// Bind the post-quantum block (if any) so the ML-KEM layer cannot be stripped
+	// or substituted without invalidating the GCM tag. As with escrow, envelopes
+	// without a PQC block append nothing, so classical ciphertext is unaffected.
+	if e.PQC != nil {
+		writeLP(e.PQC.digest())
+	}
 	return buf.Bytes()
+}
+
+// classicalCommit returns the commitment to the value the top-level WrappedDEK
+// protects: the DATA key on a classical envelope (DEKCommit) or the classical
+// shared secret on a hybrid one (PQC.ClassicalCommit). The rewrap path and the
+// hybrid open path check the classically-unwrapped bytes against it.
+func (e *Envelope) classicalCommit() []byte {
+	if e.PQC != nil {
+		return e.PQC.ClassicalCommit
+	}
+	return e.DEKCommit
+}
+
+// validate checks a post-quantum block is well-formed before any cryptographic
+// work. It does not verify the ML-KEM material cryptographically — that happens
+// on decapsulation — only that the declared algorithm and field sizes are sane.
+func (p *PQCBlock) validate() error {
+	if p.Alg != AlgMLKEM1024 {
+		return fmt.Errorf("secret: unsupported post-quantum algorithm %q (want %s)", p.Alg, AlgMLKEM1024)
+	}
+	if p.KeyID == "" {
+		return fmt.Errorf("secret: post-quantum block is missing key_id")
+	}
+	if len(p.KEMCiphertext) != mlkem1024CiphertextSize {
+		return fmt.Errorf("secret: post-quantum block has a malformed KEM ciphertext (%d bytes, want %d)", len(p.KEMCiphertext), mlkem1024CiphertextSize)
+	}
+	if len(p.WrapNonce) != nonceSize {
+		return fmt.Errorf("secret: post-quantum block has a malformed wrap nonce")
+	}
+	// WrappedDEK is a 32-byte DEK sealed with AES-256-GCM (32 + 16-byte tag).
+	if len(p.WrappedDEK) != dekSize+16 {
+		return fmt.Errorf("secret: post-quantum block has a malformed wrapped data key")
+	}
+	if len(p.ClassicalCommit) != sha256.Size {
+		return fmt.Errorf("secret: post-quantum block has a malformed classical commitment")
+	}
+	return nil
+}
+
+// digest returns a deterministic SHA-256 over the PQC block's authenticated
+// fields, bound into the envelope AAD (see Envelope.aad) so the ML-KEM layer is
+// tamper-evident and cannot be stripped. The encoding is length-prefixed and
+// domain-separated, matching EscrowBlock.digest.
+func (p *PQCBlock) digest() []byte {
+	h := sha256.New()
+	h.Write([]byte("secsy-pqc-block-v1\x00"))
+	writeLP := func(b []byte) {
+		var n [4]byte
+		binary.BigEndian.PutUint32(n[:], uint32(len(b)))
+		h.Write(n[:])
+		h.Write(b)
+	}
+	writeLP([]byte(p.Alg))
+	writeLP([]byte(p.KeyID))
+	writeLP(p.KEMCiphertext)
+	writeLP(p.WrapNonce)
+	writeLP(p.WrappedDEK)
+	writeLP(p.ClassicalCommit)
+	return h.Sum(nil)
 }
 
 // Marshal serializes the envelope to indented JSON suitable for storage or

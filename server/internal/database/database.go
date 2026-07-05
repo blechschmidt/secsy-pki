@@ -766,6 +766,27 @@ func (db *DB) migrate() error {
 		)`, boolType, boolType),
 		`CREATE INDEX IF NOT EXISTS idx_stored_secret_versions_kek ON stored_secret_versions(kek_family, kek_label)`,
 
+		// Post-quantum hybrid ML-KEM key material (Task 137). At most one active
+		// record per KEK family. The encapsulation key is public; the
+		// decapsulation-key seed is stored only SEALED under the family's classical
+		// KEK (RSA-OAEP), so recovering it still requires the HSM. Both binary
+		// fields are base64-encoded TEXT for cross-database portability, matching
+		// the rest of the schema (no BYTEA/BLOB). No plaintext ML-KEM private key
+		// is ever persisted. sealed_under_version records which classical KEK
+		// rotation version currently seals the decapsulation key.
+		`CREATE TABLE IF NOT EXISTS pqc_hybrid_keys (
+			family TEXT PRIMARY KEY,
+			key_id TEXT NOT NULL,
+			alg TEXT NOT NULL,
+			encap_key TEXT NOT NULL,
+			sealed_decap_key TEXT NOT NULL,
+			seal_alg TEXT NOT NULL,
+			sealed_under_version INTEGER NOT NULL DEFAULT 1,
+			status TEXT NOT NULL DEFAULT 'active',
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL
+		)`,
+
 		// Four-eyes / maker-checker approval requests (Task 81). A high-risk
 		// operation is held here until enough DISTINCT approvers sign off. The row
 		// stores only the operation's identity (class, resource_key, fingerprint)

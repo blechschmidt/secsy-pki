@@ -41,8 +41,13 @@ type API struct {
 	hsmCfg               hsm.Config
 	suppressAuditWarning bool
 	secretKEKLabel       string
-	policy               Policy
-	monitorOpts          monitor.Options
+	// secretPQCHybrid is the secret.pqc_hybrid config gate (Task 137): when set,
+	// new envelopes are sealed in post-quantum hybrid mode for KEK families that
+	// have ML-KEM material provisioned. Existing/hybrid envelopes always open
+	// regardless; the gate only governs sealing.
+	secretPQCHybrid bool
+	policy          Policy
+	monitorOpts     monitor.Options
 	// Escrow configuration for the secret layer. escrowSpecs/escrowThreshold are
 	// installed from config; escrowPolicy is the lazily-built, cached policy (its
 	// construction self-tests the agent keys on the HSM, so it is deferred to the
@@ -247,6 +252,12 @@ func (a *API) EventPublisher() *eventstream.Publisher { return a.events }
 
 // SetPolicy installs the centrally-configured issuance policy.
 func (a *API) SetPolicy(p Policy) { a.policy = p }
+
+// SetPQCHybrid enables post-quantum hybrid sealing for the secret layer (Task
+// 137), mirroring secret.pqc_hybrid. It only affects sealing of NEW envelopes;
+// opening hybrid envelopes always uses whatever ML-KEM material the KEK family
+// has, independent of this flag.
+func (a *API) SetPQCHybrid(enabled bool) { a.secretPQCHybrid = enabled }
 
 // SetEscrow installs the M-of-N key-escrow configuration for the secret layer.
 // The recovery-agent policy is built lazily on first use (its construction

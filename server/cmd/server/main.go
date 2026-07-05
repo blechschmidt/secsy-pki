@@ -480,6 +480,10 @@ func main() {
 		RequireReason:       cfg.Policy.RequireReason,
 		MaxCertValidityDays: cfg.Policy.MaxCertValidityDays,
 	})
+	// Post-quantum hybrid KEK wrapping for the secret layer (Task 137): seal new
+	// envelopes with an additional ML-KEM-1024 encapsulation for KEK families
+	// that have ML-KEM material provisioned.
+	api.SetPQCHybrid(cfg.Secret.PQCHybrid)
 	// Four-eyes / maker-checker approval gate (Task 81): construct the engine over
 	// the shared store (which is both the Store and the audit Auditor) and install
 	// it so the guarded operations (CA creation/rotation/retirement, bulk

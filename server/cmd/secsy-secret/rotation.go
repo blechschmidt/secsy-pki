@@ -42,7 +42,27 @@ func ringFromDB(cfg *config.Config, provider keyprovider.Provider, family string
 	if err != nil {
 		return nil, fmt.Errorf("reading KEK rotation state: %w", err)
 	}
-	return secret.LoadRing(context.Background(), provider, family, versions)
+	// Attach the family's post-quantum ML-KEM material (Task 137) if provisioned,
+	// so the ring opens hybrid envelopes; the secret.pqc_hybrid gate decides
+	// whether NEW envelopes are sealed hybrid.
+	pqcRec, err := db.GetPQCHybridKey(family)
+	if err != nil {
+		return nil, fmt.Errorf("reading post-quantum hybrid key material: %w", err)
+	}
+	return secret.LoadRingWithPQC(context.Background(), provider, family, versions, pqcRec, cfg.Secret.PQCHybrid)
+}
+
+// ringForFamily builds a rotation-aware Ring for a family from an already-open
+// database handle, attaching the family's post-quantum ML-KEM material (Task
+// 137) so hybrid envelopes open and — with the secret.pqc_hybrid gate — new
+// ones seal hybrid. It is the shared path for every stored-secret command
+// (put/get/exec) so none of them silently drops the post-quantum layer.
+func ringForFamily(cfg *config.Config, db *database.DB, provider keyprovider.Provider, family string, versions []models.KEKVersion) (*secret.Ring, error) {
+	pqcRec, err := db.GetPQCHybridKey(family)
+	if err != nil {
+		return nil, fmt.Errorf("reading post-quantum hybrid key material: %w", err)
+	}
+	return secret.LoadRingWithPQC(context.Background(), provider, family, versions, pqcRec, cfg.Secret.PQCHybrid)
 }
 
 // serviceOrRing returns the envelope service for a command: an explicit -kek
@@ -162,6 +182,16 @@ func cmdRetireKEK(cfg *config.Config, _ keyprovider.Provider, args []string) err
 	}
 	defer func() { _ = db.Close() }()
 
+	// Post-quantum guard (Task 137): retiring the classical KEK version that
+	// currently seals the family's ML-KEM decapsulation key would strand ALL
+	// hybrid envelopes (their decapsulation key could no longer be unsealed).
+	// Refuse unless the key has been re-sealed onto a newer version, or -force.
+	if pqcRec, perr := db.GetPQCHybridKey(fam); perr != nil {
+		return fmt.Errorf("checking post-quantum key material: %w", perr)
+	} else if pqcRec != nil && pqcRec.SealedUnderVersion == *version && !*force {
+		return fmt.Errorf("KEK version %d of family %q currently seals the ML-KEM decapsulation key; re-seal it onto the active version first (`secsy-secret pqc-reseal`) or pass -force to strand hybrid ciphertext", *version, fam)
+	}
+
 	retired, err := secret.RetireKEK(db, fam, *version, *force)
 	if err != nil {
 		_ = recordEscrowEvent(db, actor, audit.ActionSecretKEKRetire, fam, audit.ResultError, err.Error())
@@ -261,7 +291,7 @@ func cmdRewrap(cfg *config.Config, provider keyprovider.Provider, args []string)
 	if err != nil {
 		return err
 	}
-	ring, err := secret.LoadRing(context.Background(), provider, fam, versions)
+	ring, err := ringForFamily(cfg, db, provider, fam, versions)
 	if err != nil {
 		return err
 	}

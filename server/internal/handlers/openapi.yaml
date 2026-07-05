@@ -5373,6 +5373,22 @@ components:
         escrow_agents:
           type: integer
           description: Number of configured recovery agents.
+        pqc_hybrid_available:
+          type: boolean
+          description: >-
+            Whether the KEK family has post-quantum ML-KEM-1024 material
+            provisioned, so it can OPEN hybrid envelopes (Task 137).
+        pqc_hybrid_enabled:
+          type: boolean
+          description: >-
+            Whether NEW envelopes are sealed in post-quantum hybrid mode
+            (material present AND secret.pqc_hybrid enabled). When true, "version"
+            is 3.
+        pqc_kem:
+          type: string
+          description: >-
+            The post-quantum KEM the family uses ("ML-KEM-1024"), or empty when
+            no ML-KEM material is provisioned.
 
     EncryptRequest:
       type: object

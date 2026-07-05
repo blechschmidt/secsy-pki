@@ -1810,6 +1810,44 @@ type SecretVersionRef struct {
 	Version  int    `json:"version"`
 }
 
+// PQCKeyStatusActive marks the family's live ML-KEM hybrid key material.
+const PQCKeyStatusActive = "active"
+
+// PQCHybridKey is the post-quantum (ML-KEM-1024 / FIPS 203) key material that
+// augments a KEK family's classical wrap with harvest-now-decrypt-later
+// resistance (Task 137). There is at most one active record per family. The
+// encapsulation key is public; the decapsulation key is stored only as a seed
+// SEALED under the family's classical HSM KEK, so recovering it — and therefore
+// decapsulating any envelope — still requires the HSM, keeping it in the trust
+// path. No plaintext ML-KEM private key is ever persisted.
+type PQCHybridKey struct {
+	// Family is the KEK family this material belongs to (the deployment-wide
+	// secret.kek_label or a tenant's kek_label).
+	Family string `json:"family" db:"family"`
+	// KeyID is a stable identifier derived from the encapsulation key; every
+	// hybrid envelope records it so the right decapsulation key is selected even
+	// across classical-KEK rotations.
+	KeyID string `json:"key_id" db:"key_id"`
+	// Alg names the KEM ("ML-KEM-1024").
+	Alg string `json:"alg" db:"alg"`
+	// EncapKey is the raw ML-KEM-1024 encapsulation (public) key (1568 bytes).
+	EncapKey []byte `json:"-" db:"encap_key"`
+	// SealedDecapKey is the 64-byte ML-KEM decapsulation-key seed encrypted under
+	// the classical KEK (RSA-OAEP). It is useless without the HSM-held KEK.
+	SealedDecapKey []byte `json:"-" db:"sealed_decap_key"`
+	// SealAlg is the classical wrap algorithm used to seal the decapsulation key
+	// (RSA-OAEP-SHA256 / RSA-OAEP-SHA1), read back to unseal it.
+	SealAlg string `json:"seal_alg" db:"seal_alg"`
+	// SealedUnderVersion is the classical KEK rotation version whose key sealed
+	// the decapsulation key. The seal survives classical rotations (the sealing
+	// version stays in the dual-KEK window); it must be re-sealed onto a newer
+	// version before the sealing version is retired.
+	SealedUnderVersion int       `json:"sealed_under_version" db:"sealed_under_version"`
+	Status             string    `json:"status" db:"status"`
+	CreatedAt          time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at" db:"updated_at"`
+}
+
 // KEKUsage summarizes how many stored secrets are wrapped under one KEK
 // version, joined against the version's rotation status for the KEK status
 // report and the secrets-on-old-KEK gauge.

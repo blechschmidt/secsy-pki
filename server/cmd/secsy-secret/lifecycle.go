@@ -127,7 +127,7 @@ func cmdPut(cfg *config.Config, provider keyprovider.Provider, args []string) er
 	if err != nil {
 		return err
 	}
-	ring, err := secret.LoadRing(context.Background(), provider, family, versions)
+	ring, err := ringForFamily(cfg, db, provider, family, versions)
 	if err != nil {
 		return err
 	}
@@ -285,7 +285,7 @@ func cmdGet(cfg *config.Config, provider keyprovider.Provider, args []string) er
 	if err != nil {
 		return err
 	}
-	ring, err := secret.LoadRing(context.Background(), provider, family, versions)
+	ring, err := ringForFamily(cfg, db, provider, family, versions)
 	if err != nil {
 		return err
 	}
@@ -520,7 +520,7 @@ func cmdExec(cfg *config.Config, provider keyprovider.Provider, args []string) e
 		if err != nil {
 			return nil, err
 		}
-		ring, err := secret.LoadRing(context.Background(), provider, family, versions)
+		ring, err := ringForFamily(cfg, db, provider, family, versions)
 		if err != nil {
 			return nil, err
 		}

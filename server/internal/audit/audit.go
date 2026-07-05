@@ -223,6 +223,13 @@ const (
 	ActionSecretKEKRotate = "secret.kek_rotate"
 	ActionSecretRewrap    = "secret.rewrap"
 	ActionSecretKEKRetire = "secret.kek_retire"
+	// Post-quantum hybrid ML-KEM key material lifecycle (Task 137).
+	// ActionSecretPQCEnable records provisioning a family's ML-KEM keypair (its
+	// decapsulation key sealed under the classical KEK). ActionSecretPQCReseal
+	// records re-sealing that decapsulation key under a newer classical KEK
+	// version (target: family; detail: key id and sealing version).
+	ActionSecretPQCEnable = "secret.pqc_enable"
+	ActionSecretPQCReseal = "secret.pqc_reseal"
 	// ActionSecretStore / ActionSecretStoreDelete record the lifecycle of
 	// server-held envelopes in the stored-secret registry (the encryption
 	// itself is additionally recorded as secret.encrypt).

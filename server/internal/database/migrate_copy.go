@@ -82,6 +82,11 @@ var migrationTables = []string{
 	"kek_versions",
 	"stored_secrets",
 	"stored_secret_versions",
+	// Post-quantum hybrid ML-KEM key material (Task 137). Keyed by KEK family;
+	// standalone (no foreign keys). Copied with the rest of the secret layer so a
+	// store migration preserves the sealed decapsulation key (existing hybrid
+	// envelopes stay openable after the migration).
+	"pqc_hybrid_keys",
 	// Four-eyes approval workflow (Task 81). pending_approvals references
 	// tenants, so it is copied after them; the per-approver decisions reference
 	// pending_approvals, so they come last.
