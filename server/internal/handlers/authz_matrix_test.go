@@ -335,6 +335,7 @@ func authzMatrix() []rc {
 		authed("GET", "/api/profiles", "/api/profiles", ""),
 		iss("POST", "/api/ca/{id}/issue", "/api/ca/ca-a/issue", `{"csr":"bogus"}`),
 		iss("POST", "/api/ca/{id}/pkcs12", "/api/ca/ca-a/pkcs12", `{}`),
+		iss("POST", "/api/ca/{id}/delegated-credential", "/api/ca/ca-a/delegated-credential", `{}`),
 		iss("POST", "/api/ca/{id}/renew", "/api/ca/ca-a/renew", `{}`),
 		iss("POST", "/api/ca/{id}/revoke", "/api/ca/ca-a/revoke", `{"serial":"01"}`),
 		caMg("POST", "/api/ca/{id}/revocations:bulk", "/api/ca/ca-a/revocations:bulk", `{}`),

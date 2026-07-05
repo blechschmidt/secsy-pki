@@ -262,6 +262,11 @@ func (m *Manager) issuePQCLeaf(ctx context.Context, spec IssueSpec, issuerCA *mo
 	// Stamp the RFC 7633 Must-Staple extension before linting, mirroring the
 	// classical buildLeaf path (post-quantum server profiles are serverAuth too).
 	base = applyMustStaple(base, profile.resolveMustStaple(spec.MustStaple))
+	// Stamp the RFC 9345 delegation-usage marker (and enforce the §4.2 mutual
+	// exclusion with Must-Staple, fail-closed) as on the classical path.
+	if base, err = applyDelegationUsage(base, profile, profile.resolveMustStaple(spec.MustStaple)); err != nil {
+		return nil, err
+	}
 	// Stamp the eIDAS QCStatements extension (ETSI EN 319 412-5, Task 128) before
 	// linting, mirroring the classical path.
 	if base, err = applyQCStatements(base, profile, spec.PSD2); err != nil {
@@ -335,6 +340,11 @@ func (m *Manager) issueHybridLeaf(ctx context.Context, spec IssueSpec, issuerCA 
 	// Stamp the RFC 7633 Must-Staple extension before linting, mirroring the
 	// classical buildLeaf path (hybrid server profiles are serverAuth too).
 	base = applyMustStaple(base, profile.resolveMustStaple(spec.MustStaple))
+	// Stamp the RFC 9345 delegation-usage marker (and enforce the §4.2 mutual
+	// exclusion with Must-Staple, fail-closed) as on the classical path.
+	if base, err = applyDelegationUsage(base, profile, profile.resolveMustStaple(spec.MustStaple)); err != nil {
+		return nil, err
+	}
 	// Stamp the eIDAS QCStatements extension (ETSI EN 319 412-5, Task 128) before
 	// linting, mirroring the classical path.
 	if base, err = applyQCStatements(base, profile, spec.PSD2); err != nil {

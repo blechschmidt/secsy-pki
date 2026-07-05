@@ -857,6 +857,74 @@ type PKCS12EscrowInfo struct {
 	Envelope json.RawMessage `json:"envelope"`
 }
 
+// MintDelegatedCredentialRequest asks a CA to mint an RFC 9345 TLS delegated
+// credential for a previously issued, delegation-eligible certificate.
+//
+// The credential is signed by the certificate's PRIVATE key, which this CA does
+// not retain for ordinary issuance. This endpoint therefore serves only leaves
+// whose key was generated server-side via a PKCS#12 export (Task 80) AND escrowed
+// under the M-of-N recovery policy (Task 33): the operator presents the escrow
+// envelope and a quorum of recovery-agent IDs, and the server recovers the leaf
+// key just long enough to sign the credential (it is zeroized immediately after).
+// For a leaf whose key the operator already holds, use the offline
+// `secsy-ca delegated-credential mint` helper instead.
+type MintDelegatedCredentialRequest struct {
+	// Serial is the decimal serial of the issued certificate under this CA. It
+	// must carry the RFC 9345 DelegationUsage extension (a delegation_usage
+	// profile) and the digitalSignature key usage.
+	Serial string `json:"serial"`
+	// EscrowEnvelope is the escrow envelope JSON returned when the certificate's
+	// PKCS#12 subject key was escrowed. RecoveryAgents is the quorum of recovery-
+	// agent identifiers that unseal it. The recovery context is derived from the
+	// serial, so it need not be supplied.
+	EscrowEnvelope json.RawMessage `json:"escrow_envelope"`
+	RecoveryAgents []string        `json:"recovery_agents"`
+	// ValidForSeconds is the credential lifetime from now. Zero defaults to one
+	// day. RFC 9345 caps the wire valid_time at seven days from the certificate
+	// notBefore, so mint from a freshly issued leaf.
+	ValidForSeconds int `json:"valid_for_seconds,omitempty"`
+	// Client mints a client delegated credential (default is a server credential).
+	Client bool `json:"client,omitempty"`
+	// DCPublicKey is the base64 DER SubjectPublicKeyInfo of the delegated key. When
+	// empty the server generates a keypair of DCKeyType and returns the delegated
+	// private key in the response.
+	DCPublicKey string `json:"dc_public_key,omitempty"`
+	// DCKeyType selects the generated delegated key type when DCPublicKey is empty:
+	// ecdsa-p256 (default), ecdsa-p384, ecdsa-p521, rsa-2048, rsa-3072, ed25519.
+	DCKeyType string `json:"dc_key_type,omitempty"`
+	// ExpectedCertVerifyAlgorithm overrides the delegated key's TLS scheme (IANA
+	// name); empty derives it from the delegated key.
+	ExpectedCertVerifyAlgorithm string `json:"expected_cert_verify_algorithm,omitempty"`
+	// SignatureScheme overrides the scheme used to sign the credential with the
+	// leaf key (IANA name); empty derives it from the leaf key (RSA uses PSS).
+	SignatureScheme string `json:"signature_scheme,omitempty"`
+}
+
+// MintDelegatedCredentialResponse returns the wire-format delegated credential and
+// its metadata. When the server generated the delegated keypair, the delegated
+// private key is included so it can be installed into the TLS terminator; it is
+// delivered only over the response (never persisted).
+type MintDelegatedCredentialResponse struct {
+	Serial string `json:"serial"`
+	// DelegatedCredential is the base64-encoded RFC 9345 wire credential.
+	DelegatedCredential string `json:"delegated_credential"`
+	// ValidTimeSeconds is the credential's valid_time (seconds from notBefore).
+	ValidTimeSeconds uint32 `json:"valid_time_seconds"`
+	// NotAfter is the credential's absolute expiry (RFC 3339).
+	NotAfter string `json:"not_after"`
+	// Endpoint is "server" or "client".
+	Endpoint string `json:"endpoint"`
+	// Algorithm is the scheme used to sign the credential with the leaf key.
+	Algorithm string `json:"algorithm"`
+	// ExpectedCertVerifyAlgorithm is the delegated key's handshake scheme.
+	ExpectedCertVerifyAlgorithm string `json:"expected_cert_verify_algorithm"`
+	// DCPublicKeyPEM is the delegated public key (SubjectPublicKeyInfo PEM).
+	DCPublicKeyPEM string `json:"dc_public_key_pem"`
+	// DCPrivateKeyPEM is the generated delegated private key (PKCS#8 PEM), present
+	// only when the server generated the keypair.
+	DCPrivateKeyPEM string `json:"dc_private_key_pem,omitempty"`
+}
+
 // IssueSVIDRequest asks a CA to mint a SPIFFE X.509-SVID. The workload supplies
 // a CSR for its freshly generated key; only the public key is used. The identity
 // is the SPIFFE ID, given either as a full spiffe:// URI (SpiffeID) or as a

@@ -94,6 +94,18 @@ type Profile struct {
 	// ignored — the "where policy permits" gate on the override.
 	AllowMustStapleOverride bool `json:"allow_must_staple_override,omitempty"`
 
+	// DelegationUsage stamps the RFC 9345 id-ce-delegationUsage extension
+	// (OID 1.3.6.1.4.1.44363.44; a non-critical NULL) on every leaf issued under
+	// this profile, marking it eligible to authorize TLS Delegated Credentials: the
+	// certified key may sign short-lived DelegatedCredential structures that
+	// authenticate TLS 1.3 handshakes on its behalf (see internal/delegatedcred).
+	// It is opt-in and pairs with a serverAuth profile. RFC 9345 §4.2 requires the
+	// digitalSignature key usage and forbids combining the marker with the RFC 7633
+	// OCSP Must-Staple commitment; SetCustomProfiles enforces both statically and
+	// the issuance path enforces the mutual exclusion fail-closed (see
+	// applyDelegationUsage).
+	DelegationUsage bool `json:"delegation_usage,omitempty"`
+
 	// Algorithm selects the signature scheme family for certificates issued under
 	// this profile: classical (default), pure post-quantum ML-DSA, or hybrid
 	// (classical primary + ML-DSA alternative signature). See the pqc package.
@@ -200,6 +212,22 @@ var builtinProfiles = map[string]Profile{
 		MaxValidity:             397 * day,
 		MustStaple:              true,
 		AllowMustStapleOverride: true,
+	},
+	// server-delegation is server marked eligible to authorize RFC 9345 TLS
+	// Delegated Credentials: every leaf carries the non-critical
+	// id-ce-delegationUsage extension, so its key may sign short-lived delegated
+	// credentials for a front end without that front end holding the certificate
+	// key (see internal/delegatedcred and `secsy-ca delegated-credential`).
+	// digitalSignature is present as RFC 9345 §4.2 requires; the profile
+	// deliberately cannot also be OCSP Must-Staple (§4.2 forbids the combination).
+	"server-delegation": {
+		Name:            "server-delegation",
+		Description:     "TLS server certificate eligible to authorize RFC 9345 delegated credentials (DelegationUsage)",
+		KeyUsages:       []string{"digitalSignature", "keyEncipherment"},
+		ExtKeyUsages:    []string{"serverAuth"},
+		DefaultValidity: 397 * day,
+		MaxValidity:     397 * day,
+		DelegationUsage: true,
 	},
 	"code-signing": {
 		Name:            "code-signing",
@@ -463,6 +491,21 @@ func SetCustomProfiles(profiles []Profile) error {
 		if p.PrivateKeyUsagePeriod != nil {
 			if err := p.PrivateKeyUsagePeriod.validate(p.Name); err != nil {
 				return err
+			}
+		}
+		// RFC 9345 delegated-credential eligibility. §4.2 forbids combining the
+		// DelegationUsage marker with the RFC 7633 OCSP Must-Staple TLS Feature, so
+		// reject a profile that could ever produce both — including one that merely
+		// permits a per-request Must-Staple override — making the combination
+		// statically impossible. §4.2 also requires the authorizing certificate to
+		// carry the digitalSignature key usage.
+		if p.DelegationUsage {
+			if p.MustStaple || p.AllowMustStapleOverride {
+				return fmt.Errorf("custom profile %q: delegation_usage cannot be combined with must_staple or allow_must_staple_override (RFC 9345 §4.2 forbids OCSP Must-Staple on a delegated-credential-eligible certificate)", p.Name)
+			}
+			ku, _ := p.keyUsage() // already validated above
+			if ku&x509.KeyUsageDigitalSignature == 0 {
+				return fmt.Errorf("custom profile %q: delegation_usage requires the digitalSignature key usage (RFC 9345 §4.2)", p.Name)
 			}
 		}
 		// Under the FIPS policy a PQC/hybrid profile is refused at install time so

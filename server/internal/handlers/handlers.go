@@ -453,6 +453,10 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	// Delivers a subject key + leaf + full chain in a password-protected bundle
 	// for S/MIME and device enrollment; the CA key never leaves the HSM.
 	mux.Handle("POST /api/ca/{id}/pkcs12", protected(http.HandlerFunc(a.ExportCertificatePKCS12)))
+	// Mints an RFC 9345 TLS delegated credential for a delegation-eligible leaf,
+	// recovering the leaf key from its PKCS#12 escrow (Task 33). Issue-capability
+	// gated, like the PKCS#12 export it depends on.
+	mux.Handle("POST /api/ca/{id}/delegated-credential", protected(http.HandlerFunc(a.MintDelegatedCredential)))
 	mux.Handle("POST /api/ca/{id}/renew", protected(http.HandlerFunc(a.RenewCertificate)))
 	mux.Handle("POST /api/ca/{id}/revoke", protectStepUp("cert.revoke", http.HandlerFunc(a.RevokeCertificate)))
 	// Bulk revocation for compromise scenarios (Task 70). More privileged than

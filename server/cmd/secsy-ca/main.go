@@ -75,6 +75,15 @@ func run(args []string) error {
 		return cmdDoctor(*cfgPath, cmdArgs)
 	}
 
+	// RFC 9345 delegated-credential minting/verification is pure crypto over
+	// operator-supplied files: the leaf certificate and (for minting) its private
+	// key. The CA never holds subscriber leaf keys, so this helper needs neither
+	// the config, the database, nor the key provider — dispatch it before any of
+	// them are opened, like version.
+	if command == "delegated-credential" {
+		return cmdDelegatedCredential(cmdArgs)
+	}
+
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -434,6 +443,10 @@ Commands:
   publish-chain       Emit the combined overlap chain (AIA/bundle) for a CA
   cross-sign          Cross-sign a subject key under an issuer CA (bridge/root-transition)
   list-cross-signs    List a CA's cross-sign relationships or alternate chains
+  delegated-credential
+                      Mint/verify an RFC 9345 TLS delegated credential with an
+                      end-entity certificate's key (operator holds the leaf key;
+                      issue the leaf under a delegation_usage profile)
   tsa-key             Provision an RFC 3161 TSA signing key + certificate
   signing-key         Provision an artifact code-signing key + certificate (code-signing profile)
   sign                Sign a release artifact (file or digest) as CMS/PKCS#7, optionally RFC 3161 timestamped

@@ -1395,6 +1395,34 @@ type DecryptResponse struct {
 	Plaintext *string `json:"plaintext,omitempty"`
 }
 
+// DelegatedCredentialResult The wire-format delegated credential and its metadata. The delegated private key is present only when the server generated the keypair.
+type DelegatedCredentialResult struct {
+	// Algorithm scheme used to sign the credential with the leaf key
+	Algorithm *string `json:"algorithm,omitempty"`
+
+	// DcPrivateKeyPem generated delegated private key (PKCS#8 PEM); present only when generated server-side
+	DcPrivateKeyPem *string `json:"dc_private_key_pem,omitempty"`
+
+	// DcPublicKeyPem delegated public key (SubjectPublicKeyInfo PEM)
+	DcPublicKeyPem *string `json:"dc_public_key_pem,omitempty"`
+
+	// DelegatedCredential base64-encoded RFC 9345 wire delegated credential
+	DelegatedCredential *string `json:"delegated_credential,omitempty"`
+
+	// Endpoint "server" or "client"
+	Endpoint *string `json:"endpoint,omitempty"`
+
+	// ExpectedCertVerifyAlgorithm delegated key's handshake scheme
+	ExpectedCertVerifyAlgorithm *string `json:"expected_cert_verify_algorithm,omitempty"`
+
+	// NotAfter absolute expiry (RFC 3339)
+	NotAfter *string `json:"not_after,omitempty"`
+	Serial   *string `json:"serial,omitempty"`
+
+	// ValidTimeSeconds valid_time in seconds
+	ValidTimeSeconds *int `json:"valid_time_seconds,omitempty"`
+}
+
 // DiscoveredCertificate A certificate observed on an external TLS endpoint by the discovery scanner.
 type DiscoveredCertificate struct {
 	// Certificate PEM-encoded leaf
@@ -1900,6 +1928,36 @@ type LivenessBuildFips140 string
 
 // LivenessBuildFips140Policy defines model for Liveness.Build.Fips140Policy.
 type LivenessBuildFips140Policy string
+
+// MintDelegatedCredentialRequest Request to mint an RFC 9345 delegated credential for an issued, delegation-eligible certificate. The leaf key is recovered from its PKCS#12 escrow (M-of-N), so the escrow envelope and a recovery-agent quorum are required.
+type MintDelegatedCredentialRequest struct {
+	// Client mint a client delegated credential (default is server)
+	Client *bool `json:"client,omitempty"`
+
+	// DcKeyType generated delegated key type when dc_public_key is empty (default: ecdsa-p256)
+	DcKeyType *string `json:"dc_key_type,omitempty"`
+
+	// DcPublicKey base64 DER SubjectPublicKeyInfo of the delegated key; empty generates a keypair
+	DcPublicKey *string `json:"dc_public_key,omitempty"`
+
+	// EscrowEnvelope escrow envelope JSON returned when the subject key was escrowed
+	EscrowEnvelope interface{} `json:"escrow_envelope"`
+
+	// ExpectedCertVerifyAlgorithm delegated key TLS scheme name; empty derives it from the key
+	ExpectedCertVerifyAlgorithm *string `json:"expected_cert_verify_algorithm,omitempty"`
+
+	// RecoveryAgents quorum of escrow recovery-agent IDs
+	RecoveryAgents []string `json:"recovery_agents"`
+
+	// Serial decimal serial of the issued certificate under this CA
+	Serial string `json:"serial"`
+
+	// SignatureScheme scheme to sign the credential with the leaf key; empty derives it (RSA uses PSS)
+	SignatureScheme *string `json:"signature_scheme,omitempty"`
+
+	// ValidForSeconds credential lifetime from now (default 86400; wire valid_time capped at 7 days from the cert notBefore)
+	ValidForSeconds *int `json:"valid_for_seconds,omitempty"`
+}
 
 // NameConstraintsConfig RFC 5280 Name Constraints (2.5.29.30) applied to a CA certificate, bounding the identities certificates below it may assert. Enforced as a fail-closed pre-issuance gate and by conforming path validators.
 type NameConstraintsConfig struct {
@@ -3171,6 +3229,9 @@ type PreviewCertificateJSONRequestBody = PreviewCertRequest
 // CreateCrossSignJSONRequestBody defines body for CreateCrossSign for application/json ContentType.
 type CreateCrossSignJSONRequestBody = CACrossSignRequest
 
+// MintDelegatedCredentialJSONRequestBody defines body for MintDelegatedCredential for application/json ContentType.
+type MintDelegatedCredentialJSONRequestBody = MintDelegatedCredentialRequest
+
 // ImportExternalCACertJSONRequestBody defines body for ImportExternalCACert for application/json ContentType.
 type ImportExternalCACertJSONRequestBody = CAImportCertRequest
 
@@ -3461,6 +3522,11 @@ type ClientInterface interface {
 
 	// GetExternalCACSR request
 	GetExternalCACSR(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// MintDelegatedCredentialWithBody request with any body
+	MintDelegatedCredentialWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	MintDelegatedCredential(ctx context.Context, id CAId, body MintDelegatedCredentialJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GenerateTLSARecords request
 	GenerateTLSARecords(ctx context.Context, id CAId, params *GenerateTLSARecordsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4254,6 +4320,30 @@ func (c *Client) GetCrossSignChain(ctx context.Context, id CAId, csid string, re
 
 func (c *Client) GetExternalCACSR(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetExternalCACSRRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) MintDelegatedCredentialWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewMintDelegatedCredentialRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) MintDelegatedCredential(ctx context.Context, id CAId, body MintDelegatedCredentialJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewMintDelegatedCredentialRequest(c.Server, id, body)
 	if err != nil {
 		return nil, err
 	}
@@ -7410,6 +7500,53 @@ func NewGetExternalCACSRRequest(server string, id CAId) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewMintDelegatedCredentialRequest calls the generic MintDelegatedCredential builder with application/json body
+func NewMintDelegatedCredentialRequest(server string, id CAId, body MintDelegatedCredentialJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewMintDelegatedCredentialRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewMintDelegatedCredentialRequestWithBody generates requests for MintDelegatedCredential with any type of body
+func NewMintDelegatedCredentialRequestWithBody(server string, id CAId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/delegated-credential", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -11685,6 +11822,11 @@ type ClientWithResponsesInterface interface {
 	// GetExternalCACSRWithResponse request
 	GetExternalCACSRWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetExternalCACSRResponse, error)
 
+	// MintDelegatedCredentialWithBodyWithResponse request with any body
+	MintDelegatedCredentialWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*MintDelegatedCredentialResponse, error)
+
+	MintDelegatedCredentialWithResponse(ctx context.Context, id CAId, body MintDelegatedCredentialJSONRequestBody, reqEditors ...RequestEditorFn) (*MintDelegatedCredentialResponse, error)
+
 	// GenerateTLSARecordsWithResponse request
 	GenerateTLSARecordsWithResponse(ctx context.Context, id CAId, params *GenerateTLSARecordsParams, reqEditors ...RequestEditorFn) (*GenerateTLSARecordsResponse, error)
 
@@ -12708,6 +12850,31 @@ func (r GetExternalCACSRResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetExternalCACSRResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type MintDelegatedCredentialResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *DelegatedCredentialResult
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r MintDelegatedCredentialResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r MintDelegatedCredentialResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -15285,6 +15452,23 @@ func (c *ClientWithResponses) GetExternalCACSRWithResponse(ctx context.Context, 
 	return ParseGetExternalCACSRResponse(rsp)
 }
 
+// MintDelegatedCredentialWithBodyWithResponse request with arbitrary body returning *MintDelegatedCredentialResponse
+func (c *ClientWithResponses) MintDelegatedCredentialWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*MintDelegatedCredentialResponse, error) {
+	rsp, err := c.MintDelegatedCredentialWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseMintDelegatedCredentialResponse(rsp)
+}
+
+func (c *ClientWithResponses) MintDelegatedCredentialWithResponse(ctx context.Context, id CAId, body MintDelegatedCredentialJSONRequestBody, reqEditors ...RequestEditorFn) (*MintDelegatedCredentialResponse, error) {
+	rsp, err := c.MintDelegatedCredential(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseMintDelegatedCredentialResponse(rsp)
+}
+
 // GenerateTLSARecordsWithResponse request returning *GenerateTLSARecordsResponse
 func (c *ClientWithResponses) GenerateTLSARecordsWithResponse(ctx context.Context, id CAId, params *GenerateTLSARecordsParams, reqEditors ...RequestEditorFn) (*GenerateTLSARecordsResponse, error) {
 	rsp, err := c.GenerateTLSARecords(ctx, id, params, reqEditors...)
@@ -17305,6 +17489,53 @@ func ParseGetExternalCACSRResponse(rsp *http.Response) (*GetExternalCACSRRespons
 	}
 
 	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseMintDelegatedCredentialResponse parses an HTTP response from a MintDelegatedCredentialWithResponse call
+func ParseMintDelegatedCredentialResponse(rsp *http.Response) (*MintDelegatedCredentialResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &MintDelegatedCredentialResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest DelegatedCredentialResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
 		var dest NotFound
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {

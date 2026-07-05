@@ -122,6 +122,11 @@ renders it as `TLS Feature: status_request`.
   serverAuth leaf that ends up *without* Must-Staple — useful to catch a profile
   that forgot to set the knob. `secsy-ca lint -require-must-staple <cert>` runs
   the same check ad hoc.
+- **Mutually exclusive with delegated credentials.** RFC 9345 §4.2 forbids
+  combining Must-Staple with the `DelegationUsage` marker, so a profile cannot set
+  both `must_staple`/`allow_must_staple_override` and `delegation_usage` — the
+  combination is rejected fail-closed at profile install and again at issuance.
+  See [TLS Delegated Credentials](delegated-credentials.md).
 
 ## 4. Issue an end-entity certificate
 

@@ -866,6 +866,41 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/ca/{id}/delegated-credential:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: mintDelegatedCredential
+      tags: [Certificate Lifecycle]
+      summary: Mint an RFC 9345 TLS delegated credential for an eligible leaf
+      description: >
+        Mints an RFC 9345 delegated credential for a previously issued,
+        delegation-eligible certificate (one carrying the DelegationUsage
+        extension). The credential is signed by the certificate's PRIVATE key,
+        which this CA does not hold for ordinary issuance, so this endpoint serves
+        only leaves whose subject key was generated server-side via a PKCS#12
+        export AND escrowed under the M-of-N recovery policy: the caller supplies
+        the escrow envelope and a quorum of recovery-agent IDs, and the server
+        recovers the leaf key just long enough to sign, then zeroizes it. For a
+        leaf whose key the operator already holds, use the offline
+        `secsy-ca delegated-credential mint` helper instead — no key crosses the
+        API. The credential MUST NOT be combined with OCSP Must-Staple; the
+        issuance path enforces that mutual exclusion (RFC 9345 §4.2).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MintDelegatedCredentialRequest" }
+      responses:
+        "201":
+          description: The wire-format delegated credential and its metadata.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DelegatedCredentialResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/ca/{id}/renew:
     parameters:
       - $ref: "#/components/parameters/CAId"
@@ -4042,6 +4077,41 @@ components:
         agents: { type: integer }
         context: { type: string, description: encryption context to supply at recovery time }
         envelope: { description: escrow envelope JSON to store for break-glass recovery }
+
+    MintDelegatedCredentialRequest:
+      type: object
+      required: [serial, escrow_envelope, recovery_agents]
+      description: >
+        Request to mint an RFC 9345 delegated credential for an issued,
+        delegation-eligible certificate. The leaf key is recovered from its
+        PKCS#12 escrow (M-of-N), so the escrow envelope and a recovery-agent
+        quorum are required.
+      properties:
+        serial: { type: string, description: decimal serial of the issued certificate under this CA }
+        escrow_envelope: { description: escrow envelope JSON returned when the subject key was escrowed }
+        recovery_agents: { type: array, items: { type: string }, description: quorum of escrow recovery-agent IDs }
+        valid_for_seconds: { type: integer, description: "credential lifetime from now (default 86400; wire valid_time capped at 7 days from the cert notBefore)" }
+        client: { type: boolean, description: mint a client delegated credential (default is server) }
+        dc_public_key: { type: string, description: "base64 DER SubjectPublicKeyInfo of the delegated key; empty generates a keypair" }
+        dc_key_type: { type: string, description: "generated delegated key type when dc_public_key is empty (default: ecdsa-p256)" }
+        expected_cert_verify_algorithm: { type: string, description: "delegated key TLS scheme name; empty derives it from the key" }
+        signature_scheme: { type: string, description: "scheme to sign the credential with the leaf key; empty derives it (RSA uses PSS)" }
+
+    DelegatedCredentialResult:
+      type: object
+      description: >
+        The wire-format delegated credential and its metadata. The delegated
+        private key is present only when the server generated the keypair.
+      properties:
+        serial: { type: string }
+        delegated_credential: { type: string, description: base64-encoded RFC 9345 wire delegated credential }
+        valid_time_seconds: { type: integer, description: valid_time in seconds, relative to the certificate notBefore }
+        not_after: { type: string, description: absolute expiry (RFC 3339) }
+        endpoint: { type: string, description: "\"server\" or \"client\"" }
+        algorithm: { type: string, description: scheme used to sign the credential with the leaf key }
+        expected_cert_verify_algorithm: { type: string, description: delegated key's handshake scheme }
+        dc_public_key_pem: { type: string, description: delegated public key (SubjectPublicKeyInfo PEM) }
+        dc_private_key_pem: { type: string, description: "generated delegated private key (PKCS#8 PEM); present only when generated server-side" }
 
     SVIDRequest:
       type: object

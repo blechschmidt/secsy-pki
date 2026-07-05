@@ -170,6 +170,14 @@ const (
 	// policy.
 	ActionCertPKCS12 = "cert.pkcs12"
 
+	// ActionCertDelegatedCredential records the minting of an RFC 9345 TLS
+	// delegated credential (Task 133): a short-lived credential signed by an
+	// end-entity certificate's private key, which the system recovers from the
+	// PKCS#12 escrow (Task 33) for this endpoint. Target is the issuing CA; the
+	// certificate serial, validity, and signature scheme travel in the detail. A
+	// paired secret.recover event records the escrow-recovery ceremony.
+	ActionCertDelegatedCredential = "cert.delegated_credential"
+
 	// Per-profile manual issuance-approval gate (Task 84). When a certificate
 	// profile sets require_approval, operator/API-driven leaf issuance is routed
 	// through the four-eyes engine instead of executing immediately.

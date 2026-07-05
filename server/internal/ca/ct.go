@@ -190,6 +190,16 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 	// precertificate and final certificate carry it identically.
 	base = applyMustStaple(base, mustStaple)
 
+	// Stamp the RFC 9345 id-ce-delegationUsage extension when the profile opts in,
+	// marking the leaf eligible to authorize TLS Delegated Credentials. This is
+	// also the fail-closed guard for the RFC 9345 §4.2 mutual exclusion with OCSP
+	// Must-Staple (mustStaple is already resolved above). Appended in the same
+	// pre-lint / pre-CT-split position as Must-Staple so it is linted and carried
+	// identically by the precertificate and the final certificate.
+	if base, err = applyDelegationUsage(base, profile, mustStaple); err != nil {
+		return nil, nil, err
+	}
+
 	// Fail-closed pre-issuance lint gate: run CA/Browser-Forum Baseline
 	// Requirements checks on the to-be-signed template BEFORE any HSM signature.
 	// A violating template is rejected here — neither the precertificate nor the
@@ -365,6 +375,32 @@ func applyMustStaple(base pki.LeafCertRequest, mustStaple bool) pki.LeafCertRequ
 		base.ExtraExtensions = appendExt(base.ExtraExtensions, pki.MustStapleExtension())
 	}
 	return base
+}
+
+// applyDelegationUsage stamps the RFC 9345 id-ce-delegationUsage extension on a
+// leaf request when the profile opts in (delegation_usage), marking the
+// certificate eligible to authorize TLS Delegated Credentials. It is a no-op for
+// a profile that does not opt in, and never mutates the caller's extension slice.
+//
+// It is the fail-closed chokepoint for the RFC 9345 §4.2 mutual exclusion: a
+// certificate MUST NOT carry both the DelegationUsage marker and the RFC 7633
+// OCSP Must-Staple TLS Feature. mustStaple is the already-resolved Must-Staple
+// decision (profile default plus any permitted per-request override), so a leaf
+// that would end up with both is refused here, before any HSM signature — even
+// though SetCustomProfiles also makes the combination statically impossible to
+// configure. Shared by the classical buildLeaf path and the PQC/hybrid issuance
+// paths so the marker and the guard apply identically regardless of algorithm.
+func applyDelegationUsage(base pki.LeafCertRequest, profile Profile, mustStaple bool) (pki.LeafCertRequest, error) {
+	if !profile.DelegationUsage {
+		return base, nil
+	}
+	if mustStaple {
+		return base, fmt.Errorf(
+			"profile %q enables both RFC 9345 delegated-credential eligibility (delegation_usage) and RFC 7633 OCSP Must-Staple; RFC 9345 §4.2 forbids combining them",
+			profile.Name)
+	}
+	base.ExtraExtensions = appendExt(base.ExtraExtensions, pki.DelegationUsageExtension())
+	return base, nil
 }
 
 // certHasMustStaple reports whether a parsed certificate carries the RFC 7633
