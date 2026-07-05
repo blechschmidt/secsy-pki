@@ -180,6 +180,7 @@ the Helm chart, with convenience symlinks under `deploy/observability/`):
 |-------|------|
 | Grafana dashboard JSON | `deploy/helm/secsy-pki/files/grafana-dashboard.json` (also `deploy/observability/grafana/secsy-pki-dashboard.json`) |
 | Prometheus alerting rules | `deploy/helm/secsy-pki/files/prometheus-rules.yaml` (also `deploy/observability/prometheus/secsy-pki-rules.yaml`) |
+| Prometheus SLO recording rules + burn-rate alerts | `deploy/helm/secsy-pki/files/prometheus-slo-rules.yaml` (also `deploy/observability/prometheus/secsy-pki-slo-rules.yaml`) — see [SLOs and error budgets](#slos-and-error-budgets) |
 
 The dashboard (`uid: secsy-pki-overview`) covers issuance rate/latency, HSM
 session-pool saturation and queueing, OCSP/CRL request rates and derived cache
@@ -197,9 +198,16 @@ It uses two template variables: a Prometheus **datasource** and a multi-select
   ```yaml
   rule_files:
     - /etc/prometheus/secsy-pki-rules.yaml
+    - /etc/prometheus/secsy-pki-slo-rules.yaml   # SLO recording rules + burn-rate alerts
   ```
 
-  Validate before shipping: `promtool check rules deploy/observability/prometheus/secsy-pki-rules.yaml`.
+  Validate before shipping — check both rule files, and run the SLO unit test:
+
+  ```
+  promtool check rules deploy/observability/prometheus/secsy-pki-rules.yaml \
+                       deploy/observability/prometheus/secsy-pki-slo-rules.yaml
+  promtool test rules  deploy/helm/secsy-pki/files/prometheus-slo-rules.test.yaml
+  ```
 
 ### Deploy — Helm (Prometheus Operator / kube-prometheus-stack)
 
@@ -221,7 +229,10 @@ grafanaDashboard:
 
 The rule bodies are embedded verbatim from `files/prometheus-rules.yaml`, so the
 Helm and standalone deployments never drift. Add site-specific rules via
-`prometheusRule.additionalGroups` without editing the shipped file.
+`prometheusRule.additionalGroups` without editing the shipped file. The
+error-budget SLOs (`files/prometheus-slo-rules.yaml`) render as a **second**
+`PrometheusRule`, `<release>-slo`, gated by `prometheusRule.slo.enabled` (default
+`true` when `prometheusRule.enabled`) — see [SLOs and error budgets](#slos-and-error-budgets).
 
 ### Recommended alert thresholds
 
@@ -236,7 +247,6 @@ CRL/monitor cadence; the rationale and response steps live in the
 | `SecsyPKIHSMPoolExhausted` | `secsy_hsm_guard_queue_depth > 0` for 10m | warning | expected bursty queueing |
 | `SecsyPKIHSMGuardShedding` | guard-reject rate `> 0.1/s` for 5m | critical | — |
 | `SecsyPKIHSMSignLatencyHigh` | p99 sign latency `> 2s` for 10m | warning | slow network-HSM baseline |
-| `SecsyPKIIssuanceErrorBudgetBurn{Fast,Slow}` | 14.4x/1h+5m, 6x/6h+30m on a 99.5% SLO | crit/warn | change SLO target |
 | `SecsyPKICertificatesExpired` | `secsy_certificates_expiring{severity="expired"} > 0` for 15m | critical | — |
 | `SecsyPKIExpiryBacklog` | `…{severity="critical"} > 25` for 1h | warning | scale to fleet size |
 | `SecsyPKIMonitorStalled` | last scan older than 36h | warning | match `monitor.intervalHours` |
@@ -256,6 +266,72 @@ CRL/monitor cadence; the rationale and response steps live in the
 > cadence check — the metrics expose no CRL `nextUpdate` timestamp. For an
 > authoritative freshness SLO, additionally blackbox-probe the CDP URL and alert
 > on the CRL's `nextUpdate` (see the runbook).
+
+## SLOs and error budgets
+
+Beyond the operational threshold alerts above, the chart ships a set of
+**Google-SRE-style service-level objectives** with **multi-window,
+multi-burn-rate** alerts. They live in a separate single-source file,
+`files/prometheus-slo-rules.yaml` (symlinked to
+`deploy/observability/prometheus/secsy-pki-slo-rules.yaml`), and render as a
+second `PrometheusRule` (`<release>-slo`) gated by `prometheusRule.slo.enabled`
+(default `true` when `prometheusRule.enabled`).
+
+Each SLO is defined as an **SLI recording rule** — the fraction of *bad* events
+(errors, or requests slower than the objective) over a rolling window — plus two
+burn-rate alerts:
+
+- **Fast / page (`severity: critical`)** — burn ≥ **14.4×** the error budget over
+  **both** the **1h and 5m** windows. At 14.4× a 30-day budget is exhausted in
+  ~2 days, so it pages.
+- **Slow / ticket (`severity: warning`)** — burn ≥ **6×** over **both** the **6h
+  and 30m** windows: a slower leak worth a ticket before it becomes a page.
+
+Requiring a long *and* a short window prevents both false pages (a brief spike
+that already recovered fails the long window) and slow detection (the short
+window confirms the burn is still happening). SLI recording rules are named
+`job:slo_<sli>:ratio_rate<window>` and computed for the four windows the alerts
+consume (`5m`, `30m`, `1h`, `6h`). Each ratio is `0`/absent under healthy or
+no-traffic conditions — the bad-event count is the numerator and the total is
+clamped to a tiny positive floor — so an idle server never produces a false burn.
+
+| SLO (objective) | SLI recording rule (`…:ratio_rate1h`) | Fast alert — page | Slow alert — ticket |
+|-----------------|----------------------------------------|-------------------|---------------------|
+| Certificate issuance ≥ 99.5% success | `job:slo_issuance_errors` | `SecsyPKIIssuanceErrorBudgetBurnFast` | `SecsyPKIIssuanceErrorBudgetBurnSlow` |
+| OCSP responder ≥ 99.9% success | `job:slo_ocsp_errors` | `SecsyPKIOCSPErrorBudgetBurnFast` | `SecsyPKIOCSPErrorBudgetBurnSlow` |
+| CRL distribution ≥ 99.9% success | `job:slo_crl_errors` | `SecsyPKICRLErrorBudgetBurnFast` | `SecsyPKICRLErrorBudgetBurnSlow` |
+| ACME order-finalize ≥ 99% within 2.5s | `job:slo_acme_finalize_latency` | `SecsyPKIACMEFinalizeLatencyBudgetBurnFast` | `SecsyPKIACMEFinalizeLatencyBudgetBurnSlow` |
+| HSM signing ≥ 99% within 1s | `job:slo_hsm_sign_latency` | `SecsyPKIHSMSignLatencyBudgetBurnFast` | `SecsyPKIHSMSignLatencyBudgetBurnSlow` |
+| HSM signing ≥ 99.9% success | `job:slo_hsm_sign_errors` | `SecsyPKIHSMSignErrorBudgetBurnFast` | `SecsyPKIHSMSignErrorBudgetBurnSlow` |
+
+Every burn alert carries `slo: <name>` and `service: secsy-pki` labels and a
+`runbook_url` into [SLO error-budget burn](RUNBOOK.md#slo-error-budget-burn).
+
+**Freshness** (OCSP pre-sign / static-publish staleness, CRL regeneration) is a
+*threshold* objective, not an error-budget one — a staleness gauge has no
+good/total events to burn — so its SLIs are surfaced as recording rules
+(`job:slo_ocsp_presign_freshness_seconds:max`,
+`job:slo_publish_freshness_seconds:max`,
+`job:slo_crl_base_regenerations:increase24h`) and alerted by the threshold rules
+in the operational ruleset (`SecsyPKIOCSPPresignStale`, `SecsyPKIPublishStale`,
+`SecsyPKICRLNotRegenerating`).
+
+**Tuning.** Every alert threshold is written `burn_rate * error_budget` (e.g.
+`14.4 * 0.005` for the 99.5% issuance budget). To change an objective, edit the
+budget factor in that SLO's fast **and** slow expressions — the recording rules
+are objective-independent. The ACME-finalize SLI matches
+`route="POST /acme/order/{id}/finalize"` (the default `acme.directory_path` of
+`/acme`); update the matcher if you relocate the directory. The latency
+thresholds (`le="2.5"`, `le="1"`) must stay on a histogram bucket boundary
+(`DefBuckets`: … `0.5, 1, 2.5, 5, 10`).
+
+**Testing.** The rules ship with a `promtool` unit test that drives each SLI to a
+known burn rate and asserts the right alert fires — including that a slow-only
+burn (between 6× and 14.4×) tickets but does **not** page:
+
+```
+promtool test rules deploy/helm/secsy-pki/files/prometheus-slo-rules.test.yaml
+```
 
 ## Grafana dashboard notes
 

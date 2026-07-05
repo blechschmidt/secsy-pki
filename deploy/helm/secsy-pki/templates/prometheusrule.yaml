@@ -23,4 +23,27 @@ spec:
 {{- with .Values.prometheusRule.additionalGroups }}
 {{- toYaml . | nindent 4 }}
 {{- end }}
+{{- if .Values.prometheusRule.slo.enabled }}
+---
+# Second PrometheusRule: the Google-SRE service-level-objective recording rules
+# and multi-window multi-burn-rate alerts (files/prometheus-slo-rules.yaml,
+# Task 139). Kept as a separate CR so error-budget alerting can be toggled
+# independently of the operational rules above, and so the two single-source
+# files never need to be merged into one groups list. It carries the same
+# labels, so the Prometheus ruleSelector picks up both.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "secsy-pki.fullname" . }}-slo
+  {{- with .Values.prometheusRule.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "secsy-pki.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+{{ .Files.Get "files/prometheus-slo-rules.yaml" | indent 2 }}
+{{- end }}
 {{- end }}

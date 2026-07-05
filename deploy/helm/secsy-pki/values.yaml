@@ -424,6 +424,12 @@ prometheusRule:
   # namespace: ""   # defaults to the release namespace
   labels: {}
   #  release: kube-prometheus-stack
+  # Google-SRE SLO recording rules + multi-window burn-rate alerts
+  # (files/prometheus-slo-rules.yaml, Task 139), rendered as a second
+  # PrometheusRule ("<fullname>-slo"). Requires prometheusRule.enabled; set to
+  # false to ship only the operational/threshold rules without the error-budget SLOs.
+  slo:
+    enabled: true
   # Extra rule groups appended to the shipped ones (same schema as a
   # PrometheusRule spec.groups entry).
   additionalGroups: []

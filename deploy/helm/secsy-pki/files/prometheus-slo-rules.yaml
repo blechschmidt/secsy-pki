@@ -1,0 +1,381 @@
+# Google-SRE-style service-level objectives for the core PKI SLIs (Task 139).
+#
+# This file is a self-contained Prometheus rule file (usable directly as a
+# rule_files entry, and symlinked to deploy/observability/prometheus/) and is
+# also embedded verbatim into a dedicated PrometheusRule by the Helm chart
+# (templates/prometheusrule.yaml, gated by prometheusRule.slo.enabled). It is a
+# companion to files/prometheus-rules.yaml — the operational/threshold alerts
+# live there; the error-budget SLOs live here so the two concerns stay separable.
+#
+# SLO catalog (30-day rolling window; tune the objective/budget numbers to your
+# fleet — every threshold below is `burn_rate * error_budget`):
+#
+#   | SLO                          | Objective       | Budget | SLI (bad / total)                                              |
+#   |------------------------------|-----------------|--------|----------------------------------------------------------------|
+#   | Certificate issuance         | 99.5% success   | 0.005  | certificates_total{result=error} / certificates_total          |
+#   | OCSP responder availability  | 99.9% success   | 0.001  | ocsp_requests_total{result=error} / ocsp_requests_total        |
+#   | CRL distribution availability| 99.9% success   | 0.001  | crl_requests_total{result=error} / crl_requests_total          |
+#   | ACME order-finalize latency  | 99% <= 2.5s     | 0.01   | finalize requests slower than 2.5s / finalize requests         |
+#   | HSM signing latency          | 99% <= 1s       | 0.01   | sign ops slower than 1s / sign ops                             |
+#   | HSM signing availability     | 99.9% success   | 0.001  | hsm_operations_total{operation=sign,result=error} / sign ops   |
+#
+# SLI recording rules are named `job:slo_<sli>:ratio_rate<window>` and hold the
+# fraction of *bad* events over each window. They are computed for the four
+# windows the multi-window burn-rate alerts need: 5m and 1h (fast/page) and 30m
+# and 6h (slow/ticket). Every ratio is 0 (or absent) under healthy/no-traffic
+# conditions — the bad-event count is the numerator and the total is clamped to
+# a tiny positive floor, so an idle server never produces a false burn.
+#
+# Freshness is a *threshold* objective, not an error-budget one (a staleness
+# gauge has no "good/total" events to burn), so the freshness SLIs below are
+# recording rules only; they are alerted by the threshold rules in
+# files/prometheus-rules.yaml (SecsyPKIOCSPPresignStale, SecsyPKIPublishStale,
+# SecsyPKICRLNotRegenerating).
+groups:
+  # --- SLI recording rules ---------------------------------------------------
+  # Bad-event ratios per SLO per window. Alerts below consume these; dashboards
+  # and error-budget reports can read them directly.
+  - name: secsy-pki.slo.recording
+    rules:
+      # Issuance availability SLI: fraction of certificate lifecycle operations
+      # that errored (result="error"; client-denied requests are not counted
+      # against the service budget).
+      - record: job:slo_issuance_errors:ratio_rate5m
+        expr: |
+          sum by (job) (rate(secsy_certificates_total{result="error"}[5m]))
+            / clamp_min(sum by (job) (rate(secsy_certificates_total[5m])), 1e-9)
+      - record: job:slo_issuance_errors:ratio_rate30m
+        expr: |
+          sum by (job) (rate(secsy_certificates_total{result="error"}[30m]))
+            / clamp_min(sum by (job) (rate(secsy_certificates_total[30m])), 1e-9)
+      - record: job:slo_issuance_errors:ratio_rate1h
+        expr: |
+          sum by (job) (rate(secsy_certificates_total{result="error"}[1h]))
+            / clamp_min(sum by (job) (rate(secsy_certificates_total[1h])), 1e-9)
+      - record: job:slo_issuance_errors:ratio_rate6h
+        expr: |
+          sum by (job) (rate(secsy_certificates_total{result="error"}[6h]))
+            / clamp_min(sum by (job) (rate(secsy_certificates_total[6h])), 1e-9)
+
+      # OCSP responder availability SLI: fraction of OCSP responses that were
+      # server errors. Client-side "malformed"/"unauthorized" and the HSM-outage
+      # "try_later" status are excluded — they are covered by the HSM-probe and
+      # OCSP-freshness alerts rather than charged to this availability budget.
+      - record: job:slo_ocsp_errors:ratio_rate5m
+        expr: |
+          sum by (job) (rate(secsy_ocsp_requests_total{result="error"}[5m]))
+            / clamp_min(sum by (job) (rate(secsy_ocsp_requests_total[5m])), 1e-9)
+      - record: job:slo_ocsp_errors:ratio_rate30m
+        expr: |
+          sum by (job) (rate(secsy_ocsp_requests_total{result="error"}[30m]))
+            / clamp_min(sum by (job) (rate(secsy_ocsp_requests_total[30m])), 1e-9)
+      - record: job:slo_ocsp_errors:ratio_rate1h
+        expr: |
+          sum by (job) (rate(secsy_ocsp_requests_total{result="error"}[1h]))
+            / clamp_min(sum by (job) (rate(secsy_ocsp_requests_total[1h])), 1e-9)
+      - record: job:slo_ocsp_errors:ratio_rate6h
+        expr: |
+          sum by (job) (rate(secsy_ocsp_requests_total{result="error"}[6h]))
+            / clamp_min(sum by (job) (rate(secsy_ocsp_requests_total[6h])), 1e-9)
+
+      # CRL distribution availability SLI: fraction of CRL fetches that errored.
+      - record: job:slo_crl_errors:ratio_rate5m
+        expr: |
+          sum by (job) (rate(secsy_crl_requests_total{result="error"}[5m]))
+            / clamp_min(sum by (job) (rate(secsy_crl_requests_total[5m])), 1e-9)
+      - record: job:slo_crl_errors:ratio_rate30m
+        expr: |
+          sum by (job) (rate(secsy_crl_requests_total{result="error"}[30m]))
+            / clamp_min(sum by (job) (rate(secsy_crl_requests_total[30m])), 1e-9)
+      - record: job:slo_crl_errors:ratio_rate1h
+        expr: |
+          sum by (job) (rate(secsy_crl_requests_total{result="error"}[1h]))
+            / clamp_min(sum by (job) (rate(secsy_crl_requests_total[1h])), 1e-9)
+      - record: job:slo_crl_errors:ratio_rate6h
+        expr: |
+          sum by (job) (rate(secsy_crl_requests_total{result="error"}[6h]))
+            / clamp_min(sum by (job) (rate(secsy_crl_requests_total[6h])), 1e-9)
+
+      # ACME order-finalize latency SLI: fraction of finalize requests slower
+      # than the 2.5s objective. Computed as (total - fast) / total from the HTTP
+      # duration histogram of the finalize route, so it is 0 with no traffic and
+      # never inverts on an empty le bucket. The route label is the default ACME
+      # DirectoryPath ("/acme"); adjust the matcher if acme.directory_path differs.
+      - record: job:slo_acme_finalize_latency:ratio_rate5m
+        expr: |
+          (
+            sum by (job) (rate(secsy_http_request_duration_seconds_count{route="POST /acme/order/{id}/finalize"}[5m]))
+              - sum by (job) (rate(secsy_http_request_duration_seconds_bucket{route="POST /acme/order/{id}/finalize",le="2.5"}[5m]))
+          )
+            / clamp_min(sum by (job) (rate(secsy_http_request_duration_seconds_count{route="POST /acme/order/{id}/finalize"}[5m])), 1e-9)
+      - record: job:slo_acme_finalize_latency:ratio_rate30m
+        expr: |
+          (
+            sum by (job) (rate(secsy_http_request_duration_seconds_count{route="POST /acme/order/{id}/finalize"}[30m]))
+              - sum by (job) (rate(secsy_http_request_duration_seconds_bucket{route="POST /acme/order/{id}/finalize",le="2.5"}[30m]))
+          )
+            / clamp_min(sum by (job) (rate(secsy_http_request_duration_seconds_count{route="POST /acme/order/{id}/finalize"}[30m])), 1e-9)
+      - record: job:slo_acme_finalize_latency:ratio_rate1h
+        expr: |
+          (
+            sum by (job) (rate(secsy_http_request_duration_seconds_count{route="POST /acme/order/{id}/finalize"}[1h]))
+              - sum by (job) (rate(secsy_http_request_duration_seconds_bucket{route="POST /acme/order/{id}/finalize",le="2.5"}[1h]))
+          )
+            / clamp_min(sum by (job) (rate(secsy_http_request_duration_seconds_count{route="POST /acme/order/{id}/finalize"}[1h])), 1e-9)
+      - record: job:slo_acme_finalize_latency:ratio_rate6h
+        expr: |
+          (
+            sum by (job) (rate(secsy_http_request_duration_seconds_count{route="POST /acme/order/{id}/finalize"}[6h]))
+              - sum by (job) (rate(secsy_http_request_duration_seconds_bucket{route="POST /acme/order/{id}/finalize",le="2.5"}[6h]))
+          )
+            / clamp_min(sum by (job) (rate(secsy_http_request_duration_seconds_count{route="POST /acme/order/{id}/finalize"}[6h])), 1e-9)
+
+      # HSM signing latency SLI: fraction of key-provider sign operations slower
+      # than the 1s objective, from the HSM operation-duration histogram.
+      - record: job:slo_hsm_sign_latency:ratio_rate5m
+        expr: |
+          (
+            sum by (job) (rate(secsy_hsm_operation_duration_seconds_count{operation="sign"}[5m]))
+              - sum by (job) (rate(secsy_hsm_operation_duration_seconds_bucket{operation="sign",le="1"}[5m]))
+          )
+            / clamp_min(sum by (job) (rate(secsy_hsm_operation_duration_seconds_count{operation="sign"}[5m])), 1e-9)
+      - record: job:slo_hsm_sign_latency:ratio_rate30m
+        expr: |
+          (
+            sum by (job) (rate(secsy_hsm_operation_duration_seconds_count{operation="sign"}[30m]))
+              - sum by (job) (rate(secsy_hsm_operation_duration_seconds_bucket{operation="sign",le="1"}[30m]))
+          )
+            / clamp_min(sum by (job) (rate(secsy_hsm_operation_duration_seconds_count{operation="sign"}[30m])), 1e-9)
+      - record: job:slo_hsm_sign_latency:ratio_rate1h
+        expr: |
+          (
+            sum by (job) (rate(secsy_hsm_operation_duration_seconds_count{operation="sign"}[1h]))
+              - sum by (job) (rate(secsy_hsm_operation_duration_seconds_bucket{operation="sign",le="1"}[1h]))
+          )
+            / clamp_min(sum by (job) (rate(secsy_hsm_operation_duration_seconds_count{operation="sign"}[1h])), 1e-9)
+      - record: job:slo_hsm_sign_latency:ratio_rate6h
+        expr: |
+          (
+            sum by (job) (rate(secsy_hsm_operation_duration_seconds_count{operation="sign"}[6h]))
+              - sum by (job) (rate(secsy_hsm_operation_duration_seconds_bucket{operation="sign",le="1"}[6h]))
+          )
+            / clamp_min(sum by (job) (rate(secsy_hsm_operation_duration_seconds_count{operation="sign"}[6h])), 1e-9)
+
+      # HSM signing availability SLI: fraction of sign operations that errored.
+      # This is the reliability twin of the latency SLI above — a signing outage
+      # (HSM down, wrong PIN, session exhaustion) burns this budget.
+      - record: job:slo_hsm_sign_errors:ratio_rate5m
+        expr: |
+          sum by (job) (rate(secsy_hsm_operations_total{operation="sign",result="error"}[5m]))
+            / clamp_min(sum by (job) (rate(secsy_hsm_operations_total{operation="sign"}[5m])), 1e-9)
+      - record: job:slo_hsm_sign_errors:ratio_rate30m
+        expr: |
+          sum by (job) (rate(secsy_hsm_operations_total{operation="sign",result="error"}[30m]))
+            / clamp_min(sum by (job) (rate(secsy_hsm_operations_total{operation="sign"}[30m])), 1e-9)
+      - record: job:slo_hsm_sign_errors:ratio_rate1h
+        expr: |
+          sum by (job) (rate(secsy_hsm_operations_total{operation="sign",result="error"}[1h]))
+            / clamp_min(sum by (job) (rate(secsy_hsm_operations_total{operation="sign"}[1h])), 1e-9)
+      - record: job:slo_hsm_sign_errors:ratio_rate6h
+        expr: |
+          sum by (job) (rate(secsy_hsm_operations_total{operation="sign",result="error"}[6h]))
+            / clamp_min(sum by (job) (rate(secsy_hsm_operations_total{operation="sign"}[6h])), 1e-9)
+
+      # Freshness SLIs (threshold objectives; see header). Surfaced at the job
+      # level for dashboards and error-budget reports; alerted by the threshold
+      # rules in files/prometheus-rules.yaml.
+      - record: job:slo_ocsp_presign_freshness_seconds:max
+        expr: max by (job) (secsy_ocsp_presign_staleness_seconds)
+      - record: job:slo_publish_freshness_seconds:max
+        expr: max by (job) (secsy_publish_staleness_seconds)
+      - record: job:slo_crl_base_regenerations:increase24h
+        expr: sum by (job) (increase(secsy_crl_generated_total{kind="base"}[24h]))
+
+  # --- Multi-window multi-burn-rate alerts -----------------------------------
+  # For each SLO a fast (page) and a slow (ticket) alert. Both windows of a pair
+  # must exceed the threshold, so a short spike that has already recovered does
+  # not page (the long window filters it) and a real burn is caught quickly (the
+  # short window confirms it is still happening). Thresholds are burn_rate *
+  # error_budget: fast = 14.4x (2% of a 30-day budget in 1h) over 1h+5m; slow =
+  # 6x (5% in 6h) over 6h+30m.
+  - name: secsy-pki.slo.alerts
+    rules:
+      # -- Certificate issuance availability (99.5%, budget 0.005) ------------
+      - alert: SecsyPKIIssuanceErrorBudgetBurnFast
+        expr: |
+          job:slo_issuance_errors:ratio_rate1h > (14.4 * 0.005)
+          and
+          job:slo_issuance_errors:ratio_rate5m > (14.4 * 0.005)
+        for: 2m
+        labels:
+          severity: critical
+          service: secsy-pki
+          slo: issuance-availability
+        annotations:
+          summary: "Issuance error-budget burning fast ({{ $labels.job }})"
+          description: "Certificate issuance is burning the 99.5% availability SLO error budget at >14.4x over the 1h and 5m windows (recording rule job:slo_issuance_errors:ratio_rate1h). A 30-day budget is gone in ~2 days at this rate. Investigate HSM signing failures, CAA/lint rejections, or store errors."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+      - alert: SecsyPKIIssuanceErrorBudgetBurnSlow
+        expr: |
+          job:slo_issuance_errors:ratio_rate6h > (6 * 0.005)
+          and
+          job:slo_issuance_errors:ratio_rate30m > (6 * 0.005)
+        for: 15m
+        labels:
+          severity: warning
+          service: secsy-pki
+          slo: issuance-availability
+        annotations:
+          summary: "Issuance error-budget burning ({{ $labels.job }})"
+          description: "Certificate issuance is burning the 99.5% availability SLO error budget at >6x over the 6h and 30m windows (recording rule job:slo_issuance_errors:ratio_rate6h). Open a ticket and investigate before the fast burn pages."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+
+      # -- OCSP responder availability (99.9%, budget 0.001) -----------------
+      - alert: SecsyPKIOCSPErrorBudgetBurnFast
+        expr: |
+          job:slo_ocsp_errors:ratio_rate1h > (14.4 * 0.001)
+          and
+          job:slo_ocsp_errors:ratio_rate5m > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: critical
+          service: secsy-pki
+          slo: ocsp-availability
+        annotations:
+          summary: "OCSP error-budget burning fast ({{ $labels.job }})"
+          description: "The OCSP responder is burning the 99.9% availability SLO error budget at >14.4x over the 1h and 5m windows (recording rule job:slo_ocsp_errors:ratio_rate1h). Relying parties may fail validation. Check HSM signing and the responder path."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+      - alert: SecsyPKIOCSPErrorBudgetBurnSlow
+        expr: |
+          job:slo_ocsp_errors:ratio_rate6h > (6 * 0.001)
+          and
+          job:slo_ocsp_errors:ratio_rate30m > (6 * 0.001)
+        for: 15m
+        labels:
+          severity: warning
+          service: secsy-pki
+          slo: ocsp-availability
+        annotations:
+          summary: "OCSP error-budget burning ({{ $labels.job }})"
+          description: "The OCSP responder is burning the 99.9% availability SLO error budget at >6x over the 6h and 30m windows (recording rule job:slo_ocsp_errors:ratio_rate6h). Open a ticket and investigate before the fast burn pages."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+
+      # -- CRL distribution availability (99.9%, budget 0.001) ---------------
+      - alert: SecsyPKICRLErrorBudgetBurnFast
+        expr: |
+          job:slo_crl_errors:ratio_rate1h > (14.4 * 0.001)
+          and
+          job:slo_crl_errors:ratio_rate5m > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: critical
+          service: secsy-pki
+          slo: crl-availability
+        annotations:
+          summary: "CRL error-budget burning fast ({{ $labels.job }})"
+          description: "CRL distribution is burning the 99.9% availability SLO error budget at >14.4x over the 1h and 5m windows (recording rule job:slo_crl_errors:ratio_rate1h). Clients may fall back to a stale cached CRL. Check signing and the store."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+      - alert: SecsyPKICRLErrorBudgetBurnSlow
+        expr: |
+          job:slo_crl_errors:ratio_rate6h > (6 * 0.001)
+          and
+          job:slo_crl_errors:ratio_rate30m > (6 * 0.001)
+        for: 15m
+        labels:
+          severity: warning
+          service: secsy-pki
+          slo: crl-availability
+        annotations:
+          summary: "CRL error-budget burning ({{ $labels.job }})"
+          description: "CRL distribution is burning the 99.9% availability SLO error budget at >6x over the 6h and 30m windows (recording rule job:slo_crl_errors:ratio_rate6h). Open a ticket and investigate before the fast burn pages."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+
+      # -- ACME order-finalize latency (99% <= 2.5s, budget 0.01) ------------
+      - alert: SecsyPKIACMEFinalizeLatencyBudgetBurnFast
+        expr: |
+          job:slo_acme_finalize_latency:ratio_rate1h > (14.4 * 0.01)
+          and
+          job:slo_acme_finalize_latency:ratio_rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+          service: secsy-pki
+          slo: acme-finalize-latency
+        annotations:
+          summary: "ACME finalize latency budget burning fast ({{ $labels.job }})"
+          description: "More than 14.4x the latency budget for the 99%-within-2.5s ACME order-finalize SLO is burning over the 1h and 5m windows (recording rule job:slo_acme_finalize_latency:ratio_rate1h). Finalize is the client-visible issuance step. Check HSM sign latency, CT log submission, and session-pool saturation."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+      - alert: SecsyPKIACMEFinalizeLatencyBudgetBurnSlow
+        expr: |
+          job:slo_acme_finalize_latency:ratio_rate6h > (6 * 0.01)
+          and
+          job:slo_acme_finalize_latency:ratio_rate30m > (6 * 0.01)
+        for: 15m
+        labels:
+          severity: warning
+          service: secsy-pki
+          slo: acme-finalize-latency
+        annotations:
+          summary: "ACME finalize latency budget burning ({{ $labels.job }})"
+          description: "More than 6x the latency budget for the 99%-within-2.5s ACME order-finalize SLO is burning over the 6h and 30m windows (recording rule job:slo_acme_finalize_latency:ratio_rate6h). Open a ticket and investigate before the fast burn pages."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+
+      # -- HSM signing latency (99% <= 1s, budget 0.01) ----------------------
+      - alert: SecsyPKIHSMSignLatencyBudgetBurnFast
+        expr: |
+          job:slo_hsm_sign_latency:ratio_rate1h > (14.4 * 0.01)
+          and
+          job:slo_hsm_sign_latency:ratio_rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+          service: secsy-pki
+          slo: hsm-sign-latency
+        annotations:
+          summary: "HSM sign latency budget burning fast ({{ $labels.job }})"
+          description: "More than 14.4x the latency budget for the 99%-within-1s HSM signing SLO is burning over the 1h and 5m windows (recording rule job:slo_hsm_sign_latency:ratio_rate1h). Every signing path (issuance, CRL, OCSP, TSA) slows down. Check HSM health, the network to a network-HSM, and session-pool sizing."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+      - alert: SecsyPKIHSMSignLatencyBudgetBurnSlow
+        expr: |
+          job:slo_hsm_sign_latency:ratio_rate6h > (6 * 0.01)
+          and
+          job:slo_hsm_sign_latency:ratio_rate30m > (6 * 0.01)
+        for: 15m
+        labels:
+          severity: warning
+          service: secsy-pki
+          slo: hsm-sign-latency
+        annotations:
+          summary: "HSM sign latency budget burning ({{ $labels.job }})"
+          description: "More than 6x the latency budget for the 99%-within-1s HSM signing SLO is burning over the 6h and 30m windows (recording rule job:slo_hsm_sign_latency:ratio_rate6h). Open a ticket and investigate before the fast burn pages."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+
+      # -- HSM signing availability (99.9%, budget 0.001) --------------------
+      - alert: SecsyPKIHSMSignErrorBudgetBurnFast
+        expr: |
+          job:slo_hsm_sign_errors:ratio_rate1h > (14.4 * 0.001)
+          and
+          job:slo_hsm_sign_errors:ratio_rate5m > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: critical
+          service: secsy-pki
+          slo: hsm-sign-availability
+        annotations:
+          summary: "HSM sign error-budget burning fast ({{ $labels.job }})"
+          description: "HSM sign operations are burning the 99.9% availability SLO error budget at >14.4x over the 1h and 5m windows (recording rule job:slo_hsm_sign_errors:ratio_rate1h). Signing is failing (HSM down, wrong PIN, or session exhaustion) — check /readyz and the key-provider logs."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+      - alert: SecsyPKIHSMSignErrorBudgetBurnSlow
+        expr: |
+          job:slo_hsm_sign_errors:ratio_rate6h > (6 * 0.001)
+          and
+          job:slo_hsm_sign_errors:ratio_rate30m > (6 * 0.001)
+        for: 15m
+        labels:
+          severity: warning
+          service: secsy-pki
+          slo: hsm-sign-availability
+        annotations:
+          summary: "HSM sign error-budget burning ({{ $labels.job }})"
+          description: "HSM sign operations are burning the 99.9% availability SLO error budget at >6x over the 6h and 30m windows (recording rule job:slo_hsm_sign_errors:ratio_rate6h). Open a ticket and investigate before the fast burn pages."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"

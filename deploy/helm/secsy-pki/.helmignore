@@ -4,3 +4,6 @@
 *.tmp
 *.bak
 *.orig
+# promtool unit-test fixtures live beside the rules they test but are not part
+# of the packaged chart (nothing references them via .Files).
+*.test.yaml

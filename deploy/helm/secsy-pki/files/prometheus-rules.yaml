@@ -98,51 +98,12 @@ groups:
           description: "Token {{ $labels.token }} has been failing over at >0.1/s for >15m. The device or its network path is unstable. Investigate the HSM; consider raising pkcs11.failure_threshold. See docs/hsm-ha.md."
           runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#hsm-probe-down"
 
-  # --- Issuance SLO ----------------------------------------------------------
-  - name: secsy-pki.issuance
-    rules:
-      - alert: SecsyPKIIssuanceErrorBudgetBurnFast
-        # Multi-window burn-rate: a 14.4x burn on a 99.5% SLO over 1h AND 5m.
-        # This exhausts a month's error budget in ~2 days — page.
-        expr: |
-          (
-            sum by (job) (rate(secsy_certificates_total{result="error"}[1h]))
-              / clamp_min(sum by (job) (rate(secsy_certificates_total[1h])), 1e-9) > (14.4 * 0.005)
-          )
-          and
-          (
-            sum by (job) (rate(secsy_certificates_total{result="error"}[5m]))
-              / clamp_min(sum by (job) (rate(secsy_certificates_total[5m])), 1e-9) > (14.4 * 0.005)
-          )
-        for: 2m
-        labels:
-          severity: critical
-          service: secsy-pki
-        annotations:
-          summary: "Issuance error-budget burning fast ({{ $labels.job }})"
-          description: "Certificate-operation error ratio is burning the 99.5% SLO budget at >14.4x over 1h and 5m windows. Investigate signing failures, CAA/lint rejections, or store errors."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#issuance-error-rate-slo-burn"
-
-      - alert: SecsyPKIIssuanceErrorBudgetBurnSlow
-        # 6x burn over 6h AND 30m — a slower leak that still warrants a ticket.
-        expr: |
-          (
-            sum by (job) (rate(secsy_certificates_total{result="error"}[6h]))
-              / clamp_min(sum by (job) (rate(secsy_certificates_total[6h])), 1e-9) > (6 * 0.005)
-          )
-          and
-          (
-            sum by (job) (rate(secsy_certificates_total{result="error"}[30m]))
-              / clamp_min(sum by (job) (rate(secsy_certificates_total[30m])), 1e-9) > (6 * 0.005)
-          )
-        for: 15m
-        labels:
-          severity: warning
-          service: secsy-pki
-        annotations:
-          summary: "Issuance error-budget burning ({{ $labels.job }})"
-          description: "Certificate-operation error ratio is burning the 99.5% SLO budget at >6x over 6h and 30m windows."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#issuance-error-rate-slo-burn"
+  # --- Error-budget SLOs -----------------------------------------------------
+  # The Google-SRE-style multi-window multi-burn-rate alerts and their SLI
+  # recording rules (issuance/OCSP/CRL availability, ACME-finalize + HSM-sign
+  # latency, HSM-sign availability) live in the companion single-source file
+  # files/prometheus-slo-rules.yaml so the error-budget concern stays separable
+  # from these operational/threshold alerts. See docs/observability.md#slos-and-error-budgets.
 
   # --- Certificate expiry / renewal ------------------------------------------
   - name: secsy-pki.expiry

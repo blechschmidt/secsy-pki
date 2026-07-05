@@ -812,14 +812,43 @@ scale replicas, or offload OCSP with a longer `ocsp_cache_ttl_seconds`. Rising
 sign latency with a healthy HSM usually means the pool is too small for the
 offered concurrency.
 
-### Issuance error-rate SLO burn
+### SLO error-budget burn
 
-`SecsyPKIIssuanceErrorBudgetBurn{Fast,Slow}` — multi-window burn on the 99.5%
-issuance SLO. Slice `secsy_certificates_total{result="error"}` by `operation`,
-then check whether failures are signing (HSM), policy (CAA/lint rejections —
-`secsy_certificate_caa_checks_total`, `secsy_certificate_lints_total`), or store
-errors. The fast burn (14.4x) pages; the slow burn (6x) is a ticket. Adjust the
-`0.005` budget in the rules if your SLO target differs.
+The `*ErrorBudgetBurn*` / `*BudgetBurn*` alerts are the Google-SRE
+multi-window multi-burn-rate alerts for the core PKI SLOs (see
+[observability.md — SLOs and error budgets](observability.md#slos-and-error-budgets)
+for the full catalog and tuning). All are defined from SLI **recording rules**
+(`job:slo_<sli>:ratio_rate<window>`) in
+`deploy/helm/secsy-pki/files/prometheus-slo-rules.yaml`. For every SLO a **fast**
+burn (≥14.4× over 1h+5m) **pages** and a **slow** burn (≥6× over 6h+30m) is a
+**ticket**; the alert's `slo` label names which objective is burning. When one
+fires, look at the matching recording rule on the dashboard/Explore to see the
+current burn, then triage by SLO:
+
+- **`issuance-availability`** (`SecsyPKIIssuanceErrorBudgetBurn{Fast,Slow}`) —
+  slice `secsy_certificates_total{result="error"}` by `operation`; the failures
+  are signing (HSM), policy (CAA/lint rejections —
+  `secsy_certificate_caa_checks_total`, `secsy_certificate_lints_total`), or store
+  errors.
+- **`ocsp-availability`** / **`crl-availability`**
+  (`SecsyPKIOCSPErrorBudgetBurn*`, `SecsyPKICRLErrorBudgetBurn*`) — relying
+  parties are getting server errors; follow [OCSP / CRL outage](#ocsp--crl-outage)
+  (usually the HSM signing leg or the store). These are the budget-aware siblings
+  of the quick-signal `SecsyPKIOCSPErrorRateHigh` / `SecsyPKICRLServingErrors`.
+- **`acme-finalize-latency`** (`SecsyPKIACMEFinalizeLatencyBudgetBurn*`) — the
+  client-visible ACME issuance step is slow. Almost always downstream of HSM sign
+  latency, CT log submission round-trips, or session-pool saturation — cross-check
+  `hsm-sign-latency` and [HSM pool exhaustion](#hsm-pool-exhaustion).
+- **`hsm-sign-latency`** / **`hsm-sign-availability`**
+  (`SecsyPKIHSMSignLatencyBudgetBurn*`, `SecsyPKIHSMSignErrorBudgetBurn*`) —
+  signing itself is slow or failing; every issuance/CRL/OCSP/TSA path is affected.
+  See [HSM probe down](#hsm-probe-down) and [HSM pool exhaustion](#hsm-pool-exhaustion).
+
+To change an objective, edit the `burn_rate * error_budget` factor in that SLO's
+fast **and** slow expressions (e.g. `0.005` for the 99.5% issuance budget); the
+recording rules are objective-independent. Freshness objectives are threshold
+alerts, not burn-rate ones — see [CRL/delta staleness](#crldelta-staleness) and
+[OCSP / CRL outage](#ocsp--crl-outage).
 
 ### Certificate expiry backlog
 
