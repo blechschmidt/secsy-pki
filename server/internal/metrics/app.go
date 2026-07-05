@@ -497,6 +497,25 @@ var (
 		"Stored-secret registry mutations, by operation (put|rollback|delete) and result.",
 		"operation", "result")
 
+	// Stateless crypto service (Task 138): the non-storing data-key, keyed-HMAC,
+	// and random-bytes endpoints that round out the secret layer alongside
+	// encrypt/decrypt/rewrap. SecretDataKey counts data-key mints; SecretHMAC
+	// counts HMAC generate|verify by operation; SecretRandom counts random-bytes
+	// draws by their entropy source (hsm|software), so operators can confirm the
+	// HSM RNG is actually in the path.
+	SecretDataKey = NewCounter(Default,
+		"secsy_secret_datakey_operations_total",
+		"Data-key generation operations, by result.",
+		"result")
+	SecretHMAC = NewCounter(Default,
+		"secsy_secret_hmac_operations_total",
+		"Keyed-HMAC operations, by operation (generate|verify) and result.",
+		"operation", "result")
+	SecretRandom = NewCounter(Default,
+		"secsy_secret_random_operations_total",
+		"CSPRNG random-bytes operations, by entropy source (hsm|software) and result.",
+		"source", "result")
+
 	// RBAC authorization decisions. "action" is the coarse capability checked;
 	// "decision" is allow|deny.
 	AuthzDecisions = NewCounter(Default,

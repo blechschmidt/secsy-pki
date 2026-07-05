@@ -193,11 +193,15 @@ $ secsy-secret kek-info
 All endpoints require authentication and are only registered when a KEK is
 configured.
 
-| Method & path             | Purpose                                  |
-| ------------------------- | ---------------------------------------- |
-| `GET  /api/secret/info`   | KEK metadata (label, bits, algorithms)   |
-| `POST /api/secret/encrypt`| Encrypt a secret into an envelope        |
-| `POST /api/secret/decrypt`| Decrypt an envelope back to plaintext    |
+| Method & path                  | Purpose                                       |
+| ------------------------------ | --------------------------------------------- |
+| `GET  /api/secret/info`        | KEK metadata (label, bits, algorithms)        |
+| `POST /api/secret/encrypt`     | Encrypt a secret into an envelope             |
+| `POST /api/secret/decrypt`     | Decrypt an envelope back to plaintext         |
+| `POST /api/secret/datakey`     | Mint a data key (plaintext + KEK-wrapped)     |
+| `POST /api/secret/hmac`        | Compute a keyed HMAC over caller data         |
+| `POST /api/secret/hmac/verify` | Verify a keyed HMAC (constant time)           |
+| `POST /api/secret/random`      | CSPRNG bytes (HSM RNG when available)         |
 
 `encrypt` request / response:
 
@@ -219,6 +223,80 @@ configured.
 
 Plaintext is capped at 64 KiB — this feature is for passwords and small secrets,
 not bulk data.
+
+## Stateless crypto service (data key, keyed HMAC, random)
+
+Alongside encrypt/decrypt, the secret layer offers a **non-storing** crypto
+service — an "encryption as a service" surface modelled on HashiCorp Vault
+Transit. Nothing the caller submits is persisted; the server holds only keys.
+All three operations are exposed over REST, gRPC (`SecretService`), and the
+`secsy-secret` CLI, and each authorizes its own tenant-scoped capability
+(`secret:datakey`, `secret:hmac`, `secret:random`), audits, and meters.
+
+### Data keys — high-volume client-side envelope encryption
+
+`datakey` mints a fresh key and returns it **both** in the clear (for immediate
+client-side use) and **wrapped** under the family KEK. The wrapped form is an
+ordinary envelope: decrypt it later to recover the key. No plaintext key is ever
+stored, so a client can seal unlimited data locally and keep only the wrapped key
+next to its ciphertext.
+
+```jsonc
+// POST /api/secret/datakey   { "bits": 256, "context": "<b64?>", "wrapped_only": false }
+// 200 OK
+{ "plaintext": "<b64 key>", "wrapped": { /* envelope */ }, "bits": 256,
+  "kek_label": "secsy-kek", "kek_version": 1 }
+// Recover later:  POST /api/secret/decrypt { "envelope": <wrapped> }  → the same key
+```
+
+`bits` is 128, 256 (default), or 512; `wrapped_only` omits the plaintext.
+
+```console
+$ secsy-secret datakey -bits 256 -json          # plaintext + wrapped
+$ secsy-secret datakey -wrapped-only -out dk.json
+```
+
+### Keyed HMAC — authenticate caller data
+
+`hmac` computes an HMAC-SHA256 over caller data with a **versioned MAC key**
+derived (HKDF) from a random seed that is itself sealed under the KEK — so the
+MAC key never exists at rest and recovering it is an on-HSM operation. The seed
+is provisioned on first use and re-derived per request; the returned `version`
+identifies it so `hmac/verify` is unambiguous. Rotating the KEK does not
+invalidate existing tags (the sealed seed re-wraps like any DEK).
+
+```jsonc
+// POST /api/secret/hmac         { "data": "<b64>" }
+// 200 OK                        { "hmac": "<b64>", "version": 1, "algorithm": "HMAC-SHA256" }
+// POST /api/secret/hmac/verify  { "data": "<b64>", "hmac": "<b64>", "version": 1 }
+// 200 OK                        { "valid": true, "version": 1 }
+```
+
+An unknown version or a mismatch is a `valid:false` **result**, not an error;
+the comparison is constant-time.
+
+```console
+$ printf 'payload' | secsy-secret hmac                 # prints the base64 tag
+$ printf 'payload' | secsy-secret hmac-verify -hmac <tag>   # exits non-zero on mismatch
+```
+
+### Random bytes — CSPRNG from the HSM
+
+`random` returns cryptographically-strong bytes, drawn from the **HSM RNG**
+(`C_GenerateRandom`) when the backend supports it, otherwise the OS CSPRNG. The
+response reports which via `source` (`hsm` | `software`).
+
+```jsonc
+// POST /api/secret/random   { "bytes": 32, "format": "base64" }   // format: base64 | hex
+// 200 OK                    { "random": "<encoded>", "format": "base64", "bytes": 32, "source": "hsm" }
+```
+
+```console
+$ secsy-secret random -bytes 32 -format hex
+```
+
+`bytes` is capped at 1024. Data-key mints and HMAC operations count against the
+tenant's daily secret-op quota; random draws do not (the byte cap bounds abuse).
 
 ## Key escrow and recovery (M-of-N, dual control)
 

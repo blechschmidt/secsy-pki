@@ -409,6 +409,31 @@ func (p *SessionPool) Ping(ctx context.Context) error {
 	return nil
 }
 
+// GenerateRandom draws n cryptographically-strong random bytes from the token's
+// on-device RNG (C_GenerateRandom), borrowing a pooled session for the call. It
+// is the hardware source behind the random-bytes crypto service (Task 138). A
+// non-positive n is rejected; a short read from the module is treated as an
+// error rather than silently returned, so a caller never receives fewer bytes
+// than requested.
+func (p *SessionPool) GenerateRandom(ctx context.Context, n int) ([]byte, error) {
+	if n <= 0 {
+		return nil, fmt.Errorf("pkcs11 random: byte count must be positive, got %d", n)
+	}
+	s, release, err := p.borrow(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	b, err := p.ctx.GenerateRandom(s.handle, n)
+	if err != nil {
+		return nil, fmt.Errorf("pkcs11 C_GenerateRandom: %w", err)
+	}
+	if len(b) != n {
+		return nil, fmt.Errorf("pkcs11 random: token returned %d bytes, want %d", len(b), n)
+	}
+	return b, nil
+}
+
 // Close drains and closes every session, logs the application out once, and
 // releases the shared module reference (finalizing the module if this was the
 // last user). It is idempotent.

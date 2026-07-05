@@ -3390,6 +3390,503 @@ func (*StreamEventsResponse_Heartbeat) isStreamEventsResponse_Payload() {}
 
 func (*StreamEventsResponse_Lag) isStreamEventsResponse_Payload() {}
 
+// GenerateDataKeyRequest asks for a fresh data key. tenant selects the KEK
+// (id or slug; empty = default tenant).
+type GenerateDataKeyRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Tenant string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	// bits is the key strength: 128, 256 (default when 0), or 512.
+	Bits int32 `protobuf:"varint,2,opt,name=bits,proto3" json:"bits,omitempty"`
+	// context is optional AAD bound to the wrapped form; it must be presented
+	// verbatim when decrypting to recover the key.
+	Context []byte `protobuf:"bytes,3,opt,name=context,proto3" json:"context,omitempty"`
+	// wrapped_only omits the plaintext key from the response.
+	WrappedOnly   bool `protobuf:"varint,4,opt,name=wrapped_only,json=wrappedOnly,proto3" json:"wrapped_only,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GenerateDataKeyRequest) Reset() {
+	*x = GenerateDataKeyRequest{}
+	mi := &file_pki_v1_pki_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GenerateDataKeyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GenerateDataKeyRequest) ProtoMessage() {}
+
+func (x *GenerateDataKeyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pki_v1_pki_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GenerateDataKeyRequest.ProtoReflect.Descriptor instead.
+func (*GenerateDataKeyRequest) Descriptor() ([]byte, []int) {
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *GenerateDataKeyRequest) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *GenerateDataKeyRequest) GetBits() int32 {
+	if x != nil {
+		return x.Bits
+	}
+	return 0
+}
+
+func (x *GenerateDataKeyRequest) GetContext() []byte {
+	if x != nil {
+		return x.Context
+	}
+	return nil
+}
+
+func (x *GenerateDataKeyRequest) GetWrappedOnly() bool {
+	if x != nil {
+		return x.WrappedOnly
+	}
+	return false
+}
+
+// GenerateDataKeyResponse returns the fresh data key and its wrapped form.
+type GenerateDataKeyResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// plaintext is the data key in the clear; empty when wrapped_only was set.
+	Plaintext []byte `protobuf:"bytes,1,opt,name=plaintext,proto3" json:"plaintext,omitempty"`
+	// wrapped is the serialized envelope to store and later Decrypt.
+	Wrapped       []byte `protobuf:"bytes,2,opt,name=wrapped,proto3" json:"wrapped,omitempty"`
+	Bits          int32  `protobuf:"varint,3,opt,name=bits,proto3" json:"bits,omitempty"`
+	KekLabel      string `protobuf:"bytes,4,opt,name=kek_label,json=kekLabel,proto3" json:"kek_label,omitempty"`
+	KekVersion    int32  `protobuf:"varint,5,opt,name=kek_version,json=kekVersion,proto3" json:"kek_version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GenerateDataKeyResponse) Reset() {
+	*x = GenerateDataKeyResponse{}
+	mi := &file_pki_v1_pki_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GenerateDataKeyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GenerateDataKeyResponse) ProtoMessage() {}
+
+func (x *GenerateDataKeyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pki_v1_pki_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GenerateDataKeyResponse.ProtoReflect.Descriptor instead.
+func (*GenerateDataKeyResponse) Descriptor() ([]byte, []int) {
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *GenerateDataKeyResponse) GetPlaintext() []byte {
+	if x != nil {
+		return x.Plaintext
+	}
+	return nil
+}
+
+func (x *GenerateDataKeyResponse) GetWrapped() []byte {
+	if x != nil {
+		return x.Wrapped
+	}
+	return nil
+}
+
+func (x *GenerateDataKeyResponse) GetBits() int32 {
+	if x != nil {
+		return x.Bits
+	}
+	return 0
+}
+
+func (x *GenerateDataKeyResponse) GetKekLabel() string {
+	if x != nil {
+		return x.KekLabel
+	}
+	return ""
+}
+
+func (x *GenerateDataKeyResponse) GetKekVersion() int32 {
+	if x != nil {
+		return x.KekVersion
+	}
+	return 0
+}
+
+// GenerateHMACRequest carries the data to authenticate.
+type GenerateHMACRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tenant        string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	Data          []byte                 `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GenerateHMACRequest) Reset() {
+	*x = GenerateHMACRequest{}
+	mi := &file_pki_v1_pki_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GenerateHMACRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GenerateHMACRequest) ProtoMessage() {}
+
+func (x *GenerateHMACRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pki_v1_pki_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GenerateHMACRequest.ProtoReflect.Descriptor instead.
+func (*GenerateHMACRequest) Descriptor() ([]byte, []int) {
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *GenerateHMACRequest) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *GenerateHMACRequest) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+// GenerateHMACResponse returns the keyed HMAC and the MAC-key version used.
+type GenerateHMACResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Hmac          []byte                 `protobuf:"bytes,1,opt,name=hmac,proto3" json:"hmac,omitempty"`
+	Version       int32                  `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
+	Algorithm     string                 `protobuf:"bytes,3,opt,name=algorithm,proto3" json:"algorithm,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GenerateHMACResponse) Reset() {
+	*x = GenerateHMACResponse{}
+	mi := &file_pki_v1_pki_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GenerateHMACResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GenerateHMACResponse) ProtoMessage() {}
+
+func (x *GenerateHMACResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pki_v1_pki_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GenerateHMACResponse.ProtoReflect.Descriptor instead.
+func (*GenerateHMACResponse) Descriptor() ([]byte, []int) {
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *GenerateHMACResponse) GetHmac() []byte {
+	if x != nil {
+		return x.Hmac
+	}
+	return nil
+}
+
+func (x *GenerateHMACResponse) GetVersion() int32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *GenerateHMACResponse) GetAlgorithm() string {
+	if x != nil {
+		return x.Algorithm
+	}
+	return ""
+}
+
+// VerifyHMACRequest carries the data, the tag to check, and the MAC-key version.
+type VerifyHMACRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Tenant string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	Data   []byte                 `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	Hmac   []byte                 `protobuf:"bytes,3,opt,name=hmac,proto3" json:"hmac,omitempty"`
+	// version is the MAC-key version from GenerateHMAC; 0 selects the active one.
+	Version       int32 `protobuf:"varint,4,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VerifyHMACRequest) Reset() {
+	*x = VerifyHMACRequest{}
+	mi := &file_pki_v1_pki_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerifyHMACRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerifyHMACRequest) ProtoMessage() {}
+
+func (x *VerifyHMACRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pki_v1_pki_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerifyHMACRequest.ProtoReflect.Descriptor instead.
+func (*VerifyHMACRequest) Descriptor() ([]byte, []int) {
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *VerifyHMACRequest) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *VerifyHMACRequest) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *VerifyHMACRequest) GetHmac() []byte {
+	if x != nil {
+		return x.Hmac
+	}
+	return nil
+}
+
+func (x *VerifyHMACRequest) GetVersion() int32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+// VerifyHMACResponse reports whether the tag verified.
+type VerifyHMACResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Valid         bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`
+	Version       int32                  `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VerifyHMACResponse) Reset() {
+	*x = VerifyHMACResponse{}
+	mi := &file_pki_v1_pki_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VerifyHMACResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VerifyHMACResponse) ProtoMessage() {}
+
+func (x *VerifyHMACResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pki_v1_pki_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VerifyHMACResponse.ProtoReflect.Descriptor instead.
+func (*VerifyHMACResponse) Descriptor() ([]byte, []int) {
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *VerifyHMACResponse) GetValid() bool {
+	if x != nil {
+		return x.Valid
+	}
+	return false
+}
+
+func (x *VerifyHMACResponse) GetVersion() int32 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+// GenerateRandomRequest asks for num_bytes of CSPRNG output.
+type GenerateRandomRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tenant        string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	NumBytes      int32                  `protobuf:"varint,2,opt,name=num_bytes,json=numBytes,proto3" json:"num_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GenerateRandomRequest) Reset() {
+	*x = GenerateRandomRequest{}
+	mi := &file_pki_v1_pki_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GenerateRandomRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GenerateRandomRequest) ProtoMessage() {}
+
+func (x *GenerateRandomRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pki_v1_pki_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GenerateRandomRequest.ProtoReflect.Descriptor instead.
+func (*GenerateRandomRequest) Descriptor() ([]byte, []int) {
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *GenerateRandomRequest) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *GenerateRandomRequest) GetNumBytes() int32 {
+	if x != nil {
+		return x.NumBytes
+	}
+	return 0
+}
+
+// GenerateRandomResponse returns the random bytes and their entropy source.
+type GenerateRandomResponse struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Random []byte                 `protobuf:"bytes,1,opt,name=random,proto3" json:"random,omitempty"`
+	// source is "hsm" when drawn from the token RNG, else "software".
+	Source        string `protobuf:"bytes,2,opt,name=source,proto3" json:"source,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GenerateRandomResponse) Reset() {
+	*x = GenerateRandomResponse{}
+	mi := &file_pki_v1_pki_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GenerateRandomResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GenerateRandomResponse) ProtoMessage() {}
+
+func (x *GenerateRandomResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pki_v1_pki_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GenerateRandomResponse.ProtoReflect.Descriptor instead.
+func (*GenerateRandomResponse) Descriptor() ([]byte, []int) {
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *GenerateRandomResponse) GetRandom() []byte {
+	if x != nil {
+		return x.Random
+	}
+	return nil
+}
+
+func (x *GenerateRandomResponse) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
 var File_pki_v1_pki_proto protoreflect.FileDescriptor
 
 const file_pki_v1_pki_proto_rawDesc = "" +
@@ -3695,7 +4192,40 @@ const file_pki_v1_pki_proto_rawDesc = "" +
 	"\x05event\x18\x01 \x01(\v2\x18.secsy.pki.v1.AuditEventH\x00R\x05event\x12<\n" +
 	"\theartbeat\x18\x02 \x01(\v2\x1c.secsy.pki.v1.EventHeartbeatH\x00R\theartbeat\x12*\n" +
 	"\x03lag\x18\x03 \x01(\v2\x16.secsy.pki.v1.EventLagH\x00R\x03lagB\t\n" +
-	"\apayload*\xb5\x01\n" +
+	"\apayload\"\x81\x01\n" +
+	"\x16GenerateDataKeyRequest\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x12\n" +
+	"\x04bits\x18\x02 \x01(\x05R\x04bits\x12\x18\n" +
+	"\acontext\x18\x03 \x01(\fR\acontext\x12!\n" +
+	"\fwrapped_only\x18\x04 \x01(\bR\vwrappedOnly\"\xa3\x01\n" +
+	"\x17GenerateDataKeyResponse\x12\x1c\n" +
+	"\tplaintext\x18\x01 \x01(\fR\tplaintext\x12\x18\n" +
+	"\awrapped\x18\x02 \x01(\fR\awrapped\x12\x12\n" +
+	"\x04bits\x18\x03 \x01(\x05R\x04bits\x12\x1b\n" +
+	"\tkek_label\x18\x04 \x01(\tR\bkekLabel\x12\x1f\n" +
+	"\vkek_version\x18\x05 \x01(\x05R\n" +
+	"kekVersion\"A\n" +
+	"\x13GenerateHMACRequest\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x12\n" +
+	"\x04data\x18\x02 \x01(\fR\x04data\"b\n" +
+	"\x14GenerateHMACResponse\x12\x12\n" +
+	"\x04hmac\x18\x01 \x01(\fR\x04hmac\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\x05R\aversion\x12\x1c\n" +
+	"\talgorithm\x18\x03 \x01(\tR\talgorithm\"m\n" +
+	"\x11VerifyHMACRequest\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x12\n" +
+	"\x04data\x18\x02 \x01(\fR\x04data\x12\x12\n" +
+	"\x04hmac\x18\x03 \x01(\fR\x04hmac\x12\x18\n" +
+	"\aversion\x18\x04 \x01(\x05R\aversion\"D\n" +
+	"\x12VerifyHMACResponse\x12\x14\n" +
+	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\x05R\aversion\"L\n" +
+	"\x15GenerateRandomRequest\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x1b\n" +
+	"\tnum_bytes\x18\x02 \x01(\x05R\bnumBytes\"H\n" +
+	"\x16GenerateRandomResponse\x12\x16\n" +
+	"\x06random\x18\x01 \x01(\fR\x06random\x12\x16\n" +
+	"\x06source\x18\x02 \x01(\tR\x06source*\xb5\x01\n" +
 	"\x11CertificateStatus\x12\"\n" +
 	"\x1eCERTIFICATE_STATUS_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18CERTIFICATE_STATUS_VALID\x10\x01\x12\x1e\n" +
@@ -3717,7 +4247,13 @@ const file_pki_v1_pki_proto_rawDesc = "" +
 	"\x10ListCertificates\x12%.secsy.pki.v1.ListCertificatesRequest\x1a&.secsy.pki.v1.ListCertificatesResponse\x12[\n" +
 	"\x0eGetCRLMetadata\x12#.secsy.pki.v1.GetCRLMetadataRequest\x1a$.secsy.pki.v1.GetCRLMetadataResponse\x12^\n" +
 	"\x0fGetOCSPMetadata\x12$.secsy.pki.v1.GetOCSPMetadataRequest\x1a%.secsy.pki.v1.GetOCSPMetadataResponse\x12W\n" +
-	"\fStreamEvents\x12!.secsy.pki.v1.StreamEventsRequest\x1a\".secsy.pki.v1.StreamEventsResponse0\x01BGZEgithub.com/blechschmidt/secsy-pki/server/internal/grpcapi/pkiv1;pkiv1b\x06proto3"
+	"\fStreamEvents\x12!.secsy.pki.v1.StreamEventsRequest\x1a\".secsy.pki.v1.StreamEventsResponse0\x012\xf4\x02\n" +
+	"\rSecretService\x12^\n" +
+	"\x0fGenerateDataKey\x12$.secsy.pki.v1.GenerateDataKeyRequest\x1a%.secsy.pki.v1.GenerateDataKeyResponse\x12U\n" +
+	"\fGenerateHMAC\x12!.secsy.pki.v1.GenerateHMACRequest\x1a\".secsy.pki.v1.GenerateHMACResponse\x12O\n" +
+	"\n" +
+	"VerifyHMAC\x12\x1f.secsy.pki.v1.VerifyHMACRequest\x1a .secsy.pki.v1.VerifyHMACResponse\x12[\n" +
+	"\x0eGenerateRandom\x12#.secsy.pki.v1.GenerateRandomRequest\x1a$.secsy.pki.v1.GenerateRandomResponseBGZEgithub.com/blechschmidt/secsy-pki/server/internal/grpcapi/pkiv1;pkiv1b\x06proto3"
 
 var (
 	file_pki_v1_pki_proto_rawDescOnce sync.Once
@@ -3732,7 +4268,7 @@ func file_pki_v1_pki_proto_rawDescGZIP() []byte {
 }
 
 var file_pki_v1_pki_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pki_v1_pki_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
+var file_pki_v1_pki_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
 var file_pki_v1_pki_proto_goTypes = []any{
 	(CertificateStatus)(0),               // 0: secsy.pki.v1.CertificateStatus
 	(*CTLogOutcome)(nil),                 // 1: secsy.pki.v1.CTLogOutcome
@@ -3773,46 +4309,54 @@ var file_pki_v1_pki_proto_goTypes = []any{
 	(*EventHeartbeat)(nil),               // 36: secsy.pki.v1.EventHeartbeat
 	(*EventLag)(nil),                     // 37: secsy.pki.v1.EventLag
 	(*StreamEventsResponse)(nil),         // 38: secsy.pki.v1.StreamEventsResponse
-	(*timestamppb.Timestamp)(nil),        // 39: google.protobuf.Timestamp
+	(*GenerateDataKeyRequest)(nil),       // 39: secsy.pki.v1.GenerateDataKeyRequest
+	(*GenerateDataKeyResponse)(nil),      // 40: secsy.pki.v1.GenerateDataKeyResponse
+	(*GenerateHMACRequest)(nil),          // 41: secsy.pki.v1.GenerateHMACRequest
+	(*GenerateHMACResponse)(nil),         // 42: secsy.pki.v1.GenerateHMACResponse
+	(*VerifyHMACRequest)(nil),            // 43: secsy.pki.v1.VerifyHMACRequest
+	(*VerifyHMACResponse)(nil),           // 44: secsy.pki.v1.VerifyHMACResponse
+	(*GenerateRandomRequest)(nil),        // 45: secsy.pki.v1.GenerateRandomRequest
+	(*GenerateRandomResponse)(nil),       // 46: secsy.pki.v1.GenerateRandomResponse
+	(*timestamppb.Timestamp)(nil),        // 47: google.protobuf.Timestamp
 }
 var file_pki_v1_pki_proto_depIdxs = []int32{
 	1,  // 0: secsy.pki.v1.CTInfo.logs:type_name -> secsy.pki.v1.CTLogOutcome
 	3,  // 1: secsy.pki.v1.IssueCertificateRequest.psd2:type_name -> secsy.pki.v1.PSD2QCStatement
 	4,  // 2: secsy.pki.v1.IssueCertificateRequest.private_key_usage_period:type_name -> secsy.pki.v1.PrivateKeyUsagePeriod
-	39, // 3: secsy.pki.v1.CertificateResponse.not_before:type_name -> google.protobuf.Timestamp
-	39, // 4: secsy.pki.v1.CertificateResponse.not_after:type_name -> google.protobuf.Timestamp
+	47, // 3: secsy.pki.v1.CertificateResponse.not_before:type_name -> google.protobuf.Timestamp
+	47, // 4: secsy.pki.v1.CertificateResponse.not_after:type_name -> google.protobuf.Timestamp
 	2,  // 5: secsy.pki.v1.CertificateResponse.ct:type_name -> secsy.pki.v1.CTInfo
 	3,  // 6: secsy.pki.v1.PreviewCertificateRequest.psd2:type_name -> secsy.pki.v1.PSD2QCStatement
 	4,  // 7: secsy.pki.v1.PreviewCertificateRequest.private_key_usage_period:type_name -> secsy.pki.v1.PrivateKeyUsagePeriod
-	39, // 8: secsy.pki.v1.PreviewCertificateResponse.not_before:type_name -> google.protobuf.Timestamp
-	39, // 9: secsy.pki.v1.PreviewCertificateResponse.not_after:type_name -> google.protobuf.Timestamp
+	47, // 8: secsy.pki.v1.PreviewCertificateResponse.not_before:type_name -> google.protobuf.Timestamp
+	47, // 9: secsy.pki.v1.PreviewCertificateResponse.not_after:type_name -> google.protobuf.Timestamp
 	10, // 10: secsy.pki.v1.PreviewCertificateResponse.extensions:type_name -> secsy.pki.v1.PreviewExtension
 	9,  // 11: secsy.pki.v1.PreviewCertificateResponse.gates:type_name -> secsy.pki.v1.PreviewGate
-	39, // 12: secsy.pki.v1.ValidationRevocation.revoked_at:type_name -> google.protobuf.Timestamp
-	39, // 13: secsy.pki.v1.ValidatedCertificate.not_before:type_name -> google.protobuf.Timestamp
-	39, // 14: secsy.pki.v1.ValidatedCertificate.not_after:type_name -> google.protobuf.Timestamp
+	47, // 12: secsy.pki.v1.ValidationRevocation.revoked_at:type_name -> google.protobuf.Timestamp
+	47, // 13: secsy.pki.v1.ValidatedCertificate.not_before:type_name -> google.protobuf.Timestamp
+	47, // 14: secsy.pki.v1.ValidatedCertificate.not_after:type_name -> google.protobuf.Timestamp
 	13, // 15: secsy.pki.v1.ValidatedCertificate.revocation:type_name -> secsy.pki.v1.ValidationRevocation
-	39, // 16: secsy.pki.v1.ValidateChainResponse.evaluated_at:type_name -> google.protobuf.Timestamp
-	39, // 17: secsy.pki.v1.ValidateChainResponse.valid_from:type_name -> google.protobuf.Timestamp
-	39, // 18: secsy.pki.v1.ValidateChainResponse.valid_until:type_name -> google.protobuf.Timestamp
+	47, // 16: secsy.pki.v1.ValidateChainResponse.evaluated_at:type_name -> google.protobuf.Timestamp
+	47, // 17: secsy.pki.v1.ValidateChainResponse.valid_from:type_name -> google.protobuf.Timestamp
+	47, // 18: secsy.pki.v1.ValidateChainResponse.valid_until:type_name -> google.protobuf.Timestamp
 	14, // 19: secsy.pki.v1.ValidateChainResponse.chain:type_name -> secsy.pki.v1.ValidatedCertificate
 	15, // 20: secsy.pki.v1.ValidateChainResponse.checks:type_name -> secsy.pki.v1.ValidationCheck
-	39, // 21: secsy.pki.v1.CertificateInfo.not_before:type_name -> google.protobuf.Timestamp
-	39, // 22: secsy.pki.v1.CertificateInfo.not_after:type_name -> google.protobuf.Timestamp
+	47, // 21: secsy.pki.v1.CertificateInfo.not_before:type_name -> google.protobuf.Timestamp
+	47, // 22: secsy.pki.v1.CertificateInfo.not_after:type_name -> google.protobuf.Timestamp
 	0,  // 23: secsy.pki.v1.CertificateInfo.status:type_name -> secsy.pki.v1.CertificateStatus
-	39, // 24: secsy.pki.v1.CertificateInfo.revoked_at:type_name -> google.protobuf.Timestamp
-	39, // 25: secsy.pki.v1.CertificateInfo.created_at:type_name -> google.protobuf.Timestamp
+	47, // 24: secsy.pki.v1.CertificateInfo.revoked_at:type_name -> google.protobuf.Timestamp
+	47, // 25: secsy.pki.v1.CertificateInfo.created_at:type_name -> google.protobuf.Timestamp
 	23, // 26: secsy.pki.v1.GetCertificateResponse.certificate:type_name -> secsy.pki.v1.CertificateInfo
 	0,  // 27: secsy.pki.v1.GetCertificateStatusResponse.status:type_name -> secsy.pki.v1.CertificateStatus
-	39, // 28: secsy.pki.v1.GetCertificateStatusResponse.revoked_at:type_name -> google.protobuf.Timestamp
-	39, // 29: secsy.pki.v1.ListCertificatesRequest.expires_before:type_name -> google.protobuf.Timestamp
+	47, // 28: secsy.pki.v1.GetCertificateStatusResponse.revoked_at:type_name -> google.protobuf.Timestamp
+	47, // 29: secsy.pki.v1.ListCertificatesRequest.expires_before:type_name -> google.protobuf.Timestamp
 	23, // 30: secsy.pki.v1.ListCertificatesResponse.certificates:type_name -> secsy.pki.v1.CertificateInfo
-	39, // 31: secsy.pki.v1.GetCRLMetadataResponse.this_update:type_name -> google.protobuf.Timestamp
-	39, // 32: secsy.pki.v1.GetCRLMetadataResponse.next_update:type_name -> google.protobuf.Timestamp
-	39, // 33: secsy.pki.v1.GetCRLMetadataResponse.delta_this_update:type_name -> google.protobuf.Timestamp
-	39, // 34: secsy.pki.v1.GetCRLMetadataResponse.delta_next_update:type_name -> google.protobuf.Timestamp
-	39, // 35: secsy.pki.v1.AuditEvent.timestamp:type_name -> google.protobuf.Timestamp
-	39, // 36: secsy.pki.v1.EventHeartbeat.time:type_name -> google.protobuf.Timestamp
+	47, // 31: secsy.pki.v1.GetCRLMetadataResponse.this_update:type_name -> google.protobuf.Timestamp
+	47, // 32: secsy.pki.v1.GetCRLMetadataResponse.next_update:type_name -> google.protobuf.Timestamp
+	47, // 33: secsy.pki.v1.GetCRLMetadataResponse.delta_this_update:type_name -> google.protobuf.Timestamp
+	47, // 34: secsy.pki.v1.GetCRLMetadataResponse.delta_next_update:type_name -> google.protobuf.Timestamp
+	47, // 35: secsy.pki.v1.AuditEvent.timestamp:type_name -> google.protobuf.Timestamp
+	47, // 36: secsy.pki.v1.EventHeartbeat.time:type_name -> google.protobuf.Timestamp
 	35, // 37: secsy.pki.v1.StreamEventsResponse.event:type_name -> secsy.pki.v1.AuditEvent
 	36, // 38: secsy.pki.v1.StreamEventsResponse.heartbeat:type_name -> secsy.pki.v1.EventHeartbeat
 	37, // 39: secsy.pki.v1.StreamEventsResponse.lag:type_name -> secsy.pki.v1.EventLag
@@ -3829,21 +4373,29 @@ var file_pki_v1_pki_proto_depIdxs = []int32{
 	30, // 50: secsy.pki.v1.PKIService.GetCRLMetadata:input_type -> secsy.pki.v1.GetCRLMetadataRequest
 	32, // 51: secsy.pki.v1.PKIService.GetOCSPMetadata:input_type -> secsy.pki.v1.GetOCSPMetadataRequest
 	34, // 52: secsy.pki.v1.PKIService.StreamEvents:input_type -> secsy.pki.v1.StreamEventsRequest
-	7,  // 53: secsy.pki.v1.PKIService.IssueCertificate:output_type -> secsy.pki.v1.CertificateResponse
-	11, // 54: secsy.pki.v1.PKIService.PreviewCertificate:output_type -> secsy.pki.v1.PreviewCertificateResponse
-	16, // 55: secsy.pki.v1.PKIService.ValidateChain:output_type -> secsy.pki.v1.ValidateChainResponse
-	7,  // 56: secsy.pki.v1.PKIService.RenewCertificate:output_type -> secsy.pki.v1.CertificateResponse
-	18, // 57: secsy.pki.v1.PKIService.RevokeCertificate:output_type -> secsy.pki.v1.RevokeCertificateResponse
-	20, // 58: secsy.pki.v1.PKIService.SuspendCertificate:output_type -> secsy.pki.v1.SuspendCertificateResponse
-	22, // 59: secsy.pki.v1.PKIService.ReleaseCertificate:output_type -> secsy.pki.v1.ReleaseCertificateResponse
-	25, // 60: secsy.pki.v1.PKIService.GetCertificate:output_type -> secsy.pki.v1.GetCertificateResponse
-	27, // 61: secsy.pki.v1.PKIService.GetCertificateStatus:output_type -> secsy.pki.v1.GetCertificateStatusResponse
-	29, // 62: secsy.pki.v1.PKIService.ListCertificates:output_type -> secsy.pki.v1.ListCertificatesResponse
-	31, // 63: secsy.pki.v1.PKIService.GetCRLMetadata:output_type -> secsy.pki.v1.GetCRLMetadataResponse
-	33, // 64: secsy.pki.v1.PKIService.GetOCSPMetadata:output_type -> secsy.pki.v1.GetOCSPMetadataResponse
-	38, // 65: secsy.pki.v1.PKIService.StreamEvents:output_type -> secsy.pki.v1.StreamEventsResponse
-	53, // [53:66] is the sub-list for method output_type
-	40, // [40:53] is the sub-list for method input_type
+	39, // 53: secsy.pki.v1.SecretService.GenerateDataKey:input_type -> secsy.pki.v1.GenerateDataKeyRequest
+	41, // 54: secsy.pki.v1.SecretService.GenerateHMAC:input_type -> secsy.pki.v1.GenerateHMACRequest
+	43, // 55: secsy.pki.v1.SecretService.VerifyHMAC:input_type -> secsy.pki.v1.VerifyHMACRequest
+	45, // 56: secsy.pki.v1.SecretService.GenerateRandom:input_type -> secsy.pki.v1.GenerateRandomRequest
+	7,  // 57: secsy.pki.v1.PKIService.IssueCertificate:output_type -> secsy.pki.v1.CertificateResponse
+	11, // 58: secsy.pki.v1.PKIService.PreviewCertificate:output_type -> secsy.pki.v1.PreviewCertificateResponse
+	16, // 59: secsy.pki.v1.PKIService.ValidateChain:output_type -> secsy.pki.v1.ValidateChainResponse
+	7,  // 60: secsy.pki.v1.PKIService.RenewCertificate:output_type -> secsy.pki.v1.CertificateResponse
+	18, // 61: secsy.pki.v1.PKIService.RevokeCertificate:output_type -> secsy.pki.v1.RevokeCertificateResponse
+	20, // 62: secsy.pki.v1.PKIService.SuspendCertificate:output_type -> secsy.pki.v1.SuspendCertificateResponse
+	22, // 63: secsy.pki.v1.PKIService.ReleaseCertificate:output_type -> secsy.pki.v1.ReleaseCertificateResponse
+	25, // 64: secsy.pki.v1.PKIService.GetCertificate:output_type -> secsy.pki.v1.GetCertificateResponse
+	27, // 65: secsy.pki.v1.PKIService.GetCertificateStatus:output_type -> secsy.pki.v1.GetCertificateStatusResponse
+	29, // 66: secsy.pki.v1.PKIService.ListCertificates:output_type -> secsy.pki.v1.ListCertificatesResponse
+	31, // 67: secsy.pki.v1.PKIService.GetCRLMetadata:output_type -> secsy.pki.v1.GetCRLMetadataResponse
+	33, // 68: secsy.pki.v1.PKIService.GetOCSPMetadata:output_type -> secsy.pki.v1.GetOCSPMetadataResponse
+	38, // 69: secsy.pki.v1.PKIService.StreamEvents:output_type -> secsy.pki.v1.StreamEventsResponse
+	40, // 70: secsy.pki.v1.SecretService.GenerateDataKey:output_type -> secsy.pki.v1.GenerateDataKeyResponse
+	42, // 71: secsy.pki.v1.SecretService.GenerateHMAC:output_type -> secsy.pki.v1.GenerateHMACResponse
+	44, // 72: secsy.pki.v1.SecretService.VerifyHMAC:output_type -> secsy.pki.v1.VerifyHMACResponse
+	46, // 73: secsy.pki.v1.SecretService.GenerateRandom:output_type -> secsy.pki.v1.GenerateRandomResponse
+	57, // [57:74] is the sub-list for method output_type
+	40, // [40:57] is the sub-list for method input_type
 	40, // [40:40] is the sub-list for extension type_name
 	40, // [40:40] is the sub-list for extension extendee
 	0,  // [0:40] is the sub-list for field type_name
@@ -3868,9 +4420,9 @@ func file_pki_v1_pki_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pki_v1_pki_proto_rawDesc), len(file_pki_v1_pki_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   38,
+			NumMessages:   46,
 			NumExtensions: 0,
-			NumServices:   1,
+			NumServices:   2,
 		},
 		GoTypes:           file_pki_v1_pki_proto_goTypes,
 		DependencyIndexes: file_pki_v1_pki_proto_depIdxs,

@@ -95,12 +95,22 @@ func New(cfg Config, api *handlers.API, authMw *middleware.AuthMiddleware) (*Ser
 
 	s.grpc = grpc.NewServer(opts...)
 	pkiv1.RegisterPKIServiceServer(s.grpc, &service{api: api})
+	// The stateless crypto service (Task 138) is served only when a KEK is
+	// configured, mirroring the REST secret routes; when disabled its RPCs return
+	// Unimplemented rather than a per-call error.
+	secretEnabled := api.SecretEnabled()
+	if secretEnabled {
+		pkiv1.RegisterSecretServiceServer(s.grpc, &secretService{api: api})
+	}
 
 	// Health service for load-balancer / Kubernetes gRPC probes. Report SERVING
 	// for the whole server and the PKI service.
 	hs := health.NewServer()
 	hs.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	hs.SetServingStatus(pkiv1.PKIService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_SERVING)
+	if secretEnabled {
+		hs.SetServingStatus(pkiv1.SecretService_ServiceDesc.ServiceName, healthpb.HealthCheckResponse_SERVING)
+	}
 	healthpb.RegisterHealthServer(s.grpc, hs)
 
 	// Server reflection so grpcurl and other tooling can discover the schema.

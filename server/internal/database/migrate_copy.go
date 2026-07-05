@@ -87,6 +87,11 @@ var migrationTables = []string{
 	// store migration preserves the sealed decapsulation key (existing hybrid
 	// envelopes stay openable after the migration).
 	"pqc_hybrid_keys",
+	// Keyed-HMAC MAC keys for the crypto service (Task 138). Keyed by KEK
+	// family/version; standalone (no foreign keys). Copied with the rest of the
+	// secret layer so a store migration preserves the sealed MAC seed (existing
+	// HMAC tokens still verify after the migration).
+	"mac_keys",
 	// Four-eyes approval workflow (Task 81). pending_approvals references
 	// tenants, so it is copied after them; the per-approver decisions reference
 	// pending_approvals, so they come last.

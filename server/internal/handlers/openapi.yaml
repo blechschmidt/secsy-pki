@@ -2635,6 +2635,113 @@ paths:
           description: Decryption failed (generic, oracle-resistant).
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/secret/datakey:
+    post:
+      operationId: generateDataKey
+      tags: [Secrets]
+      summary: Mint a data key (plaintext + KEK-wrapped)
+      description: >-
+        Mint a fresh data key and return it BOTH in the clear (for immediate
+        client-side envelope encryption) and wrapped under the family KEK. The
+        wrapped form is an ordinary envelope: POST it to /api/secret/decrypt to
+        recover the key. No plaintext key is stored. Requires the secret:datakey
+        capability on the tenant.
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DataKeyRequest" }
+      responses:
+        "200":
+          description: The fresh data key and its wrapped form.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DataKeyResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429":
+          description: Tenant secret-op quota exceeded (Retry-After set).
+
+  /api/secret/hmac:
+    post:
+      operationId: generateHMAC
+      tags: [Secrets]
+      summary: Compute a keyed HMAC
+      description: >-
+        Compute an HMAC-SHA256 over the supplied data with the family's
+        versioned, HSM/KEK-derived MAC key (provisioned on first use). The
+        response version identifies the key so verification is unambiguous.
+        Requires the secret:hmac capability on the tenant.
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HMACRequest" }
+      responses:
+        "200":
+          description: The keyed HMAC and MAC-key version.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HMACResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429":
+          description: Tenant secret-op quota exceeded (Retry-After set).
+
+  /api/secret/hmac/verify:
+    post:
+      operationId: verifyHMAC
+      tags: [Secrets]
+      summary: Verify a keyed HMAC
+      description: >-
+        Constant-time verify a keyed HMAC against the named MAC-key version (the
+        active version when unset). An unknown version or a mismatch is a
+        valid=false result, not an error. Requires the secret:hmac capability.
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HMACVerifyRequest" }
+      responses:
+        "200":
+          description: Whether the tag verified.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HMACVerifyResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/secret/random:
+    post:
+      operationId: generateRandom
+      tags: [Secrets]
+      summary: Generate CSPRNG random bytes
+      description: >-
+        Return cryptographically-strong random bytes, sourced from the HSM RNG
+        when available (else the OS CSPRNG), reporting which. Requires the
+        secret:random capability on the tenant.
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RandomRequest" }
+      responses:
+        "200":
+          description: The random bytes and their entropy source.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RandomResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   # ---------------------------------------------------------------------------
   # HSM
   # ---------------------------------------------------------------------------
@@ -5425,6 +5532,89 @@ components:
       type: object
       properties:
         plaintext: { type: string, description: base64-encoded plaintext }
+
+    DataKeyRequest:
+      type: object
+      properties:
+        bits:
+          type: integer
+          enum: [128, 256, 512]
+          default: 256
+          description: Data-key strength in bits.
+        context:
+          type: string
+          description: >-
+            base64-encoded optional AAD bound to the wrapped form; it must be
+            supplied verbatim when decrypting to recover the key.
+        wrapped_only:
+          type: boolean
+          description: Omit the plaintext key from the response (return only the wrapped form).
+
+    DataKeyResponse:
+      type: object
+      properties:
+        plaintext:
+          type: string
+          description: base64-encoded data key (absent when wrapped_only was requested).
+        wrapped:
+          type: object
+          additionalProperties: true
+          description: Opaque versioned envelope; POST to /api/secret/decrypt to recover the key.
+        bits: { type: integer }
+        kek_label: { type: string }
+        kek_version: { type: integer }
+
+    HMACRequest:
+      type: object
+      required: [data]
+      properties:
+        data: { type: string, description: base64-encoded data to authenticate }
+
+    HMACResponse:
+      type: object
+      properties:
+        hmac: { type: string, description: base64-encoded HMAC tag }
+        version: { type: integer, description: MAC-key version the tag was produced under }
+        algorithm: { type: string, description: e.g. HMAC-SHA256 }
+
+    HMACVerifyRequest:
+      type: object
+      required: [data, hmac]
+      properties:
+        data: { type: string, description: base64-encoded data }
+        hmac: { type: string, description: base64-encoded HMAC tag to verify }
+        version:
+          type: integer
+          description: MAC-key version the tag was produced under (0 or absent selects the active key).
+
+    HMACVerifyResponse:
+      type: object
+      properties:
+        valid: { type: boolean }
+        version: { type: integer, description: MAC-key version the verification was performed against }
+
+    RandomRequest:
+      type: object
+      required: [bytes]
+      properties:
+        bytes:
+          type: integer
+          minimum: 1
+          maximum: 1024
+          description: Number of random bytes to generate.
+        format:
+          type: string
+          enum: [base64, hex]
+          default: base64
+          description: Output encoding.
+
+    RandomResponse:
+      type: object
+      properties:
+        random: { type: string, description: The random bytes, encoded per format. }
+        format: { type: string }
+        bytes: { type: integer }
+        source: { type: string, description: "hsm when drawn from the token RNG, else software." }
 
     HSMInfo:
       type: object

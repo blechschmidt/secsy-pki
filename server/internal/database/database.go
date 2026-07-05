@@ -787,6 +787,22 @@ func (db *DB) migrate() error {
 			updated_at TIMESTAMP NOT NULL
 		)`,
 
+		// Keyed-HMAC MAC keys for the stateless crypto service (Task 138), one or
+		// more versioned rows per KEK family. The MAC key is never stored in the
+		// clear: envelope is an ordinary sealed envelope (see secret.Envelope) over a
+		// random seed, so recovering the seed still requires the HSM-held KEK, and a
+		// per-use MAC key is HKDF-derived from it. Multiple versions coexist so an
+		// operator can rotate the MAC key while old tokens still verify; the active
+		// version signs new tokens. There is no plaintext key material in this table.
+		`CREATE TABLE IF NOT EXISTS mac_keys (
+			family TEXT NOT NULL,
+			version INTEGER NOT NULL,
+			envelope TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			created_at TIMESTAMP NOT NULL,
+			PRIMARY KEY (family, version)
+		)`,
+
 		// Four-eyes / maker-checker approval requests (Task 81). A high-risk
 		// operation is held here until enough DISTINCT approvers sign off. The row
 		// stores only the operation's identity (class, resource_key, fingerprint)

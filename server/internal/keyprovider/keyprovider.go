@@ -394,6 +394,22 @@ type KeyWrapper interface {
 	UnwrapKey(ctx context.Context, ref KeyRef, ciphertext []byte) (plaintext []byte, err error)
 }
 
+// RandomProvider is an optional capability implemented by providers that can
+// source cryptographically-strong random bytes directly from their backend's
+// hardware RNG — a PKCS#11 token's C_GenerateRandom (Task 138). Callers
+// type-assert a Provider to it and fall back to crypto/rand when it is absent
+// (the software and cloud-KMS backends do not implement it), so the random-bytes
+// service degrades gracefully to the OS CSPRNG rather than failing when no HSM
+// is present. Only the PKCS#11 backends implement it, so a successful call means
+// the bytes came off the token.
+type RandomProvider interface {
+	// Random returns n cryptographically-strong random bytes drawn from the
+	// backend RNG. It errors on a non-positive n or on a backend failure; the
+	// caller is expected to fall back to crypto/rand on error only for
+	// availability, never to weaken an explicit HSM-RNG requirement silently.
+	Random(ctx context.Context, n int) ([]byte, error)
+}
+
 // ErrKeyNotFound is returned (wrapped) by FindKey / Signer / PublicKey when no
 // key matches the supplied reference.
 var ErrKeyNotFound = fmt.Errorf("keyprovider: key not found")
@@ -406,6 +422,13 @@ var ErrWrapUnsupported = fmt.Errorf("keyprovider: key wrapping not supported by 
 // does not implement Prober. Readiness checks treat it as "cannot probe" rather
 // than "unhealthy".
 var ErrProbeUnsupported = fmt.Errorf("keyprovider: connectivity probe not supported by this provider")
+
+// ErrRandomUnsupported is returned by the instrumented wrapper's Random when the
+// wrapped provider does not implement RandomProvider (the software and cloud-KMS
+// backends). The random-bytes service treats it as "no HSM RNG" and falls back
+// to crypto/rand, so the presence of the always-on wrapper method never forces a
+// caller to believe a hardware RNG exists.
+var ErrRandomUnsupported = fmt.Errorf("keyprovider: hardware RNG not supported by this provider")
 
 // PKCS11Settings configures the PKCS#11 backend. It mirrors the fields of
 // pki.PKCS11Config; New maps it across so callers of this package need not

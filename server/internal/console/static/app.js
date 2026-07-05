@@ -1547,6 +1547,50 @@ $('decBtn').onclick = async () => {
   } catch (e) { alert('Decrypt failed: ' + e.message); }
 };
 
+// ---- Stateless crypto service (Task 138) ---------------------------------
+$('dkBtn').onclick = async () => {
+  try {
+    const body = { bits: parseInt($('dkBits').value, 10) };
+    if ($('dkWrappedOnly').checked) body.wrapped_only = true;
+    const res = await api('POST', '/api/secret/datakey', body);
+    let out = '';
+    if (res.plaintext) out += 'data key (base64):\n' + res.plaintext + '\n\n';
+    out += `wrapped under KEK ${res.kek_label} v${res.kek_version} — decrypt to recover:\n` +
+           JSON.stringify(res.wrapped, null, 2);
+    $('dkOut').value = out;
+  } catch (e) { alert('Data key failed: ' + e.message); }
+};
+$('hmacGenBtn').onclick = async () => {
+  try {
+    const data = b64(new TextEncoder().encode($('hmacData').value));
+    const res = await api('POST', '/api/secret/hmac', { data });
+    $('hmacTag').value = res.hmac;
+    $('hmacVer').value = res.version;
+    const el = $('hmacResult');
+    el.style.color = '';
+    el.textContent = `${res.algorithm} · MAC key version ${res.version}`;
+  } catch (e) { alert('HMAC generate failed: ' + e.message); }
+};
+$('hmacVerBtn').onclick = async () => {
+  try {
+    const body = { data: b64(new TextEncoder().encode($('hmacData').value)), hmac: $('hmacTag').value.trim() };
+    const v = parseInt($('hmacVer').value, 10);
+    if (!isNaN(v) && v > 0) body.version = v;
+    const res = await api('POST', '/api/secret/hmac/verify', body);
+    const el = $('hmacResult');
+    el.style.color = res.valid ? 'var(--ok)' : 'var(--crit)';
+    el.textContent = res.valid ? `✓ valid (MAC key version ${res.version})` : '✗ INVALID — tag does not match';
+  } catch (e) { alert('HMAC verify failed: ' + e.message); }
+};
+$('rndBtn').onclick = async () => {
+  try {
+    const res = await api('POST', '/api/secret/random',
+      { bytes: parseInt($('rndBytes').value, 10), format: $('rndFormat').value });
+    $('rndOut').value = res.random;
+    $('rndSource').textContent = `source: ${res.source}`;
+  } catch (e) { alert('Random failed: ' + e.message); }
+};
+
 // ---- Tenant administration (Task 61) --------------------------------------
 // Lifecycle (suspend/reactivate), per-tenant quotas, and the usage report.
 // Everything is enforced server-side; this page is platform-admin territory

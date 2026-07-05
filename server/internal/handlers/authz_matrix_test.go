@@ -470,6 +470,11 @@ func authzMatrix() []rc {
 		secretR("POST", "/api/secret/kek/rotate", "/api/secret/kek/rotate", `{}`),
 		secretR("POST", "/api/secret/kek/retire", "/api/secret/kek/retire", `{}`),
 		secretR("POST", "/api/secret/rewrap", "/api/secret/rewrap", `{}`),
+		// Stateless crypto service (Task 138): datakey / hmac / hmac-verify / random.
+		secretR("POST", "/api/secret/datakey", "/api/secret/datakey", `{}`),
+		secretR("POST", "/api/secret/hmac", "/api/secret/hmac", `{}`),
+		secretR("POST", "/api/secret/hmac/verify", "/api/secret/hmac/verify", `{}`),
+		secretR("POST", "/api/secret/random", "/api/secret/random", `{}`),
 		secretR("POST", "/api/secret/store", "/api/secret/store", `{}`),
 		secretR("GET", "/api/secret/store", "/api/secret/store", ""),
 		secretR("GET", "/api/secret/store/{id}", "/api/secret/store/s-a", ""),

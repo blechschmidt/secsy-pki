@@ -246,6 +246,17 @@ const (
 	ActionSecretPut         = "secret.put"
 	ActionSecretRollback    = "secret.rollback"
 	ActionSecretExec        = "secret.exec"
+	// Stateless crypto service (Task 138). ActionSecretDataKey records a data-key
+	// mint (target: KEK label; the plaintext key and its wrapped envelope are
+	// never in the audit detail). ActionSecretHMAC / ActionSecretHMACVerify record
+	// keyed-HMAC generate / verify (detail: MAC-key version and, for verify, the
+	// valid/invalid outcome; the data and tag are never logged). ActionSecretRandom
+	// records a random-bytes draw (detail: byte count and entropy source
+	// hsm|software; the bytes are never logged).
+	ActionSecretDataKey    = "secret.datakey"
+	ActionSecretHMAC       = "secret.hmac"
+	ActionSecretHMACVerify = "secret.hmac_verify"
+	ActionSecretRandom     = "secret.random"
 	ActionPermissionGrant   = "permission.grant"
 	ActionPermissionRevoke  = "permission.revoke"
 	ActionGroupCreate       = "group.create"

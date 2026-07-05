@@ -765,3 +765,277 @@ var PKIService_ServiceDesc = grpc.ServiceDesc{
 	},
 	Metadata: "pki/v1/pki.proto",
 }
+
+const (
+	SecretService_GenerateDataKey_FullMethodName = "/secsy.pki.v1.SecretService/GenerateDataKey"
+	SecretService_GenerateHMAC_FullMethodName    = "/secsy.pki.v1.SecretService/GenerateHMAC"
+	SecretService_VerifyHMAC_FullMethodName      = "/secsy.pki.v1.SecretService/VerifyHMAC"
+	SecretService_GenerateRandom_FullMethodName  = "/secsy.pki.v1.SecretService/GenerateRandom"
+)
+
+// SecretServiceClient is the client API for SecretService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// SecretService is the stateless (non-storing) symmetric crypto surface (Task
+// 138): data-key generation, keyed HMAC, and CSPRNG random bytes, all backed by
+// the HSM-held key-encryption key. It rounds out the REST /api/secret/encrypt|
+// decrypt|rewrap endpoints over gRPC. Every RPC authorizes the caller against
+// the named tenant using the same RBAC checks as REST and appends a
+// tamper-evident audit event; nothing the caller supplies is stored. It is
+// deliberately symmetric-only — certificate issuance (PKIService) and CMS/
+// asymmetric signing live elsewhere. The server registers it only when a KEK is
+// configured (secret.kek_label); otherwise every RPC returns FAILED_PRECONDITION.
+type SecretServiceClient interface {
+	// GenerateDataKey mints a fresh data key and returns it BOTH in the clear (for
+	// immediate client-side envelope encryption) and wrapped under the family KEK,
+	// from which the same key is recovered later by decrypting the wrapped
+	// envelope. No plaintext key is stored. Requires the secret:datakey capability
+	// on the tenant.
+	//
+	// Errors: PERMISSION_DENIED (no secret:datakey), INVALID_ARGUMENT (bad bits /
+	// context), RESOURCE_EXHAUSTED (tenant secret-op quota), FAILED_PRECONDITION
+	// (secret service disabled), INTERNAL (HSM/wrap failure).
+	GenerateDataKey(ctx context.Context, in *GenerateDataKeyRequest, opts ...grpc.CallOption) (*GenerateDataKeyResponse, error)
+	// GenerateHMAC computes a keyed HMAC over the supplied data with the family's
+	// versioned, HSM/KEK-derived MAC key (provisioned on first use). The returned
+	// version identifies the key so verification is unambiguous. Requires the
+	// secret:hmac capability on the tenant.
+	GenerateHMAC(ctx context.Context, in *GenerateHMACRequest, opts ...grpc.CallOption) (*GenerateHMACResponse, error)
+	// VerifyHMAC constant-time verifies a keyed HMAC against the named MAC-key
+	// version (the active version when unset). An unknown version or a mismatch is
+	// a valid=false result, not an error. Requires the secret:hmac capability.
+	VerifyHMAC(ctx context.Context, in *VerifyHMACRequest, opts ...grpc.CallOption) (*VerifyHMACResponse, error)
+	// GenerateRandom returns CSPRNG bytes sourced from the HSM RNG when available
+	// (else the OS CSPRNG), reporting which. Requires the secret:random capability
+	// on the tenant.
+	GenerateRandom(ctx context.Context, in *GenerateRandomRequest, opts ...grpc.CallOption) (*GenerateRandomResponse, error)
+}
+
+type secretServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewSecretServiceClient(cc grpc.ClientConnInterface) SecretServiceClient {
+	return &secretServiceClient{cc}
+}
+
+func (c *secretServiceClient) GenerateDataKey(ctx context.Context, in *GenerateDataKeyRequest, opts ...grpc.CallOption) (*GenerateDataKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GenerateDataKeyResponse)
+	err := c.cc.Invoke(ctx, SecretService_GenerateDataKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *secretServiceClient) GenerateHMAC(ctx context.Context, in *GenerateHMACRequest, opts ...grpc.CallOption) (*GenerateHMACResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GenerateHMACResponse)
+	err := c.cc.Invoke(ctx, SecretService_GenerateHMAC_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *secretServiceClient) VerifyHMAC(ctx context.Context, in *VerifyHMACRequest, opts ...grpc.CallOption) (*VerifyHMACResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VerifyHMACResponse)
+	err := c.cc.Invoke(ctx, SecretService_VerifyHMAC_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *secretServiceClient) GenerateRandom(ctx context.Context, in *GenerateRandomRequest, opts ...grpc.CallOption) (*GenerateRandomResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GenerateRandomResponse)
+	err := c.cc.Invoke(ctx, SecretService_GenerateRandom_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SecretServiceServer is the server API for SecretService service.
+// All implementations must embed UnimplementedSecretServiceServer
+// for forward compatibility.
+//
+// SecretService is the stateless (non-storing) symmetric crypto surface (Task
+// 138): data-key generation, keyed HMAC, and CSPRNG random bytes, all backed by
+// the HSM-held key-encryption key. It rounds out the REST /api/secret/encrypt|
+// decrypt|rewrap endpoints over gRPC. Every RPC authorizes the caller against
+// the named tenant using the same RBAC checks as REST and appends a
+// tamper-evident audit event; nothing the caller supplies is stored. It is
+// deliberately symmetric-only — certificate issuance (PKIService) and CMS/
+// asymmetric signing live elsewhere. The server registers it only when a KEK is
+// configured (secret.kek_label); otherwise every RPC returns FAILED_PRECONDITION.
+type SecretServiceServer interface {
+	// GenerateDataKey mints a fresh data key and returns it BOTH in the clear (for
+	// immediate client-side envelope encryption) and wrapped under the family KEK,
+	// from which the same key is recovered later by decrypting the wrapped
+	// envelope. No plaintext key is stored. Requires the secret:datakey capability
+	// on the tenant.
+	//
+	// Errors: PERMISSION_DENIED (no secret:datakey), INVALID_ARGUMENT (bad bits /
+	// context), RESOURCE_EXHAUSTED (tenant secret-op quota), FAILED_PRECONDITION
+	// (secret service disabled), INTERNAL (HSM/wrap failure).
+	GenerateDataKey(context.Context, *GenerateDataKeyRequest) (*GenerateDataKeyResponse, error)
+	// GenerateHMAC computes a keyed HMAC over the supplied data with the family's
+	// versioned, HSM/KEK-derived MAC key (provisioned on first use). The returned
+	// version identifies the key so verification is unambiguous. Requires the
+	// secret:hmac capability on the tenant.
+	GenerateHMAC(context.Context, *GenerateHMACRequest) (*GenerateHMACResponse, error)
+	// VerifyHMAC constant-time verifies a keyed HMAC against the named MAC-key
+	// version (the active version when unset). An unknown version or a mismatch is
+	// a valid=false result, not an error. Requires the secret:hmac capability.
+	VerifyHMAC(context.Context, *VerifyHMACRequest) (*VerifyHMACResponse, error)
+	// GenerateRandom returns CSPRNG bytes sourced from the HSM RNG when available
+	// (else the OS CSPRNG), reporting which. Requires the secret:random capability
+	// on the tenant.
+	GenerateRandom(context.Context, *GenerateRandomRequest) (*GenerateRandomResponse, error)
+	mustEmbedUnimplementedSecretServiceServer()
+}
+
+// UnimplementedSecretServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedSecretServiceServer struct{}
+
+func (UnimplementedSecretServiceServer) GenerateDataKey(context.Context, *GenerateDataKeyRequest) (*GenerateDataKeyResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GenerateDataKey not implemented")
+}
+func (UnimplementedSecretServiceServer) GenerateHMAC(context.Context, *GenerateHMACRequest) (*GenerateHMACResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GenerateHMAC not implemented")
+}
+func (UnimplementedSecretServiceServer) VerifyHMAC(context.Context, *VerifyHMACRequest) (*VerifyHMACResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method VerifyHMAC not implemented")
+}
+func (UnimplementedSecretServiceServer) GenerateRandom(context.Context, *GenerateRandomRequest) (*GenerateRandomResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GenerateRandom not implemented")
+}
+func (UnimplementedSecretServiceServer) mustEmbedUnimplementedSecretServiceServer() {}
+func (UnimplementedSecretServiceServer) testEmbeddedByValue()                       {}
+
+// UnsafeSecretServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to SecretServiceServer will
+// result in compilation errors.
+type UnsafeSecretServiceServer interface {
+	mustEmbedUnimplementedSecretServiceServer()
+}
+
+func RegisterSecretServiceServer(s grpc.ServiceRegistrar, srv SecretServiceServer) {
+	// If the following call pancis, it indicates UnimplementedSecretServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&SecretService_ServiceDesc, srv)
+}
+
+func _SecretService_GenerateDataKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GenerateDataKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SecretServiceServer).GenerateDataKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SecretService_GenerateDataKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SecretServiceServer).GenerateDataKey(ctx, req.(*GenerateDataKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SecretService_GenerateHMAC_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GenerateHMACRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SecretServiceServer).GenerateHMAC(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SecretService_GenerateHMAC_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SecretServiceServer).GenerateHMAC(ctx, req.(*GenerateHMACRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SecretService_VerifyHMAC_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VerifyHMACRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SecretServiceServer).VerifyHMAC(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SecretService_VerifyHMAC_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SecretServiceServer).VerifyHMAC(ctx, req.(*VerifyHMACRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SecretService_GenerateRandom_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GenerateRandomRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SecretServiceServer).GenerateRandom(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SecretService_GenerateRandom_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SecretServiceServer).GenerateRandom(ctx, req.(*GenerateRandomRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// SecretService_ServiceDesc is the grpc.ServiceDesc for SecretService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var SecretService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "secsy.pki.v1.SecretService",
+	HandlerType: (*SecretServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "GenerateDataKey",
+			Handler:    _SecretService_GenerateDataKey_Handler,
+		},
+		{
+			MethodName: "GenerateHMAC",
+			Handler:    _SecretService_GenerateHMAC_Handler,
+		},
+		{
+			MethodName: "VerifyHMAC",
+			Handler:    _SecretService_VerifyHMAC_Handler,
+		},
+		{
+			MethodName: "GenerateRandom",
+			Handler:    _SecretService_GenerateRandom_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "pki/v1/pki.proto",
+}

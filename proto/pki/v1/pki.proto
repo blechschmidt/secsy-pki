@@ -636,3 +636,106 @@ message StreamEventsResponse {
     EventLag lag = 3;
   }
 }
+
+// SecretService is the stateless (non-storing) symmetric crypto surface (Task
+// 138): data-key generation, keyed HMAC, and CSPRNG random bytes, all backed by
+// the HSM-held key-encryption key. It rounds out the REST /api/secret/encrypt|
+// decrypt|rewrap endpoints over gRPC. Every RPC authorizes the caller against
+// the named tenant using the same RBAC checks as REST and appends a
+// tamper-evident audit event; nothing the caller supplies is stored. It is
+// deliberately symmetric-only — certificate issuance (PKIService) and CMS/
+// asymmetric signing live elsewhere. The server registers it only when a KEK is
+// configured (secret.kek_label); otherwise every RPC returns FAILED_PRECONDITION.
+service SecretService {
+  // GenerateDataKey mints a fresh data key and returns it BOTH in the clear (for
+  // immediate client-side envelope encryption) and wrapped under the family KEK,
+  // from which the same key is recovered later by decrypting the wrapped
+  // envelope. No plaintext key is stored. Requires the secret:datakey capability
+  // on the tenant.
+  //
+  // Errors: PERMISSION_DENIED (no secret:datakey), INVALID_ARGUMENT (bad bits /
+  // context), RESOURCE_EXHAUSTED (tenant secret-op quota), FAILED_PRECONDITION
+  // (secret service disabled), INTERNAL (HSM/wrap failure).
+  rpc GenerateDataKey(GenerateDataKeyRequest) returns (GenerateDataKeyResponse);
+
+  // GenerateHMAC computes a keyed HMAC over the supplied data with the family's
+  // versioned, HSM/KEK-derived MAC key (provisioned on first use). The returned
+  // version identifies the key so verification is unambiguous. Requires the
+  // secret:hmac capability on the tenant.
+  rpc GenerateHMAC(GenerateHMACRequest) returns (GenerateHMACResponse);
+
+  // VerifyHMAC constant-time verifies a keyed HMAC against the named MAC-key
+  // version (the active version when unset). An unknown version or a mismatch is
+  // a valid=false result, not an error. Requires the secret:hmac capability.
+  rpc VerifyHMAC(VerifyHMACRequest) returns (VerifyHMACResponse);
+
+  // GenerateRandom returns CSPRNG bytes sourced from the HSM RNG when available
+  // (else the OS CSPRNG), reporting which. Requires the secret:random capability
+  // on the tenant.
+  rpc GenerateRandom(GenerateRandomRequest) returns (GenerateRandomResponse);
+}
+
+// GenerateDataKeyRequest asks for a fresh data key. tenant selects the KEK
+// (id or slug; empty = default tenant).
+message GenerateDataKeyRequest {
+  string tenant = 1;
+  // bits is the key strength: 128, 256 (default when 0), or 512.
+  int32 bits = 2;
+  // context is optional AAD bound to the wrapped form; it must be presented
+  // verbatim when decrypting to recover the key.
+  bytes context = 3;
+  // wrapped_only omits the plaintext key from the response.
+  bool wrapped_only = 4;
+}
+
+// GenerateDataKeyResponse returns the fresh data key and its wrapped form.
+message GenerateDataKeyResponse {
+  // plaintext is the data key in the clear; empty when wrapped_only was set.
+  bytes plaintext = 1;
+  // wrapped is the serialized envelope to store and later Decrypt.
+  bytes wrapped = 2;
+  int32 bits = 3;
+  string kek_label = 4;
+  int32 kek_version = 5;
+}
+
+// GenerateHMACRequest carries the data to authenticate.
+message GenerateHMACRequest {
+  string tenant = 1;
+  bytes data = 2;
+}
+
+// GenerateHMACResponse returns the keyed HMAC and the MAC-key version used.
+message GenerateHMACResponse {
+  bytes hmac = 1;
+  int32 version = 2;
+  string algorithm = 3;
+}
+
+// VerifyHMACRequest carries the data, the tag to check, and the MAC-key version.
+message VerifyHMACRequest {
+  string tenant = 1;
+  bytes data = 2;
+  bytes hmac = 3;
+  // version is the MAC-key version from GenerateHMAC; 0 selects the active one.
+  int32 version = 4;
+}
+
+// VerifyHMACResponse reports whether the tag verified.
+message VerifyHMACResponse {
+  bool valid = 1;
+  int32 version = 2;
+}
+
+// GenerateRandomRequest asks for num_bytes of CSPRNG output.
+message GenerateRandomRequest {
+  string tenant = 1;
+  int32 num_bytes = 2;
+}
+
+// GenerateRandomResponse returns the random bytes and their entropy source.
+message GenerateRandomResponse {
+  bytes random = 1;
+  // source is "hsm" when drawn from the token RNG, else "software".
+  string source = 2;
+}

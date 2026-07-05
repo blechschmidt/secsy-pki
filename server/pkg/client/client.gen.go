@@ -152,6 +152,13 @@ const (
 	CrossSignStatusRevoked CrossSignStatus = "revoked"
 )
 
+// Defines values for DataKeyRequestBits.
+const (
+	N128 DataKeyRequestBits = 128
+	N256 DataKeyRequestBits = 256
+	N512 DataKeyRequestBits = 512
+)
+
 // Defines values for DiscoveredCertificateSeverity.
 const (
 	DiscoveredCertificateSeverityCritical DiscoveredCertificateSeverity = "critical"
@@ -285,6 +292,12 @@ const (
 	PreviewGateStatusPass    PreviewGateStatus = "pass"
 	PreviewGateStatusSkipped PreviewGateStatus = "skipped"
 	PreviewGateStatusWarn    PreviewGateStatus = "warn"
+)
+
+// Defines values for RandomRequestFormat.
+const (
+	Base64 RandomRequestFormat = "base64"
+	Hex    RandomRequestFormat = "hex"
 )
 
 // Defines values for ReadinessComponentsStatus.
@@ -1382,6 +1395,34 @@ type DNSRecordBundle struct {
 	Zone string `json:"zone"`
 }
 
+// DataKeyRequest defines model for DataKeyRequest.
+type DataKeyRequest struct {
+	// Bits Data-key strength in bits.
+	Bits *DataKeyRequestBits `json:"bits,omitempty"`
+
+	// Context base64-encoded optional AAD bound to the wrapped form; it must be supplied verbatim when decrypting to recover the key.
+	Context *string `json:"context,omitempty"`
+
+	// WrappedOnly Omit the plaintext key from the response (return only the wrapped form).
+	WrappedOnly *bool `json:"wrapped_only,omitempty"`
+}
+
+// DataKeyRequestBits Data-key strength in bits.
+type DataKeyRequestBits int
+
+// DataKeyResponse defines model for DataKeyResponse.
+type DataKeyResponse struct {
+	Bits       *int    `json:"bits,omitempty"`
+	KekLabel   *string `json:"kek_label,omitempty"`
+	KekVersion *int    `json:"kek_version,omitempty"`
+
+	// Plaintext base64-encoded data key (absent when wrapped_only was requested).
+	Plaintext *string `json:"plaintext,omitempty"`
+
+	// Wrapped Opaque versioned envelope; POST to /api/secret/decrypt to recover the key.
+	Wrapped *map[string]interface{} `json:"wrapped,omitempty"`
+}
+
 // DecryptRequest defines model for DecryptRequest.
 type DecryptRequest struct {
 	// Context base64-encoded optional AAD
@@ -1687,6 +1728,44 @@ type ExportPKCS12Response struct {
 type Group struct {
 	Id   *string `json:"id,omitempty"`
 	Name *string `json:"name,omitempty"`
+}
+
+// HMACRequest defines model for HMACRequest.
+type HMACRequest struct {
+	// Data base64-encoded data to authenticate
+	Data string `json:"data"`
+}
+
+// HMACResponse defines model for HMACResponse.
+type HMACResponse struct {
+	// Algorithm e.g. HMAC-SHA256
+	Algorithm *string `json:"algorithm,omitempty"`
+
+	// Hmac base64-encoded HMAC tag
+	Hmac *string `json:"hmac,omitempty"`
+
+	// Version MAC-key version the tag was produced under
+	Version *int `json:"version,omitempty"`
+}
+
+// HMACVerifyRequest defines model for HMACVerifyRequest.
+type HMACVerifyRequest struct {
+	// Data base64-encoded data
+	Data string `json:"data"`
+
+	// Hmac base64-encoded HMAC tag to verify
+	Hmac string `json:"hmac"`
+
+	// Version MAC-key version the tag was produced under (0 or absent selects the active key).
+	Version *int `json:"version,omitempty"`
+}
+
+// HMACVerifyResponse defines model for HMACVerifyResponse.
+type HMACVerifyResponse struct {
+	Valid *bool `json:"valid,omitempty"`
+
+	// Version MAC-key version the verification was performed against
+	Version *int `json:"version,omitempty"`
 }
 
 // HSMAuditEntry defines model for HSMAuditEntry.
@@ -2235,6 +2314,30 @@ type ProviderKeyEntry struct {
 	KeyType     *string `json:"key_type,omitempty"`
 	Label       *string `json:"label,omitempty"`
 	Sensitive   *bool   `json:"sensitive,omitempty"`
+}
+
+// RandomRequest defines model for RandomRequest.
+type RandomRequest struct {
+	// Bytes Number of random bytes to generate.
+	Bytes int `json:"bytes"`
+
+	// Format Output encoding.
+	Format *RandomRequestFormat `json:"format,omitempty"`
+}
+
+// RandomRequestFormat Output encoding.
+type RandomRequestFormat string
+
+// RandomResponse defines model for RandomResponse.
+type RandomResponse struct {
+	Bytes  *int    `json:"bytes,omitempty"`
+	Format *string `json:"format,omitempty"`
+
+	// Random The random bytes
+	Random *string `json:"random,omitempty"`
+
+	// Source hsm when drawn from the token RNG, else software.
+	Source *string `json:"source,omitempty"`
 }
 
 // Readiness defines model for Readiness.
@@ -3193,6 +3296,12 @@ type ListExpiringCertificatesParams struct {
 // ListExpiringCertificatesParamsSeverity defines parameters for ListExpiringCertificates.
 type ListExpiringCertificatesParamsSeverity string
 
+// GenerateDataKeyParams defines parameters for GenerateDataKey.
+type GenerateDataKeyParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
 // DecryptSecretParams defines parameters for DecryptSecret.
 type DecryptSecretParams struct {
 	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
@@ -3201,6 +3310,24 @@ type DecryptSecretParams struct {
 
 // EncryptSecretParams defines parameters for EncryptSecret.
 type EncryptSecretParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// GenerateHMACParams defines parameters for GenerateHMAC.
+type GenerateHMACParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// VerifyHMACParams defines parameters for VerifyHMAC.
+type VerifyHMACParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// GenerateRandomParams defines parameters for GenerateRandom.
+type GenerateRandomParams struct {
 	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
 	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
 }
@@ -3319,11 +3446,23 @@ type CreateGlobalRestrictionSetJSONRequestBody = RestrictionSet
 // UpdateRestrictionSetJSONRequestBody defines body for UpdateRestrictionSet for application/json ContentType.
 type UpdateRestrictionSetJSONRequestBody = RestrictionSet
 
+// GenerateDataKeyJSONRequestBody defines body for GenerateDataKey for application/json ContentType.
+type GenerateDataKeyJSONRequestBody = DataKeyRequest
+
 // DecryptSecretJSONRequestBody defines body for DecryptSecret for application/json ContentType.
 type DecryptSecretJSONRequestBody = DecryptRequest
 
 // EncryptSecretJSONRequestBody defines body for EncryptSecret for application/json ContentType.
 type EncryptSecretJSONRequestBody = EncryptRequest
+
+// GenerateHMACJSONRequestBody defines body for GenerateHMAC for application/json ContentType.
+type GenerateHMACJSONRequestBody = HMACRequest
+
+// VerifyHMACJSONRequestBody defines body for VerifyHMAC for application/json ContentType.
+type VerifyHMACJSONRequestBody = HMACVerifyRequest
+
+// GenerateRandomJSONRequestBody defines body for GenerateRandom for application/json ContentType.
+type GenerateRandomJSONRequestBody = RandomRequest
 
 // SignArtifactJSONRequestBody defines body for SignArtifact for application/json ContentType.
 type SignArtifactJSONRequestBody = ArtifactSignRequest
@@ -3784,6 +3923,11 @@ type ClientInterface interface {
 	// ListRotations request
 	ListRotations(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GenerateDataKeyWithBody request with any body
+	GenerateDataKeyWithBody(ctx context.Context, params *GenerateDataKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	GenerateDataKey(ctx context.Context, params *GenerateDataKeyParams, body GenerateDataKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// DecryptSecretWithBody request with any body
 	DecryptSecretWithBody(ctx context.Context, params *DecryptSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -3794,8 +3938,23 @@ type ClientInterface interface {
 
 	EncryptSecret(ctx context.Context, params *EncryptSecretParams, body EncryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GenerateHMACWithBody request with any body
+	GenerateHMACWithBody(ctx context.Context, params *GenerateHMACParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	GenerateHMAC(ctx context.Context, params *GenerateHMACParams, body GenerateHMACJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// VerifyHMACWithBody request with any body
+	VerifyHMACWithBody(ctx context.Context, params *VerifyHMACParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	VerifyHMAC(ctx context.Context, params *VerifyHMACParams, body VerifyHMACJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetSecretInfo request
 	GetSecretInfo(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GenerateRandomWithBody request with any body
+	GenerateRandomWithBody(ctx context.Context, params *GenerateRandomParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	GenerateRandom(ctx context.Context, params *GenerateRandomParams, body GenerateRandomJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// SignArtifactWithBody request with any body
 	SignArtifactWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5455,6 +5614,30 @@ func (c *Client) ListRotations(ctx context.Context, reqEditors ...RequestEditorF
 	return c.Client.Do(req)
 }
 
+func (c *Client) GenerateDataKeyWithBody(ctx context.Context, params *GenerateDataKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGenerateDataKeyRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GenerateDataKey(ctx context.Context, params *GenerateDataKeyParams, body GenerateDataKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGenerateDataKeyRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) DecryptSecretWithBody(ctx context.Context, params *DecryptSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewDecryptSecretRequestWithBody(c.Server, params, contentType, body)
 	if err != nil {
@@ -5503,8 +5686,80 @@ func (c *Client) EncryptSecret(ctx context.Context, params *EncryptSecretParams,
 	return c.Client.Do(req)
 }
 
+func (c *Client) GenerateHMACWithBody(ctx context.Context, params *GenerateHMACParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGenerateHMACRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GenerateHMAC(ctx context.Context, params *GenerateHMACParams, body GenerateHMACJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGenerateHMACRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyHMACWithBody(ctx context.Context, params *VerifyHMACParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyHMACRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyHMAC(ctx context.Context, params *VerifyHMACParams, body VerifyHMACJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyHMACRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) GetSecretInfo(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetSecretInfoRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GenerateRandomWithBody(ctx context.Context, params *GenerateRandomParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGenerateRandomRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GenerateRandom(ctx context.Context, params *GenerateRandomParams, body GenerateRandomJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGenerateRandomRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -10489,6 +10744,61 @@ func NewListRotationsRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewGenerateDataKeyRequest calls the generic GenerateDataKey builder with application/json body
+func NewGenerateDataKeyRequest(server string, params *GenerateDataKeyParams, body GenerateDataKeyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewGenerateDataKeyRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewGenerateDataKeyRequestWithBody generates requests for GenerateDataKey with any type of body
+func NewGenerateDataKeyRequestWithBody(server string, params *GenerateDataKeyParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/datakey")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewDecryptSecretRequest calls the generic DecryptSecret builder with application/json body
 func NewDecryptSecretRequest(server string, params *DecryptSecretParams, body DecryptSecretJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -10599,6 +10909,116 @@ func NewEncryptSecretRequestWithBody(server string, params *EncryptSecretParams,
 	return req, nil
 }
 
+// NewGenerateHMACRequest calls the generic GenerateHMAC builder with application/json body
+func NewGenerateHMACRequest(server string, params *GenerateHMACParams, body GenerateHMACJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewGenerateHMACRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewGenerateHMACRequestWithBody generates requests for GenerateHMAC with any type of body
+func NewGenerateHMACRequestWithBody(server string, params *GenerateHMACParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/hmac")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewVerifyHMACRequest calls the generic VerifyHMAC builder with application/json body
+func NewVerifyHMACRequest(server string, params *VerifyHMACParams, body VerifyHMACJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewVerifyHMACRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewVerifyHMACRequestWithBody generates requests for VerifyHMAC with any type of body
+func NewVerifyHMACRequestWithBody(server string, params *VerifyHMACParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/hmac/verify")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewGetSecretInfoRequest generates requests for GetSecretInfo
 func NewGetSecretInfoRequest(server string) (*http.Request, error) {
 	var err error
@@ -10621,6 +11041,61 @@ func NewGetSecretInfoRequest(server string) (*http.Request, error) {
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
 	if err != nil {
 		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGenerateRandomRequest calls the generic GenerateRandom builder with application/json body
+func NewGenerateRandomRequest(server string, params *GenerateRandomParams, body GenerateRandomJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewGenerateRandomRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewGenerateRandomRequestWithBody generates requests for GenerateRandom with any type of body
+func NewGenerateRandomRequestWithBody(server string, params *GenerateRandomParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/random")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
 	}
 
 	return req, nil
@@ -12083,6 +12558,11 @@ type ClientWithResponsesInterface interface {
 	// ListRotationsWithResponse request
 	ListRotationsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListRotationsResponse, error)
 
+	// GenerateDataKeyWithBodyWithResponse request with any body
+	GenerateDataKeyWithBodyWithResponse(ctx context.Context, params *GenerateDataKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*GenerateDataKeyResponse, error)
+
+	GenerateDataKeyWithResponse(ctx context.Context, params *GenerateDataKeyParams, body GenerateDataKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*GenerateDataKeyResponse, error)
+
 	// DecryptSecretWithBodyWithResponse request with any body
 	DecryptSecretWithBodyWithResponse(ctx context.Context, params *DecryptSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DecryptSecretResponse, error)
 
@@ -12093,8 +12573,23 @@ type ClientWithResponsesInterface interface {
 
 	EncryptSecretWithResponse(ctx context.Context, params *EncryptSecretParams, body EncryptSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*EncryptSecretResponse, error)
 
+	// GenerateHMACWithBodyWithResponse request with any body
+	GenerateHMACWithBodyWithResponse(ctx context.Context, params *GenerateHMACParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*GenerateHMACResponse, error)
+
+	GenerateHMACWithResponse(ctx context.Context, params *GenerateHMACParams, body GenerateHMACJSONRequestBody, reqEditors ...RequestEditorFn) (*GenerateHMACResponse, error)
+
+	// VerifyHMACWithBodyWithResponse request with any body
+	VerifyHMACWithBodyWithResponse(ctx context.Context, params *VerifyHMACParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyHMACResponse, error)
+
+	VerifyHMACWithResponse(ctx context.Context, params *VerifyHMACParams, body VerifyHMACJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyHMACResponse, error)
+
 	// GetSecretInfoWithResponse request
 	GetSecretInfoWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSecretInfoResponse, error)
+
+	// GenerateRandomWithBodyWithResponse request with any body
+	GenerateRandomWithBodyWithResponse(ctx context.Context, params *GenerateRandomParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*GenerateRandomResponse, error)
+
+	GenerateRandomWithResponse(ctx context.Context, params *GenerateRandomParams, body GenerateRandomJSONRequestBody, reqEditors ...RequestEditorFn) (*GenerateRandomResponse, error)
 
 	// SignArtifactWithBodyWithResponse request with any body
 	SignArtifactWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SignArtifactResponse, error)
@@ -14391,6 +14886,30 @@ func (r ListRotationsResponse) StatusCode() int {
 	return 0
 }
 
+type GenerateDataKeyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *DataKeyResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r GenerateDataKeyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GenerateDataKeyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type DecryptSecretResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -14438,6 +14957,54 @@ func (r EncryptSecretResponse) StatusCode() int {
 	return 0
 }
 
+type GenerateHMACResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *HMACResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r GenerateHMACResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GenerateHMACResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type VerifyHMACResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *HMACVerifyResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r VerifyHMACResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r VerifyHMACResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type GetSecretInfoResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -14454,6 +15021,30 @@ func (r GetSecretInfoResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetSecretInfoResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GenerateRandomResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *RandomResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r GenerateRandomResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GenerateRandomResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -16271,6 +16862,23 @@ func (c *ClientWithResponses) ListRotationsWithResponse(ctx context.Context, req
 	return ParseListRotationsResponse(rsp)
 }
 
+// GenerateDataKeyWithBodyWithResponse request with arbitrary body returning *GenerateDataKeyResponse
+func (c *ClientWithResponses) GenerateDataKeyWithBodyWithResponse(ctx context.Context, params *GenerateDataKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*GenerateDataKeyResponse, error) {
+	rsp, err := c.GenerateDataKeyWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGenerateDataKeyResponse(rsp)
+}
+
+func (c *ClientWithResponses) GenerateDataKeyWithResponse(ctx context.Context, params *GenerateDataKeyParams, body GenerateDataKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*GenerateDataKeyResponse, error) {
+	rsp, err := c.GenerateDataKey(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGenerateDataKeyResponse(rsp)
+}
+
 // DecryptSecretWithBodyWithResponse request with arbitrary body returning *DecryptSecretResponse
 func (c *ClientWithResponses) DecryptSecretWithBodyWithResponse(ctx context.Context, params *DecryptSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DecryptSecretResponse, error) {
 	rsp, err := c.DecryptSecretWithBody(ctx, params, contentType, body, reqEditors...)
@@ -16305,6 +16913,40 @@ func (c *ClientWithResponses) EncryptSecretWithResponse(ctx context.Context, par
 	return ParseEncryptSecretResponse(rsp)
 }
 
+// GenerateHMACWithBodyWithResponse request with arbitrary body returning *GenerateHMACResponse
+func (c *ClientWithResponses) GenerateHMACWithBodyWithResponse(ctx context.Context, params *GenerateHMACParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*GenerateHMACResponse, error) {
+	rsp, err := c.GenerateHMACWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGenerateHMACResponse(rsp)
+}
+
+func (c *ClientWithResponses) GenerateHMACWithResponse(ctx context.Context, params *GenerateHMACParams, body GenerateHMACJSONRequestBody, reqEditors ...RequestEditorFn) (*GenerateHMACResponse, error) {
+	rsp, err := c.GenerateHMAC(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGenerateHMACResponse(rsp)
+}
+
+// VerifyHMACWithBodyWithResponse request with arbitrary body returning *VerifyHMACResponse
+func (c *ClientWithResponses) VerifyHMACWithBodyWithResponse(ctx context.Context, params *VerifyHMACParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyHMACResponse, error) {
+	rsp, err := c.VerifyHMACWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyHMACResponse(rsp)
+}
+
+func (c *ClientWithResponses) VerifyHMACWithResponse(ctx context.Context, params *VerifyHMACParams, body VerifyHMACJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyHMACResponse, error) {
+	rsp, err := c.VerifyHMAC(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyHMACResponse(rsp)
+}
+
 // GetSecretInfoWithResponse request returning *GetSecretInfoResponse
 func (c *ClientWithResponses) GetSecretInfoWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSecretInfoResponse, error) {
 	rsp, err := c.GetSecretInfo(ctx, reqEditors...)
@@ -16312,6 +16954,23 @@ func (c *ClientWithResponses) GetSecretInfoWithResponse(ctx context.Context, req
 		return nil, err
 	}
 	return ParseGetSecretInfoResponse(rsp)
+}
+
+// GenerateRandomWithBodyWithResponse request with arbitrary body returning *GenerateRandomResponse
+func (c *ClientWithResponses) GenerateRandomWithBodyWithResponse(ctx context.Context, params *GenerateRandomParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*GenerateRandomResponse, error) {
+	rsp, err := c.GenerateRandomWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGenerateRandomResponse(rsp)
+}
+
+func (c *ClientWithResponses) GenerateRandomWithResponse(ctx context.Context, params *GenerateRandomParams, body GenerateRandomJSONRequestBody, reqEditors ...RequestEditorFn) (*GenerateRandomResponse, error) {
+	rsp, err := c.GenerateRandom(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGenerateRandomResponse(rsp)
 }
 
 // SignArtifactWithBodyWithResponse request with arbitrary body returning *SignArtifactResponse
@@ -19711,6 +20370,46 @@ func ParseListRotationsResponse(rsp *http.Response) (*ListRotationsResponse, err
 	return response, nil
 }
 
+// ParseGenerateDataKeyResponse parses an HTTP response from a GenerateDataKeyWithResponse call
+func ParseGenerateDataKeyResponse(rsp *http.Response) (*GenerateDataKeyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GenerateDataKeyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest DataKeyResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseDecryptSecretResponse parses an HTTP response from a DecryptSecretWithResponse call
 func ParseDecryptSecretResponse(rsp *http.Response) (*DecryptSecretResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -19784,6 +20483,86 @@ func ParseEncryptSecretResponse(rsp *http.Response) (*EncryptSecretResponse, err
 	return response, nil
 }
 
+// ParseGenerateHMACResponse parses an HTTP response from a GenerateHMACWithResponse call
+func ParseGenerateHMACResponse(rsp *http.Response) (*GenerateHMACResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GenerateHMACResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest HMACResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseVerifyHMACResponse parses an HTTP response from a VerifyHMACWithResponse call
+func ParseVerifyHMACResponse(rsp *http.Response) (*VerifyHMACResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &VerifyHMACResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest HMACVerifyResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseGetSecretInfoResponse parses an HTTP response from a GetSecretInfoWithResponse call
 func ParseGetSecretInfoResponse(rsp *http.Response) (*GetSecretInfoResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -19804,6 +20583,46 @@ func ParseGetSecretInfoResponse(rsp *http.Response) (*GetSecretInfoResponse, err
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGenerateRandomResponse parses an HTTP response from a GenerateRandomWithResponse call
+func ParseGenerateRandomResponse(rsp *http.Response) (*GenerateRandomResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GenerateRandomResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest RandomResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
 
 	}
 

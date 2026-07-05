@@ -75,6 +75,24 @@ func (p *instrumentedProvider) ListKeys(ctx context.Context) ([]KeyDescriptor, e
 	return keys, err
 }
 
+// Random forwards to the wrapped provider's RandomProvider implementation so the
+// hardware-RNG capability survives the instrumented wrapper (the embedded
+// Provider interface does not surface Random). Because this method is always
+// present, the instrumented wrapper always satisfies RandomProvider; it returns
+// ErrRandomUnsupported when the underlying backend has no hardware RNG, which the
+// random-bytes service treats as "fall back to crypto/rand". Latency/outcome is
+// recorded under the "random" operation.
+func (p *instrumentedProvider) Random(ctx context.Context, n int) ([]byte, error) {
+	rp, ok := p.Provider.(RandomProvider)
+	if !ok {
+		return nil, ErrRandomUnsupported
+	}
+	start := time.Now()
+	b, err := rp.Random(ctx, n)
+	metrics.ObserveHSM("random", start, err)
+	return b, err
+}
+
 func (p *instrumentedProvider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInfo, error) {
 	ctx, span := tracing.Start(ctx, "hsm.generate_key",
 		attribute.String("hsm.operation", "generate"),

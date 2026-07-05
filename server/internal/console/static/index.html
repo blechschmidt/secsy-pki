@@ -1078,6 +1078,62 @@
             </div>
           </div>
         </div>
+
+        <!-- Stateless crypto service (Task 138): data-key, keyed HMAC, random bytes -->
+        <h2 style="font-size:15px;margin-top:22px">Crypto service <span class="muted" style="font-weight:normal;font-size:13px">— stateless: nothing you submit is stored</span></h2>
+        <div class="row" style="align-items:stretch">
+          <div class="panel" style="flex:1;min-width:280px">
+            <h2 style="font-size:14px">Data key</h2>
+            <p class="muted" style="margin-top:0">Mint a fresh key, returned in the clear and wrapped under the KEK. Recover it later by decrypting the wrapped form.</p>
+            <div class="field">
+              <label for="dkBits">Strength</label>
+              <select id="dkBits"><option value="256">256-bit</option><option value="128">128-bit</option><option value="512">512-bit</option></select>
+            </div>
+            <label class="muted" style="display:flex;gap:6px;align-items:center;margin-bottom:10px"><input type="checkbox" id="dkWrappedOnly"> wrapped only (hide plaintext)</label>
+            <button class="btn" id="dkBtn">Generate →</button>
+            <div class="field" style="margin-top:12px">
+              <label for="dkOut">Result</label>
+              <textarea id="dkOut" readonly style="min-height:120px;font-family:monospace;font-size:12px"></textarea>
+            </div>
+          </div>
+          <div class="panel" style="flex:1;min-width:280px">
+            <h2 style="font-size:14px">Keyed HMAC</h2>
+            <p class="muted" style="margin-top:0">HMAC-SHA256 with an HSM/KEK-derived MAC key. Generate a tag, then verify data against it.</p>
+            <div class="field">
+              <label for="hmacData">Data</label>
+              <textarea id="hmacData" placeholder="data to authenticate…" style="min-height:60px"></textarea>
+            </div>
+            <button class="btn" id="hmacGenBtn">Generate tag →</button>
+            <div class="field" style="margin-top:12px">
+              <label for="hmacTag">Tag (base64)</label>
+              <textarea id="hmacTag" placeholder="tag…" style="min-height:44px;font-family:monospace;font-size:12px"></textarea>
+            </div>
+            <div class="field">
+              <label for="hmacVer">MAC key version</label>
+              <input id="hmacVer" type="number" min="0" placeholder="0 = active" style="width:120px">
+            </div>
+            <button class="btn ghost" id="hmacVerBtn">Verify →</button>
+            <div id="hmacResult" class="muted" style="margin-top:8px"></div>
+          </div>
+          <div class="panel" style="flex:1;min-width:220px">
+            <h2 style="font-size:14px">Random bytes</h2>
+            <p class="muted" style="margin-top:0">CSPRNG, sourced from the HSM RNG when available.</p>
+            <div class="field">
+              <label for="rndBytes">Bytes (1–1024)</label>
+              <input id="rndBytes" type="number" min="1" max="1024" value="32" style="width:120px">
+            </div>
+            <div class="field">
+              <label for="rndFormat">Format</label>
+              <select id="rndFormat"><option value="base64">base64</option><option value="hex">hex</option></select>
+            </div>
+            <button class="btn" id="rndBtn">Generate →</button>
+            <div class="field" style="margin-top:12px">
+              <label for="rndOut">Output</label>
+              <textarea id="rndOut" readonly style="min-height:60px;font-family:monospace;font-size:12px"></textarea>
+            </div>
+            <div id="rndSource" class="muted" style="margin-top:6px"></div>
+          </div>
+        </div>
       </section>
 
       <!-- Tenant administration (Task 61) -->

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -36,7 +37,16 @@ const TenantHeader = "X-Secsy-Tenant"
 // request context for auditing. The record is always loaded — default tenant
 // included — because its quotas drive the secret-op accounting.
 func (a *API) resolveSecretTenant(r *http.Request) (tenant *models.Tenant, kekLabel string, err error) {
-	sel := r.Header.Get(TenantHeader)
+	return a.resolveSecretTenantSel(r.Context(), r.Header.Get(TenantHeader))
+}
+
+// resolveSecretTenantSel is the transport-agnostic core of resolveSecretTenant:
+// it maps an explicit tenant selector (the X-Secsy-Tenant header for REST, a
+// request field for gRPC) to its record and effective KEK label, stamping the
+// resolved tenant on ctx for auditing. An empty selector means the default
+// tenant. It is shared by the REST secret handlers and the gRPC SecretService so
+// both enforce identical tenant scoping.
+func (a *API) resolveSecretTenantSel(ctx context.Context, sel string) (tenant *models.Tenant, kekLabel string, err error) {
 	if sel == "" {
 		sel = models.DefaultTenantID
 	}
@@ -57,7 +67,7 @@ func (a *API) resolveSecretTenant(r *http.Request) (tenant *models.Tenant, kekLa
 		metrics.TenantDenied.Inc(metrics.TenantLabel(t.ID), "suspended")
 		return nil, "", &models.TenantSuspendedError{TenantID: t.ID}
 	}
-	middleware.SetTenant(r.Context(), t.ID)
+	middleware.SetTenant(ctx, t.ID)
 	label := t.KEKLabel
 	if label == "" {
 		label = a.secretKEKLabel
@@ -82,6 +92,12 @@ func writeSecretTenantError(w http.ResponseWriter, err error) {
 // short-lived, matching the signing path. family is the base KEK label (the
 // deployment-wide secret.kek_label or the tenant's kek_label).
 func (a *API) secretRing(r *http.Request, family string) (*secret.Ring, error) {
+	return a.secretRingCtx(r.Context(), family)
+}
+
+// secretRingCtx is the context-based core of secretRing so a non-HTTP transport
+// (the gRPC SecretService, Task 138) builds the identical rotation-aware Ring.
+func (a *API) secretRingCtx(ctx context.Context, family string) (*secret.Ring, error) {
 	if family == "" {
 		return nil, fmt.Errorf("no KEK configured")
 	}
@@ -96,7 +112,7 @@ func (a *API) secretRing(r *http.Request, family string) (*secret.Ring, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading post-quantum hybrid key material: %w", err)
 	}
-	return secret.LoadRingWithPQC(r.Context(), a.keyProvider, family, versions, pqcRec, a.secretPQCHybrid)
+	return secret.LoadRingWithPQC(ctx, a.keyProvider, family, versions, pqcRec, a.secretPQCHybrid)
 }
 
 // pqcKEMLabel names the post-quantum KEM the ring's family uses, or "" when the

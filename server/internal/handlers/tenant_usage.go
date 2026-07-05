@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -84,6 +85,14 @@ func (a *API) requireActiveTenant(tenantID string) (*models.Tenant, error) {
 // invoke with the operation's final error: done(nil) commits the unit and the
 // per-tenant metric, done(err) releases the reservation.
 func (a *API) consumeSecretOpQuota(r *http.Request, tenant *models.Tenant, operation string) (func(opErr error), error) {
+	return a.consumeSecretOpQuotaCtx(r.Context(), clientIP(r), tenant, operation)
+}
+
+// consumeSecretOpQuotaCtx is the context-based core of consumeSecretOpQuota so a
+// non-HTTP transport (the gRPC SecretService, Task 138) meters the same
+// per-tenant daily secret-op quota. ip is the client address recorded on the
+// denied audit event.
+func (a *API) consumeSecretOpQuotaCtx(ctx context.Context, ip string, tenant *models.Tenant, operation string) (func(opErr error), error) {
 	now := time.Now()
 	day := database.UsageDay(now)
 	limit := tenant.Quotas.MaxSecretOpsPerDay
@@ -93,7 +102,7 @@ func (a *API) consumeSecretOpQuota(r *http.Request, tenant *models.Tenant, opera
 	}
 	if !ok {
 		metrics.TenantDenied.Inc(metrics.TenantLabel(tenant.ID), models.QuotaSecretOpsPerDay)
-		a.recordEvent(r, audit.ActionTenantQuota, tenant.ID, tenant.Slug, audit.ResultDenied,
+		a.recordEventCtx(ctx, ip, audit.ActionTenantQuota, tenant.ID, tenant.Slug, audit.ResultDenied,
 			fmt.Sprintf("quota=%s limit=%d day=%s", models.QuotaSecretOpsPerDay, limit, day))
 		return nil, &models.QuotaExceededError{
 			TenantID:   tenant.ID,

@@ -1904,6 +1904,37 @@ type PQCHybridKey struct {
 	UpdatedAt          time.Time `json:"updated_at" db:"updated_at"`
 }
 
+// MAC key lifecycle states.
+const (
+	// MACKeyStatusActive marks the version that signs new HMAC tokens. The active
+	// version is the highest-numbered active row for a family.
+	MACKeyStatusActive = "active"
+	// MACKeyStatusRetired marks a superseded version that can still verify
+	// previously issued tokens but no longer signs new ones.
+	MACKeyStatusRetired = "retired"
+)
+
+// MACKey is a versioned keyed-HMAC MAC key for a KEK family (Task 138). The key
+// material is never stored in the clear: Envelope is an ordinary sealed envelope
+// (see secret.Envelope) over a random seed, so recovering the seed requires the
+// HSM-held KEK, and a per-use MAC key is HKDF-derived from it. Multiple versions
+// coexist so an operator can rotate the MAC key while previously issued tokens
+// still verify.
+type MACKey struct {
+	// Family is the KEK family this MAC key belongs to (the deployment-wide
+	// secret.kek_label or a tenant's kek_label).
+	Family string `json:"family" db:"family"`
+	// Version is the monotonically increasing MAC-key version. It is embedded in
+	// every issued token so verification selects the right key unambiguously.
+	Version int `json:"version" db:"version"`
+	// Envelope is the serialized JSON envelope sealing the random MAC seed. It is
+	// exactly what /api/secret/encrypt would produce over the seed bytes.
+	Envelope string `json:"-" db:"envelope"`
+	// Status is MACKeyStatusActive or MACKeyStatusRetired.
+	Status    string    `json:"status" db:"status"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
+}
+
 // KEKUsage summarizes how many stored secrets are wrapped under one KEK
 // version, joined against the version's rotation status for the KEK status
 // report and the secrets-on-old-KEK gauge.

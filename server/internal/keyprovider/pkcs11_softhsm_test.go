@@ -128,6 +128,59 @@ func TestPKCS11GenerateFindSign(t *testing.T) {
 	}
 }
 
+// TestPKCS11GenerateRandom exercises the HSM RNG (C_GenerateRandom) behind the
+// RandomProvider capability (Task 138): the token returns exactly the requested
+// number of bytes, successive draws differ, and a non-positive request is
+// rejected. It also confirms the provider satisfies the RandomProvider interface
+// so the random-bytes crypto service routes to the token rather than the OS.
+func TestPKCS11GenerateRandom(t *testing.T) {
+	ctx := context.Background()
+	p := pkcs11TestProvider(t)
+
+	rp, ok := any(p).(RandomProvider)
+	if !ok {
+		t.Fatal("PKCS11Provider does not satisfy RandomProvider")
+	}
+
+	for _, n := range []int{1, 16, 32, 256} {
+		b, err := rp.Random(ctx, n)
+		if err != nil {
+			t.Fatalf("Random(%d): %v", n, err)
+		}
+		if len(b) != n {
+			t.Errorf("Random(%d) returned %d bytes", n, len(b))
+		}
+	}
+
+	// Two 32-byte draws must not collide (astronomically unlikely for a real RNG;
+	// a stuck/zero RNG would fail here).
+	a, err := rp.Random(ctx, 32)
+	if err != nil {
+		t.Fatalf("Random: %v", err)
+	}
+	b, err := rp.Random(ctx, 32)
+	if err != nil {
+		t.Fatalf("Random: %v", err)
+	}
+	if string(a) == string(b) {
+		t.Error("two HSM RNG draws were identical")
+	}
+	allZero := true
+	for _, x := range a {
+		if x != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		t.Error("HSM RNG returned all-zero bytes")
+	}
+
+	if _, err := rp.Random(ctx, 0); err == nil {
+		t.Error("Random(0) should error")
+	}
+}
+
 var errConcurrentVerify = errors.New("HSM signature failed verification")
 
 // TestPKCS11ConcurrentSign exercises the session pool under concurrency: many

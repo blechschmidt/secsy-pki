@@ -105,6 +105,14 @@ func run(args []string) error {
 		return cmdEncrypt(cfg, provider, cmdArgs)
 	case "decrypt":
 		return cmdDecrypt(cfg, provider, cmdArgs)
+	case "datakey":
+		return cmdDataKey(cfg, provider, cmdArgs)
+	case "hmac":
+		return cmdHMAC(cfg, provider, cmdArgs)
+	case "hmac-verify":
+		return cmdHMACVerify(cfg, provider, cmdArgs)
+	case "random":
+		return cmdRandom(cfg, provider, cmdArgs)
 	case "put":
 		return cmdPut(cfg, provider, cmdArgs)
 	case "get":
@@ -152,6 +160,13 @@ Commands:
   decrypt            Decrypt a ciphertext envelope back to plaintext
                      (accepts envelopes on any non-retired KEK version; -id decrypts
                      a stored secret from the registry)
+  datakey            Mint a fresh data key, returned BOTH in the clear and wrapped
+                     under the KEK for client-side envelope encryption (-bits, -wrapped-only;
+                     recover the key later with the decrypt command)
+  hmac               Compute a keyed HMAC over stdin/a file with the family's
+                     HSM/KEK-derived MAC key (provisioned on first use)
+  hmac-verify        Verify a keyed HMAC (-hmac TAG [-version N]); exits non-zero on mismatch
+  random             Generate CSPRNG bytes from the HSM RNG when available (-bytes, -format)
   put                Create or update a named stored secret; every put appends a
                      new value version (-ttl-days / -rotate-every-days arm reminders)
   get                Decrypt a stored secret by name (-version N for older values)

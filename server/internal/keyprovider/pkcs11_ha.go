@@ -597,6 +597,22 @@ func (p *PKCS11HAProvider) Decrypter(ctx context.Context, ref KeyRef) (Decrypter
 	return &haDecrypter{p: p, ctx: ctx, ref: ref, pub: info.PublicKey}, nil
 }
 
+// Random draws random bytes from any healthy token's RNG, failing over across
+// members exactly like a signing operation. It satisfies the RandomProvider
+// capability (Task 138); the tokens are interchangeable RNG sources.
+func (p *PKCS11HAProvider) Random(ctx context.Context, n int) ([]byte, error) {
+	var out []byte
+	err := p.withFailover(ctx, "random", nil, func(m *haMember) error {
+		b, e := m.provider.Random(ctx, n)
+		if e != nil {
+			return e
+		}
+		out = b
+		return nil
+	})
+	return out, err
+}
+
 // ListKeys enumerates keys from any healthy token (the tokens are replicas).
 func (p *PKCS11HAProvider) ListKeys(ctx context.Context) ([]KeyDescriptor, error) {
 	var keys []KeyDescriptor

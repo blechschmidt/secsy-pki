@@ -74,6 +74,19 @@ const (
 	// ActionEncrypt / ActionDecrypt cover the secret envelope endpoints.
 	ActionEncrypt Action = "secret:encrypt"
 	ActionDecrypt Action = "secret:decrypt"
+	// ActionDataKey covers minting a fresh data key (returned in the clear plus
+	// KEK-wrapped) for client-side envelope encryption (Task 138). It is a
+	// creation/encryption-class capability, granted alongside secret:encrypt: a
+	// caller that can encrypt can already obtain KEK-protected ciphertext, and a
+	// data key is recoverable only through secret:decrypt.
+	ActionDataKey Action = "secret:datakey"
+	// ActionHMAC covers generating and verifying a keyed HMAC over caller data
+	// with the family's HSM/KEK-derived MAC key (Task 138). Generate and verify
+	// share one capability: both operate the same MAC key and neither exposes it.
+	ActionHMAC Action = "secret:hmac"
+	// ActionRandom covers drawing CSPRNG bytes from the crypto service, sourced
+	// from the HSM RNG when available (Task 138).
+	ActionRandom Action = "secret:random"
 	// ActionManageEscrow covers administering the key-escrow configuration
 	// (inspecting recovery agents, provisioning agent keys). It is an
 	// administrative capability held by admins only.
@@ -145,6 +158,11 @@ var roleActions = map[Role]map[Action]bool{
 		ActionReadAudit: true, // issuers can review their own operations
 		ActionEncrypt:   true,
 		ActionDecrypt:   true,
+		// The stateless crypto-service capabilities travel with the day-to-day
+		// encrypt/decrypt grant: the issuer role is the crypto-service consumer.
+		ActionDataKey: true,
+		ActionHMAC:    true,
+		ActionRandom:  true,
 	},
 	RoleSigner: {
 		ActionSignArtifact: true,

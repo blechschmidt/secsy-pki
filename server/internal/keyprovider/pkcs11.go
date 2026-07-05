@@ -467,6 +467,17 @@ func (p *PKCS11Provider) ListKeys(ctx context.Context) ([]KeyDescriptor, error) 
 	return out, nil
 }
 
+// Random draws n random bytes from the token's on-device RNG (C_GenerateRandom),
+// satisfying the RandomProvider capability so the random-bytes crypto service
+// (Task 138) can source entropy from the HSM rather than the host OS.
+func (p *PKCS11Provider) Random(ctx context.Context, n int) ([]byte, error) {
+	pool, err := p.getPool(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return pool.GenerateRandom(ctx, n)
+}
+
 // Decrypter returns a Decrypter for the referenced RSA KEK. The private key
 // never leaves the token; unwrapping happens on the device via C_Decrypt.
 func (p *PKCS11Provider) Decrypter(ctx context.Context, ref KeyRef) (Decrypter, error) {

@@ -653,6 +653,13 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 		mux.Handle("POST /api/secret/kek/rotate", protectStepUp("secret.kek_rotate", http.HandlerFunc(a.RotateSecretKEK)))
 		mux.Handle("POST /api/secret/kek/retire", protectStepUp("secret.kek_retire", http.HandlerFunc(a.RetireSecretKEK)))
 		mux.Handle("POST /api/secret/rewrap", protected(http.HandlerFunc(a.RewrapSecrets)))
+		// Stateless crypto service (Task 138): data-key, keyed-HMAC, and CSPRNG
+		// endpoints rounding out encrypt/decrypt/rewrap, each authorizing its own
+		// tenant-scoped capability (secret:datakey / secret:hmac / secret:random).
+		mux.Handle("POST /api/secret/datakey", protected(http.HandlerFunc(a.GenerateDataKey)))
+		mux.Handle("POST /api/secret/hmac", protected(http.HandlerFunc(a.GenerateHMAC)))
+		mux.Handle("POST /api/secret/hmac/verify", protected(http.HandlerFunc(a.VerifyHMAC)))
+		mux.Handle("POST /api/secret/random", protected(http.HandlerFunc(a.GenerateRandom)))
 		// Stored-secret registry: server-held envelopes, which is what makes a
 		// fleet-wide re-wrap enumerable.
 		mux.Handle("POST /api/secret/store", protected(http.HandlerFunc(a.StoreSecret)))
