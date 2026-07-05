@@ -313,6 +313,12 @@ const (
 	// owner's reply being validated (or rejected) against the expected
 	// key-authorization digest.
 	ActionACMEEmail = "cert.acme_email"
+	// ActionACMEStar records the lifecycle of an RFC 8739 STAR (short-term
+	// auto-renewed) order (Task 136): the first certificate issued at finalize, each
+	// certificate the background renewer re-issues ahead of expiry, and the order
+	// being canceled. The target is the order id; the detail carries the serial and
+	// recurrence horizon.
+	ActionACMEStar = "cert.acme"
 
 	// SCEP (RFC 8894) and EST (RFC 7030) device-enrollment actions. The actor is
 	// the enrollment grant / authenticated principal rather than an OIDC subject,

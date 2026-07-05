@@ -437,6 +437,14 @@ const CertMarkerCanary = "canary"
 // serving-cert freshness check locates the newest such record by this marker.
 const CertMarkerServingTLS = "serving-tls"
 
+// CertMarkerACMEStar marks the short-lived certificates minted for an ACME STAR
+// (RFC 8739) order — both the first at finalize and every one the background
+// renewer re-issues (Task 136). Like the canary marker it flags a deliberately
+// short-lived, self-renewing artifact: the expiry monitor excludes it so the
+// rapid expiry churn neither floods the warning/critical/expired buckets nor
+// triggers the monitor's own auto-renewal (STAR renews itself).
+const CertMarkerACMEStar = "acme-star"
+
 // IssuedCertificate records an end-entity certificate minted by a CA. It is the
 // authority's copy used for renewal, listing, and (via revocation) CRL/OCSP.
 type IssuedCertificate struct {
@@ -1561,6 +1569,11 @@ const (
 	ACMEOrderStatusProcessing = "processing"
 	ACMEOrderStatusValid      = "valid"
 	ACMEOrderStatusInvalid    = "invalid"
+	// ACMEOrderStatusCanceled marks an RFC 8739 STAR (short-term auto-renewed)
+	// order the client canceled by POSTing status="canceled" to the order URL.
+	// The background renewer issues no further certificates for it, and the
+	// star-certificate URL answers 403 (autoRenewalCanceled).
+	ACMEOrderStatusCanceled = "canceled"
 
 	ACMEAuthzStatusPending     = "pending"
 	ACMEAuthzStatusValid       = "valid"
@@ -1624,6 +1637,33 @@ type ACMEAccount struct {
 	CreatedAt        time.Time `json:"created_at"`
 }
 
+// ACMEAutoRenewal is the RFC 8739 STAR (short-term auto-renewed) recurrence in
+// effect for an order (Task 136). It is resolved from the client's newOrder
+// "auto-renewal" object against the server's configured min/max bounds and then
+// persisted, so the background renewer knows the per-certificate lifetime and the
+// horizon past which it must stop re-issuing. Its presence on an order is what
+// makes the order a STAR order.
+type ACMEAutoRenewal struct {
+	// StartDate is the earliest notBefore of the recurrence. Defaults to the order
+	// creation time when the client omits it.
+	StartDate time.Time `json:"start_date"`
+	// EndDate is the horizon past which no further certificates are issued; the
+	// last certificate's notAfter is capped at it.
+	EndDate time.Time `json:"end_date"`
+	// LifetimeSeconds is the validity of each short-lived STAR certificate, in
+	// seconds (RFC 8739 "lifetime"), bounded by the server's min/max lifetime.
+	LifetimeSeconds int `json:"lifetime_seconds"`
+	// AllowCertificateGet records the client's request (RFC 8739 §3.4) that the
+	// star-certificate be retrievable with an unauthenticated GET, not just an
+	// authenticated POST-as-GET.
+	AllowCertificateGet bool `json:"allow_certificate_get,omitempty"`
+}
+
+// Lifetime returns the per-certificate validity as a duration.
+func (a ACMEAutoRenewal) Lifetime() time.Duration {
+	return time.Duration(a.LifetimeSeconds) * time.Second
+}
+
 // ACMEOrder is a request to issue a certificate for a set of identifiers.
 type ACMEOrder struct {
 	ID          string           `json:"id"`
@@ -1653,8 +1693,24 @@ type ACMEOrder struct {
 	// where finalize falls back to the server's default profile. Surfaced (when
 	// set) on the operator inventory endpoint GET /api/acme/orders for visibility
 	// into the profile each order issued under.
-	Profile   string    `json:"profile,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	Profile string `json:"profile,omitempty"`
+	// AutoRenewal, when non-nil, marks this as an RFC 8739 STAR (short-term
+	// auto-renewed) order and carries its resolved recurrence parameters (Task
+	// 136). A background renewer re-issues the certificate ahead of expiry until
+	// AutoRenewal.EndDate; the client fetches the current short-lived certificate
+	// from the stable star-certificate URL.
+	AutoRenewal *ACMEAutoRenewal `json:"auto_renewal,omitempty"`
+	// StarCSR is the base64url-encoded DER PKCS#10 request captured at finalize of
+	// a STAR order. The renewer replays it to re-issue the certificate for the same
+	// key and identifiers without a fresh CSR from the client. Empty for non-STAR
+	// orders.
+	StarCSR string `json:"-"`
+	// StarNextRenewal is when the background renewer should next re-issue the STAR
+	// certificate (set just inside the current certificate's expiry). Nil for a
+	// non-STAR order, and cleared once the recurrence reaches EndDate or the order
+	// is canceled, which is how the renewer's due-query knows to stop.
+	StarNextRenewal *time.Time `json:"-"`
+	CreatedAt       time.Time  `json:"created_at"`
 }
 
 // ACMEAuthorization is the authorization for a single identifier within an order.

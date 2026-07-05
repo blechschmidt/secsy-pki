@@ -91,6 +91,28 @@ func (s *Server) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := s.now().UTC()
+
+	// RFC 8739 STAR (Task 136): an "auto-renewal" object requests short-term
+	// automatically-renewed certificates. It is honored only when STAR is enabled
+	// (otherwise ignored, per RFC 8739 §3 — a non-implementing server issues a
+	// normal certificate); when honored the recurrence is validated against the
+	// server's configured min/max bounds and persisted on the order.
+	var autoRenewal *models.ACMEAutoRenewal
+	if req.AutoRenewal != nil && s.starEnabled() {
+		// A STAR recurrence for an email (S/MIME) order is not supported: those are
+		// one-shot mailbox certificates on a distinct profile family.
+		if containsEmailIdentifier(ids) {
+			s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest, "email (S/MIME) orders cannot be auto-renewed"))
+			return
+		}
+		ar, prob := s.resolveAutoRenewal(req.AutoRenewal, now)
+		if prob != nil {
+			s.writeProblem(w, prob)
+			return
+		}
+		autoRenewal = ar
+	}
+
 	order := &models.ACMEOrder{
 		ID:          newUUID(),
 		AccountID:   acct.rec.ID,
@@ -99,6 +121,7 @@ func (s *Server) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 		Expires:     now.Add(s.cfg.OrderValidity),
 		Replaces:    replaces,
 		Profile:     profileID,
+		AutoRenewal: autoRenewal,
 	}
 	if err := s.db.CreateACMEOrder(order); err != nil {
 		s.writeProblem(w, newProblem(probServerInternal, http.StatusInternalServerError, "creating order"))
@@ -172,9 +195,11 @@ func (s *Server) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusCreated, wo)
 }
 
-// handleOrder serves POST-as-GET fetches of an order, refreshing its status.
+// handleOrder serves POST-as-GET fetches of an order, and the one mutating POST
+// the order resource accepts: canceling a STAR recurrence (RFC 8739 §3.5) with a
+// status="canceled" payload.
 func (s *Server) handleOrder(w http.ResponseWriter, r *http.Request) {
-	acct, _, prob := s.authAccount(r)
+	acct, payload, prob := s.authAccount(r)
 	if prob != nil {
 		s.writeProblem(w, prob)
 		return
@@ -184,6 +209,12 @@ func (s *Server) handleOrder(w http.ResponseWriter, r *http.Request) {
 		s.writeProblem(w, prob)
 		return
 	}
+	// A non-empty payload is an order update. The only one defined is the STAR
+	// cancellation; an empty payload is the usual POST-as-GET.
+	if len(payload) > 0 {
+		s.handleOrderUpdate(w, r, acct, order, payload)
+		return
+	}
 	s.refreshOrderStatus(order)
 	wo, prob := s.wireOrder(r, order)
 	if prob != nil {
@@ -191,6 +222,22 @@ func (s *Server) handleOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, wo)
+}
+
+// handleOrderUpdate applies a mutating POST to an order. RFC 8739 §3.5 defines
+// canceling a STAR recurrence via status="canceled"; no other order mutation is
+// supported, so anything else is rejected as malformed.
+func (s *Server) handleOrderUpdate(w http.ResponseWriter, r *http.Request, acct *acmeAccount, order *models.ACMEOrder, payload []byte) {
+	var req orderUpdateRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest, "invalid order update payload"))
+		return
+	}
+	if req.Status != models.ACMEOrderStatusCanceled {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest, "the only supported order update is status=\"canceled\""))
+		return
+	}
+	s.cancelStarOrder(w, r, acct, order)
 }
 
 // handleAuthz serves POST-as-GET fetches of an authorization.
@@ -608,6 +655,18 @@ func (s *Server) wireOrder(r *http.Request, order *models.ACMEOrder) (*wireOrder
 		var p Problem
 		if json.Unmarshal([]byte(order.Error), &p) == nil {
 			wo.Error = &p
+		}
+	}
+	// RFC 8739 STAR order: echo the resolved recurrence and expose the current
+	// certificate at the stable star-certificate URL instead of the one-shot
+	// "certificate" URL. The recurrence horizon (end-date) is the meaningful
+	// "expires" for the order.
+	if order.AutoRenewal != nil {
+		wo.AutoRenewal = wireAutoRenewalFrom(order.AutoRenewal)
+		wo.Expires = rfc3339(order.AutoRenewal.EndDate)
+		wo.Certificate = ""
+		if order.Certificate != "" {
+			wo.StarCertificate = s.starCertURL(r, order.ID)
 		}
 	}
 	return wo, nil

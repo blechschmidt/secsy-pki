@@ -537,6 +537,16 @@ acme:
   # set it identically on every replica only to pin/rotate the key. Multi-replica
   # correctness does NOT require it.
   # nonce_hmac_key: "base64-encoded-32-byte-secret"
+  # star enables RFC 8739 STAR short-term auto-renewed certificates: the directory
+  # advertises meta.auto-renewal, newOrder accepts an "auto-renewal" object bounded
+  # by the limits below, and a leader-elected renewer re-issues each certificate
+  # ahead of expiry until its end-date. The client fetches the current certificate
+  # from a stable star-certificate URL. Off by default. See docs/acme.md.
+  # star:
+  #   enabled: true
+  #   min_lifetime_hours: 1        # floor on each certificate's lifetime (min-lifetime)
+  #   max_lifetime_hours: 168      # ceiling on each certificate's lifetime (7 days)
+  #   max_duration_days: 365       # longest total recurrence (max-duration)
 
 # tsa exposes an RFC 3161 Time-Stamp Authority at /tsa (application/timestamp-
 # query). Disabled by default; see docs/timestamping.md. Provision the signing

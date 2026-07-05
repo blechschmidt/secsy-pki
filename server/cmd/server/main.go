@@ -835,6 +835,13 @@ func main() {
 			elector.Register("acme-email-poller", acmeSrv.RunEmailChallengePoller)
 			log.Printf("ACME email-reply-00 (RFC 8823) challenge enabled (from=%s)", cfg.ACME.Email.From)
 		}
+		// RFC 8739 STAR renewer (Task 136): when short-term auto-renewed certificates
+		// are enabled, one replica re-issues each STAR certificate ahead of expiry
+		// until its end-date. Leader-elected so a single replica drives the recurrence.
+		if acmeCfg.Star != nil {
+			elector.Register("acme-star-renewer", acmeSrv.RunStarRenewer)
+			log.Printf("ACME STAR (RFC 8739) short-term auto-renewed certificates enabled")
+		}
 	}
 
 	// SCEP (RFC 8894) device-enrollment server. Like ACME it authenticates
@@ -1326,6 +1333,17 @@ func buildACMEConfig(db *database.DB, cfg *config.Config) (acme.Config, error) {
 		return acme.Config{}, err
 	}
 	ac.Email = email
+
+	// RFC 8739 STAR short-term auto-renewed certificates (Task 136): translate the
+	// operator-friendly hour/day bounds into the durations the server validates
+	// against. Zero fields fall back to the server's defaults (1h / 7d / 365d).
+	if cfg.ACME.Star.Enabled {
+		ac.Star = &acme.StarConfig{
+			MinLifetime: time.Duration(cfg.ACME.Star.MinLifetimeHours) * time.Hour,
+			MaxLifetime: time.Duration(cfg.ACME.Star.MaxLifetimeHours) * time.Hour,
+			MaxDuration: time.Duration(cfg.ACME.Star.MaxDurationDays) * 24 * time.Hour,
+		}
+	}
 	return ac, nil
 }
 

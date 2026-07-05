@@ -125,6 +125,14 @@ type Config struct {
 	// leader-elected job). Absent or half-configured, the challenge is not offered
 	// and email identifiers are rejected as unsupported.
 	Email *EmailChallengeConfig
+
+	// Star, when set, enables RFC 8739 STAR (short-term automatically-renewed)
+	// certificates (Task 136): the directory advertises meta.auto-renewal, newOrder
+	// accepts an "auto-renewal" object bounded by the configured lifetime/duration
+	// limits, and a leader-elected renewer (register RunStarRenewer) re-issues each
+	// STAR certificate ahead of expiry until its end-date. Nil (the default) leaves
+	// the feature off and the "auto-renewal" object ignored on orders.
+	Star *StarConfig
 }
 
 // ACMEProfile is one client-selectable issuance profile exposed by the ACME
@@ -210,6 +218,10 @@ func (c Config) withDefaults() Config {
 	}
 	if c.RenewalPollInterval == 0 {
 		c.RenewalPollInterval = 6 * time.Hour
+	}
+	if c.Star != nil {
+		star := c.Star.withDefaults()
+		c.Star = &star
 	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 	return c
@@ -332,6 +344,13 @@ func (s *Server) Register(mux *http.ServeMux) {
 	// Alternate certificate chains (RFC 8555 §7.4.2): the same leaf served with a
 	// differently-rooted trust path, one per cross-sign of the issuing CA (Task 47).
 	mux.HandleFunc("POST "+p+"/cert/{id}/{n}", s.handleAlternateCertificate)
+	// STAR certificate (RFC 8739 §3.4): the stable URL that always returns the
+	// current short-lived certificate of a STAR order. POST is the account-
+	// authenticated POST-as-GET; GET is the unauthenticated fetch honored when the
+	// order requested allow-certificate-get. Both routes stay mounted even with STAR
+	// disabled so they answer with a proper ACME problem instead of a bare 404.
+	mux.HandleFunc("POST "+p+"/star-cert/{id}", s.handleStarCertificate)
+	mux.HandleFunc("GET "+p+"/star-cert/{id}", s.handleStarCertificateGET)
 	mux.HandleFunc("POST "+p+"/acct/{id}", s.handleAccount)
 	mux.HandleFunc("POST "+p+"/acct/{id}/orders", s.handleAccountOrders)
 	mux.HandleFunc("POST "+p+"/revoke-cert", s.handleRevokeCert)
@@ -384,6 +403,10 @@ func (s *Server) orderURL(r *http.Request, id string) string   { return s.link(r
 func (s *Server) authzURL(r *http.Request, id string) string   { return s.link(r, "/authz/"+id) }
 func (s *Server) challURL(r *http.Request, id string) string   { return s.link(r, "/chall/"+id) }
 func (s *Server) certURL(r *http.Request, id string) string    { return s.link(r, "/cert/"+id) }
+
+// starCertURL returns the stable RFC 8739 star-certificate URL for a STAR order
+// (keyed by the order id), which always serves the current short-lived cert.
+func (s *Server) starCertURL(r *http.Request, id string) string { return s.link(r, "/star-cert/"+id) }
 
 // altCertURL returns the URL of the n-th (1-based) alternate certificate chain
 // for an order, per RFC 8555 §7.4.2. Index 0 is the default chain at certURL.
@@ -470,6 +493,12 @@ func (s *Server) handleDirectory(w http.ResponseWriter, r *http.Request) {
 	// pre-authorization is enabled, so clients discover it exactly when it works.
 	if s.cfg.PreAuthorization {
 		dir.NewAuthz = s.link(r, "/new-authz")
+	}
+	// RFC 8739 STAR support (Task 136) is advertised via meta.auto-renewal only when
+	// enabled, so STAR-aware clients discover the lifetime/duration bounds exactly
+	// when the server will honor them.
+	if s.starEnabled() {
+		dir.Meta.AutoRenewal = s.cfg.Star.wireMeta()
 	}
 	s.writeJSON(w, http.StatusOK, dir)
 }

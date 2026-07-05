@@ -386,6 +386,17 @@ var (
 		"secsy_acme_email_challenge_total",
 		"ACME email-reply-00 (RFC 8823) challenge lifecycle events, by event.",
 		"event")
+	// ACMEStarOrders counts RFC 8739 STAR (short-term auto-renewed) order lifecycle
+	// events (Task 136), by "event": created (first certificate issued at finalize),
+	// renewed (the background renewer re-issued ahead of expiry), renew_failed (a
+	// renewal attempt errored — the order keeps its deadline and is retried),
+	// canceled (the client canceled the recurrence), or ended (the recurrence
+	// reached its end-date and the renewer stopped). A rising renew_failed is the
+	// signal that STAR subscribers are silently losing coverage.
+	ACMEStarOrders = NewCounter(Default,
+		"secsy_acme_star_orders_total",
+		"ACME STAR (RFC 8739) short-term auto-renewed order lifecycle events, by event.",
+		"event")
 
 	// ACMENonces tracks the shared/durable anti-replay nonce store (Task 97) by
 	// "result": issued (a nonce minted), valid (a nonce consumed on its first use),

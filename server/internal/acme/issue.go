@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
 
@@ -139,11 +140,34 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// RFC 8739 STAR (Task 136): a STAR order issues a short-lived certificate whose
+	// validity is the recurrence lifetime, capped so notAfter never exceeds the
+	// end-date. Compute it here so it flows into the IssueSpec, and mark the record
+	// so the expiry monitor ignores STAR's deliberately short-lived, self-renewing
+	// certificates. A recurrence whose end-date already passed before finalize has
+	// nothing to issue.
+	var issueValidity time.Duration
+	var marker string
+	if order.AutoRenewal != nil {
+		issueValidity = starCertValidity(order.AutoRenewal, s.now().UTC())
+		if issueValidity <= 0 {
+			prob := newProblem(probMalformed, http.StatusForbidden, "the auto-renewal end-date has already passed")
+			s.markOrderInvalid(order.ID, prob)
+			s.recordEvent(r, acct.rec.ID, audit.ActionACMEOrderFinalize, order.ID, audit.ResultError,
+				"STAR end-date passed before finalize")
+			s.writeProblem(w, prob)
+			return
+		}
+		marker = models.CertMarkerACMEStar
+	}
+
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
 	result, err := s.caMgr.IssueCertificate(r.Context(), ca.IssueSpec{
 		CAID:              s.cfg.CAID,
 		CSRPEM:            csrPEM,
 		Profile:           profileID,
+		Validity:          issueValidity,
+		Marker:            marker,
 		RequestedBy:       "acme:" + acct.rec.ID,
 		ACMEAccountURI:    s.accountURL(r, acct.rec.ID),
 		ValidationMethods: s.validationMethods(authzs),
@@ -167,7 +191,22 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := s.now().UTC()
-	if err := s.db.FinalizeACMEOrder(order.ID, s.cfg.CAID, result.Serial.String(), string(result.ChainPEM), now); err != nil {
+	if order.AutoRenewal != nil {
+		// STAR (RFC 8739): capture the CSR so the background renewer can replay it,
+		// and schedule the first renewal just inside this certificate's expiry (nil
+		// when it already runs to the recurrence horizon, ending the recurrence).
+		nextRenewal := starNextRenewal(order.AutoRenewal, result.Certificate.NotAfter)
+		if err := s.db.FinalizeACMEStarOrder(order.ID, s.cfg.CAID, result.Serial.String(), string(result.ChainPEM), req.CSR, nextRenewal, now); err != nil {
+			s.writeProblem(w, newProblem(probServerInternal, http.StatusInternalServerError, "recording issued certificate"))
+			return
+		}
+		order.StarCSR = req.CSR
+		order.StarNextRenewal = nextRenewal
+		metrics.ACMEStarOrders.Inc("created")
+		s.recordEvent(r, acct.rec.ID, audit.ActionACMEStar, order.ID, audit.ResultSuccess,
+			"star issued serial="+result.Serial.String()+
+				" lifetime="+strconv.Itoa(order.AutoRenewal.LifetimeSeconds)+"s end="+rfc3339(order.AutoRenewal.EndDate))
+	} else if err := s.db.FinalizeACMEOrder(order.ID, s.cfg.CAID, result.Serial.String(), string(result.ChainPEM), now); err != nil {
 		s.writeProblem(w, newProblem(probServerInternal, http.StatusInternalServerError, "recording issued certificate"))
 		return
 	}

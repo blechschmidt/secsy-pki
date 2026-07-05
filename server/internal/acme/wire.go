@@ -46,6 +46,10 @@ const (
 	// the server does not offer (RFC 9773 — the ACME Profiles extension). The
 	// available profiles are advertised in the directory's meta.profiles.
 	probInvalidProfile = "urn:ietf:params:acme:error:invalidProfile"
+	// probAutoRenewalCanceled signals that the STAR certificate of a canceled
+	// RFC 8739 recurrence was requested (§3.5): the star-certificate URL answers
+	// 403 with this type once the order has been canceled.
+	probAutoRenewalCanceled = "urn:ietf:params:acme:error:autoRenewalCanceled"
 )
 
 // Problem is an RFC 7807 / RFC 8555 problem document.
@@ -116,6 +120,26 @@ type directoryMeta struct {
 	// human-readable description. Omitted when no profiles are configured, keeping
 	// the directory byte-for-byte compatible with the pre-extension server.
 	Profiles map[string]string `json:"profiles,omitempty"`
+	// AutoRenewal advertises RFC 8739 STAR (short-term auto-renewed certificate)
+	// support (Task 136): the server-configured lifetime/duration bounds a client's
+	// newOrder "auto-renewal" object is validated against. Omitted when STAR is
+	// disabled, so the directory stays compatible with the pre-extension server.
+	AutoRenewal *metaAutoRenewal `json:"auto-renewal,omitempty"`
+}
+
+// metaAutoRenewal is the directory meta.auto-renewal object advertising the
+// server's RFC 8739 STAR bounds (§3.1). Durations are in seconds.
+type metaAutoRenewal struct {
+	// MinLifetime is the smallest per-certificate lifetime the server will accept
+	// in a newOrder "auto-renewal.lifetime".
+	MinLifetime int64 `json:"min-lifetime"`
+	// MaxDuration is the longest total recurrence (end-date − start-date) the
+	// server will accept.
+	MaxDuration int64 `json:"max-duration"`
+	// AllowCertificateGet advertises that the server honors a per-order
+	// "allow-certificate-get" request, serving the star-certificate to an
+	// unauthenticated GET (RFC 8739 §3.4).
+	AllowCertificateGet bool `json:"allow-certificate-get,omitempty"`
 }
 
 // wireAccount is the account object returned to clients (RFC 8555 §7.1.2).
@@ -152,6 +176,37 @@ type newOrderRequest struct {
 	// names in the directory's meta.profiles; an unknown value is rejected with an
 	// invalidProfile problem. Omitted means the server's default profile.
 	Profile string `json:"profile,omitempty"`
+	// AutoRenewal, when set, requests an RFC 8739 STAR (short-term auto-renewed)
+	// order (Task 136): the server issues short-lived certificates and re-issues
+	// them ahead of expiry until "end-date". Honored only when the server
+	// advertises meta.auto-renewal; ignored otherwise (a normal order results).
+	AutoRenewal *autoRenewalRequest `json:"auto-renewal,omitempty"`
+}
+
+// autoRenewalRequest is the newOrder "auto-renewal" object a client sends to
+// request a STAR recurrence (RFC 8739 §3.1.1). Dates are RFC 3339 strings and
+// "lifetime" is in seconds.
+type autoRenewalRequest struct {
+	// StartDate is the requested earliest validity of the first certificate.
+	// Optional; the server defaults it to the order creation time.
+	StartDate string `json:"start-date,omitempty"`
+	// EndDate is the horizon past which the client wants no further certificates.
+	// Required.
+	EndDate string `json:"end-date,omitempty"`
+	// Lifetime is the requested validity of each short-lived certificate, in
+	// seconds. Required; validated against the server's min/max lifetime.
+	Lifetime int64 `json:"lifetime,omitempty"`
+	// AllowCertificateGet, when true, requests that the star-certificate be
+	// retrievable with an unauthenticated GET (RFC 8739 §3.4), not just an
+	// authenticated POST-as-GET.
+	AllowCertificateGet bool `json:"allow-certificate-get,omitempty"`
+}
+
+// orderUpdateRequest is the payload of a POST to an order URL that mutates it.
+// The only supported mutation is canceling a STAR recurrence (RFC 8739 §3.5) by
+// setting status="canceled"; an empty payload is a POST-as-GET.
+type orderUpdateRequest struct {
+	Status string `json:"status,omitempty"`
 }
 
 // newAuthzRequest is the payload of a pre-authorization (newAuthz) POST
@@ -186,6 +241,21 @@ type wireOrder struct {
 	Authorizations []string         `json:"authorizations"`
 	Finalize       string           `json:"finalize"`
 	Certificate    string           `json:"certificate,omitempty"`
+	// AutoRenewal echoes the resolved RFC 8739 STAR recurrence (Task 136) for a
+	// STAR order, reflecting the parameters actually in effect (which may have been
+	// clamped to the server's bounds). Present only on STAR orders.
+	AutoRenewal *wireAutoRenewal `json:"auto-renewal,omitempty"`
+	// StarCertificate is the stable URL that always returns the current short-lived
+	// STAR certificate (RFC 8739 §3.4). It replaces "certificate" on a STAR order.
+	StarCertificate string `json:"star-certificate,omitempty"`
+}
+
+// wireAutoRenewal is the resolved "auto-renewal" object echoed on a STAR order.
+type wireAutoRenewal struct {
+	StartDate           string `json:"start-date"`
+	EndDate             string `json:"end-date"`
+	Lifetime            int64  `json:"lifetime"`
+	AllowCertificateGet bool   `json:"allow-certificate-get,omitempty"`
 }
 
 // wireAuthorization is the authorization object (RFC 8555 §7.1.4).

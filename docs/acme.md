@@ -22,7 +22,9 @@ per-order auditing.
 - [5. Client examples](#5-client-examples)
 - [6. Auditing and operator visibility](#6-auditing-and-operator-visibility)
 - [7. Endpoint reference](#7-endpoint-reference)
-- [8. Operational notes](#8-operational-notes)
+- [8. Renewal Information (ARI)](#8-renewal-information-ari)
+- [9. STAR: short-term auto-renewed certificates (RFC 8739)](#9-star-short-term-auto-renewed-certificates-rfc-8739)
+- [10. Operational notes](#10-operational-notes)
 
 ## 1. Enabling the ACME server
 
@@ -319,8 +321,9 @@ reads), per RFC 8555.
 | HEAD/GET | `/acme/new-nonce` | Fetch an anti-replay nonce |
 | POST | `/acme/new-account` | Register / look up an account |
 | POST | `/acme/new-order` | Create an order |
-| POST | `/acme/order/{id}` | Fetch an order (POST-as-GET) |
+| POST | `/acme/order/{id}` | Fetch an order (POST-as-GET), or cancel a STAR recurrence (`status="canceled"`) |
 | POST | `/acme/order/{id}/finalize` | Submit a CSR to issue |
+| POST/GET | `/acme/star-cert/{id}` | Download the current STAR certificate (GET is unauthenticated when the order set `allow-certificate-get`) |
 | POST | `/acme/authz/{id}` | Fetch an authorization |
 | POST | `/acme/chall/{id}` | Respond to / fetch a challenge |
 | POST | `/acme/cert/{id}` | Download the issued chain (PEM) |
@@ -388,7 +391,87 @@ acme:
 
 To compute a CertID from a certificate you hold, use `acme.CertID(*x509.Certificate)`.
 
-## 9. Operational notes
+## 9. STAR: short-term auto-renewed certificates (RFC 8739)
+
+[STAR](https://www.rfc-editor.org/rfc/rfc8739) turns an order into a
+**subscription**: the server issues a short-lived certificate and *automatically
+re-issues* it ahead of expiry, and the subscriber always fetches the current one
+from a single stable URL. It suits deployments that prefer very short lifetimes
+(so revocation is rarely needed) with no per-renewal client work — and it lets a
+relying party fetch the certificate over an unauthenticated GET, e.g. for CDN
+push. Off by default.
+
+**Enabling.**
+
+```yaml
+acme:
+  star:
+    enabled: true
+    min_lifetime_hours: 1     # floor on each certificate's lifetime (advertised as min-lifetime)
+    max_lifetime_hours: 168   # ceiling on each certificate's lifetime (7 days)
+    max_duration_days: 365    # longest total recurrence (advertised as max-duration)
+```
+
+When enabled the directory advertises the bounds under `meta.auto-renewal`:
+
+```console
+$ curl -s https://pki.example.com/acme/directory | jq '.meta."auto-renewal"'
+{ "min-lifetime": 3600, "max-duration": 31536000, "allow-certificate-get": true }
+```
+
+**Ordering.** A client adds an `auto-renewal` object to its **newOrder** (only
+`dns`/`ip` identifiers — not S/MIME email):
+
+```json
+{
+  "identifiers": [{ "type": "dns", "value": "app.example.com" }],
+  "auto-renewal": {
+    "start-date": "2026-07-05T00:00:00Z",   // optional; defaults to now
+    "end-date":   "2026-10-05T00:00:00Z",   // required — recurrence horizon
+    "lifetime":   86400,                      // required — per-certificate seconds
+    "allow-certificate-get": true             // optional — permit unauthenticated GET
+  }
+}
+```
+
+The recurrence is validated against the configured bounds (`lifetime` within
+min/max, duration within max, `end-date` in the future); a violation is rejected
+with `urn:ietf:params:acme:error:malformed`. The order is then validated and
+finalized exactly like a normal order — you still solve a challenge per identifier
+and submit a CSR — after which it reports `status: valid` and carries a
+**`star-certificate`** URL instead of `certificate`, plus the resolved
+`auto-renewal` object. `expires` reflects the recurrence's `end-date`.
+
+**Fetching.** `star-certificate` always returns the *current* certificate:
+
+```console
+# Authenticated POST-as-GET (always available):
+# ... signed JWS POST to the star-certificate URL ...
+# Unauthenticated GET (only when the order set allow-certificate-get):
+$ curl -s https://pki.example.com/acme/star-cert/<order-id>
+-----BEGIN CERTIFICATE----- ...
+```
+
+**Renewal.** A leader-elected background job re-issues each STAR certificate
+before it expires (from the CSR captured at finalize — same key and identifiers),
+up to `end-date`, then stops. Because the certificates are deliberately
+short-lived and self-renewing, they are excluded from the
+[expiry monitor](expiry-monitoring.md). Renewal never involves the client.
+
+**Cancellation.** POST `status: "canceled"` to the order URL (RFC 8739 §3.5) to
+end the subscription: renewal stops immediately and `star-certificate` then
+answers `403` with `urn:ietf:params:acme:error:autoRenewalCanceled`.
+
+**Observability.** `secsy_acme_star_orders_total{event}` counts
+`created|renewed|renew_failed|canceled|ended`, and each event is audited under the
+`cert.acme` action.
+
+> **Client support.** STAR is a niche extension; certbot/lego do not implement it.
+> Drive it with a STAR-aware client or a direct JWS integration. The server's
+> behavior is exercised by the raw-JWS test in
+> `server/internal/acme/star_test.go`.
+
+## 10. Operational notes
 
 - **TLS.** Real ACME clients require the directory to be served over HTTPS.
   Configure `server.tls_cert`/`tls_key`, or terminate TLS at a trusted proxy and

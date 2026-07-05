@@ -1451,6 +1451,31 @@ type ACMEConfig struct {
 	// enabled only when an outbound SMTP sink and an inbound IMAP poller are both
 	// configured.
 	Email ACMEEmailConfig `yaml:"email"`
+
+	// Star configures RFC 8739 STAR (short-term automatically-renewed) certificates
+	// (Task 136). When enabled the directory advertises meta.auto-renewal, newOrder
+	// accepts an "auto-renewal" object bounded by the lifetime/duration limits here,
+	// and a leader-elected renewer re-issues each STAR certificate ahead of expiry
+	// until its end-date. Off by default.
+	Star ACMEStarConfig `yaml:"star"`
+}
+
+// ACMEStarConfig bounds RFC 8739 STAR certificates (Task 136). The lifetime and
+// duration limits are advertised to clients (min-lifetime, max-duration) and every
+// newOrder "auto-renewal" object is validated against them.
+type ACMEStarConfig struct {
+	// Enabled turns the STAR extension on.
+	Enabled bool `yaml:"enabled"`
+	// MinLifetimeHours is the smallest per-certificate lifetime a client may request
+	// (advertised as meta.auto-renewal.min-lifetime). Default 1.
+	MinLifetimeHours int `yaml:"min_lifetime_hours"`
+	// MaxLifetimeHours is the largest per-certificate lifetime a client may request.
+	// STAR is for short-lived certificates, so this caps any single certificate.
+	// Default 168 (7 days).
+	MaxLifetimeHours int `yaml:"max_lifetime_hours"`
+	// MaxDurationDays is the longest total recurrence (end-date − start-date) a
+	// client may request (advertised as meta.auto-renewal.max-duration). Default 365.
+	MaxDurationDays int `yaml:"max_duration_days"`
 }
 
 // ACMEEmailConfig configures the RFC 8823 email-reply-00 challenge (Task 108).
@@ -3819,6 +3844,28 @@ func (c *Config) validateACME() error {
 	}
 	if err := c.validateACMEEmail(); err != nil {
 		return err
+	}
+	if err := c.validateACMEStar(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateACMEStar sanity-checks the RFC 8739 STAR block (Task 136) when it is
+// enabled: the lifetime/duration bounds must be non-negative (zero picks the
+// default) and the maximum lifetime must not be below the minimum, else no
+// lifetime could ever satisfy both bounds.
+func (c *Config) validateACMEStar() error {
+	s := c.ACME.Star
+	if !s.Enabled {
+		return nil
+	}
+	if s.MinLifetimeHours < 0 || s.MaxLifetimeHours < 0 || s.MaxDurationDays < 0 {
+		return fmt.Errorf("acme.star lifetime/duration bounds must not be negative")
+	}
+	if s.MinLifetimeHours > 0 && s.MaxLifetimeHours > 0 && s.MaxLifetimeHours < s.MinLifetimeHours {
+		return fmt.Errorf("acme.star.max_lifetime_hours (%d) must not be below min_lifetime_hours (%d)",
+			s.MaxLifetimeHours, s.MinLifetimeHours)
 	}
 	return nil
 }

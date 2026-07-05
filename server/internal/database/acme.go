@@ -54,6 +54,9 @@ func (db *DB) migrateACME() error {
 			finalized_at TIMESTAMP,
 			replaces TEXT,
 			profile TEXT,
+			star_auto_renewal TEXT,
+			star_csr TEXT,
+			star_next_renewal TIMESTAMP,
 			created_at %s
 		)`, currentTimestamp),
 		`CREATE INDEX IF NOT EXISTS idx_acme_orders_account ON acme_orders(account_id)`,
@@ -153,6 +156,23 @@ func (db *DB) migrateACME() error {
 	// predate the feature, so a standalone pre-authorization (order_id NULL) can be
 	// stored. A fresh database already has the nullable column from the CREATE above.
 	db.relaxACMEAuthzOrderIDNullable()
+	// Additive migration for ACME STAR short-term auto-renewed certificates
+	// (Task 136, RFC 8739): the resolved recurrence parameters, the replayable CSR
+	// captured at finalize, and the next-renewal deadline the background renewer
+	// polls on. Errors are ignored — the columns already exist on a fresh CREATE
+	// TABLE above and on a second startup.
+	if db.isPostgres() {
+		_, _ = db.conn.Exec(`ALTER TABLE acme_orders ADD COLUMN IF NOT EXISTS star_auto_renewal TEXT`)
+		_, _ = db.conn.Exec(`ALTER TABLE acme_orders ADD COLUMN IF NOT EXISTS star_csr TEXT`)
+		_, _ = db.conn.Exec(`ALTER TABLE acme_orders ADD COLUMN IF NOT EXISTS star_next_renewal TIMESTAMP`)
+	} else {
+		_, _ = db.conn.Exec(`ALTER TABLE acme_orders ADD COLUMN star_auto_renewal TEXT`)
+		_, _ = db.conn.Exec(`ALTER TABLE acme_orders ADD COLUMN star_csr TEXT`)
+		_, _ = db.conn.Exec(`ALTER TABLE acme_orders ADD COLUMN star_next_renewal TIMESTAMP`)
+	}
+	// Index the renewal deadline so the leader-elected renewer's due-query stays a
+	// cheap partial scan even with many active STAR orders.
+	_, _ = db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_acme_orders_star_next_renewal ON acme_orders(star_next_renewal)`)
 	return nil
 }
 
@@ -325,31 +345,43 @@ func (db *DB) UpdateACMEAccountKey(id, jwk, thumbprint string) error {
 
 // ---- Orders ---------------------------------------------------------------
 
-// CreateACMEOrder inserts a new order.
+// CreateACMEOrder inserts a new order. When the order carries an RFC 8739 STAR
+// recurrence (AutoRenewal set, Task 136) it is serialized into star_auto_renewal;
+// star_csr and star_next_renewal stay NULL until finalize captures them.
 func (db *DB) CreateACMEOrder(o *models.ACMEOrder) error {
 	ids, _ := json.Marshal(o.Identifiers)
 	status := o.Status
 	if status == "" {
 		status = models.ACMEOrderStatusPending
 	}
+	var autoRenewal interface{}
+	if o.AutoRenewal != nil {
+		b, err := json.Marshal(o.AutoRenewal)
+		if err != nil {
+			return err
+		}
+		autoRenewal = string(b)
+	}
 	_, err := db.exec(
-		`INSERT INTO acme_orders (id, account_id, status, identifiers, not_before, not_after, expires, replaces, profile)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		o.ID, o.AccountID, status, string(ids), nullTime(o.NotBefore), nullTime(o.NotAfter), o.Expires.UTC(), nullString(o.Replaces), nullString(o.Profile),
+		`INSERT INTO acme_orders (id, account_id, status, identifiers, not_before, not_after, expires, replaces, profile, star_auto_renewal)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		o.ID, o.AccountID, status, string(ids), nullTime(o.NotBefore), nullTime(o.NotAfter), o.Expires.UTC(), nullString(o.Replaces), nullString(o.Profile), autoRenewal,
 	)
 	return err
 }
 
 const acmeOrderColumns = `id, account_id, status, identifiers, not_before, not_after,
-	expires, error, ca_id, serial, certificate, finalized_at, replaces, profile, created_at`
+	expires, error, ca_id, serial, certificate, finalized_at, replaces, profile,
+	star_auto_renewal, star_csr, star_next_renewal, created_at`
 
 func scanACMEOrder(s caScanner) (*models.ACMEOrder, error) {
 	var o models.ACMEOrder
 	var ids string
-	var notBefore, notAfter, finalizedAt sql.NullTime
-	var errStr, caID, serial, cert, replaces, profile sql.NullString
+	var notBefore, notAfter, finalizedAt, starNextRenewal sql.NullTime
+	var errStr, caID, serial, cert, replaces, profile, autoRenewal, starCSR sql.NullString
 	if err := s.Scan(&o.ID, &o.AccountID, &o.Status, &ids, &notBefore, &notAfter,
-		&o.Expires, &errStr, &caID, &serial, &cert, &finalizedAt, &replaces, &profile, &o.CreatedAt); err != nil {
+		&o.Expires, &errStr, &caID, &serial, &cert, &finalizedAt, &replaces, &profile,
+		&autoRenewal, &starCSR, &starNextRenewal, &o.CreatedAt); err != nil {
 		return nil, err
 	}
 	o.Replaces = replaces.String
@@ -366,6 +398,17 @@ func scanACMEOrder(s caScanner) (*models.ACMEOrder, error) {
 	if finalizedAt.Valid {
 		t := finalizedAt.Time
 		o.FinalizedAt = &t
+	}
+	if autoRenewal.Valid && autoRenewal.String != "" {
+		var ar models.ACMEAutoRenewal
+		if err := json.Unmarshal([]byte(autoRenewal.String), &ar); err == nil {
+			o.AutoRenewal = &ar
+		}
+	}
+	o.StarCSR = starCSR.String
+	if starNextRenewal.Valid {
+		t := starNextRenewal.Time
+		o.StarNextRenewal = &t
 	}
 	o.Error = errStr.String
 	o.CAID = caID.String
@@ -462,6 +505,91 @@ func (db *DB) FinalizeACMEOrder(id, caID, serial, chainPEM string, finalizedAt t
 		models.ACMEOrderStatusValid, caID, serial, chainPEM, finalizedAt.UTC(), id,
 	)
 	return err
+}
+
+// FinalizeACMEStarOrder records the first short-lived certificate of an RFC 8739
+// STAR order (Task 136), marks it valid, and captures the replayable CSR plus the
+// next-renewal deadline the background renewer polls on. A nil nextRenewal (the
+// recurrence already fits in a single certificate) leaves star_next_renewal NULL,
+// so the renewer never re-issues.
+func (db *DB) FinalizeACMEStarOrder(id, caID, serial, chainPEM, csrB64 string, nextRenewal *time.Time, finalizedAt time.Time) error {
+	_, err := db.exec(
+		`UPDATE acme_orders
+		 SET status = ?, ca_id = ?, serial = ?, certificate = ?, finalized_at = ?, star_csr = ?, star_next_renewal = ?
+		 WHERE id = ?`,
+		models.ACMEOrderStatusValid, caID, serial, chainPEM, finalizedAt.UTC(), csrB64, nullTime(nextRenewal), id,
+	)
+	return err
+}
+
+// RenewACMEStarOrder replaces the current STAR certificate with a freshly issued
+// one and reschedules (or, with a nil nextRenewal, ends) the recurrence. It
+// touches only the rotating fields, so the order stays valid and keeps its stored
+// CSR and recurrence parameters. The status guard makes it a no-op if the order
+// was canceled concurrently, so a renewal in flight cannot resurrect a canceled
+// order.
+func (db *DB) RenewACMEStarOrder(id, caID, serial, chainPEM string, nextRenewal *time.Time) error {
+	_, err := db.exec(
+		`UPDATE acme_orders
+		 SET ca_id = ?, serial = ?, certificate = ?, star_next_renewal = ?
+		 WHERE id = ? AND status = ?`,
+		caID, serial, chainPEM, nullTime(nextRenewal), id, models.ACMEOrderStatusValid,
+	)
+	return err
+}
+
+// StopACMEStarRenewal clears a STAR order's next-renewal deadline without issuing
+// a certificate, ending the recurrence (the horizon EndDate has passed). The order
+// stays valid and keeps serving its last certificate.
+func (db *DB) StopACMEStarRenewal(id string) error {
+	_, err := db.exec(`UPDATE acme_orders SET star_next_renewal = NULL WHERE id = ?`, id)
+	return err
+}
+
+// CancelACMEStarOrder marks a STAR order canceled (RFC 8739 §3.5) and clears its
+// renewal deadline so the background renewer stops. The guards restrict it to a
+// STAR order (star_auto_renewal present) that is not already terminal
+// (canceled/invalid), so the cancel is idempotent and cannot fire on a non-STAR or
+// dead order; it reports whether this call performed the cancellation.
+func (db *DB) CancelACMEStarOrder(id string) (bool, error) {
+	res, err := db.exec(
+		`UPDATE acme_orders SET status = ?, star_next_renewal = NULL
+		 WHERE id = ? AND star_auto_renewal IS NOT NULL AND status NOT IN (?, ?)`,
+		models.ACMEOrderStatusCanceled, id, models.ACMEOrderStatusCanceled, models.ACMEOrderStatusInvalid,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// ListDueACMEStarOrders returns valid STAR orders whose next-renewal deadline has
+// arrived (star_next_renewal <= now), oldest deadline first, capped at limit. It
+// backs the leader-elected renewer's due-query; canceled and ended recurrences
+// have a NULL deadline and are excluded.
+func (db *DB) ListDueACMEStarOrders(now time.Time, limit int) ([]models.ACMEOrder, error) {
+	rows, err := db.query(
+		`SELECT `+acmeOrderColumns+` FROM acme_orders
+		 WHERE status = ? AND star_next_renewal IS NOT NULL AND star_next_renewal <= ?
+		 ORDER BY star_next_renewal ASC LIMIT ?`,
+		models.ACMEOrderStatusValid, now.UTC(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []models.ACMEOrder
+	for rows.Next() {
+		o, err := scanACMEOrder(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *o)
+	}
+	return out, rows.Err()
 }
 
 // ---- Authorizations -------------------------------------------------------
