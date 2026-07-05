@@ -337,8 +337,52 @@
             <label for="issueUPN">User Principal Name(s)</label>
             <input id="issueUPN" type="text" placeholder="user@EXAMPLE.COM (comma-separated; smartcard-logon / PKINIT profiles)">
           </div>
-          <button class="btn" id="issueBtn">Issue certificate</button>
+          <div class="field" id="issueMustStapleField" style="display:none;max-width:300px">
+            <label for="issueMustStaple">OCSP Must-Staple (RFC 7633)</label>
+            <select id="issueMustStaple">
+              <option value="">Profile default</option>
+              <option value="true">Force on (id-pe-tlsfeature: status_request)</option>
+              <option value="false">Force off</option>
+            </select>
+          </div>
+          <!-- eIDAS QCStatements PSD2 authorization (ETSI TS 119 495, Task 128):
+               shown only for a qualified profile that permits a per-request PSD2
+               override (qcstatements.allow_psd2_override, e.g. qualified-web).
+               Leave every role unchecked to omit the PSD2 QcStatement. -->
+          <div class="field" id="issueQCField" style="display:none">
+            <label>PSD2 authorization — eIDAS QWAC (ETSI TS 119 495)</label>
+            <div class="muted" style="margin:-4px 0 8px">Stamped into the qualified-certificate QCStatements extension for a payment-service (PSD2) certificate. Optional; leave roles unchecked to omit.</div>
+            <div class="row" style="gap:16px;margin-bottom:8px">
+              <label class="muted" style="display:flex;gap:5px;align-items:center"><input type="checkbox" class="psd2Role" value="PSP_AS"> PSP_AS <span class="muted">account servicing</span></label>
+              <label class="muted" style="display:flex;gap:5px;align-items:center"><input type="checkbox" class="psd2Role" value="PSP_PI"> PSP_PI <span class="muted">payment initiation</span></label>
+              <label class="muted" style="display:flex;gap:5px;align-items:center"><input type="checkbox" class="psd2Role" value="PSP_AI"> PSP_AI <span class="muted">account information</span></label>
+              <label class="muted" style="display:flex;gap:5px;align-items:center"><input type="checkbox" class="psd2Role" value="PSP_IC"> PSP_IC <span class="muted">card-based instruments</span></label>
+            </div>
+            <div class="row" style="gap:10px">
+              <div class="field" style="flex:1;min-width:240px;margin:0">
+                <label for="issuePSD2NCAName">Competent authority (NCA) name</label>
+                <input id="issuePSD2NCAName" type="text" placeholder="Financial Conduct Authority">
+              </div>
+              <div class="field" style="flex:1;min-width:150px;margin:0">
+                <label for="issuePSD2NCAID">NCA identifier</label>
+                <input id="issuePSD2NCAID" type="text" placeholder="GB-FCA">
+              </div>
+            </div>
+          </div>
+          <!-- RFC 5280 Private Key Usage Period override (Task 132): shown only
+               where the profile permits a per-request override
+               (private_key_usage_period.allow_override, e.g. qualified-esign). -->
+          <div class="field" id="issuePKUPField" style="display:none;max-width:420px">
+            <label for="issuePKUP">Private-key usage period (RFC 5280 id-ce-privateKeyUsagePeriod)</label>
+            <input id="issuePKUP" type="text" placeholder="duration from notBefore, e.g. 365d / 52w / 8760h — blank = profile default">
+          </div>
+          <div class="toolbar">
+            <button class="btn" id="issueBtn">Issue certificate</button>
+            <button class="btn ghost" id="issuePreviewBtn">Preview (dry run)</button>
+            <span class="muted" id="issuePreviewHint">Preview runs every pre-issuance gate without signing — no serial, no audit, no HSM.</span>
+          </div>
         </div>
+        <div class="panel hidden" id="issuePreviewResult"></div>
         <div class="panel hidden" id="issueResult">
           <div class="field">
             <label>Issued certificate (PEM)</label>
@@ -1059,6 +1103,10 @@
             <label class="muted hidden" id="encEscrowLabel" style="display:flex;gap:6px;align-items:center;margin-bottom:10px" title="Additionally wrap the data key to the configured M-of-N recovery agents; recovery is a dual-control CLI ceremony (secsy-secret recover)">
               <input type="checkbox" id="encEscrow"> escrow to recovery agents
             </label>
+            <div class="field">
+              <label for="encContext">Context / AAD <span class="muted">(optional)</span></label>
+              <input id="encContext" type="text" placeholder="additional authenticated data; needed verbatim to decrypt">
+            </div>
             <button class="btn" id="encBtn">Encrypt →</button>
             <div class="field" style="margin-top:12px">
               <label for="encOut">Envelope (JSON)</label>
@@ -1070,6 +1118,10 @@
             <div class="field">
               <label for="decEnv">Envelope (JSON)</label>
               <textarea id="decEnv" placeholder='{"version":1,...}' style="min-height:120px"></textarea>
+            </div>
+            <div class="field">
+              <label for="decContext">Context / AAD <span class="muted">(optional)</span></label>
+              <input id="decContext" type="text" placeholder="the same context used at encrypt / data-key time">
             </div>
             <button class="btn" id="decBtn">Decrypt →</button>
             <div class="field" style="margin-top:12px">
@@ -1090,6 +1142,10 @@
               <select id="dkBits"><option value="256">256-bit</option><option value="128">128-bit</option><option value="512">512-bit</option></select>
             </div>
             <label class="muted" style="display:flex;gap:6px;align-items:center;margin-bottom:10px"><input type="checkbox" id="dkWrappedOnly"> wrapped only (hide plaintext)</label>
+            <div class="field">
+              <label for="dkContext">Context / AAD <span class="muted">(optional)</span></label>
+              <input id="dkContext" type="text" placeholder="binds the wrapped key; supply verbatim under Decrypt to recover">
+            </div>
             <button class="btn" id="dkBtn">Generate →</button>
             <div class="field" style="margin-top:12px">
               <label for="dkOut">Result</label>

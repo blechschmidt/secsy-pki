@@ -48,6 +48,12 @@ A built-in profile is provided:
 |---|---|
 | `server-delegation` | `serverAuth`, `digitalSignature` + `keyEncipherment`, `DelegationUsage`, 397-day max |
 
+Because eligibility is a profile property with no per-request knob, the operator
+[console](web-console.md) surfaces it as a read-only indicator: selecting a
+delegation-eligible profile on the **Issue** page flags it (`RFC 9345
+delegated-credential eligible`) in the profile policy summary, so an operator
+knows the resulting leaf can authorize delegated credentials before issuing it.
+
 Or add your own:
 
 ```yaml

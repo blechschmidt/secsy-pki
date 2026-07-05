@@ -27,7 +27,8 @@ The design decisions behind these procedures are recorded in
 12. [Audit-chain anchoring](#audit-chain-anchoring)
 13. [Supply-chain / image verification failure](#supply-chain--image-verification-failure)
 14. [Preflight diagnostics (`secsy-ca doctor`)](#preflight-diagnostics-secsy-ca-doctor)
-15. [First-response quick reference](#first-response-quick-reference)
+15. [Serving-TLS certificate (self-managed)](#serving-tls-certificate-self-managed)
+16. [First-response quick reference](#first-response-quick-reference)
 
 ---
 
@@ -1173,6 +1174,50 @@ exit 1), or age a persisted CRL and expect `crl.freshness` WARN, exit 2.
 
 ---
 
+## Serving-TLS certificate (self-managed)
+
+Applies only when `server.tls.self_issue` is enabled, i.e. the HTTPS listener
+serves a certificate the server issued for itself from an internal CA instead of
+a static `tls_cert`/`tls_key` pair. Full design in
+[serving-cert.md](serving-cert.md).
+
+**Health at a glance.**
+
+```bash
+secsy-ca doctor            # look for the serving.self_issued line
+# newest serving-tls cert (serial …, CN="…"): valid, 41d remaining
+```
+
+- `secsy_serving_cert_expiry_timestamp_seconds` — the `NotAfter` of the
+  certificate now served; alert when `(value - now) < renew_before`.
+- `secsy_serving_cert_rotations_total{result="error"}` — a rising error count
+  means rotation is failing **while the old certificate is still served**. You
+  have until that certificate's `NotAfter` to fix the cause before the listener
+  serves an expired certificate.
+
+**Rotation is failing (error counter climbing / doctor warns near expiry).** The
+loop re-issues through `ca.Manager`, so a rotation failure is an *issuance*
+failure — diagnose it as one:
+
+1. Confirm the issuing CA is healthy and not retired:
+   `secsy-ca doctor` and `secsy-ca ca list` for `self_issue.ca_id`. A CA that was
+   rotated/retired out from under the serving profile is the usual cause.
+2. Confirm the HSM/key provider is reachable (`GET /readyz`, the HSM probe in
+   `/metrics`). The serving key lives in the provider; an HSM outage stalls
+   rotation (but the previously issued certificate keeps being served until it
+   expires).
+3. Confirm the profile still issues a serverAuth leaf and passes the gates —
+   dry-run it: `secsy-ca issue -ca <self_issue.ca_id> -profile <self_issue.profile> -csr any.csr -dry-run`
+   (see [issuance preview](issuance-preview.md)). A gate that now rejects the
+   serving profile (e.g. a tightened lint/validity policy) blocks rotation.
+4. The startup log records the initial issuance and each rotation
+   (`serving-tls: …`); check it for the concrete error.
+
+**Emergency fallback.** To take the feature out of the path, set
+`server.tls.self_issue.enabled: false` and provide a static `tls_cert`/`tls_key`
+(or an ACME-obtained certificate), then restart. The listener then loads the
+static pair as usual.
+
 ## First-response quick reference
 
 | Situation | First command / check |
@@ -1182,6 +1227,9 @@ exit 1), or age a persisted CRL and expect `crl.freshness` WARN, exit 2.
 | Is the HSM reachable? | `GET /readyz`; inspect HSM probe in `/metrics` |
 | Prove the CA key wasn't misused | `secsy-ca audit verify -json` + `secsy-verify verify-combined-log` |
 | Revocation not propagating | Regenerate CRL: `secsy-ca gen-crl -ca <id> -out crl.der -der` |
+| A client can't verify our cert | `secsy-ca validate-cert -ca <id> leaf.pem` (chain/validity/live revocation/constraints; [chain validation](chain-validation.md)) |
+| Will a request still issue under policy? | `secsy-ca issue -ca <id> -csr req.csr -profile <p> -dry-run` (no HSM/serial/audit; [preview](issuance-preview.md)) |
+| Serving-TLS cert nearing expiry / not rotating | `secsy-ca doctor` → `serving.self_issued`; diagnose as an issuance failure ([serving-TLS](#serving-tls-certificate-self-managed)) |
 | Clients getting `429` | Loosen `rate_limit.{global,per_ip,per_account}` |
 | Clients getting `503` | Raise `rate_limit.concurrency.max_in_flight` + `pkcs11.session_pool_size` |
 | OCSP overloading HSM | Raise `server.ocsp_cache_ttl_seconds` |

@@ -96,6 +96,7 @@ profiles:
 | REST | `POST /api/ca/{id}/issue` body `{"profile": "qualified-web", "psd2": {"roles": [...], "nca_name": "...", "nca_id": "..."}}` |
 | REST preview | `POST /api/ca/{id}/certificates:preview` — reports the `qcstatements` gate verdict without signing |
 | gRPC | `IssueCertificateRequest.psd2` / `PreviewCertificateRequest.psd2` (`PSD2QCStatement` message) |
+| Console | The [Issue page](web-console.md) flags an `eIDAS qualified (…)` profile in its policy summary; where the profile permits a PSD2 override (`qualified-web`), a **PSD2 authorization** group of PSP-role checkboxes (`PSP_AS/PI/AI/IC`) and competent-authority name/ID fields appears, submitted as the `psd2` issue body. The **Preview (dry run)** button reports the `qcstatements` gate verdict |
 | Config | Per-profile `qcstatements:` block (above) |
 
 The QCStatements themselves are profile-driven (a policy decision), so they apply

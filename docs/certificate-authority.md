@@ -128,6 +128,41 @@ renders it as `TLS Feature: status_request`.
   combination is rejected fail-closed at profile install and again at issuance.
   See [TLS Delegated Credentials](delegated-credentials.md).
 
+### Private-key usage period (RFC 5280)
+
+A `private_key_usage_period` block on a profile stamps the non-critical
+`id-ce-privateKeyUsagePeriod` extension (OID `2.5.29.16`): the window during which
+the certified private key may *produce* signatures, which can be narrower than the
+certificate's own validity (the classic case is a signing key that must retire
+before the certificate expires while signatures it already made stay verifiable).
+The window is expressed as a `duration` from `notBefore` (e.g. `365d`, `52w`,
+`8760h`), a `fraction` of the certificate validity, or explicit `not_before` /
+`not_after` instants, and is always clamped inside the certificate validity.
+
+- **Per-request override.** With `allow_override: true`, a REST/gRPC issue request
+  may supply a `private_key_usage_period` (a `duration` or explicit instants) per
+  certificate; without it the profile window (if any) is authoritative. The
+  built-in `qualified-esign` / `qualified-eseal` profiles set `allow_override`
+  with no default, so the deployment supplies a window per request where its policy
+  requires one.
+- **Preserved on renewal** and re-applied against the fresh validity window.
+- **Console / CLI.** The [Issue page](web-console.md) shows a *private-key usage
+  period* field where the profile permits an override; `secsy-ca issue -pkup 365d`
+  (or `-pkup-not-before`/`-pkup-not-after`) is the CLI equivalent, and `-dry-run`
+  previews the resolved window through the `private_key_usage_period` gate.
+
+### Delegated-credential eligibility (RFC 9345)
+
+Setting `delegation_usage: true` on a profile stamps the RFC 9345
+`id-ce-delegationUsage` extension (OID `1.3.6.1.4.1.44363.44`), marking every leaf
+issued under it *eligible* to authorize short-lived TLS Delegated Credentials. It
+is profile-only (there is no per-request override) and pairs with a `serverAuth`
+profile that has `digitalSignature` key usage; the built-in `server-delegation`
+profile is the reference. The [Issue page](web-console.md) policy summary flags a
+delegation-eligible profile so an operator knows the resulting leaf can mint
+delegated credentials. It is mutually exclusive with OCSP Must-Staple (above). See
+[TLS Delegated Credentials](delegated-credentials.md) for minting and verification.
+
 ## 4. Issue an end-entity certificate
 
 The subject, SANs, and public key all come from the caller's PKCS#10 CSR; the
@@ -573,6 +608,12 @@ explicitly.
 
 ## See also
 
+- [Issuance preview (dry-run)](issuance-preview.md) — validate a would-be
+  issuance through every pre-issuance gate without signing (`issue -dry-run`,
+  `POST …/certificates:preview`)
+- [Chain / path validation](chain-validation.md) — validate a supplied leaf
+  against a CA's trust anchors, with live revocation (`validate-cert`,
+  `POST /api/validate`)
 - [PKCS#12 (.p12/.pfx) export](pkcs12.md) — server-side-keygen key delivery
 - [HSM / PKCS#11 configuration](hsm-configuration.md)
 - [RBAC, audit logging & config](rbac-and-audit.md)

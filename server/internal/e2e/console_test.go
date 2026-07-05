@@ -26,6 +26,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
@@ -231,7 +232,9 @@ func TestConsoleFlow(t *testing.T) {
 		if status != http.StatusOK {
 			t.Fatalf("GET /console/ = %d, want 200", status)
 		}
-		for _, want := range []string{"Operator Console", "app.js", "style.css", "DNS Records"} {
+		for _, want := range []string{"Operator Console", "app.js", "style.css", "DNS Records",
+			// Task 143 issuance/crypto controls surfaced on the console.
+			"PSD2 authorization", "Private-key usage period", "Context / AAD"} {
 			if !strings.Contains(string(body), want) {
 				t.Errorf("console index missing %q", want)
 			}
@@ -247,7 +250,10 @@ func TestConsoleFlow(t *testing.T) {
 		if !strings.Contains(ctype, "javascript") {
 			t.Errorf("app.js content-type = %q, want javascript", ctype)
 		}
-		for _, want := range []string{"bootAuth", "loadDNS"} {
+		for _, want := range []string{"bootAuth", "loadDNS",
+			// Task 143 issuance-control logic: eIDAS PSD2 (128), PKUP (132),
+			// delegated-credential eligibility (133).
+			"issueQCField", "private_key_usage_period", "delegation_usage"} {
 			if !bytes.Contains(body, []byte(want)) {
 				t.Errorf("app.js does not contain expected console code %q", want)
 			}
@@ -1328,6 +1334,127 @@ func TestConsoleFlow(t *testing.T) {
 		}
 		if st, _ := env.req(t, "GET", "/api/events/export?format=bogus", nil); st != http.StatusBadRequest {
 			t.Errorf("bogus export format = %d, want 400", st)
+		}
+	})
+
+	// --- Console issuance controls (Task 143): eIDAS QCStatements / PSD2 (Task
+	// 128), the RFC 5280 private-key usage period (Task 132), and RFC 9345
+	// delegated-credential eligibility (Task 133). The console holds no privileges
+	// of its own: it gates these controls on the metadata /api/profiles advertises
+	// and submits them through the same issue endpoint the browser calls. Proving
+	// both ends — the advertised flags and the stamped extensions — proves the
+	// console surface maps to a real, authorized issuance path. ---
+	t.Run("IssuanceControls", func(t *testing.T) {
+		// The profile metadata that drives the console's show/hide + policy hint.
+		status, body := env.req(t, "GET", "/api/profiles", nil)
+		if status != http.StatusOK {
+			t.Fatalf("profiles = %d: %s", status, body)
+		}
+		var profs []struct {
+			Name            string `json:"name"`
+			DelegationUsage bool   `json:"delegation_usage"`
+			QCStatements    *struct {
+				Type              string `json:"type"`
+				AllowPSD2Override bool   `json:"allow_psd2_override"`
+			} `json:"qcstatements"`
+			PrivateKeyUsagePeriod *struct {
+				AllowOverride bool `json:"allow_override"`
+			} `json:"private_key_usage_period"`
+		}
+		if err := json.Unmarshal(body, &profs); err != nil {
+			t.Fatalf("decode profiles: %v", err)
+		}
+		byName := map[string]int{}
+		for i, p := range profs {
+			byName[p.Name] = i
+		}
+		if i, ok := byName["qualified-web"]; !ok || profs[i].QCStatements == nil || !profs[i].QCStatements.AllowPSD2Override {
+			t.Errorf("qualified-web must advertise qcstatements.allow_psd2_override (drives the PSD2 control)")
+		}
+		if i, ok := byName["qualified-esign"]; !ok || profs[i].PrivateKeyUsagePeriod == nil || !profs[i].PrivateKeyUsagePeriod.AllowOverride {
+			t.Errorf("qualified-esign must advertise private_key_usage_period.allow_override (drives the PKUP control)")
+		}
+		if i, ok := byName["server-delegation"]; !ok || !profs[i].DelegationUsage {
+			t.Errorf("server-delegation must advertise delegation_usage:true (drives the eligibility indicator)")
+		}
+
+		leafOf := func(t *testing.T, pemStr string) *x509.Certificate {
+			t.Helper()
+			block, _ := pem.Decode([]byte(pemStr))
+			if block == nil {
+				t.Fatalf("issued certificate is not PEM")
+			}
+			c, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				t.Fatalf("parse issued certificate: %v", err)
+			}
+			return c
+		}
+		hasExt := func(c *x509.Certificate, oid asn1.ObjectIdentifier) bool {
+			for _, e := range c.Extensions {
+				if e.Id.Equal(oid) {
+					return true
+				}
+			}
+			return false
+		}
+
+		// (1) eIDAS QWAC with a per-request PSD2 QcStatement — the exact body the
+		// console's issueFormBody() builds when PSD2 roles are checked (Task 128).
+		status, body = env.req(t, "POST", "/api/ca/"+env.interID+"/issue", map[string]any{
+			"csr":     string(makeCSR(t, "psd2.e2e.example.com", []string{"psd2.e2e.example.com"})),
+			"profile": "qualified-web",
+			"psd2": map[string]any{
+				"roles":    []string{"PSP_AI"},
+				"nca_name": "Financial Conduct Authority",
+				"nca_id":   "GB-FCA",
+			},
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("issue qualified-web + PSD2 = %d: %s", status, body)
+		}
+		var qwac models.IssueCertResponse
+		if err := json.Unmarshal(body, &qwac); err != nil {
+			t.Fatalf("decode qualified-web response: %v", err)
+		}
+		if !hasExt(leafOf(t, qwac.Certificate), pki.OIDQCStatements) {
+			t.Errorf("qualified-web leaf is missing the id-pe-qcStatements extension")
+		}
+
+		// (2) A private-key usage period override — the console's PKUP control
+		// (Task 132), a duration from notBefore honored under an override profile.
+		status, body = env.req(t, "POST", "/api/ca/"+env.interID+"/issue", map[string]any{
+			"csr":                      string(makeCSR(t, "pkup.e2e.example.com", []string{"pkup.e2e.example.com"})),
+			"profile":                  "qualified-esign",
+			"validity_days":            90,
+			"private_key_usage_period": map[string]any{"duration": "30d"},
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("issue qualified-esign + PKUP = %d: %s", status, body)
+		}
+		var pkupRes models.IssueCertResponse
+		if err := json.Unmarshal(body, &pkupRes); err != nil {
+			t.Fatalf("decode qualified-esign response: %v", err)
+		}
+		if !hasExt(leafOf(t, pkupRes.Certificate), pki.OIDPrivateKeyUsagePeriod) {
+			t.Errorf("qualified-esign leaf is missing the id-ce-privateKeyUsagePeriod extension")
+		}
+
+		// (3) A delegated-credential-eligible leaf — the eligibility the console
+		// surfaces from the server-delegation profile (Task 133).
+		status, body = env.req(t, "POST", "/api/ca/"+env.interID+"/issue", map[string]any{
+			"csr":     string(makeCSR(t, "dc.e2e.example.com", []string{"dc.e2e.example.com"})),
+			"profile": "server-delegation",
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("issue server-delegation = %d: %s", status, body)
+		}
+		var dcRes models.IssueCertResponse
+		if err := json.Unmarshal(body, &dcRes); err != nil {
+			t.Fatalf("decode server-delegation response: %v", err)
+		}
+		if !pki.HasDelegationUsage(leafOf(t, dcRes.Certificate)) {
+			t.Errorf("server-delegation leaf is not delegated-credential eligible (missing DelegationUsage)")
 		}
 	})
 }

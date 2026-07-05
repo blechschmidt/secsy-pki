@@ -267,6 +267,35 @@ change that does not flow through the revocation path. Keep the TTL well under
 `defaultOCSPValidity` (24 h). The cache is bounded (`DefaultOCSPCacheMaxEntries`,
 16384) to resist memory growth under a flood of distinct serials.
 
+## Runtime profiling (pprof)
+
+Benchmarks tell you the *shape* of the hot paths; when a **live** process is slow
+and you need to see inside it — CPU time, heap growth, goroutine blocking,
+mutex/HSM-session contention — enable the opt-in `net/http/pprof` endpoints. They
+are **off by default** and, when on, exposed only over a loopback listener or
+behind operator auth **plus** the admin-only `server:profile` capability, because
+a profile is a raw dump of process memory:
+
+```yaml
+server:
+  pprof:
+    enabled: true
+    mode: loopback          # or "authenticated" (mount on the API listener,
+                            # gated by operator auth + server:profile)
+    address: "127.0.0.1:6060"
+```
+
+```bash
+go tool pprof -http=:0 'http://127.0.0.1:6060/debug/pprof/profile?seconds=30'  # CPU
+go tool pprof         'http://127.0.0.1:6060/debug/pprof/heap'                 # allocations
+```
+
+The full procedure — including reading session-pool-wait contention via the
+`mutex`/`block` profiles, and using it in `authenticated` mode against a remote
+replica — is in the runbook under
+[**Performance profiling (pprof)**](RUNBOOK.md#performance-profiling-pprof--hsm-latency--session-pool-contention).
+The `server:profile` capability is documented in [RBAC & audit](rbac-and-audit.md).
+
 ## Security invariants
 
 The pool changes *how* the token is accessed, not *what* is allowed. The Task 12

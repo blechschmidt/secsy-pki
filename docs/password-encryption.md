@@ -229,9 +229,12 @@ not bulk data.
 Alongside encrypt/decrypt, the secret layer offers a **non-storing** crypto
 service — an "encryption as a service" surface modelled on HashiCorp Vault
 Transit. Nothing the caller submits is persisted; the server holds only keys.
-All three operations are exposed over REST, gRPC (`SecretService`), and the
-`secsy-secret` CLI, and each authorizes its own tenant-scoped capability
-(`secret:datakey`, `secret:hmac`, `secret:random`), audits, and meters.
+All three operations are exposed over REST, gRPC (`SecretService`), the
+`secsy-secret` CLI, and the operator [console](web-console.md) — the **Crypto
+service** panel on the Secrets page mints data keys (with an optional context/AAD
+binding), generates and verifies keyed HMACs, and draws random bytes — and each
+authorizes its own tenant-scoped capability (`secret:datakey`, `secret:hmac`,
+`secret:random`), audits, and meters.
 
 ### Data keys — high-volume client-side envelope encryption
 

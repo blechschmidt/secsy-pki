@@ -387,10 +387,57 @@ function renderIssueProfileInfo() {
   if (p.must_staple) bits.push('OCSP Must-Staple' + (p.allow_must_staple_override ? ' (override allowed)' : ''));
   if (p.lint && p.lint.public) bits.push('CA/B public lint rules');
   if (p.upn) bits.push('UPN SAN' + (p.upn.require_upn ? ' (required)' : ''));
+  // eIDAS / ETSI EN 319 412-5 qualified-certificate semantics (Task 128).
+  if (p.qcstatements) {
+    const qc = p.qcstatements;
+    const t = { esign: 'e-signature', eseal: 'e-seal', web: 'website / QWAC' }[qc.type] || qc.type || 'qualified';
+    let label = 'eIDAS qualified (' + t + (qc.sscd ? ', QSCD' : '') + ')';
+    if (qc.allow_psd2_override) label += ' — PSD2 override allowed';
+    bits.push(label);
+  }
+  // RFC 5280 id-ce-privateKeyUsagePeriod window (Task 132).
+  if (p.private_key_usage_period) {
+    const k = p.private_key_usage_period;
+    const win = k.duration || (k.fraction ? Math.round(k.fraction * 100) + '% of validity'
+      : (k.not_after ? 'fixed window' : 'per request'));
+    bits.push('private-key usage period ' + win + (k.allow_override ? ' (override allowed)' : ''));
+  }
+  // RFC 9345 TLS delegated-credential eligibility (Task 133) — profile-only.
+  if (p.delegation_usage) bits.push('RFC 9345 delegated-credential eligible');
   $('issueProfileInfo').textContent = bits.length ? 'Profile policy: ' + bits.join(' · ') : '';
   // Only relevant for UPN-enabled profiles; keep the input visible but hint it.
   const upnField = $('issueUPNField');
   if (upnField) upnField.style.display = p.upn ? '' : 'none';
+  // The Must-Staple override (RFC 7633) is honored only where the profile sets
+  // allow_must_staple_override; otherwise the profile default is fixed, so hide
+  // the control and reset it to "profile default".
+  const msField = $('issueMustStapleField');
+  if (msField) {
+    msField.style.display = p.allow_must_staple_override ? '' : 'none';
+    if (!p.allow_must_staple_override) $('issueMustStaple').value = '';
+  }
+  // eIDAS PSD2 override fields (Task 128) — shown only where the qualified
+  // profile permits a per-request PSD2 QcStatement (qcstatements.allow_psd2_override,
+  // e.g. qualified-web); hidden and cleared otherwise so a stale value is never sent.
+  const qcField = $('issueQCField');
+  if (qcField) {
+    const allowPSD2 = !!(p.qcstatements && p.qcstatements.allow_psd2_override);
+    qcField.style.display = allowPSD2 ? '' : 'none';
+    if (!allowPSD2) {
+      document.querySelectorAll('.psd2Role').forEach(cb => { cb.checked = false; });
+      $('issuePSD2NCAName').value = '';
+      $('issuePSD2NCAID').value = '';
+    }
+  }
+  // Private Key Usage Period override (Task 132) — shown only where the profile
+  // sets private_key_usage_period.allow_override (e.g. qualified-esign/eseal);
+  // otherwise the profile window (if any) is authoritative, so hide and clear it.
+  const pkupField = $('issuePKUPField');
+  if (pkupField) {
+    const allowPKUP = !!(p.private_key_usage_period && p.private_key_usage_period.allow_override);
+    pkupField.style.display = allowPKUP ? '' : 'none';
+    if (!allowPKUP) $('issuePKUP').value = '';
+  }
 }
 $('issueProfile').onchange = renderIssueProfileInfo;
 
@@ -1303,20 +1350,54 @@ function downloadBlob(content, filename, type) {
 }
 
 // ---- Issue view ----------------------------------------------------------
+
+// issueFormBody collects the request body shared by the Issue and Preview
+// actions: the CSR, profile, optional validity, UPN otherName SANs (smartcard-
+// logon / PKINIT), and the RFC 7633 OCSP Must-Staple override. Must-Staple is a
+// tri-state — "" leaves the profile default, "true"/"false" force the extension
+// on/off — and is honored by the server only under a profile that sets
+// allow_must_staple_override (the control is hidden otherwise).
+function issueFormBody(csr) {
+  const body = { csr, profile: $('issueProfile').value };
+  const days = parseInt($('issueDays').value, 10);
+  if (days > 0) body.validity_days = days;
+  const upns = $('issueUPN').value.split(',').map(s => s.trim()).filter(Boolean);
+  if (upns.length) body.upns = upns;
+  const ms = $('issueMustStaple').value;
+  if (ms === 'true') body.must_staple = true;
+  else if (ms === 'false') body.must_staple = false;
+  // eIDAS PSD2 authorization (Task 128): honored only under a qualified profile
+  // that sets allow_psd2_override — the field is hidden and reset otherwise, so
+  // gate on its visibility to never submit a PSD2 block the server would reject.
+  if ($('issueQCField').style.display !== 'none') {
+    const roles = Array.from(document.querySelectorAll('.psd2Role:checked')).map(cb => cb.value);
+    const ncaName = $('issuePSD2NCAName').value.trim();
+    const ncaID = $('issuePSD2NCAID').value.trim();
+    if (roles.length || ncaName || ncaID) {
+      body.psd2 = {};
+      if (roles.length) body.psd2.roles = roles;
+      if (ncaName) body.psd2.nca_name = ncaName;
+      if (ncaID) body.psd2.nca_id = ncaID;
+    }
+  }
+  // RFC 5280 private-key usage period override (Task 132): a duration from the
+  // certificate notBefore, honored only where the profile permits overrides.
+  if ($('issuePKUPField').style.display !== 'none') {
+    const pkup = $('issuePKUP').value.trim();
+    if (pkup) body.private_key_usage_period = { duration: pkup };
+  }
+  return body;
+}
+
 $('issueBtn').onclick = async () => {
   const id = $('issueCA').value;
   const msg = $('issueMsg');
   msg.className = 'notice hidden';
+  $('issuePreviewResult').classList.add('hidden');
   if (!id) { showError(msg, 'Select a CA.'); msg.className = 'notice err'; return; }
   const csr = $('issueCSR').value.trim();
   if (!csr) { showError(msg, 'Paste a PEM CSR.'); msg.className = 'notice err'; return; }
-  const body = { csr, profile: $('issueProfile').value };
-  const days = parseInt($('issueDays').value, 10);
-  if (days > 0) body.validity_days = days;
-  // User Principal Name SANs (smartcard-logon / PKINIT): comma-separated,
-  // honored only under a UPN-enabled profile.
-  const upns = $('issueUPN').value.split(',').map(s => s.trim()).filter(Boolean);
-  if (upns.length) body.upns = upns;
+  const body = issueFormBody(csr);
   $('issueBtn').disabled = true;
   try {
     const res = await api('POST', `/api/ca/${id}/issue`, body);
@@ -1345,6 +1426,71 @@ $('issueBtn').onclick = async () => {
     showError(msg, e.message); msg.className = 'notice err';
   } finally { $('issueBtn').disabled = false; }
 };
+
+// Preview (dry run): run the request through the full fail-closed pre-issuance
+// gate stack (POST …/certificates:preview) and render the verdict WITHOUT
+// signing — no serial, no audit, no HSM. Reuses issueFormBody() so the preview
+// reflects exactly what "Issue certificate" would submit.
+$('issuePreviewBtn').onclick = async () => {
+  const id = $('issueCA').value;
+  const msg = $('issueMsg');
+  msg.className = 'notice hidden';
+  const box = $('issuePreviewResult');
+  if (!id) { showError(msg, 'Select a CA.'); msg.className = 'notice err'; return; }
+  const csr = $('issueCSR').value.trim();
+  if (!csr) { showError(msg, 'Paste a PEM CSR.'); msg.className = 'notice err'; return; }
+  $('issueResult').classList.add('hidden');
+  box.classList.remove('hidden');
+  box.innerHTML = '<p class="muted">Previewing…</p>';
+  $('issuePreviewBtn').disabled = true;
+  try {
+    const res = await api('POST', `/api/ca/${id}/certificates:preview`, issueFormBody(csr));
+    renderIssuePreview(res);
+  } catch (e) {
+    box.innerHTML = '';
+    showError(msg, e.message); msg.className = 'notice err';
+  } finally { $('issuePreviewBtn').disabled = false; }
+};
+
+// renderIssuePreview paints the preview verdict: a decision banner, the resolved
+// leaf summary, and the per-gate table (reusing the validation checkBadge).
+function renderIssuePreview(r) {
+  const decision = (r.decision || '').toLowerCase();
+  const cls = decision === 'accept' ? 'ok' : decision === 'park' ? 'warn' : 'err';
+  const label = decision === 'accept' ? 'WOULD ISSUE'
+    : decision === 'park' ? 'WOULD BE HELD FOR APPROVAL' : 'WOULD BE REJECTED';
+  let html = `<div class="notice ${cls}" style="margin-bottom:12px"><strong>${label}</strong>` +
+    ` — ${escapeHTML(r.profile || '')} under ${escapeHTML(r.ca_label || r.ca_id || '')}. ` +
+    `Dry run only: nothing signed, no serial, no audit.</div>`;
+
+  const rows = [];
+  if (r.subject) rows.push(['Subject', escapeHTML(r.subject)]);
+  if (r.sans && r.sans.length) rows.push(['SANs', escapeHTML(r.sans.join(', '))]);
+  if (r.key_usages && r.key_usages.length) rows.push(['Key usage', escapeHTML(r.key_usages.join(', '))]);
+  if (r.ext_key_usages && r.ext_key_usages.length) rows.push(['EKU', escapeHTML(r.ext_key_usages.join(', '))]);
+  const validity = r.validity_days + 'd' +
+    (r.requested_validity_days && r.requested_validity_days !== r.validity_days
+      ? ` (requested ${r.requested_validity_days}d, max ${r.max_validity_days}d)` : '');
+  rows.push(['Validity', escapeHTML(validity)]);
+  rows.push(['OCSP Must-Staple', r.must_staple ? 'yes' : 'no']);
+  if (r.subject_key_provided === false) {
+    rows.push(['Subject key', '<span class="muted">synthesized (no CSR key) — identifiers indicative</span>']);
+  }
+  html += '<table><tbody>' + rows.map(([k, v]) =>
+    `<tr><th style="text-align:left;width:160px">${k}</th><td>${v}</td></tr>`).join('') + '</tbody></table>';
+
+  html += '<h2 style="font-size:15px;margin-top:14px">Pre-issuance gates</h2>';
+  html += '<table><thead><tr><th>Gate</th><th>Status</th><th>Detail</th></tr></thead><tbody>';
+  (r.gates || []).forEach(g => {
+    let detail = escapeHTML(g.reason || '');
+    if (g.findings && g.findings.length) {
+      detail += '<br>' + g.findings.map(f => `<span class="muted">• ${escapeHTML(f)}</span>`).join('<br>');
+    }
+    html += `<tr><td>${escapeHTML(g.name)}</td><td>${checkBadge(g.status)}</td><td>${detail}</td></tr>`;
+  });
+  html += '</tbody></table>';
+  $('issuePreviewResult').innerHTML = html;
+}
 
 // ---- Bulk / batch issuance (Task 101, fleet provisioning) -----------------
 // Same two-phase confirm-the-count contract as bulk revocation: Preview posts
@@ -1535,6 +1681,8 @@ $('encBtn').onclick = async () => {
     const pt = new TextEncoder().encode($('encPlain').value);
     const body = { plaintext: b64(pt) };
     if ($('encEscrow').checked) body.escrow = true;
+    const ectx = $('encContext').value;
+    if (ectx) body.context = b64(new TextEncoder().encode(ectx));
     const res = await api('POST', '/api/secret/encrypt', body);
     $('encOut').value = JSON.stringify(res.envelope, null, 2);
   } catch (e) { alert('Encrypt failed: ' + e.message); }
@@ -1542,7 +1690,10 @@ $('encBtn').onclick = async () => {
 $('decBtn').onclick = async () => {
   try {
     const env = JSON.parse($('decEnv').value);
-    const res = await api('POST', '/api/secret/decrypt', { envelope: env });
+    const body = { envelope: env };
+    const dctx = $('decContext').value;
+    if (dctx) body.context = b64(new TextEncoder().encode(dctx));
+    const res = await api('POST', '/api/secret/decrypt', body);
     $('decOut').value = new TextDecoder().decode(unb64(res.plaintext));
   } catch (e) { alert('Decrypt failed: ' + e.message); }
 };
@@ -1552,6 +1703,8 @@ $('dkBtn').onclick = async () => {
   try {
     const body = { bits: parseInt($('dkBits').value, 10) };
     if ($('dkWrappedOnly').checked) body.wrapped_only = true;
+    const dkctx = $('dkContext').value;
+    if (dkctx) body.context = b64(new TextEncoder().encode(dkctx));
     const res = await api('POST', '/api/secret/datakey', body);
     let out = '';
     if (res.plaintext) out += 'data key (base64):\n' + res.plaintext + '\n\n';
