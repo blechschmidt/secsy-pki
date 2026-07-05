@@ -18,6 +18,7 @@ per-order auditing.
 - [1. Enabling the ACME server](#1-enabling-the-acme-server)
 - [2. Configuring the ACME-enabled profile](#2-configuring-the-acme-enabled-profile)
 - [3. Challenge types (http-01, dns-01, tls-alpn-01)](#3-challenge-types-http-01-dns-01-tls-alpn-01)
+  - [Multi-perspective corroboration (MPIC / SC-067)](#multi-perspective-corroboration-mpic--sc-067)
 - [4. Access control: External Account Binding](#4-access-control-external-account-binding)
 - [5. Client examples](#5-client-examples)
 - [6. Auditing and operator visibility](#6-auditing-and-operator-visibility)
@@ -205,6 +206,18 @@ issuance: the server mails a signed challenge to the mailbox and validates the
 reply. It is offered only when an inbound-mail (IMAP) poller is configured; see
 [enrollment.md §7](enrollment.md#7-acme-smime-certificates-rfc-8823-email-reply-00)
 for the `acme.email` block and full flow.
+
+### Multi-perspective corroboration (MPIC / SC-067)
+
+By default the three domain-control challenges are validated from a **single**
+network vantage point, which a localized BGP/DNS hijack can fool. Enable
+**Multi-Perspective Issuance Corroboration** (CA/Browser Forum ballot SC-067)
+under `acme.mpic` to re-check each http-01 / dns-01 / tls-alpn-01 validation from
+several independent remote perspectives (each with its own resolver and/or
+outbound SOCKS5 proxy) and issue only when a **quorum** agrees. It is off by
+default and fails **closed** when too few perspectives corroborate. See
+**[ACME MPIC (SC-067)](acme-mpic.md)** for the quorum rule, configuration, and
+observability.
 
 ## 4. Access control: External Account Binding
 
@@ -510,6 +523,7 @@ answers `403` with `urn:ietf:params:acme:error:autoRenewalCanceled`.
 
 ## See also
 
+- [ACME MPIC (SC-067)](acme-mpic.md) — multi-perspective domain-control corroboration
 - [Certificate authority](certificate-authority.md) — creating the issuing CA and profiles
 - [RBAC, audit logging & config](rbac-and-audit.md) — the event log and roles
 - [HSM / PKCS#11 configuration](hsm-configuration.md) — the key provider

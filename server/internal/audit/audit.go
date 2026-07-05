@@ -313,6 +313,12 @@ const (
 	ActionACMEAuthzNew   = "acme.authz.new"
 	ActionACMEChallenge  = "acme.challenge"
 	ActionACMECertRevoke = "acme.cert.revoke"
+	// ActionACMEMPIC records a Multi-Perspective Issuance Corroboration (SC-067)
+	// quorum failure for a domain-control challenge (Task 142): domain control
+	// could not be corroborated from enough independent network perspectives, so
+	// the challenge failed closed. The detail names each perspective's outcome —
+	// the fingerprint of a localized BGP/DNS hijack or a degraded MPIC deployment.
+	ActionACMEMPIC = "acme.mpic"
 	// ActionACMERenewalInfo records a served ARI (draft-ietf-acme-ari) renewal-info
 	// lookup, and ActionACMEOrderReplaces records a newOrder that linked to a
 	// predecessor certificate via the "replaces" field.

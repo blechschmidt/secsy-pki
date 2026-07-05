@@ -133,6 +133,14 @@ type Config struct {
 	// STAR certificate ahead of expiry until its end-date. Nil (the default) leaves
 	// the feature off and the "auto-renewal" object ignored on orders.
 	Star *StarConfig
+
+	// MPIC configures Multi-Perspective Issuance Corroboration (Task 142, CA/Browser
+	// Forum SC-067): domain-control challenges (http-01/dns-01/tls-alpn-01) are
+	// corroborated from several independent network perspectives and accepted only
+	// when a quorum agrees, resisting a localized BGP/DNS hijack. Disabled by
+	// default; when disabled, validation uses the single primary perspective exactly
+	// as before.
+	MPIC MPICConfig
 }
 
 // ACMEProfile is one client-selectable issuance profile exposed by the ACME
@@ -235,14 +243,28 @@ type Server struct {
 	cfg       Config
 	nonces    *nonceStore
 	validator *Validator
+	mpic      *Coordinator
 	email     *emailChallenger
 	now       func() time.Time
 }
 
 // New constructs an ACME server. It does not start any listener; call Register
 // to attach the endpoints to an http.ServeMux.
+//
+// If the MPIC configuration is structurally invalid (a remote perspective with
+// no distinguishing resolver/proxy, a bad proxy URL, or too few perspectives for
+// the quorum floor) the coordinator falls back to disabled and the error is
+// logged: a misconfigured corroboration layer must not silently weaken
+// validation, but neither should it take down a server whose config validation
+// (config.validateACME) is expected to have already caught the problem at
+// startup. Construct via buildACMEConfig, which surfaces such errors before New.
 func New(db *database.DB, provider keyprovider.Provider, cfg Config) *Server {
 	cfg = cfg.withDefaults()
+	coord, err := newCoordinator(cfg.MPIC, cfg.HTTP01Port, cfg.TLSALPN01Port)
+	if err != nil {
+		log.Printf("acme: MPIC disabled — invalid configuration: %v", err)
+		coord = &Coordinator{}
+	}
 	return &Server{
 		db:        db,
 		provider:  provider,
@@ -250,6 +272,7 @@ func New(db *database.DB, provider keyprovider.Provider, cfg Config) *Server {
 		cfg:       cfg,
 		nonces:    newNonceStore(db, resolveNonceSecret(db, cfg.NonceSecret), time.Now),
 		validator: newValidator(cfg.HTTP01Port, cfg.TLSALPN01Port, cfg.DNSResolver),
+		mpic:      coord,
 		email:     newEmailChallenger(cfg.Email),
 		now:       time.Now,
 	}
@@ -281,6 +304,11 @@ func resolveNonceSecret(db *database.DB, explicit []byte) []byte {
 // SetValidator overrides the challenge validator. Used by tests to inject a
 // controllable HTTP client / DNS resolver.
 func (s *Server) SetValidator(v *Validator) { s.validator = v }
+
+// SetMPIC overrides the Multi-Perspective Issuance Corroboration coordinator.
+// Used by tests to inject fake remote perspectives; production wires it from
+// Config.MPIC in New.
+func (s *Server) SetMPIC(c *Coordinator) { s.mpic = c }
 
 // SetClock overrides the time source. Used by tests.
 func (s *Server) SetClock(now func() time.Time) {

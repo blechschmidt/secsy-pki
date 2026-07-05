@@ -1344,7 +1344,41 @@ func buildACMEConfig(db *database.DB, cfg *config.Config) (acme.Config, error) {
 			MaxDuration: time.Duration(cfg.ACME.Star.MaxDurationDays) * 24 * time.Hour,
 		}
 	}
+
+	// Multi-Perspective Issuance Corroboration (Task 142, SC-067): translate the
+	// operator-friendly seconds/perspective config into the acme.MPICConfig the
+	// coordinator consumes. Structurally validated in config.validateACMEMPIC; the
+	// dialer/proxy wiring is built and further validated in acme.New (newCoordinator).
+	ac.MPIC = buildACMEMPICConfig(cfg)
+
 	return ac, nil
+}
+
+// buildACMEMPICConfig assembles the MPIC coordinator configuration (Task 142)
+// from the acme.mpic config block, converting the seconds-based operator inputs
+// into the durations the coordinator uses. When disabled it still copies the
+// perspective list through harmlessly; acme.New treats a disabled coordinator as
+// single-perspective.
+func buildACMEMPICConfig(cfg *config.Config) acme.MPICConfig {
+	m := cfg.ACME.MPIC
+	out := acme.MPICConfig{
+		Enabled: m.Enabled,
+		Timeout: time.Duration(m.PerspectiveTimeoutSeconds) * time.Second,
+		Policy: acme.QuorumPolicy{
+			MinPerspectives: m.Quorum.MinPerspectives,
+			MaxFailures:     m.Quorum.MaxFailures,
+			RequireAll:      m.Quorum.RequireAll,
+		},
+	}
+	for _, p := range m.Perspectives {
+		out.Perspectives = append(out.Perspectives, acme.PerspectiveConfig{
+			Name:        p.Name,
+			DNSResolver: p.DNSResolver,
+			ProxyURL:    p.ProxyURL,
+			Timeout:     time.Duration(p.TimeoutSeconds) * time.Second,
+		})
+	}
+	return out
 }
 
 // buildACMEEmailConfig assembles the RFC 8823 email-reply-00 challenge transport

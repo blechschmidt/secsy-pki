@@ -79,6 +79,26 @@ acme:
   # require_eab: true                     # restrict who may register (RBAC-like)
   # eab_hmac_keys:
   #   team-web: "base64url-or-base64-hmac-key"
+  # Multi-Perspective Issuance Corroboration (CA/Browser Forum SC-067). Off by
+  # default; when enabled, each http-01/dns-01/tls-alpn-01 check is re-run from
+  # the remote perspectives below and accepted only when a quorum agrees, so a
+  # localized BGP/DNS hijack of the CA's own path is outvoted. Each perspective
+  # needs its own resolver and/or an outbound SOCKS5 proxy at a distinct network
+  # location. See docs/acme-mpic.md.
+  # mpic:
+  #   enabled: true
+  #   perspective_timeout_seconds: 10
+  #   quorum:
+  #     min_perspectives: 2               # fail closed below this many responses
+  #     # max_failures: -1                # -1 = SC-067 table (1 for 2-5, 2 for 6+)
+  #     # require_all: false
+  #   perspectives:
+  #     - name: "eu-west"
+  #       dns_resolver: "10.0.1.53:53"
+  #       proxy_url: "socks5h://10.0.1.9:1080"
+  #     - name: "us-east"
+  #       dns_resolver: "10.0.2.53:53"
+  #       proxy_url: "socks5h://10.0.2.9:1080"
 
 # SCEP (RFC 8894) device / MDM enrollment. Disabled unless enabled=true. The
 # issuing CA MUST be an RSA CA (SCEP wraps requests in a PKCS#7 EnvelopedData

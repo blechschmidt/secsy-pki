@@ -341,14 +341,27 @@ func (s *Server) validateChallenge(r *http.Request, acct *acmeAccount, authz *mo
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
+	// The three domain-control challenges are corroborated across network
+	// perspectives (MPIC, SC-067). device-attest-01 proves possession of a
+	// hardware key rather than control of a network identifier, so it is not a
+	// perspective check and never routes through the coordinator.
 	var prob *Problem
 	switch chall.Type {
 	case models.ACMEChallengeHTTP01:
-		prob = s.validator.ValidateHTTP01(ctx, authz.IdentifierValue, chall.Token, keyAuth)
+		id, token := authz.IdentifierValue, chall.Token
+		prob = s.corroborateChallenge(ctx, r, acct, authz, chall, func(ctx context.Context, p Perspective) *Problem {
+			return p.ValidateHTTP01(ctx, id, token, keyAuth)
+		})
 	case models.ACMEChallengeDNS01:
-		prob = s.validator.ValidateDNS01(ctx, authz.IdentifierValue, keyAuth)
+		id := authz.IdentifierValue
+		prob = s.corroborateChallenge(ctx, r, acct, authz, chall, func(ctx context.Context, p Perspective) *Problem {
+			return p.ValidateDNS01(ctx, id, keyAuth)
+		})
 	case models.ACMEChallengeTLSALPN01:
-		prob = s.validator.ValidateTLSALPN01(ctx, authz.IdentifierValue, keyAuth)
+		id := authz.IdentifierValue
+		prob = s.corroborateChallenge(ctx, r, acct, authz, chall, func(ctx context.Context, p Perspective) *Problem {
+			return p.ValidateTLSALPN01(ctx, id, keyAuth)
+		})
 	case models.ACMEChallengeDeviceAttest01:
 		prob = s.validateDeviceAttest01(r, acct, authz, payload, keyAuth)
 	default:
@@ -380,6 +393,42 @@ func (s *Server) validateChallenge(r *http.Request, acct *acmeAccount, authz *mo
 	// has no order (OrderID ""), so GetACMEOrder returns nil and this is skipped.
 	if order, _ := s.db.GetACMEOrder(authz.OrderID); order != nil {
 		s.refreshOrderStatus(order)
+	}
+}
+
+// corroborateChallenge runs a domain-control challenge check through the MPIC
+// coordinator (the primary local perspective plus any configured remote
+// perspectives), records per-perspective and quorum metrics, emits an acme.mpic
+// audit record on quorum failure, and returns the ACME problem to fail the
+// challenge with (nil on success). When MPIC is disabled the coordinator runs
+// only the primary perspective, so this is a thin, behavior-preserving wrapper
+// over the single-vantage validator.
+func (s *Server) corroborateChallenge(ctx context.Context, r *http.Request, acct *acmeAccount, authz *models.ACMEAuthorization, chall *models.ACMEChallenge, check checkFunc) *Problem {
+	primary := &validatorPerspective{name: "primary", v: s.validator}
+	res := s.mpic.Corroborate(ctx, primary, check)
+	s.recordMPIC(r, acct, authz, chall, res)
+	return res.Problem
+}
+
+// recordMPIC emits the Multi-Perspective Issuance Corroboration observability for
+// one challenge check: a per-perspective pass/fail metric for the primary and
+// each remote, a quorum-decision metric, and — when the remote quorum was not
+// met — an acme.mpic audit record naming the dissenting perspectives. It is a
+// no-op when MPIC was not in play (disabled, or no remotes configured), so a
+// deployment that does not use MPIC emits no MPIC series and the existing
+// single-perspective ACMEChallengeValidations metric stands alone.
+func (s *Server) recordMPIC(r *http.Request, acct *acmeAccount, authz *models.ACMEAuthorization, chall *models.ACMEChallenge, res *Result) {
+	if !res.Applied && res.QuorumResult == "" {
+		return
+	}
+	metrics.ACMEMPICPerspective.Inc(res.Primary.Name, chall.Type, res.Primary.Outcome.String())
+	for _, pr := range res.Remotes {
+		metrics.ACMEMPICPerspective.Inc(pr.Name, chall.Type, pr.Outcome.String())
+	}
+	metrics.ACMEMPICQuorum.Inc(chall.Type, res.QuorumResult)
+	if res.QuorumResult == mpicResultFailQuorum || res.QuorumResult == mpicResultFailNoQuota {
+		s.recordEvent(r, acct.rec.ID, audit.ActionACMEMPIC, authzTarget(authz), audit.ResultError,
+			res.auditDetail(chall.Type, authz.IdentifierValue))
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -1458,6 +1459,71 @@ type ACMEConfig struct {
 	// and a leader-elected renewer re-issues each STAR certificate ahead of expiry
 	// until its end-date. Off by default.
 	Star ACMEStarConfig `yaml:"star"`
+
+	// MPIC configures Multi-Perspective Issuance Corroboration (Task 142, CA/Browser
+	// Forum SC-067): each domain-control challenge (http-01/dns-01/tls-alpn-01) is
+	// re-checked from several independent network perspectives and accepted only when
+	// a quorum agrees, so a localized BGP/DNS hijack of the CA's own path is outvoted
+	// by honest perspectives. Off by default; when disabled, validation uses the
+	// single primary (local) perspective exactly as before.
+	MPIC ACMEMPICConfig `yaml:"mpic"`
+}
+
+// ACMEMPICConfig configures Multi-Perspective Issuance Corroboration (Task 142,
+// SC-067). The "primary" perspective is always the server's own local view
+// (using acme.dns_resolver / the system resolver); the perspectives listed here
+// are the additional remote vantage points that must corroborate.
+type ACMEMPICConfig struct {
+	// Enabled turns on remote corroboration. When false the block is inert and
+	// challenge validation uses only the primary perspective.
+	Enabled bool `yaml:"enabled"`
+	// PerspectiveTimeoutSeconds bounds each perspective's individual check
+	// (default 10). A per-perspective override wins.
+	PerspectiveTimeoutSeconds int `yaml:"perspective_timeout_seconds"`
+	// Quorum expresses the SC-067 corroboration rule.
+	Quorum ACMEMPICQuorumConfig `yaml:"quorum"`
+	// Perspectives are the remote vantage points. Each must set at least one of
+	// dns_resolver or proxy_url so its network view differs from the primary's.
+	Perspectives []ACMEMPICPerspectiveConfig `yaml:"perspectives"`
+}
+
+// ACMEMPICQuorumConfig expresses the SC-067 quorum rule: how many remote
+// perspectives must corroborate and how many may dissent.
+type ACMEMPICQuorumConfig struct {
+	// MinPerspectives is the minimum number of remote perspectives that must
+	// return a definitive result (corroboration or rejection, not a
+	// transport/timeout error) before a quorum decision is trusted. Below it,
+	// corroboration fails closed rather than degrade to a single vantage.
+	// Default 2.
+	MinPerspectives int `yaml:"min_perspectives"`
+	// MaxFailures caps how many remote perspectives may fail to corroborate. Unset
+	// or negative derives the cap from the SC-067 scaling table (1 failure allowed
+	// for 2–5 perspectives, 2 for 6+). Set RequireAll for zero.
+	MaxFailures int `yaml:"max_failures"`
+	// RequireAll demands every attempted remote perspective corroborate, ignoring
+	// MaxFailures.
+	RequireAll bool `yaml:"require_all"`
+}
+
+// ACMEMPICPerspectiveConfig describes one remote perspective's distinct network
+// view. A perspective differs from the primary by resolving names through a
+// different DNS server (dns_resolver) and/or egressing its HTTP/TLS traffic
+// through a different outbound SOCKS5 proxy (proxy_url), reaching the target over
+// an independent path.
+type ACMEMPICPerspectiveConfig struct {
+	// Name uniquely identifies the perspective (e.g. "eu-west"). "primary" is
+	// reserved for the local perspective.
+	Name string `yaml:"name"`
+	// DNSResolver (host:port) pins this perspective's dns-01 TXT lookups and,
+	// absent a proxy, its http-01/tls-alpn-01 name resolution.
+	DNSResolver string `yaml:"dns_resolver"`
+	// ProxyURL (socks5://host:port or socks5h://host:port) routes this
+	// perspective's http-01 fetches and tls-alpn-01 dials through an outbound
+	// SOCKS5 proxy so the connection egresses from the proxy's location.
+	ProxyURL string `yaml:"proxy_url"`
+	// TimeoutSeconds overrides the block-wide per-perspective timeout for this
+	// perspective.
+	TimeoutSeconds int `yaml:"timeout_seconds"`
 }
 
 // ACMEStarConfig bounds RFC 8739 STAR certificates (Task 136). The lifetime and
@@ -3847,6 +3913,59 @@ func (c *Config) validateACME() error {
 	}
 	if err := c.validateACMEStar(); err != nil {
 		return err
+	}
+	if err := c.validateACMEMPIC(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateACMEMPIC sanity-checks the Multi-Perspective Issuance Corroboration
+// block (Task 142, SC-067) when it is enabled: enough remote perspectives to
+// meet the quorum floor, each with a unique non-reserved name and at least one
+// distinguishing view (a resolver or a SOCKS5 proxy), and non-negative quorum
+// bounds. The dialer/proxy wiring is built (and further validated) at startup in
+// newCoordinator; this catches operator mistakes at config-load time.
+func (c *Config) validateACMEMPIC() error {
+	m := c.ACME.MPIC
+	if !m.Enabled {
+		return nil
+	}
+	if m.Quorum.MinPerspectives < 0 || m.Quorum.MaxFailures < -1 {
+		return fmt.Errorf("acme.mpic.quorum bounds must not be negative")
+	}
+	minPerspectives := m.Quorum.MinPerspectives
+	if minPerspectives == 0 {
+		minPerspectives = 2 // matches QuorumPolicy.withDefaults
+	}
+	if len(m.Perspectives) < minPerspectives {
+		return fmt.Errorf("acme.mpic.enabled requires at least %d remote perspective(s) (quorum.min_perspectives), got %d",
+			minPerspectives, len(m.Perspectives))
+	}
+	seen := map[string]bool{"primary": true}
+	for i, p := range m.Perspectives {
+		name := strings.TrimSpace(p.Name)
+		if name == "" {
+			return fmt.Errorf("acme.mpic.perspectives[%d]: name must not be empty", i)
+		}
+		if seen[name] {
+			return fmt.Errorf("acme.mpic.perspectives[%d]: duplicate perspective name %q (\"primary\" is reserved for the local perspective)", i, name)
+		}
+		seen[name] = true
+		if p.DNSResolver == "" && p.ProxyURL == "" {
+			return fmt.Errorf("acme.mpic.perspectives[%q]: set at least one of dns_resolver or proxy_url", name)
+		}
+		if p.ProxyURL != "" {
+			u, err := url.Parse(p.ProxyURL)
+			if err != nil {
+				return fmt.Errorf("acme.mpic.perspectives[%q]: invalid proxy_url: %w", name, err)
+			}
+			switch strings.ToLower(u.Scheme) {
+			case "socks5", "socks5h":
+			default:
+				return fmt.Errorf("acme.mpic.perspectives[%q]: proxy_url scheme %q unsupported (use socks5:// or socks5h://)", name, u.Scheme)
+			}
+		}
 	}
 	return nil
 }

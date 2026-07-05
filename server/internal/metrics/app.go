@@ -398,6 +398,33 @@ var (
 		"ACME STAR (RFC 8739) short-term auto-renewed order lifecycle events, by event.",
 		"event")
 
+	// ACMEMPICPerspective counts per-perspective challenge checks performed by the
+	// Multi-Perspective Issuance Corroboration layer (Task 142, CA/Browser Forum
+	// SC-067), by "perspective" (the vantage-point name, e.g. primary|eu-west),
+	// "challenge" type, and "result": corroborated (the perspective agreed the
+	// challenge passes), rejected (the check ran and returned a definitive failure —
+	// the localized-hijack signal when honest perspectives dissent), or unavailable
+	// (the perspective could not complete its check — timeout/transport error). A
+	// perspective persistently "unavailable" is a broken remote vantage; a
+	// perspective that "rejected" while others corroborated points at a localized
+	// BGP/DNS interception of the CA's primary path.
+	ACMEMPICPerspective = NewCounter(Default,
+		"secsy_acme_mpic_perspective_checks_total",
+		"ACME MPIC (SC-067) per-perspective challenge checks, by perspective, challenge type, and result (corroborated|rejected|unavailable).",
+		"perspective", "challenge", "result")
+	// ACMEMPICQuorum counts MPIC quorum decisions (Task 142) by "challenge" type and
+	// "result": corroborated (the primary passed and the remote perspectives met the
+	// SC-067 quorum), primary_failed (the primary check itself failed — nothing to
+	// corroborate, identical to pre-MPIC single-perspective behavior), failed_quorum
+	// (too many remote perspectives dissented for the quorum to hold), or
+	// failed_unresponsive (too few remote perspectives returned a definitive result,
+	// so corroboration failed closed rather than silently degrade to one vantage). A
+	// rising failed_quorum is the primary MPIC alert signal.
+	ACMEMPICQuorum = NewCounter(Default,
+		"secsy_acme_mpic_quorum_total",
+		"ACME MPIC (SC-067) quorum decisions, by challenge type and result (corroborated|primary_failed|failed_quorum|failed_unresponsive).",
+		"challenge", "result")
+
 	// ACMENonces tracks the shared/durable anti-replay nonce store (Task 97) by
 	// "result": issued (a nonce minted), valid (a nonce consumed on its first use),
 	// replayed (rejected because it was already consumed — the multi-replica
