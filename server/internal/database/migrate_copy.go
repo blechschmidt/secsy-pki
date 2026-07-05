@@ -92,6 +92,11 @@ var migrationTables = []string{
 	// secret layer so a store migration preserves the sealed MAC seed (existing
 	// HMAC tokens still verify after the migration).
 	"mac_keys",
+	// Format-preserving-encryption / tokenization seed (Task 144). One row per KEK
+	// family; standalone (no foreign keys). Copied with the rest of the secret
+	// layer so a store migration preserves the sealed FPE seed (existing tokens
+	// still decode after the migration).
+	"fpe_seeds",
 	// Four-eyes approval workflow (Task 81). pending_approvals references
 	// tenants, so it is copied after them; the per-approver decisions reference
 	// pending_approvals, so they come last.

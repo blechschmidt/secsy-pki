@@ -543,6 +543,15 @@ var (
 		"CSPRNG random-bytes operations, by entropy source (hsm|software) and result.",
 		"source", "result")
 
+	// Format-preserving encryption / tokenization (Task 144). SecretTransform
+	// counts FF1 encode|decode operations, partitioned by transform template and
+	// result, so operators can see per-template usage without any plaintext ever
+	// touching the metric.
+	SecretTransform = NewCounter(Default,
+		"secsy_secret_transform_operations_total",
+		"Format-preserving-encryption transform operations, by template, operation (encode|decode) and result.",
+		"template", "operation", "result")
+
 	// RBAC authorization decisions. "action" is the coarse capability checked;
 	// "decision" is allow|deny.
 	AuthzDecisions = NewCounter(Default,

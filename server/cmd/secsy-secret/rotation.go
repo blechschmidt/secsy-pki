@@ -192,6 +192,17 @@ func cmdRetireKEK(cfg *config.Config, _ keyprovider.Provider, args []string) err
 		return fmt.Errorf("KEK version %d of family %q currently seals the ML-KEM decapsulation key; re-seal it onto the active version first (`secsy-secret pqc-reseal`) or pass -force to strand hybrid ciphertext", *version, fam)
 	}
 
+	// Format-preserving-encryption guard (Task 144): retiring the classical KEK
+	// version that currently seals the family's FPE seed would strand ALL tokens
+	// (the seed could no longer be unsealed to derive the FF1 keys). Refuse unless
+	// the seed has been re-sealed onto a newer version (`secsy-secret rewrap`) or
+	// -force is given.
+	if n, ferr := db.CountFPESeedsOnKEK(fam, *version); ferr != nil {
+		return fmt.Errorf("checking format-preserving-encryption seed: %w", ferr)
+	} else if n > 0 && !*force {
+		return fmt.Errorf("KEK version %d of family %q currently seals the format-preserving-encryption seed; re-seal it onto the active version first (`secsy-secret rewrap -all`) or pass -force to strand all tokens", *version, fam)
+	}
+
 	retired, err := secret.RetireKEK(db, fam, *version, *force)
 	if err != nil {
 		_ = recordEscrowEvent(db, actor, audit.ActionSecretKEKRetire, fam, audit.ResultError, err.Error())
@@ -304,12 +315,25 @@ func cmdRewrap(cfg *config.Config, provider keyprovider.Provider, args []string)
 		_ = recordEscrowEvent(db, actor, audit.ActionSecretRewrap, fam, audit.ResultError, err.Error())
 		return err
 	}
+	// Re-seal the family's format-preserving-encryption seed onto the active KEK
+	// as part of a fleet re-wrap (Task 144), so the old version can be retired
+	// without stranding tokens. The seed bytes — and thus every derived FF1 key and
+	// every issued token — are unchanged; only the KEK wrapping advances.
+	fpeResealed := false
+	if *all {
+		resealed, _, ferr := secret.ResealFPESeed(context.Background(), ring, db, fam)
+		if ferr != nil {
+			_ = recordEscrowEvent(db, actor, audit.ActionSecretRewrap, fam, audit.ResultError, "fpe_seed_reseal: "+ferr.Error())
+			return fmt.Errorf("re-sealing the format-preserving-encryption seed: %w", ferr)
+		}
+		fpeResealed = resealed
+	}
 	result := audit.ResultSuccess
 	if report.Failed > 0 {
 		result = audit.ResultError
 	}
-	detail := fmt.Sprintf("total=%d rewrapped=%d skipped=%d conflicts=%d failed=%d to_version=%d",
-		report.Total, report.Rewrapped, report.Skipped, report.Conflicts, report.Failed, report.ActiveVersion)
+	detail := fmt.Sprintf("total=%d rewrapped=%d skipped=%d conflicts=%d failed=%d to_version=%d fpe_seed_resealed=%v",
+		report.Total, report.Rewrapped, report.Skipped, report.Conflicts, report.Failed, report.ActiveVersion, fpeResealed)
 	if err := recordEscrowEvent(db, actor, audit.ActionSecretRewrap, fam, result, detail); err != nil {
 		return fmt.Errorf("re-wrap ran but recording the audit event failed: %w", err)
 	}
@@ -320,6 +344,9 @@ func cmdRewrap(cfg *config.Config, provider keyprovider.Provider, args []string)
 		report.Total, report.Rewrapped, report.Skipped, report.Conflicts, report.Failed)
 	for _, e := range report.Errors {
 		fmt.Printf("    ! %s\n", e)
+	}
+	if fpeResealed {
+		fmt.Printf("  FPE seed:  re-sealed onto version %d\n", report.ActiveVersion)
 	}
 	if report.Failed > 0 {
 		return fmt.Errorf("%d secret(s) failed to re-wrap", report.Failed)

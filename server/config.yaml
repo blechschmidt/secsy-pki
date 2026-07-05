@@ -777,6 +777,23 @@ canary:
 #       - id: "carol"
 #         # public_key_file: "carol.pub"  # or an externally-held public key (wrap-only)
 #         key_label: "agent-carol"
+#   # Format-preserving encryption / tokenization templates (NIST SP 800-38G FF1).
+#   # Each enciphers structured data into a value of the SAME length over the SAME
+#   # alphabet; a deterministic template yields stable ciphertext for equal input
+#   # (equality search / de-duplication). Keys are HKDF-derived per template from a
+#   # seed sealed under kek_label. See docs/password-encryption.md.
+#   transforms:
+#     - name: pan                # referenced by callers; bound into the derived key
+#       alphabet: digits         # named set, or an inline "chars:<symbols>" literal
+#       min_length: 12           # >= FF1 domain minimum for the radix (radix^len >= 1e6)
+#       max_length: 19
+#       deterministic: true      # convergent: equal PAN -> equal token
+#       preserve_other: true     # copy separators (dashes/spaces) through verbatim
+#     - name: account
+#       alphabet: alphanumeric   # radix 62
+#       deterministic: false     # context mode: a per-request tweak varies the token
+#       tweak_source: request    # re-supply the same tweak to decode
+#       # roles: [issuer]        # optional per-template role allowlist
 
 # --- Four-eyes / maker-checker approval gate ----------------------------------
 # Hold high-risk operations until a configurable number of DISTINCT approvers

@@ -120,3 +120,32 @@ func (s *secretService) GenerateRandom(ctx context.Context, req *pkiv1.GenerateR
 	}
 	return &pkiv1.GenerateRandomResponse{Random: res.Bytes, Source: res.Source}, nil
 }
+
+// TransformEncode format-preserving-enciphers a value through a named FF1
+// transform template.
+func (s *secretService) TransformEncode(ctx context.Context, req *pkiv1.TransformRequest) (*pkiv1.TransformResponse, error) {
+	return s.transform(ctx, req, true)
+}
+
+// TransformDecode inverts TransformEncode for the same template and tweak.
+func (s *secretService) TransformDecode(ctx context.Context, req *pkiv1.TransformRequest) (*pkiv1.TransformResponse, error) {
+	return s.transform(ctx, req, false)
+}
+
+// transform is the shared adapter for the encode/decode RPCs over the core
+// TransformOp, so both share identical tenant scoping and status-code mapping.
+func (s *secretService) transform(ctx context.Context, req *pkiv1.TransformRequest, encode bool) (*pkiv1.TransformResponse, error) {
+	tenant, kekLabel, err := s.api.ResolveSecretTenant(ctx, req.GetTenant())
+	if err != nil {
+		return nil, mapSecretTenantErr(err)
+	}
+	res, err := s.api.TransformOp(ctx, peerIP(ctx), tenant, kekLabel, req.GetTemplate(), req.GetValue(), req.GetTweak(), encode)
+	if err != nil {
+		return nil, mapSecretOpErr(err)
+	}
+	return &pkiv1.TransformResponse{
+		Template:      res.Template,
+		Result:        res.Result,
+		Deterministic: res.Deterministic,
+	}, nil
+}

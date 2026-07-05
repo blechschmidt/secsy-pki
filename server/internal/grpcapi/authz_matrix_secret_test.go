@@ -82,6 +82,14 @@ func grpcSecretAuthzMatrix() []grpcSecretCase {
 			_, err := s.GenerateRandom(ctx, &pkiv1.GenerateRandomRequest{Tenant: "a", NumBytes: 16})
 			return err
 		}},
+		{"TransformEncode", func(ctx context.Context, s *secretService) error {
+			_, err := s.TransformEncode(ctx, &pkiv1.TransformRequest{Tenant: "a", Template: "t", Value: "1234567890"})
+			return err
+		}},
+		{"TransformDecode", func(ctx context.Context, s *secretService) error {
+			_, err := s.TransformDecode(ctx, &pkiv1.TransformRequest{Tenant: "a", Template: "t", Value: "1234567890"})
+			return err
+		}},
 	}
 }
 

@@ -1935,6 +1935,31 @@ type MACKey struct {
 	CreatedAt time.Time `json:"created_at" db:"created_at"`
 }
 
+// FPESeed is the format-preserving-encryption / tokenization seed for a KEK
+// family (Task 144). There is at most one row per family. The seed is never
+// stored in the clear: Envelope is an ordinary sealed envelope (see
+// secret.Envelope) over a random seed, so recovering it still requires the
+// family's HSM-held KEK, and a per-template FF1 key is HKDF-derived from it. The
+// seed itself does not rotate (that would strand every previously issued token,
+// which — being format-preserving — carries no version to select an old key);
+// only its KEK wrapping is re-sealed when the classical KEK rotates, so the
+// derived keys stay stable and existing tokens keep decoding.
+type FPESeed struct {
+	// Family is the KEK family this seed belongs to (the deployment-wide
+	// secret.kek_label or a tenant's kek_label).
+	Family string `json:"family" db:"family"`
+	// Envelope is the serialized JSON envelope sealing the random FPE seed. It is
+	// exactly what /api/secret/encrypt would produce over the seed bytes.
+	Envelope string `json:"-" db:"envelope"`
+	// SealedUnderVersion is the classical KEK rotation version whose key sealed
+	// the seed. The seal survives rotations while the sealing version stays in the
+	// dual-KEK window; it must be re-sealed onto a newer version before the sealing
+	// version is retired (secsy-secret rewrap re-seals it).
+	SealedUnderVersion int       `json:"sealed_under_version" db:"sealed_under_version"`
+	CreatedAt          time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at" db:"updated_at"`
+}
+
 // KEKUsage summarizes how many stored secrets are wrapped under one KEK
 // version, joined against the version's rotation status for the KEK status
 // report and the secrets-on-old-KEK gauge.

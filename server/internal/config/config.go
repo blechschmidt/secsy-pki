@@ -18,6 +18,8 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
+	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
+	"github.com/blechschmidt/secsy-pki/server/internal/secret"
 )
 
 type Config struct {
@@ -2271,6 +2273,101 @@ type SecretConfig struct {
 	// material stays available for decryption). ML-KEM runs in software (SoftHSM
 	// has no ML-KEM mechanism); the classical KEK may still live in the HSM.
 	PQCHybrid bool `yaml:"pqc_hybrid"`
+	// Transforms defines named format-preserving-encryption / tokenization
+	// templates (Task 144). Each template enciphers structured data (a card PAN,
+	// an SSN, an account number) into a value of the same length over the same
+	// alphabet via NIST SP 800-38G FF1, with the key derived from the KEK family.
+	// A deterministic template yields stable ciphertext for equal plaintext,
+	// enabling equality search and de-duplication on protected fields.
+	Transforms []TransformConfig `yaml:"transforms"`
+}
+
+// TransformConfig is one named format-preserving-encryption / tokenization
+// template (Task 144). It is resolved and validated into a runtime
+// secret.TransformTemplate; see secret.ResolveTransformTemplate for the rules.
+type TransformConfig struct {
+	// Name uniquely identifies the template. It is referenced by API/CLI callers,
+	// bound into the derived FF1 key (so templates are cryptographically
+	// independent), and recorded in the audit trail. It must never change once
+	// data has been tokenized under it.
+	Name string `yaml:"name"`
+	// Alphabet is the symbol set / radix: a registered name ("digits",
+	// "alphanumeric", "hex-lower", "base32", ...) or an inline "chars:<symbols>"
+	// literal. It defines the format that is preserved and must be stable.
+	Alphabet string `yaml:"alphabet"`
+	// MinLength / MaxLength bound the number of alphabet symbols accepted (0 =
+	// use the FF1 domain minimum / no maximum). MinLength may not go below the FF1
+	// domain minimum for the radix (radix^len >= 1,000,000).
+	MinLength int `yaml:"min_length"`
+	MaxLength int `yaml:"max_length"`
+	// Deterministic makes the template convergent: equal plaintext always yields
+	// equal ciphertext (equality search / de-duplication). It fixes the tweak
+	// empty and forbids a per-request tweak.
+	Deterministic bool `yaml:"deterministic"`
+	// TweakSource selects the FF1 tweak: "none" (deterministic, default when
+	// Deterministic) or "request" (a per-request tweak, default otherwise). It
+	// must agree with Deterministic.
+	TweakSource string `yaml:"tweak_source"`
+	// PreserveOther copies characters outside the alphabet (separators, spaces)
+	// verbatim to the same positions instead of rejecting them, so a formatted
+	// value like a dashed card number keeps its punctuation.
+	PreserveOther bool `yaml:"preserve_other"`
+	// Roles optionally restricts which operator roles may use this template
+	// (per-template RBAC), on top of the shared secret:transform capability. Empty
+	// means any holder of secret:transform in the tenant may use it. Each entry
+	// must name a known role (admin, issuer, signer, auditor, approver).
+	Roles []string `yaml:"roles"`
+}
+
+// spec converts the config template to the secret package's resolution input.
+func (t TransformConfig) spec() secret.TransformSpec {
+	return secret.TransformSpec{
+		Name:          t.Name,
+		Alphabet:      t.Alphabet,
+		MinLength:     t.MinLength,
+		MaxLength:     t.MaxLength,
+		Deterministic: t.Deterministic,
+		TweakSource:   t.TweakSource,
+		PreserveOther: t.PreserveOther,
+		Roles:         t.Roles,
+	}
+}
+
+// TransformByName resolves a single configured transform template by name, for
+// the CLI (which reads templates from config rather than the server). It returns
+// an error naming the available templates when the name is unknown.
+func (c SecretConfig) TransformByName(name string) (*secret.TransformTemplate, error) {
+	for _, t := range c.Transforms {
+		if t.Name == name {
+			return secret.ResolveTransformTemplate(t.spec())
+		}
+	}
+	names := make([]string, 0, len(c.Transforms))
+	for _, t := range c.Transforms {
+		names = append(names, t.Name)
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("no transform templates are configured (add secret.transforms to the config)")
+	}
+	return nil, fmt.Errorf("unknown transform template %q (configured: %s)", name, strings.Join(names, ", "))
+}
+
+// ResolveTransforms resolves all configured transform templates into runtime
+// templates keyed by name. It assumes validateTransforms has already passed, so
+// a resolution failure here is an internal error.
+func (c SecretConfig) ResolveTransforms() (map[string]*secret.TransformTemplate, error) {
+	if len(c.Transforms) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]*secret.TransformTemplate, len(c.Transforms))
+	for _, t := range c.Transforms {
+		tmpl, err := secret.ResolveTransformTemplate(t.spec())
+		if err != nil {
+			return nil, err
+		}
+		out[t.Name] = tmpl
+	}
+	return out, nil
 }
 
 // EscrowConfig configures optional M-of-N key escrow for the envelope layer. At
@@ -3697,6 +3794,42 @@ func (c *Config) validateEnrollment() error {
 	}
 	if c.Secret.PQCHybrid && c.Secret.KEKLabel == "" {
 		return fmt.Errorf("secret.pqc_hybrid is enabled but secret.kek_label is not set (post-quantum hybrid mode has no KEK family to attach ML-KEM material to)")
+	}
+	if err := c.Secret.validateTransforms(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateTransforms resolves every configured transform template so any
+// misconfiguration (unknown alphabet, a min_length below the FF1 domain minimum,
+// an inconsistent tweak_source/deterministic pair, a duplicate name) fails at
+// startup rather than on first use. Templates require a KEK to derive keys from,
+// so declaring them without secret.kek_label is rejected.
+func (c SecretConfig) validateTransforms() error {
+	if len(c.Transforms) == 0 {
+		return nil
+	}
+	if c.KEKLabel == "" {
+		return fmt.Errorf("secret.transforms are configured but secret.kek_label is not set (format-preserving encryption derives its keys from the KEK family)")
+	}
+	seen := make(map[string]bool, len(c.Transforms))
+	for i, t := range c.Transforms {
+		if t.Name == "" {
+			return fmt.Errorf("secret.transforms[%d]: name is required", i)
+		}
+		if seen[t.Name] {
+			return fmt.Errorf("secret.transforms: duplicate template name %q", t.Name)
+		}
+		seen[t.Name] = true
+		for _, r := range t.Roles {
+			if !rbac.ValidRole(rbac.Role(r)) {
+				return fmt.Errorf("secret.transforms[%q]: unknown role %q in roles allowlist", t.Name, r)
+			}
+		}
+		if _, err := secret.ResolveTransformTemplate(t.spec()); err != nil {
+			return err
+		}
 	}
 	return nil
 }

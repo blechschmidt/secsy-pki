@@ -46,8 +46,13 @@ type API struct {
 	// have ML-KEM material provisioned. Existing/hybrid envelopes always open
 	// regardless; the gate only governs sealing.
 	secretPQCHybrid bool
-	policy          Policy
-	monitorOpts     monitor.Options
+	// secretTransforms holds the resolved format-preserving-encryption /
+	// tokenization templates (Task 144) keyed by name, installed from
+	// secret.transforms config. Nil/empty means the transform service is not
+	// configured and its endpoints report the template as unknown.
+	secretTransforms map[string]*secret.TransformTemplate
+	policy           Policy
+	monitorOpts      monitor.Options
 	// Escrow configuration for the secret layer. escrowSpecs/escrowThreshold are
 	// installed from config; escrowPolicy is the lazily-built, cached policy (its
 	// construction self-tests the agent keys on the HSM, so it is deferred to the
@@ -258,6 +263,14 @@ func (a *API) SetPolicy(p Policy) { a.policy = p }
 // opening hybrid envelopes always uses whatever ML-KEM material the KEK family
 // has, independent of this flag.
 func (a *API) SetPQCHybrid(enabled bool) { a.secretPQCHybrid = enabled }
+
+// SetTransformTemplates installs the resolved format-preserving-encryption /
+// tokenization templates (Task 144), from secret.transforms config. Passing nil
+// leaves the transform service unconfigured. Templates are immutable, so sharing
+// the resolved map is safe.
+func (a *API) SetTransformTemplates(templates map[string]*secret.TransformTemplate) {
+	a.secretTransforms = templates
+}
 
 // SetEscrow installs the M-of-N key-escrow configuration for the secret layer.
 // The recovery-agent policy is built lazily on first use (its construction
@@ -660,6 +673,11 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 		mux.Handle("POST /api/secret/hmac", protected(http.HandlerFunc(a.GenerateHMAC)))
 		mux.Handle("POST /api/secret/hmac/verify", protected(http.HandlerFunc(a.VerifyHMAC)))
 		mux.Handle("POST /api/secret/random", protected(http.HandlerFunc(a.GenerateRandom)))
+		// Format-preserving encryption / tokenization (Task 144): encode/decode
+		// structured data through a named FF1 transform template, gated on the
+		// tenant-scoped secret:transform capability plus any per-template allowlist.
+		mux.Handle("POST /api/secret/transform/encode", protected(http.HandlerFunc(a.EncodeTransform)))
+		mux.Handle("POST /api/secret/transform/decode", protected(http.HandlerFunc(a.DecodeTransform)))
 		// Stored-secret registry: server-held envelopes, which is what makes a
 		// fleet-wide re-wrap enumerable.
 		mux.Handle("POST /api/secret/store", protected(http.HandlerFunc(a.StoreSecret)))

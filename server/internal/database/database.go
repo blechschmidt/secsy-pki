@@ -803,6 +803,23 @@ func (db *DB) migrate() error {
 			PRIMARY KEY (family, version)
 		)`,
 
+		// Format-preserving-encryption / tokenization seed for the secret layer
+		// (Task 144), one row per KEK family. The seed is never stored in the clear:
+		// envelope is an ordinary sealed envelope (see secret.Envelope) over a random
+		// seed, so recovering it still requires the HSM-held KEK, and a per-template
+		// FF1 key is HKDF-derived from it. The seed does NOT rotate — its derived keys
+		// must stay stable because format-preserving tokens carry no version to select
+		// an old key — so only sealed_under_version advances when the seed is re-sealed
+		// onto a newer classical KEK version during rotation. No plaintext key material
+		// lives in this table.
+		`CREATE TABLE IF NOT EXISTS fpe_seeds (
+			family TEXT PRIMARY KEY,
+			envelope TEXT NOT NULL,
+			sealed_under_version INTEGER NOT NULL DEFAULT 1,
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL
+		)`,
+
 		// Four-eyes / maker-checker approval requests (Task 81). A high-risk
 		// operation is held here until enough DISTINCT approvers sign off. The row
 		// stores only the operation's identity (class, resource_key, fingerprint)

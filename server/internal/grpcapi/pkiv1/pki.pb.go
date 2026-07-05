@@ -3887,6 +3887,145 @@ func (x *GenerateRandomResponse) GetSource() string {
 	return ""
 }
 
+// TransformRequest carries a value to encode or decode under a named transform
+// template. tenant selects the KEK family (id or slug; empty = default tenant).
+type TransformRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Tenant string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	// template names the configured FF1 transform to apply.
+	Template string `protobuf:"bytes,2,opt,name=template,proto3" json:"template,omitempty"`
+	// value is the input: the plaintext for encode, the token for decode. Its
+	// format (alphabet, length) must match the template.
+	Value string `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`
+	// tweak is the optional per-request tweak for a request-tweak template
+	// (presented verbatim to decode); it must be empty for a deterministic template.
+	Tweak         []byte `protobuf:"bytes,4,opt,name=tweak,proto3" json:"tweak,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TransformRequest) Reset() {
+	*x = TransformRequest{}
+	mi := &file_pki_v1_pki_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransformRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransformRequest) ProtoMessage() {}
+
+func (x *TransformRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_pki_v1_pki_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransformRequest.ProtoReflect.Descriptor instead.
+func (*TransformRequest) Descriptor() ([]byte, []int) {
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *TransformRequest) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *TransformRequest) GetTemplate() string {
+	if x != nil {
+		return x.Template
+	}
+	return ""
+}
+
+func (x *TransformRequest) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+func (x *TransformRequest) GetTweak() []byte {
+	if x != nil {
+		return x.Tweak
+	}
+	return nil
+}
+
+// TransformResponse returns the transformed value (same length/format as input).
+type TransformResponse struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Template string                 `protobuf:"bytes,1,opt,name=template,proto3" json:"template,omitempty"`
+	// result is the token (encode) or the recovered plaintext (decode).
+	Result string `protobuf:"bytes,2,opt,name=result,proto3" json:"result,omitempty"`
+	// deterministic reports whether the template is convergent (equal plaintext ->
+	// equal ciphertext).
+	Deterministic bool `protobuf:"varint,3,opt,name=deterministic,proto3" json:"deterministic,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TransformResponse) Reset() {
+	*x = TransformResponse{}
+	mi := &file_pki_v1_pki_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TransformResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TransformResponse) ProtoMessage() {}
+
+func (x *TransformResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_pki_v1_pki_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TransformResponse.ProtoReflect.Descriptor instead.
+func (*TransformResponse) Descriptor() ([]byte, []int) {
+	return file_pki_v1_pki_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *TransformResponse) GetTemplate() string {
+	if x != nil {
+		return x.Template
+	}
+	return ""
+}
+
+func (x *TransformResponse) GetResult() string {
+	if x != nil {
+		return x.Result
+	}
+	return ""
+}
+
+func (x *TransformResponse) GetDeterministic() bool {
+	if x != nil {
+		return x.Deterministic
+	}
+	return false
+}
+
 var File_pki_v1_pki_proto protoreflect.FileDescriptor
 
 const file_pki_v1_pki_proto_rawDesc = "" +
@@ -4225,7 +4364,16 @@ const file_pki_v1_pki_proto_rawDesc = "" +
 	"\tnum_bytes\x18\x02 \x01(\x05R\bnumBytes\"H\n" +
 	"\x16GenerateRandomResponse\x12\x16\n" +
 	"\x06random\x18\x01 \x01(\fR\x06random\x12\x16\n" +
-	"\x06source\x18\x02 \x01(\tR\x06source*\xb5\x01\n" +
+	"\x06source\x18\x02 \x01(\tR\x06source\"r\n" +
+	"\x10TransformRequest\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x1a\n" +
+	"\btemplate\x18\x02 \x01(\tR\btemplate\x12\x14\n" +
+	"\x05value\x18\x03 \x01(\tR\x05value\x12\x14\n" +
+	"\x05tweak\x18\x04 \x01(\fR\x05tweak\"m\n" +
+	"\x11TransformResponse\x12\x1a\n" +
+	"\btemplate\x18\x01 \x01(\tR\btemplate\x12\x16\n" +
+	"\x06result\x18\x02 \x01(\tR\x06result\x12$\n" +
+	"\rdeterministic\x18\x03 \x01(\bR\rdeterministic*\xb5\x01\n" +
 	"\x11CertificateStatus\x12\"\n" +
 	"\x1eCERTIFICATE_STATUS_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18CERTIFICATE_STATUS_VALID\x10\x01\x12\x1e\n" +
@@ -4247,13 +4395,15 @@ const file_pki_v1_pki_proto_rawDesc = "" +
 	"\x10ListCertificates\x12%.secsy.pki.v1.ListCertificatesRequest\x1a&.secsy.pki.v1.ListCertificatesResponse\x12[\n" +
 	"\x0eGetCRLMetadata\x12#.secsy.pki.v1.GetCRLMetadataRequest\x1a$.secsy.pki.v1.GetCRLMetadataResponse\x12^\n" +
 	"\x0fGetOCSPMetadata\x12$.secsy.pki.v1.GetOCSPMetadataRequest\x1a%.secsy.pki.v1.GetOCSPMetadataResponse\x12W\n" +
-	"\fStreamEvents\x12!.secsy.pki.v1.StreamEventsRequest\x1a\".secsy.pki.v1.StreamEventsResponse0\x012\xf4\x02\n" +
+	"\fStreamEvents\x12!.secsy.pki.v1.StreamEventsRequest\x1a\".secsy.pki.v1.StreamEventsResponse0\x012\x9c\x04\n" +
 	"\rSecretService\x12^\n" +
 	"\x0fGenerateDataKey\x12$.secsy.pki.v1.GenerateDataKeyRequest\x1a%.secsy.pki.v1.GenerateDataKeyResponse\x12U\n" +
 	"\fGenerateHMAC\x12!.secsy.pki.v1.GenerateHMACRequest\x1a\".secsy.pki.v1.GenerateHMACResponse\x12O\n" +
 	"\n" +
 	"VerifyHMAC\x12\x1f.secsy.pki.v1.VerifyHMACRequest\x1a .secsy.pki.v1.VerifyHMACResponse\x12[\n" +
-	"\x0eGenerateRandom\x12#.secsy.pki.v1.GenerateRandomRequest\x1a$.secsy.pki.v1.GenerateRandomResponseBGZEgithub.com/blechschmidt/secsy-pki/server/internal/grpcapi/pkiv1;pkiv1b\x06proto3"
+	"\x0eGenerateRandom\x12#.secsy.pki.v1.GenerateRandomRequest\x1a$.secsy.pki.v1.GenerateRandomResponse\x12R\n" +
+	"\x0fTransformEncode\x12\x1e.secsy.pki.v1.TransformRequest\x1a\x1f.secsy.pki.v1.TransformResponse\x12R\n" +
+	"\x0fTransformDecode\x12\x1e.secsy.pki.v1.TransformRequest\x1a\x1f.secsy.pki.v1.TransformResponseBGZEgithub.com/blechschmidt/secsy-pki/server/internal/grpcapi/pkiv1;pkiv1b\x06proto3"
 
 var (
 	file_pki_v1_pki_proto_rawDescOnce sync.Once
@@ -4268,7 +4418,7 @@ func file_pki_v1_pki_proto_rawDescGZIP() []byte {
 }
 
 var file_pki_v1_pki_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pki_v1_pki_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
+var file_pki_v1_pki_proto_msgTypes = make([]protoimpl.MessageInfo, 48)
 var file_pki_v1_pki_proto_goTypes = []any{
 	(CertificateStatus)(0),               // 0: secsy.pki.v1.CertificateStatus
 	(*CTLogOutcome)(nil),                 // 1: secsy.pki.v1.CTLogOutcome
@@ -4317,46 +4467,48 @@ var file_pki_v1_pki_proto_goTypes = []any{
 	(*VerifyHMACResponse)(nil),           // 44: secsy.pki.v1.VerifyHMACResponse
 	(*GenerateRandomRequest)(nil),        // 45: secsy.pki.v1.GenerateRandomRequest
 	(*GenerateRandomResponse)(nil),       // 46: secsy.pki.v1.GenerateRandomResponse
-	(*timestamppb.Timestamp)(nil),        // 47: google.protobuf.Timestamp
+	(*TransformRequest)(nil),             // 47: secsy.pki.v1.TransformRequest
+	(*TransformResponse)(nil),            // 48: secsy.pki.v1.TransformResponse
+	(*timestamppb.Timestamp)(nil),        // 49: google.protobuf.Timestamp
 }
 var file_pki_v1_pki_proto_depIdxs = []int32{
 	1,  // 0: secsy.pki.v1.CTInfo.logs:type_name -> secsy.pki.v1.CTLogOutcome
 	3,  // 1: secsy.pki.v1.IssueCertificateRequest.psd2:type_name -> secsy.pki.v1.PSD2QCStatement
 	4,  // 2: secsy.pki.v1.IssueCertificateRequest.private_key_usage_period:type_name -> secsy.pki.v1.PrivateKeyUsagePeriod
-	47, // 3: secsy.pki.v1.CertificateResponse.not_before:type_name -> google.protobuf.Timestamp
-	47, // 4: secsy.pki.v1.CertificateResponse.not_after:type_name -> google.protobuf.Timestamp
+	49, // 3: secsy.pki.v1.CertificateResponse.not_before:type_name -> google.protobuf.Timestamp
+	49, // 4: secsy.pki.v1.CertificateResponse.not_after:type_name -> google.protobuf.Timestamp
 	2,  // 5: secsy.pki.v1.CertificateResponse.ct:type_name -> secsy.pki.v1.CTInfo
 	3,  // 6: secsy.pki.v1.PreviewCertificateRequest.psd2:type_name -> secsy.pki.v1.PSD2QCStatement
 	4,  // 7: secsy.pki.v1.PreviewCertificateRequest.private_key_usage_period:type_name -> secsy.pki.v1.PrivateKeyUsagePeriod
-	47, // 8: secsy.pki.v1.PreviewCertificateResponse.not_before:type_name -> google.protobuf.Timestamp
-	47, // 9: secsy.pki.v1.PreviewCertificateResponse.not_after:type_name -> google.protobuf.Timestamp
+	49, // 8: secsy.pki.v1.PreviewCertificateResponse.not_before:type_name -> google.protobuf.Timestamp
+	49, // 9: secsy.pki.v1.PreviewCertificateResponse.not_after:type_name -> google.protobuf.Timestamp
 	10, // 10: secsy.pki.v1.PreviewCertificateResponse.extensions:type_name -> secsy.pki.v1.PreviewExtension
 	9,  // 11: secsy.pki.v1.PreviewCertificateResponse.gates:type_name -> secsy.pki.v1.PreviewGate
-	47, // 12: secsy.pki.v1.ValidationRevocation.revoked_at:type_name -> google.protobuf.Timestamp
-	47, // 13: secsy.pki.v1.ValidatedCertificate.not_before:type_name -> google.protobuf.Timestamp
-	47, // 14: secsy.pki.v1.ValidatedCertificate.not_after:type_name -> google.protobuf.Timestamp
+	49, // 12: secsy.pki.v1.ValidationRevocation.revoked_at:type_name -> google.protobuf.Timestamp
+	49, // 13: secsy.pki.v1.ValidatedCertificate.not_before:type_name -> google.protobuf.Timestamp
+	49, // 14: secsy.pki.v1.ValidatedCertificate.not_after:type_name -> google.protobuf.Timestamp
 	13, // 15: secsy.pki.v1.ValidatedCertificate.revocation:type_name -> secsy.pki.v1.ValidationRevocation
-	47, // 16: secsy.pki.v1.ValidateChainResponse.evaluated_at:type_name -> google.protobuf.Timestamp
-	47, // 17: secsy.pki.v1.ValidateChainResponse.valid_from:type_name -> google.protobuf.Timestamp
-	47, // 18: secsy.pki.v1.ValidateChainResponse.valid_until:type_name -> google.protobuf.Timestamp
+	49, // 16: secsy.pki.v1.ValidateChainResponse.evaluated_at:type_name -> google.protobuf.Timestamp
+	49, // 17: secsy.pki.v1.ValidateChainResponse.valid_from:type_name -> google.protobuf.Timestamp
+	49, // 18: secsy.pki.v1.ValidateChainResponse.valid_until:type_name -> google.protobuf.Timestamp
 	14, // 19: secsy.pki.v1.ValidateChainResponse.chain:type_name -> secsy.pki.v1.ValidatedCertificate
 	15, // 20: secsy.pki.v1.ValidateChainResponse.checks:type_name -> secsy.pki.v1.ValidationCheck
-	47, // 21: secsy.pki.v1.CertificateInfo.not_before:type_name -> google.protobuf.Timestamp
-	47, // 22: secsy.pki.v1.CertificateInfo.not_after:type_name -> google.protobuf.Timestamp
+	49, // 21: secsy.pki.v1.CertificateInfo.not_before:type_name -> google.protobuf.Timestamp
+	49, // 22: secsy.pki.v1.CertificateInfo.not_after:type_name -> google.protobuf.Timestamp
 	0,  // 23: secsy.pki.v1.CertificateInfo.status:type_name -> secsy.pki.v1.CertificateStatus
-	47, // 24: secsy.pki.v1.CertificateInfo.revoked_at:type_name -> google.protobuf.Timestamp
-	47, // 25: secsy.pki.v1.CertificateInfo.created_at:type_name -> google.protobuf.Timestamp
+	49, // 24: secsy.pki.v1.CertificateInfo.revoked_at:type_name -> google.protobuf.Timestamp
+	49, // 25: secsy.pki.v1.CertificateInfo.created_at:type_name -> google.protobuf.Timestamp
 	23, // 26: secsy.pki.v1.GetCertificateResponse.certificate:type_name -> secsy.pki.v1.CertificateInfo
 	0,  // 27: secsy.pki.v1.GetCertificateStatusResponse.status:type_name -> secsy.pki.v1.CertificateStatus
-	47, // 28: secsy.pki.v1.GetCertificateStatusResponse.revoked_at:type_name -> google.protobuf.Timestamp
-	47, // 29: secsy.pki.v1.ListCertificatesRequest.expires_before:type_name -> google.protobuf.Timestamp
+	49, // 28: secsy.pki.v1.GetCertificateStatusResponse.revoked_at:type_name -> google.protobuf.Timestamp
+	49, // 29: secsy.pki.v1.ListCertificatesRequest.expires_before:type_name -> google.protobuf.Timestamp
 	23, // 30: secsy.pki.v1.ListCertificatesResponse.certificates:type_name -> secsy.pki.v1.CertificateInfo
-	47, // 31: secsy.pki.v1.GetCRLMetadataResponse.this_update:type_name -> google.protobuf.Timestamp
-	47, // 32: secsy.pki.v1.GetCRLMetadataResponse.next_update:type_name -> google.protobuf.Timestamp
-	47, // 33: secsy.pki.v1.GetCRLMetadataResponse.delta_this_update:type_name -> google.protobuf.Timestamp
-	47, // 34: secsy.pki.v1.GetCRLMetadataResponse.delta_next_update:type_name -> google.protobuf.Timestamp
-	47, // 35: secsy.pki.v1.AuditEvent.timestamp:type_name -> google.protobuf.Timestamp
-	47, // 36: secsy.pki.v1.EventHeartbeat.time:type_name -> google.protobuf.Timestamp
+	49, // 31: secsy.pki.v1.GetCRLMetadataResponse.this_update:type_name -> google.protobuf.Timestamp
+	49, // 32: secsy.pki.v1.GetCRLMetadataResponse.next_update:type_name -> google.protobuf.Timestamp
+	49, // 33: secsy.pki.v1.GetCRLMetadataResponse.delta_this_update:type_name -> google.protobuf.Timestamp
+	49, // 34: secsy.pki.v1.GetCRLMetadataResponse.delta_next_update:type_name -> google.protobuf.Timestamp
+	49, // 35: secsy.pki.v1.AuditEvent.timestamp:type_name -> google.protobuf.Timestamp
+	49, // 36: secsy.pki.v1.EventHeartbeat.time:type_name -> google.protobuf.Timestamp
 	35, // 37: secsy.pki.v1.StreamEventsResponse.event:type_name -> secsy.pki.v1.AuditEvent
 	36, // 38: secsy.pki.v1.StreamEventsResponse.heartbeat:type_name -> secsy.pki.v1.EventHeartbeat
 	37, // 39: secsy.pki.v1.StreamEventsResponse.lag:type_name -> secsy.pki.v1.EventLag
@@ -4377,25 +4529,29 @@ var file_pki_v1_pki_proto_depIdxs = []int32{
 	41, // 54: secsy.pki.v1.SecretService.GenerateHMAC:input_type -> secsy.pki.v1.GenerateHMACRequest
 	43, // 55: secsy.pki.v1.SecretService.VerifyHMAC:input_type -> secsy.pki.v1.VerifyHMACRequest
 	45, // 56: secsy.pki.v1.SecretService.GenerateRandom:input_type -> secsy.pki.v1.GenerateRandomRequest
-	7,  // 57: secsy.pki.v1.PKIService.IssueCertificate:output_type -> secsy.pki.v1.CertificateResponse
-	11, // 58: secsy.pki.v1.PKIService.PreviewCertificate:output_type -> secsy.pki.v1.PreviewCertificateResponse
-	16, // 59: secsy.pki.v1.PKIService.ValidateChain:output_type -> secsy.pki.v1.ValidateChainResponse
-	7,  // 60: secsy.pki.v1.PKIService.RenewCertificate:output_type -> secsy.pki.v1.CertificateResponse
-	18, // 61: secsy.pki.v1.PKIService.RevokeCertificate:output_type -> secsy.pki.v1.RevokeCertificateResponse
-	20, // 62: secsy.pki.v1.PKIService.SuspendCertificate:output_type -> secsy.pki.v1.SuspendCertificateResponse
-	22, // 63: secsy.pki.v1.PKIService.ReleaseCertificate:output_type -> secsy.pki.v1.ReleaseCertificateResponse
-	25, // 64: secsy.pki.v1.PKIService.GetCertificate:output_type -> secsy.pki.v1.GetCertificateResponse
-	27, // 65: secsy.pki.v1.PKIService.GetCertificateStatus:output_type -> secsy.pki.v1.GetCertificateStatusResponse
-	29, // 66: secsy.pki.v1.PKIService.ListCertificates:output_type -> secsy.pki.v1.ListCertificatesResponse
-	31, // 67: secsy.pki.v1.PKIService.GetCRLMetadata:output_type -> secsy.pki.v1.GetCRLMetadataResponse
-	33, // 68: secsy.pki.v1.PKIService.GetOCSPMetadata:output_type -> secsy.pki.v1.GetOCSPMetadataResponse
-	38, // 69: secsy.pki.v1.PKIService.StreamEvents:output_type -> secsy.pki.v1.StreamEventsResponse
-	40, // 70: secsy.pki.v1.SecretService.GenerateDataKey:output_type -> secsy.pki.v1.GenerateDataKeyResponse
-	42, // 71: secsy.pki.v1.SecretService.GenerateHMAC:output_type -> secsy.pki.v1.GenerateHMACResponse
-	44, // 72: secsy.pki.v1.SecretService.VerifyHMAC:output_type -> secsy.pki.v1.VerifyHMACResponse
-	46, // 73: secsy.pki.v1.SecretService.GenerateRandom:output_type -> secsy.pki.v1.GenerateRandomResponse
-	57, // [57:74] is the sub-list for method output_type
-	40, // [40:57] is the sub-list for method input_type
+	47, // 57: secsy.pki.v1.SecretService.TransformEncode:input_type -> secsy.pki.v1.TransformRequest
+	47, // 58: secsy.pki.v1.SecretService.TransformDecode:input_type -> secsy.pki.v1.TransformRequest
+	7,  // 59: secsy.pki.v1.PKIService.IssueCertificate:output_type -> secsy.pki.v1.CertificateResponse
+	11, // 60: secsy.pki.v1.PKIService.PreviewCertificate:output_type -> secsy.pki.v1.PreviewCertificateResponse
+	16, // 61: secsy.pki.v1.PKIService.ValidateChain:output_type -> secsy.pki.v1.ValidateChainResponse
+	7,  // 62: secsy.pki.v1.PKIService.RenewCertificate:output_type -> secsy.pki.v1.CertificateResponse
+	18, // 63: secsy.pki.v1.PKIService.RevokeCertificate:output_type -> secsy.pki.v1.RevokeCertificateResponse
+	20, // 64: secsy.pki.v1.PKIService.SuspendCertificate:output_type -> secsy.pki.v1.SuspendCertificateResponse
+	22, // 65: secsy.pki.v1.PKIService.ReleaseCertificate:output_type -> secsy.pki.v1.ReleaseCertificateResponse
+	25, // 66: secsy.pki.v1.PKIService.GetCertificate:output_type -> secsy.pki.v1.GetCertificateResponse
+	27, // 67: secsy.pki.v1.PKIService.GetCertificateStatus:output_type -> secsy.pki.v1.GetCertificateStatusResponse
+	29, // 68: secsy.pki.v1.PKIService.ListCertificates:output_type -> secsy.pki.v1.ListCertificatesResponse
+	31, // 69: secsy.pki.v1.PKIService.GetCRLMetadata:output_type -> secsy.pki.v1.GetCRLMetadataResponse
+	33, // 70: secsy.pki.v1.PKIService.GetOCSPMetadata:output_type -> secsy.pki.v1.GetOCSPMetadataResponse
+	38, // 71: secsy.pki.v1.PKIService.StreamEvents:output_type -> secsy.pki.v1.StreamEventsResponse
+	40, // 72: secsy.pki.v1.SecretService.GenerateDataKey:output_type -> secsy.pki.v1.GenerateDataKeyResponse
+	42, // 73: secsy.pki.v1.SecretService.GenerateHMAC:output_type -> secsy.pki.v1.GenerateHMACResponse
+	44, // 74: secsy.pki.v1.SecretService.VerifyHMAC:output_type -> secsy.pki.v1.VerifyHMACResponse
+	46, // 75: secsy.pki.v1.SecretService.GenerateRandom:output_type -> secsy.pki.v1.GenerateRandomResponse
+	48, // 76: secsy.pki.v1.SecretService.TransformEncode:output_type -> secsy.pki.v1.TransformResponse
+	48, // 77: secsy.pki.v1.SecretService.TransformDecode:output_type -> secsy.pki.v1.TransformResponse
+	59, // [59:78] is the sub-list for method output_type
+	40, // [40:59] is the sub-list for method input_type
 	40, // [40:40] is the sub-list for extension type_name
 	40, // [40:40] is the sub-list for extension extendee
 	0,  // [0:40] is the sub-list for field type_name
@@ -4420,7 +4576,7 @@ func file_pki_v1_pki_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pki_v1_pki_proto_rawDesc), len(file_pki_v1_pki_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   46,
+			NumMessages:   48,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

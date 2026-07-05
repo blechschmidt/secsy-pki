@@ -484,6 +484,14 @@ func main() {
 	// envelopes with an additional ML-KEM-1024 encapsulation for KEK families
 	// that have ML-KEM material provisioned.
 	api.SetPQCHybrid(cfg.Secret.PQCHybrid)
+	// Format-preserving encryption / tokenization templates (Task 144): resolve the
+	// configured FF1 transforms once at startup (config validation already proved
+	// they resolve) and install them so the transform endpoints can serve them.
+	transforms, terr := cfg.Secret.ResolveTransforms()
+	if terr != nil {
+		log.Fatalf("Failed to resolve secret.transforms: %v", terr)
+	}
+	api.SetTransformTemplates(transforms)
 	// Four-eyes / maker-checker approval gate (Task 81): construct the engine over
 	// the shared store (which is both the Store and the audit Auditor) and install
 	// it so the guarded operations (CA creation/rotation/retirement, bulk

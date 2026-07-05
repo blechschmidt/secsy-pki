@@ -673,6 +673,22 @@ service SecretService {
   // (else the OS CSPRNG), reporting which. Requires the secret:random capability
   // on the tenant.
   rpc GenerateRandom(GenerateRandomRequest) returns (GenerateRandomResponse);
+
+  // TransformEncode format-preserving-enciphers a value through a named FF1
+  // transform template: the result has the same length/format, and a
+  // deterministic template yields stable ciphertext for equal plaintext (equality
+  // search / de-duplication). Requires the secret:transform capability plus any
+  // per-template role allowlist.
+  //
+  // Errors: PERMISSION_DENIED (no secret:transform / template not permitted),
+  // INVALID_ARGUMENT (unknown template, value outside the alphabet, wrong length,
+  // tweak-policy mismatch), RESOURCE_EXHAUSTED (tenant secret-op quota),
+  // FAILED_PRECONDITION (secret service disabled), INTERNAL (HSM failure).
+  rpc TransformEncode(TransformRequest) returns (TransformResponse);
+
+  // TransformDecode inverts TransformEncode for the same template and tweak,
+  // recovering the original value. Same capability and errors as TransformEncode.
+  rpc TransformDecode(TransformRequest) returns (TransformResponse);
 }
 
 // GenerateDataKeyRequest asks for a fresh data key. tenant selects the KEK
@@ -738,4 +754,28 @@ message GenerateRandomResponse {
   bytes random = 1;
   // source is "hsm" when drawn from the token RNG, else "software".
   string source = 2;
+}
+
+// TransformRequest carries a value to encode or decode under a named transform
+// template. tenant selects the KEK family (id or slug; empty = default tenant).
+message TransformRequest {
+  string tenant = 1;
+  // template names the configured FF1 transform to apply.
+  string template = 2;
+  // value is the input: the plaintext for encode, the token for decode. Its
+  // format (alphabet, length) must match the template.
+  string value = 3;
+  // tweak is the optional per-request tweak for a request-tweak template
+  // (presented verbatim to decode); it must be empty for a deterministic template.
+  bytes tweak = 4;
+}
+
+// TransformResponse returns the transformed value (same length/format as input).
+message TransformResponse {
+  string template = 1;
+  // result is the token (encode) or the recovered plaintext (decode).
+  string result = 2;
+  // deterministic reports whether the template is convergent (equal plaintext ->
+  // equal ciphertext).
+  bool deterministic = 3;
 }

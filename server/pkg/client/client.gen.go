@@ -2901,6 +2901,28 @@ type TenantUsageReport struct {
 // TenantUsageReportStatus defines model for TenantUsageReport.Status.
 type TenantUsageReportStatus string
 
+// TransformRequest defines model for TransformRequest.
+type TransformRequest struct {
+	// Template The configured transform template to apply.
+	Template string `json:"template"`
+
+	// Tweak Optional base64 per-request tweak for a request-tweak template (presented verbatim to decode); must be empty for a deterministic template.
+	Tweak *string `json:"tweak,omitempty"`
+
+	// Value The input: the plaintext for encode, the token for decode. Its format (alphabet, length) must match the template.
+	Value string `json:"value"`
+}
+
+// TransformResponse defines model for TransformResponse.
+type TransformResponse struct {
+	// Deterministic Whether the template is convergent (equal plaintext yields equal ciphertext).
+	Deterministic *bool `json:"deterministic,omitempty"`
+
+	// Result The token (encode) or recovered plaintext (decode); same length/format as the input.
+	Result   *string `json:"result,omitempty"`
+	Template *string `json:"template,omitempty"`
+}
+
 // UpdateTenantRequest Partial update: absent fields are left unchanged. quotas, when present, replaces the whole quota set.
 type UpdateTenantRequest struct {
 	KekLabel *string `json:"kek_label,omitempty"`
@@ -3332,6 +3354,18 @@ type GenerateRandomParams struct {
 	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
 }
 
+// TransformDecodeParams defines parameters for TransformDecode.
+type TransformDecodeParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// TransformEncodeParams defines parameters for TransformEncode.
+type TransformEncodeParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
 // GetTenantUsageParams defines parameters for GetTenantUsage.
 type GetTenantUsageParams struct {
 	// Days Size of the rolling usage window in UTC days.
@@ -3463,6 +3497,12 @@ type VerifyHMACJSONRequestBody = HMACVerifyRequest
 
 // GenerateRandomJSONRequestBody defines body for GenerateRandom for application/json ContentType.
 type GenerateRandomJSONRequestBody = RandomRequest
+
+// TransformDecodeJSONRequestBody defines body for TransformDecode for application/json ContentType.
+type TransformDecodeJSONRequestBody = TransformRequest
+
+// TransformEncodeJSONRequestBody defines body for TransformEncode for application/json ContentType.
+type TransformEncodeJSONRequestBody = TransformRequest
 
 // SignArtifactJSONRequestBody defines body for SignArtifact for application/json ContentType.
 type SignArtifactJSONRequestBody = ArtifactSignRequest
@@ -3955,6 +3995,16 @@ type ClientInterface interface {
 	GenerateRandomWithBody(ctx context.Context, params *GenerateRandomParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	GenerateRandom(ctx context.Context, params *GenerateRandomParams, body GenerateRandomJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// TransformDecodeWithBody request with any body
+	TransformDecodeWithBody(ctx context.Context, params *TransformDecodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	TransformDecode(ctx context.Context, params *TransformDecodeParams, body TransformDecodeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// TransformEncodeWithBody request with any body
+	TransformEncodeWithBody(ctx context.Context, params *TransformEncodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	TransformEncode(ctx context.Context, params *TransformEncodeParams, body TransformEncodeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// SignArtifactWithBody request with any body
 	SignArtifactWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5760,6 +5810,54 @@ func (c *Client) GenerateRandomWithBody(ctx context.Context, params *GenerateRan
 
 func (c *Client) GenerateRandom(ctx context.Context, params *GenerateRandomParams, body GenerateRandomJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGenerateRandomRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) TransformDecodeWithBody(ctx context.Context, params *TransformDecodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewTransformDecodeRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) TransformDecode(ctx context.Context, params *TransformDecodeParams, body TransformDecodeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewTransformDecodeRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) TransformEncodeWithBody(ctx context.Context, params *TransformEncodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewTransformEncodeRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) TransformEncode(ctx context.Context, params *TransformEncodeParams, body TransformEncodeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewTransformEncodeRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -11101,6 +11199,116 @@ func NewGenerateRandomRequestWithBody(server string, params *GenerateRandomParam
 	return req, nil
 }
 
+// NewTransformDecodeRequest calls the generic TransformDecode builder with application/json body
+func NewTransformDecodeRequest(server string, params *TransformDecodeParams, body TransformDecodeJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewTransformDecodeRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewTransformDecodeRequestWithBody generates requests for TransformDecode with any type of body
+func NewTransformDecodeRequestWithBody(server string, params *TransformDecodeParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/transform/decode")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewTransformEncodeRequest calls the generic TransformEncode builder with application/json body
+func NewTransformEncodeRequest(server string, params *TransformEncodeParams, body TransformEncodeJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewTransformEncodeRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewTransformEncodeRequestWithBody generates requests for TransformEncode with any type of body
+func NewTransformEncodeRequestWithBody(server string, params *TransformEncodeParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/transform/encode")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewSignArtifactRequest calls the generic SignArtifact builder with application/json body
 func NewSignArtifactRequest(server string, body SignArtifactJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -12590,6 +12798,16 @@ type ClientWithResponsesInterface interface {
 	GenerateRandomWithBodyWithResponse(ctx context.Context, params *GenerateRandomParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*GenerateRandomResponse, error)
 
 	GenerateRandomWithResponse(ctx context.Context, params *GenerateRandomParams, body GenerateRandomJSONRequestBody, reqEditors ...RequestEditorFn) (*GenerateRandomResponse, error)
+
+	// TransformDecodeWithBodyWithResponse request with any body
+	TransformDecodeWithBodyWithResponse(ctx context.Context, params *TransformDecodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*TransformDecodeResponse, error)
+
+	TransformDecodeWithResponse(ctx context.Context, params *TransformDecodeParams, body TransformDecodeJSONRequestBody, reqEditors ...RequestEditorFn) (*TransformDecodeResponse, error)
+
+	// TransformEncodeWithBodyWithResponse request with any body
+	TransformEncodeWithBodyWithResponse(ctx context.Context, params *TransformEncodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*TransformEncodeResponse, error)
+
+	TransformEncodeWithResponse(ctx context.Context, params *TransformEncodeParams, body TransformEncodeJSONRequestBody, reqEditors ...RequestEditorFn) (*TransformEncodeResponse, error)
 
 	// SignArtifactWithBodyWithResponse request with any body
 	SignArtifactWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SignArtifactResponse, error)
@@ -15051,6 +15269,54 @@ func (r GenerateRandomResponse) StatusCode() int {
 	return 0
 }
 
+type TransformDecodeResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *TransformResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r TransformDecodeResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r TransformDecodeResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type TransformEncodeResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *TransformResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r TransformEncodeResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r TransformEncodeResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type SignArtifactResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -16971,6 +17237,40 @@ func (c *ClientWithResponses) GenerateRandomWithResponse(ctx context.Context, pa
 		return nil, err
 	}
 	return ParseGenerateRandomResponse(rsp)
+}
+
+// TransformDecodeWithBodyWithResponse request with arbitrary body returning *TransformDecodeResponse
+func (c *ClientWithResponses) TransformDecodeWithBodyWithResponse(ctx context.Context, params *TransformDecodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*TransformDecodeResponse, error) {
+	rsp, err := c.TransformDecodeWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseTransformDecodeResponse(rsp)
+}
+
+func (c *ClientWithResponses) TransformDecodeWithResponse(ctx context.Context, params *TransformDecodeParams, body TransformDecodeJSONRequestBody, reqEditors ...RequestEditorFn) (*TransformDecodeResponse, error) {
+	rsp, err := c.TransformDecode(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseTransformDecodeResponse(rsp)
+}
+
+// TransformEncodeWithBodyWithResponse request with arbitrary body returning *TransformEncodeResponse
+func (c *ClientWithResponses) TransformEncodeWithBodyWithResponse(ctx context.Context, params *TransformEncodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*TransformEncodeResponse, error) {
+	rsp, err := c.TransformEncodeWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseTransformEncodeResponse(rsp)
+}
+
+func (c *ClientWithResponses) TransformEncodeWithResponse(ctx context.Context, params *TransformEncodeParams, body TransformEncodeJSONRequestBody, reqEditors ...RequestEditorFn) (*TransformEncodeResponse, error) {
+	rsp, err := c.TransformEncode(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseTransformEncodeResponse(rsp)
 }
 
 // SignArtifactWithBodyWithResponse request with arbitrary body returning *SignArtifactResponse
@@ -20605,6 +20905,86 @@ func ParseGenerateRandomResponse(rsp *http.Response) (*GenerateRandomResponse, e
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
 		var dest RandomResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseTransformDecodeResponse parses an HTTP response from a TransformDecodeWithResponse call
+func ParseTransformDecodeResponse(rsp *http.Response) (*TransformDecodeResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &TransformDecodeResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest TransformResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseTransformEncodeResponse parses an HTTP response from a TransformEncodeWithResponse call
+func ParseTransformEncodeResponse(rsp *http.Response) (*TransformEncodeResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &TransformEncodeResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest TransformResponse
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}

@@ -87,6 +87,15 @@ const (
 	// ActionRandom covers drawing CSPRNG bytes from the crypto service, sourced
 	// from the HSM RNG when available (Task 138).
 	ActionRandom Action = "secret:random"
+	// ActionTransform covers format-preserving encryption / tokenization: encoding
+	// and decoding structured data through a named FF1 transform template (Task
+	// 144). Like the other crypto-service capabilities it travels with the
+	// day-to-day encrypt/decrypt grant — a caller that can encrypt can already
+	// obtain KEK-protected ciphertext — and encode/decode share one capability
+	// because both operate the same per-template key and neither exposes it.
+	// Access to any individual template is additionally gated per-template at the
+	// handler layer (a template may be restricted to specific roles).
+	ActionTransform Action = "secret:transform"
 	// ActionManageEscrow covers administering the key-escrow configuration
 	// (inspecting recovery agents, provisioning agent keys). It is an
 	// administrative capability held by admins only.
@@ -160,9 +169,10 @@ var roleActions = map[Role]map[Action]bool{
 		ActionDecrypt:   true,
 		// The stateless crypto-service capabilities travel with the day-to-day
 		// encrypt/decrypt grant: the issuer role is the crypto-service consumer.
-		ActionDataKey: true,
-		ActionHMAC:    true,
-		ActionRandom:  true,
+		ActionDataKey:   true,
+		ActionHMAC:      true,
+		ActionRandom:    true,
+		ActionTransform: true,
 	},
 	RoleSigner: {
 		ActionSignArtifact: true,

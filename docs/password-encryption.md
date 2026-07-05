@@ -159,6 +159,7 @@ $ secsy-secret pqc-reseal
 secret:
   kek_label: "secsy-kek"   # RSA KEK in the configured key_provider
   pqc_hybrid: false        # true → also protect data keys with ML-KEM-1024 (Task 137)
+  transforms: []           # format-preserving encryption / tokenization templates (see below)
 ```
 
 `SECSY_SECRET_KEK_LABEL` overrides the KEK label and `SECSY_SECRET_PQC_HYBRID=1`
@@ -184,6 +185,10 @@ $ secsy-secret decrypt -in s.json -context 'tenant=acme'
 
 # Inspect the configured KEK
 $ secsy-secret kek-info
+
+# Format-preserving encryption / tokenization (FF1)
+$ secsy-secret transform encode -template pan -value 4111-1111-1111-1111
+$ secsy-secret transform decode -template pan -value 4923-8471-2210-6634
 ```
 
 `-kek <label>` overrides the configured KEK on any subcommand.
@@ -202,6 +207,8 @@ configured.
 | `POST /api/secret/hmac`        | Compute a keyed HMAC over caller data         |
 | `POST /api/secret/hmac/verify` | Verify a keyed HMAC (constant time)           |
 | `POST /api/secret/random`      | CSPRNG bytes (HSM RNG when available)         |
+| `POST /api/secret/transform/encode` | Format-preserving encrypt / tokenize     |
+| `POST /api/secret/transform/decode` | Invert a transform (detokenize)          |
 
 `encrypt` request / response:
 
@@ -300,6 +307,72 @@ $ secsy-secret random -bytes 32 -format hex
 
 `bytes` is capped at 1024. Data-key mints and HMAC operations count against the
 tenant's daily secret-op quota; random draws do not (the byte cap bounds abuse).
+
+## Format-preserving encryption & tokenization (FF1)
+
+Where envelope encryption turns a value into an opaque blob, a **transform**
+enciphers structured data — a card PAN, an SSN, an account number — into another
+value of the **same length over the same alphabet**, using NIST SP 800-38G **FF1**
+(AES-based format-preserving encryption). Legacy systems that validate the format
+of a field keep working on the protected value. A **deterministic** template
+yields **stable ciphertext for equal plaintext**, so a protected column can still
+be searched for equality and de-duplicated.
+
+The FF1 key never exists in the clear at rest. A random seed is sealed as an
+ordinary envelope under the family KEK (exactly like the [keyed-HMAC](#keyed-hmac--authenticate-caller-data)
+seed), and a **per-template** FF1 key is HKDF-derived from it per request —
+so templates are cryptographically independent, and raw keys never leave the HSM
+trust path. The seed does **not** rotate (a format-preserving token carries no
+version to select an old key), but its KEK wrapping is re-sealed when the KEK
+rotates (`secsy-secret rewrap -all`), keeping the derived keys — and every issued
+token — stable. `secsy-secret retire-kek` refuses to withdraw a KEK version still
+sealing the FPE seed until it has been re-sealed (or `-force`).
+
+Templates are declared in config:
+
+```yaml
+secret:
+  kek_label: "secsy-kek"
+  transforms:
+    - name: pan                 # referenced by callers; bound into the derived key
+      alphabet: digits          # named set, or an inline "chars:<symbols>" literal
+      min_length: 12            # >= the FF1 domain minimum for the radix (radix^len >= 1e6)
+      max_length: 19
+      deterministic: true       # convergent: equal PAN -> equal token (equality search)
+      preserve_other: true      # copy separators (dashes/spaces) through verbatim
+    - name: account
+      alphabet: alphanumeric    # radix 62
+      deterministic: false      # context mode
+      tweak_source: request     # a per-request tweak (e.g. a record id); re-supply to decode
+      roles: [issuer]           # optional per-template role allowlist
+```
+
+Named alphabets: `digits`, `hex-lower`, `hex-upper`, `letters-lower`,
+`letters-upper`, `alphanumeric-lower`/`-upper` (radix 36), `alphanumeric`
+(radix 62), `base32`, `base32-hex`. A custom set is `chars:<symbols>` (e.g.
+`chars:ACGT`). **The name and alphabet of a template must never change once data
+has been tokenized under it** — both are identity.
+
+```jsonc
+// POST /api/secret/transform/encode  { "template": "pan", "value": "4111-1111-1111-1111" }
+// 200 OK                             { "template": "pan", "result": "4923-8471-2210-6634", "deterministic": true }
+
+// POST /api/secret/transform/decode  { "template": "pan", "value": "4923-8471-2210-6634" }
+// 200 OK                             { "template": "pan", "result": "4111-1111-1111-1111", "deterministic": true }
+```
+
+For a `request`-tweak template, pass a base64 `tweak`; present the same tweak to
+decode. Access requires the `secret:transform` capability plus any per-template
+`roles` allowlist. Only lengths (never the plaintext or token) are audited.
+
+```console
+$ secsy-secret transform encode -template pan -value 4111-1111-1111-1111
+$ secsy-secret transform decode -template pan -value 4923-8471-2210-6634
+$ secsy-secret transform encode -template account -value ACCT12345 -tweak "$(printf ctx-7 | base64)"
+```
+
+Both directions count against the tenant's daily secret-op quota. gRPC exposes
+the same operations as `SecretService.TransformEncode` / `TransformDecode`.
 
 ## Key escrow and recovery (M-of-N, dual control)
 

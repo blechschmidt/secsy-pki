@@ -257,6 +257,11 @@ const (
 	ActionSecretHMAC       = "secret.hmac"
 	ActionSecretHMACVerify = "secret.hmac_verify"
 	ActionSecretRandom     = "secret.random"
+	// Format-preserving encryption / tokenization (Task 144). ActionSecretTransform
+	// records an encode or decode through a named FF1 transform template (target:
+	// KEK label, target-name: template; detail: operation and the input/output
+	// LENGTH only — neither the plaintext nor the token is ever logged).
+	ActionSecretTransform = "secret.transform"
 	ActionPermissionGrant   = "permission.grant"
 	ActionPermissionRevoke  = "permission.revoke"
 	ActionGroupCreate       = "group.create"

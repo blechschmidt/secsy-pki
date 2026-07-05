@@ -771,6 +771,8 @@ const (
 	SecretService_GenerateHMAC_FullMethodName    = "/secsy.pki.v1.SecretService/GenerateHMAC"
 	SecretService_VerifyHMAC_FullMethodName      = "/secsy.pki.v1.SecretService/VerifyHMAC"
 	SecretService_GenerateRandom_FullMethodName  = "/secsy.pki.v1.SecretService/GenerateRandom"
+	SecretService_TransformEncode_FullMethodName = "/secsy.pki.v1.SecretService/TransformEncode"
+	SecretService_TransformDecode_FullMethodName = "/secsy.pki.v1.SecretService/TransformDecode"
 )
 
 // SecretServiceClient is the client API for SecretService service.
@@ -810,6 +812,20 @@ type SecretServiceClient interface {
 	// (else the OS CSPRNG), reporting which. Requires the secret:random capability
 	// on the tenant.
 	GenerateRandom(ctx context.Context, in *GenerateRandomRequest, opts ...grpc.CallOption) (*GenerateRandomResponse, error)
+	// TransformEncode format-preserving-enciphers a value through a named FF1
+	// transform template: the result has the same length/format, and a
+	// deterministic template yields stable ciphertext for equal plaintext (equality
+	// search / de-duplication). Requires the secret:transform capability plus any
+	// per-template role allowlist.
+	//
+	// Errors: PERMISSION_DENIED (no secret:transform / template not permitted),
+	// INVALID_ARGUMENT (unknown template, value outside the alphabet, wrong length,
+	// tweak-policy mismatch), RESOURCE_EXHAUSTED (tenant secret-op quota),
+	// FAILED_PRECONDITION (secret service disabled), INTERNAL (HSM failure).
+	TransformEncode(ctx context.Context, in *TransformRequest, opts ...grpc.CallOption) (*TransformResponse, error)
+	// TransformDecode inverts TransformEncode for the same template and tweak,
+	// recovering the original value. Same capability and errors as TransformEncode.
+	TransformDecode(ctx context.Context, in *TransformRequest, opts ...grpc.CallOption) (*TransformResponse, error)
 }
 
 type secretServiceClient struct {
@@ -860,6 +876,26 @@ func (c *secretServiceClient) GenerateRandom(ctx context.Context, in *GenerateRa
 	return out, nil
 }
 
+func (c *secretServiceClient) TransformEncode(ctx context.Context, in *TransformRequest, opts ...grpc.CallOption) (*TransformResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TransformResponse)
+	err := c.cc.Invoke(ctx, SecretService_TransformEncode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *secretServiceClient) TransformDecode(ctx context.Context, in *TransformRequest, opts ...grpc.CallOption) (*TransformResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TransformResponse)
+	err := c.cc.Invoke(ctx, SecretService_TransformDecode_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SecretServiceServer is the server API for SecretService service.
 // All implementations must embed UnimplementedSecretServiceServer
 // for forward compatibility.
@@ -897,6 +933,20 @@ type SecretServiceServer interface {
 	// (else the OS CSPRNG), reporting which. Requires the secret:random capability
 	// on the tenant.
 	GenerateRandom(context.Context, *GenerateRandomRequest) (*GenerateRandomResponse, error)
+	// TransformEncode format-preserving-enciphers a value through a named FF1
+	// transform template: the result has the same length/format, and a
+	// deterministic template yields stable ciphertext for equal plaintext (equality
+	// search / de-duplication). Requires the secret:transform capability plus any
+	// per-template role allowlist.
+	//
+	// Errors: PERMISSION_DENIED (no secret:transform / template not permitted),
+	// INVALID_ARGUMENT (unknown template, value outside the alphabet, wrong length,
+	// tweak-policy mismatch), RESOURCE_EXHAUSTED (tenant secret-op quota),
+	// FAILED_PRECONDITION (secret service disabled), INTERNAL (HSM failure).
+	TransformEncode(context.Context, *TransformRequest) (*TransformResponse, error)
+	// TransformDecode inverts TransformEncode for the same template and tweak,
+	// recovering the original value. Same capability and errors as TransformEncode.
+	TransformDecode(context.Context, *TransformRequest) (*TransformResponse, error)
 	mustEmbedUnimplementedSecretServiceServer()
 }
 
@@ -918,6 +968,12 @@ func (UnimplementedSecretServiceServer) VerifyHMAC(context.Context, *VerifyHMACR
 }
 func (UnimplementedSecretServiceServer) GenerateRandom(context.Context, *GenerateRandomRequest) (*GenerateRandomResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GenerateRandom not implemented")
+}
+func (UnimplementedSecretServiceServer) TransformEncode(context.Context, *TransformRequest) (*TransformResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method TransformEncode not implemented")
+}
+func (UnimplementedSecretServiceServer) TransformDecode(context.Context, *TransformRequest) (*TransformResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method TransformDecode not implemented")
 }
 func (UnimplementedSecretServiceServer) mustEmbedUnimplementedSecretServiceServer() {}
 func (UnimplementedSecretServiceServer) testEmbeddedByValue()                       {}
@@ -1012,6 +1068,42 @@ func _SecretService_GenerateRandom_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SecretService_TransformEncode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TransformRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SecretServiceServer).TransformEncode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SecretService_TransformEncode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SecretServiceServer).TransformEncode(ctx, req.(*TransformRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SecretService_TransformDecode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TransformRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SecretServiceServer).TransformDecode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SecretService_TransformDecode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SecretServiceServer).TransformDecode(ctx, req.(*TransformRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SecretService_ServiceDesc is the grpc.ServiceDesc for SecretService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1034,6 +1126,14 @@ var SecretService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GenerateRandom",
 			Handler:    _SecretService_GenerateRandom_Handler,
+		},
+		{
+			MethodName: "TransformEncode",
+			Handler:    _SecretService_TransformEncode_Handler,
+		},
+		{
+			MethodName: "TransformDecode",
+			Handler:    _SecretService_TransformDecode_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

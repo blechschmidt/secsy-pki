@@ -2742,6 +2742,61 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/secret/transform/encode:
+    post:
+      operationId: transformEncode
+      tags: [Secrets]
+      summary: Format-preserving encrypt / tokenize a value
+      description: >-
+        Encipher a value through a named FF1 (NIST SP 800-38G) transform
+        template into a value of the SAME length over the SAME alphabet, so
+        legacy systems that validate format keep working. A deterministic
+        template yields stable ciphertext for equal plaintext, enabling equality
+        search and de-duplication on protected fields. Requires the
+        secret:transform capability on the tenant plus any per-template role
+        allowlist.
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TransformRequest" }
+      responses:
+        "200":
+          description: The tokenized value (same length/format as the input).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransformResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/secret/transform/decode:
+    post:
+      operationId: transformDecode
+      tags: [Secrets]
+      summary: Invert a format-preserving transform (detokenize)
+      description: >-
+        Recover the original value from a token produced by
+        /api/secret/transform/encode under the same template and tweak. Requires
+        the secret:transform capability on the tenant plus any per-template role
+        allowlist.
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TransformRequest" }
+      responses:
+        "200":
+          description: The recovered original value.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransformResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   # ---------------------------------------------------------------------------
   # HSM
   # ---------------------------------------------------------------------------
@@ -5615,6 +5670,34 @@ components:
         format: { type: string }
         bytes: { type: integer }
         source: { type: string, description: "hsm when drawn from the token RNG, else software." }
+
+    TransformRequest:
+      type: object
+      required: [template, value]
+      properties:
+        template: { type: string, description: The configured transform template to apply. }
+        value:
+          type: string
+          description: >-
+            The input: the plaintext for encode, the token for decode. Its format
+            (alphabet, length) must match the template.
+        tweak:
+          type: string
+          description: >-
+            Optional base64 per-request tweak for a request-tweak template
+            (presented verbatim to decode); must be empty for a deterministic
+            template.
+
+    TransformResponse:
+      type: object
+      properties:
+        template: { type: string }
+        result:
+          type: string
+          description: The token (encode) or recovered plaintext (decode); same length/format as the input.
+        deterministic:
+          type: boolean
+          description: Whether the template is convergent (equal plaintext yields equal ciphertext).
 
     HSMInfo:
       type: object
