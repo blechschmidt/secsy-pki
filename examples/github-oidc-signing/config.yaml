@@ -1,0 +1,103 @@
+# =============================================================================
+# Example: keyless software signing from GitHub Actions through OIDC
+# =============================================================================
+# A GitHub Actions job proves its identity with a short-lived GitHub OIDC token
+# — NO long-lived secret stored in the repo — and Secsy PKI signs the release
+# artifact with an HSM-backed code-signing key (CMS/PKCS#7 detached signature),
+# countersigned with an RFC 3161 timestamp so it verifies after the certificate
+# expires.
+#
+# How the trust is wired:
+#   * The top-level `oidc` block points the Bearer-token verifier at GitHub's
+#     OIDC issuer. The workflow requests a token whose audience == client_id.
+#   * `rbac.subjects` maps the workflow's OIDC `sub` claim to the `signer` role,
+#     which grants exactly `artifact:sign` (POST /api/sign) and nothing else.
+#   * The `signing` service exposes a `release` signer backed by an HSM key.
+#
+# See examples/github-oidc-signing/README.md for the end-to-end walkthrough and
+# the important note on making the `sub` claim STABLE via a GitHub environment.
+# Reference: docs/artifact-signing.md, docs/authentication.md.
+
+server:
+  host: "0.0.0.0"
+  port: 8443
+  tls_cert: "certs/server.crt"
+  tls_key: "certs/server.key"
+
+database:
+  driver: "sqlite"
+  dsn: "secsy-pki.db"
+
+root_user:
+  username: "root"
+  password: "change-me-in-production"
+
+# Signing keys live on the HSM; the code-signing private key never leaves it.
+key_provider:
+  type: "pkcs11"
+
+pkcs11:
+  module_path: "/usr/lib/softhsm/libsofthsm2.so"
+  token_label: "secsy-ca"
+  pin: "1234"
+  session_pool_size: 8
+
+# --- OIDC: verify GitHub Actions Bearer tokens -------------------------------
+# This is the verifier the API uses for `Authorization: Bearer <token>` machine
+# callers. Point it at GitHub's Actions OIDC issuer; client_id is the AUDIENCE
+# your workflow requests (core.getIDToken('<audience>')). The server discovers
+# GitHub's OIDC metadata at startup (so it needs outbound access to GitHub) and
+# validates every token's signature, issuer, expiry, and audience.
+#
+# NOTE: this same verifier is what validates ALL Bearer tokens. If human
+# operators also log in to the console via a *corporate* IdP, set
+# `auth.oidc.issuer_url` separately — that interactive-login provider is
+# independent of this machine-Bearer one.
+oidc:
+  issuer_url: "https://token.actions.githubusercontent.com"
+  client_id: "secsy-pki-signing"      # the audience your workflow requests
+
+# --- RBAC: grant the workflow's identity the signer role ---------------------
+# The map key is the GitHub OIDC `sub` claim. Using a dedicated GitHub
+# *environment* named "release" makes `sub` stable across tags/branches:
+#   repo:<owner>/<repo>:environment:release
+# (Without an environment, `sub` embeds the ref — e.g. refs/tags/v1.2.3 — and
+# would differ per release; see the README.) The `signer` role grants only
+# artifact:sign, so a leaked/misissued token can sign but can NEVER mint certs.
+rbac:
+  subjects:
+    "repo:example-org/example-repo:environment:release": ["signer"]
+
+# --- Artifact code-signing service -------------------------------------------
+# Provision the signer key + certificate first (offline, one-time):
+#   secsy-ca init-root -cn "Example Root" -label "Example Root"
+#   secsy-ca signing-key -ca "Example Root" -label codesign-release \
+#       -cn "Release Signing" -o "Example Corp" -chain -out /etc/secsy/codesign.pem
+signing:
+  enabled: true
+  signers:
+    - name: release                              # callers reference this name
+      key_label: codesign-release                # HSM key from `signing-key`
+      certificate_file: /etc/secsy/codesign.pem  # written by `signing-key`
+      ca_label: "Example Root"                   # completes the chain
+      digest: sha256
+      timestamp: true                            # RFC 3161 countersignature (needs tsa.enabled)
+
+# --- RFC 3161 Time-Stamp Authority (for the countersignature) ----------------
+# A timestamped signature keeps verifying after the code-signing certificate
+# expires — the reason release pipelines pair signing with a TSA. Provision the
+# (RSA) TSA key once: secsy-ca tsa-key ...  (see docs/timestamping.md).
+tsa:
+  enabled: true
+  key_label: tsa-signer
+  certificate_file: /etc/secsy/tsa.pem
+  ca_label: "Example Root"
+
+# --- Protect the public sign endpoint ----------------------------------------
+# /api/sign is rate-limited and HSM-concurrency-guarded so a runaway pipeline
+# can't starve the HSM. Recommended when CI can trigger many signs.
+rate_limit:
+  enabled: true
+  per_account:                 # per authenticated identity
+    rate: 5
+    burst: 10

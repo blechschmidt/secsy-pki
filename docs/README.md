@@ -8,6 +8,13 @@ Start with the [project README](../README.md) for what secsy-pki is, how to
 build it, and the SSH certificate workflow. The guides here cover the enterprise
 CA, secret-encryption, and governance features.
 
+**Want a running start?** The [`examples/`](../examples/README.md) folder has
+copy-and-adapt recipes for whole use cases — an [SSH PKI](../examples/ssh-pki/),
+[keyless signing from GitHub Actions via OIDC](../examples/github-oidc-signing/),
+[ACME TLS automation](../examples/acme-tls/), and a
+[private mTLS CA](../examples/mtls-internal/) — each a minimal config plus the
+client-side glue. The guides below are the reference behind them.
+
 **Operating a live deployment?** Jump to the
 [operator runbook](RUNBOOK.md) for day-2 procedures (incident response, outage
 handling, tuning, rotation, DR), and the

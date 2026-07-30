@@ -1,0 +1,16 @@
+# Run secsy-krl-refresh.service every 15 minutes (a few minutes after boot).
+# Tighten OnUnitActiveSec to shorten the worst-case revocation propagation
+# window; it trades against load on the KRL endpoint.
+[Unit]
+Description=Periodic Secsy PKI SSH CA KRL refresh
+Documentation=https://github.com/blechschmidt/secsy-pki/blob/enterprise/examples/ssh-pki/README.md
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+# Spread load when many hosts refresh at once.
+RandomizedDelaySec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

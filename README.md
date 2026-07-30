@@ -51,6 +51,8 @@ Comprehensive deployment and operations guides live in [`docs/`](docs/README.md)
 | [Kubernetes deployment](docs/kubernetes.md) | Container image, Helm chart, cert-manager ACME issuer, kind/SoftHSM smoke test |
 | [Production HSM migration](docs/hsm-migration.md) | SoftHSM → real HSM cutover |
 
+**Worked examples** for common deployments — an [SSH PKI](examples/ssh-pki/), [keyless software signing from GitHub Actions through OIDC](examples/github-oidc-signing/), [automated TLS with ACME](examples/acme-tls/), and a [private CA for service-to-service mTLS](examples/mtls-internal/) — live in [`examples/`](examples/README.md): a minimal, ready-to-adapt config plus the client-side glue for each use case.
+
 The `secsy-ca` and `secsy-secret` CLIs drive the CA and secret features; see the guides above. The sections below document the base server, SSH workflow, and per-key signing API.
 
 ## Features

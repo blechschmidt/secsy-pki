@@ -1,0 +1,16 @@
+# Secsy PKI — client-side trust for SSH HOST certificates.
+#
+# Append these lines to ~/.ssh/known_hosts (per user) or
+# /etc/ssh/ssh_known_hosts (system-wide). A single @cert-authority line lets a
+# client verify every host that presents a certificate signed by this CA, so
+# you never see (or blindly accept) a trust-on-first-use host-key prompt again,
+# and re-keying a host needs no known_hosts edits.
+#
+# Replace the key blob below with the CA public key printed by
+#   secsy-ca ssh ca-init -label ops-ssh-ca ...
+# (the same bytes served at GET /api/ssh/cas/<ca-id>/public).
+#
+# The pattern before the key scopes which hostnames this CA is trusted for.
+# Prefer a narrow pattern (a domain suffix) over "*".
+
+@cert-authority *.prod.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI_REPLACE_WITH_YOUR_CA_PUBLIC_KEY ops-ssh-ca

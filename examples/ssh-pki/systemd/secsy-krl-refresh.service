@@ -1,0 +1,18 @@
+# Refresh the SSH CA KRL so revocations take effect on this host.
+# Install alongside secsy-krl-refresh.timer in /etc/systemd/system/, edit the
+# CA id and PKI URL below, then:
+#   systemctl daemon-reload && systemctl enable --now secsy-krl-refresh.timer
+[Unit]
+Description=Refresh Secsy PKI SSH CA revocation list (KRL)
+Documentation=https://github.com/blechschmidt/secsy-pki/blob/enterprise/examples/ssh-pki/README.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# EDIT: the CA id (from `secsy-ca ssh ca-init`) and your server base URL.
+Environment=PKI_BASE_URL=https://pki.example.com
+Environment=KRL_PATH=/etc/ssh/ops-ssh-ca.krl
+ExecStart=/usr/local/bin/refresh-krl.sh REPLACE_WITH_CA_ID
+# Do not fail the unit if the server is briefly unreachable; the timer retries.
+SuccessExitStatus=0 1

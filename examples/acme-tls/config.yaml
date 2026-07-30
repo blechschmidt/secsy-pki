@@ -1,0 +1,83 @@
+# =============================================================================
+# Example: automated internal TLS with the ACME server
+# =============================================================================
+# Issue and auto-renew TLS server certificates for internal services and ingress
+# with any standard ACME client (certbot, acme.sh, lego, Caddy, Traefik,
+# cert-manager). Certificates are signed by an HSM-backed issuing CA.
+#
+# See examples/acme-tls/README.md for client setup, and docs/acme.md for the
+# full reference (EAB, ARI, wildcards/dns-01, profiles, STAR, MPIC, ...).
+
+server:
+  host: "0.0.0.0"
+  port: 8443
+  tls_cert: "certs/server.crt"
+  tls_key: "certs/server.key"
+
+database:
+  driver: "sqlite"
+  dsn: "secsy-pki.db"
+
+root_user:
+  username: "root"
+  password: "change-me-in-production"
+
+key_provider:
+  type: "pkcs11"
+
+pkcs11:
+  module_path: "/usr/lib/softhsm/libsofthsm2.so"
+  token_label: "secsy-ca"
+  pin: "1234"
+  session_pool_size: 8
+
+# --- ACME server (RFC 8555) --------------------------------------------------
+# Provision the issuing CA first (see README):
+#   secsy-ca init-root          -cn "Example Root"    -label "Example Root"
+#   secsy-ca issue-intermediate -parent "Example Root" -cn "Example Issuing CA" \
+#                               -label "Example Issuing CA"
+acme:
+  enabled: true
+  # The directory URL clients register against is <base_url>/acme/directory.
+  base_url: "https://pki.example.com"
+  # The CA that signs ACME certificates (an issuing intermediate is recommended).
+  ca_label: "Example Issuing CA"
+  # Issuance profile applied to every ACME order (built-in serverAuth profile).
+  profile: "server"
+  # Offer all three validation methods. dns-01 is required for wildcards.
+  # http-01 (port 80), tls-alpn-01 (port 443), dns-01 (DNS TXT).
+  challenge_types: ["http-01", "dns-01", "tls-alpn-01"]
+  # Restrict who may register with External Account Binding (recommended for a
+  # non-public ACME server so only provisioned clients can enroll). Generate a
+  # key per team/client and hand it out of band.
+  # require_eab: true
+  # eab_hmac_keys:
+  #   team-web: "base64url-or-base64-hmac-key"
+
+# The CDP/OCSP URLs stamped into issued certs, and where CRLs are served from.
+crl:
+  base_url: "https://pki.example.com"
+
+# --- Rate limiting (strongly recommended for a public-facing ACME endpoint) --
+# A token-bucket limiter across three tiers plus a bounded HSM in-flight guard,
+# so a misbehaving client can't exhaust issuance capacity or the HSM. Rejected
+# requests get 429/503 + Retry-After, which compliant ACME clients honor.
+rate_limit:
+  enabled: true
+  global:
+    rate: 200
+    burst: 400
+  per_ip:
+    rate: 20
+    burst: 40
+  per_account:
+    rate: 50
+    burst: 100
+  concurrency:
+    max_queue: 64
+    acquire_timeout_ms: 5000
+
+# For unattended renewal on each host, run the bundled host agent
+# (secsy-agent, docs/agent.md) or your ACME client's renew timer. ACME Renewal
+# Information (ARI) is advertised automatically so clients can schedule renewals
+# around the CA's suggested window.

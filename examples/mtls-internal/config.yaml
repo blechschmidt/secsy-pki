@@ -1,0 +1,94 @@
+# =============================================================================
+# Example: private CA for service-to-service mTLS
+# =============================================================================
+# Issue short-lived server (serverAuth) and client (clientAuth) certificates to
+# internal workloads so services authenticate each other with mutual TLS, all
+# anchored to one HSM-backed CA. Automation enrolls via a scoped API-token
+# service account (issuer role) or a bound mutual-TLS operator certificate.
+#
+# See examples/mtls-internal/README.md for the walkthrough. Reference:
+# docs/certificate-authority.md, docs/authentication.md, docs/rbac-and-audit.md.
+
+server:
+  host: "0.0.0.0"
+  port: 8443
+  tls_cert: "certs/server.crt"
+  tls_key: "certs/server.key"
+
+database:
+  driver: "sqlite"
+  dsn: "secsy-pki.db"
+
+root_user:
+  username: "root"
+  password: "change-me-in-production"
+
+key_provider:
+  type: "pkcs11"
+
+pkcs11:
+  module_path: "/usr/lib/softhsm/libsofthsm2.so"
+  token_label: "secsy-ca"
+  pin: "1234"
+  session_pool_size: 8
+
+# --- Leaf profiles for workload identities -----------------------------------
+# The built-in `server`, `client`, and `server-client` profiles already cover
+# most mTLS needs. These two custom profiles show short-lived, tightly-scoped
+# variants overlaid by name; adjust validity to your rotation cadence.
+profiles:
+  - name: mtls-server
+    description: "Internal TLS server (serverAuth) — short-lived"
+    key_usages: [digitalSignature, keyEncipherment]
+    ext_key_usages: [serverAuth]
+    default_validity_days: 14
+    max_validity_days: 90
+  - name: mtls-client
+    description: "Internal TLS client / workload identity (clientAuth) — short-lived"
+    key_usages: [digitalSignature]
+    ext_key_usages: [clientAuth]
+    default_validity_days: 7
+    max_validity_days: 30
+
+# System-wide guardrail: no leaf may outlive this, regardless of profile/request.
+policy:
+  max_cert_validity_days: 90
+  # In production, disable the shared root basic-auth superuser once you have
+  # token / mTLS operators configured below.
+  # allow_root_basic_auth: false
+
+# --- Machine operator authentication -----------------------------------------
+# Two ways for automation to authenticate to the PKI's issuance API:
+#
+# (A) Scoped API token / service account (simplest — always available, no block
+#     needed). Mint one bound to the issuer role and hand it to your deployer:
+#         secsy-ca token create -name deployer -roles issuer -expires-days 90
+#     then call the API with `Authorization: Token secsy_pat_...`.
+#     auth.api_tokens below only caps token lifetime by policy.
+auth:
+  api_tokens:
+    max_lifetime_days: 90        # a create request must expire within 90 days
+
+  # (B) Mutual-TLS operator binding — a build/deploy robot authenticates to the
+  #     PKI with its own client certificate (issued by a separate operator
+  #     client-CA you control), bound here to the issuer role. Verified-if-given,
+  #     so console/basic/token callers are unaffected.
+  mtls:
+    enabled: true
+    ca_file: "certs/operator-client-ca.pem"   # verifies operator client certs
+    bindings:
+      - subject_cn: "deploy-robot"
+        subject: "svc:deploy-robot"
+        roles: ["issuer"]
+
+# --- Rate limiting -----------------------------------------------------------
+# The issuance API is authenticated, but metering per account still protects the
+# HSM from a runaway deployer loop.
+rate_limit:
+  enabled: true
+  per_account:
+    rate: 20
+    burst: 40
+  concurrency:
+    max_queue: 64
+    acquire_timeout_ms: 5000

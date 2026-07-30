@@ -1,0 +1,95 @@
+# =============================================================================
+# Example: SSH certificate authority (SSH PKI)
+# =============================================================================
+# A minimal server config focused on the HSM-backed OpenSSH certificate
+# authority. Sign short-lived user and host certificates against a CA key that
+# never leaves the token, and publish revocations as OpenSSH KRLs.
+#
+# See examples/ssh-pki/README.md for the full walkthrough, and
+# docs/ssh-ca.md for the reference. Only SSH-relevant blocks are shown here;
+# every other feature (ACME, TSA, signing, secrets, ...) stays at its default
+# (off). server/config.yaml documents every available knob.
+
+server:
+  host: "0.0.0.0"
+  port: 8443
+  # Serving TLS for the REST/console API. Generate a pair, or point the server
+  # at an internal CA with server.tls.self_issue (see docs/serving-cert.md).
+  tls_cert: "certs/server.crt"
+  tls_key: "certs/server.key"
+
+database:
+  driver: "sqlite"          # single-node embedded store; use postgres for HA
+  dsn: "secsy-pki.db"
+
+# The built-in break-glass admin. Replace the password and, in production,
+# prefer OIDC/API-token operators plus policy.allow_root_basic_auth: false.
+root_user:
+  username: "root"
+  password: "change-me-in-production"
+
+# CA signing keys live on the PKCS#11 token — the SSH CA private key is
+# generated in, and every signature produced by, the HSM. Point module_path at
+# your PKCS#11 library (SoftHSM shown; YubiHSM/Thales/etc. work the same way).
+# Source the PIN from a secret in production (docs/hsm-configuration.md).
+key_provider:
+  type: "pkcs11"
+
+pkcs11:
+  module_path: "/usr/lib/softhsm/libsofthsm2.so"
+  token_label: "secsy-ca"
+  pin: "1234"
+  session_pool_size: 8
+
+# --- SSH certificate authority -----------------------------------------------
+# Custom signing profiles overlay the built-ins (user-default 12h/30d,
+# host-default 90d/366d) by name. A profile is the policy a certificate is
+# signed under: type, validity bounds, permitted principals, extensions, and
+# critical options. See docs/ssh-ca.md "Signing profiles".
+ssh:
+  krl_comment: "Example Corp ops SSH CA"
+  profiles:
+    # Interactive operator logins: 8h certs, human usernames only, standard
+    # shell extensions. A request may pin a source-address critical option.
+    - name: operator
+      description: "Interactive operator SSH login"
+      cert_type: user
+      default_validity: 8h
+      max_validity: 24h
+      max_principals: 4
+      default_extensions:
+        permit-pty: ""
+        permit-user-rc: ""
+      allowed_critical_options:
+        - source-address
+
+    # CI/CD deploy automation: very short-lived, no interactive PTY, principals
+    # limited to deploy-* service accounts, and locked to the runner's egress
+    # CIDR via a mandatory source-address (supply it on each sign request).
+    - name: ci-deploy
+      description: "CI deploy automation (non-interactive)"
+      cert_type: user
+      default_validity: 15m
+      max_validity: 1h
+      allowed_principals: ["deploy-*"]
+      max_principals: 1
+      # No default extensions => no PTY/agent-forwarding unless explicitly asked
+      # for (and none are permitted here, so requests can't add them).
+      allowed_critical_options:
+        - source-address
+        - force-command
+
+    # Production host certificates: 90-day host identity for *.prod hosts.
+    - name: prod-host
+      description: "Production host certificate"
+      cert_type: host
+      default_validity: 90d
+      max_validity: 366d
+      allowed_principals: ["*.prod.example.com"]
+
+# Optional but recommended for public KRL/endpoint abuse protection. The SSH
+# public-key and KRL endpoints are unauthenticated (like CRL distribution), so
+# meter them if they face untrusted networks. See docs/rate-limiting.md.
+# rate_limit:
+#   enabled: true
+#   per_ip: { rate: 20, burst: 40 }

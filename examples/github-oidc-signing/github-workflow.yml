@@ -1,0 +1,88 @@
+# Keyless release signing with Secsy PKI via GitHub Actions OIDC.
+#
+# Copy to .github/workflows/sign-release.yml in your repository. There is NO
+# stored secret: the job mints a short-lived GitHub OIDC token and Secsy PKI
+# verifies it, maps the workflow identity to the `signer` role, and returns an
+# HSM-backed CMS signature (with an RFC 3161 timestamp).
+#
+# Prerequisites on the server side: examples/github-oidc-signing/config.yaml,
+# with rbac.subjects mapping THIS repo's `sub` claim to `signer`.
+
+name: sign-release
+
+on:
+  release:
+    types: [published]
+  # Manual runs for testing. Both paths use the `release` environment so the
+  # OIDC `sub` claim is STABLE (repo:<owner>/<repo>:environment:release) and can
+  # be pinned in the server's rbac.subjects.
+  workflow_dispatch:
+
+permissions:
+  contents: write        # download/attach release assets
+  id-token: write        # REQUIRED: mint the GitHub OIDC token
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    # The environment name is what makes the OIDC subject stable and auditable.
+    # Create it under Settings → Environments and (recommended) add required
+    # reviewers / branch or tag restrictions.
+    environment: release
+    env:
+      # Must equal `oidc.client_id` in the server config (the token audience).
+      SECSY_AUDIENCE: secsy-pki-signing
+      SECSY_URL: https://pki.example.com
+      SIGNER: release
+      ARTIFACT: dist/app-${{ github.ref_name }}.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release artifact
+        run: |
+          mkdir -p dist
+          # Replace with your real build. Any file works for the demo:
+          echo "release ${{ github.ref_name }}" > "$ARTIFACT"
+
+      - name: Sign the artifact with Secsy PKI (keyless, via OIDC)
+        run: |
+          set -euo pipefail
+
+          # 1. Mint a GitHub OIDC token for our chosen audience. The two
+          #    ACTIONS_ID_TOKEN_REQUEST_* vars exist only when id-token: write.
+          idtoken="$(curl -sS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$SECSY_AUDIENCE" | jq -r '.value')"
+          [ -n "$idtoken" ] && [ "$idtoken" != "null" ] || { echo "no OIDC token"; exit 1; }
+
+          # 2. Sign by DIGEST — the artifact itself never leaves the runner.
+          digest="$(sha256sum "$ARTIFACT" | cut -d' ' -f1)"
+
+          resp="$(curl -sS --fail-with-body -X POST "$SECSY_URL/api/sign" \
+            -H "Authorization: Bearer $idtoken" \
+            -H 'Content-Type: application/json' \
+            -d "{\"signer\":\"$SIGNER\",\"digest\":\"$digest\"}")"
+
+          # 3. Save the detached CMS signature (DER) beside the artifact, plus
+          #    the signer certificate for auditing. `.p7s` (DER) is the form
+          #    `openssl cms -inform DER` and `secsy-ca verify-signature` expect.
+          echo "$resp" | jq -r '.signature'          | base64 -d > "$ARTIFACT.p7s"
+          echo "$resp" | jq -r '.signer_certificate'             > codesign-cert.pem
+          echo "Signed $ARTIFACT (timestamped=$(echo "$resp" | jq -r '.timestamped'))"
+
+      - name: Attach signature to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            "$ARTIFACT" "$ARTIFACT.p7s" codesign-cert.pem --clobber
+
+      - name: Upload signing outputs as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-release
+          path: |
+            ${{ env.ARTIFACT }}
+            ${{ env.ARTIFACT }}.p7s
+            codesign-cert.pem
