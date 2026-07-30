@@ -373,6 +373,16 @@ var (
 		"secsy_acme_order_replaces_total",
 		"ACME newOrder requests carrying an ARI \"replaces\" CertID, by result (linked|rejected).",
 		"result")
+	// ACMEAuthzDeactivations counts RFC 8555 §7.5.2 authorization-deactivation
+	// requests by "result": deactivated (an owned, still-live authorization was
+	// relinquished by the account) or rejected (the authorization was in a state it
+	// cannot be deactivated from — already invalid/expired/revoked). A client
+	// deactivating authorizations is the signal that an identifier is being
+	// decommissioned.
+	ACMEAuthzDeactivations = NewCounter(Default,
+		"secsy_acme_authz_deactivations_total",
+		"ACME authorization deactivations (RFC 8555 §7.5.2), by result (deactivated|rejected).",
+		"result")
 	// ACMEChallengeValidations counts identifier-validation challenge attempts by
 	// challenge "type" (http-01|dns-01|tls-alpn-01) and "result" (valid|invalid),
 	// giving each challenge type observable parity on the issuance path.

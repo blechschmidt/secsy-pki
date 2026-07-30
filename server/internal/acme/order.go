@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -240,9 +241,11 @@ func (s *Server) handleOrderUpdate(w http.ResponseWriter, r *http.Request, acct 
 	s.cancelStarOrder(w, r, acct, order)
 }
 
-// handleAuthz serves POST-as-GET fetches of an authorization.
+// handleAuthz serves POST-as-GET fetches of an authorization, and the one
+// mutating POST an authorization resource accepts: deactivation (RFC 8555 §7.5.2)
+// with a status="deactivated" payload.
 func (s *Server) handleAuthz(w http.ResponseWriter, r *http.Request) {
-	acct, _, prob := s.authAccount(r)
+	acct, payload, prob := s.authAccount(r)
 	if prob != nil {
 		s.writeProblem(w, prob)
 		return
@@ -257,6 +260,110 @@ func (s *Server) handleAuthz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.expireAuthzIfNeeded(authz)
+
+	// A non-empty payload is an authorization update. The only one defined is
+	// deactivation (RFC 8555 §7.5.2); an empty payload is the usual POST-as-GET.
+	if len(payload) > 0 {
+		s.handleAuthzUpdate(w, r, acct, authz, payload)
+		return
+	}
+
+	s.writeAuthz(w, r, authz)
+}
+
+// handleAuthzUpdate applies a mutating POST to an authorization. RFC 8555 §7.5.2
+// defines exactly one: the client relinquishing the authorization by sending
+// {"status":"deactivated"}. No other authorization mutation is supported, so
+// anything else is rejected as malformed.
+func (s *Server) handleAuthzUpdate(w http.ResponseWriter, r *http.Request, acct *acmeAccount, authz *models.ACMEAuthorization, payload []byte) {
+	var req authzUpdateRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest, "invalid authorization update payload"))
+		return
+	}
+	if req.Status != models.ACMEAuthzStatusDeactivated {
+		s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest, "the only supported authorization update is status=\"deactivated\""))
+		return
+	}
+	s.deactivateAuthz(w, r, acct, authz)
+}
+
+// deactivateAuthz carries out an RFC 8555 §7.5.2 authorization deactivation: the
+// authenticated account (already confirmed to own the authorization) relinquishes
+// it. Only a still-live authorization — pending or valid — can be deactivated; an
+// already-deactivated one is idempotently re-reported, and a terminally-resolved
+// one (invalid/expired/revoked) cannot be deactivated. On success the
+// authorization moves to "deactivated", its still-open challenges are closed out,
+// and any pending order that depended on it is failed (a deactivated
+// authorization can never satisfy an order) — a finalized order keeps its issued
+// certificate. The updated authorization object is returned.
+func (s *Server) deactivateAuthz(w http.ResponseWriter, r *http.Request, acct *acmeAccount, authz *models.ACMEAuthorization) {
+	// Idempotent: deactivating an already-deactivated authorization just returns it.
+	if authz.Status == models.ACMEAuthzStatusDeactivated {
+		s.writeAuthz(w, r, authz)
+		return
+	}
+	// Only a pending or valid authorization may be deactivated; a terminally
+	// resolved one has nothing left to relinquish.
+	if authz.Status != models.ACMEAuthzStatusPending && authz.Status != models.ACMEAuthzStatusValid {
+		metrics.ACMEAuthzDeactivations.Inc("rejected")
+		s.writeProblem(w, newProblem(probMalformed, http.StatusBadRequest,
+			"authorization cannot be deactivated from status \""+authz.Status+"\""))
+		return
+	}
+
+	if err := s.db.UpdateACMEAuthorizationStatus(authz.ID, models.ACMEAuthzStatusDeactivated); err != nil {
+		s.writeProblem(w, newProblem(probServerInternal, http.StatusInternalServerError, "deactivating authorization"))
+		return
+	}
+	authz.Status = models.ACMEAuthzStatusDeactivated
+
+	// Close out any still-open challenges: a deactivated authorization can no
+	// longer be validated, so a lingering pending/processing challenge is moot.
+	s.invalidateAuthzChallenges(authz.ID)
+
+	// Fail any pending order that depended on this authorization — it can never
+	// become ready now. refreshOrderStatus recomputes from all the order's
+	// authorizations (a deactivated one forces the order invalid) and leaves
+	// already-terminal orders untouched, so a finalized order keeps its certificate.
+	if authz.OrderID != "" {
+		if order, _ := s.db.GetACMEOrder(authz.OrderID); order != nil {
+			s.refreshOrderStatus(order)
+		}
+	}
+
+	metrics.ACMEAuthzDeactivations.Inc("deactivated")
+	s.recordEvent(r, acct.rec.ID, audit.ActionACMEAuthzDeactivate, authzTarget(authz), audit.ResultSuccess,
+		"identifier="+authz.IdentifierType+":"+authz.IdentifierValue)
+
+	s.writeAuthz(w, r, authz)
+}
+
+// invalidateAuthzChallenges moves an authorization's still-open (pending or
+// processing) challenges to "invalid", the terminal challenge state, when the
+// authorization itself is being deactivated (there is no "deactivated" challenge
+// status). Best-effort: a challenge-update error does not fail the deactivation —
+// the authorization is already deactivated and is what governs issuance — so it
+// is logged and skipped.
+func (s *Server) invalidateAuthzChallenges(authzID string) {
+	challs, err := s.db.ListACMEChallengesByAuthz(authzID)
+	if err != nil {
+		log.Printf("acme: listing challenges for deactivated authorization %s failed: %v", authzID, err)
+		return
+	}
+	for i := range challs {
+		switch challs[i].Status {
+		case models.ACMEChallengeStatusPending, models.ACMEChallengeStatusProcessing:
+			if err := s.db.UpdateACMEChallenge(challs[i].ID, models.ACMEChallengeStatusInvalid, nil, ""); err != nil {
+				log.Printf("acme: invalidating challenge %s of deactivated authorization %s failed: %v", challs[i].ID, authzID, err)
+			}
+		}
+	}
+}
+
+// writeAuthz renders and writes an authorization as a 200 response, or the
+// problem if rendering fails.
+func (s *Server) writeAuthz(w http.ResponseWriter, r *http.Request, authz *models.ACMEAuthorization) {
 	wa, prob := s.wireAuthz(r, authz)
 	if prob != nil {
 		s.writeProblem(w, prob)

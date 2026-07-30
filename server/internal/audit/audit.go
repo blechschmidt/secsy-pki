@@ -315,9 +315,14 @@ const (
 	ActionACMEOrderFinalize = "acme.order.finalize"
 	// ActionACMEAuthzNew records a standalone pre-authorization created via the
 	// newAuthz endpoint (RFC 8555 §7.4.1 pre-authorization).
-	ActionACMEAuthzNew   = "acme.authz.new"
-	ActionACMEChallenge  = "acme.challenge"
-	ActionACMECertRevoke = "acme.cert.revoke"
+	ActionACMEAuthzNew = "acme.authz.new"
+	// ActionACMEAuthzDeactivate records a client relinquishing an authorization via
+	// RFC 8555 §7.5.2 deactivation (a {"status":"deactivated"} POST to the authz
+	// URL): the identifier can no longer be used to satisfy an order until
+	// re-authorized.
+	ActionACMEAuthzDeactivate = "acme.authz.deactivate"
+	ActionACMEChallenge       = "acme.challenge"
+	ActionACMECertRevoke      = "acme.cert.revoke"
 	// ActionACMEMPIC records a Multi-Perspective Issuance Corroboration (SC-067)
 	// quorum failure for a domain-control challenge (Task 142): domain control
 	// could not be corroborated from enough independent network perspectives, so

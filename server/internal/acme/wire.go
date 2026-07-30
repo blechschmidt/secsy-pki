@@ -50,6 +50,13 @@ const (
 	// RFC 8739 recurrence was requested (§3.5): the star-certificate URL answers
 	// 403 with this type once the order has been canceled.
 	probAutoRenewalCanceled = "urn:ietf:params:acme:error:autoRenewalCanceled"
+	// probInvalidContact / probUnsupportedContact reject a newAccount or
+	// account-update "contact" entry (RFC 8555 §7.3): unsupportedContact when the
+	// URL uses a scheme the server does not support (anything but "mailto:"), and
+	// invalidContact when a supported "mailto:" contact carries an invalid value —
+	// a malformed address, more than one address, or header fields ("hfields").
+	probInvalidContact     = "urn:ietf:params:acme:error:invalidContact"
+	probUnsupportedContact = "urn:ietf:params:acme:error:unsupportedContact"
 )
 
 // Problem is an RFC 7807 / RFC 8555 problem document.
@@ -206,6 +213,14 @@ type autoRenewalRequest struct {
 // The only supported mutation is canceling a STAR recurrence (RFC 8739 §3.5) by
 // setting status="canceled"; an empty payload is a POST-as-GET.
 type orderUpdateRequest struct {
+	Status string `json:"status,omitempty"`
+}
+
+// authzUpdateRequest is the payload of a POST to an authorization URL that
+// mutates it. RFC 8555 §7.5.2 defines exactly one mutation: the client
+// relinquishing the authorization by setting status="deactivated". An empty
+// payload is a POST-as-GET fetch.
+type authzUpdateRequest struct {
 	Status string `json:"status,omitempty"`
 }
 

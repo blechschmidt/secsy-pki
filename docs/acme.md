@@ -21,11 +21,12 @@ per-order auditing.
   - [Multi-perspective corroboration (MPIC / SC-067)](#multi-perspective-corroboration-mpic--sc-067)
 - [4. Access control: External Account Binding](#4-access-control-external-account-binding)
 - [5. Client examples](#5-client-examples)
-- [6. Auditing and operator visibility](#6-auditing-and-operator-visibility)
-- [7. Endpoint reference](#7-endpoint-reference)
-- [8. Renewal Information (ARI)](#8-renewal-information-ari)
-- [9. STAR: short-term auto-renewed certificates (RFC 8739)](#9-star-short-term-auto-renewed-certificates-rfc-8739)
-- [10. Operational notes](#10-operational-notes)
+- [6. Account & authorization lifecycle](#6-account--authorization-lifecycle)
+- [7. Auditing and operator visibility](#7-auditing-and-operator-visibility)
+- [8. Endpoint reference](#8-endpoint-reference)
+- [9. Renewal Information (ARI)](#9-renewal-information-ari)
+- [10. STAR: short-term auto-renewed certificates (RFC 8739)](#10-star-short-term-auto-renewed-certificates-rfc-8739)
+- [11. Operational notes](#11-operational-notes)
 
 ## 1. Enabling the ACME server
 
@@ -163,7 +164,7 @@ lists the available names.
 - **Selected profile is visible** on the operator inventory endpoint
   `GET /api/acme/orders` (the `profile` field) and in the `acme.order.new` audit
   event, and issuance is metered per profile — see
-  [§6 Auditing and operator visibility](#6-auditing-and-operator-visibility).
+  [§7 Auditing and operator visibility](#7-auditing-and-operator-visibility).
 
 ## 3. Challenge types (http-01, dns-01, tls-alpn-01)
 
@@ -286,7 +287,70 @@ This is the client used by the integration test
 against a SoftHSM-backed CA. See that file for a complete worked example of
 `Register → AuthorizeOrder → Accept → WaitOrder → CreateOrderCert`.
 
-## 6. Auditing and operator visibility
+## 6. Account & authorization lifecycle
+
+Beyond registration and ordering, the server implements the account- and
+authorization-management operations of RFC 8555.
+
+### Contact validation (§7.3)
+
+An account's `contact` array — supplied on **newAccount** or an account update —
+is **validated**, not stored blindly. The server supports only `mailto:`
+contacts, and each, following RFC 8555 §7.3 and the mailto grammar of
+[RFC 6068](https://www.rfc-editor.org/rfc/rfc6068), must be a **single** address
+carrying **no header fields** (the `?subject=…` "hfields"):
+
+| Contact | Result |
+|---------|--------|
+| `mailto:admin@example.com` | accepted |
+| `tel:+1-555-0100`, `https://hook.example` | `urn:ietf:params:acme:error:unsupportedContact` (400) |
+| `mailto:a@example.com?subject=hi` | `urn:ietf:params:acme:error:invalidContact` (400) — header fields |
+| `mailto:a@example.com,b@example.com` | `invalidContact` (400) — more than one address |
+| `mailto:not-an-address` | `invalidContact` (400) — malformed address |
+
+An **unsupported scheme** (anything but `mailto:`) is rejected with
+**`unsupportedContact`**; a supported `mailto:` contact with an **invalid value**
+is rejected with **`invalidContact`**, exactly the two error types RFC 8555 §7.3
+prescribes. An empty or omitted `contact` array is valid (the account simply has
+no contacts); a contact update replaces the whole set.
+
+### Account deactivation and key rollover (§7.3)
+
+A client deactivates its **account** by POSTing `{"status": "deactivated"}` to the
+account URL; a deactivated account can no longer act (subsequent requests are
+`unauthorized`). It rotates its **account key** through the `key-change` endpoint
+(RFC 8555 §7.3.5), proving control of both the old and the new key in one signed
+request.
+
+### Authorization deactivation (§7.5.2)
+
+A client relinquishes an **authorization** — for example to give up the ability to
+issue for an identifier it no longer controls — by POSTing
+`{"status": "deactivated"}` to the authorization URL (RFC 8555 §7.5.2). The
+response is the updated authorization object:
+
+```json
+{ "status": "deactivated",
+  "identifier": { "type": "dns", "value": "app.example.com" },
+  "challenges": [ ... ] }
+```
+
+- Only the **owning account** may deactivate an authorization (otherwise
+  `unauthorized`), and only a **live** authorization — `pending` or `valid` — can
+  be deactivated. Deactivating an already-deactivated one is **idempotent**
+  (`200`); deactivating one that has already resolved terminally
+  (`invalid`/`expired`/`revoked`) is rejected as `malformed`.
+- On success the authorization moves to **`deactivated`**, its still-open
+  challenges are closed out, and any **pending order** that depended on it becomes
+  `invalid` — it can never be fulfilled now. An order that had already been
+  **finalized keeps its issued certificate**.
+- A deactivated authorization is **never reused**: a later order for the same
+  identifier validates afresh (a deactivated pre-authorization, RFC 8555 §7.4.1,
+  is likewise not claimed).
+- The operation is audited as `acme.authz.deactivate` and metered by
+  `secsy_acme_authz_deactivations_total{result}` (`deactivated`|`rejected`).
+
+## 7. Auditing and operator visibility
 
 Every ACME operation appends an entry to the [hash-chained event log](rbac-and-audit.md):
 
@@ -296,6 +360,7 @@ Every ACME operation appends an entry to the [hash-chained event log](rbac-and-a
 | `acme.order.new` | An order is placed (records the identifiers and the selected issuance profile) |
 | `acme.challenge` | A challenge is validated or fails (the detail records the challenge type — `http-01`, `dns-01`, or `tls-alpn-01` — and identifier) |
 | `acme.order.finalize` | A certificate is issued (records the serial and profile) |
+| `acme.authz.deactivate` | An authorization is deactivated by its account (RFC 8555 §7.5.2) |
 | `acme.cert.revoke` | A certificate is revoked via ACME |
 | `acme.renewal_info` | A renewal-info (ARI) window is served (records whether the window is normal/revoked/rotating) |
 | `acme.order.replaces` | A new order links to the certificate it renews via `replaces` |
@@ -312,7 +377,9 @@ counts attempts by challenge `type` (`http-01`|`dns-01`|`tls-alpn-01`) and
 `secsy_acme_certificates_issued_total{profile}` counts certificates issued
 through finalize by the internal issuance profile they were signed under, so with
 the [ACME Profiles extension](#client-selectable-profiles-rfc-9773) an operator
-can see volume broken down by selectable profile.
+can see volume broken down by selectable profile. Authorization deactivations
+(RFC 8555 §7.5.2) are metered by `secsy_acme_authz_deactivations_total{result}`
+(`deactivated`|`rejected`), surfacing clients decommissioning identifiers.
 
 Operators can inspect ACME state through RBAC-gated (read: admin/issuer/auditor)
 inventory endpoints:
@@ -322,7 +389,7 @@ GET /api/acme/accounts    # registered ACME accounts
 GET /api/acme/orders      # ACME orders and their status/serials
 ```
 
-## 7. Endpoint reference
+## 8. Endpoint reference
 
 All paths are relative to `acme.directory_path` (default `/acme`). Except the
 directory and new-nonce, every endpoint is a JWS-signed POST (POST-as-GET for
@@ -337,7 +404,7 @@ reads), per RFC 8555.
 | POST | `/acme/order/{id}` | Fetch an order (POST-as-GET), or cancel a STAR recurrence (`status="canceled"`) |
 | POST | `/acme/order/{id}/finalize` | Submit a CSR to issue |
 | POST/GET | `/acme/star-cert/{id}` | Download the current STAR certificate (GET is unauthenticated when the order set `allow-certificate-get`) |
-| POST | `/acme/authz/{id}` | Fetch an authorization |
+| POST | `/acme/authz/{id}` | Fetch an authorization (POST-as-GET), or deactivate it (`status="deactivated"`, RFC 8555 §7.5.2) |
 | POST | `/acme/chall/{id}` | Respond to / fetch a challenge |
 | POST | `/acme/cert/{id}` | Download the issued chain (PEM) |
 | POST | `/acme/acct/{id}` | Fetch / update / deactivate an account |
@@ -346,7 +413,7 @@ reads), per RFC 8555.
 | POST | `/acme/key-change` | Rotate the account key |
 | GET | `/acme/renewal-info/{certID}` | Renewal Information (ARI) — suggested renewal window |
 
-## 8. Renewal Information (ARI)
+## 9. Renewal Information (ARI)
 
 The server implements [ACME Renewal Information](https://datatracker.ietf.org/doc/draft-ietf-acme-ari/)
 (`draft-ietf-acme-ari`) so clients schedule renewals against the server's advice
@@ -404,7 +471,7 @@ acme:
 
 To compute a CertID from a certificate you hold, use `acme.CertID(*x509.Certificate)`.
 
-## 9. STAR: short-term auto-renewed certificates (RFC 8739)
+## 10. STAR: short-term auto-renewed certificates (RFC 8739)
 
 [STAR](https://www.rfc-editor.org/rfc/rfc8739) turns an order into a
 **subscription**: the server issues a short-lived certificate and *automatically
@@ -484,7 +551,7 @@ answers `403` with `urn:ietf:params:acme:error:autoRenewalCanceled`.
 > behavior is exercised by the raw-JWS test in
 > `server/internal/acme/star_test.go`.
 
-## 10. Operational notes
+## 11. Operational notes
 
 - **TLS.** Real ACME clients require the directory to be served over HTTPS.
   Configure `server.tls_cert`/`tls_key`, or terminate TLS at a trusted proxy and

@@ -77,7 +77,7 @@ must either live in the shared store or be safe to keep per-replica:
   a nonce minted by one replica is accepted — exactly once — by any other behind
   a load balancer. Before this, an in-process nonce map produced spurious
   `badNonce` retries on round-robin traffic. No configuration is required (the
-  secret is generated once and persisted); see [ACME](acme.md#9-operational-notes).
+  secret is generated once and persisted); see [ACME](acme.md#11-operational-notes).
 - **Rate-limit token buckets remain per-replica** (known follow-up). Each
   replica meters ACME/OCSP/CRL/SCEP/EST traffic against its own in-memory
   buckets, so the effective global limit is roughly `configured_rate ×

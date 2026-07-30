@@ -5,6 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/mail"
+	"net/url"
+	"strconv"
+	"strings"
 
 	jose "github.com/go-jose/go-jose/v4"
 
@@ -79,6 +83,15 @@ func (s *Server) handleNewAccount(w http.ResponseWriter, r *http.Request) {
 		eabKid = kid
 	}
 
+	// Validate the requested contacts before creating the account (RFC 8555 §7.3):
+	// only "mailto:" contacts are supported, and each must be a single, header-free
+	// address. An unsupported scheme or invalid value is rejected with the matching
+	// ACME problem rather than being stored verbatim.
+	if prob := validateContacts(req.Contact); prob != nil {
+		s.writeProblem(w, prob)
+		return
+	}
+
 	jwkJSON, err := json.Marshal(d.JWK)
 	if err != nil {
 		s.writeProblem(w, newProblem(probServerInternal, http.StatusInternalServerError, "serializing account key"))
@@ -135,6 +148,13 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 		acct.rec.Status = models.ACMEAccountStatusDeactivated
 	}
 	if req.Contact != nil {
+		// A contact update carries the full replacement set (RFC 8555 §7.3.2);
+		// validate every entry before persisting so a bad value is rejected rather
+		// than stored. An empty array clears the account's contacts.
+		if prob := validateContacts(req.Contact); prob != nil {
+			s.writeProblem(w, prob)
+			return
+		}
 		acct.rec.Contacts = req.Contact
 	}
 	if err := s.db.UpdateACMEAccount(acct.rec); err != nil {
@@ -227,4 +247,66 @@ func (s *Server) verifyEAB(r *http.Request, eab json.RawMessage, accountKey *jos
 // hmacEqual compares two thumbprint strings in constant time.
 func hmacEqual(a, b string) bool {
 	return hmac.Equal([]byte(a), []byte(b))
+}
+
+// validateContacts checks the "contact" URLs supplied on newAccount or an
+// account update (RFC 8555 §7.3). The server supports only "mailto:" contacts,
+// and — following RFC 8555 §7.3 and the mailto grammar of RFC 6068 — a mailto
+// contact must carry exactly one address and no header fields ("hfields", the
+// "?…" tail). It returns the ACME problem for the first offending entry, or nil
+// when every entry is acceptable. A nil/empty list is valid: the account simply
+// has no contacts.
+func validateContacts(contacts []string) *Problem {
+	for _, contact := range contacts {
+		if prob := validateContact(contact); prob != nil {
+			return prob
+		}
+	}
+	return nil
+}
+
+// validateContact validates a single "contact" URL (see validateContacts). A URL
+// using an unsupported scheme yields unsupportedContact; a supported "mailto:"
+// URL with an invalid value yields invalidContact — matching the two error types
+// RFC 8555 §7.3 mandates for these cases.
+func validateContact(contact string) *Problem {
+	if strings.TrimSpace(contact) == "" {
+		return newProblem(probInvalidContact, http.StatusBadRequest, "a contact URL must not be empty")
+	}
+	u, err := url.Parse(contact)
+	if err != nil {
+		return newProblem(probInvalidContact, http.StatusBadRequest, "contact is not a valid URL: "+contact)
+	}
+	// url.Parse lowercases the scheme, so this comparison is effectively
+	// case-insensitive; anything but mailto is an unsupported contact method.
+	if u.Scheme != "mailto" {
+		scheme := u.Scheme
+		if scheme == "" {
+			scheme = contact
+		}
+		return newProblem(probUnsupportedContact, http.StatusBadRequest,
+			"unsupported contact scheme "+strconv.Quote(scheme)+`; only "mailto:" contacts are supported`)
+	}
+	// hfields (the "?header=value" tail, RFC 6068 §2) are not permitted: a contact
+	// must not smuggle mail headers. ForceQuery covers a bare trailing "?".
+	if u.RawQuery != "" || u.ForceQuery {
+		return newProblem(probInvalidContact, http.StatusBadRequest,
+			"mailto contact must not contain header fields (hfields): "+contact)
+	}
+	// The mailto body holds the address(es). Percent-decode it (RFC 6068 permits
+	// percent-encoding) before validating, so e.g. "%40" is read as "@".
+	addr := u.Opaque
+	if dec, derr := url.PathUnescape(addr); derr == nil {
+		addr = dec
+	}
+	// Exactly one address: a comma-separated to-list is rejected.
+	if strings.Contains(addr, ",") {
+		return newProblem(probInvalidContact, http.StatusBadRequest,
+			"mailto contact must contain exactly one address: "+contact)
+	}
+	if _, err := mail.ParseAddress(addr); err != nil {
+		return newProblem(probInvalidContact, http.StatusBadRequest,
+			"invalid email address in contact "+strconv.Quote(contact))
+	}
+	return nil
 }
