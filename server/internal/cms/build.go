@@ -89,6 +89,15 @@ type SignedDataOpts struct {
 	// over the signature value — is attached (id-aa-timeStampToken, RFC 3161
 	// Appendix A): the token can only be obtained after the signature exists.
 	UnauthAttrsFunc func(signature []byte) ([]Attribute, error)
+	// ExtraUnsignedAttrs are unauthenticated (unsigned) attributes that do NOT
+	// depend on the signature value — e.g. the CAdES id-aa-ets-revocationValues
+	// attribute carrying long-term-validation material. They are embedded
+	// alongside any returned by UnauthAttrsFunc.
+	ExtraUnsignedAttrs []Attribute
+	// CRLs are DER-encoded X.509 CRLs (CertificateList) to place in the SignedData
+	// `crls` field (RFC 5652 §5.1 / §10.2.1). Populating this field lets generic
+	// CMS tooling see the revocation material of a CAdES-LT signature.
+	CRLs [][]byte
 }
 
 // BuildSignedData builds an attached-signature SignedData with a single
@@ -167,21 +176,35 @@ func BuildSignedData(opts SignedDataOpts) ([]byte, error) {
 		return nil, fmt.Errorf("cms: signing authenticated attributes: %w", err)
 	}
 
-	// Unauthenticated attributes are outside the signature, so they can be
-	// derived from it (the RFC 3161 timestamp-countersignature pattern).
+	// Unauthenticated attributes are outside the signature. Some are static
+	// (ExtraUnsignedAttrs, e.g. CAdES revocation-values); others are derived from
+	// the signature (the RFC 3161 timestamp-countersignature pattern). Both are
+	// collected, then sorted together into the single DER SET OF the SignerInfo
+	// carries.
 	var unauthAttrs []attribute
+	addUnauth := func(list []Attribute) error {
+		for _, a := range list {
+			enc, err := buildAttribute(a)
+			if err != nil {
+				return err
+			}
+			unauthAttrs = append(unauthAttrs, enc)
+		}
+		return nil
+	}
+	if err := addUnauth(opts.ExtraUnsignedAttrs); err != nil {
+		return nil, err
+	}
 	if opts.UnauthAttrsFunc != nil {
 		extra, err := opts.UnauthAttrsFunc(sig)
 		if err != nil {
 			return nil, fmt.Errorf("cms: building unauthenticated attributes: %w", err)
 		}
-		for _, a := range extra {
-			enc, err := buildAttribute(a)
-			if err != nil {
-				return nil, err
-			}
-			unauthAttrs = append(unauthAttrs, enc)
+		if err := addUnauth(extra); err != nil {
+			return nil, err
 		}
+	}
+	if len(unauthAttrs) > 0 {
 		if err := sortAttributes(unauthAttrs); err != nil {
 			return nil, err
 		}
@@ -216,6 +239,9 @@ func BuildSignedData(opts SignedDataOpts) ([]byte, error) {
 		ContentInfo:      eContent,
 		Certificates:     marshalCerts(certs),
 		SignerInfos:      []signerInfo{si},
+	}
+	if len(opts.CRLs) > 0 {
+		sd.CRLs = marshalCRLs(opts.CRLs)
 	}
 	return wrapContentInfo(oidSignedData, sd)
 }
@@ -373,6 +399,25 @@ func marshalCerts(certs []*x509.Certificate) asn1.RawValue {
 		buf = append(buf, c.Raw...)
 	}
 	return asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: buf}
+}
+
+// marshalCRLs wraps DER CRLs in the SignedData `crls` field ([1] IMPLICIT
+// RevocationInfoChoices, a SET OF). Each CRL is a RevocationInfoChoice `crl`
+// alternative — a bare CertificateList (universal SEQUENCE) — so the field is
+// the concatenation of the CRL DERs. DER requires the SET OF members to be
+// sorted by their encoding, so we order them before concatenating.
+func marshalCRLs(crls [][]byte) asn1.RawValue {
+	if len(crls) == 0 {
+		return asn1.RawValue{}
+	}
+	sorted := make([][]byte, len(crls))
+	copy(sorted, crls)
+	sort.Slice(sorted, func(i, j int) bool { return bytes.Compare(sorted[i], sorted[j]) < 0 })
+	var buf []byte
+	for _, c := range sorted {
+		buf = append(buf, c...)
+	}
+	return asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 1, IsCompound: true, Bytes: buf}
 }
 
 // sortAttributes orders attributes by their DER encoding, the canonical DER

@@ -1954,13 +1954,16 @@ paths:
         Signs the submitted artifact (base64) — or its precomputed digest
         (hex), for artifacts too large to ship — with a configured code-signing
         key held by the key provider, returning a detached CMS/PKCS#7
-        SignedData. When timestamping applies (the signer's default, or the
-        request's explicit choice), an RFC 3161 timestamp token over the
-        signature value from the in-process TSA is embedded as the
-        id-aa-timeStampToken unsigned attribute, so the signature stays
-        verifiable after the signing certificate expires. Requires the
-        artifact:sign capability (signer role) within the signer's tenant;
-        audited as artifact.sign; rate-limited and HSM-concurrency-guarded.
+        SignedData. The signature is a CAdES (ETSI EN 319 122) baseline
+        signature at the requested level: b (signing-certificate-v2 +
+        signing-time), t (adds an RFC 3161 signature-timestamp from the
+        in-process TSA over the signature value), or lt (adds long-term-
+        validation material — the signer chain plus current CRLs / OCSP
+        responses in the SignedData crls field and the id-aa-ets-revocationValues
+        attribute), so the signature stays independently verifiable after the
+        signing certificate expires. Requires the artifact:sign capability
+        (signer role) within the signer's tenant; audited as artifact.sign;
+        rate-limited and HSM-concurrency-guarded.
       requestBody:
         required: true
         content:
@@ -5276,12 +5279,22 @@ components:
             Hex digest of the artifact, computed with the signer's digest
             algorithm — signs artifacts too large to ship through the API.
             Mutually exclusive with artifact.
+        level:
+          type: string
+          enum: [b, t, lt]
+          description: >-
+            CAdES (ETSI EN 319 122) baseline level: b embeds the
+            signing-certificate-v2 and signing-time signed attributes; t adds an
+            RFC 3161 signature-timestamp; lt additionally embeds long-term-
+            validation revocation material (CRLs / OCSP responses) so the
+            signature stays verifiable after the signer certificate expires.
+            Omitted applies the signer's default; takes precedence over timestamp.
         timestamp:
           type: boolean
           description: >-
             Overrides the signer's timestamp-by-default setting: true embeds an
-            RFC 3161 countersignature, false suppresses it. Omitted applies the
-            signer's default.
+            RFC 3161 countersignature (CAdES-T), false suppresses it. Omitted
+            applies the signer's default. Ignored when level is set.
 
     ArtifactSignResponse:
       type: object
@@ -5300,6 +5313,10 @@ components:
         digest:
           type: string
           description: Hex digest of the artifact the signature covers.
+        level:
+          type: string
+          enum: [b, t, lt]
+          description: The achieved CAdES baseline level.
         timestamped: { type: boolean }
         timestamp_time:
           type: string
@@ -5308,6 +5325,12 @@ components:
         timestamp_serial:
           type: string
           description: RFC 3161 token serial (when timestamped).
+        embedded_crls:
+          type: integer
+          description: CRLs embedded as long-term-validation material (CAdES-LT).
+        embedded_ocsps:
+          type: integer
+          description: OCSP responses embedded as long-term-validation material (CAdES-LT).
 
     ArtifactVerifyRequest:
       type: object
@@ -5332,6 +5355,12 @@ components:
         require_timestamp:
           type: boolean
           description: Fail verification when no RFC 3161 countersignature is embedded.
+        require_level:
+          type: string
+          enum: [b, t, lt]
+          description: >-
+            Fail verification when the achieved CAdES level is below this minimum
+            (b < t < lt). Omitted imposes no floor.
 
     ArtifactVerifyResponse:
       type: object
@@ -5347,6 +5376,16 @@ components:
           description: The signer certificate (PEM), on a valid signature.
         digest_algorithm: { type: string }
         digest: { type: string }
+        level:
+          type: string
+          enum: [b, t, lt]
+          description: The achieved CAdES baseline level, on a valid signature.
+        revocation_crls:
+          type: integer
+          description: Distinct CRLs embedded as long-term-validation material.
+        revocation_ocsps:
+          type: integer
+          description: Distinct OCSP responses embedded as long-term-validation material.
         timestamped: { type: boolean }
         timestamp_time: { type: string, format: date-time }
         timestamp_serial: { type: string }
@@ -5367,6 +5406,10 @@ components:
         not_after: { type: string, format: date-time }
         digest_algorithm: { type: string }
         timestamp_default: { type: boolean }
+        level_default:
+          type: string
+          enum: ["", b, t, lt]
+          description: The default CAdES level applied when a request names none.
         tenant: { type: string }
 
     SSHSignRequest:

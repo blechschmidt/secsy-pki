@@ -1926,8 +1926,13 @@ type SigningSignerConfig struct {
 	// default sha256).
 	Digest string `yaml:"digest"`
 	// Timestamp embeds an RFC 3161 countersignature from the local TSA on every
-	// signature unless a request opts out. Requires tsa.enabled.
+	// signature unless a request opts out. Requires tsa.enabled. Equivalent to a
+	// Level of "t"; Level takes precedence when both are set.
 	Timestamp bool `yaml:"timestamp"`
+	// Level is the default CAdES baseline level (b|t|lt) produced when a request
+	// does not name one. "t"/"lt" require tsa.enabled; "lt" additionally embeds
+	// long-term-validation revocation material. Empty falls back to Timestamp.
+	Level string `yaml:"level"`
 	// Tenant scopes this signer to a tenant for RBAC and audit. Empty means the
 	// default tenant.
 	Tenant string `yaml:"tenant"`

@@ -279,6 +279,59 @@ func TestSigningSoftHSM(t *testing.T) {
 			}
 		})
 	}
+
+	// CAdES-LT (Task 151): the long-term-validation material — a CRL and an OCSP
+	// response for the signer — is signed by the HSM CA key, embedded in the
+	// signature (SignedData.crls + id-aa-ets-revocationValues), and the result
+	// must both report level LT in-package and remain verifiable by openssl.
+	t.Run("cades-lt", func(t *testing.T) {
+		svc.SetRevocationSource(&stubRevocation{caSigner: caSigner, caCert: caCert})
+		ec := signers[0] // the ECDSA signer
+		res, err := svc.Sign(ctx, SignRequest{Signer: ec.Name, Content: artifact, Level: LevelLT})
+		if err != nil {
+			t.Fatalf("Sign LT: %v", err)
+		}
+		if res.Level != LevelLT || res.EmbeddedCRLs == 0 || res.EmbeddedOCSPs == 0 {
+			t.Fatalf("LT result: level=%s crls=%d ocsps=%d", res.Level, res.EmbeddedCRLs, res.EmbeddedOCSPs)
+		}
+		v, err := Verify(VerifyRequest{
+			Signature:    res.Signature,
+			Content:      artifact,
+			Roots:        []*x509.Certificate{caCert},
+			RequireLevel: LevelLT,
+		})
+		if err != nil {
+			t.Fatalf("Verify LT: %v", err)
+		}
+		if v.Level != LevelLT {
+			t.Fatalf("verified level = %s, want CAdES-LT", v.Level)
+		}
+
+		if opensslErr != nil {
+			t.Skip("LT signature verified in-package; openssl not installed for interop check")
+		}
+		dir := t.TempDir()
+		writeLT := func(name string, data []byte) string {
+			t.Helper()
+			p := filepath.Join(dir, name)
+			if err := os.WriteFile(p, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}
+		artifactPath := writeLT("artifact.bin", artifact)
+		sigPath := writeLT("lt.p7s", res.Signature)
+		caPath := writeLT("ca.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caCert.Raw}))
+		cmd := exec.Command(openssl, "cms", "-verify", "-binary",
+			"-inform", "DER", "-in", sigPath,
+			"-content", artifactPath,
+			"-CAfile", caPath,
+			"-purpose", "any",
+			"-out", os.DevNull)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("openssl cms -verify of the CAdES-LT signature failed: %v\n%s", err, out)
+		}
+	})
 }
 
 func hsmRandHex(t *testing.T) string {

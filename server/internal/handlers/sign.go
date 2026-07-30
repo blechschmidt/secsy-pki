@@ -36,7 +36,13 @@ type SignArtifactRequest struct {
 	Signer   string `json:"signer"`
 	Artifact string `json:"artifact,omitempty"`
 	Digest   string `json:"digest,omitempty"`
-	// Timestamp overrides the signer's configured default when present.
+	// Level requests a CAdES baseline level (b|t|lt): b is signed attributes
+	// only, t adds an RFC 3161 signature-timestamp, lt additionally embeds
+	// long-term-validation revocation material. Empty applies the signer's
+	// default. Takes precedence over timestamp.
+	Level string `json:"level,omitempty"`
+	// Timestamp overrides the signer's configured default when present. Ignored
+	// when level is set.
 	Timestamp *bool `json:"timestamp,omitempty"`
 }
 
@@ -51,9 +57,15 @@ type SignArtifactResponse struct {
 	SignerCertificate string `json:"signer_certificate"`
 	DigestAlgorithm   string `json:"digest_algorithm"`
 	Digest            string `json:"digest"`
-	Timestamped       bool   `json:"timestamped"`
-	TimestampTime     string `json:"timestamp_time,omitempty"`
-	TimestampSerial   string `json:"timestamp_serial,omitempty"`
+	// Level is the achieved CAdES baseline level (b|t|lt).
+	Level           string `json:"level"`
+	Timestamped     bool   `json:"timestamped"`
+	TimestampTime   string `json:"timestamp_time,omitempty"`
+	TimestampSerial string `json:"timestamp_serial,omitempty"`
+	// EmbeddedCRLs / EmbeddedOCSPs count the long-term-validation revocation
+	// objects embedded for a CAdES-LT signature.
+	EmbeddedCRLs  int `json:"embedded_crls,omitempty"`
+	EmbeddedOCSPs int `json:"embedded_ocsps,omitempty"`
 }
 
 // SignArtifact handles POST /api/sign: a CMS detached signature over the
@@ -102,7 +114,12 @@ func (a *API) SignArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	svcReq := signing.SignRequest{Signer: req.Signer, Timestamp: req.Timestamp}
+	level, err := signing.ParseLevel(req.Level)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	svcReq := signing.SignRequest{Signer: req.Signer, Level: level, Timestamp: req.Timestamp}
 	switch {
 	case req.Artifact != "" && req.Digest != "":
 		writeError(w, http.StatusBadRequest, "provide artifact or digest, not both")
@@ -146,7 +163,8 @@ func (a *API) SignArtifact(w http.ResponseWriter, r *http.Request) {
 	metrics.ArtifactSignatures.Inc(sc.Name, metrics.ResultSuccess)
 	digestHex := hex.EncodeToString(res.ArtifactDigest)
 	a.recordEvent(r, audit.ActionArtifactSign, sc.Name, sc.Certificate.Subject.CommonName, audit.ResultSuccess,
-		fmt.Sprintf("digest=%s:%s timestamped=%t cert_serial=%s", hashName(res.DigestAlgorithm), digestHex, res.Timestamped, sc.Certificate.SerialNumber))
+		fmt.Sprintf("digest=%s:%s level=%s timestamped=%t crls=%d ocsps=%d cert_serial=%s",
+			hashName(res.DigestAlgorithm), digestHex, res.Level, res.Timestamped, res.EmbeddedCRLs, res.EmbeddedOCSPs, sc.Certificate.SerialNumber))
 
 	resp := SignArtifactResponse{
 		Signature:         base64.StdEncoding.EncodeToString(res.Signature),
@@ -155,7 +173,10 @@ func (a *API) SignArtifact(w http.ResponseWriter, r *http.Request) {
 		SignerCertificate: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: sc.Certificate.Raw})),
 		DigestAlgorithm:   hashName(res.DigestAlgorithm),
 		Digest:            digestHex,
+		Level:             string(res.Level),
 		Timestamped:       res.Timestamped,
+		EmbeddedCRLs:      res.EmbeddedCRLs,
+		EmbeddedOCSPs:     res.EmbeddedOCSPs,
 	}
 	if res.Timestamped {
 		resp.TimestampTime = res.TimestampGenTime.UTC().Format(time.RFC3339)
@@ -178,6 +199,9 @@ type VerifyArtifactRequest struct {
 	// RequireTimestamp fails verification when no RFC 3161 countersignature is
 	// embedded.
 	RequireTimestamp bool `json:"require_timestamp,omitempty"`
+	// RequireLevel fails verification when the achieved CAdES level is below this
+	// minimum (b|t|lt). Empty imposes no floor.
+	RequireLevel string `json:"require_level,omitempty"`
 }
 
 // VerifyArtifactResponse reports the verification outcome. Valid=false with a
@@ -191,8 +215,12 @@ type VerifyArtifactResponse struct {
 	SignerCertificate string `json:"signer_certificate,omitempty"`
 	DigestAlgorithm   string `json:"digest_algorithm,omitempty"`
 	Digest            string `json:"digest,omitempty"`
-	Timestamped       bool   `json:"timestamped,omitempty"`
-	TimestampTime     string `json:"timestamp_time,omitempty"`
+	// Level is the achieved CAdES baseline level (b|t|lt), on a valid signature.
+	Level           string `json:"level,omitempty"`
+	RevocationCRLs  int    `json:"revocation_crls,omitempty"`
+	RevocationOCSPs int    `json:"revocation_ocsps,omitempty"`
+	Timestamped     bool   `json:"timestamped,omitempty"`
+	TimestampTime   string `json:"timestamp_time,omitempty"`
 	TimestampSerial   string `json:"timestamp_serial,omitempty"`
 	// VerifiedAt is the instant chain validity was evaluated at: the timestamp
 	// genTime when countersigned, else the wall clock.
@@ -225,7 +253,12 @@ func (a *API) VerifyArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	vreq := signing.VerifyRequest{Signature: sigDER, RequireTimestamp: req.RequireTimestamp}
+	requireLevel, err := signing.ParseLevel(req.RequireLevel)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	vreq := signing.VerifyRequest{Signature: sigDER, RequireTimestamp: req.RequireTimestamp, RequireLevel: requireLevel}
 	switch {
 	case req.Artifact != "" && req.Digest != "":
 		writeError(w, http.StatusBadRequest, "provide artifact or digest, not both")
@@ -280,6 +313,9 @@ func (a *API) VerifyArtifact(w http.ResponseWriter, r *http.Request) {
 	resp.SignerCertificate = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: result.SignerCertificate.Raw}))
 	resp.DigestAlgorithm = hashName(result.DigestAlgorithm)
 	resp.Digest = hex.EncodeToString(result.ArtifactDigest)
+	resp.Level = string(result.Level)
+	resp.RevocationCRLs = result.RevocationCRLs
+	resp.RevocationOCSPs = result.RevocationOCSPs
 	resp.Timestamped = result.Timestamped
 	resp.VerifiedAt = result.VerifiedAt.UTC().Format(time.RFC3339)
 	if result.Timestamped {
@@ -288,7 +324,7 @@ func (a *API) VerifyArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	metrics.ArtifactVerifications.Inc("valid")
 	a.recordEvent(r, audit.ActionArtifactVerify, resp.SignerSubject, "", audit.ResultSuccess,
-		fmt.Sprintf("digest=%s:%s timestamped=%t", resp.DigestAlgorithm, resp.Digest, resp.Timestamped))
+		fmt.Sprintf("digest=%s:%s level=%s timestamped=%t", resp.DigestAlgorithm, resp.Digest, resp.Level, resp.Timestamped))
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -301,6 +337,7 @@ type SignerInfoResponse struct {
 	NotAfter         string `json:"not_after"`
 	DigestAlgorithm  string `json:"digest_algorithm"`
 	TimestampDefault bool   `json:"timestamp_default"`
+	LevelDefault     string `json:"level_default,omitempty"`
 	Tenant           string `json:"tenant"`
 }
 
@@ -326,6 +363,7 @@ func (a *API) ListSigners(w http.ResponseWriter, r *http.Request) {
 				NotAfter:         sc.Certificate.NotAfter.UTC().Format(time.RFC3339),
 				DigestAlgorithm:  hashName(sc.Digest),
 				TimestampDefault: sc.TimestampByDefault,
+				LevelDefault:     string(sc.DefaultLevel),
 				Tenant:           sc.TenantID,
 			})
 		}

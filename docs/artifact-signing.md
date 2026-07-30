@@ -57,6 +57,29 @@ Key properties:
   the signer certificate expires, only the countersigned signature keeps
   verifying — the reason release pipelines pair code signing with a TSA.
 
+## CAdES baseline levels (B / T / LT)
+
+The signatures are **CAdES (ETSI EN 319 122) baseline signatures**. Choose the
+level per request (`-level` / `"level"`) or set a per-signer default; each level
+builds on the previous one:
+
+| Level | Adds | What it buys | Requires |
+|---|---|---|---|
+| **`b`** — CAdES-B | `signing-certificate-v2` (ESSCertIDv2) + `signing-time` **signed** attributes | binds the signer certificate into the signature; records the claimed signing time | — |
+| **`t`** — CAdES-T | an **RFC 3161 signature-timestamp** (`id-aa-timeStampToken`) over the SignerInfo signature value, from the [built-in TSA](timestamping.md) | a trusted time anchor, so the signature survives signer-certificate expiry | `tsa.enabled` |
+| **`lt`** — CAdES-LT | **long-term-validation material**: the signer/CA chain plus current **CRLs and OCSP responses**, embedded in the `SignedData.crls` field *and* the `id-aa-ets-revocationValues` unsigned attribute | offline, self-contained validation of *both* the signature and its revocation state after the certificates expire | `tsa.enabled` + an internal CA that can produce OCSP/CRLs |
+
+Every signature this service produces is at least CAdES-B (the B attributes are
+always present). `t` is exactly the previous timestamp behavior — `-timestamp
+yes` and `-level t` are equivalent. `lt` is the new archival level: the server
+gathers a fresh OCSP response for the signer certificate and the complete CRL of
+each CA in the chain (all HSM-signed by the CA key), embeds them, and the
+verifier can then confirm the chain was not revoked without any network access.
+
+The archival **CAdES-LTA** level (periodic archive-timestamps that re-protect the
+material as algorithms weaken) is out of scope; re-sign or add an external
+archive timestamp when you need multi-decade preservation.
+
 ## Provisioning a signing key + certificate
 
 ```console
@@ -96,12 +119,17 @@ signing:
       digest: sha256                               # sha256 | sha384 | sha512
       timestamp: true                              # RFC 3161 countersign by default
                                                    # (requires tsa.enabled)
+      level: lt                                    # default CAdES level b|t|lt
+                                                   # (overrides timestamp; lt needs
+                                                   #  tsa.enabled + an internal CA)
       tenant: ""                                   # owning tenant ("" = default)
 ```
 
 Multiple signers may be configured (e.g. `release`, `firmware`, `nightly`),
-each with its own key, certificate, tenant, and timestamp default. The signing
-keys may live on a dedicated backend via `key_provider.roles.signing`.
+each with its own key, certificate, tenant, and default CAdES level. The signing
+keys may live on a dedicated backend via `key_provider.roles.signing`; the
+long-term-validation revocation material for CAdES-LT is signed by the **CA**
+key, not the signing key.
 
 ## HTTP API
 
@@ -110,8 +138,8 @@ All endpoints require operator authentication; see the OpenAPI spec
 
 | Endpoint | Capability | Notes |
 |---|---|---|
-| `POST /api/sign` | `artifact:sign` (**signer** role) within the signer's tenant | body: `{"signer":"release","artifact":"<base64>"}` or `{"signer":"release","digest":"<hex>"}`, optional `"timestamp":true/false` override. Returns the DER signature (base64 + PEM), the signer certificate, digest, and timestamp details. |
-| `POST /api/sign/verify` | any assigned role | body: `{"signature":"<base64-or-PEM>","artifact":"<base64>"}` (or `"digest"`), optional `"ca_id"`, `"require_timestamp"`. Trust anchors are the caller's tenants' CAs. Returns HTTP 200 with `valid:true/false` + reason. |
+| `POST /api/sign` | `artifact:sign` (**signer** role) within the signer's tenant | body: `{"signer":"release","artifact":"<base64>"}` or `{"signer":"release","digest":"<hex>"}`, optional `"level":"b"\|"t"\|"lt"` (or the legacy `"timestamp":true/false`). Returns the DER signature (base64 + PEM), the signer certificate, digest, the achieved `level`, and timestamp / embedded-revocation details. |
+| `POST /api/sign/verify` | any assigned role | body: `{"signature":"<base64-or-PEM>","artifact":"<base64>"}` (or `"digest"`), optional `"ca_id"`, `"require_timestamp"`, `"require_level":"b"\|"t"\|"lt"`. Trust anchors are the caller's tenants' CAs. Returns HTTP 200 with `valid:true/false`, the achieved `level`, and revocation-material counts. |
 | `GET /api/sign/signers` | any assigned role | configured signers, filtered to the caller's tenants. |
 
 The dedicated **`signer` RBAC role** grants `artifact:sign` and log reading —
@@ -130,14 +158,16 @@ verdicts.
 ## CLI
 
 ```console
-# Sign a file (writes release.tar.gz.p7s; -timestamp auto|yes|no, -format der|pem)
-secsy-ca sign -signer release -in release.tar.gz
+# Sign a file at a CAdES level (-level b|t|lt; empty uses the signer default).
+# -format der|pem; the legacy -timestamp auto|yes|no still works when no -level.
+secsy-ca sign -signer release -in release.tar.gz -level lt
 
 # Sign by digest (the artifact itself never leaves the build host)
-secsy-ca sign -signer release -digest "$(sha256sum huge.iso | cut -d' ' -f1)" -out huge.iso.p7s
+secsy-ca sign -signer release -digest "$(sha256sum huge.iso | cut -d' ' -f1)" -out huge.iso.p7s -level t
 
-# Verify (no HSM needed — works anywhere with the store or a CA PEM)
-secsy-ca verify-signature -sig release.tar.gz.p7s -in release.tar.gz -require-timestamp
+# Verify (no HSM needed — works anywhere with the store or a CA PEM). It prints
+# the achieved CAdES level; -require-level fails when the signature is below it.
+secsy-ca verify-signature -sig release.tar.gz.p7s -in release.tar.gz -require-level lt
 secsy-ca verify-signature -sig huge.iso.p7s -digest "<hex>" -ca-file root.pem
 ```
 
@@ -176,12 +206,20 @@ fail-closed and check, in order:
    imprint over the signature value, TSA EKU, TSA chain to the same trust
    anchors at genTime, genTime not in the future;
 4. the signer chain builds to the trust anchors **at the validation time** —
-   the token's genTime when countersigned, else now — for the codeSigning EKU.
+   the token's genTime when countersigned, else now — for the codeSigning EKU;
+5. any **embedded long-term-validation material** (CRLs in `SignedData.crls` /
+   OCSP in `id-aa-ets-revocationValues`) is parsed and, if it authentically
+   shows the signer certificate **revoked**, verification fails closed.
 
-Revocation is *not* consulted during signature verification; check the signer
-certificate against the PKI's CRL/OCSP when your policy requires it (the
-certificate is in the issued-certificates inventory, so `secsy-ca revoke`
-works on it like any leaf).
+The verifier then **reports the achieved CAdES level** (`b`/`t`/`lt`) and, with
+`-require-level` / `require_level`, fails when the signature is below the
+required floor. LT is reported only when a valid timestamp *and* embedded
+revocation material that covers the signer are both present.
+
+Verification does *not* fetch fresh revocation data over the network — CAdES-LT's
+point is that everything needed is embedded. For a live revocation check outside
+the signature, the signer certificate is in the issued-certificates inventory,
+so `secsy-ca revoke` and the PKI's CRL/OCSP endpoints work on it like any leaf.
 
 ## Key-ceremony notes for signing keys
 
@@ -241,6 +279,14 @@ Rate-limit visibility comes from the shared `secsy_ratelimit_*` /
 - The countersigning TSA is the in-process one; pointing at an external
   RFC 3161 service is not supported (run secsy-pki's TSA next to the signer
   instead).
-- CMS verification here does not consult CRL/OCSP (see above).
+- CAdES-LT gathers revocation material for the **signer chain** (signer leaf +
+  its issuing CAs). The TSA certificate's own chain is embedded inside the
+  timestamp token but its revocation is not separately gathered; add an
+  archive-timestamp (CAdES-LTA, out of scope) if you need that too.
+- CAdES-LT only embeds material for certificates issued by a CA **known to this
+  deployment**; a signer chained to an external/offline root gets B or T only.
+- Live network revocation fetching is intentionally not performed at verify time
+  (CAdES-LT embeds everything). Pair with `secsy-ca revoke` / the CRL/OCSP
+  endpoints for a live check outside the signature.
 - The TSA key must be RSA (see [timestamping.md](timestamping.md)); the
   code-signing keys themselves may be ECDSA or RSA.

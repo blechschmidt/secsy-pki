@@ -67,6 +67,29 @@ func ParseSignedData(der []byte) (*ParsedSignedData, error) {
 // during Verify. It is nil for a degenerate (unsigned) structure.
 func (p *ParsedSignedData) SignerCertificate() *x509.Certificate { return p.signerCert }
 
+// EmbeddedCRLs returns the DER of each X.509 CRL (CertificateList) carried in
+// the SignedData `crls` field (RFC 5652 §10.2.1). Non-CRL RevocationInfoChoice
+// alternatives (e.g. RFC 5940 OCSP-in-CMS) are skipped. Available without
+// Verify — the CRLs are unauthenticated container data.
+func (p *ParsedSignedData) EmbeddedCRLs() [][]byte {
+	if len(p.sd.CRLs.Bytes) == 0 {
+		return nil
+	}
+	var out [][]byte
+	for _, elem := range splitSequenceOf(p.sd.CRLs.Bytes) {
+		var rv asn1.RawValue
+		if _, err := asn1.Unmarshal(elem, &rv); err != nil {
+			continue
+		}
+		// A `crl` choice is a universal SEQUENCE (CertificateList); a `[1] other`
+		// choice is context-tagged and not an X.509 CRL.
+		if rv.Class == asn1.ClassUniversal && rv.Tag == asn1.TagSequence {
+			out = append(out, elem)
+		}
+	}
+	return out
+}
+
 // EncapContentType returns the eContentType of the encapsulated content, so a
 // caller can confirm the message carries the content kind it expects (e.g.
 // id-ct-TSTInfo for a timestamp token) before interpreting it.

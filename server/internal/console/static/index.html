@@ -729,8 +729,8 @@
         <div class="panel">
           <h2 style="font-size:15px">Configured signers</h2>
           <table>
-            <thead><tr><th>Name</th><th>Subject</th><th>Digest</th><th>Timestamp default</th><th>Not after</th></tr></thead>
-            <tbody id="signerRows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+            <thead><tr><th>Name</th><th>Subject</th><th>Digest</th><th>Timestamp default</th><th>Level default</th><th>Not after</th></tr></thead>
+            <tbody id="signerRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
           </table>
         </div>
         <div class="row" style="align-items:stretch;margin-top:14px">
@@ -739,8 +739,13 @@
             <div id="signError" class="notice err hidden"></div>
             <div class="row">
               <div class="field" style="flex:1"><label for="signSigner">Signer</label><select id="signSigner"></select></div>
-              <div class="field" style="width:150px"><label for="signTimestamp">Timestamp</label>
-                <select id="signTimestamp"><option value="auto">signer default</option><option value="yes">yes</option><option value="no">no</option></select>
+              <div class="field" style="width:190px"><label for="signLevel">CAdES level</label>
+                <select id="signLevel">
+                  <option value="">signer default</option>
+                  <option value="b">B — signed attrs</option>
+                  <option value="t">T — + timestamp</option>
+                  <option value="lt">LT — + revocation</option>
+                </select>
               </div>
             </div>
             <div class="field"><label for="signFile">Artifact file (≤ 8 MiB; use a digest for larger files)</label><input id="signFile" type="file"></div>
@@ -762,6 +767,14 @@
             <div class="row">
               <div class="field" style="flex:1"><label for="verifyCA">Trust anchor (optional)</label>
                 <select id="verifyCA"><option value="">all my CAs</option></select>
+              </div>
+              <div class="field" style="width:150px"><label for="verifyRequireLevel">Require level</label>
+                <select id="verifyRequireLevel">
+                  <option value="">any</option>
+                  <option value="b">CAdES-B</option>
+                  <option value="t">CAdES-T</option>
+                  <option value="lt">CAdES-LT</option>
+                </select>
               </div>
               <label class="muted" style="display:flex;gap:6px;align-items:center;margin-top:16px">
                 <input type="checkbox" id="verifyRequireTS"> require timestamp

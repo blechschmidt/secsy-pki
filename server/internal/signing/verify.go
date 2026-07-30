@@ -11,6 +11,8 @@ import (
 	"math/big"
 	"time"
 
+	"golang.org/x/crypto/ocsp"
+
 	"github.com/blechschmidt/secsy-pki/server/internal/cms"
 	"github.com/blechschmidt/secsy-pki/server/internal/tsa"
 )
@@ -34,6 +36,10 @@ type VerifyRequest struct {
 	// RequireTimestamp fails verification when no (valid) RFC 3161
 	// countersignature is embedded.
 	RequireTimestamp bool
+	// RequireLevel fails verification when the achieved CAdES level is below this
+	// minimum (b < t < lt). Empty imposes no floor. Requiring lt implies a
+	// timestamp and embedded revocation material.
+	RequireLevel Level
 	// Now overrides the wall clock (tests). Zero means time.Now().
 	Now time.Time
 }
@@ -47,6 +53,14 @@ type VerifyResult struct {
 	// DigestAlgorithm / ArtifactDigest identify what the signature covers.
 	DigestAlgorithm crypto.Hash
 	ArtifactDigest  []byte
+	// Level is the highest CAdES baseline level the signature is shown to achieve
+	// (b|t|lt), or empty when the CAdES-B signed attributes are absent.
+	Level Level
+	// RevocationCRLs / RevocationOCSPs count the distinct long-term-validation
+	// revocation objects embedded in the signature (SignedData.crls +
+	// id-aa-ets-revocationValues).
+	RevocationCRLs  int
+	RevocationOCSPs int
 	// Timestamped reports whether a valid RFC 3161 countersignature was
 	// embedded. When true, GenTime/serial/TSA describe it, TimestampToken is
 	// the raw token (for external audit, e.g. openssl ts), and VerifiedAt is
@@ -158,7 +172,158 @@ func Verify(req VerifyRequest) (*VerifyResult, error) {
 		return nil, fmt.Errorf("signing: signer certificate chain: %w", err)
 	}
 	result.Chain = chain
+
+	// 5. Long-term-validation material (CAdES-LT). Parse any embedded CRLs/OCSP
+	// responses; fail closed if they show the signer revoked. Their presence and
+	// coverage of the signer, together with a valid timestamp, is what raises the
+	// reported level to LT.
+	ltv, err := evaluateEmbeddedRevocation(p, signerCert, chain)
+	if err != nil {
+		return nil, err
+	}
+	result.RevocationCRLs = ltv.crls
+	result.RevocationOCSPs = ltv.ocsps
+
+	// 6. Report the achieved CAdES level and enforce any required floor.
+	result.Level = achievedLevel(p, result.Timestamped, ltv)
+	if req.RequireLevel != "" {
+		if !req.RequireLevel.valid() {
+			return nil, fmt.Errorf("signing: unknown required CAdES level %q (want b, t, or lt)", req.RequireLevel)
+		}
+		if result.Level.rank() < req.RequireLevel.rank() {
+			achieved := result.Level
+			if achieved == "" {
+				return nil, fmt.Errorf("signing: signature does not reach %s (the CAdES-B signed attributes are absent)", req.RequireLevel)
+			}
+			return nil, fmt.Errorf("signing: signature achieves %s, below the required %s", achieved, req.RequireLevel)
+		}
+	}
 	return result, nil
+}
+
+// oidSigningTime is the id-signingTime signed attribute (RFC 5652 §11.3), one of
+// the two attributes CAdES-B requires alongside signing-certificate-v2.
+var oidSigningTime = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 5}
+
+// achievedLevel reports the highest CAdES baseline level the signature is shown
+// to reach: B requires both CAdES-B signed attributes; T additionally a valid
+// timestamp; LT additionally embedded revocation material covering the signer.
+func achievedLevel(p *cms.ParsedSignedData, timestamped bool, ltv *ltvInfo) Level {
+	_, hasSCv2 := p.AuthenticatedAttribute(cms.OIDSigningCertificateV2)
+	_, hasSigningTime := p.AuthenticatedAttribute(oidSigningTime)
+	if !hasSCv2 || !hasSigningTime {
+		return "" // not a CAdES-B signature
+	}
+	if !timestamped {
+		return LevelB
+	}
+	if ltv.covered {
+		return LevelLT
+	}
+	return LevelT
+}
+
+// ltvInfo summarizes the long-term-validation material embedded in a signature.
+type ltvInfo struct {
+	crls    int  // distinct embedded CRLs
+	ocsps   int  // distinct embedded OCSP responses
+	covered bool // at least one valid CRL/OCSP specifically covers the signer
+}
+
+// evaluateEmbeddedRevocation parses the revocation material embedded in the
+// signature (the SignedData `crls` field and the id-aa-ets-revocationValues
+// unsigned attribute), fails closed if it shows the signer certificate revoked,
+// and reports whether it authenticly covers the signer (a valid CRL from the
+// signer's issuer, or a valid OCSP response for the signer's serial).
+func evaluateEmbeddedRevocation(p *cms.ParsedSignedData, signerCert *x509.Certificate, chain []*x509.Certificate) (*ltvInfo, error) {
+	// Gather CRLs (crls field + revocation-values) and OCSP BasicOCSPResponses
+	// (revocation-values), de-duplicating by DER since we embed CRLs in both
+	// containers.
+	crlSet := map[string][]byte{}
+	for _, der := range p.EmbeddedCRLs() {
+		crlSet[string(der)] = der
+	}
+	var basicOCSPs [][]byte
+	if raw, ok := p.UnauthenticatedAttribute(cms.OIDRevocationValues); ok {
+		rv, err := cms.ParseRevocationValues(raw.FullBytes)
+		if err != nil {
+			return nil, fmt.Errorf("signing: parsing revocation-values attribute: %w", err)
+		}
+		for _, der := range rv.CRLs {
+			crlSet[string(der)] = der
+		}
+		ocspSet := map[string]bool{}
+		for _, der := range rv.BasicOCSPResponses {
+			if ocspSet[string(der)] {
+				continue
+			}
+			ocspSet[string(der)] = true
+			basicOCSPs = append(basicOCSPs, der)
+		}
+	}
+
+	info := &ltvInfo{crls: len(crlSet), ocsps: len(basicOCSPs)}
+
+	// The signer's issuer is the CA whose subject matches the signer's issuer DN.
+	var signerIssuer *x509.Certificate
+	for _, c := range chain {
+		if bytes.Equal(c.RawSubject, signerCert.RawIssuer) {
+			signerIssuer = c
+			break
+		}
+	}
+
+	// CRLs: a valid CRL from the signer's issuer that lists the signer serial is
+	// a hard revocation. Any valid CRL from the signer's issuer counts as cover.
+	for _, der := range crlSet {
+		crl, err := x509.ParseRevocationList(der)
+		if err != nil {
+			continue // unparsable material is ignored, not trusted
+		}
+		var crlIssuer *x509.Certificate
+		for _, c := range chain {
+			if bytes.Equal(c.RawSubject, crl.RawIssuer) {
+				crlIssuer = c
+				break
+			}
+		}
+		if crlIssuer == nil || crl.CheckSignatureFrom(crlIssuer) != nil {
+			continue // can't authenticate this CRL
+		}
+		if !bytes.Equal(crlIssuer.RawSubject, signerCert.RawIssuer) {
+			continue // covers a different CA in the chain, not the signer
+		}
+		info.covered = true
+		for _, e := range crl.RevokedCertificateEntries {
+			if e.SerialNumber.Cmp(signerCert.SerialNumber) == 0 {
+				return nil, errors.New("signing: signer certificate is revoked (embedded CRL)")
+			}
+		}
+	}
+
+	// OCSP: a valid response for the signer serial that says revoked is a hard
+	// revocation; good counts as cover.
+	if signerIssuer != nil {
+		for _, basic := range basicOCSPs {
+			wrapped, err := cms.WrapBasicOCSPResponse(basic)
+			if err != nil {
+				continue
+			}
+			resp, err := ocsp.ParseResponse(wrapped, signerIssuer)
+			if err != nil {
+				continue // signature/parse failure: not trusted
+			}
+			if resp.SerialNumber == nil || resp.SerialNumber.Cmp(signerCert.SerialNumber) != 0 {
+				continue
+			}
+			if resp.Status == ocsp.Revoked {
+				return nil, errors.New("signing: signer certificate is revoked (embedded OCSP response)")
+			}
+			info.covered = true
+		}
+	}
+
+	return info, nil
 }
 
 // verifyTimestampToken validates an embedded TimeStampToken end to end: the

@@ -2601,6 +2601,7 @@ async function loadSigning() {
       <td title="${escapeHTML(s.subject)}">${escapeHTML(shortName(s.subject))}</td>
       <td>${escapeHTML(s.digest_algorithm)}</td>
       <td>${s.timestamp_default ? 'yes' : 'no'}</td>
+      <td>${s.level_default ? escapeHTML(s.level_default.toUpperCase()) : '—'}</td>
       <td>${fmtTime(s.not_after)}</td>
     </tr>`).join('') : emptyRow('No signing identities configured (secsy-ca signing-key provisions one; signing.enabled activates the service).');
 }
@@ -2633,9 +2634,8 @@ $('signBtn').onclick = async () => {
   $('signOutBox').classList.add('hidden');
   if (!$('signSigner').value) { showError(err, 'No signer available.'); return; }
   const body = { signer: $('signSigner').value };
-  const ts = $('signTimestamp').value;
-  if (ts === 'yes') body.timestamp = true;
-  if (ts === 'no') body.timestamp = false;
+  const level = $('signLevel').value;
+  if (level) body.level = level;
   $('signBtn').disabled = true;
   try {
     const artifact = await readFileB64($('signFile'));
@@ -2652,7 +2652,10 @@ $('signBtn').onclick = async () => {
       downloadBlob(res.signature_pem, 'artifact.p7s', 'application/x-pem-file');
     };
     const tsNote = res.timestamped ? ` · RFC 3161 countersigned at ${fmtTime(res.timestamp_time)}` : '';
-    notice(err, 'ok', `Signed with ${res.signer} (${res.digest_algorithm}:${shortSerial(res.digest)})${tsNote}.`);
+    const ltvNote = (res.embedded_crls || res.embedded_ocsps)
+      ? ` · LTV ${res.embedded_crls || 0} CRL(s) / ${res.embedded_ocsps || 0} OCSP` : '';
+    const lvl = res.level ? `CAdES-${res.level.toUpperCase()} · ` : '';
+    notice(err, 'ok', `Signed with ${res.signer} (${lvl}${res.digest_algorithm}:${shortSerial(res.digest)})${tsNote}${ltvNote}.`);
   } catch (e) { showError(err, e.message); err.className = 'notice err'; }
   finally { $('signBtn').disabled = false; }
 };
@@ -2672,10 +2675,14 @@ $('verifyBtn').onclick = async () => {
     if (artifact) body.artifact = artifact;
     else if (digest) body.digest = digest;
     else throw new Error('choose the artifact file or paste its digest');
+    if ($('verifyRequireLevel') && $('verifyRequireLevel').value) body.require_level = $('verifyRequireLevel').value;
     const res = await api('POST', '/api/sign/verify', body);
     if (res.valid) {
       const ts = res.timestamped ? ` · timestamped ${fmtTime(res.timestamp_time)}` : '';
-      notice(out, 'ok', `✓ Valid — signed by ${res.signer_subject} (serial ${shortSerial(res.signer_serial)}), ${res.digest_algorithm}:${shortSerial(res.digest)}${ts}, verified at ${fmtTime(res.verified_at)}.`);
+      const lvl = res.level ? `CAdES-${res.level.toUpperCase()} · ` : '';
+      const ltv = (res.revocation_crls || res.revocation_ocsps)
+        ? ` · LTV ${res.revocation_crls || 0} CRL(s) / ${res.revocation_ocsps || 0} OCSP` : '';
+      notice(out, 'ok', `✓ Valid — ${lvl}signed by ${res.signer_subject} (serial ${shortSerial(res.signer_serial)}), ${res.digest_algorithm}:${shortSerial(res.digest)}${ts}${ltv}, verified at ${fmtTime(res.verified_at)}.`);
     } else {
       notice(out, 'err', `✗ Invalid — ${res.reason}${res.signer_subject ? ` (claimed signer: ${res.signer_subject})` : ''}`);
     }

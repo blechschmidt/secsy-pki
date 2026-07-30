@@ -139,14 +139,15 @@ func signingPublicKey(ctx context.Context, provider keyprovider.Provider, label,
 // optionally embedding an RFC 3161 countersignature from the locally
 // configured TSA. The signing key is used on its provider; nothing is sent to
 // the server — this is the offline/pipeline counterpart of POST /api/sign.
-func cmdSign(db *database.DB, cfg *config.Config, signingProvider, tsaProvider keyprovider.Provider, args []string) error {
+func cmdSign(db *database.DB, cfg *config.Config, mgr *ca.Manager, signingProvider, tsaProvider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("sign", flag.ContinueOnError)
 	signerName := fs.String("signer", "", "configured signer name from signing.signers (required)")
 	in := fs.String("in", "", "artifact file to sign")
 	digestHex := fs.String("digest", "", "precomputed artifact digest (hex, in the signer's digest algorithm) instead of -in")
 	out := fs.String("out", "", "signature output path (default: <in>.p7s; required with -digest unless writing to stdout with -out -)")
 	format := fs.String("format", "der", "signature output format: der or pem")
-	timestamp := fs.String("timestamp", "auto", "embed an RFC 3161 countersignature: auto (signer default), yes, or no")
+	level := fs.String("level", "", "CAdES baseline level: b (signed attrs), t (+timestamp), lt (+long-term-validation material). Empty uses the signer default")
+	timestamp := fs.String("timestamp", "auto", "embed an RFC 3161 countersignature: auto (signer default), yes, or no. Ignored when -level is set")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -160,40 +161,60 @@ func cmdSign(db *database.DB, cfg *config.Config, signingProvider, tsaProvider k
 	if *format != "der" && *format != "pem" {
 		return fmt.Errorf("-format must be der or pem")
 	}
+	reqLevel, err := signing.ParseLevel(*level)
+	if err != nil {
+		return err
+	}
 
 	sc, err := signerFromConfig(db, cfg, *signerName)
 	if err != nil {
 		return err
 	}
 
-	// Resolve the effective timestamp decision up front: this invocation signs
-	// exactly one artifact, so — unlike the server, which must be ready for any
-	// request — the TSA is wired only when this signature will actually use it.
-	needTSA := sc.TimestampByDefault
-	switch *timestamp {
-	case "auto":
-		// Signer default applies.
-	case "yes", "true":
-		needTSA = true
-	case "no", "false":
-		needTSA = false
-	default:
-		return fmt.Errorf("-timestamp must be auto, yes, or no")
+	// Resolve the effective level up front. This invocation signs exactly one
+	// artifact, so — unlike the server, which must be ready for any request — the
+	// TSA and revocation source are wired only when this signature needs them.
+	effectiveLevel := reqLevel
+	if effectiveLevel == "" {
+		effectiveLevel = sc.DefaultLevel
 	}
-	sc.TimestampByDefault = needTSA
-	req := signing.SignRequest{Signer: sc.Name}
+	if effectiveLevel == "" {
+		// Legacy -timestamp path: derive B/T from the timestamp decision.
+		needTSA := sc.TimestampByDefault
+		switch *timestamp {
+		case "auto":
+			// Signer default applies.
+		case "yes", "true":
+			needTSA = true
+		case "no", "false":
+			needTSA = false
+		default:
+			return fmt.Errorf("-timestamp must be auto, yes, or no")
+		}
+		if needTSA {
+			effectiveLevel = signing.LevelT
+		} else {
+			effectiveLevel = signing.LevelB
+		}
+	}
+	req := signing.SignRequest{Signer: sc.Name, Level: effectiveLevel}
 
 	var authority *tsa.Authority
-	if needTSA {
+	if effectiveLevel == signing.LevelT || effectiveLevel == signing.LevelLT {
 		authority, err = buildCLITSAAuthority(db, cfg, tsaProvider)
 		if err != nil {
-			return fmt.Errorf("timestamping requested but the TSA is unusable: %w", err)
+			return fmt.Errorf("%s requires a timestamp, but the TSA is unusable: %w", effectiveLevel, err)
 		}
 	}
 
 	svc, err := signing.NewService(signingProvider, authority, []signing.SignerConfig{*sc})
 	if err != nil {
 		return err
+	}
+	// CAdES-LT embeds long-term-validation material: the CA manager (over the CA
+	// key provider) produces the OCSP responses / CRLs for the signer chain.
+	if effectiveLevel == signing.LevelLT {
+		svc.SetRevocationSource(mgr)
 	}
 
 	outPath := *out
@@ -227,11 +248,15 @@ func cmdSign(db *database.DB, cfg *config.Config, signingProvider, tsaProvider k
 		sig = pem.EncodeToMemory(&pem.Block{Type: "PKCS7", Bytes: sig})
 	}
 
-	fmt.Fprintf(os.Stderr, "Signed with %q (cert serial %s): digest=%s:%s\n",
-		res.Signer.Name, res.Signer.Certificate.SerialNumber, hashFlagName(res.DigestAlgorithm), hex.EncodeToString(res.ArtifactDigest))
+	fmt.Fprintf(os.Stderr, "Signed with %q (cert serial %s): level=%s digest=%s:%s\n",
+		res.Signer.Name, res.Signer.Certificate.SerialNumber, res.Level, hashFlagName(res.DigestAlgorithm), hex.EncodeToString(res.ArtifactDigest))
 	if res.Timestamped {
-		fmt.Fprintf(os.Stderr, "RFC 3161 countersignature embedded: genTime=%s serial=%s\n",
+		fmt.Fprintf(os.Stderr, "RFC 3161 signature-timestamp embedded: genTime=%s serial=%s\n",
 			res.TimestampGenTime.UTC().Format(time.RFC3339), res.TimestampSerial)
+	}
+	if res.EmbeddedCRLs > 0 || res.EmbeddedOCSPs > 0 {
+		fmt.Fprintf(os.Stderr, "Long-term-validation material embedded: %d CRL(s), %d OCSP response(s)\n",
+			res.EmbeddedCRLs, res.EmbeddedOCSPs)
 	}
 	if outPath == "-" {
 		_, err := os.Stdout.Write(sig)
@@ -256,6 +281,7 @@ func cmdVerifySignature(db *database.DB, args []string) error {
 	caRef := fs.String("ca", "", "trust only this CA (id or label) from the store")
 	caFile := fs.String("ca-file", "", "trust the CA certificate(s) in this PEM file instead of the store")
 	requireTimestamp := fs.Bool("require-timestamp", false, "fail unless a valid RFC 3161 countersignature is embedded")
+	requireLevel := fs.String("require-level", "", "fail unless the signature achieves at least this CAdES level (b|t|lt)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -265,6 +291,10 @@ func cmdVerifySignature(db *database.DB, args []string) error {
 	}
 	if (*in == "") == (*digestHex == "") {
 		return fmt.Errorf("exactly one of -in or -digest is required")
+	}
+	reqLevel, err := signing.ParseLevel(*requireLevel)
+	if err != nil {
+		return err
 	}
 
 	sigRaw, err := os.ReadFile(*sigPath)
@@ -284,7 +314,7 @@ func cmdVerifySignature(db *database.DB, args []string) error {
 		return fmt.Errorf("no trust anchors: pass -ca/-ca-file or store a CA first")
 	}
 
-	req := signing.VerifyRequest{Signature: sigDER, Roots: roots, RequireTimestamp: *requireTimestamp}
+	req := signing.VerifyRequest{Signature: sigDER, Roots: roots, RequireTimestamp: *requireTimestamp, RequireLevel: reqLevel}
 	if *in != "" {
 		content, err := os.ReadFile(*in)
 		if err != nil {
@@ -307,6 +337,7 @@ func cmdVerifySignature(db *database.DB, args []string) error {
 
 	fmt.Printf("Verification: OK\n")
 	fmt.Printf("  Signer:    %s (serial %s)\n", res.SignerCertificate.Subject, res.SignerCertificate.SerialNumber)
+	fmt.Printf("  CAdES:     %s\n", res.Level)
 	fmt.Printf("  Digest:    %s:%s\n", hashFlagName(res.DigestAlgorithm), hex.EncodeToString(res.ArtifactDigest))
 	fmt.Printf("  Chain:     %d certificate(s) to trusted root %q\n", len(res.Chain), res.Chain[len(res.Chain)-1].Subject.CommonName)
 	if res.Timestamped {
@@ -314,6 +345,9 @@ func cmdVerifySignature(db *database.DB, args []string) error {
 			res.TimestampGenTime.UTC().Format(time.RFC3339), res.TimestampSerial, res.TSACertificate.Subject.CommonName)
 	} else {
 		fmt.Printf("  Timestamp: none\n")
+	}
+	if res.RevocationCRLs > 0 || res.RevocationOCSPs > 0 {
+		fmt.Printf("  Revocation material: %d CRL(s), %d OCSP response(s)\n", res.RevocationCRLs, res.RevocationOCSPs)
 	}
 	fmt.Printf("  Validity evaluated at: %s\n", res.VerifiedAt.UTC().Format(time.RFC3339))
 	return nil

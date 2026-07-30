@@ -76,8 +76,14 @@ type SignerConfig struct {
 	// refused for new signatures).
 	Digest crypto.Hash
 	// TimestampByDefault embeds an RFC 3161 countersignature on every signature
-	// unless the request explicitly opts out. Requires a TSA.
+	// unless the request explicitly opts out. Requires a TSA. Equivalent to a
+	// DefaultLevel of CAdES-T; DefaultLevel takes precedence when both are set.
 	TimestampByDefault bool
+	// DefaultLevel is the CAdES baseline level (b|t|lt) produced when a request
+	// does not name one. Empty falls back to TimestampByDefault (t if set, else
+	// b). A default of T or LT requires a TSA; LT additionally requires a
+	// revocation source (both validated when a signature is produced).
+	DefaultLevel Level
 	// TenantID is the tenant this signer belongs to, scoping RBAC and audit at
 	// the API layer. Empty means the default tenant (resolved by the caller).
 	TenantID string
@@ -86,10 +92,11 @@ type SignerConfig struct {
 // Service signs artifacts with the configured signers. It is safe for
 // concurrent use.
 type Service struct {
-	provider  keyprovider.Provider
-	authority *tsa.Authority // nil = timestamping unavailable
-	signers   map[string]*SignerConfig
-	names     []string // sorted, for stable listings
+	provider   keyprovider.Provider
+	authority  *tsa.Authority   // nil = timestamping unavailable (no CAdES-T/LT)
+	revocation RevocationSource // nil = LTV material unavailable (no CAdES-LT)
+	signers    map[string]*SignerConfig
+	names      []string // sorted, for stable listings
 }
 
 // NewService validates the configured signers and builds the service. A
@@ -138,8 +145,15 @@ func NewService(provider keyprovider.Provider, authority *tsa.Authority, signers
 		} else if !bytes.Equal(sc.Chain[0].Raw, sc.Certificate.Raw) {
 			return nil, fmt.Errorf("signing: signer %q: chain must start with the signer certificate", sc.Name)
 		}
-		if sc.TimestampByDefault && authority == nil {
-			return nil, fmt.Errorf("signing: signer %q requests timestamping by default, but no TSA is configured (enable tsa in config)", sc.Name)
+		if sc.DefaultLevel != "" && !sc.DefaultLevel.valid() {
+			return nil, fmt.Errorf("signing: signer %q: unknown default CAdES level %q (b, t, or lt)", sc.Name, sc.DefaultLevel)
+		}
+		// A signer whose default level (or timestamp-by-default) needs a TSA must
+		// have one, so a misconfiguration is caught at startup rather than at the
+		// first signature. The revocation source is wired after construction
+		// (SetRevocationSource); a missing one is caught when an LT signature runs.
+		if (sc.TimestampByDefault || sc.DefaultLevel.needsTimestamp()) && authority == nil {
+			return nil, fmt.Errorf("signing: signer %q defaults to a timestamped CAdES level, but no TSA is configured (enable tsa in config)", sc.Name)
 		}
 		s.signers[sc.Name] = &sc
 		s.names = append(s.names, sc.Name)
@@ -184,8 +198,19 @@ func (s *Service) Signers() []*SignerConfig {
 // Signer returns the named signer configuration, or nil when unknown.
 func (s *Service) Signer(name string) *SignerConfig { return s.signers[name] }
 
-// TimestampingAvailable reports whether an in-process TSA is wired up.
+// TimestampingAvailable reports whether an in-process TSA is wired up (required
+// for CAdES-T and CAdES-LT).
 func (s *Service) TimestampingAvailable() bool { return s.authority != nil }
+
+// SetRevocationSource wires the long-term-validation revocation source that
+// CAdES-LT needs. It is optional and set after construction so the signing
+// service need not depend on the CA manager at build time. Not safe to call
+// concurrently with Sign; wire it once during startup.
+func (s *Service) SetRevocationSource(src RevocationSource) { s.revocation = src }
+
+// LTVAvailable reports whether a revocation source is wired (required for
+// CAdES-LT, in addition to a TSA).
+func (s *Service) LTVAvailable() bool { return s.revocation != nil }
 
 // SignRequest describes one artifact-signing operation. Exactly one of Content
 // or Digest must be provided.
@@ -197,7 +222,12 @@ type SignRequest struct {
 	// Digest is the precomputed digest of the artifact, computed with the
 	// signer's digest algorithm (digest input, for artifacts too large to ship).
 	Digest []byte
-	// Timestamp overrides the signer's TimestampByDefault when non-nil.
+	// Level requests a specific CAdES baseline level (b|t|lt). When empty the
+	// signer's DefaultLevel applies, falling back to the timestamp decision below
+	// (t if timestamping, else b). It takes precedence over Timestamp.
+	Level Level
+	// Timestamp overrides the signer's TimestampByDefault when non-nil. Ignored
+	// when Level is set (the level determines timestamping).
 	Timestamp *bool
 }
 
@@ -210,11 +240,17 @@ type SignResult struct {
 	// DigestAlgorithm / ArtifactDigest identify exactly what was signed.
 	DigestAlgorithm crypto.Hash
 	ArtifactDigest  []byte
+	// Level is the CAdES baseline level the produced signature achieves (b|t|lt).
+	Level Level
 	// Timestamped reports whether an RFC 3161 countersignature is embedded;
 	// TimestampGenTime / TimestampSerial describe the token when it is.
 	Timestamped      bool
 	TimestampGenTime time.Time
 	TimestampSerial  *big.Int
+	// EmbeddedCRLs / EmbeddedOCSPs count the long-term-validation revocation
+	// objects embedded for a CAdES-LT signature (zero for B and T).
+	EmbeddedCRLs  int
+	EmbeddedOCSPs int
 }
 
 // Sign produces a CMS detached signature over the artifact with the named
@@ -254,12 +290,17 @@ func (s *Service) Sign(ctx context.Context, req SignRequest) (*SignResult, error
 		return nil, fmt.Errorf("signing: signer %q certificate expired %s — provision a new one with `secsy-ca signing-key`", sc.Name, sc.Certificate.NotAfter.UTC().Format(time.RFC3339))
 	}
 
-	wantTimestamp := sc.TimestampByDefault
-	if req.Timestamp != nil {
-		wantTimestamp = *req.Timestamp
+	// Resolve the effective CAdES level (b|t|lt) and validate the backends it
+	// needs are available: T/LT require a TSA, LT additionally a revocation source.
+	level, err := s.resolveLevel(req, sc)
+	if err != nil {
+		return nil, err
 	}
-	if wantTimestamp && s.authority == nil {
-		return nil, errors.New("signing: timestamping requested but no TSA is configured (enable tsa in config)")
+	if level.needsTimestamp() && s.authority == nil {
+		return nil, fmt.Errorf("signing: %s requested but no TSA is configured (enable tsa in config)", level)
+	}
+	if level.needsLTV() && s.revocation == nil {
+		return nil, fmt.Errorf("signing: %s requested but no revocation source is wired for long-term-validation material: %w", level, ErrUnavailable)
 	}
 
 	// KeyLabel may be a bare label or a full RFC 7512 pkcs11: URI (addressing by
@@ -286,8 +327,11 @@ func (s *Service) Sign(ctx context.Context, req SignRequest) (*SignResult, error
 		Signer:          sc,
 		DigestAlgorithm: sc.Digest,
 		ArtifactDigest:  artifactDigest,
+		Level:           level,
 	}
 
+	// CAdES-B signed attributes: signing-certificate-v2 (ESSCertIDv2 over the
+	// signer chain) and signing-time. Present at every level.
 	opts := cms.SignedDataOpts{
 		ContentDigest: artifactDigest,
 		Detached:      true,
@@ -300,7 +344,20 @@ func (s *Service) Sign(ctx context.Context, req SignRequest) (*SignResult, error
 			{Type: asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 9, 5}, Value: now.UTC().Truncate(time.Second)}, // signingTime (RFC 8933)
 		},
 	}
-	if wantTimestamp {
+
+	// CAdES-LT: embed long-term-validation material — the current CRLs in the
+	// SignedData `crls` field (for generic CMS tooling) plus the CAdES
+	// revocation-values unsigned attribute carrying both CRLs and OCSP responses.
+	// Gathered before signing (it does not depend on the signature value).
+	if level.needsLTV() {
+		if err := s.attachLTV(ctx, sc, &opts, result); err != nil {
+			return nil, err
+		}
+	}
+
+	// CAdES-T/LT: the RFC 3161 signature-timestamp over the signature value, an
+	// unsigned attribute derived from the signature (obtained after it exists).
+	if level.needsTimestamp() {
 		opts.UnauthAttrsFunc = func(sig []byte) ([]cms.Attribute, error) {
 			token, info, err := s.countersign(ctx, sc.Digest, sig)
 			if err != nil {
@@ -321,6 +378,55 @@ func (s *Service) Sign(ctx context.Context, req SignRequest) (*SignResult, error
 	}
 	result.Signature = der
 	return result, nil
+}
+
+// resolveLevel determines the effective CAdES level for a request: an explicit
+// request level wins, then the signer's DefaultLevel, then the legacy timestamp
+// decision (T when timestamping, else B).
+func (s *Service) resolveLevel(req SignRequest, sc *SignerConfig) (Level, error) {
+	if req.Level != "" {
+		if !req.Level.valid() {
+			return "", fmt.Errorf("signing: unknown CAdES level %q (want b, t, or lt)", req.Level)
+		}
+		return req.Level, nil
+	}
+	if sc.DefaultLevel != "" {
+		return sc.DefaultLevel, nil
+	}
+	timestamp := sc.TimestampByDefault
+	if req.Timestamp != nil {
+		timestamp = *req.Timestamp
+	}
+	if timestamp {
+		return LevelT, nil
+	}
+	return LevelB, nil
+}
+
+// attachLTV gathers the signer chain's revocation material from the revocation
+// source and attaches it to opts as the SignedData `crls` field plus the CAdES
+// id-aa-ets-revocationValues unsigned attribute. It fails closed: an LT
+// signature with no obtainable revocation material would not deliver the
+// long-term guarantee, so an empty result is an error.
+func (s *Service) attachLTV(ctx context.Context, sc *SignerConfig, opts *cms.SignedDataOpts, result *SignResult) error {
+	ocsps, crls, err := s.revocation.CollectRevocation(ctx, sc.Chain)
+	if err != nil {
+		return fmt.Errorf("signing: collecting long-term-validation material: %v: %w", err, ErrUnavailable)
+	}
+	if len(ocsps) == 0 && len(crls) == 0 {
+		return fmt.Errorf("signing: no revocation material available for the signer chain (cannot produce %s): %w", LevelLT, ErrUnavailable)
+	}
+	if len(crls) > 0 {
+		opts.CRLs = crls
+	}
+	rv, err := cms.RevocationValuesAttribute(crls, ocsps)
+	if err != nil {
+		return fmt.Errorf("signing: building revocation-values attribute: %v: %w", err, ErrUnavailable)
+	}
+	opts.ExtraUnsignedAttrs = append(opts.ExtraUnsignedAttrs, rv)
+	result.EmbeddedCRLs = len(crls)
+	result.EmbeddedOCSPs = len(ocsps)
+	return nil
 }
 
 // countersign obtains an RFC 3161 timestamp token over the signature value from

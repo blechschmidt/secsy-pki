@@ -359,7 +359,7 @@ func run(args []string) error {
 			defer tp.Close()
 			tsaProvider = tp
 		}
-		return cmdSign(db, cfg, signingProvider, tsaProvider, cmdArgs)
+		return cmdSign(db, cfg, mgr, signingProvider, tsaProvider, cmdArgs)
 	case "backup":
 		return cmdBackup(db, cfg, provider, cmdArgs)
 	case "restore":

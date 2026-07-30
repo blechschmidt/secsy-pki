@@ -66,11 +66,47 @@ const (
 	ApprovalDecisionDecisionReject  ApprovalDecisionDecision = "reject"
 )
 
+// Defines values for ArtifactSignRequestLevel.
+const (
+	ArtifactSignRequestLevelB  ArtifactSignRequestLevel = "b"
+	ArtifactSignRequestLevelLt ArtifactSignRequestLevel = "lt"
+	ArtifactSignRequestLevelT  ArtifactSignRequestLevel = "t"
+)
+
 // Defines values for ArtifactSignResponseDigestAlgorithm.
 const (
 	Sha256 ArtifactSignResponseDigestAlgorithm = "sha256"
 	Sha384 ArtifactSignResponseDigestAlgorithm = "sha384"
 	Sha512 ArtifactSignResponseDigestAlgorithm = "sha512"
+)
+
+// Defines values for ArtifactSignResponseLevel.
+const (
+	ArtifactSignResponseLevelB  ArtifactSignResponseLevel = "b"
+	ArtifactSignResponseLevelLt ArtifactSignResponseLevel = "lt"
+	ArtifactSignResponseLevelT  ArtifactSignResponseLevel = "t"
+)
+
+// Defines values for ArtifactSignerInfoLevelDefault.
+const (
+	ArtifactSignerInfoLevelDefaultB     ArtifactSignerInfoLevelDefault = "b"
+	ArtifactSignerInfoLevelDefaultEmpty ArtifactSignerInfoLevelDefault = ""
+	ArtifactSignerInfoLevelDefaultLt    ArtifactSignerInfoLevelDefault = "lt"
+	ArtifactSignerInfoLevelDefaultT     ArtifactSignerInfoLevelDefault = "t"
+)
+
+// Defines values for ArtifactVerifyRequestRequireLevel.
+const (
+	ArtifactVerifyRequestRequireLevelB  ArtifactVerifyRequestRequireLevel = "b"
+	ArtifactVerifyRequestRequireLevelLt ArtifactVerifyRequestRequireLevel = "lt"
+	ArtifactVerifyRequestRequireLevelT  ArtifactVerifyRequestRequireLevel = "t"
+)
+
+// Defines values for ArtifactVerifyResponseLevel.
+const (
+	B  ArtifactVerifyResponseLevel = "b"
+	Lt ArtifactVerifyResponseLevel = "lt"
+	T  ArtifactVerifyResponseLevel = "t"
 )
 
 // Defines values for AuditLogEntryCertFormat.
@@ -650,18 +686,33 @@ type ArtifactSignRequest struct {
 	// Digest Hex digest of the artifact, computed with the signer's digest algorithm — signs artifacts too large to ship through the API. Mutually exclusive with artifact.
 	Digest *string `json:"digest,omitempty"`
 
+	// Level CAdES (ETSI EN 319 122) baseline level: b embeds the signing-certificate-v2 and signing-time signed attributes; t adds an RFC 3161 signature-timestamp; lt additionally embeds long-term- validation revocation material (CRLs / OCSP responses) so the signature stays verifiable after the signer certificate expires. Omitted applies the signer's default; takes precedence over timestamp.
+	Level *ArtifactSignRequestLevel `json:"level,omitempty"`
+
 	// Signer Name of the configured signing identity.
 	Signer string `json:"signer"`
 
-	// Timestamp Overrides the signer's timestamp-by-default setting: true embeds an RFC 3161 countersignature, false suppresses it. Omitted applies the signer's default.
+	// Timestamp Overrides the signer's timestamp-by-default setting: true embeds an RFC 3161 countersignature (CAdES-T), false suppresses it. Omitted applies the signer's default. Ignored when level is set.
 	Timestamp *bool `json:"timestamp,omitempty"`
 }
+
+// ArtifactSignRequestLevel CAdES (ETSI EN 319 122) baseline level: b embeds the signing-certificate-v2 and signing-time signed attributes; t adds an RFC 3161 signature-timestamp; lt additionally embeds long-term- validation revocation material (CRLs / OCSP responses) so the signature stays verifiable after the signer certificate expires. Omitted applies the signer's default; takes precedence over timestamp.
+type ArtifactSignRequestLevel string
 
 // ArtifactSignResponse defines model for ArtifactSignResponse.
 type ArtifactSignResponse struct {
 	// Digest Hex digest of the artifact the signature covers.
 	Digest          *string                              `json:"digest,omitempty"`
 	DigestAlgorithm *ArtifactSignResponseDigestAlgorithm `json:"digest_algorithm,omitempty"`
+
+	// EmbeddedCrls CRLs embedded as long-term-validation material (CAdES-LT).
+	EmbeddedCrls *int `json:"embedded_crls,omitempty"`
+
+	// EmbeddedOcsps OCSP responses embedded as long-term-validation material (CAdES-LT).
+	EmbeddedOcsps *int `json:"embedded_ocsps,omitempty"`
+
+	// Level The achieved CAdES baseline level.
+	Level *ArtifactSignResponseLevel `json:"level,omitempty"`
 
 	// Signature DER CMS/PKCS#7 detached SignedData, base64-encoded.
 	Signature *string `json:"signature,omitempty"`
@@ -684,17 +735,26 @@ type ArtifactSignResponse struct {
 // ArtifactSignResponseDigestAlgorithm defines model for ArtifactSignResponse.DigestAlgorithm.
 type ArtifactSignResponseDigestAlgorithm string
 
+// ArtifactSignResponseLevel The achieved CAdES baseline level.
+type ArtifactSignResponseLevel string
+
 // ArtifactSignerInfo defines model for ArtifactSignerInfo.
 type ArtifactSignerInfo struct {
-	DigestAlgorithm  *string    `json:"digest_algorithm,omitempty"`
-	Name             *string    `json:"name,omitempty"`
-	NotAfter         *time.Time `json:"not_after,omitempty"`
-	NotBefore        *time.Time `json:"not_before,omitempty"`
-	Serial           *string    `json:"serial,omitempty"`
-	Subject          *string    `json:"subject,omitempty"`
-	Tenant           *string    `json:"tenant,omitempty"`
-	TimestampDefault *bool      `json:"timestamp_default,omitempty"`
+	DigestAlgorithm *string `json:"digest_algorithm,omitempty"`
+
+	// LevelDefault The default CAdES level applied when a request names none.
+	LevelDefault     *ArtifactSignerInfoLevelDefault `json:"level_default,omitempty"`
+	Name             *string                         `json:"name,omitempty"`
+	NotAfter         *time.Time                      `json:"not_after,omitempty"`
+	NotBefore        *time.Time                      `json:"not_before,omitempty"`
+	Serial           *string                         `json:"serial,omitempty"`
+	Subject          *string                         `json:"subject,omitempty"`
+	Tenant           *string                         `json:"tenant,omitempty"`
+	TimestampDefault *bool                           `json:"timestamp_default,omitempty"`
 }
+
+// ArtifactSignerInfoLevelDefault The default CAdES level applied when a request names none.
+type ArtifactSignerInfoLevelDefault string
 
 // ArtifactVerifyRequest defines model for ArtifactVerifyRequest.
 type ArtifactVerifyRequest struct {
@@ -707,6 +767,9 @@ type ArtifactVerifyRequest struct {
 	// Digest Hex digest of the artifact in the signature's digest algorithm. Mutually exclusive with artifact.
 	Digest *string `json:"digest,omitempty"`
 
+	// RequireLevel Fail verification when the achieved CAdES level is below this minimum (b < t < lt). Omitted imposes no floor.
+	RequireLevel *ArtifactVerifyRequestRequireLevel `json:"require_level,omitempty"`
+
 	// RequireTimestamp Fail verification when no RFC 3161 countersignature is embedded.
 	RequireTimestamp *bool `json:"require_timestamp,omitempty"`
 
@@ -714,13 +777,25 @@ type ArtifactVerifyRequest struct {
 	Signature string `json:"signature"`
 }
 
+// ArtifactVerifyRequestRequireLevel Fail verification when the achieved CAdES level is below this minimum (b < t < lt). Omitted imposes no floor.
+type ArtifactVerifyRequestRequireLevel string
+
 // ArtifactVerifyResponse defines model for ArtifactVerifyResponse.
 type ArtifactVerifyResponse struct {
 	Digest          *string `json:"digest,omitempty"`
 	DigestAlgorithm *string `json:"digest_algorithm,omitempty"`
 
+	// Level The achieved CAdES baseline level, on a valid signature.
+	Level *ArtifactVerifyResponseLevel `json:"level,omitempty"`
+
 	// Reason Why verification failed (valid=false only).
 	Reason *string `json:"reason,omitempty"`
+
+	// RevocationCrls Distinct CRLs embedded as long-term-validation material.
+	RevocationCrls *int `json:"revocation_crls,omitempty"`
+
+	// RevocationOcsps Distinct OCSP responses embedded as long-term-validation material.
+	RevocationOcsps *int `json:"revocation_ocsps,omitempty"`
 
 	// SignerCertificate The signer certificate (PEM), on a valid signature.
 	SignerCertificate *string    `json:"signer_certificate,omitempty"`
@@ -734,6 +809,9 @@ type ArtifactVerifyResponse struct {
 	// VerifiedAt The instant chain validity was evaluated at — the timestamp genTime when countersigned, else the wall clock.
 	VerifiedAt *time.Time `json:"verified_at,omitempty"`
 }
+
+// ArtifactVerifyResponseLevel The achieved CAdES baseline level, on a valid signature.
+type ArtifactVerifyResponseLevel string
 
 // AuditLogEntry defines model for AuditLogEntry.
 type AuditLogEntry struct {

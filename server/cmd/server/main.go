@@ -946,13 +946,13 @@ func main() {
 	// countersignatures from the in-process TSA. Signer keys/certificates are
 	// provisioned offline with `secsy-ca signing-key`.
 	if cfg.Signing.Enabled {
-		svc, err := buildSigningService(db, cfg, signingProvider, tsaAuthority)
+		svc, err := buildSigningService(db, cfg, signingProvider, provider, tsaAuthority)
 		if err != nil {
 			log.Fatalf("Signing configuration error: %v", err)
 		}
 		api.SetSigningService(svc)
-		log.Printf("Artifact signing enabled (%d signer(s), timestamping available: %t)",
-			len(cfg.Signing.Signers), svc.TimestampingAvailable())
+		log.Printf("Artifact signing enabled (%d signer(s), CAdES timestamping: %t, long-term-validation: %t)",
+			len(cfg.Signing.Signers), svc.TimestampingAvailable(), svc.LTVAvailable())
 	}
 
 	// Lightweight CMP (RFC 9483) certificate-management server. Like the other
@@ -1900,7 +1900,7 @@ func buildAnchorTimestamper(cfg *config.Config, authority *tsa.Authority) (ancho
 // file holds only the leaf, and the tenant defaults to the built-in one. The
 // TSA authority may be nil; NewService then rejects signers that default to
 // timestamping.
-func buildSigningService(db *database.DB, cfg *config.Config, provider keyprovider.Provider, authority *tsa.Authority) (*signing.Service, error) {
+func buildSigningService(db *database.DB, cfg *config.Config, provider, caProvider keyprovider.Provider, authority *tsa.Authority) (*signing.Service, error) {
 	signers := make([]signing.SignerConfig, 0, len(cfg.Signing.Signers))
 	for _, sc := range cfg.Signing.Signers {
 		certPEM, err := os.ReadFile(sc.CertificateFile)
@@ -1929,6 +1929,10 @@ func buildSigningService(db *database.DB, cfg *config.Config, provider keyprovid
 		if tenant == "" {
 			tenant = models.DefaultTenantID
 		}
+		level, err := signing.ParseLevel(sc.Level)
+		if err != nil {
+			return nil, fmt.Errorf("signer %q: %w", sc.Name, err)
+		}
 		signers = append(signers, signing.SignerConfig{
 			Name:               sc.Name,
 			KeyLabel:           sc.KeyLabel,
@@ -1936,10 +1940,20 @@ func buildSigningService(db *database.DB, cfg *config.Config, provider keyprovid
 			Chain:              chain,
 			Digest:             hashFromName(sc.Digest),
 			TimestampByDefault: sc.Timestamp,
+			DefaultLevel:       level,
 			TenantID:           tenant,
 		})
 	}
-	return signing.NewService(provider, authority, signers)
+	svc, err := signing.NewService(provider, authority, signers)
+	if err != nil {
+		return nil, err
+	}
+	// Wire the long-term-validation revocation source (CAdES-LT): the CA manager
+	// produces the OCSP responses / CRLs embedded in an LT signature. Built on the
+	// CA-role provider — revocation material is signed by the CA key, not the
+	// signing key.
+	svc.SetRevocationSource(ca.NewManager(db, caProvider))
+	return svc, nil
 }
 
 // loadCAChain returns the certificate chain for caID: the CA certificate
