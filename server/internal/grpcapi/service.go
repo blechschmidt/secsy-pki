@@ -25,6 +25,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/grpcapi/pkiv1"
 	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
+	"github.com/blechschmidt/secsy-pki/server/internal/keycheck"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -362,7 +363,8 @@ func (s *service) GetCertificateStatus(ctx context.Context, req *pkiv1.GetCertif
 
 // ListCertificates returns one keyset page of the certificates a CA has issued,
 // newest first (Task 83). It mirrors the REST endpoint's pagination and filter
-// surface: limit/cursor plus status/profile/query/serial_prefix/expires_before.
+// surface: limit/cursor plus status/profile/query/serial_prefix/expires_before
+// and public_key_sha256 (the key-compromise search, Task 154).
 func (s *service) ListCertificates(ctx context.Context, req *pkiv1.ListCertificatesRequest) (*pkiv1.ListCertificatesResponse, error) {
 	user := middleware.GetUserInfo(ctx)
 	if _, err := s.api.AuthorizeCARead(ctx, user, req.GetCaId()); err != nil {
@@ -376,6 +378,13 @@ func (s *service) ListCertificates(ctx context.Context, req *pkiv1.ListCertifica
 	}
 	if req.GetExpiresBefore() != nil {
 		filter.ExpiresBefore = req.GetExpiresBefore().AsTime()
+	}
+	if v := req.GetPublicKeySha256(); v != "" {
+		fp, err := keycheck.NormalizeFingerprint(v)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid public_key_sha256: %v", err)
+		}
+		filter.PublicKeySHA256 = fp
 	}
 	page := database.CertPageRequest{Limit: int(req.GetLimit()), Cursor: req.GetCursor()}
 

@@ -64,6 +64,13 @@ type CertFilter struct {
 	// this instant. The zero value applies no expiry bound. Applies to tables
 	// that record NotAfter (issued, discovered).
 	ExpiresBefore time.Time
+	// PublicKeySHA256 restricts to certificates whose certified subject public
+	// key has exactly this SubjectPublicKeyInfo fingerprint, in the canonical
+	// "SHA256:<base64>" form the inventory stores (see keycheck.Fingerprint /
+	// keycheck.NormalizeFingerprint). It is the key-compromise incident-response
+	// filter: given a leaked key, find every certificate that shares it. Empty
+	// applies no fingerprint bound. Applies to issued certificates.
+	PublicKeySHA256 string
 }
 
 // CertPageRequest is the pagination window for a Page* read.
@@ -159,11 +166,12 @@ func escapeLike(s string) string {
 // predicate is skipped. Column names are compile-time constants, never user
 // input, so they are safe to interpolate into SQL.
 type filterColumns struct {
-	status   string   // status column, or "" if absent
-	profile  string   // profile column, or "" if absent
-	serial   string   // serial column, or "" if absent
-	notAfter string   // not_after column, or "" if absent
-	search   []string // text columns the free-text Query matches
+	status    string   // status column, or "" if absent
+	profile   string   // profile column, or "" if absent
+	serial    string   // serial column, or "" if absent
+	notAfter  string   // not_after column, or "" if absent
+	keyFprint string   // public-key fingerprint column, or "" if absent
+	search    []string // text columns the free-text Query matches
 }
 
 // appendCertFilter appends the WHERE predicates for f (that the table supports)
@@ -199,14 +207,22 @@ func appendCertFilter(b *strings.Builder, args *[]interface{}, f CertFilter, col
 		b.WriteString(" AND " + cols.notAfter + " < ?")
 		*args = append(*args, f.ExpiresBefore.UTC())
 	}
+	// Exact fingerprint match (no LIKE): the value is the canonical, fixed-length
+	// "SHA256:<base64>" form, so equality both is correct and lets the index on
+	// public_key_fingerprint serve the key-compromise lookup directly.
+	if cols.keyFprint != "" && f.PublicKeySHA256 != "" {
+		b.WriteString(" AND " + cols.keyFprint + " = ?")
+		*args = append(*args, f.PublicKeySHA256)
+	}
 }
 
 var issuedFilterCols = filterColumns{
-	status:   "status",
-	profile:  "profile",
-	serial:   "serial",
-	notAfter: "not_after",
-	search:   []string{"subject", "common_name", "sans"},
+	status:    "status",
+	profile:   "profile",
+	serial:    "serial",
+	notAfter:  "not_after",
+	keyFprint: "public_key_fingerprint",
+	search:    []string{"subject", "common_name", "sans"},
 }
 
 // PageIssuedCertificates returns one keyset page of a CA's issued certificates,

@@ -24,6 +24,12 @@ type RevocationSelector struct {
 	CAID string
 	// Profile restricts to certificates issued under this profile ("" = any).
 	Profile string
+	// PublicKeyFingerprint restricts to certificates whose certified subject
+	// public key has exactly this SubjectPublicKeyInfo fingerprint, in the
+	// canonical "SHA256:<base64>" form (see keycheck.Fingerprint). Empty applies
+	// no bound. It drives the one-command key-compromise bulk revocation: select
+	// every certificate that shares a leaked key.
+	PublicKeyFingerprint string
 	// IssuedAfter/IssuedBefore bound the certificate's NotBefore (inclusive).
 	// nil bounds are open.
 	IssuedAfter  *time.Time
@@ -73,6 +79,10 @@ func (db *DB) ListRevocationCandidates(sel RevocationSelector) ([]RevocationCand
 	if sel.Profile != "" {
 		b.WriteString(` AND profile = ?`)
 		args = append(args, sel.Profile)
+	}
+	if sel.PublicKeyFingerprint != "" {
+		b.WriteString(` AND public_key_fingerprint = ?`)
+		args = append(args, sel.PublicKeyFingerprint)
 	}
 	if sel.IssuedAfter != nil {
 		b.WriteString(` AND not_before >= ?`)

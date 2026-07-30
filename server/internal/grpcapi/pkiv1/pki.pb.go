@@ -2476,8 +2476,13 @@ type ListCertificatesRequest struct {
 	// expires_before restricts to certificates whose NotAfter is before this
 	// instant.
 	ExpiresBefore *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=expires_before,json=expiresBefore,proto3" json:"expires_before,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// public_key_sha256 restricts to certificates whose certified subject public
+	// key has this SubjectPublicKeyInfo SHA-256 fingerprint — the key-compromise
+	// search that locates every certificate sharing a leaked key. Accepts either a
+	// hex SHA-256 digest or the canonical "SHA256:<base64>" fingerprint.
+	PublicKeySha256 string `protobuf:"bytes,9,opt,name=public_key_sha256,json=publicKeySha256,proto3" json:"public_key_sha256,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ListCertificatesRequest) Reset() {
@@ -2564,6 +2569,13 @@ func (x *ListCertificatesRequest) GetExpiresBefore() *timestamppb.Timestamp {
 		return x.ExpiresBefore
 	}
 	return nil
+}
+
+func (x *ListCertificatesRequest) GetPublicKeySha256() string {
+	if x != nil {
+		return x.PublicKeySha256
+	}
+	return ""
 }
 
 type ListCertificatesResponse struct {
@@ -4250,7 +4262,7 @@ const file_pki_v1_pki_proto_rawDesc = "" +
 	"\x06status\x18\x01 \x01(\x0e2\x1f.secsy.pki.v1.CertificateStatusR\x06status\x129\n" +
 	"\n" +
 	"revoked_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\trevokedAt\x12+\n" +
-	"\x11revocation_reason\x18\x03 \x01(\x05R\x10revocationReason\"\x8c\x02\n" +
+	"\x11revocation_reason\x18\x03 \x01(\x05R\x10revocationReason\"\xb8\x02\n" +
 	"\x17ListCertificatesRequest\x12\x13\n" +
 	"\x05ca_id\x18\x01 \x01(\tR\x04caId\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\x05R\x05limit\x12\x16\n" +
@@ -4259,7 +4271,8 @@ const file_pki_v1_pki_proto_rawDesc = "" +
 	"\aprofile\x18\x05 \x01(\tR\aprofile\x12\x14\n" +
 	"\x05query\x18\x06 \x01(\tR\x05query\x12#\n" +
 	"\rserial_prefix\x18\a \x01(\tR\fserialPrefix\x12A\n" +
-	"\x0eexpires_before\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\rexpiresBefore\"\xaf\x01\n" +
+	"\x0eexpires_before\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\rexpiresBefore\x12*\n" +
+	"\x11public_key_sha256\x18\t \x01(\tR\x0fpublicKeySha256\"\xaf\x01\n" +
 	"\x18ListCertificatesResponse\x12A\n" +
 	"\fcertificates\x18\x01 \x03(\v2\x1d.secsy.pki.v1.CertificateInfoR\fcertificates\x12\x1f\n" +
 	"\vnext_cursor\x18\x02 \x01(\tR\n" +

@@ -1153,6 +1153,7 @@ paths:
         - $ref: "#/components/parameters/CertSearch"
         - $ref: "#/components/parameters/CertSerialPrefix"
         - $ref: "#/components/parameters/CertExpiresBefore"
+        - $ref: "#/components/parameters/CertPublicKeySHA256"
       responses:
         "200":
           description: One page of issued certificates.
@@ -3226,6 +3227,15 @@ components:
       name: expires_before
       in: query
       description: Restrict to certificates whose notAfter is before this instant (RFC 3339 or YYYY-MM-DD).
+      schema: { type: string }
+    CertPublicKeySHA256:
+      name: public_key_sha256
+      in: query
+      description: >-
+        Key-compromise search: restrict to certificates whose certified subject
+        public key has this SubjectPublicKeyInfo SHA-256 fingerprint. Accepts
+        either a hex SHA-256 digest (with or without colon separators) or the
+        canonical "SHA256:<base64>" form. A malformed value is a 400.
       schema: { type: string }
     ApprovalId:
       name: id

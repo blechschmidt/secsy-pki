@@ -30,6 +30,7 @@ func cmdRevokeBulk(db *database.DB, mgr *ca.Manager, cfg *config.Config, args []
 	fs := flag.NewFlagSet("revoke-bulk", flag.ContinueOnError)
 	caRef := fs.String("ca", "", "issuing CA id or label (required)")
 	profile := fs.String("profile", "", "only certificates issued under this profile")
+	byPublicKey := fs.String("by-public-key", "", "key-compromise response: only certificates whose subject public key has this SubjectPublicKeyInfo SHA-256 (hex or SHA256:<base64>), or '@file' for a PEM/DER cert, CSR, or public key to fingerprint locally")
 	pattern := fs.String("pattern", "", "case-insensitive glob matched against CN and SANs (e.g. '*.corp.example.com')")
 	issuedAfter := fs.String("issued-after", "", "only certificates with NotBefore at/after this time (RFC 3339 or YYYY-MM-DD)")
 	issuedBefore := fs.String("issued-before", "", "only certificates with NotBefore at/before this time (RFC 3339 or YYYY-MM-DD)")
@@ -58,6 +59,12 @@ func cmdRevokeBulk(db *database.DB, mgr *ca.Manager, cfg *config.Config, args []
 		Profile:        *profile,
 		Pattern:        *pattern,
 		IncludeExpired: *includeExpired,
+	}
+	if *byPublicKey != "" {
+		if filter.PublicKeyFingerprint, err = resolveSearchFingerprint(*byPublicKey); err != nil {
+			return fmt.Errorf("-by-public-key: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Selecting certificates by subject public key %s.\n", filter.PublicKeyFingerprint)
 	}
 	if filter.IssuedAfter, err = parseBulkTime(*issuedAfter, false); err != nil {
 		return fmt.Errorf("-issued-after: %w", err)
@@ -126,8 +133,8 @@ func cmdRevokeBulk(db *database.DB, mgr *ca.Manager, cfg *config.Config, args []
 		ResourceKey:  "ca:" + caID,
 		ResourceName: plan.CALabel,
 		Summary:      fmt.Sprintf("Bulk-revoke %d certificate(s) on CA %s (reason %q)", plan.Total, caID, *reason),
-		Params: fmt.Sprintf("ca=%s;reason=%s;confirm=%d;profile=%s;pattern=%s;after=%s;before=%s;include_expired=%v;serials=%s",
-			caID, *reason, plan.Total, filter.Profile, filter.Pattern, *issuedAfter, *issuedBefore, filter.IncludeExpired, strings.Join(serials, ",")),
+		Params: fmt.Sprintf("ca=%s;reason=%s;confirm=%d;profile=%s;public_key=%s;pattern=%s;after=%s;before=%s;include_expired=%v;serials=%s",
+			caID, *reason, plan.Total, filter.Profile, filter.PublicKeyFingerprint, filter.Pattern, *issuedAfter, *issuedBefore, filter.IncludeExpired, strings.Join(serials, ",")),
 		Tenant: tenant,
 	}); err != nil {
 		return err

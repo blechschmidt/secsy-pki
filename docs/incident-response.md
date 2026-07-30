@@ -34,6 +34,7 @@ first (§ Step 2).
 | Scenario | Selection |
 |----------|-----------|
 | **CA key compromised** — every certificate the key signed is suspect | no filter (the whole CA), `-reason keyCompromise`; then rotate/retire the CA per the [runbook](RUNBOOK.md#suspected-ca-key-compromise) |
+| **Subscriber key compromised** — a specific keypair leaked; every certificate carrying it is suspect (across renewals and subjects) | `-by-public-key <hex\|@leaked.pem>` — the SubjectPublicKeyInfo SHA-256, or a PEM/DER cert, CSR, or public key fingerprinted locally (see [Finding every certificate that shares a compromised key](#finding-every-certificate-that-shares-a-compromised-key)) |
 | **Attacker-issued certificates found** (CT monitoring, `secsy-ca discover`) | `-serials-file` with the observed serials — serials the inventory has never seen are still revoked, as bare CRL entries; that is the point |
 | **Issuance-window compromise** — RA/validation bug or intrusion between T₁ and T₂ | `-issued-after T1 -issued-before T2` |
 | **Fleet/domain compromise** — one org's namespace must go | `-pattern '*.corp.example.com'` (case-insensitive glob over CN + SANs) |
@@ -51,6 +52,64 @@ Notes on selection semantics:
 - Serial files: one serial per line, `#` comments. Decimal by default;
   `-serial-format hex` (or a `0x` prefix per entry) accepts openssl-style hex,
   colons tolerated.
+- `-by-public-key` selects by the certified **subject public key** (its
+  SubjectPublicKeyInfo SHA-256), matched exactly within the CA. It composes with
+  the other filters and is the subject-key-compromise response — see the next
+  section.
+
+## Finding every certificate that shares a compromised key
+
+When a specific **private key** is exposed — a server's key exfiltrated, a key
+found in a public repository, a vendor-shipped duplicate — the affected
+population is *every certificate carrying that public key*, across renewals and
+across subjects. The inventory records each certificate's SubjectPublicKeyInfo
+SHA-256 fingerprint, so you can find them all from the leaked artifact alone and
+feed the exact set into revocation.
+
+**Search (read-only, `audit:read`).** Give the tooling either the raw SPKI
+SHA-256 or the leaked certificate/CSR/public key to fingerprint locally (`@file`,
+`@-` for stdin):
+
+```console
+# From the leaked certificate (or CSR, or public key) — fingerprinted locally:
+secsy-ca -config config.yaml list-certs -ca issuing-ca-1 --by-public-key @leaked.pem
+
+# Or by the SubjectPublicKeyInfo SHA-256 directly
+# (hex, colons tolerated, or the canonical SHA256:<base64>):
+secsy-ca -config config.yaml list-certs -ca issuing-ca-1 --by-public-key 1f37…e2a4
+```
+
+The listing prints the matching serials (each row carries its fingerprint, so a
+match is self-verifying) and, when there are matches, the exact `revoke-bulk`
+command to kill them. REST and gRPC expose the same filter — tenant-scoped and
+paginated:
+
+```
+GET /api/ca/{id}/certificates?public_key_sha256=<hex or SHA256:base64>
+PKIService.ListCertificates{ ca_id, public_key_sha256 }
+```
+
+The fingerprint is matched exactly within one CA; run it per CA (list them with
+`secsy-ca list`) to sweep a tenant. The same value belongs on the
+[compromised-key blocklist](key-checks.md#operator-compromised-key-blocklist)
+(Step 0) so the key can never be re-certified on any surface.
+
+**Revoke.** The same selector drives the bulk engine with the confirm-count
+guard, so identification and response are one workflow:
+
+```bash
+secsy-ca -config config.yaml revoke-bulk \
+  -ca issuing-ca-1 \
+  --by-public-key @leaked.pem \
+  -reason keyCompromise \
+  -operation-id IR-2026-042 \
+  -dry-run
+```
+
+Because the selector re-resolves against the live inventory on execute, a
+certificate re-issued with the compromised key between the dry run and execution
+shifts the count and trips the confirmation — exactly the safety you want. Drop
+`-dry-run` and add `-confirm <N>` (the dry-run total) to carry it out.
 
 ## Step 0 — contain first
 

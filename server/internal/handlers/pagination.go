@@ -8,18 +8,21 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
+	"github.com/blechschmidt/secsy-pki/server/internal/keycheck"
 )
 
 // Shared query-parameter parsing for the paginated inventory list endpoints
-// (Task 83): ?limit, ?cursor, ?status, ?profile, ?q, ?serial_prefix, and
-// ?expires_before. The page size defaults to database.DefaultPageSize and is
-// clamped to the hard maximum database.MaxPageSize.
+// (Task 83): ?limit, ?cursor, ?status, ?profile, ?q, ?serial_prefix,
+// ?expires_before, and ?public_key_sha256. The page size defaults to
+// database.DefaultPageSize and is clamped to the hard maximum
+// database.MaxPageSize.
 
 // parseCertListParams reads the pagination and filter parameters. It returns a
 // filter, a page request, and clamped=true when the caller asked for a larger
 // page than the hard maximum (so the handler can log the truncation). A
-// malformed ?expires_before is a request error; a malformed ?limit is treated
-// leniently (falls back to the default), matching the existing list endpoints.
+// malformed ?expires_before or ?public_key_sha256 is a request error; a
+// malformed ?limit is treated leniently (falls back to the default), matching
+// the existing list endpoints.
 func parseCertListParams(r *http.Request) (database.CertFilter, database.CertPageRequest, bool, error) {
 	q := r.URL.Query()
 	f := database.CertFilter{
@@ -34,6 +37,18 @@ func parseCertListParams(r *http.Request) (database.CertFilter, database.CertPag
 			return f, database.CertPageRequest{}, false, fmt.Errorf("invalid expires_before %q: want RFC3339 or YYYY-MM-DD", v)
 		}
 		f.ExpiresBefore = t
+	}
+	// public_key_sha256 is the key-compromise search: locate every certificate
+	// sharing a leaked subject public key. Accept either a hex SHA-256 of the
+	// SubjectPublicKeyInfo or the canonical "SHA256:<base64>" fingerprint, and
+	// normalize to the stored form so the equality match succeeds. A malformed
+	// value is a request error rather than a silent empty page.
+	if v := q.Get("public_key_sha256"); v != "" {
+		fp, err := keycheck.NormalizeFingerprint(v)
+		if err != nil {
+			return f, database.CertPageRequest{}, false, fmt.Errorf("invalid public_key_sha256: %w", err)
+		}
+		f.PublicKeySHA256 = fp
 	}
 
 	p := database.CertPageRequest{Cursor: q.Get("cursor"), Limit: database.DefaultPageSize}

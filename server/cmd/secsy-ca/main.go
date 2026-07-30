@@ -971,6 +971,7 @@ func cmdListCerts(db *database.DB, args []string) error {
 	query := fs.String("filter", "", "case-insensitive substring over subject / common name / SANs")
 	serialPrefix := fs.String("serial-prefix", "", "filter to serials beginning with this decimal prefix")
 	expiresBefore := fs.String("expires-before", "", "only certificates expiring before this time (RFC 3339 or YYYY-MM-DD)")
+	byPublicKey := fs.String("by-public-key", "", "key-compromise search: only certificates whose subject public key has this SubjectPublicKeyInfo SHA-256 (hex or SHA256:<base64>), or '@file' for a PEM/DER cert, CSR, or public key to fingerprint locally")
 	asJSON := fs.Bool("json", false, "emit the page as JSON {items,next_cursor,total,has_more}")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -995,6 +996,13 @@ func cmdListCerts(db *database.DB, args []string) error {
 		return fmt.Errorf("-expires-before: %w", err)
 	} else if t != nil {
 		filter.ExpiresBefore = *t
+	}
+	if *byPublicKey != "" {
+		fp, err := resolveSearchFingerprint(*byPublicKey)
+		if err != nil {
+			return fmt.Errorf("-by-public-key: %w", err)
+		}
+		filter.PublicKeySHA256 = fp
 	}
 
 	// A cursor or an explicit -page fetches one page; otherwise follow every page
@@ -1056,6 +1064,13 @@ func cmdListCerts(db *database.DB, args []string) error {
 		if last.HasMore {
 			fmt.Printf("Next page: secsy-ca list-certs -ca %s -cursor %s\n", *caRef, last.NextCursor)
 		}
+	}
+	// Key-compromise response hand-off: point the operator at the one-command
+	// bulk revocation that revokes exactly this set, guarded by the confirm-count.
+	if *byPublicKey != "" && last.Total > 0 {
+		fmt.Printf("\nTo revoke all %d certificate(s) sharing this key:\n"+
+			"  secsy-ca revoke-bulk -ca %s -by-public-key %s -reason keyCompromise -confirm %d\n",
+			last.Total, *caRef, *byPublicKey, last.Total)
 	}
 	return nil
 }

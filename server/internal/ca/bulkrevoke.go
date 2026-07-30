@@ -66,6 +66,13 @@ const maxBulkRevokeBatchSize = 5000
 type BulkRevokeFilter struct {
 	// Profile restricts to certificates issued under this profile.
 	Profile string
+	// PublicKeyFingerprint restricts to certificates whose certified subject
+	// public key has exactly this SubjectPublicKeyInfo fingerprint, in the
+	// canonical "SHA256:<base64>" form (see keycheck.Fingerprint). It is the
+	// key-compromise selector: revoke every certificate that shares a leaked
+	// key in one command. It composes with the other filters (profile, pattern,
+	// time window) — the intersection is revoked.
+	PublicKeyFingerprint string
 	// Pattern is a case-insensitive glob (path.Match syntax: * ? [...]) tested
 	// against the common name and every SAN; a certificate matches when any
 	// name matches.
@@ -90,6 +97,9 @@ func (f BulkRevokeFilter) Describe() string {
 	var parts []string
 	if f.Profile != "" {
 		parts = append(parts, "profile="+f.Profile)
+	}
+	if f.PublicKeyFingerprint != "" {
+		parts = append(parts, "public_key="+f.PublicKeyFingerprint)
 	}
 	if f.Pattern != "" {
 		parts = append(parts, "pattern="+f.Pattern)
@@ -281,12 +291,13 @@ func (b *BulkRevoker) buildPlan(spec BulkRevokeSpec) (*BulkRevokePlan, error) {
 	// plan can report how many matching certificates were excluded by expiry.
 	now := time.Now()
 	candidates, err := b.mgr.db.ListRevocationCandidates(database.RevocationSelector{
-		CAID:           spec.CAID,
-		Profile:        spec.Filter.Profile,
-		IssuedAfter:    spec.Filter.IssuedAfter,
-		IssuedBefore:   spec.Filter.IssuedBefore,
-		IncludeExpired: true,
-		Now:            now,
+		CAID:                 spec.CAID,
+		Profile:              spec.Filter.Profile,
+		PublicKeyFingerprint: spec.Filter.PublicKeyFingerprint,
+		IssuedAfter:          spec.Filter.IssuedAfter,
+		IssuedBefore:         spec.Filter.IssuedBefore,
+		IncludeExpired:       true,
+		Now:                  now,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing revocation candidates: %w", err)

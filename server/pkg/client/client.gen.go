@@ -3131,6 +3131,9 @@ type CertExpiresBefore = string
 // CertProfileFilter defines model for CertProfileFilter.
 type CertProfileFilter = string
 
+// CertPublicKeySHA256 defines model for CertPublicKeySHA256.
+type CertPublicKeySHA256 = string
+
 // CertSearch defines model for CertSearch.
 type CertSearch = string
 
@@ -3250,6 +3253,9 @@ type ListIssuedCertificatesParams struct {
 
 	// ExpiresBefore Restrict to certificates whose notAfter is before this instant (RFC 3339 or YYYY-MM-DD).
 	ExpiresBefore *CertExpiresBefore `form:"expires_before,omitempty" json:"expires_before,omitempty"`
+
+	// PublicKeySha256 Key-compromise search: restrict to certificates whose certified subject public key has this SubjectPublicKeyInfo SHA-256 fingerprint. Accepts either a hex SHA-256 digest (with or without colon separators) or the canonical "SHA256:<base64>" form. A malformed value is a 400.
+	PublicKeySha256 *CertPublicKeySHA256 `form:"public_key_sha256,omitempty" json:"public_key_sha256,omitempty"`
 }
 
 // ListIssuedCertificatesParamsStatus defines parameters for ListIssuedCertificates.
@@ -7288,6 +7294,22 @@ func NewListIssuedCertificatesRequest(server string, id CAId, params *ListIssued
 		if params.ExpiresBefore != nil {
 
 			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "expires_before", runtime.ParamLocationQuery, *params.ExpiresBefore); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.PublicKeySha256 != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "public_key_sha256", runtime.ParamLocationQuery, *params.PublicKeySha256); err != nil {
 				return nil, err
 			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
 				return nil, err

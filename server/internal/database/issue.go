@@ -77,21 +77,24 @@ func (db *DB) DistinctSubjectsForKeyFingerprint(fingerprint, excludeSerial strin
 }
 
 // issuedCertColumns is the canonical column list for issued-certificate reads.
+// public_key_fingerprint is included so listings surface the certified subject
+// key's SubjectPublicKeyInfo fingerprint — the value the key-compromise search
+// matches on, shown so a matched result set is self-verifying.
 const issuedCertColumns = `id, ca_id, serial, subject, common_name, sans, profile,
 	certificate, not_before, not_after, status, revoked_at, revocation_reason,
-	requested_by, created_at, ct_status, sct_count, marker`
+	requested_by, created_at, ct_status, sct_count, marker, public_key_fingerprint`
 
 func scanIssuedCert(s caScanner) (*models.IssuedCertificate, error) {
 	var c models.IssuedCertificate
 	var subject, commonName, sans, profile, requestedBy sql.NullString
 	var status string
-	var ctStatus, marker sql.NullString
+	var ctStatus, marker, keyFingerprint sql.NullString
 	var notBefore, notAfter sql.NullTime
 	var revokedAt sql.NullTime
 	if err := s.Scan(
 		&c.ID, &c.CAID, &c.Serial, &subject, &commonName, &sans, &profile,
 		&c.Certificate, &notBefore, &notAfter, &status, &revokedAt, &c.RevocationReason,
-		&requestedBy, &c.CreatedAt, &ctStatus, &c.SCTCount, &marker,
+		&requestedBy, &c.CreatedAt, &ctStatus, &c.SCTCount, &marker, &keyFingerprint,
 	); err != nil {
 		return nil, err
 	}
@@ -100,6 +103,7 @@ func scanIssuedCert(s caScanner) (*models.IssuedCertificate, error) {
 	c.Profile = profile.String
 	c.RequestedBy = requestedBy.String
 	c.Marker = marker.String
+	c.PublicKeyFingerprint = keyFingerprint.String
 	c.Status = models.CertStatus(status)
 	if ctStatus.Valid && ctStatus.String != "" {
 		c.CTStatus = models.CTStatus(ctStatus.String)

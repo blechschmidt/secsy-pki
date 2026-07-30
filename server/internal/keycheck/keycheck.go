@@ -34,6 +34,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"math/big"
 	"strings"
@@ -220,6 +221,59 @@ func Fingerprint(pub crypto.PublicKey) (string, error) {
 	}
 	sum := sha256.Sum256(spki)
 	return "SHA256:" + base64.RawStdEncoding.EncodeToString(sum[:]), nil
+}
+
+// NormalizeFingerprint canonicalizes an operator-supplied SubjectPublicKeyInfo
+// SHA-256 fingerprint to the exact "SHA256:<base64>" form that Fingerprint emits
+// and the certificate inventory stores, so a value typed for a key-compromise
+// search compares equal to a stored fingerprint regardless of which common
+// textual form the operator pasted. It accepts:
+//
+//   - the canonical "SHA256:<base64>" form (the scheme label is matched
+//     case-insensitively, and both padded and unpadded base64 are accepted); and
+//   - a raw hex SHA-256 digest — 64 hex characters, case-insensitive, with any
+//     embedded colons or whitespace ignored, so the colon-separated form that
+//     openssl and browsers print (AA:BB:CC…) is accepted verbatim.
+//
+// It fails closed on anything else — including a digest of the wrong length —
+// rather than silently returning a fingerprint that can never match, so a
+// mistyped incident-response query surfaces an error instead of an empty result
+// the operator might read as "no affected certificates".
+func NormalizeFingerprint(s string) (string, error) {
+	raw := strings.TrimSpace(s)
+	if raw == "" {
+		return "", fmt.Errorf("empty public-key fingerprint")
+	}
+	// Canonical "SHA256:<base64>" form (accept any case for the scheme label and
+	// tolerate trailing base64 padding a copy-paste may carry).
+	if i := strings.IndexByte(raw, ':'); i >= 0 && strings.EqualFold(raw[:i], "sha256") {
+		sum, err := base64.RawStdEncoding.DecodeString(strings.TrimRight(raw[i+1:], "="))
+		if err != nil {
+			return "", fmt.Errorf("invalid SHA256:<base64> fingerprint: %w", err)
+		}
+		if len(sum) != sha256.Size {
+			return "", fmt.Errorf("invalid fingerprint: SHA-256 digest must be %d bytes, got %d", sha256.Size, len(sum))
+		}
+		return "SHA256:" + base64.RawStdEncoding.EncodeToString(sum), nil
+	}
+	// Otherwise treat it as a hex digest, ignoring separators so openssl's
+	// colon-grouped form is accepted.
+	cleaned := strings.Map(func(r rune) rune {
+		switch r {
+		case ':', ' ', '\t', '\n', '\r':
+			return -1
+		default:
+			return r
+		}
+	}, raw)
+	sum, err := hex.DecodeString(cleaned)
+	if err != nil {
+		return "", fmt.Errorf("public-key fingerprint is neither a SHA256:<base64> value nor a hex SHA-256 digest: %w", err)
+	}
+	if len(sum) != sha256.Size {
+		return "", fmt.Errorf("hex public-key fingerprint must be a %d-byte SHA-256 digest (%d hex chars), got %d bytes", sha256.Size, sha256.Size*2, len(sum))
+	}
+	return "SHA256:" + base64.RawStdEncoding.EncodeToString(sum), nil
 }
 
 // --- ROCA / CVE-2017-15361 fingerprint detection ---

@@ -513,6 +513,11 @@ message ListCertificatesRequest {
   // expires_before restricts to certificates whose NotAfter is before this
   // instant.
   google.protobuf.Timestamp expires_before = 8;
+  // public_key_sha256 restricts to certificates whose certified subject public
+  // key has this SubjectPublicKeyInfo SHA-256 fingerprint — the key-compromise
+  // search that locates every certificate sharing a leaked key. Accepts either a
+  // hex SHA-256 digest or the canonical "SHA256:<base64>" fingerprint.
+  string public_key_sha256 = 9;
 }
 
 message ListCertificatesResponse {
