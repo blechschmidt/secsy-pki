@@ -4345,6 +4345,7 @@ components:
         enabled: { type: boolean, description: whether the profile requested CT }
         embedded: { type: boolean, description: whether an SCT list was embedded }
         sct_count: { type: integer, description: number of embedded SCTs }
+        operators: { type: integer, description: distinct CT log operators that returned a usable SCT (enforced against a profile's min_distinct_operators) }
         status: { type: string, enum: [none, submitted, failed_open] }
         logs:
           type: array
@@ -4355,6 +4356,7 @@ components:
       description: Per-log result of a precertificate submission.
       properties:
         log: { type: string, description: configured log name }
+        operator: { type: string, description: the log's configured operator (empty when unknown) }
         ok: { type: boolean }
         error: { type: string, description: failure detail when ok is false }
 

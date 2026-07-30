@@ -294,12 +294,23 @@ func main() {
 					}
 				}
 				prof.CT = &ca.CTConfig{
-					Enabled:        true,
-					Logs:           p.CT.Logs,
-					MinSCTs:        p.CT.MinSCTs,
-					FailOpen:       p.CT.FailOpen,
-					TimeoutSeconds: p.CT.TimeoutSeconds,
-					Retries:        p.CT.Retries,
+					Enabled:              true,
+					Logs:                 p.CT.Logs,
+					MinSCTs:              p.CT.MinSCTs,
+					MinDistinctOperators: p.CT.MinDistinctOperators,
+					RequireOperators:     p.CT.RequireOperators,
+					FailOpen:             p.CT.FailOpen,
+					TimeoutSeconds:       p.CT.TimeoutSeconds,
+					Retries:              p.CT.Retries,
+				}
+				// An operator-diversity policy can only be enforced when every log
+				// it might submit to has a resolved operator. Validate at startup so
+				// a policy that could never be satisfied (or would silently
+				// under-count) fails loudly here rather than at issuance time.
+				if p.CT.MinDistinctOperators > 0 || len(p.CT.RequireOperators) > 0 {
+					if err := validateCTOperatorPolicy(p.Name, p.CT, ctSubmitter); err != nil {
+						log.Fatalf("%v", err)
+					}
 				}
 			}
 			prof.Lint = &ca.LintConfig{
@@ -2392,12 +2403,67 @@ func buildCTSubmitter(cfg config.CTConfig) (*ct.Submitter, error) {
 			}
 			pubPEM = string(data)
 		}
-		logs = append(logs, ct.LogConfig{Name: l.Name, URL: l.URL, PublicKeyPEM: pubPEM, MMD: l.MMD()})
+		logs = append(logs, ct.LogConfig{Name: l.Name, URL: l.URL, PublicKeyPEM: pubPEM, MMD: l.MMD(), Operator: l.Operator})
+	}
+	// Optionally attribute logs to their operators from a Google-style CT log
+	// list, filling only logs without an explicit operator (operator config
+	// always wins). This lets an operator-diversity policy work without
+	// hand-copying every operator name.
+	if f := strings.TrimSpace(cfg.KnownLogsFile); f != "" {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return nil, fmt.Errorf("reading certificate_transparency.known_logs_file %q: %w", f, err)
+		}
+		ops, err := ct.LoadOperatorMap(data)
+		if err != nil {
+			return nil, fmt.Errorf("certificate_transparency.known_logs_file %q: %w", f, err)
+		}
+		ct.ApplyOperators(logs, ops)
 	}
 	// A dedicated HTTP client with a conservative overall timeout; per-attempt
 	// timeouts are applied by the submitter from each profile's policy.
 	client := &http.Client{Timeout: 30 * time.Second}
 	return ct.NewSubmitter(logs, client)
+}
+
+// validateCTOperatorPolicy fails startup when a profile enables a CT
+// operator-diversity policy (min_distinct_operators / require_operators) that the
+// configured logs cannot possibly satisfy: a candidate log missing an operator
+// (diversity over an unknown operator is meaningless), fewer distinct operators
+// available than required, or a required operator that runs none of the
+// candidate logs. Operators are read from the (already operator-resolved)
+// submitter, so any known_logs_file attribution is reflected. The candidate set
+// is the profile's named logs, or every registered log when none are named.
+func validateCTOperatorPolicy(profile string, pc config.ProfileCTConfig, sub *ct.Submitter) error {
+	opByName := make(map[string]string)
+	for _, l := range sub.Logs() {
+		opByName[l.Name] = strings.TrimSpace(l.Operator)
+	}
+	names := pc.Logs
+	if len(names) == 0 {
+		names = sub.LogNames()
+	}
+	operators := make(map[string]bool)
+	var missing []string
+	for _, n := range names {
+		if op := opByName[n]; op != "" {
+			operators[op] = true
+		} else {
+			missing = append(missing, n)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("profile %q enables a CT operator-diversity policy (min_distinct_operators/require_operators) but these candidate logs have no operator configured: %v — set each log's `operator` or a certificate_transparency.known_logs_file", profile, missing)
+	}
+	if n := pc.MinDistinctOperators; n > len(operators) {
+		return fmt.Errorf("profile %q requires %d distinct CT log operators but its candidate logs cover only %d", profile, n, len(operators))
+	}
+	for _, req := range pc.RequireOperators {
+		if req = strings.TrimSpace(req); req != "" && !operators[req] {
+			return fmt.Errorf("profile %q requires an SCT from CT operator %q but none of its candidate logs is run by that operator", profile, req)
+		}
+	}
+	return nil
 }
 
 // buildRoleProvider constructs the instrumented key provider for a signing role

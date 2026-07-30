@@ -132,6 +132,21 @@ var (
 		"Pre-issuance name-constraint violations that forbid issuance, partitioned by kind.",
 		"kind")
 
+	// Certificate Transparency log-operator diversity achieved per CT-enabled
+	// issuance (Task 150). Observed once for every issuance that reaches the CT
+	// gate: the number of DISTINCT log operators that returned a usable SCT (two
+	// logs run by the same operator count once). Modern CT policies (Chrome,
+	// Apple) require SCTs from a minimum number of INDEPENDENT operators; a
+	// per-profile min_distinct_operators enforces it. The observation is recorded
+	// even when the policy fails (fail-closed reject) or fail-open ships anyway,
+	// so a live log set that has degraded to a single operator is visible here
+	// even while the raw SCT count is still met. Alert on the lower quantiles
+	// falling toward 1 (histogram_quantile(0.1, ...) or _bucket{le="1"} rising).
+	CTDistinctOperators = NewHistogram(Default,
+		"secsy_ct_distinct_operators",
+		"Distinct CT log operators that returned a usable SCT, observed once per CT-enabled issuance.",
+		[]float64{0, 1, 2, 3, 4, 5})
+
 	// Pre-issuance key-quality checking (Task 120, CA/Browser Forum BR §6.1.1.3
 	// weak/compromised-key gate). CertificateKeyChecks counts every run by outcome:
 	// "result" is pass|warn|fail (fail = an enforce-mode finding blocked signing).

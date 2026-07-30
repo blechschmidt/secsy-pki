@@ -1021,6 +1021,12 @@ type CAAGlobalConfig struct {
 type CTConfig struct {
 	// Logs is the set of known CT logs, keyed by name.
 	Logs []CTLogConfig `yaml:"logs"`
+	// KnownLogsFile optionally points at a Google/Chrome-style CT log-list v3 JSON
+	// document (e.g. a cached copy of log_list.json). At startup, any registered
+	// log whose `operator` is not set explicitly inherits its operator from this
+	// list by URL match, so operator-diversity policies work without hand-copying
+	// every operator name. Explicit per-log operators always take precedence.
+	KnownLogsFile string `yaml:"known_logs_file"`
 	// InclusionMonitor configures the post-issuance SCT inclusion-proof monitor
 	// (Task 93): a leader-elected background job that verifies logs actually merge
 	// the certificates they issued SCTs for, and alerts on any that they don't.
@@ -1031,6 +1037,16 @@ type CTConfig struct {
 type CTLogConfig struct {
 	// Name is the identifier profiles reference and audit records display.
 	Name string `yaml:"name"`
+	// Operator names the organization that runs this log (e.g. "Google",
+	// "Cloudflare", "DigiCert"). CT operator-diversity policies (Chrome, Apple)
+	// require SCTs from a minimum number of DISTINCT operators, so this — not the
+	// individual log name — is what a per-profile min_distinct_operators counts.
+	// Two logs sharing an operator satisfy a diversity requirement only once.
+	// Optional: leave empty and set certificate_transparency.known_logs_file to
+	// attribute logs to operators from a Google-style CT log list instead. A log
+	// with no resolved operator cannot participate in an operator-diversity
+	// policy (a profile enabling one over such a log is rejected at startup).
+	Operator string `yaml:"operator"`
 	// URL is the log's base URL; the RFC 6962 ct/v1/* paths are appended.
 	URL string `yaml:"url"`
 	// PublicKey is the log's public key as a PEM SubjectPublicKeyInfo block. When
@@ -1108,7 +1124,23 @@ type ProfileCTConfig struct {
 	Logs []string `yaml:"logs"`
 	// MinSCTs is the minimum SCT count the policy requires (0 defaults to 1).
 	MinSCTs int `yaml:"min_scts"`
+	// MinDistinctOperators is the minimum number of DISTINCT CT log operators
+	// that must return a usable SCT, in addition to MinSCTs. Modern CT policies
+	// (Chrome, Apple) require SCTs from at least two independent operators so no
+	// single operator can unilaterally back-date or withhold evidence. 0 disables
+	// the operator-diversity check (only MinSCTs applies). Enabling it (or
+	// RequireOperators) requires every candidate log to have a resolved operator
+	// (see CTLogConfig.Operator / CTConfig.KnownLogsFile), enforced at startup.
+	MinDistinctOperators int `yaml:"min_distinct_operators"`
+	// RequireOperators, when non-empty, is an allowlist of operator names each of
+	// which MUST be represented by at least one usable SCT — a stricter constraint
+	// than MinDistinctOperators (e.g. "one Google SCT and one Apple SCT"). Every
+	// named operator must be the operator of at least one candidate log, enforced
+	// at startup.
+	RequireOperators []string `yaml:"require_operators"`
 	// FailOpen selects fail-open (issue anyway) vs fail-closed (default: reject).
+	// It governs the whole SCT policy: a shortfall in MinSCTs, MinDistinctOperators,
+	// or RequireOperators is fatal when false and flagged (failed_open) when true.
 	FailOpen bool `yaml:"fail_open"`
 	// TimeoutSeconds bounds each individual log attempt (0 uses a default).
 	TimeoutSeconds int `yaml:"timeout_seconds"`

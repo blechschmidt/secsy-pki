@@ -99,9 +99,14 @@ type SubmitRequest struct {
 
 // LogResult reports the outcome of submitting to a single log.
 type LogResult struct {
-	Log   string `json:"log"`
-	OK    bool   `json:"ok"`
-	Error string `json:"error,omitempty"`
+	Log string `json:"log"`
+	// Operator is the log's configured operator (Log.Operator), carried through
+	// so the caller can enforce an operator-diversity policy over the results
+	// without re-resolving each SCT's log. Empty when the log has no configured
+	// operator.
+	Operator string `json:"operator,omitempty"`
+	OK       bool   `json:"ok"`
+	Error    string `json:"error,omitempty"`
 }
 
 // SubmitResult aggregates a fan-out submission.
@@ -149,11 +154,11 @@ func (s *Submitter) Submit(ctx context.Context, req SubmitRequest) (*SubmitResul
 			defer wg.Done()
 			sct, err := lg.submitWithPolicy(ctx, chain, ikh, tbs, req.Timeout, req.Retries)
 			if err != nil {
-				results[i] = LogResult{Log: lg.Name, OK: false, Error: err.Error()}
+				results[i] = LogResult{Log: lg.Name, Operator: lg.Operator, OK: false, Error: err.Error()}
 				return
 			}
 			scts[i] = sct
-			results[i] = LogResult{Log: lg.Name, OK: true}
+			results[i] = LogResult{Log: lg.Name, Operator: lg.Operator, OK: true}
 		}(i, lg)
 	}
 	wg.Wait()

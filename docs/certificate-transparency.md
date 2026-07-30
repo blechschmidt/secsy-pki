@@ -47,9 +47,15 @@ Register the CT logs your profiles may use under `certificate_transparency`:
 
 ```yaml
 certificate_transparency:
+  # Optional: a Google/Chrome-style CT log-list v3 JSON document (a cached copy of
+  # log_list.json). Any log below whose `operator` is not set explicitly inherits
+  # it from this list by URL match — so operator-diversity policies work without
+  # hand-copying every operator name. Explicit `operator` values always win.
+  known_logs_file: /etc/secsy-pki/ct/log_list.json
   logs:
     - name: test-log
       url: "https://ct.example.com/testlog"
+      operator: "Example Labs"    # organization that runs the log (see below)
       # Optional PEM SubjectPublicKeyInfo. When present, every SCT this log
       # returns is cryptographically verified (signature + matching log id)
       # before it is embedded. Strongly recommended.
@@ -59,11 +65,17 @@ certificate_transparency:
         -----END PUBLIC KEY-----
     - name: prod-log
       url: "https://ct.googleapis.com/logs/us1/argon2025h1"
+      operator: "Google"
       public_key_file: /etc/secsy-pki/ct/argon2025h1.pem
 ```
 
 - `url` is the log's **base URL**; the `/ct/v1/add-pre-chain` path is appended
   automatically.
+- `operator` names the **organization that runs the log** (e.g. `Google`,
+  `Cloudflare`, `DigiCert`). CT operator-diversity policies count distinct
+  *operators*, not distinct *logs*, so two logs run by the same operator satisfy a
+  diversity requirement only once. Optional here — set it, or populate it in bulk
+  from `known_logs_file`. See [Operator diversity](#operator-diversity).
 - Supplying a log's public key (inline `public_key` or `public_key_file`) enables
   **SCT signature verification**: a returned SCT is only embedded if its
   signature validates against the log key and its log id matches. Without a key,
@@ -87,6 +99,8 @@ profiles:
       enabled: true
       logs: [test-log, prod-log]   # empty = submit to every registered log
       min_scts: 2                  # minimum SCTs required (default: 1)
+      min_distinct_operators: 2    # minimum DISTINCT log operators (0 = off)
+      require_operators: [Google]  # each listed operator must contribute an SCT
       fail_open: false             # see failure modes below
       timeout_seconds: 5           # per-log attempt timeout
       retries: 2                   # extra attempts per log after the first
@@ -101,8 +115,9 @@ Submissions to the selected logs run **concurrently**; each log gets up to
 
 ### Failure modes
 
-When fewer than `min_scts` usable SCTs are obtained (logs down, timing out, or
-returning SCTs that fail verification):
+When the SCT policy is not met — fewer than `min_scts` usable SCTs, fewer than
+`min_distinct_operators` distinct operators, or a `require_operators` entry with
+no SCT (logs down, timing out, or returning SCTs that fail verification):
 
 | `fail_open` | Behaviour |
 |-------------|-----------|
@@ -110,7 +125,52 @@ returning SCTs that fail verification):
 | `true` (**fail-open**) | Issuance **proceeds**, embedding whatever SCTs were obtained (possibly none). The certificate is marked `failed_open`. Use when availability matters more than guaranteed CT logging. |
 
 Operator misconfiguration (an unknown log name) is always fatal regardless of
-`fail_open`; the flag only covers log **availability**.
+`fail_open`; the flag only covers log **availability** and diversity shortfalls.
+
+## Operator diversity
+
+Modern CT policies (Chrome, Apple) require SCTs from a minimum number of
+**distinct log operators**, not merely a minimum SCT count. The reason is a
+threat model: a single log operator that is compromised or colludes can hand out
+SCTs that all trace back to one organization, so counting SCTs alone can be
+satisfied by one bad actor. Requiring SCTs from *independent* operators means no
+single operator can unilaterally fake the appearance of public logging.
+
+Two per-profile knobs enforce this, layered on top of `min_scts`:
+
+- **`min_distinct_operators`** — the minimum number of distinct operators that
+  must each contribute at least one usable SCT. `0` (default) disables the check.
+- **`require_operators`** — an allowlist of operator names that must *each* be
+  represented by a usable SCT (e.g. `[Google, Apple]`). Stricter than a bare
+  count.
+
+Each usable SCT is mapped to its log's configured `operator`; the number of
+distinct operators is enforced alongside `min_scts`, honoring the same
+`fail_open` semantics. The achieved operator count is recorded in the CT audit
+detail (`operators=N`), the issuance response (`ct.operators`), and the
+`secsy_ct_distinct_operators` metric.
+
+### Attributing logs to operators
+
+- Set each log's **`operator`** explicitly under `certificate_transparency.logs`, or
+- point **`certificate_transparency.known_logs_file`** at a cached
+  Google/Chrome CT log-list v3 JSON (`log_list.json`); any log without an explicit
+  `operator` inherits it by URL match. Explicit values always win.
+
+A log with **no** resolved operator cannot participate in a diversity policy: it
+is counted as an independent operator (keyed by its own name) but can never
+satisfy a `require_operators` entry, and — importantly — **a profile that enables
+`min_distinct_operators`/`require_operators` over any candidate log lacking an
+operator is rejected at startup**. This is deliberate: a diversity policy whose
+logs are not all attributable to a known operator cannot be enforced meaningfully,
+so the misconfiguration fails loudly rather than silently under-counting. The same
+startup check rejects a policy that requires more operators than the candidate
+logs can ever cover, or a `require_operators` name that runs none of them.
+
+> **Note.** Under fail-open, a set of SCTs that meets `min_scts` but not the
+> operator minimum is still **embedded** (the SCTs are real) — but the
+> certificate is recorded as `failed_open`, not `submitted`, so the shortfall is
+> visible in the inventory, console, and reports.
 
 ## Observing CT status
 
@@ -123,7 +183,12 @@ Operator misconfiguration (an unknown log name) is always fatal regardless of
   logged certificates (hover for the log names) or a `fail-open` badge, and the
   issuance form reports the CT outcome.
 - **Audit log.** `cert.issue` / `cert.renew` events record a CT summary in their
-  detail (e.g. `ct=enabled scts=2 logs=2/2`).
+  detail (e.g. `ct=enabled scts=2 operators=2 logs=2/2`).
+- **Metric.** `secsy_ct_distinct_operators` is a histogram of the distinct
+  log-operator count observed per CT-enabled issuance (recorded even when the
+  policy fails or ships fail-open). Alert on its lower quantiles falling toward 1
+  (`histogram_quantile(0.1, ...)`, or a rising `..._bucket{le="1"}`): the live log
+  set has degraded to a single operator even if the raw SCT count is still met.
 
 You can confirm SCTs in an issued certificate with OpenSSL:
 

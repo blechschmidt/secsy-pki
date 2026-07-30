@@ -15,6 +15,7 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -321,6 +322,153 @@ func TestIssueWithCTFailOpen(t *testing.T) {
 	}
 	if res.Record.CTStatus != models.CTStatusFailedOpen {
 		t.Errorf("record CTStatus = %q, want %q", res.Record.CTStatus, models.CTStatusFailedOpen)
+	}
+}
+
+// TestIssueWithCTOperatorDiversityPasses issues under a profile requiring SCTs
+// from two DISTINCT operators, with two healthy logs run by two different
+// operators. Issuance succeeds and the achieved operator count is recorded.
+func TestIssueWithCTOperatorDiversityPasses(t *testing.T) {
+	ctx := context.Background()
+	mgr := newTestManager(t, softwareProvider(t))
+	root := newRoot(t, mgr, "ct-ops-pass")
+
+	log1 := newCTMockLog(t)
+	log2 := newCTMockLog(t)
+	srv1 := httptest.NewServer(log1)
+	defer srv1.Close()
+	srv2 := httptest.NewServer(log2)
+	defer srv2.Close()
+
+	sub, err := ct.NewSubmitter([]ct.LogConfig{
+		{Name: "log1", URL: srv1.URL, PublicKeyPEM: log1.publicKeyPEM(t), Operator: "OperatorA"},
+		{Name: "log2", URL: srv2.URL, PublicKeyPEM: log2.publicKeyPEM(t), Operator: "OperatorB"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewSubmitter: %v", err)
+	}
+	withCTSubmitter(t, sub, []Profile{{
+		Name:            "server-ct-ops",
+		KeyUsages:       []string{"digitalSignature"},
+		ExtKeyUsages:    []string{"serverAuth"},
+		DefaultValidity: 90 * day,
+		CT:              &CTConfig{Enabled: true, MinSCTs: 2, MinDistinctOperators: 2, TimeoutSeconds: 5, Retries: 2},
+	}})
+
+	csr := makeCSR(t, "ops-pass.example.com", nil)
+	res, err := mgr.IssueCertificate(ctx, IssueSpec{CAID: root.ID, CSRPEM: csr, Profile: "server-ct-ops"})
+	if err != nil {
+		t.Fatalf("diverse issuance should succeed: %v", err)
+	}
+	if !res.CT.Embedded || res.CT.SCTCount != 2 {
+		t.Fatalf("CT status not embedded with 2 SCTs: %+v", res.CT)
+	}
+	if res.CT.Operators != 2 {
+		t.Errorf("CT.Operators = %d, want 2", res.CT.Operators)
+	}
+	if res.CT.FailedOpen {
+		t.Error("policy was met; FailedOpen must be false")
+	}
+	if res.Record.CTStatus != models.CTStatusSubmitted {
+		t.Errorf("record CTStatus = %q, want %q", res.Record.CTStatus, models.CTStatusSubmitted)
+	}
+}
+
+// TestIssueWithCTOperatorDiversityFailClosed proves that meeting min_scts is not
+// enough: two healthy logs that share ONE operator satisfy min_scts=2 but not
+// min_distinct_operators=2, so a fail-closed profile rejects issuance even though
+// two valid SCTs were obtained.
+func TestIssueWithCTOperatorDiversityFailClosed(t *testing.T) {
+	ctx := context.Background()
+	mgr := newTestManager(t, softwareProvider(t))
+	root := newRoot(t, mgr, "ct-ops-closed")
+
+	log1 := newCTMockLog(t)
+	log2 := newCTMockLog(t)
+	srv1 := httptest.NewServer(log1)
+	defer srv1.Close()
+	srv2 := httptest.NewServer(log2)
+	defer srv2.Close()
+
+	// Both logs are healthy (2 usable SCTs) but run by the SAME operator.
+	sub, err := ct.NewSubmitter([]ct.LogConfig{
+		{Name: "log1", URL: srv1.URL, PublicKeyPEM: log1.publicKeyPEM(t), Operator: "SoleOperator"},
+		{Name: "log2", URL: srv2.URL, PublicKeyPEM: log2.publicKeyPEM(t), Operator: "SoleOperator"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewSubmitter: %v", err)
+	}
+	withCTSubmitter(t, sub, []Profile{{
+		Name:            "server-ct-ops-closed",
+		KeyUsages:       []string{"digitalSignature"},
+		ExtKeyUsages:    []string{"serverAuth"},
+		DefaultValidity: 90 * day,
+		CT:              &CTConfig{Enabled: true, MinSCTs: 2, MinDistinctOperators: 2, FailOpen: false, TimeoutSeconds: 5, Retries: 1},
+	}})
+
+	csr := makeCSR(t, "ops-closed.example.com", nil)
+	_, err = mgr.IssueCertificate(ctx, IssueSpec{CAID: root.ID, CSRPEM: csr, Profile: "server-ct-ops-closed"})
+	if err == nil {
+		t.Fatal("expected fail-closed issuance to be rejected when SCTs come from too few operators")
+	}
+	if !strings.Contains(err.Error(), "operator") {
+		t.Errorf("rejection should cite operator diversity, got: %v", err)
+	}
+}
+
+// TestIssueWithCTOperatorDiversityFailOpen is the fail-open counterpart: the same
+// single-operator SCT set does not meet min_distinct_operators, but a fail-open
+// profile issues anyway. Because the SCTs WERE obtained, they are still embedded
+// (unlike a down-log fail-open), the achieved (insufficient) operator count is
+// recorded, and the record is flagged failed_open rather than masked as
+// submitted.
+func TestIssueWithCTOperatorDiversityFailOpen(t *testing.T) {
+	ctx := context.Background()
+	mgr := newTestManager(t, softwareProvider(t))
+	root := newRoot(t, mgr, "ct-ops-open")
+
+	log1 := newCTMockLog(t)
+	log2 := newCTMockLog(t)
+	srv1 := httptest.NewServer(log1)
+	defer srv1.Close()
+	srv2 := httptest.NewServer(log2)
+	defer srv2.Close()
+
+	sub, err := ct.NewSubmitter([]ct.LogConfig{
+		{Name: "log1", URL: srv1.URL, PublicKeyPEM: log1.publicKeyPEM(t), Operator: "SoleOperator"},
+		{Name: "log2", URL: srv2.URL, PublicKeyPEM: log2.publicKeyPEM(t), Operator: "SoleOperator"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewSubmitter: %v", err)
+	}
+	withCTSubmitter(t, sub, []Profile{{
+		Name:            "server-ct-ops-open",
+		KeyUsages:       []string{"digitalSignature"},
+		ExtKeyUsages:    []string{"serverAuth"},
+		DefaultValidity: 90 * day,
+		CT:              &CTConfig{Enabled: true, MinSCTs: 2, MinDistinctOperators: 2, FailOpen: true, TimeoutSeconds: 5, Retries: 1},
+	}})
+
+	csr := makeCSR(t, "ops-open.example.com", nil)
+	res, err := mgr.IssueCertificate(ctx, IssueSpec{CAID: root.ID, CSRPEM: csr, Profile: "server-ct-ops-open"})
+	if err != nil {
+		t.Fatalf("fail-open issuance should succeed: %v", err)
+	}
+	if !res.CT.Embedded || res.CT.SCTCount != 2 {
+		t.Errorf("SCTs were obtained and should be embedded: %+v", res.CT)
+	}
+	if res.CT.Operators != 1 {
+		t.Errorf("CT.Operators = %d, want 1 (both SCTs from one operator)", res.CT.Operators)
+	}
+	if !res.CT.FailedOpen {
+		t.Error("operator-diversity shortfall under fail-open must set FailedOpen")
+	}
+	if res.Record.CTStatus != models.CTStatusFailedOpen {
+		t.Errorf("record CTStatus = %q, want %q", res.Record.CTStatus, models.CTStatusFailedOpen)
+	}
+	// The SCT list is genuinely embedded even though the policy failed open.
+	if !hasOID(res.Certificate, ct.OIDSCTList) {
+		t.Error("SCT list extension should be present (SCTs were obtained)")
 	}
 }
 

@@ -102,7 +102,13 @@ type IssueResult struct {
 	CT *CTStatus
 }
 
-// applyCTToRecord folds a CT status into the stored certificate record.
+// applyCTToRecord folds a CT status into the stored certificate record. When the
+// SCT policy failed open (a fail-open profile whose policy was not fully met) the
+// record is marked failed_open even if some SCTs were still embedded — the
+// fail-open is the operationally important signal (e.g. SCTs obtained but from
+// too few distinct operators to satisfy min_distinct_operators), and inclusion
+// monitoring keys off sct_count rather than this status, so surfacing the
+// shortfall here costs no monitoring coverage.
 func applyCTToRecord(record *models.IssuedCertificate, status *CTStatus) {
 	if status == nil || !status.Enabled {
 		record.CTStatus = models.CTStatusNone
@@ -111,10 +117,10 @@ func applyCTToRecord(record *models.IssuedCertificate, status *CTStatus) {
 	record.SCTCount = status.SCTCount
 	record.CTLogs = status.succeededLogNames()
 	switch {
-	case status.Embedded:
-		record.CTStatus = models.CTStatusSubmitted
 	case status.FailedOpen:
 		record.CTStatus = models.CTStatusFailedOpen
+	case status.Embedded:
+		record.CTStatus = models.CTStatusSubmitted
 	default:
 		record.CTStatus = models.CTStatusNone
 	}

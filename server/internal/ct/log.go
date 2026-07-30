@@ -27,6 +27,14 @@ const maxSCTResponseBytes = 1 << 20 // 1 MiB
 type Log struct {
 	// Name is the operator-facing identifier used in profiles and audit records.
 	Name string
+	// Operator is the name of the organization that runs this log (e.g.
+	// "Google", "Cloudflare", "DigiCert"). CT operator-diversity policies
+	// (Chrome, Apple) count distinct operators rather than distinct logs, so two
+	// logs sharing an Operator satisfy a diversity requirement only once. Empty
+	// means the operator is unknown; a diversity policy then treats the log as an
+	// independent operator keyed by its own name, and it can never satisfy a
+	// required-operator allowlist entry.
+	Operator string
 	// URL is the log's base URL (the RFC 6962 ct/v1/* paths are appended to it).
 	URL string
 	// PublicKey, when set, is the log's public key. It enables verification of
@@ -55,6 +63,10 @@ const defaultMMD = 24 * time.Hour
 type LogConfig struct {
 	Name string
 	URL  string
+	// Operator names the organization that runs the log; see Log.Operator.
+	// Optional — when empty it can be filled from a Google-style CT log list via
+	// LoadOperatorMap / ApplyOperators before the submitter is built.
+	Operator string
 	// PublicKeyPEM is the log's public key as a PEM SubjectPublicKeyInfo block.
 	// Optional: when empty, SCT signatures from this log are accepted without
 	// cryptographic verification (count-only policy).
@@ -81,12 +93,13 @@ func NewLog(cfg LogConfig, client *http.Client) (*Log, error) {
 	}
 	rootURL := strings.TrimRight(cfg.URL, "/")
 	l := &Log{
-		Name:    cfg.Name,
-		URL:     cfg.URL,
-		mmd:     mmd,
-		rootURL: rootURL,
-		baseURL: rootURL + "/" + addPreChainPath,
-		httpDo:  client.Do,
+		Name:     cfg.Name,
+		Operator: strings.TrimSpace(cfg.Operator),
+		URL:      cfg.URL,
+		mmd:      mmd,
+		rootURL:  rootURL,
+		baseURL:  rootURL + "/" + addPreChainPath,
+		httpDo:   client.Do,
 	}
 	if pemStr := strings.TrimSpace(cfg.PublicKeyPEM); pemStr != "" {
 		block, _ := pem.Decode([]byte(pemStr))

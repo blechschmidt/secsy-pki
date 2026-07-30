@@ -1188,6 +1188,9 @@ type CTLogOutcome struct {
 	// Log configured log name
 	Log *string `json:"log,omitempty"`
 	Ok  *bool   `json:"ok,omitempty"`
+
+	// Operator the log's configured operator (empty when unknown)
+	Operator *string `json:"operator,omitempty"`
 }
 
 // CTResponse Certificate Transparency outcome for an issuance.
@@ -1198,6 +1201,9 @@ type CTResponse struct {
 	// Enabled whether the profile requested CT
 	Enabled *bool           `json:"enabled,omitempty"`
 	Logs    *[]CTLogOutcome `json:"logs,omitempty"`
+
+	// Operators distinct CT log operators that returned a usable SCT (enforced against a profile's min_distinct_operators)
+	Operators *int `json:"operators,omitempty"`
 
 	// SctCount number of embedded SCTs
 	SctCount *int              `json:"sct_count,omitempty"`

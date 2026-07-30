@@ -595,13 +595,14 @@ func issueResponse(result *ca.IssueResult) models.IssueCertResponse {
 	}
 	if ct := result.CT; ct != nil && ct.Enabled {
 		out := &models.CTResponse{
-			Enabled:  true,
-			Embedded: ct.Embedded,
-			SCTCount: ct.SCTCount,
-			Status:   result.Record.CTStatus,
+			Enabled:   true,
+			Embedded:  ct.Embedded,
+			SCTCount:  ct.SCTCount,
+			Operators: ct.Operators,
+			Status:    result.Record.CTStatus,
 		}
 		for _, r := range ct.Logs {
-			out.Logs = append(out.Logs, models.CTLogOutcome{Log: r.Log, OK: r.OK, Error: r.Error})
+			out.Logs = append(out.Logs, models.CTLogOutcome{Log: r.Log, Operator: r.Operator, OK: r.OK, Error: r.Error})
 		}
 		resp.CT = out
 	}

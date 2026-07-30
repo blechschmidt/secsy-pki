@@ -775,18 +775,24 @@ type IssueCertResponse struct {
 // CTResponse conveys the Certificate Transparency outcome of an issuance to API
 // clients and the admin console.
 type CTResponse struct {
-	Enabled  bool           `json:"enabled"`
-	Embedded bool           `json:"embedded"`
-	SCTCount int            `json:"sct_count"`
-	Status   CTStatus       `json:"status"`
-	Logs     []CTLogOutcome `json:"logs,omitempty"`
+	Enabled  bool `json:"enabled"`
+	Embedded bool `json:"embedded"`
+	SCTCount int  `json:"sct_count"`
+	// Operators is the number of distinct CT log operators that returned a usable
+	// SCT — the value enforced against a profile's min_distinct_operators policy.
+	Operators int            `json:"operators"`
+	Status    CTStatus       `json:"status"`
+	Logs      []CTLogOutcome `json:"logs,omitempty"`
 }
 
 // CTLogOutcome is the per-log result of a precertificate submission.
 type CTLogOutcome struct {
-	Log   string `json:"log"`
-	OK    bool   `json:"ok"`
-	Error string `json:"error,omitempty"`
+	Log string `json:"log"`
+	// Operator is the log's configured operator (empty when unknown), so a client
+	// can see the operator-diversity makeup, not just per-log success.
+	Operator string `json:"operator,omitempty"`
+	OK       bool   `json:"ok"`
+	Error    string `json:"error,omitempty"`
 }
 
 // ExportPKCS12Request asks a CA to generate a subject keypair server-side, issue

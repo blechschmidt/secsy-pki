@@ -6,11 +6,14 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/caa"
 	"github.com/blechschmidt/secsy-pki/server/internal/ct"
 	"github.com/blechschmidt/secsy-pki/server/internal/fips"
+	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
@@ -29,9 +32,20 @@ type CTConfig struct {
 	// MinSCTs is the minimum number of SCTs the policy requires. Zero defaults to
 	// one. When fewer are obtained, FailOpen decides whether issuance proceeds.
 	MinSCTs int `json:"min_scts,omitempty"`
-	// FailOpen selects the failure mode. False (fail-closed, the default) makes
-	// issuance fail when the minimum SCT count is not met. True (fail-open) lets
-	// issuance proceed, embedding whatever SCTs were obtained (possibly none).
+	// MinDistinctOperators is the minimum number of DISTINCT CT log operators that
+	// must return a usable SCT, enforced in addition to MinSCTs. Modern CT
+	// policies (Chrome, Apple) require independent operators so no single operator
+	// can unilaterally back-date or withhold transparency evidence. Zero disables
+	// the operator-diversity check.
+	MinDistinctOperators int `json:"min_distinct_operators,omitempty"`
+	// RequireOperators, when non-empty, is an allowlist of operator names each of
+	// which must be represented by at least one usable SCT — a stricter constraint
+	// layered on top of MinDistinctOperators.
+	RequireOperators []string `json:"require_operators,omitempty"`
+	// FailOpen selects the failure mode for the whole SCT policy (MinSCTs,
+	// MinDistinctOperators, and RequireOperators). False (fail-closed, the
+	// default) makes issuance fail when the policy is not met. True (fail-open)
+	// lets issuance proceed, embedding whatever SCTs were obtained (possibly none).
 	FailOpen bool `json:"fail_open,omitempty"`
 	// TimeoutSeconds bounds each individual log submission attempt. Zero uses a
 	// built-in default.
@@ -79,6 +93,9 @@ type CTStatus struct {
 	Embedded bool `json:"embedded"`
 	// SCTCount is the number of SCTs embedded.
 	SCTCount int `json:"sct_count"`
+	// Operators is the number of DISTINCT CT log operators that returned a usable
+	// SCT — the value enforced against the profile's MinDistinctOperators policy.
+	Operators int `json:"operators"`
 	// Logs is the per-log submission outcome.
 	Logs []ct.LogResult `json:"logs,omitempty"`
 	// FailedOpen reports that the SCT policy was not met but issuance proceeded
@@ -98,7 +115,7 @@ func (s *CTStatus) Summary() string {
 			ok++
 		}
 	}
-	str := fmt.Sprintf("ct=enabled scts=%d logs=%d/%d", s.SCTCount, ok, len(s.Logs))
+	str := fmt.Sprintf("ct=enabled scts=%d operators=%d logs=%d/%d", s.SCTCount, s.Operators, ok, len(s.Logs))
 	if s.FailedOpen {
 		str += " fail_open=applied"
 	}
@@ -281,17 +298,28 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 		// fail-open covers log unavailability, not operator misconfiguration.
 		return nil, nil, fmt.Errorf("certificate transparency submission: %w", err)
 	}
-	ctSpan.SetAttributes(attribute.Int("ca.ct.sct_count", len(sub.SCTs)))
+	// Map each usable SCT back to its log's operator so operator diversity — not
+	// just the raw SCT count — can be enforced (Task 150). The achieved count is
+	// recorded on the status (audit), as a span attribute, and as a histogram
+	// observation regardless of whether the policy ultimately passes, so a live
+	// log set that has degraded to a single operator is visible even on fail-open.
+	div := evaluateOperatorDiversity(sub.Results)
+	status.Operators = div.Count
+	metrics.CTDistinctOperators.Observe(float64(div.Count))
+	ctSpan.SetAttributes(
+		attribute.Int("ca.ct.sct_count", len(sub.SCTs)),
+		attribute.Int("ca.ct.operator_count", div.Count))
 	ctSpan.End()
 	status.Logs = sub.Results
 	status.SCTCount = len(sub.SCTs)
 
-	// (3) Enforce the min-SCT / fail-open policy.
-	if len(sub.SCTs) < cfg.minSCTs() {
+	// (3) Enforce the SCT-count and operator-diversity policy under the profile's
+	// fail-open/fail-closed semantics. A shortfall in any dimension (too few SCTs,
+	// too few distinct operators, or a missing required operator) is fatal when
+	// fail-closed and flagged (failed_open) when fail-open.
+	if violation := cfg.evaluateSCTPolicy(len(sub.SCTs), div, profile.Name, sub.Results); violation != "" {
 		if !cfg.FailOpen {
-			return nil, nil, fmt.Errorf(
-				"certificate transparency: obtained %d SCT(s), profile %q requires %d (%s)",
-				len(sub.SCTs), profile.Name, cfg.minSCTs(), ctResultsSummary(sub.Results))
+			return nil, nil, fmt.Errorf("%s", violation)
 		}
 		status.FailedOpen = true
 	}
@@ -438,6 +466,92 @@ func appendExts(base []pkix.Extension, exts []pkix.Extension) []pkix.Extension {
 	out = append(out, base...)
 	out = append(out, exts...)
 	return out
+}
+
+// operatorDiversity summarizes the CT log-operator diversity achieved by a set
+// of per-log submission results — the raw material for enforcing an operator
+// (not merely SCT) minimum.
+type operatorDiversity struct {
+	// Count is the number of DISTINCT operators that returned a usable SCT. A log
+	// with no configured operator is counted as its own independent operator
+	// (keyed by log name) so the count is always well-defined; it never merges
+	// with a named operator.
+	Count int
+	// Operators is the sorted set of distinct operator identities represented,
+	// for the audit/error detail. Unlabelled logs appear as "log:<name>".
+	Operators []string
+	// named is the set of explicitly-configured operator names present among the
+	// usable SCTs, used to satisfy a RequireOperators allowlist. An unlabelled
+	// log never contributes here, so it can never satisfy a required operator.
+	named map[string]struct{}
+}
+
+// evaluateOperatorDiversity computes the operator diversity achieved by the
+// successful log results. Each result maps to its configured operator; a log
+// with no operator is treated as an independent operator keyed by "log:<name>",
+// so unlabelled logs are counted but never merge with — nor satisfy a required
+// entry for — a named operator.
+func evaluateOperatorDiversity(results []ct.LogResult) operatorDiversity {
+	distinct := make(map[string]struct{})
+	named := make(map[string]struct{})
+	for _, r := range results {
+		if !r.OK {
+			continue
+		}
+		if op := strings.TrimSpace(r.Operator); op != "" {
+			distinct[op] = struct{}{}
+			named[op] = struct{}{}
+		} else {
+			distinct["log:"+r.Log] = struct{}{}
+		}
+	}
+	ops := make([]string, 0, len(distinct))
+	for op := range distinct {
+		ops = append(ops, op)
+	}
+	sort.Strings(ops)
+	return operatorDiversity{Count: len(distinct), Operators: ops, named: named}
+}
+
+// missingRequired returns the required operator names (trimmed, non-empty) that
+// are not represented by any usable SCT.
+func (d operatorDiversity) missingRequired(required []string) []string {
+	var missing []string
+	for _, req := range required {
+		req = strings.TrimSpace(req)
+		if req == "" {
+			continue
+		}
+		if _, ok := d.named[req]; !ok {
+			missing = append(missing, req)
+		}
+	}
+	return missing
+}
+
+// evaluateSCTPolicy reports the first way the collected SCTs fall short of the
+// profile's Certificate Transparency policy — too few SCTs, too few distinct
+// operators, or a missing required operator — or "" when the policy is met. The
+// returned string is a complete, human-readable failure message (used verbatim
+// as the fail-closed error and implied by the failed_open status). Checks run
+// SCT-count first, then operator diversity, then the required-operator allowlist.
+func (c *CTConfig) evaluateSCTPolicy(sctCount int, div operatorDiversity, profileName string, results []ct.LogResult) string {
+	if sctCount < c.minSCTs() {
+		return fmt.Sprintf(
+			"certificate transparency: obtained %d SCT(s), profile %q requires %d (%s)",
+			sctCount, profileName, c.minSCTs(), ctResultsSummary(results))
+	}
+	if c.MinDistinctOperators > 0 && div.Count < c.MinDistinctOperators {
+		return fmt.Sprintf(
+			"certificate transparency: obtained SCTs from %d distinct log operator(s) %v, profile %q requires %d (%s)",
+			div.Count, div.Operators, profileName, c.MinDistinctOperators, ctResultsSummary(results))
+	}
+	if missing := div.missingRequired(c.RequireOperators); len(missing) > 0 {
+		return fmt.Sprintf(
+			"certificate transparency: profile %q requires an SCT from operator(s) %v but none was obtained (got operators %v; %s)",
+			profileName, missing, div.Operators, ctResultsSummary(results))
+	}
+	return ""
 }
 
 // ctResultsSummary renders per-log errors for a policy-failure message.
