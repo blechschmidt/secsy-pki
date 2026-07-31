@@ -456,6 +456,10 @@ func authzMatrix() []rc {
 		// reference: a cross-tenant auditor referencing tenant-a's CA gets a
 		// non-disclosing 404 (caRdBody), a capable auditor reaches the handler.
 		caRdBody("POST", "/api/validate", "/api/validate", `{"ca":"ca-a"}`),
+		// Evidence-Record verification is a global read (canRead / audit:read), not
+		// tenant-scoped: an empty body reaches the handler (400) past auth, which is
+		// what the matrix asserts for a capable principal.
+		rdG("POST", "/api/ers/verify", "/api/ers/verify", `{}`),
 		hsmMg("GET", "/api/inventory/keys", "/api/inventory/keys", ""),
 
 		// ACME operator visibility.

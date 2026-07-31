@@ -949,6 +949,14 @@ func main() {
 		elector.Register("audit-anchor", anchorRunner.Run)
 	}
 
+	// RFC 4998 Evidence-Record preservation (Task 161): a leader-elected job that
+	// folds recent audit events into Evidence Records over the internal TSA and
+	// renews existing records — time-stamp renewal before the TSA certificate
+	// expires and hash-tree renewal on algorithm deprecation — so the audit chain
+	// and signed artifacts survive hash/signature-algorithm obsolescence. It sits
+	// after the TSA block so it can reuse the in-process authority.
+	setupErs(cfg, db, tsaAuthority, elector)
+
 	// Artifact code-signing service (Task 60): CMS detached signatures over
 	// release artifacts at /api/sign (RBAC role "signer"), with optional RFC 3161
 	// countersignatures from the in-process TSA. Signer keys/certificates are

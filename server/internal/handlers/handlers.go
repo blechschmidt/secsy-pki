@@ -651,6 +651,12 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	// referenced CA; a pure read (no HSM, no signing, no audit).
 	mux.Handle("POST /api/validate", protected(http.HandlerFunc(a.ValidateChain)))
 
+	// RFC 4998 Evidence Records (Task 161): verify a long-term-preservation
+	// Evidence Record — a stored record by id (re-deriving audit objects), or a
+	// standalone DER — end to end. Read-gated pure read (no HSM, no signing);
+	// records the ers.verify outcome.
+	mux.Handle("POST /api/ers/verify", protected(http.HandlerFunc(a.VerifyEvidenceRecord)))
+
 	// ACME operator visibility (the ACME protocol endpoints are mounted
 	// separately, authenticated by account keys). Read-gated like other inventory.
 	mux.Handle("GET /api/acme/accounts", protected(http.HandlerFunc(a.ListACMEAccounts)))

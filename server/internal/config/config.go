@@ -178,6 +178,17 @@ type Config struct {
 	// `secsy-ca inventory retention` CLI (run/dry-run/status) works regardless.
 	// See RetentionConfig and docs/retention.md.
 	Retention RetentionConfig `yaml:"retention"`
+	// Ers configures the RFC 4998 Evidence-Record long-term-preservation job (Task
+	// 161): a leader-elected loop that folds recent audit-log events into Evidence
+	// Records over an HSM-backed archive timestamp, and renews existing records —
+	// time-stamp renewal before the TSA certificate expires, and hash-tree renewal
+	// when the current hash algorithm is deprecated (driven by the internal/fips
+	// policy) — so the tamper-evident audit chain and signed artifacts survive
+	// hash/signature-algorithm obsolescence. It reuses the internal TSA (tsa.enabled)
+	// or an external tsa_url. Disabled unless ers.enabled is true; the `secsy-ca ers`
+	// CLI (generate/renew/verify/export) works regardless. See ErsConfig and
+	// docs/evidence-records.md.
+	Ers ErsConfig `yaml:"ers"`
 	// Webhook configures the durable outbound webhook / eventing system (Task
 	// 116): a leader-elected delivery worker that POSTs certificate lifecycle
 	// events (issue/renew/revoke/suspend/release) to operator-registered external
@@ -610,6 +621,91 @@ func (c RetentionConfig) Validate() error {
 	default:
 		return fmt.Errorf("retention.mode %q is not one of archive|prune", c.Mode)
 	}
+}
+
+// ErsConfig configures the RFC 4998 Evidence-Record preservation job (Task 161).
+// Enabled gates only the leader-elected loop; the `secsy-ca ers` CLI works
+// regardless. The loop obtains archive timestamps from the internal TSA (which
+// then must be enabled) or an external TSAURL.
+type ErsConfig struct {
+	// Enabled starts the leader-elected preservation loop in the server.
+	Enabled bool `yaml:"enabled"`
+	// Schedule controls how often the loop runs.
+	Schedule ErsScheduleConfig `yaml:"schedule"`
+	// Hash is the message-imprint / hash-tree algorithm for NEW records and the
+	// target of hash-tree renewal (sha256|sha384|sha512). Defaults to sha256. When
+	// an existing record's current chain uses a weaker algorithm than this — or
+	// one deprecated by the FIPS policy — the loop performs a hash-tree renewal.
+	Hash string `yaml:"hash"`
+	// RenewalLookaheadDays schedules time-stamp renewal this many days before a
+	// record's newest embedded TSA certificate expires. Defaults to 30.
+	RenewalLookaheadDays int `yaml:"renewal_lookahead_days"`
+	// BatchSize bounds how many audit events one generation cycle folds into a
+	// single Evidence Record. Defaults to 256, capped at 4096.
+	BatchSize int `yaml:"batch_size"`
+	// PreserveAudit generates Evidence Records over audit-log events (the primary
+	// use case). Defaults to true when the job is enabled; set false to run a
+	// renewal-only loop (e.g. an artifact-only deployment driving generation via
+	// the CLI).
+	PreserveAudit *bool `yaml:"preserve_audit"`
+	// TSAURL, when set, obtains archive timestamps from an external RFC 3161 TSA
+	// instead of the internal one (which then need not be enabled).
+	TSAURL string `yaml:"tsa_url"`
+	// TimeoutSeconds bounds an external-TSA request (default 30).
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+}
+
+// ErsScheduleConfig is the ers.schedule block.
+type ErsScheduleConfig struct {
+	// IntervalHours is how often the preservation loop runs. Defaults to 24 when
+	// unset; a cycle happens once immediately on leadership gain, then every
+	// interval.
+	IntervalHours int `yaml:"interval_hours"`
+}
+
+// Interval returns the resolved preservation interval (default 24h).
+func (c ErsConfig) Interval() time.Duration {
+	if c.Schedule.IntervalHours <= 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(c.Schedule.IntervalHours) * time.Hour
+}
+
+// RenewalLookahead returns the resolved time-stamp-renewal lookahead window
+// (default 30 days).
+func (c ErsConfig) RenewalLookahead() time.Duration {
+	if c.RenewalLookaheadDays <= 0 {
+		return 30 * 24 * time.Hour
+	}
+	return time.Duration(c.RenewalLookaheadDays) * 24 * time.Hour
+}
+
+// Batch returns the resolved per-record generation batch size (default 256,
+// capped at 4096 so a single record's reduced hash tree stays bounded).
+func (c ErsConfig) Batch() int {
+	n := c.BatchSize
+	if n <= 0 {
+		n = 256
+	}
+	if n > 4096 {
+		n = 4096
+	}
+	return n
+}
+
+// ResolvedHash returns the configured hash-tree algorithm name (default sha256).
+func (c ErsConfig) ResolvedHash() string {
+	h := strings.ToLower(strings.TrimSpace(c.Hash))
+	if h == "" {
+		return "sha256"
+	}
+	return h
+}
+
+// PreserveAuditEnabled reports whether the loop generates records over audit
+// events (default true).
+func (c ErsConfig) PreserveAuditEnabled() bool {
+	return c.PreserveAudit == nil || *c.PreserveAudit
 }
 
 // WebhookConfig configures the durable outbound webhook delivery worker (Task
@@ -3544,6 +3640,9 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateErs(); err != nil {
+		return nil, err
+	}
 	if err := cfg.validateAuditAnchor(); err != nil {
 		return nil, err
 	}
@@ -4028,6 +4127,40 @@ func (c *Config) validateAuditAnchor() error {
 	}
 	if !c.TSA.Enabled {
 		return fmt.Errorf("audit.anchor.enabled requires the internal TSA (tsa.enabled: true) or an external audit.anchor.tsa_url")
+	}
+	return nil
+}
+
+// validateErs sanity-checks the RFC 4998 Evidence-Record preservation
+// configuration when enabled: like audit anchoring it needs a timestamp source
+// (the internal TSA or an external URL), and it accepts only a SHA-2 hash tree.
+func (c *Config) validateErs() error {
+	e := &c.Ers
+	if !e.Enabled {
+		return nil
+	}
+	if e.Schedule.IntervalHours < 0 {
+		return fmt.Errorf("ers.schedule.interval_hours must not be negative")
+	}
+	if e.RenewalLookaheadDays < 0 {
+		return fmt.Errorf("ers.renewal_lookahead_days must not be negative")
+	}
+	if e.TimeoutSeconds < 0 {
+		return fmt.Errorf("ers.timeout_seconds must not be negative")
+	}
+	switch e.ResolvedHash() {
+	case "sha256", "sha-256", "sha384", "sha-384", "sha512", "sha-512":
+	default:
+		return fmt.Errorf("ers.hash %q is not one of sha256|sha384|sha512", e.Hash)
+	}
+	if e.TSAURL != "" {
+		if !strings.HasPrefix(e.TSAURL, "http://") && !strings.HasPrefix(e.TSAURL, "https://") {
+			return fmt.Errorf("ers.tsa_url %q must be an http(s) URL", e.TSAURL)
+		}
+		return nil
+	}
+	if !c.TSA.Enabled {
+		return fmt.Errorf("ers.enabled requires the internal TSA (tsa.enabled: true) or an external ers.tsa_url")
 	}
 	return nil
 }

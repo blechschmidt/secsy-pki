@@ -644,6 +644,38 @@ func (db *DB) migrate() error {
 			created_at TIMESTAMP NOT NULL
 		)`, blob),
 		`CREATE INDEX IF NOT EXISTS idx_audit_anchors_seq ON audit_anchors(seq)`,
+		// RFC 4998 Evidence Records (Task 161): long-term preservation attestations
+		// over protected data objects (a range of event_log events, or a signed
+		// artifact). record holds the DER EvidenceRecord — a renewable chain of
+		// RFC 3161 archive timestamps that survives hash/signature-algorithm
+		// obsolescence. The metadata columns let the leader-elected renewal job find
+		// records due for time-stamp renewal (tsa_not_after) or hash-tree renewal
+		// (digest_alg deprecated) without decoding every DER blob.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS evidence_records (
+			id TEXT PRIMARY KEY,
+			scope TEXT NOT NULL,
+			description TEXT,
+			first_seq INTEGER NOT NULL DEFAULT 0,
+			last_seq INTEGER NOT NULL DEFAULT 0,
+			object_ids TEXT NOT NULL,
+			digest_alg TEXT NOT NULL,
+			chains INTEGER NOT NULL DEFAULT 1,
+			record %s NOT NULL,
+			created_at TIMESTAMP NOT NULL,
+			renewed_at TIMESTAMP,
+			last_gen_time TIMESTAMP NOT NULL,
+			tsa_not_after TIMESTAMP
+		)`, blob),
+		`CREATE INDEX IF NOT EXISTS idx_evidence_records_last_seq ON evidence_records(last_seq)`,
+		`CREATE INDEX IF NOT EXISTS idx_evidence_records_created ON evidence_records(created_at)`,
+		// Durable single-row cursor for the Evidence-Record generation job: the
+		// highest event_log.seq already folded into an Evidence Record. The job
+		// resumes from here so audit events are preserved exactly once.
+		`CREATE TABLE IF NOT EXISTS ers_cursor (
+			id TEXT PRIMARY KEY,
+			last_seq BIGINT NOT NULL,
+			updated_at TIMESTAMP NOT NULL
+		)`,
 		// Registered WebAuthn passkeys for operator step-up authentication (Task
 		// 50). Only the credential id, public key (SPKI DER), and signature counter
 		// are stored; the private key never leaves the authenticator.

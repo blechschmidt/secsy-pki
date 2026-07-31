@@ -1212,6 +1212,59 @@ func checkRetention(r *Report, cfg *config.Config, db dbHandle, schemaOK bool) {
 	})
 }
 
+// checkErs reports on the RFC 4998 Evidence-Record preservation job (Task 161):
+// the freshness of the newest ers.generate / ers.renew cycle. A stalled job
+// means audit-chain / artifact evidence is no longer being renewed and will
+// eventually outlive its archive-timestamp certificate or hash algorithm.
+func checkErs(r *Report, cfg *config.Config, db dbHandle, schemaOK bool) {
+	r.run("ers.freshness", func() (Status, string) {
+		if db == nil || !schemaOK {
+			return StatusSkip, "store unavailable or schema incomplete"
+		}
+		// Consider both event kinds: a purely renewal-driven deployment
+		// (preserve_audit: false) never emits ers.generate.
+		gen, _, err := db.ListEvents(audit.ActionERSGenerate, "", "", 1, 0)
+		if err != nil {
+			return StatusFail, fmt.Sprintf("listing ers.generate audit events: %v", err)
+		}
+		ren, _, err := db.ListEvents(audit.ActionERSRenew, "", "", 1, 0)
+		if err != nil {
+			return StatusFail, fmt.Sprintf("listing ers.renew audit events: %v", err)
+		}
+		var newest audit.Event
+		switch {
+		case len(gen) > 0 && len(ren) > 0:
+			if gen[0].Timestamp.After(ren[0].Timestamp) {
+				newest = gen[0]
+			} else {
+				newest = ren[0]
+			}
+		case len(gen) > 0:
+			newest = gen[0]
+		case len(ren) > 0:
+			newest = ren[0]
+		default:
+			if cfg.Ers.Enabled {
+				return StatusWarn, "ers.enabled is set but no evidence record has been generated or renewed yet (server not started, this replica never led, or no audit activity yet)"
+			}
+			return StatusSkip, "evidence-record preservation disabled (ers.enabled) and no records on record"
+		}
+
+		now := time.Now()
+		age := humanDuration(now.Sub(newest.Timestamp))
+		if newest.Result != audit.ResultSuccess {
+			return StatusFail, fmt.Sprintf("last evidence-record %s FAILED %s ago (%s)", newest.Action, age, newest.Detail)
+		}
+		if !cfg.Ers.Enabled {
+			return StatusPass, fmt.Sprintf("last evidence-record activity ok %s ago (preservation currently disabled)", age)
+		}
+		if elapsed := now.Sub(newest.Timestamp); elapsed > 3*cfg.Ers.Interval() {
+			return StatusWarn, fmt.Sprintf("last evidence-record cycle ok but stalled — %s ago exceeds 3x the %s interval", age, cfg.Ers.Interval())
+		}
+		return StatusPass, fmt.Sprintf("last evidence-record %s ok %s ago", newest.Action, age)
+	})
+}
+
 // --- 7d. CT inclusion monitoring ---------------------------------------------
 
 // checkCTInclusion surfaces the Certificate Transparency SCT inclusion monitor's

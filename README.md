@@ -46,6 +46,7 @@ Comprehensive deployment and operations guides live in [`docs/`](docs/README.md)
 | [Four-eyes / maker-checker approvals](docs/approvals.md) | Dual-control gate for CA lifecycle, bulk revoke, KEK rotation, and per-profile issuance |
 | [DANE TLSA & SSHFP DNS records](docs/dns-records.md) | Zone-file pinning records for TLS services and SSH hosts the PKI issues |
 | [Scheduled backups & restore verification](docs/backup.md) | Leader-elected encrypted DR backups with an automated restore-verification drill |
+| [Long-term preservation (RFC 4998)](docs/evidence-records.md) | Renewable Evidence Records over the audit chain & signed artifacts, surviving hash/signature-algorithm obsolescence |
 | [Observability](docs/observability.md) | Prometheus `/metrics`, health/readiness probes, structured logs |
 | [Rate limiting & abuse protection](docs/rate-limiting.md) | Tiered rate limits + HSM concurrency guard for public ACME/OCSP/CRL/SCEP/EST endpoints |
 | [Kubernetes deployment](docs/kubernetes.md) | Container image, Helm chart, cert-manager ACME issuer, kind/SoftHSM smoke test |

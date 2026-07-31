@@ -242,7 +242,7 @@ func Run(ctx context.Context, opts Options) *Report {
 		for _, name := range []string{
 			"db.connectivity", "db.schema", "keyprovider.ca", "pin.source", "auth.ldap", "pkcs11.uris", "keys.ca",
 			"audit.chain_head", "certs.ca_expiry", "crl.freshness",
-			"canary.last_probe", "ct.inclusion", "webhook.dead_letters",
+			"canary.last_probe", "ct.inclusion", "webhook.dead_letters", "ers.freshness",
 			"keychecks.blocklist", "keychecks.profiles", "clock.skew",
 			"serving.self_issued", "listener.tls",
 			"fips.mode", "fips.store_keys", "fips.secret_oaep",
@@ -309,6 +309,12 @@ func Run(ctx context.Context, opts Options) *Report {
 	// inventory.retention run (Task 157) — a stalled retention job means a
 	// high-volume CA's issued_certificates table grows unbounded.
 	checkRetention(r, cfg, db, schemaOK)
+
+	// 7c‴. RFC 4998 Evidence-Record preservation: freshness of the newest
+	// ers.generate/ers.renew cycle (Task 161) — a stalled preservation job means
+	// audit-chain / artifact evidence stops being renewed and will eventually
+	// outlive its archive-timestamp certificate or hash algorithm.
+	checkErs(r, cfg, db, schemaOK)
 
 	// 7d. CT SCT inclusion monitor: standing inclusion state and scan freshness.
 	checkCTInclusion(r, cfg, db, schemaOK)

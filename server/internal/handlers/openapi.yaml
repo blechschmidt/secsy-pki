@@ -2520,6 +2520,41 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/ers/verify:
+    post:
+      operationId: verifyEvidenceRecord
+      tags: [Audit]
+      summary: Verify an RFC 4998 Evidence Record
+      description: >-
+        Verifies a long-term-preservation Evidence Record (RFC 4998) end to end:
+        every embedded RFC 3161 archive timestamp's signature and imprint, each
+        reduced hash tree, the chain/sequence linkage across time-stamp and
+        hash-tree renewals, and coverage of the protected data objects. Provide a
+        stored record id (audit-scope objects are re-derived from the event log,
+        so verification also proves the live audit chain still matches), or a
+        standalone Evidence Record DER with its protected objects. A pure read:
+        no HSM is touched. Certificate-path verification against TSA trust
+        anchors is left to `secsy-ca ers verify -tsa-ca`. Read-gated (audit:read).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VerifyEvidenceRecordRequest" }
+      responses:
+        "200":
+          description: The record verifies.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvidenceRecordVerifyResult" }
+        "409":
+          description: The record does not verify (structural, timestamp, or coverage failure).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvidenceRecordVerifyResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/inventory/keys:
     get:
       operationId: listProviderKeys
@@ -5088,6 +5123,61 @@ components:
         count: { type: integer }
         broken_seq: { type: integer, format: int64 }
         detail: { type: string }
+
+    VerifyEvidenceRecordRequest:
+      type: object
+      description: >-
+        Selects the Evidence Record to verify. Provide exactly one of id (a
+        stored record) or record (a base64 DER standalone Evidence Record).
+      properties:
+        id:
+          type: string
+          description: A stored Evidence Record's id.
+        record:
+          type: string
+          description: Base64-encoded DER of a standalone Evidence Record.
+        objects:
+          type: array
+          description: >-
+            Base64-encoded protected data objects. Required for a standalone
+            record or an artifact-scope stored record; ignored for an audit-scope
+            stored record, whose objects are re-derived from the event log.
+          items: { type: string }
+
+    EvidenceRecordVerifyResult:
+      type: object
+      description: The end-to-end verification verdict for an Evidence Record.
+      properties:
+        valid: { type: boolean }
+        reason: { type: string }
+        first_gen_time: { type: string, format: date-time }
+        latest_gen_time: { type: string, format: date-time }
+        chains:
+          type: array
+          items: { $ref: "#/components/schemas/EvidenceRecordChainResult" }
+        objects:
+          type: array
+          items: { $ref: "#/components/schemas/EvidenceRecordObjectResult" }
+
+    EvidenceRecordChainResult:
+      type: object
+      description: Per-ArchiveTimeStampChain verification outcome.
+      properties:
+        index: { type: integer }
+        hash: { type: string }
+        timestamps: { type: integer }
+        valid: { type: boolean }
+        reason: { type: string }
+        first_gen_time: { type: string, format: date-time }
+        last_gen_time: { type: string, format: date-time }
+
+    EvidenceRecordObjectResult:
+      type: object
+      description: Per-protected-object coverage outcome.
+      properties:
+        id: { type: string }
+        covered: { type: boolean }
+        reason: { type: string }
 
     ApprovalDecision:
       type: object

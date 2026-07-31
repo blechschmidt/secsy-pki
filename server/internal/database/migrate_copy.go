@@ -59,6 +59,11 @@ var migrationTables = []string{
 	"event_log",
 	"siem_export_cursor",
 	"audit_anchors",
+	// RFC 4998 Evidence Records (Task 161) and their generation cursor: copying
+	// them verbatim preserves the long-term-preservation attestations and the
+	// exactly-once cursor across a store migration.
+	"evidence_records",
+	"ers_cursor",
 	// ACME state (account → order → authorization → challenge).
 	"acme_accounts",
 	"acme_orders",

@@ -863,6 +863,36 @@ var (
 		"Unix timestamp (seconds) of the last successful scheduled backup.")
 )
 
+// Ers* track the RFC 4998 Evidence-Record preservation job (Task 161): the
+// leader-elected loop generates new Evidence Records over recent audit events
+// and renews existing ones — time-stamp renewal before TSA-certificate expiry
+// and hash-tree renewal on algorithm deprecation. ErsGenerated / ErsRenewed
+// count minted / renewed records (the latter labelled by kind timestamp|hashtree),
+// ErsCycleErrors counts failed cycles, ErsRecordsTotal is the standing record
+// count, and ErsLastSuccess plus the staleness FuncGauge expose freshness.
+var (
+	ErsGenerated = NewCounter(Default,
+		"secsy_ers_generated_total",
+		"Evidence Records minted by the preservation job.")
+	ErsRenewed = NewCounter(Default,
+		"secsy_ers_renewed_total",
+		"Evidence-Record renewals, partitioned by kind (timestamp|hashtree).",
+		"kind")
+	ErsCycleErrors = NewCounter(Default,
+		"secsy_ers_cycle_errors_total",
+		"Evidence-Record preservation cycles (generation or renewal) that failed.")
+	ErsCycleDuration = NewHistogram(Default,
+		"secsy_ers_cycle_duration_seconds",
+		"Duration of Evidence-Record preservation cycles in seconds.",
+		BatchBuckets)
+	ErsRecordsTotal = NewGauge(Default,
+		"secsy_ers_records_total",
+		"Total Evidence Records currently persisted.")
+	ErsLastSuccess = NewGauge(Default,
+		"secsy_ers_last_success_timestamp_seconds",
+		"Unix timestamp (seconds) of the last successful Evidence-Record preservation cycle.")
+)
+
 // BackupVerify* track the automated backup restore-verification drill (Task 94):
 // the leader-elected verifier (and the `secsy-ca backup verify-restore` CLI)
 // pulls the newest published backup artifact, decrypts it, restores the DB dump
@@ -1011,6 +1041,9 @@ var (
 	inventoryRetentionLastRunNano atomic.Int64
 	inventoryRetentionBacklog     atomic.Int64
 
+	ersLastSuccessNano atomic.Int64
+	ersBacklog         atomic.Int64
+
 	_ = NewFuncGauge(Default,
 		"secsy_ocsp_presign_staleness_seconds",
 		"Seconds since the last successful OCSP pre-signing batch. Absent until the first batch succeeds.",
@@ -1047,6 +1080,19 @@ var (
 				return 0, false
 			}
 			return float64(inventoryRetentionBacklog.Load()), true
+		})
+	_ = NewFuncGauge(Default,
+		"secsy_ers_staleness_seconds",
+		"Seconds since the last successful Evidence-Record generation or renewal cycle (RFC 4998, seeded from the store at startup). Absent until the first cycle succeeds.",
+		func() (float64, bool) { return sinceNano(ersLastSuccessNano.Load()) })
+	_ = NewFuncGauge(Default,
+		"secsy_ers_records_pending_renewal",
+		"Evidence Records past their renewal threshold still awaiting renewal after the last cycle (should trend to zero). Absent until the first cycle completes.",
+		func() (float64, bool) {
+			if ersLastSuccessNano.Load() == 0 {
+				return 0, false
+			}
+			return float64(ersBacklog.Load()), true
 		})
 )
 
@@ -1271,6 +1317,42 @@ func setAuditAnchorPending(anchoredSeq, head int64) {
 		pending = 0
 	}
 	AuditAnchorPending.Set(float64(pending))
+}
+
+// Evidence-Record (RFC 4998) preservation-job recorders.
+
+// RecordErsGenerated counts one newly minted Evidence Record.
+func RecordErsGenerated() { ErsGenerated.Inc() }
+
+// RecordErsRenewed counts one Evidence-Record renewal of the given kind
+// ("timestamp" or "hashtree").
+func RecordErsRenewed(kind string) { ErsRenewed.Inc(kind) }
+
+// RecordErsCycle records the outcome of one preservation cycle: its duration,
+// any error, and — on success — the freshness timestamp, the standing record
+// count, and how many records remain past their renewal threshold.
+func RecordErsCycle(start time.Time, total, pendingRenewal int, err error) {
+	ErsCycleDuration.Observe(time.Since(start).Seconds())
+	if err != nil {
+		ErsCycleErrors.Inc()
+		return
+	}
+	now := time.Now()
+	ErsLastSuccess.Set(float64(now.Unix()))
+	ersLastSuccessNano.Store(now.UnixNano())
+	ErsRecordsTotal.Set(float64(total))
+	ersBacklog.Store(int64(pendingRenewal))
+}
+
+// SeedErs initializes the Evidence-Record gauges from persisted state at
+// startup, so the record count and staleness reflect reality before the first
+// cycle. at is the newest record's created/renewed time (zero when none).
+func SeedErs(total int, at time.Time) {
+	ErsRecordsTotal.Set(float64(total))
+	if !at.IsZero() {
+		ErsLastSuccess.Set(float64(at.Unix()))
+		ersLastSuccessNano.Store(at.UnixNano())
+	}
 }
 
 // Decision label values for AuthzDecisions.

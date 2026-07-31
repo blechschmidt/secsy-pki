@@ -306,6 +306,17 @@ const (
 	// a tamper-evident record of exactly which certificates left the hot inventory,
 	// preserving audit-chain continuity even after a prune removes the rows.
 	ActionInventoryRetention = "inventory.retention"
+	// RFC 4998 Evidence Records long-term preservation (Task 161). ActionERSGenerate
+	// records a new Evidence Record minted over a batch of audit events or a signed
+	// artifact (target: record id; detail: scope, object count, seq range, hash).
+	// ActionERSRenew records a renewal — time-stamp renewal (before TSA cert expiry,
+	// same hash) or hash-tree renewal (on algorithm deprecation, new chain / stronger
+	// hash) — of an existing record. ActionERSVerify records a verify request. No
+	// private key material is handled; every archive timestamp is an HSM-backed TSA
+	// token.
+	ActionERSGenerate = "ers.generate"
+	ActionERSRenew    = "ers.renew"
+	ActionERSVerify   = "ers.verify"
 	// Intermediate-CA key rotation / rollover (Task 24). Rotate records a new key
 	// being cross-signed under the parent and the old key entering the overlap
 	// window; Retire records the old key being revoked under its parent after the

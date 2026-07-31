@@ -1800,6 +1800,34 @@ type EventVerifyResult struct {
 	Valid     *bool   `json:"valid,omitempty"`
 }
 
+// EvidenceRecordChainResult Per-ArchiveTimeStampChain verification outcome.
+type EvidenceRecordChainResult struct {
+	FirstGenTime *time.Time `json:"first_gen_time,omitempty"`
+	Hash         *string    `json:"hash,omitempty"`
+	Index        *int       `json:"index,omitempty"`
+	LastGenTime  *time.Time `json:"last_gen_time,omitempty"`
+	Reason       *string    `json:"reason,omitempty"`
+	Timestamps   *int       `json:"timestamps,omitempty"`
+	Valid        *bool      `json:"valid,omitempty"`
+}
+
+// EvidenceRecordObjectResult Per-protected-object coverage outcome.
+type EvidenceRecordObjectResult struct {
+	Covered *bool   `json:"covered,omitempty"`
+	Id      *string `json:"id,omitempty"`
+	Reason  *string `json:"reason,omitempty"`
+}
+
+// EvidenceRecordVerifyResult The end-to-end verification verdict for an Evidence Record.
+type EvidenceRecordVerifyResult struct {
+	Chains        *[]EvidenceRecordChainResult  `json:"chains,omitempty"`
+	FirstGenTime  *time.Time                    `json:"first_gen_time,omitempty"`
+	LatestGenTime *time.Time                    `json:"latest_gen_time,omitempty"`
+	Objects       *[]EvidenceRecordObjectResult `json:"objects,omitempty"`
+	Reason        *string                       `json:"reason,omitempty"`
+	Valid         *bool                         `json:"valid,omitempty"`
+}
+
 // ExpiryReport defines model for ExpiryReport.
 type ExpiryReport struct {
 	Certificates *[]CertItem     `json:"certificates,omitempty"`
@@ -3216,6 +3244,18 @@ type ValidationRevocation struct {
 // ValidationRevocationState good, revoked, held (reversible RFC 5280 certificateHold), or unknown (no record for the serial under the resolved issuer).
 type ValidationRevocationState string
 
+// VerifyEvidenceRecordRequest Selects the Evidence Record to verify. Provide exactly one of id (a stored record) or record (a base64 DER standalone Evidence Record).
+type VerifyEvidenceRecordRequest struct {
+	// Id A stored Evidence Record's id.
+	Id *string `json:"id,omitempty"`
+
+	// Objects Base64-encoded protected data objects. Required for a standalone record or an artifact-scope stored record; ignored for an audit-scope stored record, whose objects are re-derived from the event log.
+	Objects *[]string `json:"objects,omitempty"`
+
+	// Record Base64-encoded DER of a standalone Evidence Record.
+	Record *string `json:"record,omitempty"`
+}
+
 // VerifySignatureRequest Supply exactly one of message or digest.
 type VerifySignatureRequest struct {
 	// Digest base64 pre-computed digest (length must match hash).
@@ -3731,6 +3771,9 @@ type IssueJWTSVIDJSONRequestBody = JWTSVIDRequest
 // RunDiscoveryScanJSONRequestBody defines body for RunDiscoveryScan for application/json ContentType.
 type RunDiscoveryScanJSONRequestBody = DiscoveryScanRequest
 
+// VerifyEvidenceRecordJSONRequestBody defines body for VerifyEvidenceRecord for application/json ContentType.
+type VerifyEvidenceRecordJSONRequestBody = VerifyEvidenceRecordRequest
+
 // CreateGroupJSONRequestBody defines body for CreateGroup for application/json ContentType.
 type CreateGroupJSONRequestBody = CreateGroupRequest
 
@@ -4104,6 +4147,11 @@ type ClientInterface interface {
 	RunDiscoveryScanWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	RunDiscoveryScan(ctx context.Context, body RunDiscoveryScanJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// VerifyEvidenceRecordWithBody request with any body
+	VerifyEvidenceRecordWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	VerifyEvidenceRecord(ctx context.Context, body VerifyEvidenceRecordJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListEventLog request
 	ListEventLog(ctx context.Context, params *ListEventLogParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5277,6 +5325,30 @@ func (c *Client) RunDiscoveryScanWithBody(ctx context.Context, contentType strin
 
 func (c *Client) RunDiscoveryScan(ctx context.Context, body RunDiscoveryScanJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewRunDiscoveryScanRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyEvidenceRecordWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyEvidenceRecordRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyEvidenceRecord(ctx context.Context, body VerifyEvidenceRecordJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyEvidenceRecordRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -9480,6 +9552,46 @@ func NewRunDiscoveryScanRequestWithBody(server string, contentType string, body 
 	return req, nil
 }
 
+// NewVerifyEvidenceRecordRequest calls the generic VerifyEvidenceRecord builder with application/json body
+func NewVerifyEvidenceRecordRequest(server string, body VerifyEvidenceRecordJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewVerifyEvidenceRecordRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewVerifyEvidenceRecordRequestWithBody generates requests for VerifyEvidenceRecord with any type of body
+func NewVerifyEvidenceRecordRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ers/verify")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewListEventLogRequest generates requests for ListEventLog
 func NewListEventLogRequest(server string, params *ListEventLogParams) (*http.Request, error) {
 	var err error
@@ -13395,6 +13507,11 @@ type ClientWithResponsesInterface interface {
 
 	RunDiscoveryScanWithResponse(ctx context.Context, body RunDiscoveryScanJSONRequestBody, reqEditors ...RequestEditorFn) (*RunDiscoveryScanResponse, error)
 
+	// VerifyEvidenceRecordWithBodyWithResponse request with any body
+	VerifyEvidenceRecordWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyEvidenceRecordResponse, error)
+
+	VerifyEvidenceRecordWithResponse(ctx context.Context, body VerifyEvidenceRecordJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyEvidenceRecordResponse, error)
+
 	// ListEventLogWithResponse request
 	ListEventLogWithResponse(ctx context.Context, params *ListEventLogParams, reqEditors ...RequestEditorFn) (*ListEventLogResponse, error)
 
@@ -14892,6 +15009,32 @@ func (r RunDiscoveryScanResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r RunDiscoveryScanResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type VerifyEvidenceRecordResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *EvidenceRecordVerifyResult
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *NotFound
+	JSON409      *EvidenceRecordVerifyResult
+}
+
+// Status returns HTTPResponse.Status
+func (r VerifyEvidenceRecordResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r VerifyEvidenceRecordResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -17572,6 +17715,23 @@ func (c *ClientWithResponses) RunDiscoveryScanWithResponse(ctx context.Context, 
 		return nil, err
 	}
 	return ParseRunDiscoveryScanResponse(rsp)
+}
+
+// VerifyEvidenceRecordWithBodyWithResponse request with arbitrary body returning *VerifyEvidenceRecordResponse
+func (c *ClientWithResponses) VerifyEvidenceRecordWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyEvidenceRecordResponse, error) {
+	rsp, err := c.VerifyEvidenceRecordWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyEvidenceRecordResponse(rsp)
+}
+
+func (c *ClientWithResponses) VerifyEvidenceRecordWithResponse(ctx context.Context, body VerifyEvidenceRecordJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyEvidenceRecordResponse, error) {
+	rsp, err := c.VerifyEvidenceRecord(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyEvidenceRecordResponse(rsp)
 }
 
 // ListEventLogWithResponse request returning *ListEventLogResponse
@@ -20320,6 +20480,60 @@ func ParseRunDiscoveryScanResponse(rsp *http.Response) (*RunDiscoveryScanRespons
 			return nil, err
 		}
 		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseVerifyEvidenceRecordResponse parses an HTTP response from a VerifyEvidenceRecordWithResponse call
+func ParseVerifyEvidenceRecordResponse(rsp *http.Response) (*VerifyEvidenceRecordResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &VerifyEvidenceRecordResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest EvidenceRecordVerifyResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest EvidenceRecordVerifyResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
 
 	}
 

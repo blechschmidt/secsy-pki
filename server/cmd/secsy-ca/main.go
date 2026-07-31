@@ -169,6 +169,13 @@ func run(args []string) error {
 		return cmdAudit(db, cfg, cmdArgs)
 	}
 
+	// RFC 4998 Evidence Records (Task 161): "ers verify|export|list" are HSM-free;
+	// "ers generate|renew" build the TSA-role key provider lazily inside the
+	// command, so this dispatches before the CA provider is opened.
+	if command == "ers" {
+		return cmdErs(db, cfg, cmdArgs)
+	}
+
 	// The four-eyes approval queue (Task 81) needs only the database and config
 	// for most subcommands, so dispatch it here alongside audit administration.
 	// The `certificate` subcommand (Task 84) completes an approved issuance on the
