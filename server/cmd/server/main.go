@@ -51,6 +51,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/monitor"
+	"github.com/blechschmidt/secsy-pki/server/internal/mswstep"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/ratelimit"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
@@ -983,6 +984,20 @@ func main() {
 		cmp.New(db, provider, cmpCfg).Register(mux)
 	}
 
+	// Microsoft Windows autoenrollment web services (Task 162): the MS-XCEP policy
+	// (CEP) and MS-WSTEP enrollment (CES) SOAP endpoints for GPO-driven Windows
+	// autoenrollment. Like the other enrollment protocols they authenticate with
+	// their own mechanism (a native API token or a mutual-TLS client certificate),
+	// so they mount outside the OIDC middleware and are metered by the rate-limit +
+	// HSM-concurrency guard below.
+	if cfg.MSWSTEP.Enabled {
+		msCfg, err := buildMSWSTEPConfig(db, cfg)
+		if err != nil {
+			log.Fatalf("MS-WSTEP configuration error: %v", err)
+		}
+		mswstep.New(db, provider, msCfg).Register(mux)
+	}
+
 	// Serve the legacy disk-based SPA from web/static when present. The Task 21
 	// operator console is served separately from an embedded (go:embed) bundle
 	// under /console/ by RegisterRoutes, so it ships in the binary regardless.
@@ -1888,6 +1903,56 @@ func buildCMPConfig(db *database.DB, cfg *config.Config) (cmp.Config, error) {
 	}, nil
 }
 
+// buildMSWSTEPConfig assembles the mswstep.Config for the Microsoft Windows
+// autoenrollment web services (Task 162). Client authentication is Kerberos-free:
+// a native scoped API token (always available) and, when operator mTLS is
+// configured, the same client-CA pool and bindings the operator-auth binder uses.
+func buildMSWSTEPConfig(db *database.DB, cfg *config.Config) (mswstep.Config, error) {
+	caID, err := resolveCAID(db, cfg.MSWSTEP.CAID, cfg.MSWSTEP.CALabel, "mswstep")
+	if err != nil {
+		return mswstep.Config{}, err
+	}
+	templates := make([]mswstep.Template, 0, len(cfg.MSWSTEP.Templates))
+	for _, t := range cfg.MSWSTEP.Templates {
+		templates = append(templates, mswstep.Template{
+			Profile:          t.Profile,
+			Name:             t.Name,
+			OID:              t.OID,
+			Enroll:           t.Enroll,
+			AutoEnroll:       t.AutoEnroll,
+			MinimalKeyLength: t.MinimalKeyLength,
+			SchemaVersion:    t.SchemaVersion,
+			MajorRevision:    t.MajorRevision,
+		})
+	}
+	msCfg := mswstep.Config{
+		PolicyPath:                cfg.MSWSTEP.PolicyPath,
+		EnrollPath:                cfg.MSWSTEP.EnrollPath,
+		CAID:                      caID,
+		DefaultProfile:            cfg.MSWSTEP.DefaultProfile,
+		PolicyID:                  cfg.MSWSTEP.PolicyID,
+		PolicyFriendlyName:        cfg.MSWSTEP.PolicyFriendlyName,
+		NextUpdateHours:           cfg.MSWSTEP.NextUpdateHours,
+		TemplateOIDArc:            cfg.MSWSTEP.TemplateOIDArc,
+		CESEndpoint:               cfg.MSWSTEP.CESEndpoint,
+		Templates:                 templates,
+		AllowClientCertIssuedByCA: cfg.MSWSTEP.AllowClientCertIssuedByCA,
+		// Native scoped API tokens are the primary Kerberos-free machine-auth
+		// mechanism; a token is verified against the same store as the REST/gRPC paths.
+		Tokens: authn.NewTokenAuthenticator(db),
+	}
+	// Reuse the operator mutual-TLS client-CA pool and bindings so an operator
+	// certificate authenticates identically to the REST/gRPC surfaces.
+	if cfg.Auth.MTLS.Enabled {
+		pool, err := loadClientCAs(cfg.Auth.MTLS.CAFile)
+		if err != nil {
+			return mswstep.Config{}, fmt.Errorf("mswstep mtls: %w", err)
+		}
+		msCfg.CertBinder = authn.NewCertBinder(buildCertBindings(cfg.Auth.MTLS.Bindings), pool)
+	}
+	return msCfg, nil
+}
+
 // buildTSAConfig assembles the tsa.Config from the application config. The
 // assembly (certificate/chain loading, policy OID and digest parsing) lives in
 // tsa.LoadAuthorityConfig so the secsy-ca CLI (audit-chain anchoring) builds an
@@ -2261,6 +2326,10 @@ func buildRateLimit(cfg *config.Config, db *database.DB) *ratelimit.Middleware {
 	if cfg.CMP.Enabled {
 		pref.CMP = orDefaultPath(cfg.CMP.Path, "/cmp")
 	}
+	if cfg.MSWSTEP.Enabled {
+		pref.MSXCEP = orDefaultPath(cfg.MSWSTEP.PolicyPath, "/mswstep/policy")
+		pref.MSWSTEP = orDefaultPath(cfg.MSWSTEP.EnrollPath, "/mswstep/enroll")
+	}
 	if cfg.Signing.Enabled {
 		pref.Sign = "/api/sign"
 	}
@@ -2326,6 +2395,8 @@ func (s *tenantStateSource) Resolve(_ *http.Request, endpoint string) *ratelimit
 		proto = "scep"
 	case endpoint == "cmp":
 		proto = "cmp"
+	case strings.HasPrefix(endpoint, "mswstep"):
+		proto = "mswstep"
 	default:
 		return nil
 	}
@@ -2357,6 +2428,8 @@ func (s *tenantStateSource) tenantForProtocol(proto string) string {
 		caID, caLabel = s.cfg.SCEP.CAID, s.cfg.SCEP.CALabel
 	case "cmp":
 		caID, caLabel = s.cfg.CMP.CAID, s.cfg.CMP.CALabel
+	case "mswstep":
+		caID, caLabel = s.cfg.MSWSTEP.CAID, s.cfg.MSWSTEP.CALabel
 	}
 	var caRec *models.CA
 	var err error

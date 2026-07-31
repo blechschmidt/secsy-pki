@@ -30,6 +30,10 @@ type Prefixes struct {
 	CMP   string // e.g. "/cmp"
 	Sign  string // e.g. "/api/sign" (authenticated, but HSM-bound per request)
 	BRSKI string // e.g. "/.well-known/brski" (RFC 8995 registrar)
+	// MS-XCEP (policy/CEP) and MS-WSTEP (enrollment/CES) Windows autoenrollment
+	// endpoints (Task 162), e.g. "/mswstep/policy" and "/mswstep/enroll".
+	MSXCEP  string
+	MSWSTEP string
 }
 
 // TenantState is what the middleware needs to know about the tenant behind a
@@ -78,13 +82,15 @@ func New(opts Options) *Middleware {
 		guard:       opts.Guard,
 		tenantState: opts.TenantState,
 		prefixes: Prefixes{
-			ACME:  normalizePrefix(opts.Prefixes.ACME),
-			EST:   normalizePrefix(opts.Prefixes.EST),
-			SCEP:  normalizePrefix(opts.Prefixes.SCEP),
-			TSA:   normalizePrefix(opts.Prefixes.TSA),
-			CMP:   normalizePrefix(opts.Prefixes.CMP),
-			Sign:  normalizePrefix(opts.Prefixes.Sign),
-			BRSKI: normalizePrefix(opts.Prefixes.BRSKI),
+			ACME:    normalizePrefix(opts.Prefixes.ACME),
+			EST:     normalizePrefix(opts.Prefixes.EST),
+			SCEP:    normalizePrefix(opts.Prefixes.SCEP),
+			TSA:     normalizePrefix(opts.Prefixes.TSA),
+			CMP:     normalizePrefix(opts.Prefixes.CMP),
+			Sign:    normalizePrefix(opts.Prefixes.Sign),
+			BRSKI:   normalizePrefix(opts.Prefixes.BRSKI),
+			MSXCEP:  normalizePrefix(opts.Prefixes.MSXCEP),
+			MSWSTEP: normalizePrefix(opts.Prefixes.MSWSTEP),
 		},
 	}
 }
@@ -279,6 +285,17 @@ func (m *Middleware) classify(r *http.Request) *class {
 	// concurrency guard like the other signing endpoints.
 	if p := m.prefixes.CMP; p != "" && path == p {
 		return &class{name: "cmp", hsmBound: true, tenantScoped: true}
+	}
+
+	// Microsoft autoenrollment (Task 162): MS-WSTEP RequestSecurityToken issues on
+	// the HSM, so gate it behind the concurrency guard; MS-XCEP GetPolicies only
+	// reads the policy/CA certificate, so it is metered but never queues on the
+	// guard. Both are keyed per credential (API token digest) and tenant-scoped.
+	if p := m.prefixes.MSWSTEP; p != "" && path == p {
+		return &class{name: "mswstep_enroll", hsmBound: true, account: apiAccount, tenantScoped: true}
+	}
+	if p := m.prefixes.MSXCEP; p != "" && path == p {
+		return &class{name: "mswstep_policy", account: apiAccount, tenantScoped: true}
 	}
 
 	// Artifact signing. POST /api/sign signs on the HSM, so it is both metered

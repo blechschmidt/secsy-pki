@@ -210,6 +210,19 @@ var (
 		"BRSKI EST-handoff authorization checks, partitioned by result.",
 		"result")
 
+	// Microsoft Windows autoenrollment web services (Task 162: MS-XCEP policy +
+	// MS-WSTEP enrollment). MSXCEPPolicies counts GetPolicies (CEP) responses by
+	// result; MSWSTEPRequests counts RequestSecurityToken (CES) issuance attempts
+	// by result (success|denied|error), mirroring the other enrollment protocols.
+	MSXCEPPolicies = NewCounter(Default,
+		"secsy_mswstep_getpolicies_total",
+		"MS-XCEP GetPolicies (certificate enrollment policy) responses, partitioned by result.",
+		"result")
+	MSWSTEPRequests = NewCounter(Default,
+		"secsy_mswstep_requests_total",
+		"MS-WSTEP RequestSecurityToken issuance requests, partitioned by result.",
+		"result")
+
 	// SSH certificate authority (Task 57). SSHCertificates counts signing
 	// operations by certificate "type" (user|host) and "result"; SSHRevocations
 	// counts revocation operations by result; SSHKRLRequests counts KRL builds/
@@ -1487,6 +1500,21 @@ func RecordBRSKIStatusReport(kind, status string) { BRSKIStatusReports.Inc(kind,
 
 // RecordBRSKIEnrollAuthorized records an EST-handoff authorization check outcome.
 func RecordBRSKIEnrollAuthorized(result string) { BRSKIEnrollAuthorized.Inc(result) }
+
+// MS-WSTEP / MS-XCEP result labels (Task 162), shared by the Microsoft Windows
+// autoenrollment web services.
+const (
+	MSWSTEPResultSuccess = "success"
+	MSWSTEPResultDenied  = "denied"
+	MSWSTEPResultError   = "error"
+)
+
+// RecordMSXCEPGetPolicies records an MS-XCEP GetPolicies (CEP) response outcome.
+func RecordMSXCEPGetPolicies(result string) { MSXCEPPolicies.Inc(result) }
+
+// RecordMSWSTEPRequest records an MS-WSTEP RequestSecurityToken (CES) issuance
+// outcome. result is one of the MSWSTEPResult* constants.
+func RecordMSWSTEPRequest(result string) { MSWSTEPRequests.Inc(result) }
 
 // Durable outbound webhook subscriptions (Task 116). WebhookDeliveries counts
 // terminal/retry delivery attempt outcomes (delivered|retry|dead|canceled);

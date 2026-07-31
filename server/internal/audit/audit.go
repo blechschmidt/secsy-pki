@@ -243,9 +243,9 @@ const (
 	// ActionSecretExec records secrets being decrypted for injection into a
 	// child process environment via `secsy-secret exec`; the detail lists the
 	// secret NAMES and the command, never any plaintext.
-	ActionSecretPut         = "secret.put"
-	ActionSecretRollback    = "secret.rollback"
-	ActionSecretExec        = "secret.exec"
+	ActionSecretPut      = "secret.put"
+	ActionSecretRollback = "secret.rollback"
+	ActionSecretExec     = "secret.exec"
 	// Stateless crypto service (Task 138). ActionSecretDataKey records a data-key
 	// mint (target: KEK label; the plaintext key and its wrapped envelope are
 	// never in the audit detail). ActionSecretHMAC / ActionSecretHMACVerify record
@@ -271,12 +271,12 @@ const (
 	ActionSecretSigningKeyCreate = "secret.signing_key_create"
 	ActionSecretSign             = "secret.sign"
 	ActionSecretSignVerify       = "secret.sign_verify"
-	ActionPermissionGrant   = "permission.grant"
-	ActionPermissionRevoke  = "permission.revoke"
-	ActionGroupCreate       = "group.create"
-	ActionGroupDelete       = "group.delete"
-	ActionHSMProvisionAudit = "hsm.provision_audit"
-	ActionHSMFactoryReset   = "hsm.factory_reset"
+	ActionPermissionGrant        = "permission.grant"
+	ActionPermissionRevoke       = "permission.revoke"
+	ActionGroupCreate            = "group.create"
+	ActionGroupDelete            = "group.delete"
+	ActionHSMProvisionAudit      = "hsm.provision_audit"
+	ActionHSMFactoryReset        = "hsm.factory_reset"
 	// Key-ceremony, backup, and disaster-recovery lifecycle operations. A
 	// ceremony records its start, each operator's M-of-N confirmation, and its
 	// completion (or abort) alongside the underlying ca.init_root /
@@ -419,6 +419,15 @@ const (
 	ActionCMPKeyUpdate      = "cmp.kur"
 	ActionCMPRevocation     = "cmp.rr"
 	ActionCMPCertConfirm    = "cmp.certconf"
+
+	// Microsoft Windows autoenrollment web services (Task 162): the MS-XCEP
+	// GetPolicies (CEP) policy-advertisement request and the MS-WSTEP
+	// RequestSecurityToken (CES) issuance request. Like the other enrollment
+	// protocols the actor is the presented machine credential (an mTLS client
+	// certificate subject or the "token:<id>" of a native API token) rather than
+	// an interactive OIDC subject.
+	ActionMSXCEPGetPolicies = "mswstep.getpolicies"
+	ActionMSWSTEPEnroll     = "mswstep.enroll"
 
 	// Operator authentication (Task 50). These record how a console/API principal
 	// authenticated and any subsequent step-up. The actor is the resolved

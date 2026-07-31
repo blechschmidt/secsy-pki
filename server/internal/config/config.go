@@ -64,6 +64,10 @@ type Config struct {
 	// CMP configures the Lightweight CMP (RFC 9483) certificate-management server.
 	// Disabled unless cmp.enabled is true.
 	CMP CMPConfig `yaml:"cmp"`
+	// MSWSTEP configures the Microsoft Windows autoenrollment web services — the
+	// MS-XCEP policy (CEP) and MS-WSTEP enrollment (CES) SOAP endpoints (Task 162).
+	// Disabled unless mswstep.enabled is true.
+	MSWSTEP MSWSTEPConfig `yaml:"mswstep"`
 	// Monitor configures the background certificate-expiry monitor and optional
 	// auto-renewal workflow. Disabled unless monitor.enabled is true.
 	Monitor MonitorConfig `yaml:"monitor"`
@@ -2175,6 +2179,70 @@ type CMPSecretConfig struct {
 	Profile string `yaml:"profile"`
 }
 
+// MSWSTEPConfig configures the Microsoft Windows autoenrollment web services
+// (Task 162): the MS-XCEP certificate-enrollment-policy service ("CEP") and the
+// MS-WSTEP WS-Trust enrollment service ("CES"). When enabled, two SOAP endpoints
+// are exposed so a GPO-configured Windows client can discover the available
+// templates and enroll. Clients authenticate with a native API token (Task 86) or
+// a mutual-TLS client certificate — a Kerberos-free alternative to AD-integrated
+// authentication. The issuing CA binds the services to a single tenant, like the
+// other enrollment protocols.
+type MSWSTEPConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// PolicyPath / EnrollPath are the URLs the CEP and CES endpoints mount under
+	// (defaults /mswstep/policy and /mswstep/enroll).
+	PolicyPath string `yaml:"policy_path"`
+	EnrollPath string `yaml:"enroll_path"`
+	// CAID / CALabel select the issuing CA. Exactly one should be set.
+	CAID    string `yaml:"ca_id"`
+	CALabel string `yaml:"ca_label"`
+	// DefaultProfile is the issuance profile used when a request selects no
+	// (recognized) template (default "client").
+	DefaultProfile string `yaml:"default_profile"`
+	// PolicyID is the CEP policyID advertised in GetPolicies (defaults to a value
+	// derived from the CA); PolicyFriendlyName is its human-readable name.
+	PolicyID           string `yaml:"policy_id"`
+	PolicyFriendlyName string `yaml:"policy_friendly_name"`
+	// NextUpdateHours is the advertised policy refresh hint in hours (default 8).
+	NextUpdateHours int `yaml:"next_update_hours"`
+	// TemplateOIDArc is the base OID arc for synthesizing per-template OIDs when a
+	// template does not set one explicitly.
+	TemplateOIDArc string `yaml:"template_oid_arc"`
+	// CESEndpoint is the absolute URL of the MS-WSTEP (CES) enrollment service,
+	// advertised to the client in the policy. It is the URL the Windows GPO enters
+	// as the enrollment (CES) server; when empty the policy omits the CA URI list.
+	CESEndpoint string `yaml:"ces_endpoint"`
+	// Templates maps issuance profiles to advertised/honored Windows templates.
+	// When empty a single template is derived from the default profile.
+	Templates []MSWSTEPTemplateConfig `yaml:"templates"`
+	// AllowClientCertIssuedByCA authorizes enrollment for a mutual-TLS client
+	// certificate this CA previously issued (the machine-renewal path), the
+	// analogue of est.allow_tls_client_reenroll.
+	AllowClientCertIssuedByCA bool `yaml:"allow_client_cert_issued_by_ca"`
+}
+
+// MSWSTEPTemplateConfig maps one issuance profile to a Windows certificate
+// template advertised by MS-XCEP and honored by MS-WSTEP.
+type MSWSTEPTemplateConfig struct {
+	// Profile is the secsy-pki issuance profile this template maps to (required).
+	Profile string `yaml:"profile"`
+	// Name is the template common name advertised and matched (default: Profile).
+	Name string `yaml:"name"`
+	// OID is the template OID advertised and matched (default: synthesized under
+	// the configured template OID arc).
+	OID string `yaml:"oid"`
+	// Enroll / AutoEnroll are the advertised enrollment permissions (both default
+	// true). Pointers so an operator can advertise autoEnroll=false explicitly.
+	Enroll     *bool `yaml:"enroll"`
+	AutoEnroll *bool `yaml:"auto_enroll"`
+	// MinimalKeyLength is the advertised minimum subject key length (default 2048).
+	MinimalKeyLength int `yaml:"minimal_key_length"`
+	// SchemaVersion / MajorRevision are the advertised template schema version
+	// (default 2) and major revision (default 100).
+	SchemaVersion int `yaml:"schema_version"`
+	MajorRevision int `yaml:"major_revision"`
+}
+
 // TSAConfig configures the RFC 3161 Time-Stamp Authority. When enabled a public
 // /tsa endpoint issues signed time-stamp tokens. The signing key and certificate
 // are provisioned offline with `secsy-ca tsa-key`; the key MUST be RSA.
@@ -4228,6 +4296,26 @@ func (c *Config) validateEnrollment() error {
 			}
 			if s.Secret == "" {
 				return fmt.Errorf("cmp.secrets[%d]: secret must not be empty", i)
+			}
+		}
+	}
+	if c.MSWSTEP.Enabled {
+		if c.MSWSTEP.CAID == "" && c.MSWSTEP.CALabel == "" {
+			return fmt.Errorf("mswstep.enabled is true but neither mswstep.ca_id nor mswstep.ca_label is set")
+		}
+		for i, t := range c.MSWSTEP.Templates {
+			if t.Profile == "" {
+				return fmt.Errorf("mswstep.templates[%d]: profile must not be empty", i)
+			}
+			if t.OID != "" {
+				if _, err := parseOID(t.OID); err != nil {
+					return fmt.Errorf("mswstep.templates[%d]: oid %q: %w", i, t.OID, err)
+				}
+			}
+		}
+		if c.MSWSTEP.TemplateOIDArc != "" {
+			if _, err := parseOID(c.MSWSTEP.TemplateOIDArc); err != nil {
+				return fmt.Errorf("mswstep.template_oid_arc %q: %w", c.MSWSTEP.TemplateOIDArc, err)
 			}
 		}
 	}
