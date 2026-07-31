@@ -243,7 +243,7 @@ func Run(ctx context.Context, opts Options) *Report {
 			"db.connectivity", "db.schema", "keyprovider.ca", "pin.source", "auth.ldap", "pkcs11.uris", "keys.ca",
 			"audit.chain_head", "certs.ca_expiry", "crl.freshness",
 			"canary.last_probe", "ct.inclusion", "webhook.dead_letters", "ers.freshness",
-			"keychecks.blocklist", "keychecks.profiles", "clock.skew",
+			"keychecks.blocklist", "keychecks.profiles", "clock.skew", "time.trusted",
 			"serving.self_issued", "listener.tls",
 			"fips.mode", "fips.store_keys", "fips.secret_oaep",
 		} {
@@ -335,6 +335,11 @@ func Run(ctx context.Context, opts Options) *Report {
 
 	// 8. Clock-skew sanity against the database host and the audit head.
 	checkClockSkew(ctx, r, db, schemaOK, opts)
+
+	// 8e. Trusted external time source (Task 163): probe the configured NTS /
+	// Roughtime source(s) and report whether the host clock passes the
+	// fail-closed drift check that guards TSA signing and audit anchoring.
+	checkTrustedTime(ctx, r, cfg)
 
 	// 8f. Self-managed serving-TLS certificate freshness (Task 118): the newest
 	// serving-tls-marked record, flagged when inside its renew_before window.

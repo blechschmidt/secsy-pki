@@ -154,6 +154,17 @@ Verification: OK
   into `granted` | `rejected` | `error`. The HSM concurrency guard's
   `secsy_hsm_guard_*` metrics also cover the TSA path.
 
+## Trusted time source (fail-closed drift detection)
+
+By default `genTime` comes from the host wall clock. A rewound or drifted host
+clock would therefore emit correctly-signed but false timestamps. To guard
+against that, configure a [trusted external time source](trusted-time.md)
+(`time.source`: authenticated NTP/NTS or Roughtime): before signing, the host
+clock is cross-checked against it and the TSA returns a `timeNotAvailable`
+rejection instead of a token when the drift exceeds the threshold. It is opt-in
+and off by default, so the plain host-clock behavior above is unchanged until you
+enable it.
+
 ## Standards & interop
 
 - RFC 3161 (Time-Stamp Protocol) and RFC 5816/5035 (ESS `signing-certificate-v2`).

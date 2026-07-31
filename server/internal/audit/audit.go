@@ -401,6 +401,14 @@ const (
 	// record of the anchored head even if the local anchor row is later deleted.
 	ActionAuditAnchor = "audit.anchor"
 
+	// ActionTimeCheck records a fail-closed trusted-time cross-check (Task 163):
+	// before signing a time-stamp token or creating an audit anchor, the host
+	// clock is checked against the configured external time source(s) (NTS /
+	// Roughtime), and this event is written with ResultDenied when the measured
+	// drift exceeded the threshold (or the source was unreachable under a
+	// fail-closed policy), carrying the offset, threshold, and per-source detail.
+	ActionTimeCheck = "time.check"
+
 	// Artifact (code) signing (Task 60). ActionArtifactSign records a CMS
 	// detached signature produced with an HSM-held code-signing key: the target
 	// is the signer name, the detail carries the artifact digest, digest

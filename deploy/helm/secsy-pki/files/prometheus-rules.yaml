@@ -324,6 +324,36 @@ groups:
           description: "More than one audit-anchor attempt failed in the last 6h. Check the TSA (internal /tsa health, or the external audit.anchor.tsa_url) and the audit.anchor error events in the log."
           runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#audit-chain-anchoring"
 
+      - alert: SecsyPKITrustedTimeCheckFailing
+        # The fail-closed trusted-time check (time.source) is failing: the host
+        # clock drifted beyond the threshold, or the trusted source(s) are
+        # unreachable under a fail-closed policy. While this fires, the TSA
+        # refuses to sign timestamp tokens and audit anchoring is blocked — a
+        # correctness safeguard, but one that halts timestamping until resolved.
+        expr: sum by (job, instance, reason) (increase(secsy_time_check_failures_total[15m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: secsy-pki
+        annotations:
+          summary: "Trusted-time check failing: {{ $labels.reason }} ({{ $labels.instance }})"
+          description: "The host clock could not be confirmed against the trusted time source ({{ $labels.reason }}). Under the default fail-closed policy the TSA is returning timeNotAvailable and audit anchoring is blocked (drift always fails closed; unreachable fails closed unless on_source_error=fail_open). If reason=drift, discipline the host clock (NTP); if reason=unreachable, restore reachability to the configured time.source servers. Check the time.check audit events and 'secsy-ca doctor' (time.trusted)."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#trusted-time-source"
+
+      - alert: SecsyPKIClockDriftHigh
+        # The measured host-vs-trusted offset is large (>5s) but has not yet
+        # tripped the fail-closed threshold (default 10s). Early warning to
+        # discipline the clock before timestamping starts failing.
+        expr: max by (job, instance, source) (abs(secsy_time_drift_seconds)) > 5
+        for: 10m
+        labels:
+          severity: warning
+          service: secsy-pki
+        annotations:
+          summary: "Host clock drift high vs trusted source {{ $labels.source }} ({{ $labels.instance }})"
+          description: "The host clock is more than 5s from trusted source {{ $labels.source }}. It has not yet crossed the fail-closed drift threshold, but timestamping will start failing closed if the drift grows. Check NTP discipline on the host."
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#trusted-time-source"
+
   # --- Multi-replica coordination -------------------------------------------
   - name: secsy-pki.coordination
     rules:

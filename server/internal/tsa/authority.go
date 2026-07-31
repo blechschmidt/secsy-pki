@@ -83,13 +83,29 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
+// Clock yields the genTime to stamp into a token, having validated it. Now
+// returns a non-nil error to force a fail-closed rejection (timeNotAvailable)
+// when the host clock cannot be trusted against the configured external time
+// source. *timesource.Checker satisfies it; the default is the host wall clock,
+// which never fails. Keeping it a local interface leaves the tsa package
+// decoupled from internal/timesource.
+type Clock interface {
+	Now(ctx context.Context) (time.Time, error)
+}
+
+// hostClock is the default, never-failing Clock: the host wall clock. It also
+// backs the SetClock test seam.
+type hostClock struct{ now func() time.Time }
+
+func (c hostClock) Now(context.Context) (time.Time, error) { return c.now(), nil }
+
 // Authority is an RFC 3161 Time-Stamp Authority bound to a signing key in the
 // key provider. It is safe for concurrent use.
 type Authority struct {
 	db       *database.DB
 	provider keyprovider.Provider
 	cfg      Config
-	now      func() time.Time
+	clock    Clock
 	serial   func() (*big.Int, error)
 }
 
@@ -117,13 +133,25 @@ func New(db *database.DB, provider keyprovider.Provider, cfg Config) (*Authority
 		db:       db,
 		provider: provider,
 		cfg:      cfg,
-		now:      time.Now,
+		clock:    hostClock{now: time.Now},
 		serial:   newSerial,
 	}, nil
 }
 
-// SetClock overrides the time source (tests only).
-func (a *Authority) SetClock(now func() time.Time) { a.now = now }
+// SetClock overrides the time source (tests only). It wraps now in a
+// never-failing Clock, preserving the deterministic-genTime test seam.
+func (a *Authority) SetClock(now func() time.Time) { a.clock = hostClock{now: now} }
+
+// SetTrustedClock installs a fail-closed trusted-time clock (Task 163): before
+// each token is signed the host clock is cross-checked against the configured
+// external time source(s), and Stamp returns a timeNotAvailable rejection when
+// the drift exceeds the threshold. The zero-config default keeps the host wall
+// clock, so this is only wired when a time.source is configured.
+func (a *Authority) SetTrustedClock(c Clock) {
+	if c != nil {
+		a.clock = c
+	}
+}
 
 // checkTimeStampingEKU enforces RFC 3161 §2.3: the signing certificate must have
 // id-kp-timeStamping as its only extended key usage.
@@ -226,6 +254,16 @@ func (a *Authority) Stamp(ctx context.Context, reqDER []byte) (*Result, error) {
 			"requested policy %v is not supported (this TSA asserts %v)", req.ReqPolicy, a.cfg.PolicyOID))
 	}
 
+	// Fail closed on an untrusted clock: cross-check the host clock against the
+	// configured external time source(s) BEFORE allocating a serial or signing.
+	// A drift beyond the threshold yields the RFC 3161 timeNotAvailable
+	// rejection — the TSA must never sign a timestamp it cannot vouch for. The
+	// default clock is the host wall clock, which never fails (existing behavior).
+	genTime, err := a.clock.Now(ctx)
+	if err != nil {
+		return a.reject(badRequest(FailureTimeNotAvailable, "TSA time source unavailable: %v", err))
+	}
+
 	serial, err := a.serial()
 	if err != nil {
 		return nil, fmt.Errorf("tsa: allocating token serial: %w", err)
@@ -234,7 +272,7 @@ func (a *Authority) Stamp(ctx context.Context, reqDER []byte) (*Result, error) {
 	params := tstInfoParams{
 		Policy:       a.cfg.PolicyOID,
 		SerialNumber: serial,
-		GenTime:      a.now(),
+		GenTime:      genTime,
 		Accuracy:     a.cfg.Accuracy,
 		Ordering:     a.cfg.Ordering,
 	}

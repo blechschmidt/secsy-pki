@@ -25,10 +25,11 @@ The design decisions behind these procedures are recorded in
 10. [Scheduled backups & restore verification](#scheduled-backups--restore-verification)
 11. [Observability: dashboards & alerts](#observability-dashboards--alerts)
 12. [Audit-chain anchoring](#audit-chain-anchoring)
-13. [Supply-chain / image verification failure](#supply-chain--image-verification-failure)
-14. [Preflight diagnostics (`secsy-ca doctor`)](#preflight-diagnostics-secsy-ca-doctor)
-15. [Serving-TLS certificate (self-managed)](#serving-tls-certificate-self-managed)
-16. [First-response quick reference](#first-response-quick-reference)
+13. [Trusted time source](#trusted-time-source)
+14. [Supply-chain / image verification failure](#supply-chain--image-verification-failure)
+15. [Preflight diagnostics (`secsy-ca doctor`)](#preflight-diagnostics-secsy-ca-doctor)
+16. [Serving-TLS certificate (self-managed)](#serving-tls-certificate-self-managed)
+17. [First-response quick reference](#first-response-quick-reference)
 
 ---
 
@@ -1066,6 +1067,90 @@ An anchor only ever attests history **up to** its seq. Events after the newest
 anchor carry no external evidence yet — that residual window is what
 `SecsyPKIAuditAnchorStale` guards (it fires when unanchored events exist and no
 anchor happened for >48h).
+
+---
+
+## Trusted time source
+
+A time-stamping authority's entire value is the *time* it attests. Both the RFC
+3161 TSA (`/tsa`) and audit-chain anchoring derive `genTime` from the host wall
+clock, so a host whose clock has been rewound, advanced, or silently drifted
+would emit authoritatively-signed but **false** timestamps. The trusted-time
+guard (`time.source`) closes that gap: before signing a timestamp token or
+creating an anchor, the host clock is cross-checked against one or more trusted
+external sources (authenticated NTP/NTS per RFC 8915, or Roughtime), and signing
+**fails closed** when the measured offset exceeds a threshold.
+
+The default is the host clock with no cross-check, so this is opt-in.
+
+### Configuration
+
+```yaml
+time:
+  source:
+    type: nts                 # system (default) | nts | roughtime
+    max_drift: 10s            # fail closed beyond this host-vs-source offset
+    refresh_interval: 60s     # cache a good check this long (bounds upstream load)
+    timeout: 5s               # per-source query timeout
+    min_sources: 1            # minimum reachable sources per check
+    on_source_error: fail_closed   # fail_closed (default) | fail_open
+    servers:
+      - address: time.cloudflare.com          # NTS-KE host (port defaults to 4460)
+      - name: nist
+        address: time.nist.gov
+# Roughtime instead:
+#   type: roughtime
+#   servers:
+#     - name: cloudflare
+#       address: roughtime.cloudflare.com:2002
+#       public_key: gD63hSj3ScS+wuOeGrubXlq35N1c5Lby/S+T7MNTjxo=   # Ed25519, base64 or hex
+```
+
+- **`max_drift`** is the correctness/availability trade-off. Too tight and
+  ordinary network jitter or a brief NTP excursion halts timestamping; the 10s
+  default tolerates that while still catching a clock that is badly wrong
+  (minutes/hours). It is *not* an accuracy target — set the TSA `accuracy` field
+  for that.
+- **`on_source_error`** governs only *unreachability*. `fail_closed` (default)
+  refuses to sign when fewer than `min_sources` answer — the safe choice for a
+  trust anchor. `fail_open` keeps signing on the host clock when the source is
+  unreachable, trading trust for availability. **Drift beyond `max_drift` always
+  fails closed**, regardless of this setting.
+- Every reachable source must agree within `max_drift`; a single disagreeing
+  source fails the check (you cannot tell which clock is right, so you must not
+  sign).
+
+### Symptoms & response
+
+When the guard trips, the TSA returns an RFC 3161 **`timeNotAvailable`**
+rejection (not a token), audit anchoring returns an error and persists nothing,
+a `time.check` audit event (`ResultDenied`) is written with the offset, the
+`secsy_time_check_failures_total{reason}` counter increments, and — for a
+running server — `SecsyPKITrustedTimeCheckFailing` pages.
+
+1. **Identify the reason** from the alert label / audit detail:
+   - `reason=drift` — the host clock really is off. Discipline it (NTP/chrony);
+     confirm the fix with `secsy-ca doctor` (see below). Do **not** raise
+     `max_drift` to paper over a genuinely wrong clock.
+   - `reason=unreachable` — the configured source(s) cannot be reached (firewall
+     blocking NTS-KE TCP/4460 or the Roughtime UDP port, DNS, or an outage). Fix
+     reachability, or add a second server. Only choose `fail_open` if
+     availability must win over the trust guarantee.
+2. **Confirm current state without signing** — the doctor check performs one
+   live, uncached probe and reports the offset and per-source detail:
+   ```bash
+   secsy-ca -config config.yaml doctor        # look for the time.trusted check
+   ```
+3. **Verify recovery** — once the clock is disciplined or the source restored,
+   the next check (within `refresh_interval`) passes and timestamping resumes
+   automatically; no restart is needed.
+
+Metrics: `secsy_time_drift_seconds{source}` (last measured offset per source,
+signed — positive means the host is ahead), `secsy_time_checks_total{result}`
+(`pass|fail|cached`), and `secsy_time_check_failures_total{reason}`
+(`drift|unreachable`). `SecsyPKIClockDriftHigh` warns at >5s before the default
+threshold is crossed. See [docs/trusted-time.md](trusted-time.md) for protocol
+detail.
 
 ---
 

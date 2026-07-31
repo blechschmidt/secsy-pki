@@ -23,6 +23,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/anchor"
 	"github.com/blechschmidt/secsy-pki/server/internal/approval"
 	"github.com/blechschmidt/secsy-pki/server/internal/attestation"
+	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/authn"
 	"github.com/blechschmidt/secsy-pki/server/internal/brski"
@@ -62,8 +63,11 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/signing"
 	"github.com/blechschmidt/secsy-pki/server/internal/spiffe"
 	"github.com/blechschmidt/secsy-pki/server/internal/sshca"
+	"github.com/blechschmidt/secsy-pki/server/internal/timesource"
 	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
 	"github.com/blechschmidt/secsy-pki/server/internal/tsa"
+
+	"github.com/google/uuid"
 )
 
 // version is the release version, stamped by the linker (-X main.version) in
@@ -915,6 +919,19 @@ func main() {
 		est.New(db, provider, estCfg).Register(mux)
 	}
 
+	// Trusted external time source (Task 163): when a time.source (NTS/Roughtime)
+	// is configured, this fail-closed Clock cross-checks the host wall clock
+	// before the TSA signs a token or an audit anchor is created, refusing to sign
+	// when the drift exceeds the threshold. Nil (the zero-config default) leaves
+	// the host clock as the sole reference, so existing deployments are unaffected.
+	timeClock, err := buildTimeClock(db, cfg)
+	if err != nil {
+		log.Fatalf("Trusted time-source configuration error: %v", err)
+	}
+	if timeClock != nil {
+		log.Printf("Trusted time source enabled: %s (fail-closed drift check on TSA + audit anchoring)", timeClock.Describe())
+	}
+
 	// RFC 3161 Time-Stamp Authority. The /tsa endpoint is anonymous and public
 	// (like OCSP/CRL), so it mounts outside the OIDC middleware and is metered by
 	// the rate-limit + HSM-concurrency guard below. The authority is kept for the
@@ -928,6 +945,9 @@ func main() {
 		authority, err := tsa.New(db, tsaProvider, tsaCfg)
 		if err != nil {
 			log.Fatalf("TSA configuration error: %v", err)
+		}
+		if timeClock != nil {
+			authority.SetTrustedClock(timeClock)
 		}
 		authority.Register(mux)
 		tsaAuthority = authority
@@ -945,7 +965,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("Audit anchor configuration error: %v", err)
 		}
-		anchorRunner := anchor.NewRunner(anchor.NewService(db, ts),
+		anchorSvc := anchor.NewService(db, ts)
+		if timeClock != nil {
+			anchorSvc.SetTrustedClock(timeClock)
+		}
+		anchorRunner := anchor.NewRunner(anchorSvc,
 			time.Duration(cfg.Audit.Anchor.IntervalHours)*time.Hour, log.Default())
 		elector.Register("audit-anchor", anchorRunner.Run)
 	}
@@ -1959,6 +1983,35 @@ func buildMSWSTEPConfig(db *database.DB, cfg *config.Config) (mswstep.Config, er
 // identical authority from the same config block.
 func buildTSAConfig(db *database.DB, cfg *config.Config) (tsa.Config, error) {
 	return tsa.LoadAuthorityConfig(db, cfg.TSA)
+}
+
+// buildTimeClock assembles the trusted-time Clock (Task 163) from the
+// time.source config block. When no external source is configured it returns
+// nil, so callers keep their default host-clock behavior untouched. Otherwise it
+// returns a fail-closed Checker whose failures are recorded to the tamper-
+// evident audit log via the auditor. It mirrors buildAnchorTimestamper: a single
+// assembly point shared conceptually with the CLI (both go through
+// timesource.FromConfig).
+func buildTimeClock(db *database.DB, cfg *config.Config) (timesource.Clock, error) {
+	if !cfg.Time.Source.Enabled() {
+		return nil, nil
+	}
+	auditor := func(res timesource.CheckResult) {
+		if db == nil {
+			return
+		}
+		if err := db.AppendEvent(&audit.Event{
+			ID:         uuid.New().String(),
+			Actor:      "system",
+			ActorRoles: "system",
+			Action:     audit.ActionTimeCheck,
+			Result:     audit.ResultDenied,
+			Detail:     res.Detail(),
+		}); err != nil {
+			log.Printf("timesource: appending time.check audit event: %v", err)
+		}
+	}
+	return timesource.FromConfig(cfg.Time.Source, auditor)
 }
 
 // buildAnchorTimestamper selects the audit-anchor token source: the external

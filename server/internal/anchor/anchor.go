@@ -159,13 +159,29 @@ func NewHTTPTimestamper(url string, timeout time.Duration) Timestamper {
 	}
 }
 
+// Clock yields the anchor's creation time, having validated it. Now returns a
+// non-nil error to force a fail-closed refusal when the host clock cannot be
+// trusted against the configured external time source. *timesource.Checker
+// satisfies it; the default is the host wall clock, which never fails. Keeping
+// it a local interface leaves the anchor package decoupled from
+// internal/timesource.
+type Clock interface {
+	Now(ctx context.Context) (time.Time, error)
+}
+
+// hostClock is the default, never-failing Clock: the host wall clock. It also
+// backs the SetClock test seam.
+type hostClock struct{ now func() time.Time }
+
+func (c hostClock) Now(context.Context) (time.Time, error) { return c.now(), nil }
+
 // Service anchors the audit chain's head on demand. It is safe for concurrent
 // use, though anchoring is naturally serial (one background runner or an
 // operator CLI invocation).
 type Service struct {
 	store Store
 	ts    Timestamper
-	now   func() time.Time
+	clock Clock
 	// actor identifies who anchored in the audit trail: "anchor" for the
 	// background job, "secsy-ca-cli" for operator-initiated anchors.
 	actor string
@@ -173,7 +189,7 @@ type Service struct {
 
 // NewService assembles an anchor service over the given store and token source.
 func NewService(store Store, ts Timestamper) *Service {
-	return &Service{store: store, ts: ts, now: time.Now, actor: "anchor"}
+	return &Service{store: store, ts: ts, clock: hostClock{now: time.Now}, actor: "anchor"}
 }
 
 // WithActor overrides the audit-event actor (e.g. the CLI).
@@ -182,8 +198,20 @@ func (s *Service) WithActor(actor string) *Service {
 	return s
 }
 
-// SetClock overrides the time source (tests only).
-func (s *Service) SetClock(now func() time.Time) { s.now = now }
+// SetClock overrides the time source (tests only). It wraps now in a
+// never-failing Clock, preserving the deterministic-createdAt test seam.
+func (s *Service) SetClock(now func() time.Time) { s.clock = hostClock{now: now} }
+
+// SetTrustedClock installs a fail-closed trusted-time clock (Task 163): before
+// an anchor is created the host clock is cross-checked against the configured
+// external time source(s), and AnchorOnce refuses (returns an error, persists
+// nothing) when the drift exceeds the threshold. The zero-config default keeps
+// the host wall clock, so this is only wired when a time.source is configured.
+func (s *Service) SetTrustedClock(c Clock) {
+	if c != nil {
+		s.clock = c
+	}
+}
 
 // SeedMetrics initializes the last-anchor gauges from the persisted state so a
 // restarted server reports the true anchor age immediately instead of blanking
@@ -241,6 +269,18 @@ func (s *Service) AnchorOnce(ctx context.Context, force bool) (*Result, error) {
 		}
 	}
 
+	// Fail closed on an untrusted clock: cross-check the host clock against the
+	// configured external time source(s) BEFORE requesting a token, so a drifted
+	// or compromised host clock cannot mint a falsely-dated anchor (and, for the
+	// external-TSA path, cannot persist a CreatedAt the host cannot vouch for).
+	// The default clock is the host wall clock, which never fails.
+	createdAt, err := s.clock.Now(ctx)
+	if err != nil {
+		metrics.RecordAuditAnchorFailure()
+		s.record(audit.ResultError, "", fmt.Sprintf("seq=%d head=%s trusted-time check failed: %v", seq, hash, err))
+		return nil, fmt.Errorf("anchor: trusted-time check failed: %w", err)
+	}
+
 	token, genTime, err := s.ts.Timestamp(ctx, audit.AnchorDigest(seq, hash))
 	if err != nil {
 		metrics.RecordAuditAnchorFailure()
@@ -255,7 +295,7 @@ func (s *Service) AnchorOnce(ctx context.Context, force bool) (*Result, error) {
 		Token:     token,
 		TSASource: s.ts.Source(),
 		GenTime:   genTime,
-		CreatedAt: s.now().UTC(),
+		CreatedAt: createdAt.UTC(),
 	}
 	if err := s.store.InsertAuditAnchor(a); err != nil {
 		metrics.RecordAuditAnchorFailure()

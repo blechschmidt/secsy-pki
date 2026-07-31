@@ -30,6 +30,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/pqc"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
+	"github.com/blechschmidt/secsy-pki/server/internal/timesource"
 )
 
 // --- 1. configuration --------------------------------------------------------
@@ -1610,6 +1611,66 @@ func checkClockSkew(ctx context.Context, r *Report, db dbHandle, schemaOK bool, 
 		}
 		return status, strings.Join(parts, "; ")
 	})
+}
+
+// --- 8e. trusted external time source ---------------------------------------
+
+// checkTrustedTime probes the configured trusted external time source (Task
+// 163) and reports whether the host clock currently passes the fail-closed
+// drift check that guards TSA signing and audit anchoring. It performs one live,
+// uncached query per configured source; a source that cannot be reached, or a
+// host clock that drifts beyond the threshold, is exactly what would make the
+// TSA refuse to sign — so surfacing it here catches the misconfiguration before
+// the first timestamp is rejected. Skipped when no external source is configured
+// (the zero-config host-clock default).
+func checkTrustedTime(ctx context.Context, r *Report, cfg *config.Config) {
+	r.run("time.trusted", func() (Status, string) {
+		sc := cfg.Time.Source
+		if !sc.Enabled() {
+			return StatusSkip, "no external trusted-time source configured (host clock is the reference)"
+		}
+		clock, err := timesource.FromConfig(sc, nil)
+		if err != nil {
+			return StatusFail, fmt.Sprintf("building %s time source: %v", sc.ResolvedType(), err)
+		}
+		checker, ok := clock.(*timesource.Checker)
+		if !ok {
+			return StatusPass, "system clock (host wall clock is the reference)"
+		}
+
+		res := checker.Probe(ctx)
+		threshold := sc.MaxDriftDuration()
+		if !res.Passed {
+			if res.Reason == "unreachable" {
+				policy := "fail-closed"
+				if sc.FailOpenOnUnreachable() {
+					policy = "fail-open"
+				}
+				return StatusFail, fmt.Sprintf("no trusted time source reachable (%s policy; need %d, got %d): %s",
+					policy, sc.MinSourcesResolved(), res.Reachable, res.Detail())
+			}
+			return StatusFail, fmt.Sprintf("host clock drift %s exceeds threshold %s — the TSA would refuse to sign: %s",
+				humanDuration(res.Offset), humanDuration(threshold), res.Detail())
+		}
+
+		// Passing, but warn as the offset approaches the threshold so an operator
+		// has runway before signing starts failing closed.
+		status := StatusPass
+		if absDur(res.Offset) > threshold/2 {
+			status = StatusWarn
+		}
+		return status, fmt.Sprintf("host clock within %s of %s (offset %s, %d/%d source%s reachable)",
+			humanDuration(threshold), sc.ResolvedType(), humanDuration(res.Offset), res.Reachable, len(sc.Servers), plural(len(sc.Servers)))
+	})
+}
+
+// absDur returns the absolute value of a duration (doctor-local, since the
+// timesource helper is unexported).
+func absDur(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
 }
 
 // --- 8f. self-issued serving certificate ------------------------------------

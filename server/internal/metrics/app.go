@@ -825,6 +825,31 @@ var (
 		"Audit events appended since the last anchor (event-log head seq minus anchored seq).")
 )
 
+// Trusted external time source (Task 163). Before the TSA signs a time-stamp
+// token or the audit-chain anchor is created, the host clock is cross-checked
+// against the configured trusted source(s) (authenticated NTP/NTS or
+// Roughtime). TimeDriftSeconds is the last measured host-minus-source offset per
+// source (positive: host ahead) — the value the fail-closed threshold is
+// applied to. TimeChecks counts every cross-check by result (pass|fail|cached),
+// and TimeCheckFailures is the fail-closed alert signal, by reason
+// (drift|unreachable). All three stay absent until an external source is
+// configured and first queried, so a system-clock (zero-config) deployment
+// exposes nothing here.
+var (
+	TimeDriftSeconds = NewGauge(Default,
+		"secsy_time_drift_seconds",
+		"Measured offset between the host clock and a trusted external time source, in seconds (positive: host ahead), per source.",
+		"source")
+	TimeChecks = NewCounter(Default,
+		"secsy_time_checks_total",
+		"Trusted-time cross-checks of the host clock, partitioned by result (pass|fail|cached).",
+		"result")
+	TimeCheckFailures = NewCounter(Default,
+		"secsy_time_check_failures_total",
+		"Trusted-time cross-checks that could not confirm the host clock, by reason (drift|unreachable). Under the default fail-closed policy each such check also refuses to sign (see secsy_time_checks_total{result=\"fail\"}).",
+		"reason")
+)
+
 // Static artifact publishing (Task 58). The publisher writes CRLs, chains, and
 // pre-signed OCSP responses as static artifacts to a directory or S3-compatible
 // store for CDN fronting. PublishRuns/PublishDuration track each run by backend

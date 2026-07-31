@@ -710,6 +710,29 @@ audit:
     # tsa_url: ""                # external RFC 3161 TSA; empty = internal TSA
     # timeout_seconds: 30        # external TSA request timeout
 
+# time.source cross-checks the host clock against a trusted external time source
+# before the TSA signs a token or an audit anchor is created, and FAILS CLOSED
+# (the TSA returns timeNotAvailable; anchoring refuses) when the drift exceeds
+# max_drift — so a rewound or drifted host clock cannot mint false timestamps.
+# The default (type: system, or omitting this block) trusts the host clock with
+# no cross-check, so existing deployments are unaffected. See docs/trusted-time.md.
+time:
+  source:
+    type: system                 # system (default) | nts | roughtime
+    # max_drift: 10s             # fail closed beyond this |host - source| offset
+    # refresh_interval: 60s      # cache a good check this long (bounds upstream load)
+    # timeout: 5s                # per-source query timeout
+    # min_sources: 1             # minimum reachable sources per check
+    # on_source_error: fail_closed   # fail_closed (default) | fail_open (drift always fails closed)
+    # servers:                   # NTS: NTS-KE host (port defaults to 4460)
+    #   - address: time.cloudflare.com
+    #   - name: nist
+    #     address: time.nist.gov
+    # For Roughtime, set type: roughtime and give each server an Ed25519 public_key:
+    #   - name: cloudflare
+    #     address: roughtime.cloudflare.com:2002
+    #     public_key: gD63hSj3ScS+wuOeGrubXlq35N1c5Lby/S+T7MNTjxo=
+
 # rate_limit protects the public-facing endpoints (ACME newOrder/newAccount,
 # OCSP, CRL, and SCEP/EST enrollment) from issuance abuse and HSM overload.
 # Disabled by default; see docs/rate-limiting.md. When enabled, a token-bucket

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/asn1"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -209,6 +210,126 @@ type Config struct {
 	// compromised-key blocklist store always run; per-profile enforce/warn mode is
 	// set in each profile's `key_checks` block. See KeyChecksConfig.
 	KeyChecks KeyChecksConfig `yaml:"keychecks"`
+	// Time configures the trusted external time source (Task 163) used to
+	// validate the host clock before the RFC 3161 TSA signs a time-stamp token or
+	// the audit-chain anchor is created. The zero value (source.type empty or
+	// "system") keeps the host wall clock as the sole reference — no cross-check,
+	// no fail-closed — so existing deployments are unaffected until they opt in to
+	// authenticated NTP/NTS or Roughtime. See TimeConfig and docs/trusted-time.md.
+	Time TimeConfig `yaml:"time"`
+}
+
+// TimeConfig is the top-level `time` block.
+type TimeConfig struct {
+	// Source configures the trusted external time source and the fail-closed
+	// drift threshold.
+	Source TimeSourceConfig `yaml:"source"`
+}
+
+// TimeSourceConfig configures the trusted-time cross-check. When Type is
+// "system" (or empty) the host wall clock is trusted unconditionally — the
+// zero-config default. When Type is "nts" or "roughtime" the host clock is
+// cross-checked against the configured Servers before every timestamp signature
+// and audit anchor, and signing fails closed when the measured offset exceeds
+// MaxDrift.
+type TimeSourceConfig struct {
+	// Type selects the source: "system" (default; host clock, never fails
+	// closed), "nts" (authenticated NTP/NTS, RFC 8915), or "roughtime".
+	Type string `yaml:"type"`
+	// MaxDrift is the maximum tolerated absolute offset between the host clock and
+	// any reachable source before signing fails closed. Go duration; default 10s.
+	MaxDrift string `yaml:"max_drift"`
+	// RefreshInterval bounds how often the source(s) are actually queried: a
+	// successful check is cached this long so a busy TSA does not hammer the
+	// upstream servers. Go duration; default 60s.
+	RefreshInterval string `yaml:"refresh_interval"`
+	// Timeout bounds a single source query. Go duration; default 5s.
+	Timeout string `yaml:"timeout"`
+	// MinSources is the minimum number of reachable sources a check requires
+	// before the unreachable-source policy applies. Default 1.
+	MinSources int `yaml:"min_sources"`
+	// OnSourceError selects the unreachable-source policy: "fail_closed" (default
+	// — refuse to sign when fewer than MinSources sources answer, the safe choice
+	// for a trust anchor) or "fail_open" (sign on the host clock when the
+	// source(s) cannot be reached, trading trust for availability). Drift beyond
+	// MaxDrift always fails closed regardless of this setting.
+	OnSourceError string `yaml:"on_source_error"`
+	// Servers lists the trusted time servers to cross-check against.
+	Servers []TimeServerConfig `yaml:"servers"`
+}
+
+// TimeServerConfig is one trusted time server.
+type TimeServerConfig struct {
+	// Name is an optional label used in metrics/audit/logs; defaults to Address.
+	Name string `yaml:"name"`
+	// Address is the server endpoint. For NTS it is the NTS-KE host (host or
+	// host:port; the key-establishment port defaults to 4460 and the negotiated
+	// NTP port is used automatically). For Roughtime it is the UDP endpoint
+	// (host:port).
+	Address string `yaml:"address"`
+	// PublicKey is required for Roughtime: the server's long-term Ed25519 public
+	// key, base64- or hex-encoded (32 bytes). Ignored for NTS (authenticated via
+	// the NTS-KE TLS handshake).
+	PublicKey string `yaml:"public_key"`
+}
+
+// Enabled reports whether an external trusted-time source is configured (i.e.
+// the type is not the zero-config "system"/empty default).
+func (c TimeSourceConfig) Enabled() bool {
+	t := c.ResolvedType()
+	return t == "nts" || t == "roughtime"
+}
+
+// ResolvedType returns the lowercased source type, defaulting to "system".
+func (c TimeSourceConfig) ResolvedType() string {
+	t := strings.ToLower(strings.TrimSpace(c.Type))
+	if t == "" {
+		return "system"
+	}
+	return t
+}
+
+// MaxDriftDuration returns the resolved drift threshold (default 10s).
+func (c TimeSourceConfig) MaxDriftDuration() time.Duration {
+	return parseDurationDefault(c.MaxDrift, 10*time.Second)
+}
+
+// RefreshDuration returns the resolved refresh/cache window (default 60s).
+func (c TimeSourceConfig) RefreshDuration() time.Duration {
+	return parseDurationDefault(c.RefreshInterval, 60*time.Second)
+}
+
+// TimeoutDuration returns the resolved per-query timeout (default 5s).
+func (c TimeSourceConfig) TimeoutDuration() time.Duration {
+	return parseDurationDefault(c.Timeout, 5*time.Second)
+}
+
+// MinSourcesResolved returns the minimum reachable-source count (default 1).
+func (c TimeSourceConfig) MinSourcesResolved() int {
+	if c.MinSources <= 0 {
+		return 1
+	}
+	return c.MinSources
+}
+
+// FailOpenOnUnreachable reports whether an unreachable source lets signing
+// proceed (fail open). Default is false (fail closed).
+func (c TimeSourceConfig) FailOpenOnUnreachable() bool {
+	return strings.EqualFold(strings.TrimSpace(c.OnSourceError), "fail_open")
+}
+
+// parseDurationDefault parses a Go duration string, returning def when empty or
+// unparseable (validation rejects unparseable values at load, so a bad value
+// never reaches these getters in practice).
+func parseDurationDefault(s string, def time.Duration) time.Duration {
+	if strings.TrimSpace(s) == "" {
+		return def
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return def
+	}
+	return d
 }
 
 // KeyChecksConfig holds the deployment-wide inputs to the pre-issuance
@@ -3715,6 +3836,10 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateTime(); err != nil {
+		return nil, err
+	}
+
 	if err := cfg.validateCoordination(); err != nil {
 		return nil, err
 	}
@@ -4197,6 +4322,101 @@ func (c *Config) validateAuditAnchor() error {
 		return fmt.Errorf("audit.anchor.enabled requires the internal TSA (tsa.enabled: true) or an external audit.anchor.tsa_url")
 	}
 	return nil
+}
+
+// validateTime sanity-checks the trusted external time-source configuration
+// (Task 163). The zero value (type system/empty) is always valid — it is the
+// zero-config default. For nts/roughtime it requires at least one server, valid
+// durations, a recognized unreachable-source policy, and (for roughtime) a
+// well-formed Ed25519 public key per server, so a misconfiguration fails at load
+// rather than silently disabling the fail-closed guard.
+func (c *Config) validateTime() error {
+	s := &c.Time.Source
+	switch s.ResolvedType() {
+	case "system":
+		return nil
+	case "nts", "roughtime":
+	default:
+		return fmt.Errorf("time.source.type %q is not one of system|nts|roughtime", s.Type)
+	}
+
+	for field, v := range map[string]string{
+		"max_drift":        s.MaxDrift,
+		"refresh_interval": s.RefreshInterval,
+		"timeout":          s.Timeout,
+	} {
+		if strings.TrimSpace(v) == "" {
+			continue
+		}
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("time.source.%s %q is not a valid duration: %w", field, v, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("time.source.%s must be positive", field)
+		}
+	}
+
+	if s.MinSources < 0 {
+		return fmt.Errorf("time.source.min_sources must not be negative")
+	}
+	switch strings.ToLower(strings.TrimSpace(s.OnSourceError)) {
+	case "", "fail_closed", "fail_open":
+	default:
+		return fmt.Errorf("time.source.on_source_error %q is not one of fail_closed|fail_open", s.OnSourceError)
+	}
+
+	if len(s.Servers) == 0 {
+		return fmt.Errorf("time.source.type %q requires at least one time.source.servers entry", s.ResolvedType())
+	}
+	if s.MinSources > len(s.Servers) {
+		return fmt.Errorf("time.source.min_sources (%d) exceeds the number of configured servers (%d)", s.MinSources, len(s.Servers))
+	}
+	roughtime := s.ResolvedType() == "roughtime"
+	for i, srv := range s.Servers {
+		if strings.TrimSpace(srv.Address) == "" {
+			return fmt.Errorf("time.source.servers[%d].address is required", i)
+		}
+		if roughtime {
+			if strings.TrimSpace(srv.PublicKey) == "" {
+				return fmt.Errorf("time.source.servers[%d] (roughtime) requires a public_key", i)
+			}
+			if _, err := decodeTimeServerKey(srv.PublicKey); err != nil {
+				return fmt.Errorf("time.source.servers[%d].public_key: %w", i, err)
+			}
+		}
+	}
+	return nil
+}
+
+// decodeTimeServerKey decodes a Roughtime server's Ed25519 public key from
+// base64 (standard or raw) or hex, requiring exactly 32 bytes. It is shared by
+// config validation and the timesource provider builder so both accept the same
+// encodings.
+func decodeTimeServerKey(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	if len(s) == 64 {
+		if b, err := hex.DecodeString(s); err == nil {
+			if len(b) != 32 {
+				return nil, fmt.Errorf("Ed25519 public key must be 32 bytes, got %d", len(b))
+			}
+			return b, nil
+		}
+	}
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		if b, err := enc.DecodeString(s); err == nil {
+			if len(b) == 32 {
+				return b, nil
+			}
+		}
+	}
+	if b, err := hex.DecodeString(s); err == nil {
+		if len(b) != 32 {
+			return nil, fmt.Errorf("Ed25519 public key must be 32 bytes, got %d", len(b))
+		}
+		return b, nil
+	}
+	return nil, fmt.Errorf("not valid base64 or hex for a 32-byte Ed25519 public key")
 }
 
 // validateErs sanity-checks the RFC 4998 Evidence-Record preservation
