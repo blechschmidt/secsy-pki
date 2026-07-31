@@ -35,6 +35,7 @@ const (
 	KeyTypeECDSAP384 = "ecdsa-sha2-nistp384"
 	KeyTypeECDSAP521 = "ecdsa-sha2-nistp521"
 	KeyTypeRSA2048   = "rsa-2048"
+	KeyTypeRSA3072   = "rsa-3072"
 	KeyTypeRSA4096   = "rsa-4096"
 
 	// Post-quantum ML-DSA (FIPS 204) key types. These are only supported by the
@@ -560,6 +561,8 @@ func NormalizeKeyType(s string) (string, error) {
 		return KeyTypeECDSAP521, nil
 	case "rsa", "rsa-2048", "rsa2048":
 		return KeyTypeRSA2048, nil
+	case "rsa-3072", "rsa3072":
+		return KeyTypeRSA3072, nil
 	case "rsa-4096", "rsa4096":
 		return KeyTypeRSA4096, nil
 	default:

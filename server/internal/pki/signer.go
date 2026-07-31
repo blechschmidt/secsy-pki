@@ -492,22 +492,25 @@ func signECDSAOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, priv pkcs
 }
 
 func signRSAOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, priv pkcs11.ObjectHandle, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
-	mechanism := []*pkcs11.Mechanism{pkcs11.NewMechanism(pkcs11.CKM_RSA_PKCS, nil)}
-
-	// PKCS#1 v1.5: prepend DigestInfo ASN.1 structure
-	hash := opts.HashFunc()
-	var prefix []byte
-	switch hash {
-	case crypto.SHA256:
-		prefix = []byte{0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20}
-	case crypto.SHA512:
-		prefix = []byte{0x30, 0x51, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03, 0x05, 0x00, 0x04, 0x40}
-	case crypto.SHA1:
-		prefix = []byte{0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14}
-	default:
-		return nil, fmt.Errorf("unsupported hash for RSA signing: %v", hash)
+	// RSASSA-PSS: the caller signals PSS by passing *rsa.PSSOptions (exactly as
+	// crypto.Signer does for a software key). The token computes the PSS encoding
+	// itself from the raw digest, so we drive CKM_RSA_PKCS_PSS with a matching
+	// CK_RSA_PKCS_PSS_PARAMS (hash, MGF1 over the same hash, salt length).
+	if pssOpts, ok := opts.(*rsa.PSSOptions); ok {
+		return signRSAPSSOnSession(ctx, session, priv, digest, pssOpts)
 	}
-	data := append(prefix, digest...)
+
+	// RSASSA-PKCS1-v1_5: prepend the DigestInfo ASN.1 structure for the hash and
+	// let the token do the raw RSA private-key operation (CKM_RSA_PKCS).
+	mechanism := []*pkcs11.Mechanism{pkcs11.NewMechanism(pkcs11.CKM_RSA_PKCS, nil)}
+	hash := opts.HashFunc()
+	prefix, ok := pkcs1DigestInfoPrefix(hash)
+	if !ok {
+		return nil, fmt.Errorf("unsupported hash for RSA PKCS#1 v1.5 signing: %v", hash)
+	}
+	data := make([]byte, 0, len(prefix)+len(digest))
+	data = append(data, prefix...)
+	data = append(data, digest...)
 
 	if err := ctx.SignInit(session, mechanism, priv); err != nil {
 		return nil, fmt.Errorf("RSA sign init: %w", err)
@@ -517,6 +520,73 @@ func signRSAOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, priv pkcs11
 		return nil, fmt.Errorf("RSA sign: %w", err)
 	}
 	return sig, nil
+}
+
+// signRSAPSSOnSession produces an RSASSA-PSS signature over digest on the token.
+// The salt length is resolved to a concrete byte count: PSSSaltLengthEqualsHash
+// and PSSSaltLengthAuto both map to the hash length, which is the interoperable
+// choice (and the one Go's crypto/rsa uses for verification when SaltLength is
+// PSSSaltLengthEqualsHash), so a token-produced signature verifies both against
+// crypto/rsa and against openssl's default.
+func signRSAPSSOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, priv pkcs11.ObjectHandle, digest []byte, opts *rsa.PSSOptions) ([]byte, error) {
+	hash := opts.HashFunc()
+	if len(digest) != hash.Size() {
+		return nil, fmt.Errorf("RSA-PSS: digest length %d does not match hash %v (%d)", len(digest), hash, hash.Size())
+	}
+	hashMech, mgf, ok := pssHashParams(hash)
+	if !ok {
+		return nil, fmt.Errorf("unsupported hash for RSA-PSS signing: %v", hash)
+	}
+	saltLen := opts.SaltLength
+	switch saltLen {
+	case rsa.PSSSaltLengthAuto, rsa.PSSSaltLengthEqualsHash:
+		saltLen = hash.Size()
+	}
+	if saltLen < 0 {
+		return nil, fmt.Errorf("RSA-PSS: invalid salt length %d", saltLen)
+	}
+	params := pkcs11.NewPSSParams(hashMech, mgf, uint(saltLen))
+	mechanism := []*pkcs11.Mechanism{pkcs11.NewMechanism(pkcs11.CKM_RSA_PKCS_PSS, params)}
+	if err := ctx.SignInit(session, mechanism, priv); err != nil {
+		return nil, fmt.Errorf("RSA-PSS sign init: %w", err)
+	}
+	sig, err := ctx.Sign(session, digest)
+	if err != nil {
+		return nil, fmt.Errorf("RSA-PSS sign: %w", err)
+	}
+	return sig, nil
+}
+
+// pkcs1DigestInfoPrefix returns the DigestInfo ASN.1 prefix that precedes the
+// raw digest for a PKCS#1 v1.5 signature over the given hash.
+func pkcs1DigestInfoPrefix(hash crypto.Hash) ([]byte, bool) {
+	switch hash {
+	case crypto.SHA256:
+		return []byte{0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20}, true
+	case crypto.SHA384:
+		return []byte{0x30, 0x41, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02, 0x05, 0x00, 0x04, 0x30}, true
+	case crypto.SHA512:
+		return []byte{0x30, 0x51, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03, 0x05, 0x00, 0x04, 0x40}, true
+	case crypto.SHA1:
+		return []byte{0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14}, true
+	default:
+		return nil, false
+	}
+}
+
+// pssHashParams maps a hash to the CKM_* digest mechanism and matching CKG_MGF1_*
+// mask-generation function for a CK_RSA_PKCS_PSS_PARAMS structure.
+func pssHashParams(hash crypto.Hash) (hashMech, mgf uint, ok bool) {
+	switch hash {
+	case crypto.SHA256:
+		return pkcs11.CKM_SHA256, pkcs11.CKG_MGF1_SHA256, true
+	case crypto.SHA384:
+		return pkcs11.CKM_SHA384, pkcs11.CKG_MGF1_SHA384, true
+	case crypto.SHA512:
+		return pkcs11.CKM_SHA512, pkcs11.CKG_MGF1_SHA512, true
+	default:
+		return 0, 0, false
+	}
 }
 
 func (s *PKCS11Signer) KeyType() string {
@@ -551,7 +621,8 @@ const CKM_EC_EDWARDS_KEY_PAIR_GEN = 0x00001055 //nolint:staticcheck // ST1003: m
 const CKK_EC_EDWARDS = 0x00000040 //nolint:staticcheck // ST1003: mirrors the PKCS#11 spec constant name (cf. miekg/pkcs11 CKM_*/CKK_*).
 
 // GenerateKeyOnHSM creates a new key pair on the HSM and returns its metadata.
-// Supported key types: "ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521".
+// Supported key types: "ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384",
+// "ecdsa-sha2-nistp521", "rsa-2048", "rsa-3072", "rsa-4096".
 func GenerateKeyOnHSM(cfg PKCS11Config, label string, keyType string) (*GeneratedHSMKey, error) {
 	ctx := pkcs11.New(cfg.ModulePath)
 	if ctx == nil {
@@ -706,10 +777,10 @@ func generateKeyPairOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, cfg
 			pkcs11.NewAttribute(pkcs11.CKA_UNWRAP, false),
 			pkcs11.NewAttribute(pkcs11.CKA_LABEL, label),
 		}
-	case "rsa-2048", "rsa-4096":
-		bits := 2048
-		if keyType == "rsa-4096" {
-			bits = 4096
+	case "rsa-2048", "rsa-3072", "rsa-4096":
+		bits, bitErr := rsaKeyTypeBits(keyType)
+		if bitErr != nil {
+			return nil, bitErr
 		}
 		mechanism = []*pkcs11.Mechanism{pkcs11.NewMechanism(pkcs11.CKM_RSA_PKCS_KEY_PAIR_GEN, nil)}
 		pubAttrs = []*pkcs11.Attribute{
@@ -747,7 +818,7 @@ func generateKeyPairOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, cfg
 
 	// Read back the public key
 	var readAttrs []*pkcs11.Attribute
-	if keyType == "rsa-2048" || keyType == "rsa-4096" {
+	if isRSAKeyType(keyType) {
 		readAttrs, err = ctx.GetAttributeValue(session, pubHandle, []*pkcs11.Attribute{
 			pkcs11.NewAttribute(pkcs11.CKA_MODULUS, nil),
 			pkcs11.NewAttribute(pkcs11.CKA_PUBLIC_EXPONENT, nil),
@@ -777,9 +848,33 @@ func generateKeyPairOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, cfg
 	}, nil
 }
 
+// isRSAKeyType reports whether keyType is one of the supported RSA key types.
+func isRSAKeyType(keyType string) bool {
+	switch keyType {
+	case "rsa-2048", "rsa-3072", "rsa-4096":
+		return true
+	default:
+		return false
+	}
+}
+
+// rsaKeyTypeBits maps a canonical RSA key-type to its modulus size in bits.
+func rsaKeyTypeBits(keyType string) (int, error) {
+	switch keyType {
+	case "rsa-2048":
+		return 2048, nil
+	case "rsa-3072":
+		return 3072, nil
+	case "rsa-4096":
+		return 4096, nil
+	default:
+		return 0, fmt.Errorf("not an RSA key type: %s", keyType)
+	}
+}
+
 func hsmPubKeyToSSH(attrs []*pkcs11.Attribute, keyType string) (string, error) {
 	// RSA keys
-	if keyType == "rsa-2048" || keyType == "rsa-4096" {
+	if isRSAKeyType(keyType) {
 		var modulus, exponent []byte
 		for _, a := range attrs {
 			switch a.Type {

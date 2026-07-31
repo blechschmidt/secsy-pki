@@ -1966,6 +1966,48 @@ type FPESeed struct {
 	UpdatedAt          time.Time `json:"updated_at" db:"updated_at"`
 }
 
+// SigningKey is a named, HSM-backed asymmetric signing key on the crypto/secret
+// layer (Task 153): the Transit-style digital-signature counterpart to the
+// symmetric data-key/HMAC service. Unlike MACKey, no key material — not even a
+// KEK-sealed seed — lives in this row: the private key is generated
+// non-extractable inside the key provider (the HSM under PKCS#11) and is only
+// ever addressed through KeyRef. The row is pure metadata plus the exported
+// public key, so an external verifier (or this server, for Verify) can check a
+// signature without touching the HSM. A key's Algorithm — the curve/modulus and
+// the RSA scheme (PSS vs PKCS#1 v1.5) — is fixed at creation; only the message
+// hash is chosen per signing request.
+type SigningKey struct {
+	// ID is the immutable, globally unique identifier for the key. It also seeds
+	// the provider/HSM object label, so two keys never collide on a CKA_LABEL
+	// (see the duplicate-label hazard the PKCS#11 provider guards against).
+	ID string `json:"id" db:"id"`
+	// TenantID scopes the key: sign/verify/get-public-key resolve a key by
+	// (tenant, name), keeping one tenant's signing keys invisible to another.
+	TenantID string `json:"tenant_id" db:"tenant_id"`
+	// Name is the tenant-unique, caller-chosen friendly name used to address the
+	// key in every operation.
+	Name string `json:"name" db:"name"`
+	// Algorithm is the fixed signing algorithm (a secret.SigningAlgorithm value:
+	// ecdsa-p256/p384 or rsa-pss/rsa-pkcs1v15-2048/4096).
+	Algorithm string `json:"algorithm" db:"algorithm"`
+	// KeyType is the canonical key-provider key type the algorithm generates
+	// (e.g. ecdsa-sha2-nistp256, rsa-2048), retained for inventory/diagnostics.
+	KeyType string `json:"key_type" db:"key_type"`
+	// KeyRef is the provider-specific reference to the private key (an RFC 7512
+	// pkcs11: URI, or software:<label>). Signing resolves the provider key from it.
+	KeyRef string `json:"key_ref" db:"key_ref"`
+	// PublicKeyDER is the DER-encoded SubjectPublicKeyInfo (SPKI) of the key,
+	// stored base64. Verification and public-key export use it directly, so
+	// neither needs the HSM.
+	PublicKeyDER string `json:"public_key_der" db:"public_key_der"`
+	// Provider names the key-provider backend that holds the private key
+	// (pkcs11|software|kms), for operator diagnostics.
+	Provider string `json:"provider" db:"provider"`
+	// CreatedBy is the operator/actor recorded at creation.
+	CreatedBy string    `json:"created_by" db:"created_by"`
+	CreatedAt time.Time `json:"created_at" db:"created_at"`
+}
+
 // KEKUsage summarizes how many stored secrets are wrapped under one KEK
 // version, joined against the version's rotation status for the KEK status
 // report and the secrets-on-old-KEK gauge.

@@ -350,12 +350,12 @@ func (s *kmsSigner) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]
 // cloud KMS, with a clear error naming the supported set otherwise.
 func kmsSupportsKeyType(keyType string) error {
 	switch keyType {
-	case KeyTypeECDSAP256, KeyTypeECDSAP384, KeyTypeECDSAP521, KeyTypeRSA2048, KeyTypeRSA4096:
+	case KeyTypeECDSAP256, KeyTypeECDSAP384, KeyTypeECDSAP521, KeyTypeRSA2048, KeyTypeRSA3072, KeyTypeRSA4096:
 		return nil
 	default:
 		return fmt.Errorf("keyprovider: cloud KMS does not support key type %q "+
-			"(supported: %s, %s, %s, %s, %s)", keyType,
-			KeyTypeECDSAP256, KeyTypeECDSAP384, KeyTypeECDSAP521, KeyTypeRSA2048, KeyTypeRSA4096)
+			"(supported: %s, %s, %s, %s, %s, %s)", keyType,
+			KeyTypeECDSAP256, KeyTypeECDSAP384, KeyTypeECDSAP521, KeyTypeRSA2048, KeyTypeRSA3072, KeyTypeRSA4096)
 	}
 }
 

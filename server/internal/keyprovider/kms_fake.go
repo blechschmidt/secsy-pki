@@ -150,6 +150,8 @@ func generateKMSKey(keyType string) (crypto.Signer, error) {
 		return ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
 	case KeyTypeRSA2048:
 		return rsa.GenerateKey(rand.Reader, 2048)
+	case KeyTypeRSA3072:
+		return rsa.GenerateKey(rand.Reader, 3072)
 	case KeyTypeRSA4096:
 		return rsa.GenerateKey(rand.Reader, 4096)
 	default:

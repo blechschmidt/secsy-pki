@@ -673,6 +673,17 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 		mux.Handle("POST /api/secret/hmac", protected(http.HandlerFunc(a.GenerateHMAC)))
 		mux.Handle("POST /api/secret/hmac/verify", protected(http.HandlerFunc(a.VerifyHMAC)))
 		mux.Handle("POST /api/secret/random", protected(http.HandlerFunc(a.GenerateRandom)))
+		// Named HSM-backed asymmetric signing keys (Task 153): Transit-style
+		// sign/verify. Creating/listing keys needs the privileged secret:signing-key
+		// capability; sign/verify/get-public-key need the day-to-day secret:sign.
+		mux.Handle("POST /api/secret/signing-keys", protected(http.HandlerFunc(a.CreateSigningKey)))
+		mux.Handle("GET /api/secret/signing-keys", protected(http.HandlerFunc(a.ListSigningKeysHandler)))
+		mux.Handle("GET /api/secret/signing-keys/{name}", protected(http.HandlerFunc(a.GetSigningKey)))
+		mux.Handle("POST /api/secret/signing-keys/{name}/sign", protected(http.HandlerFunc(a.SignWithKey)))
+		mux.Handle("POST /api/secret/signing-keys/{name}/verify", protected(http.HandlerFunc(a.VerifyWithKey)))
+		// Verify a signature against a caller-supplied public key (SPKI PEM/DER) +
+		// algorithm, without a stored key; secret:sign, public material only.
+		mux.Handle("POST /api/secret/verify", protected(http.HandlerFunc(a.VerifyStandalone)))
 		// Format-preserving encryption / tokenization (Task 144): encode/decode
 		// structured data through a named FF1 transform template, gated on the
 		// tenant-scoped secret:transform capability plus any per-template allowlist.

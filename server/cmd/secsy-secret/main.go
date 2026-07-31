@@ -113,6 +113,12 @@ func run(args []string) error {
 		return cmdHMACVerify(cfg, provider, cmdArgs)
 	case "random":
 		return cmdRandom(cfg, provider, cmdArgs)
+	case "signing-key":
+		return cmdSigningKey(cfg, provider, cmdArgs)
+	case "sign":
+		return cmdSign(cfg, provider, cmdArgs)
+	case "verify":
+		return cmdVerify(cfg, provider, cmdArgs)
 	case "transform":
 		return cmdTransform(cfg, provider, cmdArgs)
 	case "put":
@@ -169,6 +175,16 @@ Commands:
                      HSM/KEK-derived MAC key (provisioned on first use)
   hmac-verify        Verify a keyed HMAC (-hmac TAG [-version N]); exits non-zero on mismatch
   random             Generate CSPRNG bytes from the HSM RNG when available (-bytes, -format)
+  signing-key        Manage named HSM-backed asymmetric signing keys:
+                     create (-name, -algorithm one of ecdsa-p256|ecdsa-p384|
+                     ecdsa-p521|ed25519|rsa-pss-{2048,3072,4096}|
+                     rsa-pkcs1v15-{2048,3072,4096}), list, public
+                     (export the SPKI public key for external verifiers)
+  sign               Sign stdin/a file with a named signing key (-key, -hash, -prehashed);
+                     the private key never leaves the HSM
+  verify             Verify a signature against a stored key's public half (-key) or a
+                     supplied public-key file (-public-key + -algorithm), -signature/-sig-in;
+                     exits non-zero on mismatch
   transform          Format-preserving encryption / tokenization (FF1): encode|decode a
                      value through a named secret.transforms template (-template, -value/-in)
   put                Create or update a named stored secret; every put appends a

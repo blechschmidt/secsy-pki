@@ -262,6 +262,15 @@ const (
 	// KEK label, target-name: template; detail: operation and the input/output
 	// LENGTH only — neither the plaintext nor the token is ever logged).
 	ActionSecretTransform = "secret.transform"
+	// Named HSM-backed asymmetric signing keys (Task 153). ActionSecretSigningKeyCreate
+	// records a signing-key creation (target: key name; detail: algorithm and key
+	// id — no private material, which never leaves the provider). ActionSecretSign
+	// records a signature production and ActionSecretSignVerify a verification
+	// (detail: algorithm/hash and, for verify, the valid/invalid outcome; the
+	// signed data and the signature are never logged).
+	ActionSecretSigningKeyCreate = "secret.signing_key_create"
+	ActionSecretSign             = "secret.sign"
+	ActionSecretSignVerify       = "secret.sign_verify"
 	ActionPermissionGrant   = "permission.grant"
 	ActionPermissionRevoke  = "permission.revoke"
 	ActionGroupCreate       = "group.create"

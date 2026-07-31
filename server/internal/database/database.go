@@ -803,6 +803,29 @@ func (db *DB) migrate() error {
 			PRIMARY KEY (family, version)
 		)`,
 
+		// Named HSM-backed asymmetric signing keys for the crypto service (Task
+		// 153): the Transit-style digital-signature counterpart to mac_keys. Unlike
+		// mac_keys, this table holds NO key material — not even a sealed seed: the
+		// private key is generated non-extractable inside the key provider (the HSM
+		// under PKCS#11) and is addressed only through key_ref. public_key_der is the
+		// exported SPKI so verification and public-key export never touch the HSM.
+		// (tenant_id, name) is unique so a key is addressable by a tenant-scoped
+		// friendly name; id is the immutable primary key and also seeds the provider
+		// object label so labels never collide.
+		`CREATE TABLE IF NOT EXISTS signing_keys (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			algorithm TEXT NOT NULL,
+			key_type TEXT NOT NULL,
+			key_ref TEXT NOT NULL,
+			public_key_der TEXT NOT NULL,
+			provider TEXT NOT NULL,
+			created_by TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL,
+			UNIQUE (tenant_id, name)
+		)`,
+
 		// Format-preserving-encryption / tokenization seed for the secret layer
 		// (Task 144), one row per KEK family. The seed is never stored in the clear:
 		// envelope is an ordinary sealed envelope (see secret.Envelope) over a random

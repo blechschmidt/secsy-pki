@@ -323,6 +323,8 @@ func generatePrivateKey(keyType string) (crypto.Signer, error) {
 		return ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
 	case KeyTypeRSA2048:
 		return rsa.GenerateKey(rand.Reader, 2048)
+	case KeyTypeRSA3072:
+		return rsa.GenerateKey(rand.Reader, 3072)
 	case KeyTypeRSA4096:
 		return rsa.GenerateKey(rand.Reader, 4096)
 	default:
@@ -350,10 +352,14 @@ func keyTypeOf(pub crypto.PublicKey) (string, error) {
 			return "", fmt.Errorf("unsupported ECDSA curve")
 		}
 	case *rsa.PublicKey:
-		if k.N.BitLen() > 3072 {
+		switch {
+		case k.N.BitLen() > 3072:
 			return KeyTypeRSA4096, nil
+		case k.N.BitLen() > 2048:
+			return KeyTypeRSA3072, nil
+		default:
+			return KeyTypeRSA2048, nil
 		}
-		return KeyTypeRSA2048, nil
 	default:
 		return "", fmt.Errorf("unsupported public key type %T", pub)
 	}

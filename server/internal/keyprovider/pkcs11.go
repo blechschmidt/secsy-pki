@@ -530,6 +530,8 @@ func rsaBits(keyType string) (int, error) {
 	switch keyType {
 	case KeyTypeRSA2048:
 		return 2048, nil
+	case KeyTypeRSA3072:
+		return 3072, nil
 	case KeyTypeRSA4096:
 		return 4096, nil
 	default:

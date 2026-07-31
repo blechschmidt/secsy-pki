@@ -475,6 +475,15 @@ func authzMatrix() []rc {
 		secretR("POST", "/api/secret/hmac", "/api/secret/hmac", `{}`),
 		secretR("POST", "/api/secret/hmac/verify", "/api/secret/hmac/verify", `{}`),
 		secretR("POST", "/api/secret/random", "/api/secret/random", `{}`),
+		// Named HSM-backed asymmetric signing keys (Task 153): create/list need
+		// secret:signing-key, sign/verify/get-public-key need secret:sign; all are
+		// tenant-scoped (admin holds every capability, so secretR covers both).
+		secretR("POST", "/api/secret/signing-keys", "/api/secret/signing-keys", `{}`),
+		secretR("GET", "/api/secret/signing-keys", "/api/secret/signing-keys", ""),
+		secretR("GET", "/api/secret/signing-keys/{name}", "/api/secret/signing-keys/k-a", ""),
+		secretR("POST", "/api/secret/signing-keys/{name}/sign", "/api/secret/signing-keys/k-a/sign", `{}`),
+		secretR("POST", "/api/secret/signing-keys/{name}/verify", "/api/secret/signing-keys/k-a/verify", `{}`),
+		secretR("POST", "/api/secret/verify", "/api/secret/verify", `{}`),
 		secretR("POST", "/api/secret/transform/encode", "/api/secret/transform/encode", `{}`),
 		secretR("POST", "/api/secret/transform/decode", "/api/secret/transform/decode", `{}`),
 		secretR("POST", "/api/secret/store", "/api/secret/store", `{}`),

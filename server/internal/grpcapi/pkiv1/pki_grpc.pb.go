@@ -767,12 +767,18 @@ var PKIService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	SecretService_GenerateDataKey_FullMethodName = "/secsy.pki.v1.SecretService/GenerateDataKey"
-	SecretService_GenerateHMAC_FullMethodName    = "/secsy.pki.v1.SecretService/GenerateHMAC"
-	SecretService_VerifyHMAC_FullMethodName      = "/secsy.pki.v1.SecretService/VerifyHMAC"
-	SecretService_GenerateRandom_FullMethodName  = "/secsy.pki.v1.SecretService/GenerateRandom"
-	SecretService_TransformEncode_FullMethodName = "/secsy.pki.v1.SecretService/TransformEncode"
-	SecretService_TransformDecode_FullMethodName = "/secsy.pki.v1.SecretService/TransformDecode"
+	SecretService_GenerateDataKey_FullMethodName     = "/secsy.pki.v1.SecretService/GenerateDataKey"
+	SecretService_GenerateHMAC_FullMethodName        = "/secsy.pki.v1.SecretService/GenerateHMAC"
+	SecretService_VerifyHMAC_FullMethodName          = "/secsy.pki.v1.SecretService/VerifyHMAC"
+	SecretService_GenerateRandom_FullMethodName      = "/secsy.pki.v1.SecretService/GenerateRandom"
+	SecretService_TransformEncode_FullMethodName     = "/secsy.pki.v1.SecretService/TransformEncode"
+	SecretService_TransformDecode_FullMethodName     = "/secsy.pki.v1.SecretService/TransformDecode"
+	SecretService_CreateSigningKey_FullMethodName    = "/secsy.pki.v1.SecretService/CreateSigningKey"
+	SecretService_ListSigningKeys_FullMethodName     = "/secsy.pki.v1.SecretService/ListSigningKeys"
+	SecretService_GetSigningKey_FullMethodName       = "/secsy.pki.v1.SecretService/GetSigningKey"
+	SecretService_Sign_FullMethodName                = "/secsy.pki.v1.SecretService/Sign"
+	SecretService_Verify_FullMethodName              = "/secsy.pki.v1.SecretService/Verify"
+	SecretService_VerifyWithPublicKey_FullMethodName = "/secsy.pki.v1.SecretService/VerifyWithPublicKey"
 )
 
 // SecretServiceClient is the client API for SecretService service.
@@ -826,6 +832,38 @@ type SecretServiceClient interface {
 	// TransformDecode inverts TransformEncode for the same template and tweak,
 	// recovering the original value. Same capability and errors as TransformEncode.
 	TransformDecode(ctx context.Context, in *TransformRequest, opts ...grpc.CallOption) (*TransformResponse, error)
+	// CreateSigningKey generates a named HSM-backed asymmetric signing key (ECDSA
+	// P-256/384 or RSA-PSS/PKCS#1-v1.5, algorithm fixed at creation). The private
+	// key is generated non-extractable in the key provider; only the public half is
+	// returned/persisted. Requires the secret:signing-key capability on the tenant.
+	//
+	// Errors: PERMISSION_DENIED (no secret:signing-key), INVALID_ARGUMENT (unknown
+	// algorithm / missing name), ALREADY_EXISTS (name taken), FAILED_PRECONDITION
+	// (secret service disabled), INTERNAL (provider/HSM failure).
+	CreateSigningKey(ctx context.Context, in *CreateSigningKeyRequest, opts ...grpc.CallOption) (*SigningKeyResponse, error)
+	// ListSigningKeys lists the tenant's signing keys (public metadata only).
+	// Requires the secret:signing-key capability.
+	ListSigningKeys(ctx context.Context, in *ListSigningKeysRequest, opts ...grpc.CallOption) (*ListSigningKeysResponse, error)
+	// GetSigningKey returns one signing key's public view — metadata plus the
+	// exported SubjectPublicKeyInfo (PEM and DER) for external verifiers. Requires
+	// the secret:sign capability (exporting the already-public half is a signing
+	// operation, not key management).
+	GetSigningKey(ctx context.Context, in *GetSigningKeyRequest, opts ...grpc.CallOption) (*SigningKeyResponse, error)
+	// Sign produces a raw digital signature over the caller's data (a message
+	// hashed server-side, or a pre-computed digest) with the named key's private
+	// half in the provider. Requires the secret:sign capability. This is a raw
+	// application-level signature, distinct from the CMS/X.509 signing service.
+	Sign(ctx context.Context, in *SignRequest, opts ...grpc.CallOption) (*SignResponse, error)
+	// Verify checks a signature against the named key's public half. A signature
+	// that does not match is a valid=false result, not an error. Requires the
+	// secret:sign capability.
+	Verify(ctx context.Context, in *VerifyRequest, opts ...grpc.CallOption) (*VerifyResponse, error)
+	// VerifyWithPublicKey checks a signature against a caller-supplied public key
+	// (SPKI, PEM or DER) and algorithm, without a stored key — for validating a
+	// signature produced by a key this service does not manage. Uses only public
+	// material (no HSM). A non-matching signature is a valid=false result, not an
+	// error. Requires the secret:sign capability.
+	VerifyWithPublicKey(ctx context.Context, in *VerifyWithPublicKeyRequest, opts ...grpc.CallOption) (*VerifyResponse, error)
 }
 
 type secretServiceClient struct {
@@ -896,6 +934,66 @@ func (c *secretServiceClient) TransformDecode(ctx context.Context, in *Transform
 	return out, nil
 }
 
+func (c *secretServiceClient) CreateSigningKey(ctx context.Context, in *CreateSigningKeyRequest, opts ...grpc.CallOption) (*SigningKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SigningKeyResponse)
+	err := c.cc.Invoke(ctx, SecretService_CreateSigningKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *secretServiceClient) ListSigningKeys(ctx context.Context, in *ListSigningKeysRequest, opts ...grpc.CallOption) (*ListSigningKeysResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSigningKeysResponse)
+	err := c.cc.Invoke(ctx, SecretService_ListSigningKeys_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *secretServiceClient) GetSigningKey(ctx context.Context, in *GetSigningKeyRequest, opts ...grpc.CallOption) (*SigningKeyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SigningKeyResponse)
+	err := c.cc.Invoke(ctx, SecretService_GetSigningKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *secretServiceClient) Sign(ctx context.Context, in *SignRequest, opts ...grpc.CallOption) (*SignResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SignResponse)
+	err := c.cc.Invoke(ctx, SecretService_Sign_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *secretServiceClient) Verify(ctx context.Context, in *VerifyRequest, opts ...grpc.CallOption) (*VerifyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VerifyResponse)
+	err := c.cc.Invoke(ctx, SecretService_Verify_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *secretServiceClient) VerifyWithPublicKey(ctx context.Context, in *VerifyWithPublicKeyRequest, opts ...grpc.CallOption) (*VerifyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(VerifyResponse)
+	err := c.cc.Invoke(ctx, SecretService_VerifyWithPublicKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SecretServiceServer is the server API for SecretService service.
 // All implementations must embed UnimplementedSecretServiceServer
 // for forward compatibility.
@@ -947,6 +1045,38 @@ type SecretServiceServer interface {
 	// TransformDecode inverts TransformEncode for the same template and tweak,
 	// recovering the original value. Same capability and errors as TransformEncode.
 	TransformDecode(context.Context, *TransformRequest) (*TransformResponse, error)
+	// CreateSigningKey generates a named HSM-backed asymmetric signing key (ECDSA
+	// P-256/384 or RSA-PSS/PKCS#1-v1.5, algorithm fixed at creation). The private
+	// key is generated non-extractable in the key provider; only the public half is
+	// returned/persisted. Requires the secret:signing-key capability on the tenant.
+	//
+	// Errors: PERMISSION_DENIED (no secret:signing-key), INVALID_ARGUMENT (unknown
+	// algorithm / missing name), ALREADY_EXISTS (name taken), FAILED_PRECONDITION
+	// (secret service disabled), INTERNAL (provider/HSM failure).
+	CreateSigningKey(context.Context, *CreateSigningKeyRequest) (*SigningKeyResponse, error)
+	// ListSigningKeys lists the tenant's signing keys (public metadata only).
+	// Requires the secret:signing-key capability.
+	ListSigningKeys(context.Context, *ListSigningKeysRequest) (*ListSigningKeysResponse, error)
+	// GetSigningKey returns one signing key's public view — metadata plus the
+	// exported SubjectPublicKeyInfo (PEM and DER) for external verifiers. Requires
+	// the secret:sign capability (exporting the already-public half is a signing
+	// operation, not key management).
+	GetSigningKey(context.Context, *GetSigningKeyRequest) (*SigningKeyResponse, error)
+	// Sign produces a raw digital signature over the caller's data (a message
+	// hashed server-side, or a pre-computed digest) with the named key's private
+	// half in the provider. Requires the secret:sign capability. This is a raw
+	// application-level signature, distinct from the CMS/X.509 signing service.
+	Sign(context.Context, *SignRequest) (*SignResponse, error)
+	// Verify checks a signature against the named key's public half. A signature
+	// that does not match is a valid=false result, not an error. Requires the
+	// secret:sign capability.
+	Verify(context.Context, *VerifyRequest) (*VerifyResponse, error)
+	// VerifyWithPublicKey checks a signature against a caller-supplied public key
+	// (SPKI, PEM or DER) and algorithm, without a stored key — for validating a
+	// signature produced by a key this service does not manage. Uses only public
+	// material (no HSM). A non-matching signature is a valid=false result, not an
+	// error. Requires the secret:sign capability.
+	VerifyWithPublicKey(context.Context, *VerifyWithPublicKeyRequest) (*VerifyResponse, error)
 	mustEmbedUnimplementedSecretServiceServer()
 }
 
@@ -974,6 +1104,24 @@ func (UnimplementedSecretServiceServer) TransformEncode(context.Context, *Transf
 }
 func (UnimplementedSecretServiceServer) TransformDecode(context.Context, *TransformRequest) (*TransformResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method TransformDecode not implemented")
+}
+func (UnimplementedSecretServiceServer) CreateSigningKey(context.Context, *CreateSigningKeyRequest) (*SigningKeyResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateSigningKey not implemented")
+}
+func (UnimplementedSecretServiceServer) ListSigningKeys(context.Context, *ListSigningKeysRequest) (*ListSigningKeysResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListSigningKeys not implemented")
+}
+func (UnimplementedSecretServiceServer) GetSigningKey(context.Context, *GetSigningKeyRequest) (*SigningKeyResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSigningKey not implemented")
+}
+func (UnimplementedSecretServiceServer) Sign(context.Context, *SignRequest) (*SignResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Sign not implemented")
+}
+func (UnimplementedSecretServiceServer) Verify(context.Context, *VerifyRequest) (*VerifyResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Verify not implemented")
+}
+func (UnimplementedSecretServiceServer) VerifyWithPublicKey(context.Context, *VerifyWithPublicKeyRequest) (*VerifyResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method VerifyWithPublicKey not implemented")
 }
 func (UnimplementedSecretServiceServer) mustEmbedUnimplementedSecretServiceServer() {}
 func (UnimplementedSecretServiceServer) testEmbeddedByValue()                       {}
@@ -1104,6 +1252,114 @@ func _SecretService_TransformDecode_Handler(srv interface{}, ctx context.Context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SecretService_CreateSigningKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateSigningKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SecretServiceServer).CreateSigningKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SecretService_CreateSigningKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SecretServiceServer).CreateSigningKey(ctx, req.(*CreateSigningKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SecretService_ListSigningKeys_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSigningKeysRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SecretServiceServer).ListSigningKeys(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SecretService_ListSigningKeys_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SecretServiceServer).ListSigningKeys(ctx, req.(*ListSigningKeysRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SecretService_GetSigningKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSigningKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SecretServiceServer).GetSigningKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SecretService_GetSigningKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SecretServiceServer).GetSigningKey(ctx, req.(*GetSigningKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SecretService_Sign_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SignRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SecretServiceServer).Sign(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SecretService_Sign_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SecretServiceServer).Sign(ctx, req.(*SignRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SecretService_Verify_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VerifyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SecretServiceServer).Verify(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SecretService_Verify_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SecretServiceServer).Verify(ctx, req.(*VerifyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SecretService_VerifyWithPublicKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VerifyWithPublicKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SecretServiceServer).VerifyWithPublicKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SecretService_VerifyWithPublicKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SecretServiceServer).VerifyWithPublicKey(ctx, req.(*VerifyWithPublicKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SecretService_ServiceDesc is the grpc.ServiceDesc for SecretService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1134,6 +1390,30 @@ var SecretService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TransformDecode",
 			Handler:    _SecretService_TransformDecode_Handler,
+		},
+		{
+			MethodName: "CreateSigningKey",
+			Handler:    _SecretService_CreateSigningKey_Handler,
+		},
+		{
+			MethodName: "ListSigningKeys",
+			Handler:    _SecretService_ListSigningKeys_Handler,
+		},
+		{
+			MethodName: "GetSigningKey",
+			Handler:    _SecretService_GetSigningKey_Handler,
+		},
+		{
+			MethodName: "Sign",
+			Handler:    _SecretService_Sign_Handler,
+		},
+		{
+			MethodName: "Verify",
+			Handler:    _SecretService_Verify_Handler,
+		},
+		{
+			MethodName: "VerifyWithPublicKey",
+			Handler:    _SecretService_VerifyWithPublicKey_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

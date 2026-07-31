@@ -221,6 +221,8 @@ func awsKeySpec(keyType string) (kmstypes.KeySpec, error) {
 		return kmstypes.KeySpecEccNistP521, nil
 	case KeyTypeRSA2048:
 		return kmstypes.KeySpecRsa2048, nil
+	case KeyTypeRSA3072:
+		return kmstypes.KeySpecRsa3072, nil
 	case KeyTypeRSA4096:
 		return kmstypes.KeySpecRsa4096, nil
 	default:
@@ -238,6 +240,8 @@ func awsKeyTypeFromSpec(spec kmstypes.KeySpec) (string, error) {
 		return KeyTypeECDSAP521, nil
 	case kmstypes.KeySpecRsa2048:
 		return KeyTypeRSA2048, nil
+	case kmstypes.KeySpecRsa3072:
+		return KeyTypeRSA3072, nil
 	case kmstypes.KeySpecRsa4096:
 		return KeyTypeRSA4096, nil
 	default:
@@ -248,7 +252,7 @@ func awsKeyTypeFromSpec(spec kmstypes.KeySpec) (string, error) {
 // awsSigningAlgorithm maps a key family, digest, and PSS flag to the KMS signing
 // algorithm. It rejects combinations the CA/TSA/OCSP paths never emit.
 func awsSigningAlgorithm(keyType string, hash crypto.Hash, pss bool) (kmstypes.SigningAlgorithmSpec, error) {
-	isRSA := keyType == KeyTypeRSA2048 || keyType == KeyTypeRSA4096
+	isRSA := keyType == KeyTypeRSA2048 || keyType == KeyTypeRSA3072 || keyType == KeyTypeRSA4096
 	if isRSA {
 		switch {
 		case pss && hash == crypto.SHA256:

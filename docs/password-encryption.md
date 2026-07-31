@@ -186,6 +186,12 @@ $ secsy-secret decrypt -in s.json -context 'tenant=acme'
 # Inspect the configured KEK
 $ secsy-secret kek-info
 
+# Named HSM-backed signing keys (sign / verify over arbitrary data)
+$ secsy-secret signing-key create -name app-signer -algorithm ecdsa-p256
+$ secsy-secret signing-key list
+$ printf 'data' | secsy-secret sign   -key app-signer -out sig.bin
+$ printf 'data' | secsy-secret verify -key app-signer -sig-in sig.bin
+
 # Format-preserving encryption / tokenization (FF1)
 $ secsy-secret transform encode -template pan -value 4111-1111-1111-1111
 $ secsy-secret transform decode -template pan -value 4923-8471-2210-6634
@@ -207,6 +213,11 @@ configured.
 | `POST /api/secret/hmac`        | Compute a keyed HMAC over caller data         |
 | `POST /api/secret/hmac/verify` | Verify a keyed HMAC (constant time)           |
 | `POST /api/secret/random`      | CSPRNG bytes (HSM RNG when available)         |
+| `POST /api/secret/signing-keys` | Create a named HSM-backed signing key        |
+| `GET  /api/secret/signing-keys` | List named signing keys                      |
+| `GET  /api/secret/signing-keys/{name}` | Get a key's public view (SPKI PEM/DER) |
+| `POST /api/secret/signing-keys/{name}/sign`   | Sign data (raw digital signature) |
+| `POST /api/secret/signing-keys/{name}/verify` | Verify a signature               |
 | `POST /api/secret/transform/encode` | Format-preserving encrypt / tokenize     |
 | `POST /api/secret/transform/decode` | Invert a transform (detokenize)          |
 
@@ -307,6 +318,87 @@ $ secsy-secret random -bytes 32 -format hex
 
 `bytes` is capped at 1024. Data-key mints and HMAC operations count against the
 tenant's daily secret-op quota; random draws do not (the byte cap bounds abuse).
+
+## Digital signatures (named signing keys, sign / verify)
+
+Beyond the symmetric primitives above, the secret layer offers **asymmetric
+digital signatures** — the sign/verify counterpart to Vault Transit — over
+**named, HSM-backed signing keys**. A signing key is a real key pair whose
+private half is generated **non-extractable inside the key provider** (the HSM
+under PKCS#11); only the public half is exported and persisted. Signatures are
+raw, application-level signatures over arbitrary data — deliberately distinct
+from the CMS/X.509 [artifact-signing service](artifact-signing.md), which
+produces structured signature containers. Everything here is exposed over REST,
+gRPC (`SecretService`: `CreateSigningKey`, `ListSigningKeys`, `GetSigningKey`,
+`Sign`, `Verify`), and the `secsy-secret` CLI.
+
+The **algorithm is fixed when the key is created** — the curve or RSA modulus
+and, for RSA, the PSS-vs-PKCS#1-v1.5 scheme:
+
+| Algorithm            | Key                | Scheme            |
+| -------------------- | ------------------ | ----------------- |
+| `ecdsa-p256`         | NIST P-256         | ECDSA             |
+| `ecdsa-p384`         | NIST P-384         | ECDSA             |
+| `ecdsa-p521`         | NIST P-521         | ECDSA             |
+| `ed25519`            | Edwards25519       | Ed25519 (EdDSA)   |
+| `rsa-pss-2048`       | RSA 2048           | RSASSA-PSS        |
+| `rsa-pss-3072`       | RSA 3072           | RSASSA-PSS        |
+| `rsa-pss-4096`       | RSA 4096           | RSASSA-PSS        |
+| `rsa-pkcs1v15-2048`  | RSA 2048           | RSASSA-PKCS1-v1_5 |
+| `rsa-pkcs1v15-3072`  | RSA 3072           | RSASSA-PKCS1-v1_5 |
+| `rsa-pkcs1v15-4096`  | RSA 4096           | RSASSA-PKCS1-v1_5 |
+
+For ECDSA and RSA the **message hash** (`sha256` | `sha384` | `sha512`) is chosen
+per signing request (empty selects the algorithm's default), and a caller may
+sign either a **message** (hashed server-side) or a pre-computed **digest**
+(signed verbatim, its length checked against the hash). RSASSA-PSS uses a salt
+length equal to the hash length — the interoperable choice, so signatures verify
+against `openssl` and JOSE libraries as well as this service. **Ed25519** is pure
+EdDSA: it signs the message directly (no selectable hash, no pre-hashed digest),
+and a request that supplies either is rejected.
+
+Two capabilities separate the privileged key-management from day-to-day use:
+creating and listing keys needs **`secret:signing-key`** (admins by default);
+sign, verify, and public-key export need **`secret:sign`** (travels with the
+crypto-service grant). Key creation and each signature are audited; signing meters
+the daily secret-op quota (verify and public-key export do not — they touch only
+public material).
+
+```jsonc
+// POST /api/secret/signing-keys          { "name": "app-signer", "algorithm": "ecdsa-p256" }
+// 201 Created  { "id": "...", "name": "app-signer", "algorithm": "ecdsa-p256",
+//                "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...", "public_key_der": "<b64>" , ... }
+
+// POST /api/secret/signing-keys/app-signer/sign     { "message": "<b64>", "hash": "sha256" }
+// 200 OK   { "signature": "<b64>", "algorithm": "ecdsa-p256", "hash": "sha256", "key": "app-signer" }
+
+// POST /api/secret/signing-keys/app-signer/verify   { "message": "<b64>", "signature": "<b64>" }
+// 200 OK   { "valid": true, "algorithm": "ecdsa-p256" }
+```
+
+A signature that does not match is a `valid:false` **result**, not an error.
+Verification uses only the stored public key, so it works even without the HSM —
+exactly what an external verifier does.
+
+```console
+$ secsy-secret signing-key create -name app-signer -algorithm ecdsa-p256
+$ secsy-secret signing-key public -name app-signer -out app-signer.pub.pem
+$ printf 'release-v1.2.3' | secsy-secret sign   -key app-signer -out sig.bin
+$ printf 'release-v1.2.3' | secsy-secret verify -key app-signer -sig-in sig.bin   # exit 0 on match
+
+# The exported SPKI verifies with standard tooling — no secsy-pki needed:
+$ printf 'release-v1.2.3' > msg.bin
+$ openssl dgst -sha256 -verify app-signer.pub.pem -signature sig.bin msg.bin
+Verified OK
+```
+
+For an RSASSA-PSS key, `openssl` needs the padding mode and salt length:
+
+```console
+$ openssl dgst -sha256 -verify k.pub.pem \
+    -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:32 \
+    -signature sig.bin msg.bin
+```
 
 ## Format-preserving encryption & tokenization (FF1)
 

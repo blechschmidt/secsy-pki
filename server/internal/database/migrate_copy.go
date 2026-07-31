@@ -92,6 +92,11 @@ var migrationTables = []string{
 	// secret layer so a store migration preserves the sealed MAC seed (existing
 	// HMAC tokens still verify after the migration).
 	"mac_keys",
+	// Named HSM-backed asymmetric signing keys for the crypto service (Task 153).
+	// Keyed by id, unique per (tenant, name); standalone (no foreign keys). Holds
+	// only metadata plus the exported public key — no private material — so a store
+	// migration preserves the ability to verify and to address the HSM key.
+	"signing_keys",
 	// Format-preserving-encryption / tokenization seed (Task 144). One row per KEK
 	// family; standalone (no foreign keys). Copied with the rest of the secret
 	// layer so a store migration preserves the sealed FPE seed (existing tokens

@@ -75,9 +75,9 @@ const (
 
 // Defines values for ArtifactSignResponseDigestAlgorithm.
 const (
-	Sha256 ArtifactSignResponseDigestAlgorithm = "sha256"
-	Sha384 ArtifactSignResponseDigestAlgorithm = "sha384"
-	Sha512 ArtifactSignResponseDigestAlgorithm = "sha512"
+	ArtifactSignResponseDigestAlgorithmSha256 ArtifactSignResponseDigestAlgorithm = "sha256"
+	ArtifactSignResponseDigestAlgorithmSha384 ArtifactSignResponseDigestAlgorithm = "sha384"
+	ArtifactSignResponseDigestAlgorithmSha512 ArtifactSignResponseDigestAlgorithm = "sha512"
 )
 
 // Defines values for ArtifactSignResponseLevel.
@@ -158,6 +158,20 @@ const (
 const (
 	ChainValidationReportDecisionInvalid ChainValidationReportDecision = "invalid"
 	ChainValidationReportDecisionValid   ChainValidationReportDecision = "valid"
+)
+
+// Defines values for CreateSigningKeyRequestAlgorithm.
+const (
+	CreateSigningKeyRequestAlgorithmEcdsaP256       CreateSigningKeyRequestAlgorithm = "ecdsa-p256"
+	CreateSigningKeyRequestAlgorithmEcdsaP384       CreateSigningKeyRequestAlgorithm = "ecdsa-p384"
+	CreateSigningKeyRequestAlgorithmEcdsaP521       CreateSigningKeyRequestAlgorithm = "ecdsa-p521"
+	CreateSigningKeyRequestAlgorithmEd25519         CreateSigningKeyRequestAlgorithm = "ed25519"
+	CreateSigningKeyRequestAlgorithmRsaPkcs1v152048 CreateSigningKeyRequestAlgorithm = "rsa-pkcs1v15-2048"
+	CreateSigningKeyRequestAlgorithmRsaPkcs1v153072 CreateSigningKeyRequestAlgorithm = "rsa-pkcs1v15-3072"
+	CreateSigningKeyRequestAlgorithmRsaPkcs1v154096 CreateSigningKeyRequestAlgorithm = "rsa-pkcs1v15-4096"
+	CreateSigningKeyRequestAlgorithmRsaPss2048      CreateSigningKeyRequestAlgorithm = "rsa-pss-2048"
+	CreateSigningKeyRequestAlgorithmRsaPss3072      CreateSigningKeyRequestAlgorithm = "rsa-pss-3072"
+	CreateSigningKeyRequestAlgorithmRsaPss4096      CreateSigningKeyRequestAlgorithm = "rsa-pss-4096"
 )
 
 // Defines values for CreateTokenRequestRoles.
@@ -402,6 +416,13 @@ const (
 	SSHSignResponseCertTypeUser SSHSignResponseCertType = "user"
 )
 
+// Defines values for SecretSignRequestHash.
+const (
+	SecretSignRequestHashSha256 SecretSignRequestHash = "sha256"
+	SecretSignRequestHashSha384 SecretSignRequestHash = "sha384"
+	SecretSignRequestHashSha512 SecretSignRequestHash = "sha512"
+)
+
 // Defines values for SetDefaultRestrictionSetRequestType.
 const (
 	Ssh  SetDefaultRestrictionSetRequestType = "ssh"
@@ -446,6 +467,34 @@ const (
 	ValidationRevocationStateHeld    ValidationRevocationState = "held"
 	ValidationRevocationStateRevoked ValidationRevocationState = "revoked"
 	ValidationRevocationStateUnknown ValidationRevocationState = "unknown"
+)
+
+// Defines values for VerifySignatureRequestHash.
+const (
+	VerifySignatureRequestHashSha256 VerifySignatureRequestHash = "sha256"
+	VerifySignatureRequestHashSha384 VerifySignatureRequestHash = "sha384"
+	VerifySignatureRequestHashSha512 VerifySignatureRequestHash = "sha512"
+)
+
+// Defines values for VerifyWithPublicKeyRequestAlgorithm.
+const (
+	VerifyWithPublicKeyRequestAlgorithmEcdsaP256       VerifyWithPublicKeyRequestAlgorithm = "ecdsa-p256"
+	VerifyWithPublicKeyRequestAlgorithmEcdsaP384       VerifyWithPublicKeyRequestAlgorithm = "ecdsa-p384"
+	VerifyWithPublicKeyRequestAlgorithmEcdsaP521       VerifyWithPublicKeyRequestAlgorithm = "ecdsa-p521"
+	VerifyWithPublicKeyRequestAlgorithmEd25519         VerifyWithPublicKeyRequestAlgorithm = "ed25519"
+	VerifyWithPublicKeyRequestAlgorithmRsaPkcs1v152048 VerifyWithPublicKeyRequestAlgorithm = "rsa-pkcs1v15-2048"
+	VerifyWithPublicKeyRequestAlgorithmRsaPkcs1v153072 VerifyWithPublicKeyRequestAlgorithm = "rsa-pkcs1v15-3072"
+	VerifyWithPublicKeyRequestAlgorithmRsaPkcs1v154096 VerifyWithPublicKeyRequestAlgorithm = "rsa-pkcs1v15-4096"
+	VerifyWithPublicKeyRequestAlgorithmRsaPss2048      VerifyWithPublicKeyRequestAlgorithm = "rsa-pss-2048"
+	VerifyWithPublicKeyRequestAlgorithmRsaPss3072      VerifyWithPublicKeyRequestAlgorithm = "rsa-pss-3072"
+	VerifyWithPublicKeyRequestAlgorithmRsaPss4096      VerifyWithPublicKeyRequestAlgorithm = "rsa-pss-4096"
+)
+
+// Defines values for VerifyWithPublicKeyRequestHash.
+const (
+	VerifyWithPublicKeyRequestHashSha256 VerifyWithPublicKeyRequestHash = "sha256"
+	VerifyWithPublicKeyRequestHashSha384 VerifyWithPublicKeyRequestHash = "sha384"
+	VerifyWithPublicKeyRequestHashSha512 VerifyWithPublicKeyRequestHash = "sha512"
 )
 
 // Defines values for CertStatusFilter.
@@ -1397,6 +1446,18 @@ type CreateSSHCARequest struct {
 	// TenantId Owning tenant (default: the default tenant).
 	TenantId *string `json:"tenant_id,omitempty"`
 }
+
+// CreateSigningKeyRequest defines model for CreateSigningKeyRequest.
+type CreateSigningKeyRequest struct {
+	// Algorithm The fixed signing algorithm (curve/modulus and, for RSA, the PSS-vs-PKCS#1-v1.5 scheme). ed25519 signs the message directly and takes no hash.
+	Algorithm CreateSigningKeyRequestAlgorithm `json:"algorithm"`
+
+	// Name Tenant-unique name for the signing key.
+	Name string `json:"name"`
+}
+
+// CreateSigningKeyRequestAlgorithm The fixed signing algorithm (curve/modulus and, for RSA, the PSS-vs-PKCS#1-v1.5 scheme). ed25519 signs the message directly and takes no hash.
+type CreateSigningKeyRequestAlgorithm string
 
 // CreateTenantRequest defines model for CreateTenantRequest.
 type CreateTenantRequest struct {
@@ -2838,6 +2899,35 @@ type SecretInfo struct {
 	WrapAlg  *string `json:"wrap_alg,omitempty"`
 }
 
+// SecretSignRequest Supply exactly one of message or digest.
+type SecretSignRequest struct {
+	// Digest base64 pre-computed digest to sign verbatim (length must match hash).
+	Digest *string `json:"digest,omitempty"`
+
+	// Hash Message hash; empty selects the algorithm's default.
+	Hash *SecretSignRequestHash `json:"hash,omitempty"`
+
+	// Message base64 data to hash (with hash) and then sign.
+	Message *string `json:"message,omitempty"`
+}
+
+// SecretSignRequestHash Message hash; empty selects the algorithm's default.
+type SecretSignRequestHash string
+
+// SecretSignResponse defines model for SecretSignResponse.
+type SecretSignResponse struct {
+	Algorithm *string `json:"algorithm,omitempty"`
+
+	// Hash The hash actually used.
+	Hash *string `json:"hash,omitempty"`
+
+	// Key The signing key name.
+	Key *string `json:"key,omitempty"`
+
+	// Signature base64-encoded signature.
+	Signature *string `json:"signature,omitempty"`
+}
+
 // SetDefaultRestrictionSetRequest defines model for SetDefaultRestrictionSetRequest.
 type SetDefaultRestrictionSetRequest struct {
 	RestrictionSetId *string                             `json:"restriction_set_id,omitempty"`
@@ -2870,6 +2960,29 @@ type SignRequestCertType string
 type SignResponse struct {
 	Certificate *string `json:"certificate,omitempty"`
 	KeyId       *string `json:"key_id,omitempty"`
+}
+
+// SigningKey The public view of a named signing key — never any private material.
+type SigningKey struct {
+	Algorithm *string    `json:"algorithm,omitempty"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+	CreatedBy *string    `json:"created_by,omitempty"`
+
+	// Id Immutable unique key id.
+	Id *string `json:"id,omitempty"`
+
+	// KeyType The key-provider key type the algorithm generates.
+	KeyType *string `json:"key_type,omitempty"`
+	Name    *string `json:"name,omitempty"`
+
+	// Provider The backend holding the private key (pkcs11|software|kms).
+	Provider *string `json:"provider,omitempty"`
+
+	// PublicKeyDer base64-encoded SubjectPublicKeyInfo DER.
+	PublicKeyDer *string `json:"public_key_der,omitempty"`
+
+	// PublicKeyPem SubjectPublicKeyInfo as a PEM block.
+	PublicKeyPem *string `json:"public_key_pem,omitempty"`
 }
 
 // StatusMessage defines model for StatusMessage.
@@ -3102,6 +3215,60 @@ type ValidationRevocation struct {
 
 // ValidationRevocationState good, revoked, held (reversible RFC 5280 certificateHold), or unknown (no record for the serial under the resolved issuer).
 type ValidationRevocationState string
+
+// VerifySignatureRequest Supply exactly one of message or digest.
+type VerifySignatureRequest struct {
+	// Digest base64 pre-computed digest (length must match hash).
+	Digest *string `json:"digest,omitempty"`
+
+	// Hash Message hash; empty selects the algorithm's default.
+	Hash *VerifySignatureRequestHash `json:"hash,omitempty"`
+
+	// Message base64 data that was signed.
+	Message *string `json:"message,omitempty"`
+
+	// Signature base64-encoded signature to verify.
+	Signature string `json:"signature"`
+}
+
+// VerifySignatureRequestHash Message hash; empty selects the algorithm's default.
+type VerifySignatureRequestHash string
+
+// VerifySignatureResponse defines model for VerifySignatureResponse.
+type VerifySignatureResponse struct {
+	Algorithm *string `json:"algorithm,omitempty"`
+	Valid     *bool   `json:"valid,omitempty"`
+}
+
+// VerifyWithPublicKeyRequest Supply exactly one of message or digest, and exactly one of public_key_pem or public_key_der (both SubjectPublicKeyInfo).
+type VerifyWithPublicKeyRequest struct {
+	// Algorithm The algorithm the signature was produced under.
+	Algorithm VerifyWithPublicKeyRequestAlgorithm `json:"algorithm"`
+
+	// Digest base64 pre-computed digest (length must match hash).
+	Digest *string `json:"digest,omitempty"`
+
+	// Hash Message hash; empty selects the algorithm's default (ignored for ed25519).
+	Hash *VerifyWithPublicKeyRequestHash `json:"hash,omitempty"`
+
+	// Message base64 data that was signed.
+	Message *string `json:"message,omitempty"`
+
+	// PublicKeyDer base64-encoded SubjectPublicKeyInfo DER.
+	PublicKeyDer *string `json:"public_key_der,omitempty"`
+
+	// PublicKeyPem SubjectPublicKeyInfo as a PEM block.
+	PublicKeyPem *string `json:"public_key_pem,omitempty"`
+
+	// Signature base64-encoded signature to verify.
+	Signature string `json:"signature"`
+}
+
+// VerifyWithPublicKeyRequestAlgorithm The algorithm the signature was produced under.
+type VerifyWithPublicKeyRequestAlgorithm string
+
+// VerifyWithPublicKeyRequestHash Message hash; empty selects the algorithm's default (ignored for ed25519).
+type VerifyWithPublicKeyRequestHash string
 
 // X509SignRequest defines model for X509SignRequest.
 type X509SignRequest struct {
@@ -3444,6 +3611,36 @@ type GenerateRandomParams struct {
 	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
 }
 
+// ListSigningKeysParams defines parameters for ListSigningKeys.
+type ListSigningKeysParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// CreateSigningKeyParams defines parameters for CreateSigningKey.
+type CreateSigningKeyParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// GetSigningKeyParams defines parameters for GetSigningKey.
+type GetSigningKeyParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// SignWithKeyParams defines parameters for SignWithKey.
+type SignWithKeyParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// VerifyWithKeyParams defines parameters for VerifyWithKey.
+type VerifyWithKeyParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
 // TransformDecodeParams defines parameters for TransformDecode.
 type TransformDecodeParams struct {
 	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
@@ -3452,6 +3649,12 @@ type TransformDecodeParams struct {
 
 // TransformEncodeParams defines parameters for TransformEncode.
 type TransformEncodeParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// VerifyWithPublicKeyParams defines parameters for VerifyWithPublicKey.
+type VerifyWithPublicKeyParams struct {
 	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
 	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
 }
@@ -3588,11 +3791,23 @@ type VerifyHMACJSONRequestBody = HMACVerifyRequest
 // GenerateRandomJSONRequestBody defines body for GenerateRandom for application/json ContentType.
 type GenerateRandomJSONRequestBody = RandomRequest
 
+// CreateSigningKeyJSONRequestBody defines body for CreateSigningKey for application/json ContentType.
+type CreateSigningKeyJSONRequestBody = CreateSigningKeyRequest
+
+// SignWithKeyJSONRequestBody defines body for SignWithKey for application/json ContentType.
+type SignWithKeyJSONRequestBody = SecretSignRequest
+
+// VerifyWithKeyJSONRequestBody defines body for VerifyWithKey for application/json ContentType.
+type VerifyWithKeyJSONRequestBody = VerifySignatureRequest
+
 // TransformDecodeJSONRequestBody defines body for TransformDecode for application/json ContentType.
 type TransformDecodeJSONRequestBody = TransformRequest
 
 // TransformEncodeJSONRequestBody defines body for TransformEncode for application/json ContentType.
 type TransformEncodeJSONRequestBody = TransformRequest
+
+// VerifyWithPublicKeyJSONRequestBody defines body for VerifyWithPublicKey for application/json ContentType.
+type VerifyWithPublicKeyJSONRequestBody = VerifyWithPublicKeyRequest
 
 // SignArtifactJSONRequestBody defines body for SignArtifact for application/json ContentType.
 type SignArtifactJSONRequestBody = ArtifactSignRequest
@@ -4086,6 +4301,27 @@ type ClientInterface interface {
 
 	GenerateRandom(ctx context.Context, params *GenerateRandomParams, body GenerateRandomJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ListSigningKeys request
+	ListSigningKeys(ctx context.Context, params *ListSigningKeysParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateSigningKeyWithBody request with any body
+	CreateSigningKeyWithBody(ctx context.Context, params *CreateSigningKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreateSigningKey(ctx context.Context, params *CreateSigningKeyParams, body CreateSigningKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetSigningKey request
+	GetSigningKey(ctx context.Context, name string, params *GetSigningKeyParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SignWithKeyWithBody request with any body
+	SignWithKeyWithBody(ctx context.Context, name string, params *SignWithKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	SignWithKey(ctx context.Context, name string, params *SignWithKeyParams, body SignWithKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// VerifyWithKeyWithBody request with any body
+	VerifyWithKeyWithBody(ctx context.Context, name string, params *VerifyWithKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	VerifyWithKey(ctx context.Context, name string, params *VerifyWithKeyParams, body VerifyWithKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// TransformDecodeWithBody request with any body
 	TransformDecodeWithBody(ctx context.Context, params *TransformDecodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -4095,6 +4331,11 @@ type ClientInterface interface {
 	TransformEncodeWithBody(ctx context.Context, params *TransformEncodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	TransformEncode(ctx context.Context, params *TransformEncodeParams, body TransformEncodeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// VerifyWithPublicKeyWithBody request with any body
+	VerifyWithPublicKeyWithBody(ctx context.Context, params *VerifyWithPublicKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	VerifyWithPublicKey(ctx context.Context, params *VerifyWithPublicKeyParams, body VerifyWithPublicKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// SignArtifactWithBody request with any body
 	SignArtifactWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5910,6 +6151,102 @@ func (c *Client) GenerateRandom(ctx context.Context, params *GenerateRandomParam
 	return c.Client.Do(req)
 }
 
+func (c *Client) ListSigningKeys(ctx context.Context, params *ListSigningKeysParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListSigningKeysRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateSigningKeyWithBody(ctx context.Context, params *CreateSigningKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateSigningKeyRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateSigningKey(ctx context.Context, params *CreateSigningKeyParams, body CreateSigningKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateSigningKeyRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetSigningKey(ctx context.Context, name string, params *GetSigningKeyParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSigningKeyRequest(c.Server, name, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SignWithKeyWithBody(ctx context.Context, name string, params *SignWithKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSignWithKeyRequestWithBody(c.Server, name, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SignWithKey(ctx context.Context, name string, params *SignWithKeyParams, body SignWithKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSignWithKeyRequest(c.Server, name, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyWithKeyWithBody(ctx context.Context, name string, params *VerifyWithKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyWithKeyRequestWithBody(c.Server, name, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyWithKey(ctx context.Context, name string, params *VerifyWithKeyParams, body VerifyWithKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyWithKeyRequest(c.Server, name, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) TransformDecodeWithBody(ctx context.Context, params *TransformDecodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewTransformDecodeRequestWithBody(c.Server, params, contentType, body)
 	if err != nil {
@@ -5948,6 +6285,30 @@ func (c *Client) TransformEncodeWithBody(ctx context.Context, params *TransformE
 
 func (c *Client) TransformEncode(ctx context.Context, params *TransformEncodeParams, body TransformEncodeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewTransformEncodeRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyWithPublicKeyWithBody(ctx context.Context, params *VerifyWithPublicKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyWithPublicKeyRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyWithPublicKey(ctx context.Context, params *VerifyWithPublicKeyParams, body VerifyWithPublicKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyWithPublicKeyRequest(c.Server, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -11305,6 +11666,276 @@ func NewGenerateRandomRequestWithBody(server string, params *GenerateRandomParam
 	return req, nil
 }
 
+// NewListSigningKeysRequest generates requests for ListSigningKeys
+func NewListSigningKeysRequest(server string, params *ListSigningKeysParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/signing-keys")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewCreateSigningKeyRequest calls the generic CreateSigningKey builder with application/json body
+func NewCreateSigningKeyRequest(server string, params *CreateSigningKeyParams, body CreateSigningKeyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateSigningKeyRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewCreateSigningKeyRequestWithBody generates requests for CreateSigningKey with any type of body
+func NewCreateSigningKeyRequestWithBody(server string, params *CreateSigningKeyParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/signing-keys")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetSigningKeyRequest generates requests for GetSigningKey
+func NewGetSigningKeyRequest(server string, name string, params *GetSigningKeyParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "name", runtime.ParamLocationPath, name)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/signing-keys/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewSignWithKeyRequest calls the generic SignWithKey builder with application/json body
+func NewSignWithKeyRequest(server string, name string, params *SignWithKeyParams, body SignWithKeyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSignWithKeyRequestWithBody(server, name, params, "application/json", bodyReader)
+}
+
+// NewSignWithKeyRequestWithBody generates requests for SignWithKey with any type of body
+func NewSignWithKeyRequestWithBody(server string, name string, params *SignWithKeyParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "name", runtime.ParamLocationPath, name)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/signing-keys/%s/sign", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewVerifyWithKeyRequest calls the generic VerifyWithKey builder with application/json body
+func NewVerifyWithKeyRequest(server string, name string, params *VerifyWithKeyParams, body VerifyWithKeyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewVerifyWithKeyRequestWithBody(server, name, params, "application/json", bodyReader)
+}
+
+// NewVerifyWithKeyRequestWithBody generates requests for VerifyWithKey with any type of body
+func NewVerifyWithKeyRequestWithBody(server string, name string, params *VerifyWithKeyParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "name", runtime.ParamLocationPath, name)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/signing-keys/%s/verify", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewTransformDecodeRequest calls the generic TransformDecode builder with application/json body
 func NewTransformDecodeRequest(server string, params *TransformDecodeParams, body TransformDecodeJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -11381,6 +12012,61 @@ func NewTransformEncodeRequestWithBody(server string, params *TransformEncodePar
 	}
 
 	operationPath := fmt.Sprintf("/api/secret/transform/encode")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewVerifyWithPublicKeyRequest calls the generic VerifyWithPublicKey builder with application/json body
+func NewVerifyWithPublicKeyRequest(server string, params *VerifyWithPublicKeyParams, body VerifyWithPublicKeyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewVerifyWithPublicKeyRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewVerifyWithPublicKeyRequestWithBody generates requests for VerifyWithPublicKey with any type of body
+func NewVerifyWithPublicKeyRequestWithBody(server string, params *VerifyWithPublicKeyParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/verify")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -12905,6 +13591,27 @@ type ClientWithResponsesInterface interface {
 
 	GenerateRandomWithResponse(ctx context.Context, params *GenerateRandomParams, body GenerateRandomJSONRequestBody, reqEditors ...RequestEditorFn) (*GenerateRandomResponse, error)
 
+	// ListSigningKeysWithResponse request
+	ListSigningKeysWithResponse(ctx context.Context, params *ListSigningKeysParams, reqEditors ...RequestEditorFn) (*ListSigningKeysResponse, error)
+
+	// CreateSigningKeyWithBodyWithResponse request with any body
+	CreateSigningKeyWithBodyWithResponse(ctx context.Context, params *CreateSigningKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateSigningKeyResponse, error)
+
+	CreateSigningKeyWithResponse(ctx context.Context, params *CreateSigningKeyParams, body CreateSigningKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateSigningKeyResponse, error)
+
+	// GetSigningKeyWithResponse request
+	GetSigningKeyWithResponse(ctx context.Context, name string, params *GetSigningKeyParams, reqEditors ...RequestEditorFn) (*GetSigningKeyResponse, error)
+
+	// SignWithKeyWithBodyWithResponse request with any body
+	SignWithKeyWithBodyWithResponse(ctx context.Context, name string, params *SignWithKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SignWithKeyResponse, error)
+
+	SignWithKeyWithResponse(ctx context.Context, name string, params *SignWithKeyParams, body SignWithKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*SignWithKeyResponse, error)
+
+	// VerifyWithKeyWithBodyWithResponse request with any body
+	VerifyWithKeyWithBodyWithResponse(ctx context.Context, name string, params *VerifyWithKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyWithKeyResponse, error)
+
+	VerifyWithKeyWithResponse(ctx context.Context, name string, params *VerifyWithKeyParams, body VerifyWithKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyWithKeyResponse, error)
+
 	// TransformDecodeWithBodyWithResponse request with any body
 	TransformDecodeWithBodyWithResponse(ctx context.Context, params *TransformDecodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*TransformDecodeResponse, error)
 
@@ -12914,6 +13621,11 @@ type ClientWithResponsesInterface interface {
 	TransformEncodeWithBodyWithResponse(ctx context.Context, params *TransformEncodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*TransformEncodeResponse, error)
 
 	TransformEncodeWithResponse(ctx context.Context, params *TransformEncodeParams, body TransformEncodeJSONRequestBody, reqEditors ...RequestEditorFn) (*TransformEncodeResponse, error)
+
+	// VerifyWithPublicKeyWithBodyWithResponse request with any body
+	VerifyWithPublicKeyWithBodyWithResponse(ctx context.Context, params *VerifyWithPublicKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyWithPublicKeyResponse, error)
+
+	VerifyWithPublicKeyWithResponse(ctx context.Context, params *VerifyWithPublicKeyParams, body VerifyWithPublicKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyWithPublicKeyResponse, error)
 
 	// SignArtifactWithBodyWithResponse request with any body
 	SignArtifactWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SignArtifactResponse, error)
@@ -15375,6 +16087,127 @@ func (r GenerateRandomResponse) StatusCode() int {
 	return 0
 }
 
+type ListSigningKeysResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *struct {
+		SigningKeys *[]SigningKey `json:"signing_keys,omitempty"`
+	}
+	JSON403 *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListSigningKeysResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListSigningKeysResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type CreateSigningKeyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *SigningKey
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateSigningKeyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateSigningKeyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetSigningKeyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *SigningKey
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r GetSigningKeyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetSigningKeyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type SignWithKeyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *SecretSignResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r SignWithKeyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SignWithKeyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type VerifyWithKeyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *VerifySignatureResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r VerifyWithKeyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r VerifyWithKeyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type TransformDecodeResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -15417,6 +16250,30 @@ func (r TransformEncodeResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r TransformEncodeResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type VerifyWithPublicKeyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *VerifySignatureResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r VerifyWithPublicKeyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r VerifyWithPublicKeyResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -17345,6 +18202,75 @@ func (c *ClientWithResponses) GenerateRandomWithResponse(ctx context.Context, pa
 	return ParseGenerateRandomResponse(rsp)
 }
 
+// ListSigningKeysWithResponse request returning *ListSigningKeysResponse
+func (c *ClientWithResponses) ListSigningKeysWithResponse(ctx context.Context, params *ListSigningKeysParams, reqEditors ...RequestEditorFn) (*ListSigningKeysResponse, error) {
+	rsp, err := c.ListSigningKeys(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListSigningKeysResponse(rsp)
+}
+
+// CreateSigningKeyWithBodyWithResponse request with arbitrary body returning *CreateSigningKeyResponse
+func (c *ClientWithResponses) CreateSigningKeyWithBodyWithResponse(ctx context.Context, params *CreateSigningKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateSigningKeyResponse, error) {
+	rsp, err := c.CreateSigningKeyWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateSigningKeyResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreateSigningKeyWithResponse(ctx context.Context, params *CreateSigningKeyParams, body CreateSigningKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateSigningKeyResponse, error) {
+	rsp, err := c.CreateSigningKey(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateSigningKeyResponse(rsp)
+}
+
+// GetSigningKeyWithResponse request returning *GetSigningKeyResponse
+func (c *ClientWithResponses) GetSigningKeyWithResponse(ctx context.Context, name string, params *GetSigningKeyParams, reqEditors ...RequestEditorFn) (*GetSigningKeyResponse, error) {
+	rsp, err := c.GetSigningKey(ctx, name, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetSigningKeyResponse(rsp)
+}
+
+// SignWithKeyWithBodyWithResponse request with arbitrary body returning *SignWithKeyResponse
+func (c *ClientWithResponses) SignWithKeyWithBodyWithResponse(ctx context.Context, name string, params *SignWithKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SignWithKeyResponse, error) {
+	rsp, err := c.SignWithKeyWithBody(ctx, name, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSignWithKeyResponse(rsp)
+}
+
+func (c *ClientWithResponses) SignWithKeyWithResponse(ctx context.Context, name string, params *SignWithKeyParams, body SignWithKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*SignWithKeyResponse, error) {
+	rsp, err := c.SignWithKey(ctx, name, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSignWithKeyResponse(rsp)
+}
+
+// VerifyWithKeyWithBodyWithResponse request with arbitrary body returning *VerifyWithKeyResponse
+func (c *ClientWithResponses) VerifyWithKeyWithBodyWithResponse(ctx context.Context, name string, params *VerifyWithKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyWithKeyResponse, error) {
+	rsp, err := c.VerifyWithKeyWithBody(ctx, name, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyWithKeyResponse(rsp)
+}
+
+func (c *ClientWithResponses) VerifyWithKeyWithResponse(ctx context.Context, name string, params *VerifyWithKeyParams, body VerifyWithKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyWithKeyResponse, error) {
+	rsp, err := c.VerifyWithKey(ctx, name, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyWithKeyResponse(rsp)
+}
+
 // TransformDecodeWithBodyWithResponse request with arbitrary body returning *TransformDecodeResponse
 func (c *ClientWithResponses) TransformDecodeWithBodyWithResponse(ctx context.Context, params *TransformDecodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*TransformDecodeResponse, error) {
 	rsp, err := c.TransformDecodeWithBody(ctx, params, contentType, body, reqEditors...)
@@ -17377,6 +18303,23 @@ func (c *ClientWithResponses) TransformEncodeWithResponse(ctx context.Context, p
 		return nil, err
 	}
 	return ParseTransformEncodeResponse(rsp)
+}
+
+// VerifyWithPublicKeyWithBodyWithResponse request with arbitrary body returning *VerifyWithPublicKeyResponse
+func (c *ClientWithResponses) VerifyWithPublicKeyWithBodyWithResponse(ctx context.Context, params *VerifyWithPublicKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyWithPublicKeyResponse, error) {
+	rsp, err := c.VerifyWithPublicKeyWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyWithPublicKeyResponse(rsp)
+}
+
+func (c *ClientWithResponses) VerifyWithPublicKeyWithResponse(ctx context.Context, params *VerifyWithPublicKeyParams, body VerifyWithPublicKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyWithPublicKeyResponse, error) {
+	rsp, err := c.VerifyWithPublicKey(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyWithPublicKeyResponse(rsp)
 }
 
 // SignArtifactWithBodyWithResponse request with arbitrary body returning *SignArtifactResponse
@@ -21035,6 +21978,201 @@ func ParseGenerateRandomResponse(rsp *http.Response) (*GenerateRandomResponse, e
 	return response, nil
 }
 
+// ParseListSigningKeysResponse parses an HTTP response from a ListSigningKeysWithResponse call
+func ParseListSigningKeysResponse(rsp *http.Response) (*ListSigningKeysResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListSigningKeysResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest struct {
+			SigningKeys *[]SigningKey `json:"signing_keys,omitempty"`
+		}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateSigningKeyResponse parses an HTTP response from a CreateSigningKeyWithResponse call
+func ParseCreateSigningKeyResponse(rsp *http.Response) (*CreateSigningKeyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateSigningKeyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest SigningKey
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetSigningKeyResponse parses an HTTP response from a GetSigningKeyWithResponse call
+func ParseGetSigningKeyResponse(rsp *http.Response) (*GetSigningKeyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetSigningKeyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SigningKey
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseSignWithKeyResponse parses an HTTP response from a SignWithKeyWithResponse call
+func ParseSignWithKeyResponse(rsp *http.Response) (*SignWithKeyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SignWithKeyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SecretSignResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseVerifyWithKeyResponse parses an HTTP response from a VerifyWithKeyWithResponse call
+func ParseVerifyWithKeyResponse(rsp *http.Response) (*VerifyWithKeyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &VerifyWithKeyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest VerifySignatureResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseTransformDecodeResponse parses an HTTP response from a TransformDecodeWithResponse call
 func ParseTransformDecodeResponse(rsp *http.Response) (*TransformDecodeResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -21091,6 +22229,46 @@ func ParseTransformEncodeResponse(rsp *http.Response) (*TransformEncodeResponse,
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
 		var dest TransformResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseVerifyWithPublicKeyResponse parses an HTTP response from a VerifyWithPublicKeyWithResponse call
+func ParseVerifyWithPublicKeyResponse(rsp *http.Response) (*VerifyWithPublicKeyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &VerifyWithPublicKeyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest VerifySignatureResponse
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}

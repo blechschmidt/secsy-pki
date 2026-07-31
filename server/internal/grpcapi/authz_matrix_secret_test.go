@@ -90,6 +90,34 @@ func grpcSecretAuthzMatrix() []grpcSecretCase {
 			_, err := s.TransformDecode(ctx, &pkiv1.TransformRequest{Tenant: "a", Template: "t", Value: "1234567890"})
 			return err
 		}},
+		// Task 153: named HSM-backed signing keys. The authz check runs before any
+		// content validation, so the denial cases short-circuit; the (d) case reaches
+		// an InvalidArgument (empty algorithm / no data / unknown key), which is not a
+		// denial — exactly what the matrix asserts.
+		{"CreateSigningKey", func(ctx context.Context, s *secretService) error {
+			_, err := s.CreateSigningKey(ctx, &pkiv1.CreateSigningKeyRequest{Tenant: "a", Name: "k"})
+			return err
+		}},
+		{"ListSigningKeys", func(ctx context.Context, s *secretService) error {
+			_, err := s.ListSigningKeys(ctx, &pkiv1.ListSigningKeysRequest{Tenant: "a"})
+			return err
+		}},
+		{"GetSigningKey", func(ctx context.Context, s *secretService) error {
+			_, err := s.GetSigningKey(ctx, &pkiv1.GetSigningKeyRequest{Tenant: "a", Name: "k"})
+			return err
+		}},
+		{"Sign", func(ctx context.Context, s *secretService) error {
+			_, err := s.Sign(ctx, &pkiv1.SignRequest{Tenant: "a", Key: "k", Message: []byte("m")})
+			return err
+		}},
+		{"Verify", func(ctx context.Context, s *secretService) error {
+			_, err := s.Verify(ctx, &pkiv1.VerifyRequest{Tenant: "a", Key: "k", Message: []byte("m"), Signature: []byte("s")})
+			return err
+		}},
+		{"VerifyWithPublicKey", func(ctx context.Context, s *secretService) error {
+			_, err := s.VerifyWithPublicKey(ctx, &pkiv1.VerifyWithPublicKeyRequest{Tenant: "a", Algorithm: "ecdsa-p256", PublicKeyPem: "x", Message: []byte("m"), Signature: []byte("s")})
+			return err
+		}},
 	}
 }
 

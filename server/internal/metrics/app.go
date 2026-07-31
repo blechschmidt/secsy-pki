@@ -577,6 +577,19 @@ var (
 		"Format-preserving-encryption transform operations, by template, operation (encode|decode) and result.",
 		"template", "operation", "result")
 
+	// Named HSM-backed asymmetric signing keys (Task 153). SecretSigningKey counts
+	// signing-key creations by result; SecretSign counts sign|verify operations by
+	// operation and result, so operators can see signing throughput distinct from
+	// the symmetric crypto-service traffic.
+	SecretSigningKey = NewCounter(Default,
+		"secsy_secret_signing_key_operations_total",
+		"Signing-key management operations (create), by result.",
+		"result")
+	SecretSign = NewCounter(Default,
+		"secsy_secret_sign_operations_total",
+		"Asymmetric sign/verify operations, by operation (sign|verify) and result.",
+		"operation", "result")
+
 	// RBAC authorization decisions. "action" is the coarse capability checked;
 	// "decision" is allow|deny.
 	AuthzDecisions = NewCounter(Default,

@@ -694,6 +694,44 @@ service SecretService {
   // TransformDecode inverts TransformEncode for the same template and tweak,
   // recovering the original value. Same capability and errors as TransformEncode.
   rpc TransformDecode(TransformRequest) returns (TransformResponse);
+
+  // CreateSigningKey generates a named HSM-backed asymmetric signing key (ECDSA
+  // P-256/384 or RSA-PSS/PKCS#1-v1.5, algorithm fixed at creation). The private
+  // key is generated non-extractable in the key provider; only the public half is
+  // returned/persisted. Requires the secret:signing-key capability on the tenant.
+  //
+  // Errors: PERMISSION_DENIED (no secret:signing-key), INVALID_ARGUMENT (unknown
+  // algorithm / missing name), ALREADY_EXISTS (name taken), FAILED_PRECONDITION
+  // (secret service disabled), INTERNAL (provider/HSM failure).
+  rpc CreateSigningKey(CreateSigningKeyRequest) returns (SigningKeyResponse);
+
+  // ListSigningKeys lists the tenant's signing keys (public metadata only).
+  // Requires the secret:signing-key capability.
+  rpc ListSigningKeys(ListSigningKeysRequest) returns (ListSigningKeysResponse);
+
+  // GetSigningKey returns one signing key's public view — metadata plus the
+  // exported SubjectPublicKeyInfo (PEM and DER) for external verifiers. Requires
+  // the secret:sign capability (exporting the already-public half is a signing
+  // operation, not key management).
+  rpc GetSigningKey(GetSigningKeyRequest) returns (SigningKeyResponse);
+
+  // Sign produces a raw digital signature over the caller's data (a message
+  // hashed server-side, or a pre-computed digest) with the named key's private
+  // half in the provider. Requires the secret:sign capability. This is a raw
+  // application-level signature, distinct from the CMS/X.509 signing service.
+  rpc Sign(SignRequest) returns (SignResponse);
+
+  // Verify checks a signature against the named key's public half. A signature
+  // that does not match is a valid=false result, not an error. Requires the
+  // secret:sign capability.
+  rpc Verify(VerifyRequest) returns (VerifyResponse);
+
+  // VerifyWithPublicKey checks a signature against a caller-supplied public key
+  // (SPKI, PEM or DER) and algorithm, without a stored key — for validating a
+  // signature produced by a key this service does not manage. Uses only public
+  // material (no HSM). A non-matching signature is a valid=false result, not an
+  // error. Requires the secret:sign capability.
+  rpc VerifyWithPublicKey(VerifyWithPublicKeyRequest) returns (VerifyResponse);
 }
 
 // GenerateDataKeyRequest asks for a fresh data key. tenant selects the KEK
@@ -783,4 +821,102 @@ message TransformResponse {
   // deterministic reports whether the template is convergent (equal plaintext ->
   // equal ciphertext).
   bool deterministic = 3;
+}
+
+// CreateSigningKeyRequest asks for a new named signing key. tenant selects the
+// scope (id or slug; empty = default tenant).
+message CreateSigningKeyRequest {
+  string tenant = 1;
+  // name is the tenant-unique friendly name to address the key by.
+  string name = 2;
+  // algorithm is the fixed signing algorithm: ecdsa-p256, ecdsa-p384,
+  // rsa-pss-2048, rsa-pss-4096, rsa-pkcs1v15-2048, or rsa-pkcs1v15-4096.
+  string algorithm = 3;
+}
+
+// SigningKeyResponse is the public view of a signing key — no private material.
+message SigningKeyResponse {
+  string id = 1;
+  string name = 2;
+  string algorithm = 3;
+  string key_type = 4;
+  string provider = 5;
+  string created_by = 6;
+  string created_at = 7;
+  // public_key_pem is the SubjectPublicKeyInfo as a PEM block; public_key_der is
+  // the same in raw DER. Either verifies signatures without this service.
+  string public_key_pem = 8;
+  bytes public_key_der = 9;
+}
+
+// ListSigningKeysRequest lists a tenant's signing keys.
+message ListSigningKeysRequest {
+  string tenant = 1;
+}
+
+// ListSigningKeysResponse returns the tenant's signing keys.
+message ListSigningKeysResponse {
+  repeated SigningKeyResponse keys = 1;
+}
+
+// GetSigningKeyRequest addresses one signing key by name within a tenant.
+message GetSigningKeyRequest {
+  string tenant = 1;
+  string name = 2;
+}
+
+// SignRequest carries the data to sign with a named key. Exactly one of message
+// or digest must be set.
+message SignRequest {
+  string tenant = 1;
+  // key is the signing-key name.
+  string key = 2;
+  // message is data to hash (with hash) and then sign.
+  bytes message = 3;
+  // digest is a pre-computed digest to sign verbatim (its length must match hash).
+  bytes digest = 4;
+  // hash selects the message hash (sha256|sha384|sha512); empty = algorithm default.
+  string hash = 5;
+}
+
+// SignResponse returns the signature and the parameters it was made under.
+message SignResponse {
+  bytes signature = 1;
+  string algorithm = 2;
+  string hash = 3;
+  string key = 4;
+}
+
+// VerifyRequest carries the data, the signature, and the key to verify against.
+// Exactly one of message or digest must be set.
+message VerifyRequest {
+  string tenant = 1;
+  string key = 2;
+  bytes message = 3;
+  bytes digest = 4;
+  bytes signature = 5;
+  string hash = 6;
+}
+
+// VerifyResponse reports whether the signature verified.
+message VerifyResponse {
+  bool valid = 1;
+  string algorithm = 2;
+}
+
+// VerifyWithPublicKeyRequest carries a caller-supplied public key, the algorithm,
+// the data, and the signature to check — no stored key. Exactly one of message or
+// digest must be set; supply the public key in exactly one of public_key_pem or
+// public_key_der (both SubjectPublicKeyInfo).
+message VerifyWithPublicKeyRequest {
+  string tenant = 1;
+  // algorithm is the signing algorithm the signature was produced under (e.g.
+  // ecdsa-p256, ed25519, rsa-pss-3072).
+  string algorithm = 2;
+  string public_key_pem = 3;
+  bytes public_key_der = 4;
+  bytes message = 5;
+  bytes digest = 6;
+  bytes signature = 7;
+  string hash = 8;
 }

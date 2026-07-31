@@ -67,6 +67,12 @@ type secretClientError struct{ msg string }
 
 func (e *secretClientError) Error() string { return e.msg }
 
+// secretConflictError marks a uniqueness conflict — e.g. creating a signing key
+// whose name is already taken (mapped to 409 / AlreadyExists).
+type secretConflictError struct{ msg string }
+
+func (e *secretConflictError) Error() string { return e.msg }
+
 // SecretErrorKind classifies a stateless-crypto-service error returned by the
 // shared core methods so a non-HTTP transport (the gRPC SecretService) can map
 // it to the right status code without importing the unexported error types. It
@@ -74,6 +80,7 @@ func (e *secretClientError) Error() string { return e.msg }
 func SecretErrorKind(err error) string {
 	var fe *secretForbiddenError
 	var ce *secretClientError
+	var conflict *secretConflictError
 	var suspended *models.TenantSuspendedError
 	var quota *models.QuotaExceededError
 	switch {
@@ -81,6 +88,8 @@ func SecretErrorKind(err error) string {
 		return "forbidden"
 	case errors.As(err, &ce):
 		return "bad_request"
+	case errors.As(err, &conflict):
+		return "conflict"
 	case errors.As(err, &quota):
 		return "quota"
 	default:
@@ -96,6 +105,8 @@ func (a *API) writeSecretCryptoError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "%s", err.Error())
 	case "bad_request":
 		writeError(w, http.StatusBadRequest, "%s", err.Error())
+	case "conflict":
+		writeError(w, http.StatusConflict, "%s", err.Error())
 	case "quota":
 		if writeTenantLimitError(w, err) { // 429 + Retry-After
 			return

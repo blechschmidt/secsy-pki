@@ -47,6 +47,8 @@ func mapSecretOpErr(err error) error {
 		return status.Error(codes.PermissionDenied, err.Error())
 	case "bad_request":
 		return status.Error(codes.InvalidArgument, err.Error())
+	case "conflict":
+		return status.Error(codes.AlreadyExists, err.Error())
 	case "quota":
 		return status.Error(codes.ResourceExhausted, err.Error())
 	default:
@@ -148,4 +150,111 @@ func (s *secretService) transform(ctx context.Context, req *pkiv1.TransformReque
 		Result:        res.Result,
 		Deterministic: res.Deterministic,
 	}, nil
+}
+
+// signingKeyResponse maps a shared SigningKeyInfo onto the proto message.
+func signingKeyResponse(info *handlers.SigningKeyInfo) *pkiv1.SigningKeyResponse {
+	return &pkiv1.SigningKeyResponse{
+		Id:           info.ID,
+		Name:         info.Name,
+		Algorithm:    info.Algorithm,
+		KeyType:      info.KeyType,
+		Provider:     info.Provider,
+		CreatedBy:    info.CreatedBy,
+		CreatedAt:    info.CreatedAt,
+		PublicKeyPem: info.PublicKeyPEM,
+		PublicKeyDer: info.PublicKeyDER,
+	}
+}
+
+// CreateSigningKey generates a named HSM-backed signing key and returns its
+// public view.
+func (s *secretService) CreateSigningKey(ctx context.Context, req *pkiv1.CreateSigningKeyRequest) (*pkiv1.SigningKeyResponse, error) {
+	tenant, _, err := s.api.ResolveSecretTenant(ctx, req.GetTenant())
+	if err != nil {
+		return nil, mapSecretTenantErr(err)
+	}
+	info, err := s.api.CreateSigningKeyOp(ctx, peerIP(ctx), tenant, req.GetName(), req.GetAlgorithm())
+	if err != nil {
+		return nil, mapSecretOpErr(err)
+	}
+	return signingKeyResponse(info), nil
+}
+
+// ListSigningKeys lists the tenant's signing keys (public metadata only).
+func (s *secretService) ListSigningKeys(ctx context.Context, req *pkiv1.ListSigningKeysRequest) (*pkiv1.ListSigningKeysResponse, error) {
+	tenant, _, err := s.api.ResolveSecretTenant(ctx, req.GetTenant())
+	if err != nil {
+		return nil, mapSecretTenantErr(err)
+	}
+	infos, err := s.api.ListSigningKeysOp(ctx, peerIP(ctx), tenant)
+	if err != nil {
+		return nil, mapSecretOpErr(err)
+	}
+	out := &pkiv1.ListSigningKeysResponse{Keys: make([]*pkiv1.SigningKeyResponse, 0, len(infos))}
+	for _, info := range infos {
+		out.Keys = append(out.Keys, signingKeyResponse(info))
+	}
+	return out, nil
+}
+
+// GetSigningKey returns one signing key's public view (metadata + public key).
+func (s *secretService) GetSigningKey(ctx context.Context, req *pkiv1.GetSigningKeyRequest) (*pkiv1.SigningKeyResponse, error) {
+	tenant, _, err := s.api.ResolveSecretTenant(ctx, req.GetTenant())
+	if err != nil {
+		return nil, mapSecretTenantErr(err)
+	}
+	info, err := s.api.GetSigningKeyPublicOp(ctx, peerIP(ctx), tenant, req.GetName())
+	if err != nil {
+		return nil, mapSecretOpErr(err)
+	}
+	return signingKeyResponse(info), nil
+}
+
+// Sign produces a raw digital signature over the caller's data.
+func (s *secretService) Sign(ctx context.Context, req *pkiv1.SignRequest) (*pkiv1.SignResponse, error) {
+	tenant, _, err := s.api.ResolveSecretTenant(ctx, req.GetTenant())
+	if err != nil {
+		return nil, mapSecretTenantErr(err)
+	}
+	res, err := s.api.SignOp(ctx, peerIP(ctx), tenant, req.GetKey(), req.GetMessage(), req.GetDigest(), req.GetHash())
+	if err != nil {
+		return nil, mapSecretOpErr(err)
+	}
+	return &pkiv1.SignResponse{
+		Signature: res.Signature,
+		Algorithm: res.Algorithm,
+		Hash:      res.Hash,
+		Key:       res.KeyName,
+	}, nil
+}
+
+// Verify checks a signature against a named key's public half.
+func (s *secretService) Verify(ctx context.Context, req *pkiv1.VerifyRequest) (*pkiv1.VerifyResponse, error) {
+	tenant, _, err := s.api.ResolveSecretTenant(ctx, req.GetTenant())
+	if err != nil {
+		return nil, mapSecretTenantErr(err)
+	}
+	res, err := s.api.VerifySignatureOp(ctx, peerIP(ctx), tenant, req.GetKey(), req.GetMessage(), req.GetDigest(), req.GetSignature(), req.GetHash())
+	if err != nil {
+		return nil, mapSecretOpErr(err)
+	}
+	return &pkiv1.VerifyResponse{Valid: res.Valid, Algorithm: res.Algorithm}, nil
+}
+
+// VerifyWithPublicKey checks a signature against a caller-supplied public key and
+// algorithm, without a stored key. The public key is supplied as SPKI in exactly
+// one of public_key_pem or public_key_der; the shared Op enforces that (after the
+// authorization check) so REST and gRPC behave identically.
+func (s *secretService) VerifyWithPublicKey(ctx context.Context, req *pkiv1.VerifyWithPublicKeyRequest) (*pkiv1.VerifyResponse, error) {
+	tenant, _, err := s.api.ResolveSecretTenant(ctx, req.GetTenant())
+	if err != nil {
+		return nil, mapSecretTenantErr(err)
+	}
+	res, err := s.api.VerifyWithSuppliedKeyOp(ctx, peerIP(ctx), tenant, req.GetAlgorithm(),
+		[]byte(req.GetPublicKeyPem()), req.GetPublicKeyDer(), req.GetMessage(), req.GetDigest(), req.GetSignature(), req.GetHash())
+	if err != nil {
+		return nil, mapSecretOpErr(err)
+	}
+	return &pkiv1.VerifyResponse{Valid: res.Valid, Algorithm: res.Algorithm}, nil
 }

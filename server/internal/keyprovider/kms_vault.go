@@ -395,7 +395,7 @@ func vaultSignRequest(keyType string, digest []byte, hash crypto.Hash, pss bool)
 	switch keyType {
 	case KeyTypeECDSAP256, KeyTypeECDSAP384, KeyTypeECDSAP521:
 		params.MarshalingAlgorithm = "asn1"
-	case KeyTypeRSA2048, KeyTypeRSA4096:
+	case KeyTypeRSA2048, KeyTypeRSA3072, KeyTypeRSA4096:
 		if pss {
 			params.SignatureAlgorithm = "pss"
 		} else {
@@ -410,9 +410,9 @@ func vaultSignRequest(keyType string, digest []byte, hash crypto.Hash, pss bool)
 // --- type/hash mapping -------------------------------------------------------
 
 // vaultSigningKeyType maps a canonical key type to a Transit signing key type.
-// The supported set mirrors the other cloud-KMS backends (ECDSA P-256/384/521,
-// RSA 2048/4096); Transit's additional types (ed25519, rsa-3072) are not exposed
-// so the abstraction stays uniform.
+// The supported set is ECDSA P-256/384/521 and RSA 2048/3072/4096; Transit's
+// ed25519 type is not exposed here (its Ed25519 signing flow differs), so
+// Ed25519 signing keys are served by the software/PKCS#11 backends instead.
 func vaultSigningKeyType(keyType string) (string, error) {
 	switch keyType {
 	case KeyTypeECDSAP256:
@@ -423,12 +423,14 @@ func vaultSigningKeyType(keyType string) (string, error) {
 		return "ecdsa-p521", nil
 	case KeyTypeRSA2048:
 		return "rsa-2048", nil
+	case KeyTypeRSA3072:
+		return "rsa-3072", nil
 	case KeyTypeRSA4096:
 		return "rsa-4096", nil
 	default:
 		return "", fmt.Errorf("keyprovider: vault does not support signing key type %q "+
-			"(supported: %s, %s, %s, %s, %s)", keyType,
-			KeyTypeECDSAP256, KeyTypeECDSAP384, KeyTypeECDSAP521, KeyTypeRSA2048, KeyTypeRSA4096)
+			"(supported: %s, %s, %s, %s, %s, %s)", keyType,
+			KeyTypeECDSAP256, KeyTypeECDSAP384, KeyTypeECDSAP521, KeyTypeRSA2048, KeyTypeRSA3072, KeyTypeRSA4096)
 	}
 }
 
@@ -443,6 +445,8 @@ func vaultKeyTypeToCanonical(transitType string) (string, error) {
 		return KeyTypeECDSAP521, nil
 	case "rsa-2048":
 		return KeyTypeRSA2048, nil
+	case "rsa-3072":
+		return KeyTypeRSA3072, nil
 	case "rsa-4096":
 		return KeyTypeRSA4096, nil
 	default:

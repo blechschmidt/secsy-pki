@@ -32,7 +32,8 @@ func newFakeKMSProvider(t *testing.T) *KMSProvider {
 func TestKMSGenerateResolveSign(t *testing.T) {
 	ctx := context.Background()
 	for _, keyType := range []string{
-		KeyTypeECDSAP256, KeyTypeECDSAP384, KeyTypeECDSAP521, KeyTypeRSA2048,
+		KeyTypeECDSAP256, KeyTypeECDSAP384, KeyTypeECDSAP521,
+		KeyTypeRSA2048, KeyTypeRSA3072, KeyTypeRSA4096,
 	} {
 		t.Run(keyType, func(t *testing.T) {
 			p := newFakeKMSProvider(t)

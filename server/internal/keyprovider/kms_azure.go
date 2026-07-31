@@ -192,6 +192,8 @@ func azureCreateParams(keyType string) (azkeys.CreateKeyParameters, error) {
 		return ecParams(azkeys.CurveNameP521), nil
 	case KeyTypeRSA2048:
 		return rsaParams(2048), nil
+	case KeyTypeRSA3072:
+		return rsaParams(3072), nil
 	case KeyTypeRSA4096:
 		return rsaParams(4096), nil
 	default:
@@ -232,10 +234,14 @@ func azureKeyType(jwk *azkeys.JSONWebKey) (string, error) {
 			return "", fmt.Errorf("keyprovider: azure unsupported curve %q", *jwk.Crv)
 		}
 	case azkeys.KeyTypeRSA, azkeys.KeyTypeRSAHSM:
-		if len(jwk.N) > 384 {
+		switch {
+		case len(jwk.N) > 384: // > 3072-bit modulus
 			return KeyTypeRSA4096, nil
+		case len(jwk.N) > 256: // > 2048-bit modulus
+			return KeyTypeRSA3072, nil
+		default:
+			return KeyTypeRSA2048, nil
 		}
-		return KeyTypeRSA2048, nil
 	default:
 		return "", fmt.Errorf("keyprovider: azure unsupported key type %q", *jwk.Kty)
 	}
@@ -280,7 +286,7 @@ func azurePublicKey(jwk *azkeys.JSONWebKey) (crypto.PublicKey, error) {
 }
 
 func azureSignatureAlgorithm(keyType string, hash crypto.Hash, pss bool) (azkeys.SignatureAlgorithm, error) {
-	isRSA := keyType == KeyTypeRSA2048 || keyType == KeyTypeRSA4096
+	isRSA := keyType == KeyTypeRSA2048 || keyType == KeyTypeRSA3072 || keyType == KeyTypeRSA4096
 	if isRSA {
 		switch {
 		case pss && hash == crypto.SHA256:

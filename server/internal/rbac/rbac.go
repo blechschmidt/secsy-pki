@@ -96,6 +96,19 @@ const (
 	// Access to any individual template is additionally gated per-template at the
 	// handler layer (a template may be restricted to specific roles).
 	ActionTransform Action = "secret:transform"
+	// ActionSign covers producing and verifying raw asymmetric digital signatures
+	// (and exporting the public key) with a named HSM-backed signing key on the
+	// crypto service (Task 153). Like the other crypto-service capabilities it
+	// travels with the day-to-day encrypt/decrypt grant; sign, verify, and
+	// get-public-key share one capability because verify and public-key export
+	// operate only on the already-public half. Creating/managing the keys
+	// themselves is the separate, more privileged secret:signing-key capability.
+	ActionSign Action = "secret:sign"
+	// ActionManageSigningKey covers creating and listing named signing keys — an
+	// HSM key-generation operation — so it is held more tightly than the day-to-day
+	// signing capability (admins only by default). It does not itself permit
+	// signing, and signing does not permit key creation.
+	ActionManageSigningKey Action = "secret:signing-key"
 	// ActionManageEscrow covers administering the key-escrow configuration
 	// (inspecting recovery agents, provisioning agent keys). It is an
 	// administrative capability held by admins only.
@@ -173,6 +186,10 @@ var roleActions = map[Role]map[Action]bool{
 		ActionHMAC:      true,
 		ActionRandom:    true,
 		ActionTransform: true,
+		// Day-to-day signing/verification with named signing keys travels with the
+		// crypto-service grant; creating the keys (secret:signing-key) stays
+		// admin-only.
+		ActionSign: true,
 	},
 	RoleSigner: {
 		ActionSignArtifact: true,
