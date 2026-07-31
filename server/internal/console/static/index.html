@@ -210,6 +210,23 @@
           <button class="btn sm" id="invCSV" style="margin-top:16px">Export CSV</button>
         </div>
         <div id="invCounts" class="muted" style="margin-bottom:12px"></div>
+
+        <!-- Key-compromise incident response (Task 154): find every certificate sharing a leaked subject public key -->
+        <details class="panel" id="keyCompromisePanel" style="margin-bottom:12px">
+          <summary style="cursor:pointer;font-weight:600">Key-compromise search <span class="muted" style="font-weight:normal">— find every certificate that shares a public key (SubjectPublicKeyInfo SHA-256)</span></summary>
+          <p class="muted" style="margin-top:10px">Paste the compromised key's <b>SPKI SHA-256 fingerprint</b> (hex, colon-grouped hex, or <code>SHA256:&lt;base64&gt;</code>), or a <b>public-key PEM</b> (fingerprinted locally in your browser). The search runs across every CA you can read. To derive a fingerprint from a certificate, CSR, or private key instead, use <code>secsy-ca list-certs --by-public-key @file</code>.</p>
+          <div class="row">
+            <div class="field" style="flex:1"><label for="kcFingerprint">SPKI fingerprint</label><input id="kcFingerprint" placeholder="hex or SHA256:base64…"></div>
+            <button class="btn" id="kcSearchBtn" style="margin-top:16px">Search all my CAs</button>
+          </div>
+          <div class="field"><label for="kcPubKey">…or paste a public-key PEM (auto-fills the fingerprint)</label><textarea id="kcPubKey" placeholder="-----BEGIN PUBLIC KEY-----" style="min-height:70px;font-family:monospace;font-size:12px"></textarea></div>
+          <div id="kcResult" class="muted" style="margin-top:8px"></div>
+          <table id="kcTable" class="hidden" style="margin-top:8px">
+            <thead><tr><th>Serial</th><th>Common name</th><th>CA</th><th>Profile</th><th>Not after</th><th>Status</th></tr></thead>
+            <tbody id="kcRows"></tbody>
+          </table>
+        </details>
+
         <div class="panel">
           <table>
             <thead><tr><th>Serial</th><th>Common name</th><th>Profile</th><th>CA</th><th>Not after</th><th>Status</th><th>CT</th><th>Lint</th></tr></thead>
@@ -1201,6 +1218,59 @@
               <textarea id="rndOut" readonly style="min-height:60px;font-family:monospace;font-size:12px"></textarea>
             </div>
             <div id="rndSource" class="muted" style="margin-top:6px"></div>
+          </div>
+        </div>
+
+        <!-- Digital signatures (Task 155): named HSM-backed asymmetric signing keys -->
+        <h2 style="font-size:15px;margin-top:22px">Digital signatures <span class="muted" style="font-weight:normal;font-size:13px">— named signing keys; the private half is generated non-extractable on the token</span></h2>
+        <div id="sigKeysSection" class="hidden">
+          <div class="row" style="align-items:stretch">
+            <div class="panel" style="flex:1.4;min-width:340px">
+              <h2 style="font-size:14px">Signing keys</h2>
+              <p class="muted" style="margin-top:0">Create a named key (algorithm fixed at creation) and export its public half for external verifiers (openssl / JOSE). Listing and creation require <code>secret:signing-key</code>; signing and public-key export require <code>secret:sign</code>. This is distinct from the X.509/CMS <b>Signing</b> page (that signs release artifacts) — here you sign arbitrary data with a raw key.</p>
+              <div id="sigKeysError" class="notice err hidden" style="margin-bottom:8px"></div>
+              <table>
+                <thead><tr><th>Name</th><th>Algorithm</th><th>Provider</th><th>Created</th><th></th></tr></thead>
+                <tbody id="sigKeyRows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+              </table>
+              <div class="row" style="margin-top:10px">
+                <div class="field" style="flex:1"><label for="sigKeyNewName">New key name</label><input id="sigKeyNewName" placeholder="app-signer"></div>
+                <div class="field" style="width:200px"><label for="sigKeyNewAlg">Algorithm</label>
+                  <select id="sigKeyNewAlg">
+                    <option value="ecdsa-p256">ecdsa-p256</option>
+                    <option value="ecdsa-p384">ecdsa-p384</option>
+                    <option value="ecdsa-p521">ecdsa-p521</option>
+                    <option value="ed25519">ed25519</option>
+                    <option value="rsa-pss-2048">rsa-pss-2048</option>
+                    <option value="rsa-pss-3072">rsa-pss-3072</option>
+                    <option value="rsa-pss-4096">rsa-pss-4096</option>
+                    <option value="rsa-pkcs1v15-2048">rsa-pkcs1v15-2048</option>
+                    <option value="rsa-pkcs1v15-3072">rsa-pkcs1v15-3072</option>
+                    <option value="rsa-pkcs1v15-4096">rsa-pkcs1v15-4096</option>
+                  </select>
+                </div>
+                <button class="btn" id="sigKeyCreateBtn" style="margin-top:16px">Create key</button>
+              </div>
+              <div class="field hidden" id="sigKeyPubBox" style="margin-top:10px">
+                <label>Public key (SPKI PEM) — <a href="#" id="sigKeyPubDownload">download .pem</a></label>
+                <textarea id="sigKeyPub" readonly style="min-height:110px;font-family:monospace;font-size:12px"></textarea>
+              </div>
+            </div>
+            <div class="panel" style="flex:1;min-width:320px">
+              <h2 style="font-size:14px">Sign / verify</h2>
+              <div id="sigError" class="notice err hidden" style="margin-bottom:8px"></div>
+              <div class="row">
+                <div class="field" style="flex:1"><label for="sigKeyName">Key name</label><input id="sigKeyName" placeholder="app-signer"></div>
+                <div class="field" style="width:130px"><label for="sigHash">Hash</label>
+                  <select id="sigHash"><option value="">default</option><option value="sha256">sha256</option><option value="sha384">sha384</option><option value="sha512">sha512</option></select>
+                </div>
+              </div>
+              <div class="field"><label for="sigMessage">Message (UTF-8 text)</label><textarea id="sigMessage" placeholder="data to sign…" style="min-height:70px"></textarea></div>
+              <button class="btn" id="sigSignBtn">Sign →</button>
+              <div class="field" style="margin-top:10px"><label for="sigOut">Signature (base64) <span class="muted">— filled by Sign; paste one here to verify</span></label><textarea id="sigOut" style="min-height:60px;font-family:monospace;font-size:12px"></textarea></div>
+              <button class="btn ghost" id="sigVerifyBtn">Verify signature</button>
+              <div id="sigVerifyResult" class="muted" style="margin-top:8px"></div>
+            </div>
           </div>
         </div>
       </section>

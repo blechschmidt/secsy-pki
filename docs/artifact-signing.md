@@ -80,6 +80,12 @@ The archival **CAdES-LTA** level (periodic archive-timestamps that re-protect th
 material as algorithms weaken) is out of scope; re-sign or add an external
 archive timestamp when you need multi-decade preservation.
 
+In the [operator console](web-console.md), the **Signing** page exposes the level
+as a per-signature dropdown (**signer default / B / T / LT**), shows each signer's
+default level in the signer table, and reports the achieved level (and any embedded
+CRL/OCSP counts) on the result; the verify panel adds a **require-level** gate so an
+operator can confirm a signature reaches at least CAdES-T or -LT.
+
 ## Provisioning a signing key + certificate
 
 ```console

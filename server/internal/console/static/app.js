@@ -314,6 +314,7 @@ function switchView(name) {
   if (name === 'cas') loadAuthorities();
   if (name === 'ssh') loadSSH();
   if (name === 'signing') loadSigning();
+  if (name === 'secrets' && secretServiceEnabled) loadSigningKeys();
   if (name === 'acme') loadACME();
   if (name === 'audit') loadAudit();
   if (name === 'approvals') loadApprovals();
@@ -1141,6 +1142,70 @@ async function exportInventoryCSV() {
   finally { $('invCSV').disabled = false; }
 }
 
+// ---- Key-compromise search (Task 154) ------------------------------------
+// Locate every certificate that certifies a leaked subject public key. The
+// server matches on the SubjectPublicKeyInfo SHA-256 fingerprint; the console
+// either passes a fingerprint straight through (the server normalizes hex /
+// SHA256:base64) or derives it locally from a pasted public-key PEM. Because the
+// list endpoint is per-CA and tenant-scoped, the search fans out over every CA
+// the operator can read and aggregates the matches.
+async function fingerprintPublicKeyPEM(pem) {
+  const m = pem.match(/-----BEGIN PUBLIC KEY-----([\s\S]*?)-----END PUBLIC KEY-----/);
+  if (!m) throw new Error('paste a PEM "PUBLIC KEY" block, or enter a fingerprint directly');
+  // A "PUBLIC KEY" block's DER is exactly the SubjectPublicKeyInfo, so its
+  // SHA-256 equals the server's keycheck.Fingerprint over the same bytes.
+  const der = unb64(m[1].replace(/\s+/g, ''));
+  const digest = await crypto.subtle.digest('SHA-256', der);
+  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function runKeyCompromiseSearch() {
+  const res = $('kcResult');
+  res.style.color = '';
+  let fp = $('kcFingerprint').value.trim();
+  const pem = $('kcPubKey').value.trim();
+  try {
+    if (!fp && pem) { fp = await fingerprintPublicKeyPEM(pem); $('kcFingerprint').value = fp; }
+    if (!fp) { res.textContent = 'Enter a fingerprint or paste a public key.'; res.style.color = 'var(--crit)'; return; }
+    res.textContent = 'Searching…';
+    $('kcTable').classList.add('hidden');
+    const matches = [];
+    for (const c of x509CAs) {
+      let cursor = '';
+      do {
+        const q = `/api/ca/${c.id}/certificates?public_key_sha256=${encodeURIComponent(fp)}&limit=200` +
+          (cursor ? '&cursor=' + encodeURIComponent(cursor) : '');
+        const page = await api('GET', q);
+        (page.items || []).forEach(it => matches.push({ ...it, _ca: c.label }));
+        cursor = page.next_cursor || '';
+      } while (cursor);
+    }
+    if (!matches.length) {
+      res.textContent = `No certificates share this key (searched ${x509CAs.length} CA(s)).`;
+      return;
+    }
+    const live = matches.filter(m => m.status === 'valid').length;
+    res.innerHTML = `<b>${matches.length}</b> certificate(s) share this key across ${x509CAs.length} CA(s) — <b>${live}</b> still valid. ` +
+      `Revoke every match with <code>secsy-ca revoke-bulk --by-public-key ${escapeHTML(fp)} -ca &lt;ref&gt;</code> (subject to four-eyes approval if configured).`;
+    $('kcRows').innerHTML = matches.map(m => `<tr>
+      <td class="mono">${escapeHTML(shortSerial(m.serial))}</td>
+      <td>${escapeHTML(m.common_name || '')}</td>
+      <td>${escapeHTML(m._ca)}</td>
+      <td>${escapeHTML(m.profile || '')}</td>
+      <td>${fmtTime(m.not_after)}</td>
+      <td><span class="badge ${escapeHTML(m.status)}">${escapeHTML(m.status)}</span></td>
+    </tr>`).join('');
+    $('kcTable').classList.remove('hidden');
+  } catch (e) { res.textContent = 'Search failed: ' + e.message; res.style.color = 'var(--crit)'; }
+}
+if ($('kcSearchBtn')) $('kcSearchBtn').onclick = runKeyCompromiseSearch;
+if ($('kcPubKey')) $('kcPubKey').addEventListener('change', async () => {
+  const v = $('kcPubKey').value.trim();
+  if (!v) return;
+  try { $('kcFingerprint').value = await fingerprintPublicKeyPEM(v); }
+  catch (e) { $('kcResult').textContent = e.message; $('kcResult').style.color = 'var(--crit)'; }
+});
+
 // ---- Compliance view -----------------------------------------------------
 $('compRefresh').onclick = loadCompliance;
 $('compCA').onchange = loadCompliance;
@@ -1658,6 +1723,10 @@ $('p12Btn').onclick = async () => {
 };
 
 // ---- Secrets view --------------------------------------------------------
+// secretServiceEnabled tracks whether the secret layer (KEK) is configured, so
+// the signing-keys panel (which shares the /api/secret/* gate) is shown and
+// loaded only when the routes exist.
+let secretServiceEnabled = false;
 async function loadSecretInfo() {
   try {
     const info = await api('GET', '/api/secret/info');
@@ -1670,12 +1739,102 @@ async function loadSecretInfo() {
     }
     $('secretInfo').textContent = text;
     $('secretDisabled').classList.add('hidden');
+    secretServiceEnabled = true;
+    if ($('sigKeysSection')) $('sigKeysSection').classList.remove('hidden');
+    loadSigningKeys();
   } catch (e) {
     // 404 when the feature is disabled (routes not registered).
     $('secretDisabled').classList.remove('hidden');
     $('secretInfo').textContent = '';
+    secretServiceEnabled = false;
+    if ($('sigKeysSection')) $('sigKeysSection').classList.add('hidden');
   }
 }
+
+// ---- Secret-layer signing keys (Task 155) --------------------------------
+// Named HSM-backed asymmetric keys on the secret layer: create a key, export
+// its public half, and sign/verify arbitrary data. Every call is authorized,
+// audited, and (for sign) metered server-side; the console only drives it.
+async function loadSigningKeys() {
+  const tbody = $('sigKeyRows');
+  if (!tbody) return;
+  try {
+    const res = await api('GET', '/api/secret/signing-keys');
+    const keys = res.signing_keys || [];
+    if (!keys.length) { tbody.innerHTML = '<tr><td colspan="5" class="muted">No signing keys yet.</td></tr>'; return; }
+    tbody.innerHTML = keys.map(k => `<tr>
+      <td class="mono">${escapeHTML(k.name)}</td>
+      <td>${escapeHTML(k.algorithm)}</td>
+      <td>${escapeHTML(k.provider || '')}</td>
+      <td>${fmtTime(k.created_at)}</td>
+      <td><button class="btn ghost sm" data-sigkey="${escapeHTML(k.name)}" title="Use this key in Sign / verify">Use ▸</button>
+          <button class="btn ghost sm" data-sigpub="${escapeHTML(k.name)}" title="Show / download the public key">Public key</button></td>
+    </tr>`).join('');
+    tbody.querySelectorAll('[data-sigkey]').forEach(b => b.onclick = () => { $('sigKeyName').value = b.dataset.sigkey; });
+    tbody.querySelectorAll('[data-sigpub]').forEach(b => b.onclick = () => showSigningPublicKey(b.dataset.sigpub));
+  } catch (e) {
+    // Listing needs secret:signing-key; a plain signer (secret:sign) can still
+    // sign/verify by typing a key name, so this is informational, not fatal.
+    tbody.innerHTML = '<tr><td colspan="5" class="muted">Key listing needs the secret:signing-key capability. You can still sign/verify by entering a key name.</td></tr>';
+  }
+}
+
+async function showSigningPublicKey(name) {
+  try {
+    const k = await api('GET', '/api/secret/signing-keys/' + encodeURIComponent(name));
+    $('sigKeyPub').value = k.public_key_pem || '';
+    $('sigKeyPubBox').classList.remove('hidden');
+    const a = $('sigKeyPubDownload');
+    a.onclick = (e) => { e.preventDefault(); downloadBlob(k.public_key_pem || '', name + '.pub.pem', 'application/x-pem-file'); };
+  } catch (e) { alert('Public key export failed: ' + e.message); }
+}
+
+$('sigKeyCreateBtn').onclick = async () => {
+  const err = $('sigKeysError');
+  err.classList.add('hidden');
+  const name = $('sigKeyNewName').value.trim();
+  if (!name) { showError(err, 'A key name is required.'); return; }
+  try {
+    const k = await api('POST', '/api/secret/signing-keys', { name, algorithm: $('sigKeyNewAlg').value });
+    $('sigKeyNewName').value = '';
+    $('sigKeyPub').value = k.public_key_pem || '';
+    $('sigKeyPubBox').classList.remove('hidden');
+    $('sigKeyPubDownload').onclick = (e) => { e.preventDefault(); downloadBlob(k.public_key_pem || '', name + '.pub.pem', 'application/x-pem-file'); };
+    $('sigKeyName').value = name;
+    await loadSigningKeys();
+  } catch (e) { showError(err, 'Create failed: ' + e.message); }
+};
+
+$('sigSignBtn').onclick = async () => {
+  const err = $('sigError'); err.classList.add('hidden');
+  const name = $('sigKeyName').value.trim();
+  if (!name) { showError(err, 'A key name is required.'); return; }
+  try {
+    const body = { message: b64(new TextEncoder().encode($('sigMessage').value)) };
+    if ($('sigHash').value) body.hash = $('sigHash').value;
+    const res = await api('POST', `/api/secret/signing-keys/${encodeURIComponent(name)}/sign`, body);
+    $('sigOut').value = res.signature;
+    const el = $('sigVerifyResult');
+    el.style.color = '';
+    el.textContent = `signed · ${res.algorithm}${res.hash ? ' · ' + res.hash : ''}`;
+  } catch (e) { showError(err, 'Sign failed: ' + e.message); }
+};
+
+$('sigVerifyBtn').onclick = async () => {
+  const err = $('sigError'); err.classList.add('hidden');
+  const name = $('sigKeyName').value.trim();
+  if (!name) { showError(err, 'A key name is required.'); return; }
+  const sig = $('sigOut').value.trim();
+  if (!sig) { showError(err, 'A base64 signature is required — sign first, or paste one.'); return; }
+  try {
+    const body = { message: b64(new TextEncoder().encode($('sigMessage').value)), signature: sig };
+    if ($('sigHash').value) body.hash = $('sigHash').value;
+    const res = await api('POST', `/api/secret/signing-keys/${encodeURIComponent(name)}/verify`, body);
+    const el = $('sigVerifyResult');
+    el.style.color = res.valid ? 'var(--ok)' : 'var(--crit)';
+    el.textContent = res.valid ? `✓ valid signature (${res.algorithm})` : '✗ INVALID — signature does not match';
+  } catch (e) { showError(err, 'Verify failed: ' + e.message); }
+};
 $('encBtn').onclick = async () => {
   try {
     const pt = new TextEncoder().encode($('encPlain').value);

@@ -94,6 +94,13 @@ The fingerprint is matched exactly within one CA; run it per CA (list them with
 [compromised-key blocklist](key-checks.md#operator-compromised-key-blocklist)
 (Step 0) so the key can never be re-certified on any surface.
 
+**In the console.** The [operator console](web-console.md)'s **Inventory** page has
+a collapsible **Key-compromise search** panel that does the cross-CA sweep for
+you: paste the SPKI fingerprint (hex or `SHA256:<base64>`) or a public-key PEM
+(fingerprinted in your browser), and it queries every CA you can read, aggregates
+the matches into one table (serial, CN, CA, profile, expiry, status), and prints
+the ready-to-run `revoke-bulk --by-public-key` command for the response step.
+
 **Revoke.** The same selector drives the bulk engine with the confirm-count
 guard, so identification and response are one workflow:
 

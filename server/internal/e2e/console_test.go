@@ -34,6 +34,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -225,6 +226,7 @@ func TestConsoleFlow(t *testing.T) {
 	env := setupConsole(t)
 	var serial string
 	var leafPEM string
+	var pubKeyFP string // the issued leaf's SPKI fingerprint, for the key-compromise search
 
 	// --- 1. Embedded console assets are served from the binary (go:embed). ---
 	t.Run("EmbeddedAssets", func(t *testing.T) {
@@ -234,7 +236,10 @@ func TestConsoleFlow(t *testing.T) {
 		}
 		for _, want := range []string{"Operator Console", "app.js", "style.css", "DNS Records",
 			// Task 143 issuance/crypto controls surfaced on the console.
-			"PSD2 authorization", "Private-key usage period", "Context / AAD"} {
+			"PSD2 authorization", "Private-key usage period", "Context / AAD",
+			// Task 158 console catch-up: secret-layer signing keys (155) and
+			// the key-compromise / SPKI-fingerprint search (154).
+			"Digital signatures", "Key-compromise search"} {
 			if !strings.Contains(string(body), want) {
 				t.Errorf("console index missing %q", want)
 			}
@@ -253,7 +258,10 @@ func TestConsoleFlow(t *testing.T) {
 		for _, want := range []string{"bootAuth", "loadDNS",
 			// Task 143 issuance-control logic: eIDAS PSD2 (128), PKUP (132),
 			// delegated-credential eligibility (133).
-			"issueQCField", "private_key_usage_period", "delegation_usage"} {
+			"issueQCField", "private_key_usage_period", "delegation_usage",
+			// Task 158 console catch-up: secret-layer signing keys (155) and
+			// the key-compromise / SPKI-fingerprint search (154).
+			"loadSigningKeys", "runKeyCompromiseSearch", "public_key_sha256"} {
 			if !bytes.Contains(body, []byte(want)) {
 				t.Errorf("app.js does not contain expected console code %q", want)
 			}
@@ -331,6 +339,7 @@ func TestConsoleFlow(t *testing.T) {
 		for _, c := range page.Items {
 			if c.Serial == serial {
 				found = true
+				pubKeyFP = c.PublicKeyFingerprint
 				if c.Status != models.CertStatusValid {
 					t.Errorf("issued cert status = %q, want valid", c.Status)
 				}
@@ -338,6 +347,57 @@ func TestConsoleFlow(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("issued serial %s not in listing", serial)
+		}
+	})
+
+	// --- 5a. Key-compromise search (Inventory view): the leaf's subject public
+	// key is locatable across the CA by its SPKI SHA-256 fingerprint, and a
+	// non-matching fingerprint returns an empty page. This backs the console's
+	// "Key-compromise search" incident-response panel (Task 154). ---
+	t.Run("KeyCompromiseSearch", func(t *testing.T) {
+		if pubKeyFP == "" {
+			t.Skip("no fingerprint captured")
+		}
+		status, body := env.req(t, "GET", "/api/ca/"+env.interID+"/certificates?public_key_sha256="+url.QueryEscape(pubKeyFP), nil)
+		if status != http.StatusOK {
+			t.Fatalf("public-key search = %d: %s", status, body)
+		}
+		var page struct {
+			Items []models.IssuedCertificate `json:"items"`
+		}
+		if err := json.Unmarshal(body, &page); err != nil {
+			t.Fatalf("decode search: %v", err)
+		}
+		found := false
+		for _, c := range page.Items {
+			if c.Serial == serial {
+				found = true
+			}
+			if c.PublicKeyFingerprint != pubKeyFP {
+				t.Errorf("search returned a non-matching key: %q != %q", c.PublicKeyFingerprint, pubKeyFP)
+			}
+		}
+		if !found {
+			t.Errorf("key-compromise search did not return the issued leaf %s", serial)
+		}
+
+		// A well-formed but non-matching fingerprint yields an empty page, not an error.
+		other := "SHA256:" + base64.StdEncoding.EncodeToString(make([]byte, 32))
+		status, body = env.req(t, "GET", "/api/ca/"+env.interID+"/certificates?public_key_sha256="+url.QueryEscape(other), nil)
+		if status != http.StatusOK {
+			t.Fatalf("non-matching search = %d: %s", status, body)
+		}
+		page.Items = nil
+		if err := json.Unmarshal(body, &page); err != nil {
+			t.Fatalf("decode empty search: %v", err)
+		}
+		if len(page.Items) != 0 {
+			t.Errorf("non-matching fingerprint returned %d items, want 0", len(page.Items))
+		}
+
+		// A malformed fingerprint is a request error (400), not a silent empty page.
+		if st, _ := env.req(t, "GET", "/api/ca/"+env.interID+"/certificates?public_key_sha256=not-a-fingerprint", nil); st != http.StatusBadRequest {
+			t.Errorf("malformed public_key_sha256 = %d, want 400", st)
 		}
 	})
 
@@ -819,6 +879,96 @@ func TestConsoleFlow(t *testing.T) {
 		}
 		if info.EscrowAvailable == nil || *info.EscrowAvailable {
 			t.Errorf("escrow_available should be present and false: %s", body)
+		}
+	})
+
+	// --- 13b. Secret-layer signing keys (Secrets view → Digital signatures):
+	// create a named HSM-backed key, export its public half, sign a message and
+	// verify it (and confirm a tampered message fails). This backs the console's
+	// signing-key panel (Task 155). ---
+	t.Run("SecretSigningKeys", func(t *testing.T) {
+		const keyName = "console-signer"
+		status, body := env.req(t, "POST", "/api/secret/signing-keys", map[string]string{
+			"name": keyName, "algorithm": "ecdsa-p256",
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("create signing key = %d: %s", status, body)
+		}
+		var created struct {
+			Name         string `json:"name"`
+			Algorithm    string `json:"algorithm"`
+			PublicKeyPEM string `json:"public_key_pem"`
+		}
+		if err := json.Unmarshal(body, &created); err != nil {
+			t.Fatalf("decode create: %v", err)
+		}
+		if created.Algorithm != "ecdsa-p256" || !strings.Contains(created.PublicKeyPEM, "BEGIN PUBLIC KEY") {
+			t.Fatalf("unexpected create response: %s", body)
+		}
+
+		// The key appears in the tenant listing that powers the table.
+		status, body = env.req(t, "GET", "/api/secret/signing-keys", nil)
+		if status != http.StatusOK {
+			t.Fatalf("list signing keys = %d: %s", status, body)
+		}
+		var list struct {
+			SigningKeys []struct {
+				Name string `json:"name"`
+			} `json:"signing_keys"`
+		}
+		if err := json.Unmarshal(body, &list); err != nil {
+			t.Fatalf("decode list: %v", err)
+		}
+		listed := false
+		for _, k := range list.SigningKeys {
+			if k.Name == keyName {
+				listed = true
+			}
+		}
+		if !listed {
+			t.Errorf("created signing key %q not in listing: %s", keyName, body)
+		}
+
+		// Sign a message, then verify it round-trips.
+		msg := base64.StdEncoding.EncodeToString([]byte("release manifest v1"))
+		status, body = env.req(t, "POST", "/api/secret/signing-keys/"+keyName+"/sign", map[string]string{"message": msg})
+		if status != http.StatusOK {
+			t.Fatalf("sign = %d: %s", status, body)
+		}
+		var signed struct {
+			Signature string `json:"signature"`
+		}
+		if err := json.Unmarshal(body, &signed); err != nil || signed.Signature == "" {
+			t.Fatalf("decode sign (%v): %s", err, body)
+		}
+
+		status, body = env.req(t, "POST", "/api/secret/signing-keys/"+keyName+"/verify", map[string]string{
+			"message": msg, "signature": signed.Signature,
+		})
+		if status != http.StatusOK {
+			t.Fatalf("verify = %d: %s", status, body)
+		}
+		var verified struct {
+			Valid bool `json:"valid"`
+		}
+		if err := json.Unmarshal(body, &verified); err != nil || !verified.Valid {
+			t.Fatalf("signature did not verify (%v): %s", err, body)
+		}
+
+		// A tampered message must not verify (valid=false is a 200 result).
+		tampered := base64.StdEncoding.EncodeToString([]byte("release manifest v2"))
+		status, body = env.req(t, "POST", "/api/secret/signing-keys/"+keyName+"/verify", map[string]string{
+			"message": tampered, "signature": signed.Signature,
+		})
+		if status != http.StatusOK {
+			t.Fatalf("verify tampered = %d: %s", status, body)
+		}
+		verified.Valid = true
+		if err := json.Unmarshal(body, &verified); err != nil {
+			t.Fatalf("decode tampered verify: %v", err)
+		}
+		if verified.Valid {
+			t.Error("a tampered message must not verify")
 		}
 	})
 

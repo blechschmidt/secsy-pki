@@ -113,6 +113,13 @@ create the `release` environment. On the next published release the job:
 Signing **by digest** means the artifact bytes never leave the runner — good for
 multi-GB images (the API caps request bodies at 8 MiB regardless).
 
+**CAdES level (optional).** Every signature is at least CAdES-B. If you provision
+the [built-in TSA](../../docs/timestamping.md) (`secsy-ca tsa-key` + `tsa.enabled`),
+add `"level":"t"` to the request for an embedded RFC 3161 timestamp, or `"level":"lt"`
+to additionally embed the chain's CRLs/OCSP for offline **long-term validation** —
+so releases stay verifiable after the signer certificate expires. The response
+reports the achieved `level`. See [CAdES baseline levels](../../docs/artifact-signing.md#cades-baseline-levels-b--t--lt).
+
 ## 4. Verify downstream (no server, no HSM)
 
 Anyone with your **root CA** can verify, offline, with standard tooling:
@@ -136,6 +143,10 @@ signer has the code-signing shape — use the CLI (also HSM-free):
 $ secsy-ca verify-signature -sig app-v1.2.3.tar.gz.p7s -in app-v1.2.3.tar.gz \
       -ca-file root.pem -require-timestamp
 ```
+
+Add `-require-level t` (or `lt`) to fail unless the signature actually reached that
+[CAdES level](../../docs/artifact-signing.md#cades-baseline-levels-b--t--lt) — a
+stronger, self-describing gate than `-require-timestamp` alone.
 
 The **timestamp is why this keeps verifying after the signing certificate
 expires** — the chain is validated at the token's genTime, not the wall clock.

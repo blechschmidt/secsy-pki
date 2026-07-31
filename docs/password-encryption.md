@@ -400,6 +400,12 @@ $ openssl dgst -sha256 -verify k.pub.pem \
     -signature sig.bin msg.bin
 ```
 
+In the [operator console](web-console.md), the **Secrets** page carries a **Digital
+signatures** panel: it lists the tenant's signing keys, creates a new key (algorithm
+picker), shows and downloads a key's SPKI public-key PEM, and signs / verifies a
+text message against a named key — the same authorized, audited, quota-metered
+operations as the CLI and API.
+
 ## Format-preserving encryption & tokenization (FF1)
 
 Where envelope encryption turns a value into an opaque blob, a **transform**
