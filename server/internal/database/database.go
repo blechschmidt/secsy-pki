@@ -376,6 +376,42 @@ func (db *DB) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_issued_certs_keyfp ON issued_certificates(public_key_fingerprint)`,
 		`CREATE INDEX IF NOT EXISTS idx_issued_certs_ca ON issued_certificates(ca_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_issued_certs_status ON issued_certificates(ca_id, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_issued_certs_notafter_status ON issued_certificates(not_after, status)`,
+		// Cold archive for aged-out issued certificates (Task 157). The retention
+		// job MOVES long-expired, terminal rows here (archive mode) so the hot
+		// issued_certificates table stays bounded on a high-volume CA; prune mode
+		// then hard-deletes archive rows past a longer window. The schema mirrors
+		// issued_certificates (so a row round-trips losslessly) plus the archival
+		// bookkeeping (archived_at, the run id, and the reason). It is deliberately
+		// NOT the authoritative revocation store: retention never touches
+		// revoked_certificates, so CRL/OCSP for every retained serial is unaffected.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS issued_certificates_archive (
+			id TEXT PRIMARY KEY,
+			ca_id TEXT NOT NULL,
+			serial TEXT NOT NULL,
+			subject TEXT,
+			common_name TEXT,
+			sans TEXT,
+			profile TEXT,
+			certificate TEXT NOT NULL,
+			not_before TIMESTAMP,
+			not_after TIMESTAMP,
+			status TEXT NOT NULL DEFAULT 'valid',
+			revoked_at TIMESTAMP,
+			revocation_reason INTEGER NOT NULL DEFAULT 0,
+			requested_by TEXT,
+			created_at %s,
+			ct_status TEXT NOT NULL DEFAULT 'none',
+			sct_count INTEGER NOT NULL DEFAULT 0,
+			marker TEXT NOT NULL DEFAULT '',
+			public_key_fingerprint TEXT NOT NULL DEFAULT '',
+			archived_at TIMESTAMP NOT NULL,
+			archive_run_id TEXT NOT NULL DEFAULT '',
+			archive_reason TEXT NOT NULL DEFAULT '',
+			UNIQUE(ca_id, serial)
+		)`, currentTimestamp),
+		`CREATE INDEX IF NOT EXISTS idx_archived_certs_notafter ON issued_certificates_archive(not_after)`,
+		`CREATE INDEX IF NOT EXISTS idx_archived_certs_ca ON issued_certificates_archive(ca_id)`,
 		// Authoritative revocation store read by CRL/OCSP generation. Kept
 		// separate from issued_certificates so a serial that was never recorded
 		// (e.g. an externally issued certificate) can still be revoked.

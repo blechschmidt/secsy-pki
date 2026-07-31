@@ -168,6 +168,16 @@ type Config struct {
 	// and keep-N / max-age retention. Disabled unless backup.enabled is true. See
 	// BackupConfig and docs/backup.md.
 	Backup BackupConfig `yaml:"backup"`
+	// Retention configures the certificate-inventory retention/archival job (Task
+	// 157): a leader-elected loop that safely ages out long-expired, terminal
+	// issued-certificate rows so a high-volume (short-lived STAR/ACME) CA does not
+	// grow issued_certificates unbounded. It NEVER removes a cert that is still
+	// valid, revoked-but-not-yet-expired, on hold, or referenced by an open
+	// approval; only rows whose not_after passed more than retention.min_age_days
+	// ago are eligible. Disabled unless retention.enabled is true. The
+	// `secsy-ca inventory retention` CLI (run/dry-run/status) works regardless.
+	// See RetentionConfig and docs/retention.md.
+	Retention RetentionConfig `yaml:"retention"`
 	// Webhook configures the durable outbound webhook / eventing system (Task
 	// 116): a leader-elected delivery worker that POSTs certificate lifecycle
 	// events (issue/renew/revoke/suspend/release) to operator-registered external
@@ -489,6 +499,117 @@ func (c BackupConfig) VerifyInterval() time.Duration {
 		return c.Interval()
 	}
 	return time.Duration(c.Verify.IntervalHours) * time.Hour
+}
+
+// Retention mode selectors for RetentionConfig.Mode.
+const (
+	// RetentionModeArchive moves eligible rows into issued_certificates_archive
+	// (nothing is lost; the hot table shrinks). It is the fail-safe default.
+	RetentionModeArchive = "archive"
+	// RetentionModePrune archives eligible rows and then hard-deletes archive rows
+	// older than prune_after_days — "delete after successful archive".
+	RetentionModePrune = "prune"
+)
+
+// RetentionConfig configures the certificate-inventory retention/archival job
+// (Task 157). The job is fail-safe by construction: eligibility is driven by
+// not_after (a row is eligible only once its validity ended more than
+// min_age_days ago), so a still-valid or revoked-but-not-yet-expired certificate
+// — whose not_after is in the future — is never eligible. Held (suspended)
+// certificates and certificates referenced by an open approval are additionally
+// excluded. The job never touches the authoritative revoked_certificates table,
+// so CRL/OCSP for every retained serial is unaffected.
+type RetentionConfig struct {
+	// Enabled starts the leader-elected retention loop in the server. The
+	// `secsy-ca inventory retention` CLI works regardless of this flag.
+	Enabled bool `yaml:"enabled"`
+	// Mode is "archive" (move eligible rows to issued_certificates_archive) or
+	// "prune" (archive, then hard-delete archive rows past prune_after_days).
+	// Empty defaults to "archive".
+	Mode string `yaml:"mode"`
+	// MinAgeDays is the grace window: a terminal certificate becomes eligible only
+	// once its not_after passed more than this many days ago. Unset (<=0) defaults
+	// to a deliberately generous 90 days — retention must never be aggressive by
+	// accident.
+	MinAgeDays int `yaml:"min_age_days"`
+	// PruneAfterDays bounds the archive table in prune mode: archive rows whose
+	// not_after passed more than this many days ago are hard-deleted. Unset (<=0)
+	// defaults to min_age_days (archived rows are pruned as soon as they are
+	// archived). Values below min_age_days are clamped up to it — prune can never
+	// be more aggressive than archive eligibility.
+	PruneAfterDays int `yaml:"prune_after_days"`
+	// Schedule controls how often the loop runs.
+	Schedule RetentionScheduleConfig `yaml:"schedule"`
+	// BatchSize bounds how many rows each transaction moves/deletes, keeping the
+	// job online-safe on a large inventory. Unset (<=0) defaults to 500.
+	BatchSize int `yaml:"batch_size"`
+}
+
+// RetentionScheduleConfig is the retention.schedule block.
+type RetentionScheduleConfig struct {
+	// IntervalHours is how often retention runs. Defaults to 24 when unset. A run
+	// happens once immediately on leadership gain, then every interval.
+	IntervalHours int `yaml:"interval_hours"`
+}
+
+// ResolvedMode returns the retention mode, defaulting to "archive".
+func (c RetentionConfig) ResolvedMode() string {
+	if c.Mode == RetentionModePrune {
+		return RetentionModePrune
+	}
+	return RetentionModeArchive
+}
+
+// Interval returns the resolved retention interval (default 24h).
+func (c RetentionConfig) Interval() time.Duration {
+	if c.Schedule.IntervalHours <= 0 {
+		return 24 * time.Hour
+	}
+	return time.Duration(c.Schedule.IntervalHours) * time.Hour
+}
+
+// MinAge returns the resolved grace window past not_after (default 90 days). It
+// is never zero: a zero window would make every expired certificate eligible the
+// instant it expired, which is exactly the accident this default guards against.
+func (c RetentionConfig) MinAge() time.Duration {
+	if c.MinAgeDays <= 0 {
+		return 90 * 24 * time.Hour
+	}
+	return time.Duration(c.MinAgeDays) * 24 * time.Hour
+}
+
+// PruneAfter returns the resolved prune window (prune mode). It defaults to and
+// is clamped to at least MinAge, so an archived row is never hard-deleted before
+// it was eligible to be archived.
+func (c RetentionConfig) PruneAfter() time.Duration {
+	minAge := c.MinAge()
+	if c.PruneAfterDays <= 0 {
+		return minAge
+	}
+	d := time.Duration(c.PruneAfterDays) * 24 * time.Hour
+	if d < minAge {
+		return minAge
+	}
+	return d
+}
+
+// Batch returns the resolved per-transaction batch size (default 500).
+func (c RetentionConfig) Batch() int {
+	if c.BatchSize <= 0 {
+		return 500
+	}
+	return c.BatchSize
+}
+
+// Validate rejects an unknown mode. The numeric windows are clamped by their
+// getters, so they cannot be invalid; only the mode string can be.
+func (c RetentionConfig) Validate() error {
+	switch c.Mode {
+	case "", RetentionModeArchive, RetentionModePrune:
+		return nil
+	default:
+		return fmt.Errorf("retention.mode %q is not one of archive|prune", c.Mode)
+	}
 }
 
 // WebhookConfig configures the durable outbound webhook delivery worker (Task

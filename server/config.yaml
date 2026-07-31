@@ -878,3 +878,34 @@ backup:
     secret_access_key: ""
     # NOTE: an S3 destination keeps only the latest backup (fixed keys); use
     # bucket versioning + lifecycle rules for keep-N / max-age history.
+
+# Certificate-inventory retention/archival (Task 157). A leader-elected loop
+# that safely ages out long-expired, terminal issued-certificate rows so a
+# high-volume CA (short-lived STAR/ACME issuance) does not grow
+# issued_certificates unbounded. The policy is fail-safe by construction:
+# eligibility is driven by not_after, so a still-valid or revoked-but-not-yet-
+# expired certificate (not_after in the future) is NEVER eligible. Held
+# (suspended) certificates and certificates pinned by an open approval are
+# additionally excluded. The job never touches the authoritative
+# revoked_certificates table, so OCSP/CRL for every retained serial is
+# unaffected. The `secsy-ca inventory retention` CLI (run/dry-run/status) works
+# regardless of this block. See docs/retention.md.
+retention:
+  enabled: false
+  # mode: "archive" MOVES eligible rows into issued_certificates_archive (nothing
+  # is lost; the hot table shrinks). "prune" archives, then hard-deletes archive
+  # rows past prune_after_days — "delete after successful archive". Default archive.
+  mode: "archive"
+  # min_age_days is the grace window: a terminal certificate becomes eligible only
+  # once its not_after passed more than this many days ago. Default 90 — retention
+  # must never be aggressive by accident.
+  min_age_days: 90
+  # prune_after_days (prune mode) hard-deletes archive rows whose not_after passed
+  # more than this many days ago. 0 defaults to min_age_days (archived rows are
+  # pruned as soon as they are archived). Values below min_age_days are clamped up.
+  prune_after_days: 0
+  schedule:
+    interval_hours: 24          # how often retention runs (default 24); one runs
+                                # immediately on leadership gain, then per interval
+  batch_size: 500               # rows per transaction (default 500); keeps the job
+                                # online-safe on a large inventory

@@ -36,6 +36,10 @@ var migrationTables = []string{
 	"ca_scoped_crl_counters",
 	"ca_published_crls",
 	"issued_certificates",
+	// Cold archive of aged-out issued certificates (Task 157). No foreign key
+	// (it is a historical record that survives CA deletion), so its position here
+	// is not FK-constrained; kept next to issued_certificates for readability.
+	"issued_certificates_archive",
 	"revoked_certificates",
 	// Released certificateHold records (Task 82) retained for delta-CRL
 	// removeFromCRL generation; references cas, so copied after it.

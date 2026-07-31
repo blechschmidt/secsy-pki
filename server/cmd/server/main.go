@@ -794,6 +794,14 @@ func main() {
 	// atomic swap, manifest, and keep-N/max-age retention. Never blocks issuance.
 	setupBackup(cfg, db, provider, *cfgPath, elector)
 
+	// Certificate-inventory retention/archival (Task 157): a leader-elected loop
+	// that safely ages out long-expired, terminal issued-certificate rows so a
+	// high-volume (short-lived STAR/ACME) CA does not grow issued_certificates
+	// unbounded. Fail-safe (never removes a valid, revoked-but-unexpired, held, or
+	// approval-pinned cert) and never touches revoked_certificates, so OCSP/CRL for
+	// retained serials is unaffected. HSM-independent.
+	setupRetention(cfg, db, elector)
+
 	// Durable outbound webhooks (Task 116): a leader-elected worker that POSTs
 	// certificate lifecycle events to operator-registered endpoints with
 	// at-least-once delivery, exponential-backoff retries, dead-lettering, and

@@ -1139,6 +1139,44 @@ func checkBackupRestoreVerified(r *Report, cfg *config.Config, db dbHandle, sche
 	})
 }
 
+// checkRetention surfaces the certificate-inventory retention job's freshness
+// (Task 157) from the inventory.retention audit trail: a fail when the newest run
+// errored, a warn when the job is enabled but silent (never led / not started) or
+// stalled beyond three intervals, and the last-run age otherwise. Like the backup
+// checks, the audit log is the offline source of truth — doctor runs
+// out-of-process and cannot read the runner's in-memory state or metrics.
+func checkRetention(r *Report, cfg *config.Config, db dbHandle, schemaOK bool) {
+	r.run("retention.freshness", func() (Status, string) {
+		if db == nil || !schemaOK {
+			return StatusSkip, "store unavailable or schema incomplete"
+		}
+		events, _, err := db.ListEvents(audit.ActionInventoryRetention, "", "", 20, 0)
+		if err != nil {
+			return StatusFail, fmt.Sprintf("listing inventory.retention audit events: %v", err)
+		}
+		if len(events) == 0 {
+			if cfg.Retention.Enabled {
+				return StatusWarn, "retention.enabled is set but no retention run has been recorded yet (server not started, or this replica never led?)"
+			}
+			return StatusSkip, "certificate-inventory retention disabled (retention.enabled) and no runs on record"
+		}
+
+		newest := events[0] // newest first
+		now := time.Now()
+		age := humanDuration(now.Sub(newest.Timestamp))
+		if newest.Result != audit.ResultSuccess {
+			return StatusFail, fmt.Sprintf("last retention run FAILED %s ago (%s)", age, newest.Detail)
+		}
+		if !cfg.Retention.Enabled {
+			return StatusPass, fmt.Sprintf("last retention run ok %s ago (retention currently disabled)", age)
+		}
+		if elapsed := now.Sub(newest.Timestamp); elapsed > 3*cfg.Retention.Interval() {
+			return StatusWarn, fmt.Sprintf("last retention run ok but stalled — %s ago exceeds 3x the %s interval", age, cfg.Retention.Interval())
+		}
+		return StatusPass, fmt.Sprintf("last retention run ok %s ago (%s)", age, newest.Detail)
+	})
+}
+
 // --- 7d. CT inclusion monitoring ---------------------------------------------
 
 // checkCTInclusion surfaces the Certificate Transparency SCT inclusion monitor's

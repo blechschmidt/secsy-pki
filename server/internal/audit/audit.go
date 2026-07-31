@@ -298,6 +298,14 @@ const (
 	// and its restored audit-head fingerprint matched against the manifest. The
 	// result is success or error (an unrestorable / tampered backup).
 	ActionBackupVerify = "backup.verify"
+	// Certificate-inventory retention/archival job (Task 157): one
+	// inventory.retention event per completed cycle of the leader-elected
+	// retention loop (or a `secsy-ca inventory retention run`), recording the mode
+	// (archive|prune), how many rows were archived/pruned, the eligibility window,
+	// the remaining backlog, and a manifest digest over the archived/pruned set —
+	// a tamper-evident record of exactly which certificates left the hot inventory,
+	// preserving audit-chain continuity even after a prune removes the rows.
+	ActionInventoryRetention = "inventory.retention"
 	// Intermediate-CA key rotation / rollover (Task 24). Rotate records a new key
 	// being cross-signed under the parent and the old key entering the overlap
 	// window; Retire records the old key being revoked under its parent after the

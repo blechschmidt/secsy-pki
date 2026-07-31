@@ -280,6 +280,11 @@ func Run(ctx context.Context, opts Options) *Report {
 	// a backup).
 	checkBackupRestoreVerified(r, cfg, db, schemaOK)
 
+	// 7c″. Certificate-inventory retention: freshness of the newest
+	// inventory.retention run (Task 157) — a stalled retention job means a
+	// high-volume CA's issued_certificates table grows unbounded.
+	checkRetention(r, cfg, db, schemaOK)
+
 	// 7d. CT SCT inclusion monitor: standing inclusion state and scan freshness.
 	checkCTInclusion(r, cfg, db, schemaOK)
 

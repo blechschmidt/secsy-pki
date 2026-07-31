@@ -887,6 +887,37 @@ var (
 		"Unix timestamp (seconds) of the last successfully verified backup restore.")
 )
 
+// InventoryRetention* track the certificate-inventory retention/archival job
+// (Task 157): a leader-elected loop that ages out long-expired, terminal
+// issued-certificate rows so a high-volume CA's issued_certificates table does
+// not grow unbounded. InventoryRetentionRuns counts completed runs by result;
+// InventoryRetentionDuration times them; the Archived/Pruned counters accumulate
+// how many rows were moved to the archive table and hard-deleted; the last-run
+// timestamp gauge plus the staleness and backlog FuncGauges expose freshness and
+// how many eligible rows still await processing.
+var (
+	InventoryRetentionRuns = NewCounter(Default,
+		"secsy_inventory_retention_runs_total",
+		"Certificate-inventory retention runs, partitioned by result (success|error).",
+		"result")
+	InventoryRetentionDuration = NewHistogram(Default,
+		"secsy_inventory_retention_duration_seconds",
+		"Duration of certificate-inventory retention runs in seconds.",
+		BatchBuckets)
+	InventoryRetentionArchived = NewCounter(Default,
+		"secsy_inventory_retention_archived_total",
+		"Total issued-certificate rows moved to the archive table by the retention job.")
+	InventoryRetentionPruned = NewCounter(Default,
+		"secsy_inventory_retention_pruned_total",
+		"Total archived issued-certificate rows hard-deleted by the retention job (prune mode).")
+	InventoryRetentionArchiveSize = NewGauge(Default,
+		"secsy_inventory_retention_archive_size",
+		"Number of rows currently held in issued_certificates_archive after the last successful retention run.")
+	InventoryRetentionLastRun = NewGauge(Default,
+		"secsy_inventory_retention_last_run_timestamp_seconds",
+		"Unix timestamp (seconds) of the last successful certificate-inventory retention run.")
+)
+
 // CT SCT inclusion-proof monitoring (Task 93). The leader-elected monitor
 // verifies that logs honor the SCTs embedded at issuance (Task 26): once a log's
 // Maximum Merge Delay has elapsed it fetches the log's signed tree head and a
@@ -977,6 +1008,9 @@ var (
 	backupVerifyLastSuccessNano atomic.Int64
 	ctMonitorLastRunNano        atomic.Int64
 
+	inventoryRetentionLastRunNano atomic.Int64
+	inventoryRetentionBacklog     atomic.Int64
+
 	_ = NewFuncGauge(Default,
 		"secsy_ocsp_presign_staleness_seconds",
 		"Seconds since the last successful OCSP pre-signing batch. Absent until the first batch succeeds.",
@@ -1001,6 +1035,19 @@ var (
 		"secsy_ct_inclusion_monitor_staleness_seconds",
 		"Seconds since the last completed CT inclusion-monitor scan. Absent until the first scan completes.",
 		func() (float64, bool) { return sinceNano(ctMonitorLastRunNano.Load()) })
+	_ = NewFuncGauge(Default,
+		"secsy_inventory_retention_staleness_seconds",
+		"Seconds since the last successful certificate-inventory retention run. Absent until the first run succeeds.",
+		func() (float64, bool) { return sinceNano(inventoryRetentionLastRunNano.Load()) })
+	_ = NewFuncGauge(Default,
+		"secsy_inventory_retention_backlog",
+		"Certificates eligible for retention still awaiting processing after the last run (should trend to zero). Absent until the first run completes.",
+		func() (float64, bool) {
+			if inventoryRetentionLastRunNano.Load() == 0 {
+				return 0, false
+			}
+			return float64(inventoryRetentionBacklog.Load()), true
+		})
 )
 
 func sinceNano(nano int64) (float64, bool) {
@@ -1084,6 +1131,33 @@ func RecordBackupVerify(start time.Time, err error) {
 	now := time.Now()
 	BackupVerifyLastSuccess.Set(float64(now.Unix()))
 	backupVerifyLastSuccessNano.Store(now.UnixNano())
+}
+
+// RecordInventoryRetention records a completed certificate-inventory retention
+// run: its duration and result, and — on success — the archived/pruned deltas,
+// the resulting archive-table size, the remaining backlog, and the last-run
+// instant the timestamp, staleness, and backlog gauges derive from. A failed run
+// leaves the last-run gauges untouched so the staleness gauge keeps climbing,
+// which is the operator's alert signal that inventory is no longer being aged
+// out. Counts are the additions from this run (they feed cumulative counters).
+func RecordInventoryRetention(start time.Time, archived, pruned, backlog, archiveSize int, err error) {
+	InventoryRetentionDuration.Observe(time.Since(start).Seconds())
+	if err != nil {
+		InventoryRetentionRuns.Inc(ResultError)
+		return
+	}
+	InventoryRetentionRuns.Inc(ResultSuccess)
+	if archived > 0 {
+		InventoryRetentionArchived.Add(uint64(archived))
+	}
+	if pruned > 0 {
+		InventoryRetentionPruned.Add(uint64(pruned))
+	}
+	InventoryRetentionArchiveSize.Set(float64(archiveSize))
+	inventoryRetentionBacklog.Store(int64(backlog))
+	now := time.Now()
+	InventoryRetentionLastRun.Set(float64(now.Unix()))
+	inventoryRetentionLastRunNano.Store(now.UnixNano())
 }
 
 // RecordCTMonitorRun records a completed CT inclusion-monitor scan: it refreshes

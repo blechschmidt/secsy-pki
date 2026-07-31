@@ -218,6 +218,15 @@ func run(args []string) error {
 		return cmdDNSRecords(db, cmdArgs)
 	}
 
+	// Certificate-inventory retention/archival (Task 157) ages out long-expired,
+	// terminal issued-certificate rows; it reads and writes only the store and
+	// never touches the HSM, so dispatch its subcommands before the key provider
+	// is constructed (retention can run during an HSM outage). The bare
+	// `inventory` command below lists HSM keys and does need the provider.
+	if command == "inventory" && len(cmdArgs) > 0 && cmdArgs[0] == "retention" {
+		return cmdInventoryRetention(db, cfg, cmdArgs[1:])
+	}
+
 	// Publishing constructs the key provider lazily so `publish -verify` (a pure
 	// manifest/digest audit of the published snapshot) works during an HSM
 	// outage — exactly when an operator most wants to prove the static artifacts
