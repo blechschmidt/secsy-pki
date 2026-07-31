@@ -124,6 +124,58 @@ func marshalYAML(t *testing.T, v any) string {
 	return string(out)
 }
 
+// TestRedactedMasksAuthSecrets asserts that the operator-authentication secrets —
+// the OIDC confidential-client secret and the LDAP bind-service-account password
+// (inline and any credential-store token backing bind_password_source) — are
+// masked, while non-secret directory settings survive.
+func TestRedactedMasksAuthSecrets(t *testing.T) {
+	c := &Config{
+		Auth: AuthConfig{
+			OIDC: AuthOIDCConfig{ClientSecret: "oidcsecret"},
+			LDAP: AuthLDAPConfig{
+				Enabled:      true,
+				URL:          "ldaps://ad.example.com:636",
+				BindDN:       "CN=svc,DC=example,DC=com",
+				BindPassword: "bindpw",
+				BindPasswordSource: PinSourceConfig{
+					Type:  "vault",
+					Vault: VaultPinSourceConfig{VaultProviderConfig: VaultProviderConfig{Token: "ldapvtoken"}},
+				},
+			},
+		},
+	}
+
+	red := c.Redacted()
+
+	// Original untouched.
+	if c.Auth.LDAP.BindPassword != "bindpw" || c.Auth.OIDC.ClientSecret != "oidcsecret" ||
+		c.Auth.LDAP.BindPasswordSource.Vault.Token != "ldapvtoken" {
+		t.Fatal("Redacted mutated the original auth config")
+	}
+
+	for field, got := range map[string]string{
+		"auth.oidc.client_secret":                    red.Auth.OIDC.ClientSecret,
+		"auth.ldap.bind_password":                    red.Auth.LDAP.BindPassword,
+		"auth.ldap.bind_password_source.vault.token": red.Auth.LDAP.BindPasswordSource.Vault.Token,
+	} {
+		if got != redactedSecret {
+			t.Errorf("%s = %q, want %q", field, got, redactedSecret)
+		}
+	}
+
+	// Non-secret directory settings survive.
+	if red.Auth.LDAP.URL != "ldaps://ad.example.com:636" || red.Auth.LDAP.BindDN != "CN=svc,DC=example,DC=com" {
+		t.Errorf("redaction dropped non-secret LDAP fields: %+v", red.Auth.LDAP)
+	}
+
+	dump := marshalYAML(t, red.Auth)
+	for _, secret := range []string{"bindpw", "oidcsecret", "ldapvtoken"} {
+		if strings.Contains(dump, secret) {
+			t.Errorf("redacted auth dump leaks secret %q:\n%s", secret, dump)
+		}
+	}
+}
+
 // TestRedactedNilSafe guards the nil receiver path.
 func TestRedactedNilSafe(t *testing.T) {
 	var c *Config

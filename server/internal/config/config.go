@@ -820,6 +820,9 @@ type AuthConfig struct {
 	WebAuthn WebAuthnConfig `yaml:"webauthn"`
 	// APITokens configures native scoped API tokens / service accounts (Task 86).
 	APITokens APITokenConfig `yaml:"api_tokens"`
+	// LDAP configures LDAP / Active Directory operator authentication with
+	// directory-group -> RBAC role mapping (Task 159).
+	LDAP AuthLDAPConfig `yaml:"ldap"`
 }
 
 // APITokenConfig configures native scoped API tokens / service accounts. The
@@ -896,6 +899,103 @@ type ClaimMappingConfig struct {
 	Tenant string `yaml:"tenant"`
 	// Roles are the RBAC roles granted (admin|issuer|signer|auditor).
 	Roles []string `yaml:"roles"`
+}
+
+// AuthLDAPConfig configures LDAP / Active Directory operator authentication
+// (Task 159). It maps a directory username+password to a console principal by
+// binding against the directory (simple-bind or search-then-bind, over LDAPS or
+// StartTLS) and translating the caller's directory groups into RBAC roles using
+// the same claim -> role mapping as OIDC (role_mappings below).
+type AuthLDAPConfig struct {
+	// Enabled turns on the interactive directory login endpoint
+	// (/auth/login/ldap) and directory authentication of HTTP/RPC Basic credentials.
+	Enabled bool `yaml:"enabled"`
+	// URL is one or more directory endpoints (space/comma-separated for failover),
+	// each ldaps://host:636 (implicit TLS) or ldap://host:389 (cleartext, which
+	// MUST be upgraded via start_tls). A bind is never sent over an unencrypted
+	// connection.
+	URL string `yaml:"url"`
+	// StartTLS upgrades an ldap:// connection to TLS via the RFC 4511 StartTLS
+	// extended operation before any credential is sent. Required for ldap:// URLs
+	// unless InsecureAllowCleartext is set; a StartTLS failure fails the login
+	// closed rather than continuing in the clear.
+	StartTLS bool `yaml:"start_tls"`
+	// InsecureAllowCleartext permits binding over an unencrypted ldap:// connection
+	// (no LDAPS, no StartTLS). Off by default; it ships credentials in the clear and
+	// exists only for isolated test environments.
+	InsecureAllowCleartext bool `yaml:"insecure_allow_cleartext"`
+
+	// BindDN / BindPassword are the service-account credentials used to look up a
+	// user's DN before binding as them (search-then-bind). Leave BindDN empty to use
+	// simple-bind, templating the username directly into UserDNTemplate.
+	BindDN       string `yaml:"bind_dn"`
+	BindPassword string `yaml:"bind_password"`
+	// BindPasswordSource sources the service-account password from a credential
+	// store (env/file/vault/aws/azure) instead of an inline bind_password, reusing
+	// the pkcs11 pin_source machinery (Task 111). When its type is empty the inline
+	// bind_password is used.
+	BindPasswordSource PinSourceConfig `yaml:"bind_password_source"`
+
+	// UserBaseDN / UserFilter locate a user entry in search-then-bind. UserFilter
+	// must contain a %s placeholder for the (escaped) username, e.g.
+	// "(&(objectClass=user)(sAMAccountName=%s))".
+	UserBaseDN string `yaml:"user_base_dn"`
+	UserFilter string `yaml:"user_filter"`
+	// UserDNTemplate is the bind-DN (or userPrincipalName) pattern for simple-bind,
+	// with %s for the username, e.g. "uid=%s,ou=people,dc=example,dc=com" or
+	// "%s@example.com". Used only when BindDN is empty.
+	UserDNTemplate string `yaml:"user_dn_template"`
+
+	// GroupBaseDN / GroupFilter locate the groups a user belongs to. GroupFilter
+	// may contain %s (the user's DN) and %u (the username), e.g.
+	// "(&(objectClass=group)(member=%s))". When GroupFilter is empty, group
+	// membership is read from GroupAttribute on the user entry instead.
+	GroupBaseDN string `yaml:"group_base_dn"`
+	GroupFilter string `yaml:"group_filter"`
+	// GroupAttribute names the group identifier: the multi-valued attribute on the
+	// user entry (when GroupFilter is empty; default "memberOf"), or the attribute
+	// read from each matched group entry (when GroupFilter is set; default the entry
+	// DN when unset).
+	GroupAttribute string `yaml:"group_attribute"`
+
+	// UsernameAttribute / EmailAttribute / NameAttribute select the user-entry
+	// attributes recorded on the principal (defaults: the bound DN, "mail",
+	// "displayName" then "cn").
+	UsernameAttribute string `yaml:"username_attribute"`
+	EmailAttribute    string `yaml:"email_attribute"`
+	NameAttribute     string `yaml:"name_attribute"`
+
+	// GroupsClaim names the synthetic claim under which resolved groups are
+	// presented to the role mapping (default "groups"), reusing the OIDC mapper.
+	GroupsClaim string `yaml:"groups_claim"`
+	// RoleMappings map a directory group (its DN or name, matched against the
+	// GroupsClaim values) to RBAC roles, optionally tenant-scoped — identical in
+	// shape and semantics to the OIDC role_mappings.
+	RoleMappings []ClaimMappingConfig `yaml:"role_mappings"`
+	// AllowZeroRole permits a login that resolves to no role (default false: a
+	// directory user matching no role mapping is denied at login).
+	AllowZeroRole bool `yaml:"allow_zero_role"`
+
+	// TLS configures certificate trust for the LDAPS / StartTLS connection.
+	TLS LDAPTLSConfig `yaml:"tls"`
+	// TimeoutSeconds bounds each connect+bind+search cycle (default 10).
+	TimeoutSeconds int `yaml:"timeout_seconds"`
+}
+
+// LDAPTLSConfig configures TLS trust for the directory connection.
+type LDAPTLSConfig struct {
+	// CAFile is a PEM bundle of CA certificates trusted to verify the directory
+	// server certificate. Empty uses the system trust store.
+	CAFile string `yaml:"ca_file"`
+	// ServerName overrides the expected certificate name (used for SNI and
+	// verification), needed when connecting by IP or through a load balancer.
+	ServerName string `yaml:"server_name"`
+	// InsecureSkipVerify disables server-certificate verification. Off by default
+	// (fail-closed); enabling it defeats TLS server authentication and is only for
+	// tests.
+	InsecureSkipVerify bool `yaml:"insecure_skip_verify"`
+	// MinVersion is the minimum TLS version, "1.2" (default) or "1.3".
+	MinVersion string `yaml:"min_version"`
 }
 
 // MTLSConfig configures mutual-TLS client-certificate authentication.
@@ -3213,7 +3313,19 @@ func (c *Config) Redacted() *Config {
 	cp.YubiHSM.Password = redactSecret(c.YubiHSM.Password)
 	cp.PKCS11 = c.PKCS11.redacted()
 	cp.KeyProvider = c.KeyProvider.redacted()
+	cp.Auth = c.Auth.redacted()
 	return &cp
+}
+
+// redacted returns a copy of the operator-authentication config with its secrets
+// masked: the OIDC confidential-client secret and the LDAP bind-service-account
+// password (inline and any credential-store token backing bind_password_source).
+func (a AuthConfig) redacted() AuthConfig {
+	cp := a
+	cp.OIDC.ClientSecret = redactSecret(a.OIDC.ClientSecret)
+	cp.LDAP.BindPassword = redactSecret(a.LDAP.BindPassword)
+	cp.LDAP.BindPasswordSource = a.LDAP.BindPasswordSource.redacted()
+	return cp
 }
 
 func (p PKCS11Config) redacted() PKCS11Config {

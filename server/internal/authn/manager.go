@@ -3,6 +3,7 @@ package authn
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"time"
@@ -43,6 +44,13 @@ type Manager struct {
 	// SSO). It lets a password login establish a real session — and therefore CSRF
 	// protection and WebAuthn step-up — rather than replaying basic-auth per call.
 	password PasswordAuthenticator
+
+	// ldap authenticates a console username/password against an LDAP / Active
+	// Directory server, mapping directory groups to RBAC roles (Task 159). Nil when
+	// LDAP authentication is not configured. Like password login it establishes a
+	// real session, so the interactive directory login also gets CSRF protection
+	// and WebAuthn step-up.
+	ldap *LDAPAuthenticator
 }
 
 // PasswordAuthenticator validates a console username/password and returns the
@@ -98,6 +106,12 @@ func (m *Manager) SetWebAuthn(w *WebAuthn) { m.webauthn = w }
 // SetPasswordAuthenticator attaches the console password authenticator.
 func (m *Manager) SetPasswordAuthenticator(p PasswordAuthenticator) { m.password = p }
 
+// SetLDAPAuthenticator attaches the console LDAP / Active Directory authenticator.
+func (m *Manager) SetLDAPAuthenticator(l *LDAPAuthenticator) { m.ldap = l }
+
+// LDAPEnabled reports whether interactive LDAP login is configured.
+func (m *Manager) LDAPEnabled() bool { return m != nil && m.ldap != nil }
+
 // SessionCookieName returns the configured session cookie name.
 func (m *Manager) SessionCookieName() string { return m.sessionCookie }
 
@@ -123,6 +137,9 @@ func (m *Manager) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /auth/session", m.SessionInfo)
 	if m.password != nil {
 		mux.HandleFunc("POST /auth/login/password", m.LoginPassword)
+	}
+	if m.ldap != nil {
+		mux.HandleFunc("POST /auth/login/ldap", m.LoginLDAP)
 	}
 	if m.webauthn != nil {
 		mux.HandleFunc("POST /auth/webauthn/register/begin", m.webauthn.RegisterBegin)
@@ -195,6 +212,72 @@ func (m *Manager) LoginPassword(w http.ResponseWriter, r *http.Request) {
 		"user":       user,
 		"csrf_token": sess.CSRFToken,
 	})
+}
+
+// LoginLDAP authenticates a console username/password against the configured LDAP
+// / Active Directory server and, on success, establishes a session with a CSRF
+// token — the directory equivalent of LoginPassword. It emits login audit and
+// metrics consistent with the OIDC path (method=ldap). The error surfaced to the
+// caller is deliberately generic (no user-enumeration signal); the audit detail
+// carries the reason for operators.
+func (m *Manager) LoginLDAP(w http.ResponseWriter, r *http.Request) {
+	if m.ldap == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "ldap login disabled"})
+		return
+	}
+	var body struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	user, err := m.ldap.Authenticate(r.Context(), body.Username, body.Password)
+	if err != nil {
+		recordLoginMetric(MethodLDAP, false)
+		m.record(r, nil, audit.ActionAuthLoginFailed, "", audit.ResultDenied,
+			"method=ldap user="+body.Username+" reason="+ldapFailReason(err))
+		status, msg := ldapLoginErrorResponse(err)
+		writeJSON(w, status, map[string]string{"error": msg})
+		return
+	}
+	sess := m.startSession(w, user, MethodLDAP)
+	recordLoginMetric(MethodLDAP, true)
+	m.record(r, user, audit.ActionAuthLogin, sess.ID, audit.ResultSuccess, "method=ldap")
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"user":       user,
+		"csrf_token": sess.CSRFToken,
+	})
+}
+
+// ldapFailReason classifies an authentication error into a short, non-sensitive
+// audit token.
+func ldapFailReason(err error) string {
+	switch {
+	case errors.Is(err, ErrLDAPInvalidCredentials):
+		return "invalid_credentials"
+	case errors.Is(err, ErrLDAPUnavailable):
+		return "directory_unavailable"
+	default:
+		// A resolver denial (e.g. no RBAC role assigned).
+		return "no_access"
+	}
+}
+
+// ldapLoginErrorResponse maps an authentication error to an HTTP status and a
+// client-facing message. Invalid credentials and unreachable-directory both map to
+// 401 with a generic message (no enumeration / infrastructure disclosure); a
+// resolver denial (no role) maps to 403 and surfaces the resolver's own message.
+func ldapLoginErrorResponse(err error) (int, string) {
+	switch {
+	case errors.Is(err, ErrLDAPInvalidCredentials):
+		return http.StatusUnauthorized, "invalid credentials"
+	case errors.Is(err, ErrLDAPUnavailable):
+		return http.StatusUnauthorized, "invalid credentials"
+	default:
+		return http.StatusForbidden, err.Error()
+	}
 }
 
 // SessionInfo returns the current session's principal and CSRF token, so the SPA

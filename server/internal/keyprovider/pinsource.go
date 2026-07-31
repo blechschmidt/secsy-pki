@@ -153,6 +153,24 @@ func newPinSource(settings PinSourceSettings, inlinePin string) (PinSource, erro
 	}
 }
 
+// NewPinSource constructs a single credential source from settings, returning
+// the inline value (inlineValue) when settings.Type is empty/"inline". It is the
+// single-secret analogue of BuildNamedPinSources, exported so other subsystems
+// that must source a secret from the same credential stores — for example the
+// LDAP bind-service-account password (Task 159) — reuse the identical env / file
+// / Vault / AWS / Azure machinery and its fail-closed, redaction-safe semantics,
+// rather than growing a parallel secret loader. Construction performs no I/O;
+// reachability is proven lazily by Resolve.
+func NewPinSource(settings PinSourceSettings, inlineValue string) (PinSource, error) {
+	return newPinSource(settings, inlineValue)
+}
+
+// PinSourceIsExternal reports whether a configured source type resolves its
+// secret from somewhere other than the inline config field, so callers can
+// decide whether a reachability probe applies. It is the exported form of the
+// internal predicate.
+func PinSourceIsExternal(t string) bool { return pinSourceIsExternal(t) }
+
 // NamedPinSource pairs a constructed PinSource with the token it belongs to (and
 // whether it is external), for diagnostics such as the doctor "pin.source" check.
 type NamedPinSource struct {

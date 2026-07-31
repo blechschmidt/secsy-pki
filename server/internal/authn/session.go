@@ -32,6 +32,7 @@ const (
 	MethodOIDC     = "oidc"
 	MethodPassword = "password"
 	MethodMTLS     = "mtls"
+	MethodLDAP     = "ldap"
 )
 
 // Default cookie names. Operators may override the session cookie name via

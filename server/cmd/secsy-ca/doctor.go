@@ -2,14 +2,20 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/authn"
+	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/doctor"
+	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
+	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
 
 // cmdDoctor runs the read-only preflight diagnostic suite and renders the
@@ -51,6 +57,7 @@ func cmdDoctor(cfgPath string, args []string) error {
 		ConfigPath:      cfgPath,
 		BuildProvider:   buildProvider,
 		BuildPinSources: buildPinSources,
+		BuildLDAP:       buildLDAPProbe,
 		ExpiryWarn:      time.Duration(*expiryWarnDays) * 24 * time.Hour,
 		ExpiryFail:      time.Duration(*expiryFailDays) * 24 * time.Hour,
 		AuditSample:     *auditSample,
@@ -116,4 +123,72 @@ func pluralS(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// buildLDAPProbe constructs a directory prober from config for the doctor
+// "auth.ldap" check. It maps the auth.ldap block onto the authn authenticator —
+// resolving the bind-password credential source through the shared pin_source
+// machinery and reading the TLS trust material — with a deny-all resolver, since
+// the check performs connectivity/bind probing only, never an end-user login.
+func buildLDAPProbe(cfg *config.Config) (doctor.LDAPProber, error) {
+	c := cfg.Auth.LDAP
+	urls := splitLDAPURLs(c.URL)
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("auth.ldap.url is required")
+	}
+	bindSource, err := keyprovider.NewPinSource(pinSourceSettings(c.BindPasswordSource), c.BindPassword)
+	if err != nil {
+		return nil, fmt.Errorf("bind_password_source: %w", err)
+	}
+	var caPEM []byte
+	if c.TLS.CAFile != "" {
+		if caPEM, err = os.ReadFile(c.TLS.CAFile); err != nil {
+			return nil, fmt.Errorf("reading tls.ca_file %q: %w", c.TLS.CAFile, err)
+		}
+	}
+	var minVer uint16
+	switch c.TLS.MinVersion {
+	case "", "1.2":
+		minVer = tls.VersionTLS12
+	case "1.3":
+		minVer = tls.VersionTLS13
+	default:
+		return nil, fmt.Errorf("tls.min_version %q must be \"1.2\" or \"1.3\"", c.TLS.MinVersion)
+	}
+	denyAll := func(authn.DirectoryIdentity) (*models.UserInfo, error) {
+		return nil, fmt.Errorf("ldap probe: authentication not available")
+	}
+	return authn.NewLDAPAuthenticator(authn.LDAPConfig{
+		URLs:                   urls,
+		StartTLS:               c.StartTLS,
+		InsecureAllowCleartext: c.InsecureAllowCleartext,
+		BindDN:                 c.BindDN,
+		BindPassword:           bindSource,
+		UserBaseDN:             c.UserBaseDN,
+		UserFilter:             c.UserFilter,
+		UserDNTemplate:         c.UserDNTemplate,
+		GroupBaseDN:            c.GroupBaseDN,
+		GroupFilter:            c.GroupFilter,
+		GroupAttribute:         c.GroupAttribute,
+		UsernameAttribute:      c.UsernameAttribute,
+		EmailAttribute:         c.EmailAttribute,
+		NameAttribute:          c.NameAttribute,
+		Timeout:                time.Duration(c.TimeoutSeconds) * time.Second,
+		TLSCACertPEM:           caPEM,
+		TLSServerName:          c.TLS.ServerName,
+		TLSInsecureSkipVerify:  c.TLS.InsecureSkipVerify,
+		TLSMinVersion:          minVer,
+	}, denyAll)
+}
+
+// splitLDAPURLs splits a space/comma-separated list of directory URLs.
+func splitLDAPURLs(s string) []string {
+	fields := strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' })
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }

@@ -17,7 +17,9 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.42.5
 	github.com/cloudflare/circl v1.6.3
 	github.com/coreos/go-oidc/v3 v3.17.0
+	github.com/go-asn1-ber/asn1-ber v1.5.7
 	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/go-ldap/ldap/v3 v3.4.10
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.12.0
 	github.com/mattn/go-sqlite3 v1.14.37
@@ -45,6 +47,7 @@ require (
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/internal v1.2.0 // indirect
+	github.com/Azure/go-ntlmssp v0.0.0-20221128193559-754e69321358 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.7.2 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.30 // indirect

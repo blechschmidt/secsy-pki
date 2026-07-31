@@ -130,6 +130,44 @@ auth:
       # - { value: "acme-issuers", tenant: "acme-corp", roles: ["issuer"] }
     # allow_zero_role: false denies login to an operator that resolves to no role.
     allow_zero_role: false
+  ldap:
+    # LDAP / Active Directory login (console session + HTTP/RPC Basic for machine
+    # callers), mapping directory groups to RBAC roles like oidc.role_mappings.
+    enabled: false
+    # url: ldaps:// (implicit TLS) or ldap:// (then set start_tls). A bind is
+    # never sent over an unencrypted connection.
+    url: "ldaps://ad.example.com:636"
+    # start_tls: true   # required for an ldap:// URL
+    # search-then-bind: bind as a service account, look up the user's DN, then
+    # bind as the user. Leave bind_dn empty to use simple-bind + user_dn_template.
+    bind_dn: "CN=svc-pki,OU=Service,DC=example,DC=com"
+    bind_password: ""   # or bind_password_source (env/file/vault/aws/azure)
+    # bind_password_source:
+    #   type: file
+    #   file: { path: /etc/secsy/ldap-bind.pass }
+    user_base_dn: "OU=Users,DC=example,DC=com"
+    user_filter: "(&(objectClass=user)(sAMAccountName=%s))"   # %s = login name
+    # user_dn_template: "%s@example.com"   # simple-bind only (bind_dn empty)
+    # Groups: read from the user entry's memberOf, OR search a group subtree.
+    group_attribute: "memberOf"
+    # group_base_dn: "OU=Groups,DC=example,DC=com"
+    # group_filter: "(&(objectClass=group)(member=%s))"   # %s = user DN, %u = username
+    email_attribute: "mail"
+    name_attribute: "displayName"
+    groups_claim: "groups"
+    role_mappings:
+      - { value: "CN=PKI-Admins,OU=Groups,DC=example,DC=com", roles: ["admin"] }
+      # - { value: "CN=ACME-Issuers,OU=Groups,DC=example,DC=com", tenant: "acme-corp", roles: ["issuer"] }
+    allow_zero_role: false
+    tls:
+      # ca_file trusts the directory server certificate (empty = system store).
+      ca_file: ""
+      # server_name overrides the expected cert name (needed for IP dials).
+      server_name: ""
+      # insecure_skip_verify disables verification — tests only.
+      insecure_skip_verify: false
+      min_version: "1.2"
+    timeout_seconds: 10
   mtls:
     # Mutual-TLS client-certificate auth for machine/API callers. When enabled,
     # a client cert is requested and verified against ca_file; a presented cert

@@ -121,6 +121,20 @@ type AuthMiddleware struct {
 	// authentication for machine callers (Task 86). Tokens are presented under a
 	// distinct Authorization scheme from OIDC Bearer and verified fail-closed.
 	tokens *authn.TokenAuthenticator
+	// ldap, when set, authenticates HTTP Basic / RPC Basic credentials that are not
+	// the built-in root user against an LDAP / Active Directory server (Task 159),
+	// so machine/CLI callers can present directory credentials. The credential is a
+	// real bind per request; it is only accepted over TLS (the server refuses
+	// cleartext HTTP by default).
+	ldap DirectoryAuthenticator
+}
+
+// DirectoryAuthenticator authenticates a username/password against an LDAP /
+// Active Directory server and returns the resolved principal. *authn.LDAPAuthenticator
+// satisfies it; the interface keeps the middleware decoupled from the concrete
+// type and lets the basic-auth glue be unit-tested with a stub.
+type DirectoryAuthenticator interface {
+	Authenticate(ctx context.Context, username, password string) (*models.UserInfo, error)
 }
 
 func NewAuthMiddleware(oidcProvider TokenVerifier, rootUsername, rootPassword string) *AuthMiddleware {
@@ -169,6 +183,12 @@ func (am *AuthMiddleware) SetTokenAuthenticator(t *authn.TokenAuthenticator) {
 	am.tokens = t
 }
 
+// SetLDAPAuthenticator enables LDAP / Active Directory authentication of HTTP
+// Basic and RPC Basic credentials that are not the built-in root user.
+func (am *AuthMiddleware) SetLDAPAuthenticator(l DirectoryAuthenticator) {
+	am.ldap = l
+}
+
 // SetStepUpOperations declares the high-risk operation names that require an
 // active WebAuthn step-up for console (session) callers.
 func (am *AuthMiddleware) SetStepUpOperations(ops []string) {
@@ -185,13 +205,13 @@ func (am *AuthMiddleware) SetStepUpOperations(ops []string) {
 
 func (am *AuthMiddleware) Authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Try basic auth first (root user)
+		// Try basic auth first: the built-in root user, then (when configured) an
+		// LDAP / Active Directory bind for directory operators. Each mechanism is
+		// tried in turn; only if none accepts the credential do we 401.
 		if username, password, ok := r.BasicAuth(); ok {
-			if !am.rootEnabled {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "basic-auth root login is disabled"})
-				return
-			}
-			if subtle.ConstantTimeCompare([]byte(username), []byte(am.rootUsername)) == 1 &&
+			// 1. Built-in root user (constant-time comparison).
+			if am.rootEnabled &&
+				subtle.ConstantTimeCompare([]byte(username), []byte(am.rootUsername)) == 1 &&
 				subtle.ConstantTimeCompare([]byte(password), []byte(am.rootPassword)) == 1 {
 				info := &models.UserInfo{
 					Subject: "root",
@@ -201,6 +221,21 @@ func (am *AuthMiddleware) Authenticate(next http.Handler) http.Handler {
 				ctx := context.WithValue(r.Context(), UserInfoKey, info)
 				ctx = WithTenantHolder(ctx)
 				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+			// 2. LDAP / Active Directory directory user (binds per request; the
+			// authenticator maps directory groups to RBAC roles). Failures fall
+			// through to the generic 401 — never to another mechanism.
+			if am.ldap != nil {
+				info, err := am.ldap.Authenticate(r.Context(), username, password)
+				metrics.RecordAuthLogin(authn.MethodLDAP, err == nil)
+				if err == nil {
+					am.serveAs(w, r, next, info, nil)
+					return
+				}
+			}
+			if !am.rootEnabled && am.ldap == nil {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "basic-auth login is disabled"})
 				return
 			}
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
@@ -347,14 +382,20 @@ func (am *AuthMiddleware) StepUpGate(operation string) func(http.Handler) http.H
 func (am *AuthMiddleware) AuthenticateRPC(ctx context.Context, authorization string, peerCerts []*x509.Certificate) (*models.UserInfo, error) {
 	authorization = strings.TrimSpace(authorization)
 
-	// Basic auth (built-in root user), mirroring r.BasicAuth() semantics.
+	// Basic auth (built-in root user, then LDAP directory user), mirroring
+	// r.BasicAuth() semantics and the HTTP path's ordering.
 	if user, pass, ok := parseBasicAuth(authorization); ok {
-		if !am.rootEnabled {
-			return nil, ErrInvalidCredentials
-		}
-		if subtle.ConstantTimeCompare([]byte(user), []byte(am.rootUsername)) == 1 &&
+		if am.rootEnabled &&
+			subtle.ConstantTimeCompare([]byte(user), []byte(am.rootUsername)) == 1 &&
 			subtle.ConstantTimeCompare([]byte(pass), []byte(am.rootPassword)) == 1 {
 			return &models.UserInfo{Subject: "root", Name: "Root User", IsRoot: true}, nil
+		}
+		if am.ldap != nil {
+			info, err := am.ldap.Authenticate(ctx, user, pass)
+			metrics.RecordAuthLogin(authn.MethodLDAP, err == nil)
+			if err == nil {
+				return info, nil
+			}
 		}
 		return nil, ErrInvalidCredentials
 	}

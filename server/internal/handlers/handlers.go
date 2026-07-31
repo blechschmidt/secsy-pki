@@ -190,6 +190,9 @@ type AuthInfo struct {
 	// PasswordLogin reports that session-establishing password login
 	// (/auth/login/password) is available.
 	PasswordLogin bool
+	// LDAPLogin reports that session-establishing LDAP / Active Directory login
+	// (/auth/login/ldap) is available.
+	LDAPLogin bool
 	// WebAuthn reports that passkey step-up is configured.
 	WebAuthn bool
 }
@@ -746,6 +749,7 @@ func (a *API) AuthConfig(w http.ResponseWriter, r *http.Request) {
 		"oidc_enabled":       a.oidcProvider != nil,
 		"oidc_login_enabled": a.authInfo.OIDCLogin,
 		"password_login":     a.authInfo.PasswordLogin,
+		"ldap_login":         a.authInfo.LDAPLogin,
 		"webauthn_enabled":   a.authInfo.WebAuthn,
 	}
 	if a.oidcProvider != nil {

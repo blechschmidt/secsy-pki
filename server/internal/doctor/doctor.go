@@ -34,6 +34,18 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 )
 
+// LDAPProber is the narrow view of the directory authenticator the auth.ldap
+// check uses: a log-safe description and a read-only connectivity/bind probe.
+// *authn.LDAPAuthenticator satisfies it; keeping it an interface avoids a doctor
+// dependency on the authn package.
+type LDAPProber interface {
+	// Describe returns a short, credential-free description of the directory target.
+	Describe() string
+	// Probe verifies reachability, TLS negotiation, and (for search-then-bind) the
+	// service-account bind. It performs no end-user authentication.
+	Probe(ctx context.Context) error
+}
+
 // Status classifies the outcome of one diagnostic check.
 type Status string
 
@@ -142,6 +154,13 @@ type Options struct {
 	// pin.source check is skipped.
 	BuildPinSources func(cfg *config.Config) ([]keyprovider.NamedPinSource, error)
 
+	// BuildLDAP constructs a directory prober from config, so the "auth.ldap" check
+	// can verify the LDAP/AD server is reachable, TLS is negotiated, and the
+	// service-account bind succeeds. Injected by the caller, which owns the
+	// config→authn mapping (including the bind-password credential source and TLS
+	// trust material). Optional: when nil the auth.ldap check is skipped.
+	BuildLDAP func(cfg *config.Config) (LDAPProber, error)
+
 	// ExpiryWarn / ExpiryFail are the certificate-expiry headroom thresholds:
 	// a certificate expiring within ExpiryFail fails, within ExpiryWarn warns.
 	// Defaults: 7 and 30 days.
@@ -221,7 +240,7 @@ func Run(ctx context.Context, opts Options) *Report {
 		// Without a loadable config nothing else can be diagnosed; emit the
 		// remaining checks as skips so the report shape is stable for CI.
 		for _, name := range []string{
-			"db.connectivity", "db.schema", "keyprovider.ca", "pin.source", "pkcs11.uris", "keys.ca",
+			"db.connectivity", "db.schema", "keyprovider.ca", "pin.source", "auth.ldap", "pkcs11.uris", "keys.ca",
 			"audit.chain_head", "certs.ca_expiry", "crl.freshness",
 			"canary.last_probe", "ct.inclusion", "webhook.dead_letters",
 			"keychecks.blocklist", "keychecks.profiles", "clock.skew",
@@ -242,6 +261,12 @@ func Run(ctx context.Context, opts Options) *Report {
 	// PIN is reachable and yields a PIN, so a plaintext-free PIN configuration is
 	// verified before the HSM actually needs it.
 	checkPinSources(ctx, r, cfg, opts)
+
+	// 2d. LDAP / Active Directory operator authentication: prove the directory is
+	// reachable, TLS is negotiated (fail-closed), and the service-account bind
+	// succeeds, so a misconfigured directory is caught before an operator is locked
+	// out at login.
+	checkLDAP(ctx, r, cfg, opts)
 
 	// 3. Database: connectivity without migrating, then pending-migration
 	// (missing table) detection.

@@ -214,6 +214,37 @@ func checkPinSources(ctx context.Context, r *Report, cfg *config.Config, opts Op
 	})
 }
 
+// --- 2d. LDAP / Active Directory authentication ------------------------------
+
+// checkLDAP verifies the configured LDAP / Active Directory server (Task 159) is
+// reachable, that TLS is negotiated (LDAPS or StartTLS — fail-closed), and that
+// the service-account bind succeeds, so a directory misconfiguration is caught
+// before it locks operators out at login. It performs no end-user authentication
+// and never prints a credential (only the target Describe()).
+func checkLDAP(ctx context.Context, r *Report, cfg *config.Config, opts Options) {
+	if !cfg.Auth.LDAP.Enabled {
+		r.skip("auth.ldap", "ldap authentication disabled")
+		return
+	}
+	if opts.BuildLDAP == nil {
+		r.skip("auth.ldap", "no ldap factory supplied")
+		return
+	}
+	prober, err := opts.BuildLDAP(cfg)
+	if err != nil {
+		r.run("auth.ldap", func() (Status, string) {
+			return StatusFail, fmt.Sprintf("configuring ldap: %v", err)
+		})
+		return
+	}
+	r.run("auth.ldap", func() (Status, string) {
+		if err := prober.Probe(ctx); err != nil {
+			return StatusFail, fmt.Sprintf("%s: %v", prober.Describe(), err)
+		}
+		return StatusPass, fmt.Sprintf("directory reachable, TLS + service bind ok (%s)", prober.Describe())
+	})
+}
+
 // describeBackend renders a short human description of a provider backend.
 func describeBackend(cfg *config.Config, ptype string) string {
 	switch ptype {

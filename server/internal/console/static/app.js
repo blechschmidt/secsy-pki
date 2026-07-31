@@ -114,17 +114,26 @@ $('loginForm').addEventListener('submit', async (e) => {
   $('loginError').classList.add('hidden');
   const u = $('loginUser').value, p = $('loginPass').value;
   try {
-    if (authConfig && authConfig.password_login) {
-      // Establish a real session (enables CSRF protection and WebAuthn step-up).
-      const res = await fetch('/auth/login/password', {
-        method: 'POST', credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: u, password: p }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'login failed');
-      csrfToken = data.csrf_token || null;
-      store.auth = null;
+    // Session-establishing endpoints (enable CSRF protection and WebAuthn
+    // step-up), tried in order: directory (LDAP/AD) users first, then the
+    // built-in root password. Both may be enabled, so a directory user and the
+    // break-glass root account log in through the same form.
+    const endpoints = [];
+    if (authConfig && authConfig.ldap_login) endpoints.push('/auth/login/ldap');
+    if (authConfig && authConfig.password_login) endpoints.push('/auth/login/password');
+    if (endpoints.length) {
+      let ok = false, lastErr = 'login failed';
+      for (const ep of endpoints) {
+        const res = await fetch(ep, {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: u, password: p }),
+        });
+        const data = await res.json();
+        if (res.ok) { csrfToken = data.csrf_token || null; store.auth = null; ok = true; break; }
+        lastErr = data.error || 'login failed';
+      }
+      if (!ok) throw new Error(lastErr);
     } else {
       // Fallback: stateless basic-auth.
       store.auth = 'Basic ' + btoa(u + ':' + p);
