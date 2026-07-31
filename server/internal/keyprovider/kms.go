@@ -58,6 +58,8 @@ type KMSSettings struct {
 	VaultURL string
 	// Vault configures the HashiCorp Vault Transit backend (Backend == "vault").
 	Vault VaultSettings
+	// GCP configures the Google Cloud KMS backend (Backend == "gcpkms").
+	GCP GCPKMSSettings
 }
 
 // KMSBackend is the narrow interface the KMSProvider needs from a concrete cloud
@@ -141,11 +143,13 @@ func newKMSBackend(cfg KMSSettings) (KMSBackend, error) {
 		return newAzureKeyVaultBackend(cfg)
 	case KMSBackendVault:
 		return newVaultTransitBackend(cfg)
+	case KMSBackendGCP:
+		return newGCPKMSBackend(cfg)
 	case "":
-		return nil, fmt.Errorf("keyprovider: kms backend is required (aws, azure, vault, or fake)")
+		return nil, fmt.Errorf("keyprovider: kms backend is required (aws, azure, gcpkms, vault, or fake)")
 	default:
-		return nil, fmt.Errorf("keyprovider: unknown kms backend %q (supported: %s, %s, %s, %s)",
-			cfg.Backend, KMSBackendAWS, KMSBackendAzure, KMSBackendVault, KMSBackendFake)
+		return nil, fmt.Errorf("keyprovider: unknown kms backend %q (supported: %s, %s, %s, %s, %s)",
+			cfg.Backend, KMSBackendAWS, KMSBackendAzure, KMSBackendGCP, KMSBackendVault, KMSBackendFake)
 	}
 }
 

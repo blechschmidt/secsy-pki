@@ -509,6 +509,15 @@ func pinSourceSettings(p config.PinSourceConfig) keyprovider.PinSourceSettings {
 		},
 		AWS:   keyprovider.AWSPinSourceSettings{Region: p.AWS.Region, SecretID: p.AWS.SecretID, Field: p.AWS.Field},
 		Azure: keyprovider.AzurePinSourceSettings{VaultURL: p.Azure.VaultURL, Name: p.Azure.Name, Version: p.Azure.Version, Field: p.Azure.Field},
+		GCP: keyprovider.GCPPinSourceSettings{
+			Project:         p.GCP.Project,
+			Secret:          p.GCP.Secret,
+			Version:         p.GCP.Version,
+			CredentialsFile: p.GCP.CredentialsFile,
+			CredentialsJSON: p.GCP.CredentialsJSON,
+			Field:           p.GCP.Field,
+			Endpoint:        p.GCP.Endpoint,
+		},
 	}
 }
 

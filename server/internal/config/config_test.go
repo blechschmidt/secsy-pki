@@ -298,6 +298,114 @@ key_provider:
 	}
 }
 
+func TestKeyProviderKMSGCP(t *testing.T) {
+	clearProviderEnv(t)
+	cfg := writeAndLoad(t, `
+root_user:
+  password: secret
+key_provider:
+  type: kms
+  kms:
+    backend: gcpkms
+    key_prefix: secsy/
+    gcp:
+      project: my-proj
+      location: europe-west1
+      key_ring: pki
+      protection_level: hsm
+      rsa_pss: true
+`)
+	if cfg.KeyProvider.Type != "kms" {
+		t.Errorf("type = %q, want kms", cfg.KeyProvider.Type)
+	}
+	g := cfg.KeyProvider.KMS.GCP
+	if cfg.KeyProvider.KMS.Backend != "gcpkms" || g.Project != "my-proj" || g.Location != "europe-west1" ||
+		g.KeyRing != "pki" || g.ProtectionLevel != "hsm" || !g.RSAPSS {
+		t.Errorf("gcp config = %+v (backend %q)", g, cfg.KeyProvider.KMS.Backend)
+	}
+}
+
+func TestKeyProviderKMSGCPDefaultsFromBackend(t *testing.T) {
+	clearProviderEnv(t)
+	cfg := writeAndLoad(t, `
+root_user:
+  password: secret
+key_provider:
+  kms:
+    backend: gcpkms
+    gcp:
+      project: p
+      location: global
+      key_ring: r
+`)
+	if cfg.KeyProvider.Type != "kms" {
+		t.Errorf("type = %q, want kms (inferred from kms.backend)", cfg.KeyProvider.Type)
+	}
+}
+
+func TestKeyProviderKMSGCPRequiresFields(t *testing.T) {
+	clearProviderEnv(t)
+	for _, tc := range []struct{ name, body string }{
+		{"no project", "location: global\n      key_ring: r"},
+		{"no location", "project: p\n      key_ring: r"},
+		{"no key ring", "project: p\n      location: global"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadContent(t, `
+root_user:
+  password: secret
+key_provider:
+  type: kms
+  kms:
+    backend: gcpkms
+    gcp:
+      `+tc.body+`
+`)
+			if err == nil {
+				t.Fatalf("expected error for %s", tc.name)
+			}
+		})
+	}
+}
+
+func TestKeyProviderKMSGCPBadProtectionLevel(t *testing.T) {
+	clearProviderEnv(t)
+	if _, err := loadContent(t, `
+root_user:
+  password: secret
+key_provider:
+  type: kms
+  kms:
+    backend: gcpkms
+    gcp:
+      project: p
+      location: global
+      key_ring: r
+      protection_level: bogus
+`); err == nil {
+		t.Fatal("expected error: invalid gcp protection_level")
+	}
+}
+
+func TestKeyProviderKMSGCPProjectFromEnv(t *testing.T) {
+	clearProviderEnv(t)
+	t.Setenv("GOOGLE_CLOUD_PROJECT", "env-proj")
+	t.Setenv("SECSY_KMS_GCP_LOCATION", "us-east1")
+	t.Setenv("SECSY_KMS_GCP_KEY_RING", "env-ring")
+	cfg := writeAndLoad(t, `
+root_user:
+  password: secret
+key_provider:
+  type: kms
+  kms:
+    backend: gcpkms
+`)
+	g := cfg.KeyProvider.KMS.GCP
+	if g.Project != "env-proj" || g.Location != "us-east1" || g.KeyRing != "env-ring" {
+		t.Errorf("gcp env override = %+v", g)
+	}
+}
+
 func TestKeyProviderPerRoleSelection(t *testing.T) {
 	clearProviderEnv(t)
 	cfg := writeAndLoad(t, `
@@ -318,6 +426,35 @@ key_provider:
 	}
 	if got := cfg.KeyProviderTypeForRole("tsa"); got != "kms" {
 		t.Errorf("tsa role = %q, want kms (override)", got)
+	}
+}
+
+// TestKeyProviderPerRoleSelectionGCP verifies a mixed deployment: CA keys on a
+// PKCS#11 HSM, TSA keys in Google Cloud KMS. The gcpkms backend block is
+// validated because the tsa role selects it.
+func TestKeyProviderPerRoleSelectionGCP(t *testing.T) {
+	clearProviderEnv(t)
+	cfg := writeAndLoad(t, `
+root_user:
+  password: secret
+pkcs11:
+  module_path: /usr/lib/test.so
+key_provider:
+  type: pkcs11
+  kms:
+    backend: gcpkms
+    gcp:
+      project: p
+      location: global
+      key_ring: r
+  roles:
+    tsa: kms
+`)
+	if got := cfg.KeyProviderTypeForRole("ca"); got != "pkcs11" {
+		t.Errorf("ca role = %q, want pkcs11", got)
+	}
+	if got := cfg.KeyProviderTypeForRole("tsa"); got != "kms" {
+		t.Errorf("tsa role = %q, want kms", got)
 	}
 }
 
@@ -370,8 +507,11 @@ func clearProviderEnv(t *testing.T) {
 		"SECSY_USER_PIN", "SECSY_SOFTWARE_KEYSTORE_DIR",
 		"SECSY_KMS_BACKEND", "SECSY_KMS_REGION", "SECSY_KMS_KEY_PREFIX",
 		"SECSY_KMS_VAULT_URL", "SECSY_KEY_PROVIDER_CA", "SECSY_KEY_PROVIDER_TSA",
+		"SECSY_KEY_PROVIDER_SIGNING",
 		"VAULT_ADDR", "VAULT_TOKEN", "VAULT_NAMESPACE",
 		"SECSY_VAULT_ROLE_ID", "SECSY_VAULT_SECRET_ID",
+		"GOOGLE_CLOUD_PROJECT", "SECSY_KMS_GCP_PROJECT",
+		"SECSY_KMS_GCP_LOCATION", "SECSY_KMS_GCP_KEY_RING",
 	} {
 		t.Setenv(k, "")
 	}

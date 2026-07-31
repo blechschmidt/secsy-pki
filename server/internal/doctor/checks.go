@@ -254,13 +254,17 @@ func describeBackend(cfg *config.Config, ptype string) string {
 		}
 		return fmt.Sprintf("pkcs11 token %q (module %s)", cfg.PKCS11.TokenLabel, cfg.PKCS11.ModulePath)
 	case string(keyprovider.ProviderKMS):
-		if cfg.KeyProvider.KMS.Backend == keyprovider.KMSBackendVault {
+		switch cfg.KeyProvider.KMS.Backend {
+		case keyprovider.KMSBackendVault:
 			addr := cfg.KeyProvider.KMS.Vault.Address
 			mount := cfg.KeyProvider.KMS.Vault.Mount
 			if mount == "" {
 				mount = "transit"
 			}
 			return fmt.Sprintf("HashiCorp Vault Transit (%s, mount %s)", addr, mount)
+		case keyprovider.KMSBackendGCP:
+			g := cfg.KeyProvider.KMS.GCP
+			return fmt.Sprintf("Google Cloud KMS (project %s, location %s, key ring %s)", g.Project, g.Location, g.KeyRing)
 		}
 		return fmt.Sprintf("cloud KMS (%s)", cfg.KeyProvider.KMS.Backend)
 	case string(keyprovider.ProviderSoftware):

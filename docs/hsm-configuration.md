@@ -26,7 +26,7 @@ key_provider:
 |------------|-----------------|---------|
 | `pkcs11`   | An HSM / PKCS#11 token (YubiHSM, SoftHSM, network HSM) | Production, staging, HSM tests |
 | `software` | On-disk PKCS#8 keystore under `keystore_dir` | Local development without any HSM |
-| `kms`      | AWS KMS, Azure Key Vault, or HashiCorp Vault Transit | Cloud/enterprise deployments without a dedicated HSM — see [Cloud KMS backend](cloud-kms.md) and [Vault Transit backend](vault-transit.md) |
+| `kms`      | AWS KMS, Azure Key Vault, Google Cloud KMS, or HashiCorp Vault Transit | Cloud/enterprise deployments without a dedicated HSM — see [Cloud KMS backend](cloud-kms.md) and [Vault Transit backend](vault-transit.md) |
 
 If `type` is omitted it defaults to `pkcs11` when `pkcs11.module_path` is set,
 to `kms` when `key_provider.kms.backend` is set, and to `software` otherwise. The
@@ -138,7 +138,7 @@ pkcs11:
   token_label: "secsy-pki-root"
   # pin: "…"           # ← omit; the PIN is sourced below instead
   pin_source:
-    type: "file"        # inline | env | file | vault | aws | azure
+    type: "file"        # inline | env | file | vault | aws | azure | gcp
     file:
       path: "/etc/secsy/hsm.pin"
 ```
@@ -153,6 +153,7 @@ Select the source with `type`; only the matching sub-block is read:
 | `vault`  | A HashiCorp Vault KV secret | `vault.address` + auth, `vault.mount`, `vault.path`, `vault.field` |
 | `aws`    | AWS Secrets Manager      | `aws.region`, `aws.secret_id`, `aws.field` |
 | `azure`  | Azure Key Vault secret   | `azure.vault_url`, `azure.name`, `azure.field` |
+| `gcp` (alias `gcpsm`) | Google Cloud Secret Manager | `gcp.project`, `gcp.secret`, `gcp.version`, `gcp.field` |
 
 #### `file`
 
@@ -229,6 +230,28 @@ pin_source:
     # version: "…"    # optional; latest otherwise
     # field: "pin"    # optional: pick a key from a JSON secret value
 ```
+
+#### `gcp` (Google Cloud Secret Manager)
+
+Uses **Application Default Credentials** (the metadata server, Workload Identity
+Federation, `GOOGLE_APPLICATION_CREDENTIALS`, or `gcloud auth application-default
+login`), sharing the [Cloud KMS backend](cloud-kms.md#credentials) credential
+wiring. The alias `gcpsm` selects the same source.
+
+```yaml
+pin_source:
+  type: "gcp"
+  gcp:
+    project: "my-project"      # or give secret as a full projects/…/secrets/… name
+    secret: "hsm-pin"          # secret id (or a full resource name)
+    # version: "latest"        # optional; "latest" otherwise
+    # field: "pin"             # optional: pick a key from a JSON secret value
+    # credentials_file: "…"    # optional service-account JSON path (else ADC)
+```
+
+The secret must grant the runtime identity `roles/secretmanager.secretAccessor`.
+The PIN is resolved lazily at HSM login, never at process start, and is never
+logged.
 
 #### Per-token override (HA)
 

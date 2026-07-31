@@ -1410,6 +1410,37 @@ func pinSourceSettings(p config.PinSourceConfig) keyprovider.PinSourceSettings {
 		},
 		AWS:   keyprovider.AWSPinSourceSettings{Region: p.AWS.Region, SecretID: p.AWS.SecretID, Field: p.AWS.Field},
 		Azure: keyprovider.AzurePinSourceSettings{VaultURL: p.Azure.VaultURL, Name: p.Azure.Name, Version: p.Azure.Version, Field: p.Azure.Field},
+		GCP:   gcpPinSourceSettings(p.GCP),
+	}
+}
+
+// gcpPinSourceSettings maps the config's Google Cloud Secret Manager pin_source
+// block onto the keyprovider settings type (mirrors the helper in cmd/server and
+// cmd/secsy-secret).
+func gcpPinSourceSettings(g config.GCPPinSourceConfig) keyprovider.GCPPinSourceSettings {
+	return keyprovider.GCPPinSourceSettings{
+		Project:         g.Project,
+		Secret:          g.Secret,
+		Version:         g.Version,
+		CredentialsFile: g.CredentialsFile,
+		CredentialsJSON: g.CredentialsJSON,
+		Field:           g.Field,
+		Endpoint:        g.Endpoint,
+	}
+}
+
+// gcpKMSSettings maps the config's Google Cloud KMS block onto the keyprovider
+// settings type (mirrors the helper in cmd/server).
+func gcpKMSSettings(g config.GCPProviderConfig) keyprovider.GCPKMSSettings {
+	return keyprovider.GCPKMSSettings{
+		Project:         g.Project,
+		Location:        g.Location,
+		KeyRing:         g.KeyRing,
+		CredentialsFile: g.CredentialsFile,
+		CredentialsJSON: g.CredentialsJSON,
+		ProtectionLevel: g.ProtectionLevel,
+		RSAPSS:          g.RSAPSS,
+		Endpoint:        g.Endpoint,
 	}
 }
 
@@ -1459,6 +1490,7 @@ func buildProvider(cfg *config.Config, role string) (keyprovider.Provider, error
 			KeyPrefix: cfg.KeyProvider.KMS.KeyPrefix,
 			VaultURL:  cfg.KeyProvider.KMS.VaultURL,
 			Vault:     vaultSettings(cfg.KeyProvider.KMS.Vault),
+			GCP:       gcpKMSSettings(cfg.KeyProvider.KMS.GCP),
 		},
 	})
 }

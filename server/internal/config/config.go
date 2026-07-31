@@ -3094,6 +3094,41 @@ type KMSProviderConfig struct {
 	VaultURL string `yaml:"vault_url"`
 	// Vault configures the HashiCorp Vault Transit backend (Backend == "vault").
 	Vault VaultProviderConfig `yaml:"vault"`
+	// GCP configures the Google Cloud KMS backend (Backend == "gcpkms").
+	GCP GCPProviderConfig `yaml:"gcp"`
+}
+
+// GCPProviderConfig configures the Google Cloud KMS backend. Signing keys live
+// as CryptoKeyVersions inside a pre-existing key ring and never leave Cloud KMS,
+// mirroring the HSM non-extractability invariant. Credentials follow Application
+// Default Credentials by default; an explicit service-account key may instead be
+// supplied by file path or inline JSON. See docs/cloud-kms.md.
+type GCPProviderConfig struct {
+	// Project is the GCP project id that owns the key ring. Required. May come
+	// from the GOOGLE_CLOUD_PROJECT / SECSY_KMS_GCP_PROJECT environment variables.
+	Project string `yaml:"project"`
+	// Location is the Cloud KMS location, e.g. "global" or "europe-west1"
+	// (required); it must match the key ring's location.
+	Location string `yaml:"location"`
+	// KeyRing is the id of a pre-existing key ring within Project/Location.
+	// Required. secsy-pki creates CryptoKeys inside this ring; it does not create
+	// key rings (an infrastructure/IAM concern).
+	KeyRing string `yaml:"key_ring"`
+	// CredentialsFile is the path to a service-account JSON key file; empty uses
+	// Application Default Credentials (workload identity / metadata server).
+	CredentialsFile string `yaml:"credentials_file"`
+	// CredentialsJSON is the inline service-account JSON key. It is a credential;
+	// prefer CredentialsFile or ADC. Redacted from any dumped config.
+	CredentialsJSON string `yaml:"credentials_json"`
+	// ProtectionLevel is "software" (default), "hsm" (Cloud HSM, FIPS 140-2 L3),
+	// or "external". "hsm" keeps CA/TSA keys in a hardware module.
+	ProtectionLevel string `yaml:"protection_level"`
+	// RSAPSS provisions new RSA keys with an RSASSA-PSS algorithm instead of the
+	// default RSASSA-PKCS1v1.5; signing supports either scheme regardless.
+	RSAPSS bool `yaml:"rsa_pss"`
+	// Endpoint overrides the Cloud KMS API endpoint (a local emulator); when set,
+	// authentication is disabled. Leave empty for the real service.
+	Endpoint string `yaml:"endpoint"`
 }
 
 // VaultProviderConfig configures the HashiCorp Vault Transit backend. Signing
@@ -3230,6 +3265,7 @@ type PinSourceConfig struct {
 	Vault VaultPinSourceConfig `yaml:"vault"`
 	AWS   AWSPinSourceConfig   `yaml:"aws"`
 	Azure AzurePinSourceConfig `yaml:"azure"`
+	GCP   GCPPinSourceConfig   `yaml:"gcp"`
 }
 
 // EnvPinSourceConfig configures pin_source type "env".
@@ -3287,6 +3323,31 @@ type AzurePinSourceConfig struct {
 	// Field, when set, selects a key from a JSON secret value; empty uses the whole
 	// secret value as the PIN.
 	Field string `yaml:"field"`
+}
+
+// GCPPinSourceConfig configures pin_source type "gcp"/"gcpsm" (Google Cloud
+// Secret Manager). Credentials follow Application Default Credentials by default;
+// an explicit service-account key may instead be supplied by file or inline JSON.
+type GCPPinSourceConfig struct {
+	// Project is the GCP project id owning the secret. Required unless Secret is a
+	// full "projects/…/secrets/…" resource name.
+	Project string `yaml:"project"`
+	// Secret is the secret id (e.g. "hsm-pin") or a full resource name (required).
+	Secret string `yaml:"secret"`
+	// Version pins a specific secret version; empty uses "latest".
+	Version string `yaml:"version"`
+	// CredentialsFile is the path to a service-account JSON key file; empty uses
+	// Application Default Credentials.
+	CredentialsFile string `yaml:"credentials_file"`
+	// CredentialsJSON is the inline service-account JSON key. A credential; prefer
+	// CredentialsFile or ADC. Redacted from any dumped config.
+	CredentialsJSON string `yaml:"credentials_json"`
+	// Field, when set, selects a key from a JSON secret value; empty uses the whole
+	// secret payload as the PIN.
+	Field string `yaml:"field"`
+	// Endpoint overrides the Secret Manager endpoint (a local emulator); when set,
+	// authentication is disabled. Leave empty for the real service.
+	Endpoint string `yaml:"endpoint"`
 }
 
 // redactedSecret is substituted for any non-empty secret in a redacted config.
@@ -3371,6 +3432,7 @@ func (p PinSourceConfig) redacted() PinSourceConfig {
 	cp := p
 	cp.Vault.Token = redactSecret(p.Vault.Token)
 	cp.Vault.SecretID = redactSecret(p.Vault.SecretID)
+	cp.GCP.CredentialsJSON = redactSecret(p.GCP.CredentialsJSON)
 	return cp
 }
 
@@ -3378,6 +3440,7 @@ func (k KeyProviderConfig) redacted() KeyProviderConfig {
 	cp := k
 	cp.KMS.Vault.Token = redactSecret(k.KMS.Vault.Token)
 	cp.KMS.Vault.SecretID = redactSecret(k.KMS.Vault.SecretID)
+	cp.KMS.GCP.CredentialsJSON = redactSecret(k.KMS.GCP.CredentialsJSON)
 	return cp
 }
 
@@ -4577,6 +4640,23 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SECSY_KMS_VAULT_URL"); v != "" {
 		cfg.KeyProvider.KMS.VaultURL = v
 	}
+	// Google Cloud KMS backend. Project/location/key-ring are non-secret and may
+	// come from the environment; credentials follow the SDK's ADC chain (workload
+	// identity, GOOGLE_APPLICATION_CREDENTIALS) and are never taken from config.
+	// GOOGLE_CLOUD_PROJECT is the standard GCP project variable; SECSY_KMS_GCP_*
+	// mirror the other backends' override names.
+	if v := os.Getenv("GOOGLE_CLOUD_PROJECT"); v != "" {
+		cfg.KeyProvider.KMS.GCP.Project = v
+	}
+	if v := os.Getenv("SECSY_KMS_GCP_PROJECT"); v != "" {
+		cfg.KeyProvider.KMS.GCP.Project = v
+	}
+	if v := os.Getenv("SECSY_KMS_GCP_LOCATION"); v != "" {
+		cfg.KeyProvider.KMS.GCP.Location = v
+	}
+	if v := os.Getenv("SECSY_KMS_GCP_KEY_RING"); v != "" {
+		cfg.KeyProvider.KMS.GCP.KeyRing = v
+	}
 	// HashiCorp Vault Transit backend. The address and namespace are non-secret;
 	// the token and AppRole secret-id are credentials and are sourced from the
 	// environment (VAULT_TOKEN and the standard names Vault tooling already sets,
@@ -4766,10 +4846,14 @@ func (c *Config) validateProviderType(providerType, field string) error {
 			if err := c.validateVaultProvider(); err != nil {
 				return err
 			}
+		case "gcpkms":
+			if err := c.validateGCPProvider(); err != nil {
+				return err
+			}
 		case "":
-			return fmt.Errorf("key_provider.kms.backend is required for the kms provider (aws, azure, vault, or fake)")
+			return fmt.Errorf("key_provider.kms.backend is required for the kms provider (aws, azure, gcpkms, vault, or fake)")
 		default:
-			return fmt.Errorf("key_provider.kms.backend %q is invalid (must be \"aws\", \"azure\", \"vault\", or \"fake\")", c.KeyProvider.KMS.Backend)
+			return fmt.Errorf("key_provider.kms.backend %q is invalid (must be \"aws\", \"azure\", \"gcpkms\", \"vault\", or \"fake\")", c.KeyProvider.KMS.Backend)
 		}
 	default:
 		return fmt.Errorf("%s %q is invalid (must be \"pkcs11\", \"software\", or \"kms\")", field, providerType)
@@ -4797,6 +4881,30 @@ func (c *Config) validateVaultProvider() error {
 		}
 	default:
 		return fmt.Errorf("key_provider.kms.vault.auth_method %q is invalid (must be \"token\" or \"approle\")", v.AuthMethod)
+	}
+	return nil
+}
+
+// validateGCPProvider checks the Google Cloud KMS backend settings. Credentials
+// are resolved by the SDK at construction (ADC or the supplied service-account
+// key), so only the addressing shape is checked here; the protection level is
+// validated so a typo fails fast rather than at first key creation.
+func (c *Config) validateGCPProvider() error {
+	g := c.KeyProvider.KMS.GCP
+	if g.Project == "" {
+		return fmt.Errorf("key_provider.kms.gcp.project is required for the gcpkms backend (or set GOOGLE_CLOUD_PROJECT / SECSY_KMS_GCP_PROJECT)")
+	}
+	if g.Location == "" {
+		return fmt.Errorf("key_provider.kms.gcp.location is required for the gcpkms backend")
+	}
+	if g.KeyRing == "" {
+		return fmt.Errorf("key_provider.kms.gcp.key_ring is required for the gcpkms backend")
+	}
+	switch strings.ToLower(strings.TrimSpace(g.ProtectionLevel)) {
+	case "", "software", "hsm", "external":
+		// ok
+	default:
+		return fmt.Errorf("key_provider.kms.gcp.protection_level %q is invalid (must be \"software\", \"hsm\", or \"external\")", g.ProtectionLevel)
 	}
 	return nil
 }

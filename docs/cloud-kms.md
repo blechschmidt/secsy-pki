@@ -1,9 +1,10 @@
-# Cloud KMS key-provider backend (AWS KMS / Azure Key Vault)
+# Cloud KMS key-provider backend (AWS KMS / Azure Key Vault / Google Cloud KMS)
 
 secsy-pki generates and uses every private key through the pluggable
 [key-provider abstraction](hsm-configuration.md). Alongside the PKCS#11/HSM and
 on-disk software backends, the **cloud KMS** backend hosts CA, TSA, and OCSP
-responder signing keys in **AWS KMS** or **Azure Key Vault**.
+responder signing keys in **AWS KMS**, **Azure Key Vault**, or **Google Cloud
+KMS**.
 
 Like an HSM, a cloud KMS never releases private key material: key generation,
 signing, and public-key export all happen through the cloud API, and the backend
@@ -22,13 +23,17 @@ invariant (see [security review](security-review.md)) at the type level.
 |---------|-----------------|---------|
 | `pkcs11` | HSM / PKCS#11 token | On-prem HSM, SoftHSM tests |
 | `software` | On-disk PKCS#8 keystore | Local development |
-| **`kms`** | **AWS KMS or Azure Key Vault** | Cloud deployments without a dedicated HSM, or to offload a specific signing role to a managed KMS |
+| **`kms`** | **AWS KMS, Azure Key Vault, or Google Cloud KMS** | Cloud deployments without a dedicated HSM, or to offload a specific signing role to a managed KMS |
 
 The cloud KMS backend supports **ECDSA** (P-256 / P-384 / P-521) and **RSA**
-(2048 / 4096) signing keys — the algorithms both AWS KMS and Azure Key Vault
-offer for the CA/TSA/OCSP roles. Ed25519 and post-quantum (ML-DSA) key types are
-**not** available in cloud KMS and are rejected with a clear error; use the
-software or PKCS#11 backend for those.
+(2048 / 3072 / 4096) signing keys — the algorithms the managed KMSes offer for
+the CA/TSA/OCSP roles. Ed25519 and post-quantum (ML-DSA) key types are **not**
+available in cloud KMS and are rejected with a clear error; use the software or
+PKCS#11 backend for those.
+
+> **Google Cloud KMS** offers no `EC_SIGN_P521` algorithm, so `ecdsa-p521` is
+> rejected on the `gcpkms` backend (AWS KMS and Azure Key Vault support it). Use
+> `ecdsa-p256` / `ecdsa-p384` or an RSA key there.
 
 > The TSA (RFC 3161) signing key **must be RSA** for `openssl ts -verify`
 > interop; both KMS backends provision RSA keys for it.
@@ -39,17 +44,26 @@ software or PKCS#11 backend for those.
 key_provider:
   type: kms                 # pkcs11 | software | kms
   kms:
-    backend: aws            # aws | azure | vault | fake  (vault: see vault-transit.md)
+    backend: aws            # aws | azure | gcpkms | vault | fake  (vault: see vault-transit.md)
     region: eu-central-1    # AWS region (AWS backend; optional, SDK-resolved when empty)
-    key_prefix: "secsy/"    # namespaces this deployment's keys within the account/vault
+    key_prefix: "secsy/"    # namespaces this deployment's keys within the account/vault/ring
     vault_url: ""           # https://<vault>.vault.azure.net/ (Azure backend, required)
+    gcp:                    # Google Cloud KMS backend (backend: gcpkms)
+      project: my-project   #   GCP project id (required; or GOOGLE_CLOUD_PROJECT)
+      location: europe-west1 #  Cloud KMS location, must match the key ring (required)
+      key_ring: pki         #   pre-existing key ring id (required)
+      protection_level: hsm #   software (default) | hsm (Cloud HSM) | external
+      rsa_pss: false        #   create RSA keys as RSASSA-PSS instead of PKCS#1 v1.5
+      credentials_file: ""  #   optional service-account JSON path (else ADC)
 ```
 
 `key_prefix` is prepended to each key label to form the cloud-side identifier
-(an AWS KMS **alias**, or an Azure Key Vault **key name**). It lets several
-deployments share one account or vault without label collisions. The backends
-sanitize the prefix+label to each service's character rules (AWS aliases allow
-`/_-`; Azure key names allow only alphanumerics and `-`).
+(an AWS KMS **alias**, an Azure Key Vault **key name**, or a Google Cloud KMS
+**CryptoKey id** within the key ring). It lets several deployments share one
+account / vault / ring without label collisions. The backends sanitize the
+prefix+label to each service's character rules (AWS aliases allow `/_-`; Azure
+key names allow only alphanumerics and `-`; GCP CryptoKey ids allow `[a-zA-Z0-9_-]`,
+≤63 chars).
 
 ### Per-role backend selection
 
@@ -92,8 +106,12 @@ never come from config — see below):
 | `SECSY_KMS_REGION` | `key_provider.kms.region` |
 | `SECSY_KMS_KEY_PREFIX` | `key_provider.kms.key_prefix` |
 | `SECSY_KMS_VAULT_URL` | `key_provider.kms.vault_url` |
+| `GOOGLE_CLOUD_PROJECT` / `SECSY_KMS_GCP_PROJECT` | `key_provider.kms.gcp.project` |
+| `SECSY_KMS_GCP_LOCATION` | `key_provider.kms.gcp.location` |
+| `SECSY_KMS_GCP_KEY_RING` | `key_provider.kms.gcp.key_ring` |
 | `SECSY_KEY_PROVIDER_CA` | `key_provider.roles.ca` |
 | `SECSY_KEY_PROVIDER_TSA` | `key_provider.roles.tsa` |
+| `SECSY_KEY_PROVIDER_SIGNING` | `key_provider.roles.signing` |
 
 ## Credentials
 
@@ -108,6 +126,12 @@ development and with workload/managed identity in production:
 - **Azure** — `azidentity.NewDefaultAzureCredential`: environment
   (`AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_CLIENT_SECRET`), **workload
   identity**, or managed identity.
+- **Google Cloud** — **Application Default Credentials**: `GOOGLE_APPLICATION_CREDENTIALS`
+  (a service-account key file), **Workload Identity Federation** on GKE, the
+  metadata server on GCE/Cloud Run, or `gcloud auth application-default login` in
+  development. An explicit service-account key may instead be pointed at with
+  `key_provider.kms.gcp.credentials_file` (a path) or `credentials_json` (inline;
+  a credential, redacted from any dumped config) — prefer ADC / workload identity.
 
 ## IAM / RBAC requirements
 
@@ -158,6 +182,38 @@ For hardware-backed protection use an Azure Key Vault **Premium** tier or
 **Managed HSM** (keys of type `EC-HSM` / `RSA-HSM`). Software-protected Key Vault
 keys are still non-extractable via the API.
 
+### Google Cloud KMS
+
+Create the **key ring** ahead of time (secsy-pki creates CryptoKeys inside it,
+but not the ring itself — an infrastructure/IAM concern):
+
+```bash
+gcloud kms keyrings create pki --location europe-west1
+```
+
+Grant the runtime identity these Cloud KMS permissions on the key ring (or bind
+the predefined roles shown). Scope to the key ring where possible.
+
+| Permission | Role | Used for |
+|------------|------|----------|
+| `cloudkms.cryptoKeys.create` | **Cloud KMS Admin** | `secsy-ca` key generation |
+| `cloudkms.cryptoKeys.get` / `.list` | Cloud KMS Admin / Viewer | Resolve label → key, duplicate-guard, inventory |
+| `cloudkms.cryptoKeyVersions.list` | Cloud KMS Viewer | Pick the active key version |
+| `cloudkms.cryptoKeyVersions.viewPublicKey` | **Cloud KMS Viewer** | Public-key export |
+| `cloudkms.cryptoKeyVersions.useToSign` | **Cloud KMS CryptoKey Signer** | All signing (CA/CRL/OCSP/TSA) |
+| `cloudkms.keyRings.get` | Cloud KMS Viewer | The readiness probe (`secsy-ca doctor`, `/readyz`) |
+
+Day-to-day signing needs only **Cloud KMS CryptoKey Signer/Verifier**
+(`roles/cloudkms.signerVerifier`) plus `cloudkms.keyRings.get`; grant the admin
+role only while provisioning.
+
+Set `protection_level: hsm` to create keys in **Cloud HSM** (FIPS 140-2 Level 3),
+keeping CA/TSA keys in a hardware module. Software-protection keys are still
+non-extractable via the API. Cloud KMS binds the signature scheme to the key at
+creation: RSA keys default to `RSA_SIGN_PKCS1_*_SHA256` (matching the CA default),
+or `RSA_SIGN_PSS_*_SHA256` when `rsa_pss: true`; EC keys use
+`EC_SIGN_P256_SHA256` / `EC_SIGN_P384_SHA384`.
+
 ## Provisioning keys
 
 `secsy-ca` and the server construct the key provider identically, so the same
@@ -193,18 +249,30 @@ key_provider:
     backend: fake
 ```
 
+Each concrete backend is additionally unit-tested against an **in-memory fake of
+its own cloud client** (real stdlib crypto, no network): the Vault Transit backend
+talks to an `httptest` fake Vault, and the Google Cloud KMS backend talks to a
+fake `gcpKMSClient` that models Cloud KMS's algorithm-bound signing and `CRC32C`
+integrity checks. See `internal/keyprovider/kms_gcp_test.go`, which signs a real
+X.509 certificate through the Cloud KMS signer path (ECDSA P-256/P-384, RSA
+2048/3072/4096, and RSASSA-PSS) and verifies it against the exported public key.
+
 ## How it maps to the cloud APIs
 
-| Provider op | AWS KMS | Azure Key Vault |
-|-------------|---------|-----------------|
-| GenerateKey | `CreateKey` (`SIGN_VERIFY`) + `CreateAlias` | `CreateKey` |
-| FindKey / PublicKey | `DescribeKey` + `GetPublicKey` (DER SPKI) | `GetKey` (JWK) |
-| Sign | `Sign` (`MessageType=DIGEST`) | `Sign` (digest value) |
-| ListKeys | `ListAliases` (+`DescribeKey`) | `ListKeyProperties` |
-| Ping (readiness) | `ListAliases` (limit 1) | `GetKey` probe name |
+| Provider op | AWS KMS | Azure Key Vault | Google Cloud KMS |
+|-------------|---------|-----------------|------------------|
+| GenerateKey | `CreateKey` (`SIGN_VERIFY`) + `CreateAlias` | `CreateKey` | `CreateCryptoKey` (`ASYMMETRIC_SIGN`, auto version 1) |
+| FindKey / PublicKey | `DescribeKey` + `GetPublicKey` (DER SPKI) | `GetKey` (JWK) | `ListCryptoKeyVersions` + `GetPublicKey` (PEM SPKI) |
+| Sign | `Sign` (`MessageType=DIGEST`) | `Sign` (digest value) | `AsymmetricSign` (`Digest` field) |
+| ListKeys | `ListAliases` (+`DescribeKey`) | `ListKeyProperties` | `ListCryptoKeys` (`ASYMMETRIC_SIGN`) |
+| Ping (readiness) | `ListAliases` (limit 1) | `GetKey` probe name | `GetKeyRing` |
 
 Signing-algorithm selection follows the standard-library signer contract: the
 caller's digest hash picks `ECDSA_SHA_{256,384,512}` / `RSASSA_PKCS1_V1_5_SHA_*`,
 and an `*rsa.PSSOptions` selects `RSASSA_PSS_SHA_*`. Azure returns ECDSA
 signatures in IEEE P1363 (`r‖s`) form; the backend converts them to the ASN.1 DER
-encoding X.509/CMS verifiers expect (AWS already returns DER).
+encoding X.509/CMS verifiers expect (AWS already returns DER). **Google Cloud KMS**
+binds the algorithm (scheme + hash) to the CryptoKeyVersion, so the scheme comes
+from the key rather than the request; the backend selects the `Digest` field by
+the caller's hash (Cloud KMS rejects a mismatch), returns ECDSA signatures already
+in ASN.1 DER, and verifies the response `CRC32C` integrity checksums.

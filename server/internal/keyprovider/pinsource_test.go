@@ -39,7 +39,7 @@ func TestInlinePinSource(t *testing.T) {
 }
 
 func TestUnknownPinSourceType(t *testing.T) {
-	if _, err := newPinSource(PinSourceSettings{Type: "gcp"}, ""); err == nil {
+	if _, err := newPinSource(PinSourceSettings{Type: "keychain"}, ""); err == nil {
 		t.Fatal("expected error for unknown pin_source type")
 	}
 }

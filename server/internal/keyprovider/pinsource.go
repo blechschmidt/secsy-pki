@@ -24,11 +24,14 @@ import (
 	"strings"
 	"sync"
 
+	secretmanager "cloud.google.com/go/secretmanager/apiv1"
+	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azsecrets"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	gax "github.com/googleapis/gax-go/v2"
 )
 
 // PinSource lazily supplies the PKCS#11 user PIN from a credential store. Every
@@ -49,13 +52,15 @@ type PinSource interface {
 // is the inline source, which returns the PIN carried alongside it
 // (PKCS11Settings.Pin) — the historical behavior.
 type PinSourceSettings struct {
-	// Type is "" / "inline", "env", "file", "vault", "aws", or "azure".
+	// Type is "" / "inline", "env", "file", "vault", "aws", "azure", or
+	// "gcp"/"gcpsm".
 	Type  string
 	Env   EnvPinSourceSettings
 	File  FilePinSourceSettings
 	Vault VaultPinSourceSettings
 	AWS   AWSPinSourceSettings
 	Azure AzurePinSourceSettings
+	GCP   GCPPinSourceSettings
 }
 
 // EnvPinSourceSettings configures the "env" source (read the PIN from a named
@@ -118,6 +123,34 @@ type AzurePinSourceSettings struct {
 	Field string
 }
 
+// GCPPinSourceSettings configures the "gcp"/"gcpsm" source (Google Cloud Secret
+// Manager). Credentials follow Application Default Credentials by default
+// (workload identity / GOOGLE_APPLICATION_CREDENTIALS / gcloud login); an
+// explicit service-account key may instead be supplied by file path or inline
+// JSON, reusing the Task 160 Cloud KMS credential wiring.
+type GCPPinSourceSettings struct {
+	// Project is the GCP project id that owns the secret. Required unless Secret is
+	// already a full "projects/…/secrets/…" resource name.
+	Project string
+	// Secret is the secret id (e.g. "hsm-pin") or a full resource name
+	// ("projects/p/secrets/hsm-pin"). Required.
+	Secret string
+	// Version pins a specific secret version; empty uses "latest".
+	Version string
+	// CredentialsFile is the path to a service-account JSON key file; empty uses
+	// Application Default Credentials.
+	CredentialsFile string
+	// CredentialsJSON is the inline service-account JSON key. A credential; prefer
+	// CredentialsFile or ADC. Redacted from any dumped config.
+	CredentialsJSON string
+	// Field, when set, selects a key from a JSON secret value; empty uses the whole
+	// secret payload as the PIN.
+	Field string
+	// Endpoint overrides the Secret Manager API endpoint for a local emulator;
+	// when set, authentication is disabled. Leave empty for the real service.
+	Endpoint string
+}
+
 // pinSourceIsExternal reports whether a configured pin_source type resolves the
 // PIN from somewhere other than the inline config field. Used to decide whether
 // the doctor "pin.source" reachability probe applies.
@@ -148,8 +181,10 @@ func newPinSource(settings PinSourceSettings, inlinePin string) (PinSource, erro
 		return newAWSPinSource(settings.AWS)
 	case "azure":
 		return newAzurePinSource(settings.Azure)
+	case "gcp", "gcpsm":
+		return newGCPPinSource(settings.GCP)
 	default:
-		return nil, fmt.Errorf("keyprovider: unknown pkcs11 pin_source type %q (supported: inline, env, file, vault, aws, azure)", settings.Type)
+		return nil, fmt.Errorf("keyprovider: unknown pkcs11 pin_source type %q (supported: inline, env, file, vault, aws, azure, gcp)", settings.Type)
 	}
 }
 
@@ -505,6 +540,110 @@ func (s *azurePinSource) Describe() string {
 		return "azure keyvault " + s.name + "#" + s.field
 	}
 	return "azure keyvault " + s.name
+}
+
+// gcpSecretsClient is the narrow subset of the Google Cloud Secret Manager API
+// used here, declared as an interface so tests can substitute a fake. The real
+// *secretmanager.Client satisfies it directly.
+type gcpSecretsClient interface {
+	AccessSecretVersion(ctx context.Context, req *secretmanagerpb.AccessSecretVersionRequest, opts ...gax.CallOption) (*secretmanagerpb.AccessSecretVersionResponse, error)
+	Close() error
+}
+
+// gcpPinSource reads the PIN from Google Cloud Secret Manager over the shared
+// Task 160 Cloud KMS credential wiring (ADC or an explicit service-account key).
+// The Secret Manager client is built lazily inside Resolve so an unreachable
+// source or missing credentials fails the login op closed, not process start.
+type gcpPinSource struct {
+	// name is the full secret-version resource name
+	// (projects/P/secrets/S/versions/V).
+	name  string
+	field string
+	// describe is a log-safe rendering (the resource name, never the PIN).
+	describe string
+	// client, when non-nil, is used directly (test injection); otherwise newClient
+	// builds one per Resolve.
+	client    gcpSecretsClient
+	newClient func(ctx context.Context) (gcpSecretsClient, error)
+}
+
+func newGCPPinSource(c GCPPinSourceSettings) (PinSource, error) {
+	name, err := gcpSecretResourceName(c.Project, c.Secret, c.Version)
+	if err != nil {
+		return nil, err
+	}
+	settings := c
+	return &gcpPinSource{
+		name:     name,
+		field:    strings.TrimSpace(c.Field),
+		describe: gcpSecretDescribe(name, strings.TrimSpace(c.Field)),
+		newClient: func(ctx context.Context) (gcpSecretsClient, error) {
+			opts, err := gcpClientOptions(settings.CredentialsFile, settings.CredentialsJSON, settings.Endpoint)
+			if err != nil {
+				return nil, err
+			}
+			return secretmanager.NewClient(ctx, opts...)
+		},
+	}, nil
+}
+
+func (s *gcpPinSource) Resolve(ctx context.Context) (string, error) {
+	client := s.client
+	if client == nil {
+		c, err := s.newClient(ctx)
+		if err != nil {
+			return "", fmt.Errorf("keyprovider: pin_source %s: creating client: %w", s.describe, err)
+		}
+		defer func() { _ = c.Close() }()
+		client = c
+	}
+	resp, err := client.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{Name: s.name})
+	if err != nil {
+		return "", fmt.Errorf("keyprovider: pin_source %s: %w", s.describe, err)
+	}
+	data := resp.GetPayload().GetData()
+	if len(data) == 0 {
+		return "", fmt.Errorf("keyprovider: pin_source %s: secret version has an empty payload", s.describe)
+	}
+	return extractPin(string(data), s.field, s.describe)
+}
+
+func (s *gcpPinSource) Describe() string { return s.describe }
+
+// gcpSecretResourceName builds the fully qualified secret-version resource name
+// from a project id, a secret id or full resource name, and an optional version
+// (default "latest").
+func gcpSecretResourceName(project, secret, version string) (string, error) {
+	secret = strings.Trim(strings.TrimSpace(secret), "/")
+	if secret == "" {
+		return "", fmt.Errorf("keyprovider: pin_source gcp: secret is required")
+	}
+	version = strings.TrimSpace(version)
+	if version == "" {
+		version = "latest"
+	}
+	// A full resource name may be supplied directly.
+	if strings.HasPrefix(secret, "projects/") {
+		if strings.Contains(secret, "/versions/") {
+			return secret, nil
+		}
+		if !strings.Contains(secret, "/secrets/") {
+			return "", fmt.Errorf("keyprovider: pin_source gcp: %q is not a valid secret resource name", secret)
+		}
+		return secret + "/versions/" + version, nil
+	}
+	if strings.TrimSpace(project) == "" {
+		return "", fmt.Errorf("keyprovider: pin_source gcp: project is required (or give secret as a full projects/…/secrets/… resource name)")
+	}
+	return fmt.Sprintf("projects/%s/secrets/%s/versions/%s", strings.TrimSpace(project), secret, version), nil
+}
+
+// gcpSecretDescribe renders a log-safe description of a Secret Manager source.
+func gcpSecretDescribe(name, field string) string {
+	if field != "" {
+		return "gcp secretmanager " + name + "#" + field
+	}
+	return "gcp secretmanager " + name
 }
 
 // extractPin returns the PIN from a raw secret value: the whole (newline-trimmed)

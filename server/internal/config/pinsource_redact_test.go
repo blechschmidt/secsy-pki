@@ -27,11 +27,15 @@ func TestConfigRedactedMasksSecrets(t *testing.T) {
 					},
 					Path: "hsm/prod",
 				},
+				GCP: GCPPinSourceConfig{Project: "proj", Secret: "hsm-pin", CredentialsJSON: "pingcpjson"},
 			},
 			Tokens: []PKCS11TokenConfig{{Name: "t1", Pin: "tokpin"}},
 		},
 		KeyProvider: KeyProviderConfig{
-			KMS: KMSProviderConfig{Vault: VaultProviderConfig{Token: "kmsvtoken", SecretID: "kmsvsecret"}},
+			KMS: KMSProviderConfig{
+				Vault: VaultProviderConfig{Token: "kmsvtoken", SecretID: "kmsvsecret"},
+				GCP:   GCPProviderConfig{Project: "proj", CredentialsJSON: "kmsgcpjson"},
+			},
 		},
 	}
 
@@ -40,20 +44,23 @@ func TestConfigRedactedMasksSecrets(t *testing.T) {
 	// The original must be untouched (Redacted returns a copy).
 	if c.PKCS11.Pin != "toppin" || c.PKCS11.Tokens[0].Pin != "tokpin" ||
 		c.PKCS11.PinSource.Vault.Token != "vtoken" || c.RootUser.Password != "rootpw" ||
-		c.KeyProvider.KMS.Vault.SecretID != "kmsvsecret" {
+		c.KeyProvider.KMS.Vault.SecretID != "kmsvsecret" ||
+		c.KeyProvider.KMS.GCP.CredentialsJSON != "kmsgcpjson" {
 		t.Fatal("Redacted mutated the original config")
 	}
 
 	// Every credential field is masked to the placeholder.
 	for field, got := range map[string]string{
-		"pkcs11.pin":                        red.PKCS11.Pin,
-		"pkcs11.tokens[0].pin":              red.PKCS11.Tokens[0].Pin,
-		"pkcs11.pin_source.vault.token":     red.PKCS11.PinSource.Vault.Token,
-		"pkcs11.pin_source.vault.secret_id": red.PKCS11.PinSource.Vault.SecretID,
-		"root_user.password":                red.RootUser.Password,
-		"yubihsm.password":                  red.YubiHSM.Password,
-		"key_provider.kms.vault.token":      red.KeyProvider.KMS.Vault.Token,
-		"key_provider.kms.vault.secret_id":  red.KeyProvider.KMS.Vault.SecretID,
+		"pkcs11.pin":                             red.PKCS11.Pin,
+		"pkcs11.tokens[0].pin":                   red.PKCS11.Tokens[0].Pin,
+		"pkcs11.pin_source.vault.token":          red.PKCS11.PinSource.Vault.Token,
+		"pkcs11.pin_source.vault.secret_id":      red.PKCS11.PinSource.Vault.SecretID,
+		"root_user.password":                     red.RootUser.Password,
+		"yubihsm.password":                       red.YubiHSM.Password,
+		"key_provider.kms.vault.token":           red.KeyProvider.KMS.Vault.Token,
+		"key_provider.kms.vault.secret_id":       red.KeyProvider.KMS.Vault.SecretID,
+		"key_provider.kms.gcp.credentials_json":  red.KeyProvider.KMS.GCP.CredentialsJSON,
+		"pkcs11.pin_source.gcp.credentials_json": red.PKCS11.PinSource.GCP.CredentialsJSON,
 	} {
 		if got != redactedSecret {
 			t.Errorf("%s = %q, want %q", field, got, redactedSecret)
@@ -70,7 +77,7 @@ func TestConfigRedactedMasksSecrets(t *testing.T) {
 
 	// A dump of the (self-contained) pkcs11 subtree must not leak any secret.
 	dump := marshalYAML(t, red.PKCS11)
-	for _, secret := range []string{"toppin", "tokpin", "vtoken", "vsecret"} {
+	for _, secret := range []string{"toppin", "tokpin", "vtoken", "vsecret", "pingcpjson"} {
 		if strings.Contains(dump, secret) {
 			t.Errorf("redacted pkcs11 dump leaks secret %q:\n%s", secret, dump)
 		}
