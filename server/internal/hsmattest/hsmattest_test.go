@@ -99,30 +99,117 @@ func TestVerifyRealDeviceAttestation(t *testing.T) {
 		t.Errorf("SPKIFingerprint = %q, want the canonical SHA256: form", res.SPKIFingerprint)
 	}
 
-	// This device's per-batch sub-CA is not in Yubico's published bundle, so the
-	// chain is honestly reported as unanchored rather than silently accepted.
-	if res.ChainAnchored {
-		t.Error("ChainAnchored = true; the fixture device's sub-CA is not in the embedded bundle")
+	// Real hardware anchors with no configuration. Yubico publishes both the
+	// root and this device's issuing sub-CA, and both ship embedded, so the
+	// default policy's anchoring requirement is satisfied by stock hardware.
+	if !res.ChainAnchored {
+		t.Errorf("ChainAnchored = false; the fixture device must chain to the embedded Yubico roots (problems=%v warnings=%v)",
+			res.Problems, res.Warnings)
 	}
-	if len(res.Warnings) == 0 {
-		t.Error("expected a warning about the unanchored chain")
+	if got, want := res.TrustAnchor, "Yubico YubiHSM Root CA"; got != want {
+		t.Errorf("TrustAnchor = %q, want %q", got, want)
+	}
+	if len(res.Warnings) != 0 {
+		t.Errorf("Warnings = %v, want none for stock hardware", res.Warnings)
 	}
 	if !strings.Contains(res.Summary, "cannot be exported") {
 		t.Errorf("Summary = %q, want it to state the key cannot be exported", res.Summary)
 	}
 }
 
-// A deployment that demands an anchored chain must not get a pass from a
-// device whose chain cannot be anchored.
+// The default policy demands an anchored chain, so a device certificate that
+// does not chain to a Yubico root must fail rather than pass on the device's
+// own say-so.
 func TestVerifyRequireAnchoredChainFails(t *testing.T) {
-	pol := DefaultPolicy()
-	pol.RequireAnchoredChain = true
-	res := Verify(realAttestation(), pol)
+	att := realAttestation()
+	// A self-signed stand-in for the device certificate: structurally a device
+	// cert, but issued by nobody Yubico vouches for.
+	att.DeviceCertificatePEM = selfSignedPEM(t)
+
+	res := Verify(att, DefaultPolicy())
 	if res.Verified {
-		t.Fatal("Verified = true despite RequireAnchoredChain and an unanchorable device certificate")
+		t.Fatal("Verified = true despite an unanchorable device certificate")
 	}
-	if !containsSubstr(res.Problems, "does not chain to a trusted attestation root") {
-		t.Errorf("problems = %v, want the anchoring failure", res.Problems)
+	if !containsSubstr(res.Problems, "does not chain to a trusted attestation root") &&
+		!containsSubstr(res.Problems, "do not belong together") {
+		t.Errorf("problems = %v, want the anchoring or binding failure", res.Problems)
+	}
+}
+
+// An unanchored chain is nearly always a sub-CA published after this binary was
+// built, so the verdict must name the URL that fixes it rather than leaving the
+// operator to guess.
+func TestUnanchoredChainNamesThePublishedIntermediate(t *testing.T) {
+	att := realAttestation()
+	pol := DefaultPolicy()
+	pol.Roots = x509.NewCertPool() // trust nothing; the device cert is genuine
+	pol.Intermediates = nil
+
+	res := Verify(att, pol)
+	if res.Verified {
+		t.Fatal("Verified = true with an empty trust store")
+	}
+	const want = "https://developers.yubico.com/YubiHSM2/Concepts/E45DA5F361B091B30D8F2C6FA040DB6FEF57918E.pem"
+	if !containsSubstr(res.Problems, want) {
+		t.Errorf("problems = %v, want them to name %s", res.Problems, want)
+	}
+}
+
+// The published-intermediate URL is derived from the device certificate's
+// authority key identifier, which is how an operator locates the one file that
+// anchors their device.
+func TestYubicoIntermediateURL(t *testing.T) {
+	dev, err := realAttestation().DeviceCertificate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "https://developers.yubico.com/YubiHSM2/Concepts/E45DA5F361B091B30D8F2C6FA040DB6FEF57918E.pem"
+	if got := YubicoIntermediateURL(dev); got != want {
+		t.Errorf("YubicoIntermediateURL = %q, want %q", got, want)
+	}
+	if got := YubicoIntermediateURL(nil); got != "" {
+		t.Errorf("YubicoIntermediateURL(nil) = %q, want empty", got)
+	}
+}
+
+// The embedded bundle must actually contain the YubiHSM 2 attestation PKI —
+// the one a YubiHSM's pre-loaded certificate chains through — and not only the
+// YubiKey-family PKI that superficially resembles it.
+func TestEmbeddedRootsIncludeYubiHSMPKI(t *testing.T) {
+	var foundRoot, foundSubCA bool
+	for _, c := range EmbeddedIntermediates() {
+		if c.Subject.CommonName == "Yubico YubiHSM 6742036 Sub-CA" {
+			foundSubCA = true
+			if c.Issuer.CommonName != "Yubico YubiHSM Root CA" {
+				t.Errorf("sub-CA issuer = %q, want %q", c.Issuer.CommonName, "Yubico YubiHSM Root CA")
+			}
+		}
+	}
+	if !foundSubCA {
+		t.Error("the published YubiHSM 2 sub-CA is not embedded")
+	}
+	dev, err := realAttestation().DeviceCertificate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inter := x509.NewCertPool()
+	for _, c := range EmbeddedIntermediates() {
+		inter.AddCert(c)
+	}
+	chains, err := dev.Verify(x509.VerifyOptions{
+		Roots: EmbeddedRoots(), Intermediates: inter,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+	})
+	if err != nil {
+		t.Fatalf("real device certificate does not chain to the embedded roots: %v", err)
+	}
+	if got := chains[0][len(chains[0])-1].Subject.CommonName; got == "Yubico YubiHSM Root CA" {
+		foundRoot = true
+	} else {
+		t.Errorf("chain terminates at %q, want %q", got, "Yubico YubiHSM Root CA")
+	}
+	if !foundRoot {
+		t.Error("the YubiHSM 2 attestation root is not embedded")
 	}
 }
 
@@ -448,10 +535,10 @@ func dropExtension(t *testing.T, oid asn1.ObjectIdentifier) string {
 	})
 }
 
-// A synthetic root -> device -> leaf chain, so the anchoring success path is
-// exercised even though the attached hardware's per-batch sub-CA is not
-// publishable. Without this the only anchoring assertions would be negative
-// ones, and a verifier that never returns ChainAnchored=true would pass them.
+// A synthetic root -> device -> leaf chain, exercising the anchoring success
+// path against operator-supplied anchors rather than the embedded Yubico ones.
+// This is the case of a device whose factory attestation key was replaced with
+// an owner-generated one, which is the only reason Policy.Roots exists.
 func TestVerifyAnchoredChain(t *testing.T) {
 	rootKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

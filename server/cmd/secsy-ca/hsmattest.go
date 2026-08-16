@@ -56,7 +56,7 @@ Flags (verify):
                         certificate that does not carry one. Without it the
                         attestation's signature cannot be checked.
   -roots FILE           PEM trust anchors. Defaults to Yubico's published
-                        attestation root, embedded in this binary.
+                        attestation roots, embedded in this binary.
   -expect-key FILE      Certificate or public key the attested key must equal.
                         This is what ties an attestation to a specific CA;
                         without it the result only says that some key on the
@@ -64,10 +64,13 @@ Flags (verify):
   -expect-label LABEL   Key label the attestation must assert.
   -expect-serial SERIAL Device serial the attestation must assert.
   -require-anchor       Fail unless the device certificate chains to a trusted
-                        root. Off by default: Yubico does not publish the
-                        per-batch sub-CA for every device generation, so honest
-                        hardware can be unanchorable until the operator obtains
-                        the right intermediate.
+                        root, i.e. the attesting device is provably a genuine
+                        YubiHSM. On by default; Yubico publishes both the root
+                        and the issuing sub-CA and both ship embedded, so stock
+                        hardware anchors with no configuration. Pass
+                        -require-anchor=false for a device whose factory
+                        attestation key was replaced with an owner-generated
+                        one, where no Yubico chain exists to anchor to.
   -allow-exportable     Report rather than fail when the key can be exported.
   -allow-imported       Report rather than fail when the key was imported
                         instead of generated inside the HSM.
@@ -304,7 +307,7 @@ func cmdHSMAttestVerify(args []string) error {
 	expectKey := fs.String("expect-key", "", "certificate or public key the attested key must equal")
 	expectLabel := fs.String("expect-label", "", "key label the attestation must assert")
 	expectSerial := fs.String("expect-serial", "", "device serial the attestation must assert")
-	requireAnchor := fs.Bool("require-anchor", false, "fail unless the device certificate chains to a trusted root")
+	requireAnchor := fs.Bool("require-anchor", true, "fail unless the device certificate chains to a trusted root; -require-anchor=false to opt out")
 	allowExportable := fs.Bool("allow-exportable", false, "report rather than fail when the key is exportable")
 	allowImported := fs.Bool("allow-imported", false, "report rather than fail when the key was imported")
 	asJSON := fs.Bool("json", false, "emit JSON")

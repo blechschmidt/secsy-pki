@@ -120,12 +120,16 @@ type Policy struct {
 	// RequireAnchoredChain fails an attestation whose device certificate does
 	// not chain to a configured root.
 	//
-	// Off by default, deliberately. Yubico's published attestation bundle does
-	// not contain the sub-CA certificates for every device generation — a
-	// YubiHSM 2 with firmware 2.4.0 chains to a "Yubico YubiHSM <n> Sub-CA"
-	// that is neither on the device nor in the published PEM — so requiring an
-	// anchor by default would fail honest hardware. Deployments that have
-	// obtained the right intermediate for their devices should turn it on.
+	// On by default. Without it an attestation shows a key's properties as
+	// asserted by *a* device, and any attacker can mint a self-signed
+	// "attestation" saying whatever they like; the anchor is what makes the
+	// asserting device provably a genuine YubiHSM. Yubico publishes both the
+	// root and the issuing sub-CA (see roots.go), and both ship embedded, so
+	// stock hardware satisfies this with no configuration.
+	//
+	// Turn it off only for a device whose factory attestation key has been
+	// replaced with an owner-generated one, where there is no Yubico chain to
+	// anchor to by construction.
 	RequireAnchoredChain bool
 
 	// ForbiddenCapabilities names capabilities the key must not hold, beyond
@@ -159,6 +163,7 @@ func DefaultPolicy() Policy {
 		RequireNonExportable:     true,
 		RequireGeneratedOnDevice: true,
 		RequireDeviceBinding:     true,
+		RequireAnchoredChain:     true,
 	}
 }
 
@@ -381,6 +386,12 @@ func verifyTrust(att *Attestation, cert *x509.Certificate, claims *Claims, pol P
 		check("chain-anchored", false, err.Error())
 		msg := fmt.Sprintf("device attestation certificate %q does not chain to a trusted attestation root (%v); the assertions are self-consistent but nothing proves the attesting device is a genuine YubiHSM",
 			deviceCert.Subject.CommonName, err)
+		// Almost always a sub-CA published after this binary was built rather
+		// than a fraudulent device, and the fix is one file, so say which one.
+		if u := YubicoIntermediateURL(deviceCert); u != "" {
+			msg += fmt.Sprintf("; if this is genuine hardware its issuing sub-CA %q is published at %s — fetch it and add it to the configured attestation anchors",
+				deviceCert.Issuer.CommonName, u)
+		}
 		if pol.RequireAnchoredChain {
 			fail("%s", msg)
 		} else {

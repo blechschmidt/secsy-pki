@@ -3758,25 +3758,26 @@ type YubiHSMConfig struct {
 
 	// AttestationRootFiles are PEM files holding the trust anchors for YubiHSM
 	// key attestation (Task 168). Empty uses Yubico's published attestation
-	// root, which ships embedded in the binary.
+	// PKIs, which ship embedded in the binary and cover stock hardware.
 	//
-	// Deployments generally need to set this for one of two reasons: their
-	// devices chain through a per-batch "Yubico YubiHSM <n> Sub-CA" that Yubico
-	// does not publish, or they have replaced the factory attestation key with
-	// their own. Self-signed certificates in these files are treated as roots
-	// and the rest as intermediates, so one bundle containing a whole chain
-	// works without being split by hand.
+	// Deployments need to set this for one of two reasons: their device chains
+	// through a Yubico sub-CA published after this binary was built (fetch it
+	// from the URL the unanchored-chain error names), or they have replaced the
+	// factory attestation key with their own. Self-signed certificates in these
+	// files are treated as roots and the rest as intermediates, so one bundle
+	// containing a whole chain works without being split by hand.
 	AttestationRootFiles []string `yaml:"attestation_root_files"`
 	// AttestationRequireAnchoredChain fails a key attestation whose device
-	// certificate does not chain to one of those anchors.
+	// certificate does not chain to one of those anchors, i.e. demands that the
+	// attesting device is provably a genuine YubiHSM rather than merely a
+	// device asserting it is.
 	//
-	// Off by default because honest hardware fails it: a YubiHSM 2 on firmware
-	// 2.4.0 chains through a sub-CA that is neither on the device nor in
-	// Yubico's published bundle, so there is nothing to anchor to until an
-	// operator obtains that intermediate. Turn it on once they have — until
-	// then an attestation proves the key's properties as asserted by *a*
-	// device, not that the device is a genuine YubiHSM.
-	AttestationRequireAnchoredChain bool `yaml:"attestation_require_anchored_chain"`
+	// Unset means on, which is what stock hardware satisfies. Set it to false
+	// only for a device whose factory attestation key has been replaced with an
+	// owner-generated one, where no Yubico chain exists to anchor to — and
+	// understand that an unanchored attestation proves the key's properties as
+	// asserted by *a* device, not that the device is a genuine YubiHSM.
+	AttestationRequireAnchoredChain *bool `yaml:"attestation_require_anchored_chain"`
 	// AttestationForbiddenCapabilities names YubiHSM capabilities a key must
 	// not hold, beyond the exportable-under-wrap check that is always applied.
 	AttestationForbiddenCapabilities []string `yaml:"attestation_forbidden_capabilities"`
@@ -3800,7 +3801,9 @@ func (y YubiHSMConfig) AttestationPolicy() (hsmattest.Policy, error) {
 	pol := hsmattest.DefaultPolicy()
 	pol.RequireNonExportable = !y.AttestationAllowExportableKeys
 	pol.RequireGeneratedOnDevice = !y.AttestationAllowImportedKeys
-	pol.RequireAnchoredChain = y.AttestationRequireAnchoredChain
+	if y.AttestationRequireAnchoredChain != nil {
+		pol.RequireAnchoredChain = *y.AttestationRequireAnchoredChain
+	}
 	pol.ForbiddenCapabilities = y.AttestationForbiddenCapabilities
 
 	if _, err := hsmattest.ParseCapabilityNames(y.AttestationForbiddenCapabilities); err != nil {

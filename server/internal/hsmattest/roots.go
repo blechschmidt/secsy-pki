@@ -3,22 +3,38 @@ package hsmattest
 import (
 	"crypto/x509"
 	"embed"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 )
 
 // Yubico's published attestation PKI, embedded so that verification needs no
 // network and no configuration in the common case.
 //
-// These files come from https://developers.yubico.com/PKI/ (yubico-ca-1.pem and
-// yubico-intermediate.pem). Embedding rather than fetching is deliberate: a
-// verifier that downloads its own trust anchors at verification time trusts
-// whoever answers that request, which defeats the purpose. Operators who need
-// different anchors — a device generation whose sub-CA Yubico has not
-// published, or a device with an owner-installed attestation key — supply them
-// explicitly via LoadRoots.
+// Two disjoint PKIs are embedded, because Yubico runs two:
+//
+//   - roots/yubihsm2-attestation-*.pem — the YubiHSM 2 device attestation PKI,
+//     rooted in "Yubico YubiHSM Root CA". This is the one a YubiHSM 2's
+//     pre-loaded certificate (opaque object 0) actually chains through, so it
+//     is the one that matters here. Both files come from
+//     https://developers.yubico.com/YubiHSM2/Concepts/ — the root as
+//     yubihsm2-attest-ca-crt.pem, the sub-CA under the name the YubiHSM 2 User
+//     Guide lists it under (§1.2.13, "Pre-Loaded Certificates" → "Intermediates").
+//   - roots/yubico-attestation-*.pem — the newer unified Yubico device
+//     attestation PKI rooted in "Yubico Attestation Root 1", from
+//     https://developers.yubico.com/PKI/ (yubico-ca-1.pem and
+//     yubico-intermediate.pem). It covers the YubiKey family and carries a
+//     "YubiHSM Attestation B2 1" branch, so devices issued out of it anchor too.
+//
+// Embedding rather than fetching is deliberate: a verifier that downloads its
+// own trust anchors at verification time trusts whoever answers that request,
+// which defeats the purpose. Operators whose device chains through a sub-CA not
+// bundled here, or who have replaced the factory attestation key with their
+// own, supply anchors explicitly via LoadRoots — see YubicoIntermediateURL for
+// how to obtain the former.
 //
 //go:embed roots/*.pem
 var rootsFS embed.FS
@@ -29,20 +45,41 @@ var (
 	embeddedInter []*x509.Certificate
 )
 
+// loadEmbedded parses every embedded PEM and sorts it by what it is rather than
+// by which file it came from: self-signed certificates become trust anchors and
+// the rest intermediates. Adding a newly published Yubico sub-CA is then a
+// matter of dropping the file into roots/ — the same rule LoadRoots applies to
+// operator-supplied bundles, so embedded and configured anchors cannot diverge
+// in how they are interpreted.
 func loadEmbedded() {
 	embeddedOnce.Do(func() {
 		embeddedRoots = x509.NewCertPool()
-		if data, err := rootsFS.ReadFile("roots/yubico-attestation-root.pem"); err == nil {
-			embeddedRoots.AppendCertsFromPEM(data)
+		entries, err := rootsFS.ReadDir("roots")
+		if err != nil {
+			return
 		}
-		if data, err := rootsFS.ReadFile("roots/yubico-attestation-intermediates.pem"); err == nil {
-			certs, _ := parseCertsPEM(data)
-			embeddedInter = certs
+		for _, e := range entries {
+			data, err := rootsFS.ReadFile("roots/" + e.Name())
+			if err != nil {
+				continue
+			}
+			certs, err := parseCertsPEM(data)
+			if err != nil {
+				continue
+			}
+			for _, c := range certs {
+				if isSelfSigned(c) {
+					embeddedRoots.AddCert(c)
+				} else {
+					embeddedInter = append(embeddedInter, c)
+				}
+			}
 		}
 	})
 }
 
-// EmbeddedRoots returns a pool containing Yubico's published attestation root.
+// EmbeddedRoots returns a pool containing Yubico's published attestation roots:
+// "Yubico YubiHSM Root CA" and "Yubico Attestation Root 1".
 func EmbeddedRoots() *x509.CertPool {
 	loadEmbedded()
 	return embeddedRoots
@@ -50,15 +87,39 @@ func EmbeddedRoots() *x509.CertPool {
 
 // EmbeddedIntermediates returns Yubico's published attestation intermediates.
 //
-// Note that this bundle does not cover every device generation: a YubiHSM 2 on
-// firmware 2.4.0 chains through a per-batch "Yubico YubiHSM <n> Sub-CA" that is
-// neither stored on the device nor present here. Such a device is genuine but
-// unanchorable from public material alone, which is why Policy does not require
-// an anchored chain by default.
+// Yubico publishes the YubiHSM 2 sub-CAs individually rather than as a bundle,
+// each named after its own subject key identifier, so a device whose sub-CA
+// postdates this binary will not be covered. That is a staleness problem with a
+// one-file fix, not an unanchorable device: YubicoIntermediateURL turns the
+// device certificate into the exact URL to fetch.
 func EmbeddedIntermediates() []*x509.Certificate {
 	loadEmbedded()
 	return embeddedInter
 }
+
+// YubicoIntermediateURL returns the URL Yubico publishes deviceCert's issuing
+// sub-CA at, or "" when deviceCert carries no authority key identifier.
+//
+// Yubico names each published YubiHSM 2 intermediate after its subject key
+// identifier in uppercase hex — the YubiHSM 2 User Guide lists the current one
+// as "E45DA5F361B091B30D8F2C6FA040DB6FEF57918E.pem" — and a device certificate
+// names its issuer by exactly that value in its authority key identifier. The
+// mapping is therefore mechanical, which is what makes an unanchored chain an
+// actionable error rather than a dead end.
+//
+// Fetching the result is safe despite being over the network: the intermediate
+// is signed by an embedded root, so a hostile server can supply a bad file but
+// not a chain that verifies. That is the same argument AIA fetching rests on,
+// and the reason this is a URL to hand an operator rather than something the
+// verifier retrieves on its own.
+func YubicoIntermediateURL(deviceCert *x509.Certificate) string {
+	if deviceCert == nil || len(deviceCert.AuthorityKeyId) == 0 {
+		return ""
+	}
+	return yubicoIntermediateBaseURL + strings.ToUpper(hex.EncodeToString(deviceCert.AuthorityKeyId)) + ".pem"
+}
+
+const yubicoIntermediateBaseURL = "https://developers.yubico.com/YubiHSM2/Concepts/"
 
 // LoadRoots reads trust anchors from PEM files.
 //

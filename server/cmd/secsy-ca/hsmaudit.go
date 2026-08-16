@@ -56,12 +56,14 @@ Verification flags (verify):
                         consistency, which cannot detect a wholly forged history.
   -serial SERIAL        Expected device serial number.
   -attest-roots FILE    PEM trust anchors for YubiHSM key attestation. Empty
-                        uses Yubico's published root, embedded in the binary.
+                        uses Yubico's published roots, embedded in the binary.
   -require-anchored-attestation
                         Fail unless each device attestation certificate chains
                         to one of those roots, i.e. the attesting device is
-                        provably a genuine YubiHSM. Off by default; see
-                        docs/hsm/key-attestation.md for why.
+                        provably a genuine YubiHSM. On by default; stock
+                        hardware anchors with no configuration. Pass =false
+                        only for a device whose factory attestation key was
+                        replaced. See docs/hsm/key-attestation.md.
   -allow-unattested-keys
                         Report rather than fail when a key that signed is not
                         attested. Not for real audits: without attestation the
@@ -364,8 +366,8 @@ func cmdHSMAuditVerify(args []string) error {
 	var keyPaths repeatedFlag
 	fs.Var(&keyPaths, "key", "certificate or public key to prove; repeatable")
 	attestRoots := fs.String("attest-roots", "", "PEM file of YubiHSM attestation trust anchors")
-	requireAnchoredAttestation := fs.Bool("require-anchored-attestation", false,
-		"fail unless each device attestation certificate chains to a trusted attestation root")
+	requireAnchoredAttestation := fs.Bool("require-anchored-attestation", true,
+		"fail unless each device attestation certificate chains to a trusted attestation root; =false to opt out")
 	allowUnattested := fs.Bool("allow-unattested-keys", false,
 		"report rather than fail when a key that signed is not attested")
 	tsaRootsPath := fs.String("tsa-roots", "", "PEM file of timestamp-authority trust anchors")

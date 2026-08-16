@@ -156,11 +156,14 @@ func TestHardwareAttestGeneratedKey(t *testing.T) {
 		t.Error("attestation carries no device certificate; offline verification would be impossible")
 	}
 
-	// Device binding is required; chain anchoring is not, because Yubico does
-	// not publish the per-batch sub-CA for every device generation.
+	// The default policy requires both device binding and an anchored chain,
+	// and stock hardware satisfies both from the embedded Yubico PKI.
 	res := Verify(att, DefaultPolicy())
 	if !res.Verified {
 		t.Fatalf("Verified = false: %v", res.Problems)
+	}
+	if !res.ChainAnchored {
+		t.Errorf("ChainAnchored = false; this device should chain to %q", "Yubico YubiHSM Root CA")
 	}
 	if !res.NonExportable {
 		t.Error("NonExportable = false for a key without exportable-under-wrap")

@@ -150,36 +150,62 @@ Other flags: `-roots` (trust anchors), `-expect-label`, `-expect-serial`,
 4. **Device binding** — the attestation certificate's signature verifies against
    the device attestation certificate, i.e. *this device* made these assertions.
 5. **Chain anchored** — the device certificate chains to a trusted attestation
-   root, i.e. the attesting device is a genuine YubiHSM. See the caveat below.
+   root, i.e. the attesting device is a genuine YubiHSM.
 6. **Expected key / label / serial / object ID** — when supplied.
 
 Unrecognised capability bits are reported as warnings rather than ignored: a
 capability introduced by newer firmware cannot be shown *not* to permit export.
 
-### Caveat: chain anchoring is off by default
+### Chain anchoring
 
-Yubico's published attestation bundle does not contain the sub-CA certificates
-for every device generation. A YubiHSM 2 on firmware 2.4.0 chains through a
-per-batch `Yubico YubiHSM <n> Sub-CA` that is **neither stored on the device nor
-in the published PEM**, so requiring an anchored chain by default would fail
-honest hardware.
-
-The verifier therefore reports anchoring honestly rather than pretending:
+Anchoring is what separates *"a device asserts this key is non-exportable"* from
+*"a YubiHSM asserts it"*. Without it anyone can mint a self-signed certificate
+carrying whatever assertions they like, so it is **required by default**, and
+stock hardware satisfies it with no configuration:
 
 ```
-Chain anchored:   no
-Warnings:
-  - device attestation certificate "YubiHSM Attestation (31650425)" does not
-    chain to a trusted attestation root …; the assertions are self-consistent
-    but nothing proves the attesting device is a genuine YubiHSM
+Chain anchored:   yes (Yubico YubiHSM Root CA)
 ```
 
-Until you obtain the right intermediate, an attestation proves the key's
-properties *as asserted by a device* — not that the device is a genuine YubiHSM.
-Once you have it, point `yubihsm.attestation_root_files` at it and set
-`attestation_require_anchored_chain: true`. Yubico's current root
-(`Yubico Attestation Root 1`) and published intermediates ship embedded in the
-binary, so newer devices anchor with no configuration.
+Yubico runs two attestation PKIs and secsy-pki embeds both:
+
+| PKI | Root | Published at |
+| --- | --- | --- |
+| YubiHSM 2 device attestation | `Yubico YubiHSM Root CA` | [`yubihsm2-attest-ca-crt.pem`](https://developers.yubico.com/YubiHSM2/Concepts/yubihsm2-attest-ca-crt.pem) |
+| Unified Yubico device attestation | `Yubico Attestation Root 1` | [developers.yubico.com/PKI/](https://developers.yubico.com/PKI/) |
+
+A YubiHSM 2's pre-loaded certificate (opaque object `0`) is issued by a
+`Yubico YubiHSM <n> Sub-CA` under the first of these. Yubico publishes those
+sub-CAs individually rather than as a bundle, each named after its own subject
+key identifier — the [YubiHSM 2 User Guide][ug] lists the current one under
+*Core Concepts → Attestation → Pre-Loaded Certificates → Intermediates* as
+[`E45DA5F361B091B30D8F2C6FA040DB6FEF57918E.pem`](https://developers.yubico.com/YubiHSM2/Concepts/E45DA5F361B091B30D8F2C6FA040DB6FEF57918E.pem),
+and that certificate ships embedded here.
+
+[ug]: https://docs.yubico.com/hardware/yubihsm-2/hsm-2-user-guide/hsm2-core-concepts.html
+
+Because that naming is mechanical, a device whose sub-CA Yubico published after
+your binary was built is a one-file fix rather than a dead end. A device
+certificate names its issuer in its authority key identifier, and that hex value
+*is* the filename, so the verifier computes the URL for you:
+
+```
+device attestation certificate "YubiHSM Attestation (…)" does not chain to a
+trusted attestation root …; if this is genuine hardware its issuing sub-CA
+"Yubico YubiHSM <n> Sub-CA" is published at
+https://developers.yubico.com/YubiHSM2/Concepts/<AKI>.pem — fetch it and add it
+to the configured attestation anchors
+```
+
+Fetch that file, point `yubihsm.attestation_root_files` at it, and the chain
+anchors. Fetching it over the network is safe: it is signed by an embedded root,
+so a hostile server can serve a bad file but not one that verifies.
+
+Set `attestation_require_anchored_chain: false` only for a device whose factory
+attestation key has been replaced with an owner-generated one, where no Yubico
+chain exists to anchor to by construction. An unanchored attestation proves the
+key's properties *as asserted by a device* — not that the device is a genuine
+YubiHSM.
 
 ## Configuration
 
@@ -189,14 +215,14 @@ yubihsm:
   auth_key_id: 1
   password: "…"
 
-  # Trust anchors for key attestation. Empty uses Yubico's published root,
-  # embedded in the binary. Self-signed certificates in these files are treated
-  # as roots and the rest as intermediates, so one bundle containing a whole
-  # chain works without being split by hand.
+  # Trust anchors for key attestation. Empty uses Yubico's published roots,
+  # embedded in the binary, which cover stock hardware. Self-signed certificates
+  # in these files are treated as roots and the rest as intermediates, so one
+  # bundle containing a whole chain works without being split by hand.
   attestation_root_files: []
   # Fail an attestation whose device certificate does not chain to one of them.
-  # Off by default — see the caveat above.
-  attestation_require_anchored_chain: false
+  # Unset means on — see "Chain anchoring" above before turning it off.
+  attestation_require_anchored_chain: true
   # Capabilities a key must not hold, beyond the exportability check.
   attestation_forbidden_capabilities: []
   # Report rather than fail. Both discard a guarantee; see below.

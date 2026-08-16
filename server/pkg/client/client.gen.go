@@ -2019,7 +2019,7 @@ type HSMKeyAttestationResult struct {
 	CanSign      *bool     `json:"can_sign,omitempty"`
 	Capabilities *[]string `json:"capabilities,omitempty"`
 
-	// ChainAnchored The device certificate chains to a configured trust anchor. False is common on genuine hardware whose per-batch sub-CA Yubico does not publish, which is why it is not required by default.
+	// ChainAnchored The device certificate chains to a configured trust anchor, i.e. the attesting device is provably a genuine YubiHSM. Required by default; Yubico's YubiHSM 2 attestation root and the sub-CA that issues device certificates both ship embedded, so stock hardware anchors with no configuration.
 	ChainAnchored *bool `json:"chain_anchored,omitempty"`
 	Checks        *[]struct {
 		Detail *string `json:"detail,omitempty"`

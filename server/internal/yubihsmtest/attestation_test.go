@@ -19,7 +19,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/x509"
 	"encoding/pem"
 	"testing"
 
@@ -260,16 +259,18 @@ func pemCertificate(der []byte) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
-// TestAttestationChainToYubico records where the device's attestation
-// certificate chain actually terminates.
+// TestAttestationChainToYubico requires that the device in front of the
+// operator is provably a genuine YubiHSM.
 //
-// This is deliberately reported rather than required. The device certificate on
-// this hardware is issued by a per-batch "Yubico YubiHSM <n> Sub-CA" that is
-// neither stored on the device nor present in Yubico's published attestation
-// bundle, so a policy that demanded an anchored chain would reject honest
-// hardware — which is why hsmattest.Policy leaves RequireAnchoredChain off. The
-// test exists to make the situation visible on whatever device is in front of
-// the operator, and to fail loudly if the chain ever verifies *incorrectly*.
+// This is the check that separates "a device asserts this key is
+// non-exportable" from "a YubiHSM asserts it". Yubico publishes the YubiHSM 2
+// attestation root and the sub-CA that issues device certificates, and both
+// ship embedded, so stock hardware anchors with no configuration.
+//
+// A failure here has exactly two causes worth distinguishing, and the test says
+// which: a device whose sub-CA Yubico published after this binary was built —
+// fetch the one file the verdict names — or hardware that is not what it claims
+// to be.
 func TestAttestationChainToYubico(t *testing.T) {
 	requireDevice(t)
 	keepLogSpace(t, 6)
@@ -282,36 +283,18 @@ func TestAttestationChainToYubico(t *testing.T) {
 	}
 	t.Logf("device certificate: subject %q issuer %q", devCert.Subject, devCert.Issuer)
 
-	pol := hsmattest.DefaultPolicy()
-	pol.RequireAnchoredChain = true
-	res := hsmattest.Verify(att, pol)
+	res := hsmattest.Verify(att, hsmattest.DefaultPolicy())
 
-	if res.ChainAnchored {
-		t.Logf("the device certificate chains to the embedded trust anchor %q", res.TrustAnchor)
-		if !res.Verified {
-			t.Errorf("the chain anchored but verification still failed: %v", res.Problems)
-		}
+	if !res.ChainAnchored {
+		t.Errorf("the device certificate does not chain to an embedded Yubico attestation root: %v", res.Problems)
+		t.Errorf("if this device is genuine, its issuing sub-CA %q is published at %s — add it to the embedded bundle",
+			devCert.Issuer.CommonName, hsmattest.YubicoIntermediateURL(devCert))
 		return
 	}
-
-	// Not anchored: confirm that this is the known missing-intermediate case
-	// and not a verification bug, by checking the chain would complete if the
-	// issuer were supplied.
-	if res.Verified {
-		t.Fatal("verification passed while reporting the chain as unanchored")
+	t.Logf("the device certificate chains to the embedded trust anchor %q", res.TrustAnchor)
+	if !res.Verified {
+		t.Errorf("the chain anchored but verification still failed: %v", res.Problems)
 	}
-	roots := hsmattest.EmbeddedRoots()
-	inter := x509.NewCertPool()
-	for _, c := range hsmattest.EmbeddedIntermediates() {
-		inter.AddCert(c)
-	}
-	_, chainErr := devCert.Verify(x509.VerifyOptions{Roots: roots, Intermediates: inter,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
-	if chainErr == nil {
-		t.Fatal("the device certificate does chain to an embedded root, but Verify reported it as unanchored")
-	}
-	t.Logf("chain not anchored, as expected for this device generation: %v", chainErr)
-	t.Logf("supply the matching %q certificate to enable RequireAnchoredChain", devCert.Issuer)
 }
 
 // TestAttestByLabelResolvesExactly checks that label lookup is exact.

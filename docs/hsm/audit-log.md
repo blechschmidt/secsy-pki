@@ -416,10 +416,11 @@ A negative surplus — the CA recording more signatures than the device log show
   no longer be attested, so a bundle exported afterwards fails closed rather than
   vouching for it retroactively. Retain earlier bundles: they are the record that
   the key was confined while it was signing.
-- **Anchoring the attestation chain needs the right Yubico intermediate.** Until
-  you have it, an attestation shows the key's properties *as asserted by a
-  device*, not that the device is a genuine YubiHSM. See
-  [key attestation](key-attestation.md#caveat-chain-anchoring-is-off-by-default).
+- **Anchoring needs the sub-CA that issued this device.** Yubico publishes it,
+  named after its own subject key identifier, and the current one ships embedded
+  — but a device whose sub-CA postdates this binary needs that one file before
+  its attestation shows more than the key's properties *as asserted by a device*.
+  See [key attestation](key-attestation.md#chain-anchoring).
 - **The internal TSA is circular.** See the note above.
 
 ## Related

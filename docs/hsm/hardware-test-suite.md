@@ -132,12 +132,14 @@ EdDSA mechanism, which made "the YubiHSM supports Ed25519" true of the device
 and false of the only path the product can reach it through. It is now true of
 both, and tier 5's matrix is where a regression would show.
 
-**Attestation chains do not anchor to Yubico's published roots.** The device
-certificate on firmware 2.4.0 is issued by a per-batch `Yubico YubiHSM <n>
-Sub-CA` that is neither stored on the device nor present in Yubico's published
-attestation bundle. `hsmattest.Policy.RequireAnchoredChain` is therefore off by
-default; tier 3 reports where the chain actually terminates rather than
-asserting a verdict. See [key attestation](key-attestation.md).
+**Attestation chains anchor to Yubico's published roots.** The device
+certificate is issued by a `Yubico YubiHSM <n> Sub-CA` which Yubico publishes
+individually, named after its own subject key identifier; that sub-CA and the
+`Yubico YubiHSM Root CA` above it both ship embedded, so
+`hsmattest.Policy.RequireAnchoredChain` is on by default and tier 3 asserts the
+chain rather than merely reporting where it terminates. A device whose sub-CA
+postdates the binary fails with the URL that fixes it. See
+[key attestation](key-attestation.md).
 
 **RSA is slow.** On a YubiHSM 2, RSA-3072 key generation measured 25-45
 seconds and RSA-4096 about 1m33s. Any timeout on an issuance or key-ceremony
