@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -15,6 +14,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/approval"
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/authn"
+	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -72,8 +72,12 @@ func cmdTokenCreate(db *database.DB, cfg *config.Config, args []string) error {
 	scope := fs.String("scope", models.TokenScopeTenant, "token scope: tenant | platform")
 	expiresDays := fs.Int("expires-days", -1, "days until expiry (omit for policy default; 0 = never when uncapped)")
 	description := fs.String("description", "", "optional description")
-	asJSON := fs.Bool("json", false, "emit the created token (including the secret) as JSON")
+	out := cliout.Register(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	asJSON, err := out.JSON()
+	if err != nil {
 		return err
 	}
 	if strings.TrimSpace(*name) == "" {
@@ -150,8 +154,8 @@ func cmdTokenCreate(db *database.DB, cfg *config.Config, args []string) error {
 		Detail: fmt.Sprintf("scope=%s roles=%s expires=%s via=cli", sc, strings.Join(roles, ","), tokenExpiryLabel(expiresAt)),
 	})
 
-	if *asJSON {
-		return json.NewEncoder(os.Stdout).Encode(struct {
+	if asJSON {
+		return cliout.Emit(struct {
 			*models.APIToken
 			Secret string `json:"secret"`
 		}{APIToken: tok, Secret: secret})
@@ -172,13 +176,16 @@ func cmdTokenCreate(db *database.DB, cfg *config.Config, args []string) error {
 func cmdTokenList(db *database.DB, args []string) error {
 	fs := flag.NewFlagSet("token list", flag.ContinueOnError)
 	tenant := fs.String("tenant", "", "filter by tenant id or slug (default: all tenants)")
-	asJSON := fs.Bool("json", false, "emit JSON")
+	out := cliout.Register(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	asJSON, err := out.JSON()
+	if err != nil {
 		return err
 	}
 	tenantID := ""
 	if strings.TrimSpace(*tenant) != "" {
-		var err error
 		if tenantID, err = resolveTenant(db, *tenant); err != nil {
 			return err
 		}
@@ -187,8 +194,11 @@ func cmdTokenList(db *database.DB, args []string) error {
 	if err != nil {
 		return err
 	}
-	if *asJSON {
-		return json.NewEncoder(os.Stdout).Encode(tokens)
+	if asJSON {
+		if tokens == nil {
+			tokens = []models.APIToken{}
+		}
+		return cliout.Emit(tokens)
 	}
 	if len(tokens) == 0 {
 		fmt.Println("No API tokens.")

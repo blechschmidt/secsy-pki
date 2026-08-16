@@ -95,6 +95,19 @@ func New(opts Options) *Middleware {
 	}
 }
 
+// UpdateTiers re-applies the token-bucket tier rates from cfg to the running
+// limiter for configuration hot-reload (Task 166). It is a no-op when rate
+// limiting was not enabled at startup (no limiter was built) — toggling
+// rate_limit.enabled on or off, or changing the concurrency guard, still
+// requires a restart. The in-flight concurrency guard is intentionally left
+// untouched (its bound is baked into a fixed-size channel).
+func (m *Middleware) UpdateTiers(cfg LimiterConfig) {
+	if m == nil || m.limiter == nil {
+		return
+	}
+	m.limiter.UpdateTiers(cfg)
+}
+
 // Active reports whether the middleware would enforce anything. When false the
 // caller may skip installing it.
 func (m *Middleware) Active() bool {

@@ -151,6 +151,11 @@ type API struct {
 	// configured retry budget for test deliveries. Set via SetWebhookDelivery.
 	webhookWorkerEnabled bool
 	webhookMaxAttempts   int
+	// reloader hot-reloads the reloadable configuration subset (issuance
+	// profiles, monitor notification sinks, rate-limit tiers) without a restart
+	// (Task 166). nil when hot-reload is not wired (tests / CLI), in which case
+	// POST /api/admin/reload answers 503. Set via SetReloader.
+	reloader ConfigReloader
 	// attestPolicy is the configured YubiHSM key-attestation policy (Task 168):
 	// the trust anchors and the properties a key must show. nil falls back to
 	// hsmattest.DefaultPolicy. Set via SetKeyAttestationPolicy.
@@ -434,6 +439,12 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 
 	mux.Handle("GET /api/keys", protected(http.HandlerFunc(a.ListCAs)))
 	mux.Handle("POST /api/keys", protected(http.HandlerFunc(a.CreateCA)))
+
+	// Configuration hot-reload (Task 166). Platform-admin-only: re-read the config
+	// file and atomically swap the reloadable subset (issuance profiles, monitor
+	// notification sinks, rate-limit tiers) without a process restart. Mirrors the
+	// SIGHUP path.
+	mux.Handle("POST /api/admin/reload", protected(http.HandlerFunc(a.ReloadConfig)))
 
 	// Multi-tenant administration (Task 43). Tenant provisioning is platform-level
 	// (root / platform admin); reading a single tenant is allowed for its members.

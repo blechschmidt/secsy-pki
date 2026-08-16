@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/monitor"
@@ -30,8 +30,12 @@ func cmdExpiring(db *database.DB, cfg *config.Config, args []string) error {
 	days := fs.Int("days", 0, "only show certs expiring within N days (0 = all)")
 	severity := fs.String("severity", "", "only show certs at/above this severity (warning|critical|expired)")
 	showSuperseded := fs.Bool("superseded", false, "include stale certs superseded by a newer reissue")
-	asJSON := fs.Bool("json", false, "emit the full report as JSON")
+	out := cliout.Register(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	asJSON, err := out.JSON()
+	if err != nil {
 		return err
 	}
 
@@ -74,10 +78,8 @@ func cmdExpiring(db *database.DB, cfg *config.Config, args []string) error {
 		items = append(items, it)
 	}
 
-	if *asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(map[string]any{
+	if asJSON {
+		return cliout.Emit(map[string]any{
 			"generated_at":  report.GeneratedAt,
 			"warning_days":  report.WarningDays,
 			"critical_days": report.CriticalDays,
@@ -117,8 +119,12 @@ func cmdMonitorRun(db *database.DB, mgr *ca.Manager, cfg *config.Config, args []
 	fs := flag.NewFlagSet("monitor-run", flag.ContinueOnError)
 	caRef := fs.String("ca", "", "restrict to a CA id or label (default: all CAs)")
 	autoRenew := fs.Bool("auto-renew", false, "auto-renew eligible certificates before expiry")
-	asJSON := fs.Bool("json", false, "emit the report as JSON")
+	out := cliout.Register(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	asJSON, err := out.JSON()
+	if err != nil {
 		return err
 	}
 
@@ -141,10 +147,8 @@ func cmdMonitorRun(db *database.DB, mgr *ca.Manager, cfg *config.Config, args []
 		return err
 	}
 
-	if *asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(report)
+	if asJSON {
+		return cliout.Emit(report)
 	}
 
 	fmt.Printf("Scan complete (%s): ok=%d warning=%d critical=%d expired=%d\n",

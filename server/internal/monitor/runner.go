@@ -3,6 +3,7 @@ package monitor
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,9 +24,13 @@ type Rotator interface {
 // the configured notification sinks. It is started once at server boot and
 // stopped on shutdown.
 type Runner struct {
-	monitor      *Monitor
-	interval     time.Duration
-	autoRenew    bool
+	monitor   *Monitor
+	interval  time.Duration
+	autoRenew bool
+	// mu guards bindings so UpdateNotifications (config hot-reload, Task 166) can
+	// atomically swap the notification sink set on a running monitor; each scan
+	// tick reads it through currentBindings.
+	mu           sync.RWMutex
 	bindings     []sinkBinding
 	logger       *log.Logger
 	rotator      Rotator
@@ -119,6 +124,31 @@ func buildSinks(cfg config.MonitorConfig, logger *log.Logger) ([]sinkBinding, er
 	return bindings, nil
 }
 
+// currentBindings returns the live notification sink set under the read lock, so
+// a scan tick sees a consistent snapshot even if UpdateNotifications swaps it
+// mid-cycle.
+func (r *Runner) currentBindings() []sinkBinding {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.bindings
+}
+
+// UpdateNotifications rebuilds the notification sinks from cfg and atomically
+// swaps them in for configuration hot-reload (Task 166); the next scan tick uses
+// the new set. It validates first (via buildSinks) and returns any error WITHOUT
+// touching the live set, so a bad reload leaves the running sinks intact
+// (fail-safe). Safe to call concurrently with the scan loop.
+func (r *Runner) UpdateNotifications(cfg config.MonitorConfig) error {
+	bindings, err := buildSinks(cfg, r.logger)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.bindings = bindings
+	r.mu.Unlock()
+	return nil
+}
+
 // Run scans immediately, then on every interval tick, until ctx is cancelled.
 // It blocks; callers run it in a goroutine.
 func (r *Runner) Run(ctx context.Context) {
@@ -151,7 +181,7 @@ func (r *Runner) runOnce(ctx context.Context) {
 		r.logger.Printf("cert-expiry monitor: scan failed: %v", err)
 		return
 	}
-	r.monitor.Dispatch(ctx, report, r.bindings)
+	r.monitor.Dispatch(ctx, report, r.currentBindings())
 }
 
 // scanSecretLifecycle runs the stored-secret TTL/rotation scan and dispatches
@@ -171,7 +201,7 @@ func (r *Runner) scanSecretLifecycle(ctx context.Context) {
 	if len(due) == 0 {
 		return
 	}
-	for _, b := range r.bindings {
+	for _, b := range r.currentBindings() {
 		var filtered []SecretItem
 		for _, it := range due {
 			if it.Severity.atLeast(b.minSeverity) {

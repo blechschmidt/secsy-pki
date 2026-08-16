@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/x509"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/anchor"
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
+	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/siem"
@@ -83,9 +83,13 @@ type auditVerifyOutput struct {
 // and validates every stored anchor against the chain and its RFC 3161 token.
 func cmdAuditVerify(db *database.DB, args []string) error {
 	fs := flag.NewFlagSet("audit verify", flag.ContinueOnError)
-	asJSON := fs.Bool("json", false, "emit the verification result as JSON")
+	out := cliout.Register(fs)
 	tsaCAFile := fs.String("tsa-ca", "", "PEM file with TSA trust anchor(s); when set, each anchor token's TSA certificate must chain to one")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	asJSON, err := out.JSON()
+	if err != nil {
 		return err
 	}
 
@@ -115,10 +119,8 @@ func cmdAuditVerify(db *database.DB, args []string) error {
 		}
 	}
 
-	if *asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(auditVerifyOutput{VerifyResult: res, AnchorsValid: anchorsValid, Anchors: checks}); err != nil {
+	if asJSON {
+		if err := cliout.Emit(auditVerifyOutput{VerifyResult: res, AnchorsValid: anchorsValid, Anchors: checks}); err != nil {
 			return err
 		}
 	} else {
@@ -162,13 +164,17 @@ func cmdAuditAnchor(db *database.DB, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("audit anchor", flag.ContinueOnError)
 	list := fs.Bool("list", false, "list stored anchors instead of creating one")
 	force := fs.Bool("force", false, "anchor even if nothing new happened since the last anchor")
-	asJSON := fs.Bool("json", false, "emit the result as JSON")
+	out := cliout.Register(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	asJSON, err := out.JSON()
+	if err != nil {
 		return err
 	}
 
 	if *list {
-		return listAuditAnchors(db, *asJSON)
+		return listAuditAnchors(db, asJSON)
 	}
 
 	ts, cleanup, err := buildAnchorTimestamperCLI(db, cfg)
@@ -183,10 +189,8 @@ func cmdAuditAnchor(db *database.DB, cfg *config.Config, args []string) error {
 		return err
 	}
 
-	if *asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(res)
+	if asJSON {
+		return cliout.Emit(res)
 	}
 	if res.Skipped {
 		fmt.Printf("anchor skipped: %s (use -force to anchor anyway)\n", res.Reason)
@@ -209,9 +213,7 @@ func listAuditAnchors(db *database.DB, asJSON bool) error {
 		return err
 	}
 	if asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(anchors)
+		return cliout.Emit(anchors)
 	}
 	if len(anchors) == 0 {
 		fmt.Println("No audit anchors stored.")

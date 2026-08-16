@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"text/tabwriter"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 )
@@ -63,8 +63,12 @@ func cmdDBVerify(cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("db verify", flag.ContinueOnError)
 	driver := fs.String("driver", "", "database driver to check (default: the configured database)")
 	dsn := fs.String("dsn", "", "database DSN to check (default: the configured database)")
-	asJSON := fs.Bool("json", false, "emit the full result (including the fingerprint) as JSON")
+	out := cliout.Register(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	asJSON, err := out.JSON()
+	if err != nil {
 		return err
 	}
 
@@ -91,10 +95,8 @@ func cmdDBVerify(cfg *config.Config, args []string) error {
 		return err
 	}
 
-	if *asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(res); err != nil {
+	if asJSON {
+		if err := cliout.Emit(res); err != nil {
 			return err
 		}
 	} else {

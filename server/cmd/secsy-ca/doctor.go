@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/authn"
+	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/doctor"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
@@ -30,7 +30,7 @@ import (
 //	2  no failures, but at least one warning
 func cmdDoctor(cfgPath string, args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	asJSON := fs.Bool("json", false, "emit the report as JSON")
+	out := cliout.Register(fs)
 	deep := fs.Bool("deep", false, "additionally run the full store-integrity gate (walks the entire audit chain; same as \"secsy-ca db verify\")")
 	timeout := fs.Duration("timeout", 60*time.Second, "overall time budget for the run")
 	expiryWarnDays := fs.Int("expiry-warn-days", 30, "warn when a certificate expires within this many days")
@@ -49,6 +49,10 @@ func cmdDoctor(cfgPath string, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	asJSON, err := out.JSON()
+	if err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
@@ -65,10 +69,8 @@ func cmdDoctor(cfgPath string, args []string) error {
 		Deep:            *deep,
 	})
 
-	if *asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(report); err != nil {
+	if asJSON {
+		if err := cliout.Emit(report); err != nil {
 			return err
 		}
 	} else {

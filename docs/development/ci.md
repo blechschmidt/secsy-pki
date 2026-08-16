@@ -126,6 +126,16 @@ Two environment notes that cause local-only failures:
   `SOFTHSM2_CONF` and `SECSY_TEST_PG_DSN` before `make cover-check`, or the
   numbers will not be comparable. See [coverage](coverage.md).
 
+**Never commit a coverage baseline generated on a developer machine.** Env vars
+are not the only thing that moves the numbers — *attached hardware* does too. A
+host with a YubiHSM 2 on USB covers device paths in `internal/yubihsm` that a
+hosted runner cannot reach, which recorded that package 18.6pp too high and
+failed the ratchet on the next push. Refresh the baseline on the runner class
+that enforces it: dispatch *Enterprise CI (SoftHSM)* with
+`refresh_coverage_baseline=true`, then download the `coverage-baseline`
+artifact and commit it verbatim. The same applies to `bench/baseline.txt`
+(`refresh_baseline=true`).
+
 ---
 
 ↩ Back to the [development index](README.md) · [documentation map](../README.md)

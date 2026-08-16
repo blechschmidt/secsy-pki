@@ -14,7 +14,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -24,6 +23,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/approval"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/issueapproval"
@@ -147,9 +147,13 @@ func cmdApprovalsList(db *database.DB, cfg *config.Config, args []string) error 
 	status := fs.String("status", "", "filter by status")
 	class := fs.String("class", "", "filter by operation class")
 	tenant := fs.String("tenant", "", "filter by tenant id")
-	asJSON := fs.Bool("json", false, "emit JSON")
 	limit := fs.Int("limit", 200, "maximum rows")
+	out := cliout.Register(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	asJSON, err := out.JSON()
+	if err != nil {
 		return err
 	}
 	list, err := newApprovalEngine(db, cfg).List(approval.Query{
@@ -158,8 +162,8 @@ func cmdApprovalsList(db *database.DB, cfg *config.Config, args []string) error 
 	if err != nil {
 		return err
 	}
-	if *asJSON {
-		return json.NewEncoder(os.Stdout).Encode(list)
+	if asJSON {
+		return cliout.Emit(list)
 	}
 	if !cfg.Approvals.Enabled {
 		fmt.Fprintln(os.Stderr, "note: the approval gate is DISABLED (approvals.enabled is false); existing requests are shown for reference.")
@@ -192,9 +196,13 @@ func splitIDAndFlags(args []string) (id string, rest []string) {
 
 func cmdApprovalsShow(db *database.DB, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("approvals show", flag.ContinueOnError)
-	asJSON := fs.Bool("json", false, "emit JSON")
+	out := cliout.Register(fs)
 	id, rest := splitIDAndFlags(args)
 	if err := fs.Parse(rest); err != nil {
+		return err
+	}
+	asJSON, err := out.JSON()
+	if err != nil {
 		return err
 	}
 	if id == "" {
@@ -207,8 +215,8 @@ func cmdApprovalsShow(db *database.DB, cfg *config.Config, args []string) error 
 	if err != nil {
 		return err
 	}
-	if *asJSON {
-		return json.NewEncoder(os.Stdout).Encode(pa)
+	if asJSON {
+		return cliout.Emit(pa)
 	}
 	printApproval(pa)
 	return nil
@@ -308,7 +316,7 @@ func cmdApprovalsExpire(db *database.DB, cfg *config.Config, args []string) erro
 		return err
 	}
 	if *asJSON {
-		return json.NewEncoder(os.Stdout).Encode(map[string]int{"expired": n})
+		return cliout.Emit(map[string]int{"expired": n})
 	}
 	fmt.Printf("Expired %d stale request(s).\n", n)
 	return nil
@@ -350,7 +358,7 @@ func cmdApprovalsCertificate(db *database.DB, cfg *config.Config, providerFn fun
 	switch outcome.State {
 	case issueapproval.StateDelivered:
 		if *asJSON {
-			return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			return cliout.Emit(map[string]any{
 				"serial":      outcome.Issued.Serial,
 				"profile":     outcome.Issued.Profile,
 				"not_before":  outcome.Issued.NotBefore.Format(time.RFC3339),

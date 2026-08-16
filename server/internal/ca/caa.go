@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,14 +20,29 @@ import (
 // caaResolver is the process-wide DNS resolver used by the CAA pre-issuance
 // gate. It is nil until installed at startup via SetCAAResolver; a profile that
 // enables CAA while it is nil fails closed under enforce mode (authorization
-// cannot be established) — see checkCAA. Set once before serving, so no locking
-// is required for reads. Tests replace it directly.
-var caaResolver caa.Resolver
+// cannot be established) — see checkCAA. Reads and writes are guarded by
+// caaResolverMu so config hot-reload (Task 166) can (re)install it on a running
+// server — e.g. when a reloaded profile set newly enables CAA — concurrently
+// with issuance reading it.
+var (
+	caaResolverMu sync.RWMutex
+	caaResolver   caa.Resolver
+)
 
 // SetCAAResolver installs the DNS resolver used by every profile's CAA gate.
-// Pass a caching resolver (see caa.NewCachingResolver) in production.
+// Pass a caching resolver (see caa.NewCachingResolver) in production. Safe to
+// call on a running server (config hot-reload) as well as at startup.
 func SetCAAResolver(r caa.Resolver) {
+	caaResolverMu.Lock()
 	caaResolver = r
+	caaResolverMu.Unlock()
+}
+
+// currentCAAResolver returns the installed resolver under the read lock.
+func currentCAAResolver() caa.Resolver {
+	caaResolverMu.RLock()
+	defer caaResolverMu.RUnlock()
+	return caaResolver
 }
 
 // CAAConfig is a profile's DNS Certification Authority Authorization policy
@@ -155,11 +171,12 @@ func (m *Manager) evaluateCAA(ctx context.Context, base pki.LeafCertRequest, pro
 	if len(base.DNSNames) == 0 {
 		return caa.Result{}, policy, caaSkipped
 	}
-	if caaResolver == nil {
+	resolver := currentCAAResolver()
+	if resolver == nil {
 		res := caa.Result{Findings: []caa.Finding{{Reason: caa.ReasonLookupError, Detail: "no CAA resolver configured"}}}
 		return res, policy, caaNoResolver
 	}
-	return policy.Check(ctx, caaResolver, base.DNSNames, reqCtx), policy, caaChecked
+	return policy.Check(ctx, resolver, base.DNSNames, reqCtx), policy, caaChecked
 }
 
 // recordCAAEvent appends a tamper-evident audit event describing a CAA check

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 )
 
@@ -121,15 +121,10 @@ func cmdCACSR(db *database.DB, mgr *ca.Manager, args []string) error {
 	})
 
 	if *jsonOut {
-		enc, err := json.MarshalIndent(map[string]interface{}{
+		return cliout.Emit(map[string]interface{}{
 			"ca":      result.CA,
 			"csr_pem": string(result.CSRPEM),
-		}, "", "  ")
-		if err != nil {
-			return err
-		}
-		fmt.Println(string(enc))
-		return nil
+		})
 	}
 
 	fmt.Printf("Pending externally-signed CA created (key generated inside the provider):\n")
@@ -222,16 +217,11 @@ func cmdCAImportCert(db *database.DB, mgr *ca.Manager, args []string) error {
 	}
 
 	if *jsonOut {
-		enc, err := json.MarshalIndent(map[string]interface{}{
+		return cliout.Emit(map[string]interface{}{
 			"ca":        result.CA,
 			"warnings":  result.Warnings,
 			"chain_pem": string(result.ChainPEM),
-		}, "", "  ")
-		if err != nil {
-			return err
-		}
-		fmt.Println(string(enc))
-		return nil
+		})
 	}
 
 	fmt.Printf("Imported externally signed certificate for %q:\n", result.CA.Label)

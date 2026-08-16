@@ -3844,7 +3844,12 @@ func UnknownKeys(data []byte) ([]string, error) {
 	return nil, err
 }
 
-func Load(path string) (*Config, error) {
+// loadConfig is the side-effect-free core shared by Load and Validate: it
+// reads, decodes, resolves env overrides and defaults, and fully validates the
+// configuration file at path, but installs NO process-global state (in
+// particular it does not call fips.SetPolicy). Load layers the FIPS side effect
+// on top; Validate uses it as-is for the hot-reload / offline-validation paths.
+func loadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading config: %w", err)
@@ -3960,13 +3965,33 @@ func Load(path string) (*Config, error) {
 	if err := cfg.Server.TLS.SelfIssue.Validate(); err != nil {
 		return nil, err
 	}
-	// Mirror the validated policy switch into the process-global enforcement
-	// flag. Load is the single path configuration enters a process through, so
-	// this is where key generation, issuance, and the secret layer pick the
-	// policy up (see internal/fips).
-	fips.SetPolicy(cfg.Security.FIPS)
-
 	return cfg, nil
+}
+
+// Load reads, validates, and returns the configuration at path, and installs
+// the process-global FIPS 140-3 enforcement policy (security.fips). It is the
+// single path configuration enters the server through at startup.
+func Load(path string) (*Config, error) {
+	cfg, err := loadConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	// Mirror the validated policy switch into the process-global enforcement
+	// flag, so key generation, issuance, and the secret layer pick the policy up
+	// (see internal/fips).
+	fips.SetPolicy(cfg.Security.FIPS)
+	return cfg, nil
+}
+
+// Validate parses and fully validates the configuration file at path and
+// returns the resulting *Config WITHOUT any process-global side effects — in
+// particular it does NOT install the FIPS policy the way Load does. This makes
+// it safe to validate a candidate configuration on a running server, which the
+// config hot-reload path (SIGHUP and POST /api/admin/reload) relies on: it must
+// reject an invalid — or immutably-changed — file before swapping anything,
+// without mutating global state as a side effect of merely validating.
+func Validate(path string) (*Config, error) {
+	return loadConfig(path)
 }
 
 // validateFIPS rejects configuration that names non-approved algorithms when

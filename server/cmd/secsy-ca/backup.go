@@ -11,6 +11,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/backup"
+	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
@@ -194,8 +195,12 @@ func cmdBackup(db *database.DB, cfg *config.Config, provider keyprovider.Provide
 // can trip on it. An untested backup is not a backup.
 func cmdBackupVerifyRestore(db *database.DB, cfg *config.Config, provider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("backup verify-restore", flag.ContinueOnError)
-	asJSON := fs.Bool("json", false, "emit the full verification result as JSON")
+	out := cliout.Register(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	asJSON, err := out.JSON()
+	if err != nil {
 		return err
 	}
 
@@ -218,10 +223,8 @@ func cmdBackupVerifyRestore(db *database.DB, cfg *config.Config, provider keypro
 
 	res := verifier.VerifyOnce(context.Background())
 
-	if *asJSON {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(res); err != nil {
+	if asJSON {
+		if err := cliout.Emit(res); err != nil {
 			return err
 		}
 	} else {
