@@ -8,10 +8,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsmattest"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 )
+
+// Auditor appends events to the tamper-evident, hash-chained event log.
+// Satisfied by *database.DB.
+type Auditor interface {
+	AppendEvent(e *audit.Event) error
+}
 
 // Service ties the pieces together: it provisions a freshly reset device,
 // records signatures into the ledger, and produces export bundles.
@@ -19,6 +26,8 @@ type Service struct {
 	dev      Device
 	store    Store
 	attester KeyAttester
+	auditor  Auditor
+	actor    string
 	now      func() time.Time
 }
 
@@ -39,6 +48,28 @@ func NewService(dev Device, store Store) *Service {
 // SetAttester overrides the key attester. A nil attester produces bundles with
 // no attestations, which verification then reports as unconfined keys.
 func (s *Service) SetAttester(a KeyAttester) { s.attester = a }
+
+// SetAuditor supplies the hash-chained event log Provision writes the pinned
+// chain anchor into.
+//
+// This is what gives the anchor a time. The anchor itself cannot be shown to
+// have come from a genuine factory reset — it is a device-chosen value with no
+// derivable relationship to the sentinel it belongs to, see genesis.go — so the
+// only thing that can distinguish a real anchor from one invented later is a
+// witness that saw it early. The event log is hash-chained and periodically
+// timestamped by an RFC 3161 authority (internal/anchor), so an anchor recorded
+// there at commissioning time sits behind a third-party signature that an
+// operator cannot backdate.
+//
+// Without an auditor Provision refuses to run, rather than pinning an anchor
+// that nothing outside this system ever saw.
+func (s *Service) SetAuditor(a Auditor) { s.auditor = a }
+
+// SetActor labels the genesis audit event with whoever ran the commissioning.
+// Empty (the default) records "system". Provisioning is always operator-driven,
+// so the CLI passes its own actor label; "who commissioned this device" is a
+// question the trail should be able to answer.
+func (s *Service) SetActor(actor string) { s.actor = actor }
 
 // EnableRecording returns a signature recorder for store when the device has
 // been provisioned, and nil when it has not.
@@ -99,10 +130,15 @@ type ProvisionResult struct {
 //  1. Read the log and require that entry 1 is the factory-reset sentinel.
 //  2. Pin the sentinel digest as the chain anchor, and store the pre-existing
 //     entries, before changing anything on the device.
-//  3. Force-audit every command that could produce or exfiltrate a signature.
-//  4. Read the options back and verify they took, failing if the device
+//  3. Record the anchor in the hash-chained event log, which is what gives it a
+//     witnessed time — see SetAuditor. This happens before anything on the
+//     device is changed irreversibly, so an event log that cannot be written
+//     aborts provisioning rather than leaving a force-audited device whose
+//     anchor nothing outside this system ever saw.
+//  4. Force-audit every command that could produce or exfiltrate a signature.
+//  5. Read the options back and verify they took, failing if the device
 //     declined any of them.
-//  5. Collect the entries provisioning itself generated.
+//  6. Collect the entries provisioning itself generated.
 func (s *Service) Provision(ctx context.Context) (*ProvisionResult, error) {
 	info, err := s.dev.Info(ctx)
 	if err != nil {
@@ -117,6 +153,14 @@ func (s *Service) Provision(ctx context.Context) (*ProvisionResult, error) {
 				"pinned chain anchor, which is exactly how a forged history would be introduced. "+
 				"Factory reset the device and clear the stored audit state deliberately if that is really intended",
 			existing.DeviceSerial, existing.Anchor, existing.ProvisionedAt.UTC().Format(time.RFC3339))
+	}
+
+	// Checked before the device is read, let alone written: an anchor that
+	// reaches no witness is one an operator could have chosen at any later date.
+	if s.auditor == nil {
+		return nil, fmt.Errorf("no audit log configured: the chain anchor must be recorded in the " +
+			"hash-chained event log at provisioning time, because an anchor no third party ever witnessed " +
+			"cannot be told apart from one invented later (see SetAuditor)")
 	}
 
 	resp, err := s.dev.FetchLog(ctx)
@@ -155,6 +199,9 @@ func (s *Service) Provision(ctx context.Context) (*ProvisionResult, error) {
 	if err := s.store.SaveAuditState(ctx, st); err != nil {
 		return nil, fmt.Errorf("pinning hsm audit state: %w", err)
 	}
+	if err := s.recordGenesis(st); err != nil {
+		return nil, err
+	}
 	if err := s.dev.ConsumeLog(ctx, st.Tail.Number); err != nil {
 		return nil, fmt.Errorf("acknowledging initial device log: %w", err)
 	}
@@ -168,7 +215,7 @@ func (s *Service) Provision(ctx context.Context) (*ProvisionResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading device audit options: %w", err)
 	}
-	if _, err := hsm.ProvisionAuditLogging(ctx, deviceConfig(s.dev), before.RequiredForced()); err != nil {
+	if _, err := s.dev.ProvisionAudit(ctx, before.RequiredForced()); err != nil {
 		return nil, fmt.Errorf("enabling forced audit logging: %w", err)
 	}
 
@@ -192,15 +239,49 @@ func (s *Service) Provision(ctx context.Context) (*ProvisionResult, error) {
 	return res, nil
 }
 
-// deviceConfig extracts the device config from a HardwareDevice so provisioning
-// can address the same YubiHSM through the native driver. Devices that are not
-// real hardware (test fakes) provision through their own Options plumbing and
-// get a zero config.
-func deviceConfig(d Device) hsm.Config {
-	if sd, ok := d.(*HardwareDevice); ok {
-		return sd.Cfg
+// GenesisDetail renders the audit-event detail Provision records for a pinned
+// anchor. It is a function rather than an inline string so the offline reader of
+// an exported event log and the writer agree on the wording, and so a test can
+// assert the anchor is actually in there.
+//
+// The sentinel preimage is included even though it is a public constant, and for
+// once that is the point: it states in the record itself which bytes the anchor
+// is the digest of, so nobody reading the log later has to go looking for the
+// reason the anchor is not simply the hash of them. See genesis.go.
+func GenesisDetail(st *AuditState) string {
+	return fmt.Sprintf(
+		"chain anchor %s pinned from the factory-reset device-init sentinel (entry 1, preimage %s); "+
+			"the anchor is the device's own digest of that entry and cannot be recomputed from it, "+
+			"so this record is what dates it",
+		strings.ToLower(st.Anchor), SentinelPreimageHex)
+}
+
+// recordGenesis writes the pinned anchor into the hash-chained event log.
+//
+// It fails closed. An anchor that reaches no witness is one an operator could
+// have chosen at any later date, which is the single assumption the whole
+// "the device signed nothing else" argument rests on — so a store that will not
+// accept the event is a reason to stop, not a reason to continue quietly.
+func (s *Service) recordGenesis(st *AuditState) error {
+	actor := s.actor
+	if actor == "" {
+		actor = "system"
 	}
-	return hsm.Config{}
+	err := s.auditor.AppendEvent(&audit.Event{
+		Timestamp:  st.ProvisionedAt,
+		Actor:      actor,
+		ActorRoles: "system",
+		Action:     audit.ActionHSMProvisionAudit,
+		Target:     st.DeviceSerial,
+		Result:     audit.ResultSuccess,
+		Detail:     GenesisDetail(st),
+	})
+	if err != nil {
+		return fmt.Errorf("recording the chain anchor in the audit log: %w "+
+			"(the anchor was pinned but nothing witnessed it, so provisioning stopped before "+
+			"changing the device; clear the stored hsm audit state and retry)", err)
+	}
+	return nil
 }
 
 // ExportReport carries what an export could not do, for the operator running

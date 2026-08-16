@@ -758,11 +758,18 @@ func GetAuditLog(ctx context.Context, cfg Config) (*AuditLog, error) {
 	return out, nil
 }
 
-// ComputeEntryHash computes the expected hash for an audit log entry.
-// The hash is SHA256(entry_struct_BE || prev_hash)[:16].
-// entry_struct_BE = number(2) + cmd(1) + length(2) + session_key(2) + target_key(2) + second_key(2) + result(1) + systick(4)
-// All multi-byte fields are big-endian (network byte order), matching the YubiHSM SDK's yh_verify_logs.
-func ComputeEntryHash(e AuditLogEntry, prevHash []byte) string {
+// EntryData renders the 16 bytes of an entry that go into the chain digest,
+// exactly as they appear on the wire.
+//
+// entry_data = number(2) + cmd(1) + length(2) + session_key(2) + target_key(2) +
+// second_key(2) + result(1) + systick(4), all multi-byte fields big-endian
+// (network byte order), matching the YubiHSM SDK's yh_verify_logs.
+//
+// It is exported because it is the *preimage* a verifier reasons about, not
+// merely an implementation detail of the digest: whether a given chain digest
+// can be re-derived at all is a question about this byte string. See
+// hsmaudit.SentinelPreimage.
+func EntryData(e AuditLogEntry) []byte {
 	buf := make([]byte, 16)
 	buf[0] = byte(e.Number >> 8)
 	buf[1] = byte(e.Number)
@@ -780,8 +787,13 @@ func ComputeEntryHash(e AuditLogEntry, prevHash []byte) string {
 	buf[13] = byte(e.Tick >> 16)
 	buf[14] = byte(e.Tick >> 8)
 	buf[15] = byte(e.Tick)
+	return buf
+}
 
-	data := append(buf, prevHash...)
+// ComputeEntryHash computes the expected hash for an audit log entry.
+// The hash is SHA256(EntryData(e) || prev_hash)[:16].
+func ComputeEntryHash(e AuditLogEntry, prevHash []byte) string {
+	data := append(EntryData(e), prevHash...)
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:16])
 }

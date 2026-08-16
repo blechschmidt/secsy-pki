@@ -1,3 +1,23 @@
+//go:build yubihsm
+
+// Read-only hardware validation for the native driver, behind the same build tag
+// as its siblings in internal/hsm, internal/hsmattest, internal/hsmaudit and
+// internal/pki.
+//
+// It used to be untagged, on the reasoning that it skips when no device answers
+// and is therefore harmless. That holds only while "no device" and "a healthy
+// device" are the only two states. A YubiHSM that is enumerated but unresponsive
+// — mid-reboot after a factory reset, or on a USB/IP link whose far side went
+// away — answers neither: the probe lands in a usbfs wait the kernel will not
+// interrupt, the context deadline is decoration, and a plain `go test ./...`
+// hangs for its full timeout in a package the developer was not thinking about.
+// Tagging it means an ordinary test run never reaches for physical hardware,
+// which is the property the rest of the tree already had.
+//
+// Run it with the other legacy hardware tests:
+//
+//	./scripts/yubihsm-test.sh --legacy
+
 package yubihsm
 
 import (

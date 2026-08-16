@@ -26,6 +26,7 @@ import (
 const (
 	envEnable      = "SECSY_YUBIHSM_TESTS"
 	envDestructive = "SECSY_YUBIHSM_DESTRUCTIVE"
+	envReset       = "SECSY_YUBIHSM_RESET"
 	envConnector   = "SECSY_YUBIHSM_CONNECTOR"
 	envPassword    = "SECSY_YUBIHSM_PASSWORD"
 	envAuthKeyID   = "SECSY_YUBIHSM_AUTH_KEY_ID"
@@ -124,6 +125,23 @@ func requireDestructive(t *testing.T) {
 	requireDevice(t)
 	if os.Getenv(envDestructive) != "1" {
 		t.Skipf("this test changes the device irreversibly; set %s=1 to allow it", envDestructive)
+	}
+}
+
+// requireReset gates the tests that factory-reset the device.
+//
+// A separate gate from requireDestructive, and not implied by it, for two
+// reasons. A reset erases every key and every log entry — strictly more than
+// "irreversible configuration" — and it also runs *mid-suite*, so it would undo
+// the forced audit TestProvisionForcedAudit had just established and leave later
+// tiers looking at a device in a different state than the one they were told
+// about. Opting in separately keeps a destructive run predictable.
+func requireReset(t *testing.T) {
+	t.Helper()
+	requireDestructive(t)
+	if os.Getenv(envReset) != "1" {
+		t.Skipf("this test factory-resets the device, erasing every key and the whole audit log; "+
+			"set %s=1 to allow it", envReset)
 	}
 }
 

@@ -135,6 +135,70 @@ seeds the chain with something that is not a function of the sentinel's fields,
 so byte-identical sentinels can carry different digests. That is why the anchor
 is *pinned* at provisioning time rather than derived — fact 3 below.
 
+#### Why the anchor cannot verify itself
+
+Pinning a hash by hand is the one manual step in this whole subsystem, and the
+obvious way to remove it is to make the anchor *derivable*: publish the sentinel
+record — it is famously almost all `0xff` — and let the verifier hash it. Then
+nobody has to be told the anchor; they compute it, and in computing it they learn
+it really came from a factory reset.
+
+It does not work, for two measured reasons and one that would survive any
+firmware change.
+
+**The preimage is a public constant.** The sixteen bytes a sentinel contributes
+to the chain are `0001ffffffffffffffffffffffffffff` — `0x0001` and then fourteen
+`0xff`. Seven factory resets of device 31650425 (firmware 2.4.0) produced
+byte-identical records. A constant is the same on every YubiHSM 2 ever
+made, so any hash of it is a universal constant: it identifies no device, no
+reset and no history. Pinning it would establish only that the log came from a
+YubiHSM, which the bundle already says.
+
+**The digest is not a function of it.** Those same seven resets reported seven
+unrelated digests for that one record:
+
+```text
+27caf4edc279c4b514bfc61fc6638677
+bf22cc13167d6d976defa49648a7f0a3
+ef6067b14aae540ed1cf74669abe7b37
+fe6bd9680b4df143948cb3e2d3d7230f
+9267e0f9f2a2884922bb9b2eedfe58bc
+207006239e4d4373e05d876ba9a46647
+7ba868938a7a16ef60702d947dc57815
+```
+
+So the digest is `SHA-256(0001ff…ff ‖ seed)[0:16]` for a seed the device picks at
+reset and never discloses. No candidate an auditor could guess reproduces it —
+not an absent seed, not all-zero, not all-ones, not the record itself, not the
+serial number. A verifier holding the sentinel simply has nothing to hash.
+
+**And if it could, it would be worthless.** Take any test over a candidate anchor
+that a *verifier* can perform from public data. A forger can perform it too: they
+pick a value that passes, call it the anchor, and hash a consistent history
+forward from it — the chain rule is unkeyed, so a flawless 62-entry log is a few
+lines of code. The test rejects nothing. Self-verifiability and evidentiary value
+are mutually exclusive here: the anchor is worth something *because* it is
+unpredictable and was written down before the history it anchors. It is a
+trust-on-first-use pin, not a proof of a property, and making it recomputable
+would delete the only thing it does.
+
+The half of the idea that does work is already in place. A bundle carries the
+sentinel record in full, verification requires it to have the sentinel's shape,
+and it requires the pinned anchor to equal that entry's reported digest. The
+preimage is published and checked; what is missing is the seed, and the device
+offers neither the seed nor a signature over its log that could stand in for one.
+
+What closes the remaining gap is a witness outside the device — the anchor is
+written into the hash-chained event log at provisioning time, so the RFC 3161
+audit-chain anchoring that runs over that log places it under a timestamp the CA
+cannot backdate (fact 3). Verification also refuses an anchor that *is* derivable
+from public data, which is not a live concern but would be the first symptom of a
+firmware that started seeding deterministically.
+
+The measurements live in `internal/hsmaudit/genesis.go`; the reset-by-reset
+observation is `TestFactoryResetSentinelIsConstantButItsDigestIsNot` in the
+[hardware suite](hardware-test-suite.md), gated on `SECSY_YUBIHSM_RESET=1`.
+
 ### How it reaches an auditor
 
 An export carries the decoded fields verbatim, so what the auditor checks is what
@@ -205,14 +269,24 @@ writes, so the history starts on a device with no prior use. The sentinel's own
 digest is the **chain anchor**.
 
 The anchor has to be *pinned*, not recomputed. The device seeds its chain with a
-value that is not derived from the sentinel's fields — verified on hardware: two
-factory resets of the same device produced sentinels with byte-identical
-all-`0xff` fields but different digests. So an unpinned chain proves only
+value that is not derived from the sentinel's fields — verified on hardware:
+seven factory resets of the same device produced sentinels with byte-identical
+all-`0xff` fields but seven different digests. So an unpinned chain proves only
 internal consistency: an attacker could invent a sentinel, pick any anchor, and
-hash a perfectly consistent forged history forward from it.
+hash a perfectly consistent forged history forward from it. Publishing the
+sentinel does not help, and could not help even if the firmware changed — see
+[why the anchor cannot verify itself](#why-the-anchor-cannot-verify-itself).
 
 `hsm-audit provision` prints the anchor once. **Record it outside this system.**
 An auditor who only ever learns it from the CA learns nothing.
+
+Provisioning also writes the anchor into the hash-chained `event_log`, and
+refuses to run if it cannot. That does not make the anchor self-proving, but it
+does date it: the [audit-chain anchoring](../signing/timestamping.md) job puts an
+RFC 3161 timestamp over that log, so an operator who fabricates a history later
+would have to produce an anchor a third party had already witnessed beforehand.
+Recording it out of band remains the part that gives an auditor a copy the CA
+cannot revise.
 
 ### 4. Every signature is attributed
 
@@ -321,6 +395,11 @@ CHAIN ANCHOR: 940ff5892251586f8647e86c24d3811a
 Record this anchor outside this system — an auditor who learns it only from
 the CA cannot tell a genuine history from a fabricated one, because the device
 seeds it randomly at each factory reset and it cannot be recomputed.
+
+It has also been written to the hash-chained event log, so the next RFC 3161
+audit-chain anchoring run will place it under a timestamp the CA cannot
+backdate (`secsy-ca audit anchor`). That dates the anchor; only recording it
+out of band gives an auditor a copy the CA cannot revise.
 ```
 
 Provisioning is irreversible short of a factory reset, and re-provisioning is

@@ -9,7 +9,7 @@ append-only audit log, no attestation certificates, and no device options that
 cannot be undone. Those are precisely the properties the enterprise claims in
 this codebase rest on, so they can only be validated on hardware.
 
-`server/internal/yubihsmtest` is that validation — one suite, six tiers, from
+`server/internal/yubihsmtest` is that validation — one suite, seven tiers, from
 the wire up to the product.
 
 ---
@@ -42,9 +42,13 @@ caught — while costing CI nothing but a compile. A build tag would hide it fro
 both.
 
 The per-package hardware tests that predate this suite (`internal/hsm`,
-`internal/hsmattest`, `internal/hsmaudit`, `internal/pki`) stay behind the
-`yubihsm` build tag, because each declares a `TestMain` that would otherwise
-take over that package's SoftHSM tests. Run them alongside the suite with
+`internal/hsmattest`, `internal/hsmaudit`, `internal/pki`, `internal/yubihsm`)
+stay behind the `yubihsm` build tag, because each declares a `TestMain` that
+would otherwise take over that package's SoftHSM tests. `internal/yubihsm` was
+untagged until it was found to hang: it skipped when *no* device answered, but a
+device that is enumerated and unresponsive — mid-reboot after a factory reset,
+or on a USB/IP link whose far side went away — answers neither, and the probe
+lands in a usbfs wait no context deadline can cancel. Run them alongside the suite with
 `./scripts/yubihsm-test.sh --legacy`.
 
 ### Configuration
@@ -53,6 +57,7 @@ take over that package's SoftHSM tests. Run them alongside the suite with
 |---|---|---|
 | `SECSY_YUBIHSM_TESTS` | *(unset)* | `1` enables the suite. Without it, every test skips. |
 | `SECSY_YUBIHSM_DESTRUCTIVE` | *(unset)* | `1` additionally allows irreversible device changes (see below). |
+| `SECSY_YUBIHSM_RESET` | *(unset)* | `1` additionally allows the genesis tier to **factory-reset** the device, erasing every key and the whole log. Requires `SECSY_YUBIHSM_DESTRUCTIVE=1` as well. |
 | `SECSY_YUBIHSM_CONNECTOR` | `yhusb://` | Connector URL. Falls back to `YUBIHSM_CONNECTOR`. |
 | `SECSY_YUBIHSM_PASSWORD` | `password` | Authentication key password. Falls back to `YUBIHSM_PASSWORD`. |
 | `SECSY_YUBIHSM_AUTH_KEY_ID` | `1` | Authentication key object id. |
@@ -84,6 +89,21 @@ fresh device. Setting the per-command audit levels to `fixed` survives every
 power cycle, and the only way back is a factory reset that destroys every key on
 the device. Running the hardware tests is not consent to that.
 
+**`SECSY_YUBIHSM_RESET=1` is a second gate on top of it**, for the genesis tier,
+which factory-resets the device several times. A reset erases more than a
+configuration — every key and every log entry go with it — and it runs
+*mid-suite*, so it would also undo the forced audit tier 4 had just established.
+Opting in separately keeps a destructive run predictable. After a genesis run the
+device is at factory defaults: authentication key id `1`, password `password`, no
+forced audit.
+
+`internal/hsmaudit` had a latent version of the same hazard, now fixed: a
+`Service` built over a scripted fake device provisioned through a zero
+`hsm.Config`, whose empty connector URL resolves to the real direct-USB default —
+so a plain `go test ./internal/hsmaudit/` on a machine with a YubiHSM attached
+silently force-audited it. Provisioning is now a method on the `Device`
+interface, so a fake can only provision itself.
+
 ---
 
 ## The tiers
@@ -97,8 +117,9 @@ it, so the first failing tier names the layer at fault.
 | 2 | `keys_test.go` | Key lifecycle over the full algorithm matrix: generate / read public half / sign / verify with the standard library on P-256, P-384, P-521 and Ed25519; ECDSA nonces differ and Ed25519 is deterministic; imported keys sign as the key that was imported; capabilities are enforced; delete deletes; two keys from one template differ; and `GET PUBLIC KEY` agrees with the attestation certificate. |
 | 3 | `attestation_test.go` | Attestation says something true: a device-generated non-exportable key verifies, an **exportable** one fails, an **imported** one fails, an attestation binds to a specific public key and rejects another, a flipped signature bit is caught, label resolution is exact, and chain anchoring is reported honestly (see below). |
 | 4 | `audit_test.go` | The audit trail can be complete: the device's forced-audit configuration meets the baseline, a fixed setting cannot be downgraded, signatures are attributed to the handle that made them, collection stays continuous across drain seams spanning more than one 62-entry ring, and a **full log stops the device** rather than dropping records. |
-| 5 | `pkcs11_test.go` | The layer the product signs through: generate/find/sign/verify for every offered key type through `keyprovider`, the readiness probe and hardware RNG, concurrent signing through the session pool over a device that cannot parallelise, the secret-envelope round trip, keys created non-exportable, and PKCS#11 labels and native handles resolving to the same object. |
-| 6 | `pki_test.go` | The product itself, on the device: a root CA, an intermediate signed by it, a leaf whose chain verifies as a TLS client would build it, revocation and a signature-checked CRL, and an SSH CA whose certificate `ssh.CertChecker` accepts for its principal and rejects for another. Needs `-tags sqlite`. |
+| 5 | `genesis_test.go` | What a factory reset writes, and therefore what the chain anchor is worth: the device-init sentinel's hashed bytes are the constant `0001ffffffffffffffffffffffffffff` on every reset, while the digest the device reports for them differs on every reset and is reproducible from no publicly guessable seed — so the anchor cannot be recomputed and must be pinned out of band. Also that a reset restarts the log at entry 1 with no unlogged-operation counters. Gated on `SECSY_YUBIHSM_RESET=1`; see [why the anchor cannot verify itself](audit-log.md#why-the-anchor-cannot-verify-itself). |
+| 6 | `pkcs11_test.go` | The layer the product signs through: generate/find/sign/verify for every offered key type through `keyprovider`, the readiness probe and hardware RNG, concurrent signing through the session pool over a device that cannot parallelise, the secret-envelope round trip, keys created non-exportable, and PKCS#11 labels and native handles resolving to the same object. |
+| 7 | `pki_test.go` | The product itself, on the device: a root CA, an intermediate signed by it, a leaf whose chain verifies as a TLS client would build it, revocation and a signature-checked CRL, and an SSH CA whose certificate `ssh.CertChecker` accepts for its principal and rejects for another. Needs `-tags sqlite`. |
 
 ---
 
@@ -130,7 +151,7 @@ every probe of a key an attacker does not have.
 **Ed25519 works through this PKCS#11 module.** Older Yubico releases exposed no
 EdDSA mechanism, which made "the YubiHSM supports Ed25519" true of the device
 and false of the only path the product can reach it through. It is now true of
-both, and tier 5's matrix is where a regression would show.
+both, and tier 6's matrix is where a regression would show.
 
 **Attestation chains anchor to Yubico's published roots.** The device
 certificate is issued by a `Yubico YubiHSM <n> Sub-CA` which Yubico publishes

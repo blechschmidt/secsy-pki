@@ -13,6 +13,7 @@
 //	keys_test.go         on-device key lifecycle across the algorithm matrix
 //	attestation_test.go  per-key attestation and its trust chain
 //	audit_test.go        the append-only device audit log and its digest chain
+//	genesis_test.go      what a factory reset writes, and what the anchor is worth
 //	pkcs11_test.go       the keyprovider/PKCS#11 layer the product signs through
 //	pki_test.go          the product itself: CA, CRL, OCSP, SSH CA, TSA, secrets
 //
@@ -53,8 +54,12 @@
 // this suite at a device whose audit log a running deployment is collecting.
 // See docs/hsm/hardware-test-suite.md.
 //
-// Irreversible operations — provisioning forced audit, factory reset — are
-// additionally gated on SECSY_YUBIHSM_DESTRUCTIVE=1, because a YubiHSM that has
-// had force-audit set to "fixed" cannot be returned to its previous state
-// without a factory reset that destroys every key on it.
+// Provisioning forced audit is gated on SECSY_YUBIHSM_DESTRUCTIVE=1, because a
+// YubiHSM that has had force-audit set to "fixed" cannot be returned to its
+// previous state without a factory reset that destroys every key on it.
+//
+// The genesis tier factory-resets the device several times, which is strictly
+// more than that and also undoes what the audit tier just established, so it
+// needs SECSY_YUBIHSM_RESET=1 on top. After a genesis run the device is at
+// factory defaults.
 package yubihsmtest

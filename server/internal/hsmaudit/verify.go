@@ -24,15 +24,19 @@
 //     later verification, closing the "export starts at an arbitrary point"
 //     hole. See VerifyChainFromGenesis.
 //
-//     The anchor has to be pinned rather than recomputed. The device seeds its
-//     chain with a value that is not derived from the sentinel's fields — this
-//     was checked against hardware, and neither an all-zero nor an all-ones
-//     predecessor reproduces the digest a real device reports for entry 1.
-//     Yubico's own SDK likewise starts verifying at the second entry. So an
-//     unpinned chain proves only internal consistency: an attacker could invent
-//     a sentinel, pick any anchor digest, and compute a perfectly consistent
-//     forged history from it. Recording the anchor at provisioning time into
-//     the RFC 3161-anchored audit chain is what makes the origin trustworthy.
+//     The anchor has to be pinned rather than recomputed, and no amount of
+//     publishing the sentinel changes that: the sixteen bytes a sentinel
+//     contributes to the chain are a public constant (0x0001 then fourteen
+//     0xff), while the digest the device reports for them differs after every
+//     factory reset. genesis.go carries the measurements and the argument for
+//     why a self-verifying anchor is not merely unavailable but undesirable.
+//     So an unpinned chain proves only internal consistency: an attacker could
+//     invent a sentinel, pick any anchor digest, and compute a perfectly
+//     consistent forged history from it. Service.Provision records the anchor
+//     into the hash-chained event log — which internal/anchor timestamps with
+//     an RFC 3161 authority — so it at least cannot be introduced after the
+//     fact; recording it out of band is what gives an auditor a copy the CA
+//     cannot revise.
 //
 //  4. Reconciliation against what was published. Every SIGN entry in the log is
 //     matched against the signature ledger the CA writes at the key-provider
@@ -308,8 +312,16 @@ func VerifySegment(entries []hsm.AuditLogEntry, prev *Tail, unlogged Unlogged) *
 
 // VerifyChainFromGenesis verifies a complete device log — every entry since the
 // factory reset — in one pass. It is what the offline verifier runs against an
-// exported bundle: the chain must begin at the device-init sentinel, hash
-// forward from the all-zero genesis digest, and remain gap-free to the end.
+// exported bundle: the chain must begin at the device-init sentinel and remain
+// gap-free to the end, with every digest after the first re-derived from its
+// predecessor.
+//
+// The sentinel's own digest is taken as given, not re-derived. There is no
+// genesis value to hash forward from — the device seeds the chain with
+// something it never discloses, so entry 1's digest is unverifiable by
+// construction and is instead pinned by VerifyBundle against the anchor the
+// auditor holds. A chain that verifies here but carries an unpinned anchor is
+// self-consistent and worthless; see genesis.go.
 //
 // A caller holding only a suffix of the log cannot use this; that is the point.
 // Any export claiming to prove "the HSM signed nothing else" must carry the

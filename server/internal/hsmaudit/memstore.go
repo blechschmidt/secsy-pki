@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 )
 
@@ -134,3 +135,46 @@ func (m *MemStore) FreshnessProofs(ctx context.Context) ([]FreshnessProof, error
 }
 
 var _ Store = (*MemStore)(nil)
+
+// MemAuditor is an in-memory Auditor, the counterpart to MemStore for the one
+// event this package writes. It hash-chains like the real event log so a test
+// that inspects the recorded anchor is looking at the same shape production
+// produces.
+type MemAuditor struct {
+	mu     sync.Mutex
+	events []audit.Event
+	// Fail, when set, is returned from every append. Provisioning must abort on
+	// an unwritable audit log rather than pin an unwitnessed anchor, and that is
+	// only testable with a store that refuses.
+	Fail error
+}
+
+// AppendEvent seals the event into the chain.
+func (m *MemAuditor) AppendEvent(e *audit.Event) error {
+	if m.Fail != nil {
+		return m.Fail
+	}
+	if e == nil {
+		return fmt.Errorf("hsm audit event: nothing to append")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	prev := ""
+	if n := len(m.events); n > 0 {
+		prev = m.events[n-1].Hash
+	}
+	e.Seq = int64(len(m.events)) + 1
+	e.PrevHash = prev
+	e.Hash = audit.ComputeHash(e, prev)
+	m.events = append(m.events, *e)
+	return nil
+}
+
+// Events returns a copy of everything appended so far.
+func (m *MemAuditor) Events() []audit.Event {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]audit.Event(nil), m.events...)
+}
+
+var _ Auditor = (*MemAuditor)(nil)

@@ -1864,6 +1864,17 @@ func (a *API) consumeHSMAuditLogs(signAuditID string) {
 	if a.hsmAuditManaged() {
 		return
 	}
+	// No YubiHSM configured means there is no device log to drain. The check is
+	// not merely an optimisation: an unset hsm.Config carries an empty connector
+	// URL, which the driver resolves to the *default direct-USB* one — so
+	// without this, a deployment (or a test) with no YubiHSM configured reaches
+	// for whichever device happens to be plugged into the machine. On a healthy
+	// device that is a wrong-but-quiet drain of someone else's audit log; on a
+	// wedged one it is an uninterruptible USB wait that the 30-second context
+	// below cannot cancel, and the caller hangs.
+	if !a.hsmEnabled() {
+		return
+	}
 	// This runs after the response has been written, from many call sites that do
 	// not thread a context, so it gets its own bounded one rather than a request
 	// context that may already be cancelled — a drain abandoned halfway is the

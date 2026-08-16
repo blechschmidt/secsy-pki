@@ -262,8 +262,12 @@ func VerifyBundle(b *Bundle, opts VerifyOptions) *BundleResult {
 	}
 	switch {
 	case opts.ExpectedAnchor == "":
-		res.AnchorErr = "no expected anchor supplied: the chain was checked for internal consistency only, " +
-			"which cannot distinguish a genuine history from a forged one built on an invented anchor"
+		res.AnchorErr = "no expected anchor supplied (-anchor): the chain was checked for internal consistency " +
+			"only, which cannot distinguish a genuine history from a forged one built on an invented anchor. " +
+			"The bundle cannot make up for that on its own: the sentinel's hashed bytes are a constant every " +
+			"YubiHSM shares, and the digest the device reports for them is chosen afresh at each factory reset, " +
+			"so nothing in here shows the anchor came from a real one. It has to come from whoever commissioned " +
+			"the device"
 	case !strings.EqualFold(strings.TrimSpace(opts.ExpectedAnchor), strings.TrimSpace(b.Anchor)):
 		res.AnchorErr = fmt.Sprintf("bundle anchor %s does not match the pinned anchor %s",
 			strings.ToLower(b.Anchor), strings.ToLower(opts.ExpectedAnchor))
@@ -275,6 +279,19 @@ func VerifyBundle(b *Bundle, opts VerifyOptions) *BundleResult {
 	if len(b.LogEntries) > 0 && b.Anchor != "" && !strings.EqualFold(b.Anchor, b.LogEntries[0].Hash) {
 		fail("bundle anchor %s is not the digest of the first log entry (%s): the anchor does not bind this chain",
 			strings.ToLower(b.Anchor), strings.ToLower(b.LogEntries[0].Hash))
+	}
+
+	// An anchor anyone can compute from public data pins nothing. It has never
+	// been observed on hardware — a YubiHSM 2 seeds its chain unpredictably at
+	// each factory reset — but if a firmware ever changed that, every deployment
+	// would suddenly be pinning a universal constant while the output went on
+	// saying "anchor matches". Cheap to rule out, and silent when it does not
+	// apply. See genesis.go.
+	if seed := DerivableAnchor(b.Anchor, b.Device.Serial); seed != "" {
+		fail("bundle anchor %s is derivable from public data (it is the sentinel digest under the %s seed), "+
+			"so it identifies no device and no factory reset: anyone could hash a forged history forward from "+
+			"the same value and it would match the anchor you pinned",
+			strings.ToLower(b.Anchor), seed)
 	}
 
 	// 3. Device log chain.

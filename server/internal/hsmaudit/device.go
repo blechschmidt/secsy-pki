@@ -222,6 +222,18 @@ type Device interface {
 	ConsumeLog(ctx context.Context, upTo uint16) error
 	// Options returns the device audit configuration.
 	Options(ctx context.Context) (*Options, error)
+	// ProvisionAudit raises the audit level of every command in forced to
+	// "fixed", irreversibly until a factory reset, and returns a report.
+	//
+	// It is on the interface rather than reached through a config value because
+	// this is the one irreversible operation in the subsystem, and the config
+	// route was actively dangerous: a Device that was not a HardwareDevice
+	// yielded a zero hsm.Config, whose empty connector URL resolves to the
+	// default direct-USB one — so provisioning a scripted fake silently
+	// force-audited whatever YubiHSM happened to be plugged into the machine.
+	// Requiring the device itself to perform the step means a fake can only
+	// provision itself.
+	ProvisionAudit(ctx context.Context, forced []uint8) (string, error)
 }
 
 // HardwareDevice is the production Device, reaching the YubiHSM through the
@@ -232,6 +244,11 @@ type HardwareDevice struct {
 
 // NewHardwareDevice returns a Device backed by an attached YubiHSM.
 func NewHardwareDevice(cfg hsm.Config) *HardwareDevice { return &HardwareDevice{Cfg: cfg} }
+
+// ProvisionAudit force-audits the given commands on the attached device.
+func (d *HardwareDevice) ProvisionAudit(ctx context.Context, forced []uint8) (string, error) {
+	return hsm.ProvisionAuditLogging(ctx, d.Cfg, forced)
+}
 
 func (d *HardwareDevice) Info(ctx context.Context) (*DeviceInfo, error) {
 	info, err := hsm.GetDeviceInfo(ctx, d.Cfg)

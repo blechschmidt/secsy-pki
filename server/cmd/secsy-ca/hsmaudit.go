@@ -100,6 +100,10 @@ func cmdHSMAudit(db *database.DB, cfg *config.Config, args []string) error {
 		Password:     cfg.YubiHSM.Password,
 	})
 	svc := hsmaudit.NewService(dev, db)
+	// Provisioning records the pinned chain anchor into the hash-chained event
+	// log, which is what dates it — see hsmaudit.Service.SetAuditor.
+	svc.SetAuditor(db)
+	svc.SetActor(cliActor())
 	ctx := context.Background()
 
 	switch sub {
@@ -204,6 +208,11 @@ func cmdHSMAuditProvision(ctx context.Context, svc *hsmaudit.Service, args []str
 	fmt.Println("Record this anchor outside this system — an auditor who learns it only from")
 	fmt.Println("the CA cannot tell a genuine history from a fabricated one, because the device")
 	fmt.Println("seeds it randomly at each factory reset and it cannot be recomputed.")
+	fmt.Println()
+	fmt.Println("It has also been written to the hash-chained event log, so the next RFC 3161")
+	fmt.Println("audit-chain anchoring run will place it under a timestamp the CA cannot")
+	fmt.Println("backdate (`secsy-ca audit anchor`). That dates the anchor; only recording it")
+	fmt.Println("out of band gives an auditor a copy the CA cannot revise.")
 	return nil
 }
 

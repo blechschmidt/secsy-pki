@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"io"
 	"log"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,9 +23,11 @@ type fakeDevice struct {
 	consumed uint16
 	unlogged Unlogged
 
-	fetchErr   error
-	consumeErr error
-	fetches    int
+	fetchErr     error
+	consumeErr   error
+	provisionErr error
+	fetches      int
+	provisioned  []uint8
 }
 
 func (d *fakeDevice) Info(ctx context.Context) (*DeviceInfo, error) {
@@ -61,6 +64,26 @@ func (d *fakeDevice) ConsumeLog(ctx context.Context, upTo uint16) error {
 func (d *fakeDevice) Options(ctx context.Context) (*Options, error) {
 	cp := d.opts
 	return &cp, nil
+}
+
+// ProvisionAudit records what would have been force-audited and raises the
+// fake's own options. It reaches no hardware — which is the point of having it
+// on the Device interface: before that, provisioning a fake reached for a zero
+// hsm.Config, whose empty connector URL is the real direct-USB default, and
+// silently force-audited any YubiHSM plugged into the machine running the test.
+func (d *fakeDevice) ProvisionAudit(ctx context.Context, forced []uint8) (string, error) {
+	if d.provisionErr != nil {
+		return "", d.provisionErr
+	}
+	d.provisioned = append(d.provisioned, forced...)
+	if d.opts.CommandAudit == nil {
+		d.opts.CommandAudit = map[uint8]AuditLevel{}
+	}
+	d.opts.ForceAudit = AuditFixed
+	for _, c := range forced {
+		d.opts.CommandAudit[c] = AuditFixed
+	}
+	return "fake: force-audited " + strconv.Itoa(len(forced)) + " command(s)", nil
 }
 
 // forcedOptions returns a device configuration that satisfies Options.Verify.
@@ -141,6 +164,7 @@ func provisioned(t *testing.T, entries []hsm.AuditLogEntry) (*Service, *fakeDevi
 	// would be unattested and every verification would fail on coverage, which
 	// would say nothing about the property each test is actually checking.
 	svc.SetAttester(&fakeAttester{})
+	svc.SetAuditor(&MemAuditor{})
 	return svc, dev, store
 }
 
@@ -547,6 +571,7 @@ func TestProvisionRefusesUnresetDevice(t *testing.T) {
 	used[0].Number = 1
 	dev := newFake(used)
 	svc := NewService(dev, NewMemStore())
+	svc.SetAuditor(&MemAuditor{})
 
 	if _, err := svc.Provision(context.Background()); err == nil {
 		t.Fatal("provisioning succeeded on a device that was not factory reset")
