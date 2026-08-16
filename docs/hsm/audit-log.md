@@ -9,12 +9,156 @@ That is a stronger claim than "we keep logs", and it is deliberately built so
 that it holds even against the operator running the CA — someone who holds the
 HSM authentication key, the database credentials and the export tooling.
 
+## What the device log actually is
+
+The whole argument below rests on records the HSM writes about itself, so it is
+worth being exact about what one contains — and about what it does not.
+
+### The ring
+
+The log is a **62-entry ring buffer in the device's flash**. Two commands reach
+it:
+
+- `GET LOG ENTRIES` (`0x4d`) returns every entry not yet acknowledged, framed as
+  a 2-byte unlogged-boot counter, a 2-byte unlogged-authentication counter, a
+  1-byte entry count, and that many fixed 32-byte records. Reading acknowledges
+  nothing, so a collector that dies while persisting can simply retry.
+- `SET LOG INDEX` (`0x67`) acknowledges through an entry number and frees those
+  slots. It is irreversible and discards the device's only copy, which is why the
+  collector persists first and acknowledges second.
+
+The two counters are the device's own admission that operations happened which it
+could not record because the ring was full. Any non-zero value means the log has
+holes, so they travel with the entries instead of being dropped.
+
+Only commands whose audit level is *on* or *fixed* produce a record. The rest —
+opening a session, reading the log, listing objects — write nothing and, verified
+on hardware, **do not consume an entry number either**: 48 entries collected
+across several sessions that issued plenty of unaudited commands ran 1365…1412
+with no gaps. A gap in the numbering is therefore always a lost record, never an
+unaudited command.
+
+### The record
+
+Every entry is exactly 32 bytes; all multi-byte fields are big-endian.
+
+| Offset | Size | Field | What it says |
+| --- | --- | --- | --- |
+| 0 | 2 | entry number | 1-based `uint16`, monotonic across drains; wraps from `0xffff` to 1, never 0, and a factory reset restarts it at 1 with the sentinel |
+| 2 | 1 | command | the command byte, e.g. `0x56` SIGN ECDSA, `0x46` GENERATE ASYMMETRIC KEY |
+| 3 | 2 | length | size of the command's **input**, not of whatever was signed |
+| 5 | 2 | session key | object id of the authentication key that opened the session — *who*, in the device's terms |
+| 7 | 2 | target key | the object the command acted on; `0xffff` when there is none |
+| 9 | 2 | second key | a second object id for commands naming two; `0xffff` otherwise |
+| 11 | 1 | result | the command byte with its high bit set on success (`0x56` → `0xd6`), the device's error code on failure |
+| 12 | 4 | tick | free-running device counter — not a clock |
+| 16 | 16 | digest | truncated SHA-256 chaining this entry to its predecessor |
+
+Four of those fields carry more meaning than their names suggest.
+
+**`length` is the size of the request, not of the message.** A SIGN ECDSA entry
+is always `0x0022`: a 2-byte key id plus a 32-byte digest, whether the
+certificate signed was a kilobyte or a megabyte, because the device only ever
+sees the digest. GENERATE ASYMMETRIC KEY is always `0x0035` (id, 40-byte label,
+domains, capability mask, algorithm); DELETE OBJECT always `0x0003`. The field
+pins down the *shape* of a command and reveals nothing about its content.
+
+**`result` separates an operation from an attempt.** Success is the command byte
+with the high bit set — `0x46` → `0xc6`, `0x56` → `0xd6`. A failure carries the
+device's error code instead: a delete of a nonexistent object logs `0x0b`
+(OBJECT NOT FOUND). Error codes are all below `0x80`, so `result == command|0x80`
+is an exact test. Rejected attempts stay in the log and are counted separately —
+a refused signature produced nothing to reconcile against a published artifact,
+but a burst of them is worth an operator's attention.
+
+**`target key` is not always the object you care about.** For the wrap-transfer
+commands the target is the *wrap key* and the second key is the object being
+moved. Reading the wrong field would silently miss an export, so verification
+matches either.
+
+**`tick` is not a timestamp.** It is a free-running counter, measured at ≈41
+ticks per second (≈24 ms) on firmware 2.4.0 — 1248 ticks across a wall-clock
+interval of 30.17 s. It has no epoch, carries no unit, and nothing relates it to
+UTC. It orders operations and measures their spacing; it can never say when one
+happened. That is exactly the gap the RFC 3161 freshness attestation fills
+(fact 6 below).
+
+### The chain digest
+
+```text
+digest[n] = SHA-256( record[n][0:16] ‖ digest[n-1] )[0:16]
+```
+
+The preimage is the record's own first 16 bytes, exactly as they appear on the
+wire, followed by the predecessor's 16-byte digest. Each digest therefore commits
+to the whole history since the reset — which is what lets a single verified link
+bind an entire new segment to everything collected before it. A verifier
+re-derives every digest from the fields and never trusts the stored value.
+
+Worked example from device 31650425 (firmware 2.4.0), entry 1375:
+
+| Field | Value |
+| --- | --- |
+| entry number | 1375 = `055f` |
+| command | `56` (SIGN ECDSA) |
+| length | `0022` |
+| session key | `0001` |
+| target key | `fe19` |
+| second key | `ffff` |
+| result | `d6` (success) |
+| tick | 441356 = `0006bc0c` |
+| digest of entry 1374 | `132ceaf51f5b099b9893331a9de47d92` |
+
+```console
+$ printf '055f5600220001fe19ffffd60006bc0c132ceaf51f5b099b9893331a9de47d92' \
+    | xxd -r -p | sha256sum
+785eac279ce4bf6febb7a0cca8a30fd5ecf8d7a8ab703e11a0ce610f62ea65ae  -
+```
+
+The first 16 bytes are the digest the device reported for entry 1375. The
+truncation to 128 bits is the device's choice, and a verifier can only re-derive
+what the device commits to — the chain is bounded by the entry numbering and by
+reconciliation, not by that digest alone.
+
+### The device-init sentinel
+
+A factory reset writes one record with **every field set to `0xff`**, except the
+number, which is 1:
+
+```text
+number=1  command=0xff  length=0xffff  session=0xffff
+target=0xffff  second=0xffff  result=0xff  tick=0xffffffff
+```
+
+Its digest is the one value in the chain that cannot be recomputed: the device
+seeds the chain with something that is not a function of the sentinel's fields,
+so byte-identical sentinels can carry different digests. That is why the anchor
+is *pinned* at provisioning time rather than derived — fact 3 below.
+
+### How it reaches an auditor
+
+An export carries the decoded fields verbatim, so what the auditor checks is what
+the device wrote:
+
+```json
+{
+  "number": 1375, "command": 86, "length": 34, "session_key": 1,
+  "target_key": 65049, "second_key": 65535, "result": 214, "tick": 441356,
+  "hash": "785eac279ce4bf6febb7a0cca8a30fd5"
+}
+```
+
+In this codebase `internal/yubihsm` parses the records off the wire (see the
+[native driver](yubihsm-native-driver.md)), `hsm.ComputeEntryHash` re-derives the
+digest, and `internal/hsmaudit` performs the verification.
+
 ## Why the device log alone is not enough
 
-A YubiHSM log entry records that key `0x1939` performed an ECDSA signature. It
-does **not** record what was signed. So the device log by itself cannot tell 412
-legitimate certificate signatures from 411 legitimate ones plus one forged
-certificate — the counts are identical.
+Read that format back and the limit is plain. An entry says object `0x1939`
+performed an ECDSA signature over a 34-byte request. It does **not** record what
+was signed. So the device log by itself cannot tell 412 legitimate certificate
+signatures from 411 legitimate ones plus one forged certificate — the counts, and
+every field in every record, are identical.
 
 The proof is therefore assembled from six independent facts, each of which must
 hold or verification fails closed.
@@ -42,11 +186,10 @@ too — and so is anything a future firmware adds.
 
 ### 2. The collected copy is complete
 
-The device log is a 62-entry ring buffer. A leader-elected collector drains it
-continuously, and each drained segment must start exactly where the previous one
-stopped: the successor entry number, and a chain digest that hashes forward from
-the stored one. A dropped, reordered, or silently re-fetched segment breaks one
-of the two.
+A leader-elected collector drains the ring continuously, and each drained segment
+must start exactly where the previous one stopped: the successor entry number,
+and a chain digest that hashes forward from the stored one. A dropped, reordered,
+or silently re-fetched segment breaks one of the two.
 
 The collector **persists before it acknowledges**. Acknowledgement frees the
 device's ring slots and is irreversible, so a failure after it would destroy the
@@ -325,7 +468,7 @@ confinement but not its use. Neither alone answers the question.
 | `-tsa-roots` | Tokens are checked against the certificate they embed, so an authority the CA controls would pass |
 | `-max-age` | Defaults to 25h; `0` reports the age without failing on it |
 | `-require-external-tsa` | An attestation from the CA's own HSM-backed TSA is accepted, with a note |
-| `-attest-roots` / `-require-anchored-attestation` | Attestations are checked against Yubico's embedded roots but a chain that does not reach one is reported, not refused — see [key attestation](key-attestation.md#caveat-chain-anchoring-is-off-by-default) |
+| `-attest-roots` / `-require-anchored-attestation` | Attestations must chain to Yubico's embedded roots either way — anchoring is on by default. `-attest-roots` adds anchors for a device whose sub-CA postdates this binary; `-require-anchored-attestation=false` downgrades the requirement to a report — see [key attestation](key-attestation.md#chain-anchoring) |
 | `-allow-unattested-keys` | An unattested signing key fails the bundle. **Do not set it in a real audit**: it downgrades the one check that distinguishes a key's history from a device's |
 
 The verifier states these limits in its own output rather than leaving them

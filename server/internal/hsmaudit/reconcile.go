@@ -25,8 +25,11 @@ import (
 //
 // The YubiHSM stores the response command byte in the entry's result field.
 // A successful response is the request command with the high bit set; a failure
-// is 0x7f (an error response). Observed on a real device: a SIGN PKCS1 request
-// (cmd 0x47) that succeeded carries result 0xc7.
+// carries the device's error code instead. Both observed on a real device: a
+// SIGN PKCS1 request (cmd 0x47) that succeeded carries result 0xc7, and a
+// DELETE OBJECT (cmd 0x58) naming an object that does not exist carries 0x0b
+// (OBJECT NOT FOUND). Error codes are all below 0x80, so the test below cannot
+// mistake a failure for a success.
 //
 // The distinction matters because a rejected signing attempt produces no
 // signature and so must not be counted against published artifacts — but it is
