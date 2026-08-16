@@ -20,7 +20,7 @@ import (
 // against an operator who holds the HSM authentication key, because that
 // operator can no more suppress a device log entry than forge one.
 
-// signSucceeded reports whether a device log entry records a completed
+// entrySucceeded reports whether a device log entry records a completed
 // operation.
 //
 // The YubiHSM stores the response command byte in the entry's result field.
@@ -32,7 +32,7 @@ import (
 // signature and so must not be counted against published artifacts — but it is
 // still reported, since a burst of failures is itself worth an operator's
 // attention.
-func signSucceeded(e hsm.AuditLogEntry) bool {
+func entrySucceeded(e hsm.AuditLogEntry) bool {
 	return e.Result == e.Command|0x80
 }
 
@@ -119,7 +119,7 @@ func Reconcile(entries []hsm.AuditLogEntry, ledger []LedgerEntry) *ReconcileResu
 			continue
 		}
 		c := get(e.TargetKey)
-		if !signSucceeded(e) {
+		if !entrySucceeded(e) {
 			c.failures++
 			continue
 		}

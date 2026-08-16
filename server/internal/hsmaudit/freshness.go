@@ -478,7 +478,7 @@ func VerifyFreshness(b *Bundle, opts FreshnessOptions) *FreshnessResult {
 	runningSignatures := make(map[uint16]int, len(b.LogEntries))
 	sigs := 0
 	for _, e := range b.LogEntries {
-		if _, isSign := hsm.SignCommands[e.Command]; isSign && signSucceeded(e) {
+		if _, isSign := hsm.SignCommands[e.Command]; isSign && entrySucceeded(e) {
 			sigs++
 		}
 		digestByNumber[e.Number] = strings.ToLower(e.Hash)

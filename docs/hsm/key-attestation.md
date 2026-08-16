@@ -17,6 +17,12 @@ audit log without attestation cannot rule out that a copy of the key is signing
 elsewhere, off the books entirely. Attestation without an audit log cannot rule
 out that the confined key signed something that was never published.
 
+They are wired together rather than merely documented together: an audit-log
+export carries an attestation for every key that has signed, verification refuses
+a bundle whose signing keys are not attested, and `hsm-audit verify -key` takes a
+public key and answers the joined question — *has this key signed anything that
+was not published?* See [the audit log](audit-log.md#5-the-signatures-belong-to-a-key-not-to-a-handle).
+
 ## What the device asserts
 
 `attest asymmetric` makes the YubiHSM sign an X.509 certificate over the public
@@ -97,6 +103,11 @@ Matches expected: yes
 expectation automatically from the stored CA certificate. **Prefer them over the
 bare key form** — an unbound attestation is a much weaker statement than it
 looks.
+
+The [audit log](audit-log.md) binds it the same way and goes one step further: it
+also reads the handle's history out of the device log, so an attested key whose
+object ID was deleted and recreated — or exported under a wrap key — is refused
+rather than counted.
 
 ### Sweep the whole device
 

@@ -135,11 +135,17 @@ func provisioned(t *testing.T, entries []hsm.AuditLogEntry) (*Service, *fakeDevi
 		t.Fatalf("pinning state: %v", err)
 	}
 	dev.consumed = 1
-	return NewService(dev, store), dev, store
+	svc := NewService(dev, store)
+	// Production wires an attester from the device; the fake device is not a
+	// ShellDevice, so give it the captured one. Without it every exported bundle
+	// would be unattested and every verification would fail on coverage, which
+	// would say nothing about the property each test is actually checking.
+	svc.SetAttester(&fakeAttester{})
+	return svc, dev, store
 }
 
 func TestCollectPersistsThenConsumes(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939), signEntry(0x1939))
+	entries := chain(testAnchor, signEntry(attestedKeyID), signEntry(attestedKeyID))
 	svc, dev, store := provisioned(t, entries)
 
 	res, err := NewCollector(dev, store, 0, discardLogger()).Collect(context.Background())
@@ -163,7 +169,7 @@ func TestCollectPersistsThenConsumes(t *testing.T) {
 // survive to the next cycle. This is the specific bug in the pre-existing
 // fetch-and-consume-then-store implementation.
 func TestCollectDoesNotConsumeWhenPersistFails(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939))
+	entries := chain(testAnchor, signEntry(attestedKeyID))
 	_, dev, store := provisioned(t, entries)
 
 	failing := &failingStore{Store: store}
@@ -192,7 +198,7 @@ func (f *failingStore) AppendLogEntries(ctx context.Context, entries []hsm.Audit
 // On a force-audited device those may be signatures, so the collector must
 // refuse to acknowledge rather than skip over them.
 func TestCollectFailsClosedOnGap(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939), signEntry(0x1939))
+	entries := chain(testAnchor, signEntry(attestedKeyID), signEntry(attestedKeyID))
 	// Drop entry 2, leaving 1 and 3.
 	gapped := []hsm.AuditLogEntry{entries[0], entries[2]}
 	_, dev, store := provisioned(t, gapped)
@@ -213,7 +219,7 @@ func TestCollectFailsClosedOnGap(t *testing.T) {
 // The device's own unlogged-operation counters mean the log overflowed and
 // operations went unrecorded. That is the device admitting incompleteness.
 func TestCollectFailsOnUnloggedOperations(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939))
+	entries := chain(testAnchor, signEntry(attestedKeyID))
 	_, dev, store := provisioned(t, entries)
 	dev.unlogged = Unlogged{Boots: 1}
 
@@ -226,7 +232,7 @@ func TestCollectFailsOnUnloggedOperations(t *testing.T) {
 // re-delivers what we already hold. That must be tolerated, not reported as a
 // rewind.
 func TestCollectToleratesReDeliveryAfterConsumeFailure(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939), signEntry(0x1939))
+	entries := chain(testAnchor, signEntry(attestedKeyID), signEntry(attestedKeyID))
 	_, dev, store := provisioned(t, entries)
 	dev.consumeErr = context.DeadlineExceeded
 
@@ -251,7 +257,7 @@ func TestCollectToleratesReDeliveryAfterConsumeFailure(t *testing.T) {
 // A device that re-delivers an entry whose content differs from the stored copy
 // is not describing an immutable log.
 func TestCollectRejectsAlteredReDelivery(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939))
+	entries := chain(testAnchor, signEntry(attestedKeyID))
 	_, dev, store := provisioned(t, entries)
 	dev.consumeErr = context.DeadlineExceeded
 	c := NewCollector(dev, store, 0, discardLogger())
@@ -269,14 +275,14 @@ func TestCollectRejectsAlteredReDelivery(t *testing.T) {
 }
 
 func TestVerifyBundleAcceptsBalancedHistory(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939), signEntry(0x1939))
+	entries := keyChain(testAnchor, signEntry(attestedKeyID), signEntry(attestedKeyID))
 	svc, _, store := provisioned(t, entries)
 	if _, err := svc.Export(context.Background()); err != nil {
 		t.Fatalf("priming export: %v", err)
 	}
 	// Two device signatures, two ledger rows.
-	addLedger(t, store, 0x1939, "aa")
-	addLedger(t, store, 0x1939, "bb")
+	addLedger(t, store, attestedKeyID, "aa")
+	addLedger(t, store, attestedKeyID, "bb")
 
 	b, err := svc.Export(context.Background())
 	if err != nil {
@@ -294,11 +300,11 @@ func TestVerifyBundleAcceptsBalancedHistory(t *testing.T) {
 // The headline property: a signature the device performed that the CA cannot
 // account for must be reported as key abuse.
 func TestVerifyBundleDetectsKeyAbuse(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939), signEntry(0x1939), signEntry(0x1939))
+	entries := keyChain(testAnchor, signEntry(attestedKeyID), signEntry(attestedKeyID), signEntry(attestedKeyID))
 	svc, _, store := provisioned(t, entries)
 	// The CA only accounts for two of the three device signatures.
-	addLedger(t, store, 0x1939, "aa")
-	addLedger(t, store, 0x1939, "bb")
+	addLedger(t, store, attestedKeyID, "aa")
+	addLedger(t, store, attestedKeyID, "bb")
 
 	b, err := svc.Export(context.Background())
 	if err != nil {
@@ -319,9 +325,9 @@ func TestVerifyBundleDetectsKeyAbuse(t *testing.T) {
 // An anchor that does not match the one the auditor pinned means the bundle
 // describes a different history, however internally consistent it is.
 func TestVerifyBundleRejectsUnpinnedAnchor(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939))
+	entries := keyChain(testAnchor, signEntry(attestedKeyID))
 	svc, _, store := provisioned(t, entries)
-	addLedger(t, store, 0x1939, "aa")
+	addLedger(t, store, attestedKeyID, "aa")
 
 	b, err := svc.Export(context.Background())
 	if err != nil {
@@ -339,9 +345,9 @@ func TestVerifyBundleRejectsUnpinnedAnchor(t *testing.T) {
 // Without force-audit fixed the device would overwrite log entries instead of
 // refusing to operate, so the completeness argument collapses.
 func TestVerifyBundleRejectsWeakDeviceOptions(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939))
+	entries := keyChain(testAnchor, signEntry(attestedKeyID))
 	svc, dev, store := provisioned(t, entries)
-	addLedger(t, store, 0x1939, "aa")
+	addLedger(t, store, attestedKeyID, "aa")
 	dev.opts.ForceAudit = AuditOn // merely on: an operator can turn it off again
 
 	b, err := svc.Export(context.Background())
@@ -416,9 +422,9 @@ func TestVerifyRejectsOptionsMissingBaselineCommand(t *testing.T) {
 // make reconciliation balance.
 func TestLedgerDeletionBreaksChain(t *testing.T) {
 	store := NewMemStore()
-	addLedger(t, store, 0x1939, "aa")
-	addLedger(t, store, 0x1939, "bb")
-	addLedger(t, store, 0x1939, "cc")
+	addLedger(t, store, attestedKeyID, "aa")
+	addLedger(t, store, attestedKeyID, "bb")
+	addLedger(t, store, attestedKeyID, "cc")
 
 	full, _ := store.Ledger(context.Background())
 	if res := VerifyLedger(full); !res.Valid {
@@ -436,10 +442,10 @@ func TestLedgerDeletionBreaksChain(t *testing.T) {
 
 // Chaining exports is what bounds "what happened since the last export".
 func TestVerifyContinuation(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939), signEntry(0x1939))
+	entries := keyChain(testAnchor, signEntry(attestedKeyID), signEntry(attestedKeyID))
 	svc, dev, store := provisioned(t, entries)
-	addLedger(t, store, 0x1939, "aa")
-	addLedger(t, store, 0x1939, "bb")
+	addLedger(t, store, attestedKeyID, "aa")
+	addLedger(t, store, attestedKeyID, "bb")
 
 	first, err := svc.Export(context.Background())
 	if err != nil {
@@ -447,8 +453,8 @@ func TestVerifyContinuation(t *testing.T) {
 	}
 
 	// One more signature happens, and is accounted for.
-	dev.entries = chain(testAnchor, signEntry(0x1939), signEntry(0x1939), signEntry(0x1939))
-	addLedger(t, store, 0x1939, "cc")
+	dev.entries = keyChain(testAnchor, signEntry(attestedKeyID), signEntry(attestedKeyID), signEntry(attestedKeyID))
+	addLedger(t, store, attestedKeyID, "cc")
 	second, err := svc.Export(context.Background())
 	if err != nil {
 		t.Fatalf("second export: %v", err)
@@ -469,9 +475,9 @@ func TestVerifyContinuation(t *testing.T) {
 // A factory reset between exports erases history. The anchor change makes that
 // undeniable, which is the point: a reset cannot be used to launder a log.
 func TestVerifyContinuationDetectsResetBetweenExports(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939))
+	entries := keyChain(testAnchor, signEntry(attestedKeyID))
 	svc, _, store := provisioned(t, entries)
-	addLedger(t, store, 0x1939, "aa")
+	addLedger(t, store, attestedKeyID, "aa")
 	first, err := svc.Export(context.Background())
 	if err != nil {
 		t.Fatalf("first export: %v", err)
@@ -480,7 +486,7 @@ func TestVerifyContinuationDetectsResetBetweenExports(t *testing.T) {
 	newAnchor := "225212b1e76170fed634a755a92a389f"
 	second := *first
 	second.Anchor = newAnchor
-	second.LogEntries = chain(newAnchor, signEntry(0x1939))
+	second.LogEntries = chain(newAnchor, signEntry(attestedKeyID))
 
 	cont := VerifyContinuation(first, &second)
 	if cont.OK {
@@ -493,10 +499,10 @@ func TestVerifyContinuationDetectsResetBetweenExports(t *testing.T) {
 
 // History that was already exported cannot be rewritten later.
 func TestVerifyContinuationDetectsRewrittenHistory(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939), signEntry(0x1939))
+	entries := keyChain(testAnchor, signEntry(attestedKeyID), signEntry(attestedKeyID))
 	svc, _, store := provisioned(t, entries)
-	addLedger(t, store, 0x1939, "aa")
-	addLedger(t, store, 0x1939, "bb")
+	addLedger(t, store, attestedKeyID, "aa")
+	addLedger(t, store, attestedKeyID, "bb")
 	first, err := svc.Export(context.Background())
 	if err != nil {
 		t.Fatalf("export: %v", err)
@@ -520,8 +526,8 @@ func TestVerifyContinuationDetectsRewrittenHistory(t *testing.T) {
 // turns "the HSM signed N times" into "the HSM signed exactly these N things".
 func TestMatchPublishedDetectsUnpublishedSignature(t *testing.T) {
 	store := NewMemStore()
-	addLedger(t, store, 0x1939, "aa")
-	addLedger(t, store, 0x1939, "bb")
+	addLedger(t, store, attestedKeyID, "aa")
+	addLedger(t, store, attestedKeyID, "bb")
 	ledger, _ := store.Ledger(context.Background())
 
 	// The auditor only found one of the two signed artifacts published.
@@ -537,7 +543,7 @@ func TestMatchPublishedDetectsUnpublishedSignature(t *testing.T) {
 func TestProvisionRefusesUnresetDevice(t *testing.T) {
 	// A log that does not begin with the device-init sentinel means the device
 	// has prior, unaudited history.
-	used := []hsm.AuditLogEntry{signEntry(0x1939)}
+	used := []hsm.AuditLogEntry{signEntry(attestedKeyID)}
 	used[0].Number = 1
 	dev := newFake(used)
 	svc := NewService(dev, NewMemStore())
@@ -548,7 +554,7 @@ func TestProvisionRefusesUnresetDevice(t *testing.T) {
 }
 
 func TestProvisionRefusesToRePin(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939))
+	entries := keyChain(testAnchor, signEntry(attestedKeyID))
 	svc, _, _ := provisioned(t, entries)
 	if _, err := svc.Provision(context.Background()); err == nil {
 		t.Fatal("re-provisioning replaced a pinned anchor")

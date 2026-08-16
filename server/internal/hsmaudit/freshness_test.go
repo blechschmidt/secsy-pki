@@ -130,13 +130,13 @@ func (ts *testTSA) Timestamp(ctx context.Context, digest []byte) ([]byte, time.T
 // token over the head it actually holds, and the bundle it exports verifies as
 // current.
 func TestTimestampAttestsCurrentHead(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939), signEntry(0x1939))
+	entries := keyChain(testAnchor, signEntry(attestedKeyID), signEntry(attestedKeyID))
 	svc, dev, store := provisioned(t, entries)
 	if _, err := NewCollector(dev, store, 0, discardLogger()).Collect(context.Background()); err != nil {
 		t.Fatalf("collect: %v", err)
 	}
-	addLedger(t, store, 0x1939, "aa")
-	addLedger(t, store, 0x1939, "bb")
+	addLedger(t, store, attestedKeyID, "aa")
+	addLedger(t, store, attestedKeyID, "bb")
 
 	ts := newTestTSA(t, "https://tsa.example/tsr")
 	p, err := svc.Timestamp(context.Background(), ts)
@@ -146,8 +146,10 @@ func TestTimestampAttestsCurrentHead(t *testing.T) {
 	if p.Head.Signatures != 2 {
 		t.Fatalf("attested %d signatures, want 2", p.Head.Signatures)
 	}
-	if p.Head.DeviceNumber != 3 {
-		t.Fatalf("attested device entry %d, want 3", p.Head.DeviceNumber)
+	// Entry 1 is the reset sentinel, 2 the key's creation, 3 and 4 the two
+	// signatures.
+	if p.Head.DeviceNumber != 4 {
+		t.Fatalf("attested device entry %d, want 4", p.Head.DeviceNumber)
 	}
 	if p.Head.LedgerSeq != 2 {
 		t.Fatalf("attested ledger seq %d, want 2", p.Head.LedgerSeq)
@@ -201,12 +203,12 @@ func TestVerifyRejectsStaleBundle(t *testing.T) {
 // that never configured a TSA. It must fail rather than quietly report OK, since
 // "verified" would then mean "verified as of some unknown date".
 func TestVerifyRejectsBundleWithoutProofs(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939))
+	entries := keyChain(testAnchor, signEntry(attestedKeyID))
 	svc, dev, store := provisioned(t, entries)
 	if _, err := NewCollector(dev, store, 0, discardLogger()).Collect(context.Background()); err != nil {
 		t.Fatalf("collect: %v", err)
 	}
-	addLedger(t, store, 0x1939, "aa")
+	addLedger(t, store, attestedKeyID, "aa")
 	b, err := svc.Export(context.Background())
 	if err != nil {
 		t.Fatalf("export: %v", err)
@@ -317,13 +319,13 @@ func TestInternalTSAIsFlaggedAndRejectable(t *testing.T) {
 // Replaying an older head at a later time would let an abandoned log look
 // maintained, so the sequence must be rejected when it goes backwards.
 func TestVerifyRejectsReAttestedEarlierHead(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939), signEntry(0x1939))
+	entries := keyChain(testAnchor, signEntry(attestedKeyID), signEntry(attestedKeyID))
 	svc, dev, store := provisioned(t, entries)
 	if _, err := NewCollector(dev, store, 0, discardLogger()).Collect(context.Background()); err != nil {
 		t.Fatalf("collect: %v", err)
 	}
-	addLedger(t, store, 0x1939, "aa")
-	addLedger(t, store, 0x1939, "bb")
+	addLedger(t, store, attestedKeyID, "aa")
+	addLedger(t, store, attestedKeyID, "bb")
 
 	ts := newTestTSA(t, "https://tsa.example/tsr")
 	if _, err := svc.Timestamp(context.Background(), ts); err != nil {
@@ -356,12 +358,12 @@ func TestVerifyRejectsReAttestedEarlierHead(t *testing.T) {
 // Two exports taken around an interval must bracket it in trusted-clock terms,
 // which is what turns "no abuse so far" into "no abuse during this window".
 func TestContinuationReportsAttestedInterval(t *testing.T) {
-	entries := chain(testAnchor, signEntry(0x1939))
+	entries := keyChain(testAnchor, signEntry(attestedKeyID))
 	svc, dev, store := provisioned(t, entries)
 	if _, err := NewCollector(dev, store, 0, discardLogger()).Collect(context.Background()); err != nil {
 		t.Fatalf("collect: %v", err)
 	}
-	addLedger(t, store, 0x1939, "aa")
+	addLedger(t, store, attestedKeyID, "aa")
 
 	ts := newTestTSA(t, "https://tsa.example/tsr")
 	ts.now = func() time.Time { return time.Now().Add(-2 * time.Hour) }
@@ -374,11 +376,11 @@ func TestContinuationReportsAttestedInterval(t *testing.T) {
 	}
 
 	// One more signature, then a later attestation.
-	dev.entries = chain(testAnchor, signEntry(0x1939), signEntry(0x1939))
+	dev.entries = keyChain(testAnchor, signEntry(attestedKeyID), signEntry(attestedKeyID))
 	if _, err := NewCollector(dev, store, 0, discardLogger()).Collect(context.Background()); err != nil {
 		t.Fatalf("second collect: %v", err)
 	}
-	addLedger(t, store, 0x1939, "bb")
+	addLedger(t, store, attestedKeyID, "bb")
 	ts.now = time.Now
 	if _, err := svc.Timestamp(context.Background(), ts); err != nil {
 		t.Fatalf("second attestation: %v", err)
@@ -437,13 +439,13 @@ func TestVerifyDetectsEditedProofRecord(t *testing.T) {
 // non-nil, adjusts the test TSA before the attestation is taken.
 func attestedBundle(t *testing.T, tweak func(*testTSA)) (*Bundle, *testTSA) {
 	t.Helper()
-	entries := chain(testAnchor, signEntry(0x1939), signEntry(0x1939))
+	entries := keyChain(testAnchor, signEntry(attestedKeyID), signEntry(attestedKeyID))
 	svc, dev, store := provisioned(t, entries)
 	if _, err := NewCollector(dev, store, 0, discardLogger()).Collect(context.Background()); err != nil {
 		t.Fatalf("collect: %v", err)
 	}
-	addLedger(t, store, 0x1939, "aa")
-	addLedger(t, store, 0x1939, "bb")
+	addLedger(t, store, attestedKeyID, "aa")
+	addLedger(t, store, attestedKeyID, "bb")
 
 	ts := newTestTSA(t, "https://tsa.example/tsr")
 	if tweak != nil {

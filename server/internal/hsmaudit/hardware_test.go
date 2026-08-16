@@ -15,8 +15,13 @@ package hsmaudit
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"os/exec"
@@ -25,6 +30,7 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
+	"github.com/blechschmidt/secsy-pki/server/internal/hsmattest"
 )
 
 func hwConfig(t *testing.T) hsm.Config {
@@ -369,7 +375,7 @@ func TestSignaturesAreCounted_RealDevice(t *testing.T) {
 
 	const keyID = 0x7e57
 	const signatures = 5
-	shell(t, cfg, fmt.Sprintf("delete object 0 0x%04x asymmetric-key", keyID)) // best effort
+	shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", keyID)) // best effort
 	shell(t, cfg, fmt.Sprintf("generate asymmetric 0 0x%04x hsmaudit-test 1 sign-ecdsa ecp256", keyID))
 
 	digest := make([]byte, 32)
@@ -432,7 +438,7 @@ func TestSignaturesAreCounted_RealDevice(t *testing.T) {
 	if err := d.ConsumeLog(ctx, post.Entries[len(post.Entries)-1].Number); err != nil {
 		t.Fatalf("ConsumeLog: %v", err)
 	}
-	shell(t, cfg, fmt.Sprintf("delete object 0 0x%04x asymmetric-key", keyID))
+	shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", keyID))
 }
 
 // TestFreshnessEndToEnd_RealDevice exercises the complete claim on hardware: a
@@ -499,9 +505,9 @@ func TestFreshnessEndToEnd_RealDevice(t *testing.T) {
 	// key-provider chokepoint does in production.
 	const keyID = 0x7e58
 	const signatures = 3
-	shell(t, cfg, fmt.Sprintf("delete object 0 0x%04x asymmetric-key", keyID)) // best effort
+	shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", keyID)) // best effort
 	shell(t, cfg, fmt.Sprintf("generate asymmetric 0 0x%04x freshness-test 1 sign-ecdsa ecp256", keyID))
-	t.Cleanup(func() { shell(t, cfg, fmt.Sprintf("delete object 0 0x%04x asymmetric-key", keyID)) })
+	t.Cleanup(func() { shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", keyID)) })
 
 	digest := make([]byte, 32)
 	digestFile := t.TempDir() + "/digest.bin"
@@ -546,8 +552,19 @@ func TestFreshnessEndToEnd_RealDevice(t *testing.T) {
 			RequireIndependentTSA: true,
 		},
 	})
-	if !res.OK {
-		t.Fatalf("a genuine attested bundle from real hardware was rejected: %v", res.Err())
+	// This window starts at the device's current position rather than at the
+	// factory-reset sentinel, which VerifyBundle correctly refuses as a genesis
+	// (TestBootSentinel_RealDevice covers that requirement). Every other part of
+	// the verdict is meaningful here, so assert on those rather than on the
+	// bottom line, which the missing sentinel would fail for an unrelated reason.
+	if err := res.Reconciliation.Err(); err != nil {
+		t.Fatalf("a genuine hardware history failed to reconcile: %v", err)
+	}
+	if err := res.Attestations.Err(); err != nil {
+		t.Fatalf("the device's own key attestations were rejected: %v", err)
+	}
+	if err := res.Freshness.Err(); err != nil {
+		t.Fatalf("a freshly attested bundle was judged stale: %v", err)
 	}
 	if res.Reconciliation.TotalDeviceSignatures != signatures {
 		t.Fatalf("device reported %d signatures, want %d",
@@ -571,11 +588,11 @@ func TestFreshnessEndToEnd_RealDevice(t *testing.T) {
 		ExpectedSerial: info.Serial,
 		Freshness:      FreshnessOptions{Roots: []*x509.Certificate{ts.root}},
 	})
-	if abuseRes.OK {
+	if abuseRes.Reconciliation.OK {
 		t.Fatal("a signature the ledger does not account for was NOT detected on real hardware")
 	}
-	if !strings.Contains(abuseRes.Err().Error(), "KEY ABUSE") {
-		t.Fatalf("expected a key-abuse finding, got: %v", abuseRes.Err())
+	if !strings.Contains(abuseRes.Reconciliation.Err().Error(), "KEY ABUSE") {
+		t.Fatalf("expected a key-abuse finding, got: %v", abuseRes.Reconciliation.Err())
 	}
 	t.Logf("unrecorded hardware signature correctly reported: %s", abuseRes.Summary)
 
@@ -589,8 +606,277 @@ func TestFreshnessEndToEnd_RealDevice(t *testing.T) {
 			MaxAge: time.Hour,
 		},
 	})
-	if stale.OK || !stale.Freshness.Stale {
+	if !stale.Freshness.Stale {
 		t.Fatal("an attestation two days past the freshness threshold was accepted as current")
 	}
 	t.Logf("stale bundle correctly refused: %v", stale.Freshness.Findings)
+}
+
+// TestKeyProofEndToEnd_RealDevice is the Task 170 claim on hardware: an auditor
+// who holds nothing but a public key learns, from the exported bundle alone,
+// that this key lives inside this HSM and has signed exactly what was published.
+//
+// It is deliberately built from two independent device paths. The public key
+// comes from GET PUBLIC KEY; the binding of that key to an object handle comes
+// from a device-signed attestation certificate; the signature history comes from
+// the audit log. Nothing in the chain is asserted by this process.
+func TestKeyProofEndToEnd_RealDevice(t *testing.T) {
+	if os.Getenv("YUBIHSM_ALLOW_PROVISION") != "1" {
+		t.Skip("set YUBIHSM_ALLOW_PROVISION=1 to run (creates and deletes keys on the device)")
+	}
+	d := hwDevice(t)
+	cfg := hwConfig(t)
+	ctx := context.Background()
+
+	opts, err := d.Options(ctx)
+	if err != nil {
+		t.Fatalf("Options: %v", err)
+	}
+	if err := opts.Verify(); err != nil {
+		t.Skipf("device is not commissioned for audited operation: %v", err)
+	}
+
+	// As in the freshness test, pin the device's current position as the window
+	// anchor: earlier tests have long since consumed the factory-reset sentinel,
+	// and the structural guarantees over the window are the same.
+	svc, store, _, _ := hwWindow(t, d)
+
+	const keyID = 0x7e5a
+	const signatures = 2
+	shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", keyID)) // best effort
+	shell(t, cfg, fmt.Sprintf("generate asymmetric 0 0x%04x keyproof-test 1 sign-ecdsa ecp256", keyID))
+	t.Cleanup(func() { shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", keyID)) })
+
+	// The auditor's copy of the public key, read out of the device by a different
+	// command than the one that attests it. In production this is the key in the
+	// CA certificate they are deciding whether to trust.
+	pub := hwPublicKey(t, cfg, keyID)
+
+	digest := make([]byte, 32)
+	digestFile := t.TempDir() + "/digest.bin"
+	for i := 0; i < signatures; i++ {
+		for j := range digest {
+			digest[j] = byte(i*32 + j)
+		}
+		if err := os.WriteFile(digestFile, digest, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		shell(t, cfg, fmt.Sprintf("sign ecdsa 0 0x%04x ecdsa-sha256 %s", keyID, digestFile))
+		if err := store.AppendLedger(ctx, &LedgerEntry{
+			Timestamp: time.Now().UTC(),
+			KeyLabel:  "keyproof-test",
+			KeyID:     keyID,
+			Digest:    hex.EncodeToString(digest),
+			Algorithm: "SHA-256",
+			Purpose:   PurposeCertificate,
+		}); err != nil {
+			t.Fatalf("appending ledger row: %v", err)
+		}
+	}
+
+	bundle, report, err := svc.ExportWithReport(ctx)
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	if len(report.AttestationErrors) > 0 {
+		t.Fatalf("the device would not attest a key it holds: %v", report.AttestationErrors)
+	}
+	if len(bundle.KeyAttestations) == 0 {
+		t.Fatal("export carried no key attestations")
+	}
+
+	atts, kp := verifyWindow(t, bundle, ExpectedKey{Name: "keyproof-test", PublicKey: pub})
+	if !atts.OK {
+		t.Fatalf("the device's own attestations were rejected: %v", atts.Err())
+	}
+	if !kp.OK {
+		t.Fatalf("a genuine key proof from real hardware was rejected: %v", kp.Err())
+	}
+	if kp.Key == nil || kp.Key.ObjectID != keyID {
+		t.Fatalf("the public key was not bound to object 0x%04x: %+v", keyID, kp.Key)
+	}
+	if !kp.Key.Attestation.IsNonExportable() || !kp.Key.Attestation.IsGeneratedOnDevice() {
+		t.Fatalf("hardware did not assert a generated, non-exportable key: %+v", kp.Key.Attestation)
+	}
+	if !kp.Key.Attestation.IsDeviceBound() {
+		t.Fatal("the attestation certificate was not verified against the device attestation certificate")
+	}
+	if len(kp.Key.Lifecycle.Generated) != 1 {
+		t.Fatalf("the log recorded %d creation(s) of the handle, want 1", len(kp.Key.Lifecycle.Generated))
+	}
+	if kp.Key.DeviceSignatures != signatures {
+		t.Fatalf("device recorded %d signature(s) for the key, want %d", kp.Key.DeviceSignatures, signatures)
+	}
+	t.Logf("verified: %s", kp.Summary)
+
+	// A key the bundle does not attest must not inherit this one's clean result.
+	foreign, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, other := verifyWindow(t, bundle, ExpectedKey{Name: "unrelated", PublicKey: foreign.Public()})
+	if other.OK {
+		t.Fatal("a key the device never attested was reported as proven")
+	}
+	t.Logf("unattested key correctly refused: %s", other.Summary)
+
+	// The abuse case, phrased against the key rather than the device: one more
+	// signature with no ledger row.
+	shell(t, cfg, fmt.Sprintf("sign ecdsa 0 0x%04x ecdsa-sha256 %s", keyID, digestFile))
+	abusedBundle, err := svc.Export(ctx)
+	if err != nil {
+		t.Fatalf("export after unrecorded signature: %v", err)
+	}
+	_, abused := verifyWindow(t, abusedBundle, ExpectedKey{Name: "keyproof-test", PublicKey: pub})
+	if abused.OK {
+		t.Fatal("an unpublished signature by the named key was not detected on real hardware")
+	}
+	if !strings.Contains(abused.Err().Error(), "never published") {
+		t.Fatalf("the key verdict does not name the unpublished signature: %v", abused.Err())
+	}
+	t.Logf("unpublished hardware signature correctly attributed to the key: %s", abused.Summary)
+}
+
+// TestExportableKeyFailsTheAudit_RealDevice pins the property that makes the
+// audit log mean anything: a signing key that could leave the device breaks the
+// whole bundle, because signatures made with an exported copy would appear in no
+// log at all. The device's own attestation is what reveals it — nothing in the
+// audit log distinguishes an exportable key from a confined one.
+func TestExportableKeyFailsTheAudit_RealDevice(t *testing.T) {
+	if os.Getenv("YUBIHSM_ALLOW_PROVISION") != "1" {
+		t.Skip("set YUBIHSM_ALLOW_PROVISION=1 to run (creates and deletes keys on the device)")
+	}
+	d := hwDevice(t)
+	cfg := hwConfig(t)
+	ctx := context.Background()
+
+	opts, err := d.Options(ctx)
+	if err != nil {
+		t.Fatalf("Options: %v", err)
+	}
+	if err := opts.Verify(); err != nil {
+		t.Skipf("device is not commissioned for audited operation: %v", err)
+	}
+	svc, store, _, _ := hwWindow(t, d)
+
+	const keyID = 0x7e5b
+	shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", keyID)) // best effort
+	shell(t, cfg, fmt.Sprintf("generate asymmetric 0 0x%04x exportable-test 1 sign-ecdsa,exportable-under-wrap ecp256", keyID))
+	t.Cleanup(func() { shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", keyID)) })
+
+	pub := hwPublicKey(t, cfg, keyID)
+	digest := make([]byte, 32)
+	digestFile := t.TempDir() + "/digest.bin"
+	if err := os.WriteFile(digestFile, digest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shell(t, cfg, fmt.Sprintf("sign ecdsa 0 0x%04x ecdsa-sha256 %s", keyID, digestFile))
+	if err := store.AppendLedger(ctx, &LedgerEntry{
+		Timestamp: time.Now().UTC(),
+		KeyLabel:  "exportable-test",
+		KeyID:     keyID,
+		Digest:    hex.EncodeToString(digest),
+		Algorithm: "SHA-256",
+		Purpose:   PurposeCertificate,
+	}); err != nil {
+		t.Fatalf("appending ledger row: %v", err)
+	}
+
+	bundle, err := svc.Export(ctx)
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	// The counts balance exactly — one device signature, one ledger row — so the
+	// pre-Task-170 verdict would have been a clean pass.
+	if rec := Reconcile(bundle.LogEntries, bundle.Ledger); !rec.OK {
+		t.Fatalf("the signature counts should balance; this test is about what they do not show: %v", rec.Err())
+	}
+
+	atts, kp := verifyWindow(t, bundle, ExpectedKey{Name: "exportable-test", PublicKey: pub})
+	if atts.OK {
+		t.Fatal("a signing key that can be exported from the HSM was accepted as confined")
+	}
+	if kp.OK {
+		t.Fatal("a balanced history for a key that can leave the device was reported as proof")
+	}
+	if !strings.Contains(kp.Err().Error(), "exportable-under-wrap") {
+		t.Fatalf("the finding does not name the exportability: %v", kp.Err())
+	}
+	t.Logf("exportable signing key correctly refused: %s", kp.Summary)
+}
+
+// hwWindow pins the device's current log position as a chain anchor and returns
+// a Service over a fresh in-memory store. Provisioning proper requires a
+// factory-reset device; this gives the same structural guarantees over the
+// window under test, which is what these tests exercise.
+func hwWindow(t *testing.T, d *ShellDevice) (*Service, *MemStore, string, *DeviceInfo) {
+	t.Helper()
+	ctx := context.Background()
+	pre, err := d.FetchLog(ctx)
+	if err != nil {
+		t.Fatalf("FetchLog: %v", err)
+	}
+	if len(pre.Entries) == 0 {
+		t.Skip("no pending entry to anchor this window on")
+	}
+	last := pre.Entries[len(pre.Entries)-1]
+	if err := d.ConsumeLog(ctx, last.Number); err != nil {
+		t.Fatalf("ConsumeLog: %v", err)
+	}
+	info, err := d.Info(ctx)
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	store := NewMemStore()
+	if err := store.AppendLogEntries(ctx, []hsm.AuditLogEntry{last}); err != nil {
+		t.Fatalf("seeding window anchor: %v", err)
+	}
+	anchor := strings.ToLower(last.Hash)
+	if err := store.SaveAuditState(ctx, &AuditState{
+		DeviceSerial:  info.Serial,
+		Anchor:        anchor,
+		ProvisionedAt: time.Now().UTC(),
+		Tail:          Tail{Number: last.Number, Digest: anchor},
+	}); err != nil {
+		t.Fatalf("pinning window anchor: %v", err)
+	}
+	return NewService(d, store), store, anchor, info
+}
+
+// hwPublicKey reads an object's public key off the device with GET PUBLIC KEY —
+// a different command than the one that attests it, so the test's expectation is
+// not derived from the evidence it is checking.
+func hwPublicKey(t *testing.T, cfg hsm.Config, keyID uint16) crypto.PublicKey {
+	t.Helper()
+	out := shell(t, cfg, fmt.Sprintf("get pubkey 0 0x%04x asymmetric-key", keyID))
+	start := strings.Index(out, "-----BEGIN PUBLIC KEY-----")
+	end := strings.Index(out, "-----END PUBLIC KEY-----")
+	if start < 0 || end < 0 {
+		t.Fatalf("no public key in yubihsm-shell output:\n%s", out)
+	}
+	block, _ := pem.Decode([]byte(out[start : end+len("-----END PUBLIC KEY-----\n")]))
+	if block == nil {
+		t.Fatal("public key did not decode as PEM")
+	}
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		t.Fatalf("parsing device public key: %v", err)
+	}
+	return pub
+}
+
+// verifyWindow runs the checks that are meaningful over a mid-history window.
+//
+// VerifyBundle deliberately refuses a log that does not begin at the
+// factory-reset sentinel, and by the time these tests run the sentinel is long
+// consumed — pinning the device's current position is the best a repeatable
+// hardware test can do. That requirement is exercised by
+// TestBootSentinel_RealDevice and by the unit tests; what is checked here is
+// everything that depends on the hardware being real: the device's own
+// attestations, the log's account of the key's lifecycle, and the join of both
+// onto the ledger.
+func verifyWindow(t *testing.T, b *Bundle, want ExpectedKey) (*AttestationResult, *KeyProofResult) {
+	t.Helper()
+	atts := VerifyAttestations(b, hsmattest.DefaultPolicy())
+	return atts, ProveKey(b, atts, want, nil)
 }

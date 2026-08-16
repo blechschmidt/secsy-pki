@@ -1,9 +1,9 @@
 # Remotely Verifiable HSM Audit Log
 
 secsy-pki can turn a YubiHSM 2's on-device audit log into evidence that a third
-party can check: **this HSM has produced no signature beyond the ones the CA
-published, and that is still true as of a recent, independently attested
-moment.**
+party can check: **this key has produced no signature beyond the ones the CA
+published, that key cannot leave the HSM, and both are still true as of a recent,
+independently attested moment.**
 
 That is a stronger claim than "we keep logs", and it is deliberately built so
 that it holds even against the operator running the CA — someone who holds the
@@ -16,7 +16,7 @@ does **not** record what was signed. So the device log by itself cannot tell 412
 legitimate certificate signatures from 411 legitimate ones plus one forged
 certificate — the counts are identical.
 
-The proof is therefore assembled from five independent facts, each of which must
+The proof is therefore assembled from six independent facts, each of which must
 hold or verification fails closed.
 
 ### 1. Nothing can be signed unlogged
@@ -90,7 +90,43 @@ Recording happens **after** the signature and fails closed: if the row cannot be
 written the signature is discarded rather than returned, so an unaccountable
 signature is never published.
 
-### 5. The evidence is current
+### 5. The signatures belong to a key, not to a handle
+
+Facts 1–4 bound what *a device* did. They say object `0x1939` performed four
+signatures and the CA published four artifacts. That is not yet the question a
+relying party has, which is about the public key in the certificate they are
+deciding whether to trust:
+
+> has *this key* ever signed anything that was not published?
+
+Two things separate the two questions, and neither is visible in any log:
+
+- **The handle is not the key.** Nothing in the audit log says which public key
+  `0x1939` holds. An object can be deleted and recreated under the same number.
+- **A copy signs silently.** If the private key was imported from a laptop, or is
+  exportable under a wrap key, signatures made with a copy of it appear in no
+  device log anywhere, because no device was involved.
+
+The device closes both, on its own authority. `attest asymmetric` makes the
+YubiHSM sign a certificate over the public key of one of its objects using its
+factory-provisioned [attestation key](key-attestation.md), asserting the
+handle, the label, the origin and the full capability mask. An export therefore
+carries one attestation per key that has signed, and verification uses it to:
+
+1. join a public key to an on-device handle — so log entries can be attributed
+   to *that key*;
+2. establish that the key was **generated inside** the HSM, so no copy predates
+   it, and holds no **exportable-under-wrap** capability, so no copy can be made;
+3. read the handle's own history out of the log — created exactly once, never
+   deleted, never exported — so the entries counted against it all belong to the
+   attested key.
+
+Only with all three does "the device signed N times" become "this key signed
+these N things and nothing else, on or off the device". A key that signed but is
+not attested fails verification: the counts may balance perfectly while a copy of
+the key signs elsewhere, off the books entirely.
+
+### 6. The evidence is current
 
 Everything above proves the device signed only what was published — *as of some
 moment*. Nothing in it pins that moment down. `exported_at` is the exporting
@@ -189,6 +225,7 @@ Chain anchor:    940ff5892251586f8647e86c24d3811a
 Collected up to: entry 47
 Stored entries:  47 (31 signature(s))
 Ledger entries:  31
+Signing keys:    0x1939
 Last attested:   2026-08-16T16:18:40Z (12m3s ago, 4 proof(s))
 Audit config:    forced (irreversible until factory reset)
 ```
@@ -199,7 +236,7 @@ Audit config:    forced (irreversible until factory reset)
 | `hsm-audit provision` | Commission a factory-reset device; pin the anchor |
 | `hsm-audit collect` | Drain the device log once (the server does this continuously) |
 | `hsm-audit timestamp` | Obtain one freshness attestation now |
-| `hsm-audit export -out FILE` | Write a remotely verifiable bundle |
+| `hsm-audit export -out FILE` | Write a remotely verifiable bundle, attesting every key that signed |
 | `hsm-audit verify -bundle FILE` | Check a bundle — **needs no config, database or HSM** |
 
 `GET /api/hsm/audit-bundle` (capability `audit:read`) serves the same bundle over
@@ -212,24 +249,47 @@ The verifier is deliberately config-free: requiring the audited party's
 `config.yaml` to check their own audit bundle would be absurd. Copy the bundle
 anywhere and run:
 
+Pass `-key` with the certificate whose key you want an answer about — that is
+what turns a statement about a device into a statement about the key you hold:
+
 ```console
 $ secsy-ca hsm-audit verify \
     -bundle bundle-2.json \
     -anchor 940ff5892251586f8647e86c24d3811a \
     -serial 31650425 \
+    -key issuing-ca.pem \
     -published published.txt \
     -tsa-roots tsa-roots.pem \
     -require-external-tsa
-OK: device 31650425 performed 3 signature(s) since the factory reset, all
-accounted for by the published artifacts; no key abuse detected, current as of
-2026-08-16T16:18:40Z (8s ago, attested by a timestamp authority)
+OK: device 31650425, using 1 key(s) it attests are confined to it (0x1939 (issuing-ca))
+performed 3 signature(s) since the factory reset, all accounted for by the published
+artifacts; no key abuse detected, current as of 2026-08-16T16:18:40Z (8s ago,
+attested by a timestamp authority)
 
-  key 0x1939 issuing-ca               device   3  ledger   3  balanced
+  key 0x1939 issuing-ca               device   3  ledger   3  balanced   in-HSM, generated
+
+Key issuing-ca.pem
+  Public key:       SHA256:9O5vTL11FNF2/x7rfPNzg6g89xuJad5EKlGC8aaRnjc
+  On-device handle: 0x1939 (issuing-ca)
+  Non-exportable:   yes
+  Generated in HSM: yes
+  Device-signed:    yes
+  Chain anchored:   no
+  Handle history:   generated on-device at log entry 28, never deleted or exported
+  Signatures:       device 3, accounted for 3
+  Published match:  3 of 3
+  OK: public key SHA256:9O5v… was generated inside YubiHSM 31650425 as object
+  0x1939 (issuing-ca) and cannot be exported from it; the device performed 3
+  signature(s) with it, all accounted for by the published artifacts — so this
+  key has signed nothing else, on or off the device
 
 Freshness: last attested 2026-08-16T16:18:40Z (8s ago), 2/2 proof(s) verified.
 ```
 
-Verification runs seven checks, all of them even after one fails, so an operator
+`-key` accepts a certificate or a bare public key, and is repeatable. Exit status
+is 0 only when every check passed, so this works as a compliance gate.
+
+Verification runs nine checks, all of them even after one fails, so an operator
 sees the whole picture rather than the first symptom:
 
 1. The device is configured so no signature can escape the log.
@@ -237,25 +297,36 @@ sees the whole picture rather than the first symptom:
 3. The device log chain re-derives from the sentinel, gap-free.
 4. The signature ledger chain re-derives.
 5. Device signature counts equal ledger counts, per key.
-6. Every ledger digest corresponds to an independently obtained artifact.
-7. A trusted authority attested to this history recently enough.
+6. Every key that signed is attested by the device as generated inside it and
+   non-exportable, and the log shows its handle created once and never exported.
+7. Every ledger digest corresponds to an independently obtained artifact.
+8. A trusted authority attested to this history recently enough.
+9. Each `-key` is bound to an attested handle whose signatures are all accounted
+   for.
 
-Checks 1–5 need nothing but the bundle. Check 6 needs the auditor to have
+Checks 1–6 need nothing but the bundle. Check 7 needs the auditor to have
 collected the published artifacts themselves — from Certificate Transparency, a
 CRL distribution point, or the published inventory — which is the only part of
-the argument that cannot be delegated to the party being audited. Check 7 needs
+the argument that cannot be delegated to the party being audited. Check 8 needs
 the CA to have been attesting all along, which is why it is a background job and
 not something an export can retrofit.
+
+Checks 5 and 6 are two halves of one claim. Counting operations without
+attestation bounds the device; attestation without counting bounds the key's
+confinement but not its use. Neither alone answers the question.
 
 ### Flags that change what the result means
 
 | Flag | Without it |
 | --- | --- |
 | `-anchor` | Only internal consistency is checked; a wholly forged history built on an invented anchor would pass |
+| `-key` | The verdict is about the device. It says nothing about whether any key you hold — the one in a CA certificate, say — is among the ones accounted for |
 | `-published` | The bundle proves the device signed exactly what the ledger records — not that those records correspond to anything real |
 | `-tsa-roots` | Tokens are checked against the certificate they embed, so an authority the CA controls would pass |
 | `-max-age` | Defaults to 25h; `0` reports the age without failing on it |
 | `-require-external-tsa` | An attestation from the CA's own HSM-backed TSA is accepted, with a note |
+| `-attest-roots` / `-require-anchored-attestation` | Attestations are checked against Yubico's embedded roots but a chain that does not reach one is reported, not refused — see [key attestation](key-attestation.md#caveat-chain-anchoring-is-off-by-default) |
+| `-allow-unattested-keys` | An unattested signing key fails the bundle. **Do not set it in a real audit**: it downgrades the one check that distinguishes a key's history from a device's |
 
 The verifier states these limits in its own output rather than leaving them
 implicit.
@@ -286,6 +357,27 @@ VERIFICATION FAILED: cannot conclude that device 31650425 signed only what was p
 
   - key 0x1939 (issuing-ca): KEY ABUSE — the device performed 4 signature(s)
     but the CA accounts for only 3; 1 signature(s) exist that were never published
+```
+
+A signing key that could leave the device — note that the counts balance
+perfectly, which is exactly why counting alone is not enough:
+
+```
+VERIFICATION FAILED: cannot conclude that device 31650425 signed only what was published (1 finding(s))
+
+  key 0x7e5b legacy-signer            device   1  ledger   1  balanced   ATTESTATION FAILED
+
+  - attestation for object 0x7e5b is not valid: key holds the exportable-under-wrap
+    capability: its private material can be exported from the HSM under a wrap key,
+    so confinement to hardware is only as strong as that wrap key
+```
+
+A key that signed but that the bundle cannot attest at all:
+
+```
+  - key 0x1939 signed 3 time(s) but the bundle carries no attestation for it:
+    nothing shows that the private key is confined to this HSM, so signatures made
+    with a copy of it elsewhere would leave no trace in this log
 ```
 
 A bundle that is merely out of date:
@@ -320,10 +412,20 @@ A negative surplus — the CA recording more signatures than the device log show
 - **A surplus says a signature exists, not what it was.** The device log carries
   no digest of its input. Reconciliation localises abuse to a key and an
   interval; identifying the forged artifact is an investigation, not a lookup.
+- **Attestations are gathered at export time.** A key deleted from the device can
+  no longer be attested, so a bundle exported afterwards fails closed rather than
+  vouching for it retroactively. Retain earlier bundles: they are the record that
+  the key was confined while it was signing.
+- **Anchoring the attestation chain needs the right Yubico intermediate.** Until
+  you have it, an attestation shows the key's properties *as asserted by a
+  device*, not that the device is a genuine YubiHSM. See
+  [key attestation](key-attestation.md#caveat-chain-anchoring-is-off-by-default).
 - **The internal TSA is circular.** See the note above.
 
 ## Related
 
+- [YubiHSM key attestation](key-attestation.md) — the device-signed proof that a
+  key lives inside the HSM, which fact 5 above depends on
 - [Audit logging and SIEM export](../security/audit-siem-export.md) — the hash-chained
   `event_log` this sits alongside
 - [Timestamping and audit anchoring](../signing/timestamping.md) — the RFC 3161 authority

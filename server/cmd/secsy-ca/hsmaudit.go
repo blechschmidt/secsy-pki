@@ -9,6 +9,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
+	"github.com/blechschmidt/secsy-pki/server/internal/hsmattest"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsmaudit"
 	"github.com/blechschmidt/secsy-pki/server/internal/tsa"
 )
@@ -43,10 +46,26 @@ Subcommands:
   verify  -bundle FILE  Verify a bundle offline (no database, no HSM)
 
 Verification flags (verify):
+  -key FILE             Certificate or public key to prove. Repeatable. Answers
+                        "has THIS key signed anything that was not published",
+                        by binding it to an on-device handle through the
+                        device's own key attestation. Without it the verdict is
+                        about the device rather than about a key you hold.
   -anchor HEX           Genesis anchor recorded when the device was commissioned.
                         Without it the bundle is only checked for internal
                         consistency, which cannot detect a wholly forged history.
   -serial SERIAL        Expected device serial number.
+  -attest-roots FILE    PEM trust anchors for YubiHSM key attestation. Empty
+                        uses Yubico's published root, embedded in the binary.
+  -require-anchored-attestation
+                        Fail unless each device attestation certificate chains
+                        to one of those roots, i.e. the attesting device is
+                        provably a genuine YubiHSM. Off by default; see
+                        docs/hsm/key-attestation.md for why.
+  -allow-unattested-keys
+                        Report rather than fail when a key that signed is not
+                        attested. Not for real audits: without attestation the
+                        bundle bounds what the device did, not what a key did.
   -previous FILE        A previously exported bundle; checks that this one
                         extends it without rewriting history, and reports what
                         the device signed in between.
@@ -129,6 +148,18 @@ func cmdHSMAuditStatus(ctx context.Context, svc *hsmaudit.Service, args []string
 	fmt.Printf("Collected up to: entry %d\n", st.Tail.Number)
 	fmt.Printf("Stored entries:  %d (%d signature(s))\n", st.StoredEntries, st.Signatures)
 	fmt.Printf("Ledger entries:  %d\n", st.LedgerEntries)
+	if len(st.SigningKeys) > 0 {
+		handles := make([]string, 0, len(st.SigningKeys))
+		for _, id := range st.SigningKeys {
+			handles = append(handles, fmt.Sprintf("0x%04x", id))
+		}
+		fmt.Printf("Signing keys:    %s\n", strings.Join(handles, ", "))
+		if !st.CanAttest {
+			fmt.Println("                 WARNING: no attester configured — exports will carry no key")
+			fmt.Println("                 attestations, and a verifier cannot then tell that those")
+			fmt.Println("                 signatures came from keys confined to this HSM.")
+		}
+	}
 	if st.LastAttestedAt == nil {
 		fmt.Printf("Last attested:   never — exports cannot prove they are current " +
 			"(run `secsy-ca hsm-audit timestamp`)\n")
@@ -272,7 +303,7 @@ func cmdHSMAuditExport(ctx context.Context, svc *hsmaudit.Service, args []string
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	b, err := svc.Export(ctx)
+	b, report, err := svc.ExportWithReport(ctx)
 	if err != nil {
 		return err
 	}
@@ -280,6 +311,11 @@ func cmdHSMAuditExport(ctx context.Context, svc *hsmaudit.Service, args []string
 	if err != nil {
 		return err
 	}
+	// Attestation failures go to stderr rather than into the bundle: a verifier
+	// must reach its verdict from the evidence, not from the audited party's
+	// account of why a piece of it is missing. The operator still needs to know,
+	// because such a bundle will be refused.
+	printExportWarnings(report)
 	if *out == "" {
 		_, err := os.Stdout.Write(append(raw, '\n'))
 		return err
@@ -291,10 +327,28 @@ func cmdHSMAuditExport(ctx context.Context, svc *hsmaudit.Service, args []string
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Wrote %s (%d device log entr(ies), %d ledger entr(ies)).\n",
-		*out, len(b.LogEntries), len(b.Ledger))
+	fmt.Printf("Wrote %s (%d device log entr(ies), %d ledger entr(ies), %d key attestation(s)).\n",
+		*out, len(b.LogEntries), len(b.Ledger), len(b.KeyAttestations))
 	fmt.Printf("Bundle fingerprint: %s\n", fp)
 	return nil
+}
+
+func printExportWarnings(report *hsmaudit.ExportReport) {
+	if report == nil {
+		return
+	}
+	ids := make([]uint16, 0, len(report.AttestationErrors))
+	for id := range report.AttestationErrors {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		fmt.Fprintf(os.Stderr, "WARNING: could not attest key 0x%04x: %s\n", id, report.AttestationErrors[id])
+	}
+	if len(ids) > 0 {
+		fmt.Fprintln(os.Stderr, "A bundle missing an attestation for a key that signed cannot show that key is")
+		fmt.Fprintln(os.Stderr, "confined to the HSM, and verification will refuse it.")
+	}
 }
 
 // cmdHSMAuditVerify is the auditor-side offline verifier. It deliberately takes
@@ -307,6 +361,13 @@ func cmdHSMAuditVerify(args []string) error {
 	publishedPath := fs.String("published", "", "file of published artifact digests, one hex digest per line")
 	expectedAnchor := fs.String("anchor", "", "expected genesis chain anchor")
 	serial := fs.String("serial", "", "expected device serial")
+	var keyPaths repeatedFlag
+	fs.Var(&keyPaths, "key", "certificate or public key to prove; repeatable")
+	attestRoots := fs.String("attest-roots", "", "PEM file of YubiHSM attestation trust anchors")
+	requireAnchoredAttestation := fs.Bool("require-anchored-attestation", false,
+		"fail unless each device attestation certificate chains to a trusted attestation root")
+	allowUnattested := fs.Bool("allow-unattested-keys", false,
+		"report rather than fail when a key that signed is not attested")
 	tsaRootsPath := fs.String("tsa-roots", "", "PEM file of timestamp-authority trust anchors")
 	maxAge := fs.Duration("max-age", hsmaudit.DefaultMaxAge,
 		"reject the bundle when the newest attestation is older than this (0 reports the age without failing)")
@@ -327,9 +388,10 @@ func cmdHSMAuditVerify(args []string) error {
 		return err
 	}
 	opts := hsmaudit.VerifyOptions{
-		ExpectedAnchor: *expectedAnchor,
-		ExpectedSerial: *serial,
-		SkipFreshness:  *skipFreshness,
+		ExpectedAnchor:      *expectedAnchor,
+		ExpectedSerial:      *serial,
+		SkipFreshness:       *skipFreshness,
+		AllowUnattestedKeys: *allowUnattested,
 		Freshness: hsmaudit.FreshnessOptions{
 			// A -max-age of 0 means "report but do not fail", which
 			// FreshnessOptions spells as a negative duration (its own zero
@@ -337,6 +399,25 @@ func cmdHSMAuditVerify(args []string) error {
 			MaxAge:                orZero(*maxAge),
 			RequireIndependentTSA: *requireExternalTSA,
 		},
+	}
+	for _, path := range keyPaths {
+		key, err := readExpectedKey(path)
+		if err != nil {
+			return err
+		}
+		opts.ExpectedKeys = append(opts.ExpectedKeys, key)
+	}
+	if *attestRoots != "" || *requireAnchoredAttestation {
+		pol := hsmattest.DefaultPolicy()
+		pol.RequireAnchoredChain = *requireAnchoredAttestation
+		if *attestRoots != "" {
+			roots, inter, err := hsmattest.LoadRoots([]string{*attestRoots})
+			if err != nil {
+				return fmt.Errorf("reading -attest-roots: %w", err)
+			}
+			pol.Roots, pol.Intermediates = roots, inter
+		}
+		opts.AttestationPolicy = &pol
 	}
 	if *publishedPath != "" {
 		digests, err := readDigests(*publishedPath)
@@ -389,6 +470,12 @@ func printHSMAuditVerdict(res *hsmaudit.BundleResult, cont *hsmaudit.Continuatio
 	fmt.Println(res.Summary)
 	fmt.Println()
 	if res.Reconciliation != nil {
+		attested := map[uint16]*hsmaudit.AttestedKey{}
+		if res.Attestations != nil {
+			for _, a := range res.Attestations.Keys {
+				attested[a.ObjectID] = a
+			}
+		}
 		for _, k := range res.Reconciliation.Keys {
 			label := k.KeyLabel
 			if label == "" {
@@ -398,10 +485,27 @@ func printHSMAuditVerdict(res *hsmaudit.BundleResult, cont *hsmaudit.Continuatio
 			if !k.Balanced {
 				status = fmt.Sprintf("SURPLUS %+d", k.Surplus)
 			}
-			fmt.Printf("  key 0x%04x %-24s device %3d  ledger %3d  %s\n",
-				k.KeyID, label, k.DeviceSignatures, k.LedgerSignatures, status)
+			// The confinement column is the point of the per-key view: a
+			// balanced count for a key that is not shown to live in the HSM
+			// bounds the device's activity, not the key's.
+			confinement := "NOT ATTESTED"
+			if a := attested[k.KeyID]; a != nil {
+				switch {
+				case !a.OK:
+					confinement = "ATTESTATION FAILED"
+				case a.Attestation.IsGeneratedOnDevice():
+					confinement = "in-HSM, generated"
+				default:
+					confinement = "in-HSM"
+				}
+			}
+			fmt.Printf("  key 0x%04x %-24s device %3d  ledger %3d  %-9s  %s\n",
+				k.KeyID, label, k.DeviceSignatures, k.LedgerSignatures, status, confinement)
 		}
 		fmt.Println()
+	}
+	for _, k := range res.Keys {
+		printKeyProof(k)
 	}
 	if f := res.Freshness; f != nil {
 		switch {
@@ -440,9 +544,95 @@ func printHSMAuditVerdict(res *hsmaudit.BundleResult, cont *hsmaudit.Continuatio
 		fmt.Println("correspond to artifacts the CA actually published.")
 		fmt.Println()
 	}
+	if len(opts.ExpectedKeys) == 0 && res.OK {
+		fmt.Println("NOTE: no public key supplied (-key). The bundle accounts for every key the device")
+		fmt.Println("attests to holding, but says nothing about whether any particular key you hold —")
+		fmt.Println("the one in a CA certificate, say — is among them.")
+		fmt.Println()
+	}
 	for _, f := range res.Findings {
 		fmt.Printf("  - %s\n", f)
 	}
+}
+
+// printKeyProof renders the answer to "has this key signed anything that was
+// not published", spelling out each link of the argument rather than only its
+// conclusion — an auditor needs to see which step would have caught what.
+func printKeyProof(k *hsmaudit.KeyProofResult) {
+	name := k.Name
+	if name == "" {
+		name = k.SPKIFingerprint
+	}
+	fmt.Printf("Key %s\n", name)
+	fmt.Printf("  Public key:       %s\n", k.SPKIFingerprint)
+	if k.Key == nil {
+		fmt.Printf("  Attested:         NO — this bundle does not show that key lives in the device\n")
+	} else {
+		a := k.Key
+		fmt.Printf("  On-device handle: 0x%04x%s\n", a.ObjectID, labelParens(a.KeyLabel))
+		fmt.Printf("  Non-exportable:   %s\n", yesNo(a.Attestation.IsNonExportable()))
+		fmt.Printf("  Generated in HSM: %s\n", yesNo(a.Attestation.IsGeneratedOnDevice()))
+		fmt.Printf("  Device-signed:    %s\n", yesNo(a.Attestation.IsDeviceBound()))
+		fmt.Printf("  Chain anchored:   %s\n", yesNo(a.Attestation.IsChainAnchored()))
+		if a.Lifecycle != nil {
+			fmt.Printf("  Handle history:   %s\n", describeLifecycle(a.Lifecycle))
+		}
+		fmt.Printf("  Signatures:       device %d, accounted for %d\n", a.DeviceSignatures, a.LedgerSignatures)
+		if p := k.Published; p != nil {
+			fmt.Printf("  Published match:  %d of %d\n", p.Matched, p.Matched+len(p.Unpublished))
+		}
+		for _, w := range a.Attestation.Warnings {
+			fmt.Printf("  WARNING: %s\n", w)
+		}
+	}
+	fmt.Printf("  %s\n", k.Summary)
+	for _, f := range k.Findings {
+		fmt.Printf("    - %s\n", f)
+	}
+	fmt.Println()
+}
+
+func describeLifecycle(lc *hsmaudit.KeyLifecycle) string {
+	if !lc.OK {
+		return strings.Join(lc.Findings, "; ")
+	}
+	if len(lc.Generated) == 1 {
+		return fmt.Sprintf("generated on-device at log entry %d, never deleted or exported", lc.Generated[0].Entry)
+	}
+	return "created once, never deleted or exported"
+}
+
+func labelParens(label string) string {
+	if label == "" {
+		return ""
+	}
+	return " (" + label + ")"
+}
+
+// repeatedFlag collects a flag given more than once, so an auditor can prove
+// several keys against one bundle in a single run.
+type repeatedFlag []string
+
+func (r *repeatedFlag) String() string { return strings.Join(*r, ",") }
+
+func (r *repeatedFlag) Set(v string) error {
+	*r = append(*r, v)
+	return nil
+}
+
+// readExpectedKey loads a public key to prove, from a certificate or a bare
+// public key. Naming the result after the file keeps a multi-key report
+// readable without the auditor having to match fingerprints by eye.
+func readExpectedKey(path string) (hsmaudit.ExpectedKey, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return hsmaudit.ExpectedKey{}, fmt.Errorf("reading -key %s: %w", path, err)
+	}
+	pub, err := publicKeyFromPEM(raw)
+	if err != nil {
+		return hsmaudit.ExpectedKey{}, fmt.Errorf("-key %s: %w", path, err)
+	}
+	return hsmaudit.ExpectedKey{Name: filepath.Base(path), PublicKey: pub}, nil
 }
 
 func readBundle(path string) (*hsmaudit.Bundle, error) {

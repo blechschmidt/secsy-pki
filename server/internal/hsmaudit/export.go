@@ -1,6 +1,7 @@
 package hsmaudit
 
 import (
+	"crypto"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
+	"github.com/blechschmidt/secsy-pki/server/internal/hsmattest"
 )
 
 // The export bundle is the artifact a remote auditor receives. It has to stand
@@ -32,10 +34,21 @@ import (
 // carries the whole history rather than a window: a suffix cannot prove that
 // nothing happened before it started.
 
-// BundleVersion is the schema version of an export bundle. A verifier refuses
+// BundleVersion is the schema version this build produces. A verifier refuses
 // versions it does not know rather than silently skipping checks it cannot
 // perform.
-const BundleVersion = 1
+//
+// Version 2 added the key attestations (Task 170). Version 1 bundles are still
+// accepted — refusing them outright would tell an auditor holding an old export
+// nothing at all — but they carry no attestation, so the coverage check reports
+// every signing key as unconfined and verification fails unless the auditor
+// deliberately opts out. That is the honest outcome: a v1 bundle really does not
+// establish that the signing keys live inside the device.
+const (
+	BundleVersion = 2
+	// MinBundleVersion is the oldest schema this verifier will read.
+	MinBundleVersion = 1
+)
 
 // Bundle is a self-contained, remotely verifiable export of the HSM audit
 // state.
@@ -68,6 +81,15 @@ type Bundle struct {
 	// Ledger is the CA's hash-chained record of every signature it requested,
 	// carrying the digest of each signed input.
 	Ledger []LedgerEntry `json:"ledger"`
+
+	// KeyAttestations are the device's own signed statements about the keys that
+	// appear in the log and the ledger: this handle holds this public key, it was
+	// generated in here, and it cannot be exported. Without them the rest of the
+	// bundle proves that a number of operations happened on a device, not that a
+	// particular key produced them and nothing else — signatures made with a copy
+	// of the key on someone's laptop would leave no trace in any device log. See
+	// keyproof.go.
+	KeyAttestations []hsmattest.Attestation `json:"key_attestations,omitempty"`
 
 	// Freshness holds the RFC 3161 attestations that pin this history to real
 	// time. Without them a bundle proves the device signed only what was
@@ -107,8 +129,13 @@ type BundleResult struct {
 	Chain            *SegmentResult     `json:"chain"`
 	LedgerChain      LedgerVerifyResult `json:"ledger_chain"`
 	Reconciliation   *ReconcileResult   `json:"reconciliation"`
+	Attestations     *AttestationResult `json:"attestations,omitempty"`
 	Published        *PublishedResult   `json:"published,omitempty"`
 	Freshness        *FreshnessResult   `json:"freshness,omitempty"`
+
+	// Keys holds one verdict per public key the auditor asked about, answering
+	// "has this key signed anything that was not published" for each.
+	Keys []*KeyProofResult `json:"keys,omitempty"`
 
 	// Summary is a one-line operator-readable conclusion.
 	Summary string `json:"summary"`
@@ -143,6 +170,26 @@ type VerifyOptions struct {
 	// the device signed exactly what the CA's ledger claims — not that the
 	// ledger corresponds to anything real.
 	PublishedDigests []string
+	// ExpectedKeys are the public keys the auditor wants an answer about — the
+	// key in a CA certificate they are deciding whether to trust. Each one is
+	// resolved to a device object through the bundle's attestations and reported
+	// on separately. When empty, verification still checks that every signing key
+	// is attested, but the verdict is about the device rather than about any
+	// particular key.
+	ExpectedKeys []ExpectedKey
+	// AttestationPolicy overrides what each key attestation must show. Nil
+	// applies hsmattest.DefaultPolicy: generated on-device, non-exportable, and
+	// signed by the device's own attestation key. The expected serial, object ID
+	// and public key are always set from the bundle and cannot be overridden
+	// here, since those are the join rather than the policy.
+	AttestationPolicy *hsmattest.Policy
+	// AllowUnattestedKeys downgrades a missing or invalid key attestation from a
+	// failure to a report. It exists for a deployment that provisioned the audit
+	// log before this build could attest keys, and for inspecting a v1 bundle.
+	// It must not be used in a real audit: without attestation the bundle bounds
+	// what the device did, not what the key did, and a key copied out before the
+	// history began would sign elsewhere undetected.
+	AllowUnattestedKeys bool
 	// Freshness parameterizes the RFC 3161 staleness check. Its zero value
 	// applies DefaultMaxAge with no TSA trust anchors.
 	Freshness FreshnessOptions
@@ -164,15 +211,24 @@ type VerifyOptions struct {
 //  3. The device log chain re-derives from the sentinel, gap-free.
 //  4. The CA's signature ledger chain re-derives.
 //  5. Device signature counts equal ledger counts, per key.
-//  6. Every ledger digest corresponds to an independently obtained artifact.
-//  7. A trusted timestamp authority has attested to this history recently
+//  6. Every key that signed is attested by the device as living inside it, and
+//     the log shows that handle created once and never exported.
+//  7. Every ledger digest corresponds to an independently obtained artifact.
+//  8. A trusted timestamp authority has attested to this history recently
 //     enough that it is not simply an outdated snapshot.
+//  9. Each public key the auditor asked about is bound to an attested handle
+//     whose signatures are all accounted for.
 //
-// Steps 1-5 need nothing but the bundle. Step 6 needs the auditor to have
+// Steps 1-6 need nothing but the bundle. Step 7 needs the auditor to have
 // collected the published artifacts themselves, which is the only part of the
-// argument that cannot be delegated to the party being audited. Step 7 needs
+// argument that cannot be delegated to the party being audited. Step 8 needs
 // the CA to have been obtaining timestamps all along — which is why it is a
 // background job, not something an export can retrofit.
+//
+// Steps 5 and 6 are the two halves of one claim and neither is sufficient. Step
+// 5 alone counts operations on a device; step 6 is what makes those counts the
+// complete history of a *key*, by establishing that the private material was
+// created inside the HSM and has no path out of it.
 func VerifyBundle(b *Bundle, opts VerifyOptions) *BundleResult {
 	res := &BundleResult{OK: true}
 	fail := func(format string, args ...any) {
@@ -186,9 +242,9 @@ func VerifyBundle(b *Bundle, opts VerifyOptions) *BundleResult {
 		res.Findings = []string{"no bundle supplied"}
 		return res
 	}
-	if b.Version != BundleVersion {
-		fail("unsupported bundle version %d (this verifier understands %d); refusing to report a verdict it cannot compute",
-			b.Version, BundleVersion)
+	if b.Version < MinBundleVersion || b.Version > BundleVersion {
+		fail("unsupported bundle version %d (this verifier understands %d..%d); refusing to report a verdict it cannot compute",
+			b.Version, MinBundleVersion, BundleVersion)
 		res.Summary = "unsupported bundle version"
 		return res
 	}
@@ -239,7 +295,23 @@ func VerifyBundle(b *Bundle, opts VerifyOptions) *BundleResult {
 		fail("%v", err)
 	}
 
-	// 6. Ledger-vs-published match.
+	// 6. Key confinement: every key that signed is one the device attests to
+	// holding, and the log shows nothing that could have moved it or reused its
+	// handle.
+	pol := hsmattest.DefaultPolicy()
+	if opts.AttestationPolicy != nil {
+		pol = *opts.AttestationPolicy
+	}
+	res.Attestations = VerifyAttestations(b, pol)
+	if err := res.Attestations.Err(); err != nil {
+		if opts.AllowUnattestedKeys {
+			res.Findings = append(res.Findings, "IGNORED (-allow-unattested-keys): "+err.Error())
+		} else {
+			fail("%v", err)
+		}
+	}
+
+	// 7. Ledger-vs-published match.
 	if opts.PublishedDigests != nil {
 		res.Published = MatchPublished(b.Ledger, opts.PublishedDigests)
 		if err := res.Published.Err(); err != nil {
@@ -247,7 +319,7 @@ func VerifyBundle(b *Bundle, opts VerifyOptions) *BundleResult {
 		}
 	}
 
-	// 7. Freshness. This runs last because it is the only check whose subject is
+	// 8. Freshness. This runs late because it is the only check whose subject is
 	// the bundle as a whole rather than its contents: everything above says what
 	// the history contains, and this says whether that history is current.
 	if !opts.SkipFreshness {
@@ -257,8 +329,28 @@ func VerifyBundle(b *Bundle, opts VerifyOptions) *BundleResult {
 		}
 	}
 
+	// 9. The auditor's own question, per key. This runs last because it composes
+	// the results above into a statement about a public key someone actually
+	// holds, rather than about a device they do not.
+	for _, want := range opts.ExpectedKeys {
+		kp := ProveKey(b, res.Attestations, want, opts.PublishedDigests)
+		res.Keys = append(res.Keys, kp)
+		if err := kp.Err(); err != nil {
+			fail("public key %s: %v", describeExpectedKey(want, kp), err)
+		}
+	}
+
 	res.Summary = summarize(res, b, opts)
 	return res
+}
+
+// describeExpectedKey names a key in a finding: the auditor's own label when
+// they gave one, else the fingerprint.
+func describeExpectedKey(want ExpectedKey, res *KeyProofResult) string {
+	if want.Name != "" {
+		return want.Name
+	}
+	return res.SPKIFingerprint
 }
 
 func summarize(res *BundleResult, b *Bundle, opts VerifyOptions) string {
@@ -282,9 +374,26 @@ func summarize(res *BundleResult, b *Bundle, opts VerifyOptions) string {
 		asOf = fmt.Sprintf("current as of %s (%s ago, attested by a timestamp authority)",
 			f.NewestGenTime.Format(time.RFC3339), roundDuration(f.Age))
 	}
-	return fmt.Sprintf("OK: device %s performed %d signature(s) since the factory reset, all accounted for by %s; "+
+	// Naming the keys is the difference between "these many operations happened"
+	// and "these keys did this and nothing else". Only say it when the
+	// attestations actually established it.
+	subject := fmt.Sprintf("device %s", b.Device.Serial)
+	if a := res.Attestations; a != nil && a.OK && len(a.Keys) > 0 {
+		subject = fmt.Sprintf("device %s, using %d key(s) it attests are confined to it (%s)",
+			b.Device.Serial, len(a.Keys), describeAttestedKeys(a.Keys))
+	}
+	return fmt.Sprintf("OK: %s performed %d signature(s) since the factory reset, all accounted for by %s; "+
 		"no key abuse detected, %s",
-		b.Device.Serial, total, scope, asOf)
+		subject, total, scope, asOf)
+}
+
+// describeAttestedKeys lists attested handles compactly for the summary line.
+func describeAttestedKeys(keys []*AttestedKey) string {
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("0x%04x%s", k.ObjectID, labelSuffix(k.KeyLabel)))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // ContinuationResult is the verdict on whether one bundle genuinely extends
@@ -394,9 +503,47 @@ func VerifyContinuation(prev, next *Bundle) *ContinuationResult {
 		}
 	}
 
+	// A handle that attested to one public key in the earlier export and to a
+	// different one now means the key behind those signature counts changed
+	// identity mid-history. The log checks above would normally show the delete
+	// and re-create that requires, so this is a second, independent way to catch
+	// the substitution that does not depend on the log at all.
+	nextAttested := attestedPublicKeys(next)
+	for handle, prevKey := range attestedPublicKeys(prev) {
+		nextKey, ok := nextAttested[handle]
+		if !ok {
+			fail("object 0x%04x was attested in the previous export but is not attested now: the bundle no longer "+
+				"shows that the key behind its signatures is confined to the device", handle)
+			continue
+		}
+		if !publicKeysEqual(prevKey, nextKey) {
+			fail("object 0x%04x now attests a different public key than it did in the previous export: "+
+				"the signatures counted against that handle were not all made by the same key", handle)
+		}
+	}
+
 	res.NewSignatures = countSignatures(next.LogEntries) - countSignatures(prev.LogEntries)
 	res.Interval = describeInterval(prev, next)
 	return res
+}
+
+// attestedPublicKeys maps each attested on-device handle to the public key its
+// attestation certificate carries. Unparseable attestations are skipped here;
+// VerifyBundle is what reports them.
+func attestedPublicKeys(b *Bundle) map[uint16]crypto.PublicKey {
+	out := map[uint16]crypto.PublicKey{}
+	for i := range b.KeyAttestations {
+		cert, err := b.KeyAttestations[i].Certificate()
+		if err != nil {
+			continue
+		}
+		claims, err := hsmattest.ParseClaims(cert)
+		if err != nil {
+			continue
+		}
+		out[claims.ObjectID] = cert.PublicKey
+	}
+	return out
 }
 
 // describeInterval states, in trusted-clock terms, the window the two bundles
@@ -434,7 +581,7 @@ func newestGenTime(b *Bundle) (time.Time, bool) {
 func countSignatures(entries []hsm.AuditLogEntry) int {
 	n := 0
 	for _, e := range entries {
-		if _, isSign := hsm.SignCommands[e.Command]; isSign && signSucceeded(e) {
+		if _, isSign := hsm.SignCommands[e.Command]; isSign && entrySucceeded(e) {
 			n++
 		}
 	}
