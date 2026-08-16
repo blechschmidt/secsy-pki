@@ -1,0 +1,8 @@
+# Documentation-site toolchain, pinned so a local `make docs-site` and the
+# GitHub Pages workflow build byte-for-byte the same site.
+#
+# mkdocs-material pins compatible mkdocs / pymdown-extensions / Jinja2
+# versions itself, so this one pin fixes the whole stack. Bump it deliberately
+# and re-run `make docs-site` — the build is `--strict`, so a theme change that
+# breaks a link or an anchor fails loudly rather than shipping.
+mkdocs-material==9.7.7

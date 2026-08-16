@@ -1,0 +1,140 @@
+# Material for MkDocs configuration for the published documentation site.
+#
+# This is the *base* config. `scripts/build-docs.py` copies it to
+# `dist/mkdocs.yml` and appends the generated `nav:` — the navigation is
+# derived from the section indexes under `docs/` that `scripts/check-docs.sh`
+# already enforces, so a page joins the site's menu the moment it is indexed.
+# Do not add a `nav:` key here; the build script refuses to run if you do.
+#
+# Every relative path below is resolved from `dist/`, because that is where
+# mkdocs reads the assembled config from:
+#
+#   make docs-site    -> dist/docs-site/          (what CI publishes)
+#   make docs-serve   -> http://127.0.0.1:8000    (live preview)
+
+site_name: Secsy PKI
+site_url: https://blechschmidt.github.io/secsy-pki/
+site_author: Secsy PKI contributors
+site_description: >-
+  HSM-backed enterprise PKI — X.509 and SSH certificate authorities, ACME/EST/SCEP/CMP
+  enrollment, RFC 3161 timestamping and envelope-based secret encryption, with every
+  private key generated inside the hardware and never leaving it.
+copyright: Copyright &copy; 2026 Secsy PKI contributors — MIT licensed
+
+repo_url: https://github.com/blechschmidt/secsy-pki
+repo_name: blechschmidt/secsy-pki
+edit_uri: edit/enterprise/
+
+# Resolved from dist/, where build-docs.py writes the assembled config.
+docs_dir: docs-src
+site_dir: docs-site
+hooks:
+  - ../website/hooks.py
+
+theme:
+  name: material
+  language: en
+  favicon: assets/favicon.svg
+  icon:
+    logo: material/certificate-outline
+    repo: fontawesome/brands/github
+    edit: material/pencil
+    view: material/eye
+  palette:
+    # Follows the reader's OS preference, with a manual override either way.
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+  features:
+    - content.action.edit          # "edit this page" -> the file on GitHub
+    - content.action.view          # "view source" -> the raw file
+    - content.code.annotate
+    - content.code.copy            # copy button on every fenced block
+    - content.tooltips
+    - navigation.indexes           # a section's README.md is the section page
+    - navigation.instant           # SPA-style navigation
+    - navigation.instant.progress
+    - navigation.top               # back-to-top button
+    - navigation.tracking          # deep-link the anchor into the address bar
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.follow
+
+extra_css:
+  - assets/extra.css
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/blechschmidt/secsy-pki
+      name: secsy-pki on GitHub
+  generator: false
+
+plugins:
+  - search
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list                      # {: .md-button } and friends
+  - def_list
+  - footnotes
+  - md_in_html                     # the grid cards on the landing page
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+      # GitHub-compatible anchors. The ~800 cross-page links in docs/ were
+      # written against GitHub's slugs; python-markdown's default slugifier
+      # collapses runs of whitespace and would silently break every anchor
+      # that follows an em dash.
+      slugify: !!python/object/apply:pymdownx.slugs.slugify {kwds: {case: lower}}
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+# Built with `--strict`, so each of these is a build failure, not a log line.
+# Together with check-docs.sh this makes the site a second link gate: every
+# internal link *and* every heading anchor must resolve, and no page may be
+# missing from the navigation.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+  nav:
+    omitted_files: warn
+    not_found: warn
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn

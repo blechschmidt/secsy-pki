@@ -139,6 +139,50 @@ docs-check: ## Check documentation links, anchors, section indexes and quoted pa
 	@./scripts/check-docs.sh
 
 # ---------------------------------------------------------------------------
+# Documentation site (Task 173): the docs/ tree published to GitHub Pages
+# ---------------------------------------------------------------------------
+# scripts/build-docs.py stages this repository's Markdown — docs/, README,
+# ARCHITECTURE, TESTING and examples/ — mirroring the repository layout so the
+# relative links between pages survive, derives the navigation from the section
+# indexes docs-check already enforces, and writes dist/mkdocs.yml. Material for
+# MkDocs then renders it.
+#
+# The build is --strict: a link that does not resolve in the rendered site, a
+# dead #heading-anchor, or a page missing from the navigation fails it. That
+# makes this a second, complementary gate to docs-check (structure) — and it is
+# the same command the Pages workflow runs, so CI and local cannot drift.
+#
+# Python 3 is the only prerequisite: the toolchain is pinned in
+# website/requirements.txt and installed into a throw-away venv under dist/.
+DOCS_VENV    ?= $(DIST)/docs-venv
+DOCS_PORT    ?= 8000
+DOCS_PY      := $(DOCS_VENV)/bin/python
+DOCS_MKDOCS  := $(DOCS_VENV)/bin/mkdocs
+# Bumped whenever website/requirements.txt changes, so the venv is rebuilt.
+$(DOCS_VENV): website/requirements.txt
+	@echo "==> creating docs venv in $(DOCS_VENV)"
+	@rm -rf $(DOCS_VENV)
+	@python3 -m venv $(DOCS_VENV)
+	@$(DOCS_VENV)/bin/pip install --quiet --upgrade pip
+	@$(DOCS_VENV)/bin/pip install --quiet -r website/requirements.txt
+	@touch $(DOCS_VENV)
+
+.PHONY: docs-stage
+docs-stage: ## Stage the Markdown + generate the nav into dist/docs-src (no render)
+	@python3 scripts/build-docs.py
+
+.PHONY: docs-site
+docs-site: $(DOCS_VENV) docs-stage ## Build the documentation site into dist/docs-site
+	@echo "==> mkdocs build --strict"
+	@$(DOCS_MKDOCS) build --strict -f $(DIST)/mkdocs.yml
+	@echo "==> site built: $(DIST)/docs-site/index.html"
+
+.PHONY: docs-serve
+docs-serve: $(DOCS_VENV) docs-stage ## Live-preview the documentation site (http://127.0.0.1:$(DOCS_PORT))
+	@echo "==> mkdocs serve on http://127.0.0.1:$(DOCS_PORT)  (re-run to pick up docs/ edits)"
+	@$(DOCS_MKDOCS) serve --strict -f $(DIST)/mkdocs.yml -a 127.0.0.1:$(DOCS_PORT)
+
+# ---------------------------------------------------------------------------
 # Data-race detector (Task 109)
 # ---------------------------------------------------------------------------
 # Runs the test suite under Go's -race detector — the standard tool for catching

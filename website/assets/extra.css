@@ -1,0 +1,71 @@
+/* Small refinements on top of Material for MkDocs.
+ *
+ * Deliberately minimal: the theme already carries the design. This file only
+ * styles the landing-page hero and takes the edge off two things the imported
+ * repository Markdown does a lot of — very wide index tables and long inline
+ * `code` spans in prose. */
+
+/* ---------------------------------------------------------------- landing */
+
+.secsy-tagline {
+  font-size: 1.15rem;
+  line-height: 1.65;
+  max-width: 46rem;
+  color: var(--md-default-fg-color--light);
+}
+
+.secsy-hero-actions {
+  margin-top: 1.4em;
+}
+
+.secsy-hero-actions .md-button {
+  margin: 0 0.4rem 0.6rem 0;
+}
+
+/* Grid-card icons pick up the accent colour instead of body text. */
+.md-typeset .grid.cards > ul > li > hr + p:first-of-type,
+.md-typeset .grid.cards .twemoji.lg {
+  color: var(--md-primary-fg-color);
+}
+
+.md-typeset .grid.cards > ul > li {
+  border-radius: 0.4rem;
+  transition: border-color 125ms, box-shadow 125ms;
+}
+
+.md-typeset .grid.cards > ul > li:hover {
+  border-color: var(--md-primary-fg-color);
+  box-shadow: 0 0 0.4rem rgba(0, 0, 0, 0.08);
+}
+
+/* ----------------------------------------------------------------- tables */
+
+/* The section indexes are two-column tables whose second column is a full
+ * paragraph. Give the link column room to stay on one line and let the prose
+ * column take the rest. */
+.md-typeset table:not([class]) th:first-child {
+  min-width: 12rem;
+}
+
+.md-typeset table:not([class]) td {
+  vertical-align: top;
+}
+
+/* ------------------------------------------------------------------- code */
+
+/* Long identifiers (`secsy-ca hsm-audit provision/collect/timestamp`) must be
+ * allowed to wrap in prose, or narrow screens get a horizontal scrollbar. */
+.md-typeset p code,
+.md-typeset li code,
+.md-typeset td code {
+  word-break: break-word;
+}
+
+/* --------------------------------------------------------------- headings */
+
+/* The guides use em-dash subtitles in headings; a touch more leading keeps
+ * the wrapped second line readable. */
+.md-typeset h1,
+.md-typeset h2 {
+  line-height: 1.3;
+}

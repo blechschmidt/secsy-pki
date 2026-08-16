@@ -2,6 +2,8 @@
 
 HSM-backed SSH and X.509 Certificate Authority with OIDC authentication, publicly auditable signing logs, and a web UI.
 
+**Documentation: <https://blechschmidt.github.io/secsy-pki/>** — every guide below, searchable and cross-linked. Built from this repository by [a CI workflow](docs/development/documentation-site.md); run `make docs-serve` to read it locally.
+
 Secsy PKI manages a public key infrastructure where CA private keys are stored on hardware security modules (HSMs) via PKCS#11. Users authenticate through OpenID Connect and request SSH or X.509 certificates signed by the HSM. Every signing operation is recorded in a cryptographically verifiable audit log backed by the YubiHSM's hardware hash chain.
 
 ## Enterprise Edition
@@ -27,7 +29,9 @@ See the [architecture overview](ARCHITECTURE.md) and the full guide index in [`d
 
 Comprehensive deployment and operations guides live in [`docs/`](docs/README.md),
 grouped into twelve sections. Each links to its own index; the
-[documentation map](docs/README.md) lists every page.
+[documentation map](docs/README.md) lists every page. The same pages are
+published — with search and navigation — at
+<https://blechschmidt.github.io/secsy-pki/> ([how](docs/development/documentation-site.md)).
 
 | Section | Covers |
 |---------|--------|

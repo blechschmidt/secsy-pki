@@ -37,3 +37,6 @@ cosign.pub
 
 # stray go build output in server/
 server/server
+
+# Python bytecode (mkdocs imports website/hooks.py when building the docs site)
+__pycache__/

@@ -9,6 +9,10 @@ and the `secsy-ssh` workflow. Everything below is the enterprise reference,
 grouped into 12 sections. Each section folder has its own index with fuller
 descriptions; this page is the map.
 
+These pages are also published — with search and navigation — at
+<https://blechschmidt.github.io/secsy-pki/>, built from this tree by
+[the documentation-site workflow](development/documentation-site.md).
+
 ## Start here
 
 | If you want to… | Go to |
@@ -179,6 +183,7 @@ descriptions; this page is the map.
 | [Resilience & fault-injection testing](development/resilience.md) | Deliberately breaking dependencies to prove the PKI fails closed |
 | [Authorization & tenant-isolation regression matrix](development/authz-regression-matrix.md) | A pinned RBAC/tenant decision for every REST route and RPC |
 | [Supply-chain security (SBOM, signing, SLSA)](development/supply-chain.md) | SBOMs, cosign signing, SLSA provenance and the govulncheck gate |
+| [Documentation site (GitHub Pages)](development/documentation-site.md) | How these pages are published, and how to build the site locally |
 
 
 ### Architecture Decision Records — [`adr/`](adr/README.md)

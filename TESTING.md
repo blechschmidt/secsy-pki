@@ -343,6 +343,25 @@ fast and runs as the required, no-HSM **Documentation structure** job in
 folder and link it from that section's `README.md`; the gate will tell you if you
 forget.
 
+### Rendering gate
+
+The same pages are published as a site
+([https://blechschmidt.github.io/secsy-pki/](https://blechschmidt.github.io/secsy-pki/)),
+built from this tree rather than a copy of it:
+
+```bash
+make docs-site       # build into dist/docs-site/ (strict)
+make docs-serve      # live preview on http://127.0.0.1:8000
+```
+
+`docs-check` reasons about the repository layout; the site build reasons about
+the *rendered* result, and fails on a link that does not resolve as published, a
+`#anchor` no heading produces, or a page missing from the navigation. Python 3
+is the only prerequisite (the pinned toolchain installs into `dist/docs-venv/`)
+— no Go, HSM or database. It runs on every documentation change in
+`.github/workflows/docs.yaml`, which also publishes the site. See
+[docs/development/documentation-site.md](docs/development/documentation-site.md).
+
 ## CI
 
 The GitHub Actions workflow (`.github/workflows/test.yaml`) installs

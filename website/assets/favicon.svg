@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Secsy PKI">
+  <!-- A shield (the CA) with a keyhole (the key that never leaves it). -->
+  <path fill="#3f51b5" d="M16 1.5 4.5 6.2v9.1c0 7.2 4.8 13.2 11.5 15.2 6.7-2 11.5-8 11.5-15.2V6.2L16 1.5z"/>
+  <path fill="#fff" d="M16 9.4a3.4 3.4 0 0 0-1.7 6.35V21a1.7 1.7 0 0 0 3.4 0v-5.25A3.4 3.4 0 0 0 16 9.4zm0 2.2a1.2 1.2 0 1 1 0 2.4 1.2 1.2 0 0 1 0-2.4z"/>
+</svg>

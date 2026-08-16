@@ -28,6 +28,11 @@ import os, re, subprocess, sys
 ROOT = os.getcwd()
 SKIP_DIRS = {".git", ".cloop", "node_modules", "dist", "coverage", "test-ssh"}
 
+# Pages written for the documentation site (scripts/build-docs.py) rather than
+# for the repository. They are staged at the repository root, so their relative
+# links are authored against ROOT, not against the folder they are stored in.
+SITE_AUTHORED = {"website/index.md"}
+
 LINK_RE   = re.compile(r'\]\(\s*([^)\s]+?)\s*\)')
 REFDEF_RE = re.compile(r'^\s*\[[^\]]+\]:\s*(\S+)', re.M)
 EXTERNAL  = re.compile(r'^(https?:|mailto:|tel:|data:|#)')
@@ -108,7 +113,8 @@ for f in md_files():
         if not path:
             continue
         checked += 1
-        resolved = os.path.normpath(os.path.join(os.path.dirname(f), path))
+        base = ROOT if rel(f) in SITE_AUTHORED else os.path.dirname(f)
+        resolved = os.path.normpath(os.path.join(base, path))
         if not os.path.exists(resolved):
             problems.append(f"broken link   {rel(f)} -> {target}")
         elif anchor and resolved.endswith(".md") and anchor not in anchors_of(resolved):
