@@ -513,6 +513,16 @@ func authzMatrix() []rc {
 		// than 200 — the reachability probe accepts that; the point of the row is
 		// that a tenant-scoped caller is still refused.
 		platRd("GET", "/api/hsm/audit-bundle", "/api/hsm/audit-bundle"),
+		// Task 168 key attestation. Producing one touches the device, so it is
+		// hsm:manage like the other device operations; the harness has no HSM, so
+		// a permitted caller gets 500 rather than 200 and the row's job is to show
+		// that a tenant admin is still refused.
+		hsmMg("GET", "/api/hsm/keys/{label}/attestation", "/api/hsm/keys/authz-key/attestation", ""),
+		hsmMg("GET", "/api/ca/{id}/key-attestation", "/api/ca/authz-ca/key-attestation", ""),
+		// Verifying one touches nothing, and is audit:read for the same reason the
+		// audit bundle is: an auditor must be able to check the evidence without
+		// holding the capability that administers the device.
+		platRd("POST", "/api/hsm/attestation:verify", "/api/hsm/attestation:verify"),
 
 		// OpenAPI spec + docs UI (public).
 		pub("GET", "/openapi.json", "/openapi.json"),

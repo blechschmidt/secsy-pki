@@ -1941,6 +1941,23 @@ type HMACVerifyResponse struct {
 	Version *int `json:"version,omitempty"`
 }
 
+// HSMAttestationVerifyRequest defines model for HSMAttestationVerifyRequest.
+type HSMAttestationVerifyRequest struct {
+	// CertificatePem The per-key attestation certificate.
+	CertificatePem string `json:"certificate_pem"`
+
+	// DeviceCertificatePem The device attestation certificate that issued it.
+	DeviceCertificatePem *string `json:"device_certificate_pem,omitempty"`
+	ExpectedLabel        *string `json:"expected_label,omitempty"`
+
+	// ExpectedPublicKeyPem A PUBLIC KEY or CERTIFICATE whose key the attested key must equal. This is what ties an attestation to a specific CA.
+	ExpectedPublicKeyPem *string `json:"expected_public_key_pem,omitempty"`
+	ExpectedSerial       *string `json:"expected_serial,omitempty"`
+
+	// RequireAnchoredChain Override the configured chain-anchoring requirement.
+	RequireAnchoredChain *bool `json:"require_anchored_chain,omitempty"`
+}
+
 // HSMAuditEntry defines model for HSMAuditEntry.
 type HSMAuditEntry struct {
 	Command     *int    `json:"command,omitempty"`
@@ -1972,6 +1989,73 @@ type HSMInfo struct {
 	Serial               *string `json:"serial,omitempty"`
 	SuppressAuditWarning *bool   `json:"suppress_audit_warning,omitempty"`
 	Version              *string `json:"version,omitempty"`
+}
+
+// HSMKeyAttestation A self-contained YubiHSM key attestation. It carries certificates rather than only conclusions so a third party can re-derive the verdict.
+type HSMKeyAttestation struct {
+	// CertificatePem The per-key attestation certificate the device signed.
+	CertificatePem *string `json:"certificate_pem,omitempty"`
+
+	// Claims The decoded device assertions. Informational — verification re-parses the certificate and ignores this field.
+	Claims *map[string]interface{} `json:"claims,omitempty"`
+
+	// DeviceCertificatePem The device's own attestation certificate, which issued the one above. It travels with the attestation because an auditor cannot read it off a device they do not have.
+	DeviceCertificatePem *string    `json:"device_certificate_pem,omitempty"`
+	KeyLabel             *string    `json:"key_label,omitempty"`
+	ProducedAt           *time.Time `json:"produced_at,omitempty"`
+}
+
+// HSMKeyAttestationResponse defines model for HSMKeyAttestationResponse.
+type HSMKeyAttestationResponse struct {
+	// Attestation A self-contained YubiHSM key attestation. It carries certificates rather than only conclusions so a third party can re-derive the verdict.
+	Attestation *HSMKeyAttestation `json:"attestation,omitempty"`
+
+	// Verification The verdict on one key attestation.
+	Verification *HSMKeyAttestationResult `json:"verification,omitempty"`
+}
+
+// HSMKeyAttestationResult The verdict on one key attestation.
+type HSMKeyAttestationResult struct {
+	CanSign      *bool     `json:"can_sign,omitempty"`
+	Capabilities *[]string `json:"capabilities,omitempty"`
+
+	// ChainAnchored The device certificate chains to a configured trust anchor. False is common on genuine hardware whose per-batch sub-CA Yubico does not publish, which is why it is not required by default.
+	ChainAnchored *bool `json:"chain_anchored,omitempty"`
+	Checks        *[]struct {
+		Detail *string `json:"detail,omitempty"`
+		Name   *string `json:"name,omitempty"`
+		Passed *bool   `json:"passed,omitempty"`
+	} `json:"checks,omitempty"`
+
+	// DeviceBound The attestation's signature verified against the device attestation certificate — this device really made these assertions.
+	DeviceBound     *bool   `json:"device_bound,omitempty"`
+	DeviceSerial    *string `json:"device_serial,omitempty"`
+	Domains         *[]int  `json:"domains,omitempty"`
+	FirmwareVersion *string `json:"firmware_version,omitempty"`
+
+	// GeneratedOnDevice The key was created inside the HSM and so never existed anywhere else. Without this, non-exportability only means no copy can leave now — not that none was made before import.
+	GeneratedOnDevice *bool   `json:"generated_on_device,omitempty"`
+	KeyLabel          *string `json:"key_label,omitempty"`
+
+	// KeyMatched Whether the attested key equals the expected key, when one was supplied.
+	KeyMatched *bool `json:"key_matched,omitempty"`
+
+	// NonExportable The key holds no capability permitting export, so its private material cannot leave the HSM.
+	NonExportable      *bool     `json:"non_exportable,omitempty"`
+	ObjectId           *int      `json:"object_id,omitempty"`
+	Origin             *string   `json:"origin,omitempty"`
+	Problems           *[]string `json:"problems,omitempty"`
+	PublicKeyAlgorithm *string   `json:"public_key_algorithm,omitempty"`
+	PublicKeyDetail    *string   `json:"public_key_detail,omitempty"`
+
+	// SpkiFingerprint SubjectPublicKeyInfo fingerprint in the same "SHA256:<base64>" form the certificate inventory stores.
+	SpkiFingerprint *string `json:"spki_fingerprint,omitempty"`
+	Summary         *string `json:"summary,omitempty"`
+	TrustAnchor     *string `json:"trust_anchor,omitempty"`
+
+	// Verified Every required check passed.
+	Verified *bool     `json:"verified,omitempty"`
+	Warnings *[]string `json:"warnings,omitempty"`
 }
 
 // HoldResult Outcome of a certificate suspend (hold) or release.
@@ -3780,6 +3864,9 @@ type CreateGroupJSONRequestBody = CreateGroupRequest
 // AddGroupMemberJSONRequestBody defines body for AddGroupMember for application/json ContentType.
 type AddGroupMemberJSONRequestBody = AddGroupMemberRequest
 
+// VerifyHSMAttestationJSONRequestBody defines body for VerifyHSMAttestation for application/json ContentType.
+type VerifyHSMAttestationJSONRequestBody = HSMAttestationVerifyRequest
+
 // CreateCAJSONRequestBody defines body for CreateCA for application/json ContentType.
 type CreateCAJSONRequestBody = CreateCARequest
 
@@ -4082,6 +4169,9 @@ type ClientInterface interface {
 
 	IssueIntermediateCA(ctx context.Context, id CAId, body IssueIntermediateCAJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetCAKeyAttestation request
+	GetCAKeyAttestation(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// PostOCSPWithBody request with any body
 	PostOCSPWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -4193,6 +4283,11 @@ type ClientInterface interface {
 	// GetHSMAttestation request
 	GetHSMAttestation(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// VerifyHSMAttestationWithBody request with any body
+	VerifyHSMAttestationWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	VerifyHSMAttestation(ctx context.Context, body VerifyHSMAttestationJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetHSMAuditLog request
 	GetHSMAuditLog(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -4204,6 +4299,9 @@ type ClientInterface interface {
 
 	// GetHSMInfo request
 	GetHSMInfo(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetHSMKeyAttestation request
+	GetHSMKeyAttestation(ctx context.Context, label string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ProvisionHSMAudit request
 	ProvisionHSMAudit(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5035,6 +5133,18 @@ func (c *Client) IssueIntermediateCA(ctx context.Context, id CAId, body IssueInt
 	return c.Client.Do(req)
 }
 
+func (c *Client) GetCAKeyAttestation(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetCAKeyAttestationRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) PostOCSPWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPostOCSPRequestWithBody(c.Server, id, contentType, body)
 	if err != nil {
@@ -5527,6 +5637,30 @@ func (c *Client) GetHSMAttestation(ctx context.Context, reqEditors ...RequestEdi
 	return c.Client.Do(req)
 }
 
+func (c *Client) VerifyHSMAttestationWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyHSMAttestationRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyHSMAttestation(ctx context.Context, body VerifyHSMAttestationJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyHSMAttestationRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) GetHSMAuditLog(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetHSMAuditLogRequest(c.Server)
 	if err != nil {
@@ -5565,6 +5699,18 @@ func (c *Client) FactoryResetHSM(ctx context.Context, reqEditors ...RequestEdito
 
 func (c *Client) GetHSMInfo(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetHSMInfoRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetHSMKeyAttestation(ctx context.Context, label string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetHSMKeyAttestationRequest(c.Server, label)
 	if err != nil {
 		return nil, err
 	}
@@ -8693,6 +8839,40 @@ func NewIssueIntermediateCARequestWithBody(server string, id CAId, contentType s
 	return req, nil
 }
 
+// NewGetCAKeyAttestationRequest generates requests for GetCAKeyAttestation
+func NewGetCAKeyAttestationRequest(server string, id string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/key-attestation", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewPostOCSPRequestWithBody generates requests for PostOCSP with any type of body
 func NewPostOCSPRequestWithBody(server string, id CAId, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
@@ -10155,6 +10335,46 @@ func NewGetHSMAttestationRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewVerifyHSMAttestationRequest calls the generic VerifyHSMAttestation builder with application/json body
+func NewVerifyHSMAttestationRequest(server string, body VerifyHSMAttestationJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewVerifyHSMAttestationRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewVerifyHSMAttestationRequestWithBody generates requests for VerifyHSMAttestation with any type of body
+func NewVerifyHSMAttestationRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/hsm/attestation:verify")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewGetHSMAuditLogRequest generates requests for GetHSMAuditLog
 func NewGetHSMAuditLogRequest(server string) (*http.Request, error) {
 	var err error
@@ -10246,6 +10466,40 @@ func NewGetHSMInfoRequest(server string) (*http.Request, error) {
 	}
 
 	operationPath := fmt.Sprintf("/api/hsm/info")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetHSMKeyAttestationRequest generates requests for GetHSMKeyAttestation
+func NewGetHSMKeyAttestationRequest(server string, label string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "label", runtime.ParamLocationPath, label)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/hsm/keys/%s/attestation", pathParam0)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -13441,6 +13695,9 @@ type ClientWithResponsesInterface interface {
 
 	IssueIntermediateCAWithResponse(ctx context.Context, id CAId, body IssueIntermediateCAJSONRequestBody, reqEditors ...RequestEditorFn) (*IssueIntermediateCAResponse, error)
 
+	// GetCAKeyAttestationWithResponse request
+	GetCAKeyAttestationWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*GetCAKeyAttestationResponse, error)
+
 	// PostOCSPWithBodyWithResponse request with any body
 	PostOCSPWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostOCSPResponse, error)
 
@@ -13552,6 +13809,11 @@ type ClientWithResponsesInterface interface {
 	// GetHSMAttestationWithResponse request
 	GetHSMAttestationWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHSMAttestationResponse, error)
 
+	// VerifyHSMAttestationWithBodyWithResponse request with any body
+	VerifyHSMAttestationWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyHSMAttestationResponse, error)
+
+	VerifyHSMAttestationWithResponse(ctx context.Context, body VerifyHSMAttestationJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyHSMAttestationResponse, error)
+
 	// GetHSMAuditLogWithResponse request
 	GetHSMAuditLogWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHSMAuditLogResponse, error)
 
@@ -13563,6 +13825,9 @@ type ClientWithResponsesInterface interface {
 
 	// GetHSMInfoWithResponse request
 	GetHSMInfoWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHSMInfoResponse, error)
+
+	// GetHSMKeyAttestationWithResponse request
+	GetHSMKeyAttestationWithResponse(ctx context.Context, label string, reqEditors ...RequestEditorFn) (*GetHSMKeyAttestationResponse, error)
 
 	// ProvisionHSMAuditWithResponse request
 	ProvisionHSMAuditWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ProvisionHSMAuditResponse, error)
@@ -14637,6 +14902,30 @@ func (r IssueIntermediateCAResponse) StatusCode() int {
 	return 0
 }
 
+type GetCAKeyAttestationResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *HSMKeyAttestationResponse
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetCAKeyAttestationResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetCAKeyAttestationResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type PostOCSPResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -15312,6 +15601,33 @@ func (r GetHSMAttestationResponse) StatusCode() int {
 	return 0
 }
 
+type VerifyHSMAttestationResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *struct {
+		// Verification The verdict on one key attestation.
+		Verification *HSMKeyAttestationResult `json:"verification,omitempty"`
+	}
+	JSON400 *BadRequest
+	JSON403 *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r VerifyHSMAttestationResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r VerifyHSMAttestationResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type GetHSMAuditLogResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -15395,6 +15711,29 @@ func (r GetHSMInfoResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetHSMInfoResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetHSMKeyAttestationResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *HSMKeyAttestationResponse
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r GetHSMKeyAttestationResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetHSMKeyAttestationResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -17501,6 +17840,15 @@ func (c *ClientWithResponses) IssueIntermediateCAWithResponse(ctx context.Contex
 	return ParseIssueIntermediateCAResponse(rsp)
 }
 
+// GetCAKeyAttestationWithResponse request returning *GetCAKeyAttestationResponse
+func (c *ClientWithResponses) GetCAKeyAttestationWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*GetCAKeyAttestationResponse, error) {
+	rsp, err := c.GetCAKeyAttestation(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetCAKeyAttestationResponse(rsp)
+}
+
 // PostOCSPWithBodyWithResponse request with arbitrary body returning *PostOCSPResponse
 func (c *ClientWithResponses) PostOCSPWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostOCSPResponse, error) {
 	rsp, err := c.PostOCSPWithBody(ctx, id, contentType, body, reqEditors...)
@@ -17858,6 +18206,23 @@ func (c *ClientWithResponses) GetHSMAttestationWithResponse(ctx context.Context,
 	return ParseGetHSMAttestationResponse(rsp)
 }
 
+// VerifyHSMAttestationWithBodyWithResponse request with arbitrary body returning *VerifyHSMAttestationResponse
+func (c *ClientWithResponses) VerifyHSMAttestationWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyHSMAttestationResponse, error) {
+	rsp, err := c.VerifyHSMAttestationWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyHSMAttestationResponse(rsp)
+}
+
+func (c *ClientWithResponses) VerifyHSMAttestationWithResponse(ctx context.Context, body VerifyHSMAttestationJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyHSMAttestationResponse, error) {
+	rsp, err := c.VerifyHSMAttestation(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyHSMAttestationResponse(rsp)
+}
+
 // GetHSMAuditLogWithResponse request returning *GetHSMAuditLogResponse
 func (c *ClientWithResponses) GetHSMAuditLogWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHSMAuditLogResponse, error) {
 	rsp, err := c.GetHSMAuditLog(ctx, reqEditors...)
@@ -17892,6 +18257,15 @@ func (c *ClientWithResponses) GetHSMInfoWithResponse(ctx context.Context, reqEdi
 		return nil, err
 	}
 	return ParseGetHSMInfoResponse(rsp)
+}
+
+// GetHSMKeyAttestationWithResponse request returning *GetHSMKeyAttestationResponse
+func (c *ClientWithResponses) GetHSMKeyAttestationWithResponse(ctx context.Context, label string, reqEditors ...RequestEditorFn) (*GetHSMKeyAttestationResponse, error) {
+	rsp, err := c.GetHSMKeyAttestation(ctx, label, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetHSMKeyAttestationResponse(rsp)
 }
 
 // ProvisionHSMAuditWithResponse request returning *ProvisionHSMAuditResponse
@@ -19906,6 +20280,46 @@ func ParseIssueIntermediateCAResponse(rsp *http.Response) (*IssueIntermediateCAR
 	return response, nil
 }
 
+// ParseGetCAKeyAttestationResponse parses an HTTP response from a GetCAKeyAttestationWithResponse call
+func ParseGetCAKeyAttestationResponse(rsp *http.Response) (*GetCAKeyAttestationResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetCAKeyAttestationResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest HSMKeyAttestationResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParsePostOCSPResponse parses an HTTP response from a PostOCSPWithResponse call
 func ParsePostOCSPResponse(rsp *http.Response) (*PostOCSPResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -20901,6 +21315,49 @@ func ParseGetHSMAttestationResponse(rsp *http.Response) (*GetHSMAttestationRespo
 	return response, nil
 }
 
+// ParseVerifyHSMAttestationResponse parses an HTTP response from a VerifyHSMAttestationWithResponse call
+func ParseVerifyHSMAttestationResponse(rsp *http.Response) (*VerifyHSMAttestationResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &VerifyHSMAttestationResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest struct {
+			// Verification The verdict on one key attestation.
+			Verification *HSMKeyAttestationResult `json:"verification,omitempty"`
+		}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseGetHSMAuditLogResponse parses an HTTP response from a GetHSMAuditLogWithResponse call
 func ParseGetHSMAuditLogResponse(rsp *http.Response) (*GetHSMAuditLogResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -21006,6 +21463,39 @@ func ParseGetHSMInfoResponse(rsp *http.Response) (*GetHSMInfoResponse, error) {
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetHSMKeyAttestationResponse parses an HTTP response from a GetHSMKeyAttestationWithResponse call
+func ParseGetHSMKeyAttestationResponse(rsp *http.Response) (*GetHSMKeyAttestationResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetHSMKeyAttestationResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest HSMKeyAttestationResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
 
 	}
 

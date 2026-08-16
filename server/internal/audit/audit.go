@@ -277,6 +277,15 @@ const (
 	ActionGroupDelete            = "group.delete"
 	ActionHSMProvisionAudit      = "hsm.provision_audit"
 	ActionHSMFactoryReset        = "hsm.factory_reset"
+	// ActionHSMKeyAttestation records one YubiHSM key attestation (Task 168):
+	// the device was asked to attest an asymmetric key, and the result was
+	// checked against the configured policy. Detail carries the verdict, so the
+	// log retains when a CA key was last shown to be non-exportable and
+	// generated on-device — and, more usefully, when that stopped being true.
+	// ResultError covers both an unreachable device and an attestation that was
+	// obtained but did not satisfy the policy; Detail distinguishes them, and
+	// the second is a finding rather than an outage.
+	ActionHSMKeyAttestation = "hsm.key_attestation"
 	// Key-ceremony, backup, and disaster-recovery lifecycle operations. A
 	// ceremony records its start, each operator's M-of-N confirmation, and its
 	// completion (or abort) alongside the underlying ca.init_root /

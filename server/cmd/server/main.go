@@ -856,6 +856,16 @@ func main() {
 	// attestation gate inert.
 	api.SetAttestationVerifier(attestVerifier)
 
+	// YubiHSM key-attestation policy (Task 168) — the trust anchors and the
+	// properties a key must show. Resolved at startup rather than per request so
+	// that a bad anchor file or an unknown capability name is a boot failure
+	// instead of a surprise the first time an operator asks for an attestation.
+	keyAttestPolicy, err := cfg.YubiHSM.AttestationPolicy()
+	if err != nil {
+		log.Fatalf("Invalid YubiHSM key-attestation configuration: %v", err)
+	}
+	api.SetKeyAttestationPolicy(keyAttestPolicy)
+
 	// ACME (RFC 8555) automated-issuance server. Its endpoints authenticate
 	// clients via JWS account keys (not OIDC/basic auth) and are therefore
 	// registered directly on the mux, outside the OIDC auth middleware.

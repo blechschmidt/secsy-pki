@@ -382,29 +382,15 @@ func GetSignedAuditLog(cfg Config) (*SignedAuditLog, error) {
 }
 
 // GetKeyAttestationCert gets an attestation certificate for a key by its label.
+//
+// Label resolution is exact; see FindAsymmetricKey for why a prefix match here
+// was a correctness bug rather than a convenience.
 func GetKeyAttestationCert(cfg Config, keyLabel string) (string, error) {
-	// First find the key's object ID
-	out, err := runShell(cfg, "list objects 0")
+	keyID, err := FindAsymmetricKey(cfg, keyLabel)
 	if err != nil {
 		return "", err
 	}
-	// Parse "id: 0x50dd, type: asymmetric-key, ..., label: ssh-pki-root-ca"
-	re := regexp.MustCompile(`id:\s+0x([0-9a-fA-F]+),\s+type:\s+asymmetric-key,.*label:\s+` + regexp.QuoteMeta(keyLabel))
-	m := re.FindStringSubmatch(out)
-	if len(m) < 2 {
-		return "", fmt.Errorf("key %q not found on HSM", keyLabel)
-	}
-	keyID := m[1]
-
-	attestOut, err := runShell(cfg, fmt.Sprintf("attest asymmetric 0 0x%s", keyID))
-	if err != nil {
-		return "", fmt.Errorf("attesting key 0x%s: %w", keyID, err)
-	}
-	cert := extractPEM(attestOut)
-	if cert == "" {
-		return "", fmt.Errorf("could not parse attestation cert for key 0x%s", keyID)
-	}
-	return cert, nil
+	return AttestAsymmetricKey(cfg, keyID, 0)
 }
 
 // SignAuditEntries signs the last entry's hash for pre-collected entries (e.g., from a database).

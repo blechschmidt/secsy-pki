@@ -94,7 +94,13 @@ func run(args []string) error {
 	if command == "hsm-audit" && len(cmdArgs) > 0 && cmdArgs[0] == "verify" {
 		return cmdHSMAuditVerify(cmdArgs[1:])
 	}
-
+	// The key-attestation verifier (Task 168) is config-free for the same reason:
+	// checking whether a CA's key is confined to hardware is a claim a relying
+	// party evaluates from the attestation alone, on a machine with no HSM, no
+	// database and none of the CA's configuration.
+	if command == "hsm-attest" && len(cmdArgs) > 0 && cmdArgs[0] == "verify" {
+		return cmdHSMAttestVerify(cmdArgs[1:])
+	}
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -239,7 +245,12 @@ func run(args []string) error {
 	if command == "hsm-audit" {
 		return cmdHSMAudit(db, cfg, cmdArgs)
 	}
-
+	// Key attestation (Task 168) likewise goes through yubihsm-shell — attestation
+	// is a vendor command with no PKCS#11 equivalent — and must work on a device
+	// whose keys the CA provider cannot open.
+	if command == "hsm-attest" {
+		return cmdHSMAttest(db, cfg, cmdArgs)
+	}
 	// DNS pinning-record generation (Task 98) hashes stored public certificate
 	// and SSH-key material — it never touches the HSM — so dispatch it before the
 	// key provider is constructed. This lets an operator mint DANE/SSHFP records
@@ -509,6 +520,11 @@ Commands:
                       (create/list/revoke); create prints the secret once
   blocked-keys        Manage the compromised-key blocklist (add/list/remove);
                       blocked subject keys are rejected fail-closed at issuance
+  hsm-audit           YubiHSM device audit log: provision/collect/timestamp/
+                      export, and "verify" a bundle offline (auditor's tool)
+  hsm-attest          YubiHSM key attestation: prove a key was generated inside
+                      the HSM and cannot be exported from it; "verify" checks an
+                      attestation offline (no HSM, no database, no config)
 
 Run "secsy-ca <command> -h" for command-specific flags.
 `)

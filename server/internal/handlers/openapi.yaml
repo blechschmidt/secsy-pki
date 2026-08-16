@@ -3097,6 +3097,80 @@ paths:
                 type: object
                 additionalProperties: true
 
+  /api/hsm/keys/{label}/attestation:
+    get:
+      operationId: getHSMKeyAttestation
+      tags: [HSM]
+      summary: Attest one HSM key
+      description: >
+        Asks the YubiHSM to attest the asymmetric key with the given label and
+        returns the attestation together with this server's verdict on it. The
+        verdict reports whether the key can be exported from the device and
+        whether it was generated inside it. A key that fails policy is reported
+        with 200 and verification.verified=false; the request itself succeeded.
+      parameters:
+        - name: label
+          in: path
+          required: true
+          schema: { type: string }
+          description: The key's HSM label.
+      responses:
+        "200":
+          description: Attestation and verdict.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HSMKeyAttestationResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ca/{id}/key-attestation:
+    get:
+      operationId: getCAKeyAttestation
+      tags: [HSM]
+      summary: Attest the HSM key behind a CA
+      description: >
+        As above, but resolves the key from the CA and binds the attestation to
+        that CA's certificate: the attested public key must equal the CA's, so
+        the result describes the key this CA actually signs with rather than
+        merely some object on the device.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Attestation and verdict.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HSMKeyAttestationResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/hsm/attestation:verify:
+    post:
+      operationId: verifyHSMAttestation
+      tags: [HSM]
+      summary: Verify a YubiHSM key attestation
+      description: >
+        Verifies a caller-supplied attestation. Touches no device and no
+        database, so an auditor holding only an attestation can check it here.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HSMAttestationVerifyRequest" }
+      responses:
+        "200":
+          description: Verdict.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verification: { $ref: "#/components/schemas/HSMKeyAttestationResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   # ---------------------------------------------------------------------------
   # ACME directory (RFC 8555) — protocol endpoints authenticate via JWS.
   # ---------------------------------------------------------------------------
@@ -3476,6 +3550,113 @@ components:
       required: [error]
       properties:
         error: { type: string }
+    HSMKeyAttestation:
+      type: object
+      description: >
+        A self-contained YubiHSM key attestation. It carries certificates rather
+        than only conclusions so a third party can re-derive the verdict.
+      properties:
+        key_label: { type: string }
+        certificate_pem:
+          type: string
+          description: The per-key attestation certificate the device signed.
+        device_certificate_pem:
+          type: string
+          description: >
+            The device's own attestation certificate, which issued the one
+            above. It travels with the attestation because an auditor cannot
+            read it off a device they do not have.
+        claims:
+          type: object
+          additionalProperties: true
+          description: >
+            The decoded device assertions. Informational — verification
+            re-parses the certificate and ignores this field.
+        produced_at: { type: string, format: date-time }
+    HSMKeyAttestationResult:
+      type: object
+      description: The verdict on one key attestation.
+      properties:
+        verified:
+          type: boolean
+          description: Every required check passed.
+        non_exportable:
+          type: boolean
+          description: >
+            The key holds no capability permitting export, so its private
+            material cannot leave the HSM.
+        generated_on_device:
+          type: boolean
+          description: >
+            The key was created inside the HSM and so never existed anywhere
+            else. Without this, non-exportability only means no copy can leave
+            now — not that none was made before import.
+        can_sign: { type: boolean }
+        origin: { type: string }
+        capabilities: { type: array, items: { type: string } }
+        domains: { type: array, items: { type: integer } }
+        key_label: { type: string }
+        object_id: { type: integer }
+        device_serial: { type: string }
+        firmware_version: { type: string }
+        public_key_algorithm: { type: string }
+        public_key_detail: { type: string }
+        spki_fingerprint:
+          type: string
+          description: >
+            SubjectPublicKeyInfo fingerprint in the same "SHA256:<base64>" form
+            the certificate inventory stores.
+        device_bound:
+          type: boolean
+          description: >
+            The attestation's signature verified against the device attestation
+            certificate — this device really made these assertions.
+        chain_anchored:
+          type: boolean
+          description: >
+            The device certificate chains to a configured trust anchor. False is
+            common on genuine hardware whose per-batch sub-CA Yubico does not
+            publish, which is why it is not required by default.
+        trust_anchor: { type: string }
+        key_matched:
+          type: boolean
+          description: Whether the attested key equals the expected key, when one was supplied.
+        checks:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              passed: { type: boolean }
+              detail: { type: string }
+        problems: { type: array, items: { type: string } }
+        warnings: { type: array, items: { type: string } }
+        summary: { type: string }
+    HSMKeyAttestationResponse:
+      type: object
+      properties:
+        attestation: { $ref: "#/components/schemas/HSMKeyAttestation" }
+        verification: { $ref: "#/components/schemas/HSMKeyAttestationResult" }
+    HSMAttestationVerifyRequest:
+      type: object
+      required: [certificate_pem]
+      properties:
+        certificate_pem:
+          type: string
+          description: The per-key attestation certificate.
+        device_certificate_pem:
+          type: string
+          description: The device attestation certificate that issued it.
+        expected_public_key_pem:
+          type: string
+          description: >
+            A PUBLIC KEY or CERTIFICATE whose key the attested key must equal.
+            This is what ties an attestation to a specific CA.
+        expected_label: { type: string }
+        expected_serial: { type: string }
+        require_anchored_chain:
+          type: boolean
+          description: Override the configured chain-anchoring requirement.
     StatusResponse:
       type: object
       properties:

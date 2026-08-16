@@ -48,6 +48,7 @@ Comprehensive deployment and operations guides live in [`docs/`](docs/README.md)
 | [Scheduled backups & restore verification](docs/backup.md) | Leader-elected encrypted DR backups with an automated restore-verification drill |
 | [Long-term preservation (RFC 4998)](docs/evidence-records.md) | Renewable Evidence Records over the audit chain & signed artifacts, surviving hash/signature-algorithm obsolescence |
 | [Remotely verifiable HSM audit log](docs/hsm-audit-log.md) | Proving to a third party that the HSM signed nothing beyond what was published — and, via periodic RFC 3161 attestations, that the proof is still current |
+| [YubiHSM key attestation](docs/hsm-key-attestation.md) | Hardware-signed proof that a CA key was generated inside the HSM and cannot be exported from it, plus the verifier that checks it remotely |
 | [Observability](docs/observability.md) | Prometheus `/metrics`, health/readiness probes, structured logs |
 | [Rate limiting & abuse protection](docs/rate-limiting.md) | Tiered rate limits + HSM concurrency guard for public ACME/OCSP/CRL/SCEP/EST endpoints |
 | [Kubernetes deployment](docs/kubernetes.md) | Container image, Helm chart, cert-manager ACME issuer, kind/SoftHSM smoke test |

@@ -22,6 +22,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/eventstream"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
+	"github.com/blechschmidt/secsy-pki/server/internal/hsmattest"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsmaudit"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
@@ -149,6 +150,10 @@ type API struct {
 	// configured retry budget for test deliveries. Set via SetWebhookDelivery.
 	webhookWorkerEnabled bool
 	webhookMaxAttempts   int
+	// attestPolicy is the configured YubiHSM key-attestation policy (Task 168):
+	// the trust anchors and the properties a key must show. nil falls back to
+	// hsmattest.DefaultPolicy. Set via SetKeyAttestationPolicy.
+	attestPolicy *hsmattest.Policy
 }
 
 // LeaderInfo is the read-only view of the multi-replica coordination elector
@@ -189,6 +194,12 @@ func (a *API) SetAPITokenMaxLifetime(d time.Duration) { a.apiTokenMaxLifetime = 
 // path — it is an EST/SCEP/ACME enrollment concern — so the preview reports it as
 // informational).
 func (a *API) SetAttestationVerifier(v *attestation.Verifier) { a.attestationVerifier = v }
+
+// SetKeyAttestationPolicy installs the YubiHSM key-attestation policy (Task
+// 168) — the trust anchors and the properties a key must show. Leaving it
+// unset falls back to hsmattest.DefaultPolicy, which requires a non-exportable,
+// on-device-generated, device-signed key and Yubico's embedded roots.
+func (a *API) SetKeyAttestationPolicy(p hsmattest.Policy) { a.attestPolicy = &p }
 
 // AuthInfo describes the operator-authentication mechanisms enabled on the
 // server, surfaced to the console through /api/auth/config.
@@ -735,6 +746,14 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 		// pulls it here and checks it offline with `secsy-ca hsm-audit verify`,
 		// trusting nothing in the response.
 		mux.Handle("GET /api/hsm/audit-bundle", protected(http.HandlerFunc(a.ExportHSMAuditBundle)))
+		// Task 168: per-key attestation. The device-level /api/hsm/attestation
+		// above says which YubiHSM this is; these say what one key on it *is* —
+		// generated on-device, non-exportable, and which key exactly.
+		mux.Handle("GET /api/hsm/keys/{label}/attestation", protected(http.HandlerFunc(a.GetHSMKeyAttestation)))
+		mux.Handle("GET /api/ca/{id}/key-attestation", protected(http.HandlerFunc(a.GetCAKeyAttestation)))
+		// Verification needs no device, so it is available to an auditor who has
+		// only been handed an attestation.
+		mux.Handle("POST /api/hsm/attestation:verify", protected(http.HandlerFunc(a.VerifyHSMAttestation)))
 	}
 
 	// OpenAPI spec + docs UI. The spec is served at the conventional

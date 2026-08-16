@@ -1304,7 +1304,64 @@ var (
 		"secsy_hsm_audit_attestations_total",
 		"RFC 3161 freshness attestations over the HSM audit head, partitioned by result.",
 		"result")
+
+	// YubiHSM key attestation (Task 168). KeyAttestations counts every
+	// attestation checked, by "result": "verified", "failed" (obtained but the
+	// policy was not satisfied), or "error" (the device or the input was
+	// unusable). KeyAttestationFindings breaks failures down by the property
+	// that could not be shown, which is the series worth alerting on — an
+	// "exportable" finding on a CA key means that key can leave the HSM.
+	KeyAttestations = NewCounter(Default,
+		"secsy_hsm_key_attestations_total",
+		"YubiHSM key attestations checked, partitioned by result.",
+		"result")
+	KeyAttestationFindings = NewCounter(Default,
+		"secsy_hsm_key_attestation_findings_total",
+		"Properties a YubiHSM key attestation failed to establish, partitioned by finding.",
+		"finding")
 )
+
+// KeyAttestationResult is the subset of a key-attestation verdict this package
+// needs. It is an interface rather than the concrete type so that
+// internal/metrics keeps no dependency on internal/hsmattest, which config
+// already imports.
+type KeyAttestationResult interface {
+	IsVerified() bool
+	IsNonExportable() bool
+	IsGeneratedOnDevice() bool
+	IsDeviceBound() bool
+	IsChainAnchored() bool
+}
+
+// RecordKeyAttestation records one checked key attestation.
+//
+// Findings are counted whenever the property is absent, not only when the
+// policy required it. A deployment that relaxed the exportability check to run
+// a migration still needs the count of exportable keys to be visible, and a
+// series that goes quiet because someone loosened policy is the worst possible
+// behaviour for this particular signal.
+func RecordKeyAttestation(res KeyAttestationResult) {
+	if res == nil {
+		return
+	}
+	if res.IsVerified() {
+		KeyAttestations.Inc("verified")
+	} else {
+		KeyAttestations.Inc("failed")
+	}
+	if !res.IsNonExportable() {
+		KeyAttestationFindings.Inc("exportable")
+	}
+	if !res.IsGeneratedOnDevice() {
+		KeyAttestationFindings.Inc("not-generated-on-device")
+	}
+	if !res.IsDeviceBound() {
+		KeyAttestationFindings.Inc("unauthenticated")
+	}
+	if !res.IsChainAnchored() {
+		KeyAttestationFindings.Inc("unanchored-chain")
+	}
+}
 
 // RecordHSMAuditCollection records one successful device-log drain.
 func RecordHSMAuditCollection(entries, signatures int) {

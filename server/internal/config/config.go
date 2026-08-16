@@ -18,6 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/fips"
+	"github.com/blechschmidt/secsy-pki/server/internal/hsmattest"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
@@ -3755,6 +3756,63 @@ type YubiHSMConfig struct {
 	AuditFreshnessTSAURL string `yaml:"audit_freshness_tsa_url"`
 	// AuditFreshnessTimeoutSeconds bounds an external TSA request. 0 selects 30s.
 	AuditFreshnessTimeoutSeconds int `yaml:"audit_freshness_timeout_seconds"`
+
+	// AttestationRootFiles are PEM files holding the trust anchors for YubiHSM
+	// key attestation (Task 168). Empty uses Yubico's published attestation
+	// root, which ships embedded in the binary.
+	//
+	// Deployments generally need to set this for one of two reasons: their
+	// devices chain through a per-batch "Yubico YubiHSM <n> Sub-CA" that Yubico
+	// does not publish, or they have replaced the factory attestation key with
+	// their own. Self-signed certificates in these files are treated as roots
+	// and the rest as intermediates, so one bundle containing a whole chain
+	// works without being split by hand.
+	AttestationRootFiles []string `yaml:"attestation_root_files"`
+	// AttestationRequireAnchoredChain fails a key attestation whose device
+	// certificate does not chain to one of those anchors.
+	//
+	// Off by default because honest hardware fails it: a YubiHSM 2 on firmware
+	// 2.4.0 chains through a sub-CA that is neither on the device nor in
+	// Yubico's published bundle, so there is nothing to anchor to until an
+	// operator obtains that intermediate. Turn it on once they have — until
+	// then an attestation proves the key's properties as asserted by *a*
+	// device, not that the device is a genuine YubiHSM.
+	AttestationRequireAnchoredChain bool `yaml:"attestation_require_anchored_chain"`
+	// AttestationForbiddenCapabilities names YubiHSM capabilities a key must
+	// not hold, beyond the exportable-under-wrap check that is always applied.
+	AttestationForbiddenCapabilities []string `yaml:"attestation_forbidden_capabilities"`
+	// AttestationAllowExportableKeys turns the exportability check from a
+	// failure into a reported finding. It exists for inventory and migration
+	// work, where the point is to discover which keys are exportable rather
+	// than to reject them; leaving it on in production discards the guarantee
+	// key attestation exists to provide.
+	AttestationAllowExportableKeys bool `yaml:"attestation_allow_exportable_keys"`
+	// AttestationAllowImportedKeys likewise permits a key that was imported
+	// rather than generated inside the HSM. Necessary for a CA migrated from a
+	// software key (Task 74), where the private material demonstrably existed
+	// outside the device and no attestation can claim otherwise.
+	AttestationAllowImportedKeys bool `yaml:"attestation_allow_imported_keys"`
+}
+
+// AttestationPolicy builds the key-attestation policy from configuration,
+// resolving the trust anchors. It fails closed: an unreadable anchor file or an
+// unknown capability name is an error rather than a silently weaker policy.
+func (y YubiHSMConfig) AttestationPolicy() (hsmattest.Policy, error) {
+	pol := hsmattest.DefaultPolicy()
+	pol.RequireNonExportable = !y.AttestationAllowExportableKeys
+	pol.RequireGeneratedOnDevice = !y.AttestationAllowImportedKeys
+	pol.RequireAnchoredChain = y.AttestationRequireAnchoredChain
+	pol.ForbiddenCapabilities = y.AttestationForbiddenCapabilities
+
+	if _, err := hsmattest.ParseCapabilityNames(y.AttestationForbiddenCapabilities); err != nil {
+		return hsmattest.Policy{}, fmt.Errorf("yubihsm.attestation_forbidden_capabilities: %w", err)
+	}
+	roots, inter, err := hsmattest.LoadRoots(y.AttestationRootFiles)
+	if err != nil {
+		return hsmattest.Policy{}, fmt.Errorf("yubihsm.attestation_root_files: %w", err)
+	}
+	pol.Roots, pol.Intermediates = roots, inter
+	return pol, nil
 }
 
 // UnknownKeys re-decodes raw config YAML in strict mode and returns one
