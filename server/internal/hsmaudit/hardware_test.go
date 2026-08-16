@@ -21,17 +21,53 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/hex"
-	"encoding/pem"
-	"fmt"
+	"errors"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsmattest"
+	"github.com/blechschmidt/secsy-pki/server/internal/yubihsm"
 )
+
+// scratchObjectIDs are the object ids these tests create and delete.
+var scratchObjectIDs = []uint16{0x7e57, 0x7e58, 0x7e5a, 0x7e5b}
+
+// TestMain clears leftover scratch objects before any test runs.
+//
+// A run aborted partway (a device claimed by another process, a killed test)
+// leaves a scratch key behind, and the next run's best-effort pre-delete then
+// becomes a *successful* DELETE OBJECT inside the window a freshness or key
+// proof is pinned over. The key-proof logic is right to reject that — a deleted
+// handle can be recreated with different material — so the cleanup has to happen
+// before any window is anchored rather than inside a test.
+func TestMain(m *testing.M) {
+	cleanScratchObjects()
+	os.Exit(m.Run())
+}
+
+func cleanScratchObjects() {
+	connector := os.Getenv("YUBIHSM_CONNECTOR")
+	if connector == "" {
+		connector = "yhusb://"
+	}
+	password := os.Getenv("YUBIHSM_PASSWORD")
+	if password == "" {
+		password = "password"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c, err := yubihsm.Open(ctx, yubihsm.Config{ConnectorURL: connector, AuthKeyID: 1, Password: password})
+	if err != nil {
+		return // no device: every test will skip anyway
+	}
+	defer func() { _ = c.Close() }()
+	for _, id := range scratchObjectIDs {
+		_ = c.DeleteObject(ctx, id, yubihsm.ObjectTypeAsymmetricKey)
+	}
+}
 
 func hwConfig(t *testing.T) hsm.Config {
 	t.Helper()
@@ -46,31 +82,75 @@ func hwConfig(t *testing.T) hsm.Config {
 	return hsm.Config{ConnectorURL: connector, AuthKeyID: 1, Password: password}
 }
 
-func hwDevice(t *testing.T) *ShellDevice {
+func hwDevice(t *testing.T) *HardwareDevice {
 	t.Helper()
-	if _, err := exec.LookPath("yubihsm-shell"); err != nil {
-		t.Skip("yubihsm-shell not installed")
-	}
-	d := NewShellDevice(hwConfig(t))
+	d := NewHardwareDevice(hwConfig(t))
 	if _, err := d.Info(context.Background()); err != nil {
 		t.Skipf("no YubiHSM reachable: %v", err)
 	}
 	return d
 }
 
-// shell runs raw yubihsm-shell commands for test setup that is not part of the
-// production surface (key generation, signing).
-func shell(t *testing.T, cfg hsm.Config, commands string) string {
+// onDevice runs fn against an authenticated session over the same native driver
+// the production paths use, for test setup that is not itself part of the
+// production surface (key generation, signing, cleanup).
+func onDevice(t *testing.T, cfg hsm.Config, fn func(ctx context.Context, c *yubihsm.Client)) {
 	t.Helper()
-	script := fmt.Sprintf("connect\nsession open %d %s\n%s\nsession close 0\nexit\n",
-		cfg.AuthKeyID, cfg.Password, commands)
-	cmd := exec.Command("yubihsm-shell", "-C", cfg.ConnectorURL)
-	cmd.Stdin = strings.NewReader(script)
-	out, err := cmd.CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c, err := yubihsm.Open(ctx, yubihsm.Config{
+		ConnectorURL: cfg.ConnectorURL,
+		AuthKeyID:    uint16(cfg.AuthKeyID),
+		Password:     cfg.Password,
+	})
 	if err != nil {
-		t.Fatalf("yubihsm-shell: %v\n%s", err, out)
+		t.Fatalf("opening a YubiHSM session: %v", err)
 	}
-	return string(out)
+	defer func() { _ = c.Close() }()
+	fn(ctx, c)
+}
+
+// scratchKey creates a throwaway signing key and removes it when the test ends.
+func scratchKey(t *testing.T, cfg hsm.Config, keyID uint16, label string, capabilities ...string) {
+	t.Helper()
+	mask, err := hsmattest.ParseCapabilityNames(capabilities)
+	if err != nil {
+		t.Fatalf("capabilities %v: %v", capabilities, err)
+	}
+	deleteScratchKey(t, cfg, keyID)
+	onDevice(t, cfg, func(ctx context.Context, c *yubihsm.Client) {
+		if _, err := c.GenerateAsymmetricKey(ctx, yubihsm.KeySpec{
+			ID:           keyID,
+			Label:        label,
+			Domains:      1,
+			Capabilities: uint64(mask),
+			Algorithm:    yubihsm.AlgorithmECP256,
+		}); err != nil {
+			t.Fatalf("generating scratch key %q: %v", label, err)
+		}
+	})
+	t.Cleanup(func() { deleteScratchKey(t, cfg, keyID) })
+}
+
+func deleteScratchKey(t *testing.T, cfg hsm.Config, keyID uint16) {
+	t.Helper()
+	onDevice(t, cfg, func(ctx context.Context, c *yubihsm.Client) {
+		// Best effort: usually the object does not exist yet.
+		_ = c.DeleteObject(ctx, keyID, yubihsm.ObjectTypeAsymmetricKey)
+	})
+}
+
+// signOnDevice produces n signatures over digest with the given key, which is
+// what the device log must then account for.
+func signOnDevice(t *testing.T, cfg hsm.Config, keyID uint16, digest []byte, n int) {
+	t.Helper()
+	onDevice(t, cfg, func(ctx context.Context, c *yubihsm.Client) {
+		for i := 0; i < n; i++ {
+			if _, err := c.SignECDSA(ctx, keyID, digest); err != nil {
+				t.Fatalf("signing with key 0x%04x (%d of %d): %v", keyID, i+1, n, err)
+			}
+		}
+	})
 }
 
 // TestDeviceInfo_RealDevice checks the device is reachable and its identity
@@ -150,13 +230,9 @@ func TestBootSentinel_RealDevice(t *testing.T) {
 // dropping them let an incomplete log pass as a clean one.
 func TestUnloggedCounters_RealDevice(t *testing.T) {
 	d := hwDevice(t)
-	out := shell(t, hwConfig(t), "audit get 0")
-	if !strings.Contains(out, "unlogged boots found") {
-		t.Fatalf("device output no longer reports unlogged boots; parser needs review:\n%s", out)
-	}
-	resp, err := hsm.ParseLogResponse(out)
+	resp, err := d.FetchLog(context.Background())
 	if err != nil {
-		t.Fatalf("ParseLogResponse: %v", err)
+		t.Fatalf("FetchLog: %v", err)
 	}
 	t.Logf("unlogged boots=%d authentications=%d entries=%d",
 		resp.UnloggedBoots, resp.UnloggedAuthentications, len(resp.Entries))
@@ -165,33 +241,38 @@ func TestUnloggedCounters_RealDevice(t *testing.T) {
 	if unlogged.Any() {
 		t.Errorf("device reports unrecorded operations: %+v — the log is not complete", unlogged)
 	}
-	_ = d
 }
 
-// TestShellInBandFailure_RealDevice pins the behaviour that motivated in-band
-// error detection: yubihsm-shell exits 0 even when a scripted command fails.
+// TestRejectedCommandIsAnError_RealDevice pins the property that replaced
+// in-band error scraping: a command the device refuses comes back as a typed
+// DeviceError, not as text on a stream with a zero exit status.
 //
-// Without this check, provisioning could report that force-audit was enabled
-// when the device had rejected the change — the exact state in which unlogged
-// signing becomes possible.
-func TestShellInBandFailure_RealDevice(t *testing.T) {
+// This matters because the predecessor drove yubihsm-shell, which exits 0 even
+// when a scripted command fails. Provisioning could therefore report that
+// force-audit was enabled when the device had rejected the change — the exact
+// state in which unlogged signing becomes possible.
+func TestRejectedCommandIsAnError_RealDevice(t *testing.T) {
 	cfg := hwConfig(t)
 	hwDevice(t)
 
-	// Ask for an option that does not exist; the shell prints an error line and
-	// still exits 0.
-	cmd := exec.Command("yubihsm-shell", "-C", cfg.ConnectorURL)
-	cmd.Stdin = strings.NewReader(fmt.Sprintf(
-		"connect\nsession open %d %s\nput option 0 command-audit ff02\nsession close 0\nexit\n",
-		cfg.AuthKeyID, cfg.Password))
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Skipf("shell exited non-zero (%v); in-band detection not exercised:\n%s", err, out)
+	onDevice(t, cfg, func(ctx context.Context, c *yubihsm.Client) {
+		// 0xff is not a command, so the device must refuse to set an audit level
+		// for it rather than silently accept the write.
+		err := c.PutOption(ctx, yubihsm.OptionCommandAudit, []byte{0xff, 0x02})
+		if err == nil {
+			t.Fatal("the device accepted an audit setting for a non-existent command")
+		}
+		var devErr yubihsm.DeviceError
+		if !errors.As(err, &devErr) {
+			t.Fatalf("rejection did not surface as a DeviceError: %T %v", err, err)
+		}
+		t.Logf("refused as expected: %v", err)
+	})
+
+	// The refusal must not have changed anything.
+	if _, err := hsm.GetAuditOptions(context.Background(), cfg); err != nil {
+		t.Fatalf("reading audit options after a refused write: %v", err)
 	}
-	if _, err := hsm.GetAuditOptions(cfg); err != nil {
-		t.Logf("GetAuditOptions surfaced: %v", err)
-	}
-	t.Logf("shell exit status 0 with output:\n%s", out)
 }
 
 // TestAuditOptions_RealDevice reads the device audit configuration and reports
@@ -273,7 +354,7 @@ func TestProvisionAndVerifyOptions_RealDevice(t *testing.T) {
 	t.Logf("device reports %d command(s), %d unknown to this build: %#x",
 		len(before.CommandAudit), len(undocumented), undocumented)
 
-	out, err := hsm.ProvisionAuditLogging(cfg, required)
+	out, err := hsm.ProvisionAuditLogging(context.Background(), cfg, required)
 	if err != nil {
 		t.Fatalf("ProvisionAuditLogging: %v\n%s", err, out)
 	}
@@ -313,14 +394,13 @@ func TestForcedAuditIsIrreversible_RealDevice(t *testing.T) {
 	}
 
 	// Attempt to turn auditing for SIGN ECDSA off. The device must refuse.
-	cmd := exec.Command("yubihsm-shell", "-C", cfg.ConnectorURL)
-	cmd.Stdin = strings.NewReader(fmt.Sprintf(
-		"connect\nsession open %d %s\nput option 0 command-audit %02x00\nsession close 0\nexit\n",
-		cfg.AuthKeyID, cfg.Password, hsm.CmdSignECDSA))
-	out, _ := cmd.CombinedOutput()
-	if !strings.Contains(string(out), "Failed") {
-		t.Fatalf("device accepted lowering a fixed audit level — auditing is NOT irreversible:\n%s", out)
-	}
+	onDevice(t, cfg, func(ctx context.Context, c *yubihsm.Client) {
+		if err := c.PutOption(ctx, yubihsm.OptionCommandAudit, []byte{hsm.CmdSignECDSA, 0x00}); err == nil {
+			t.Fatal("device accepted lowering a fixed audit level — auditing is NOT irreversible")
+		} else {
+			t.Logf("device refused the downgrade: %v", err)
+		}
+	})
 
 	after, err := d.Options(context.Background())
 	if err != nil {
@@ -375,20 +455,13 @@ func TestSignaturesAreCounted_RealDevice(t *testing.T) {
 
 	const keyID = 0x7e57
 	const signatures = 5
-	shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", keyID)) // best effort
-	shell(t, cfg, fmt.Sprintf("generate asymmetric 0 0x%04x hsmaudit-test 1 sign-ecdsa ecp256", keyID))
+	scratchKey(t, cfg, keyID, "hsmaudit-test", "sign-ecdsa")
 
 	digest := make([]byte, 32)
 	for i := range digest {
 		digest[i] = byte(i)
 	}
-	digestFile := t.TempDir() + "/digest.bin"
-	if err := os.WriteFile(digestFile, digest, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < signatures; i++ {
-		shell(t, cfg, fmt.Sprintf("sign ecdsa 0 0x%04x ecdsa-sha256 %s", keyID, digestFile))
-	}
+	signOnDevice(t, cfg, keyID, digest, signatures)
 
 	post, err := d.FetchLog(ctx)
 	if err != nil {
@@ -438,7 +511,7 @@ func TestSignaturesAreCounted_RealDevice(t *testing.T) {
 	if err := d.ConsumeLog(ctx, post.Entries[len(post.Entries)-1].Number); err != nil {
 		t.Fatalf("ConsumeLog: %v", err)
 	}
-	shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", keyID))
+	deleteScratchKey(t, cfg, keyID)
 }
 
 // TestFreshnessEndToEnd_RealDevice exercises the complete claim on hardware: a
@@ -505,20 +578,14 @@ func TestFreshnessEndToEnd_RealDevice(t *testing.T) {
 	// key-provider chokepoint does in production.
 	const keyID = 0x7e58
 	const signatures = 3
-	shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", keyID)) // best effort
-	shell(t, cfg, fmt.Sprintf("generate asymmetric 0 0x%04x freshness-test 1 sign-ecdsa ecp256", keyID))
-	t.Cleanup(func() { shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", keyID)) })
+	scratchKey(t, cfg, keyID, "freshness-test", "sign-ecdsa")
 
 	digest := make([]byte, 32)
-	digestFile := t.TempDir() + "/digest.bin"
 	for i := 0; i < signatures; i++ {
 		for j := range digest {
 			digest[j] = byte(i*32 + j)
 		}
-		if err := os.WriteFile(digestFile, digest, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		shell(t, cfg, fmt.Sprintf("sign ecdsa 0 0x%04x ecdsa-sha256 %s", keyID, digestFile))
+		signOnDevice(t, cfg, keyID, digest, 1)
 		if err := store.AppendLedger(ctx, &LedgerEntry{
 			Timestamp: time.Now().UTC(),
 			KeyLabel:  "freshness-test",
@@ -575,7 +642,7 @@ func TestFreshnessEndToEnd_RealDevice(t *testing.T) {
 	// Now the abuse case: sign once more without a ledger row, exactly as an
 	// operator misusing the key would. The device log cannot be suppressed, so
 	// the surplus must surface.
-	shell(t, cfg, fmt.Sprintf("sign ecdsa 0 0x%04x ecdsa-sha256 %s", keyID, digestFile))
+	signOnDevice(t, cfg, keyID, digest, 1)
 	if _, err := NewCollector(d, store, 0, discardLogger()).Collect(ctx); err != nil {
 		t.Fatalf("collect after unrecorded signature: %v", err)
 	}
@@ -643,9 +710,7 @@ func TestKeyProofEndToEnd_RealDevice(t *testing.T) {
 
 	const keyID = 0x7e5a
 	const signatures = 2
-	shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", keyID)) // best effort
-	shell(t, cfg, fmt.Sprintf("generate asymmetric 0 0x%04x keyproof-test 1 sign-ecdsa ecp256", keyID))
-	t.Cleanup(func() { shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", keyID)) })
+	scratchKey(t, cfg, keyID, "keyproof-test", "sign-ecdsa")
 
 	// The auditor's copy of the public key, read out of the device by a different
 	// command than the one that attests it. In production this is the key in the
@@ -653,15 +718,11 @@ func TestKeyProofEndToEnd_RealDevice(t *testing.T) {
 	pub := hwPublicKey(t, cfg, keyID)
 
 	digest := make([]byte, 32)
-	digestFile := t.TempDir() + "/digest.bin"
 	for i := 0; i < signatures; i++ {
 		for j := range digest {
 			digest[j] = byte(i*32 + j)
 		}
-		if err := os.WriteFile(digestFile, digest, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		shell(t, cfg, fmt.Sprintf("sign ecdsa 0 0x%04x ecdsa-sha256 %s", keyID, digestFile))
+		signOnDevice(t, cfg, keyID, digest, 1)
 		if err := store.AppendLedger(ctx, &LedgerEntry{
 			Timestamp: time.Now().UTC(),
 			KeyLabel:  "keyproof-test",
@@ -722,7 +783,7 @@ func TestKeyProofEndToEnd_RealDevice(t *testing.T) {
 
 	// The abuse case, phrased against the key rather than the device: one more
 	// signature with no ledger row.
-	shell(t, cfg, fmt.Sprintf("sign ecdsa 0 0x%04x ecdsa-sha256 %s", keyID, digestFile))
+	signOnDevice(t, cfg, keyID, digest, 1)
 	abusedBundle, err := svc.Export(ctx)
 	if err != nil {
 		t.Fatalf("export after unrecorded signature: %v", err)
@@ -760,17 +821,11 @@ func TestExportableKeyFailsTheAudit_RealDevice(t *testing.T) {
 	svc, store, _, _ := hwWindow(t, d)
 
 	const keyID = 0x7e5b
-	shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", keyID)) // best effort
-	shell(t, cfg, fmt.Sprintf("generate asymmetric 0 0x%04x exportable-test 1 sign-ecdsa,exportable-under-wrap ecp256", keyID))
-	t.Cleanup(func() { shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", keyID)) })
+	scratchKey(t, cfg, keyID, "exportable-test", "sign-ecdsa", "exportable-under-wrap")
 
 	pub := hwPublicKey(t, cfg, keyID)
 	digest := make([]byte, 32)
-	digestFile := t.TempDir() + "/digest.bin"
-	if err := os.WriteFile(digestFile, digest, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	shell(t, cfg, fmt.Sprintf("sign ecdsa 0 0x%04x ecdsa-sha256 %s", keyID, digestFile))
+	signOnDevice(t, cfg, keyID, digest, 1)
 	if err := store.AppendLedger(ctx, &LedgerEntry{
 		Timestamp: time.Now().UTC(),
 		KeyLabel:  "exportable-test",
@@ -809,7 +864,7 @@ func TestExportableKeyFailsTheAudit_RealDevice(t *testing.T) {
 // a Service over a fresh in-memory store. Provisioning proper requires a
 // factory-reset device; this gives the same structural guarantees over the
 // window under test, which is what these tests exercise.
-func hwWindow(t *testing.T, d *ShellDevice) (*Service, *MemStore, string, *DeviceInfo) {
+func hwWindow(t *testing.T, d *HardwareDevice) (*Service, *MemStore, string, *DeviceInfo) {
 	t.Helper()
 	ctx := context.Background()
 	pre, err := d.FetchLog(ctx)
@@ -848,20 +903,22 @@ func hwWindow(t *testing.T, d *ShellDevice) (*Service, *MemStore, string, *Devic
 // not derived from the evidence it is checking.
 func hwPublicKey(t *testing.T, cfg hsm.Config, keyID uint16) crypto.PublicKey {
 	t.Helper()
-	out := shell(t, cfg, fmt.Sprintf("get pubkey 0 0x%04x asymmetric-key", keyID))
-	start := strings.Index(out, "-----BEGIN PUBLIC KEY-----")
-	end := strings.Index(out, "-----END PUBLIC KEY-----")
-	if start < 0 || end < 0 {
-		t.Fatalf("no public key in yubihsm-shell output:\n%s", out)
-	}
-	block, _ := pem.Decode([]byte(out[start : end+len("-----END PUBLIC KEY-----\n")]))
-	if block == nil {
-		t.Fatal("public key did not decode as PEM")
-	}
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		t.Fatalf("parsing device public key: %v", err)
-	}
+	var pub crypto.PublicKey
+	onDevice(t, cfg, func(ctx context.Context, c *yubihsm.Client) {
+		algorithm, raw, err := c.GetPublicKey(ctx, keyID)
+		if err != nil {
+			t.Fatalf("reading public key 0x%04x: %v", keyID, err)
+		}
+		if algorithm != yubihsm.AlgorithmECP256 {
+			t.Fatalf("key 0x%04x has algorithm %s, expected ecp256", keyID, yubihsm.AlgorithmName(algorithm))
+		}
+		// The device returns the uncompressed point without its 0x04 prefix.
+		x, y := elliptic.Unmarshal(elliptic.P256(), append([]byte{0x04}, raw...))
+		if x == nil {
+			t.Fatalf("key 0x%04x: device returned a %d-byte point that is not on P-256", keyID, len(raw))
+		}
+		pub = &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}
+	})
 	return pub
 }
 

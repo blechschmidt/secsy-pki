@@ -142,7 +142,7 @@ func cmdHSMAttestKey(ctx context.Context, hsmCfg hsm.Config, cfg *config.Config,
 	if err != nil {
 		return err
 	}
-	att, err := hsmattest.NewShellAttester(hsmCfg).AttestKey(ctx, label)
+	att, err := hsmattest.NewDeviceAttester(hsmCfg).AttestKey(ctx, label)
 	if err != nil {
 		return err
 	}
@@ -191,7 +191,7 @@ func cmdHSMAttestCA(ctx context.Context, hsmCfg hsm.Config, cfg *config.Config, 
 			"warning: CA %q has no usable public key on record; the attestation cannot be bound to it\n", caID)
 	}
 
-	att, err := hsmattest.NewShellAttester(hsmCfg).AttestKey(ctx, label)
+	att, err := hsmattest.NewDeviceAttester(hsmCfg).AttestKey(ctx, label)
 	if err != nil {
 		return err
 	}
@@ -216,11 +216,11 @@ func cmdHSMAttestAudit(ctx context.Context, hsmCfg hsm.Config, cfg *config.Confi
 	if err != nil {
 		return err
 	}
-	objs, err := hsm.ListObjects(hsmCfg)
+	objs, err := hsm.ListObjects(ctx, hsmCfg)
 	if err != nil {
 		return err
 	}
-	attester := hsmattest.NewShellAttester(hsmCfg)
+	attester := hsmattest.NewDeviceAttester(hsmCfg)
 
 	type row struct {
 		Attestation  *hsmattest.Attestation `json:"attestation,omitempty"`

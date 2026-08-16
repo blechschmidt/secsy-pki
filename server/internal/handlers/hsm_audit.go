@@ -69,7 +69,7 @@ func (a *API) ExportHSMAuditBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	svc := hsmaudit.NewService(hsmaudit.NewShellDevice(a.hsmCfg), a.db)
+	svc := hsmaudit.NewService(hsmaudit.NewHardwareDevice(a.hsmCfg), a.db)
 	bundle, err := svc.Export(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "exporting HSM audit bundle: %v", err)

@@ -30,8 +30,8 @@ type Service struct {
 // attester — or none — set it explicitly with SetAttester.
 func NewService(dev Device, store Store) *Service {
 	s := &Service{dev: dev, store: store, now: time.Now}
-	if sd, ok := dev.(*ShellDevice); ok {
-		s.attester = hsmattest.NewShellAttester(sd.Cfg)
+	if sd, ok := dev.(*HardwareDevice); ok {
+		s.attester = hsmattest.NewDeviceAttester(sd.Cfg)
 	}
 	return s
 }
@@ -168,7 +168,7 @@ func (s *Service) Provision(ctx context.Context) (*ProvisionResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading device audit options: %w", err)
 	}
-	if _, err := hsm.ProvisionAuditLogging(deviceConfig(s.dev), before.RequiredForced()); err != nil {
+	if _, err := hsm.ProvisionAuditLogging(ctx, deviceConfig(s.dev), before.RequiredForced()); err != nil {
 		return nil, fmt.Errorf("enabling forced audit logging: %w", err)
 	}
 
@@ -192,11 +192,12 @@ func (s *Service) Provision(ctx context.Context) (*ProvisionResult, error) {
 	return res, nil
 }
 
-// deviceConfig extracts the shell config from a ShellDevice so provisioning can
-// reach the yubihsm-shell helpers. Non-shell devices (test fakes) provision
-// through their own Options plumbing and get a zero config.
+// deviceConfig extracts the device config from a HardwareDevice so provisioning
+// can address the same YubiHSM through the native driver. Devices that are not
+// real hardware (test fakes) provision through their own Options plumbing and
+// get a zero config.
 func deviceConfig(d Device) hsm.Config {
-	if sd, ok := d.(*ShellDevice); ok {
+	if sd, ok := d.(*HardwareDevice); ok {
 		return sd.Cfg
 	}
 	return hsm.Config{}

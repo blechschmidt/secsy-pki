@@ -21,13 +21,16 @@ package hsmattest
 
 import (
 	"context"
-	"fmt"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
+	"github.com/blechschmidt/secsy-pki/server/internal/yubihsm"
 )
 
 const (
@@ -38,9 +41,6 @@ const (
 
 func hwConfig(t *testing.T) hsm.Config {
 	t.Helper()
-	if _, err := exec.LookPath("yubihsm-shell"); err != nil {
-		t.Skip("yubihsm-shell not installed")
-	}
 	connector := os.Getenv("YUBIHSM_CONNECTOR")
 	if connector == "" {
 		connector = "yhusb://"
@@ -49,35 +49,96 @@ func hwConfig(t *testing.T) hsm.Config {
 	if pw := os.Getenv("YUBIHSM_PASSWORD"); pw != "" {
 		cfg.Password = pw
 	}
-	if _, err := hsm.GetDeviceInfo(cfg); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if _, err := hsm.GetDeviceInfo(ctx, cfg); err != nil {
 		t.Skipf("no YubiHSM reachable at %s: %v", connector, err)
 	}
 	return cfg
 }
 
-// shell runs one yubihsm-shell script against the device.
-func shell(t *testing.T, cfg hsm.Config, command string) string {
+// onDevice runs fn against an authenticated session, using the same native
+// driver the production code path uses rather than a second mechanism whose
+// disagreement with it would be invisible.
+func onDevice(t *testing.T, cfg hsm.Config, fn func(ctx context.Context, c *yubihsm.Client)) {
 	t.Helper()
-	script := fmt.Sprintf("connect\nsession open %d %s\n%s\nsession close 0\nexit\n",
-		cfg.AuthKeyID, cfg.Password, command)
-	cmd := exec.Command("yubihsm-shell", "-C", cfg.ConnectorURL)
-	cmd.Stdin = strings.NewReader(script)
-	out, err := cmd.CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c, err := yubihsm.Open(ctx, yubihsm.Config{
+		ConnectorURL: cfg.ConnectorURL,
+		AuthKeyID:    uint16(cfg.AuthKeyID),
+		Password:     cfg.Password,
+	})
 	if err != nil {
-		t.Fatalf("yubihsm-shell %q: %v\n%s", command, err, out)
+		t.Fatalf("opening a YubiHSM session: %v", err)
 	}
-	return string(out)
+	defer func() { _ = c.Close() }()
+	fn(ctx, c)
+}
+
+func capabilityMask(t *testing.T, names ...string) uint64 {
+	t.Helper()
+	mask, err := ParseCapabilityNames(names)
+	if err != nil {
+		t.Fatalf("capability names %v: %v", names, err)
+	}
+	return uint64(mask)
+}
+
+func deleteScratch(t *testing.T, cfg hsm.Config, id uint16) {
+	t.Helper()
+	onDevice(t, cfg, func(ctx context.Context, c *yubihsm.Client) {
+		// Best effort: the object usually does not exist yet.
+		_ = c.DeleteObject(ctx, id, yubihsm.ObjectTypeAsymmetricKey)
+	})
 }
 
 // generateScratch creates a scratch asymmetric key with the given capabilities
 // and removes it when the test ends.
-func generateScratch(t *testing.T, cfg hsm.Config, id int, label, capabilities string) {
+func generateScratch(t *testing.T, cfg hsm.Config, id uint16, label string, capabilities ...string) {
 	t.Helper()
-	shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", id)) // best effort
-	shell(t, cfg, fmt.Sprintf("generate asymmetric 0 0x%04x %s 1 %s ecp256", id, label, capabilities))
-	t.Cleanup(func() {
-		shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", id))
+	mask := capabilityMask(t, capabilities...)
+	deleteScratch(t, cfg, id)
+	onDevice(t, cfg, func(ctx context.Context, c *yubihsm.Client) {
+		if _, err := c.GenerateAsymmetricKey(ctx, yubihsm.KeySpec{
+			ID:           id,
+			Label:        label,
+			Domains:      1,
+			Capabilities: mask,
+			Algorithm:    yubihsm.AlgorithmECP256,
+		}); err != nil {
+			t.Fatalf("generating scratch key %q: %v", label, err)
+		}
 	})
+	t.Cleanup(func() { deleteScratch(t, cfg, id) })
+}
+
+// importScratch imports a P-256 key generated on this host, so the device
+// records its origin as imported.
+func importScratch(t *testing.T, cfg hsm.Config, id uint16, label string, capabilities ...string) {
+	t.Helper()
+	mask := capabilityMask(t, capabilities...)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating a host key: %v", err)
+	}
+	// The device expects the raw private scalar, left-padded to the curve length.
+	scalar := make([]byte, 32)
+	key.D.FillBytes(scalar)
+
+	deleteScratch(t, cfg, id)
+	onDevice(t, cfg, func(ctx context.Context, c *yubihsm.Client) {
+		if _, err := c.PutAsymmetricKey(ctx, yubihsm.KeySpec{
+			ID:           id,
+			Label:        label,
+			Domains:      1,
+			Capabilities: mask,
+			Algorithm:    yubihsm.AlgorithmECP256,
+		}, scalar); err != nil {
+			t.Fatalf("importing scratch key %q: %v", label, err)
+		}
+	})
+	t.Cleanup(func() { deleteScratch(t, cfg, id) })
 }
 
 // TestHardwareAttestGeneratedKey pins the happy path: a key generated on the
@@ -87,7 +148,7 @@ func TestHardwareAttestGeneratedKey(t *testing.T) {
 	cfg := hwConfig(t)
 	generateScratch(t, cfg, scratchGenerated, "t168-hw-generated", "sign-ecdsa")
 
-	att, err := NewShellAttester(cfg).AttestKey(context.Background(), "t168-hw-generated")
+	att, err := NewDeviceAttester(cfg).AttestKey(context.Background(), "t168-hw-generated")
 	if err != nil {
 		t.Fatalf("AttestKey: %v", err)
 	}
@@ -128,9 +189,9 @@ func TestHardwareAttestGeneratedKey(t *testing.T) {
 // key that really can be exported from the device must not verify.
 func TestHardwareAttestExportableKey(t *testing.T) {
 	cfg := hwConfig(t)
-	generateScratch(t, cfg, scratchExportable, "t168-hw-exportable", "sign-ecdsa:exportable-under-wrap")
+	generateScratch(t, cfg, scratchExportable, "t168-hw-exportable", "sign-ecdsa", "exportable-under-wrap")
 
-	att, err := NewShellAttester(cfg).AttestKey(context.Background(), "t168-hw-exportable")
+	att, err := NewDeviceAttester(cfg).AttestKey(context.Background(), "t168-hw-exportable")
 	if err != nil {
 		t.Fatalf("AttestKey: %v", err)
 	}
@@ -164,18 +225,9 @@ func TestHardwareAttestExportableKey(t *testing.T) {
 func TestHardwareAttestImportedKey(t *testing.T) {
 	cfg := hwConfig(t)
 
-	keyPath := t.TempDir() + "/imported.pem"
-	gen := exec.Command("openssl", "ecparam", "-genkey", "-name", "prime256v1", "-noout", "-out", keyPath)
-	if out, err := gen.CombinedOutput(); err != nil {
-		t.Skipf("openssl unavailable: %v\n%s", err, out)
-	}
-	shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", scratchImported))
-	shell(t, cfg, fmt.Sprintf("put asymmetric 0 0x%04x t168-hw-imported 1 sign-ecdsa %s", scratchImported, keyPath))
-	t.Cleanup(func() {
-		shell(t, cfg, fmt.Sprintf("delete 0 0x%04x asymmetric-key", scratchImported))
-	})
+	importScratch(t, cfg, scratchImported, "t168-hw-imported", "sign-ecdsa")
 
-	att, err := NewShellAttester(cfg).AttestKey(context.Background(), "t168-hw-imported")
+	att, err := NewDeviceAttester(cfg).AttestKey(context.Background(), "t168-hw-imported")
 	if err != nil {
 		t.Fatalf("AttestKey: %v", err)
 	}
@@ -204,7 +256,7 @@ func TestHardwareExactLabelResolution(t *testing.T) {
 	generateScratch(t, cfg, scratchGenerated, "t168-hw-pref", "sign-ecdsa")
 	generateScratch(t, cfg, scratchExportable, "t168-hw-pref-longer", "sign-ecdsa")
 
-	id, err := hsm.FindAsymmetricKey(cfg, "t168-hw-pref")
+	id, err := hsm.FindAsymmetricKey(context.Background(), cfg, "t168-hw-pref")
 	if err != nil {
 		t.Fatalf("FindAsymmetricKey: %v", err)
 	}
@@ -212,7 +264,7 @@ func TestHardwareExactLabelResolution(t *testing.T) {
 		t.Errorf("resolved 0x%04x, want 0x%04x — a prefix match picked the wrong key", id, scratchGenerated)
 	}
 
-	if _, err := hsm.FindAsymmetricKey(cfg, "t168-hw-nonexistent"); err == nil {
+	if _, err := hsm.FindAsymmetricKey(context.Background(), cfg, "t168-hw-nonexistent"); err == nil {
 		t.Error("FindAsymmetricKey accepted a label no object carries")
 	}
 }

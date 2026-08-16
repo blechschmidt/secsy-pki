@@ -94,28 +94,28 @@ type Attester interface {
 	AttestKey(ctx context.Context, label string) (*Attestation, error)
 }
 
-// ShellAttester is the production Attester, driven through yubihsm-shell.
+// DeviceAttester is the production Attester, talking to the YubiHSM over the
+// native driver in internal/yubihsm.
 //
-// It uses the shell rather than PKCS#11 because attestation is a YubiHSM
-// vendor command with no PKCS#11 equivalent — the installed yubihsm_pkcs11
-// module exposes no attestation mechanism — and because internal/hsmaudit
-// already reaches the device this way.
-type ShellAttester struct {
+// It uses the device's own protocol rather than PKCS#11 because attestation is a
+// YubiHSM vendor command with no PKCS#11 equivalent — the installed
+// yubihsm_pkcs11 module exposes no attestation mechanism.
+type DeviceAttester struct {
 	Cfg hsm.Config
 	// AttestKeyID selects the attesting key; 0 (the default) selects the
 	// factory-provisioned one.
 	AttestKeyID uint16
 }
 
-// NewShellAttester returns an Attester backed by the yubihsm-shell binary.
-func NewShellAttester(cfg hsm.Config) *ShellAttester { return &ShellAttester{Cfg: cfg} }
+// NewDeviceAttester returns an Attester backed by the native YubiHSM driver.
+func NewDeviceAttester(cfg hsm.Config) *DeviceAttester { return &DeviceAttester{Cfg: cfg} }
 
 // AttestKey resolves label to an on-device object and attests it.
-func (s *ShellAttester) AttestKey(ctx context.Context, label string) (*Attestation, error) {
+func (s *DeviceAttester) AttestKey(ctx context.Context, label string) (*Attestation, error) {
 	if strings.TrimSpace(label) == "" {
 		return nil, fmt.Errorf("hsmattest: key label is required")
 	}
-	objectID, err := hsm.FindAsymmetricKey(s.Cfg, label)
+	objectID, err := hsm.FindAsymmetricKey(ctx, s.Cfg, label)
 	if err != nil {
 		return nil, err
 	}
@@ -125,15 +125,15 @@ func (s *ShellAttester) AttestKey(ctx context.Context, label string) (*Attestati
 // AttestObject attests the asymmetric key with the given on-device object ID,
 // for callers that hold the handle rather than a label — on a YubiHSM the
 // PKCS#11 CKA_ID is that handle.
-func (s *ShellAttester) AttestObject(ctx context.Context, objectID uint16) (*Attestation, error) {
+func (s *DeviceAttester) AttestObject(ctx context.Context, objectID uint16) (*Attestation, error) {
 	return s.attest(ctx, "", objectID)
 }
 
-func (s *ShellAttester) attest(ctx context.Context, label string, objectID uint16) (*Attestation, error) {
+func (s *DeviceAttester) attest(ctx context.Context, label string, objectID uint16) (*Attestation, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	certPEM, err := hsm.AttestAsymmetricKey(s.Cfg, objectID, s.AttestKeyID)
+	certPEM, err := hsm.AttestAsymmetricKey(ctx, s.Cfg, objectID, s.AttestKeyID)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +149,7 @@ func (s *ShellAttester) attest(ctx context.Context, label string, objectID uint1
 	// attestation rather than invalidating it: the per-key certificate is still
 	// the device's signed statement, and Verify reports precisely which of the
 	// two links it could establish.
-	if der, err := hsm.GetDeviceAttestation(s.Cfg); err == nil && len(der) > 0 {
+	if der, err := hsm.GetDeviceAttestation(ctx, s.Cfg); err == nil && len(der) > 0 {
 		att.DeviceCertificatePEM = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 	}
 

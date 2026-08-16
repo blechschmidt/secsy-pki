@@ -239,15 +239,16 @@ func run(args []string) error {
 	}
 
 	// The remaining hsm-audit subcommands (Task 167) reach the YubiHSM through
-	// yubihsm-shell rather than the PKCS#11 key provider, so dispatch them before
-	// the provider is built. Provisioning in particular runs on a device that has
-	// no keys yet, where constructing the CA provider would fail.
+	// the native driver in internal/yubihsm rather than the PKCS#11 key provider,
+	// so dispatch them before the provider is built. Provisioning in particular
+	// runs on a device that has no keys yet, where constructing the CA provider
+	// would fail.
 	if command == "hsm-audit" {
 		return cmdHSMAudit(db, cfg, cmdArgs)
 	}
-	// Key attestation (Task 168) likewise goes through yubihsm-shell — attestation
-	// is a vendor command with no PKCS#11 equivalent — and must work on a device
-	// whose keys the CA provider cannot open.
+	// Key attestation (Task 168) likewise goes through the native driver —
+	// attestation is a vendor command with no PKCS#11 equivalent — and must work
+	// on a device whose keys the CA provider cannot open.
 	if command == "hsm-attest" {
 		return cmdHSMAttest(db, cfg, cmdArgs)
 	}

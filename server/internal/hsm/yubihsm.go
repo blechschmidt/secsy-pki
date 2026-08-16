@@ -1,17 +1,26 @@
-// Package hsm provides YubiHSM audit-log verification, device attestation, and yubihsm-shell-backed helpers.
+// Package hsm provides YubiHSM audit-log verification, device attestation, and
+// the device operations the audit and attestation subsystems need.
+//
+// Every device operation goes through internal/yubihsm, a native driver that
+// speaks the YubiHSM's own SCP03 protocol over USB or a yubihsm-connector. It
+// replaced a layer that shelled out to the yubihsm-shell binary and recovered
+// results by regular expression over its human-readable output; see that
+// package's documentation for why that mattered beyond tidiness.
 package hsm
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"os"
-	"os/exec"
-	"regexp"
-	"strconv"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/yubihsm"
 )
 
 type Config struct {
@@ -38,6 +47,29 @@ type AuditLog struct {
 	ExportedAt   time.Time       `json:"exported_at"`
 }
 
+// auditSigningKeyID is the on-device asymmetric key that signs audit-log heads
+// and freshness attestations. Object ids are per-type on a YubiHSM, so this does
+// not collide with the authentication key of the same id.
+const auditSigningKeyID uint16 = 0x0001
+
+// deviceAttestationObjectID is the opaque object holding the factory device
+// attestation certificate, which anchors per-key attestations to Yubico's PKI.
+const deviceAttestationObjectID uint16 = 0x0000
+
+// nativeConfig adapts the package's configuration to the driver's.
+//
+// The connector is resolved the same way the PKCS#11 module resolves it, so a
+// deployment that configured only YUBIHSM_PKCS11_CONF keeps working: the audit
+// path and the signing path must address the same device, or the audit log would
+// describe hardware other than the one holding the CA key.
+func (c Config) nativeConfig() yubihsm.Config {
+	return yubihsm.Config{
+		ConnectorURL: connectorArg(c),
+		AuthKeyID:    uint16(c.AuthKeyID),
+		Password:     c.Password,
+	}
+}
+
 func connectorArg(cfg Config) string {
 	if cfg.ConnectorURL != "" {
 		return cfg.ConnectorURL
@@ -56,51 +88,17 @@ func connectorArg(cfg Config) string {
 			}
 		}
 	}
-	return "http://localhost:12345"
+	return "yhusb://"
 }
 
-func runShell(cfg Config, commands string) (string, error) {
-	connector := connectorArg(cfg)
-	authKey := cfg.AuthKeyID
-	if authKey == 0 {
-		authKey = 1
-	}
-	password := cfg.Password
-	if password == "" {
-		password = "password"
-	}
-
-	script := fmt.Sprintf("connect\nsession open %d %s\n%s\nsession close 0\nexit\n", authKey, password, commands)
-	cmd := exec.Command("yubihsm-shell", "-C", connector)
-	cmd.Stdin = strings.NewReader(script)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return string(out), fmt.Errorf("yubihsm-shell failed: %w\nOutput: %s", err, out)
-	}
-	if failure := scriptFailure(string(out)); failure != "" {
-		return string(out), fmt.Errorf("yubihsm-shell reported failure: %s\nOutput: %s", failure, out)
-	}
-	return string(out), nil
-}
-
-// shellFailureRe matches the in-band error lines yubihsm-shell prints.
+// withClient runs fn against an authenticated session and closes it afterwards.
 //
-// The binary exits 0 even when a scripted command fails — a rejected "put
-// option", a refused session, an unreachable connector all produce an error
-// line on stdout and status 0. Trusting the exit status alone would let
-// provisioning report that force-audit is enabled when the device rejected the
-// change, which is precisely the state in which unlogged signing becomes
-// possible. Every command therefore has its output scanned.
-var shellFailureRe = regexp.MustCompile(`(?im)^\s*(Failed [^\n]*|Unable to [^\n]*|Not connected[^\n]*|Invalid argument[^\n]*|Command failed[^\n]*|Error: [^\n]*)$`)
-
-// scriptFailure returns the first in-band failure line in the shell output, or
-// "" when the output is clean.
-func scriptFailure(out string) string {
-	m := shellFailureRe.FindStringSubmatch(out)
-	if len(m) < 2 {
-		return ""
-	}
-	return strings.TrimSpace(m[1])
+// One session per operation, rather than one per device command: the shell-based
+// predecessor opened and tore down a session for every single command, so a
+// signed audit-log export cost four authentications and four device log entries
+// where one now suffices.
+func withClient(ctx context.Context, cfg Config, fn func(*yubihsm.Client) error) error {
+	return yubihsm.WithSession(ctx, cfg.nativeConfig(), fn)
 }
 
 // YubiHSM command codes for audit log entries
@@ -205,10 +203,11 @@ var AllCommands = map[uint8]string{
 }
 
 // FactoryReset performs a factory reset of the YubiHSM, erasing all keys and logs.
-func FactoryReset(cfg Config) error {
-	out, err := runShell(cfg, "reset 0")
-	if err != nil {
-		return fmt.Errorf("factory reset failed: %w\n%s", err, out)
+func FactoryReset(ctx context.Context, cfg Config) error {
+	if err := withClient(ctx, cfg, func(c *yubihsm.Client) error {
+		return c.Reset(ctx)
+	}); err != nil {
+		return fmt.Errorf("factory reset failed: %w", err)
 	}
 	return nil
 }
@@ -227,7 +226,7 @@ func CheckDeviceInitEntry(entries []AuditLogEntry) error {
 		return fmt.Errorf(
 			"no audit log entries found — cannot verify device state.\n" +
 				"Please factory reset the device first:\n" +
-				"  yubihsm-shell> reset 0\n" +
+				"  secsy-ca hsm-audit reset\n" +
 				"Then re-run provisioning")
 	}
 	if !IsBootSentinel(entries[0]) {
@@ -235,14 +234,15 @@ func CheckDeviceInitEntry(entries []AuditLogEntry) error {
 			"audit log does not start with a device init entry (entry 1, all 0xff fields).\n" +
 				"The device was not factory reset before provisioning.\n" +
 				"There may be unaudited operations. Please factory reset the device first:\n" +
-				"  yubihsm-shell> reset 0\n" +
+				"  secsy-ca hsm-audit reset\n" +
 				"Then re-run provisioning")
 	}
 	return nil
 }
 
 // ProvisionAuditLogging enables forced, irreversible audit logging on the
-// YubiHSM for every command in forced.
+// YubiHSM for every command in forced. It returns a human-readable report of the
+// resulting device state.
 //
 // Ordering is deliberate and load-bearing:
 //
@@ -263,23 +263,64 @@ func CheckDeviceInitEntry(entries []AuditLogEntry) error {
 //
 // The caller must verify the device-init entry (CheckDeviceInitEntry) first, so
 // that auditing is provisioned on a device with no prior unaudited operations.
-func ProvisionAuditLogging(cfg Config, forced []uint8) (string, error) {
-	cmds := []string{
-		fmt.Sprintf("put option 0 command-audit %02x01", CmdPutOption),
-		fmt.Sprintf("put option 0 command-audit %02x02", CmdPutOption),
-		"put option 0 force-audit 02",
-	}
-	for _, c := range forced {
-		if c == CmdPutOption {
-			continue // already fixed above
+func ProvisionAuditLogging(ctx context.Context, cfg Config, forced []uint8) (string, error) {
+	var report string
+	err := withClient(ctx, cfg, func(c *yubihsm.Client) error {
+		// Enabling command-audit for PUT OPTION at level "on" first, then raising
+		// it to "fixed", means the transition to fixed is itself the first
+		// recorded option change.
+		steps := [][2]byte{
+			{CmdPutOption, 0x01},
+			{CmdPutOption, 0x02},
 		}
-		cmds = append(cmds, fmt.Sprintf("put option 0 command-audit %02x02", c))
+		for _, cmd := range forced {
+			if cmd == CmdPutOption {
+				continue // already fixed above
+			}
+			steps = append(steps, [2]byte{cmd, 0x02})
+		}
+
+		if err := c.PutOption(ctx, yubihsm.OptionCommandAudit, []byte{steps[0][0], steps[0][1]}); err != nil {
+			return err
+		}
+		if err := c.PutOption(ctx, yubihsm.OptionCommandAudit, []byte{steps[1][0], steps[1][1]}); err != nil {
+			return err
+		}
+		// force-audit is raised before the remaining per-command levels so there
+		// is no window in which a command is audited but its entries may be
+		// silently overwritten.
+		if err := c.PutOption(ctx, yubihsm.OptionForceAudit, []byte{0x02}); err != nil {
+			return err
+		}
+		for _, step := range steps[2:] {
+			if err := c.PutOption(ctx, yubihsm.OptionCommandAudit, []byte{step[0], step[1]}); err != nil {
+				return err
+			}
+		}
+
+		// Read the settings back from the device and check them, rather than
+		// reporting what was requested: the point of the exercise is that the
+		// device, not this process, is the authority on whether logging can still
+		// be disabled. A write the device declined must not be reported as
+		// provisioning, because the operator's next step is to generate keys on
+		// the strength of it.
+		opts, err := readAuditOptions(ctx, c)
+		if err != nil {
+			return err
+		}
+		report = opts.Report()
+		if opts.ForceAudit != 0x02 {
+			return fmt.Errorf("device did not accept force-audit=fixed (it reports %s)", auditLevelName(opts.ForceAudit))
+		}
+		if !opts.signCommandsFixed() {
+			return fmt.Errorf("device did not fix the audit level for every signing and key-generation command:\n%s", report)
+		}
+		return nil
+	})
+	if err != nil {
+		return report, fmt.Errorf("provisioning forced audit logging: %w", err)
 	}
-	cmds = append(cmds,
-		"get option 0 command-audit",
-		"get option 0 force-audit",
-	)
-	return runShell(cfg, strings.Join(cmds, "\n"))
+	return report, nil
 }
 
 // SignedAuditLog is an audit log with a cryptographic signature from the HSM's
@@ -296,157 +337,112 @@ type SignedAuditLog struct {
 	ExportedAt         time.Time       `json:"exported_at"`
 }
 
-// signLastHash signs the last entry's hash with the attestation key and returns
-// the signature, attestation cert, and device cert.
-func signLastHash(cfg Config, lastHash string) (signature, attestCertPEM, deviceCertPEM string, err error) {
+// signLastHash signs the last entry's hash with the audit signing key and
+// collects the certificates a remote verifier needs to check it.
+func signLastHash(ctx context.Context, c *yubihsm.Client, lastHash string) (signature, attestCertPEM, deviceCertPEM string, err error) {
 	if lastHash == "" {
 		return "", "", "", fmt.Errorf("no entries to sign")
 	}
-
 	hashBytes, err := hex.DecodeString(lastHash)
 	if err != nil {
 		return "", "", "", fmt.Errorf("invalid last hash: %w", err)
 	}
 
-	hashFile, err := os.CreateTemp("", "audit-hash-*.bin")
-	if err != nil {
-		return "", "", "", err
-	}
-	if _, err := hashFile.Write(hashBytes); err != nil {
-		return "", "", "", err
-	}
-	if err := hashFile.Close(); err != nil {
-		return "", "", "", err
-	}
-	defer func() { _ = os.Remove(hashFile.Name()) }()
-
-	sigOut, err := runShell(cfg, fmt.Sprintf("sign eddsa 0 0x0001 ed25519 %s", hashFile.Name()))
+	sig, err := c.SignEdDSA(ctx, auditSigningKeyID, hashBytes)
 	if err != nil {
 		return "", "", "", fmt.Errorf("signing last hash: %w", err)
 	}
-	for _, line := range strings.Split(sigOut, "\n") {
-		line = strings.TrimSpace(line)
-		if len(line) > 40 && !strings.Contains(line, " ") {
-			signature = line
-		}
-	}
-	if signature == "" {
-		return "", "", "", fmt.Errorf("could not parse signature from output: %s", sigOut)
-	}
 
-	attestOut, err := runShell(cfg, "attest asymmetric 0 0x0001")
+	attestDER, err := c.AttestAsymmetricKey(ctx, auditSigningKeyID, 0)
 	if err != nil {
 		return "", "", "", fmt.Errorf("getting attestation cert: %w", err)
 	}
-	attestCertPEM = extractPEM(attestOut)
-	if attestCertPEM == "" {
-		return "", "", "", fmt.Errorf("could not parse attestation cert")
-	}
-
-	derBytes, err := GetDeviceAttestation(cfg)
+	deviceDER, err := c.GetOpaque(ctx, deviceAttestationObjectID)
 	if err != nil {
 		return "", "", "", fmt.Errorf("getting device cert: %w", err)
 	}
-	deviceCertPEM = string(pemEncode("CERTIFICATE", derBytes))
 
-	return signature, attestCertPEM, deviceCertPEM, nil
+	return base64.StdEncoding.EncodeToString(sig),
+		encodeCertPEM(attestDER),
+		encodeCertPEM(deviceDER),
+		nil
+}
+
+func encodeCertPEM(der []byte) string {
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
 // GetSignedAuditLog fetches the audit log and signs the last entry's hash
-// with the HSM's attestation key (0x0001). The last hash is the HSM's own
-// chain commitment — it depends on every previous entry.
-func GetSignedAuditLog(cfg Config) (*SignedAuditLog, error) {
-	auditLog, err := GetAuditLog(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("getting audit log: %w", err)
-	}
-	if len(auditLog.Entries) == 0 {
-		return nil, fmt.Errorf("no audit log entries")
-	}
-
-	lastHash := auditLog.Entries[len(auditLog.Entries)-1].Hash
-	sig, attestCert, deviceCert, err := signLastHash(cfg, lastHash)
+// with the HSM's audit signing key. The last hash is the HSM's own chain
+// commitment — it depends on every previous entry.
+func GetSignedAuditLog(ctx context.Context, cfg Config) (*SignedAuditLog, error) {
+	var out *SignedAuditLog
+	err := withClient(ctx, cfg, func(c *yubihsm.Client) error {
+		info, err := c.DeviceInfo(ctx)
+		if err != nil {
+			return err
+		}
+		log, err := c.GetLogEntries(ctx)
+		if err != nil {
+			return err
+		}
+		entries := convertEntries(log.Entries)
+		if len(entries) == 0 {
+			return fmt.Errorf("no audit log entries")
+		}
+		lastHash := entries[len(entries)-1].Hash
+		sig, attestCert, deviceCert, err := signLastHash(ctx, c, lastHash)
+		if err != nil {
+			return err
+		}
+		out = &SignedAuditLog{
+			DeviceSerial:       info.Serial,
+			Entries:            entries,
+			LastHash:           lastHash,
+			Signature:          sig,
+			AttestationCertPEM: attestCert,
+			DeviceCertPEM:      deviceCert,
+			ExportedAt:         time.Now().UTC(),
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	return &SignedAuditLog{
-		DeviceSerial:       auditLog.DeviceSerial,
-		Entries:            auditLog.Entries,
-		LastHash:           lastHash,
-		Signature:          sig,
-		AttestationCertPEM: attestCert,
-		DeviceCertPEM:      deviceCert,
-		ExportedAt:         time.Now().UTC(),
-	}, nil
-}
-
-// GetKeyAttestationCert gets an attestation certificate for a key by its label.
-//
-// Label resolution is exact; see FindAsymmetricKey for why a prefix match here
-// was a correctness bug rather than a convenience.
-func GetKeyAttestationCert(cfg Config, keyLabel string) (string, error) {
-	keyID, err := FindAsymmetricKey(cfg, keyLabel)
-	if err != nil {
-		return "", err
-	}
-	return AttestAsymmetricKey(cfg, keyID, 0)
+	return out, nil
 }
 
 // SignAuditEntries signs the last entry's hash for pre-collected entries (e.g., from a database).
-func SignAuditEntries(cfg Config, entries []AuditLogEntry) (*SignedAuditLog, error) {
+func SignAuditEntries(ctx context.Context, cfg Config, entries []AuditLogEntry) (*SignedAuditLog, error) {
 	if len(entries) == 0 {
 		return nil, fmt.Errorf("no entries to sign")
 	}
-
-	serial, _ := GetDeviceSerial(cfg)
-	lastHash := entries[len(entries)-1].Hash
-
-	sig, attestCert, deviceCert, err := signLastHash(cfg, lastHash)
+	var out *SignedAuditLog
+	err := withClient(ctx, cfg, func(c *yubihsm.Client) error {
+		info, err := c.DeviceInfo(ctx)
+		if err != nil {
+			return err
+		}
+		lastHash := entries[len(entries)-1].Hash
+		sig, attestCert, deviceCert, err := signLastHash(ctx, c, lastHash)
+		if err != nil {
+			return err
+		}
+		out = &SignedAuditLog{
+			DeviceSerial:       info.Serial,
+			Entries:            entries,
+			LastHash:           lastHash,
+			Signature:          sig,
+			AttestationCertPEM: attestCert,
+			DeviceCertPEM:      deviceCert,
+			ExportedAt:         time.Now().UTC(),
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	return &SignedAuditLog{
-		DeviceSerial:       serial,
-		Entries:            entries,
-		LastHash:           lastHash,
-		Signature:          sig,
-		AttestationCertPEM: attestCert,
-		DeviceCertPEM:      deviceCert,
-		ExportedAt:         time.Now().UTC(),
-	}, nil
-}
-
-func extractPEM(output string) string {
-	start := strings.Index(output, "-----BEGIN CERTIFICATE-----")
-	if start < 0 {
-		return ""
-	}
-	end := strings.Index(output[start:], "-----END CERTIFICATE-----")
-	if end < 0 {
-		return ""
-	}
-	return output[start : start+end+len("-----END CERTIFICATE-----")]
-}
-
-func pemEncode(blockType string, data []byte) []byte {
-	return []byte("-----BEGIN " + blockType + "-----\n" +
-		base64Encode(data) +
-		"-----END " + blockType + "-----\n")
-}
-
-func base64Encode(data []byte) string {
-	encoded := base64.StdEncoding.EncodeToString(data)
-	var lines string
-	for i := 0; i < len(encoded); i += 76 {
-		end := i + 76
-		if end > len(encoded) {
-			end = len(encoded)
-		}
-		lines += encoded[i:end] + "\n"
-	}
-	return lines
+	return out, nil
 }
 
 // SignCommands is the subset of CryptoCommands that are signing operations (not keygen).
@@ -457,6 +453,40 @@ var SignCommands = map[uint8]string{
 	CmdSignRSAPSS:   "SIGN RSA PSS",
 }
 
+// LogResponse is a full parse of one GET LOG ENTRIES response: the entries plus
+// the device's unlogged-operation counters.
+type LogResponse struct {
+	Entries []AuditLogEntry `json:"entries"`
+	// UnloggedBoots and UnloggedAuthentications are non-zero only when the log
+	// overflowed. Any non-zero value invalidates the completeness claim.
+	UnloggedBoots           uint16 `json:"unlogged_boots"`
+	UnloggedAuthentications uint16 `json:"unlogged_authentications"`
+}
+
+// convertEntries maps driver log records to this package's representation. The
+// digest is kept as lowercase hex because it is stored and transported that way
+// throughout the audit subsystem.
+func convertEntries(in []yubihsm.LogEntry) []AuditLogEntry {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]AuditLogEntry, 0, len(in))
+	for _, e := range in {
+		out = append(out, AuditLogEntry{
+			Number:     e.Number,
+			Command:    e.Command,
+			Length:     e.Length,
+			SessionKey: e.SessionKey,
+			TargetKey:  e.TargetKey,
+			SecondKey:  e.SecondKey,
+			Result:     e.Result,
+			Tick:       e.Tick,
+			Hash:       hex.EncodeToString(e.Digest[:]),
+		})
+	}
+	return out
+}
+
 // FetchLog retrieves the unconsumed device log entries and the
 // unlogged-operation counters without acknowledging anything.
 //
@@ -465,22 +495,33 @@ var SignCommands = map[uint8]string{
 // acknowledgement but before they are durably stored are gone from the only
 // place they existed. Callers must persist and verify a segment first, then
 // call ConsumeLog.
-func FetchLog(cfg Config) (*LogResponse, error) {
-	out, err := runShell(cfg, "audit get 0")
+func FetchLog(ctx context.Context, cfg Config) (*LogResponse, error) {
+	var out *LogResponse
+	err := withClient(ctx, cfg, func(c *yubihsm.Client) error {
+		log, err := c.GetLogEntries(ctx)
+		if err != nil {
+			return err
+		}
+		out = &LogResponse{
+			Entries:                 convertEntries(log.Entries),
+			UnloggedBoots:           log.UnloggedBoots,
+			UnloggedAuthentications: log.UnloggedAuthentications,
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	return ParseLogResponse(out)
+	return out, nil
 }
 
 // ConsumeLog acknowledges device log entries up to and including upTo, freeing
 // those ring-buffer slots. Call it only after the segment is durably stored and
 // its continuity verified.
-func ConsumeLog(cfg Config, upTo uint16) error {
-	if _, err := runShell(cfg, fmt.Sprintf("audit set 0 %d", upTo)); err != nil {
-		return fmt.Errorf("consuming device log up to entry %d: %w", upTo, err)
-	}
-	return nil
+func ConsumeLog(ctx context.Context, cfg Config, upTo uint16) error {
+	return withClient(ctx, cfg, func(c *yubihsm.Client) error {
+		return c.SetLogIndex(ctx, upTo)
+	})
 }
 
 // FetchAndConsumeAuditLog retrieves audit log entries and acknowledges them so
@@ -489,35 +530,45 @@ func ConsumeLog(cfg Config, upTo uint16) error {
 // Deprecated: this acknowledges entries before the caller can store them, so a
 // failure in between loses them permanently. Use FetchLog, persist, then
 // ConsumeLog.
-func FetchAndConsumeAuditLog(cfg Config) ([]AuditLogEntry, error) {
-	resp, err := FetchLog(cfg)
+func FetchAndConsumeAuditLog(ctx context.Context, cfg Config) ([]AuditLogEntry, error) {
+	var entries []AuditLogEntry
+	err := withClient(ctx, cfg, func(c *yubihsm.Client) error {
+		log, err := c.GetLogEntries(ctx)
+		if err != nil {
+			return err
+		}
+		entries = convertEntries(log.Entries)
+		if len(entries) == 0 {
+			return nil
+		}
+		last := entries[len(entries)-1].Number
+		if err := c.SetLogIndex(ctx, last); err != nil {
+			return fmt.Errorf("fetched %d entries but failed to consume: %w", len(entries), err)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, err
+		return entries, err
 	}
-	if len(resp.Entries) == 0 {
-		return nil, nil
-	}
-	last := resp.Entries[len(resp.Entries)-1].Number
-	if err := ConsumeLog(cfg, last); err != nil {
-		return resp.Entries, fmt.Errorf("fetched %d entries but failed to consume: %w", len(resp.Entries), err)
-	}
-	return resp.Entries, nil
+	return entries, nil
 }
 
-func GetDeviceAttestation(cfg Config) ([]byte, error) {
-	tmpFile, err := os.CreateTemp("", "yubihsm-cert-*.der")
+// GetDeviceAttestation returns the factory device attestation certificate in
+// DER form.
+func GetDeviceAttestation(ctx context.Context, cfg Config) ([]byte, error) {
+	var der []byte
+	err := withClient(ctx, cfg, func(c *yubihsm.Client) error {
+		b, err := c.GetOpaque(ctx, deviceAttestationObjectID)
+		if err != nil {
+			return err
+		}
+		der = b
+		return nil
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getting device attestation: %w", err)
 	}
-	tmpPath := tmpFile.Name()
-	_ = tmpFile.Close()
-	defer func() { _ = os.Remove(tmpPath) }()
-
-	out, err := runShell(cfg, fmt.Sprintf("get opaque 0 0 %s", tmpPath))
-	if err != nil {
-		return nil, fmt.Errorf("getting device attestation: %w\n%s", err, out)
-	}
-	return os.ReadFile(tmpPath)
+	return der, nil
 }
 
 type DeviceInfo struct {
@@ -529,71 +580,30 @@ type DeviceInfo struct {
 	AuditProvisioned bool   `json:"audit_provisioned"` // all sign commands are force-audited
 }
 
-func GetDeviceInfo(cfg Config) (*DeviceInfo, error) {
-	out, err := runShell(cfg, "get deviceinfo\nget option 0 force-audit\nget option 0 command-audit")
+func GetDeviceInfo(ctx context.Context, cfg Config) (*DeviceInfo, error) {
+	out := &DeviceInfo{}
+	err := withClient(ctx, cfg, func(c *yubihsm.Client) error {
+		info, err := c.DeviceInfo(ctx)
+		if err != nil {
+			return err
+		}
+		out.Version = info.Version
+		out.Serial = info.Serial
+		out.PartNumber = info.PartNumber
+		out.LogUsed = info.LogCapacity()
+
+		opts, err := readAuditOptions(ctx, c)
+		if err != nil {
+			return err
+		}
+		out.ForceAudit = opts.ForceAudit == 0x02
+		out.AuditProvisioned = opts.signCommandsFixed()
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	info := &DeviceInfo{}
-
-	if m := regexp.MustCompile(`Version number:\s+(.+)`).FindStringSubmatch(out); len(m) > 1 {
-		info.Version = strings.TrimSpace(m[1])
-	}
-	if m := regexp.MustCompile(`Serial number:\s+(\d+)`).FindStringSubmatch(out); len(m) > 1 {
-		info.Serial = m[1]
-	}
-	if m := regexp.MustCompile(`Part number:\s+(.+)`).FindStringSubmatch(out); len(m) > 1 {
-		info.PartNumber = strings.TrimSpace(m[1])
-	}
-	if m := regexp.MustCompile(`Log used:\s+(.+)`).FindStringSubmatch(out); len(m) > 1 {
-		info.LogUsed = strings.TrimSpace(m[1])
-	}
-
-	// Parse force-audit and command-audit options
-	// They appear as "Option value is: XX" lines in order
-	optionValues := regexp.MustCompile(`Option value is:\s+([0-9a-fA-F]+)`).FindAllStringSubmatch(out, -1)
-	if len(optionValues) >= 1 {
-		info.ForceAudit = optionValues[0][1] == "02"
-	}
-	if len(optionValues) >= 2 {
-		info.AuditProvisioned = checkSignCommandsAudited(optionValues[1][1])
-	}
-
-	return info, nil
-}
-
-// checkSignCommandsAudited parses the command-audit hex string and verifies
-// all sign commands are set to 0x02 (force-audited, irreversible).
-func checkSignCommandsAudited(hexStr string) bool {
-	// The hex string is pairs of (command_byte, audit_level) concatenated
-	data, err := hex.DecodeString(hexStr)
-	if err != nil || len(data)%2 != 0 {
-		return false
-	}
-
-	required := map[byte]bool{
-		CmdSignECDSA:             false,
-		CmdSignEdDSA:             false,
-		CmdSignRSAPKCS1:          false,
-		CmdSignRSAPSS:            false,
-		CmdGenerateAsymmetricKey: false,
-	}
-
-	for i := 0; i < len(data)-1; i += 2 {
-		cmd := data[i]
-		level := data[i+1]
-		if _, need := required[cmd]; need {
-			required[cmd] = (level == 0x02)
-		}
-	}
-
-	for _, ok := range required {
-		if !ok {
-			return false
-		}
-	}
-	return true
+	return out, nil
 }
 
 // AuditOptions is the device's raw audit configuration.
@@ -604,25 +614,86 @@ type AuditOptions struct {
 	CommandAudit map[uint8]uint8 `json:"command_audit"`
 }
 
-var optionValueRe = regexp.MustCompile(`(?i)Option value is:\s+([0-9a-fA-F]+)`)
+// signCommandsFixed reports whether every signing and key-generation command is
+// at level "fixed", the state in which the device cannot be made to sign without
+// recording it.
+func (o *AuditOptions) signCommandsFixed() bool {
+	for _, cmd := range []uint8{
+		CmdSignECDSA, CmdSignEdDSA, CmdSignRSAPKCS1, CmdSignRSAPSS, CmdGenerateAsymmetricKey,
+	} {
+		if o.CommandAudit[cmd] != 0x02 {
+			return false
+		}
+	}
+	return true
+}
+
+// Report renders the audit configuration for an operator, listing the commands
+// that are not irreversibly audited rather than only summarising.
+func (o *AuditOptions) Report() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "force-audit: %s\n", auditLevelName(o.ForceAudit))
+	cmds := make([]int, 0, len(o.CommandAudit))
+	for cmd := range o.CommandAudit {
+		cmds = append(cmds, int(cmd))
+	}
+	sort.Ints(cmds)
+	var notFixed []string
+	for _, cmd := range cmds {
+		if level := o.CommandAudit[uint8(cmd)]; level != 0x02 {
+			name := AllCommands[uint8(cmd)]
+			if name == "" {
+				name = "UNDOCUMENTED COMMAND"
+			}
+			notFixed = append(notFixed, fmt.Sprintf("0x%02x %s=%s", cmd, name, auditLevelName(level)))
+		}
+	}
+	fmt.Fprintf(&b, "command-audit: %d commands, %d not fixed\n", len(cmds), len(notFixed))
+	for _, s := range notFixed {
+		fmt.Fprintf(&b, "  %s\n", s)
+	}
+	return b.String()
+}
+
+func auditLevelName(level uint8) string {
+	switch level {
+	case 0x00:
+		return "off"
+	case 0x01:
+		return "on"
+	case 0x02:
+		return "fixed"
+	default:
+		return fmt.Sprintf("unknown(0x%02x)", level)
+	}
+}
 
 // GetAuditOptions reads the force-audit and command-audit device options.
-//
-// The two options are fetched in separate shell invocations on purpose: the
-// device prints them in an untagged "Option value is: <hex>" form, so reading
-// both from one combined output means guessing which line is which from
-// ordering. Separate calls remove that ambiguity — misreading the option that
-// proves logging cannot be disabled would silently weaken every downstream
-// claim.
-func GetAuditOptions(cfg Config) (*AuditOptions, error) {
-	force, err := getOptionValue(cfg, "force-audit")
+func GetAuditOptions(ctx context.Context, cfg Config) (*AuditOptions, error) {
+	var out *AuditOptions
+	err := withClient(ctx, cfg, func(c *yubihsm.Client) error {
+		opts, err := readAuditOptions(ctx, c)
+		if err != nil {
+			return err
+		}
+		out = opts
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func readAuditOptions(ctx context.Context, c *yubihsm.Client) (*AuditOptions, error) {
+	force, err := c.GetOption(ctx, yubihsm.OptionForceAudit)
 	if err != nil {
 		return nil, err
 	}
 	if len(force) != 1 {
 		return nil, fmt.Errorf("force-audit option: expected 1 byte, got %d (%x)", len(force), force)
 	}
-	cmdAudit, err := getOptionValue(cfg, "command-audit")
+	cmdAudit, err := c.GetOption(ctx, yubihsm.OptionCommandAudit)
 	if err != nil {
 		return nil, err
 	}
@@ -636,166 +707,55 @@ func GetAuditOptions(cfg Config) (*AuditOptions, error) {
 	return opts, nil
 }
 
-func getOptionValue(cfg Config, name string) ([]byte, error) {
-	out, err := runShell(cfg, "get option 0 "+name)
-	if err != nil {
-		return nil, fmt.Errorf("reading %s option: %w", name, err)
-	}
-	m := optionValueRe.FindStringSubmatch(out)
-	if len(m) < 2 {
-		return nil, fmt.Errorf("reading %s option: no value in output: %s", name, strings.TrimSpace(out))
-	}
-	raw, err := hex.DecodeString(m[1])
-	if err != nil {
-		return nil, fmt.Errorf("reading %s option: value %q is not hex: %w", name, m[1], err)
-	}
-	return raw, nil
-}
-
-func GetDeviceSerial(cfg Config) (string, error) {
-	out, err := runShell(cfg, "get deviceinfo")
+// GetDeviceSerial reads the device serial over an authenticated session.
+//
+// The device answers GET DEVICE INFO outside a session too, which would be one
+// round trip cheaper — but this serial is stamped into audit exports as the
+// identity of the device they describe, and an unauthenticated answer is one
+// that anything able to reply on the transport could have written. Liveness
+// probing, where that does not matter, uses yubihsm.TransportDeviceInfo.
+func GetDeviceSerial(ctx context.Context, cfg Config) (string, error) {
+	var serial string
+	err := withClient(ctx, cfg, func(c *yubihsm.Client) error {
+		info, err := c.DeviceInfo(ctx)
+		if err != nil {
+			return err
+		}
+		serial = info.Serial
+		return nil
+	})
 	if err != nil {
 		return "", err
 	}
-	re := regexp.MustCompile(`Serial number:\s+(\d+)`)
-	m := re.FindStringSubmatch(out)
-	if len(m) < 2 {
-		return "", fmt.Errorf("could not parse device serial from output: %s", out)
-	}
-	return m[1], nil
+	return serial, nil
 }
 
-func GetAuditLog(cfg Config) (*AuditLog, error) {
-	out, err := runShell(cfg, "audit get 0")
-	if err != nil {
-		return nil, err
-	}
-
-	serial, _ := GetDeviceSerial(cfg)
-
-	entries, err := ParseAuditLogOutput(out)
-	if err != nil {
-		return nil, err
-	}
-
-	return &AuditLog{
-		DeviceSerial: serial,
-		Entries:      entries,
-		ExportedAt:   time.Now().UTC(),
-	}, nil
-}
-
-var auditLineRe = regexp.MustCompile(
-	`item:\s+(\d+)\s+--\s+cmd:\s+0x([0-9a-fA-F]+)\s+--\s+length:\s+(\d+)\s+--\s+session key:\s+0x([0-9a-fA-F]+)\s+--\s+target key:\s+0x([0-9a-fA-F]+)\s+--\s+second key:\s+0x([0-9a-fA-F]+)\s+--\s+result:\s+0x([0-9a-fA-F]+)\s+--\s+tick:\s+(\d+)\s+--\s+hash:\s+([0-9a-fA-F]+)`,
-)
-
-// The device reports, alongside the entries, how many boots and authentications
-// it could not record because the log was full. Those counters are the device
-// admitting its own log is incomplete, so they must be parsed and surfaced —
-// discarding them would let unrecorded operations pass as a clean log.
-var (
-	unloggedBootsRe = regexp.MustCompile(`(\d+)\s+unlogged\s+boots?\s+found`)
-	unloggedAuthsRe = regexp.MustCompile(`(\d+)\s+unlogged\s+authentications?\s+found`)
-)
-
-// LogResponse is a full parse of one "get-logs" response: the entries plus the
-// device's unlogged-operation counters.
-type LogResponse struct {
-	Entries []AuditLogEntry `json:"entries"`
-	// UnloggedBoots and UnloggedAuthentications are non-zero only when the log
-	// overflowed. Any non-zero value invalidates the completeness claim.
-	UnloggedBoots           uint16 `json:"unlogged_boots"`
-	UnloggedAuthentications uint16 `json:"unlogged_authentications"`
-}
-
-// ParseLogResponse parses the full "get-logs" output, including the
-// unlogged-operation counters. An empty entry list is not an error: a freshly
-// consumed log legitimately has nothing new to report.
-func ParseLogResponse(output string) (*LogResponse, error) {
-	resp := &LogResponse{}
-	if m := unloggedBootsRe.FindStringSubmatch(output); len(m) > 1 {
-		n, err := strconv.ParseUint(m[1], 10, 16)
+func GetAuditLog(ctx context.Context, cfg Config) (*AuditLog, error) {
+	var out *AuditLog
+	err := withClient(ctx, cfg, func(c *yubihsm.Client) error {
+		info, err := c.DeviceInfo(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("parsing unlogged boot count %q: %w", m[1], err)
+			return err
 		}
-		resp.UnloggedBoots = uint16(n)
-	}
-	if m := unloggedAuthsRe.FindStringSubmatch(output); len(m) > 1 {
-		n, err := strconv.ParseUint(m[1], 10, 16)
+		log, err := c.GetLogEntries(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("parsing unlogged authentication count %q: %w", m[1], err)
+			return err
 		}
-		resp.UnloggedAuthentications = uint16(n)
-	}
-	entries, err := parseAuditLogEntries(output)
+		entries := convertEntries(log.Entries)
+		if len(entries) == 0 {
+			return fmt.Errorf("no audit log entries found")
+		}
+		out = &AuditLog{
+			DeviceSerial: info.Serial,
+			Entries:      entries,
+			ExportedAt:   time.Now().UTC(),
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	resp.Entries = entries
-	return resp, nil
-}
-
-// ParseAuditLogOutput parses only the entries and treats an empty log as an
-// error. Prefer ParseLogResponse, which also surfaces the unlogged counters.
-func ParseAuditLogOutput(output string) ([]AuditLogEntry, error) {
-	entries, err := parseAuditLogEntries(output)
-	if err != nil {
-		return nil, err
-	}
-	if len(entries) == 0 {
-		return nil, fmt.Errorf("no audit log entries found in output")
-	}
-	return entries, nil
-}
-
-func parseAuditLogEntries(output string) ([]AuditLogEntry, error) {
-	matches := auditLineRe.FindAllStringSubmatch(output, -1)
-
-	// Field widths are enforced rather than discarded: an out-of-range value
-	// means the output does not describe a YubiHSM log entry, and silently
-	// truncating it would fabricate an entry that then fails to hash-verify for
-	// the wrong reason.
-	var entries []AuditLogEntry
-	for _, m := range matches {
-		var (
-			num, cmd, length, sessionKey, targetKey, secondKey, result, tick uint64
-			err                                                              error
-		)
-		for _, f := range []struct {
-			dst     *uint64
-			text    string
-			base    int
-			bitSize int
-			name    string
-		}{
-			{&num, m[1], 10, 16, "item"},
-			{&cmd, m[2], 16, 8, "cmd"},
-			{&length, m[3], 10, 16, "length"},
-			{&sessionKey, m[4], 16, 16, "session key"},
-			{&targetKey, m[5], 16, 16, "target key"},
-			{&secondKey, m[6], 16, 16, "second key"},
-			{&result, m[7], 16, 8, "result"},
-			{&tick, m[8], 10, 32, "tick"},
-		} {
-			if *f.dst, err = strconv.ParseUint(f.text, f.base, f.bitSize); err != nil {
-				return nil, fmt.Errorf("audit log entry %q: field %s: %w", m[0], f.name, err)
-			}
-		}
-		hash := strings.ToLower(m[9])
-
-		entries = append(entries, AuditLogEntry{
-			Number:     uint16(num),
-			Command:    uint8(cmd),
-			Length:     uint16(length),
-			SessionKey: uint16(sessionKey),
-			TargetKey:  uint16(targetKey),
-			SecondKey:  uint16(secondKey),
-			Result:     uint8(result),
-			Tick:       uint32(tick),
-			Hash:       hash,
-		})
-	}
-	return entries, nil
+	return out, nil
 }
 
 // ComputeEntryHash computes the expected hash for an audit log entry.

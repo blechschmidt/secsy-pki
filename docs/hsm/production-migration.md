@@ -27,9 +27,12 @@ CA alongside the development one**, then cutting over — not an in-place swap.
 
 ## Step 1 — Provision the target HSM
 
-1. Install the vendor PKCS#11 module and tools.
-   - YubiHSM 2: `yubihsm-shell`, `yubihsm-connector`, and
-     `/usr/lib/pkcs11/yubihsm_pkcs11.so`.
+1. Install the vendor PKCS#11 module.
+   - YubiHSM 2: `/usr/lib/pkcs11/yubihsm_pkcs11.so`. The audit, attestation and
+     provisioning commands do not need `yubihsm-shell`: secsy-pki drives the
+     device natively over USB (or a `yubihsm-connector`, if you prefer to run
+     one). Give the service read/write access to the USB device — a udev rule
+     granting the service account access to `1050:0030` is enough.
 2. Establish the token: set the user PIN / authentication key, create the slot
    or domain the service will use.
 3. **YubiHSM: enable forced audit logging before generating any key.** This is

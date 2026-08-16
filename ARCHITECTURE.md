@@ -228,8 +228,10 @@ server/
       keyprovider.go  Provider/Signer interfaces, Config, New() selector, key-type normalization
       software.go  SoftwareProvider: on-disk PKCS#8 keystore (keys never exported)
       pkcs11.go    PKCS11Provider: delegates to pki.PKCS11Signer / pki.GenerateKeyOnHSM
+    yubihsm/       Native YubiHSM 2 driver: SCP03 secure channel over direct USB
+                   (Linux usbfs) or a yubihsm-connector; no vendor binaries, no cgo
     hsm/
-      yubihsm.go   YubiHSM 2 ops via `yubihsm-shell`: audit log, attestation, provisioning, reset
+      yubihsm.go   YubiHSM 2 ops on that driver: audit log, attestation, provisioning, reset
     handlers/      HTTP API (handlers.go), OpenAPI spec (openapi.yaml / openapi.go)
     config/        YAML config loading (incl. key_provider selection + SECSY_* env overrides)
     database/      SQLite + PostgreSQL, schema migration, all persistence
@@ -296,10 +298,19 @@ Two distinct paths coexist:
 
 1. **`internal/pki/signer.go`** — the live signing path, using `miekg/pkcs11`
    directly. Generic across any PKCS#11 token (works with SoftHSM and YubiHSM).
-2. **`internal/hsm/yubihsm.go`** — YubiHSM-2-specific management, shelling out to
-   `yubihsm-shell`: factory reset, **forced-audit provisioning**, audit-log fetch
-   / consume / hash-chain verification, device + key **attestation** certs, and
-   Ed25519 signing of the last audit hash for offline proof.
+2. **`internal/hsm/yubihsm.go`** — YubiHSM-2-specific management on top of the
+   native driver in **`internal/yubihsm`**: factory reset, **forced-audit
+   provisioning**, audit-log fetch / consume / hash-chain verification, device +
+   key **attestation** certs, and Ed25519 signing of the last audit hash for
+   offline proof. These are vendor commands with no PKCS#11 equivalent.
+
+   The driver speaks the device's own protocol — a GlobalPlatform SCP03 secure
+   channel carried over direct USB bulk transfers (Linux usbfs) or a
+   yubihsm-connector — so no vendor binary is on the path of evidence the audit
+   subsystem later has to stand behind. It replaced a layer that drove
+   `yubihsm-shell` and recovered results by regular expression over its output,
+   which mattered because that binary exits 0 even when a scripted command is
+   rejected: a refused option write read as a success.
 
 The verifier binary (`cmd/verify`) validates the full chain: HSM hash chain →
 Ed25519 signature over the last hash → attestation cert → device cert → Yubico

@@ -3,11 +3,11 @@
 package hsm
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +16,8 @@ import (
 var hwCfg Config
 
 func TestMain(m *testing.M) {
-	// Write yubihsm_pkcs11.conf so the PKCS#11 module knows how to reach the device.
+	// Write yubihsm_pkcs11.conf so the connector-resolution path this package
+	// shares with the PKCS#11 module is exercised as deployed.
 	confDir, err := os.MkdirTemp("", "yubihsm-hwtest-*")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create temp dir: %v\n", err)
@@ -25,8 +26,7 @@ func TestMain(m *testing.M) {
 	defer os.RemoveAll(confDir)
 
 	confPath := filepath.Join(confDir, "yubihsm_pkcs11.conf")
-	confContent := "connector = yhusb://\n"
-	if err := os.WriteFile(confPath, []byte(confContent), 0644); err != nil {
+	if err := os.WriteFile(confPath, []byte("connector = yhusb://\n"), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to write conf: %v\n", err)
 		os.Exit(1)
 	}
@@ -41,22 +41,11 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// retryRunShell retries a runShell call up to 3 times with a short delay,
-// working around transient USB contention with the YubiHSM.
-func retryRunShell(cfg Config, commands string) (string, error) {
-	var out string
-	var err error
-	for i := 0; i < 3; i++ {
-		out, err = runShell(cfg, commands)
-		if err == nil {
-			return out, nil
-		}
-		if !strings.Contains(out, "Connector operation failed") {
-			return out, err
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	return out, err
+func hwContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	return ctx
 }
 
 // ---------------------------------------------------------------------------
@@ -64,7 +53,7 @@ func retryRunShell(cfg Config, commands string) (string, error) {
 // ---------------------------------------------------------------------------
 
 func TestGetDeviceInfo(t *testing.T) {
-	info, err := GetDeviceInfo(hwCfg)
+	info, err := GetDeviceInfo(hwContext(t), hwCfg)
 	if err != nil {
 		t.Fatalf("GetDeviceInfo: %v", err)
 	}
@@ -72,50 +61,57 @@ func TestGetDeviceInfo(t *testing.T) {
 	if info.Version == "" {
 		t.Error("Version is empty")
 	}
-	t.Logf("Version: %s", info.Version)
-
 	if info.Serial == "" {
 		t.Error("Serial is empty")
 	}
-	t.Logf("Serial: %s", info.Serial)
-
-	if info.LogUsed == "" {
-		t.Error("LogUsed is empty")
+	// Log occupancy is reported as used/capacity and is what the collector
+	// watches to drain before a force-audit device wedges.
+	if !strings.Contains(info.LogUsed, "/") {
+		t.Errorf("LogUsed = %q, want used/capacity", info.LogUsed)
 	}
-	t.Logf("LogUsed: %s", info.LogUsed)
-
-	t.Logf("ForceAudit: %v, AuditProvisioned: %v", info.ForceAudit, info.AuditProvisioned)
+	t.Logf("version %s serial %s part %q log %s force-audit=%v provisioned=%v",
+		info.Version, info.Serial, info.PartNumber, info.LogUsed, info.ForceAudit, info.AuditProvisioned)
 }
 
 // ---------------------------------------------------------------------------
-// GetAuditLog
+// GetAuditOptions
+// ---------------------------------------------------------------------------
+
+func TestGetAuditOptionsFromDevice(t *testing.T) {
+	opts, err := GetAuditOptions(hwContext(t), hwCfg)
+	if err != nil {
+		t.Fatalf("GetAuditOptions: %v", err)
+	}
+	if len(opts.CommandAudit) == 0 {
+		t.Fatal("device reported no command-audit settings")
+	}
+	// The device enumerates its whole command set here, so a settings map far
+	// smaller than the command table means the response was mis-parsed.
+	if len(opts.CommandAudit) < 50 {
+		t.Errorf("only %d command-audit entries; the option was likely mis-parsed", len(opts.CommandAudit))
+	}
+	t.Logf("force-audit=0x%02x over %d commands", opts.ForceAudit, len(opts.CommandAudit))
+}
+
+// ---------------------------------------------------------------------------
+// GetAuditLog / hash chain
 // ---------------------------------------------------------------------------
 
 func TestGetAuditLog(t *testing.T) {
-	// Generate some activity to ensure there are log entries
-	_, _ = retryRunShell(hwCfg, "list objects 0")
-	_, _ = retryRunShell(hwCfg, "get deviceinfo")
-
-	log, err := GetAuditLog(hwCfg)
+	log, err := GetAuditLog(hwContext(t), hwCfg)
 	if err != nil {
-		t.Skipf("GetAuditLog: %v (audit log may be empty after consumption)", err)
+		t.Skipf("GetAuditLog: %v (the log may have been consumed)", err)
 	}
-
 	if log.DeviceSerial == "" {
 		t.Error("DeviceSerial is empty")
 	}
-
 	if len(log.Entries) == 0 {
-		t.Skip("no audit log entries returned (may have been consumed)")
+		t.Skip("no audit log entries (may have been consumed)")
 	}
 
-	t.Logf("Got %d audit log entries from device %s", len(log.Entries), log.DeviceSerial)
-
-	// Verify structure of each entry
 	for i, e := range log.Entries {
-		if e.Hash == "" {
-			t.Errorf("entry %d: hash is empty", i)
-		}
+		// The digest is a 16-byte value carried as hex; a length other than 32
+		// means the wire record was mis-sliced.
 		if len(e.Hash) != 32 {
 			t.Errorf("entry %d: hash length = %d, want 32 hex chars", i, len(e.Hash))
 		}
@@ -126,226 +122,144 @@ func TestGetAuditLog(t *testing.T) {
 			t.Errorf("entry %d: unknown command 0x%02x", i, e.Command)
 		}
 	}
+	t.Logf("%d entries from device %s", len(log.Entries), log.DeviceSerial)
 }
 
-// ---------------------------------------------------------------------------
-// FetchAndConsumeAuditLog
-// ---------------------------------------------------------------------------
-
-func TestFetchAndConsumeAuditLog(t *testing.T) {
-	// Generate some activity first
-	_, _ = retryRunShell(hwCfg, "list objects 0")
-
-	entries, err := FetchAndConsumeAuditLog(hwCfg)
+func TestVerifyHashChainRealDevice(t *testing.T) {
+	log, err := GetAuditLog(hwContext(t), hwCfg)
 	if err != nil {
-		t.Fatalf("FetchAndConsumeAuditLog: %v", err)
+		t.Skipf("GetAuditLog: %v", err)
 	}
-
-	t.Logf("FetchAndConsumeAuditLog returned %d entries", len(entries))
-
-	if entries != nil {
-		for i, e := range entries {
-			if e.Hash == "" {
-				t.Errorf("entry %d: hash is empty", i)
-			}
-			if _, err := hex.DecodeString(e.Hash); err != nil {
-				t.Errorf("entry %d: invalid hash hex: %v", i, err)
-			}
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ParseAuditLogOutput - with real output format
-// ---------------------------------------------------------------------------
-
-func TestParseAuditLogOutput_RealDevice(t *testing.T) {
-	// Generate some activity first
-	_, _ = retryRunShell(hwCfg, "list objects 0")
-	_, _ = retryRunShell(hwCfg, "get deviceinfo")
-
-	out, err := retryRunShell(hwCfg, "audit get 0")
-	if err != nil {
-		t.Fatalf("runShell audit get: %v", err)
-	}
-	t.Logf("Raw audit output:\n%s", out)
-
-	entries, err := ParseAuditLogOutput(out)
-	if err != nil {
-		t.Skipf("no entries in audit output (may have been consumed): %v", err)
-	}
-
-	if len(entries) == 0 {
-		t.Skip("no entries from real device (log may be empty)")
-	}
-
-	t.Logf("Parsed %d entries from real device output", len(entries))
-
-	// Verify entries are numbered sequentially (may not start at 1 if consumed)
-	for i := 1; i < len(entries); i++ {
-		if entries[i].Number != entries[i-1].Number+1 {
-			t.Errorf("entries not sequential: entry[%d].Number=%d, entry[%d].Number=%d",
-				i-1, entries[i-1].Number, i, entries[i].Number)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ComputeEntryHash / VerifyHashChain - with entries from real device
-// ---------------------------------------------------------------------------
-
-func TestVerifyHashChain_RealDevice(t *testing.T) {
-	// Generate activity to ensure entries exist
-	_, _ = retryRunShell(hwCfg, "list objects 0")
-	_, _ = retryRunShell(hwCfg, "get deviceinfo")
-
-	log, err := GetAuditLog(hwCfg)
-	if err != nil {
-		t.Skipf("GetAuditLog: %v (audit log may be empty)", err)
-	}
-
 	if len(log.Entries) < 2 {
-		t.Skip("need at least 2 entries to verify hash chain")
+		t.Skip("need at least 2 entries to verify a chain")
 	}
 
 	results, err := VerifyHashChain(log.Entries)
 	if err != nil {
 		t.Fatalf("VerifyHashChain: %v", err)
 	}
-
-	allPass := true
 	for i, ok := range results {
 		if !ok {
-			t.Errorf("entry %d (Number=%d, Command=0x%02x): hash chain verification FAILED",
+			t.Errorf("entry %d (number %d, command 0x%02x) failed hash-chain verification",
 				i, log.Entries[i].Number, log.Entries[i].Command)
-			allPass = false
 		}
 	}
-	if allPass {
-		t.Logf("all %d entries passed hash chain verification", len(results))
-	}
 
-	// Also test ComputeEntryHash individually for a non-anchor entry
+	// The device computes these digests itself, so a match proves this package's
+	// entry encoding matches the firmware's byte for byte.
 	prevHash, err := hex.DecodeString(log.Entries[0].Hash)
 	if err != nil {
 		t.Fatalf("decode prev hash: %v", err)
 	}
-	computed := ComputeEntryHash(log.Entries[1], prevHash)
-	if computed != log.Entries[1].Hash {
-		t.Errorf("ComputeEntryHash mismatch: computed=%s actual=%s", computed, log.Entries[1].Hash)
-	} else {
-		t.Logf("ComputeEntryHash matched for entry %d", log.Entries[1].Number)
+	if computed := ComputeEntryHash(log.Entries[1], prevHash); computed != log.Entries[1].Hash {
+		t.Errorf("ComputeEntryHash = %s, device reported %s", computed, log.Entries[1].Hash)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// GetKeyAttestationCert
+// FetchLog does not consume
 // ---------------------------------------------------------------------------
 
-func TestGetKeyAttestationCert(t *testing.T) {
-	out, err := retryRunShell(hwCfg, "list objects 0")
+func TestFetchLogDoesNotConsume(t *testing.T) {
+	ctx := hwContext(t)
+	first, err := FetchLog(ctx, hwCfg)
 	if err != nil {
-		t.Fatalf("list objects: %v", err)
+		t.Fatalf("FetchLog: %v", err)
 	}
-
-	// Find an asymmetric key with a unique label (appears only once).
-	// The regex used by GetKeyAttestationCert matches labels in the listing,
-	// so we need a label that uniquely identifies one key.
-	re := regexp.MustCompile(`id:\s+0x([0-9a-fA-F]+),\s+type:\s+asymmetric-key,.*label:\s+(.+)`)
-	matches := re.FindAllStringSubmatch(out, -1)
-
-	// Count label occurrences and prefer short, unique labels
-	labelCount := make(map[string]int)
-	for _, m := range matches {
-		label := strings.TrimSpace(m[2])
-		labelCount[label]++
-	}
-
-	var keyLabel string
-	// First pass: prefer unique, short labels without test prefixes
-	for _, m := range matches {
-		candidate := strings.TrimSpace(m[2])
-		if labelCount[candidate] == 1 && !strings.HasPrefix(candidate, "Test") &&
-			!strings.HasPrefix(candidate, "t_") && len(candidate) < 30 {
-			keyLabel = candidate
-			break
-		}
-	}
-	// Second pass: any unique label
-	if keyLabel == "" {
-		for _, m := range matches {
-			candidate := strings.TrimSpace(m[2])
-			if labelCount[candidate] == 1 {
-				keyLabel = candidate
-				break
-			}
-		}
-	}
-
-	if keyLabel == "" {
-		t.Skip("no asymmetric key with unique label found on HSM for attestation test")
-	}
-
-	t.Logf("Testing attestation for key label: %q", keyLabel)
-
-	cert, err := GetKeyAttestationCert(hwCfg, keyLabel)
+	second, err := FetchLog(ctx, hwCfg)
 	if err != nil {
-		t.Fatalf("GetKeyAttestationCert(%q): %v", keyLabel, err)
+		t.Fatalf("FetchLog (second): %v", err)
 	}
-
-	if !strings.Contains(cert, "-----BEGIN CERTIFICATE-----") {
-		t.Error("attestation cert missing PEM header")
+	// Fetch and consume are separate calls precisely so a caller that dies while
+	// persisting can retry; a fetch that consumed would lose the only copy.
+	if len(first.Entries) != len(second.Entries) {
+		t.Fatalf("fetching consumed entries: %d then %d", len(first.Entries), len(second.Entries))
 	}
-	if !strings.Contains(cert, "-----END CERTIFICATE-----") {
-		t.Error("attestation cert missing PEM footer")
+	if first.UnloggedBoots != 0 || first.UnloggedAuthentications != 0 {
+		t.Logf("device reports unlogged operations: %d boots, %d authentications",
+			first.UnloggedBoots, first.UnloggedAuthentications)
 	}
-	t.Logf("Got attestation cert (%d bytes) for key %q", len(cert), keyLabel)
 }
 
 // ---------------------------------------------------------------------------
-// GetDeviceSerial
+// ListObjects
 // ---------------------------------------------------------------------------
+
+func TestListObjectsRealDevice(t *testing.T) {
+	objs, err := ListObjects(hwContext(t), hwCfg)
+	if err != nil {
+		t.Fatalf("ListObjects: %v", err)
+	}
+	if len(objs) == 0 {
+		t.Fatal("no objects; the session's own authentication key must be visible")
+	}
+	var sawAuthKey bool
+	for _, o := range objs {
+		if o.Type == "" || strings.HasPrefix(o.Type, "unknown(") {
+			t.Errorf("object 0x%04x has an unrecognised type %q", o.ID, o.Type)
+		}
+		if o.Type == "authentication-key" {
+			sawAuthKey = true
+		}
+		t.Logf("0x%04x %-20s %-30s %q", o.ID, o.Type, o.Algo, o.Label)
+	}
+	if !sawAuthKey {
+		t.Error("no authentication key in the inventory")
+	}
+}
+
+func TestFindAsymmetricKeyRejectsUnknownLabel(t *testing.T) {
+	_, err := FindAsymmetricKey(hwContext(t), hwCfg, "no-such-key-label-t171")
+	if err == nil {
+		t.Fatal("resolving an absent label succeeded")
+	}
+	if !strings.Contains(err.Error(), "no asymmetric key labelled") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetDeviceAttestation / GetDeviceSerial
+// ---------------------------------------------------------------------------
+
+func TestGetDeviceAttestationRealDevice(t *testing.T) {
+	der, err := GetDeviceAttestation(hwContext(t), hwCfg)
+	if err != nil {
+		t.Fatalf("GetDeviceAttestation: %v", err)
+	}
+	if len(der) == 0 {
+		t.Fatal("device attestation certificate is empty")
+	}
+	t.Logf("device attestation certificate: %d DER bytes", len(der))
+}
 
 func TestGetDeviceSerial(t *testing.T) {
-	var serial string
-	var err error
-	for i := 0; i < 5; i++ {
-		serial, err = GetDeviceSerial(hwCfg)
-		if err == nil {
-			break
-		}
-		time.Sleep(time.Duration(500*(i+1)) * time.Millisecond)
-	}
+	serial, err := GetDeviceSerial(hwContext(t), hwCfg)
 	if err != nil {
 		t.Fatalf("GetDeviceSerial: %v", err)
 	}
 	if serial == "" {
-		t.Error("serial is empty")
+		t.Fatal("serial is empty")
 	}
 	for _, c := range serial {
 		if c < '0' || c > '9' {
-			t.Errorf("serial contains non-digit: %q", serial)
-			break
+			t.Fatalf("serial contains a non-digit: %q", serial)
 		}
 	}
-	t.Logf("Device serial: %s", serial)
+	// The serial must be readable without a session: it is the identity check
+	// for a device whose authentication key is unknown to this process.
+	t.Logf("device serial: %s", serial)
 }
 
 // ---------------------------------------------------------------------------
-// TestConnectorArg_WithEnv verifies the env-based connector lookup that
-// is active when TestMain sets YUBIHSM_PKCS11_CONF.
+// Connector resolution
 // ---------------------------------------------------------------------------
 
-func TestConnectorArg_WithEnv(t *testing.T) {
-	// The conf file set by TestMain has "connector = yhusb://"
-	got := connectorArg(Config{})
-	if got != "yhusb://" {
+func TestConnectorArgWithEnv(t *testing.T) {
+	if got := connectorArg(Config{}); got != "yhusb://" {
 		t.Errorf("connectorArg with env conf = %q, want yhusb://", got)
 	}
-
-	// With explicit ConnectorURL, it should take priority
-	got = connectorArg(Config{ConnectorURL: "http://explicit:12345"})
-	if got != "http://explicit:12345" {
+	if got := connectorArg(Config{ConnectorURL: "http://explicit:12345"}); got != "http://explicit:12345" {
 		t.Errorf("connectorArg with explicit URL = %q", got)
 	}
 }

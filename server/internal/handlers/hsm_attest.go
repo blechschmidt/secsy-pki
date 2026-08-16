@@ -124,7 +124,7 @@ func (a *API) attestAndRespond(w http.ResponseWriter, r *http.Request, label str
 	// so drain first for the same reason the other device endpoints do: a full
 	// ring makes the device refuse the command outright.
 	a.consumeHSMAuditLogs("")
-	att, err := hsmattest.NewShellAttester(a.hsmCfg).AttestKey(r.Context(), label)
+	att, err := hsmattest.NewDeviceAttester(a.hsmCfg).AttestKey(r.Context(), label)
 	a.consumeHSMAuditLogs("")
 	if err != nil {
 		metrics.KeyAttestations.Inc("error")

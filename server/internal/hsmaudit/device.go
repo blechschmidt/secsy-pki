@@ -224,16 +224,17 @@ type Device interface {
 	Options(ctx context.Context) (*Options, error)
 }
 
-// ShellDevice is the production Device, driven through yubihsm-shell.
-type ShellDevice struct {
+// HardwareDevice is the production Device, reaching the YubiHSM through the
+// native driver in internal/yubihsm.
+type HardwareDevice struct {
 	Cfg hsm.Config
 }
 
-// NewShellDevice returns a Device backed by the yubihsm-shell binary.
-func NewShellDevice(cfg hsm.Config) *ShellDevice { return &ShellDevice{Cfg: cfg} }
+// NewHardwareDevice returns a Device backed by an attached YubiHSM.
+func NewHardwareDevice(cfg hsm.Config) *HardwareDevice { return &HardwareDevice{Cfg: cfg} }
 
-func (d *ShellDevice) Info(ctx context.Context) (*DeviceInfo, error) {
-	info, err := hsm.GetDeviceInfo(d.Cfg)
+func (d *HardwareDevice) Info(ctx context.Context) (*DeviceInfo, error) {
+	info, err := hsm.GetDeviceInfo(ctx, d.Cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -245,16 +246,16 @@ func (d *ShellDevice) Info(ctx context.Context) (*DeviceInfo, error) {
 	}, nil
 }
 
-func (d *ShellDevice) FetchLog(ctx context.Context) (*hsm.LogResponse, error) {
-	return hsm.FetchLog(d.Cfg)
+func (d *HardwareDevice) FetchLog(ctx context.Context) (*hsm.LogResponse, error) {
+	return hsm.FetchLog(ctx, d.Cfg)
 }
 
-func (d *ShellDevice) ConsumeLog(ctx context.Context, upTo uint16) error {
-	return hsm.ConsumeLog(d.Cfg, upTo)
+func (d *HardwareDevice) ConsumeLog(ctx context.Context, upTo uint16) error {
+	return hsm.ConsumeLog(ctx, d.Cfg, upTo)
 }
 
-func (d *ShellDevice) Options(ctx context.Context) (*Options, error) {
-	raw, err := hsm.GetAuditOptions(d.Cfg)
+func (d *HardwareDevice) Options(ctx context.Context) (*Options, error) {
+	raw, err := hsm.GetAuditOptions(ctx, d.Cfg)
 	if err != nil {
 		return nil, err
 	}

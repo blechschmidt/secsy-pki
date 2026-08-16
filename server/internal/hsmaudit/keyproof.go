@@ -62,7 +62,7 @@ type KeyAttester interface {
 }
 
 // Compile-time check that the production attester fits.
-var _ KeyAttester = (*hsmattest.ShellAttester)(nil)
+var _ KeyAttester = (*hsmattest.DeviceAttester)(nil)
 
 // SigningKeyIDs returns every on-device object ID that either signed something
 // according to the device log or was recorded as signing something by the CA.

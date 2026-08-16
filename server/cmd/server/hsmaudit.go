@@ -45,7 +45,7 @@ func setupHSMAuditCollector(cfg *config.Config, db *database.DB, elector *leader
 		return
 	}
 
-	dev := hsmaudit.NewShellDevice(hsm.Config{
+	dev := hsmaudit.NewHardwareDevice(hsm.Config{
 		ConnectorURL: cfg.YubiHSM.ConnectorURL,
 		AuthKeyID:    cfg.YubiHSM.AuthKeyID,
 		Password:     cfg.YubiHSM.Password,
@@ -98,7 +98,7 @@ func setupHSMAuditFreshness(cfg *config.Config, db *database.DB, authority *tsa.
 		return
 	}
 
-	dev := hsmaudit.NewShellDevice(hsm.Config{
+	dev := hsmaudit.NewHardwareDevice(hsm.Config{
 		ConnectorURL: cfg.YubiHSM.ConnectorURL,
 		AuthKeyID:    cfg.YubiHSM.AuthKeyID,
 		Password:     cfg.YubiHSM.Password,

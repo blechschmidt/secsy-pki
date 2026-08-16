@@ -1,17 +1,19 @@
 package hsm
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/yubihsm"
 )
 
 // YubiHSM key attestation (Task 168).
 //
-// `attest asymmetric` makes the device sign a short-lived X.509 certificate
-// over the public key of one of its own asymmetric objects, using the
-// factory-provisioned attestation key. The certificate's Yubico extensions
+// SIGN ATTESTATION CERTIFICATE makes the device sign a short-lived X.509
+// certificate over the public key of one of its own asymmetric objects, using
+// the factory-provisioned attestation key. The certificate's Yubico extensions
 // carry the device's assertions about that object — origin, capabilities,
 // domains, on-device handle — which is how a relying party learns, without
 // trusting the CA operator, that a CA signing key was generated inside the HSM
@@ -28,32 +30,40 @@ type ObjectInfo struct {
 	Label string
 }
 
-// objectLine matches a `list objects` row. The label runs to end of line
-// because YubiHSM labels may contain spaces and separators.
-var objectLine = regexp.MustCompile(`id:\s*0x([0-9a-fA-F]{1,4}),\s*type:\s*(\S+?),\s*algo:\s*(\S+?),\s*sequence:\s*\d+,\s*label:\s*(.*)$`)
-
 // ListObjects returns the device object inventory.
-func ListObjects(cfg Config) ([]ObjectInfo, error) {
-	out, err := runShell(cfg, "list objects 0")
+func ListObjects(ctx context.Context, cfg Config) ([]ObjectInfo, error) {
+	var objs []ObjectInfo
+	err := withClient(ctx, cfg, func(c *yubihsm.Client) error {
+		handles, err := c.ListObjects(ctx, 0)
+		if err != nil {
+			return err
+		}
+		for _, h := range handles {
+			// The listing carries only ids and types, so the label and algorithm
+			// come from a per-object query. Only a deletion racing the listing is
+			// tolerated; any other failure aborts, because this inventory is what
+			// `hsm-attest audit` walks to decide which keys pass policy, and an
+			// inventory silently short of the failing key would read as a clean
+			// device.
+			info, err := c.GetObjectInfo(ctx, h.ID, h.Type)
+			if err != nil {
+				var devErr yubihsm.DeviceError
+				if errors.As(err, &devErr) && devErr == yubihsm.ErrObjectNotFound {
+					continue
+				}
+				return err
+			}
+			objs = append(objs, ObjectInfo{
+				ID:    h.ID,
+				Type:  yubihsm.ObjectTypeName(h.Type),
+				Algo:  yubihsm.AlgorithmName(info.Algorithm),
+				Label: info.Label,
+			})
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, fmt.Errorf("listing HSM objects: %w", err)
-	}
-	var objs []ObjectInfo
-	for _, line := range strings.Split(out, "\n") {
-		m := objectLine.FindStringSubmatch(strings.TrimSpace(line))
-		if m == nil {
-			continue
-		}
-		id, err := strconv.ParseUint(m[1], 16, 16)
-		if err != nil {
-			continue
-		}
-		objs = append(objs, ObjectInfo{
-			ID:    uint16(id),
-			Type:  strings.TrimSuffix(m[2], ","),
-			Algo:  strings.TrimSuffix(m[3], ","),
-			Label: strings.TrimSpace(m[4]),
-		})
 	}
 	return objs, nil
 }
@@ -65,26 +75,43 @@ func ListObjects(cfg Config) ([]ObjectInfo, error) {
 // different key than the caller named — and an attestation naming the wrong
 // key is worse than none, because it still verifies. A label shared by two
 // objects is likewise refused rather than resolved arbitrarily.
-func FindAsymmetricKey(cfg Config, label string) (uint16, error) {
-	objs, err := ListObjects(cfg)
+func FindAsymmetricKey(ctx context.Context, cfg Config, label string) (uint16, error) {
+	var id uint16
+	err := withClient(ctx, cfg, func(c *yubihsm.Client) error {
+		found, err := findAsymmetricKey(ctx, c, label)
+		if err != nil {
+			return err
+		}
+		id = found
+		return nil
+	})
+	return id, err
+}
+
+func findAsymmetricKey(ctx context.Context, c *yubihsm.Client, label string) (uint16, error) {
+	handles, err := c.ListObjects(ctx, yubihsm.ObjectTypeAsymmetricKey)
 	if err != nil {
 		return 0, err
 	}
-	var matches []ObjectInfo
-	for _, o := range objs {
-		if o.Type == "asymmetric-key" && o.Label == label {
-			matches = append(matches, o)
+	var matches []uint16
+	for _, h := range handles {
+		info, err := c.GetObjectInfo(ctx, h.ID, h.Type)
+		if err != nil {
+			return 0, err
+		}
+		if info.Label == label {
+			matches = append(matches, h.ID)
 		}
 	}
 	switch len(matches) {
 	case 0:
 		return 0, fmt.Errorf("no asymmetric key labelled %q on the HSM", label)
 	case 1:
-		return matches[0].ID, nil
+		return matches[0], nil
 	default:
 		ids := make([]string, 0, len(matches))
 		for _, m := range matches {
-			ids = append(ids, fmt.Sprintf("0x%04x", m.ID))
+			ids = append(ids, fmt.Sprintf("0x%04x", m))
 		}
 		return 0, fmt.Errorf("label %q is shared by %d asymmetric keys (%s); attest by object ID instead",
 			label, len(matches), strings.Join(ids, ", "))
@@ -99,14 +126,43 @@ func FindAsymmetricKey(cfg Config, label string) (uint16, error) {
 // device owner may install their own attestation key instead, in which case
 // the resulting certificate chains to whatever they installed — which is why
 // the verifier reports the anchor it reached rather than assuming Yubico's.
-func AttestAsymmetricKey(cfg Config, objectID, attestKeyID uint16) (string, error) {
-	out, err := runShell(cfg, fmt.Sprintf("attest asymmetric 0 0x%04x 0x%04x", objectID, attestKeyID))
+func AttestAsymmetricKey(ctx context.Context, cfg Config, objectID, attestKeyID uint16) (string, error) {
+	var certPEM string
+	err := withClient(ctx, cfg, func(c *yubihsm.Client) error {
+		der, err := c.AttestAsymmetricKey(ctx, objectID, attestKeyID)
+		if err != nil {
+			return err
+		}
+		certPEM = encodeCertPEM(der)
+		return nil
+	})
 	if err != nil {
 		return "", fmt.Errorf("attesting key 0x%04x: %w", objectID, err)
 	}
-	certPEM := extractPEM(out)
-	if certPEM == "" {
-		return "", fmt.Errorf("attesting key 0x%04x: no certificate in yubihsm-shell output", objectID)
+	return certPEM, nil
+}
+
+// GetKeyAttestationCert gets an attestation certificate for a key by its label.
+//
+// Label resolution is exact; see FindAsymmetricKey for why a prefix match here
+// was a correctness bug rather than a convenience. Resolution and attestation
+// share one session, so the key cannot be swapped between the two steps.
+func GetKeyAttestationCert(ctx context.Context, cfg Config, keyLabel string) (string, error) {
+	var certPEM string
+	err := withClient(ctx, cfg, func(c *yubihsm.Client) error {
+		objectID, err := findAsymmetricKey(ctx, c, keyLabel)
+		if err != nil {
+			return err
+		}
+		der, err := c.AttestAsymmetricKey(ctx, objectID, 0)
+		if err != nil {
+			return fmt.Errorf("attesting key 0x%04x: %w", objectID, err)
+		}
+		certPEM = encodeCertPEM(der)
+		return nil
+	})
+	if err != nil {
+		return "", err
 	}
 	return certPEM, nil
 }

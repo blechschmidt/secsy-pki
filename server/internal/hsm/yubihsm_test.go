@@ -3,47 +3,9 @@ package hsm
 import (
 	"encoding/hex"
 	"os"
+	"strings"
 	"testing"
 )
-
-func TestParseAuditLogOutput(t *testing.T) {
-	output := `Session keepalive set up to run every 15 seconds
-Created session 0
-0 unlogged boots found
-0 unlogged authentications found
-Found 3 items
-item:     1 -- cmd: 0xff -- length: 65535 -- session key: 0xffff -- target key: 0xffff -- second key: 0xffff -- result: 0xff -- tick: 4294967295 -- hash: 33012657537e4842f57fa6ed3b09b25b
-item:     2 -- cmd: 0x00 -- length:    0 -- session key: 0xffff -- target key: 0x0000 -- second key: 0x0000 -- result: 0x00 -- tick: 0 -- hash: fc153091560e18bca82621522c85bdba
-item:     3 -- cmd: 0x4f -- length:    5 -- session key: 0x0001 -- target key: 0xffff -- second key: 0xffff -- result: 0xcf -- tick: 1987 -- hash: 3d9380a76ae41826d90daa44c1085a62`
-
-	entries, err := ParseAuditLogOutput(output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 3 {
-		t.Fatalf("expected 3 entries, got %d", len(entries))
-	}
-
-	e := entries[0]
-	if e.Number != 1 || e.Command != 0xff || e.Length != 65535 || e.SessionKey != 0xffff {
-		t.Errorf("entry 0: %+v", e)
-	}
-	if e.Hash != "33012657537e4842f57fa6ed3b09b25b" {
-		t.Errorf("entry 0 hash: %s", e.Hash)
-	}
-
-	e = entries[2]
-	if e.Number != 3 || e.Command != 0x4f || e.Length != 5 || e.Tick != 1987 {
-		t.Errorf("entry 2: %+v", e)
-	}
-}
-
-func TestParseAuditLogOutputEmpty(t *testing.T) {
-	_, err := ParseAuditLogOutput("No logs to extract")
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
 
 func TestComputeEntryHash(t *testing.T) {
 	// From the YubiHSM gist — verified against real hardware
@@ -140,36 +102,52 @@ func TestCheckDeviceInitEntry(t *testing.T) {
 	}
 }
 
-func TestCheckSignCommandsAudited(t *testing.T) {
-	// Build a hex string with all required commands set to 0x02
-	required := []byte{
-		CmdSignECDSA, 0x02,
-		CmdSignEdDSA, 0x02,
-		CmdSignRSAPKCS1, 0x02,
-		CmdSignRSAPSS, 0x02,
-		CmdGenerateAsymmetricKey, 0x02,
-	}
-	if !checkSignCommandsAudited(hex.EncodeToString(required)) {
-		t.Error("should pass with all required commands audited")
-	}
-
-	// Missing one
-	partial := []byte{
-		CmdSignECDSA, 0x02,
-		CmdSignEdDSA, 0x02,
-	}
-	if checkSignCommandsAudited(hex.EncodeToString(partial)) {
-		t.Error("should fail with missing commands")
+func TestSignCommandsFixed(t *testing.T) {
+	fixed := &AuditOptions{CommandAudit: map[uint8]uint8{
+		CmdSignECDSA:             0x02,
+		CmdSignEdDSA:             0x02,
+		CmdSignRSAPKCS1:          0x02,
+		CmdSignRSAPSS:            0x02,
+		CmdGenerateAsymmetricKey: 0x02,
+	}}
+	if !fixed.signCommandsFixed() {
+		t.Error("all signing commands at level fixed should pass")
 	}
 
-	// Invalid hex
-	if checkSignCommandsAudited("zzzz") {
-		t.Error("should fail for invalid hex")
+	// A command merely "on" can be switched off again by anyone holding the
+	// authentication key, so it must not count as provisioned.
+	on := &AuditOptions{CommandAudit: map[uint8]uint8{}}
+	for cmd, level := range fixed.CommandAudit {
+		on.CommandAudit[cmd] = level
+	}
+	on.CommandAudit[CmdSignECDSA] = 0x01
+	if on.signCommandsFixed() {
+		t.Error("a signing command at level on should fail")
 	}
 
-	// Odd length
-	if checkSignCommandsAudited("abc") {
-		t.Error("should fail for odd length")
+	missing := &AuditOptions{CommandAudit: map[uint8]uint8{CmdSignECDSA: 0x02}}
+	if missing.signCommandsFixed() {
+		t.Error("an options set missing signing commands should fail")
+	}
+}
+
+func TestAuditOptionsReportNamesUnfixedCommands(t *testing.T) {
+	opts := &AuditOptions{
+		ForceAudit: 0x01,
+		CommandAudit: map[uint8]uint8{
+			CmdSignECDSA: 0x02,
+			CmdSignEdDSA: 0x00,
+			0x07:         0x01, // undocumented on firmware 2.4.0
+		},
+	}
+	report := opts.Report()
+	for _, want := range []string{"force-audit: on", "0x6a SIGN EDDSA=off", "0x07 UNDOCUMENTED COMMAND=on"} {
+		if !strings.Contains(report, want) {
+			t.Errorf("report does not mention %q:\n%s", want, report)
+		}
+	}
+	if strings.Contains(report, "0x56") {
+		t.Errorf("report should not list the command that is already fixed:\n%s", report)
 	}
 }
 
@@ -187,21 +165,6 @@ func TestAllCommandsComplete(t *testing.T) {
 	}
 }
 
-func TestExtractPEM(t *testing.T) {
-	input := `some output
------BEGIN CERTIFICATE-----
-MIIB...
------END CERTIFICATE-----
-more output`
-	result := extractPEM(input)
-	if result != "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----" {
-		t.Errorf("extractPEM = %q", result)
-	}
-	if extractPEM("no cert here") != "" {
-		t.Error("should return empty for no PEM")
-	}
-}
-
 func TestConnectorArg(t *testing.T) {
 	cfg := Config{ConnectorURL: "http://test:12345"}
 	if got := connectorArg(cfg); got != "http://test:12345" {
@@ -216,7 +179,7 @@ func TestConnectorArg(t *testing.T) {
 			os.Setenv("YUBIHSM_PKCS11_CONF", prev)
 		}
 	}()
-	if got := connectorArg(Config{}); got != "http://localhost:12345" {
+	if got := connectorArg(Config{}); got != "yhusb://" {
 		t.Errorf("default connectorArg = %q", got)
 	}
 }

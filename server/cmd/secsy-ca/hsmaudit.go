@@ -92,7 +92,7 @@ func cmdHSMAudit(db *database.DB, cfg *config.Config, args []string) error {
 	}
 	sub, rest := args[0], args[1:]
 
-	dev := hsmaudit.NewShellDevice(hsm.Config{
+	dev := hsmaudit.NewHardwareDevice(hsm.Config{
 		ConnectorURL: cfg.YubiHSM.ConnectorURL,
 		AuthKeyID:    cfg.YubiHSM.AuthKeyID,
 		Password:     cfg.YubiHSM.Password,

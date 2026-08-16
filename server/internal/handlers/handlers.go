@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -1749,7 +1750,7 @@ func (a *API) ListAccessLog(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) GetHSMInfo(w http.ResponseWriter, r *http.Request) {
 	a.consumeHSMAuditLogs("")
-	info, err := hsm.GetDeviceInfo(a.hsmCfg)
+	info, err := hsm.GetDeviceInfo(r.Context(), a.hsmCfg)
 	a.consumeHSMAuditLogs("")
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -1779,7 +1780,7 @@ func (a *API) GetHSMAttestation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.consumeHSMAuditLogs("")
-	derBytes, err := hsm.GetDeviceAttestation(a.hsmCfg)
+	derBytes, err := hsm.GetDeviceAttestation(r.Context(), a.hsmCfg)
 	a.consumeHSMAuditLogs("")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to get device attestation: %v", err)
@@ -1834,7 +1835,7 @@ func (a *API) GetHSMAuditLog(w http.ResponseWriter, r *http.Request) {
 		verified = append(verified, entryWithVerify{e, valid})
 	}
 
-	serial, _ := hsm.GetDeviceSerial(a.hsmCfg)
+	serial, _ := hsm.GetDeviceSerial(r.Context(), a.hsmCfg)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"device_serial": serial,
@@ -1863,7 +1864,13 @@ func (a *API) consumeHSMAuditLogs(signAuditID string) {
 	if a.hsmAuditManaged() {
 		return
 	}
-	entries, err := hsm.FetchAndConsumeAuditLog(a.hsmCfg)
+	// This runs after the response has been written, from many call sites that do
+	// not thread a context, so it gets its own bounded one rather than a request
+	// context that may already be cancelled — a drain abandoned halfway is the
+	// failure mode this path is least able to tolerate.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	entries, err := hsm.FetchAndConsumeAuditLog(ctx, a.hsmCfg)
 	if err != nil {
 		log.Printf("WARNING: failed to fetch HSM audit log: %v", err)
 		return
@@ -1917,7 +1924,7 @@ func (a *API) ExportCombinedAuditLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Add device serial
-	serial, _ := hsm.GetDeviceSerial(a.hsmCfg)
+	serial, _ := hsm.GetDeviceSerial(r.Context(), a.hsmCfg)
 	export.DeviceSerial = serial
 
 	// Add attestation certs for all CA keys referenced in sign operations
@@ -1936,7 +1943,7 @@ func (a *API) ExportCombinedAuditLog(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		a.consumeHSMAuditLogs("") // free space before attestation calls
-		cert, err := hsm.GetKeyAttestationCert(a.hsmCfg, keyLabel)
+		cert, err := hsm.GetKeyAttestationCert(r.Context(), a.hsmCfg, keyLabel)
 		if err != nil {
 			log.Printf("WARNING: could not get attestation cert for key %q: %v", keyLabel, err)
 			continue
@@ -1978,7 +1985,7 @@ func (a *API) GetSignedAuditLog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sign the complete log (all entries from DB)
-	signedLog, err := hsm.SignAuditEntries(a.hsmCfg, allEntries)
+	signedLog, err := hsm.SignAuditEntries(r.Context(), a.hsmCfg, allEntries)
 	a.consumeHSMAuditLogs("") // consume entries created by the signing/attestation operations
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to sign audit log: %v", err)
@@ -2027,13 +2034,13 @@ func (a *API) ProvisionHSMAudit(w http.ResponseWriter, r *http.Request) {
 	// The set is derived from the attached device rather than from a constant,
 	// so a command this build does not recognise — and therefore cannot show to
 	// be incapable of signing — is force-audited as well.
-	deviceOpts, err := hsmaudit.NewShellDevice(a.hsmCfg).Options(r.Context())
+	deviceOpts, err := hsmaudit.NewHardwareDevice(a.hsmCfg).Options(r.Context())
 	if err != nil {
 		a.recordEvent(r, audit.ActionHSMProvisionAudit, "", "", audit.ResultError, err.Error())
 		writeError(w, http.StatusInternalServerError, "failed to read device audit options: %v", err)
 		return
 	}
-	output, err := hsm.ProvisionAuditLogging(a.hsmCfg, deviceOpts.RequiredForced())
+	output, err := hsm.ProvisionAuditLogging(r.Context(), a.hsmCfg, deviceOpts.RequiredForced())
 	a.consumeHSMAuditLogs("")
 	if err != nil {
 		a.recordEvent(r, audit.ActionHSMProvisionAudit, "", "", audit.ResultError, err.Error())
@@ -2056,7 +2063,7 @@ func (a *API) FactoryResetHSM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := hsm.FactoryReset(a.hsmCfg); err != nil {
+	if err := hsm.FactoryReset(r.Context(), a.hsmCfg); err != nil {
 		a.recordEvent(r, audit.ActionHSMFactoryReset, "", "", audit.ResultError, err.Error())
 		writeError(w, http.StatusInternalServerError, "factory reset failed: %v", err)
 		return

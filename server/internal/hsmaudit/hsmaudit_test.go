@@ -137,7 +137,7 @@ func provisioned(t *testing.T, entries []hsm.AuditLogEntry) (*Service, *fakeDevi
 	dev.consumed = 1
 	svc := NewService(dev, store)
 	// Production wires an attester from the device; the fake device is not a
-	// ShellDevice, so give it the captured one. Without it every exported bundle
+	// HardwareDevice, so give it the captured one. Without it every exported bundle
 	// would be unattested and every verification would fail on coverage, which
 	// would say nothing about the property each test is actually checking.
 	svc.SetAttester(&fakeAttester{})
