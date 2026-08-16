@@ -8,18 +8,10 @@ import (
 	"sort"
 	"text/tabwriter"
 
-	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 )
-
-// inventoryItem is the stable JSON shape of one inventoried key: the provider's
-// key descriptor plus the operational role resolved from the CA registry.
-type inventoryItem struct {
-	keyprovider.KeyDescriptor
-	Role string `json:"role"`
-}
 
 // cmdInventory lists the keys held by the configured key provider and
 // cross-references them with the CAs recorded in the database. It surfaces the
@@ -28,12 +20,7 @@ type inventoryItem struct {
 func cmdInventory(db *database.DB, provider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("inventory", flag.ContinueOnError)
 	strict := fs.Bool("strict", false, "exit non-zero if any key is extractable or unaccounted for")
-	out := cliout.Register(fs)
 	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
 		return err
 	}
 
@@ -64,58 +51,35 @@ func cmdInventory(db *database.DB, provider keyprovider.Provider, args []string)
 
 	sort.Slice(keys, func(i, j int) bool { return keys[i].Label < keys[j].Label })
 
-	// Annotate every key with its role and count extractable keys once, shared
-	// by both output modes.
-	items := make([]inventoryItem, 0, len(keys))
-	var extractable int
-	for _, k := range keys {
-		role := caByLabel[k.Label]
-		if role == "" {
-			role = "(not bound to a CA)"
-		}
-		if k.Extractable {
-			extractable++
-		}
-		items = append(items, inventoryItem{KeyDescriptor: k, Role: role})
-	}
-
-	if asJSON {
-		if err := cliout.Emit(struct {
-			Provider         string          `json:"provider"`
-			Keys             []inventoryItem `json:"keys"`
-			ExtractableCount int             `json:"extractable_count"`
-		}{Provider: provider.Name(), Keys: items, ExtractableCount: extractable}); err != nil {
-			return err
-		}
-		if *strict && extractable > 0 {
-			return fmt.Errorf("inventory: %d extractable key(s) present", extractable)
-		}
-		return nil
-	}
-
-	if len(items) == 0 {
+	if len(keys) == 0 {
 		fmt.Println("No keys found on the key provider.")
 		return nil
 	}
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "LABEL\tKEY TYPE\tEXTRACTABLE\tSENSITIVE\tCA / ROLE")
-	for _, k := range items {
+	var extractable int
+	for _, k := range keys {
+		role := caByLabel[k.Label]
+		if role == "" {
+			role = "(not bound to a CA)"
+		}
 		ext := "no"
 		if k.Extractable {
 			ext = "YES ⚠"
+			extractable++
 		}
 		sens := "no"
 		if k.Sensitive {
 			sens = "yes"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", k.Label, k.KeyType, ext, sens, k.Role)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", k.Label, k.KeyType, ext, sens, role)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
 	}
 
-	fmt.Printf("\n%d key(s) on provider %q.\n", len(items), provider.Name())
+	fmt.Printf("\n%d key(s) on provider %q.\n", len(keys), provider.Name())
 	if extractable > 0 {
 		fmt.Fprintf(os.Stderr, "WARNING: %d key(s) are marked extractable — a CA/KEK private key must be non-extractable.\n", extractable)
 	}

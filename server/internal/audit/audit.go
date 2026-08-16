@@ -286,12 +286,6 @@ const (
 	// obtained but did not satisfy the policy; Detail distinguishes them, and
 	// the second is a finding rather than an outage.
 	ActionHSMKeyAttestation = "hsm.key_attestation"
-	// ActionConfigReload records a configuration hot-reload attempt (Task 166),
-	// triggered by SIGHUP or POST /api/admin/reload. ResultSuccess names the
-	// reloaded subset in Detail; ResultError carries the rejection reason (an
-	// invalid file, or an attempt to change an immutable field); ResultDenied is
-	// recorded by the endpoint when the caller lacks the platform-admin gate.
-	ActionConfigReload = "config.reload"
 	// Key-ceremony, backup, and disaster-recovery lifecycle operations. A
 	// ceremony records its start, each operator's M-of-N confirmation, and its
 	// completion (or abort) alongside the underlying ca.init_root /

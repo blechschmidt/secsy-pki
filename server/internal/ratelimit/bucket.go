@@ -146,29 +146,6 @@ func newKeyedBuckets(rate, burst float64, maxKeys int, idleTTL time.Duration, no
 	}
 }
 
-// setRate re-applies rate/burst (and the maxKeys/idleTTL bounds) to the store
-// for configuration hot-reload: the template used for buckets created later is
-// updated, and every live bucket is retuned so already-active keys pick up the
-// new limit on their next request rather than keeping their birth rate. Live
-// buckets keep their accrued token balances (see tokenBucket.retune), so no
-// in-flight caller is dropped. maxKeys/idleTTL of zero leave the current bound
-// unchanged.
-func (k *keyedBuckets) setRate(rate, burst float64, maxKeys int, idleTTL time.Duration, now time.Time) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	k.rate = rate
-	k.burst = burst
-	if maxKeys > 0 {
-		k.maxKeys = maxKeys
-	}
-	if idleTTL > 0 {
-		k.idleTTL = idleTTL
-	}
-	for _, b := range k.buckets {
-		b.retune(rate, burst, now)
-	}
-}
-
 // bucketFor returns the bucket for key, creating it (and possibly evicting
 // idle/old buckets to stay within maxKeys) if it does not exist.
 func (k *keyedBuckets) bucketFor(key string, now time.Time) *tokenBucket {

@@ -10,7 +10,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
-	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
@@ -67,7 +66,7 @@ func cmdTenant(db *database.DB, args []string) error {
 	sub, rest := args[0], args[1:]
 	switch sub {
 	case "list":
-		return cmdTenantList(db, rest)
+		return cmdTenantList(db)
 	case "create":
 		return cmdTenantCreate(db, rest)
 	case "suspend":
@@ -91,27 +90,10 @@ func fmtLimit(v int64) string {
 	return fmt.Sprintf("%d", v)
 }
 
-func cmdTenantList(db *database.DB, args []string) error {
-	fs := flag.NewFlagSet("tenant list", flag.ContinueOnError)
-	out := cliout.Register(fs)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
-		return err
-	}
+func cmdTenantList(db *database.DB) error {
 	tenants, err := db.ListTenants()
 	if err != nil {
 		return err
-	}
-	if asJSON {
-		if tenants == nil {
-			tenants = []models.Tenant{}
-		}
-		return cliout.Emit(struct {
-			Tenants []models.Tenant `json:"tenants"`
-		}{Tenants: tenants})
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(w, "SLUG\tID\tNAME\tSTATUS\tKEK\tCERTS/DAY\tACTIVE-MAX\tSECRET-OPS/DAY\tRATE")
@@ -272,7 +254,6 @@ func cmdTenantQuota(db *database.DB, args []string) error {
 func cmdTenantUsage(db *database.DB, args []string) error {
 	fs := flag.NewFlagSet("tenant usage", flag.ContinueOnError)
 	days := fs.Int("days", 7, "rolling window size in UTC days (1-90)")
-	out := cliout.Register(fs)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: secsy-ca tenant usage <slug-or-id> [-days N]")
 		fs.PrintDefaults()
@@ -283,10 +264,6 @@ func cmdTenantUsage(db *database.DB, args []string) error {
 	}
 	selector := args[0]
 	if err := fs.Parse(args[1:]); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
 		return err
 	}
 	if *days < 1 || *days > 90 {
@@ -318,31 +295,6 @@ func cmdTenantUsage(db *database.DB, args []string) error {
 	byDay := make(map[string]models.TenantUsageDay, len(recorded))
 	for _, d := range recorded {
 		byDay[d.Day] = d
-	}
-
-	if asJSON {
-		dayRows := make([]map[string]any, 0, *days)
-		for i := 0; i < *days; i++ {
-			day := database.UsageDay(now.AddDate(0, 0, -i))
-			d := byDay[day] // zero row when absent
-			dayRows = append(dayRows, map[string]any{
-				"day":           day,
-				"certs_issued":  d.CertsIssued,
-				"certs_revoked": d.CertsRevoked,
-				"secret_ops":    d.SecretOps,
-			})
-		}
-		return cliout.Emit(map[string]any{
-			"tenant":          t.Slug,
-			"tenant_id":       t.ID,
-			"status":          t.Status,
-			"cas":             cas,
-			"active_certs":    active,
-			"issued_lifetime": total,
-			"revoked":         revoked,
-			"quotas":          t.Quotas,
-			"days":            dayRows,
-		})
 	}
 
 	fmt.Printf("Tenant %s (%s) — status: %s\n", t.Slug, t.ID, t.Status)

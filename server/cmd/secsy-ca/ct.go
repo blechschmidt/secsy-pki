@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -10,7 +11,6 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/ct"
 	"github.com/blechschmidt/secsy-pki/server/internal/ctmonitor"
@@ -45,12 +45,8 @@ func cmdCT(db *database.DB, cfg *config.Config, args []string) error {
 func cmdCTVerifyInclusion(db *database.DB, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("ct verify-inclusion", flag.ContinueOnError)
 	maxCerts := fs.Int("max", 0, "maximum certificates to check this run (0 = config/default)")
-	out := cliout.Register(fs)
+	asJSON := fs.Bool("json", false, "emit the scan result as JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
 		return err
 	}
 
@@ -76,8 +72,10 @@ func cmdCTVerifyInclusion(db *database.DB, cfg *config.Config, args []string) er
 		return res.Err
 	}
 
-	if asJSON {
-		return cliout.Emit(res)
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(res)
 	}
 
 	fmt.Printf("CT inclusion scan complete (%s):\n", res.StartedAt.Format(time.RFC3339))
@@ -108,12 +106,8 @@ func cmdCTInclusionStatus(db *database.DB, _ *config.Config, args []string) erro
 	caRef := fs.String("ca", "", "restrict to a CA id or label (requires -serial)")
 	serial := fs.String("serial", "", "restrict to one certificate serial (requires -ca)")
 	limit := fs.Int("limit", 200, "maximum rows to list")
-	out := cliout.Register(fs)
+	asJSON := fs.Bool("json", false, "emit the rows as JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
 		return err
 	}
 
@@ -142,8 +136,10 @@ func cmdCTInclusionStatus(db *database.DB, _ *config.Config, args []string) erro
 		}
 	}
 
-	if asJSON {
-		return cliout.Emit(map[string]any{"counts": counts, "rows": rows})
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(map[string]any{"counts": counts, "rows": rows})
 	}
 
 	total := 0

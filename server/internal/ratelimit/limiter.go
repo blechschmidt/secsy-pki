@@ -1,9 +1,6 @@
 package ratelimit
 
-import (
-	"sync"
-	"time"
-)
+import "time"
 
 // Tier names, used both as configuration keys and as the "tier" metric label.
 const (
@@ -46,13 +43,7 @@ type tier struct {
 // tier for which a key is supplied; admission is all-or-nothing, so tokens
 // consumed from earlier tiers are refunded when a later tier rejects.
 type TieredLimiter struct {
-	now func() time.Time
-	// mu guards the tier pointers, perTenantDefault, and the default bounds so
-	// UpdateTiers (config hot-reload, Task 166) can atomically re-apply the tier
-	// rates on a running limiter concurrently with Allow/Enabled. It is held only
-	// briefly; the per-key bucket stores keep their own finer-grained locks, so
-	// the admission hot path stays effectively lock-free under the read lock.
-	mu      sync.RWMutex
+	now     func() time.Time
 	global  *tier
 	perIP   *tier
 	perAcct *tier
@@ -61,11 +52,6 @@ type TieredLimiter struct {
 	// the effective rate is resolved per request in Allow.
 	perTenantDefault Rate
 	perTenantBuckets *keyedBuckets
-	// maxKeys/idleTTL are the resolved default bounds new per-key stores are
-	// built with; retained so UpdateTiers can create a tier that was disabled at
-	// startup (nil) with the same bounds as the others.
-	maxKeys int
-	idleTTL time.Duration
 }
 
 // LimiterConfig configures a TieredLimiter.
@@ -116,56 +102,7 @@ func NewTieredLimiter(cfg LimiterConfig) *TieredLimiter {
 		perAcct:          mk(TierPerAccount, cfg.PerAccount),
 		perTenantDefault: cfg.PerTenant,
 		perTenantBuckets: newKeyedBuckets(cfg.PerTenant.Rate, cfg.PerTenant.Burst, maxKeys, idle, now),
-		maxKeys:          maxKeys,
-		idleTTL:          idle,
 	}
-}
-
-// UpdateTiers atomically re-applies the tier rates from cfg to a running
-// limiter, for configuration hot-reload (Task 166). Existing per-key buckets are
-// retuned in place (see tokenBucket.retune) so in-flight admission state is
-// preserved: no request is dropped and no bucket is reset to full. A tier that
-// transitions between disabled (nil) and enabled is torn down or created with
-// the limiter's default bounds. The deployment-wide per-tenant default is
-// swapped; individual tenant buckets self-heal via bucketForRate on their next
-// request. Safe to call concurrently with Allow/Enabled.
-//
-// It cannot resurrect a limiter that was never built (rate_limit.enabled=false
-// at startup leaves the middleware with a nil limiter); toggling rate limiting
-// on or off as a whole still requires a restart.
-func (l *TieredLimiter) UpdateTiers(cfg LimiterConfig) {
-	maxKeys := cfg.MaxKeys
-	if maxKeys <= 0 {
-		maxKeys = 100_000
-	}
-	idle := cfg.IdleTTL
-	if idle <= 0 {
-		idle = 10 * time.Minute
-	}
-	now := l.now()
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.maxKeys, l.idleTTL = maxKeys, idle
-	l.global = l.retuneTierLocked(l.global, TierGlobal, cfg.Global)
-	l.perIP = l.retuneTierLocked(l.perIP, TierPerIP, cfg.PerIP)
-	l.perAcct = l.retuneTierLocked(l.perAcct, TierPerAccount, cfg.PerAccount)
-	l.perTenantDefault = cfg.PerTenant
-	l.perTenantBuckets.setRate(cfg.PerTenant.Rate, cfg.PerTenant.Burst, maxKeys, idle, now)
-}
-
-// retuneTierLocked updates an existing tier's rate in place, creates one when a
-// previously disabled (nil) tier becomes enabled, or returns nil to disable a
-// tier whose new rate is non-positive. The caller holds l.mu.
-func (l *TieredLimiter) retuneTierLocked(t *tier, name string, r Rate) *tier {
-	if !r.enabled() {
-		return nil // a disabled tier is inert (always admit)
-	}
-	if t == nil {
-		return &tier{name: name, buckets: newKeyedBuckets(r.Rate, r.Burst, l.maxKeys, l.idleTTL, l.now)}
-	}
-	t.buckets.setRate(r.Rate, r.Burst, l.maxKeys, l.idleTTL, l.now())
-	return t
 }
 
 // Keys identifies a request to the limiter. An empty IP or Account skips that
@@ -191,13 +128,6 @@ const globalKey = "_global_"
 // rejection it names the offending tier and a Retry-After estimate, and refunds
 // any tokens already taken from earlier tiers so admission is all-or-nothing.
 func (l *TieredLimiter) Allow(keys Keys) Decision {
-	// Hold the read lock for the whole admission check so UpdateTiers cannot swap
-	// a tier pointer mid-evaluation. The per-key bucket stores keep their own
-	// locks, so this permits unbounded concurrent admissions and only blocks
-	// against the (rare) reload writer.
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-
 	now := l.now()
 
 	// Evaluate tiers cheapest-scope-first: global, then per-IP, then
@@ -262,7 +192,5 @@ func (l *TieredLimiter) Allow(keys Keys) Decision {
 // enforced by Allow, so middleware should also consult that override when
 // deciding whether to consult the limiter.
 func (l *TieredLimiter) Enabled() bool {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
 	return l.global != nil || l.perIP != nil || l.perAcct != nil || l.perTenantDefault.enabled()
 }

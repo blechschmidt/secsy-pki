@@ -14,7 +14,6 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/approval"
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
-	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 )
@@ -224,12 +223,8 @@ func cmdRotateIntermediate(db *database.DB, mgr *ca.Manager, cfg *config.Config,
 func cmdRotationStatus(db *database.DB, mgr *ca.Manager, args []string) error {
 	fs := flag.NewFlagSet("rotation-status", flag.ContinueOnError)
 	caRef := fs.String("ca", "", "CA id or label (required)")
-	out := cliout.Register(fs)
+	jsonOut := fs.Bool("json", false, "emit JSON instead of a table")
 	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
 		return err
 	}
 	if *caRef == "" {
@@ -245,8 +240,13 @@ func cmdRotationStatus(db *database.DB, mgr *ca.Manager, args []string) error {
 		return err
 	}
 
-	if asJSON {
-		return cliout.Emit(status)
+	if *jsonOut {
+		out, err := json.MarshalIndent(status, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+		return nil
 	}
 
 	fmt.Printf("CA:              %s (%s)\n", status.CA.Label, status.CA.ID)
@@ -397,32 +397,14 @@ func cmdPublishChain(db *database.DB, mgr *ca.Manager, args []string) error {
 
 // cmdListRotations lists CAs by rollover state, so an operator can see which
 // superseded keys are awaiting retirement and whether they are safe to retire.
-func cmdListRotations(db *database.DB, mgr *ca.Manager, args []string) error {
-	fs := flag.NewFlagSet("list-rotations", flag.ContinueOnError)
-	out := cliout.Register(fs)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
-		return err
-	}
+func cmdListRotations(db *database.DB, mgr *ca.Manager, _ []string) error {
 	cas, err := db.ListCAs()
 	if err != nil {
 		return err
 	}
-
-	// rotationRow is the stable JSON shape of one lineage row.
-	type rotationRow struct {
-		ID                string     `json:"id"`
-		Label             string     `json:"label"`
-		Status            string     `json:"status"`
-		Serial            string     `json:"serial"`
-		NotAfter          *time.Time `json:"not_after,omitempty"`
-		OutstandingLeaves int        `json:"outstanding_leaves"`
-		SafeToRetire      bool       `json:"safe_to_retire"`
-	}
-	rows := make([]rotationRow, 0)
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "LABEL\tSTATUS\tSERIAL\tNOT AFTER\tOUTSTANDING\tSAFE TO RETIRE")
+	shown := 0
 	for _, c := range cas {
 		// Only X.509 CAs participate in rollover; show those that are part of a
 		// rollover lineage (superseded/retired, or an active CA with a predecessor).
@@ -438,32 +420,17 @@ func cmdListRotations(db *database.DB, mgr *ca.Manager, args []string) error {
 		if err != nil {
 			return err
 		}
-		rows = append(rows, rotationRow{
-			ID: c.ID, Label: c.Label, Status: c.Status, Serial: c.Serial,
-			NotAfter: c.NotAfter, OutstandingLeaves: status.OutstandingLeaves,
-			SafeToRetire: status.SafeToRetire,
-		})
-	}
-
-	if asJSON {
-		return cliout.Emit(struct {
-			Rotations []rotationRow `json:"rotations"`
-		}{Rotations: rows})
-	}
-
-	if len(rows) == 0 {
-		fmt.Println("No CAs are currently in a key-rotation lineage.")
-		return nil
-	}
-	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "LABEL\tSTATUS\tSERIAL\tNOT AFTER\tOUTSTANDING\tSAFE TO RETIRE")
-	for _, r := range rows {
 		notAfter := "-"
-		if r.NotAfter != nil {
-			notAfter = r.NotAfter.Format("2006-01-02")
+		if c.NotAfter != nil {
+			notAfter = c.NotAfter.Format("2006-01-02")
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%t\n",
-			r.Label, r.Status, r.Serial, notAfter, r.OutstandingLeaves, r.SafeToRetire)
+			c.Label, c.Status, c.Serial, notAfter, status.OutstandingLeaves, status.SafeToRetire)
+		shown++
+	}
+	if shown == 0 {
+		fmt.Println("No CAs are currently in a key-rotation lineage.")
+		return nil
 	}
 	return tw.Flush()
 }

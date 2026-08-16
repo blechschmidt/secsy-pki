@@ -31,7 +31,6 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
-	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -62,12 +61,6 @@ func run(args []string) error {
 		return fmt.Errorf("no command given")
 	}
 	command, cmdArgs := rest[0], rest[1:]
-
-	// completion emits a static shell-completion script (bash/zsh/fish). It is a
-	// hidden subcommand needing no config or key provider, so dispatch it first.
-	if command == "completion" {
-		return cmdCompletion(cmdArgs)
-	}
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -275,12 +268,7 @@ func cmdInitKEK(cfg *config.Config, provider keyprovider.Provider, args []string
 func cmdKEKInfo(cfg *config.Config, provider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("kek-info", flag.ContinueOnError)
 	label := fs.String("kek", "", "explicit KEK label override (default: the family's ACTIVE KEK version)")
-	out := cliout.Register(fs)
 	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
 		return err
 	}
 	ring, svc, err := serviceOrRing(cfg, provider, *label)
@@ -289,16 +277,6 @@ func cmdKEKInfo(cfg *config.Config, provider keyprovider.Provider, args []string
 	}
 	if ring != nil {
 		svc = ring.Active()
-	}
-	if asJSON {
-		payload := map[string]any{"kek": svc.KEKInfo()}
-		if ring != nil {
-			payload["family"] = ring.Family()
-			payload["active_version"] = ring.ActiveVersion()
-		}
-		return cliout.Emit(payload)
-	}
-	if ring != nil {
 		fmt.Printf("KEK family %q (active version %d; see `secsy-secret kek-versions` for the lineage)\n",
 			ring.Family(), ring.ActiveVersion())
 	}

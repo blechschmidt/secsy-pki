@@ -282,11 +282,6 @@ func authzMatrix() []rc {
 		rdG("GET", "/api/keys", "/api/keys", ""),
 		caMgBody("POST", "/api/keys", "/api/keys", `{"label":"authz-new",`+bogusKey+`,"tenant_id":"a"}`),
 
-		// Configuration hot-reload (Task 166): platform-admin-only. No reloader is
-		// wired in the test API, so a permitted caller gets 503 (not 401/403),
-		// which the reachability probe accepts; a tenant admin is still 403.
-		platAdm("POST", "/api/admin/reload", "/api/admin/reload", `{}`),
-
 		// Multi-tenant administration.
 		platAdm("GET", "/api/tenants", "/api/tenants", ""),
 		platAdm("POST", "/api/tenants", "/api/tenants", `{"slug":"authz-t","name":"t"}`),

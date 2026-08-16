@@ -6,7 +6,6 @@ import (
 	"encoding/asn1"
 	"fmt"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
@@ -443,21 +442,13 @@ const defaultProfileName = "server"
 // configuration via SetCustomProfiles. They layer over the built-ins: a custom
 // profile with the same (lowercase) name as a built-in overrides it. This lets
 // deployments add issuance shapes or tighten validity without a code change.
-//
-// The map is a whole-map snapshot swapped atomically under customProfilesMu:
-// SetCustomProfiles builds and validates a fresh map, then replaces the pointer
-// under the write lock, while every reader takes the read lock. This makes
-// configuration hot-reload (Task 166) race-free — profiles can be replaced on a
-// running server, concurrently with issuance reading them, without a restart.
-var (
-	customProfilesMu sync.RWMutex
-	customProfiles   = map[string]Profile{}
-)
+// Set once at startup before serving, so no locking is required for reads.
+var customProfiles = map[string]Profile{}
 
 // SetCustomProfiles validates and installs operator-defined profiles. Each
 // profile must have a name and reference only known key usages / extended key
-// usages. Calling it again replaces the previous custom set atomically, so it is
-// safe to invoke on a running server (config hot-reload) as well as at startup.
+// usages. It is intended to be called once during initialization; calling it
+// again replaces the previous custom set.
 func SetCustomProfiles(profiles []Profile) error {
 	next := make(map[string]Profile, len(profiles))
 	for _, p := range profiles {
@@ -524,9 +515,7 @@ func SetCustomProfiles(profiles []Profile) error {
 		}
 		next[key] = p
 	}
-	customProfilesMu.Lock()
 	customProfiles = next
-	customProfilesMu.Unlock()
 	return nil
 }
 
@@ -538,14 +527,11 @@ func LookupProfile(name string) (Profile, error) {
 		name = defaultProfileName
 	}
 	key := normalizeProfileName(name)
-	customProfilesMu.RLock()
-	p, ok := customProfiles[key]
-	customProfilesMu.RUnlock()
-	if ok {
+	if p, ok := customProfiles[key]; ok {
 		p.fillValidityDays()
 		return p, nil
 	}
-	p, ok = builtinProfiles[key]
+	p, ok := builtinProfiles[key]
 	if !ok {
 		return Profile{}, fmt.Errorf("unknown certificate profile %q (available: %v)", name, ProfileNames())
 	}
@@ -556,8 +542,6 @@ func LookupProfile(name string) (Profile, error) {
 // mergedProfiles returns the effective profile set: built-ins overlaid with any
 // custom profiles.
 func mergedProfiles() map[string]Profile {
-	customProfilesMu.RLock()
-	defer customProfilesMu.RUnlock()
 	out := make(map[string]Profile, len(builtinProfiles)+len(customProfiles))
 	for k, v := range builtinProfiles {
 		out[k] = v

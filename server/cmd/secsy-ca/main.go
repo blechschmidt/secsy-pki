@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -28,7 +29,6 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/certlint"
-	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/fips"
@@ -68,13 +68,6 @@ func run(args []string) error {
 		return nil
 	}
 
-	// completion emits a static shell-completion script (bash/zsh/fish). It is a
-	// hidden subcommand needing no config/database/key provider, so — like
-	// version — it is dispatched before anything is opened.
-	if command == "completion" {
-		return cmdCompletion(cmdArgs)
-	}
-
 	// The doctor runs before the config is loaded: a config that fails to parse
 	// is one of its findings (reported with the documented exit codes), not a
 	// reason the diagnostics cannot run.
@@ -86,7 +79,7 @@ func run(args []string) error {
 	// operator-supplied files: the leaf certificate and (for minting) its private
 	// key. The CA never holds subscriber leaf keys, so this helper needs neither
 	// the config, the database, nor the key provider — dispatch it before any of
-	// them are opened, like version/completion.
+	// them are opened, like version.
 	if command == "delegated-credential" {
 		return cmdDelegatedCredential(cmdArgs)
 	}
@@ -108,7 +101,6 @@ func run(args []string) error {
 	if command == "hsm-attest" && len(cmdArgs) > 0 && cmdArgs[0] == "verify" {
 		return cmdHSMAttestVerify(cmdArgs[1:])
 	}
-
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -260,7 +252,6 @@ func run(args []string) error {
 	if command == "hsm-attest" {
 		return cmdHSMAttest(db, cfg, cmdArgs)
 	}
-
 	// DNS pinning-record generation (Task 98) hashes stored public certificate
 	// and SSH-key material — it never touches the HSM — so dispatch it before the
 	// key provider is constructed. This lets an operator mint DANE/SSHFP records
@@ -319,7 +310,7 @@ func run(args []string) error {
 		// Externally-signed subordinate CA flow: "ca csr" / "ca import-cert".
 		return cmdCA(db, mgr, cmdArgs)
 	case "list":
-		return cmdList(db, cmdArgs)
+		return cmdList(db)
 	case "issue":
 		return cmdIssue(db, mgr, cmdArgs)
 	case "issue-bulk":
@@ -345,7 +336,7 @@ func run(args []string) error {
 	case "monitor-run":
 		return cmdMonitorRun(db, mgr, cfg, cmdArgs)
 	case "profiles":
-		return cmdProfiles(cmdArgs)
+		return cmdProfiles()
 	case "svid":
 		return cmdSVID(db, mgr, cfg, cmdArgs)
 	case "svid-bundle":
@@ -687,27 +678,10 @@ func cmdIssueIntermediate(db *database.DB, mgr *ca.Manager, args []string) error
 	return nil
 }
 
-func cmdList(db *database.DB, args []string) error {
-	fs := flag.NewFlagSet("list", flag.ContinueOnError)
-	out := cliout.Register(fs)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
+func cmdList(db *database.DB) error {
 	cas, err := db.ListCAs()
 	if err != nil {
 		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
-		return err
-	}
-	if asJSON {
-		if cas == nil {
-			cas = []models.CA{}
-		}
-		return cliout.Emit(struct {
-			CAs []models.CA `json:"cas"`
-		}{CAs: cas})
 	}
 	if len(cas) == 0 {
 		fmt.Println("No CAs configured.")
@@ -1054,12 +1028,8 @@ func cmdListCerts(db *database.DB, args []string) error {
 	serialPrefix := fs.String("serial-prefix", "", "filter to serials beginning with this decimal prefix")
 	expiresBefore := fs.String("expires-before", "", "only certificates expiring before this time (RFC 3339 or YYYY-MM-DD)")
 	byPublicKey := fs.String("by-public-key", "", "key-compromise search: only certificates whose subject public key has this SubjectPublicKeyInfo SHA-256 (hex or SHA256:<base64>), or '@file' for a PEM/DER cert, CSR, or public key to fingerprint locally")
-	out := cliout.Register(fs)
+	asJSON := fs.Bool("json", false, "emit the page as JSON {items,next_cursor,total,has_more}")
 	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
 		return err
 	}
 	if *caRef == "" {
@@ -1111,21 +1081,23 @@ func cmdListCerts(db *database.DB, args []string) error {
 		pageReq.Cursor = page.NextCursor
 	}
 
-	if asJSON {
-		payload := struct {
+	if *asJSON {
+		out := struct {
 			Items      []models.IssuedCertificate `json:"items"`
 			NextCursor string                     `json:"next_cursor"`
 			Total      int                        `json:"total"`
 			HasMore    bool                       `json:"has_more"`
 		}{Items: items, Total: last.Total}
 		if !followAll {
-			payload.NextCursor = last.NextCursor
-			payload.HasMore = last.HasMore
+			out.NextCursor = last.NextCursor
+			out.HasMore = last.HasMore
 		}
-		if payload.Items == nil {
-			payload.Items = []models.IssuedCertificate{}
+		if out.Items == nil {
+			out.Items = []models.IssuedCertificate{}
 		}
-		return cliout.Emit(payload)
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
 	}
 
 	if len(items) == 0 {
@@ -1159,25 +1131,7 @@ func cmdListCerts(db *database.DB, args []string) error {
 	return nil
 }
 
-func cmdProfiles(args []string) error {
-	fs := flag.NewFlagSet("profiles", flag.ContinueOnError)
-	out := cliout.Register(fs)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
-		return err
-	}
-	if asJSON {
-		profiles := ca.Profiles()
-		if profiles == nil {
-			profiles = []ca.Profile{}
-		}
-		return cliout.Emit(struct {
-			Profiles []ca.Profile `json:"profiles"`
-		}{Profiles: profiles})
-	}
+func cmdProfiles() error {
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tDEFAULT DAYS\tMAX DAYS\tKEY USAGES\tEXT KEY USAGES\tDESCRIPTION")
 	for _, p := range ca.Profiles() {

@@ -2,12 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
 
-	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/discovery"
@@ -30,13 +30,9 @@ func cmdDiscover(db *database.DB, cfg *config.Config, args []string) error {
 	tenant := fs.String("tenant", "", "tenant to record findings under (default: built-in tenant)")
 	store := fs.Bool("store", false, "record findings into the discovered-certificate inventory")
 	notify := fs.Bool("notify", false, "dispatch flagged findings through the monitor notification sinks")
+	asJSON := fs.Bool("json", false, "emit the full report as JSON instead of a table")
 	rogueOnly := fs.Bool("rogue-only", false, "exit non-zero if any rogue (not-issued-by-this-PKI) certificate is found")
-	out := cliout.Register(fs)
 	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
 		return err
 	}
 
@@ -90,8 +86,10 @@ func cmdDiscover(db *database.DB, cfg *config.Config, args []string) error {
 		return fmt.Errorf("discovery scan: %w", err)
 	}
 
-	if asJSON {
-		if err := cliout.Emit(res.Report); err != nil {
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(res.Report); err != nil {
 			return err
 		}
 	} else {

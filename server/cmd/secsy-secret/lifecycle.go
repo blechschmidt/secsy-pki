@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
-	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
@@ -304,12 +303,7 @@ func cmdVersions(cfg *config.Config, args []string) error {
 	name := fs.String("name", "", "secret name")
 	id := fs.String("id", "", "secret ID (alternative to -name)")
 	tenant := fs.String("tenant", models.DefaultTenantID, "owning tenant (id or slug)")
-	out := cliout.Register(fs)
 	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
 		return err
 	}
 	db, err := openAuditDB(cfg)
@@ -329,34 +323,6 @@ func cmdVersions(cfg *config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-
-	if asJSON {
-		// Metadata-only projection: the value history never includes the ciphertext.
-		type versionRow struct {
-			Version    int       `json:"version"`
-			Current    bool      `json:"current"`
-			KEKLabel   string    `json:"kek_label"`
-			KEKVersion int       `json:"kek_version"`
-			CreatedAt  time.Time `json:"created_at"`
-			CreatedBy  string    `json:"created_by"`
-			Comment    string    `json:"comment"`
-		}
-		rows := make([]versionRow, 0, len(versions))
-		for _, v := range versions {
-			rows = append(rows, versionRow{
-				Version: v.Version, Current: v.Version == s.CurrentVersion,
-				KEKLabel: v.KEKLabel, KEKVersion: v.KEKVersion,
-				CreatedAt: v.CreatedAt, CreatedBy: v.CreatedBy, Comment: v.Comment,
-			})
-		}
-		return cliout.Emit(struct {
-			ID             string       `json:"id"`
-			Name           string       `json:"name"`
-			CurrentVersion int          `json:"current_version"`
-			Versions       []versionRow `json:"versions"`
-		}{ID: s.ID, Name: s.Name, CurrentVersion: s.CurrentVersion, Versions: rows})
-	}
-
 	fmt.Printf("Secret %q (id %s) — current version %d\n\n", s.Name, s.ID, s.CurrentVersion)
 	fmt.Printf("  %-8s %-8s %-24s %-4s %-20s %-16s %s\n", "VERSION", "CURRENT", "KEK LABEL", "VER", "CREATED", "BY", "COMMENT")
 	for _, v := range versions {
@@ -458,12 +424,7 @@ func cmdRollback(cfg *config.Config, args []string) error {
 // exactly what the monitor's reminder scan would flag right now.
 func cmdLifecycle(cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("lifecycle", flag.ContinueOnError)
-	out := cliout.Register(fs)
 	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
 		return err
 	}
 	db, err := openAuditDB(cfg)
@@ -483,19 +444,6 @@ func cmdLifecycle(cfg *config.Config, args []string) error {
 		critical = 7
 	}
 	items := monitor.ClassifySecrets(secrets, warning, critical, time.Now().UTC())
-
-	if asJSON {
-		if items == nil {
-			items = []monitor.SecretItem{}
-		}
-		return cliout.Emit(map[string]any{
-			"warning_days":  warning,
-			"critical_days": critical,
-			"scheduled":     len(secrets),
-			"items":         items,
-		})
-	}
-
 	if len(items) == 0 {
 		fmt.Printf("No stored secrets due for TTL or rotation attention (%d with a schedule).\n", len(secrets))
 		return nil

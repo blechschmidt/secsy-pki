@@ -14,11 +14,9 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/signal"
 	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/acme"
@@ -36,7 +34,6 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/cmp"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
-	"github.com/blechschmidt/secsy-pki/server/internal/confreload"
 	"github.com/blechschmidt/secsy-pki/server/internal/ct"
 	"github.com/blechschmidt/secsy-pki/server/internal/ctmonitor"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
@@ -283,12 +280,99 @@ func main() {
 	}
 
 	// Install any operator-defined certificate profiles, layered over built-ins.
-	// The mapping lives in buildCustomProfiles so config hot-reload (Task 166)
-	// re-applies profiles through exactly the same path.
 	if len(cfg.Profiles) > 0 {
-		profiles, err := buildCustomProfiles(cfg, ctSubmitter)
-		if err != nil {
-			log.Fatalf("Invalid custom certificate profile: %v", err)
+		profiles := make([]ca.Profile, 0, len(cfg.Profiles))
+		for _, p := range cfg.Profiles {
+			prof := ca.Profile{
+				Name:                    p.Name,
+				Description:             p.Description,
+				KeyUsages:               p.KeyUsages,
+				ExtKeyUsages:            p.ExtKeyUsages,
+				DefaultValidityDays:     p.DefaultValidityDays,
+				MaxValidityDays:         p.MaxValidityDays,
+				RequireApproval:         p.RequireApproval,
+				MustStaple:              p.MustStaple,
+				AllowMustStapleOverride: p.AllowMustStapleOverride,
+			}
+			if p.CT.Enabled {
+				if ctSubmitter == nil {
+					log.Fatalf("Profile %q enables certificate transparency but no CT logs are configured", p.Name)
+				}
+				for _, name := range p.CT.Logs {
+					if !ctSubmitter.Has(name) {
+						log.Fatalf("Profile %q references unknown CT log %q", p.Name, name)
+					}
+				}
+				prof.CT = &ca.CTConfig{
+					Enabled:              true,
+					Logs:                 p.CT.Logs,
+					MinSCTs:              p.CT.MinSCTs,
+					MinDistinctOperators: p.CT.MinDistinctOperators,
+					RequireOperators:     p.CT.RequireOperators,
+					FailOpen:             p.CT.FailOpen,
+					TimeoutSeconds:       p.CT.TimeoutSeconds,
+					Retries:              p.CT.Retries,
+				}
+				// An operator-diversity policy can only be enforced when every log
+				// it might submit to has a resolved operator. Validate at startup so
+				// a policy that could never be satisfied (or would silently
+				// under-count) fails loudly here rather than at issuance time.
+				if p.CT.MinDistinctOperators > 0 || len(p.CT.RequireOperators) > 0 {
+					if err := validateCTOperatorPolicy(p.Name, p.CT, ctSubmitter); err != nil {
+						log.Fatalf("%v", err)
+					}
+				}
+			}
+			prof.Lint = &ca.LintConfig{
+				Disabled:          p.Lint.Disabled,
+				Mode:              p.Lint.Mode,
+				Public:            p.Lint.Public,
+				RequireMustStaple: p.Lint.RequireMustStaple,
+				Overrides:         p.Lint.Overrides,
+				ZLint:             zlintConfig(p.Lint.ZLint),
+			}
+			if p.Lint.ZLint.Enabled && !certlint.ZLintAvailable() {
+				log.Printf("WARNING: profile %q enables the zlint backend, but this binary was not built with -tags zlint; "+
+					"only the hand-rolled Baseline Requirements checks will run", p.Name)
+			}
+			if mode := strings.ToLower(strings.TrimSpace(p.CAA.Mode)); mode != "" && mode != "off" {
+				identifier := p.CAA.Identifier
+				if identifier == "" {
+					identifier = cfg.CAA.Identifier
+				}
+				if mode == "enforce" && identifier == "" {
+					log.Fatalf("Profile %q enables CAA enforcement but no CA identifier is configured (set caa.identifier)", p.Name)
+				}
+				prof.CAA = &ca.CAAConfig{
+					Mode:           mode,
+					Identifier:     identifier,
+					TimeoutSeconds: p.CAA.TimeoutSeconds,
+				}
+			}
+			if len(p.Policies.OIDs) > 0 || len(p.Policies.Mappings) > 0 {
+				prof.Policies = &certpolicy.PolicyConfig{
+					OIDs:     p.Policies.OIDs,
+					CPS:      p.Policies.CPS,
+					Critical: p.Policies.Critical,
+					Mappings: p.Policies.Mappings,
+				}
+			}
+			if p.SMIME.Enabled {
+				prof.SMIME = &ca.SMIMEConfig{
+					Variant:        p.SMIME.Variant,
+					BRProfile:      p.SMIME.BRProfile,
+					AllowedDomains: p.SMIME.AllowedDomains,
+					SubjectEmail:   p.SMIME.SubjectEmail,
+				}
+			}
+			if p.UPN.Enabled {
+				prof.UPN = &ca.UPNConfig{
+					AllowedRealms: p.UPN.AllowedRealms,
+					RequireUPN:    p.UPN.RequireUPN,
+				}
+			}
+			prof.KeyChecks = keyChecksConfig(p.KeyChecks)
+			profiles = append(profiles, prof)
 		}
 		if err := ca.SetCustomProfiles(profiles); err != nil {
 			log.Fatalf("Invalid custom certificate profile: %v", err)
@@ -310,12 +394,30 @@ func main() {
 	}
 
 	// Install the DNS resolver backing the CAA pre-issuance gate when any profile
-	// enables it. Factored into installCAAResolver so config hot-reload can
-	// (re)install it if a reloaded profile set newly enables CAA. A profile
-	// enforcing CAA cannot run without a resolver, so a resolver-build failure is
-	// fatal here at startup.
-	if err := installCAAResolver(cfg); err != nil {
-		log.Fatalf("%v", err)
+	// enables it. The resolver is wrapped in a TTL cache shared across requests. A
+	// profile enforcing CAA cannot run without a resolver, so a resolver-build
+	// failure is fatal only then; otherwise it is a warning.
+	caaUsed, caaEnforced := false, false
+	for _, p := range cfg.Profiles {
+		if mode := strings.ToLower(strings.TrimSpace(p.CAA.Mode)); mode != "" && mode != "off" {
+			caaUsed = true
+			if mode == "enforce" {
+				caaEnforced = true
+			}
+		}
+	}
+	if caaUsed {
+		sysResolver, err := caa.NewSystemResolver()
+		if err != nil {
+			if caaEnforced {
+				log.Fatalf("CAA enforcement is enabled but no DNS resolver is available: %v", err)
+			}
+			log.Printf("WARNING: CAA is configured (permissive) but no DNS resolver is available: %v", err)
+		} else {
+			ttl := time.Duration(cfg.CAA.CacheTTLSeconds) * time.Second
+			ca.SetCAAResolver(caa.NewCachingResolver(sysResolver, ttl))
+			log.Printf("CAA pre-issuance gate enabled (enforce=%v)", caaEnforced)
+		}
 	}
 
 	// Install the CRL distribution policy (delta CRLs + partitioning, RFC 5280).
@@ -591,9 +693,6 @@ func main() {
 	// replica scanning prevents duplicate expiry alerts and racing auto-renewals
 	// (and re-scanning after a handover is idempotent — a renewed certificate is
 	// superseded and never renewed twice).
-	// monRunner is captured for config hot-reload (Task 166) so a reload can swap
-	// its notification sinks; nil when the monitor is disabled.
-	var monRunner *monitor.Runner
 	if cfg.Monitor.Enabled {
 		caMgr := ca.NewManager(db, provider)
 		mon := monitor.New(db, caMgr, db, monitorOpts)
@@ -601,7 +700,6 @@ func main() {
 		if err != nil {
 			log.Fatalf("Certificate-expiry monitor configuration error: %v", err)
 		}
-		monRunner = runner
 		// Enable HSM-backed intermediate-CA key rotation when configured: the same
 		// manager cross-signs a fresh key under the parent and opens a dual-chain
 		// overlap window as intermediates near expiry.
@@ -989,65 +1087,10 @@ func main() {
 	// middleware is installed for its tenant enrollment gate (Task 61): a
 	// suspended tenant's enrollment protocol surfaces answer 403 outright, while
 	// OCSP/CRL for its already-issued certificates keep flowing.
-	// rlMw is captured for config hot-reload (Task 166) so a reload can swap the
-	// rate-limit tier rates on it in place; nil when rate limiting is off entirely.
-	rlMw := buildRateLimit(cfg, db)
-	if rlMw != nil && rlMw.Active() {
-		handler = rlMw.Handler(handler)
+	if rlmw := buildRateLimit(cfg, db); rlmw != nil && rlmw.Active() {
+		handler = rlmw.Handler(handler)
 		log.Printf("Public-endpoint protection enabled (rate limiting: %v; tenant enrollment gate: on)", cfg.RateLimit.Enabled)
 	}
-
-	// Configuration + issuance-profile hot-reload (Task 166). On SIGHUP or POST
-	// /api/admin/reload, re-read the config file, validate it, reject changes to
-	// immutable fields (listen addresses, key-provider/HSM wiring, database DSN,
-	// …), and atomically swap the reloadable subset — custom issuance profiles,
-	// the CAA resolver requirement, rate-limit tiers, and monitor notification
-	// sinks — each behind its own RWMutex, without dropping HSM sessions,
-	// in-flight requests, or listeners. The apply closure captures the live
-	// runtime so SIGHUP and the endpoint re-apply through exactly the same path.
-	applyReload := func(newCfg *config.Config) error {
-		// Rebuild the custom profile set and validate the CAA-resolver requirement
-		// BEFORE committing any swap, so a bad reload leaves the running config
-		// intact (all-or-nothing).
-		profiles, err := buildCustomProfiles(newCfg, ctSubmitter)
-		if err != nil {
-			return fmt.Errorf("certificate profiles: %w", err)
-		}
-		if err := installCAAResolver(newCfg); err != nil {
-			return err
-		}
-		if err := ca.SetCustomProfiles(profiles); err != nil {
-			return fmt.Errorf("certificate profiles: %w", err)
-		}
-		// The remaining swaps are pre-validated by config.Validate and are
-		// in-place pointer/field updates, so they cannot leave a half-applied
-		// state after the profile commit above.
-		rlMw.UpdateTiers(rateLimiterConfig(newCfg.RateLimit))
-		if monRunner != nil {
-			if err := monRunner.UpdateNotifications(newCfg.Monitor); err != nil {
-				return fmt.Errorf("monitor notifications: %w", err)
-			}
-		}
-		return nil
-	}
-	reloader := confreload.New(*cfgPath, cfg, applyReload, db, log.Default())
-	api.SetReloader(reloader)
-
-	// SIGHUP triggers the same reload as the admin endpoint. signal.Notify keeps
-	// SIGHUP from terminating the process (its default disposition); SIGINT/SIGTERM
-	// retain their default behavior.
-	sighup := make(chan os.Signal, 1)
-	signal.Notify(sighup, syscall.SIGHUP)
-	go func() {
-		for range sighup {
-			log.Printf("SIGHUP received: reloading configuration from %s", *cfgPath)
-			if _, err := reloader.Reload(context.Background(), confreload.Actor{
-				Subject: "sighup", Roles: "system", Source: "signal",
-			}); err != nil {
-				log.Printf("config reload (SIGHUP) failed: %v", err)
-			}
-		}
-	}()
 
 	// Outermost middleware: assign a correlation ID to every request, record HTTP
 	// metrics, and emit one structured (JSON) log line per request. Wrapping the
@@ -1792,158 +1835,6 @@ func buildBRSKIIDevIDTrust(cfg *config.Config) (*x509.CertPool, []*x509.Certific
 	return roots, intermediates, nil
 }
 
-// buildCustomProfiles maps the operator-defined certificate profiles from
-// config onto the ca.Profile set installed via ca.SetCustomProfiles. It is the
-// single source of truth for that mapping, shared by startup and config
-// hot-reload (Task 166) so the two cannot drift. Unlike the old inline startup
-// code it returns errors instead of calling log.Fatalf, so the hot-reload path
-// can reject a bad profile set without taking the process down; startup wraps
-// the errors in log.Fatalf as before.
-func buildCustomProfiles(cfg *config.Config, ctSubmitter *ct.Submitter) ([]ca.Profile, error) {
-	profiles := make([]ca.Profile, 0, len(cfg.Profiles))
-	for _, p := range cfg.Profiles {
-		prof := ca.Profile{
-			Name:                    p.Name,
-			Description:             p.Description,
-			KeyUsages:               p.KeyUsages,
-			ExtKeyUsages:            p.ExtKeyUsages,
-			DefaultValidityDays:     p.DefaultValidityDays,
-			MaxValidityDays:         p.MaxValidityDays,
-			RequireApproval:         p.RequireApproval,
-			MustStaple:              p.MustStaple,
-			AllowMustStapleOverride: p.AllowMustStapleOverride,
-		}
-		if p.CT.Enabled {
-			if ctSubmitter == nil {
-				return nil, fmt.Errorf("profile %q enables certificate transparency but no CT logs are configured", p.Name)
-			}
-			for _, name := range p.CT.Logs {
-				if !ctSubmitter.Has(name) {
-					return nil, fmt.Errorf("profile %q references unknown CT log %q", p.Name, name)
-				}
-			}
-			prof.CT = &ca.CTConfig{
-				Enabled:              true,
-				Logs:                 p.CT.Logs,
-				MinSCTs:              p.CT.MinSCTs,
-				MinDistinctOperators: p.CT.MinDistinctOperators,
-				RequireOperators:     p.CT.RequireOperators,
-				FailOpen:             p.CT.FailOpen,
-				TimeoutSeconds:       p.CT.TimeoutSeconds,
-				Retries:              p.CT.Retries,
-			}
-			// An operator-diversity policy can only be enforced when every log it
-			// might submit to has a resolved operator. Validate here so a policy that
-			// could never be satisfied (or would silently under-count) is rejected
-			// before install rather than at issuance time.
-			if p.CT.MinDistinctOperators > 0 || len(p.CT.RequireOperators) > 0 {
-				if err := validateCTOperatorPolicy(p.Name, p.CT, ctSubmitter); err != nil {
-					return nil, err
-				}
-			}
-		}
-		prof.Lint = &ca.LintConfig{
-			Disabled:          p.Lint.Disabled,
-			Mode:              p.Lint.Mode,
-			Public:            p.Lint.Public,
-			RequireMustStaple: p.Lint.RequireMustStaple,
-			Overrides:         p.Lint.Overrides,
-			ZLint:             zlintConfig(p.Lint.ZLint),
-		}
-		if p.Lint.ZLint.Enabled && !certlint.ZLintAvailable() {
-			log.Printf("WARNING: profile %q enables the zlint backend, but this binary was not built with -tags zlint; "+
-				"only the hand-rolled Baseline Requirements checks will run", p.Name)
-		}
-		if mode := strings.ToLower(strings.TrimSpace(p.CAA.Mode)); mode != "" && mode != "off" {
-			identifier := p.CAA.Identifier
-			if identifier == "" {
-				identifier = cfg.CAA.Identifier
-			}
-			if mode == "enforce" && identifier == "" {
-				return nil, fmt.Errorf("profile %q enables CAA enforcement but no CA identifier is configured (set caa.identifier)", p.Name)
-			}
-			prof.CAA = &ca.CAAConfig{
-				Mode:           mode,
-				Identifier:     identifier,
-				TimeoutSeconds: p.CAA.TimeoutSeconds,
-			}
-		}
-		if len(p.Policies.OIDs) > 0 || len(p.Policies.Mappings) > 0 {
-			prof.Policies = &certpolicy.PolicyConfig{
-				OIDs:     p.Policies.OIDs,
-				CPS:      p.Policies.CPS,
-				Critical: p.Policies.Critical,
-				Mappings: p.Policies.Mappings,
-			}
-		}
-		if p.SMIME.Enabled {
-			prof.SMIME = &ca.SMIMEConfig{
-				Variant:        p.SMIME.Variant,
-				BRProfile:      p.SMIME.BRProfile,
-				AllowedDomains: p.SMIME.AllowedDomains,
-				SubjectEmail:   p.SMIME.SubjectEmail,
-			}
-		}
-		if p.UPN.Enabled {
-			prof.UPN = &ca.UPNConfig{
-				AllowedRealms: p.UPN.AllowedRealms,
-				RequireUPN:    p.UPN.RequireUPN,
-			}
-		}
-		prof.KeyChecks = keyChecksConfig(p.KeyChecks)
-		profiles = append(profiles, prof)
-	}
-	return profiles, nil
-}
-
-// installCAAResolver installs (or reinstalls) the DNS resolver backing the CAA
-// pre-issuance gate when any profile enables CAA, wrapping it in the shared TTL
-// cache. It is shared by startup and config hot-reload; on reload it lets a
-// newly-added CAA-enabled profile find a resolver instead of failing closed. It
-// returns an error only when a profile enforces CAA but no resolver can be built
-// (fail-closed) — fatal at startup, a reload rejection at runtime. When no
-// profile uses CAA it leaves any existing resolver untouched.
-func installCAAResolver(cfg *config.Config) error {
-	caaUsed, caaEnforced := false, false
-	for _, p := range cfg.Profiles {
-		if mode := strings.ToLower(strings.TrimSpace(p.CAA.Mode)); mode != "" && mode != "off" {
-			caaUsed = true
-			if mode == "enforce" {
-				caaEnforced = true
-			}
-		}
-	}
-	if !caaUsed {
-		return nil
-	}
-	sysResolver, err := caa.NewSystemResolver()
-	if err != nil {
-		if caaEnforced {
-			return fmt.Errorf("CAA enforcement is enabled but no DNS resolver is available: %w", err)
-		}
-		log.Printf("WARNING: CAA is configured (permissive) but no DNS resolver is available: %v", err)
-		return nil
-	}
-	ttl := time.Duration(cfg.CAA.CacheTTLSeconds) * time.Second
-	ca.SetCAAResolver(caa.NewCachingResolver(sysResolver, ttl))
-	log.Printf("CAA pre-issuance gate enabled (enforce=%v)", caaEnforced)
-	return nil
-}
-
-// rateLimiterConfig maps the rate_limit config block onto the ratelimit tier
-// configuration, shared by startup (buildRateLimit) and config hot-reload so the
-// tier mapping cannot drift.
-func rateLimiterConfig(rl config.RateLimitConfig) ratelimit.LimiterConfig {
-	return ratelimit.LimiterConfig{
-		Global:     ratelimit.Rate{Rate: rl.Global.Rate, Burst: rl.Global.Burst},
-		PerIP:      ratelimit.Rate{Rate: rl.PerIP.Rate, Burst: rl.PerIP.Burst},
-		PerAccount: ratelimit.Rate{Rate: rl.PerAccount.Rate, Burst: rl.PerAccount.Burst},
-		PerTenant:  ratelimit.Rate{Rate: rl.PerTenant.Rate, Burst: rl.PerTenant.Burst},
-		MaxKeys:    rl.MaxKeys,
-		IdleTTL:    time.Duration(rl.IdleTTLSeconds) * time.Second,
-	}
-}
-
 // zlintConfig converts a profile's zlint configuration into the ca.ZLintConfig
 // consumed by the pre-issuance lint gate. It returns nil when zlint is not
 // enabled for the profile so the gate skips the backend entirely.
@@ -2462,7 +2353,14 @@ func buildRateLimit(cfg *config.Config, db *database.DB) *ratelimit.Middleware {
 	var limiter *ratelimit.TieredLimiter
 	var guard *ratelimit.Guard
 	if rl.Enabled {
-		limiter = ratelimit.NewTieredLimiter(rateLimiterConfig(rl))
+		limiter = ratelimit.NewTieredLimiter(ratelimit.LimiterConfig{
+			Global:     ratelimit.Rate{Rate: rl.Global.Rate, Burst: rl.Global.Burst},
+			PerIP:      ratelimit.Rate{Rate: rl.PerIP.Rate, Burst: rl.PerIP.Burst},
+			PerAccount: ratelimit.Rate{Rate: rl.PerAccount.Rate, Burst: rl.PerAccount.Burst},
+			PerTenant:  ratelimit.Rate{Rate: rl.PerTenant.Rate, Burst: rl.PerTenant.Burst},
+			MaxKeys:    rl.MaxKeys,
+			IdleTTL:    time.Duration(rl.IdleTTLSeconds) * time.Second,
+		})
 	}
 
 	if rl.Enabled && rl.Concurrency.GuardEnabled(true) {

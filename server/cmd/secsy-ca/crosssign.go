@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -10,7 +11,6 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
-	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 )
 
@@ -127,7 +127,12 @@ func cmdCrossSign(db *database.DB, mgr *ca.Manager, args []string) error {
 	}
 
 	if *jsonOut {
-		return cliout.Emit(cs)
+		out, err := json.MarshalIndent(cs, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+		return nil
 	}
 
 	fmt.Printf("Cross-signed %q\n", cs.Subject)
@@ -154,12 +159,8 @@ func cmdListCrossSigns(db *database.DB, mgr *ca.Manager, args []string) error {
 	caRef := fs.String("ca", "", "CA id or label (required)")
 	chains := fs.Bool("chains", false, "print the alternate chains available for the CA instead of the records")
 	chainOut := fs.String("chain-out", "", "with -chains: write the concatenated alternate chains PEM here")
-	out := cliout.Register(fs)
+	jsonOut := fs.Bool("json", false, "emit JSON instead of a table")
 	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
 		return err
 	}
 	if *caRef == "" {
@@ -176,8 +177,13 @@ func cmdListCrossSigns(db *database.DB, mgr *ca.Manager, args []string) error {
 		if err != nil {
 			return err
 		}
-		if asJSON {
-			return cliout.Emit(alts)
+		if *jsonOut {
+			out, err := json.MarshalIndent(alts, "", "  ")
+			if err != nil {
+				return err
+			}
+			fmt.Println(string(out))
+			return nil
 		}
 		if *chainOut != "" {
 			var bundle []byte
@@ -204,8 +210,13 @@ func cmdListCrossSigns(db *database.DB, mgr *ca.Manager, args []string) error {
 	if err != nil {
 		return err
 	}
-	if asJSON {
-		return cliout.Emit(records)
+	if *jsonOut {
+		out, err := json.MarshalIndent(records, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+		return nil
 	}
 	if len(records) == 0 {
 		fmt.Println("No cross-sign relationships for this CA.")

@@ -629,19 +629,6 @@ var (
 		"secsy_auth_sessions_active",
 		"Number of live operator console sessions.")
 
-	// Configuration hot-reload (Task 166). ConfigReloads counts reload attempts
-	// (via SIGHUP or POST /api/admin/reload) partitioned by result
-	// (success|error); ConfigReloadLastSuccess is the Unix timestamp of the last
-	// successful reload, so an alert can fire when reloads start failing while an
-	// operator believes a change took effect.
-	ConfigReloads = NewCounter(Default,
-		"secsy_config_reload_total",
-		"Configuration hot-reload attempts, partitioned by result.",
-		"result")
-	ConfigReloadLastSuccess = NewGauge(Default,
-		"secsy_config_reload_last_success_timestamp_seconds",
-		"Unix timestamp (seconds) of the last successful configuration hot-reload.")
-
 	// Native scoped API tokens / service accounts (Task 86). AuthTokenOps counts
 	// token lifecycle operations (create|revoke) by result; AuthTokenVerifications
 	// counts machine authentication attempts by outcome

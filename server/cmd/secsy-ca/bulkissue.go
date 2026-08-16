@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
-	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 )
 
@@ -129,7 +128,9 @@ func cmdIssueBulk(db *database.DB, mgr *ca.Manager, args []string) error {
 
 	printIssueBulkResult(result, *outDir)
 	if *jsonOut {
-		if err := cliout.Emit(result); err != nil {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(result); err != nil {
 			return err
 		}
 	}

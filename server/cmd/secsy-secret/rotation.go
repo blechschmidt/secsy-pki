@@ -19,7 +19,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
-	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
@@ -360,12 +359,7 @@ func cmdRewrap(cfg *config.Config, provider keyprovider.Provider, args []string)
 func cmdKEKVersions(cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("kek-versions", flag.ContinueOnError)
 	family := fs.String("family", "", "KEK family (default: secret.kek_label from config)")
-	out := cliout.Register(fs)
 	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
 		return err
 	}
 	fam, err := resolveKEK(cfg, *family)
@@ -381,9 +375,6 @@ func cmdKEKVersions(cfg *config.Config, args []string) error {
 	st, err := secret.BuildKEKStatus(db, fam)
 	if err != nil {
 		return err
-	}
-	if asJSON {
-		return cliout.Emit(st)
 	}
 	fmt.Printf("KEK family %q — active version %d (label %q)\n", st.Family, st.ActiveVersion, st.ActiveLabel)
 	if st.NeverRotated {
@@ -415,12 +406,7 @@ func cmdKEKVersions(cfg *config.Config, args []string) error {
 func cmdListSecrets(cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("list-secrets", flag.ContinueOnError)
 	tenant := fs.String("tenant", models.DefaultTenantID, "tenant whose stored secrets to list")
-	out := cliout.Register(fs)
 	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
 		return err
 	}
 	db, err := openAuditDB(cfg)
@@ -433,31 +419,6 @@ func cmdListSecrets(cfg *config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
-
-	if asJSON {
-		// Metadata-only projection: never emit the ciphertext envelope in a listing.
-		type secretRow struct {
-			ID           string `json:"id"`
-			Name         string `json:"name"`
-			TenantID     string `json:"tenant_id"`
-			KEKLabel     string `json:"kek_label"`
-			KEKVersion   int    `json:"kek_version"`
-			ContextBound bool   `json:"context_bound"`
-			Escrowed     bool   `json:"escrowed"`
-		}
-		rows := make([]secretRow, 0, len(secrets))
-		for _, s := range secrets {
-			rows = append(rows, secretRow{
-				ID: s.ID, Name: s.Name, TenantID: s.TenantID, KEKLabel: s.KEKLabel,
-				KEKVersion: s.KEKVersion, ContextBound: s.ContextBound, Escrowed: s.Escrowed,
-			})
-		}
-		return cliout.Emit(struct {
-			Tenant  string      `json:"tenant"`
-			Secrets []secretRow `json:"secrets"`
-		}{Tenant: *tenant, Secrets: rows})
-	}
-
 	if len(secrets) == 0 {
 		fmt.Printf("No stored secrets in tenant %q.\n", *tenant)
 		return nil

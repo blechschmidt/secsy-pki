@@ -1,12 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
 
-	"github.com/blechschmidt/secsy-pki/server/internal/cliout"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/dnsrecords"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
@@ -68,12 +68,8 @@ func cmdDNSRecordsTLSA(db *database.DB, args []string) error {
 	host := fs.String("host", "", "service hostname the records are published under (required)")
 	port := fs.Int("port", 443, "TLS service port")
 	protocol := fs.String("protocol", "tcp", "transport protocol (tcp|udp)")
-	out := cliout.Register(fs)
+	asJSON := fs.Bool("json", false, "emit structured records plus the zone text as JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
 		return err
 	}
 	if *caRef == "" || *host == "" {
@@ -127,7 +123,7 @@ func cmdDNSRecordsTLSA(db *database.DB, args []string) error {
 	}
 	tlsa = append(tlsa, issuerRecs...)
 
-	return emitDNSRecords(dnsrecords.NewBundle(tlsa, nil), asJSON)
+	return emitDNSRecords(dnsrecords.NewBundle(tlsa, nil), *asJSON)
 }
 
 // cmdDNSRecordsSSHFP emits SSHFP records for a raw SSH host key or an
@@ -138,12 +134,8 @@ func cmdDNSRecordsSSHFP(db *database.DB, args []string) error {
 	keyPath := fs.String("key", "", "path to an SSH public key or certificate in authorized_keys format ('-' for stdin)")
 	caRef := fs.String("ssh-ca", "", "SSH CA id or label holding the stored host certificate (with -serial)")
 	serial := fs.String("serial", "", "serial of the stored SSH host certificate (with -ssh-ca)")
-	out := cliout.Register(fs)
+	asJSON := fs.Bool("json", false, "emit structured records plus the zone text as JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	asJSON, err := out.JSON()
-	if err != nil {
 		return err
 	}
 
@@ -201,14 +193,16 @@ func cmdDNSRecordsSSHFP(db *database.DB, args []string) error {
 		return err
 	}
 
-	return emitDNSRecords(dnsrecords.NewBundle(nil, sshfp), asJSON)
+	return emitDNSRecords(dnsrecords.NewBundle(nil, sshfp), *asJSON)
 }
 
 // emitDNSRecords writes a bundle either as the plain zone-file block (default) or
-// as indented JSON through the shared encoder.
+// as indented JSON.
 func emitDNSRecords(bundle dnsrecords.Bundle, asJSON bool) error {
 	if asJSON {
-		return cliout.Emit(bundle)
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(bundle)
 	}
 	if bundle.Zone != "" {
 		fmt.Println(bundle.Zone)
