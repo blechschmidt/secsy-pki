@@ -208,7 +208,9 @@ func (a *API) DeleteWebhook(w http.ResponseWriter, r *http.Request) {
 func (a *API) EnableWebhook(w http.ResponseWriter, r *http.Request) { a.setWebhookEnabled(w, r, true) }
 
 // DisableWebhook pauses a subscription and cancels its still-pending deliveries.
-func (a *API) DisableWebhook(w http.ResponseWriter, r *http.Request) { a.setWebhookEnabled(w, r, false) }
+func (a *API) DisableWebhook(w http.ResponseWriter, r *http.Request) {
+	a.setWebhookEnabled(w, r, false)
+}
 
 func (a *API) setWebhookEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {
 	user := middleware.GetUserInfo(r.Context())

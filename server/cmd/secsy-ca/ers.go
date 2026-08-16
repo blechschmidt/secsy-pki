@@ -577,5 +577,5 @@ func printErsInfo(rec models.EvidenceRecord, info ers.Info) {
 		fmt.Fprintf(tw, "  %d\t%d\t%s\t%s\t%s\t%s\n",
 			ts.Chain, ts.Index, ts.Hash, ts.GenTime.Format(time.RFC3339), exp, ts.TSASubject)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 }

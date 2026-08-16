@@ -49,7 +49,7 @@ func seed(t *testing.T, db *database.DB, now time.Time) {
 			t.Fatalf("RecordIssuedCertificate(%s): %v", serial, err)
 		}
 	}
-	rec("2001", now.Add(90*24*time.Hour), models.CertStatusValid)  // valid   -> retained
+	rec("2001", now.Add(90*24*time.Hour), models.CertStatusValid)     // valid   -> retained
 	rec("2002", now.Add(-200*24*time.Hour), models.CertStatusExpired) // eligible
 	rec("2003", now.Add(-200*24*time.Hour), models.CertStatusValid)   // eligible after revoke
 	if _, err := db.RevokeCertificate(testCA, "2003", 1, now); err != nil {

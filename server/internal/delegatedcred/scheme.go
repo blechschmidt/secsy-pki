@@ -27,7 +27,7 @@ const (
 	RSAPSSWithSHA256       SignatureScheme = 0x0804
 	RSAPSSWithSHA384       SignatureScheme = 0x0805
 	RSAPSSWithSHA512       SignatureScheme = 0x0806
-	Ed25519               SignatureScheme = 0x0807
+	Ed25519                SignatureScheme = 0x0807
 )
 
 // schemeNames maps the supported schemes to their IANA registry names.
@@ -38,7 +38,7 @@ var schemeNames = map[SignatureScheme]string{
 	RSAPSSWithSHA256:       "rsa_pss_rsae_sha256",
 	RSAPSSWithSHA384:       "rsa_pss_rsae_sha384",
 	RSAPSSWithSHA512:       "rsa_pss_rsae_sha512",
-	Ed25519:               "ed25519",
+	Ed25519:                "ed25519",
 }
 
 // String renders the scheme by its IANA name, or as a hex code point when

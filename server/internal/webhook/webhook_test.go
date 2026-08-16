@@ -179,9 +179,11 @@ func TestFanOutDeliverAndSignature(t *testing.T) {
 
 	clock := newFakeClock()
 	e := newEngine(db, clock)
-	cursor := e.initCursor() // seeds to current head; event above predates it
-	// Re-run against a cursor positioned BEFORE the event so it is delivered.
-	cursor = ev.Seq - 1
+	// Seed and persist the cursor exactly as production start-up does (it lands on
+	// the current head, which the event above already predates), then rewind the
+	// local cursor BEFORE the event so fan-out actually delivers it.
+	_ = e.initCursor()
+	cursor := ev.Seq - 1
 	ctx := context.Background()
 	e.fanOutOnce(ctx, &cursor)
 
@@ -306,10 +308,10 @@ func TestEventTypeFiltering(t *testing.T) {
 	sub := mkSub(t, db, "w1", models.DefaultTenantID, "tenant", "http://127.0.0.1:1/hook", []string{audit.ActionCertIssue})
 
 	start, _ := db.MaxEventSeq()
-	appendLifecycle(t, db, audit.ActionCertIssue, models.DefaultTenantID, "ca-1", "01")   // matches
-	appendLifecycle(t, db, audit.ActionCertRevoke, models.DefaultTenantID, "ca-1", "02")  // filtered out
-	appendLifecycle(t, db, audit.ActionCertRenew, models.DefaultTenantID, "ca-1", "03")   // filtered out
-	appendLifecycle(t, db, audit.ActionCertIssue, models.DefaultTenantID, "ca-1", "04")   // matches
+	appendLifecycle(t, db, audit.ActionCertIssue, models.DefaultTenantID, "ca-1", "01")  // matches
+	appendLifecycle(t, db, audit.ActionCertRevoke, models.DefaultTenantID, "ca-1", "02") // filtered out
+	appendLifecycle(t, db, audit.ActionCertRenew, models.DefaultTenantID, "ca-1", "03")  // filtered out
+	appendLifecycle(t, db, audit.ActionCertIssue, models.DefaultTenantID, "ca-1", "04")  // matches
 
 	e := newEngine(db, newFakeClock())
 	cursor := start

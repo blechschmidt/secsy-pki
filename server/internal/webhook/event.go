@@ -133,10 +133,10 @@ func BuildEventPayload(deliveryID string, sub *models.WebhookSubscription, ev *a
 		Tenant:         normalizeTenant(ev.Tenant),
 		SubscriptionID: sub.ID,
 		Data: EventData{
-			Action:     ev.Action,
-			Result:     ev.Result,
-			Actor:      ev.Actor,
-			ActorName:  ev.ActorName,
+			Action:    ev.Action,
+			Result:    ev.Result,
+			Actor:     ev.Actor,
+			ActorName: ev.ActorName,
 			// For certificate lifecycle events the audit Target is the issuing CA id
 			// and TargetName is the certificate serial; surface both raw and split.
 			CAID:       ev.Target,

@@ -265,7 +265,7 @@ func emitVerifyResult(jsonOut, valid bool, version int) error {
 
 // cmdRandom draws CSPRNG bytes from the provider/HSM RNG (or the OS CSPRNG),
 // reporting the source. It needs neither a KEK nor the database.
-func cmdRandom(cfg *config.Config, provider keyprovider.Provider, args []string) error {
+func cmdRandom(cfg *config.Config, provider keyprovider.Provider, args []string) error { //nolint:unparam // cfg keeps the uniform cmd*(cfg, provider, args) signature the main.go dispatch switch calls; this command alone needs neither a KEK nor the database.
 	fs := flag.NewFlagSet("random", flag.ContinueOnError)
 	n := fs.Int("bytes", 32, "number of random bytes to generate (1..1024)")
 	format := fs.String("format", "base64", "output encoding: base64 or hex")

@@ -322,7 +322,7 @@ func VerifyChainFromGenesis(entries []hsm.AuditLogEntry, unlogged Unlogged) *Seg
 // tolerating the wrap. Half the counter space is treated as "ahead" and the
 // other half as "behind", the standard serial-number comparison.
 func isForward(want, got uint16) bool {
-	return uint16(got-want) < 0x8000
+	return got-want < 0x8000
 }
 
 // gapSize returns how many entry numbers were skipped between want and got.

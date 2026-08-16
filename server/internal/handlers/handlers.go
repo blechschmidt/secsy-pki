@@ -1854,9 +1854,9 @@ func (a *API) GetHSMAuditLog(w http.ResponseWriter, r *http.Request) {
 //     collector owns that job; a second drainer here would take entries the
 //     collector never saw, and the collector would — correctly — report the
 //     hole as an uncollected gap.
-//   - Safety. This path acknowledges before storing and only logs a warning if
-//     the store then fails, which destroys the sole copy of records that
-//     nothing can reconstruct. The collector inverts that order.
+//   - Safety. Draining is only ever safe in the fetch → persist → acknowledge
+//     order this path now follows (as the collector does); acknowledging first
+//     would destroy the sole copy of records nothing can reconstruct.
 //
 // It stays for deployments that have never run `hsm-audit provision`, where it
 // is the only thing populating the legacy combined-audit export.
@@ -1870,11 +1870,17 @@ func (a *API) consumeHSMAuditLogs(signAuditID string) {
 	// failure mode this path is least able to tolerate.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	entries, err := hsm.FetchAndConsumeAuditLog(ctx, a.hsmCfg)
+	// Fetch without acknowledging, persist, and only then free the device slots.
+	// Acknowledging is irreversible, so doing it first would destroy the sole
+	// copy of any entry the store then failed to write. Re-fetching an
+	// un-acknowledged segment is harmless: StoreHSMAuditEntries inserts-or-ignores
+	// on the entry number, so a retry cannot duplicate rows.
+	resp, err := hsm.FetchLog(ctx, a.hsmCfg)
 	if err != nil {
 		log.Printf("WARNING: failed to fetch HSM audit log: %v", err)
 		return
 	}
+	entries := resp.Entries
 	if len(entries) == 0 {
 		return
 	}
@@ -1906,7 +1912,13 @@ func (a *API) consumeHSMAuditLogs(signAuditID string) {
 	}
 
 	if err := a.db.StoreHSMAuditEntries(dbEntries); err != nil {
+		// Leave the segment on the device: unacknowledged entries are re-fetched
+		// by the next drain, whereas acknowledged-but-unstored entries are lost.
 		log.Printf("WARNING: failed to store HSM audit entries: %v", err)
+		return
+	}
+	if err := hsm.ConsumeLog(ctx, a.hsmCfg, entries[len(entries)-1].Number); err != nil {
+		log.Printf("WARNING: failed to acknowledge HSM audit log: %v", err)
 	}
 }
 

@@ -9,6 +9,7 @@ suites.
 
 | Guide | Covers |
 |-------|--------|
+| [**Continuous integration: workflows, gates & runner minutes**](ci.md) | What each of the five workflows gates, which nine jobs are required and which four are advisory (and so run nightly rather than on every push), how a private repository's metered Actions allowance shapes the suite — including the distinctive "no runner, zero steps" signature of a billing block and who can clear it — and the one-command local equivalent of every gate |
 | [**Performance & load benchmarking**](benchmarks.md) | Benchmark/load-test suite for the HSM hot paths (signing/issuance, OCSP/CRL, secret encrypt/decrypt), the bounded PKCS#11 session pool, baseline SoftHSM numbers, and the tuning knobs (session pool size, OCSP cache TTL) |
 | [**Test-coverage measurement & ratchet gate**](coverage.md) | HSM-free statement-coverage gate that ratchets a committed baseline (`coverage/baseline.txt`) so coverage can only rise: `make cover`/`cover-check`/`cover-baseline`, the per-package + total table, the tolerance band, HTML/summary artifacts, the required no-HSM CI job, and the baseline-refresh workflow for contributors adding covered code |
 | [**Fuzz & property testing**](fuzzing.md) | Native `go test -fuzz` over the untrusted-input parsers (CSR/DER, ACME JOSE/JWS, secret-envelope decrypt, OCSP/cert): targets, how to run local campaigns, CI smoke run, and handling crashes |

@@ -365,7 +365,7 @@ func (e *Engine) attemptDelivery(ctx context.Context, d *models.WebhookDelivery)
 			return
 		}
 		metrics.RecordWebhookDelivered(dur)
-		e.auditDeliver(sub, d, statusCode, audit.ResultSuccess, fmt.Sprintf("status=%d", statusCode))
+		e.auditDeliver(sub, d, audit.ResultSuccess, fmt.Sprintf("status=%d", statusCode))
 		return
 	}
 
@@ -379,7 +379,7 @@ func (e *Engine) attemptDelivery(ctx context.Context, d *models.WebhookDelivery)
 		metrics.RecordWebhookDead(dur)
 		e.cfg.Logger.Printf("webhook delivery %s to sub %s dead-lettered after %d attempts: %s",
 			d.ID, sub.ID, attemptsAfter, errMsg)
-		e.auditDeliver(sub, d, statusCode, audit.ResultError, fmt.Sprintf("dead-lettered after %d attempts: %s", attemptsAfter, errMsg))
+		e.auditDeliver(sub, d, audit.ResultError, fmt.Sprintf("dead-lettered after %d attempts: %s", attemptsAfter, errMsg))
 		return
 	}
 
@@ -411,7 +411,7 @@ func (e *Engine) backoff(attempt int) time.Duration {
 // log (best-effort: an audit failure must not wedge the queue). Transient
 // retryable failures are intentionally not audited — metrics cover them — so the
 // hash-chained log is not flooded.
-func (e *Engine) auditDeliver(sub *models.WebhookSubscription, d *models.WebhookDelivery, statusCode int, result, detail string) {
+func (e *Engine) auditDeliver(sub *models.WebhookSubscription, d *models.WebhookDelivery, result, detail string) {
 	if !e.cfg.AuditDeliveries {
 		return
 	}

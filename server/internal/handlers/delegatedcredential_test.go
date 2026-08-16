@@ -200,7 +200,7 @@ func TestMintDelegatedCredentialGuards(t *testing.T) {
 	}
 	reqBody, _ := json.Marshal(models.MintDelegatedCredentialRequest{
 		Serial:         res.Serial.String(),
-		EscrowEnvelope:  json.RawMessage(`{}`),
+		EscrowEnvelope: json.RawMessage(`{}`),
 		RecoveryAgents: agentIDs,
 	})
 	rec = mintDCRequest(t, api, caID, reqBody, rootUser())

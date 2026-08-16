@@ -150,8 +150,8 @@ func cmdInventoryRetentionStatus(db *database.DB, cfg *config.Config, args []str
 
 	if *asJSON {
 		return emitJSON(struct {
-			Enabled  bool               `json:"enabled"`
-			Interval string             `json:"interval"`
+			Enabled  bool   `json:"enabled"`
+			Interval string `json:"interval"`
 			retention.Snapshot
 			LastRun *audit.Event `json:"last_run,omitempty"`
 		}{

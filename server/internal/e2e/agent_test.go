@@ -403,7 +403,7 @@ type txtFileResolver struct{ dir string }
 func (r txtFileResolver) LookupTXT(_ context.Context, name string) ([]string, error) {
 	data, err := os.ReadFile(filepath.Join(r.dir, strings.TrimSuffix(name, ".")))
 	if err != nil {
-		return nil, nil // NODATA
+		return nil, nil //nolint:nilerr // a missing file models a DNS NODATA answer (no TXT record), not a resolver error.
 	}
 	return []string{string(data)}, nil
 }

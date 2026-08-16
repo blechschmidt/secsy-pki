@@ -164,7 +164,7 @@ func (p *recordingProvider) resolveKeyID(ctx context.Context, ref KeyRef) string
 	if ok {
 		return id
 	}
-	info, err := p.Provider.FindKey(ctx, ref)
+	info, err := p.Provider.FindKey(ctx, ref) //nolint:staticcheck // QF1008: the explicit embedded selector matches the delegation style of the sibling methods and prevents a silent self-recursion if recordingProvider ever grows its own FindKey.
 	if err != nil || info == nil {
 		return ""
 	}

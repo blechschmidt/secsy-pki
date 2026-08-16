@@ -205,7 +205,7 @@ func (db *DB) EnqueueWebhookDelivery(d *models.WebhookDelivery) error {
 
 // GetWebhookDelivery loads a delivery by id, or (nil, nil) when absent.
 func (db *DB) GetWebhookDelivery(id string) (*models.WebhookDelivery, error) {
-	d, err := scanWebhookDelivery(db.queryRow(`SELECT ` + webhookDeliveryColumns + ` FROM webhook_deliveries WHERE id = ?`, id))
+	d, err := scanWebhookDelivery(db.queryRow(`SELECT `+webhookDeliveryColumns+` FROM webhook_deliveries WHERE id = ?`, id))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -337,7 +337,7 @@ func (db *DB) CountWebhookDeliveriesByStatus() (map[string]int, error) {
 // delivery, or (nil, nil) when none exist. The doctor check reads it to alert on
 // stale dead-letters that an operator has not yet triaged.
 func (db *DB) OldestDeadWebhookDelivery() (*models.WebhookDelivery, error) {
-	d, err := scanWebhookDelivery(db.queryRow(`SELECT ` + webhookDeliveryColumns +
+	d, err := scanWebhookDelivery(db.queryRow(`SELECT `+webhookDeliveryColumns+
 		` FROM webhook_deliveries WHERE status = ? ORDER BY created_at ASC LIMIT 1`, models.WebhookDeliveryDead))
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -350,11 +350,11 @@ func (db *DB) OldestDeadWebhookDelivery() (*models.WebhookDelivery, error) {
 
 func scanWebhookDelivery(s scanner) (*models.WebhookDelivery, error) {
 	var (
-		d                    models.WebhookDelivery
-		eventID, eventType   sql.NullString
-		payload, lastError   sql.NullString
-		lastAttempt          sql.NullTime
-		deliveredAt          sql.NullTime
+		d                  models.WebhookDelivery
+		eventID, eventType sql.NullString
+		payload, lastError sql.NullString
+		lastAttempt        sql.NullTime
+		deliveredAt        sql.NullTime
 	)
 	if err := s.Scan(&d.ID, &d.SubscriptionID, &d.TenantID, &eventID, &d.EventSeq, &eventType,
 		&payload, &d.Status, &d.Attempts, &d.MaxAttempts, &d.NextAttemptAt, &lastAttempt,

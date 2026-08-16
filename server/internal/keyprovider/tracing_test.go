@@ -62,7 +62,7 @@ func TestFailoverEmitsSpanEvents(t *testing.T) {
 	for _, ev := range stubs[0].Events {
 		attrs := map[string]string{}
 		for _, a := range ev.Attributes {
-			attrs[string(a.Key)] = a.Value.Emit()
+			attrs[string(a.Key)] = a.Value.String()
 		}
 		events[ev.Name] = attrs
 	}

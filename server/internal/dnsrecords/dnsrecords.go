@@ -255,7 +255,7 @@ func sshfpAlgorithm(keyType string) (int, error) {
 	switch keyType {
 	case ssh.KeyAlgoRSA:
 		return SSHFPAlgoRSA, nil
-	case ssh.InsecureKeyAlgoDSA:
+	case ssh.InsecureKeyAlgoDSA: //nolint:staticcheck // SA1019: recognising the legacy "ssh-dss" key type is required to emit its SSHFP record (RFC 4255 algorithm 2); nothing here generates or accepts a DSA key.
 		return SSHFPAlgoDSA, nil
 	case ssh.KeyAlgoECDSA256, ssh.KeyAlgoECDSA384, ssh.KeyAlgoECDSA521:
 		return SSHFPAlgoECDSA, nil

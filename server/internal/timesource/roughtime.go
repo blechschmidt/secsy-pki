@@ -138,7 +138,7 @@ func (p *roughtimeProvider) Now(ctx context.Context) (Reading, error) {
 	if err != nil {
 		return Reading{}, fmt.Errorf("roughtime: dialing server: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	deadline := time.Now().Add(p.timeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
@@ -278,7 +278,7 @@ func verifyRoughtimeResponse(resp, nonce []byte, longTermKey ed25519.PublicKey) 
 // it equals the signed ROOT.
 func verifyMerklePath(nonce, path []byte, index uint32, root []byte) error {
 	if len(path)%roughtimeHashLen != 0 {
-		return errors.New("Merkle PATH length is not a multiple of the hash size")
+		return errors.New("roughtime: Merkle PATH length is not a multiple of the hash size")
 	}
 	h := hashLeaf(nonce)
 	for off := 0; off < len(path); off += roughtimeHashLen {

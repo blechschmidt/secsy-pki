@@ -213,7 +213,7 @@ func sealMode(on bool) string {
 // creating the KEK also provisions its ML-KEM material in one step. It is a
 // best-effort convenience: a failure is surfaced but the RSA KEK is already
 // created.
-func provisionPQCForKEK(cfg *config.Config, provider keyprovider.Provider, svc *secret.Service, family string) error {
+func provisionPQCForKEK(cfg *config.Config, svc *secret.Service, family string) error {
 	db, err := openAuditDB(cfg)
 	if err != nil {
 		return fmt.Errorf("post-quantum hybrid is enabled but the database (needed to store ML-KEM material) is unavailable: %w", err)

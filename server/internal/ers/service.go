@@ -270,7 +270,7 @@ func (s *Service) renewOne(ctx context.Context, rec *models.EvidenceRecord) (kin
 		if derr != nil {
 			// Cannot re-derive the objects here (an artifact record). Leave it for
 			// the CLI, which supplies the bytes.
-			return "", true, nil
+			return "", true, nil //nolint:nilerr // derr surfaces as pending=true, not as a failure: the record is renewable, just not from here.
 		}
 		renewed, rerr := er.RenewHashTree(ctx, s.ts, objs, s.hash)
 		if rerr != nil {

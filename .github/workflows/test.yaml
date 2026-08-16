@@ -1,10 +1,25 @@
 name: Test
 
+# The upstream project's original workflow, kept for the one thing the
+# enterprise suite does not cover: the root-package integration_test.go, which
+# drives a live server over HTTP behind a real OIDC provider (KeyCloak).
+# Everything else it runs is a strict subset of "Enterprise CI (SoftHSM)".
+#
+# It is scoped to the enterprise branch and given a concurrency group. It
+# previously matched branches: ['**'] with no concurrency group, so every push
+# on every branch started a KeyCloak container plus a SoftHSM token and ran to
+# completion even when immediately superseded — on 2026-07-02 alone that was 52
+# runs in a day. See docs/development/ci.md#runner-minutes.
 on:
   push:
-    branches: ['**']
+    branches: [enterprise]
   pull_request:
-    branches: ['**']
+    branches: [enterprise]
+  workflow_dispatch:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:

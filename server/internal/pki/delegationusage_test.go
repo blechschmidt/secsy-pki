@@ -57,7 +57,7 @@ func TestDelegationUsageExtensionKAT(t *testing.T) {
 	// Marshal the complete extension (OID + extnValue OCTET STRING) and compare to
 	// the byte-for-byte expected DER.
 	fullDER, err := asn1.Marshal(struct {
-		Id  asn1.ObjectIdentifier
+		ID  asn1.ObjectIdentifier
 		Val []byte
 	}{ext.Id, ext.Value})
 	if err != nil {

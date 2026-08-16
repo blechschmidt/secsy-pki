@@ -258,7 +258,7 @@ func cmdInitKEK(cfg *config.Config, provider keyprovider.Provider, args []string
 	// material in the same step so the KEK is immediately usable for hybrid
 	// sealing (Task 137).
 	if cfg.Secret.PQCHybrid {
-		if err := provisionPQCForKEK(cfg, provider, svc, info.Label); err != nil {
+		if err := provisionPQCForKEK(cfg, svc, info.Label); err != nil {
 			return fmt.Errorf("KEK was created but provisioning post-quantum hybrid material failed (run `secsy-secret pqc-enable` once the issue is resolved): %w", err)
 		}
 	}

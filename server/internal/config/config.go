@@ -2,7 +2,6 @@ package config
 
 import (
 	"bytes"
-	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -1061,11 +1060,11 @@ type APITokenConfig struct {
 
 // APITokenMaxLifetime returns the configured maximum token lifetime, or 0 when
 // unbounded.
-func (c AuthConfig) APITokenMaxLifetime() time.Duration {
-	if c.APITokens.MaxLifetimeDays <= 0 {
+func (a AuthConfig) APITokenMaxLifetime() time.Duration {
+	if a.APITokens.MaxLifetimeDays <= 0 {
 		return 0
 	}
-	return time.Duration(c.APITokens.MaxLifetimeDays) * 24 * time.Hour
+	return time.Duration(a.APITokens.MaxLifetimeDays) * 24 * time.Hour
 }
 
 // SessionConfig configures console sessions.
@@ -4563,7 +4562,7 @@ func (c *Config) validateEnrollment() error {
 			return fmt.Errorf("tsa.enabled is true but tsa.certificate_file is not set (run: secsy-ca tsa-key)")
 		}
 		if c.TSA.PolicyOID != "" {
-			if _, err := parseOID(c.TSA.PolicyOID); err != nil {
+			if err := validateOID(c.TSA.PolicyOID); err != nil {
 				return fmt.Errorf("tsa.policy_oid %q: %w", c.TSA.PolicyOID, err)
 			}
 		}
@@ -4607,13 +4606,13 @@ func (c *Config) validateEnrollment() error {
 				return fmt.Errorf("mswstep.templates[%d]: profile must not be empty", i)
 			}
 			if t.OID != "" {
-				if _, err := parseOID(t.OID); err != nil {
+				if err := validateOID(t.OID); err != nil {
 					return fmt.Errorf("mswstep.templates[%d]: oid %q: %w", i, t.OID, err)
 				}
 			}
 		}
 		if c.MSWSTEP.TemplateOIDArc != "" {
-			if _, err := parseOID(c.MSWSTEP.TemplateOIDArc); err != nil {
+			if err := validateOID(c.MSWSTEP.TemplateOIDArc); err != nil {
 				return fmt.Errorf("mswstep.template_oid_arc %q: %w", c.MSWSTEP.TemplateOIDArc, err)
 			}
 		}
@@ -4724,21 +4723,20 @@ func (e *EscrowConfig) validate() error {
 	return nil
 }
 
-// parseOID parses a dotted-decimal OID string into an asn1.ObjectIdentifier.
-func parseOID(s string) (asn1.ObjectIdentifier, error) {
+// validateOID reports whether s is a well-formed dotted-decimal OID. Config
+// validation only ever needs the verdict, not the parsed value.
+func validateOID(s string) error {
 	parts := strings.Split(s, ".")
 	if len(parts) < 2 {
-		return nil, fmt.Errorf("an OID needs at least two arcs")
+		return fmt.Errorf("an OID needs at least two arcs")
 	}
-	oid := make(asn1.ObjectIdentifier, 0, len(parts))
 	for _, p := range parts {
 		n, err := strconv.Atoi(p)
 		if err != nil || n < 0 {
-			return nil, fmt.Errorf("invalid arc %q", p)
+			return fmt.Errorf("invalid arc %q", p)
 		}
-		oid = append(oid, n)
 	}
-	return oid, nil
+	return nil
 }
 
 // validateMonitor applies defaults and sanity-checks the expiry-monitor config

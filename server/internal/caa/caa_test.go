@@ -176,10 +176,10 @@ func TestCheck(t *testing.T) {
 			wantOK: true,
 		},
 		{
-			name:       "combined binding blocks when only the account matches",
-			policy:     Policy{Identifier: caID},
-			resolver:   &fakeResolver{caa: map[string][]Record{"example.com": {{Tag: TagIssue, Value: caID + "; accounturi=https://acme.example/acct/1; validationmethods=dns-01"}}}},
-			names:      []string{"host.example.com"},
+			name:     "combined binding blocks when only the account matches",
+			policy:   Policy{Identifier: caID},
+			resolver: &fakeResolver{caa: map[string][]Record{"example.com": {{Tag: TagIssue, Value: caID + "; accounturi=https://acme.example/acct/1; validationmethods=dns-01"}}}},
+			names:    []string{"host.example.com"},
 			reqCtx: RequestContext{
 				AccountURI:        "https://acme.example/acct/1",
 				ValidationMethods: map[string]string{"host.example.com": "http-01"},

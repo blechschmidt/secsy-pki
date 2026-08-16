@@ -150,7 +150,7 @@ func (r *Runner) RunOnce(ctx context.Context) Result {
 // any error — so the `inventory retention run` CLI can exit non-zero on failure
 // while the background loop (via RunOnce) simply ignores it and retries next tick.
 func (r *Runner) RunNow(ctx context.Context) (Result, error) {
-	res, err := r.pass(ctx, false)
+	res, err := r.pass(false)
 	metrics.RecordInventoryRetention(res.Started, res.Archived, res.Pruned, res.Backlog, res.ArchiveSize, err)
 	r.recordAudit(res, err)
 	if err != nil {
@@ -167,7 +167,7 @@ func (r *Runner) RunNow(ctx context.Context) (Result, error) {
 // digest a real run would produce, touching no rows. It backs
 // `inventory retention dry-run`.
 func (r *Runner) Plan(ctx context.Context) (Result, error) {
-	return r.pass(ctx, true)
+	return r.pass(true)
 }
 
 // Snapshot returns the current retention state (cheap counts, no scan) for the
@@ -213,7 +213,7 @@ func (r *Runner) Snapshot(ctx context.Context) (Snapshot, error) {
 
 // pass computes cutoffs, resolves the approval-pinned exclusion set, and either
 // reports (dryRun) or performs the archive and prune passes.
-func (r *Runner) pass(ctx context.Context, dryRun bool) (Result, error) {
+func (r *Runner) pass(dryRun bool) (Result, error) {
 	start := r.now().UTC()
 	minAge := r.cfg.MinAge()
 	cutoff := start.Add(-minAge)

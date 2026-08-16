@@ -221,7 +221,7 @@ type VerifyArtifactResponse struct {
 	RevocationOCSPs int    `json:"revocation_ocsps,omitempty"`
 	Timestamped     bool   `json:"timestamped,omitempty"`
 	TimestampTime   string `json:"timestamp_time,omitempty"`
-	TimestampSerial   string `json:"timestamp_serial,omitempty"`
+	TimestampSerial string `json:"timestamp_serial,omitempty"`
 	// VerifiedAt is the instant chain validity was evaluated at: the timestamp
 	// genTime when countersigned, else the wall clock.
 	VerifiedAt string `json:"verified_at,omitempty"`

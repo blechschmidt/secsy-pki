@@ -17,6 +17,15 @@ on:
     branches: [enterprise]
   pull_request:
     branches: [enterprise]
+  # Nightly full run. Every push gets the REQUIRED gates; the four advisory
+  # (continue-on-error) suites — chaos, -race, interop and the benchmark diff —
+  # run here instead. They cannot fail a build by construction, but together
+  # they are the most expensive half of this workflow, so paying for them once a
+  # day rather than on every push is what keeps the suite affordable on a
+  # private repository's runner-minute allowance. See
+  # docs/development/ci.md#runner-minutes.
+  schedule:
+    - cron: "17 3 * * *"
   # Allow manual runs from the Actions tab for debugging / re-runs.
   workflow_dispatch:
     inputs:
@@ -367,6 +376,11 @@ jobs:
 
   chaos-resilience:
     name: Chaos / fault-injection resilience suite
+    # Advisory suite: runs on the nightly schedule and on manual dispatch, not on
+    # every push (see the schedule trigger above). continue-on-error already means
+    # it can never block a merge, so per-push execution bought signal nobody gates
+    # on at the highest runner-minute cost in this workflow.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -434,6 +448,11 @@ jobs:
 
   race-detector:
     name: Data-race detector (-race)
+    # Advisory suite: runs on the nightly schedule and on manual dispatch, not on
+    # every push (see the schedule trigger above). continue-on-error already means
+    # it can never block a merge, so per-push execution bought signal nobody gates
+    # on at the highest runner-minute cost in this workflow.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -512,6 +531,11 @@ jobs:
 
   interop-conformance:
     name: External-client interop / conformance suite
+    # Advisory suite: runs on the nightly schedule and on manual dispatch, not on
+    # every push (see the schedule trigger above). continue-on-error already means
+    # it can never block a merge, so per-push execution bought signal nobody gates
+    # on at the highest runner-minute cost in this workflow.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -565,6 +589,11 @@ jobs:
 
   benchmark-regression:
     name: Benchmark regression gate (no HSM)
+    # Advisory suite: runs on the nightly schedule and on manual dispatch, not on
+    # every push (see the schedule trigger above). continue-on-error already means
+    # it can never block a merge, so per-push execution bought signal nobody gates
+    # on at the highest runner-minute cost in this workflow.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 

@@ -130,7 +130,7 @@ func (p *ntsProvider) keyExchange(ctx context.Context) (*ntsKEResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	tlsConn := conn.(*tls.Conn)
 	if deadline, ok := dctx.Deadline(); ok {
 		_ = tlsConn.SetDeadline(deadline)
@@ -209,14 +209,14 @@ func readKEResponse(conn *tls.Conn) (*ntsKEResult, error) {
 	res := &ntsKEResult{}
 	buf := make([]byte, 4)
 	for {
-		if _, err := readFull(conn, buf); err != nil {
+		if err := readFull(conn, buf); err != nil {
 			return nil, fmt.Errorf("reading NTS-KE record header: %w", err)
 		}
 		typ := binary.BigEndian.Uint16(buf[0:2]) & 0x7fff
 		bodyLen := int(binary.BigEndian.Uint16(buf[2:4]))
 		body := make([]byte, bodyLen)
 		if bodyLen > 0 {
-			if _, err := readFull(conn, body); err != nil {
+			if err := readFull(conn, body); err != nil {
 				return nil, fmt.Errorf("reading NTS-KE record body: %w", err)
 			}
 		}
@@ -276,7 +276,7 @@ func (p *ntsProvider) ntpQuery(ctx context.Context, ke *ntsKEResult) (Reading, e
 	if err != nil {
 		return Reading{}, fmt.Errorf("nts: dialing NTP server: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	deadline := time.Now().Add(p.timeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
@@ -530,7 +530,7 @@ func splitHostPortDefault(addr string, defaultPort int) (host string, port int, 
 	}
 	h, p, splitErr := net.SplitHostPort(addr)
 	if splitErr != nil {
-		return addr, defaultPort, nil
+		return addr, defaultPort, nil //nolint:nilerr // an unsplittable address is treated as a bare host on the default port — the documented fallback.
 	}
 	pn, convErr := strconv.Atoi(p)
 	if convErr != nil {
@@ -539,15 +539,15 @@ func splitHostPortDefault(addr string, defaultPort int) (host string, port int, 
 	return h, pn, nil
 }
 
-// readFull reads len(buf) bytes or returns an error.
-func readFull(conn net.Conn, buf []byte) (int, error) {
+// readFull reads exactly len(buf) bytes or returns an error.
+func readFull(conn net.Conn, buf []byte) error {
 	total := 0
 	for total < len(buf) {
 		n, err := conn.Read(buf[total:])
 		total += n
 		if err != nil {
-			return total, err
+			return err
 		}
 	}
-	return total, nil
+	return nil
 }

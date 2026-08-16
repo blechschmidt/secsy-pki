@@ -92,9 +92,9 @@ type algoSpec struct {
 // signingAlgorithms is the closed set of supported algorithms and their fixed
 // key type / scheme / default hash.
 var signingAlgorithms = map[SigningAlgorithm]algoSpec{
-	AlgECDSAP256:       {keyprovider.KeyTypeECDSAP256, schemeECDSA, crypto.SHA256},
-	AlgECDSAP384:       {keyprovider.KeyTypeECDSAP384, schemeECDSA, crypto.SHA384},
-	AlgECDSAP521:       {keyprovider.KeyTypeECDSAP521, schemeECDSA, crypto.SHA512},
+	AlgECDSAP256: {keyprovider.KeyTypeECDSAP256, schemeECDSA, crypto.SHA256},
+	AlgECDSAP384: {keyprovider.KeyTypeECDSAP384, schemeECDSA, crypto.SHA384},
+	AlgECDSAP521: {keyprovider.KeyTypeECDSAP521, schemeECDSA, crypto.SHA512},
 	// Ed25519 has no selectable message hash; crypto.Hash(0) marks "sign the
 	// message directly" (the crypto.Signer contract for an ed25519 key).
 	AlgEd25519:         {keyprovider.KeyTypeEd25519, schemeEd25519, crypto.Hash(0)},
