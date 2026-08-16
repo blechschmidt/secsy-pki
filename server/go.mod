@@ -2,7 +2,7 @@ module github.com/blechschmidt/secsy-pki/server
 
 go 1.25.7
 
-toolchain go1.25.11
+toolchain go1.25.13
 
 require (
 	cloud.google.com/go/auth v0.22.0
