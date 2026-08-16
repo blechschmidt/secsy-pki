@@ -56,6 +56,15 @@ var migrationTables = []string{
 	"audit_log",
 	"access_log",
 	"hsm_audit_entries",
+	// HSM audit subsystem (Task 167): the pinned device anchor, the durable copy
+	// of the device log, and the hash-chained signature ledger. All three must
+	// survive a backend migration or the remote-verifiability claim dies with it
+	// — the anchor in particular cannot be recovered from anywhere else, since
+	// the device seeds it randomly at each factory reset.
+	"hsm_audit_state",
+	"hsm_log_entries",
+	"hsm_signature_ledger",
+	"hsm_freshness_proofs",
 	"event_log",
 	"siem_export_cursor",
 	"audit_anchors",

@@ -1075,6 +1075,8 @@ var (
 	backupLastSuccessNano       atomic.Int64
 	backupVerifyLastSuccessNano atomic.Int64
 	ctMonitorLastRunNano        atomic.Int64
+	hsmAuditLastCollectNano     atomic.Int64
+	hsmAuditLastAttestNano      atomic.Int64
 
 	inventoryRetentionLastRunNano atomic.Int64
 	inventoryRetentionBacklog     atomic.Int64
@@ -1102,6 +1104,19 @@ var (
 		"secsy_audit_anchor_age_seconds",
 		"Seconds since the most recent audit-chain anchor was persisted (seeded from the store at startup). Absent until an anchor exists.",
 		func() (float64, bool) { return sinceNano(auditAnchorLastNano.Load()) })
+	_ = NewFuncGauge(Default,
+		"secsy_hsm_audit_collection_staleness_seconds",
+		"Seconds since the HSM device audit log was last successfully drained into durable storage (Task 167). "+
+			"The device log is a 62-entry ring and a force-audited HSM refuses every auditable command once it fills, "+
+			"so growth here precedes an issuance outage as well as an audit gap. Absent until the first drain succeeds.",
+		func() (float64, bool) { return sinceNano(hsmAuditLastCollectNano.Load()) })
+	_ = NewFuncGauge(Default,
+		"secsy_hsm_audit_attestation_age_seconds",
+		"Seconds since a timestamp authority last attested to the HSM audit head (Task 167), measured against the "+
+			"TSA's own clock. Once this exceeds the auditor's freshness threshold an exported audit bundle can no "+
+			"longer prove it is current, so it stops bounding what the HSM has signed recently. Absent until the "+
+			"first attestation succeeds.",
+		func() (float64, bool) { return sinceNano(hsmAuditLastAttestNano.Load()) })
 	_ = NewFuncGauge(Default,
 		"secsy_ct_inclusion_monitor_staleness_seconds",
 		"Seconds since the last completed CT inclusion-monitor scan. Absent until the first scan completes.",
@@ -1260,6 +1275,60 @@ func RecordCTMonitorRun(start time.Time, pending, failed int, err error) {
 	now := time.Now()
 	CTMonitorLastRun.Set(float64(now.Unix()))
 	ctMonitorLastRunNano.Store(now.UnixNano())
+}
+
+// HSM audit-log collection (Task 167).
+var (
+	// HSMAuditCollectionFailures counts drain cycles that could not establish
+	// device-log continuity. Each one means the device log was left
+	// unacknowledged on purpose, so a sustained non-zero rate ends in the HSM
+	// refusing to sign — which is the safe failure, but an incident either way.
+	HSMAuditCollectionFailures = NewCounter(Default,
+		"secsy_hsm_audit_collection_failures_total",
+		"HSM device audit-log drain cycles that failed continuity verification and were not acknowledged.")
+	// HSMAuditEntries counts device log entries durably collected, and
+	// HSMAuditSignatures how many of them were successful signing operations —
+	// the numerator of the reconciliation an auditor performs.
+	HSMAuditEntries = NewCounter(Default,
+		"secsy_hsm_audit_entries_total",
+		"HSM device audit-log entries durably collected.")
+	HSMAuditSignatures = NewCounter(Default,
+		"secsy_hsm_audit_signatures_total",
+		"Successful HSM signing operations observed in the device audit log.")
+	// HSMAuditAttestations counts RFC 3161 freshness attestations over the audit
+	// head, by result. These are what let a remote auditor tell a current export
+	// from a stale one, so a sustained error rate means exports are quietly
+	// losing their ability to prove they are recent — while every other check
+	// keeps reporting OK.
+	HSMAuditAttestations = NewCounter(Default,
+		"secsy_hsm_audit_attestations_total",
+		"RFC 3161 freshness attestations over the HSM audit head, partitioned by result.",
+		"result")
+)
+
+// RecordHSMAuditCollection records one successful device-log drain.
+func RecordHSMAuditCollection(entries, signatures int) {
+	if entries > 0 {
+		HSMAuditEntries.Add(uint64(entries))
+		HSMAuditSignatures.Add(uint64(signatures))
+	}
+	hsmAuditLastCollectNano.Store(time.Now().UnixNano())
+}
+
+// RecordHSMAuditAttestation records one freshness-attestation attempt. genTime
+// is the TSA-asserted time on success; a non-nil err marks a failure.
+//
+// The staleness gauge is stamped with the TSA's clock rather than the host's.
+// The host clock is precisely the thing an attestation exists to stop anyone
+// having to trust, and seeding the gauge from it would let a skewed server
+// report a fresh audit state it has no evidence for.
+func RecordHSMAuditAttestation(genTime time.Time, err error) {
+	if err != nil {
+		HSMAuditAttestations.Inc("error")
+		return
+	}
+	HSMAuditAttestations.Inc("success")
+	hsmAuditLastAttestNano.Store(genTime.UnixNano())
 }
 
 // RecordCTLogMisbehavior counts one SCT a log failed to honor (never included

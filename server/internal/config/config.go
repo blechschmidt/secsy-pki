@@ -3734,6 +3734,27 @@ type YubiHSMConfig struct {
 	AuthKeyID            int    `yaml:"auth_key_id"`
 	Password             string `yaml:"password"`
 	SuppressAuditWarning bool   `yaml:"suppress_audit_warning"`
+	// AuditCollectIntervalSeconds is how often the leader drains the device
+	// audit log into durable storage (Task 167). 0 selects 15s. The device log
+	// is a 62-entry ring and a force-audited device refuses every auditable
+	// command once it is full, so this is a liveness setting as much as an
+	// audit one: raise it only if issuance volume is known to be low.
+	AuditCollectIntervalSeconds int `yaml:"audit_collect_interval_seconds"`
+	// AuditFreshnessIntervalSeconds is how often the leader obtains an RFC 3161
+	// attestation that the current audit head existed at that moment (Task 167).
+	// 0 selects 6h. It is also the resolution of the guarantee: a signature can
+	// only be placed between the two attestations that bracket it, so shortening
+	// this narrows the window an abuse could hide in, at one TSA round trip each.
+	AuditFreshnessIntervalSeconds int `yaml:"audit_freshness_interval_seconds"`
+	// AuditFreshnessTSAURL is the external RFC 3161 authority those attestations
+	// come from. Empty falls back to this PKI's own TSA, which is enough to stop
+	// an outsider passing off an old export but NOT an operator holding the HSM:
+	// the internal TSA signs with that same HSM, so such an operator could choose
+	// the genTime freely. A deployment whose audit must hold against its own
+	// staff has to point this at an authority those staff do not control.
+	AuditFreshnessTSAURL string `yaml:"audit_freshness_tsa_url"`
+	// AuditFreshnessTimeoutSeconds bounds an external TSA request. 0 selects 30s.
+	AuditFreshnessTimeoutSeconds int `yaml:"audit_freshness_timeout_seconds"`
 }
 
 // UnknownKeys re-decodes raw config YAML in strict mode and returns one

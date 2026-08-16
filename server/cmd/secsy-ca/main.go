@@ -84,6 +84,17 @@ func run(args []string) error {
 		return cmdDelegatedCredential(cmdArgs)
 	}
 
+	// The HSM audit bundle verifier (Task 167) is the auditor's tool. It takes a
+	// JSON bundle plus the anchor, artifact digests and TSA roots the auditor
+	// holds independently, and reads no config, no database and no device — the
+	// whole point being that a third party can check the CA's claims on a machine
+	// with access to none of them. So it is dispatched here, alongside the other
+	// config-free helpers, rather than after config.Load: requiring the audited
+	// party's config.yaml to verify their own audit bundle would be absurd.
+	if command == "hsm-audit" && len(cmdArgs) > 0 && cmdArgs[0] == "verify" {
+		return cmdHSMAuditVerify(cmdArgs[1:])
+	}
+
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -160,6 +171,10 @@ func run(args []string) error {
 	}
 	defer func() { _ = db.Close() }()
 
+	// Enable HSM signature-ledger recording before any key provider is built, so
+	// every signature the CLI produces is accounted for (Task 167).
+	installSignatureRecorder(db)
+
 	// Audit-log administration (chain/anchor verification, offline export) is
 	// dispatched before the key provider is constructed, so an auditor can run
 	// "audit verify" without the HSM being present or unlocked. Only
@@ -215,6 +230,14 @@ func run(args []string) error {
 	// dispatch it before the key provider is constructed.
 	if command == "ct" {
 		return cmdCT(db, cfg, cmdArgs)
+	}
+
+	// The remaining hsm-audit subcommands (Task 167) reach the YubiHSM through
+	// yubihsm-shell rather than the PKCS#11 key provider, so dispatch them before
+	// the provider is built. Provisioning in particular runs on a device that has
+	// no keys yet, where constructing the CA provider would fail.
+	if command == "hsm-audit" {
+		return cmdHSMAudit(db, cfg, cmdArgs)
 	}
 
 	// DNS pinning-record generation (Task 98) hashes stored public certificate
@@ -1472,7 +1495,7 @@ func buildProvider(cfg *config.Config, role string) (keyprovider.Provider, error
 			_ = os.Setenv("YUBIHSM_PKCS11_CONF", confPath)
 		}
 	}
-	return keyprovider.New(keyprovider.Config{
+	p, err := keyprovider.New(keyprovider.Config{
 		Type: keyprovider.ProviderType(cfg.KeyProviderTypeForRole(role)),
 		PKCS11: keyprovider.PKCS11Settings{
 			ModulePath:        cfg.PKCS11.ModulePath,
@@ -1500,6 +1523,14 @@ func buildProvider(cfg *config.Config, role string) (keyprovider.Provider, error
 			GCP:       gcpKMSSettings(cfg.KeyProvider.KMS.GCP),
 		},
 	})
+	if err != nil {
+		return nil, err
+	}
+	// Record every signature this provider produces into the tamper-evident
+	// signature ledger, so a CLI-issued certificate is accounted for the same
+	// way a server-issued one is (Task 167). No-op until the device has been
+	// provisioned for audited operation.
+	return recordSignatures(p), nil
 }
 
 // vaultSettings maps the config's HashiCorp Vault block onto the keyprovider

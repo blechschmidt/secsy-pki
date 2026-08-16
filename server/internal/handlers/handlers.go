@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/approval"
@@ -21,6 +22,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/eventstream"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
+	"github.com/blechschmidt/secsy-pki/server/internal/hsmaudit"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -40,7 +42,14 @@ type API struct {
 	oidcProvider         *auth.OIDCProvider
 	hsmCfg               hsm.Config
 	suppressAuditWarning bool
-	secretKEKLabel       string
+	// hsmAuditOn caches whether the device has been commissioned for audited
+	// operation (Task 167). When it has, the leader-elected collector is the
+	// sole owner of the device log and the legacy per-request drain in
+	// consumeHSMAuditLogs stands down. hsmAuditCheckedAt throttles the lookup
+	// while the answer is still "no". See hsmAuditManaged.
+	hsmAuditOn        atomic.Bool
+	hsmAuditCheckedAt atomic.Int64
+	secretKEKLabel    string
 	// secretPQCHybrid is the secret.pqc_hybrid config gate (Task 137): when set,
 	// new envelopes are sealed in post-quantum hybrid mode for KEK families that
 	// have ML-KEM material provisioned. Existing/hybrid envelopes always open
@@ -721,6 +730,11 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 		mux.Handle("POST /api/hsm/factory-reset", protectStepUp("hsm.factory_reset", http.HandlerFunc(a.FactoryResetHSM)))
 		mux.Handle("GET /api/hsm/combined-audit-log", protected(http.HandlerFunc(a.ExportCombinedAuditLog)))
 		mux.Handle("GET /api/hsm/signed-audit-log", protected(http.HandlerFunc(a.GetSignedAuditLog)))
+		// Task 167: the self-contained, remotely verifiable audit bundle. Serving
+		// it over HTTP is what makes remote verification practical — an auditor
+		// pulls it here and checks it offline with `secsy-ca hsm-audit verify`,
+		// trusting nothing in the response.
+		mux.Handle("GET /api/hsm/audit-bundle", protected(http.HandlerFunc(a.ExportHSMAuditBundle)))
 	}
 
 	// OpenAPI spec + docs UI. The spec is served at the conventional
@@ -1809,7 +1823,27 @@ func (a *API) GetHSMAuditLog(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// consumeHSMAuditLogs opportunistically drains the device audit log after an
+// operation that may have used the HSM.
+//
+// It is the legacy collection path and is now inert on any device commissioned
+// for audited operation (Task 167). Two reasons:
+//
+//   - Correctness. Acknowledging device log entries is irreversible and frees
+//     the ring slots, so exactly one component may do it. The leader-elected
+//     collector owns that job; a second drainer here would take entries the
+//     collector never saw, and the collector would — correctly — report the
+//     hole as an uncollected gap.
+//   - Safety. This path acknowledges before storing and only logs a warning if
+//     the store then fails, which destroys the sole copy of records that
+//     nothing can reconstruct. The collector inverts that order.
+//
+// It stays for deployments that have never run `hsm-audit provision`, where it
+// is the only thing populating the legacy combined-audit export.
 func (a *API) consumeHSMAuditLogs(signAuditID string) {
+	if a.hsmAuditManaged() {
+		return
+	}
 	entries, err := hsm.FetchAndConsumeAuditLog(a.hsmCfg)
 	if err != nil {
 		log.Printf("WARNING: failed to fetch HSM audit log: %v", err)
@@ -1966,7 +2000,21 @@ func (a *API) ProvisionHSMAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	output, err := hsm.ProvisionAuditLogging(a.hsmCfg)
+	// Force-audit the full command set the audit subsystem requires, not just
+	// the signing commands: key generation, auth-key changes, object deletion
+	// and every wrap/export path are equally capable of producing or removing
+	// signing capability off the books.
+	//
+	// The set is derived from the attached device rather than from a constant,
+	// so a command this build does not recognise — and therefore cannot show to
+	// be incapable of signing — is force-audited as well.
+	deviceOpts, err := hsmaudit.NewShellDevice(a.hsmCfg).Options(r.Context())
+	if err != nil {
+		a.recordEvent(r, audit.ActionHSMProvisionAudit, "", "", audit.ResultError, err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to read device audit options: %v", err)
+		return
+	}
+	output, err := hsm.ProvisionAuditLogging(a.hsmCfg, deviceOpts.RequiredForced())
 	a.consumeHSMAuditLogs("")
 	if err != nil {
 		a.recordEvent(r, audit.ActionHSMProvisionAudit, "", "", audit.ResultError, err.Error())

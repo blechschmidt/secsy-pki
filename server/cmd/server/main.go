@@ -136,6 +136,11 @@ func main() {
 	}
 	defer func() { _ = db.Close() }()
 
+	// Enable HSM signature-ledger recording before any key provider is built
+	// (Task 167), so no role's provider is constructed without the hook and every
+	// signature the process produces is accounted for.
+	installSignatureRecorder(db)
+
 	// Multi-replica coordination (Task 68): the singleton background jobs
 	// registered below (expiry monitor/auto-renewal + CA rotation, discovery
 	// scans, OCSP pre-signing, CRL regeneration/publishing, SIEM export, audit
@@ -807,6 +812,14 @@ func main() {
 	// retained serials is unaffected. HSM-independent.
 	setupRetention(cfg, db, elector)
 
+	// HSM device audit-log collection (Task 167): a leader-elected loop that
+	// drains the YubiHSM's 62-entry log ring into durable storage, verifying that
+	// each segment continues the previous one before acknowledging anything.
+	// Registered only on a device commissioned via `secsy-ca hsm-audit provision`.
+	// Leader-gated because acknowledging entries is destructive and must have
+	// exactly one owner.
+	setupHSMAuditCollector(cfg, db, elector)
+
 	// Durable outbound webhooks (Task 116): a leader-elected worker that POSTs
 	// certificate lifecycle events to operator-registered endpoints with
 	// at-least-once delivery, exponential-backoff retries, dead-lettering, and
@@ -981,6 +994,14 @@ func main() {
 	// and signed artifacts survive hash/signature-algorithm obsolescence. It sits
 	// after the TSA block so it can reuse the in-process authority.
 	setupErs(cfg, db, tsaAuthority, elector)
+
+	// HSM audit freshness attestation (Task 167): a leader-elected job that has a
+	// timestamp authority attest, on a fixed cadence, that the current HSM audit
+	// head existed at that moment. Without it every other check in an exported
+	// bundle still passes on a months-old snapshot, so an operator could answer
+	// an audit with state captured before the abuse. Like setupErs it sits after
+	// the TSA block so it can fall back to the in-process authority.
+	setupHSMAuditFreshness(cfg, db, tsaAuthority, elector)
 
 	// Artifact code-signing service (Task 60): CMS detached signatures over
 	// release artifacts at /api/sign (RBAC role "signer"), with optional RFC 3161
@@ -2634,7 +2655,9 @@ func buildRoleProvider(cfg *config.Config, role string) (keyprovider.Provider, e
 	// Wrap so every key operation (sign, decrypt, generate, find, public-key
 	// export, connectivity probe) records latency and error metrics. The wrapper
 	// is transparent and preserves the Decrypter/Prober/KeyLister capabilities.
-	return keyprovider.Instrument(p), nil
+	// The ledger wrapper goes outside it so a signature is recorded only once it
+	// has actually been produced (Task 167).
+	return recordHSMSignatures(keyprovider.Instrument(p)), nil
 }
 
 // pkcs11TokenSettings maps the config's optional multi-token HA list onto the

@@ -77,7 +77,30 @@ func runShell(cfg Config, commands string) (string, error) {
 	if err != nil {
 		return string(out), fmt.Errorf("yubihsm-shell failed: %w\nOutput: %s", err, out)
 	}
+	if failure := scriptFailure(string(out)); failure != "" {
+		return string(out), fmt.Errorf("yubihsm-shell reported failure: %s\nOutput: %s", failure, out)
+	}
 	return string(out), nil
+}
+
+// shellFailureRe matches the in-band error lines yubihsm-shell prints.
+//
+// The binary exits 0 even when a scripted command fails — a rejected "put
+// option", a refused session, an unreachable connector all produce an error
+// line on stdout and status 0. Trusting the exit status alone would let
+// provisioning report that force-audit is enabled when the device rejected the
+// change, which is precisely the state in which unlogged signing becomes
+// possible. Every command therefore has its output scanned.
+var shellFailureRe = regexp.MustCompile(`(?im)^\s*(Failed [^\n]*|Unable to [^\n]*|Not connected[^\n]*|Invalid argument[^\n]*|Command failed[^\n]*|Error: [^\n]*)$`)
+
+// scriptFailure returns the first in-band failure line in the shell output, or
+// "" when the output is clean.
+func scriptFailure(out string) string {
+	m := shellFailureRe.FindStringSubmatch(out)
+	if len(m) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(m[1])
 }
 
 // YubiHSM command codes for audit log entries
@@ -218,46 +241,45 @@ func CheckDeviceInitEntry(entries []AuditLogEntry) error {
 	return nil
 }
 
-// ProvisionAuditLogging enables forced, irreversible audit logging for all
-// cryptographic operations on the YubiHSM.
+// ProvisionAuditLogging enables forced, irreversible audit logging on the
+// YubiHSM for every command in forced.
 //
-// The caller must verify the device init entry (CheckDeviceInitEntry) before
-// calling this function.
-func ProvisionAuditLogging(cfg Config) (string, error) {
-	commands := strings.Join([]string{
-		// First enable PUT OPTION auditing (reversible), then force it (irreversible)
-		"put option 0 command-audit 4f01",
-		"put option 0 command-audit 4f02",
-		// Force audit consumption (irreversible) — HSM refuses ops when log is full
+// Ordering is deliberate and load-bearing:
+//
+//  1. PUT OPTION (0x4f) is set to audit level "fixed" before anything else, so
+//     every subsequent option change — including the ones this function makes —
+//     is itself recorded in the device log and can never stop being recorded.
+//     Provisioning that is not self-auditing could be silently undone.
+//  2. force-audit is set to "fixed" next, so the device begins refusing
+//     auditable commands once the log fills rather than overwriting entries.
+//     Setting it before the per-command levels means there is no window in
+//     which a command is audited but its entries may be discarded.
+//  3. Each command in forced is set to "fixed".
+//
+// Every level is 0x02 ("fixed"), not 0x01 ("on"), because "on" can be turned
+// off again by anyone holding the authentication key. Level 0x02 survives until
+// a factory reset, which itself writes a device-init entry that makes the break
+// in history obvious.
+//
+// The caller must verify the device-init entry (CheckDeviceInitEntry) first, so
+// that auditing is provisioned on a device with no prior unaudited operations.
+func ProvisionAuditLogging(cfg Config, forced []uint8) (string, error) {
+	cmds := []string{
+		fmt.Sprintf("put option 0 command-audit %02x01", CmdPutOption),
+		fmt.Sprintf("put option 0 command-audit %02x02", CmdPutOption),
 		"put option 0 force-audit 02",
-		// Force-audit all signing commands
-		"put option 0 command-audit 5602", // SIGN ECDSA
-		"put option 0 command-audit 6a02", // SIGN EDDSA
-		"put option 0 command-audit 4702", // SIGN RSA PKCS1
-		"put option 0 command-audit 5502", // SIGN RSA PSS
-		// Force-audit key generation
-		"put option 0 command-audit 4602", // GENERATE ASYMMETRIC KEY
-		// Force-audit auth key operations
-		"put option 0 command-audit 4402", // PUT AUTH KEY
-		"put option 0 command-audit 6c02", // CHANGE AUTH KEY
-		"put option 0 command-audit 5802", // DELETE OBJECT
-		// Force-audit wrapping operations
-		"put option 0 command-audit 4c02", // PUT WRAP KEY
-		"put option 0 command-audit 5b02", // GENERATE WRAP KEY
-		"put option 0 command-audit 7302", // PUT PUBLIC WRAP KEY
-		"put option 0 command-audit 7402", // EXPORT RSA WRAPPED KEY
-		"put option 0 command-audit 7502", // IMPORT RSA WRAPPED KEY
-		"put option 0 command-audit 7602", // EXPORT RSA WRAPPED OBJECT
-		"put option 0 command-audit 7702", // IMPORT RSA WRAPPED OBJECT
-		"put option 0 command-audit 4a02", // EXPORT WRAPPED
-		"put option 0 command-audit 4b02", // IMPORT WRAPPED
-		// Retrieve the resulting audit log and options for verification
+	}
+	for _, c := range forced {
+		if c == CmdPutOption {
+			continue // already fixed above
+		}
+		cmds = append(cmds, fmt.Sprintf("put option 0 command-audit %02x02", c))
+	}
+	cmds = append(cmds,
 		"get option 0 command-audit",
 		"get option 0 force-audit",
-		"audit get 0",
-	}, "\n")
-
-	return runShell(cfg, commands)
+	)
+	return runShell(cfg, strings.Join(cmds, "\n"))
 }
 
 // SignedAuditLog is an audit log with a cryptographic signature from the HSM's
@@ -449,27 +471,51 @@ var SignCommands = map[uint8]string{
 	CmdSignRSAPSS:   "SIGN RSA PSS",
 }
 
-// FetchAndConsumeAuditLog retrieves audit log entries and acknowledges them
-// so the HSM can reuse the log slots. Returns only new entries.
-func FetchAndConsumeAuditLog(cfg Config) ([]AuditLogEntry, error) {
+// FetchLog retrieves the unconsumed device log entries and the
+// unlogged-operation counters without acknowledging anything.
+//
+// Fetching and consuming are deliberately separate calls. Acknowledging frees
+// the device's log slots and is irreversible: entries dropped after the
+// acknowledgement but before they are durably stored are gone from the only
+// place they existed. Callers must persist and verify a segment first, then
+// call ConsumeLog.
+func FetchLog(cfg Config) (*LogResponse, error) {
 	out, err := runShell(cfg, "audit get 0")
 	if err != nil {
 		return nil, err
 	}
+	return ParseLogResponse(out)
+}
 
-	entries, _ := ParseAuditLogOutput(out)
-	if len(entries) == 0 {
+// ConsumeLog acknowledges device log entries up to and including upTo, freeing
+// those ring-buffer slots. Call it only after the segment is durably stored and
+// its continuity verified.
+func ConsumeLog(cfg Config, upTo uint16) error {
+	if _, err := runShell(cfg, fmt.Sprintf("audit set 0 %d", upTo)); err != nil {
+		return fmt.Errorf("consuming device log up to entry %d: %w", upTo, err)
+	}
+	return nil
+}
+
+// FetchAndConsumeAuditLog retrieves audit log entries and acknowledges them so
+// the HSM can reuse the log slots.
+//
+// Deprecated: this acknowledges entries before the caller can store them, so a
+// failure in between loses them permanently. Use FetchLog, persist, then
+// ConsumeLog.
+func FetchAndConsumeAuditLog(cfg Config) ([]AuditLogEntry, error) {
+	resp, err := FetchLog(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if len(resp.Entries) == 0 {
 		return nil, nil
 	}
-
-	// Acknowledge up to the last entry so the HSM frees log slots
-	lastNum := entries[len(entries)-1].Number
-	_, err = runShell(cfg, fmt.Sprintf("audit set 0 %d", lastNum))
-	if err != nil {
-		return entries, fmt.Errorf("fetched %d entries but failed to consume: %w", len(entries), err)
+	last := resp.Entries[len(resp.Entries)-1].Number
+	if err := ConsumeLog(cfg, last); err != nil {
+		return resp.Entries, fmt.Errorf("fetched %d entries but failed to consume: %w", len(resp.Entries), err)
 	}
-
-	return entries, nil
+	return resp.Entries, nil
 }
 
 func GetDeviceAttestation(cfg Config) ([]byte, error) {
@@ -564,6 +610,62 @@ func checkSignCommandsAudited(hexStr string) bool {
 	return true
 }
 
+// AuditOptions is the device's raw audit configuration.
+type AuditOptions struct {
+	// ForceAudit is the global force-audit setting: 0 off, 1 on, 2 fixed.
+	ForceAudit uint8 `json:"force_audit"`
+	// CommandAudit maps a command byte to its audit level (0 off, 1 on, 2 fixed).
+	CommandAudit map[uint8]uint8 `json:"command_audit"`
+}
+
+var optionValueRe = regexp.MustCompile(`(?i)Option value is:\s+([0-9a-fA-F]+)`)
+
+// GetAuditOptions reads the force-audit and command-audit device options.
+//
+// The two options are fetched in separate shell invocations on purpose: the
+// device prints them in an untagged "Option value is: <hex>" form, so reading
+// both from one combined output means guessing which line is which from
+// ordering. Separate calls remove that ambiguity — misreading the option that
+// proves logging cannot be disabled would silently weaken every downstream
+// claim.
+func GetAuditOptions(cfg Config) (*AuditOptions, error) {
+	force, err := getOptionValue(cfg, "force-audit")
+	if err != nil {
+		return nil, err
+	}
+	if len(force) != 1 {
+		return nil, fmt.Errorf("force-audit option: expected 1 byte, got %d (%x)", len(force), force)
+	}
+	cmdAudit, err := getOptionValue(cfg, "command-audit")
+	if err != nil {
+		return nil, err
+	}
+	if len(cmdAudit)%2 != 0 {
+		return nil, fmt.Errorf("command-audit option: expected (command, level) pairs, got %d bytes (%x)", len(cmdAudit), cmdAudit)
+	}
+	opts := &AuditOptions{ForceAudit: force[0], CommandAudit: make(map[uint8]uint8, len(cmdAudit)/2)}
+	for i := 0; i+1 < len(cmdAudit); i += 2 {
+		opts.CommandAudit[cmdAudit[i]] = cmdAudit[i+1]
+	}
+	return opts, nil
+}
+
+func getOptionValue(cfg Config, name string) ([]byte, error) {
+	out, err := runShell(cfg, "get option 0 "+name)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s option: %w", name, err)
+	}
+	m := optionValueRe.FindStringSubmatch(out)
+	if len(m) < 2 {
+		return nil, fmt.Errorf("reading %s option: no value in output: %s", name, strings.TrimSpace(out))
+	}
+	raw, err := hex.DecodeString(m[1])
+	if err != nil {
+		return nil, fmt.Errorf("reading %s option: value %q is not hex: %w", name, m[1], err)
+	}
+	return raw, nil
+}
+
 func GetDeviceSerial(cfg Config) (string, error) {
 	out, err := runShell(cfg, "get deviceinfo")
 	if err != nil {
@@ -601,22 +703,98 @@ var auditLineRe = regexp.MustCompile(
 	`item:\s+(\d+)\s+--\s+cmd:\s+0x([0-9a-fA-F]+)\s+--\s+length:\s+(\d+)\s+--\s+session key:\s+0x([0-9a-fA-F]+)\s+--\s+target key:\s+0x([0-9a-fA-F]+)\s+--\s+second key:\s+0x([0-9a-fA-F]+)\s+--\s+result:\s+0x([0-9a-fA-F]+)\s+--\s+tick:\s+(\d+)\s+--\s+hash:\s+([0-9a-fA-F]+)`,
 )
 
+// The device reports, alongside the entries, how many boots and authentications
+// it could not record because the log was full. Those counters are the device
+// admitting its own log is incomplete, so they must be parsed and surfaced —
+// discarding them would let unrecorded operations pass as a clean log.
+var (
+	unloggedBootsRe = regexp.MustCompile(`(\d+)\s+unlogged\s+boots?\s+found`)
+	unloggedAuthsRe = regexp.MustCompile(`(\d+)\s+unlogged\s+authentications?\s+found`)
+)
+
+// LogResponse is a full parse of one "get-logs" response: the entries plus the
+// device's unlogged-operation counters.
+type LogResponse struct {
+	Entries []AuditLogEntry `json:"entries"`
+	// UnloggedBoots and UnloggedAuthentications are non-zero only when the log
+	// overflowed. Any non-zero value invalidates the completeness claim.
+	UnloggedBoots           uint16 `json:"unlogged_boots"`
+	UnloggedAuthentications uint16 `json:"unlogged_authentications"`
+}
+
+// ParseLogResponse parses the full "get-logs" output, including the
+// unlogged-operation counters. An empty entry list is not an error: a freshly
+// consumed log legitimately has nothing new to report.
+func ParseLogResponse(output string) (*LogResponse, error) {
+	resp := &LogResponse{}
+	if m := unloggedBootsRe.FindStringSubmatch(output); len(m) > 1 {
+		n, err := strconv.ParseUint(m[1], 10, 16)
+		if err != nil {
+			return nil, fmt.Errorf("parsing unlogged boot count %q: %w", m[1], err)
+		}
+		resp.UnloggedBoots = uint16(n)
+	}
+	if m := unloggedAuthsRe.FindStringSubmatch(output); len(m) > 1 {
+		n, err := strconv.ParseUint(m[1], 10, 16)
+		if err != nil {
+			return nil, fmt.Errorf("parsing unlogged authentication count %q: %w", m[1], err)
+		}
+		resp.UnloggedAuthentications = uint16(n)
+	}
+	entries, err := parseAuditLogEntries(output)
+	if err != nil {
+		return nil, err
+	}
+	resp.Entries = entries
+	return resp, nil
+}
+
+// ParseAuditLogOutput parses only the entries and treats an empty log as an
+// error. Prefer ParseLogResponse, which also surfaces the unlogged counters.
 func ParseAuditLogOutput(output string) ([]AuditLogEntry, error) {
-	matches := auditLineRe.FindAllStringSubmatch(output, -1)
-	if len(matches) == 0 {
+	entries, err := parseAuditLogEntries(output)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
 		return nil, fmt.Errorf("no audit log entries found in output")
 	}
+	return entries, nil
+}
 
+func parseAuditLogEntries(output string) ([]AuditLogEntry, error) {
+	matches := auditLineRe.FindAllStringSubmatch(output, -1)
+
+	// Field widths are enforced rather than discarded: an out-of-range value
+	// means the output does not describe a YubiHSM log entry, and silently
+	// truncating it would fabricate an entry that then fails to hash-verify for
+	// the wrong reason.
 	var entries []AuditLogEntry
 	for _, m := range matches {
-		num, _ := strconv.ParseUint(m[1], 10, 16)
-		cmd, _ := strconv.ParseUint(m[2], 16, 8)
-		length, _ := strconv.ParseUint(m[3], 10, 16)
-		sessionKey, _ := strconv.ParseUint(m[4], 16, 16)
-		targetKey, _ := strconv.ParseUint(m[5], 16, 16)
-		secondKey, _ := strconv.ParseUint(m[6], 16, 16)
-		result, _ := strconv.ParseUint(m[7], 16, 8)
-		tick, _ := strconv.ParseUint(m[8], 10, 32)
+		var (
+			num, cmd, length, sessionKey, targetKey, secondKey, result, tick uint64
+			err                                                              error
+		)
+		for _, f := range []struct {
+			dst     *uint64
+			text    string
+			base    int
+			bitSize int
+			name    string
+		}{
+			{&num, m[1], 10, 16, "item"},
+			{&cmd, m[2], 16, 8, "cmd"},
+			{&length, m[3], 10, 16, "length"},
+			{&sessionKey, m[4], 16, 16, "session key"},
+			{&targetKey, m[5], 16, 16, "target key"},
+			{&secondKey, m[6], 16, 16, "second key"},
+			{&result, m[7], 16, 8, "result"},
+			{&tick, m[8], 10, 32, "tick"},
+		} {
+			if *f.dst, err = strconv.ParseUint(f.text, f.base, f.bitSize); err != nil {
+				return nil, fmt.Errorf("audit log entry %q: field %s: %w", m[0], f.name, err)
+			}
+		}
 		hash := strings.ToLower(m[9])
 
 		entries = append(entries, AuditLogEntry{

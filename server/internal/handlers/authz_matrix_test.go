@@ -508,6 +508,11 @@ func authzMatrix() []rc {
 		hsmMg("POST", "/api/hsm/factory-reset", "/api/hsm/factory-reset", `{}`),
 		platRd("GET", "/api/hsm/combined-audit-log", "/api/hsm/combined-audit-log"),
 		platRd("GET", "/api/hsm/signed-audit-log", "/api/hsm/signed-audit-log"),
+		// Task 167 audit bundle: audit:read, like the other audit exports. The
+		// harness has no provisioned device, so a permitted caller gets 404 rather
+		// than 200 — the reachability probe accepts that; the point of the row is
+		// that a tenant-scoped caller is still refused.
+		platRd("GET", "/api/hsm/audit-bundle", "/api/hsm/audit-bundle"),
 
 		// OpenAPI spec + docs UI (public).
 		pub("GET", "/openapi.json", "/openapi.json"),

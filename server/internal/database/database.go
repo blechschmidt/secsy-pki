@@ -29,6 +29,12 @@ type DB struct {
 	// It also guards eventHook so installing the hook races neither with an
 	// in-flight append nor with its invocation.
 	eventMu sync.Mutex
+	// hsmLedgerMu serializes appends to the hash-chained HSM signature ledger
+	// for the same reason eventMu does for event_log. Unlike the event log, this
+	// chain is written from the signing hot path, where the bounded session pool
+	// issues signatures genuinely in parallel — so without it two concurrent
+	// signatures would read the same predecessor hash and fork the chain.
+	hsmLedgerMu sync.Mutex
 	// eventHook, when non-nil, is invoked with each event AFTER it has been sealed
 	// and durably committed, from within the eventMu critical section so callbacks
 	// observe events in the same monotonic sequence they were chained in. It backs
@@ -593,6 +599,86 @@ func (db *DB) migrate() error {
 			sign_audit_id TEXT REFERENCES audit_log(id)
 		)`, autoIncPK, currentTimestamp),
 		`CREATE INDEX IF NOT EXISTS idx_hsm_audit_number ON hsm_audit_entries(number)`,
+		// Task 167 replaces the opportunistic hsm_audit_entries collection above
+		// with three tables that can actually carry a proof. The old table stays
+		// for the legacy combined-audit export; new work uses these.
+		//
+		// hsm_audit_state pins the device identity and the genesis chain anchor.
+		// Exactly one row (id = 1) ever exists. The anchor is the digest of the
+		// factory-reset sentinel, which — verified on hardware — the device seeds
+		// randomly per reset rather than deriving from the entry's fields, so it
+		// can only be remembered, never recomputed. Everything a remote auditor
+		// concludes rests on this value being the one recorded at commissioning.
+		`CREATE TABLE IF NOT EXISTS hsm_audit_state (
+			id INTEGER PRIMARY KEY,
+			device_serial TEXT NOT NULL,
+			anchor TEXT NOT NULL,
+			provisioned_at TIMESTAMP NOT NULL,
+			tail_number INTEGER NOT NULL DEFAULT 0,
+			tail_digest TEXT NOT NULL DEFAULT ''
+		)`,
+		// hsm_log_entries is the durable copy of the device's own log, keyed by
+		// the device entry number so a re-delivered segment is idempotent. Rows
+		// are never updated: the device log is immutable, so a differing
+		// re-delivery is evidence of tampering, not a conflict to merge.
+		`CREATE TABLE IF NOT EXISTS hsm_log_entries (
+			number INTEGER PRIMARY KEY,
+			command INTEGER NOT NULL,
+			length INTEGER NOT NULL,
+			session_key INTEGER NOT NULL,
+			target_key INTEGER NOT NULL,
+			second_key INTEGER NOT NULL,
+			result INTEGER NOT NULL,
+			tick INTEGER NOT NULL,
+			hash TEXT NOT NULL,
+			collected_at TIMESTAMP NOT NULL
+		)`,
+		// hsm_signature_ledger is the CA's append-only, hash-chained record of
+		// every signature it asked the HSM for, carrying the digest of each
+		// signed input. The device log says how many signatures exist; this says
+		// which ones they were. seq is assigned by the app inside the insert
+		// transaction (under hsmLedgerMu) so it is part of the hashed content and
+		// a deleted row shows up as a gap rather than a shorter list.
+		`CREATE TABLE IF NOT EXISTS hsm_signature_ledger (
+			seq INTEGER PRIMARY KEY,
+			timestamp TIMESTAMP NOT NULL,
+			key_label TEXT NOT NULL,
+			key_id INTEGER NOT NULL,
+			digest TEXT NOT NULL,
+			algorithm TEXT NOT NULL DEFAULT '',
+			purpose TEXT NOT NULL DEFAULT '',
+			prev_hash TEXT NOT NULL,
+			hash TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_hsm_ledger_key ON hsm_signature_ledger(key_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_hsm_ledger_digest ON hsm_signature_ledger(digest)`,
+		// hsm_freshness_proofs holds RFC 3161 timestamp tokens over the audit
+		// head. The tables above establish WHAT the HSM signed; these establish
+		// WHEN that was last true, so an operator cannot answer an audit with a
+		// pristine export taken before the abuse.
+		//
+		// The rows carry no hash chain of their own. Each token already commits
+		// to the entire history through the two chain heads it covers, and its
+		// integrity rests on the TSA's signature rather than on a neighbouring
+		// row. The one thing a deletion would buy — disowning an interval the CA
+		// had already committed to — is caught by comparing successive exports
+		// instead (see VerifyContinuation).
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS hsm_freshness_proofs (
+			seq INTEGER PRIMARY KEY,
+			gen_time TIMESTAMP NOT NULL,
+			obtained_at TIMESTAMP NOT NULL,
+			source TEXT NOT NULL DEFAULT '',
+			device_serial TEXT NOT NULL,
+			anchor TEXT NOT NULL,
+			device_number INTEGER NOT NULL,
+			device_digest TEXT NOT NULL,
+			signatures INTEGER NOT NULL,
+			ledger_seq INTEGER NOT NULL,
+			ledger_hash TEXT NOT NULL,
+			head_digest TEXT NOT NULL,
+			token %s NOT NULL
+		)`, blob),
+		`CREATE INDEX IF NOT EXISTS idx_hsm_freshness_gen_time ON hsm_freshness_proofs(gen_time)`,
 		// Tamper-evident, append-only event log. seq is a gap-free monotonic
 		// counter (assigned by the app under eventMu, not the DB, so it is part of
 		// the hashed content); prev_hash/hash form the chain. Any edit, deletion,
