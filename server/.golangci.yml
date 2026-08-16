@@ -4,7 +4,11 @@
 # with the project's `sqlite` build tag so the SQLite persistence driver and
 # every package that depends on it typecheck. SoftHSM-only code paths are
 # gated at *runtime* via env vars (not build tags), so no extra tag is needed
-# to lint them — only the yubihsm hardware tests sit behind a build tag and are
+# to lint them. The same holds for the YubiHSM hardware suite in
+# internal/yubihsmtest: it is gated on SECSY_YUBIHSM_TESTS and so is linted
+# here, which is much of the point of using an env var rather than a build tag.
+# Only the older per-package hardware tests (internal/hsm, internal/hsmattest,
+# internal/hsmaudit, internal/pki) sit behind the `yubihsm` build tag and are
 # intentionally left out of the default lint build.
 #
 # Pinned to match the Makefile's GOLANGCI_LINT_VERSION and the CI workflow so

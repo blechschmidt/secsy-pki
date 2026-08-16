@@ -221,6 +221,14 @@ define run_bench
 	  -count=$(BENCH_COUNT) $(BENCH_PKGS) | tee "$(1)"
 endef
 
+.PHONY: test-yubihsm
+test-yubihsm: ## Run the YubiHSM hardware suite against an attached device (not CI; needs the device)
+	./scripts/yubihsm-test.sh
+
+.PHONY: test-yubihsm-quick
+test-yubihsm-quick: ## test-yubihsm without the slow RSA-4096 case
+	./scripts/yubihsm-test.sh --quick
+
 .PHONY: bench
 bench: | $(DIST) ## Run the HSM-free benchmark set -> dist/bench-new.txt
 	@echo "==> go test -bench $(BENCH_PATTERN) (-tags $(BENCH_TAGS), count=$(BENCH_COUNT), benchtime=$(BENCH_TIME))"

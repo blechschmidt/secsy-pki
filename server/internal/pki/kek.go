@@ -125,9 +125,9 @@ func oaepMechParams(opts crypto.DecrypterOpts) (hashAlg, mgf uint, err error) {
 }
 
 // GenerateRSAKEKOnHSM creates an RSA key-encryption key pair on the token with
-// least-privilege usage attributes: the private key can DECRYPT (and unwrap)
-// but not SIGN, and it is marked sensitive and non-extractable so the wrapping
-// key material can never leave the HSM. Supported sizes are 2048 and 4096 bits.
+// least-privilege usage attributes: the private key can DECRYPT but not SIGN,
+// and it is marked sensitive and non-extractable so the wrapping key material
+// can never leave the HSM. Supported sizes are 2048 and 4096 bits.
 //
 // It returns the same GeneratedHSMKey shape as GenerateKeyOnHSM so callers can
 // treat a KEK uniformly with signing keys for metadata purposes.
@@ -178,11 +178,23 @@ func GenerateRSAKEKOnHSM(cfg PKCS11Config, label string, bits int) (*GeneratedHS
 // sensitive and non-extractable). It is the shared generation core used by both
 // the one-shot GenerateRSAKEKOnHSM and the pooled provider.
 func generateRSAKEKOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, cfg PKCS11Config, label string, bits int) (*GeneratedHSMKey, error) {
+	// CKA_WRAP / CKA_UNWRAP are deliberately absent.
+	//
+	// They look like the right thing to ask for on a key-encryption key, but the
+	// envelope layer never calls C_WrapKey or C_UnwrapKey: it wraps the data key
+	// on the host with the public half and unwraps it with C_Decrypt (see
+	// decryptOAEPOnSession). The attributes are therefore unused — and on a
+	// YubiHSM they are actively harmful. Yubico's module maps a template asking
+	// for wrapping onto a device *wrap-key* object rather than an asymmetric
+	// key, and a wrap-key is not exposed as CKO_PRIVATE_KEY, so the KEK becomes
+	// invisible to the very lookup that has to find it: generation succeeds and
+	// the next step fails with "private key label not found", leaving a
+	// deployment that cannot encrypt anything. SoftHSM draws no such distinction,
+	// which is why this survived until the hardware suite ran (Task 172).
 	mechanism := []*pkcs11.Mechanism{pkcs11.NewMechanism(pkcs11.CKM_RSA_PKCS_KEY_PAIR_GEN, nil)}
 	pubAttrs := []*pkcs11.Attribute{
 		pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
 		pkcs11.NewAttribute(pkcs11.CKA_ENCRYPT, true),
-		pkcs11.NewAttribute(pkcs11.CKA_WRAP, true),
 		pkcs11.NewAttribute(pkcs11.CKA_VERIFY, false),
 		pkcs11.NewAttribute(pkcs11.CKA_LABEL, label),
 		pkcs11.NewAttribute(pkcs11.CKA_MODULUS_BITS, bits),
@@ -192,7 +204,6 @@ func generateRSAKEKOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, cfg 
 		pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
 		pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
 		pkcs11.NewAttribute(pkcs11.CKA_DECRYPT, true),
-		pkcs11.NewAttribute(pkcs11.CKA_UNWRAP, true),
 		pkcs11.NewAttribute(pkcs11.CKA_SIGN, false),
 		pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, true),
 		pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, false),
