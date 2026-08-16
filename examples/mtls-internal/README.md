@@ -10,9 +10,9 @@ certificate** — no shared passwords.
 |------|---------|
 | [`config.yaml`](config.yaml) | Server: `mtls-server` / `mtls-client` leaf profiles + machine operator auth (API token + mTLS binding) + rate limiting |
 
-Reference: [`docs/certificate-authority.md`](../../docs/certificate-authority.md),
-[`docs/authentication.md`](../../docs/authentication.md),
-[`docs/rbac-and-audit.md`](../../docs/rbac-and-audit.md).
+Reference: [`docs/ca/overview.md`](../../docs/ca/overview.md),
+[`docs/security/authentication.md`](../../docs/security/authentication.md),
+[`docs/security/rbac-and-audit.md`](../../docs/security/rbac-and-audit.md).
 
 ---
 
@@ -105,10 +105,10 @@ $ curl -fsS -X POST "https://pki.example.com/api/ca/$CA_ID/issue" \
 Prefer certificate-based automation? The [`config.yaml`](config.yaml) also enables
 an `auth.mtls` binding: a `deploy-robot` client certificate (issued by an
 operator client-CA you control) authenticates as an `issuer`. See
-[`docs/authentication.md`](../../docs/authentication.md).
+[`docs/security/authentication.md`](../../docs/security/authentication.md).
 
 For fully unattended renewal on each host, run the
-[host agent](../../docs/agent.md) (EST/ACME) instead of scripting `curl`.
+[host agent](../../docs/protocols/agent.md) (EST/ACME) instead of scripting `curl`.
 
 ## Notes
 
@@ -116,8 +116,8 @@ For fully unattended renewal on each host, run the
   global `policy.max_cert_validity_days: 90` caps everything. Renew often and
   automatically rather than issuing long-lived certs.
 - **Revocation.** Revoke with `secsy-ca revoke -serial …`; OCSP and CRL are
-  served for relying parties (see [`docs/certificate-authority.md`](../../docs/certificate-authority.md)).
+  served for relying parties (see [`docs/ca/overview.md`](../../docs/ca/overview.md)).
 - **Least privilege.** The service-account token holds only `issuer`; keep the
   break-glass root disabled in production (`policy.allow_root_basic_auth: false`).
 - **Workload identity at scale.** For SPIFFE `spiffe://` SVIDs (X.509 + JWT) with
-  a trust-domain allowlist, see [`docs/spiffe.md`](../../docs/spiffe.md).
+  a trust-domain allowlist, see [`docs/certificates/spiffe.md`](../../docs/certificates/spiffe.md).

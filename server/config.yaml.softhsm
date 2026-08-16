@@ -16,7 +16,7 @@ server:
 # gRPC API surface (Task 56): expose the core issuance/revocation/status
 # operations over gRPC alongside REST. Disabled by default. It reuses
 # server.tls_cert/tls_key unless grpc.tls_cert/tls_key are set, and requires TLS
-# unless SECSY_ALLOW_INSECURE_HTTP=1. See docs/grpc-api.md.
+# unless SECSY_ALLOW_INSECURE_HTTP=1. See docs/protocols/grpc-api.md.
 grpc:
   enabled: false
   address: ":9443"
@@ -25,7 +25,7 @@ grpc:
 # SSH certificate authority (Task 57): HSM-backed OpenSSH user/host certificate
 # signing with KRL revocation. The /api/ssh endpoints and `secsy-ca ssh`
 # commands work out of the box with the built-in user-default/host-default
-# profiles; this block only customizes them. See docs/ssh-ca.md.
+# profiles; this block only customizes them. See docs/ca/ssh-ca.md.
 # ssh:
 #   krl_comment: "corp ops CA"           # stamped into generated KRLs
 #   profiles:
@@ -69,7 +69,7 @@ secret:
 
 # ACME (RFC 8555) automated issuance for certbot / lego / acme.sh. Disabled
 # unless enabled=true. Point it at an existing X.509 issuing CA (create one with
-# secsy-ca) and a certificate profile. See docs/acme.md for the full guide.
+# secsy-ca) and a certificate profile. See docs/protocols/acme.md for the full guide.
 acme:
   enabled: false
   # base_url: "https://pki.example.com"   # or derived from the request Host
@@ -84,7 +84,7 @@ acme:
   # the remote perspectives below and accepted only when a quorum agrees, so a
   # localized BGP/DNS hijack of the CA's own path is outvoted. Each perspective
   # needs its own resolver and/or an outbound SOCKS5 proxy at a distinct network
-  # location. See docs/acme-mpic.md.
+  # location. See docs/protocols/acme-mpic.md.
   # mpic:
   #   enabled: true
   #   perspective_timeout_seconds: 10
@@ -103,7 +103,7 @@ acme:
 # SCEP (RFC 8894) device / MDM enrollment. Disabled unless enabled=true. The
 # issuing CA MUST be an RSA CA (SCEP wraps requests in a PKCS#7 EnvelopedData
 # using RSA key transport). A dedicated, decrypt-capable RA encryption key is
-# auto-provisioned on the HSM on first use. See docs/enrollment.md.
+# auto-provisioned on the HSM on first use. See docs/protocols/scep-est.md.
 scep:
   enabled: false
   ca_label: "Secsy Issuing CA"            # must be an RSA CA
@@ -117,7 +117,7 @@ scep:
 
 # EST (RFC 7030) device / MDM enrollment over TLS. Disabled unless enabled=true.
 # Authenticate with HTTP Basic (users below) or a TLS client certificate this CA
-# previously issued (allow_tls_client_reenroll). See docs/enrollment.md.
+# previously issued (allow_tls_client_reenroll). See docs/protocols/scep-est.md.
 est:
   enabled: false
   ca_label: "Secsy Issuing CA"            # any key type
@@ -132,7 +132,7 @@ est:
 # Scheduled encrypted backups (Task 89). Leader-elected; encrypts the DR backup
 # artifact under the secret KEK and writes it to a directory (or S3) with
 # atomic swap + manifest + keep-N/max-age retention. Enable and point `dir.path`
-# at a durable location to turn it on. See docs/backup.md.
+# at a durable location to turn it on. See docs/operations/backup.md.
 backup:
   enabled: false
   schedule:

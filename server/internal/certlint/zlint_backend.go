@@ -15,7 +15,7 @@ import (
 // and github.com/zmap/zcrypto, and it is compiled only under the "zlint" build
 // tag. Default, FIPS, and supply-chain-hardened builds omit it and therefore do
 // not link (or expose to govulncheck's default reachability analysis) either
-// dependency. See docs/certlint.md for the dependency/govulncheck implications.
+// dependency. See docs/issuance/certlint.md for the dependency/govulncheck implications.
 
 const zlintCompiledIn = true
 

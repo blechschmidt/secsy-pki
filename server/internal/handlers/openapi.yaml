@@ -16,7 +16,7 @@ info:
     CRL/OCSP metadata — are additionally exposed over a gRPC API (PKIService,
     proto/pki/v1/pki.proto) with server reflection, enforcing the same operator
     authentication (Bearer OIDC / Basic root / mutual-TLS), RBAC, tenant scoping,
-    and tamper-evident audit as these REST endpoints. See docs/grpc-api.md.
+    and tamper-evident audit as these REST endpoints. See docs/protocols/grpc-api.md.
   version: "2.0.0"
   license:
     name: MIT

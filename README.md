@@ -25,36 +25,29 @@ See the [architecture overview](ARCHITECTURE.md) and the full guide index in [`d
 
 ### Enterprise documentation
 
-Comprehensive deployment and operations guides live in [`docs/`](docs/README.md):
+Comprehensive deployment and operations guides live in [`docs/`](docs/README.md),
+grouped into twelve sections. Each links to its own index; the
+[documentation map](docs/README.md) lists every page.
 
-| Guide | Topic |
-|-------|-------|
-| [Operator runbook](docs/RUNBOOK.md) | Day-2 ops: incident response, outage handling, tuning, rotation, DR |
-| [Architecture Decision Records](docs/adr/README.md) | Why the key design decisions were made |
-| [Certificate Policy / CPS (RFC 3647)](docs/certificate-policy.md) | Audit-facing CP/CPS (all nine sections) populated from the implementation, with `[OPERATOR: …]` placeholders for organizational/legal content |
-| [Compliance control mapping](docs/compliance-mapping.md) | CA/Browser-Forum TLS BR, S/MIME BR & WebTrust-for-CA → implementing package/file, with an explicit gaps-and-assumptions column |
-| [HSM / PKCS#11 configuration](docs/hsm-configuration.md) | Key provider, HSM & SoftHSM setup |
-| [Cloud KMS backend (AWS KMS / Azure Key Vault)](docs/cloud-kms.md) | Cloud-hosted CA/TSA/OCSP keys, per-role backend selection, IAM/RBAC |
-| [HashiCorp Vault Transit backend](docs/vault-transit.md) | CA/TSA/OCSP keys + KEKs in Vault Transit, token/AppRole auth, wrap/unwrap, openssl interop |
-| [Certificate authority](docs/certificate-authority.md) | CA setup, issuance, renewal, revocation, CRL & OCSP |
-| [SSH certificate authority](docs/ssh-ca.md) | HSM-backed OpenSSH user/host certs, signing profiles, KRL revocation |
-| [SCEP & EST enrollment](docs/enrollment.md) | Device / MDM / IoT auto-enrollment (RFC 8894 / RFC 7030) |
-| [Host auto-enrollment agent](docs/agent.md) | `secsy-agent`: client-side EST/ACME renewal daemon with atomic installs and reload hooks |
-| [Password / secret encryption](docs/password-encryption.md) | HSM-backed envelope encryption |
-| [RBAC, audit logging & config](docs/rbac-and-audit.md) | Roles, event log, centralized policy |
-| [Operator authentication](docs/authentication.md) | OIDC SSO + mTLS + WebAuthn step-up, and native scoped API tokens / service accounts |
-| [Four-eyes / maker-checker approvals](docs/approvals.md) | Dual-control gate for CA lifecycle, bulk revoke, KEK rotation, and per-profile issuance |
-| [DANE TLSA & SSHFP DNS records](docs/dns-records.md) | Zone-file pinning records for TLS services and SSH hosts the PKI issues |
-| [Scheduled backups & restore verification](docs/backup.md) | Leader-elected encrypted DR backups with an automated restore-verification drill |
-| [Long-term preservation (RFC 4998)](docs/evidence-records.md) | Renewable Evidence Records over the audit chain & signed artifacts, surviving hash/signature-algorithm obsolescence |
-| [Remotely verifiable HSM audit log](docs/hsm-audit-log.md) | Proving to a third party that the HSM signed nothing beyond what was published — and, via periodic RFC 3161 attestations, that the proof is still current |
-| [YubiHSM key attestation](docs/hsm-key-attestation.md) | Hardware-signed proof that a CA key was generated inside the HSM and cannot be exported from it, plus the verifier that checks it remotely |
-| [Observability](docs/observability.md) | Prometheus `/metrics`, health/readiness probes, structured logs |
-| [Rate limiting & abuse protection](docs/rate-limiting.md) | Tiered rate limits + HSM concurrency guard for public ACME/OCSP/CRL/SCEP/EST endpoints |
-| [Kubernetes deployment](docs/kubernetes.md) | Container image, Helm chart, cert-manager ACME issuer, kind/SoftHSM smoke test |
-| [Production HSM migration](docs/hsm-migration.md) | SoftHSM → real HSM cutover |
+| Section | Covers |
+|---------|--------|
+| [HSM & key management](docs/hsm/README.md) | PKCS#11 HSMs, cloud KMS and Vault Transit backends, key ceremony and DR, key attestation, the remotely verifiable HSM audit log |
+| [Certificate authority](docs/ca/README.md) | Root and intermediate CAs, the certificate lifecycle, key rotation, cross-signing, the SSH CA, chain validation |
+| [Issuance policy & gates](docs/issuance/README.md) | The fail-closed pre-issuance stack: BR linting, CAA, name constraints, weak-key checks, Certificate Transparency |
+| [Certificate types & profiles](docs/certificates/README.md) | S/MIME, smartcard logon / PKINIT, eIDAS qualified, SPIFFE SVIDs, delegated credentials, post-quantum |
+| [Enrollment protocols](docs/protocols/README.md) | ACME, SCEP/EST, BRSKI, Windows autoenrollment, the host agent, and the gRPC API |
+| [Signing & timestamping](docs/signing/README.md) | Artifact/code signing, the RFC 3161 TSA, trusted time, RFC 4998 evidence records |
+| [Secret & password encryption](docs/secrets/README.md) | HSM-backed envelope encryption, escrow and recovery, tokenization, the crypto service |
+| [Security & governance](docs/security/README.md) | RBAC, operator authentication, four-eyes approvals, multi-tenancy, rate limiting, FIPS mode, SIEM export |
+| [Deployment & scaling](docs/deployment/README.md) | Container image and Helm chart, SQLite/PostgreSQL, multi-replica HA, self-issued serving TLS |
+| [Day-2 operations](docs/operations/README.md) | The operator runbook, incident response, observability, backups, expiry monitoring, the web console |
+| [Compliance & audit readiness](docs/compliance/README.md) | The RFC 3647 CP/CPS and the CA/B Forum + WebTrust control mapping |
+| [Development & testing](docs/development/README.md) | Benchmarks, coverage, fuzzing, chaos testing, the authorization matrix, supply-chain security |
 
-**Worked examples** for common deployments — an [SSH PKI](examples/ssh-pki/), [keyless software signing from GitHub Actions through OIDC](examples/github-oidc-signing/), [automated TLS with ACME](examples/acme-tls/), and a [private CA for service-to-service mTLS](examples/mtls-internal/) — live in [`examples/`](examples/README.md): a minimal, ready-to-adapt config plus the client-side glue for each use case.
+The [Architecture Decision Records](docs/adr/README.md) explain why the
+load-bearing design decisions were made.
+
+**Worked examples** for common deployments — an [SSH PKI](examples/ssh-pki), [keyless software signing from GitHub Actions through OIDC](examples/github-oidc-signing), [automated TLS with ACME](examples/acme-tls), and a [private CA for service-to-service mTLS](examples/mtls-internal) — live in [`examples/`](examples/README.md): a minimal, ready-to-adapt config plus the client-side glue for each use case.
 
 The `secsy-ca` and `secsy-secret` CLIs drive the CA and secret features; see the guides above. The sections below document the base server, SSH workflow, and per-key signing API.
 
@@ -72,7 +65,7 @@ The `secsy-ca` and `secsy-secret` CLIs drive the CA and secret features; see the
 - **Public key export** — Export CA public keys in PEM (PKIX) or OpenSSH format via API and UI.
 - **HSM management** — Factory reset, audit provisioning, device info, and attestation certificate export from the UI.
 - **Web UI** — Bootstrap 5 SPA with dark theme and SRI-pinned CDN resources.
-- **Operator console** — Minimal, dependency-free web console embedded in the server binary (`go:embed`) at `/console/`, with feature parity to the CLIs ([docs/web-console.md](docs/web-console.md)): CA hierarchy management (roots, intermediates, key rotation with dual-chain overlap, retirement, cross-signing), certificate issue/renew/revoke with CRL/shard downloads, expiry monitoring, external discovery, SSH CA signing and KRLs, artifact code-signing and verification, SVID minting, ad-hoc certificate linting, the HSM key inventory, the tamper-evident audit log with chain verification and SIEM exports, HSM-backed secret envelopes with escrow, and tenant administration. Ships with no separate front-end deploy; all actions run through the RBAC-gated, audited API, with WebAuthn step-up on high-risk operations.
+- **Operator console** — Minimal, dependency-free web console embedded in the server binary (`go:embed`) at `/console/`, with feature parity to the CLIs ([docs/operations/web-console.md](docs/operations/web-console.md)): CA hierarchy management (roots, intermediates, key rotation with dual-chain overlap, retirement, cross-signing), certificate issue/renew/revoke with CRL/shard downloads, expiry monitoring, external discovery, SSH CA signing and KRLs, artifact code-signing and verification, SVID minting, ad-hoc certificate linting, the HSM key inventory, the tamper-evident audit log with chain verification and SIEM exports, HSM-backed secret envelopes with escrow, and tenant administration. Ships with no separate front-end deploy; all actions run through the RBAC-gated, audited API, with WebAuthn step-up on high-risk operations.
 - **SQLite and PostgreSQL** — Dual database support. SQLite for development, PostgreSQL for production.
 - **Terraform provisioning** — Provision the root CA key on a YubiHSM using [terraform-provider-pkcs11](https://github.com/blechschmidt/terraform-provider-pkcs11).
 
@@ -310,7 +303,7 @@ yubihsm:
   suppress_audit_warning: false
 ```
 
-For SoftHSM development, use `module_path: "/usr/lib/softhsm/libsofthsm2.so"`. Run `./scripts/setup-softhsm.sh` to initialize a token, and `eval "$(./scripts/setup-softhsm.sh --export-env)"` to wire the `SECSY_*` environment variables. See [HSM / PKCS#11 configuration](docs/hsm-configuration.md).
+For SoftHSM development, use `module_path: "/usr/lib/softhsm/libsofthsm2.so"`. Run `./scripts/setup-softhsm.sh` to initialize a token, and `eval "$(./scripts/setup-softhsm.sh --export-env)"` to wire the `SECSY_*` environment variables. See [HSM / PKCS#11 configuration](docs/hsm/configuration.md).
 
 The enterprise blocks — `key_provider`, `rbac`, `policy`, `profiles`, and `secret` — are documented in [`docs/`](docs/README.md) and shown fully commented in [`server/config.yaml`](server/config.yaml).
 

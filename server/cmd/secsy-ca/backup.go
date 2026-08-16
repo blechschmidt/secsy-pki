@@ -179,7 +179,7 @@ func cmdBackup(db *database.DB, cfg *config.Config, provider keyprovider.Provide
 	if manifest.SQLiteSnapshot != "" {
 		fmt.Printf("  Metadata:       %s (SQLite snapshot)\n", manifest.SQLiteSnapshot)
 	}
-	fmt.Println("\nReminder: back up the HSM token state separately (see docs/key-ceremony.md). Private keys are never exported.")
+	fmt.Println("\nReminder: back up the HSM token state separately (see docs/hsm/key-ceremony.md). Private keys are never exported.")
 	return nil
 }
 

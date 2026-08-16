@@ -14,7 +14,7 @@ import (
 // any machine with no HSM, token, or PIN.
 //
 // These are the benchmarks the CI benchmark-regression gate runs and compares
-// against the committed baseline (docs/benchmarks.md#regression-gate): a software
+// against the committed baseline (docs/development/benchmarks.md#regression-gate): a software
 // signature is pure Go/asm on the CPU, so the numbers are deterministic and
 // portable enough for benchstat to flag a real algorithmic regression, while the
 // SoftHSM benchmarks stay the tool for tuning a specific device. Keep them fast

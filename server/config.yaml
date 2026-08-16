@@ -6,7 +6,7 @@ server:
   # ocsp_cache_ttl_seconds bounds how long a signed OCSP response is reused from
   # the in-memory cache before being re-signed on the HSM. 0 uses the server
   # default (1h); a negative value disables caching. Revocations invalidate the
-  # affected entry immediately. See docs/benchmarks.md.
+  # affected entry immediately. See docs/development/benchmarks.md.
   ocsp_cache_ttl_seconds: 3600
   # OCSP responder hardening (RFC 6960 / RFC 8954). All fields are optional.
   ocsp:
@@ -24,7 +24,7 @@ server:
     # staples a fresh OCSP response to its TLS handshake (RFC 6066).
     staple_ca_id: ""
   # Opt-in net/http/pprof runtime profiling (CPU/heap/goroutine/mutex/block).
-  # OFF by default and never exposed unauthenticated — see docs/RUNBOOK.md
+  # OFF by default and never exposed unauthenticated — see docs/operations/runbook.md
   # "Performance profiling (pprof)". A profile is a raw dump of process memory
   # and stacks and can contain in-flight secrets, so access is controlled by
   # mode below.
@@ -89,7 +89,7 @@ database:
 # secsy_leader_is_leader / secsy_leader_transitions_total meter the election.
 # The defaults are correct for both single-node and multi-replica deployments:
 # mode "auto" elects via PostgreSQL when database.driver is postgres, and holds
-# leadership statically on single-node SQLite. See docs/high-availability.md.
+# leadership statically on single-node SQLite. See docs/deployment/high-availability.md.
 # coordination:
 #   mode: "auto"                            # auto | postgres | static
 #   lock_name: "secsy-pki/background-jobs"  # keep stable; namespaces the lock
@@ -102,7 +102,7 @@ oidc:
 
 # auth configures strong operator authentication for the console/API (Task 50).
 # Each sub-block is inert unless its `enabled` is set; the stateless basic-auth
-# root and Bearer-token paths keep working regardless. See docs/authentication.md.
+# root and Bearer-token paths keep working regardless. See docs/security/authentication.md.
 auth:
   session:
     # cookie_name overrides the session cookie name (default "secsy_session").
@@ -206,7 +206,7 @@ root_user:
 #   type: "pkcs11"  -> keys live on an HSM / PKCS#11 token (see the pkcs11 block)
 #   type: "software" -> keys live in an on-disk keystore (see software.keystore_dir)
 #   type: "kms"     -> keys live in a cloud KMS or HashiCorp Vault Transit (see
-#                      the kms block, docs/cloud-kms.md and docs/vault-transit.md)
+#                      the kms block, docs/hsm/cloud-kms.md and docs/hsm/vault-transit.md)
 # If omitted, the type defaults to "pkcs11" when pkcs11.module_path is set, to
 # "kms" when kms.backend is set, otherwise "software". These may be overridden by
 # the SECSY_* environment variables emitted by scripts/setup-softhsm.sh --export-env.
@@ -217,7 +217,7 @@ key_provider:
   # Cloud KMS / Vault backend. Cloud credentials are never taken from config —
   # AWS/Azure use the SDK default chain (env/instance role/IRSA; env/workload/
   # managed identity). Vault credentials come from vault.token/VAULT_TOKEN or the
-  # AppRole pair. See docs/cloud-kms.md and docs/vault-transit.md.
+  # AppRole pair. See docs/hsm/cloud-kms.md and docs/hsm/vault-transit.md.
   kms:
     backend: ""            # "aws" | "azure" | "vault" | "fake" (empty disables kms)
     region: ""             # AWS region, e.g. "eu-central-1" (AWS backend)
@@ -225,7 +225,7 @@ key_provider:
     vault_url: ""          # https://<vault>.vault.azure.net/ (Azure backend; NOT HashiCorp Vault)
     # HashiCorp Vault Transit backend (backend: vault). Signing keys and KEKs live
     # inside Vault's Transit engine and never leave the server, mirroring the HSM
-    # non-extractability invariant. See docs/vault-transit.md.
+    # non-extractability invariant. See docs/hsm/vault-transit.md.
     vault:
       address: ""          # https://vault.example.com:8200 (or VAULT_ADDR)
       mount: "transit"     # Transit secrets-engine mount path
@@ -253,7 +253,7 @@ pkcs11:
   # session_pool_size bounds concurrent PKCS#11 sessions (and thus concurrent
   # on-device operations); requests beyond it queue. 0/omitted uses the default
   # (8). Size it toward the HSM's supported concurrent-session limit. See
-  # docs/benchmarks.md for tuning guidance.
+  # docs/development/benchmarks.md for tuning guidance.
   session_pool_size: 8
 
   # High availability: multiple tokens with health-tracked failover (Task 44).
@@ -264,7 +264,7 @@ pkcs11:
   # rotation by the background prober once it recovers. Per-token health and
   # failover metrics are exported (secsy_hsm_token_up / _failovers_total /
   # _errors_total). Replicating the (non-extractable) key onto each token is an
-  # operator key-ceremony step; see docs/hsm-ha.md. Leave `tokens` empty for the
+  # operator key-ceremony step; see docs/hsm/high-availability.md. Leave `tokens` empty for the
   # ordinary single-token setup above.
   #
   # selection_policy: "primary-backup"   # or "round-robin"; default primary-backup
@@ -320,7 +320,7 @@ rbac:
 # quotas — certs/day, active-cert ceiling, secret-ops/day, and a rate-limit
 # override — managed at runtime via `secsy-ca tenant quota|suspend|activate|
 # usage`, PUT /api/tenants/{id}, and the console's Tenants page. Enforcement is
-# fail-closed with 429/quota_exceeded semantics; see docs/multi-tenancy.md.
+# fail-closed with 429/quota_exceeded semantics; see docs/security/multi-tenancy.md.
 tenants: []
 #   - id: acme-corp                 # stable, immutable internal id
 #     slug: acme                    # URL/CLI-friendly unique identifier
@@ -496,7 +496,7 @@ attestation:
 
 # crl configures delta CRLs and CRL partitioning/sharding (RFC 5280). Defaults
 # keep the pre-existing behavior: a single complete CRL, no stamped CDP URLs.
-# See docs/certificate-authority.md.
+# See docs/ca/overview.md.
 crl:
   shards: 0                    # 0/1 = single complete CRL; N>=2 = N partitions
   base_url: ""                 # origin for CDP/IDP/Freshest-CRL URLs; falls back
@@ -512,7 +512,7 @@ crl:
 # with the SPIFFE ID in `sub` and a required `aud`), both restricted to the
 # trust-domain allowlist below, and GET /api/ca/{id}/svid/bundle serves the CA's
 # authorities as a JWKS-style SPIFFE trust bundle carrying both the x509-svid and
-# jwt-svid verification keys. See docs/spiffe.md.
+# jwt-svid verification keys. See docs/certificates/spiffe.md.
 # spiffe:
 #   enabled: true
 #   trust_domains:               # global allowlist (fail-closed: empty = none)
@@ -538,7 +538,7 @@ crl:
 # policies (a profile's min_distinct_operators / require_operators) count distinct
 # operators, so it is required for any log a diversity policy submits to. Set it
 # per log, or populate it in bulk from a Google/Chrome CT log-list v3 JSON via
-# known_logs_file (explicit per-log operators win). See docs/certificate-transparency.md.
+# known_logs_file (explicit per-log operators win). See docs/issuance/certificate-transparency.md.
 certificate_transparency:
   logs: []
 # known_logs_file: /etc/secsy-pki/ct/log_list.json  # fill missing operators from a CT log list
@@ -555,7 +555,7 @@ certificate_transparency:
 #       public_key_file: /etc/secsy-pki/ct/xenon2025.pem
 
 # acme configures the RFC 8555 automated-issuance server (certbot / lego /
-# acme.sh). Disabled by default; see docs/acme.md. When enabled, point it at an
+# acme.sh). Disabled by default; see docs/protocols/acme.md. When enabled, point it at an
 # existing X.509 issuing CA and a certificate profile.
 acme:
   enabled: false
@@ -593,7 +593,7 @@ acme:
   # advertises meta.auto-renewal, newOrder accepts an "auto-renewal" object bounded
   # by the limits below, and a leader-elected renewer re-issues each certificate
   # ahead of expiry until its end-date. The client fetches the current certificate
-  # from a stable star-certificate URL. Off by default. See docs/acme.md.
+  # from a stable star-certificate URL. Off by default. See docs/protocols/acme.md.
   # star:
   #   enabled: true
   #   min_lifetime_hours: 1        # floor on each certificate's lifetime (min-lifetime)
@@ -601,7 +601,7 @@ acme:
   #   max_duration_days: 365       # longest total recurrence (max-duration)
 
 # tsa exposes an RFC 3161 Time-Stamp Authority at /tsa (application/timestamp-
-# query). Disabled by default; see docs/timestamping.md. Provision the signing
+# query). Disabled by default; see docs/signing/timestamping.md. Provision the signing
 # key + certificate first with `secsy-ca tsa-key` — the key MUST be RSA.
 tsa:
   enabled: false
@@ -621,7 +621,7 @@ tsa:
 # "signer") and via `secsy-ca sign`, with optional RFC 3161 countersignatures
 # from the tsa service above. Provision each signer's key + certificate first
 # with `secsy-ca signing-key` (lint-gated code-signing profile). See
-# docs/artifact-signing.md.
+# docs/signing/artifact-signing.md.
 signing:
   enabled: false
   # signers:
@@ -637,7 +637,7 @@ signing:
 # enterprise clients that speak CMP rather than ACME/EST. It handles the ir/cr/
 # kur/rr PKIMessage flows with shared-secret (PasswordBasedMac) or signature-based
 # message protection; every leaf is signed through the shared HSM-backed CA.
-# Disabled by default; see docs/enrollment.md.
+# Disabled by default; see docs/protocols/scep-est.md.
 cmp:
   enabled: false
   # path: /cmp                              # URL the endpoint mounts under
@@ -653,7 +653,7 @@ cmp:
 # IoT/network devices: validate the pledge's manufacturer IDevID against the
 # trusted manufacturer roots (reused from `attestation`), obtain a signed voucher
 # from a MASA, and hand the pledge off to EST for the HSM-backed LDevID. Requires
-# est.enabled. Disabled by default; see docs/brski.md.
+# est.enabled. Disabled by default; see docs/protocols/brski.md.
 brski:
   enabled: false
   # base_path: /.well-known/brski           # registrar endpoints prefix
@@ -674,7 +674,7 @@ brski:
     # voucher_validity_hours: 24            # bounds nonceless vouchers
 
 # audit.export streams the tamper-evident event log to external SIEM systems.
-# Disabled by default; see docs/audit-siem-export.md. Each sink has its own
+# Disabled by default; see docs/security/audit-siem-export.md. Each sink has its own
 # durable cursor, so delivery is at-least-once and lossless across restarts.
 audit:
   export:
@@ -703,7 +703,7 @@ audit:
   # Audit-chain anchoring (RFC 3161): periodically bind the event log's head
   # hash into a timestamp token so whole-chain truncation/rewrite is detectable
   # by `secsy-ca audit verify`. Needs the internal TSA (tsa.enabled) or an
-  # external tsa_url. See docs/RUNBOOK.md "Audit-chain anchoring".
+  # external tsa_url. See docs/operations/runbook.md "Audit-chain anchoring".
   anchor:
     enabled: false
     # interval_hours: 24         # anchor cadence; bounds the truncation window
@@ -715,7 +715,7 @@ audit:
 # (the TSA returns timeNotAvailable; anchoring refuses) when the drift exceeds
 # max_drift — so a rewound or drifted host clock cannot mint false timestamps.
 # The default (type: system, or omitting this block) trusts the host clock with
-# no cross-check, so existing deployments are unaffected. See docs/trusted-time.md.
+# no cross-check, so existing deployments are unaffected. See docs/signing/trusted-time.md.
 time:
   source:
     type: system                 # system (default) | nts | roughtime
@@ -735,7 +735,7 @@ time:
 
 # rate_limit protects the public-facing endpoints (ACME newOrder/newAccount,
 # OCSP, CRL, and SCEP/EST enrollment) from issuance abuse and HSM overload.
-# Disabled by default; see docs/rate-limiting.md. When enabled, a token-bucket
+# Disabled by default; see docs/security/rate-limiting.md. When enabled, a token-bucket
 # limiter meters requests across three independent tiers and a bounded in-flight
 # guard caps how many signing/enrollment requests hit the HSM at once. Rejected
 # requests get a 429 (or 503 when the HSM is saturated) with a Retry-After hint,
@@ -775,7 +775,7 @@ rate_limit:
 # paths (issuance, HSM sign/session-pool wait, failover events, CRL/OCSP,
 # pre-issuance lint/CAA/name-constraint gates, store writes), correlated with the
 # structured request log via trace/span IDs. Complements the Prometheus metrics.
-# Disabled by default: a no-op tracer, no exporter. See docs/tracing.md and the
+# Disabled by default: a no-op tracer, no exporter. See docs/operations/tracing.md and the
 # collector snippet in deploy/observability/tracing/. W3C traceparent is honored.
 tracing:
   enabled: false
@@ -823,7 +823,7 @@ discovery:
 # Probe certs carry the "canary" marker, keeping them out of expiry
 # monitoring and inventory reports. Leader-gated with replicas > 1.
 # Note: probes consume the probed CA's tenant issuance quota (one cert per
-# probe) and a few HSM signatures per run. See docs/canary.md.
+# probe) and a few HSM signatures per run. See docs/operations/canary.md.
 canary:
   enabled: false
   interval_minutes: 15          # probe cadence per CA (default 15)
@@ -834,7 +834,7 @@ canary:
 
 # --- HSM-backed secret encryption (envelope encryption) -----------------------
 # Encrypt passwords and small secrets under a KEK held in the HSM. See
-# docs/password-encryption.md. When secret.kek_label is unset, the /api/secret/*
+# docs/secrets/password-encryption.md. When secret.kek_label is unset, the /api/secret/*
 # endpoints are disabled.
 # secret:
 #   kek_label: "secsy-kek"       # RSA KEK label (create with `secsy-secret init-kek`)
@@ -856,7 +856,7 @@ canary:
 #   # Each enciphers structured data into a value of the SAME length over the SAME
 #   # alphabet; a deterministic template yields stable ciphertext for equal input
 #   # (equality search / de-duplication). Keys are HKDF-derived per template from a
-#   # seed sealed under kek_label. See docs/password-encryption.md.
+#   # seed sealed under kek_label. See docs/secrets/password-encryption.md.
 #   transforms:
 #     - name: pan                # referenced by callers; bound into the derived key
 #       alphabet: digits         # named set, or an inline "chars:<symbols>" literal
@@ -875,7 +875,7 @@ canary:
 # (never the requester) sign off. Approving requires the `approver` role
 # (approval:approve), deliberately separate from the roles that REQUEST the
 # operations. The gate is disabled unless approvals.enabled is set, so existing
-# deployments are unaffected until they opt in. See docs/approvals.md.
+# deployments are unaffected until they opt in. See docs/security/approvals.md.
 approvals:
   enabled: false
   # default_threshold is the distinct-approver count for any guarded class without
@@ -909,7 +909,7 @@ approvals:
 # envelope-encrypts it under the HSM-backed secret KEK, and writes it to a local
 # directory or S3-compatible store with an atomic swap, a manifest, and keep-N /
 # max-age retention. It never blocks issuance and is a no-op on non-leader
-# replicas. Disabled unless backup.enabled is set. See docs/backup.md.
+# replicas. Disabled unless backup.enabled is set. See docs/operations/backup.md.
 backup:
   enabled: false
   schedule:
@@ -950,7 +950,7 @@ backup:
 # additionally excluded. The job never touches the authoritative
 # revoked_certificates table, so OCSP/CRL for every retained serial is
 # unaffected. The `secsy-ca inventory retention` CLI (run/dry-run/status) works
-# regardless of this block. See docs/retention.md.
+# regardless of this block. See docs/ca/retention.md.
 retention:
   enabled: false
   # mode: "archive" MOVES eligible rows into issued_certificates_archive (nothing

@@ -65,7 +65,7 @@ SYFT   ?= syft
 COSIGN_KEY      ?=
 
 # Keyless verification identity. Defaults accept any GitHub Actions workflow in
-# this repo; tighten for production consumers (see docs/supply-chain.md). These
+# this repo; tighten for production consumers (see docs/development/supply-chain.md). These
 # must be defined before COSIGN_VERIFY_FLAGS references them below.
 COSIGN_CERT_IDENTITY_REGEXP     ?= ^https://github.com/$(OWNER)/secsy-pki/
 COSIGN_CERT_OIDC_ISSUER_REGEXP  ?= ^https://token.actions.githubusercontent.com$$
@@ -130,6 +130,14 @@ lint: ## Run golangci-lint on the server module (config: server/.golangci.yml)
 lint-fix: ## Run golangci-lint with --fix (gofmt/goimports + safe autofixes)
 	cd server && GOTOOLCHAIN=auto $(GOLANGCI_LINT) run --fix
 
+# Documentation structure gate: every relative link and #anchor resolves, every
+# page under docs/<section>/ is reachable from an index, and every `docs/<page>.md`
+# path quoted in code or config still points somewhere. Needs no HSM, no build
+# and no dependencies, so it runs anywhere a checkout does.
+.PHONY: docs-check
+docs-check: ## Check documentation links, anchors, section indexes and quoted paths
+	@./scripts/check-docs.sh
+
 # ---------------------------------------------------------------------------
 # Data-race detector (Task 109)
 # ---------------------------------------------------------------------------
@@ -191,7 +199,7 @@ test-race-serial: ## -race -p 1 over the SoftHSM/Postgres-backed packages (provi
 #                        in CI). Surfaces the table to the GitHub step summary.
 #   make bench-baseline  regenerate the committed baseline (bench/baseline.txt)
 #
-# See docs/benchmarks.md#benchmark-regression-gate.
+# See docs/development/benchmarks.md#benchmark-regression-gate.
 BENCHSTAT_VERSION ?= v0.0.0-20260615155930-9e4b9ddef5b6
 BENCH_TAGS        ?= sqlite
 BENCH_PATTERN     ?= Software
@@ -249,7 +257,7 @@ bench-baseline: | $(DIST) ## (Re)generate the committed benchmark baseline (benc
 # Coverage is computed straight from the profile and matches Go's own per-package
 # `coverage: N%` numbers; the total is rock-stable run-to-run and the small
 # per-package jitter of the timing-sensitive packages stays under the tolerance.
-# See TESTING.md#test-coverage-gate and docs/coverage.md.
+# See TESTING.md#test-coverage-gate and docs/development/coverage.md.
 COVER_TAGS      ?= sqlite
 COVER_PKGS      ?= ./internal/...
 # A package fails the ratchet only on a drop > this many percentage points below
@@ -291,7 +299,7 @@ cover-baseline: ## (Re)generate the committed HSM-free coverage baseline, then p
 # ---------------------------------------------------------------------------
 # The industry-standard github.com/zmap/zlint suite is compiled in only under the
 # `zlint` build tag, so the default/FIPS/supply-chain builds stay free of the
-# zmap dependency surface. See docs/certlint.md. `zmap` is in go.mod regardless
+# zmap dependency surface. See docs/issuance/certlint.md. `zmap` is in go.mod regardless
 # of tag but is linked (and reachable to govulncheck) only with -tags zlint.
 ZLINT_OUT := $(DIST)/zlint
 
@@ -317,7 +325,7 @@ govulncheck-zlint: ## Reachability scan including the zlint dependency tree (-ta
 # GODEBUG=fips140=on, so the binaries run on the module out of the box; the
 # target proves it by running the freshly built server's -version and requiring
 # "fips140=on". Pair the build with `security.fips: true` in the config for the
-# fail-closed algorithm policy — see docs/fips.md.
+# fail-closed algorithm policy — see docs/security/fips.md.
 GOFIPS140 ?= latest
 FIPS_OUT  := $(DIST)/fips
 FIPS_GOFLAGS := GOTOOLCHAIN=auto GOFIPS140=$(GOFIPS140) CGO_ENABLED=1

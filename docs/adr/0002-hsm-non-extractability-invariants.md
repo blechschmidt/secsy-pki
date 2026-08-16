@@ -27,7 +27,7 @@ system never has an API that exports a private key. Concretely:
 - **Backup never touches private keys.** `secsy-ca backup` exports CA metadata
   and a DR manifest only; key material is recovered by restoring the HSM
   token's own encrypted blob under its wrap key, never as plaintext (see
-  [key ceremony & DR](../key-ceremony.md)).
+  [key ceremony & DR](../hsm/key-ceremony.md)).
 - **Labels are unique.** Two token objects sharing a `CKA_LABEL` can resolve a
   public and private half from different key pairs, yielding intermittently
   unverifiable signatures. `GenerateKey` refuses to create a second key with an
@@ -35,14 +35,14 @@ system never has an API that exports a private key. Concretely:
 
 ## Consequences
 
-- The [security invariants](../security-review.md) are testable and tested:
+- The [security invariants](../security/security-review.md) are testable and tested:
   fuzz and integration suites assert non-extractability and reject raw CSR
   extension smuggling.
 - **Disaster recovery is HSM-shaped.** You cannot restore a CA from a file
   backup alone; you restore the token (or re-run a key ceremony) and then
-  reattach metadata. The [DR drill](../key-ceremony.md) exercises exactly this.
+  reattach metadata. The [DR drill](../hsm/key-ceremony.md) exercises exactly this.
 - Losing the token without a token-level backup means losing the key — by
-  design. This is why the [key ceremony](../key-ceremony.md) and DR procedures
+  design. This is why the [key ceremony](../hsm/key-ceremony.md) and DR procedures
   are mandatory before production issuance.
 - This invariant is a hard constraint on every later feature: rotation
   ([ADR 0004](0004-dual-chain-rotation-overlap.md)), escrow, and PQC

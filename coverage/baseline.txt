@@ -10,7 +10,7 @@
 #
 # Regenerate intentionally after adding covered code, then commit this file:
 #     scripts/cover-baseline.sh   (or: make cover-baseline)
-# See TESTING.md#test-coverage-gate and docs/coverage.md.
+# See TESTING.md#test-coverage-gate and docs/development/coverage.md.
 #
 # Format: <package-or-total>\t<percent>.  Generated — do not hand-edit.
 total	62.4

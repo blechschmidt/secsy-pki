@@ -30,6 +30,6 @@
 // require SoftHSM or PostgreSQL skip cleanly when those dependencies are not
 // configured, so `go test ./...` stays green on a bare checkout.
 //
-// See docs/resilience.md for the guarantees this suite observes and
+// See docs/development/resilience.md for the guarantees this suite observes and
 // scripts/chaos-test.sh for the one-command runner used locally and in CI.
 package chaos

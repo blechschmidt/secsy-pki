@@ -6,7 +6,7 @@ package certlint
 // carries no dependency on github.com/zmap/zlint or zcrypto. A profile that
 // enables zlint still runs the hand-rolled Baseline Requirements checks; the
 // zlint findings are simply unavailable. Build with `-tags zlint` to link the
-// backend (see internal/certlint/zlint_backend.go and docs/certlint.md).
+// backend (see internal/certlint/zlint_backend.go and docs/issuance/certlint.md).
 
 const zlintCompiledIn = false
 

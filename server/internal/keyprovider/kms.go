@@ -18,7 +18,7 @@ import (
 // Azure Key Vault). Like the PKCS#11 backend, the private key never leaves the
 // service: generation, signing, and public-key export all happen through the
 // cloud API, and there is no operation that returns private key material. See
-// docs/cloud-kms.md for backend selection and IAM requirements.
+// docs/hsm/cloud-kms.md for backend selection and IAM requirements.
 const ProviderKMS ProviderType = "kms"
 
 // Cloud-KMS backend identifiers accepted by KMSSettings.Backend.

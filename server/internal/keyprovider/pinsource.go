@@ -279,7 +279,7 @@ func (s *inlinePinSource) Resolve(_ context.Context) (string, error) {
 		inlinePinDeprecationOnce.Do(func() {
 			log.Printf("WARNING: the PKCS#11 user PIN is configured inline (pkcs11.pin / SECSY_USER_PIN, plaintext at rest). " +
 				"Configure pkcs11.pin_source (env/file/vault/aws/azure) to source it from a credential store instead. " +
-				"See docs/hsm-configuration.md.")
+				"See docs/hsm/configuration.md.")
 		})
 	}
 	return s.pin, nil

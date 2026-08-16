@@ -299,7 +299,7 @@ var builtinProfiles = map[string]Profile{
 	// URI SAN as the sole identity (no CN reliance, no DNS/IP SAN by default),
 	// CA:false, key usage digitalSignature, and serverAuth+clientAuth EKUs for
 	// mutual TLS. SVIDs are deliberately short-lived and auto-renewed aggressively
-	// by the expiry monitor; see internal/spiffe and docs/spiffe.md.
+	// by the expiry monitor; see internal/spiffe and docs/certificates/spiffe.md.
 	"spiffe-svid": {
 		Name:            "spiffe-svid",
 		Description:     "SPIFFE X.509-SVID workload identity (spiffe:// URI SAN, short-lived)",

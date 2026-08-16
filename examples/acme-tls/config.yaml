@@ -5,7 +5,7 @@
 # with any standard ACME client (certbot, acme.sh, lego, Caddy, Traefik,
 # cert-manager). Certificates are signed by an HSM-backed issuing CA.
 #
-# See examples/acme-tls/README.md for client setup, and docs/acme.md for the
+# See examples/acme-tls/README.md for client setup, and docs/protocols/acme.md for the
 # full reference (EAB, ARI, wildcards/dns-01, profiles, STAR, MPIC, ...).
 
 server:
@@ -78,6 +78,6 @@ rate_limit:
     acquire_timeout_ms: 5000
 
 # For unattended renewal on each host, run the bundled host agent
-# (secsy-agent, docs/agent.md) or your ACME client's renew timer. ACME Renewal
+# (secsy-agent, docs/protocols/agent.md) or your ACME client's renew timer. ACME Renewal
 # Information (ARI) is advertised automatically so clients can schedule renewals
 # around the CA's suggested window.

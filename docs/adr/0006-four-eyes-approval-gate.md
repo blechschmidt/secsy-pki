@@ -61,7 +61,7 @@ operations are observable.
   point. Break-glass (a genuine lone-operator emergency) means an admin lowers the
   class's approver count in config and restarts, recording the exception; the
   system does not provide a silent self-approval escape hatch. The
-  [runbook](../RUNBOOK.md#governance-approvals-suspendhold--api-tokens) documents
+  [runbook](../operations/runbook.md#governance-approvals-suspendhold--api-tokens) documents
   the stuck-queue and break-glass procedures.
 - **Gated issuance is asynchronous.** Callers must handle `202 + poll`, not a
   synchronous certificate. This is why the gate is opt-in per profile: turn it on
@@ -70,5 +70,5 @@ operations are observable.
   the gate**, not inventing a new check. The enumerated-class list is the audit
   surface for "what requires dual control here?"
 - Composes with the other fail-closed gates ([ADR 0003](0003-fail-closed-security-gates.md))
-  and with WebAuthn step-up ([authentication](../authentication.md)): step-up
+  and with WebAuthn step-up ([authentication](../security/authentication.md)): step-up
   proves *who* is acting; four-eyes proves *two* independent people agreed.

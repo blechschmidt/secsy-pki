@@ -7,7 +7,7 @@
 # service account (issuer role) or a bound mutual-TLS operator certificate.
 #
 # See examples/mtls-internal/README.md for the walkthrough. Reference:
-# docs/certificate-authority.md, docs/authentication.md, docs/rbac-and-audit.md.
+# docs/ca/overview.md, docs/security/authentication.md, docs/security/rbac-and-audit.md.
 
 server:
   host: "0.0.0.0"

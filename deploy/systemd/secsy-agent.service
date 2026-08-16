@@ -11,7 +11,7 @@
 
 [Unit]
 Description=secsy-pki host auto-enrollment agent
-Documentation=https://github.com/blechschmidt/secsy-pki/blob/main/docs/agent.md
+Documentation=https://github.com/blechschmidt/secsy-pki/blob/main/docs/protocols/agent.md
 Wants=network-online.target
 After=network-online.target
 

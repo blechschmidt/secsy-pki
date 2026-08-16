@@ -1,0 +1,116 @@
+# Operator web console
+
+The server embeds a dependency-free operator console (vanilla JS, `go:embed`)
+at **`/console/`**. There is no separate front-end deployment: the SPA ships
+inside the binary, holds no privileges of its own, and drives the same
+RBAC-gated, audited REST API as every other client. High-risk operations can
+demand a WebAuthn passkey step-up (see [authentication.md](../security/authentication.md));
+the console runs the assertion ceremony on demand and retries.
+
+Sign-in supports a server-side password login (session cookie + CSRF), OIDC
+SSO, or stateless basic auth/bearer tokens for scripting parity.
+
+For fleet-wide health beyond the console's per-CA operational views (Expiry
+Monitor, Compliance, Audit), pair it with the packaged Grafana dashboard and the
+[SLO recording rules and multi-window burn-rate alerts](observability.md#slos-and-error-budgets)
+(`prometheus-slo-rules.yaml`) — issuance/OCSP/CRL availability and latency SLIs
+with fast/slow burn-rate paging.
+
+## Pages
+
+| Page | What it covers | Backing endpoints |
+|---|---|---|
+| **Certificates** | Browse a CA's issued certificates as a **paged, filtered table** (search over subject/CN/SAN, status and profile filters incl. **held**, server-side keyset pagination with a **Load more** action), revoke (RFC 5280 reason picker), **suspend** (reversible `certificateHold`) and **release** a held certificate, **renew** with a fresh serial, download base/delta CRLs and per-shard partition CRLs, CRL freshness strip, and the **bulk revocation (incident response)** panel — filters (profile / CN-SAN glob / issuance window / serial list), dry-run preview, mandatory typed confirmation of the previewed count, result summary (see [incident-response.md](incident-response.md)) | `/api/ca/{id}/certificates`, `/revoked`, `/renew`, `/revoke`, `/certificates/{serial}:suspend`, `:release`, `/revocations:bulk`, `/crl[...]`, `/crl/status` |
+| **Inventory** | Cross-CA certificate inventory with search/status/profile filters, CT and lint verdicts, CSV export, and a **key-compromise search** panel — find every certificate that shares a leaked subject public key by its **SPKI SHA-256 fingerprint** (or a pasted public-key PEM, fingerprinted in your browser), fanned out across every CA you can read, with the ready-to-run `revoke-bulk` command for the matches (see [incident-response.md](incident-response.md#finding-every-certificate-that-shares-a-compromised-key)) | `/api/report/inventory`, `/api/ca/{id}/certificates?public_key_sha256=` |
+| **Expiry Monitor** | Certificates ranked by remaining validity; on-demand scan with auto-renewal | `/api/monitor/expiring`, `/api/monitor/scan` |
+| **Discovery** | External TLS endpoint scanning; flags expiring/weak/SHA-1/self-signed/mismatched/rogue certificates; **paged, searchable** stored-inventory table with a **Load more** action | `/api/discovery`, `/api/discovery/scan` |
+| **CT Inclusion** | Certificate Transparency SCT **inclusion-proof** state recorded by the [inclusion monitor](../issuance/certificate-transparency.md#inclusion-proof-monitoring-post-issuance): status badges (included / pending / failed / unknown-log), log name, tree size and leaf index, filterable by status; `failed` rows flag a log that broke its merge promise | `/api/ct/inclusion` |
+| **Issue** | Sign a PKCS#10 CSR under a profile. The profile **policy summary** flags validity, key usage/EKU, CT/CAA/lint, and — new — whether the profile is [**eIDAS-qualified**](../certificates/qualified-certificates.md), carries an [**RFC 5280 private-key usage period**](../ca/overview.md), or is [**RFC 9345 delegated-credential-eligible**](../certificates/delegated-credentials.md). Per-request controls appear only where the selected profile permits an override: a UPN field (smartcard-logon/PKINIT), an **OCSP Must-Staple override** (RFC 7633), an **eIDAS PSD2 authorization** group (ETSI TS 119 495 PSP roles + competent-authority name/ID, for [QWACs](../certificates/qualified-certificates.md#psd2-qwacs-etsi-ts-119-495)), and a **private-key usage period** override (a duration from notBefore). A **Preview (dry run)** button runs the full [pre-issuance gate stack](../issuance/preview.md) — decision + resolved leaf + per-gate verdicts (incl. the `qcstatements` and `private_key_usage_period` gates) — **without signing** (no serial, no audit, no HSM) | `/api/ca/{id}/issue`, `/api/ca/{id}/certificates:preview`, `/api/profiles` |
+| **Validate** | [Chain / path validation](../ca/chain-validation.md): build and validate a pasted leaf (+ optional intermediates) against a selected CA's trust anchors and read a structured verdict — chain-built, validity window, **live CRL+OCSP revocation** (incl. reversible on-hold), name-constraint & certificate-policy conformance, and weak key/signature flags per chain certificate; nothing is signed | `/api/validate` |
+| **PKCS#12** | Server-side keygen + issue + download a password-protected `.p12` (key + leaf + full chain) for S/MIME / device enrollment; subject/SANs, key type, encoder, and optional M-of-N escrow of the subject key | `/api/ca/{id}/pkcs12`, `/api/profiles` |
+| **Authorities** | CA hierarchy table with rollover state; **create root**, **issue intermediate**, **external subordinate CA** (generate HSM key + PKCS#10 CSR for an offline/third-party parent, download/re-download the CSR, import the signed certificate + external chain with validation warnings), **rotate** an intermediate's signing key (dual-chain overlap), **retire** a drained superseded key, **cross-sign** (local CA or external cert/CSR) with alternate-chain downloads, and the **HSM key inventory** (non-extractability verdict, admin-only) | `/api/ca/init-root`, `/api/ca/{id}/issue-intermediate`, `/api/ca/csr`, `/api/ca/{id}/csr`, `/api/ca/{id}/import-cert`, `/api/rotations`, `/api/ca/{id}/rotation`, `/rotate`, `/retire`, `/cross-signs`, `/api/inventory/keys` |
+| **SSH CA** | Create SSH CAs, sign user/host public keys under profiles, browse/revoke signed certificates, download the CA public key and the KRL | `/api/ssh/cas[...]`, `/api/ssh/profiles` |
+| **Signing** | Artifact code-signing: configured signer list (with each signer's default **CAdES level**), detached CMS signature over an uploaded file or a digest with a per-signature **CAdES baseline level** selector (**B** signed attrs / **T** + RFC 3161 timestamp / **LT** + embedded revocation), and signature verification against the PKI's anchors with an optional **require-level** gate and require-timestamp check; results report the achieved level and any LTV material (see [artifact-signing.md](../signing/artifact-signing.md#cades-baseline-levels-b--t--lt)) | `/api/sign`, `/api/sign/verify`, `/api/sign/signers` |
+| **ACME** | The [ACME server](../protocols/acme.md) at a glance: the offered challenge types (http-01 / dns-01 / tls-alpn-01), and browse of ACME accounts (with **status** and validated **contacts**, per [account & authorization lifecycle](../protocols/acme.md)) and orders | `/api/acme/accounts`, `/api/acme/orders` |
+| **Audit** | The tamper-evident event log with action/actor filters and paging, hash-chain verification, and SIEM exports (NDJSON, CEF, RFC 5424 syslog) | `/api/events`, `/api/events/verify`, `/api/events/export` |
+| **Approvals** | The [four-eyes / maker-checker](../security/approvals.md) queue: pending sensitive operations (CA create/rotate/retire, bulk revoke, KEK rotation, token create) and the per-profile manual **issuance** gate; **approve**/**reject** with a distinct approver, and **fetch the issued certificate** once an issuance approval clears | `/api/approvals`, `/api/approvals/{id}/approve`, `/reject`, `/certificate` |
+| **Compliance** | CA/B-Forum conformance evidence (lint split, blocked issuance, audit-chain status) plus an **ad-hoc lint** panel for any pasted certificate | `/api/report/compliance`, `/api/lint` |
+| **Trust Bundle** | Issuer chain (AIA bundle, key-rollover aware), SPIFFE trust bundle (JWKS), and **X.509-SVID minting** when SPIFFE issuance is enabled | `/api/ca/{id}/chain`, `/svid/bundle`, `/svid` |
+| **DNS Records** | Generate [DANE TLSA and SSHFP](dns-records.md) pinning records in zone-file format for material this PKI issues: a TLSA panel (CA + host/port, optional leaf serial) and an SSHFP panel (SSH CA + serial, or a pasted host public key) | `/api/ca/{id}/dns-records/tlsa`, `/api/ssh/cas/{id}/dns-records/sshfp` |
+| **Secrets** | HSM-backed envelope encryption/decryption (each with an optional **context / AAD** binding), KEK metadata, and — when configured — M-of-N **escrow on encrypt** with the policy shape displayed. A **Crypto service** panel exposes the stateless [encryption-as-a-service](../secrets/password-encryption.md#stateless-crypto-service-data-key-keyed-hmac-random) endpoints: mint a **data key** (returned in the clear and KEK-wrapped, optional AAD), compute and **verify a keyed HMAC** (versioned MAC key), and draw **CSPRNG random bytes** (HSM RNG when available, hex/base64). A **Digital signatures** panel manages named, HSM-backed [asymmetric signing keys](../secrets/password-encryption.md#digital-signatures-named-signing-keys-sign--verify): create a key (ECDSA / Ed25519 / RSA-PSS / RSA-PKCS#1 v1.5, algorithm fixed at creation), export its public half (SPKI PEM), and **sign / verify** arbitrary data — the private half is generated non-extractable on the token | `/api/secret/info`, `/encrypt`, `/decrypt`, `/datakey`, `/hmac`, `/hmac/verify`, `/random`, `/signing-keys[...]`, `/verify` |
+| **Tenants** | Tenant lifecycle (create/suspend/reactivate), per-tenant quotas, and usage reports (platform-admin only) | `/api/tenants[...]` |
+| **API Tokens** | Native scoped [API tokens / service accounts](../security/authentication.md#4-native-scoped-api-tokens-service-accounts): create a `secsy_pat_` token (name, roles, tenant/platform scope, expiry) with the secret shown **once**, list tokens with status, and revoke | `/api/tokens`, `/api/tokens/{id}` |
+
+## CLI ↔ console parity
+
+Task 62 made every server-side capability the `secsy-ca` / `secsy-secret`
+CLIs expose reachable from the console as well. The mapping:
+
+| CLI | Console |
+|---|---|
+| `init-root`, `issue-intermediate`, `list` | Authorities page |
+| `issue` (incl. `-dry-run` preview, `-psd2-*` eIDAS PSD2, `-pkup` private-key usage period), `renew`, `revoke`, `revoke-bulk`, `gen-crl` (incl. delta/shards) | Issue (incl. **Preview (dry run)**, PSD2 & PKUP override controls) + Certificates pages (bulk revocation panel with dry-run count confirmation) |
+| `suspend`, `release` (reversible `certificateHold`) | Certificates page (Suspend / Release actions; **held** status filter) |
+| `export-p12` | PKCS#12 page |
+| `list-certs` (incl. `-status`/`-profile`/`-q` filters + keyset paging), `expiring`, `monitor-run`, `profiles` | Certificates, Inventory, Expiry Monitor, Issue pages |
+| `list-certs --by-public-key <fp\|@file>`, `revoke-bulk --by-public-key` (key-compromise) | Inventory page (**Key-compromise search** panel — SPKI-fingerprint / public-key search across all readable CAs) |
+| `approvals list/approve/reject/certificate` | Approvals page (queue, approve/reject, fetch issued cert) |
+| `token create/list/revoke` | API Tokens page |
+| `ct inclusion-status` (read) / `ct verify-inclusion` (on-demand scan, CLI-only) | CT Inclusion page (status table) |
+| `dns-records tlsa`, `dns-records sshfp` | DNS Records page |
+| `rotate-intermediate`, `rotation-status`, `list-rotations`, `retire-intermediate`, `publish-chain` | Authorities page (rotate/retire actions, status badges) + Trust Bundle chain download |
+| `cross-sign`, `list-cross-signs` | Authorities page (cross-signing panels) |
+| `ca csr`, `ca import-cert` | Authorities page (external subordinate CA panel; CSR / Import cert actions on pending rows) |
+| `ssh ca-init / sign-user / sign-host / revoke / krl / list / profiles` | SSH CA page |
+| `sign` (incl. `-level b\|t\|lt`), `verify-signature` (incl. `-require-level`) | Signing page (CAdES level selector + require-level gate) |
+| `svid`, `svid-bundle` | Trust Bundle page (SVID mint panel, bundle download) |
+| `lint` | Compliance page (lint panel) |
+| `validate-cert` | Validate page (chain/path validation) |
+| `inventory` | Authorities page (HSM key inventory) |
+| `audit verify`, `audit export` (json/cef/rfc5424) | Audit page |
+| `discover` | Discovery page |
+| `tenant list/create/suspend/activate/quota/usage` | Tenants page |
+| `secsy-secret encrypt/decrypt/kek-info`, `encrypt -escrow`, `escrow-config` (status), `datakey`, `hmac`, `hmac-verify`, `random` | Secrets page (envelope encrypt/decrypt + Crypto service panel) |
+| `secsy-secret signing-key create/list/public`, `sign`, `verify` | Secrets page (**Digital signatures** panel — signing-key management, public-key export, sign/verify) |
+
+### Deliberately CLI-only
+
+Some commands are host-local or dual-control ceremonies and are intentionally
+**not** exposed over the network API (and therefore not in the console):
+
+- `ceremony` — interactive M-of-N operator quorum for root/intermediate
+  creation (the API's init-root/issue-intermediate are step-up gated instead).
+- `backup` / `restore`, `db migrate` / `db verify` — disaster recovery and
+  store administration against local files/DSNs.
+- `doctor` — local preflight diagnostics (config/HSM/DB/listener); the
+  console-visible health signals live in `/healthz`, `/readyz`, and the
+  Compliance page.
+- `publish` — writes static CRL/OCSP artifacts to a local directory or S3.
+- `blocked-keys add/list/remove` — curating the operator-managed
+  weak/compromised-key blocklist (SPKI SHA-256 fingerprints) that feeds the
+  pre-issuance [key-checks](../issuance/key-checks.md) gate. It is a security-admin store
+  with **no network API** by design, so the blocklist is curated only from an
+  authenticated host shell, never the console. The gate's effect is visible in
+  the key-check verdicts and in the Issue page's dry-run preview.
+- `tsa-key`, `signing-key`, `secsy-secret init-kek`, `escrow-init-agent` —
+  key provisioning for server-role keys; they require key-provider role
+  wiring and a restart to take effect.
+- `secsy-secret recover` and escrow recovery — a dual-control quorum ceremony
+  requiring recovery-agent key access on the HSM; the console shows escrow
+  status and can escrow-on-encrypt, but recovery stays offline by design.
+- `cmp` / `grpc` — protocol client tools for testing the CMP and gRPC
+  endpoints (the endpoints themselves serve machine enrollment, not the
+  console).
+
+## End-to-end coverage
+
+`server/internal/e2e/console_test.go` drives every console workflow against a
+real SoftHSM-backed server (assets, issuance, revocation+CRL, renewal, CA
+lifecycle incl. rotation/retirement, cross-signing, SSH CA, signing endpoints,
+lint, key inventory, audit list/verify/export, secrets round-trip incl. the
+escrow-status shape). Run it with the SoftHSM environment exported:
+
+```sh
+eval "$(scripts/setup-softhsm.sh --export-env)"
+cd server && go test -tags sqlite -p 1 -run TestConsoleFlow ./internal/e2e/
+```

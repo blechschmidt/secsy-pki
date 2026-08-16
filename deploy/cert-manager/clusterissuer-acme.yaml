@@ -9,7 +9,7 @@
 # Prerequisites:
 #   * cert-manager installed in the cluster.
 #   * secsy-pki running with config.acme.enabled=true and an ACME-enabled issuing
-#     CA (see docs/acme.md).
+#     CA (see docs/protocols/acme.md).
 #
 # Adjust:
 #   * spec.acme.server        -> the in-cluster (or public) ACME directory URL.

@@ -24,7 +24,7 @@ import (
 // helper takes the leaf certificate and its key from the operator's files
 // (`-cert`/`-key`). It is the offline, operator-holds-the-leaf-key path; the
 // server-side POST /api/ca/{id}/delegated-credential can instead recover a leaf
-// key escrowed from a PKCS#12 export (Task 33). See docs/delegated-credentials.md.
+// key escrowed from a PKCS#12 export (Task 33). See docs/certificates/delegated-credentials.md.
 func cmdDelegatedCredential(args []string) error {
 	if len(args) == 0 {
 		delegatedCredentialUsage()

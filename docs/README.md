@@ -1,130 +1,216 @@
-# Secsy PKI — Enterprise documentation
+# Secsy PKI — enterprise documentation
 
 Deployment and operations guides for the **enterprise edition** of secsy-pki: an
-HSM-backed X.509 + SSH certificate authority with envelope-based secret
+HSM-backed X.509 and SSH certificate authority with envelope-based secret
 encryption, role-based access control, and a tamper-evident audit log.
 
-Start with the [project README](../README.md) for what secsy-pki is, how to
-build it, and the SSH certificate workflow. The guides here cover the enterprise
-CA, secret-encryption, and governance features.
+The [project README](../README.md) covers what secsy-pki is, how to build it,
+and the `secsy-ssh` workflow. Everything below is the enterprise reference,
+grouped into 12 sections. Each section folder has its own index with fuller
+descriptions; this page is the map.
 
-**Want a running start?** The [`examples/`](../examples/README.md) folder has
-copy-and-adapt recipes for whole use cases — an [SSH PKI](../examples/ssh-pki/),
-[keyless signing from GitHub Actions via OIDC](../examples/github-oidc-signing/),
-[ACME TLS automation](../examples/acme-tls/), and a
-[private mTLS CA](../examples/mtls-internal/) — each a minimal config plus the
-client-side glue. The guides below are the reference behind them.
+## Start here
 
-**Operating a live deployment?** Jump to the
-[operator runbook](RUNBOOK.md) for day-2 procedures (incident response, outage
-handling, tuning, rotation, DR), and the
-[Architecture Decision Records](adr/README.md) for the reasoning behind the
-design.
+| If you want to… | Go to |
+|-----------------|-------|
+| **Copy a working setup** | [`examples/`](../examples/README.md) — whole use cases as a config plus the client-side glue: [SSH PKI](../examples/ssh-pki/), [keyless signing from GitHub Actions](../examples/github-oidc-signing/), [ACME TLS automation](../examples/acme-tls/), [a private mTLS CA](../examples/mtls-internal/) |
+| **Deploy for the first time** | [HSM configuration](hsm/configuration.md) → [Certificate authority](ca/overview.md) → [RBAC & audit](security/rbac-and-audit.md) |
+| **Add secret encryption** | [Password / secret encryption](secrets/password-encryption.md) |
+| **Move to production** | [Production HSM migration](hsm/production-migration.md) → [Key ceremony & DR](hsm/key-ceremony.md) → [Observability](operations/observability.md) |
+| **Run it on Kubernetes** | [Kubernetes deployment](deployment/kubernetes.md) → [Multi-replica coordination](deployment/high-availability.md) |
+| **Operate a live deployment** | [Operator runbook](operations/runbook.md) — keep it bookmarked |
+| **Respond to a key compromise** | [Incident response: mass revocation](operations/incident-response.md) |
+| **Prepare for a WebTrust / CA-Browser-Forum audit** | [Certificate Policy / CPS](compliance/certificate-policy.md) and the [compliance control mapping](compliance/compliance-mapping.md) |
+| **Understand why it is built this way** | [Architecture overview](../ARCHITECTURE.md) and the [decision records](adr/README.md) |
 
-**Preparing for a WebTrust / CA-Browser-Forum audit?** Start with the
-[Certificate Policy / CPS (RFC 3647)](certificate-policy.md) and the
-[compliance control mapping](compliance-mapping.md), which trace every required
-control to the implementing code and mark the organizational gaps you must
-close.
+## Documentation map
 
-## Guides
+### 1. HSM & key management — [`hsm/`](hsm/README.md)
 
-| Guide | Covers |
-|-------|--------|
-| [**Operator runbook**](RUNBOOK.md) | **Day-2 operations:** CA-key-compromise incident response, OCSP/CRL outage handling, ACME/SCEP/EST/TSA/CMP endpoint troubleshooting, rate-limit & HSM-concurrency tuning, CT log outage behavior, CA key rotation/retirement, the disaster-recovery drill, and preflight diagnostics (`secsy-ca doctor`: read-only config/HSM/KMS/DB/audit-chain/expiry/CRL/clock/TLS checks with CI exit codes) |
-| [**Incident response: mass revocation**](incident-response.md) | Key-compromise bulk revocation against the CA/B 24-hour clock: scoping the selection (profile, CN/SAN glob, issuance window, serial lists incl. attacker-issued serials unknown to the inventory), the mandatory dry-run + confirmed-count contract, batched execution with resume-after-interruption, the single end-of-run CRL+delta regeneration, OCSP cache invalidation + presign refresh, per-certificate + summary audit events, and propagation verification (`secsy-ca revoke-bulk`, `POST /api/ca/{id}/revocations:bulk`, console panel) |
-| [**Architecture Decision Records**](adr/README.md) | The load-bearing design decisions: key-provider abstraction, HSM non-extractability invariants, fail-closed security gates, dual-chain rotation overlap, and the PQC/hybrid algorithm choice |
-| [**Certificate Policy / CPS (RFC 3647)**](certificate-policy.md) | The governance document WebTrust / CA-Browser-Forum audits require: an RFC 3647-structured Certificate Policy & Certification Practice Statement (all nine sections) populated from the actual implementation — HSM key generation/non-extractability, the fail-closed pre-issuance gate pipeline (lint/CAA/name-constraints/CT), revocation (CRL/delta/OCSP), tamper-evident + RFC 3161-anchored audit logging, key ceremony, DR, and trusted roles/RBAC — with explicit `[OPERATOR: …]` placeholders for the organizational/legal facts a deployment must supply |
-| [**Compliance control mapping**](compliance-mapping.md) | CA/Browser-Forum TLS Baseline Requirements, S/MIME BR, and WebTrust-for-CA principles traced to the implementing feature/package/file, each with a status (enforced / config-dependent / operator / gap) and an explicit **gaps-and-assumptions** column — verified against the code (including honestly-listed gaps: MPIC, pre-issuance weak-key blocklisting, SC-081 phased validity) |
-| [HSM / PKCS#11 configuration](hsm-configuration.md) | The key-provider abstraction, configuring a PKCS#11 HSM or the software backend, and SoftHSM for dev/CI |
-| [Cloud KMS backend (AWS KMS / Azure Key Vault)](cloud-kms.md) | Hosting CA/TSA/OCSP signing keys in AWS KMS or Azure Key Vault: `key_provider.type: kms` + backend selection, per-role backend routing (`roles.ca`/`roles.tsa`), credentials via the cloud SDK default chain, IAM/RBAC requirements, the non-extractability guarantee, and the in-memory `fake` backend for credential-free tests |
-| [HashiCorp Vault Transit backend](vault-transit.md) | Hosting CA/TSA/OCSP signing keys and KEKs in a Vault Transit engine (`kms.backend: vault`): trust/non-extractability model, token & AppRole auth with transparent re-login, least-privilege Vault policy, per-role selection, wrap/unwrap (KEK) support, the openssl-verify interop path, and the hermetic httptest fake-Vault test |
-| [HSM high availability (multi-token failover)](hsm-ha.md) | Spanning several PKCS#11 tokens/slots behind health-tracked failover: `pkcs11.tokens` + `selection_policy` (primary-backup / round-robin), the failure-threshold & background recovery prober, replicated-key ceremony and the cross-token unique-label invariant, per-token health/failover metrics, and the SoftHSM mid-load failover test |
-| [Certificate authority](certificate-authority.md) | Initializing root & intermediate CAs, profiles, issuing / renewing / revoking certificates, reversible suspend/hold + release, the paged/filtered/searchable issued-cert list endpoints, and serving CRL & OCSP |
-| [Issuance preview (dry-run)](issuance-preview.md) | Validating a would-be issuance through the full fail-closed pre-issuance gate stack (lint/CAA/name-constraints/policy/S-MIME/key-checks/UPN/QC/validity + the four-eyes "would-park" and attestation-posture verdicts) **without** signing, allocating a serial, persisting a record, auditing, or taking a rate-limit/quota reservation — for operators and CI: `secsy-ca issue -dry-run` (exits non-zero if rejected), `POST /api/ca/{id}/certificates:preview`, gRPC `PreviewCertificate`, and the console Issue-page preview button; the gate evaluators are shared with real issuance so the verdict cannot drift |
-| [Chain / path validation](chain-validation.md) | Read-only, HSM-independent validation of a supplied leaf (+ intermediates) against a CA's trust anchors: a tolerant DFS path builder (not `x509.Verify`) reporting chain-built, validity, **live CRL+OCSP revocation** (incl. reversible on-hold), name-constraint/policy conformance, and weak key/signature flags per chain certificate — `secsy-ca validate-cert` (PEM/DER, exits non-zero when invalid), `POST /api/validate`, gRPC `ValidateChain`, and the console Validate page |
-| [PKCS#12 (.p12/.pfx) export](pkcs12.md) | Server-side-keygen key delivery for S/MIME and device enrollment: generate a subject keypair, issue a leaf, and return a password-protected PKCS#12 (key + leaf + full chain) — the CA key never leaves the HSM. `secsy-ca export-p12`, `POST /api/ca/{id}/pkcs12`, and the console PKCS#12 page; `modern`/`legacy` encoders (FIPS refuses legacy), ECDSA/RSA subject keys, optional M-of-N escrow of the subject key, `cert.pkcs12` audit + metrics, and the `openssl pkcs12 -info` round-trip test |
-| [Key ceremony, backup & DR](key-ceremony.md) | M-of-N key ceremony (`secsy-ca ceremony`), key inventory, CA-metadata backup/restore, HSM token backup, and the disaster-recovery runbook & drill |
-| [Intermediate key rotation](ca-rotation.md) | Safe, HSM-backed rollover of intermediate CA signing keys: cross-signing under the root, the dual-chain overlap window, combined-chain publication (AIA/bundle), controlled retirement, monitor-triggered auto-rotation, `secsy-ca rotate-intermediate`/`rotation-status`/`retire-intermediate`/`publish-chain`, and the rotation drill |
-| [Cross-signing & bridge CAs](cross-signing.md) | Certifying one subordinate key under multiple issuers for bridge-CA and root-transition trust: `local-ca`/`certificate`/`csr` subjects, tenant-scoped cross-sign records, alternate-chain selection by Subject Key Identifier, `secsy-ca cross-sign`/`list-cross-signs`, the `/api/ca/{id}/cross-signs` + `/chains` endpoints, and dual-chain `openssl verify` interop |
-| [Externally-signed subordinate CA](external-ca.md) | The offline/third-party-root topology: `secsy-ca ca csr` (HSM key + PKCS#10 CSR with CA attributes), the out-of-band signing ceremony, `ca import-cert` fail-closed validation (key match against the HSM, cA=TRUE, keyUsage, validity, chain verification) with operator warnings, chain serving through to the external trust anchor, same-key renewal via `-replace`, and the openssl-as-external-root e2e |
-| [ACME server (RFC 8555)](acme.md) | Automated certificate issuance for certbot/lego/acme.sh: enabling ACME, ACME-enabled profiles, http-01 & dns-01, and External Account Binding |
-| [Certificate Transparency (RFC 6962)](certificate-transparency.md) | Optional precertificate submission and SCT embedding on the issuance path: registering CT logs, per-profile CT policy (min-SCTs, fail-open/closed, retries/timeouts), SCT signature verification, CT status in the console/API/audit log, and the leader-elected **SCT inclusion-proof monitor** (get-sth / get-proof-by-hash Merkle verification, log-misbehavior alerting, `secsy-ca ct` + doctor `ct.inclusion`) |
-| [CAA record checking (RFC 8659)](caa.md) | DNS Certification Authority Authorization as a fail-closed pre-issuance gate on every issuance path: the tree-climbing + CNAME/DNAME algorithm, `issue`/`issuewild`/`iodef` evaluation against the CA identifier, per-profile `off`/`permissive`/`enforce` mode, the DNS-answer TTL cache, and the `cert.caa` audit event + Prometheus metrics |
-| [Name Constraints & Certificate Policies (RFC 5280)](name-constraints.md) | First-class Name Constraints (2.5.29.30) and the certificate-policy family (2.5.29.32/.33/.36) on CAs: configuring permitted/excluded DNS/IP/email/URI/dirName subtrees and policy OIDs on roots/intermediates, per-profile leaf policy assignment, the fail-closed pre-issuance name-constraint gate (`cert.nameconstraint` audit + metrics), rotation preservation, and `openssl verify` interop |
-| [Pre-issuance certificate linting](certlint.md) | The fail-closed pre-issuance lint gate: the dependency-free hand-rolled CA/Browser-Forum Baseline Requirements checks (always on) plus the **optional industry-standard `github.com/zmap/zlint` backend** compiled in only under `-tags zlint` (default/FIPS/supply-chain builds stay dependency-free), the per-profile `lint.zlint` level→enforce/warn/ignore mapping + source/name filters, the pre-issuance "linting certificate" synthesis, `secsy-ca lint -zlint` (PEM/DER) + `/api/lint` + console, the `zlint/`-namespaced findings in `cert.lint` audit + metrics, and the dependency / `govulncheck -tags zlint` implications |
-| [Weak-key & compromised-key gate](key-checks.md) | The fail-closed pre-issuance key-quality gate (CA/Browser Forum BR §6.1.1.3) on every issuance surface and the dry-run preview: ROCA/CVE-2017-15361 fingerprint detection, RSA exponent (e≥65537, odd) and modulus (odd, ≥2048-bit) policy, the optional operator-supplied **Debian OpenSSL weak-key blocklist**, an operator-managed **compromised-key blocklist** (`secsy-ca blocked-keys`, keyed by the SPKI SHA-256 fingerprint), and opt-in duplicate/reused-subject-key detection; per-profile enforce/warn, `cert.keycheck` audit + metrics, and `doctor keychecks.*` |
-| [SCEP & EST enrollment](enrollment.md) | Device / MDM / IoT auto-enrollment: SCEP (RFC 8894) with challenge-password grants and an HSM RA key, and EST (RFC 7030) over TLS with Basic / client-cert auth and server-side keygen |
-| [BRSKI zero-touch onboarding (RFC 8995)](brski.md) | Voucher-based bootstrapping of factory-fresh IoT/network devices with no per-device secret: the registrar validates the pledge's manufacturer IDevID against the (attestation) trust anchors, obtains an RFC 8366 CMS-signed voucher from a pluggable/built-in MASA, pins the provisional domain cert, and hands the pledge off to EST `simpleenroll` for the HSM-backed LDevID; per-profile enable, `cert.brski` audit + metrics |
-| [Host auto-enrollment agent (secsy-agent)](agent.md) | Client-side daemon that keeps host/service certificates fresh over EST or ACME http-01 (EAB/bootstrap onboarding, keys never leave the host): declarative YAML cert specs, ARI-driven renewal with fraction-of-lifetime fallback and deterministic jitter, chain-verified atomic installs with reload hooks (command/SIGHUP) and rollback, `run`/`once`/`status` CLI, Prometheus textfile/exporter metrics, and systemd units |
-| [Windows autoenrollment (MS-XCEP + MS-WSTEP)](windows-autoenrollment.md) | GPO-driven certificate autoenrollment for AD-joined Windows machines: the MS-XCEP `GetPolicies` policy service (CEP) advertising templates mapped from secsy-pki profiles (template OID/name, key specs, renewal/enrollment flags) and the MS-WSTEP WS-Trust `RequestSecurityToken` enrollment service (CES) issuing an HSM-backed certificate from a PKCS#10 `BinarySecurityToken`; Kerberos-free client auth via native API tokens and mutual TLS, profile↔template mapping from the CSR's Microsoft template extensions, `mswstep:` config with CEP/CES URL advertisement, AD GPO wiring, `mswstep.getpolicies`/`mswstep.enroll` audit + metrics |
-| [S/MIME e-mail protection](smime.md) | Mailbox-validated S/MIME certificates: the `smime`/`smime-sign`/`smime-encrypt` profiles, RFC 5321/6531 mailbox validation + punycode normalization of rfc822Name SANs, per-profile & per-tenant e-mail domain allowlists, the CA/B Forum S/MIME Baseline Requirements lint rules (`smime_*` checks, enforce/warn per profile), dual-key sign/encrypt deployment with encryption-key escrow, EST/SCEP enrollment, and `openssl smime` interop |
-| [Smartcard-logon & Kerberos PKINIT](smartcard-logon.md) | Microsoft Windows smartcard-logon and Kerberos PKINIT client-auth certificates for Active Directory: the `smartcard-logon`/`pkinit-client`/`smartcard-pkinit` profiles, the `id-ms-UPN` (`1.3.6.1.4.1.311.20.2.3`) User Principal Name otherName SAN + `msSmartcardLogon`/`pkinitClientAuth` EKUs, per-profile & per-tenant realm allowlists, `-upn` CLI flag / `upns` REST+gRPC field / console field / EST-SCEP CSR extraction, `cert.upn` audit + metrics, and Go + `openssl asn1parse` known-answer encoding tests |
-| [eIDAS qualified certificates (ETSI EN 319 412-5)](qualified-certificates.md) | EU qualified-certificate semantics via the non-critical `id-pe-qcStatements` extension (`1.3.6.1.5.5.7.1.3`): QcCompliance, QcType (`esign`/`eseal`/`web`), QcSSCD, QcRetentionPeriod, QcPDS, and the **ETSI TS 119 495 PSD2** QcStatement (PSP roles + NCA name/id); the `qualified-esign`/`qualified-eseal`/`qualified-web` (QWAC) profiles, the per-profile `qcstatements:` config block, per-request PSD2 override (`-psd2-role`/`-psd2-nca-*` CLI, `psd2` REST/gRPC field) gated by `allow_psd2_override`, certlint recognition, CT-safe hand-rolled ASN.1, and a known-answer + `openssl x509 -text` parse test |
-| [TLS Delegated Credentials (RFC 9345)](delegated-credentials.md) | Certificates eligible to authorize short-lived TLS delegated credentials via the non-critical `id-ce-delegationUsage` extension (`1.3.6.1.4.1.44363.44`, `NULL`): the `delegation_usage` per-profile opt-in + built-in `server-delegation` profile, the fail-closed mutual exclusion with OCSP Must-Staple (RFC 9345 §4.2), the operator-holds-the-leaf-key constraint, `secsy-ca delegated-credential mint`/`verify` (offline, operator-held key), `POST /api/ca/{id}/delegated-credential` (recovers an escrowed PKCS#12 leaf key via an M-of-N quorum), the ≤7-day `valid_time` cap, RSASSA-PSS-only RSA signing, `cert.delegated_credential` audit + metrics, and `openssl asn1parse` DER + sign/verify round-trip tests |
-| [gRPC API](grpc-api.md) | The core certificate-lifecycle operations (issue/renew/revoke, get certificate/status, list, CRL/OCSP metadata) exposed over gRPC alongside REST: `PKIService` (`proto/pki/v1/pki.proto`), server reflection + health, the same Bearer/Basic/mTLS auth, RBAC, tenant scoping and audit as REST, gRPC status-code mapping, request-ID/trace propagation, and the `secsy-ca grpc` client |
-| [SPIFFE X.509-SVID](spiffe.md) | HSM-backed SPIFFE workload identities: the short-lived `spiffe-svid` profile (single `spiffe://` URI SAN, CA:false, digitalSignature), `POST /api/ca/{id}/svid` + `secsy-ca svid`, the trust-domain allowlist (RBAC-layered), fraction-based short-TTL auto-renewal, the JWKS trust-bundle endpoint, and go-spiffe / SPIRE integration |
-| [Time-stamping authority (RFC 3161)](timestamping.md) | HSM-backed trusted time-stamp tokens: provisioning the TSA key/cert (`secsy-ca tsa-key`), the `/tsa` endpoint, policy/accuracy/ordering config, nonce & hash validation, audit + metrics, and `openssl ts -verify` interop |
-| [Trusted external time source (NTS / Roughtime)](trusted-time.md) | Fail-closed drift detection guarding the TSA and audit anchoring against a compromised/drifted host clock: the `time.source` block (`system` default, authenticated NTP/NTS per RFC 8915, or Roughtime), cross-checking the host clock before signing and refusing (`timeNotAvailable` / no anchor) when the offset exceeds `max_drift`, the reachability policy (`fail_closed`/`fail_open`) + `min_sources` quorum + cached `refresh_interval`, `secsy_time_drift_seconds`/`secsy_time_check_failures_total` metrics, the `SecsyPKITrustedTimeCheckFailing` alert, the `time.trusted` doctor check, and the `time.check` audit event |
-| [Long-term preservation — Evidence Records (RFC 4998)](evidence-records.md) | Renewable archive-timestamp Evidence Records over the audit chain and signed artifacts so proofs survive hash/signature-algorithm obsolescence: a Merkle/data-group hash tree, HSM-backed `ArchiveTimeStamp`s from the internal TSA, time-stamp renewal (before cert expiry) + hash-tree renewal (on FIPS-driven algorithm deprecation), a leader-elected `ers.schedule` job with a durable cursor, `secsy-ca ers generate/renew/verify/export`, `POST /api/ers/verify`, `ers.*` audit/metrics, and the `ers.freshness` doctor check |
-| [Artifact / code signing](artifact-signing.md) | HSM-backed CMS/PKCS#7 detached signatures over release artifacts: provisioning code-signing keys under the lint-gated `code-signing` profile (`secsy-ca signing-key`), `/api/sign` + `/api/sign/verify` (signer role, tenant-scoped, rate-limited, `artifact.sign` audit), `secsy-ca sign`/`verify-signature` with file & digest input, embedded RFC 3161 countersignatures with timestamp-time chain validation, key-ceremony notes for signing keys, and `openssl cms`/`openssl ts` interop |
-| [SSH certificate authority](ssh-ca.md) | HSM-backed OpenSSH user/host certificate signing: `secsy-ca ssh` (ca-init, sign-user, sign-host, revoke, krl), per-profile principals/validity/extensions/critical-options policy, store-allocated serials, revocation published as OpenSSH KRLs over HTTP (`sshd` `RevokedKeys`), `/api/ssh/*` with RBAC + tenant scoping, `ssh.sign`/`ssh.revoke` audit, and `ssh-keygen -L`/`-Q` interop |
-| [DANE TLSA & SSHFP DNS records](dns-records.md) | Offline generation of DNS pinning records for material the PKI issues: DANE TLSA (RFC 6698) for TLS services (DANE-TA/PKIX-TA/DANE-EE usages, both selectors, SHA-256) and SSHFP (RFC 4255) for SSH host keys / sshca host certs, in zone-file presentation format; `secsy-ca dns-records tlsa\|sshfp`, `/api/ca/{id}/dns-records/tlsa` + `/api/ssh/cas/{id}/dns-records/sshfp`, the console DNS Records page, and `openssl`/`ssh-keygen` known-answer tests |
-| [Post-quantum & hybrid certificates](pqc.md) | ML-DSA (FIPS 204) signatures on the CA/issuance paths: pure-PQC and catalyst-hybrid (classical + ML-DSA alternative-signature) certificates, per-profile algorithm selection (`pqc-server`/`hybrid-server`), the software-provider fallback for SoftHSM, `secsy-ca init-root -algorithm pqc\|hybrid`, chain verification, and the interop / trust-store caveats |
-| [Expiry monitoring & auto-renewal](expiry-monitoring.md) | The background expiry monitor, `secsy-ca expiring`/`monitor-run`, `/api/monitor/*`, notification sinks (log/webhook), auto-renewal, metrics & runbook |
-| [Synthetic issuance canary](canary.md) | Opt-in end-to-end self-test loop proving the issuance path continuously: per configured CA it issues a short-lived cert from the lint-enforced `canary` profile, verifies the chain, checks OCSP `good` + CRL freshness, revokes, and confirms `revoked` propagates — with per-stage timing metrics (`secsy_canary_*`), failures on the monitor's log/webhook sinks, Prometheus alerts + a Grafana row, a `canary.last_probe` doctor check, and the canary marker excluding probes from expiry monitoring & inventory reports |
-| [Password / secret encryption](password-encryption.md) | HSM-backed envelope encryption for passwords and small secrets (`secsy-secret`, `/api/secret/*`), plus the stateless **crypto service** (data key, keyed HMAC, CSPRNG random) exposed over REST/gRPC/CLI and the console Secrets page |
-| [RBAC, audit logging & config](rbac-and-audit.md) | Organization-wide roles, per-CA permissions, the hash-chained event log, and centralized policy/profiles |
-| [Four-eyes / maker-checker approvals](approvals.md) | Holding high-risk operations for distinct-approver sign-off: the guarded classes (CA create/rotate/retire, bulk revocation, KEK rotation) and the per-profile manual issuance gate (`require_approval` → `cert.issue`) — park on 202, approve, then fetch the certificate; the `approver` role & self-approval denial, `secsy-ca approvals` + `/api/approvals/{id}/certificate` + console, why ACME/EST/SCEP/CMP always bypass the gate, and the `cert.issue.*` audit events/metrics |
-| [Operator authentication (SSO, mTLS, WebAuthn)](authentication.md) | Strong console/API authentication: interactive OIDC/OAuth2 login with claim/group → RBAC role mapping, mutual-TLS client-cert binding for machine callers, WebAuthn/passkey step-up for high-risk operations, plus sessions, CSRF, and login/step-up audit + metrics |
-| [Operator web console](web-console.md) | The embedded `/console/` SPA: every page and its backing endpoints, the CLI ↔ console feature-parity map (CA lifecycle incl. rotation/cross-signing, SSH CA, artifact signing, suspend/hold + release, four-eyes approvals, API tokens, CT inclusion, DANE/SSHFP records, audit verify/export, lint, key inventory, SVIDs, secrets/escrow, tenants), and which commands stay deliberately CLI-only |
-| [Multi-tenant isolation](multi-tenancy.md) | Serving several isolated organizations from one deployment: per-tenant CAs, profiles, revocation/CRL state, secret envelopes, RBAC (platform vs. tenant roles), and a tenant-scoped audit trail; cross-tenant access is denied |
-| [Persistence backends (SQLite & PostgreSQL)](persistence.md) | The `Store` abstraction and its two engines; selecting a backend and pooling; the invariants preserved across both (audit-chain tamper-evidence, serial/CRL monotonicity); `secsy-ca db migrate` to lift a file store into PostgreSQL; and running multiple replicas for HA |
-| [Multi-replica coordination & HA](high-availability.md) | Running `replicas > 1` safely: PostgreSQL advisory-lock leader election with lease renewal gating every singleton background job (expiry monitor/auto-renewal, CA rotation, OCSP pre-signing, CRL publishing, audit anchoring, SIEM export, discovery), idempotent leadership handover, `secsy_leader_*` metrics + `/readyz` leadership detail, and the Helm `replicaCount > 1` preconditions |
-| [Self-managed serving-TLS certificate](serving-cert.md) | Dogfooding the HTTPS listener certificate from an internal CA instead of a static `tls_cert`/`tls_key` pair (`server.tls.self_issue`): the serving key generated in and used through the key provider (never on disk; non-extractable on a PKCS#11 HSM), hitless background auto-rotation through the shared `GetCertificate` Holder (also the OCSP-staple hook), the fraction-based renewal schedule, the `serving-tls` marker that excludes it from the monitor/inventory, `secsy_serving_cert_*` metrics, and the `doctor serving.self_issued` check |
-| [Audit log export to SIEM](audit-siem-export.md) | Streaming the audit event log to syslog (TCP/TLS)/CEF/webhook with at-least-once delivery & a durable cursor, plus `secsy-ca audit verify` (tamper detection) and `audit export` (offline batch) |
-| [Remotely verifiable HSM audit log](hsm-audit-log.md) | Proving to a third party that the HSM signed nothing beyond what was published, and that the proof is current: irreversible force-audit provisioning (incl. undocumented firmware commands), a pinned factory-reset chain anchor, a fail-closed persist-before-acknowledge device-log collector, the hash-chained signature ledger written at the key-provider chokepoint, device-vs-ledger-vs-published reconciliation, periodic RFC 3161 freshness attestations over the audit head, `secsy-ca hsm-audit provision/collect/timestamp/export/verify` (the verifier needs no config, database or HSM), `GET /api/hsm/audit-bundle`, and the `secsy_hsm_audit_*` metrics |
-| [YubiHSM key attestation](hsm-key-attestation.md) | Proving what a CA key *is*, as a claim a relying party can check: the device-signed attestation certificate and its Yubico extensions (origin, capabilities, domains, on-device handle), the verifier that reports whether the key is non-exportable (`exportable-under-wrap`) and was generated on-device rather than imported, binding the attestation to a CA certificate so it describes the key that CA actually signs with, honest reporting of chain anchoring (Yubico does not publish every per-batch sub-CA), `secsy-ca hsm-attest key/ca/audit/verify` (the verifier needs no config, database or HSM), `GET /api/hsm/keys/{label}/attestation`, `GET /api/ca/{id}/key-attestation`, `POST /api/hsm/attestation:verify`, the `hsm.key_attestation` audit event, and the `secsy_hsm_key_attestation*` metrics |
-| [Outbound webhooks (eventing)](webhooks.md) | Durable, tenant-scoped webhook subscriptions delivering certificate lifecycle events (issue/renew/revoke/suspend/release) to external endpoints: the leader-elected delivery worker (at-least-once, exponential-backoff retries, dead-lettering), the `X-Secsy-Signature` HMAC-SHA256 scheme, the `webhook:manage` capability, `secsy-ca webhook`, `/api/webhooks`, the console page, the `webhook.*` audit events, the `secsy_webhook_*` metrics, and the `webhook.dead_letters` doctor check |
-| [Observability](observability.md) | Prometheus `/metrics`, `/healthz` & `/readyz` (with HSM probe), structured JSON request logging, and a Prometheus/Grafana setup |
-| [Rate limiting & abuse protection](rate-limiting.md) | Tiered token-bucket rate limiting (global / per-IP / per-account) and a bounded in-flight HSM concurrency guard for the public ACME/OCSP/CRL/SCEP/EST endpoints, with `429`/`503` + `Retry-After` and Prometheus throttle/queue metrics |
-| [OCSP pre-signing & static publishing (CDN offload)](ocsp-presign-publish.md) | Batch pre-signing OCSP responses for all known serials into the response cache (HSM off the public hot path, responses survive an HSM outage), plus the static artifact publisher: CRLs/delta CRLs/shards/chains/pre-signed responses written to a directory or S3-compatible store with atomic swap + integrity manifest, the CDN URL-mapping rules, `secsy-ca publish`, and the staleness metrics |
-| [Scheduled encrypted backups](backup.md) | A leader-elected background job that periodically produces the DR backup artifact (logical DB dump + config + public CA material + audit-chain head fingerprint), envelope-encrypts it under the HSM-backed secret KEK, and writes it to a directory or S3 store with atomic swap + manifest + keep-N/max-age retention; `backup.schedule` config, the `secsy_backup_*` metrics + staleness gauge, the `backup.run` audit event, the `backup.freshness` doctor check, and the restore path |
-| [Kubernetes deployment](kubernetes.md) | Multi-stage container image, Helm chart (HSM/PKCS#11 module mount, PIN via Secret, TLS, RBAC/policy config, `/healthz`+`/readyz` probes), cert-manager ACME issuer for HSM-backed workload certs, and a kind/SoftHSM smoke test |
-| [Supply-chain security (SBOM, signing, SLSA)](supply-chain.md) | Hardened release pipeline for the container image and binaries: CycloneDX SBOMs (Go modules + image), cosign signing (keyless/OIDC or a configurable key), a cosign SBOM attestation, a SLSA Build L3 provenance attestation via `slsa-github-generator`, the `govulncheck` gating scan, the `make sbom`/`make sign`/`make verify` targets, and the `cosign verify`/`cosign verify-attestation`/`slsa-verifier` commands consumers run |
-| [FIPS 140-3 mode](fips.md) | Running as a FIPS-capable PKI: the `make build-fips`/`GOFIPS140` build on the Go Cryptographic Module (verified at build time, reported by `-version`, the startup log, and `/healthz` build info), the fail-closed `security.fips` algorithm policy (no Ed25519 leaves, no SHA-1 anywhere, no RSA<2048, no software-PQC paths — enforced at config load, key generation, and issuance), the SoftHSM SHA-1-OAEP refusal + KEK re-wrap migration, the `fips.*` doctor checks, and the module-boundary-vs-HSM-validation scope |
-| [Production HSM migration](hsm-migration.md) | Moving from SoftHSM to a real HSM (YubiHSM / network HSM) for production |
-| [Security review & hardening](security-review.md) | The security review of the enterprise branch: findings, fixes, residual risks, and how to re-verify |
-| [Fuzz & property testing](fuzzing.md) | Native `go test -fuzz` over the untrusted-input parsers (CSR/DER, ACME JOSE/JWS, secret-envelope decrypt, OCSP/cert): targets, how to run local campaigns, CI smoke run, and handling crashes |
-| [Performance & load benchmarking](benchmarks.md) | Benchmark/load-test suite for the HSM hot paths (signing/issuance, OCSP/CRL, secret encrypt/decrypt), the bounded PKCS#11 session pool, baseline SoftHSM numbers, and the tuning knobs (session pool size, OCSP cache TTL) |
-| [Test-coverage measurement & ratchet gate](coverage.md) | HSM-free statement-coverage gate that ratchets a committed baseline (`coverage/baseline.txt`) so coverage can only rise: `make cover`/`cover-check`/`cover-baseline`, the per-package + total table, the tolerance band, HTML/summary artifacts, the required no-HSM CI job, and the baseline-refresh workflow for contributors adding covered code |
+*Where private keys live, and the proof they never leave.*
 
-Related top-level docs: [architecture](../ARCHITECTURE.md) ·
-[testing](../TESTING.md) · [operator runbook](RUNBOOK.md) ·
-[decision records](adr/README.md).
+| Page | Covers |
+|------|--------|
+| [HSM / PKCS#11 configuration](hsm/configuration.md) | Key-provider abstraction, PKCS#11/HSM and SoftHSM setup, PIN sourcing |
+| [HSM high availability (multi-token failover)](hsm/high-availability.md) | Health-tracked failover across several PKCS#11 tokens |
+| [Cloud KMS backend (AWS / Azure / Google)](hsm/cloud-kms.md) | AWS KMS, Azure Key Vault and Google Cloud KMS backends |
+| [HashiCorp Vault Transit backend](hsm/vault-transit.md) | Signing keys and KEKs in a Vault Transit engine; token/AppRole auth |
+| [Key ceremony, backup & DR](hsm/key-ceremony.md) | M-of-N key ceremony, key inventory, backup and disaster recovery |
+| [Production HSM migration](hsm/production-migration.md) | SoftHSM → real HSM (YubiHSM / network HSM) cutover |
+| [Remotely verifiable HSM audit log](hsm/audit-log.md) | Third-party-checkable proof of every signature the device produced |
+| [YubiHSM key attestation](hsm/key-attestation.md) | Hardware-signed proof a key was born in the HSM and cannot be exported |
 
-## Suggested reading order
+### 2. Certificate authority — [`ca/`](ca/README.md)
 
-1. **Deploying for the first time** →
-   [HSM configuration](hsm-configuration.md) →
-   [Certificate authority](certificate-authority.md) →
-   [RBAC & audit](rbac-and-audit.md).
-2. **Adding secret encryption** → [Password / secret encryption](password-encryption.md).
-3. **Going to production** → [Production HSM migration](hsm-migration.md) →
-   [Key ceremony, backup & DR](key-ceremony.md) →
-   [Observability](observability.md).
-4. **Deploying on Kubernetes** → [Kubernetes deployment](kubernetes.md)
-   (container image, Helm chart, cert-manager issuer).
-5. **Running it day to day** → [Operator runbook](RUNBOOK.md) (keep it bookmarked
-   for incidents) → [Architecture Decision Records](adr/README.md) (the "why").
+*Standing up CAs and running the certificate lifecycle.*
+
+| Page | Covers |
+|------|--------|
+| [CA setup & certificate lifecycle](ca/overview.md) | Root and intermediate CAs, profiles, issue/renew/revoke, CRL and OCSP |
+| [Intermediate key rotation](ca/rotation.md) | Intermediate signing-key rollover with a dual-chain overlap window |
+| [Cross-signing & bridge CAs](ca/cross-signing.md) | Bridge CAs and root transitions through alternate trust chains |
+| [Externally-signed subordinate CA](ca/external-ca.md) | A subordinate CA signed by an offline or third-party root |
+| [SSH certificate authority](ca/ssh-ca.md) | HSM-backed OpenSSH user and host certificates, KRL revocation |
+| [PKCS#12 (.p12/.pfx) export](ca/pkcs12.md) | Server-side key generation with password-protected bundle delivery |
+| [Chain / path validation](ca/chain-validation.md) | Validating a supplied chain: path building, revocation, policy, key strength |
+| [Certificate-inventory retention & archival](ca/retention.md) | Bounding a high-volume inventory with a fail-safe age-out policy |
+
+### 3. Issuance policy & pre-issuance gates — [`issuance/`](issuance/README.md)
+
+*What is checked before the HSM is ever asked to sign.*
+
+| Page | Covers |
+|------|--------|
+| [Issuance preview (dry-run)](issuance/preview.md) | Dry-run a would-be issuance through every gate without signing anything |
+| [Pre-issuance certificate linting](issuance/certlint.md) | CA/Browser Forum Baseline Requirements lint gate, with optional zlint |
+| [CAA record checking (RFC 8659)](issuance/caa.md) | Fail-closed DNS authorization, incl. accounturi/validationmethods |
+| [Name Constraints & Certificate Policies (RFC 5280)](issuance/name-constraints.md) | Permitted/excluded subtrees and policy OIDs on CAs and leaves |
+| [Weak-key & compromised-key gate](issuance/key-checks.md) | ROCA, RSA policy, the Debian blocklist and an operator SPKI denylist |
+| [Certificate Transparency (RFC 6962)](issuance/certificate-transparency.md) | CT precertificate submission, SCT embedding and inclusion-proof monitoring |
+
+### 4. Certificate types & profiles — [`certificates/`](certificates/README.md)
+
+*The specialized certificate shapes the CA can issue.*
+
+| Page | Covers |
+|------|--------|
+| [S/MIME e-mail protection](certificates/smime.md) | Mailbox validation, domain allowlists and the S/MIME BR lint rules |
+| [Smartcard-logon & Kerberos PKINIT](certificates/smartcard-logon.md) | Windows smartcard logon and Kerberos PKINIT client certificates |
+| [eIDAS qualified certificates (ETSI EN 319 412-5)](certificates/qualified-certificates.md) | QcCompliance/QcType/QcSSCD and the PSD2 QcStatement |
+| [SPIFFE SVID workload identity](certificates/spiffe.md) | Short-lived workload identities and the JWKS trust bundle |
+| [TLS Delegated Credentials (RFC 9345)](certificates/delegated-credentials.md) | The delegationUsage extension; minting and verifying credentials |
+| [Post-quantum & hybrid certificates](certificates/pqc.md) | Pure ML-DSA and catalyst-hybrid signatures, with interop caveats |
+
+### 5. Enrollment protocols & integrations — [`protocols/`](protocols/README.md)
+
+*How clients and devices actually get their certificates.*
+
+| Page | Covers |
+|------|--------|
+| [ACME server (RFC 8555)](protocols/acme.md) | Challenges, EAB, ARI, client-selectable profiles, STAR, S/MIME |
+| [ACME Multi-Perspective Issuance Corroboration (SC-067)](protocols/acme-mpic.md) | Corroborating domain control from several network vantage points |
+| [SCEP & EST enrollment](protocols/scep-est.md) | Device, MDM and IoT enrollment with challenge or client-cert auth |
+| [BRSKI zero-touch onboarding (RFC 8995)](protocols/brski.md) | Voucher-based onboarding of factory-fresh devices through a MASA |
+| [Windows autoenrollment (MS-XCEP + MS-WSTEP)](protocols/windows-autoenrollment.md) | GPO-driven autoenrollment for AD-joined machines, Kerberos-free |
+| [Host auto-enrollment agent (secsy-agent)](protocols/agent.md) | Declarative cert specs, ARI-driven renewal, atomic install and rollback |
+| [gRPC API](protocols/grpc-api.md) | PKIService over gRPC, with reflection, health checks and mTLS |
+
+### 6. Signing & timestamping services — [`signing/`](signing/README.md)
+
+*Using the HSM to sign things that are not certificates.*
+
+| Page | Covers |
+|------|--------|
+| [Artifact / code signing](signing/artifact-signing.md) | HSM-backed CMS/PKCS#7 code and artifact signing, CAdES B/T/LT |
+| [Time-stamping authority (RFC 3161)](signing/timestamping.md) | Provisioning the TSA key, the /tsa endpoint, `openssl ts` interop |
+| [Trusted external time source (NTS / Roughtime)](signing/trusted-time.md) | Cross-checking the host clock before signing, and refusing on drift |
+| [Long-term preservation — Evidence Records (RFC 4998)](signing/evidence-records.md) | Renewable archive timestamps that outlive algorithm obsolescence |
+
+### 7. Secret & password encryption — [`secrets/`](secrets/README.md)
+
+*The HSM-backed encryption service that sits alongside the PKI.*
+
+| Page | Covers |
+|------|--------|
+| [Password / secret encryption](secrets/password-encryption.md) | Envelope encryption, escrow, KEK rotation, FPE and the crypto service |
+
+### 8. Security, access control & governance — [`security/`](security/README.md)
+
+*Who may do what, and the evidence that they did it.*
+
+| Page | Covers |
+|------|--------|
+| [RBAC, audit logging & config](security/rbac-and-audit.md) | Roles, per-CA permissions, the hash-chained event log, centralized config |
+| [Operator authentication (SSO, mTLS, WebAuthn)](security/authentication.md) | OIDC SSO, LDAP/AD, mTLS binding, WebAuthn step-up, scoped API tokens |
+| [Four-eyes / maker-checker approvals](security/approvals.md) | Dual control over CA lifecycle, bulk revocation and issuance |
+| [Multi-tenant isolation](security/multi-tenancy.md) | Serving several isolated organizations from one deployment |
+| [Rate limiting & abuse protection](security/rate-limiting.md) | Tiered rate limits and the bounded HSM concurrency guard |
+| [Audit log export to SIEM](security/audit-siem-export.md) | Streaming the audit log to syslog/CEF/webhook, and offline verification |
+| [FIPS 140-3 mode](security/fips.md) | The GOFIPS140 build plus the fail-closed algorithm policy |
+| [Security review & hardening](security/security-review.md) | Findings, fixes, residual risks, and how to re-verify them |
+
+### 9. Deployment & scaling — [`deployment/`](deployment/README.md)
+
+*Getting it running, and running more than one of it.*
+
+| Page | Covers |
+|------|--------|
+| [Kubernetes deployment](deployment/kubernetes.md) | Container image, Helm chart, cert-manager issuer, kind/SoftHSM smoke test |
+| [Persistence backends (SQLite & PostgreSQL)](deployment/persistence.md) | SQLite and PostgreSQL stores, pooling, and migration between them |
+| [Multi-replica coordination & HA](deployment/high-availability.md) | Multiple replicas with leader-elected singleton background jobs |
+| [Self-managed serving-TLS certificate](deployment/serving-cert.md) | Issuing the server's own HTTPS certificate from an internal CA |
+
+### 10. Day-2 operations — [`operations/`](operations/README.md)
+
+*Running it, watching it, and fixing it when it breaks.*
+
+| Page | Covers |
+|------|--------|
+| [Operator runbook](operations/runbook.md) | Day-2 procedures: incidents, outages, tuning, rotation, DR, diagnostics |
+| [Incident response: mass revocation](operations/incident-response.md) | Key-compromise mass revocation against the CA/B 24-hour clock |
+| [Observability](operations/observability.md) | Prometheus metrics, health/readiness probes, dashboards, alerts and SLOs |
+| [Distributed tracing (OpenTelemetry)](operations/tracing.md) | Request-to-HSM span trees over OTLP, with log↔trace correlation |
+| [Expiry monitoring & auto-renewal](operations/expiry-monitoring.md) | Expiry scanning, notification sinks and automated renewal |
+| [Synthetic issuance canary](operations/canary.md) | A probe that continuously proves the issuance path end to end |
+| [Scheduled encrypted backups](operations/backup.md) | Leader-elected encrypted DR artifacts, and proving they restore |
+| [OCSP pre-signing & static publishing (CDN offload)](operations/ocsp-presign-publish.md) | Taking the HSM off the public hot path; CRL/OCSP to a CDN |
+| [Outbound webhooks (eventing)](operations/webhooks.md) | At-least-once delivery with HMAC signatures and dead-lettering |
+| [DANE TLSA & SSHFP DNS records](operations/dns-records.md) | Zone-file pinning records for TLS services and SSH hosts |
+| [Operator web console](operations/web-console.md) | The embedded operator console and its CLI feature-parity map |
+
+### 11. Compliance & audit readiness — [`compliance/`](compliance/README.md)
+
+*The documents a WebTrust or CA/Browser Forum audit asks for.*
+
+| Page | Covers |
+|------|--------|
+| [Certificate Policy / CPS (RFC 3647)](compliance/certificate-policy.md) | The audit-facing CP/CPS, all nine sections, from the code |
+| [Compliance control mapping](compliance/compliance-mapping.md) | CA/B BR, S/MIME BR and WebTrust controls traced to implementing code |
+
+### 12. Development, testing & release — [`development/`](development/README.md)
+
+*The quality gates a change has to clear.*
+
+| Page | Covers |
+|------|--------|
+| [Performance & load benchmarking](development/benchmarks.md) | HSM hot-path benchmarks, session-pool tuning, the regression gate |
+| [Test-coverage measurement & ratchet gate](development/coverage.md) | A committed baseline that coverage may only ratchet above |
+| [Fuzz & property testing](development/fuzzing.md) | Native `go test -fuzz` targets over the untrusted-input parsers |
+| [Resilience & fault-injection testing](development/resilience.md) | Deliberately breaking dependencies to prove the PKI fails closed |
+| [Authorization & tenant-isolation regression matrix](development/authz-regression-matrix.md) | A pinned RBAC/tenant decision for every REST route and RPC |
+| [Supply-chain security (SBOM, signing, SLSA)](development/supply-chain.md) | SBOMs, cosign signing, SLSA provenance and the govulncheck gate |
+
+
+### Architecture Decision Records — [`adr/`](adr/README.md)
+
+*The load-bearing design decisions, and what they cost.*
+
+[Key-provider abstraction](adr/0001-key-provider-abstraction.md) ·
+[HSM non-extractability invariants](adr/0002-hsm-non-extractability-invariants.md) ·
+[Fail-closed security gates](adr/0003-fail-closed-security-gates.md) ·
+[Dual-chain rotation overlap](adr/0004-dual-chain-rotation-overlap.md) ·
+[PQC / hybrid algorithm choice](adr/0005-pqc-hybrid-algorithm-choice.md) ·
+[Four-eyes approval gate](adr/0006-four-eyes-approval-gate.md)
+
+## Project-level documents
+
+These live at the repository root, where contributors and tooling expect them:
+
+| Document | Covers |
+|----------|--------|
+| [README](../README.md) | What secsy-pki is, quick start, the `secsy-ssh` client, the REST API |
+| [ARCHITECTURE](../ARCHITECTURE.md) | Component map, request flows, and the feature-to-code index |
+| [TESTING](../TESTING.md) | How to run every suite: unit, SoftHSM integration, e2e, race, lint |
+| [`examples/`](../examples/README.md) | Runnable end-to-end use-case recipes |
 
 ## The tools at a glance
 
 | Binary | Purpose | Build |
 |--------|---------|-------|
-| `secsy-pki-server` | The HTTP server, web UI, and API | `go build -tags sqlite -o secsy-pki-server ./cmd/server` |
+| `secsy-pki-server` | The HTTP server, web console, and API | `go build -tags sqlite -o secsy-pki-server ./cmd/server` |
 | `secsy-ca` | CA setup and certificate lifecycle | `go build -tags sqlite -o secsy-ca ./cmd/secsy-ca` |
 | `secsy-secret` | HSM-backed secret encryption | `go build -tags sqlite -o secsy-secret ./cmd/secsy-secret` |
+| `secsy-agent` | Host auto-enrollment / renewal daemon | `go build -o secsy-agent ./cmd/secsy-agent` |
 | `secsy-ssh` | OIDC SSH client wrapper | `go build -o secsy-ssh ./cmd/secsy-ssh` |
 | `secsy-verify` | Offline HSM audit-log verifier | `go build -o secsy-verify ./cmd/verify` |
 

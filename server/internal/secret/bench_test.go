@@ -15,7 +15,7 @@ import (
 // Encryption wraps the data key with the KEK's public half and never touches the
 // HSM, so it is CPU-bound and highly parallel. Decryption unwraps the data key
 // on the device (C_Decrypt), so its throughput is governed by the PKCS#11
-// session pool — hence the pool-size sweep. See docs/benchmarks.md.
+// session pool — hence the pool-size sweep. See docs/development/benchmarks.md.
 //
 // Run with:
 //

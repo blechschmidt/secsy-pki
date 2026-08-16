@@ -156,7 +156,7 @@ cd server
 go test -tags sqlite -run 'AuthzMatrix|AuthenticateRPC' ./internal/handlers/ ./internal/grpcapi/
 ```
 
-See [authz-regression-matrix.md](docs/authz-regression-matrix.md) for how to add
+See [authz-regression-matrix.md](docs/development/authz-regression-matrix.md) for how to add
 a route to the matrix.
 
 Integration tests (spins up KeyCloak via Docker Compose, starts the server,
@@ -176,7 +176,7 @@ key non-extractability):
 DR_KEEP=1 ./scripts/dr-drill.sh  # keep the workspace to inspect artifacts
 ```
 
-See [Key ceremony, backup & DR](docs/key-ceremony.md) for the ceremony checklist
+See [Key ceremony, backup & DR](docs/hsm/key-ceremony.md) for the ceremony checklist
 and recovery runbook.
 
 Fuzz tests (native `go test -fuzz` over the untrusted-input parsing surfaces —
@@ -198,7 +198,7 @@ crashers) is a plain test run:
 go test ./internal/pki/ ./internal/ca/ ./internal/acme/ ./internal/secret/
 ```
 
-See [Fuzz & property testing](docs/fuzzing.md) for the full target inventory and
+See [Fuzz & property testing](docs/development/fuzzing.md) for the full target inventory and
 the workflow for handling a discovered crash.
 
 External-client interop / conformance suite (stands up a live SoftHSM-backed
@@ -254,7 +254,7 @@ lockstep with the Makefile.
 An **HSM-free, ratcheting coverage gate** measures Go statement coverage across
 the `-tags sqlite` test subset and enforces a committed baseline that can only
 **rise** — so coverage never silently regresses as the codebase grows. It is the
-coverage analogue of the [benchmark-regression gate](docs/benchmarks.md#benchmark-regression-gate)
+coverage analogue of the [benchmark-regression gate](docs/development/benchmarks.md#benchmark-regression-gate)
 and, like it, is driven entirely from the `Makefile`:
 
 ```bash
@@ -310,7 +310,38 @@ largely machine-independent the gate blocks merges; if the runner class ever
 diverges from the committed baseline, regenerate it authoritatively on the runner
 by dispatching the workflow with **`refresh_coverage_baseline: true`** (it uploads
 the fresh `coverage/baseline.txt` as an artifact to download and commit). See
-[docs/coverage.md](docs/coverage.md) for the full reference.
+[docs/development/coverage.md](docs/development/coverage.md) for the full reference.
+
+## Documentation structure gate
+
+The guides in [`docs/`](docs/README.md) are grouped into topic sections
+(`docs/<section>/`), each with its own index, over which
+[`docs/README.md`](docs/README.md) is the map. A **dependency-free gate** keeps
+that layout true:
+
+```bash
+make docs-check      # ./scripts/check-docs.sh
+```
+
+It fails on four kinds of rot:
+
+1. a **broken relative link** — a page moved or was renamed and something still
+   points at the old location;
+2. a **missing `#anchor`** — the link resolves but the heading it names no
+   longer exists (checked with GitHub's own heading→slug rule);
+3. an **unindexed page** — a file under `docs/<section>/` that no index links
+   to, reachable only by guessing its filename, or a page left loose at the
+   `docs/` root instead of in a section;
+4. a **stale quoted path** — a `docs/<page>.md` written into a Go comment,
+   `config.yaml`, the Helm chart or a Prometheus alert annotation that no longer
+   resolves. These are invisible to a link checker that only reads markdown, and
+   are the references most likely to be forgotten when a page moves.
+
+The gate needs only a checkout — no Go build, no SoftHSM, no database — so it is
+fast and runs as the required, no-HSM **Documentation structure** job in
+`.github/workflows/enterprise-ci.yaml`. When you add a page, put it in a section
+folder and link it from that section's `README.md`; the gate will tell you if you
+forget.
 
 ## CI
 
@@ -322,7 +353,7 @@ with CI means "works on my machine" and "works in CI" stay in sync.
 The enterprise workflow (`.github/workflows/enterprise-ci.yaml`) additionally
 runs a `fuzz-smoke` job: it replays the fuzz seed corpora as unit tests and then
 runs each fuzz target for a bounded `FUZZTIME`. It needs no SoftHSM (all targets
-run in software). See [Fuzz & property testing](docs/fuzzing.md).
+run in software). See [Fuzz & property testing](docs/development/fuzzing.md).
 
 The same enterprise workflow runs an advisory (`continue-on-error`, not required
 for merge) `interop-conformance` job — modeled on the chaos job — that installs

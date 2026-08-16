@@ -9,7 +9,7 @@ own HSM-backed CA instead.
 |------|---------|
 | [`config.yaml`](config.yaml) | Server: ACME enabled against an issuing CA, all three challenge types, rate limiting |
 
-Reference: [`docs/acme.md`](../../docs/acme.md) (EAB, wildcards/dns-01, ARI,
+Reference: [`docs/protocols/acme.md`](../../docs/protocols/acme.md) (EAB, wildcards/dns-01, ARI,
 client-selectable profiles, STAR short-lived certs, MPIC).
 
 ---
@@ -81,11 +81,11 @@ app.internal.example.com {
 Use the ready-made issuer manifest in
 [`deploy/cert-manager/clusterissuer-acme.yaml`](../../deploy/cert-manager/clusterissuer-acme.yaml)
 (set `server:` to `https://pki.example.com/acme/directory`), then request
-certificates as usual. See [`docs/kubernetes.md`](../../docs/kubernetes.md).
+certificates as usual. See [`docs/deployment/kubernetes.md`](../../docs/deployment/kubernetes.md).
 
 ### The bundled host agent
 
-For non-Kubernetes hosts, [`secsy-agent`](../../docs/agent.md) is a pure-Go
+For non-Kubernetes hosts, [`secsy-agent`](../../docs/protocols/agent.md) is a pure-Go
 EST/ACME renewal daemon with atomic installs, reload hooks, and ARI-aware
 scheduling — a lighter alternative to a full ACME client + cron.
 
@@ -117,6 +117,6 @@ $ certbot register \
   ACME Renewal Information (ARI) so clients renew around the CA's suggested
   window instead of a fixed fraction.
 - **Rate limiting** is on in this config — a public ACME endpoint should always
-  meter requests and guard the HSM (see [`docs/rate-limiting.md`](../../docs/rate-limiting.md)).
+  meter requests and guard the HSM (see [`docs/security/rate-limiting.md`](../../docs/security/rate-limiting.md)).
 - For **very short-lived** certificates without per-renewal ACME round-trips,
-  see ACME STAR (`acme.star`, [`docs/acme.md`](../../docs/acme.md)).
+  see ACME STAR (`acme.star`, [`docs/protocols/acme.md`](../../docs/protocols/acme.md)).

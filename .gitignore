@@ -29,7 +29,7 @@ server/ssh-pki.db*
 # Orchestration / local state
 .cloop/
 
-# Supply-chain build output (SBOMs, provenance) — see Makefile / docs/supply-chain.md
+# Supply-chain build output (SBOMs, provenance) — see Makefile / docs/development/supply-chain.md
 dist/
 # Local cosign keys must never be committed.
 cosign.key

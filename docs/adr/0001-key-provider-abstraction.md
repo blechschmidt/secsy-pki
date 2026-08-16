@@ -36,7 +36,7 @@ Higher layers (`internal/ca`, `internal/secret`, `internal/tsa`) never import
   ([ADR 0002](0002-hsm-non-extractability-invariants.md)) are implemented once.
 - **SoftHSM is a first-class backend**, so the full stack is testable in CI
   without hardware. The same code path runs against a real HSM in production;
-  migration is a config change (see [HSM migration](../hsm-migration.md)).
+  migration is a config change (see [HSM migration](../hsm/production-migration.md)).
 - **Readiness is uniform.** `/readyz` probes the provider via `Prober.Ping`;
   a wrong PIN or unreachable token surfaces as *not ready* rather than as
   per-request failures.

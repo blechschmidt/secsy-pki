@@ -4,7 +4,7 @@
 # directory. Workloads then request HSM-backed certificates with a standard
 # cert-manager Certificate object referencing this issuer. Requires config.acme
 # to be enabled on the server, cert-manager installed in the cluster, and an
-# ACME-enabled issuing CA to exist (see docs/acme.md and docs/kubernetes.md).
+# ACME-enabled issuing CA to exist (see docs/protocols/acme.md and docs/deployment/kubernetes.md).
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:

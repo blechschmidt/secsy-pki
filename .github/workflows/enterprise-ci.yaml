@@ -269,6 +269,24 @@ jobs:
           shellcheck -S warning scripts/dr-drill-full.sh scripts/dr-drill.sh || true
           bash -n scripts/dr-drill-full.sh
 
+  docs:
+    name: Documentation structure (links & indexes, no HSM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    # The guides in docs/ are grouped into topic sections, each with its own
+    # index. This gate keeps that layout true: every relative link and #anchor
+    # must resolve, every page under docs/<section>/ must be reachable from an
+    # index, and every `docs/<page>.md` path quoted in a Go comment, config.yaml,
+    # the Helm chart or an alert annotation must still point somewhere. Needs
+    # only a checkout — no Go build, no SoftHSM, no database.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check documentation structure
+        run: ./scripts/check-docs.sh
+
   openapi:
     name: OpenAPI spec & generated client SDK
     runs-on: ubuntu-latest
@@ -565,7 +583,7 @@ jobs:
     # Absolute ns/op is machine-dependent, so an apples-to-apples baseline must be
     # generated on THIS runner class: dispatch the workflow with
     # refresh_baseline=true to regenerate it and upload it as an artifact to
-    # download and commit (see docs/benchmarks.md#benchmark-regression-gate).
+    # download and commit (see docs/development/benchmarks.md#benchmark-regression-gate).
     # continue-on-error keeps the gate advisory until it has proven stable on the
     # hosted runners (which are noisier than a dedicated box).
     continue-on-error: true
@@ -632,7 +650,7 @@ jobs:
     # numbers diverge, refresh it authoritatively on THIS runner: dispatch the
     # workflow with refresh_coverage_baseline=true to regenerate coverage/baseline.txt
     # and upload it as an artifact to download and commit
-    # (see TESTING.md#test-coverage-gate and docs/coverage.md).
+    # (see TESTING.md#test-coverage-gate and docs/development/coverage.md).
     env:
       GOTOOLCHAIN: auto
 

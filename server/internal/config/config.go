@@ -148,7 +148,7 @@ type Config struct {
 	Publish PublishConfig `yaml:"publish"`
 	// Security holds deployment-wide cryptographic policy switches, notably the
 	// fail-closed FIPS 140-3 algorithm policy (security.fips). See SecurityConfig
-	// and docs/fips.md.
+	// and docs/security/fips.md.
 	Security SecurityConfig `yaml:"security"`
 	// Coordination configures multi-replica leader election (Task 68): with a
 	// shared PostgreSQL store, exactly one replica at a time runs the singleton
@@ -158,7 +158,7 @@ type Config struct {
 	// PostgreSQL advisory lock when database.driver is postgres and holds
 	// leadership statically on single-node SQLite — so replicas>1 needs no
 	// explicit configuration beyond the shared database. See
-	// docs/high-availability.md.
+	// docs/deployment/high-availability.md.
 	Coordination CoordinationConfig `yaml:"coordination"`
 	// Approvals configures the four-eyes / maker-checker approval gate (Task 81)
 	// for high-risk administrative operations (CA creation/rotation/retirement,
@@ -172,7 +172,7 @@ type Config struct {
 	// fingerprint), encrypts it with the HSM-backed secret/envelope layer, and
 	// writes it to a directory or S3-compatible store with atomic swap, manifest,
 	// and keep-N / max-age retention. Disabled unless backup.enabled is true. See
-	// BackupConfig and docs/backup.md.
+	// BackupConfig and docs/operations/backup.md.
 	Backup BackupConfig `yaml:"backup"`
 	// Retention configures the certificate-inventory retention/archival job (Task
 	// 157): a leader-elected loop that safely ages out long-expired, terminal
@@ -182,7 +182,7 @@ type Config struct {
 	// approval; only rows whose not_after passed more than retention.min_age_days
 	// ago are eligible. Disabled unless retention.enabled is true. The
 	// `secsy-ca inventory retention` CLI (run/dry-run/status) works regardless.
-	// See RetentionConfig and docs/retention.md.
+	// See RetentionConfig and docs/ca/retention.md.
 	Retention RetentionConfig `yaml:"retention"`
 	// Ers configures the RFC 4998 Evidence-Record long-term-preservation job (Task
 	// 161): a leader-elected loop that folds recent audit-log events into Evidence
@@ -193,7 +193,7 @@ type Config struct {
 	// hash/signature-algorithm obsolescence. It reuses the internal TSA (tsa.enabled)
 	// or an external tsa_url. Disabled unless ers.enabled is true; the `secsy-ca ers`
 	// CLI (generate/renew/verify/export) works regardless. See ErsConfig and
-	// docs/evidence-records.md.
+	// docs/signing/evidence-records.md.
 	Ers ErsConfig `yaml:"ers"`
 	// Webhook configures the durable outbound webhook / eventing system (Task
 	// 116): a leader-elected delivery worker that POSTs certificate lifecycle
@@ -201,7 +201,7 @@ type Config struct {
 	// endpoints with at-least-once semantics, exponential-backoff retries,
 	// dead-lettering, and HMAC-signed bodies. The subscription-management API/CLI
 	// works regardless of this block; the DELIVERY worker runs only when
-	// webhook.enabled is true. See WebhookConfig and docs/webhooks.md.
+	// webhook.enabled is true. See WebhookConfig and docs/operations/webhooks.md.
 	Webhook WebhookConfig `yaml:"webhook"`
 	// KeyChecks configures the deployment-wide inputs to the pre-issuance
 	// key-quality gate (Task 120, CA/Browser Forum BR §6.1.1.3): notably the
@@ -216,7 +216,7 @@ type Config struct {
 	// the audit-chain anchor is created. The zero value (source.type empty or
 	// "system") keeps the host wall clock as the sole reference — no cross-check,
 	// no fail-closed — so existing deployments are unaffected until they opt in to
-	// authenticated NTP/NTS or Roughtime. See TimeConfig and docs/trusted-time.md.
+	// authenticated NTP/NTS or Roughtime. See TimeConfig and docs/signing/trusted-time.md.
 	Time TimeConfig `yaml:"time"`
 }
 
@@ -431,7 +431,7 @@ type SecurityConfig struct {
 	// the SoftHSM RSA-OAEP SHA-1 fallback. This is secsy-pki's algorithm
 	// policy; running on the validated Go Cryptographic Module additionally
 	// requires the FIPS build (`make build-fips`, GOFIPS140). `secsy-ca doctor`
-	// reports both halves. See docs/fips.md.
+	// reports both halves. See docs/security/fips.md.
 	FIPS bool `yaml:"fips"`
 }
 
@@ -2959,7 +2959,7 @@ type ServerConfig struct {
 	// under the response NextUpdate window. A negative value disables caching; 0
 	// means "use the server default" (handlers.DefaultOCSPCacheTTL). Revocations
 	// invalidate the affected entry immediately regardless of this value. See
-	// docs/benchmarks.md.
+	// docs/development/benchmarks.md.
 	OCSPCacheTTLSeconds int `yaml:"ocsp_cache_ttl_seconds"`
 	// OCSP holds responder-hardening options (nonce, delegated responder,
 	// stapling). Zero-valued fields fall back to safe defaults.
@@ -3362,7 +3362,7 @@ type SoftwareProviderConfig struct {
 
 // KMSProviderConfig configures the cloud-KMS backend. Backend selects the service
 // ("aws", "azure", or "vault"; "fake" is an in-memory emulation used only by
-// tests). See docs/cloud-kms.md and docs/vault-transit.md for the per-backend
+// tests). See docs/hsm/cloud-kms.md and docs/hsm/vault-transit.md for the per-backend
 // credential / permission requirements.
 type KMSProviderConfig struct {
 	// Backend is "aws", "azure", "vault", or "fake".
@@ -3388,7 +3388,7 @@ type KMSProviderConfig struct {
 // as CryptoKeyVersions inside a pre-existing key ring and never leave Cloud KMS,
 // mirroring the HSM non-extractability invariant. Credentials follow Application
 // Default Credentials by default; an explicit service-account key may instead be
-// supplied by file path or inline JSON. See docs/cloud-kms.md.
+// supplied by file path or inline JSON. See docs/hsm/cloud-kms.md.
 type GCPProviderConfig struct {
 	// Project is the GCP project id that owns the key ring. Required. May come
 	// from the GOOGLE_CLOUD_PROJECT / SECSY_KMS_GCP_PROJECT environment variables.
@@ -3421,7 +3421,7 @@ type GCPProviderConfig struct {
 // keys and KEKs live inside Vault's Transit engine and never leave the server,
 // mirroring the HSM non-extractability invariant. Only the Vault address, mount,
 // and auth parameters live here; the actual keys are addressed by label. See
-// docs/vault-transit.md.
+// docs/hsm/vault-transit.md.
 type VaultProviderConfig struct {
 	// Address is the Vault API base URL, e.g. "https://vault.example.com:8200".
 	// When empty the VAULT_ADDR environment variable is used.
@@ -3475,12 +3475,12 @@ type PKCS11Config struct {
 	// (pin-value / pin-source) left unset above — so an operator can point at an
 	// HSM with a single self-describing string. Explicit fields always take
 	// precedence over the URI. Any embedded pin-value is redacted from dumped
-	// config. See docs/hsm-configuration.md.
+	// config. See docs/hsm/configuration.md.
 	URI string `yaml:"uri"`
 	// Pin is the inline user PIN. It is a plaintext-at-rest credential: prefer
 	// PinSource below to source it from a credential store instead. When PinSource
 	// is unset the inline pin (or SECSY_USER_PIN) is used, with a deprecation
-	// warning. See docs/hsm-configuration.md.
+	// warning. See docs/hsm/configuration.md.
 	Pin string `yaml:"pin"`
 	// PinSource selects an external credential source for the user PIN
 	// (env/file/vault/aws/azure) so it need not be stored in plaintext here or in
@@ -3493,14 +3493,14 @@ type PKCS11Config struct {
 	// provider keeps open, and therefore how many signing/decryption operations
 	// may hit the token at once. Requests beyond it queue (bounded backpressure).
 	// When <= 0 the provider uses keyprovider.DefaultSessionPoolSize. This is the
-	// primary HSM throughput tuning knob; see docs/benchmarks.md.
+	// primary HSM throughput tuning knob; see docs/development/benchmarks.md.
 	SessionPoolSize int `yaml:"session_pool_size"`
 
 	// Tokens, when non-empty, enables multi-token high availability: the pkcs11
 	// backend spans these tokens/slots (each holding a replica of the signing
 	// key(s) under the same label) behind health-tracked failover. When empty the
 	// backend addresses the single token named by token_label/token_serial above.
-	// See docs/hsm-ha.md.
+	// See docs/hsm/high-availability.md.
 	Tokens []PKCS11TokenConfig `yaml:"tokens"`
 	// SelectionPolicy chooses how a healthy token is picked: "primary-backup"
 	// (default) prefers the first healthy token, using backups only on failover;
@@ -3543,7 +3543,7 @@ type PKCS11TokenConfig struct {
 // so it need not live in plaintext in this file or SECSY_USER_PIN. Type is one of
 // "inline" (default; use the adjacent pin), "env", "file", "vault", "aws", or
 // "azure". Only the sub-block matching Type is consulted. See
-// docs/hsm-configuration.md.
+// docs/hsm/configuration.md.
 type PinSourceConfig struct {
 	Type  string               `yaml:"type"`
 	Env   EnvPinSourceConfig   `yaml:"env"`

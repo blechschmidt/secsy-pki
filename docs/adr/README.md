@@ -19,7 +19,8 @@ supersedes the old one rather than editing history.
 
 ## Related documentation
 
+- [Documentation map](../README.md) — every enterprise guide, grouped by topic
 - [Architecture overview](../../ARCHITECTURE.md)
-- [Operator runbook](../RUNBOOK.md) — day-2 procedures that put these decisions
+- [Operator runbook](../operations/runbook.md) — day-2 procedures that put these decisions
   into practice
-- [Security review & hardening](../security-review.md)
+- [Security review & hardening](../security/security-review.md)

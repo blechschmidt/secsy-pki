@@ -48,8 +48,8 @@ old key signed; `secsy-ca rotation-status` reports lineage and readiness.
   breaking outstanding leaves is the *goal*.
 - The whole flow is exercised end-to-end by `scripts/rotation-drill.sh` against
   SoftHSM, and the monitor can trigger auto-rotation. See
-  [intermediate key rotation](../ca-rotation.md) and the
-  [runbook rotation procedure](../RUNBOOK.md#ca-key-rotation-and-retirement).
+  [intermediate key rotation](../ca/rotation.md) and the
+  [runbook rotation procedure](../operations/runbook.md#ca-key-rotation-and-retirement).
 - Rotation preserves [ADR 0002](0002-hsm-non-extractability-invariants.md): the
   new key is generated on the HSM and never extracted; the old key is retired,
   not exported.

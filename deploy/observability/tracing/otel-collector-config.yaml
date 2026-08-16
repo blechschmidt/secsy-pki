@@ -1,7 +1,7 @@
 # OpenTelemetry Collector configuration for receiving secsy-pki traces.
 #
 # secsy-pki exports OTLP spans (see the `tracing` config block in
-# docs/tracing.md). This collector accepts them over OTLP gRPC (:4317) and OTLP
+# docs/operations/tracing.md). This collector accepts them over OTLP gRPC (:4317) and OTLP
 # HTTP (:4318), batches them, and fans them out to a tracing backend. The
 # debug exporter is enabled so you can watch spans arrive in `docker compose
 # logs otel-collector`; add/replace the `otlp/tempo` (or jaeger/datadog/...)

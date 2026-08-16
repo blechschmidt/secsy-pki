@@ -24,7 +24,7 @@ import (
 // the end, and appends per-certificate audit events plus a summary event.
 //
 // An interrupted run is resumed by re-running the same command: the selection
-// only ever covers not-yet-revoked certificates. See docs/incident-response.md
+// only ever covers not-yet-revoked certificates. See docs/operations/incident-response.md
 // for the full key-compromise runbook.
 func cmdRevokeBulk(db *database.DB, mgr *ca.Manager, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("revoke-bulk", flag.ContinueOnError)

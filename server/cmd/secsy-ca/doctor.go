@@ -23,7 +23,7 @@ import (
 // loaded so a broken config file is itself a reported finding rather than a
 // hard CLI error.
 //
-// Exit codes (CI-friendly, see docs/RUNBOOK.md):
+// Exit codes (CI-friendly, see docs/operations/runbook.md):
 //
 //	0  every check passed (or was skipped)
 //	1  at least one check failed

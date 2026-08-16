@@ -38,5 +38,5 @@ secsy-pki has been deployed as release "{{ .Release.Name }}" in namespace "{{ .R
 
 5. To let workloads request certs via cert-manager, enable the ACME server
    (config.acme.enabled=true) and the ClusterIssuer
-   (certManager.clusterIssuer.enabled=true). See docs/kubernetes.md.
+   (certManager.clusterIssuer.enabled=true). See docs/deployment/kubernetes.md.
 {{- end }}

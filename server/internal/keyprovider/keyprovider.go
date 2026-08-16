@@ -39,7 +39,7 @@ const (
 	KeyTypeRSA4096   = "rsa-4096"
 
 	// Post-quantum ML-DSA (FIPS 204) key types. These are only supported by the
-	// software provider; see the pqc package and docs/pqc.md.
+	// software provider; see the pqc package and docs/certificates/pqc.md.
 	KeyTypeMLDSA44 = pqc.KeyTypeMLDSA44
 	KeyTypeMLDSA65 = pqc.KeyTypeMLDSA65
 	KeyTypeMLDSA87 = pqc.KeyTypeMLDSA87
@@ -449,7 +449,7 @@ type PKCS11Settings struct {
 	Pin string
 	// PinSource, when its Type is set, resolves the user PIN lazily from an
 	// external credential store (env/file/vault/aws/azure) at login time instead
-	// of the inline Pin above. See pinsource.go and docs/hsm-configuration.md.
+	// of the inline Pin above. See pinsource.go and docs/hsm/configuration.md.
 	PinSource         PinSourceSettings
 	TokenLabel        string
 	TokenSerial       string
@@ -457,12 +457,12 @@ type PKCS11Settings struct {
 	// SessionPoolSize bounds the number of concurrent PKCS#11 sessions (and thus
 	// concurrent on-device operations) the provider keeps open. When <= 0 the
 	// provider uses DefaultSessionPoolSize. It is the primary HSM throughput
-	// tuning knob; see docs/benchmarks.md.
+	// tuning knob; see docs/development/benchmarks.md.
 	SessionPoolSize int
 
 	// Tokens, when non-empty, turns the PKCS#11 backend into a high-availability
 	// set spanning multiple tokens/slots behind health-tracked failover (see
-	// PKCS11HAProvider and docs/hsm-ha.md). Each token holds a replica of the
+	// PKCS11HAProvider and docs/hsm/high-availability.md). Each token holds a replica of the
 	// signing key(s) under the same CKA_LABEL; operations are routed to a healthy
 	// token and fail over on error. When empty, the backend is the single-token
 	// PKCS11Provider addressed by TokenLabel/TokenSerial above.

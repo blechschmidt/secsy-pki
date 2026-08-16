@@ -1,5 +1,5 @@
 # Default values for the secsy-pki Helm chart.
-# See deploy/helm/secsy-pki/README.md and docs/kubernetes.md for the full guide.
+# See deploy/helm/secsy-pki/README.md and docs/deployment/kubernetes.md for the full guide.
 
 # -- Number of server replicas. The default deployment (embedded SQLite +
 # SoftHSM) is single-node: keep this at 1. Running replicaCount > 1 is
@@ -13,7 +13,7 @@
 # expiry monitoring/auto-renewal, CA rotation, OCSP pre-signing, CRL
 # regeneration/publishing, audit anchoring, and SIEM export each run on exactly
 # one replica, with automatic failover. No extra config needed; tuning lives
-# under config.coordination. See docs/high-availability.md.
+# under config.coordination. See docs/deployment/high-availability.md.
 replicaCount: 1
 
 image:
@@ -130,7 +130,7 @@ config:
   # short-lived certificate from the lint-enforced "canary" profile, verifies
   # the chain, checks OCSP/CRL, revokes it, and confirms revocation
   # propagates. Failures alert through monitor.notifications and the
-  # SecsyPKICanary* Prometheus rules. Leader-gated. See docs/canary.md.
+  # SecsyPKICanary* Prometheus rules. Leader-gated. See docs/operations/canary.md.
   #   canary:
   #     enabled: true
   #     interval_minutes: 15
@@ -180,7 +180,7 @@ config:
     # admins are configured.
     allowRootBasicAuth: true
 
-  # Organization-wide RBAC role assignments (see docs/rbac-and-audit.md).
+  # Organization-wide RBAC role assignments (see docs/security/rbac-and-audit.md).
   rbac:
     subjects: {}
     #  "oidc-subject-id": [admin]
@@ -190,7 +190,7 @@ config:
   # Custom certificate profiles layered over the built-ins.
   profiles: []
 
-  # Certificate-expiry monitor + auto-renewal (docs/expiry-monitoring.md).
+  # Certificate-expiry monitor + auto-renewal (docs/operations/expiry-monitoring.md).
   monitor:
     enabled: false
     intervalHours: 12
@@ -203,7 +203,7 @@ config:
 
   # Audit-log SIEM export: stream the tamper-evident event log to external
   # syslog/CEF/webhook collectors. Disabled by default. See
-  # docs/audit-siem-export.md. Each entry of `sinks` mirrors the config schema
+  # docs/security/audit-siem-export.md. Each entry of `sinks` mirrors the config schema
   # (name/type/format/network/address/tls/url/headers/...).
   audit:
     export:
@@ -224,7 +224,7 @@ config:
       timeoutSeconds: 0  # 0 = default (30)
 
   # ACME (RFC 8555) server. Enable this to let cert-manager (or certbot/lego)
-  # request HSM-backed certificates. See certManager.* below and docs/acme.md.
+  # request HSM-backed certificates. See certManager.* below and docs/protocols/acme.md.
   acme:
     enabled: false
     baseURL: ""
@@ -240,7 +240,7 @@ config:
   # and the structured request log with end-to-end spans across the request
   # middleware and the CA/HSM/store hot paths. Disabled by default (a no-op
   # tracer, no exporter). Point `endpoint` at an OTel collector's OTLP receiver
-  # (e.g. the OpenTelemetry Collector, Tempo, or Jaeger). See docs/tracing.md.
+  # (e.g. the OpenTelemetry Collector, Tempo, or Jaeger). See docs/operations/tracing.md.
   tracing:
     enabled: false
     # OTLP collector endpoint in host:port form (no scheme).
@@ -319,7 +319,7 @@ secrets:
 # When enabled you will typically also set replicaCount > 1 and
 # persistence.enabled=false (the SQLite PVC is no longer the source of truth).
 # With replicas > 1 the pods elect a background-job leader through this
-# database automatically (see replicaCount above and docs/high-availability.md).
+# database automatically (see replicaCount above and docs/deployment/high-availability.md).
 # Migrate an existing SQLite store into PostgreSQL first with:
 #   secsy-ca db migrate -from-dsn <sqlite-file> -to-dsn <postgres-dsn>
 externalDatabase:
@@ -415,7 +415,7 @@ serviceMonitor:
 # Renders a PrometheusRule (monitoring.coreos.com/v1) from
 # files/prometheus-rules.yaml: HSM probe down, HSM pool exhaustion, issuance
 # error-budget burn, expiry backlog, OCSP/CRL errors + staleness, rate-limit
-# spikes, and audit-export health. See docs/observability.md and docs/RUNBOOK.md
+# spikes, and audit-export health. See docs/operations/observability.md and docs/operations/runbook.md
 # for the full list and recommended thresholds. Requires the Prometheus Operator
 # CRDs. The `labels` below MUST match your Prometheus resource's ruleSelector
 # (kube-prometheus-stack default: `release: <your-release-name>`).

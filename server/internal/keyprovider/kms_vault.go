@@ -23,7 +23,7 @@ import (
 // KMSBackendVault selects the HashiCorp Vault Transit secrets engine as the
 // cloud-KMS backend. Signing keys and key-encryption keys (KEKs) are created and
 // used inside Vault: the private/symmetric key material never leaves the server,
-// exactly like a PKCS#11 HSM or AWS KMS / Azure Key Vault. See docs/vault-transit.md.
+// exactly like a PKCS#11 HSM or AWS KMS / Azure Key Vault. See docs/hsm/vault-transit.md.
 const KMSBackendVault = "vault"
 
 // Vault Transit defaults.

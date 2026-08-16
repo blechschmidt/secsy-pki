@@ -16,8 +16,8 @@ publishing or cosign keyless — here the trust anchor is *your* PKI.
 | [`github-workflow.yml`](github-workflow.yml) | Drop-in `.github/workflows/sign-release.yml` |
 | [`verify-signature.sh`](verify-signature.sh) | Downstream `openssl cms` verification (no server needed) |
 
-Reference: [`docs/artifact-signing.md`](../../docs/artifact-signing.md),
-[`docs/authentication.md`](../../docs/authentication.md).
+Reference: [`docs/signing/artifact-signing.md`](../../docs/signing/artifact-signing.md),
+[`docs/security/authentication.md`](../../docs/security/authentication.md).
 
 ---
 
@@ -114,11 +114,11 @@ Signing **by digest** means the artifact bytes never leave the runner — good f
 multi-GB images (the API caps request bodies at 8 MiB regardless).
 
 **CAdES level (optional).** Every signature is at least CAdES-B. If you provision
-the [built-in TSA](../../docs/timestamping.md) (`secsy-ca tsa-key` + `tsa.enabled`),
+the [built-in TSA](../../docs/signing/timestamping.md) (`secsy-ca tsa-key` + `tsa.enabled`),
 add `"level":"t"` to the request for an embedded RFC 3161 timestamp, or `"level":"lt"`
 to additionally embed the chain's CRLs/OCSP for offline **long-term validation** —
 so releases stay verifiable after the signer certificate expires. The response
-reports the achieved `level`. See [CAdES baseline levels](../../docs/artifact-signing.md#cades-baseline-levels-b--t--lt).
+reports the achieved `level`. See [CAdES baseline levels](../../docs/signing/artifact-signing.md#cades-baseline-levels-b--t--lt).
 
 ## 4. Verify downstream (no server, no HSM)
 
@@ -145,7 +145,7 @@ $ secsy-ca verify-signature -sig app-v1.2.3.tar.gz.p7s -in app-v1.2.3.tar.gz \
 ```
 
 Add `-require-level t` (or `lt`) to fail unless the signature actually reached that
-[CAdES level](../../docs/artifact-signing.md#cades-baseline-levels-b--t--lt) — a
+[CAdES level](../../docs/signing/artifact-signing.md#cades-baseline-levels-b--t--lt) — a
 stronger, self-describing gate than `-require-timestamp` alone.
 
 The **timestamp is why this keeps verifying after the signing certificate
@@ -174,7 +174,7 @@ machine callers, so pointing it at GitHub dedicates that path to GitHub OIDC. If
 human operators also sign in to the console, configure their **corporate IdP**
 separately under `auth.oidc.issuer_url` — that interactive-login provider is
 independent of this machine-Bearer one (they may be different issuers). See
-[`docs/authentication.md`](../../docs/authentication.md).
+[`docs/security/authentication.md`](../../docs/security/authentication.md).
 
 ## Adapting to other CI systems
 
@@ -188,5 +188,5 @@ request a token with the matching audience, and map its `sub` in `rbac.subjects`
 | Buildkite | `https://agent.buildkite.com` | `organization:ORG:pipeline:PIPELINE:…` |
 
 Only one machine-Bearer issuer is verified per deployment; run a dedicated
-signing deployment (or use scoped [API tokens](../../docs/authentication.md#4-native-scoped-api-tokens-service-accounts))
+signing deployment (or use scoped [API tokens](../../docs/security/authentication.md#4-native-scoped-api-tokens-service-accounts))
 if you must federate several at once.

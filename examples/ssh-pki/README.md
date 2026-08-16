@@ -16,9 +16,9 @@ This example ships:
 | [`ssh_known_hosts.example`](ssh_known_hosts.example) | Client-side: `@cert-authority` trust for host certificates |
 | [`scripts/refresh-krl.sh`](scripts/refresh-krl.sh) | Pull the current KRL from the server (for cron/systemd) |
 | [`scripts/enroll-host.sh`](scripts/enroll-host.sh) | Sign a host's key into a host certificate |
-| [`systemd/`](systemd/) | Timer + service to refresh the KRL periodically |
+| [`systemd/`](systemd) | Timer + service to refresh the KRL periodically |
 
-Full reference: [`docs/ssh-ca.md`](../../docs/ssh-ca.md).
+Full reference: [`docs/ca/ssh-ca.md`](../../docs/ca/ssh-ca.md).
 
 ---
 
@@ -67,7 +67,7 @@ $ systemctl reload sshd
 
 `50-secsy-trusted-user-ca.conf` sets `TrustedUserCAKeys` (accept user certs signed
 by this CA) and `RevokedKeys` (honor the KRL). Keep the KRL fresh with the
-[systemd timer](systemd/) so revocations take effect — the KRL header carries a
+[systemd timer](systemd) so revocations take effect — the KRL header carries a
 monotonically increasing version (the revocation count).
 
 ## 4. Issue a user certificate
@@ -145,7 +145,7 @@ mean it).
 - **Interactive users:** the [`secsy-ssh`](../../README.md#secsy-ssh-ssh-client-wrapper)
   client wraps OIDC login → sign → connect, caching the cert until it expires.
 - **Hosts & agents:** call `POST /api/ssh/cas/{id}/sign` from config management,
-  or run the [host agent](../../docs/agent.md) for unattended renewal.
+  or run the [host agent](../../docs/protocols/agent.md) for unattended renewal.
 - The KRL/public endpoints are safe to put behind a CDN; keep `rate_limit`
   enabled if they face untrusted networks.
 
@@ -154,7 +154,7 @@ mean it).
 - Replace `root_user.password`; prefer OIDC/API-token operators and set
   `policy.allow_root_basic_auth: false`.
 - Source the HSM PIN from a secret, not inline `pkcs11.pin`
-  ([`docs/hsm-configuration.md`](../../docs/hsm-configuration.md)).
+  ([`docs/hsm/configuration.md`](../../docs/hsm/configuration.md)).
 - Give the CA a real serving-TLS certificate (or `server.tls.self_issue`).
-- Ship the KRL-refresh [timer](systemd/) to every host so revocations converge.
+- Ship the KRL-refresh [timer](systemd) to every host so revocations converge.
 - Keep host and user certificate lifetimes short; short lifetimes are the point.

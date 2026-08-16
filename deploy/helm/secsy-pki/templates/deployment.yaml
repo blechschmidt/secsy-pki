@@ -7,10 +7,10 @@ real HSM. Fail the render early on the two silently-corrupting combinations. */}
 {{- if gt (int .Values.replicaCount) 1 }}
 {{- $driver := ternary .Values.externalDatabase.driver .Values.config.database.driver .Values.externalDatabase.enabled }}
 {{- if has $driver (list "sqlite" "sqlite3") }}
-{{- fail "replicaCount > 1 requires a shared PostgreSQL store: enable externalDatabase (recommended) or set config.database.driver=postgres. SQLite is single-node by construction. See docs/high-availability.md." }}
+{{- fail "replicaCount > 1 requires a shared PostgreSQL store: enable externalDatabase (recommended) or set config.database.driver=postgres. SQLite is single-node by construction. See docs/deployment/high-availability.md." }}
 {{- end }}
 {{- if $softhsm }}
-{{- fail "replicaCount > 1 is not supported with hsm.module.mode=softhsm: each pod provisions its own token, so replicas would hold different CA keys. Use a shared/network HSM (hsm.module.mode=hostPath or image). See docs/high-availability.md." }}
+{{- fail "replicaCount > 1 is not supported with hsm.module.mode=softhsm: each pod provisions its own token, so replicas would hold different CA keys. Use a shared/network HSM (hsm.module.mode=hostPath or image). See docs/deployment/high-availability.md." }}
 {{- end }}
 {{- end }}
 apiVersion: apps/v1

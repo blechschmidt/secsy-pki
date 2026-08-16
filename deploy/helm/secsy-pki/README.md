@@ -3,7 +3,7 @@
 Deploys the HSM-backed secsy-pki server (X.509 + SSH CA, ACME issuance, envelope
 secret encryption, RBAC & audit) to Kubernetes.
 
-Full operational guide: [`docs/kubernetes.md`](../../../docs/kubernetes.md).
+Full operational guide: [`docs/deployment/kubernetes.md`](../../../docs/deployment/kubernetes.md).
 
 ## TL;DR
 
@@ -66,7 +66,7 @@ Set `config.acme.enabled=true` (pointing at an ACME-enabled issuing CA) and
 `certManager.clusterIssuer.enabled=true`. The chart renders an ACME
 `ClusterIssuer` targeting this server's `/acme/directory`, so any workload gets
 HSM-backed certs with a plain `Certificate` object. See
-[`deploy/cert-manager/`](../../cert-manager/) for standalone manifests and an
-example, and [`docs/kubernetes.md`](../../../docs/kubernetes.md) for the walkthrough.
+[`deploy/cert-manager/`](../../cert-manager) for standalone manifests and an
+example, and [`docs/deployment/kubernetes.md`](../../../docs/deployment/kubernetes.md) for the walkthrough.
 
 See [`values.yaml`](values.yaml) for the full, commented list of settings.

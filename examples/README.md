@@ -19,17 +19,17 @@ config key that does not exist.
 
 | Example | Use case | Highlights |
 |---------|----------|------------|
-| [`ssh-pki/`](ssh-pki/) | **SSH certificate authority** — replace `authorized_keys` sprawl with a single HSM-backed trust anchor | User + host certificate profiles, `sshd_config` trust drop-ins, `@cert-authority` client trust, KRL revocation refreshed by a systemd timer |
-| [`github-oidc-signing/`](github-oidc-signing/) | **Keyless software signing from GitHub Actions through OIDC** | GitHub's OIDC identity federated to the `signer` role — *no long-lived secret in the repo*; HSM-backed CMS signatures with RFC 3161 timestamps; a reusable release workflow and a downstream `openssl cms` verify script |
-| [`acme-tls/`](acme-tls/) | **Automated internal TLS** for services and ingress | RFC 8555 ACME server bound to an issuing CA; `certbot` / `acme.sh` / `lego` / Caddy / cert-manager clients; rate limiting for the public endpoint |
-| [`mtls-internal/`](mtls-internal/) | **Private CA for service-to-service mTLS** | `server` / `client` leaf profiles, a scoped API-token service account for CI issuance, and machine mTLS operator auth |
+| [`ssh-pki/`](ssh-pki) | **SSH certificate authority** — replace `authorized_keys` sprawl with a single HSM-backed trust anchor | User + host certificate profiles, `sshd_config` trust drop-ins, `@cert-authority` client trust, KRL revocation refreshed by a systemd timer |
+| [`github-oidc-signing/`](github-oidc-signing) | **Keyless software signing from GitHub Actions through OIDC** | GitHub's OIDC identity federated to the `signer` role — *no long-lived secret in the repo*; HSM-backed CMS signatures with RFC 3161 timestamps; a reusable release workflow and a downstream `openssl cms` verify script |
+| [`acme-tls/`](acme-tls) | **Automated internal TLS** for services and ingress | RFC 8555 ACME server bound to an issuing CA; `certbot` / `acme.sh` / `lego` / Caddy / cert-manager clients; rate limiting for the public endpoint |
+| [`mtls-internal/`](mtls-internal) | **Private CA for service-to-service mTLS** | `server` / `client` leaf profiles, a scoped API-token service account for CI issuance, and machine mTLS operator auth |
 
 ## Common prerequisites
 
 All examples assume you have built the binaries and have a PKCS#11 token
 available (SoftHSM works for evaluation — see
 [`scripts/setup-softhsm.sh`](../scripts/setup-softhsm.sh) and
-[`docs/hsm-configuration.md`](../docs/hsm-configuration.md)):
+[`docs/hsm/configuration.md`](../docs/hsm/configuration.md)):
 
 ```console
 # From the repo root — build the server and the CLIs (sqlite tag = embedded store)
@@ -59,11 +59,11 @@ $ secsy-pki-server -config /etc/secsy-pki/config.yaml
 Every config carries `root_user.password: "change-me-in-production"` and example
 labels/hostnames (`pki.example.com`, `ops-ssh-ca`, …). **Replace these before any
 real deployment**, and source the HSM PIN from a secret rather than inline
-`pkcs11.pin` (see [`docs/hsm-configuration.md`](../docs/hsm-configuration.md),
+`pkcs11.pin` (see [`docs/hsm/configuration.md`](../docs/hsm/configuration.md),
 "External PIN sourcing").
 
 ## See also
 
 - [`docs/README.md`](../docs/README.md) — the full guide index
 - [`server/config.yaml`](../server/config.yaml) — the exhaustive annotated config reference
-- [`deploy/`](../deploy/) — Kubernetes (Helm), cert-manager, systemd, and observability deployment assets
+- [`deploy/`](../deploy) — Kubernetes (Helm), cert-manager, systemd, and observability deployment assets

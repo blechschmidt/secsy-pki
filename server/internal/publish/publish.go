@@ -25,7 +25,7 @@
 //	                                      RFC 6960 GET request encoding
 //	manifest.json                         snapshot manifest (written last)
 //
-// See docs/ocsp-presign-publish.md for the CDN mapping rules.
+// See docs/operations/ocsp-presign-publish.md for the CDN mapping rules.
 package publish
 
 import (

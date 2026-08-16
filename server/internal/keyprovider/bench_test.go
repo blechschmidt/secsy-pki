@@ -14,7 +14,7 @@ import (
 
 // This file benchmarks the HSM-bound hot paths through the key provider against
 // SoftHSM, with an emphasis on how throughput scales with the PKCS#11 session
-// pool size. It is the evidence behind docs/benchmarks.md.
+// pool size. It is the evidence behind docs/development/benchmarks.md.
 //
 // All benchmarks skip unless SoftHSM is configured (SECSY_PKCS11_MODULE /
 // SECSY_TOKEN_LABEL), so `go test -bench .` on a machine without an HSM stays

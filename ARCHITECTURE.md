@@ -13,7 +13,7 @@
 >
 > The load-bearing design decisions are recorded as
 > [Architecture Decision Records](docs/adr/README.md); day-2 procedures are in the
-> [operator runbook](docs/RUNBOOK.md); per-feature guides are in
+> [operator runbook](docs/operations/runbook.md); per-feature guides are in
 > [`docs/`](docs/README.md).
 
 ---
@@ -94,34 +94,48 @@ server/
                     is internal/console (embedded at /console/)
 terraform/          HSM key provisioning via terraform-provider-pkcs11
 deploy/, Dockerfile Helm chart, container image, Grafana/Prometheus assets
-docs/               Per-feature guides, operator runbook, ADRs
+docs/               Per-feature guides, grouped by topic; each folder has an
+                    index and docs/README.md is the map:
+    hsm/            Key providers: PKCS#11, cloud KMS, Vault, ceremony, attestation
+    ca/             CA hierarchy, certificate lifecycle, rotation, SSH CA
+    issuance/       Fail-closed pre-issuance gates (lint, CAA, name constraints, CT)
+    certificates/   Specialized profiles: S/MIME, smartcard, eIDAS, SPIFFE, PQC
+    protocols/      ACME, SCEP/EST, BRSKI, Windows autoenrollment, agent, gRPC
+    signing/        Artifact signing, RFC 3161 TSA, trusted time, evidence records
+    secrets/        Envelope encryption, escrow, crypto service
+    security/       RBAC, authn, approvals, tenancy, rate limiting, FIPS, SIEM
+    deployment/     Kubernetes, persistence, multi-replica HA, serving TLS
+    operations/     Runbook, incident response, observability, backups, console
+    compliance/     RFC 3647 CP/CPS, CA/B Forum + WebTrust control mapping
+    development/    Benchmarks, coverage, fuzzing, chaos, authz matrix, supply chain
+    adr/            Architecture Decision Records
 ```
 
 ## Subsystem map
 
 | Subsystem | Packages | Guide |
 |---|---|---|
-| Key handling (HSM/KMS/Vault/software) | `keyprovider`, `pki`, `hsm` | [HSM config](docs/hsm-configuration.md) · [Cloud KMS](docs/cloud-kms.md) · [Vault Transit](docs/vault-transit.md) |
-| CA hierarchy & issuance | `ca`, `models` | [Certificate authority](docs/certificate-authority.md) |
-| Pre-issuance policy gates (fail-closed) | `certlint`, `caa`, `nameconstraints`, `certpolicy` | [certlint](docs/certlint.md) · [CAA](docs/caa.md) · [Name constraints](docs/name-constraints.md) |
-| Transparency | `ct` (embedding), `ctmonitor` (inclusion) | [Certificate Transparency](docs/certificate-transparency.md) |
-| Revocation (CRL/OCSP + offload) | `ca` (crl/ocsp), `publish` | [CA](docs/certificate-authority.md) · [OCSP presign/publish](docs/ocsp-presign-publish.md) |
-| Secret encryption + escrow | `secret` | [Password/secret encryption](docs/password-encryption.md) |
-| Enrollment protocols | `acme`, `scep`, `est`, `cmp`, `brski`, `cms`, `attestation` | [ACME](docs/acme.md) · [SCEP/EST](docs/enrollment.md) · [CMP](docs/RUNBOOK.md#cmp) · [BRSKI](docs/brski.md) |
-| SSH CA | `sshca` | [SSH CA](docs/ssh-ca.md) |
-| Time / signing / anchoring | `tsa`, `signing`, `anchor` | [Timestamping](docs/timestamping.md) · [Artifact signing](docs/artifact-signing.md) |
-| Governance (RBAC/authn/approvals/tenancy) | `rbac`, `authn`, `auth`, `approval`, `issueapproval` | [RBAC & audit](docs/rbac-and-audit.md) · [Authentication](docs/authentication.md) · [Approvals](docs/approvals.md) · [Multi-tenancy](docs/multi-tenancy.md) |
-| Audit & SIEM | `audit` (in database), `siem`, `anchor` | [SIEM export](docs/audit-siem-export.md) |
-| Persistence | `database`, `models` | [Persistence](docs/persistence.md) |
-| Multi-replica HA | `leader` + leader-gated jobs | [High availability](docs/high-availability.md) |
-| Operations & observability | `monitor`, `canary`, `discovery`, `backup`, `ratelimit`, `metrics`, `tracing`, `doctor`, `report`, `dnsrecords` | [Observability](docs/observability.md) · [Expiry](docs/expiry-monitoring.md) · [Canary](docs/canary.md) · [Backup](docs/backup.md) · [Rate limiting](docs/rate-limiting.md) · [DANE/SSHFP](docs/dns-records.md) |
-| API & console | `handlers`, `grpcapi`, `console` | [gRPC](docs/grpc-api.md) · [Web console](docs/web-console.md) |
-| Assurance modes | `fips`, `pqc` | [FIPS](docs/fips.md) · [PQC](docs/pqc.md) |
+| Key handling (HSM/KMS/Vault/software) | `keyprovider`, `pki`, `hsm` | [HSM config](docs/hsm/configuration.md) · [Cloud KMS](docs/hsm/cloud-kms.md) · [Vault Transit](docs/hsm/vault-transit.md) |
+| CA hierarchy & issuance | `ca`, `models` | [Certificate authority](docs/ca/overview.md) |
+| Pre-issuance policy gates (fail-closed) | `certlint`, `caa`, `nameconstraints`, `certpolicy` | [certlint](docs/issuance/certlint.md) · [CAA](docs/issuance/caa.md) · [Name constraints](docs/issuance/name-constraints.md) |
+| Transparency | `ct` (embedding), `ctmonitor` (inclusion) | [Certificate Transparency](docs/issuance/certificate-transparency.md) |
+| Revocation (CRL/OCSP + offload) | `ca` (crl/ocsp), `publish` | [CA](docs/ca/overview.md) · [OCSP presign/publish](docs/operations/ocsp-presign-publish.md) |
+| Secret encryption + escrow | `secret` | [Password/secret encryption](docs/secrets/password-encryption.md) |
+| Enrollment protocols | `acme`, `scep`, `est`, `cmp`, `brski`, `cms`, `attestation` | [ACME](docs/protocols/acme.md) · [SCEP/EST](docs/protocols/scep-est.md) · [CMP](docs/operations/runbook.md#cmp) · [BRSKI](docs/protocols/brski.md) |
+| SSH CA | `sshca` | [SSH CA](docs/ca/ssh-ca.md) |
+| Time / signing / anchoring | `tsa`, `signing`, `anchor` | [Timestamping](docs/signing/timestamping.md) · [Artifact signing](docs/signing/artifact-signing.md) |
+| Governance (RBAC/authn/approvals/tenancy) | `rbac`, `authn`, `auth`, `approval`, `issueapproval` | [RBAC & audit](docs/security/rbac-and-audit.md) · [Authentication](docs/security/authentication.md) · [Approvals](docs/security/approvals.md) · [Multi-tenancy](docs/security/multi-tenancy.md) |
+| Audit & SIEM | `audit` (in database), `siem`, `anchor` | [SIEM export](docs/security/audit-siem-export.md) |
+| Persistence | `database`, `models` | [Persistence](docs/deployment/persistence.md) |
+| Multi-replica HA | `leader` + leader-gated jobs | [High availability](docs/deployment/high-availability.md) |
+| Operations & observability | `monitor`, `canary`, `discovery`, `backup`, `ratelimit`, `metrics`, `tracing`, `doctor`, `report`, `dnsrecords` | [Observability](docs/operations/observability.md) · [Expiry](docs/operations/expiry-monitoring.md) · [Canary](docs/operations/canary.md) · [Backup](docs/operations/backup.md) · [Rate limiting](docs/security/rate-limiting.md) · [DANE/SSHFP](docs/operations/dns-records.md) |
+| API & console | `handlers`, `grpcapi`, `console` | [gRPC](docs/protocols/grpc-api.md) · [Web console](docs/operations/web-console.md) |
+| Assurance modes | `fips`, `pqc` | [FIPS](docs/security/fips.md) · [PQC](docs/certificates/pqc.md) |
 
 ## Cross-cutting invariants
 
 These hold across every path and are the things not to regress (see
-[security review](docs/security-review.md) and the ADRs):
+[security review](docs/security/security-review.md) and the ADRs):
 
 1. **HSM key non-extractability** — private keys are generated on-device and never
    exported; the software/PQC paths are the explicit, documented exceptions.
@@ -151,22 +165,22 @@ Where the most recently-added capabilities live, for orientation:
 
 | Feature | Package(s) | Guide |
 |---|---|---|
-| ACME tls-alpn-01 (RFC 8737) | `acme/tlsalpn.go` | [ACME §3](docs/acme.md#3-challenge-types-http-01-dns-01-tls-alpn-01) |
-| PKCS#12 export | `pkcs12` | [PKCS#12](docs/pkcs12.md) |
-| Four-eyes approvals | `approval`, `issueapproval` | [Approvals](docs/approvals.md) · [ADR 0006](docs/adr/0006-four-eyes-approval-gate.md) |
-| Suspend/hold + release | `ca` | [CA §6](docs/certificate-authority.md) |
-| Inventory pagination/filter/search | `handlers/pagination.go`, `database/pagination.go` | [CA §4a](docs/certificate-authority.md) |
-| Per-profile issuance-approval gate | `issueapproval` | [Approvals](docs/approvals.md) |
+| ACME tls-alpn-01 (RFC 8737) | `acme/tlsalpn.go` | [ACME §3](docs/protocols/acme.md#3-challenge-types-http-01-dns-01-tls-alpn-01) |
+| PKCS#12 export | `pkcs12` | [PKCS#12](docs/ca/pkcs12.md) |
+| Four-eyes approvals | `approval`, `issueapproval` | [Approvals](docs/security/approvals.md) · [ADR 0006](docs/adr/0006-four-eyes-approval-gate.md) |
+| Suspend/hold + release | `ca` | [CA §6](docs/ca/overview.md) |
+| Inventory pagination/filter/search | `handlers/pagination.go`, `database/pagination.go` | [CA §4a](docs/ca/overview.md) |
+| Per-profile issuance-approval gate | `issueapproval` | [Approvals](docs/security/approvals.md) |
 | Static-analysis gate | `.golangci.yml`, CI | [Testing](TESTING.md#static-analysis-lint--vet) |
-| Native API tokens | `authn` | [Authentication](docs/authentication.md#4-native-scoped-api-tokens-service-accounts) |
-| BRSKI onboarding | `brski` | [BRSKI](docs/brski.md) |
-| Optional zlint backend | `certlint` (`-tags zlint`) | [certlint](docs/certlint.md) |
-| Scheduled backups + restore-verify | `backup` | [Backup](docs/backup.md) |
-| Vault Transit keyprovider | `keyprovider` (kms/vault) | [Vault Transit](docs/vault-transit.md) |
-| CT inclusion monitoring | `ctmonitor` | [CT §inclusion](docs/certificate-transparency.md#inclusion-proof-monitoring-post-issuance) |
-| RFC 8657 CAA (accounturi/methods) | `caa` | [CAA](docs/caa.md) |
-| Shared ACME nonce store | `acme` | [ACME §nonces](docs/acme.md) |
-| DANE TLSA / SSHFP records | `dnsrecords` | [DANE/SSHFP](docs/dns-records.md) |
+| Native API tokens | `authn` | [Authentication](docs/security/authentication.md#4-native-scoped-api-tokens-service-accounts) |
+| BRSKI onboarding | `brski` | [BRSKI](docs/protocols/brski.md) |
+| Optional zlint backend | `certlint` (`-tags zlint`) | [certlint](docs/issuance/certlint.md) |
+| Scheduled backups + restore-verify | `backup` | [Backup](docs/operations/backup.md) |
+| Vault Transit keyprovider | `keyprovider` (kms/vault) | [Vault Transit](docs/hsm/vault-transit.md) |
+| CT inclusion monitoring | `ctmonitor` | [CT §inclusion](docs/issuance/certificate-transparency.md#inclusion-proof-monitoring-post-issuance) |
+| RFC 8657 CAA (accounturi/methods) | `caa` | [CAA](docs/issuance/caa.md) |
+| Shared ACME nonce store | `acme` | [ACME §nonces](docs/protocols/acme.md) |
+| DANE TLSA / SSHFP records | `dnsrecords` | [DANE/SSHFP](docs/operations/dns-records.md) |
 
 ---
 

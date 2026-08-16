@@ -34,7 +34,7 @@ tests:
             exp_annotations:
               summary: "Issuance error-budget burning fast (secsy-ca)"
               description: "Certificate issuance is burning the 99.5% availability SLO error budget at >14.4x over the 1h and 5m windows (recording rule job:slo_issuance_errors:ratio_rate1h). A 30-day budget is gone in ~2 days at this rate. Investigate HSM signing failures, CAA/lint rejections, or store errors."
-              runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+              runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#slo-error-budget-burn"
       - eval_time: 420m
         alertname: SecsyPKIIssuanceErrorBudgetBurnSlow
         exp_alerts:
@@ -46,7 +46,7 @@ tests:
             exp_annotations:
               summary: "Issuance error-budget burning (secsy-ca)"
               description: "Certificate issuance is burning the 99.5% availability SLO error budget at >6x over the 6h and 30m windows (recording rule job:slo_issuance_errors:ratio_rate6h). Open a ticket and investigate before the fast burn pages."
-              runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+              runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#slo-error-budget-burn"
 
   # 2. Issuance at a 4% error rate (burn ~8x): over the slow threshold (6x) but
   #    under the fast one (14.4x) — only the slow ticket fires, the fast stays quiet.
@@ -71,7 +71,7 @@ tests:
             exp_annotations:
               summary: "Issuance error-budget burning (secsy-ca)"
               description: "Certificate issuance is burning the 99.5% availability SLO error budget at >6x over the 6h and 30m windows (recording rule job:slo_issuance_errors:ratio_rate6h). Open a ticket and investigate before the fast burn pages."
-              runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+              runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#slo-error-budget-burn"
 
   # 3. Issuance at a 0.1% error rate (burn 0.2x, well inside budget): nothing fires.
   - interval: 1m
@@ -107,7 +107,7 @@ tests:
             exp_annotations:
               summary: "OCSP error-budget burning fast (secsy-ca)"
               description: "The OCSP responder is burning the 99.9% availability SLO error budget at >14.4x over the 1h and 5m windows (recording rule job:slo_ocsp_errors:ratio_rate1h). Relying parties may fail validation. Check HSM signing and the responder path."
-              runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+              runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#slo-error-budget-burn"
 
   # 5. CRL at a 2% error rate (burn 20x on the 0.001 budget): fast burn fires.
   - interval: 1m
@@ -128,7 +128,7 @@ tests:
             exp_annotations:
               summary: "CRL error-budget burning fast (secsy-ca)"
               description: "CRL distribution is burning the 99.9% availability SLO error budget at >14.4x over the 1h and 5m windows (recording rule job:slo_crl_errors:ratio_rate1h). Clients may fall back to a stale cached CRL. Check signing and the store."
-              runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+              runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#slo-error-budget-burn"
 
   # 6. ACME order-finalize latency: 20% of finalizes slower than 2.5s (burn 20x
   #    on the 0.01 budget). The le="2.5" bucket must be present for the
@@ -151,7 +151,7 @@ tests:
             exp_annotations:
               summary: "ACME finalize latency budget burning fast (secsy-ca)"
               description: "More than 14.4x the latency budget for the 99%-within-2.5s ACME order-finalize SLO is burning over the 1h and 5m windows (recording rule job:slo_acme_finalize_latency:ratio_rate1h). Finalize is the client-visible issuance step. Check HSM sign latency, CT log submission, and session-pool saturation."
-              runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+              runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#slo-error-budget-burn"
 
   # 7. ACME order-finalize latency all within budget (bucket == count, 0% slow):
   #    neither the fast nor the slow latency alert fires.
@@ -188,7 +188,7 @@ tests:
             exp_annotations:
               summary: "HSM sign latency budget burning fast (secsy-ca)"
               description: "More than 14.4x the latency budget for the 99%-within-1s HSM signing SLO is burning over the 1h and 5m windows (recording rule job:slo_hsm_sign_latency:ratio_rate1h). Every signing path (issuance, CRL, OCSP, TSA) slows down. Check HSM health, the network to a network-HSM, and session-pool sizing."
-              runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+              runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#slo-error-budget-burn"
 
   # 9. HSM signing availability: 2% of sign ops error (burn 20x on the 0.001
   #    budget). Fast sign-error burn fires.
@@ -210,7 +210,7 @@ tests:
             exp_annotations:
               summary: "HSM sign error-budget burning fast (secsy-ca)"
               description: "HSM sign operations are burning the 99.9% availability SLO error budget at >14.4x over the 1h and 5m windows (recording rule job:slo_hsm_sign_errors:ratio_rate1h). Signing is failing (HSM down, wrong PIN, or session exhaustion) — check /readyz and the key-provider logs."
-              runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/RUNBOOK.md#slo-error-budget-burn"
+              runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#slo-error-budget-burn"
 
   # 10. Recording-rule arithmetic (exact): a total issuance outage (every op
   #     errors) makes the error ratio exactly 1.0 over every window.

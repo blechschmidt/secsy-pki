@@ -75,7 +75,7 @@ type API struct {
 	// ocspCache is a long-lived, TTL-bounded cache of signed OCSP responses,
 	// shared across requests (handlers otherwise build a fresh per-request CA
 	// Manager). It avoids an on-HSM signature per OCSP request; see
-	// ca.OCSPCache and docs/benchmarks.md. Never nil.
+	// ca.OCSPCache and docs/development/benchmarks.md. Never nil.
 	ocspCache *ca.OCSPCache
 	// ocspPolicy tunes responder hardening (nonce echoing, delegated signer).
 	ocspPolicy OCSPPolicy

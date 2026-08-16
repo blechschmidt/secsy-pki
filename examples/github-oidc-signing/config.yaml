@@ -16,7 +16,7 @@
 #
 # See examples/github-oidc-signing/README.md for the end-to-end walkthrough and
 # the important note on making the `sub` claim STABLE via a GitHub environment.
-# Reference: docs/artifact-signing.md, docs/authentication.md.
+# Reference: docs/signing/artifact-signing.md, docs/security/authentication.md.
 
 server:
   host: "0.0.0.0"
@@ -86,7 +86,7 @@ signing:
 # --- RFC 3161 Time-Stamp Authority (for the countersignature) ----------------
 # A timestamped signature keeps verifying after the code-signing certificate
 # expires — the reason release pipelines pair signing with a TSA. Provision the
-# (RSA) TSA key once: secsy-ca tsa-key ...  (see docs/timestamping.md).
+# (RSA) TSA key once: secsy-ca tsa-key ...  (see docs/signing/timestamping.md).
 tsa:
   enabled: true
   key_label: tsa-signer

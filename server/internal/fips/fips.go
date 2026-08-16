@@ -17,7 +17,7 @@
 // Ed25519 leaves, no SHA-1, no RSA<2048, no software PQC" — and it also works
 // on a non-FIPS build for staging rehearsals. A deployment claiming FIPS 140-3
 // operation needs both: the FIPS build (validated module boundary) and the
-// policy (approved algorithms only). See docs/fips.md.
+// policy (approved algorithms only). See docs/security/fips.md.
 //
 // Approved by the policy:
 //

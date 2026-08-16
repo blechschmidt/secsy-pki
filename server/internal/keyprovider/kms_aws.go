@@ -37,7 +37,7 @@ type awsKMSBackend struct {
 
 // newAWSKMSBackend constructs the AWS KMS backend using the default AWS credential
 // chain (environment, shared config, IRSA/instance role). The IAM principal must
-// be granted the actions listed on awsKMSClient; see docs/cloud-kms.md.
+// be granted the actions listed on awsKMSClient; see docs/hsm/cloud-kms.md.
 func newAWSKMSBackend(cfg KMSSettings) (KMSBackend, error) {
 	var opts []func(*awsconfig.LoadOptions) error
 	if cfg.Region != "" {

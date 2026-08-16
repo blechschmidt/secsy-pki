@@ -6,7 +6,7 @@
 # never leaves the token, and publish revocations as OpenSSH KRLs.
 #
 # See examples/ssh-pki/README.md for the full walkthrough, and
-# docs/ssh-ca.md for the reference. Only SSH-relevant blocks are shown here;
+# docs/ca/ssh-ca.md for the reference. Only SSH-relevant blocks are shown here;
 # every other feature (ACME, TSA, signing, secrets, ...) stays at its default
 # (off). server/config.yaml documents every available knob.
 
@@ -14,7 +14,7 @@ server:
   host: "0.0.0.0"
   port: 8443
   # Serving TLS for the REST/console API. Generate a pair, or point the server
-  # at an internal CA with server.tls.self_issue (see docs/serving-cert.md).
+  # at an internal CA with server.tls.self_issue (see docs/deployment/serving-cert.md).
   tls_cert: "certs/server.crt"
   tls_key: "certs/server.key"
 
@@ -31,7 +31,7 @@ root_user:
 # CA signing keys live on the PKCS#11 token — the SSH CA private key is
 # generated in, and every signature produced by, the HSM. Point module_path at
 # your PKCS#11 library (SoftHSM shown; YubiHSM/Thales/etc. work the same way).
-# Source the PIN from a secret in production (docs/hsm-configuration.md).
+# Source the PIN from a secret in production (docs/hsm/configuration.md).
 key_provider:
   type: "pkcs11"
 
@@ -45,7 +45,7 @@ pkcs11:
 # Custom signing profiles overlay the built-ins (user-default 12h/30d,
 # host-default 90d/366d) by name. A profile is the policy a certificate is
 # signed under: type, validity bounds, permitted principals, extensions, and
-# critical options. See docs/ssh-ca.md "Signing profiles".
+# critical options. See docs/ca/ssh-ca.md "Signing profiles".
 ssh:
   krl_comment: "Example Corp ops SSH CA"
   profiles:
@@ -89,7 +89,7 @@ ssh:
 
 # Optional but recommended for public KRL/endpoint abuse protection. The SSH
 # public-key and KRL endpoints are unauthenticated (like CRL distribution), so
-# meter them if they face untrusted networks. See docs/rate-limiting.md.
+# meter them if they face untrusted networks. See docs/security/rate-limiting.md.
 # rate_limit:
 #   enabled: true
 #   per_ip: { rate: 20, burst: 40 }

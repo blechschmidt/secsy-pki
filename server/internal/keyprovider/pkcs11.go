@@ -21,7 +21,7 @@ import (
 // DefaultSessionPoolSize is the number of concurrent PKCS#11 sessions the
 // provider maintains when no size is configured. It bounds how many signing /
 // decryption operations may hit the token at once; requests beyond it queue.
-// See docs/benchmarks.md for tuning guidance.
+// See docs/development/benchmarks.md for tuning guidance.
 const DefaultSessionPoolSize = 8
 
 // PKCS11Provider generates and uses keys on a PKCS#11 token (HSM). It delegates

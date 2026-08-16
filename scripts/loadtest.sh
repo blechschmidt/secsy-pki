@@ -5,7 +5,7 @@
 # Runs the Go benchmark suites that measure the HSM-bound hot paths — signing /
 # certificate issuance, OCSP & CRL serving, and secret encrypt/decrypt — under
 # concurrency against SoftHSM, sweeping the PKCS#11 session pool size. It is the
-# tool used to (re)generate the baseline numbers in docs/benchmarks.md and to
+# tool used to (re)generate the baseline numbers in docs/development/benchmarks.md and to
 # tune the session-pool size / OCSP cache TTL for a given HSM.
 #
 # Usage:

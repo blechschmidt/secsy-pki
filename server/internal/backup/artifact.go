@@ -138,7 +138,7 @@ func BuildArtifact(ctx context.Context, src Source, includeConfig bool, kekLabel
 		KEKLabel:   kekLabel,
 		KEKVersion: kekVersion,
 		Notes: []string{
-			"Private keys are never included. Back up the HSM token state separately with the token's own tooling; see docs/backup.md and docs/key-ceremony.md.",
+			"Private keys are never included. Back up the HSM token state separately with the token's own tooling; see docs/operations/backup.md and docs/hsm/key-ceremony.md.",
 		},
 	}
 	if src.Provider != nil {

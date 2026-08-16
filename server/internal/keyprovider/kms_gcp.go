@@ -7,7 +7,7 @@ package keyprovider
 // export all happen through the Cloud KMS API, and there is no operation that
 // returns private key material — the non-extractability invariant an HSM
 // provides, enforced here at the type level (see kms.go's KMSBackend). See
-// docs/cloud-kms.md for the IAM / key-ring prerequisites.
+// docs/hsm/cloud-kms.md for the IAM / key-ring prerequisites.
 
 import (
 	"context"

@@ -13,7 +13,7 @@
 //
 //   - Pure PQC: the subject key and the issuer signature are both ML-DSA. The
 //     resulting certificate is post-quantum end to end but is only understood by
-//     PQC-aware verifiers (see VerifyChain and docs/pqc.md for trust-store
+//     PQC-aware verifiers (see VerifyChain and docs/certificates/pqc.md for trust-store
 //     caveats).
 //   - Hybrid ("catalyst", per the ITU-T X.509 / draft-ietf-lamps-x509-alt
 //     alternative-signature extensions): the primary key and signature are

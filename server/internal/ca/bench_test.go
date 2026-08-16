@@ -24,7 +24,7 @@ import (
 
 // This file benchmarks the certificate-authority hot paths — issuance, OCSP
 // response signing, and CRL generation — end to end against SoftHSM, sweeping
-// the PKCS#11 session pool size. It backs docs/benchmarks.md.
+// the PKCS#11 session pool size. It backs docs/development/benchmarks.md.
 //
 // Run with:
 //

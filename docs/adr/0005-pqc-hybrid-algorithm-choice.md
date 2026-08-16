@@ -41,8 +41,8 @@ have never heard of it.
   fallback can be retired.
 - **Interop caveats are real.** Pure-PQC chains fail to verify in trust stores
   that lack ML-DSA; hybrid is the safe default for mixed environments. These
-  caveats are documented in [PQC & hybrid certificates](../pqc.md).
-- Because PQC keys are software-held, the [runbook](../RUNBOOK.md) treats a
+  caveats are documented in [PQC & hybrid certificates](../certificates/pqc.md).
+- Because PQC keys are software-held, the [runbook](../operations/runbook.md) treats a
   PQC/hybrid CA-key compromise differently from an HSM-backed one: file-system
   key protection and backups matter, and the non-extractability proof from
   `secsy-verify` does not apply.
