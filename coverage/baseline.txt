@@ -13,7 +13,7 @@
 # See TESTING.md#test-coverage-gate and docs/development/coverage.md.
 #
 # Format: <package-or-total>\t<percent>.  Generated — do not hand-edit.
-total	62.1
+total	62.6
 internal/acme	70.8
 internal/agent	65.1
 internal/anchor	61.5
@@ -36,7 +36,7 @@ internal/config	57.3
 internal/console	0.0
 internal/ct	79.3
 internal/ctmonitor	68.2
-internal/database	65.5
+internal/database	65.7
 internal/delegatedcred	70.7
 internal/discovery	66.1
 internal/dnsrecords	82.2
@@ -49,17 +49,17 @@ internal/fpe	85.5
 internal/grpcapi	65.5
 internal/grpcapi/pkiv1	0.0
 internal/handlers	61.9
-internal/hsm	19.0
-internal/hsmattest	70.0
-internal/hsmaudit	70.1
+internal/hsm	22.3
+internal/hsmattest	70.8
+internal/hsmaudit	78.5
 internal/interop/acmeclient	0.0
 internal/interop/dnsd	0.0
 internal/issueapproval	66.3
 internal/keycheck	84.3
 internal/keyprovider	50.9
-internal/leader	61.1
+internal/leader	61.7
 internal/mailtransport	31.6
-internal/metrics	60.1
+internal/metrics	59.5
 internal/middleware	81.5
 internal/models	87.1
 internal/monitor	53.3
@@ -88,4 +88,4 @@ internal/tsa	51.1
 internal/tsa/tstinfo	0.0
 internal/upn	88.6
 internal/webhook	59.9
-internal/yubihsm	47.5
+internal/yubihsm	58.7
