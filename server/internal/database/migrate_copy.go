@@ -70,6 +70,11 @@ var migrationTables = []string{
 	// any hardware, which is a stronger loss than it sounds: they cannot be
 	// reissued for a head that has already passed.
 	"hsm_log_commitments",
+	// The device-log drain lease (Task 181). Standalone runtime state rather than
+	// history: it is listed so the schema-coverage check stays exhaustive, and a
+	// row copied along with everything else is harmless because it carries the
+	// expiry it was written with and is therefore already stale on arrival.
+	"hsm_collect_lease",
 	"event_log",
 	"siem_export_cursor",
 	"audit_anchors",

@@ -617,6 +617,20 @@ func (db *DB) migrate() error {
 			tail_number INTEGER NOT NULL DEFAULT 0,
 			tail_digest TEXT NOT NULL DEFAULT ''
 		)`,
+		// hsm_collect_lease is mutual exclusion between processes draining the
+		// device log (Task 181). Exactly one row (id = 1) ever exists; holding it
+		// means "I am mid-drain". The server drains after every HSM operation and
+		// an operator's `secsy-ca hsm-audit` command drains from a second process
+		// against the same device, so without this the two interleave and the
+		// slower one verifies its segment against a tail the faster one has
+		// already advanced — a false tampering report from the audit subsystem
+		// itself. expires_at bounds a lease whose holder died mid-drain.
+		`CREATE TABLE IF NOT EXISTS hsm_collect_lease (
+			id INTEGER PRIMARY KEY,
+			owner TEXT NOT NULL,
+			acquired_at TIMESTAMP NOT NULL,
+			expires_at TIMESTAMP NOT NULL
+		)`,
 		// hsm_log_entries is the durable copy of the device's own log, keyed by
 		// the device entry number so a re-delivered segment is idempotent. Rows
 		// are never updated: the device log is immutable, so a differing

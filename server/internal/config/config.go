@@ -3734,11 +3734,35 @@ type YubiHSMConfig struct {
 	AuthKeyID            int    `yaml:"auth_key_id"`
 	Password             string `yaml:"password"`
 	SuppressAuditWarning bool   `yaml:"suppress_audit_warning"`
-	// AuditCollectIntervalSeconds is how often the leader drains the device
-	// audit log into durable storage (Task 167). 0 selects 15s. The device log
-	// is a 62-entry ring and a force-audited device refuses every auditable
-	// command once it is full, so this is a liveness setting as much as an
-	// audit one: raise it only if issuance volume is known to be low.
+	// AuditCollectPerOperation drains the device audit log after every HSM
+	// operation rather than on a timer (Task 181). Unset means on, and there is
+	// no good reason to turn it off.
+	//
+	// The device log is a 62-entry volatile ring, and a force-audited device
+	// refuses every auditable command once it fills. Collecting on the operation
+	// means the durable copy trails the device's own by one drain cycle no
+	// matter how busy the CA is — where a timer had to be guessed against a
+	// signing rate nobody knows in advance, and was wrong in both directions:
+	// too slow to keep up with a burst, too fast for an idle device.
+	//
+	// Signals coalesce, so a burst of issuance costs one drain in flight plus at
+	// most one queued behind it, not one per signature.
+	AuditCollectPerOperation *bool `yaml:"audit_collect_per_operation"`
+	// AuditCollectBackstopSeconds is how often the leader drains anyway, with no
+	// operation to prompt it. 0 selects 5m.
+	//
+	// It is a safety net, not the main mechanism: a second process (an
+	// operator's secsy-ca invocation, another replica) leaves device log entries
+	// this process never hears about, a signal is lost if the process dies
+	// between the operation and the drain, and on an idle deployment this is
+	// what turns a wedged device into a visible failure rather than silence.
+	AuditCollectBackstopSeconds int `yaml:"audit_collect_backstop_seconds"`
+	// AuditCollectIntervalSeconds was the fixed drain cadence before collection
+	// became operation-driven.
+	//
+	// Deprecated: set audit_collect_backstop_seconds instead. A value here is
+	// still honoured — as the backstop, which is what a deployment that tuned
+	// this was really expressing — and logged as deprecated at startup.
 	AuditCollectIntervalSeconds int `yaml:"audit_collect_interval_seconds"`
 	// AuditFreshnessIntervalSeconds is how often the leader obtains an RFC 3161
 	// attestation that the current audit head existed at that moment (Task 167).
@@ -3764,8 +3788,9 @@ type YubiHSMConfig struct {
 	// YubiHSM audit entry carries no serial number and no signature, so an
 	// internally consistent log can be fabricated offline. Each commitment costs
 	// three device log entries (generate, attest, delete of a throwaway key in a
-	// reserved slot), and the device log is a 62-entry ring, so shortening this
-	// without also shortening audit_collect_interval_seconds will fill it.
+	// reserved slot). The device log is a 62-entry ring, but each of those
+	// entries is itself an HSM operation that prompts its own drain, so
+	// shortening this no longer risks filling the ring.
 	AuditCommitmentIntervalSeconds int `yaml:"audit_commitment_interval_seconds"`
 	// AuditCommitmentKeyID is the reserved on-device handle those throwaway keys
 	// occupy. 0 selects 0xfb00. It must lie in 0xfb00..0xfbff: verification

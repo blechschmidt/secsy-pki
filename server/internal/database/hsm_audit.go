@@ -26,6 +26,60 @@ import (
 //     is write-once by design; changing it is how a forged history would be
 //     laundered, so an attempt to change it is an error.
 
+// AcquireCollectionLease implements hsmaudit.Store, taking the cross-process
+// right to drain the device log.
+//
+// The two statements are ordered update-then-insert rather than the other way
+// round because the row exists in the steady state, so the common path is a
+// single UPDATE. Both backends serialize it the same way: PostgreSQL takes a row
+// lock and re-evaluates the WHERE clause against the committed row, SQLite
+// serializes writers outright. A loser therefore sees zero rows affected and
+// reports "not acquired" rather than overwriting a live holder.
+//
+// The expiry comparison uses the database's clock, via the value passed in from
+// this process — deliberately not now() in SQL, which would be a third clock to
+// reason about. Two processes on the same host share a clock; two hosts sharing
+// a device would have to be within a lease TTL of each other, which is already
+// the assumption every other timestamped record in this system makes.
+func (db *DB) AcquireCollectionLease(ctx context.Context, owner string, ttl time.Duration) (bool, error) {
+	if strings.TrimSpace(owner) == "" {
+		return false, fmt.Errorf("hsm audit collection lease: an owner is required")
+	}
+	now := time.Now().UTC()
+	expires := now.Add(ttl)
+
+	res, err := db.exec(
+		`UPDATE hsm_collect_lease SET owner = ?, acquired_at = ?, expires_at = ?
+		  WHERE id = 1 AND (owner = ? OR expires_at <= ?)`,
+		owner, now, expires, owner, now)
+	if err != nil {
+		return false, err
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		return true, nil
+	}
+
+	// No row was updated: either there is no lease row yet, or a live holder has
+	// it. Distinguish by trying to create it; the primary key makes that atomic,
+	// so a concurrent creator loses here rather than both believing they won.
+	if _, err := db.exec(
+		`INSERT INTO hsm_collect_lease (id, owner, acquired_at, expires_at) VALUES (1, ?, ?, ?)`,
+		owner, now, expires); err != nil {
+		return false, nil //nolint:nilerr // a conflicting insert means someone else holds the lease, which is a verdict and not a failure
+	}
+	return true, nil
+}
+
+// ReleaseCollectionLease implements hsmaudit.Store. The owner predicate makes it
+// a no-op once the lease has expired and been taken over, so a slow process
+// finishing its cycle cannot free the lease out from under its successor.
+func (db *DB) ReleaseCollectionLease(ctx context.Context, owner string) error {
+	_, err := db.exec(
+		`UPDATE hsm_collect_lease SET owner = '', expires_at = ? WHERE id = 1 AND owner = ?`,
+		time.Unix(0, 0).UTC(), owner)
+	return err
+}
+
 // LoadAuditState implements hsmaudit.Store.
 func (db *DB) LoadAuditState(ctx context.Context) (*hsmaudit.AuditState, error) {
 	var st hsmaudit.AuditState

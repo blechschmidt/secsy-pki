@@ -4,6 +4,7 @@ package database
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -292,5 +293,128 @@ func TestCommitmentRequiresACertificate(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("a commitment with no attestation certificate was stored")
+	}
+}
+
+// The collection lease (Task 181) is mutual exclusion between processes: the
+// server drains the device log after every HSM operation while an operator's
+// `secsy-ca hsm-audit` command may be draining the same device from a second
+// process. Only one of them may hold it.
+//
+// It runs against both engines (PostgreSQL when SECSY_TEST_PG_DSN is set)
+// because the exclusion rests on how each serializes the conditional UPDATE,
+// and PostgreSQL is the backend where the contenders are genuinely separate
+// hosts rather than merely separate processes.
+func TestCollectionLeaseBothBackends(t *testing.T) {
+	for _, b := range []struct {
+		name string
+		open func(t *testing.T) *DB
+	}{
+		{"sqlite", hsmAuditTestDB},
+		{"postgres", freshPostgres},
+	} {
+		t.Run(b.name, func(t *testing.T) {
+			t.Run("exclusive", func(t *testing.T) { testCollectionLeaseIsExclusive(t, b.open(t)) })
+			t.Run("expiry", func(t *testing.T) { testExpiredCollectionLeaseIsTakenOver(t, b.open(t)) })
+			t.Run("stale-release", func(t *testing.T) { testReleasingAStolenLeaseIsANoOp(t, b.open(t)) })
+			t.Run("contention", func(t *testing.T) { testCollectionLeaseHasOneWinner(t, b.open(t)) })
+			t.Run("anonymous", func(t *testing.T) {
+				if _, err := b.open(t).AcquireCollectionLease(context.Background(), "  ", time.Minute); err == nil {
+					t.Fatal("an anonymous lease was granted: the release predicate matches on the owner, " +
+						"so nobody could ever free it")
+				}
+			})
+		})
+	}
+}
+
+func testCollectionLeaseIsExclusive(t *testing.T, db *DB) {
+	ctx := context.Background()
+
+	ok, err := db.AcquireCollectionLease(ctx, "server/1", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("first acquisition: ok=%v err=%v", ok, err)
+	}
+	if ok, err := db.AcquireCollectionLease(ctx, "cli/2", time.Minute); err != nil || ok {
+		t.Fatalf("a second process took a live lease: ok=%v err=%v", ok, err)
+	}
+	// Re-acquisition by the holder extends rather than deadlocks: a process that
+	// drains after every operation takes this lease constantly.
+	if ok, err := db.AcquireCollectionLease(ctx, "server/1", time.Minute); err != nil || !ok {
+		t.Fatalf("the holder could not re-acquire its own lease: ok=%v err=%v", ok, err)
+	}
+
+	if err := db.ReleaseCollectionLease(ctx, "server/1"); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if ok, err := db.AcquireCollectionLease(ctx, "cli/2", time.Minute); err != nil || !ok {
+		t.Fatalf("the lease was not free after release: ok=%v err=%v", ok, err)
+	}
+}
+
+// A process killed mid-drain must not wedge collection for good — on a
+// force-audited device an uncollected log eventually fills and stops issuance,
+// so an unreleasable lease would be an outage.
+func testExpiredCollectionLeaseIsTakenOver(t *testing.T, db *DB) {
+	ctx := context.Background()
+	if ok, err := db.AcquireCollectionLease(ctx, "crashed/1", time.Millisecond); err != nil || !ok {
+		t.Fatalf("seeding: ok=%v err=%v", ok, err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if ok, err := db.AcquireCollectionLease(ctx, "server/2", time.Minute); err != nil || !ok {
+		t.Fatalf("an expired lease was not taken over: ok=%v err=%v", ok, err)
+	}
+}
+
+// Releasing a lease that has already been taken over must not disturb the new
+// holder: the slow process's own cycle is over, the new one's is not.
+func testReleasingAStolenLeaseIsANoOp(t *testing.T, db *DB) {
+	ctx := context.Background()
+	if ok, err := db.AcquireCollectionLease(ctx, "slow/1", time.Millisecond); err != nil || !ok {
+		t.Fatalf("seeding: ok=%v err=%v", ok, err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if ok, err := db.AcquireCollectionLease(ctx, "fast/2", time.Minute); err != nil || !ok {
+		t.Fatalf("takeover: ok=%v err=%v", ok, err)
+	}
+	if err := db.ReleaseCollectionLease(ctx, "slow/1"); err != nil {
+		t.Fatalf("late release: %v", err)
+	}
+	if ok, err := db.AcquireCollectionLease(ctx, "third/3", time.Minute); err != nil || ok {
+		t.Fatalf("the late release freed the new holder's lease: ok=%v err=%v", ok, err)
+	}
+}
+
+// Concurrent acquisition must yield exactly one winner. Anything else and two
+// processes would acknowledge device log entries at once, which is the failure
+// the lease exists to prevent.
+func testCollectionLeaseHasOneWinner(t *testing.T, db *DB) {
+	ctx := context.Background()
+	const contenders = 12
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	won := 0
+	start := make(chan struct{})
+	for i := 0; i < contenders; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			ok, err := db.AcquireCollectionLease(ctx, fmt.Sprintf("proc/%d", i), time.Minute)
+			if err != nil {
+				t.Errorf("acquire: %v", err)
+				return
+			}
+			if ok {
+				mu.Lock()
+				won++
+				mu.Unlock()
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	if won != 1 {
+		t.Fatalf("%d of %d contenders believed they held the lease, want exactly 1", won, contenders)
 	}
 }

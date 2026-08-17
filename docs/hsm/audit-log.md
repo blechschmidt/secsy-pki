@@ -251,10 +251,31 @@ too — and so is anything a future firmware adds.
 
 ### 2. The collected copy is complete
 
-A leader-elected collector drains the ring continuously, and each drained segment
-must start exactly where the previous one stopped: the successor entry number,
-and a chain digest that hashes forward from the stored one. A dropped, reordered,
-or silently re-fetched segment breaks one of the two.
+The collector drains the ring **after every HSM operation**, and each drained
+segment must start exactly where the previous one stopped: the successor entry
+number, and a chain digest that hashes forward from the stored one. A dropped,
+reordered, or silently re-fetched segment breaks one of the two.
+
+Collection follows the operations rather than a clock because the right cadence
+is not a property of time but of how busy the HSM is. Every signature,
+decryption and key wrap passes through one key-provider wrapper — the same one
+that writes the signature ledger — and that wrapper signals the collector when
+the operation completes. The signals coalesce into a single pending drain, so a
+burst of issuance costs one cycle in flight plus at most one queued behind it,
+not one device round trip per signature. A **backstop sweep** (five minutes by
+default) covers what this process's own operations cannot announce: entries
+another process produced (an operator's `secsy-ca` invocation, a second replica
+sharing the device), a signal lost because the process died between the
+operation and the drain, and an idle deployment whose device may have wedged.
+
+Concurrent drains are excluded on two levels, because both kinds happen.
+Provisioning, export, freshness attestation, device commitment and the
+`secsy-ca hsm-audit` CLI all drain the same device: within a process a mutex
+serializes them, and across processes a lease row in the database does. Without
+both, two cycles read the same collection tail, both drain, and the slower one
+verifies its segment against a tail the faster one has already advanced past —
+which reads as a gap. The subsystem would be reporting tampering because two of
+its own tools ran at once.
 
 The collector **persists before it acknowledges**. Acknowledgement frees the
 device's ring slots and is irreversible, so a failure after it would destroy the
@@ -519,6 +540,11 @@ drifting apart: a ledger that reconciles against nothing, or a force-audited
 device whose signatures are unattributed, would each produce confident-looking
 output backed by half an argument.
 
+`secsy-ca` collects too. A CLI command that reached the HSM — `init-root`,
+`issue`, `gen-crl`, `rotate`, `ssh`, `sign` — drains the device log once on its
+way out, after closing its key provider. Without that, a deployment driven only
+by the CLI would have nothing that ever emptied the ring.
+
 ## Configuration
 
 ```yaml
@@ -527,10 +553,11 @@ yubihsm:
   auth_key_id: 1
   password: ${YUBIHSM_PASSWORD}
 
-  # Device-log drain cadence. The ring holds 62 entries and a force-audited
-  # device refuses auditable commands once it fills, so this is a liveness
-  # setting as much as an audit one.
-  audit_collect_interval_seconds: 15
+  # Device-log collection. Every HSM operation drains the log, which is the
+  # default and needs no configuration; the backstop is how often the drain runs
+  # anyway, with nothing to prompt it.
+  audit_collect_per_operation: true            # default
+  audit_collect_backstop_seconds: 300          # default 5m
 
   # Freshness attestation. The interval is also the resolution of the
   # interval-bounding guarantee.
@@ -539,12 +566,22 @@ yubihsm:
   audit_freshness_timeout_seconds: 30
 
   # Device serial binding. Each commitment costs at least three device log
-  # entries (generate, attest, delete) plus session overhead, and the ring holds
-  # 62 — so shortening this without also shortening audit_collect_interval_seconds
-  # will fill it.
+  # entries (generate, attest, delete) plus session overhead. The ring holds 62,
+  # but each of those entries is an HSM operation that prompts its own drain, so
+  # shortening this no longer risks filling it.
   audit_commitment_interval_seconds: 21600     # 6h
   audit_commitment_key_id: 0xfb00              # must be in 0xfb00..0xfbff
 ```
+
+`audit_collect_interval_seconds` is the deprecated predecessor of
+`audit_collect_backstop_seconds`. It is still honoured — as the backstop, which
+is what a deployment that tuned it was really expressing — and logged as
+deprecated at startup.
+
+Turning `audit_collect_per_operation` off reverts to pure polling at the
+backstop interval. There is no good reason to: entries then sit in the device's
+volatile 62-entry ring for up to that long, which is both the window a power cut
+would destroy and, on a busy CA, long enough to fill the ring and stop issuance.
 
 With `audit_freshness_tsa_url` unset both jobs fall back to the TSA configured for
 [audit-chain anchoring](../signing/timestamping.md), then to the internal authority.
@@ -570,7 +607,7 @@ Audit config:    forced (irreversible until factory reset)
 | --- | --- |
 | `hsm-audit status` | Device audit configuration and collection state |
 | `hsm-audit provision` | Commission a factory-reset device; pin the anchor |
-| `hsm-audit collect` | Drain the device log once (the server does this continuously) |
+| `hsm-audit collect` | Drain the device log once (the server does this after every HSM operation) |
 | `hsm-audit timestamp` | Obtain one freshness attestation now |
 | `hsm-audit commit` | Have the device sign, and the TSA date, a binding of the current head to its serial |
 | `hsm-audit export -out FILE` | Write a remotely verifiable bundle, attesting every key that signed |

@@ -17,28 +17,48 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/tsa"
 )
 
-// HSM audit-log collection and signature-ledger recording (Task 167).
+// HSM audit-log collection and signature-ledger recording (Task 167, Task 181).
 //
 // The device log is a 62-entry ring. On a force-audited device the HSM refuses
 // every auditable command once it fills — which is what makes the log complete
 // rather than merely informative, and also means draining it is not optional
-// housekeeping but a liveness requirement. The collector runs continuously and
-// well ahead of the fill rate.
+// housekeeping but a liveness requirement.
 //
-// It is leader-elected because acknowledging entries is destructive and must
-// have exactly one owner: two replicas draining the same device would each see
-// half the entries and each report the other half as an uncollected gap.
+// Collection is driven by the operations themselves: the key-provider wrapper
+// every signature, decryption and key wrap passes through signals the collector
+// when it is done, so the durable copy trails the device's own by one drain
+// cycle regardless of how busy the CA is. A backstop timer covers what this
+// process's own operations cannot announce (another process's commands, a
+// signal lost to a crash) and keeps an idle deployment probing a device that
+// may have wedged.
+//
+// The loop is leader-elected so idle replicas do not generate device traffic
+// they have no operations to justify. That gate is not what makes concurrent
+// drains safe — provisioning, export, freshness attestation, device commitment
+// and the CLI all drain outside it — the collector's process mutex and the
+// store's collection lease are (see internal/hsmaudit/lease.go).
 
-// setupHSMAuditCollector registers the device-log drain when the attached
-// YubiHSM has been commissioned for audited operation.
+// hsmAuditCollector is the process-wide device-log drain, or nil when the
+// attached device has not been commissioned for audited operation.
 //
-// A deployment that has never run `secsy-ca hsm-audit provision` gets nothing —
+// It is a package-level variable for the same reason signatureRecorder below is:
+// it has to be built before the first key provider, so that no signature can be
+// produced before the thing that collects its device log entry exists, and the
+// leader registration happens much later in startup.
+var hsmAuditCollector *hsmaudit.Collector
+
+// setupHSMAudit builds the device-log collector and the signature-ledger
+// recorder, and wires the first to the second.
+//
+// A deployment that has never run `secsy-ca hsm-audit provision` gets neither —
 // there is no pinned anchor to verify against, so collecting would produce a
-// chain that cannot be attributed to a known device history.
-func setupHSMAuditCollector(cfg *config.Config, db *database.DB, elector *leader.Elector) {
+// chain that cannot be attributed to a known device history, and a ledger with
+// no device log to reconcile against proves nothing on its own.
+func setupHSMAudit(cfg *config.Config, db *database.DB) {
 	st, err := db.LoadAuditState(context.Background())
 	if err != nil {
-		log.Printf("WARNING: could not read HSM audit state, device-log collection is off: %v", err)
+		log.Printf("WARNING: could not read HSM audit state, device-log collection "+
+			"and signature-ledger recording are off: %v", err)
 		return
 	}
 	if st == nil {
@@ -50,25 +70,74 @@ func setupHSMAuditCollector(cfg *config.Config, db *database.DB, elector *leader
 		AuthKeyID:    cfg.YubiHSM.AuthKeyID,
 		Password:     cfg.YubiHSM.Password,
 	})
-	c := hsmaudit.NewCollector(dev, db, hsmAuditInterval(cfg), log.Default())
+	backstop := hsmAuditBackstop(cfg)
+	c := hsmaudit.NewCollector(dev, db, backstop, log.Default())
 	c.OnFailure(func(error) { metrics.HSMAuditCollectionFailures.Inc() })
+	hsmAuditCollector = c
 
-	log.Printf("HSM audit collection enabled (device %s, anchor %s, interval %s)",
-		st.DeviceSerial, st.Anchor, hsmAuditInterval(cfg))
+	rec, err := hsmaudit.EnableRecording(context.Background(), db)
+	if err != nil {
+		log.Printf("WARNING: could not read HSM audit state, signature-ledger recording is off: %v", err)
+	} else if rec != nil {
+		signatureRecorder = rec
+		log.Printf("HSM signature-ledger recording enabled: every signature is recorded for audit reconciliation")
+	}
+
+	if perOperationCollection(cfg) {
+		log.Printf("HSM audit collection enabled (device %s, anchor %s, after every HSM operation, backstop %s)",
+			st.DeviceSerial, st.Anchor, backstop)
+	} else {
+		hsmAuditNotify = nil
+		log.Printf("HSM audit collection enabled (device %s, anchor %s, every %s — per-operation collection "+
+			"is disabled, so entries stay in the device's volatile 62-entry ring until the next sweep)",
+			st.DeviceSerial, st.Anchor, backstop)
+	}
+	//nolint:staticcheck // SA1019: honouring the deprecated key is the whole point of reading it here.
+	if cfg.YubiHSM.AuditCollectIntervalSeconds > 0 && cfg.YubiHSM.AuditCollectBackstopSeconds == 0 {
+		log.Printf("WARNING: yubihsm.audit_collect_interval_seconds is deprecated: collection now runs after " +
+			"every HSM operation. The configured value is being used as the backstop sweep interval; " +
+			"rename it to audit_collect_backstop_seconds.")
+	}
+}
+
+// setupHSMAuditCollector registers the drain loop with the leader elector.
+func setupHSMAuditCollector(elector *leader.Elector) {
+	c := hsmAuditCollector
+	if c == nil {
+		return
+	}
 	elector.Register("hsm-audit-collector", func(ctx context.Context) {
 		c.Run(ctx)
 	})
 }
 
-// hsmAuditInterval resolves the drain cadence. The default is deliberately
-// brisk relative to the 62-entry ring: at one entry per signature plus session
-// overhead, a busy CA can fill it in well under a minute, and a full ring stops
-// issuance outright.
-func hsmAuditInterval(cfg *config.Config) time.Duration {
+// hsmAuditNotify signals the collector that an operation reached the HSM. It is
+// a function value so the wiring can disable it wholesale when per-operation
+// collection is turned off, without every call site testing a flag.
+var hsmAuditNotify = func() { hsmAuditCollector.Notify() }
+
+// perOperationCollection reports whether the drain follows every HSM operation.
+// Unset means on: an operator who has gone to the trouble of commissioning a
+// force-audited device wants its log collected promptly, not eventually.
+func perOperationCollection(cfg *config.Config) bool {
+	if v := cfg.YubiHSM.AuditCollectPerOperation; v != nil {
+		return *v
+	}
+	return true
+}
+
+// hsmAuditBackstop resolves the sweep cadence used when no operation prompts a
+// drain, honouring the deprecated audit_collect_interval_seconds so an existing
+// deployment's tuning is not silently discarded.
+func hsmAuditBackstop(cfg *config.Config) time.Duration {
+	if s := cfg.YubiHSM.AuditCollectBackstopSeconds; s > 0 {
+		return time.Duration(s) * time.Second
+	}
+	//nolint:staticcheck // SA1019: the deprecated key is read precisely so an existing deployment's tuning survives.
 	if s := cfg.YubiHSM.AuditCollectIntervalSeconds; s > 0 {
 		return time.Duration(s) * time.Second
 	}
-	return 15 * time.Second
+	return hsmaudit.BackstopInterval
 }
 
 // setupHSMAuditFreshness registers the RFC 3161 attestation job that keeps
@@ -88,7 +157,7 @@ func hsmAuditInterval(cfg *config.Config) time.Duration {
 func setupHSMAuditFreshness(cfg *config.Config, db *database.DB, authority *tsa.Authority, elector *leader.Elector) {
 	st, err := db.LoadAuditState(context.Background())
 	if err != nil || st == nil {
-		return // already reported by setupHSMAuditCollector
+		return // already reported by setupHSMAudit
 	}
 
 	ts, err := buildFreshnessTimestamper(cfg, authority)
@@ -137,7 +206,7 @@ func hsmAuditFreshnessInterval(cfg *config.Config) time.Duration {
 func setupHSMAuditCommitment(cfg *config.Config, db *database.DB, authority *tsa.Authority, elector *leader.Elector) {
 	st, err := db.LoadAuditState(context.Background())
 	if err != nil || st == nil {
-		return // already reported by setupHSMAuditCollector
+		return // already reported by setupHSMAudit
 	}
 
 	ts, err := buildFreshnessTimestamper(cfg, authority)
@@ -204,22 +273,9 @@ func buildFreshnessTimestamper(cfg *config.Config, authority *tsa.Authority) (hs
 // and guarantees no role is quietly left unrecorded.
 var signatureRecorder keyprovider.SignatureRecorder
 
-// installSignatureRecorder enables ledger recording when the attached device has
-// been commissioned for audited operation.
-func installSignatureRecorder(db *database.DB) {
-	rec, err := hsmaudit.EnableRecording(context.Background(), db)
-	if err != nil {
-		log.Printf("WARNING: could not read HSM audit state, signature-ledger recording is off: %v", err)
-		return
-	}
-	if rec != nil {
-		log.Printf("HSM signature-ledger recording enabled: every signature is recorded for audit reconciliation")
-	}
-	signatureRecorder = rec
-}
-
 // recordHSMSignatures wraps p so every signature it produces is written to the
-// tamper-evident signature ledger.
+// tamper-evident signature ledger, and every operation it performs prompts a
+// device-log drain.
 //
 // This is the chokepoint that gives the device log something to be reconciled
 // against: the log says how many signatures a key made, the ledger says which
@@ -227,9 +283,17 @@ func installSignatureRecorder(db *database.DB) {
 // signing, the TSA, the SSH CA, SVIDs, artifact signing and every background
 // job are covered without each having to know the audit subsystem exists — and
 // so is code added later.
+//
+// The same wrapper carries the collection signal, deliberately: the set of
+// operations that need a ledger row and the set whose device log entries need
+// collecting are the same set, so binding them to one chokepoint means neither
+// can be extended without the other.
 func recordHSMSignatures(p keyprovider.Provider) keyprovider.Provider {
 	if signatureRecorder == nil {
 		return p
 	}
-	return keyprovider.Record(p, signatureRecorder)
+	if hsmAuditCollector == nil || hsmAuditNotify == nil {
+		return keyprovider.Record(p, signatureRecorder)
+	}
+	return keyprovider.Record(p, signatureRecorder, keyprovider.OnOperation(hsmAuditNotify))
 }

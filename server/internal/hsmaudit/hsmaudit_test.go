@@ -7,6 +7,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,7 +17,15 @@ import (
 // fakeDevice is a scripted Device. Its log is built with real chain digests so
 // the tests exercise the same re-derivation production does, rather than a
 // weakened one that would let a broken verifier pass.
+//
+// The log-facing methods take mu because collection is now concurrent by
+// design: operation-driven drains, the backstop sweep and the export path can
+// all reach one device at once, and the tests that check they are serialized
+// correctly would otherwise trip the race detector on this double rather than
+// on the code under test. Tests that stay single-threaded may still touch the
+// fields directly.
 type fakeDevice struct {
+	mu       sync.Mutex
 	info     DeviceInfo
 	opts     Options
 	entries  []hsm.AuditLogEntry
@@ -28,14 +37,29 @@ type fakeDevice struct {
 	provisionErr error
 	fetches      int
 	provisioned  []uint8
+
+	// beforeFetch, when set, runs at the top of FetchLog. It lets a test hold a
+	// drain cycle open at the one point where a concurrent drain would collide.
+	beforeFetch func()
 }
 
 func (d *fakeDevice) Info(ctx context.Context) (*DeviceInfo, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	cp := d.info
 	return &cp, nil
 }
 
 func (d *fakeDevice) FetchLog(ctx context.Context) (*hsm.LogResponse, error) {
+	d.mu.Lock()
+	hook := d.beforeFetch
+	d.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.fetches++
 	if d.fetchErr != nil {
 		return nil, d.fetchErr
@@ -54,6 +78,8 @@ func (d *fakeDevice) FetchLog(ctx context.Context) (*hsm.LogResponse, error) {
 }
 
 func (d *fakeDevice) ConsumeLog(ctx context.Context, upTo uint16) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.consumeErr != nil {
 		return d.consumeErr
 	}
@@ -61,7 +87,39 @@ func (d *fakeDevice) ConsumeLog(ctx context.Context, upTo uint16) error {
 	return nil
 }
 
+// appendEntry adds one entry to the device log, chained onto the last, the way
+// a real operation would. It returns the new entry number.
+func (d *fakeDevice) appendEntry(e hsm.AuditLogEntry) uint16 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	last := d.entries[len(d.entries)-1]
+	prev, err := hex.DecodeString(last.Hash)
+	if err != nil {
+		panic(err)
+	}
+	e.Number = last.Number + 1
+	e.Hash = hsm.ComputeEntryHash(e, prev)
+	d.entries = append(d.entries, e)
+	return e.Number
+}
+
+// consumedUpTo reports the acknowledgement point under the lock.
+func (d *fakeDevice) consumedUpTo() uint16 {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.consumed
+}
+
+// fetchCount reports how many drain cycles reached the device.
+func (d *fakeDevice) fetchCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.fetches
+}
+
 func (d *fakeDevice) Options(ctx context.Context) (*Options, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	cp := d.opts
 	return &cp, nil
 }
@@ -72,6 +130,8 @@ func (d *fakeDevice) Options(ctx context.Context) (*Options, error) {
 // hsm.Config, whose empty connector URL is the real direct-USB default, and
 // silently force-audited any YubiHSM plugged into the machine running the test.
 func (d *fakeDevice) ProvisionAudit(ctx context.Context, forced []uint8) (string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.provisionErr != nil {
 		return "", d.provisionErr
 	}

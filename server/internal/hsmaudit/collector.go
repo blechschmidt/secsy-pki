@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
@@ -36,6 +37,73 @@ import (
 // notice before issuance stops.
 const DrainThreshold = MaxLogEntries * 3 / 4
 
+// Collection is driven by the operations themselves rather than by a clock
+// (Task 181). Every HSM operation calls Notify when it completes, and the drain
+// loop runs one cycle per signal — so an entry is durable within one cycle of
+// the operation that produced it, instead of within one polling interval.
+//
+// The polling interval it replaces was a compromise in both directions. Set
+// short, it hammered a device that was doing nothing; set long, it left the
+// most recent operations — exactly the ones an investigation cares about —
+// sitting in a volatile 62-entry ring that a power cut or a full log would
+// destroy. Neither setting could be right, because the correct cadence is not a
+// property of time but of how busy the HSM is, which is precisely what the
+// signal carries.
+//
+// Signals coalesce into a single pending token, which is what keeps this from
+// becoming one device round trip per signature: a burst of issuance produces
+// one drain in flight plus at most one queued behind it, and the queued one
+// sweeps up everything the burst generated meanwhile. The token is consumed
+// *before* the cycle runs, so an operation that completes mid-cycle re-arms it
+// and gets a cycle of its own rather than being silently folded into one that
+// had already read the log.
+const (
+	// BackstopInterval is how often the loop drains anyway, with no signal.
+	//
+	// Signals only cover the operations this process performs. Entries also
+	// arrive from a second process (an operator's `secsy-ca` invocation, another
+	// replica sharing the device) and from device work issued outside the key
+	// provider, and a signal can be lost outright if the process dies between
+	// the operation and the drain. The backstop bounds how long any of that sits
+	// in the ring, and doubles as the liveness probe that surfaces a wedged
+	// device or an unwritable store on an otherwise idle deployment.
+	BackstopInterval = 5 * time.Minute
+
+	// CollectionLeaseTTL bounds how long a drain may hold the cross-process
+	// lease before another process may assume it died. It is generous relative
+	// to a cycle (three device round trips, tens of milliseconds) because the
+	// cost of over-waiting is a delayed drain, while the cost of expiring a
+	// lease that is still live is two processes acknowledging device entries at
+	// once — the one thing the lease exists to prevent.
+	CollectionLeaseTTL = 60 * time.Second
+)
+
+// collectionLeaseWait bounds how long a drain waits for the lease before giving
+// up and reporting that another collector is not releasing it;
+// collectionLeasePoll is the retry cadence while waiting. They are variables so
+// a test can exercise the give-up path without waiting out the real one.
+var (
+	collectionLeaseWait = 30 * time.Second
+	collectionLeasePoll = 100 * time.Millisecond
+)
+
+// drainMu serializes device-log drains within this process.
+//
+// It is package-level rather than a Collector field on purpose: the drain is
+// reached from six places — the collector loop, provisioning, export (twice),
+// freshness attestation, device commitment and the CLI — and every one of them
+// constructs its own Collector over the same attached device. A per-instance
+// mutex would therefore serialize nothing that actually races. A process talks
+// to at most one YubiHSM, so one lock per process is the right granularity.
+//
+// What it prevents is not merely duplicated work. Two overlapping cycles both
+// read the tail, both drain, and the slower one then verifies a segment against
+// a tail the faster one has already advanced past — which VerifySegment
+// correctly reports as a break in continuity. That is a false tampering alarm
+// raised by the CA against itself, in the one subsystem whose alarms have to be
+// believed.
+var drainMu sync.Mutex
+
 // CollectResult reports what one drain cycle did.
 type CollectResult struct {
 	// Collected is how many new entries were durably stored this cycle.
@@ -50,12 +118,18 @@ type CollectResult struct {
 	Segment *SegmentResult `json:"segment,omitempty"`
 }
 
-// Collector drains and verifies the device log on a schedule.
+// Collector drains and verifies the device log, once per HSM operation.
 type Collector struct {
 	dev      Device
 	store    Store
-	interval time.Duration
+	backstop time.Duration
 	logger   *log.Logger
+
+	// trigger carries the "an operation touched the HSM" signal. It holds one
+	// token: a signal that arrives while a token is already pending is the same
+	// instruction, and delivering it twice would only buy a second cycle over a
+	// log the first one is about to read anyway.
+	trigger chan struct{}
 
 	// onFailure is invoked with every verification failure so the server can
 	// raise an alert. It is separate from logging because a broken audit chain
@@ -63,31 +137,59 @@ type Collector struct {
 	onFailure func(error)
 }
 
-// NewCollector returns a Collector. interval <= 0 selects a default cadence
-// chosen to drain the 62-entry ring well before it can fill under normal
-// issuance rates.
-func NewCollector(dev Device, store Store, interval time.Duration, logger *log.Logger) *Collector {
-	if interval <= 0 {
-		interval = 60 * time.Second
+// NewCollector returns a Collector. backstop <= 0 selects BackstopInterval.
+//
+// The backstop is the cadence the loop drains at when nothing signals it; the
+// operations themselves drive the normal case through Notify.
+func NewCollector(dev Device, store Store, backstop time.Duration, logger *log.Logger) *Collector {
+	if backstop <= 0 {
+		backstop = BackstopInterval
 	}
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Collector{dev: dev, store: store, interval: interval, logger: logger}
+	return &Collector{
+		dev:      dev,
+		store:    store,
+		backstop: backstop,
+		logger:   logger,
+		trigger:  make(chan struct{}, 1),
+	}
 }
 
 // OnFailure registers a callback invoked whenever a cycle fails verification.
 func (c *Collector) OnFailure(fn func(error)) { c.onFailure = fn }
 
-// Run drains the log until ctx is cancelled. It is the entry point registered
-// with the leader elector, so exactly one replica drains a given device.
+// Notify signals that an operation reached the HSM, so the loop should drain
+// the entry it produced.
 //
-// Running it on more than one replica would be incorrect rather than merely
-// wasteful: two collectors racing on fetch-and-acknowledge would each see a
-// partial segment, and each would report the other's entries as a gap.
+// It never blocks and never fails. It is called from the signing path — from
+// inside the key-provider wrapper every operation in the system passes through
+// — so anything else would let the audit subsystem stall or break issuance,
+// which is a far worse outcome than a drain that happens one backstop late.
+func (c *Collector) Notify() {
+	if c == nil {
+		return
+	}
+	select {
+	case c.trigger <- struct{}{}:
+	default: // a drain is already pending; it will cover this operation too
+	}
+}
+
+// Run drains the log until ctx is cancelled, once per signalled operation and
+// at least once per backstop interval.
+//
+// It is registered with the leader elector so that at most one replica drains a
+// given device on its own initiative. That gate is not the whole story, and was
+// never sufficient on its own: provisioning, export, freshness attestation,
+// device commitment and the `secsy-ca hsm-audit` CLI all drain the same device
+// outside it. drainMu and the store lease are what actually make concurrent
+// drains safe; the elector merely keeps idle replicas from generating device
+// traffic they have no operations to justify.
 func (c *Collector) Run(ctx context.Context) {
-	c.logger.Printf("HSM audit collector started (interval %s)", c.interval)
-	t := time.NewTicker(c.interval)
+	c.logger.Printf("HSM audit collector started (drains after every HSM operation, backstop %s)", c.backstop)
+	t := time.NewTicker(c.backstop)
 	defer t.Stop()
 	for {
 		if res, err := c.Collect(ctx); err != nil {
@@ -105,6 +207,7 @@ func (c *Collector) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-c.trigger:
 		case <-t.C:
 		}
 	}
@@ -116,7 +219,28 @@ func (c *Collector) Run(ctx context.Context) {
 // collected segment does not continue the stored chain. That is deliberate
 // fail-closed behaviour: continuing to acknowledge entries whose continuity we
 // cannot establish would convert a detectable break into an invisible one.
+//
+// The cycle runs under two locks, and needs both. drainMu excludes the other
+// drains inside this process; the store lease excludes the other processes
+// sharing the device and the database — typically an operator running
+// `secsy-ca hsm-audit export` while the server is issuing. Neither is
+// redundant: a mutex cannot reach across processes, and a lease acquired by
+// this process would happily admit a second goroutine of it.
 func (c *Collector) Collect(ctx context.Context) (*CollectResult, error) {
+	drainMu.Lock()
+	defer drainMu.Unlock()
+
+	release, err := acquireCollectionLease(ctx, c.store)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	return c.collectLocked(ctx)
+}
+
+// collectLocked is Collect's body, with both locks held.
+func (c *Collector) collectLocked(ctx context.Context) (*CollectResult, error) {
 	st, err := c.store.LoadAuditState(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("loading hsm audit state: %w", err)

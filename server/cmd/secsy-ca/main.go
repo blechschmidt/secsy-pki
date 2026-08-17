@@ -180,6 +180,11 @@ func run(args []string) error {
 	// Enable HSM signature-ledger recording before any key provider is built, so
 	// every signature the CLI produces is accounted for (Task 167).
 	installSignatureRecorder(db)
+	// And drain the device log on the way out if this command used the HSM (Task
+	// 181). Deferred here rather than at each dispatch arm so no command can sign
+	// and leave without it; deferred before the key provider is built so it runs
+	// after the provider's Close.
+	defer collectAfterHSMUse(cfg, db)
 
 	// Audit-log administration (chain/anchor verification, offline export) is
 	// dispatched before the key provider is constructed, so an auditor can run

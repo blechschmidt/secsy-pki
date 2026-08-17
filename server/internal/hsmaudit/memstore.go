@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
@@ -23,11 +24,59 @@ type MemStore struct {
 	ledger      []LedgerEntry
 	freshness   []FreshnessProof
 	commitments []Commitment
+
+	leaseOwner   string
+	leaseExpires time.Time
+	// now overrides the clock the lease expiry is judged against, so a test can
+	// age a lease out without sleeping.
+	now func() time.Time
 }
 
 // NewMemStore returns an empty in-memory store.
 func NewMemStore() *MemStore {
 	return &MemStore{entries: map[uint16]hsm.AuditLogEntry{}}
+}
+
+// SetClock overrides the lease clock, for tests.
+func (m *MemStore) SetClock(fn func() time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.now = fn
+}
+
+func (m *MemStore) clock() time.Time {
+	if m.now != nil {
+		return m.now()
+	}
+	return time.Now()
+}
+
+// AcquireCollectionLease implements Store. It grants the lease when it is free,
+// expired, or already held by owner.
+func (m *MemStore) AcquireCollectionLease(ctx context.Context, owner string, ttl time.Duration) (bool, error) {
+	if owner == "" {
+		return false, fmt.Errorf("hsm audit collection lease: an owner is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.clock()
+	if m.leaseOwner != "" && m.leaseOwner != owner && now.Before(m.leaseExpires) {
+		return false, nil
+	}
+	m.leaseOwner = owner
+	m.leaseExpires = now.Add(ttl)
+	return true, nil
+}
+
+// ReleaseCollectionLease implements Store.
+func (m *MemStore) ReleaseCollectionLease(ctx context.Context, owner string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.leaseOwner == owner {
+		m.leaseOwner = ""
+		m.leaseExpires = time.Time{}
+	}
+	return nil
 }
 
 func (m *MemStore) LoadAuditState(ctx context.Context) (*AuditState, error) {

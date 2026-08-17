@@ -55,6 +55,29 @@ type SignatureRecorder interface {
 	RecordSignature(ctx context.Context, rec SignatureRecord) error
 }
 
+// RecordOption configures the recording wrapper.
+type RecordOption func(*recordingProvider)
+
+// OnOperation registers fn, called once after every operation the wrapped
+// provider performs against the backend — signatures, decryptions, key wraps
+// and unwraps, and hardware-RNG reads alike.
+//
+// It exists so the device audit log can be drained as soon as there is
+// something in it to drain (Task 181). Each of those operations leaves an entry
+// in the YubiHSM's 62-entry log ring, and the ring is volatile: entries live
+// only until a power cut, and a full ring stops the device serving auditable
+// commands at all. Draining on the operation rather than on a timer is what
+// keeps the durable copy within one cycle of the device's own.
+//
+// fn must not block or fail — it runs on the signing path, where an audit
+// mechanism that can stall issuance is worse than a late drain. It is called
+// whether the operation succeeded or not, because a rejected operation is
+// logged by the device too, and it is called after the operation completes, so
+// the entry it should pick up already exists.
+func OnOperation(fn func()) RecordOption {
+	return func(p *recordingProvider) { p.onOperation = fn }
+}
+
 // Record wraps a Provider so that every signature it produces is recorded via
 // rec before being returned to the caller.
 //
@@ -76,11 +99,14 @@ type SignatureRecorder interface {
 // Recording before signing would invert the last case into a permanent phantom
 // deficit for every transient HSM error, which is worse: an auditor learns to
 // ignore imbalances.
-func Record(p Provider, rec SignatureRecorder) Provider {
+func Record(p Provider, rec SignatureRecorder, opts ...RecordOption) Provider {
 	if p == nil || rec == nil {
 		return p
 	}
 	rp := &recordingProvider{Provider: p, rec: rec, ids: map[string]string{}}
+	for _, opt := range opts {
+		opt(rp)
+	}
 	if _, ok := p.(DecrypterProvider); ok {
 		return &recordingDecrypterProvider{recordingProvider: rp}
 	}
@@ -92,7 +118,8 @@ func Record(p Provider, rec SignatureRecorder) Provider {
 
 type recordingProvider struct {
 	Provider
-	rec SignatureRecorder
+	rec         SignatureRecorder
+	onOperation func()
 
 	// ids caches label -> backend key ID. Resolving the ID costs a FindKey
 	// round-trip to the HSM, and it cannot change for a given label without the
@@ -100,6 +127,13 @@ type recordingProvider struct {
 	// operations that appear in the device log.
 	mu  sync.RWMutex
 	ids map[string]string
+}
+
+// operated fires the OnOperation hook, if one is installed.
+func (p *recordingProvider) operated() {
+	if p.onOperation != nil {
+		p.onOperation()
+	}
 }
 
 // Ping, ListKeys and Random forward the optional capabilities the embedded
@@ -126,6 +160,7 @@ func (p *recordingProvider) Random(ctx context.Context, n int) ([]byte, error) {
 	if !ok {
 		return nil, ErrRandomUnsupported
 	}
+	defer p.operated()
 	return rp.Random(ctx, n)
 }
 
@@ -184,6 +219,11 @@ type recordingSigner struct {
 }
 
 func (s *recordingSigner) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	// Deferred so a rejected signature triggers a drain too: the device logs the
+	// rejection, and an entry nobody collects is an entry a later fetch reports
+	// as a gap.
+	defer s.p.operated()
+
 	sig, err := s.Signer.Sign(rand, digest, opts)
 	if err != nil {
 		return nil, err
@@ -214,12 +254,33 @@ func (s *recordingSigner) Sign(rand io.Reader, digest []byte, opts crypto.Signer
 // wrapping produces a signature, so neither is recorded — the device log still
 // covers them, and inventing ledger rows for them would break the one-row-per-
 // signature invariant reconciliation depends on.
+//
+// They do fire the OnOperation hook, which is a different question: a
+// decryption leaves a device log entry exactly like a signature does, so the
+// entry needs collecting whether or not it needs a ledger row.
 type recordingDecrypterProvider struct {
 	*recordingProvider
 }
 
 func (p *recordingDecrypterProvider) Decrypter(ctx context.Context, ref KeyRef) (Decrypter, error) {
-	return p.Provider.(DecrypterProvider).Decrypter(ctx, ref)
+	d, err := p.Provider.(DecrypterProvider).Decrypter(ctx, ref)
+	if err != nil || p.onOperation == nil {
+		return d, err
+	}
+	return &notifyingDecrypter{Decrypter: d, p: p.recordingProvider}, nil
+}
+
+// notifyingDecrypter reports the operation that actually reaches the device.
+// Obtaining a Decrypter is a handle lookup; the Decrypt call is what the device
+// logs, so that is where the hook belongs.
+type notifyingDecrypter struct {
+	Decrypter
+	p *recordingProvider
+}
+
+func (d *notifyingDecrypter) Decrypt(rand io.Reader, msg []byte, opts crypto.DecrypterOpts) ([]byte, error) {
+	defer d.p.operated()
+	return d.Decrypter.Decrypt(rand, msg, opts)
 }
 
 type recordingKeyWrapperProvider struct {
@@ -227,9 +288,11 @@ type recordingKeyWrapperProvider struct {
 }
 
 func (p *recordingKeyWrapperProvider) WrapKey(ctx context.Context, ref KeyRef, plaintext []byte) ([]byte, error) {
+	defer p.operated()
 	return p.Provider.(KeyWrapper).WrapKey(ctx, ref, plaintext)
 }
 
 func (p *recordingKeyWrapperProvider) UnwrapKey(ctx context.Context, ref KeyRef, ciphertext []byte) ([]byte, error) {
+	defer p.operated()
 	return p.Provider.(KeyWrapper).UnwrapKey(ctx, ref, ciphertext)
 }

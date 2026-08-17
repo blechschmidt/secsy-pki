@@ -23,6 +23,19 @@ import (
 //     that writes the row. A caller cannot supply them; that is what stops a
 //     row from being rewritten after the fact.
 type Store interface {
+	// AcquireCollectionLease takes the exclusive right to drain the device log
+	// for owner, for at most ttl, and reports whether it was granted. It must be
+	// atomic against concurrent callers in other processes — the lease exists
+	// precisely because a mutex cannot reach them (see lease.go).
+	//
+	// Re-acquisition by the current owner succeeds and extends the lease, so a
+	// process that crashed and restarted is not locked out by its own remains.
+	AcquireCollectionLease(ctx context.Context, owner string, ttl time.Duration) (bool, error)
+	// ReleaseCollectionLease frees the lease if owner still holds it, and is a
+	// no-op otherwise. Releasing a lease that has since been taken over must not
+	// disturb the new holder.
+	ReleaseCollectionLease(ctx context.Context, owner string) error
+
 	// LoadAuditState returns the pinned device identity, chain anchor, and
 	// collection tail. It returns nil when the device has never been
 	// provisioned, which is the only state in which a new anchor may be pinned.

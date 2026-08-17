@@ -136,10 +136,12 @@ func main() {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Enable HSM signature-ledger recording before any key provider is built
-	// (Task 167), so no role's provider is constructed without the hook and every
-	// signature the process produces is accounted for.
-	installSignatureRecorder(db)
+	// Build the HSM audit-log collector and enable signature-ledger recording
+	// before any key provider is built (Task 167, Task 181), so no role's
+	// provider is constructed without the hooks: every signature the process
+	// produces is accounted for, and every operation it performs prompts a drain
+	// of the device log entry it left behind.
+	setupHSMAudit(cfg, db)
 
 	// Multi-replica coordination (Task 68): the singleton background jobs
 	// registered below (expiry monitor/auto-renewal + CA rotation, discovery
@@ -812,13 +814,14 @@ func main() {
 	// retained serials is unaffected. HSM-independent.
 	setupRetention(cfg, db, elector)
 
-	// HSM device audit-log collection (Task 167): a leader-elected loop that
-	// drains the YubiHSM's 62-entry log ring into durable storage, verifying that
-	// each segment continues the previous one before acknowledging anything.
-	// Registered only on a device commissioned via `secsy-ca hsm-audit provision`.
-	// Leader-gated because acknowledging entries is destructive and must have
-	// exactly one owner.
-	setupHSMAuditCollector(cfg, db, elector)
+	// HSM device audit-log collection (Task 167, Task 181): a leader-elected loop
+	// that drains the YubiHSM's 62-entry log ring into durable storage after
+	// every HSM operation, verifying that each segment continues the previous one
+	// before acknowledging anything. Registered only on a device commissioned via
+	// `secsy-ca hsm-audit provision`. The elector keeps idle replicas off the
+	// device; the drain's process mutex and store lease are what make it safe
+	// alongside the export, attestation and CLI paths that drain outside it.
+	setupHSMAuditCollector(elector)
 
 	// Durable outbound webhooks (Task 116): a leader-elected worker that POSTs
 	// certificate lifecycle events to operator-registered endpoints with
