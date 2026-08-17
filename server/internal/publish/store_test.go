@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -145,11 +146,44 @@ func TestPublisherRejectsBadPaths(t *testing.T) {
 
 // fakeS3 is an in-memory S3-compatible endpoint: PUT/GET on /<bucket>/<key>,
 // MD5 ETags, and SigV4 header presence checks.
+//
+// Every field is guarded by mu, and the test body must reach them through the
+// accessors below rather than touching them directly: a failed publish cancels
+// its sibling uploads, so the handler goroutines serving those abandoned
+// requests are still storing objects after Publish has returned to the test.
 type fakeS3 struct {
 	mu      sync.Mutex
 	objects map[string][]byte
 	badETag bool
 	puts    int
+}
+
+// object reads a stored object, mirroring a map lookup.
+func (f *fakeS3) object(key string) ([]byte, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	body, ok := f.objects[key]
+	return body, ok
+}
+
+// keys lists every stored key, sorted, for failure messages.
+func (f *fakeS3) keys() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	keys := make([]string, 0, len(f.objects))
+	for k := range f.objects {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// setBadETag makes subsequent PUTs answer with a wrong ETag, standing in for
+// bit rot or a broken middlebox.
+func (f *fakeS3) setBadETag(bad bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.badETag = bad
 }
 
 func (f *fakeS3) handler(t *testing.T) http.HandlerFunc {
@@ -226,15 +260,15 @@ func TestS3StorePublishVerify(t *testing.T) {
 	}
 
 	// Keys are laid out under /<bucket>/<prefix>/.
-	if _, ok := fake.objects["/pki/rev/prod/ca-1/crl.der"]; !ok {
-		keys := make([]string, 0, len(fake.objects))
-		for k := range fake.objects {
-			keys = append(keys, k)
-		}
-		t.Fatalf("expected key /pki/rev/prod/ca-1/crl.der, have %v", keys)
+	if _, ok := fake.object("/pki/rev/prod/ca-1/crl.der"); !ok {
+		t.Fatalf("expected key /pki/rev/prod/ca-1/crl.der, have %v", fake.keys())
+	}
+	stored, ok := fake.object("/pki/rev/prod/manifest.json")
+	if !ok {
+		t.Fatalf("manifest not stored, have %v", fake.keys())
 	}
 	var m Manifest
-	if err := json.Unmarshal(fake.objects["/pki/rev/prod/manifest.json"], &m); err != nil {
+	if err := json.Unmarshal(stored, &m); err != nil {
 		t.Fatalf("stored manifest invalid: %v", err)
 	}
 	if _, err := Verify(ctx, store); err != nil {
@@ -243,7 +277,7 @@ func TestS3StorePublishVerify(t *testing.T) {
 
 	// A backend returning a wrong ETag (bit rot, broken middlebox) fails the
 	// publish rather than silently storing corrupt revocation data.
-	fake.badETag = true
+	fake.setBadETag(true)
 	if _, err := NewPublisher(store).Publish(ctx, testCAs(), testArtifacts()); err == nil {
 		t.Fatal("publish succeeded despite ETag mismatch")
 	} else if !strings.Contains(err.Error(), "integrity check failed") {
@@ -282,7 +316,7 @@ func TestS3StoreManifestLast(t *testing.T) {
 	if _, err := NewPublisher(store).Publish(ctx, testCAs(), testArtifacts()); err == nil {
 		t.Fatal("publish succeeded despite a failed artifact upload")
 	}
-	if _, ok := fake.objects["/pki/manifest.json"]; ok {
+	if _, ok := fake.object("/pki/manifest.json"); ok {
 		t.Fatal("manifest was written despite a failed artifact upload")
 	}
 }
