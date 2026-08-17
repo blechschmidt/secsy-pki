@@ -38,14 +38,15 @@ import (
 // versions it does not know rather than silently skipping checks it cannot
 // perform.
 //
-// Version 2 added the key attestations (Task 170). Version 1 bundles are still
-// accepted — refusing them outright would tell an auditor holding an old export
-// nothing at all — but they carry no attestation, so the coverage check reports
-// every signing key as unconfined and verification fails unless the auditor
-// deliberately opts out. That is the honest outcome: a v1 bundle really does not
-// establish that the signing keys live inside the device.
+// Version 2 added the key attestations (Task 170); version 3 the device-signed
+// serial bindings (Task 178). Older bundles are still accepted — refusing them
+// outright would tell an auditor holding an old export nothing at all — but each
+// missing piece fails its own check unless the auditor deliberately opts out.
+// That is the honest outcome: a v1 bundle really does not establish that the
+// signing keys live inside the device, and a v2 bundle really does not establish
+// that the device it names produced the log.
 const (
-	BundleVersion = 2
+	BundleVersion = 3
 	// MinBundleVersion is the oldest schema this verifier will read.
 	MinBundleVersion = 1
 )
@@ -96,6 +97,14 @@ type Bundle struct {
 	// published *as of some unknown moment*, and an operator could answer an
 	// audit with a pristine snapshot taken before the abuse. See VerifyFreshness.
 	Freshness []FreshnessProof `json:"freshness,omitempty"`
+
+	// Commitments hold the device's own signed, timestamped bindings of the audit
+	// head to its serial number. Everything above is a log the device cannot sign
+	// — a YubiHSM audit entry carries no serial, no key and no signature, so an
+	// internally flawless one can be fabricated offline. These are what connect
+	// the log to hardware Yubico vouches for, and the timestamp on each is what
+	// stops them being minted in advance. See commitment.go.
+	Commitments []Commitment `json:"commitments,omitempty"`
 }
 
 // Fingerprint returns the SHA-256 of the bundle's canonical JSON encoding.
@@ -132,6 +141,7 @@ type BundleResult struct {
 	Attestations     *AttestationResult `json:"attestations,omitempty"`
 	Published        *PublishedResult   `json:"published,omitempty"`
 	Freshness        *FreshnessResult   `json:"freshness,omitempty"`
+	Commitments      *CommitmentResult  `json:"commitments,omitempty"`
 
 	// Keys holds one verdict per public key the auditor asked about, answering
 	// "has this key signed anything that was not published" for each.
@@ -198,6 +208,18 @@ type VerifyOptions struct {
 	// verdict; it must not be used in a real audit, because a bundle whose age
 	// is unknown cannot bound what the HSM has signed lately.
 	SkipFreshness bool
+
+	// Commitments parameterizes the device serial-binding check. Its TSA roots
+	// and staleness threshold default from Freshness when left unset, since the
+	// two mechanisms are dated by the same authority and go stale together.
+	Commitments CommitmentOptions
+	// AllowUnboundLog downgrades a missing or invalid device commitment from a
+	// failure to a report. It exists for a deployment provisioned before this
+	// build could commit, and for inspecting a v1 or v2 bundle. It must not be
+	// used in a real audit: without a commitment nothing but the CA's own word
+	// connects the log to the device it names, and a wholly fabricated log would
+	// pass every other check that does not depend on the pinned anchor.
+	AllowUnboundLog bool
 }
 
 // VerifyBundle checks a bundle end to end and reports what it does and does not
@@ -216,10 +238,13 @@ type VerifyOptions struct {
 //  7. Every ledger digest corresponds to an independently obtained artifact.
 //  8. A trusted timestamp authority has attested to this history recently
 //     enough that it is not simply an outdated snapshot.
-//  9. Each public key the auditor asked about is bound to an attested handle
+//  9. The device itself has signed a commitment to this log, so the serial the
+//     bundle names is Yubico-rooted hardware's own assertion rather than the
+//     CA's, and a timestamp authority dated that assertion.
+//  10. Each public key the auditor asked about is bound to an attested handle
 //     whose signatures are all accounted for.
 //
-// Steps 1-6 need nothing but the bundle. Step 7 needs the auditor to have
+// Steps 1-6 and 9 need nothing but the bundle. Step 7 needs the auditor to have
 // collected the published artifacts themselves, which is the only part of the
 // argument that cannot be delegated to the party being audited. Step 8 needs
 // the CA to have been obtaining timestamps all along — which is why it is a
@@ -229,6 +254,10 @@ type VerifyOptions struct {
 // 5 alone counts operations on a device; step 6 is what makes those counts the
 // complete history of a *key*, by establishing that the private material was
 // created inside the HSM and has no path out of it.
+//
+// Steps 8 and 9 are likewise two halves. The timestamp dates a state; the
+// commitment says which device asserted it. Alone, the first dates a statement
+// no hardware ever made and the second makes a statement nothing can date.
 func VerifyBundle(b *Bundle, opts VerifyOptions) *BundleResult {
 	res := &BundleResult{OK: true}
 	fail := func(format string, args ...any) {
@@ -346,7 +375,20 @@ func VerifyBundle(b *Bundle, opts VerifyOptions) *BundleResult {
 		}
 	}
 
-	// 9. The auditor's own question, per key. This runs last because it composes
+	// 9. The device's own commitment to this log. This is the only check whose
+	// subject is the *provenance* of the evidence rather than its content: every
+	// step above reasons about a log that carries no device identity and no
+	// signature, so all of them hold equally well over a fabrication.
+	res.Commitments = VerifyCommitments(b, commitmentOptions(opts))
+	if err := res.Commitments.Err(); err != nil {
+		if opts.AllowUnboundLog {
+			res.Findings = append(res.Findings, "IGNORED (-allow-unbound-log): "+err.Error())
+		} else {
+			fail("%v", err)
+		}
+	}
+
+	// 10. The auditor's own question, per key. This runs last because it composes
 	// the results above into a statement about a public key someone actually
 	// holds, rather than about a device they do not.
 	for _, want := range opts.ExpectedKeys {
@@ -359,6 +401,34 @@ func VerifyBundle(b *Bundle, opts VerifyOptions) *BundleResult {
 
 	res.Summary = summarize(res, b, opts)
 	return res
+}
+
+// commitmentOptions fills the serial-binding check's parameters from the ones
+// the auditor supplied.
+//
+// The TSA anchors, staleness threshold and independence requirement default from
+// the freshness options because the two mechanisms are dated by the same
+// authority and go stale together: an auditor who supplied -tsa-roots and
+// -max-age for one meant them for both, and making them say it twice would let
+// the weaker setting silently win. The attestation policy comes from the key
+// attestations for the same reason — the commitment certificates are produced by
+// the same device command and chain to the same roots.
+func commitmentOptions(opts VerifyOptions) CommitmentOptions {
+	c := opts.Commitments
+	if c.Now.IsZero() {
+		c.Now = opts.Freshness.Now
+	}
+	if c.MaxAge == 0 {
+		c.MaxAge = opts.Freshness.MaxAge
+	}
+	if len(c.TSARoots) == 0 {
+		c.TSARoots = opts.Freshness.Roots
+	}
+	c.RequireIndependentTSA = c.RequireIndependentTSA || opts.Freshness.RequireIndependentTSA
+	if c.AttestationPolicy == nil {
+		c.AttestationPolicy = opts.AttestationPolicy
+	}
+	return c
 }
 
 // describeExpectedKey names a key in a finding: the auditor's own label when
@@ -399,9 +469,26 @@ func summarize(res *BundleResult, b *Bundle, opts VerifyOptions) string {
 		subject = fmt.Sprintf("device %s, using %d key(s) it attests are confined to it (%s)",
 			b.Device.Serial, len(a.Keys), describeAttestedKeys(a.Keys))
 	}
+	// "device %s" is the CA's claim until a commitment makes it the device's.
+	// Which of the two the verdict rests on is the difference between a log that
+	// came from hardware and a log that says it did, so it belongs in the
+	// sentence rather than in a field further down.
+	provenance := "; the log itself carries no device identity and this verdict does not establish where it came from"
+	if c := res.Commitments; c != nil && c.OK && c.SerialBound {
+		provenance = fmt.Sprintf("; that device signed a commitment to this log at %s, so the serial is its own "+
+			"assertion under %s rather than the CA's",
+			c.NewestGenTime.Format(time.RFC3339), anchorName(c.TrustAnchor))
+	}
 	return fmt.Sprintf("OK: %s performed %d signature(s) since the factory reset, all accounted for by %s; "+
-		"no key abuse detected, %s",
-		subject, total, scope, asOf)
+		"no key abuse detected, %s%s",
+		subject, total, scope, asOf, provenance)
+}
+
+func anchorName(s string) string {
+	if s == "" {
+		return "an unnamed attestation root"
+	}
+	return s
 }
 
 // describeAttestedKeys lists attested handles compactly for the summary line.
@@ -516,6 +603,26 @@ func VerifyContinuation(prev, next *Bundle) *ContinuationResult {
 			!prev.Freshness[i].GenTime.Equal(next.Freshness[i].GenTime) {
 			fail("freshness proof %d differs from the previously exported copy: an attestation was replaced",
 				prev.Freshness[i].Seq)
+			break
+		}
+	}
+
+	// And for the device commitments, for a sharper reason than the freshness
+	// proofs. Each commitment leaves its own creation entry in the log, so a
+	// dropped commitment leaves a log entry with nothing to explain it — but only
+	// an auditor who held the earlier export would know to look. Comparing the two
+	// makes the drop itself the finding.
+	if len(next.Commitments) < len(prev.Commitments) {
+		fail("current export has %d device commitment(s), fewer than the %d already exported: bindings were deleted, "+
+			"which would let the CA disown a stretch of history the device had already signed for",
+			len(next.Commitments), len(prev.Commitments))
+	}
+	cm := min(len(prev.Commitments), len(next.Commitments))
+	for i := 0; i < cm; i++ {
+		if prev.Commitments[i].CertificatePEM != next.Commitments[i].CertificatePEM ||
+			!prev.Commitments[i].GenTime.Equal(next.Commitments[i].GenTime) {
+			fail("device commitment %d differs from the previously exported copy: a binding was replaced",
+				prev.Commitments[i].Seq)
 			break
 		}
 	}

@@ -679,6 +679,37 @@ func (db *DB) migrate() error {
 			token %s NOT NULL
 		)`, blob),
 		`CREATE INDEX IF NOT EXISTS idx_hsm_freshness_gen_time ON hsm_freshness_proofs(gen_time)`,
+		// hsm_log_commitments holds the device's own signed bindings of the audit
+		// head to its serial number (Task 178), each dated by an RFC 3161 token
+		// over the certificate's DER. The tables above establish WHAT the HSM
+		// signed and WHEN that was last true; these establish WHICH device the log
+		// came from — which nothing else can, because a YubiHSM audit entry carries
+		// no serial number and no signature.
+		//
+		// Like the freshness proofs the rows carry no hash chain. Each row's
+		// integrity rests on the device attestation key's signature, and its
+		// position in the history rests on the three force-audited operations the
+		// commitment left in the device log at the entries right after the head it
+		// bound — which the next commitment's head folds in.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS hsm_log_commitments (
+			seq INTEGER PRIMARY KEY,
+			created_at TIMESTAMP NOT NULL,
+			gen_time TIMESTAMP,
+			source TEXT NOT NULL DEFAULT '',
+			label TEXT NOT NULL,
+			object_id INTEGER NOT NULL,
+			device_serial TEXT NOT NULL,
+			anchor TEXT NOT NULL,
+			device_number INTEGER NOT NULL,
+			device_digest TEXT NOT NULL,
+			signatures INTEGER NOT NULL,
+			ledger_seq INTEGER NOT NULL,
+			ledger_hash TEXT NOT NULL,
+			certificate_pem TEXT NOT NULL,
+			device_certificate_pem TEXT NOT NULL DEFAULT '',
+			token %s
+		)`, blob),
+		`CREATE INDEX IF NOT EXISTS idx_hsm_commitment_gen_time ON hsm_log_commitments(gen_time)`,
 		// Tamper-evident, append-only event log. seq is a gap-free monotonic
 		// counter (assigned by the app under eventMu, not the DB, so it is part of
 		// the hashed content); prev_hash/hash form the chain. Any edit, deletion,

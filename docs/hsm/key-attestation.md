@@ -109,6 +109,14 @@ also reads the handle's history out of the device log, so an attested key whose
 object ID was deleted and recreated — or exported under a wrap key — is refused
 rather than counted.
 
+It also puts the same device command to a second, less obvious use. The device
+log carries no serial number and no signature, so nothing in it says which HSM
+wrote it. Attesting a *throwaway* key whose label is a digest of the audit head
+turns the host-supplied label extension into a channel for a statement the
+factory attestation key signs — which, paired with an RFC 3161 timestamp over the
+resulting certificate, is what ties an exported log to real hardware. See [the
+log came from the device it names](audit-log.md#7-the-log-came-from-the-device-it-names).
+
 ### Sweep the whole device
 
 The question an operator usually has is not "is this one key safe" but "is

@@ -41,7 +41,7 @@ These pages are also published — with search and navigation — at
 | [HashiCorp Vault Transit backend](hsm/vault-transit.md) | Signing keys and KEKs in a Vault Transit engine; token/AppRole auth |
 | [Key ceremony, backup & DR](hsm/key-ceremony.md) | M-of-N key ceremony, key inventory, backup and disaster recovery |
 | [Production HSM migration](hsm/production-migration.md) | SoftHSM → real HSM (YubiHSM / network HSM) cutover |
-| [Remotely verifiable HSM audit log](hsm/audit-log.md) | Third-party-checkable proof that a given key signed nothing beyond what was published |
+| [Remotely verifiable HSM audit log](hsm/audit-log.md) | Third-party-checkable proof that a given key signed nothing beyond what was published, and that the log came from the HSM whose serial it names |
 | [YubiHSM key attestation](hsm/key-attestation.md) | Hardware-signed proof a key was born in the HSM and cannot be exported |
 
 ### 2. Certificate authority — [`ca/`](ca/README.md)

@@ -198,3 +198,99 @@ func TestConcurrentLedgerAppendsProduceGapFreeChain(t *testing.T) {
 		t.Fatalf("concurrent appends produced a broken chain: %s (seq %d)", res.Reason, res.BrokenAtSeq)
 	}
 }
+
+// The device commitments (Task 178) are the only rows in this subsystem that
+// carry an X.509 certificate and an optional timestamp token, so the round trip
+// has more to lose than the others: a truncated PEM or a genTime that came back
+// as the zero time instead of NULL would both read, at audit, as a forged or
+// undated commitment rather than as a storage bug.
+func TestCommitmentRoundTrip(t *testing.T) {
+	db := hsmAuditTestDB(t)
+	pinState(t, db)
+	ctx := context.Background()
+
+	const certPEM = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+	head := hsmaudit.Head{
+		DeviceSerial: "31650425",
+		Anchor:       testAnchor,
+		DeviceNumber: 7,
+		DeviceDigest: strings.Repeat("ab", hsmaudit.DigestLen),
+		Signatures:   3,
+		LedgerSeq:    3,
+		LedgerHash:   strings.Repeat("cd", 32),
+	}
+	first := &hsmaudit.Commitment{
+		Head:                 head,
+		Label:                hsmaudit.CommitmentLabel(head),
+		ObjectID:             hsmaudit.DefaultCommitmentKeyID,
+		CertificatePEM:       certPEM,
+		DeviceCertificatePEM: certPEM,
+		CreatedAt:            time.Now().UTC().Truncate(time.Millisecond),
+		GenTime:              time.Now().UTC().Truncate(time.Second),
+		Source:               "https://tsa.example/tsr",
+		Token:                []byte{0x30, 0x82, 0x01, 0x00},
+	}
+	if err := db.AppendCommitment(ctx, first); err != nil {
+		t.Fatalf("appending commitment: %v", err)
+	}
+	if first.Seq != 1 {
+		t.Fatalf("first commitment got seq %d, want 1", first.Seq)
+	}
+
+	// A commitment taken while no TSA was reachable: the date must come back
+	// absent rather than as a zero time that a verifier would have to guess at.
+	undated := &hsmaudit.Commitment{
+		Head:           head,
+		Label:          hsmaudit.CommitmentLabel(head),
+		ObjectID:       hsmaudit.DefaultCommitmentKeyID,
+		CertificatePEM: certPEM,
+		CreatedAt:      time.Now().UTC().Truncate(time.Millisecond),
+	}
+	if err := db.AppendCommitment(ctx, undated); err != nil {
+		t.Fatalf("appending an undated commitment: %v", err)
+	}
+	if undated.Seq != 2 {
+		t.Fatalf("second commitment got seq %d, want 2", undated.Seq)
+	}
+
+	got, err := db.Commitments(ctx)
+	if err != nil {
+		t.Fatalf("reading commitments: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("read back %d commitment(s), want 2", len(got))
+	}
+	if got[0].Head != first.Head {
+		t.Fatalf("head round trip: got %+v, want %+v", got[0].Head, first.Head)
+	}
+	if got[0].Label != first.Label || got[0].ObjectID != first.ObjectID {
+		t.Fatalf("label/object round trip: got %q/0x%04x", got[0].Label, got[0].ObjectID)
+	}
+	if got[0].CertificatePEM != certPEM || got[0].DeviceCertificatePEM != certPEM {
+		t.Fatal("certificate PEM did not survive the round trip")
+	}
+	if string(got[0].Token) != string(first.Token) {
+		t.Fatalf("token round trip: got %x, want %x", got[0].Token, first.Token)
+	}
+	if !got[0].GenTime.Equal(first.GenTime) || got[0].Source != first.Source {
+		t.Fatalf("date round trip: got %s from %q", got[0].GenTime, got[0].Source)
+	}
+	if !got[1].GenTime.IsZero() {
+		t.Fatalf("an undated commitment came back dated %s", got[1].GenTime)
+	}
+}
+
+// A commitment with no certificate is not a commitment; storing one would put a
+// row in the record that fails verification with no way to tell whether the
+// device or the row was at fault.
+func TestCommitmentRequiresACertificate(t *testing.T) {
+	db := hsmAuditTestDB(t)
+	pinState(t, db)
+	err := db.AppendCommitment(context.Background(), &hsmaudit.Commitment{
+		Head:     hsmaudit.Head{DeviceSerial: "31650425"},
+		ObjectID: hsmaudit.DefaultCommitmentKeyID,
+	})
+	if err == nil {
+		t.Fatal("a commitment with no attestation certificate was stored")
+	}
+}

@@ -33,7 +33,11 @@ import (
 )
 
 // scratchObjectIDs are the object ids these tests create and delete.
-var scratchObjectIDs = []uint16{0x7e57, 0x7e58, 0x7e5a, 0x7e5b}
+// 0xfb00 is the reserved commitment slot: a run aborted between generating and
+// attesting leaves a key there, and while CommitAuditHead clears its own
+// leftovers, clearing it here keeps that recovery path from being what the
+// commitment test exercises by accident.
+var scratchObjectIDs = []uint16{0x7e57, 0x7e58, 0x7e5a, 0x7e5b, 0xfb00}
 
 // TestMain clears leftover scratch objects before any test runs.
 //
@@ -614,6 +618,9 @@ func TestFreshnessEndToEnd_RealDevice(t *testing.T) {
 	res := VerifyBundle(bundle, VerifyOptions{
 		ExpectedAnchor: strings.ToLower(last.Hash),
 		ExpectedSerial: info.Serial,
+		// This test is about the freshness half; the device-binding half has its
+		// own hardware test (TestCommitmentEndToEnd_RealDevice).
+		AllowUnboundLog: true,
 		Freshness: FreshnessOptions{
 			Roots:                 []*x509.Certificate{ts.root},
 			RequireIndependentTSA: true,
@@ -651,9 +658,10 @@ func TestFreshnessEndToEnd_RealDevice(t *testing.T) {
 		t.Fatalf("export after unrecorded signature: %v", err)
 	}
 	abuseRes := VerifyBundle(abused, VerifyOptions{
-		ExpectedAnchor: strings.ToLower(last.Hash),
-		ExpectedSerial: info.Serial,
-		Freshness:      FreshnessOptions{Roots: []*x509.Certificate{ts.root}},
+		ExpectedAnchor:  strings.ToLower(last.Hash),
+		ExpectedSerial:  info.Serial,
+		AllowUnboundLog: true,
+		Freshness:       FreshnessOptions{Roots: []*x509.Certificate{ts.root}},
 	})
 	if abuseRes.Reconciliation.OK {
 		t.Fatal("a signature the ledger does not account for was NOT detected on real hardware")
@@ -666,7 +674,8 @@ func TestFreshnessEndToEnd_RealDevice(t *testing.T) {
 	// And the staleness case: the same bundle judged against a threshold shorter
 	// than the attestation's age must be refused as outdated.
 	stale := VerifyBundle(bundle, VerifyOptions{
-		ExpectedAnchor: strings.ToLower(last.Hash),
+		ExpectedAnchor:  strings.ToLower(last.Hash),
+		AllowUnboundLog: true,
 		Freshness: FreshnessOptions{
 			Roots:  []*x509.Certificate{ts.root},
 			Now:    proof.GenTime.Add(48 * time.Hour),
@@ -936,4 +945,171 @@ func verifyWindow(t *testing.T, b *Bundle, want ExpectedKey) (*AttestationResult
 	t.Helper()
 	atts := VerifyAttestations(b, hsmattest.DefaultPolicy())
 	return atts, ProveKey(b, atts, want, nil)
+}
+
+// TestCommitmentEndToEnd_RealDevice is the Task 178 claim on hardware: the
+// attached YubiHSM signs a statement that binds the audit head to its own serial
+// number, an RFC 3161 authority dates that statement, and a verifier holding
+// neither the device nor the database reaches the conclusion.
+//
+// Everything the unit tests can only assert about a synthesizer is checked here
+// against the device that produces the real encoding: that a 40-byte label
+// survives the round trip through the object store and into the attestation
+// certificate's UTF8String unchanged, that the serial the certificate asserts is
+// the device's own, that the certificate chains to Yubico's published attestation
+// PKI, and — the one that cannot be faked at all — that generating the commitment
+// key leaves the log entry the verifier requires as proof the commitment was made
+// against this device rather than filed against its log.
+func TestCommitmentEndToEnd_RealDevice(t *testing.T) {
+	if os.Getenv("YUBIHSM_ALLOW_PROVISION") != "1" {
+		t.Skip("set YUBIHSM_ALLOW_PROVISION=1 to run (creates and deletes a key on the device)")
+	}
+	d := hwDevice(t)
+	cfg := hwConfig(t)
+	ctx := context.Background()
+
+	opts, err := d.Options(ctx)
+	if err != nil {
+		t.Fatalf("Options: %v", err)
+	}
+	if err := opts.Verify(); err != nil {
+		t.Skipf("device is not commissioned for audited operation: %v", err)
+	}
+
+	// Anchor a window on the device's current position, as the freshness test
+	// does: the factory-reset sentinel is long consumed by the time this runs.
+	pre, err := d.FetchLog(ctx)
+	if err != nil {
+		t.Fatalf("FetchLog: %v", err)
+	}
+	if len(pre.Entries) == 0 {
+		t.Skip("no pending entry to anchor this window on")
+	}
+	last := pre.Entries[len(pre.Entries)-1]
+	if err := d.ConsumeLog(ctx, last.Number); err != nil {
+		t.Fatalf("ConsumeLog: %v", err)
+	}
+	info, err := d.Info(ctx)
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	store := NewMemStore()
+	if err := store.AppendLogEntries(ctx, []hsm.AuditLogEntry{last}); err != nil {
+		t.Fatalf("seeding window anchor: %v", err)
+	}
+	if err := store.SaveAuditState(ctx, &AuditState{
+		DeviceSerial:  info.Serial,
+		Anchor:        strings.ToLower(last.Hash),
+		ProvisionedAt: time.Now().UTC(),
+		Tail:          Tail{Number: last.Number, Digest: strings.ToLower(last.Hash)},
+	}); err != nil {
+		t.Fatalf("pinning window anchor: %v", err)
+	}
+
+	svc := NewService(d, store)
+	ts := newTestTSA(t, "https://tsa.test/tsr")
+	com, err := svc.Commit(ctx, ts)
+	if err != nil {
+		t.Fatalf("committing the audit head on hardware: %v", err)
+	}
+	t.Logf("device %s committed to head %s at %s (label %s, object 0x%04x)",
+		com.Head.DeviceSerial, com.Head.Digest(), com.GenTime.Format(time.RFC3339), com.Label, com.ObjectID)
+
+	// The label the device stored and read back must be the one submitted. It is
+	// exactly 40 bytes precisely so this round trip cannot silently truncate or
+	// NUL-pad it, and this is the only place that can be checked.
+	if len(com.Label) != CommitmentLabelLen {
+		t.Fatalf("commitment label is %d bytes, want %d", len(com.Label), CommitmentLabelLen)
+	}
+	cert, err := com.Certificate()
+	if err != nil {
+		t.Fatalf("parsing the device's commitment certificate: %v", err)
+	}
+	claims, err := hsmattest.ParseClaims(cert)
+	if err != nil {
+		t.Fatalf("parsing the device's attestation extensions: %v", err)
+	}
+	if claims.Label != com.Label {
+		t.Fatalf("the device stored label %q but returned %q: the 40-byte round trip is not lossless",
+			com.Label, claims.Label)
+	}
+	if claims.DeviceSerial != info.Serial {
+		t.Fatalf("the commitment asserts serial %q but the device reports %q", claims.DeviceSerial, info.Serial)
+	}
+	if claims.ObjectID != com.ObjectID {
+		t.Fatalf("the commitment attests object 0x%04x, want 0x%04x", claims.ObjectID, com.ObjectID)
+	}
+	if !claims.GeneratedOnDevice() {
+		t.Fatalf("the commitment key reports origin %s, want generated-on-device", claims.OriginString())
+	}
+	if claims.Exportable() {
+		t.Fatal("the throwaway commitment key holds exportable-under-wrap")
+	}
+
+	// The certificate must chain to Yubico's embedded attestation roots with no
+	// configuration, which is what makes the serial their assertion and not ours.
+	vr := hsmattest.Verify(&hsmattest.Attestation{
+		CertificatePEM:       com.CertificatePEM,
+		DeviceCertificatePEM: com.DeviceCertificatePEM,
+	}, hsmattest.DefaultPolicy())
+	if !vr.Verified {
+		t.Fatalf("the device's own commitment did not verify against Yubico's roots: %v", vr.Problems)
+	}
+	if !vr.ChainAnchored {
+		t.Fatal("the commitment certificate did not anchor to a Yubico attestation root")
+	}
+	t.Logf("commitment anchored to %q", vr.TrustAnchor)
+
+	// The throwaway key must be gone: a signing-capable object left in a reserved
+	// slot would be a liability, and its absence is also what the delete marker in
+	// the log claims.
+	onDevice(t, cfg, func(ctx context.Context, c *yubihsm.Client) {
+		if _, err := c.GetObjectInfo(ctx, com.ObjectID, yubihsm.ObjectTypeAsymmetricKey); err == nil {
+			t.Fatalf("the commitment key 0x%04x is still on the device", com.ObjectID)
+		} else {
+			var devErr yubihsm.DeviceError
+			if !errors.As(err, &devErr) || devErr != yubihsm.ErrObjectNotFound {
+				t.Fatalf("checking that the commitment key was deleted: %v", err)
+			}
+		}
+	})
+
+	// And the whole verdict, from the bundle alone.
+	bundle, err := svc.Export(ctx)
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	res := VerifyCommitments(bundle, CommitmentOptions{TSARoots: []*x509.Certificate{ts.root}})
+	if !res.OK {
+		t.Fatalf("a commitment made by real hardware was rejected: %v", res.Err())
+	}
+	if !res.SerialBound || res.DeviceSerial != info.Serial {
+		t.Fatalf("the log was not bound to device %s (got %q, bound=%v)", info.Serial, res.DeviceSerial, res.SerialBound)
+	}
+	t.Logf("verified: device %s signed for this log at %s under %q",
+		res.DeviceSerial, res.NewestGenTime.Format(time.RFC3339), res.TrustAnchor)
+
+	// The marker check is the one property no forgery can satisfy without the
+	// device, so confirm the entry it looks for is genuinely there and that
+	// removing it flips the verdict.
+	var marker bool
+	for _, e := range bundle.LogEntries {
+		if e.TargetKey == com.ObjectID && e.Command == hsm.CmdGenerateAsymmetricKey && e.Number > com.Head.DeviceNumber {
+			marker = true
+		}
+	}
+	if !marker {
+		t.Fatal("the device did not log the creation of the commitment key, so the marker check would be vacuous")
+	}
+	stripped := *bundle
+	stripped.LogEntries = nil
+	for _, e := range bundle.LogEntries {
+		if e.TargetKey == com.ObjectID && e.Command == hsm.CmdGenerateAsymmetricKey {
+			continue
+		}
+		stripped.LogEntries = append(stripped.LogEntries, e)
+	}
+	if VerifyCommitments(&stripped, CommitmentOptions{TSARoots: []*x509.Certificate{ts.root}}).OK {
+		t.Fatal("a bundle with the commitment's own log entry removed still verified")
+	}
 }

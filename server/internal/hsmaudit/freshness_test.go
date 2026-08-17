@@ -160,9 +160,10 @@ func TestTimestampAttestsCurrentHead(t *testing.T) {
 		t.Fatalf("export: %v", err)
 	}
 	res := VerifyBundle(b, VerifyOptions{
-		ExpectedAnchor: testAnchor,
-		ExpectedSerial: "31650425",
-		Freshness:      FreshnessOptions{Roots: []*x509.Certificate{ts.root}, RequireIndependentTSA: true},
+		AllowUnboundLog: true,
+		ExpectedAnchor:  testAnchor,
+		ExpectedSerial:  "31650425",
+		Freshness:       FreshnessOptions{Roots: []*x509.Certificate{ts.root}, RequireIndependentTSA: true},
 	})
 	if !res.OK {
 		t.Fatalf("attested bundle rejected: %v", res.Err())
@@ -185,8 +186,9 @@ func TestVerifyRejectsStaleBundle(t *testing.T) {
 		tsa.now = func() time.Time { return time.Now().Add(-30 * 24 * time.Hour) }
 	})
 	res := VerifyBundle(b, VerifyOptions{
-		ExpectedAnchor: testAnchor,
-		Freshness:      FreshnessOptions{Roots: []*x509.Certificate{ts.root}},
+		AllowUnboundLog: true,
+		ExpectedAnchor:  testAnchor,
+		Freshness:       FreshnessOptions{Roots: []*x509.Certificate{ts.root}},
 	})
 	if res.OK {
 		t.Fatal("a month-old attestation passed the freshness check")
@@ -213,7 +215,7 @@ func TestVerifyRejectsBundleWithoutProofs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
-	res := VerifyBundle(b, VerifyOptions{ExpectedAnchor: testAnchor})
+	res := VerifyBundle(b, VerifyOptions{AllowUnboundLog: true, ExpectedAnchor: testAnchor})
 	if res.OK {
 		t.Fatal("a bundle with no freshness proof verified")
 	}
@@ -234,8 +236,9 @@ func TestVerifyRejectsProofOverForeignHead(t *testing.T) {
 	b.Freshness[0].HeadDigest = b.Freshness[0].Head.Digest()
 
 	res := VerifyBundle(b, VerifyOptions{
-		ExpectedAnchor: testAnchor,
-		Freshness:      FreshnessOptions{Roots: []*x509.Certificate{ts.root}},
+		AllowUnboundLog: true,
+		ExpectedAnchor:  testAnchor,
+		Freshness:       FreshnessOptions{Roots: []*x509.Certificate{ts.root}},
 	})
 	if res.OK {
 		t.Fatal("a proof over a head the bundle does not contain verified")
@@ -258,8 +261,9 @@ func TestVerifyDetectsLogRewriteBehindAttestation(t *testing.T) {
 		}
 	}
 	res := VerifyBundle(b, VerifyOptions{
-		ExpectedAnchor: testAnchor,
-		Freshness:      FreshnessOptions{Roots: []*x509.Certificate{ts.root}},
+		AllowUnboundLog: true,
+		ExpectedAnchor:  testAnchor,
+		Freshness:       FreshnessOptions{Roots: []*x509.Certificate{ts.root}},
 	})
 	if res.OK {
 		t.Fatal("a log rewritten behind an attestation verified")
@@ -273,8 +277,9 @@ func TestVerifyRejectsUntrustedTSA(t *testing.T) {
 	b, _ := attestedBundle(t, nil)
 	other := newTestTSA(t, "https://other.example/tsr")
 	res := VerifyBundle(b, VerifyOptions{
-		ExpectedAnchor: testAnchor,
-		Freshness:      FreshnessOptions{Roots: []*x509.Certificate{other.root}},
+		AllowUnboundLog: true,
+		ExpectedAnchor:  testAnchor,
+		Freshness:       FreshnessOptions{Roots: []*x509.Certificate{other.root}},
 	})
 	if res.OK {
 		t.Fatal("a token from an untrusted authority verified against pinned roots")
@@ -291,8 +296,9 @@ func TestInternalTSAIsFlaggedAndRejectable(t *testing.T) {
 	b, ts := attestedBundle(t, func(tsa *testTSA) { tsa.source = "" })
 
 	lenient := VerifyBundle(b, VerifyOptions{
-		ExpectedAnchor: testAnchor,
-		Freshness:      FreshnessOptions{Roots: []*x509.Certificate{ts.root}},
+		AllowUnboundLog: true,
+		ExpectedAnchor:  testAnchor,
+		Freshness:       FreshnessOptions{Roots: []*x509.Certificate{ts.root}},
 	})
 	if !lenient.OK {
 		t.Fatalf("an internally attested bundle was rejected by default: %v", lenient.Err())
@@ -305,7 +311,8 @@ func TestInternalTSAIsFlaggedAndRejectable(t *testing.T) {
 	}
 
 	strict := VerifyBundle(b, VerifyOptions{
-		ExpectedAnchor: testAnchor,
+		AllowUnboundLog: true,
+		ExpectedAnchor:  testAnchor,
 		Freshness: FreshnessOptions{
 			Roots:                 []*x509.Certificate{ts.root},
 			RequireIndependentTSA: true,
@@ -347,8 +354,9 @@ func TestVerifyRejectsReAttestedEarlierHead(t *testing.T) {
 	b.Freshness[1].HeadDigest = b.Freshness[1].Head.Digest()
 
 	res := VerifyBundle(b, VerifyOptions{
-		ExpectedAnchor: testAnchor,
-		Freshness:      FreshnessOptions{Roots: []*x509.Certificate{ts.root}},
+		AllowUnboundLog: true,
+		ExpectedAnchor:  testAnchor,
+		Freshness:       FreshnessOptions{Roots: []*x509.Certificate{ts.root}},
 	})
 	if res.OK {
 		t.Fatal("a re-attested earlier head verified")
@@ -424,8 +432,9 @@ func TestVerifyDetectsEditedProofRecord(t *testing.T) {
 	b, ts := attestedBundle(t, nil)
 	b.Freshness[0].HeadDigest = strings.Repeat("ab", sha256.Size)
 	res := VerifyBundle(b, VerifyOptions{
-		ExpectedAnchor: testAnchor,
-		Freshness:      FreshnessOptions{Roots: []*x509.Certificate{ts.root}},
+		AllowUnboundLog: true,
+		ExpectedAnchor:  testAnchor,
+		Freshness:       FreshnessOptions{Roots: []*x509.Certificate{ts.root}},
 	})
 	if res.OK {
 		t.Fatal("a proof whose stored digest does not match its head verified")

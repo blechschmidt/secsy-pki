@@ -312,5 +312,89 @@ func (db *DB) FreshnessProofs(ctx context.Context) ([]hsmaudit.FreshnessProof, e
 	return out, rows.Err()
 }
 
+// AppendCommitment implements hsmaudit.Store.
+//
+// It shares hsmLedgerMu with the ledger and the freshness proofs so the "read
+// the last seq, then insert" pattern is uniformly safe. Committing is a
+// leader-elected background job, so contention is nil — but a commitment is also
+// the one operation here that mutates the device (it generates and deletes a
+// key), and two concurrent ones would collide on the reserved handle long before
+// the sequence numbers did. Serializing here is the cheaper half of not relying
+// on that.
+func (db *DB) AppendCommitment(ctx context.Context, c *hsmaudit.Commitment) error {
+	if c == nil {
+		return fmt.Errorf("hsm audit commitment: nothing to append")
+	}
+	if strings.TrimSpace(c.CertificatePEM) == "" {
+		return fmt.Errorf("hsm audit commitment: refusing to store a commitment with no attestation certificate")
+	}
+
+	db.hsmLedgerMu.Lock()
+	defer db.hsmLedgerMu.Unlock()
+
+	var lastSeq sql.NullInt64
+	err := db.queryRow(`SELECT seq FROM hsm_log_commitments ORDER BY seq DESC LIMIT 1`).Scan(&lastSeq)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	c.Seq = lastSeq.Int64 + 1
+
+	// A commitment obtained while the TSA was unreachable has no genTime. It is
+	// stored as NULL rather than as the zero time so the column reads back as
+	// "undated" on both backends; verification fails such a row, which is the
+	// point — but discarding it would also discard the log markers it left behind.
+	var genTime any
+	if !c.GenTime.IsZero() {
+		genTime = c.GenTime.UTC()
+	}
+	_, err = db.exec(
+		`INSERT INTO hsm_log_commitments
+		   (seq, created_at, gen_time, source, label, object_id, device_serial, anchor,
+		    device_number, device_digest, signatures, ledger_seq, ledger_hash,
+		    certificate_pem, device_certificate_pem, token)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.Seq, c.CreatedAt.UTC(), genTime, c.Source, c.Label, int64(c.ObjectID),
+		c.Head.DeviceSerial, strings.ToLower(c.Head.Anchor),
+		int64(c.Head.DeviceNumber), strings.ToLower(c.Head.DeviceDigest), int64(c.Head.Signatures),
+		c.Head.LedgerSeq, strings.ToLower(c.Head.LedgerHash),
+		c.CertificatePEM, c.DeviceCertificatePEM, c.Token)
+	return err
+}
+
+// Commitments implements hsmaudit.Store.
+func (db *DB) Commitments(ctx context.Context) ([]hsmaudit.Commitment, error) {
+	rows, err := db.query(
+		`SELECT seq, created_at, gen_time, source, label, object_id, device_serial, anchor,
+		        device_number, device_digest, signatures, ledger_seq, ledger_hash,
+		        certificate_pem, device_certificate_pem, token
+		   FROM hsm_log_commitments ORDER BY seq ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []hsmaudit.Commitment
+	for rows.Next() {
+		var c hsmaudit.Commitment
+		var objectID, deviceNumber, signatures int64
+		var genTime sql.NullTime
+		if err := rows.Scan(&c.Seq, &c.CreatedAt, &genTime, &c.Source, &c.Label, &objectID,
+			&c.Head.DeviceSerial, &c.Head.Anchor, &deviceNumber, &c.Head.DeviceDigest,
+			&signatures, &c.Head.LedgerSeq, &c.Head.LedgerHash,
+			&c.CertificatePEM, &c.DeviceCertificatePEM, &c.Token); err != nil {
+			return nil, err
+		}
+		c.ObjectID = uint16(objectID)
+		c.Head.DeviceNumber = uint16(deviceNumber)
+		c.Head.Signatures = int(signatures)
+		c.CreatedAt = c.CreatedAt.UTC()
+		if genTime.Valid {
+			c.GenTime = genTime.Time.UTC()
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // Compile-time check that *DB satisfies the audit subsystem's store contract.
 var _ hsmaudit.Store = (*DB)(nil)

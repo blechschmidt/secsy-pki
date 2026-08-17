@@ -179,6 +179,86 @@ type FreshnessProof struct {
 	Token []byte `json:"token"`
 }
 
+// headIndex is a bundle's own history, indexed so that a head claimed by a
+// freshness proof or a device commitment can be checked against it rather than
+// taken on faith.
+//
+// Both mechanisms attest to a Head and both need exactly this check — a genuine
+// witness (a TSA, the device's attestation key) will happily put its signature
+// over a state that never existed, because neither witness has ever seen the
+// log. Sharing the index keeps the two from drifting apart on what "the head is
+// real" means.
+type headIndex struct {
+	// digestByNumber and runningSignatures describe the device log:
+	// runningSignatures[n] is the number of successful signatures in entries up
+	// to and including device entry n.
+	digestByNumber    map[uint16]string
+	runningSignatures map[uint16]int
+	ledgerHashBySeq   map[int64]string
+	// signatures is the bundle's total successful signature count.
+	signatures int
+}
+
+func indexBundle(b *Bundle) *headIndex {
+	ix := &headIndex{
+		digestByNumber:    make(map[uint16]string, len(b.LogEntries)),
+		runningSignatures: make(map[uint16]int, len(b.LogEntries)),
+		ledgerHashBySeq:   make(map[int64]string, len(b.Ledger)),
+	}
+	for _, e := range b.LogEntries {
+		if _, isSign := hsm.SignCommands[e.Command]; isSign && entrySucceeded(e) {
+			ix.signatures++
+		}
+		ix.digestByNumber[e.Number] = strings.ToLower(e.Hash)
+		ix.runningSignatures[e.Number] = ix.signatures
+	}
+	for _, l := range b.Ledger {
+		ix.ledgerHashBySeq[l.Seq] = strings.ToLower(l.Hash)
+	}
+	return ix
+}
+
+// checkHead reports whether an attested head describes the bundle's actual
+// history. label names the attestation in the resulting error.
+func (ix *headIndex) checkHead(h Head, b *Bundle, label string) error {
+	if !strings.EqualFold(h.DeviceSerial, b.Device.Serial) {
+		return fmt.Errorf("%s attests to device %q but the bundle is from %q", label, h.DeviceSerial, b.Device.Serial)
+	}
+	if !strings.EqualFold(h.Anchor, b.Anchor) {
+		return fmt.Errorf("%s attests to anchor %s but the bundle's is %s: it belongs to a different device history",
+			label, strings.ToLower(h.Anchor), strings.ToLower(b.Anchor))
+	}
+	if h.DeviceNumber != 0 {
+		have, ok := ix.digestByNumber[h.DeviceNumber]
+		switch {
+		case !ok:
+			return fmt.Errorf("%s attests to device log entry %d, which the bundle does not contain: "+
+				"entries the CA had already attested are missing from this export", label, h.DeviceNumber)
+		case !strings.EqualFold(have, h.DeviceDigest):
+			return fmt.Errorf("%s attests to digest %s for device log entry %d but the bundle has %s: "+
+				"the log was rewritten after it was attested",
+				label, strings.ToLower(h.DeviceDigest), h.DeviceNumber, have)
+		case ix.runningSignatures[h.DeviceNumber] != h.Signatures:
+			return fmt.Errorf("%s attests to %d signature(s) at device log entry %d but the bundle's log contains %d: "+
+				"the attested state does not match the exported one",
+				label, h.Signatures, h.DeviceNumber, ix.runningSignatures[h.DeviceNumber])
+		}
+	}
+	if h.LedgerSeq != 0 {
+		have, ok := ix.ledgerHashBySeq[h.LedgerSeq]
+		switch {
+		case !ok:
+			return fmt.Errorf("%s attests to ledger entry %d, which the bundle does not contain: "+
+				"ledger rows the CA had already attested were deleted", label, h.LedgerSeq)
+		case !strings.EqualFold(have, h.LedgerHash):
+			return fmt.Errorf("%s attests to hash %s for ledger entry %d but the bundle has %s: "+
+				"the ledger was rewritten after it was attested",
+				label, strings.ToLower(h.LedgerHash), h.LedgerSeq, have)
+		}
+	}
+	return nil
+}
+
 // currentHead reads the audit state, device log and ledger and assembles the
 // head as it stands now.
 func (s *Service) currentHead(ctx context.Context) (Head, error) {
@@ -472,22 +552,8 @@ func VerifyFreshness(b *Bundle, opts FreshnessOptions) *FreshnessResult {
 	}
 
 	// Index the bundle's own history so each proof's head can be checked against
-	// it rather than taken on faith. runningSignatures[n] is the number of
-	// successful signatures in entries up to and including device entry n.
-	digestByNumber := make(map[uint16]string, len(b.LogEntries))
-	runningSignatures := make(map[uint16]int, len(b.LogEntries))
-	sigs := 0
-	for _, e := range b.LogEntries {
-		if _, isSign := hsm.SignCommands[e.Command]; isSign && entrySucceeded(e) {
-			sigs++
-		}
-		digestByNumber[e.Number] = strings.ToLower(e.Hash)
-		runningSignatures[e.Number] = sigs
-	}
-	ledgerHashBySeq := make(map[int64]string, len(b.Ledger))
-	for _, l := range b.Ledger {
-		ledgerHashBySeq[l.Seq] = strings.ToLower(l.Hash)
-	}
+	// it rather than taken on faith.
+	ix := indexBundle(b)
 
 	proofs := append([]FreshnessProof(nil), b.Freshness...)
 	sort.Slice(proofs, func(i, j int) bool { return proofs[i].Seq < proofs[j].Seq })
@@ -504,48 +570,9 @@ func VerifyFreshness(b *Bundle, opts FreshnessOptions) *FreshnessResult {
 		}
 
 		// Layer 2: the attested head must describe this bundle's actual history.
-		if !strings.EqualFold(p.Head.DeviceSerial, b.Device.Serial) {
-			fail("%s attests to device %q but the bundle is from %q", label, p.Head.DeviceSerial, b.Device.Serial)
+		if err := ix.checkHead(p.Head, b, label); err != nil {
+			fail("%v", err)
 			continue
-		}
-		if !strings.EqualFold(p.Head.Anchor, b.Anchor) {
-			fail("%s attests to anchor %s but the bundle's is %s: the proof belongs to a different device history",
-				label, strings.ToLower(p.Head.Anchor), strings.ToLower(b.Anchor))
-			continue
-		}
-		if p.Head.DeviceNumber != 0 {
-			have, ok := digestByNumber[p.Head.DeviceNumber]
-			switch {
-			case !ok:
-				fail("%s attests to device log entry %d, which the bundle does not contain: "+
-					"entries the CA had already timestamped are missing from this export",
-					label, p.Head.DeviceNumber)
-				continue
-			case !strings.EqualFold(have, p.Head.DeviceDigest):
-				fail("%s attests to digest %s for device log entry %d but the bundle has %s: "+
-					"the log was rewritten after it was timestamped",
-					label, strings.ToLower(p.Head.DeviceDigest), p.Head.DeviceNumber, have)
-				continue
-			case runningSignatures[p.Head.DeviceNumber] != p.Head.Signatures:
-				fail("%s attests to %d signature(s) at device log entry %d but the bundle's log contains %d: "+
-					"the timestamped state does not match the exported one",
-					label, p.Head.Signatures, p.Head.DeviceNumber, runningSignatures[p.Head.DeviceNumber])
-				continue
-			}
-		}
-		if p.Head.LedgerSeq != 0 {
-			have, ok := ledgerHashBySeq[p.Head.LedgerSeq]
-			switch {
-			case !ok:
-				fail("%s attests to ledger entry %d, which the bundle does not contain: "+
-					"ledger rows the CA had already timestamped were deleted", label, p.Head.LedgerSeq)
-				continue
-			case !strings.EqualFold(have, p.Head.LedgerHash):
-				fail("%s attests to hash %s for ledger entry %d but the bundle has %s: "+
-					"the ledger was rewritten after it was timestamped",
-					label, strings.ToLower(p.Head.LedgerHash), p.Head.LedgerSeq, have)
-				continue
-			}
 		}
 
 		// Layer 3: the sequence must move forward on both clocks and both chains.
@@ -588,7 +615,7 @@ func VerifyFreshness(b *Bundle, opts FreshnessOptions) *FreshnessResult {
 	res.NewestGenTime = newest.GenTime.UTC()
 	res.Age = now.Sub(res.NewestGenTime)
 	res.AgeSeconds = res.Age.Seconds()
-	res.SignaturesSinceProof = sigs - newest.Head.Signatures
+	res.SignaturesSinceProof = ix.signatures - newest.Head.Signatures
 
 	if maxAge > 0 && res.Age > maxAge {
 		res.Stale = true

@@ -1077,6 +1077,7 @@ var (
 	ctMonitorLastRunNano        atomic.Int64
 	hsmAuditLastCollectNano     atomic.Int64
 	hsmAuditLastAttestNano      atomic.Int64
+	hsmAuditLastCommitNano      atomic.Int64
 
 	inventoryRetentionLastRunNano atomic.Int64
 	inventoryRetentionBacklog     atomic.Int64
@@ -1117,6 +1118,13 @@ var (
 			"longer prove it is current, so it stops bounding what the HSM has signed recently. Absent until the "+
 			"first attestation succeeds.",
 		func() (float64, bool) { return sinceNano(hsmAuditLastAttestNano.Load()) })
+	_ = NewFuncGauge(Default,
+		"secsy_hsm_audit_commitment_age_seconds",
+		"Seconds since the HSM last signed a commitment binding the audit head to its own serial number (Task 178), "+
+			"measured against the timestamp authority's clock. A YubiHSM audit log carries no device identity and no "+
+			"signature, so beyond this point the log is connected to the hardware by nothing but the CA's own word. "+
+			"Absent until the first commitment succeeds.",
+		func() (float64, bool) { return sinceNano(hsmAuditLastCommitNano.Load()) })
 	_ = NewFuncGauge(Default,
 		"secsy_ct_inclusion_monitor_staleness_seconds",
 		"Seconds since the last completed CT inclusion-monitor scan. Absent until the first scan completes.",
@@ -1304,6 +1312,15 @@ var (
 		"secsy_hsm_audit_attestations_total",
 		"RFC 3161 freshness attestations over the HSM audit head, partitioned by result.",
 		"result")
+	// HSMAuditCommitments counts device-signed serial bindings of the audit head,
+	// by result. Where the attestations above say when a head existed, these say
+	// which device asserted it — so a sustained error rate means the log is
+	// accumulating history that no hardware has vouched for, again while every
+	// other check keeps reporting OK.
+	HSMAuditCommitments = NewCounter(Default,
+		"secsy_hsm_audit_commitments_total",
+		"Device-signed commitments binding the HSM audit head to the device serial, partitioned by result.",
+		"result")
 
 	// YubiHSM key attestation (Task 168). KeyAttestations counts every
 	// attestation checked, by "result": "verified", "failed" (obtained but the
@@ -1386,6 +1403,24 @@ func RecordHSMAuditAttestation(genTime time.Time, err error) {
 	}
 	HSMAuditAttestations.Inc("success")
 	hsmAuditLastAttestNano.Store(genTime.UnixNano())
+}
+
+// RecordHSMAuditCommitment records one device serial-binding attempt. genTime is
+// the TSA-asserted time on success; a non-nil err marks a failure.
+//
+// The age gauge is stamped with the TSA's clock for the same reason the
+// attestation gauge is: the host clock is one of the things the commitment
+// exists to stop anyone having to trust.
+// A zero genTime means the binding was made but not dated, which is not evidence
+// and so must not advance the gauge — that would report a freshly bound log while
+// an auditor's verdict is that nothing bounds it in time.
+func RecordHSMAuditCommitment(genTime time.Time, err error) {
+	if err != nil || genTime.IsZero() {
+		HSMAuditCommitments.Inc("error")
+		return
+	}
+	HSMAuditCommitments.Inc("success")
+	hsmAuditLastCommitNano.Store(genTime.UnixNano())
 }
 
 // RecordCTLogMisbehavior counts one SCT a log failed to honor (never included

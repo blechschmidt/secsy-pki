@@ -3756,6 +3756,24 @@ type YubiHSMConfig struct {
 	// AuditFreshnessTimeoutSeconds bounds an external TSA request. 0 selects 30s.
 	AuditFreshnessTimeoutSeconds int `yaml:"audit_freshness_timeout_seconds"`
 
+	// AuditCommitmentIntervalSeconds is how often the leader has the device sign
+	// a commitment binding the current audit head to its own serial number (Task
+	// 178). 0 selects 6h.
+	//
+	// This is the only thing that connects the exported log to real hardware: a
+	// YubiHSM audit entry carries no serial number and no signature, so an
+	// internally consistent log can be fabricated offline. Each commitment costs
+	// three device log entries (generate, attest, delete of a throwaway key in a
+	// reserved slot), and the device log is a 62-entry ring, so shortening this
+	// without also shortening audit_collect_interval_seconds will fill it.
+	AuditCommitmentIntervalSeconds int `yaml:"audit_commitment_interval_seconds"`
+	// AuditCommitmentKeyID is the reserved on-device handle those throwaway keys
+	// occupy. 0 selects 0xfb00. It must lie in 0xfb00..0xfbff: verification
+	// insists on the reserved range so a commitment cannot be made with a
+	// production key's handle, which would make the log entries against that
+	// handle ambiguous.
+	AuditCommitmentKeyID int `yaml:"audit_commitment_key_id"`
+
 	// AttestationRootFiles are PEM files holding the trust anchors for YubiHSM
 	// key attestation (Task 168). Empty uses Yubico's published attestation
 	// PKIs, which ship embedded in the binary and cover stock hardware.

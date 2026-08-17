@@ -61,6 +61,16 @@ type Store interface {
 	AppendFreshnessProof(ctx context.Context, p *FreshnessProof) error
 	// FreshnessProofs returns every proof in ascending sequence order.
 	FreshnessProofs(ctx context.Context) ([]FreshnessProof, error)
+
+	// AppendCommitment persists one device-signed, timestamped binding of the
+	// audit head to the device serial, assigning Seq. Like the freshness proofs
+	// these are append-only but not hash-chained: each certificate is signed by
+	// the device's factory attestation key and each commitment leaves its own
+	// markers in the device log, so its integrity and its position in the history
+	// both rest on evidence outside the row.
+	AppendCommitment(ctx context.Context, c *Commitment) error
+	// Commitments returns every commitment in ascending sequence order.
+	Commitments(ctx context.Context) ([]Commitment, error)
 }
 
 // AuditState is the pinned, per-device root of trust for the whole subsystem.

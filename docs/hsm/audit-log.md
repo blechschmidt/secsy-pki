@@ -2,8 +2,9 @@
 
 secsy-pki can turn a YubiHSM 2's on-device audit log into evidence that a third
 party can check: **this key has produced no signature beyond the ones the CA
-published, that key cannot leave the HSM, and both are still true as of a recent,
-independently attested moment.**
+published, that key cannot leave the HSM, this log came from the HSM whose serial
+it names, and all of it is still true as of a recent, independently attested
+moment.**
 
 That is a stronger claim than "we keep logs", and it is deliberately built so
 that it holds even against the operator running the CA — someone who holds the
@@ -224,7 +225,7 @@ was signed. So the device log by itself cannot tell 412 legitimate certificate
 signatures from 411 legitimate ones plus one forged certificate — the counts, and
 every field in every record, are identical.
 
-The proof is therefore assembled from six independent facts, each of which must
+The proof is therefore assembled from seven independent facts, each of which must
 hold or verification fails closed.
 
 ### 1. Nothing can be signed unlogged
@@ -378,6 +379,111 @@ attestation instead *references* the ledger and device-log positions it covers.
 > Verification reports which was used, and `-require-external-tsa` refuses the
 > internal one outright.
 
+### 7. The log came from the device it names
+
+Facts 1–6 all reason about a log the device cannot sign. Read the [record
+layout](#the-record) again: sixteen bytes of fields and a sixteen-byte digest
+chained over the predecessor. No serial number. No key. No signature. The chain
+proves the entries are *self-consistent*, not that they came from anywhere — a
+complete, internally flawless 62-entry log can be fabricated offline in a few
+lines of Python.
+
+Yubico's product material states each row is hash-chained *and signed*. There is
+no documented command to retrieve such a signature; see
+[yubihsm-shell#479](https://github.com/Yubico/yubihsm-shell/issues/479), open and
+unanswered since July 2025. Treat the signing claim as unimplemented.
+
+So until this point the sentence "device 31650425 produced this log" had exactly
+two sources, and both are weaker than they look. The pinned anchor is
+trust-on-first-use — it works, but only for an auditor who was present at
+commissioning. The RFC 3161 timestamps say *when* a head existed; the TSA has
+never seen a YubiHSM and signs whatever digest it is handed, so a token over a
+fabricated head is exactly as genuine as one over a real head.
+
+The device does hold one key whose output a third party can verify without ever
+touching it: the factory [attestation key](key-attestation.md) at object `0`,
+whose certificate chains to Yubico's published attestation PKI. Certificates it
+signs carry device-asserted extensions, two of which matter here — the **device
+serial** (`1.3.6.1.4.1.41482.4.2`) and the attested object's 40-byte **label**
+(`1.3.6.1.4.1.41482.4.9`), which is supplied by the host at key generation.
+
+A **commitment** exploits exactly that. On a fixed cadence, the CA:
+
+1. computes the current audit head and digests it into a 40-character label —
+   `sb1:` plus 27 base64url-encoded bytes, filling the device's label field
+   exactly so nothing is NUL-padded on the way in or stripped on the way out;
+2. generates a throwaway P-256 key with **no capabilities at all** at a reserved
+   handle (`0xfb00`–`0xfbff`), carrying that label;
+3. has the device attest it with the factory key;
+4. deletes the key and keeps the certificate.
+
+The result is a statement
+
+> YubiHSM serial *N* asserts an object labelled *H*
+
+signed by a key that has never left genuine Yubico hardware, where *H* commits at
+once to the device log tail, the ledger head, the signature count and the anchor.
+
+**The timestamp and the commitment are two halves of one statement.** An
+attestation certificate carries no date of its own: a clockless YubiHSM copies
+the attesting certificate's fixed 2017–2071 validity into everything it
+generates, so an undated commitment could have been minted in a batch prepared in
+advance. Each commitment therefore also carries an RFC 3161 token whose imprint
+is over the certificate's own DER. Together an auditor learns
+
+> device *N* asserted head *H*, and that assertion existed at time *T*.
+
+Alone, the timestamp dates a statement no hardware ever made and the commitment
+makes a statement nothing can date. The two are welded rather than adjacent: the
+label carries the first 27 bytes of *exactly* the digest the TSA signs, so the
+two attestations are demonstrably about the same state.
+
+Steps 2–4 are themselves force-audited commands, so every commitment leaves
+entries in the log at the indices right after the head it bound — and the next
+commitment's head folds those entries in. Verification insists on finding the
+generation entry, which turns a set of detachable snapshots into a **ratchet**: a
+commitment cannot be produced out of band, because a certificate filed against a
+log that never records its creation is refused.
+
+The converse — a creation entry no commitment accounts for — is *reported*, not
+failed, and the asymmetry is deliberate. Device log entries are append-only, so
+a commitment that crashes or loses its timestamp authority after the device has
+signed leaves a trace nothing can retract. Failing on that would let one network
+blip permanently convert every future export into a tampering accusation. It also
+buys little: commitments cover cumulative prefixes, so a dropped one removes
+evidence *in the CA's favour*, and a drop between two exports is caught by
+`-previous` against a bundle the auditor already held. For the same reason an
+**undated** binding is skipped with a note rather than failed — it is not
+evidence, but it is not a lie either. If *no* binding is dated, verification
+fails.
+
+#### What a commitment does not prove
+
+**It is an operator commitment, not device-attested log authenticity.** The label
+is whatever the host passed in; the HSM does not know it is attesting its own log
+state. A dishonest operator can fabricate a log, digest the fabrication and commit
+to that digest exactly as easily as an honest one.
+
+What it establishes, verifiably and transferably:
+
+- A device with serial *N* was physically present when the commitment was made,
+  and *N* is Yubico-rooted rather than operator-asserted.
+- That device committed to this specific head at a time a third party witnessed.
+- Because each commitment is welded into the chain it binds, the sequence cannot
+  be produced after the fact or reordered.
+
+What it does not establish: that the digest corresponds to the device's real
+command history. Combined with the pinned anchor, which an auditor holds from
+commissioning, the remaining gap is one an operator can only exploit by
+fabricating a history *and* committing to it live on genuine hardware they hold
+— which is a materially different adversary from one editing a JSON file.
+
+SCP03 and SCP11 do not close this gap either. The session MAC authenticates GET
+LOG ENTRIES responses *to the device*, but session keys are symmetric and the
+operator holds them, so the transcript proves nothing to a third party.
+Asymmetric authentication changes how session keys are established, not the fact
+that they are symmetric and known to the host.
+
 ## Commissioning
 
 Provisioning requires a **factory-reset** device: the log is a bounded ring
@@ -431,9 +537,16 @@ yubihsm:
   audit_freshness_interval_seconds: 21600      # 6h
   audit_freshness_tsa_url: https://freetsa.org/tsr
   audit_freshness_timeout_seconds: 30
+
+  # Device serial binding. Each commitment costs at least three device log
+  # entries (generate, attest, delete) plus session overhead, and the ring holds
+  # 62 — so shortening this without also shortening audit_collect_interval_seconds
+  # will fill it.
+  audit_commitment_interval_seconds: 21600     # 6h
+  audit_commitment_key_id: 0xfb00              # must be in 0xfb00..0xfbff
 ```
 
-With `audit_freshness_tsa_url` unset the job falls back to the TSA configured for
+With `audit_freshness_tsa_url` unset both jobs fall back to the TSA configured for
 [audit-chain anchoring](../signing/timestamping.md), then to the internal authority.
 
 ## Operating
@@ -449,6 +562,7 @@ Stored entries:  47 (31 signature(s))
 Ledger entries:  31
 Signing keys:    0x1939
 Last attested:   2026-08-16T16:18:40Z (12m3s ago, 4 proof(s))
+Device binding:  2026-08-16T16:18:41Z (12m2s ago, 4 commitment(s))
 Audit config:    forced (irreversible until factory reset)
 ```
 
@@ -458,6 +572,7 @@ Audit config:    forced (irreversible until factory reset)
 | `hsm-audit provision` | Commission a factory-reset device; pin the anchor |
 | `hsm-audit collect` | Drain the device log once (the server does this continuously) |
 | `hsm-audit timestamp` | Obtain one freshness attestation now |
+| `hsm-audit commit` | Have the device sign, and the TSA date, a binding of the current head to its serial |
 | `hsm-audit export -out FILE` | Write a remotely verifiable bundle, attesting every key that signed |
 | `hsm-audit verify -bundle FILE` | Check a bundle — **needs no config, database or HSM** |
 
@@ -506,12 +621,15 @@ Key issuing-ca.pem
   key has signed nothing else, on or off the device
 
 Freshness: last attested 2026-08-16T16:18:40Z (8s ago), 2/2 proof(s) verified.
+
+Device binding: device 31650425 signed for this log at 2026-08-16T16:18:41Z (7s ago),
+2/2 commitment(s) verified, anchored to "Yubico YubiHSM Root CA".
 ```
 
 `-key` accepts a certificate or a bare public key, and is repeatable. Exit status
 is 0 only when every check passed, so this works as a compliance gate.
 
-Verification runs nine checks, all of them even after one fails, so an operator
+Verification runs ten checks, all of them even after one fails, so an operator
 sees the whole picture rather than the first symptom:
 
 1. The device is configured so no signature can escape the log.
@@ -523,19 +641,27 @@ sees the whole picture rather than the first symptom:
    non-exportable, and the log shows its handle created once and never exported.
 7. Every ledger digest corresponds to an independently obtained artifact.
 8. A trusted authority attested to this history recently enough.
-9. Each `-key` is bound to an attested handle whose signatures are all accounted
-   for.
+9. The device itself signed a commitment to this log, dated by that authority, so
+   the serial the bundle names is Yubico-rooted hardware's own assertion.
+10. Each `-key` is bound to an attested handle whose signatures are all accounted
+    for.
 
-Checks 1–6 need nothing but the bundle. Check 7 needs the auditor to have
+Checks 1–6 and 9 need nothing but the bundle. Check 7 needs the auditor to have
 collected the published artifacts themselves — from Certificate Transparency, a
 CRL distribution point, or the published inventory — which is the only part of
-the argument that cannot be delegated to the party being audited. Check 8 needs
-the CA to have been attesting all along, which is why it is a background job and
-not something an export can retrofit.
+the argument that cannot be delegated to the party being audited. Checks 8 and 9
+need the CA to have been attesting and committing all along, which is why they
+are background jobs and not something an export can retrofit.
 
 Checks 5 and 6 are two halves of one claim. Counting operations without
 attestation bounds the device; attestation without counting bounds the key's
 confinement but not its use. Neither alone answers the question.
+
+Checks 8 and 9 are likewise two halves — see [fact 7](#7-the-log-came-from-the-device-it-names).
+Check 9 is also the only one whose subject is the *provenance* of the evidence
+rather than its content: every other check reasons about a log that carries no
+device identity and no signature, so all of them hold equally well over a
+fabrication.
 
 ### Flags that change what the result means
 
@@ -549,6 +675,7 @@ confinement but not its use. Neither alone answers the question.
 | `-require-external-tsa` | An attestation from the CA's own HSM-backed TSA is accepted, with a note |
 | `-attest-roots` / `-require-anchored-attestation` | Attestations must chain to Yubico's embedded roots either way — anchoring is on by default. `-attest-roots` adds anchors for a device whose sub-CA postdates this binary; `-require-anchored-attestation=false` downgrades the requirement to a report — see [key attestation](key-attestation.md#chain-anchoring) |
 | `-allow-unattested-keys` | An unattested signing key fails the bundle. **Do not set it in a real audit**: it downgrades the one check that distinguishes a key's history from a device's |
+| `-allow-unbound-log` | A log no HSM has signed for fails the bundle. **Do not set it in a real audit**: it downgrades the one check that distinguishes a device's log from a JSON file |
 
 The verifier states these limits in its own output rather than leaving them
 implicit.
@@ -609,6 +736,29 @@ Freshness: STALE — last attested 2026-08-16T14:48:40Z (1h31m ago); this export
 cannot show what the HSM has signed since.
 ```
 
+A log no device has signed for — the state of every deployment that has not run
+`hsm-audit commit`, and also what a wholly fabricated history looks like:
+
+```
+Device binding: NONE — no HSM has signed for this log, so the serial it names is the CA's claim.
+
+  - the bundle carries no device-signed commitments: nothing but the CA's own word
+    connects this log to device 31650425. A YubiHSM audit log carries no serial
+    number and no signature, so an internally consistent log can be fabricated
+    offline; only a commitment signed by the device's factory attestation key ties
+    one to real hardware
+```
+
+A commitment filed against a log that has no record of it — the certificate is a
+genuine YubiHSM attestation, but it was not produced against *this* history:
+
+```
+  - commitment 3: the log contains no creation of the commitment key 0xfb00 after
+    device entry 47. Generating it is a force-audited command, so a commitment
+    genuinely made against this device would have left that entry — its absence
+    means the certificate was produced somewhere this log does not describe
+```
+
 A negative surplus — the CA recording more signatures than the device log shows
 — is equally fatal: the missing device entries could have been anything.
 
@@ -620,8 +770,10 @@ A negative surplus — the CA recording more signatures than the device log show
 | `secsy_hsm_audit_signatures_total` | Successful signing operations observed in the device log |
 | `secsy_hsm_audit_collection_failures_total` | Drain cycles that failed continuity verification and were not acknowledged |
 | `secsy_hsm_audit_attestations_total{result}` | Freshness attestations, by result |
+| `secsy_hsm_audit_commitments_total{result}` | Device serial bindings, by result |
 | `secsy_hsm_audit_collection_staleness_seconds` | Since the last successful drain — growth precedes an issuance outage as well as an audit gap |
 | `secsy_hsm_audit_attestation_age_seconds` | Since the last attestation, **measured on the TSA's clock**; once it exceeds the auditor's threshold, exports stop being able to prove they are current |
+| `secsy_hsm_audit_commitment_age_seconds` | Since the HSM last signed for the log, on the TSA's clock; beyond this point the log is connected to the hardware by the CA's word alone |
 
 ## Limits
 
@@ -642,13 +794,22 @@ A negative surplus — the CA recording more signatures than the device log show
   named after its own subject key identifier, and the current one ships embedded
   — but a device whose sub-CA postdates this binary needs that one file before
   its attestation shows more than the key's properties *as asserted by a device*.
-  See [key attestation](key-attestation.md#chain-anchoring).
+  See [key attestation](key-attestation.md#chain-anchoring). This applies to the
+  commitments too: without an anchored chain, a serial binding is a serial the
+  attesting thing chose to state.
+- **A commitment is a host-supplied label.** The device signs the digest it is
+  handed; it does not know it is attesting its own log. See [what a commitment
+  does not prove](#what-a-commitment-does-not-prove).
+- **A factory reset erases the chain and restarts the index**, so no chain and no
+  commitment sequence can span one. Export and publish the log, and record the
+  final chain digest externally, *before* any reset — the reset is itself an
+  audit-erasing event that the resulting log cannot attest to.
 - **The internal TSA is circular.** See the note above.
 
 ## Related
 
 - [YubiHSM key attestation](key-attestation.md) — the device-signed proof that a
-  key lives inside the HSM, which fact 5 above depends on
+  key lives inside the HSM, which facts 5 and 7 above both depend on
 - [Audit logging and SIEM export](../security/audit-siem-export.md) — the hash-chained
   `event_log` this sits alongside
 - [Timestamping and audit anchoring](../signing/timestamping.md) — the RFC 3161 authority

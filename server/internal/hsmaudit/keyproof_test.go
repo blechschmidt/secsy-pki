@@ -187,10 +187,11 @@ func TestVerifyBundleProvesNamedPublicKey(t *testing.T) {
 		t.Fatalf("export: %v", err)
 	}
 	res := VerifyBundle(b, VerifyOptions{
-		ExpectedAnchor: testAnchor,
-		ExpectedSerial: "31650425",
-		SkipFreshness:  true,
-		ExpectedKeys:   []ExpectedKey{{Name: "ca.pem", PublicKey: fixturePublicKey(t)}},
+		AllowUnboundLog: true,
+		ExpectedAnchor:  testAnchor,
+		ExpectedSerial:  "31650425",
+		SkipFreshness:   true,
+		ExpectedKeys:    []ExpectedKey{{Name: "ca.pem", PublicKey: fixturePublicKey(t)}},
 	})
 	if !res.OK {
 		t.Fatalf("a genuine key proof was rejected: %v", res.Err())
@@ -233,7 +234,7 @@ func TestVerifyBundleRejectsUnattestedSigningKey(t *testing.T) {
 	if len(b.KeyAttestations) != 0 {
 		t.Fatal("bundle unexpectedly carries attestations")
 	}
-	res := VerifyBundle(b, VerifyOptions{ExpectedAnchor: testAnchor, SkipFreshness: true})
+	res := VerifyBundle(b, VerifyOptions{AllowUnboundLog: true, ExpectedAnchor: testAnchor, SkipFreshness: true})
 	if res.OK {
 		t.Fatal("a bundle that cannot show its signing key is confined to the HSM verified")
 	}
@@ -242,7 +243,7 @@ func TestVerifyBundleRejectsUnattestedSigningKey(t *testing.T) {
 	}
 
 	// The escape hatch reports rather than fails, and says so.
-	relaxed := VerifyBundle(b, VerifyOptions{ExpectedAnchor: testAnchor, SkipFreshness: true, AllowUnattestedKeys: true})
+	relaxed := VerifyBundle(b, VerifyOptions{AllowUnboundLog: true, ExpectedAnchor: testAnchor, SkipFreshness: true, AllowUnattestedKeys: true})
 	if !relaxed.OK {
 		t.Fatalf("-allow-unattested-keys did not downgrade the failure: %v", relaxed.Err())
 	}
@@ -267,9 +268,10 @@ func TestProveKeyRejectsForeignPublicKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := VerifyBundle(b, VerifyOptions{
-		ExpectedAnchor: testAnchor,
-		SkipFreshness:  true,
-		ExpectedKeys:   []ExpectedKey{{Name: "other-ca.pem", PublicKey: foreign.Public()}},
+		AllowUnboundLog: true,
+		ExpectedAnchor:  testAnchor,
+		SkipFreshness:   true,
+		ExpectedKeys:    []ExpectedKey{{Name: "other-ca.pem", PublicKey: foreign.Public()}},
 	})
 	if res.OK {
 		t.Fatal("a bundle verified as proving a key it never mentions")
@@ -291,9 +293,10 @@ func TestProveKeyReportsSurplusForThatKey(t *testing.T) {
 		t.Fatalf("export: %v", err)
 	}
 	res := VerifyBundle(b, VerifyOptions{
-		ExpectedAnchor: testAnchor,
-		SkipFreshness:  true,
-		ExpectedKeys:   []ExpectedKey{{Name: "ca.pem", PublicKey: fixturePublicKey(t)}},
+		AllowUnboundLog: true,
+		ExpectedAnchor:  testAnchor,
+		SkipFreshness:   true,
+		ExpectedKeys:    []ExpectedKey{{Name: "ca.pem", PublicKey: fixturePublicKey(t)}},
 	})
 	if res.OK {
 		t.Fatal("an unpublished signature by the named key was not reported")
@@ -440,7 +443,7 @@ func TestLegacyBundleVersionIsReadableButUnproven(t *testing.T) {
 	b.Version = 1
 	b.KeyAttestations = nil
 
-	res := VerifyBundle(b, VerifyOptions{ExpectedAnchor: testAnchor, SkipFreshness: true})
+	res := VerifyBundle(b, VerifyOptions{AllowUnboundLog: true, ExpectedAnchor: testAnchor, SkipFreshness: true})
 	if res.OK {
 		t.Fatal("a bundle with no key attestations verified")
 	}
@@ -467,7 +470,7 @@ func TestUnattributedSignaturesAreReported(t *testing.T) {
 	if len(report.AttestationErrors) != 0 {
 		t.Fatalf("the export tried to attest object 0x0000: %v", report.AttestationErrors)
 	}
-	res := VerifyBundle(b, VerifyOptions{ExpectedAnchor: testAnchor, SkipFreshness: true})
+	res := VerifyBundle(b, VerifyOptions{AllowUnboundLog: true, ExpectedAnchor: testAnchor, SkipFreshness: true})
 	if res.OK {
 		t.Fatal("an unattributable ledger row was accepted")
 	}

@@ -23,24 +23,28 @@ type Auditor interface {
 // Service ties the pieces together: it provisions a freshly reset device,
 // records signatures into the ledger, and produces export bundles.
 type Service struct {
-	dev      Device
-	store    Store
-	attester KeyAttester
-	auditor  Auditor
-	actor    string
-	now      func() time.Time
+	dev         Device
+	store       Store
+	attester    KeyAttester
+	committer   Committer
+	commitKeyID uint16
+	auditor     Auditor
+	actor       string
+	now         func() time.Time
 }
 
 // NewService returns a Service over dev and store.
 //
-// A shell-backed device gets a shell-backed attester automatically, because the
-// two are the same YubiHSM reached the same way and an export without key
-// attestations is one a verifier will refuse. Callers that want a different
-// attester — or none — set it explicitly with SetAttester.
+// A hardware-backed device gets a hardware-backed attester and committer
+// automatically, because all three are the same YubiHSM reached the same way and
+// an export without key attestations or without a device-signed commitment is
+// one a verifier will refuse. Callers that want different ones — or none — set
+// them explicitly.
 func NewService(dev Device, store Store) *Service {
 	s := &Service{dev: dev, store: store, now: time.Now}
 	if sd, ok := dev.(*HardwareDevice); ok {
 		s.attester = hsmattest.NewDeviceAttester(sd.Cfg)
+		s.committer = NewHardwareCommitter(sd.Cfg)
 	}
 	return s
 }
@@ -48,6 +52,18 @@ func NewService(dev Device, store Store) *Service {
 // SetAttester overrides the key attester. A nil attester produces bundles with
 // no attestations, which verification then reports as unconfined keys.
 func (s *Service) SetAttester(a KeyAttester) { s.attester = a }
+
+// SetCommitter overrides the serial-binding committer. A nil committer produces
+// bundles with no commitments, which verification then reports as a log bound to
+// no device.
+func (s *Service) SetCommitter(c Committer) { s.committer = c }
+
+// SetCommitmentKeyID selects the reserved on-device handle commitments use. 0
+// (the default) selects DefaultCommitmentKeyID. Values outside
+// CommitmentKeyIDMin..CommitmentKeyIDMax are refused at commit time rather than
+// here, so a misconfiguration surfaces with the operation that would have used
+// it rather than at process start.
+func (s *Service) SetCommitmentKeyID(id uint16) { s.commitKeyID = id }
 
 // SetAuditor supplies the hash-chained event log Provision writes the pinned
 // chain anchor into.
@@ -361,6 +377,10 @@ func (s *Service) ExportWithReport(ctx context.Context) (*Bundle, *ExportReport,
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading freshness proofs: %w", err)
 	}
+	commitments, err := s.store.Commitments(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("reading device commitments: %w", err)
+	}
 
 	return &Bundle{
 		Version:    BundleVersion,
@@ -376,6 +396,7 @@ func (s *Service) ExportWithReport(ctx context.Context) (*Bundle, *ExportReport,
 		Ledger:          ledger,
 		KeyAttestations: atts,
 		Freshness:       proofs,
+		Commitments:     commitments,
 	}, report, nil
 }
 
@@ -433,14 +454,23 @@ type Status struct {
 	// carry a device attestation for each, or verification cannot say that those
 	// signatures are the complete history of a key rather than of a handle.
 	SigningKeys []uint16 `json:"signing_keys,omitempty"`
-	// CanAttest reports whether this process can obtain those attestations.
+	// CanAttest reports whether this process can obtain those attestations, and
+	// CanCommit whether it can obtain the device-signed serial bindings.
 	CanAttest bool `json:"can_attest"`
+	CanCommit bool `json:"can_commit"`
 	// FreshnessProofs counts the RFC 3161 attestations obtained so far, and
 	// LastAttestedAt is the trusted time of the newest. An operator watching
 	// LastAttestedAt fall behind is watching the export lose its ability to prove
 	// it is current.
 	FreshnessProofs int        `json:"freshness_proofs"`
 	LastAttestedAt  *time.Time `json:"last_attested_at,omitempty"`
+	// Commitments counts the device-signed serial bindings obtained so far, and
+	// LastCommittedAt is the trusted time of the newest. An operator watching this
+	// fall behind is watching the export lose its ability to show that the device
+	// it names produced the log at all — everything logged since a stale binding
+	// is tied to the hardware by nothing but the CA's own word.
+	Commitments     int        `json:"commitments"`
+	LastCommittedAt *time.Time `json:"last_committed_at,omitempty"`
 }
 
 // Status reports the current state without changing anything.
@@ -478,6 +508,7 @@ func (s *Service) Status(ctx context.Context) (*Status, error) {
 	out.LedgerEntries = len(ledger)
 	out.SigningKeys = SigningKeyIDs(entries, ledger)
 	out.CanAttest = s.attester != nil
+	out.CanCommit = s.committer != nil
 	proofs, err := s.store.FreshnessProofs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("reading freshness proofs: %w", err)
@@ -486,6 +517,22 @@ func (s *Service) Status(ctx context.Context) (*Status, error) {
 	if n := len(proofs); n > 0 {
 		t := proofs[n-1].GenTime.UTC()
 		out.LastAttestedAt = &t
+	}
+	commitments, err := s.store.Commitments(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reading device commitments: %w", err)
+	}
+	out.Commitments = len(commitments)
+	// The newest *dated* binding, not simply the newest: an undated one bounds
+	// nothing in time, so reporting its zero timestamp as "last committed" would
+	// show a binding an auditor is going to discount.
+	for i := len(commitments) - 1; i >= 0; i-- {
+		if commitments[i].GenTime.IsZero() {
+			continue
+		}
+		t := commitments[i].GenTime.UTC()
+		out.LastCommittedAt = &t
+		break
 	}
 	return out, nil
 }

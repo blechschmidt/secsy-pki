@@ -142,6 +142,13 @@ func newFake(entries []hsm.AuditLogEntry) *fakeDevice {
 
 // provisioned returns a Service, device and store already through provisioning,
 // so tests can start from a commissioned device.
+//
+// It wires no Committer, so bundles exported from it carry no device commitment
+// and every VerifyBundle call outside commitment_test.go passes
+// AllowUnboundLog. That is deliberate rather than an oversight: a commitment
+// costs three device log entries, which would shift every entry number these
+// tests assert on, and none of them are about where the log came from.
+// commitment_test.go builds on this helper and adds the committer.
 func provisioned(t *testing.T, entries []hsm.AuditLogEntry) (*Service, *fakeDevice, *MemStore) {
 	t.Helper()
 	dev := newFake(entries)
@@ -312,7 +319,7 @@ func TestVerifyBundleAcceptsBalancedHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
-	res := VerifyBundle(b, VerifyOptions{ExpectedAnchor: testAnchor, ExpectedSerial: "31650425", SkipFreshness: true})
+	res := VerifyBundle(b, VerifyOptions{AllowUnboundLog: true, ExpectedAnchor: testAnchor, ExpectedSerial: "31650425", SkipFreshness: true})
 	if !res.OK {
 		t.Fatalf("balanced history rejected: %v", res.Err())
 	}
@@ -334,7 +341,7 @@ func TestVerifyBundleDetectsKeyAbuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
-	res := VerifyBundle(b, VerifyOptions{ExpectedAnchor: testAnchor, ExpectedSerial: "31650425", SkipFreshness: true})
+	res := VerifyBundle(b, VerifyOptions{AllowUnboundLog: true, ExpectedAnchor: testAnchor, ExpectedSerial: "31650425", SkipFreshness: true})
 	if res.OK {
 		t.Fatal("a surplus device signature was not detected as key abuse")
 	}
@@ -357,7 +364,7 @@ func TestVerifyBundleRejectsUnpinnedAnchor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
-	res := VerifyBundle(b, VerifyOptions{ExpectedAnchor: strings.Repeat("11", DigestLen), SkipFreshness: true})
+	res := VerifyBundle(b, VerifyOptions{AllowUnboundLog: true, ExpectedAnchor: strings.Repeat("11", DigestLen), SkipFreshness: true})
 	if res.OK {
 		t.Fatal("a bundle with a foreign anchor verified")
 	}
@@ -378,7 +385,7 @@ func TestVerifyBundleRejectsWeakDeviceOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("export: %v", err)
 	}
-	res := VerifyBundle(b, VerifyOptions{ExpectedAnchor: testAnchor, SkipFreshness: true})
+	res := VerifyBundle(b, VerifyOptions{AllowUnboundLog: true, ExpectedAnchor: testAnchor, SkipFreshness: true})
 	if res.OK {
 		t.Fatal("a device without fixed force-audit verified")
 	}
@@ -491,7 +498,7 @@ func TestVerifyContinuation(t *testing.T) {
 	if cont.NewSignatures != 1 {
 		t.Fatalf("reported %d new signatures, want 1", cont.NewSignatures)
 	}
-	if res := VerifyBundle(second, VerifyOptions{ExpectedAnchor: testAnchor, SkipFreshness: true}); !res.OK {
+	if res := VerifyBundle(second, VerifyOptions{AllowUnboundLog: true, ExpectedAnchor: testAnchor, SkipFreshness: true}); !res.OK {
 		t.Fatalf("second bundle rejected: %v", res.Err())
 	}
 }

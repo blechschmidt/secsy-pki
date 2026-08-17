@@ -42,6 +42,10 @@ Subcommands:
   collect               Drain the device log into durable storage once
   timestamp             Obtain one RFC 3161 attestation that the current audit
                         head existed now, proving later exports are not stale
+  commit                Have the device sign a commitment binding the current
+                        audit head to its own serial number, and date it with the
+                        TSA. The log itself carries no device identity, so this is
+                        what ties it to real hardware
   export  -out FILE     Write a remotely verifiable audit bundle
   verify  -bundle FILE  Verify a bundle offline (no database, no HSM)
 
@@ -68,6 +72,11 @@ Verification flags (verify):
                         Report rather than fail when a key that signed is not
                         attested. Not for real audits: without attestation the
                         bundle bounds what the device did, not what a key did.
+  -allow-unbound-log    Report rather than fail when no device-signed commitment
+                        binds the log to the device it names. Not for real
+                        audits: a YubiHSM audit log carries no serial and no
+                        signature, so without a commitment every other check
+                        holds just as well over a log fabricated offline.
   -previous FILE        A previously exported bundle; checks that this one
                         extends it without rewriting history, and reports what
                         the device signed in between.
@@ -104,6 +113,9 @@ func cmdHSMAudit(db *database.DB, cfg *config.Config, args []string) error {
 	// log, which is what dates it — see hsmaudit.Service.SetAuditor.
 	svc.SetAuditor(db)
 	svc.SetActor(cliActor())
+	if id := cfg.YubiHSM.AuditCommitmentKeyID; id != 0 {
+		svc.SetCommitmentKeyID(uint16(id))
+	}
 	ctx := context.Background()
 
 	switch sub {
@@ -115,6 +127,8 @@ func cmdHSMAudit(db *database.DB, cfg *config.Config, args []string) error {
 		return cmdHSMAuditCollect(ctx, dev, db, rest)
 	case "timestamp":
 		return cmdHSMAuditTimestamp(ctx, svc, db, cfg, rest)
+	case "commit":
+		return cmdHSMAuditCommit(ctx, svc, db, cfg, rest)
 	case "export":
 		return cmdHSMAuditExport(ctx, svc, rest)
 	case "help", "-h", "--help":
@@ -173,6 +187,22 @@ func cmdHSMAuditStatus(ctx context.Context, svc *hsmaudit.Service, args []string
 		fmt.Printf("Last attested:   %s (%s ago, %d proof(s))\n",
 			st.LastAttestedAt.Format(time.RFC3339),
 			time.Since(*st.LastAttestedAt).Round(time.Second), st.FreshnessProofs)
+	}
+	switch {
+	case !st.CanCommit:
+		fmt.Println("Device binding:  unavailable — no committer configured, so exports cannot show")
+		fmt.Println("                 which device produced the log.")
+	case st.LastCommittedAt == nil && st.Commitments > 0:
+		fmt.Printf("Device binding:  %d binding(s), none dated — an undated binding bounds nothing in time.\n",
+			st.Commitments)
+		fmt.Println("                 Configure a reachable timestamp authority and run `hsm-audit commit`.")
+	case st.LastCommittedAt == nil:
+		fmt.Println("Device binding:  never — the log is attributed to this device by the CA alone " +
+			"(run `secsy-ca hsm-audit commit`)")
+	default:
+		fmt.Printf("Device binding:  %s (%s ago, %d commitment(s))\n",
+			st.LastCommittedAt.Format(time.RFC3339),
+			time.Since(*st.LastCommittedAt).Round(time.Second), st.Commitments)
 	}
 	if st.OptionsError != "" {
 		fmt.Printf("\nWARNING: %s\n", st.OptionsError)
@@ -270,6 +300,64 @@ func cmdHSMAuditTimestamp(ctx context.Context, svc *hsmaudit.Service, db *databa
 	return nil
 }
 
+// cmdHSMAuditCommit obtains one device-signed, timestamped binding of the audit
+// head to the device serial on demand.
+//
+// The background job on the server is what keeps a deployment bound; this exists
+// for commissioning — so the very first export carries a commitment rather than
+// none — and for an operator who needs to demonstrate during an incident that the
+// device in front of them is the one the log describes.
+func cmdHSMAuditCommit(ctx context.Context, svc *hsmaudit.Service, db *database.DB, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("hsm-audit commit", flag.ContinueOnError)
+	asJSON := fs.Bool("json", false, "emit JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ts, cleanup, err := buildFreshnessTimestamperCLI(db, cfg)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	// A non-nil commitment with a non-nil error means the binding was made and
+	// recorded but could not be dated, or left the device untidy. Reporting it and
+	// exiting non-zero is right; hiding the commitment would not be, since the
+	// device has already written the log entries that produced it.
+	c, err := svc.Commit(ctx, ts)
+	if c == nil {
+		return err
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: %v\n", err)
+	}
+	if *asJSON {
+		if encErr := json.NewEncoder(os.Stdout).Encode(c); encErr != nil {
+			return encErr
+		}
+		return err
+	}
+	if c.GenTime.IsZero() {
+		fmt.Printf("Device %s signed a commitment to the audit head, but it is UNDATED.\n", c.Head.DeviceSerial)
+	} else {
+		src := c.Source
+		if src == "" {
+			src = "the internal TSA (signs with the HSM under audit)"
+		}
+		fmt.Printf("Device %s signed a commitment to the audit head, dated %s by %s.\n",
+			c.Head.DeviceSerial, c.GenTime.Format(time.RFC3339), src)
+	}
+	fmt.Printf("  log entry %d, %d signature(s), ledger seq %d\n",
+		c.Head.DeviceNumber, c.Head.Signatures, c.Head.LedgerSeq)
+	fmt.Printf("  commitment label %s (attested on object 0x%04x)\n", c.Label, c.ObjectID)
+	fmt.Printf("  head digest %s, token %d bytes DER\n", c.Head.Digest(), len(c.Token))
+	fmt.Println()
+	fmt.Println("The device's factory attestation key signed that label, and its certificate carries")
+	fmt.Println("the serial as a device assertion chaining to Yubico's attestation PKI. This is what")
+	fmt.Println("connects the exported log to real hardware: the log's own entries carry no serial")
+	fmt.Println("number and no signature, so on their own they show only internal consistency.")
+	return err
+}
+
 // buildFreshnessTimestamperCLI selects the token source for freshness
 // attestations: the dedicated external TSA when configured, else the audit-chain
 // anchor's TSA, else this PKI's own in-process authority.
@@ -338,8 +426,8 @@ func cmdHSMAuditExport(ctx context.Context, svc *hsmaudit.Service, args []string
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Wrote %s (%d device log entr(ies), %d ledger entr(ies), %d key attestation(s)).\n",
-		*out, len(b.LogEntries), len(b.Ledger), len(b.KeyAttestations))
+	fmt.Printf("Wrote %s (%d device log entr(ies), %d ledger entr(ies), %d key attestation(s), %d device commitment(s)).\n",
+		*out, len(b.LogEntries), len(b.Ledger), len(b.KeyAttestations), len(b.Commitments))
 	fmt.Printf("Bundle fingerprint: %s\n", fp)
 	return nil
 }
@@ -379,6 +467,8 @@ func cmdHSMAuditVerify(args []string) error {
 		"fail unless each device attestation certificate chains to a trusted attestation root; =false to opt out")
 	allowUnattested := fs.Bool("allow-unattested-keys", false,
 		"report rather than fail when a key that signed is not attested")
+	allowUnbound := fs.Bool("allow-unbound-log", false,
+		"report rather than fail when no device-signed commitment binds the log to the device it names")
 	tsaRootsPath := fs.String("tsa-roots", "", "PEM file of timestamp-authority trust anchors")
 	maxAge := fs.Duration("max-age", hsmaudit.DefaultMaxAge,
 		"reject the bundle when the newest attestation is older than this (0 reports the age without failing)")
@@ -403,6 +493,7 @@ func cmdHSMAuditVerify(args []string) error {
 		ExpectedSerial:      *serial,
 		SkipFreshness:       *skipFreshness,
 		AllowUnattestedKeys: *allowUnattested,
+		AllowUnboundLog:     *allowUnbound,
 		Freshness: hsmaudit.FreshnessOptions{
 			// A -max-age of 0 means "report but do not fail", which
 			// FreshnessOptions spells as a negative duration (its own zero
@@ -530,6 +621,35 @@ func printHSMAuditVerdict(res *hsmaudit.BundleResult, cont *hsmaudit.Continuatio
 			fmt.Printf("Freshness: NOT ESTABLISHED — %d proof(s) present, none verified.\n", f.Proofs)
 		}
 		for _, n := range f.Notes {
+			fmt.Printf("  NOTE: %s\n", n)
+		}
+		fmt.Println()
+	}
+	// The provenance line is deliberately next to the freshness one: they are the
+	// two halves of the same statement, and reading either alone overstates what
+	// it shows.
+	if c := res.Commitments; c != nil {
+		switch {
+		case c.Commitments == 0:
+			fmt.Println("Device binding: NONE — no HSM has signed for this log, so the serial it names is the CA's claim.")
+		case c.Verified == 0 && c.Undated == c.Commitments:
+			fmt.Printf("Device binding: UNDATED — %d binding(s) present, none dated, so none bounds anything in time.\n",
+				c.Commitments)
+		case c.Verified == 0:
+			fmt.Printf("Device binding: NOT ESTABLISHED — %d commitment(s) present, none verified.\n", c.Commitments)
+		case c.Stale:
+			fmt.Printf("Device binding: STALE — device %s last signed for this log at %s (%s ago).\n",
+				c.DeviceSerial, c.NewestGenTime.Format(time.RFC3339), c.Age.Round(time.Second))
+		default:
+			fmt.Printf("Device binding: device %s signed for this log at %s (%s ago), %d/%d commitment(s) verified",
+				c.DeviceSerial, c.NewestGenTime.Format(time.RFC3339), c.Age.Round(time.Second),
+				c.Verified, c.Commitments)
+			if c.TrustAnchor != "" {
+				fmt.Printf(", anchored to %q", c.TrustAnchor)
+			}
+			fmt.Println(".")
+		}
+		for _, n := range c.Notes {
 			fmt.Printf("  NOTE: %s\n", n)
 		}
 		fmt.Println()

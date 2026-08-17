@@ -120,6 +120,59 @@ func hsmAuditFreshnessInterval(cfg *config.Config) time.Duration {
 	return hsmaudit.FreshnessInterval
 }
 
+// setupHSMAuditCommitment registers the job that has the device sign a binding
+// of the audit head to its own serial number.
+//
+// The freshness attestation above dates the audit head. This says which device
+// asserted it — and nothing else in the subsystem can, because a YubiHSM audit
+// entry carries no serial number and no signature, so every other check holds
+// equally well over a log fabricated offline. Together the two produce the
+// statement an auditor actually needs: *this device* asserted *this state* at
+// *this time*.
+//
+// It shares the collector's provisioning gate and the freshness job's TSA
+// fallback chain, and is skipped with a warning rather than failing startup for
+// the same reason: a device or TSA problem must not take a CA offline, and the
+// verifier fails closed on the resulting gap regardless.
+func setupHSMAuditCommitment(cfg *config.Config, db *database.DB, authority *tsa.Authority, elector *leader.Elector) {
+	st, err := db.LoadAuditState(context.Background())
+	if err != nil || st == nil {
+		return // already reported by setupHSMAuditCollector
+	}
+
+	ts, err := buildFreshnessTimestamper(cfg, authority)
+	if err != nil {
+		log.Printf("WARNING: HSM audit device commitment is off: %v. "+
+			"Exported audit bundles will not be able to show which device produced the log.", err)
+		return
+	}
+
+	dev := hsmaudit.NewHardwareDevice(hsm.Config{
+		ConnectorURL: cfg.YubiHSM.ConnectorURL,
+		AuthKeyID:    cfg.YubiHSM.AuthKeyID,
+		Password:     cfg.YubiHSM.Password,
+	})
+	svc := hsmaudit.NewService(dev, db)
+	if id := cfg.YubiHSM.AuditCommitmentKeyID; id != 0 {
+		svc.SetCommitmentKeyID(uint16(id))
+	}
+	interval := hsmAuditCommitmentInterval(cfg)
+	runner := hsmaudit.NewCommitmentRunner(svc, ts, interval, log.Default())
+
+	log.Printf("HSM audit device commitment enabled (interval %s)", interval)
+	elector.Register("hsm-audit-commitment", func(ctx context.Context) {
+		runner.Run(ctx)
+	})
+}
+
+// hsmAuditCommitmentInterval resolves the commitment cadence.
+func hsmAuditCommitmentInterval(cfg *config.Config) time.Duration {
+	if s := cfg.YubiHSM.AuditCommitmentIntervalSeconds; s > 0 {
+		return time.Duration(s) * time.Second
+	}
+	return hsmaudit.CommitmentInterval
+}
+
 // buildFreshnessTimestamper selects where attestation tokens come from: the
 // dedicated external TSA, else the one already configured for audit-chain
 // anchoring, else this PKI's own in-process authority.

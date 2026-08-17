@@ -17,11 +17,12 @@ import (
 // sealed ledger chain — so a test passing against it is not passing against a
 // weaker contract than production.
 type MemStore struct {
-	mu        sync.Mutex
-	state     *AuditState
-	entries   map[uint16]hsm.AuditLogEntry
-	ledger    []LedgerEntry
-	freshness []FreshnessProof
+	mu          sync.Mutex
+	state       *AuditState
+	entries     map[uint16]hsm.AuditLogEntry
+	ledger      []LedgerEntry
+	freshness   []FreshnessProof
+	commitments []Commitment
 }
 
 // NewMemStore returns an empty in-memory store.
@@ -132,6 +133,23 @@ func (m *MemStore) FreshnessProofs(ctx context.Context) ([]FreshnessProof, error
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]FreshnessProof(nil), m.freshness...), nil
+}
+
+func (m *MemStore) AppendCommitment(ctx context.Context, c *Commitment) error {
+	if c == nil {
+		return fmt.Errorf("hsm audit commitment: nothing to append")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c.Seq = int64(len(m.commitments)) + 1
+	m.commitments = append(m.commitments, *c)
+	return nil
+}
+
+func (m *MemStore) Commitments(ctx context.Context) ([]Commitment, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]Commitment(nil), m.commitments...), nil
 }
 
 var _ Store = (*MemStore)(nil)

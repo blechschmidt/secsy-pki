@@ -142,6 +142,183 @@ func AttestAsymmetricKey(ctx context.Context, cfg Config, objectID, attestKeyID 
 	return certPEM, nil
 }
 
+// CommitmentRequest describes one serial-bound audit-head commitment.
+//
+// The construction is deliberately indirect. A YubiHSM has no command that signs
+// a caller-supplied blob with the factory attestation key, so a log digest cannot
+// simply be handed to it. What it will do is generate a key with a host-supplied
+// 40-byte label and then attest that key — and the attestation certificate
+// carries both the label and, in a separate device-asserted extension, the
+// device's own serial number. Putting a digest of the audit head in the label
+// therefore produces a statement of the form
+//
+//	YubiHSM serial N holds an object labelled <digest of the audit head>
+//
+// signed by a key that has never left genuine Yubico hardware. See
+// internal/hsmaudit/commitment.go for what that does and does not establish.
+type CommitmentRequest struct {
+	// ObjectID is where the throwaway key is created. It must come from a range
+	// reserved for commitments so the log distinguishes these three operations
+	// from work done with production keys.
+	ObjectID uint16
+	// Label is the commitment itself, at most 40 bytes.
+	Label string
+	// ReservedPrefix marks a label as belonging to this scheme. An object left at
+	// ObjectID by a commitment that crashed between generating and deleting is
+	// removed when its label carries the prefix; anything else is refused rather
+	// than deleted, because an object this code did not create is not its to
+	// destroy.
+	ReservedPrefix string
+	// AttestKeyID selects the attesting key; 0 is the factory-provisioned one,
+	// which is the only one that chains to Yubico's PKI and therefore the only
+	// one that makes the serial an assertion rather than a claim.
+	AttestKeyID uint16
+	// Capabilities is the throwaway key's capability mask. 0 — the default — is
+	// what a commitment wants: the key exists only to carry a label into a
+	// certificate, and one that can do nothing cannot be repurposed if a run is
+	// interrupted before the delete. It is a field rather than a constant only so
+	// that firmware refusing a capability-less key can be given a harmless one;
+	// nothing in verification depends on the value.
+	Capabilities uint64
+}
+
+// CommitAuditHead performs one serial-bound commitment and returns the resulting
+// attestation certificate together with the device's own.
+//
+// All four device operations share one session so nothing can be swapped between
+// them, and the key is deleted before returning: the commitment is the
+// certificate, not the key, and a signing key left in a reserved slot is a
+// liability with no purpose. The deletion is best-effort in the sense that its
+// failure is reported alongside a successful commitment rather than discarding
+// it — an undeleted key is an operational problem, while throwing away a
+// commitment the device has already logged producing would leave the log with a
+// marker for evidence nobody holds.
+//
+// Every step here is an audited command (GENERATE ASYMMETRIC KEY, SIGN
+// ATTESTATION CERTIFICATE, DELETE OBJECT are all force-audited by provisioning),
+// so the commitment leaves its own trace in the log at the entries immediately
+// after the head it commits to. That is what stops commitments from being
+// produced out of band: the next commitment's head folds those entries in.
+func CommitAuditHead(ctx context.Context, cfg Config, req CommitmentRequest) (certPEM, deviceCertPEM string, err error) {
+	if len(req.Label) == 0 || len(req.Label) > 40 {
+		return "", "", fmt.Errorf("commitment label is %d bytes, want 1..40", len(req.Label))
+	}
+	err = withClient(ctx, cfg, func(c *yubihsm.Client) error {
+		if err := clearCommitmentSlot(ctx, c, req); err != nil {
+			return err
+		}
+		domains := sessionDomains(ctx, c, cfg)
+		// No capabilities at all by default: the key exists only to carry a label
+		// into an attestation certificate, and one that cannot sign, wrap or be
+		// exported cannot be repurposed if a commitment run is interrupted before
+		// the delete. It also keeps the object out of the audit subsystem's own
+		// signing-key analysis, which reasons about keys that can sign.
+		id, err := c.GenerateAsymmetricKey(ctx, yubihsm.KeySpec{
+			ID:           req.ObjectID,
+			Label:        req.Label,
+			Domains:      domains,
+			Capabilities: req.Capabilities,
+			Algorithm:    yubihsm.AlgorithmECP256,
+		})
+		if err != nil {
+			if req.Capabilities == 0 {
+				return fmt.Errorf("generating the capability-less commitment key at 0x%04x in domain(s) 0x%04x: %w "+
+					"(if this firmware refuses a key with no capabilities, give CommitmentRequest.Capabilities a "+
+					"harmless one such as sign-ecdsa — verification does not depend on the value)",
+					req.ObjectID, domains, err)
+			}
+			return fmt.Errorf("generating the commitment key at 0x%04x in domain(s) 0x%04x: %w", req.ObjectID, domains, err)
+		}
+		if id != req.ObjectID {
+			// The device allocated elsewhere, which would put the commitment
+			// outside the reserved range. Clean up and refuse.
+			_ = c.DeleteObject(ctx, id, yubihsm.ObjectTypeAsymmetricKey)
+			return fmt.Errorf("device created the commitment key at 0x%04x rather than the requested 0x%04x", id, req.ObjectID)
+		}
+
+		der, err := c.AttestAsymmetricKey(ctx, req.ObjectID, req.AttestKeyID)
+		if err != nil {
+			_ = c.DeleteObject(ctx, req.ObjectID, yubihsm.ObjectTypeAsymmetricKey)
+			return fmt.Errorf("attesting the commitment key at 0x%04x: %w", req.ObjectID, err)
+		}
+
+		// The device attestation certificate is read before the key is deleted and
+		// its absence is fatal, unlike in a per-key attestation. There, a missing
+		// device certificate degrades the attestation into an unauthenticated set
+		// of claims that a verifier reports as such. Here the whole point is the
+		// chain to Yubico's PKI, so a commitment without it could never verify —
+		// producing one would consume the device's log slots to record evidence
+		// nobody can use.
+		raw, err := c.GetOpaque(ctx, deviceAttestationObjectID)
+		if err != nil || len(raw) == 0 {
+			_ = c.DeleteObject(ctx, req.ObjectID, yubihsm.ObjectTypeAsymmetricKey)
+			return fmt.Errorf("reading the device attestation certificate from opaque object 0x%04x: %w "+
+				"(without it the commitment chains to nothing and could not be verified)",
+				deviceAttestationObjectID, err)
+		}
+
+		certPEM = encodeCertPEM(der)
+		deviceCertPEM = encodeCertPEM(raw)
+
+		// From here the commitment exists and the caller must keep it, so a delete
+		// failure is reported alongside it rather than in place of it: the device
+		// has already logged producing this evidence, and discarding it would leave
+		// the log with entries nothing accounts for. The next run's
+		// clearCommitmentSlot removes the leftover.
+		if err := c.DeleteObject(ctx, req.ObjectID, yubihsm.ObjectTypeAsymmetricKey); err != nil {
+			return fmt.Errorf("the commitment was attested but its throwaway key could not be deleted from 0x%04x: %w",
+				req.ObjectID, err)
+		}
+		return nil
+	})
+	return certPEM, deviceCertPEM, err
+}
+
+// clearCommitmentSlot removes a leftover commitment key so a run interrupted
+// between generating and deleting does not wedge every future commitment.
+//
+// It will only delete an object whose label carries the reserved prefix. A
+// different object sitting in the reserved range means an operator put it there,
+// and silently destroying it would be far worse than refusing to commit.
+func clearCommitmentSlot(ctx context.Context, c *yubihsm.Client, req CommitmentRequest) error {
+	info, err := c.GetObjectInfo(ctx, req.ObjectID, yubihsm.ObjectTypeAsymmetricKey)
+	if err != nil {
+		var devErr yubihsm.DeviceError
+		if errors.As(err, &devErr) && devErr == yubihsm.ErrObjectNotFound {
+			return nil // the usual case: the slot is free
+		}
+		return err
+	}
+	if req.ReservedPrefix == "" || !strings.HasPrefix(info.Label, req.ReservedPrefix) {
+		return fmt.Errorf("object 0x%04x is labelled %q and is not a leftover audit commitment: "+
+			"the commitment key id is reserved, so refusing to delete something else to make room",
+			req.ObjectID, info.Label)
+	}
+	return c.DeleteObject(ctx, req.ObjectID, yubihsm.ObjectTypeAsymmetricKey)
+}
+
+// sessionDomains returns the domains the commitment key should be created in:
+// the authentication key's own, since a session can only create objects in
+// domains its authentication key holds. It falls back to domain 1 — the
+// conventional first domain — when the device will not describe the auth key,
+// so a device whose auth key cannot be read still gets a commitment attempt
+// rather than a hard failure with no diagnosis.
+//
+// The zero auth key id means key 1 here, as it does everywhere else in this
+// package (see Config.nativeConfig and yubihsm.Open); looking up object 0 would
+// fail and silently take the fallback.
+func sessionDomains(ctx context.Context, c *yubihsm.Client, cfg Config) uint16 {
+	authKeyID := uint16(cfg.AuthKeyID)
+	if authKeyID == 0 {
+		authKeyID = 1
+	}
+	info, err := c.GetObjectInfo(ctx, authKeyID, yubihsm.ObjectTypeAuthenticationKey)
+	if err == nil && info.Domains != 0 {
+		return info.Domains
+	}
+	return 1
+}
+
 // GetKeyAttestationCert gets an attestation certificate for a key by its label.
 //
 // Label resolution is exact; see FindAsymmetricKey for why a prefix match here

@@ -65,6 +65,11 @@ var migrationTables = []string{
 	"hsm_log_entries",
 	"hsm_signature_ledger",
 	"hsm_freshness_proofs",
+	// The device's own signed bindings of the audit head to its serial (Task
+	// 178). Losing these would leave the log intact but no longer attributable to
+	// any hardware, which is a stronger loss than it sounds: they cannot be
+	// reissued for a head that has already passed.
+	"hsm_log_commitments",
 	"event_log",
 	"siem_export_cursor",
 	"audit_anchors",

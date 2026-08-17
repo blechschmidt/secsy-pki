@@ -1013,6 +1013,13 @@ func main() {
 	// the TSA block so it can fall back to the in-process authority.
 	setupHSMAuditFreshness(cfg, db, tsaAuthority, elector)
 
+	// HSM audit device commitment (Task 178): the same cadence, but the signature
+	// comes from the device's factory attestation key rather than from a TSA. It
+	// binds the audit head to the device's own serial number, which is the one
+	// thing the log cannot say about itself — a YubiHSM audit entry carries no
+	// device identity and no signature at all.
+	setupHSMAuditCommitment(cfg, db, tsaAuthority, elector)
+
 	// Artifact code-signing service (Task 60): CMS detached signatures over
 	// release artifacts at /api/sign (RBAC role "signer"), with optional RFC 3161
 	// countersignatures from the in-process TSA. Signer keys/certificates are

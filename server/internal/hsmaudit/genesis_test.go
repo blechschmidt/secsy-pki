@@ -108,6 +108,7 @@ func TestDerivableAnchorIsReportedAsWorthless(t *testing.T) {
 		LogEntries: entries,
 		Device:     DeviceInfo{Serial: "31650425"},
 	}, VerifyOptions{
+		AllowUnboundLog: true,
 		// Pinned to the very same value, so every other anchor check passes.
 		ExpectedAnchor:      derivable,
 		SkipFreshness:       true,
@@ -130,6 +131,13 @@ func TestDerivableAnchorIsReportedAsWorthless(t *testing.T) {
 // This is why "let the verifier recompute the anchor" cannot work. A check the
 // verifier can perform is a check the forger performs first, on the way to
 // choosing an anchor that satisfies it.
+//
+// The device commitments (commitment.go) are the second answer to the same
+// problem, and the one that does not require the auditor to have been present at
+// commissioning: they put the device's own signature over the log state. This
+// test passes AllowUnboundLog because it is about the anchor specifically —
+// TestFabricatedLogPassesEveryCheckExceptTheDeviceBinding is the version where
+// the forger also gets the anchor right and only the commitment catches them.
 func TestForgedHistoryPassesInternalConsistency(t *testing.T) {
 	// A forger with no device at all. The anchor is simply invented; nothing
 	// about it can be distinguished from a device-chosen one, because a device
@@ -152,6 +160,7 @@ func TestForgedHistoryPassesInternalConsistency(t *testing.T) {
 		Device:     DeviceInfo{Serial: "31650425"},
 	}
 	res := VerifyBundle(b, VerifyOptions{
+		AllowUnboundLog:     true,
 		ExpectedAnchor:      "27caf4edc279c4b514bfc61fc6638677",
 		SkipFreshness:       true,
 		AllowUnattestedKeys: true,
