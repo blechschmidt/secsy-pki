@@ -15,23 +15,26 @@ name: Documentation site (GitHub Pages)
 # fails it. Pull requests build but do not deploy, so breakage is caught in
 # review rather than on the live site.
 #
-# Publishing needs GitHub Pages enabled with the "GitHub Actions" source. The
-# deploy job turns that on itself via actions/configure-pages, but two things
-# are outside a workflow's control (see docs/development/documentation-site.md):
+# Publishing needs two repository settings, both one-time and both outside a
+# workflow's control (see docs/development/documentation-site.md):
 #
-#   * GitHub Pages is unavailable for *private* repositories on the Free plan —
-#     the API answers "Your current plan does not support GitHub Pages for this
-#     repository". secsy-pki is private today, so publishing starts working when
-#     the repository is made public or the plan is upgraded; nothing here needs
-#     to change.
-#   * If the `github-pages` environment restricts deployments to protected
-#     branches, `enterprise` has to be allowed.
+#   * Pages enabled with the "GitHub Actions" source. configure-pages is asked
+#     to enable it below, but GITHUB_TOKEN cannot *create* a Pages site however
+#     its permissions are set — creating one needs repository administration,
+#     which no workflow token carries. Until an admin has enabled it once, that
+#     step fails with "Create Pages site failed: Resource not accessible by
+#     integration".
+#   * `enterprise` allowed in the `github-pages` environment's deployment-branch
+#     rules. This workflow deploys from `enterprise`, and the environment
+#     GitHub creates for Pages allows only the default branch by default.
 #
-# Rather than fail the run over either, the deploy job treats "Pages is not
-# available" as a skip with an explanatory notice: the strict build still gates
-# the change, and the rendered site is still attached to the run as the
-# `github-pages` artifact. A genuine deployment failure — Pages available but
-# the upload rejected — still fails the job.
+# Neither is tolerated silently. This job used to run configure-pages under
+# `continue-on-error` and downgrade a failure to a green "Pages is unavailable"
+# notice, on the premise that the repository was private and Pages was simply
+# out of reach on the Free plan. The repository is public, that premise is gone,
+# and the masking outlived it: the site sat empty behind eight successful runs
+# because nobody reads a notice on a green check. A deploy that does not deploy
+# is a failed deploy, so both steps now fail the job and the run goes red.
 # No secrets are needed: deployment authenticates with the run's OIDC token.
 
 on:
@@ -128,29 +131,16 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-      # Enables Pages with the "GitHub Actions" source if it is not enabled
-      # yet, so the repository publishes without a manual settings visit. This
-      # is also the availability probe: it is the step that fails when the plan
-      # does not offer Pages for a private repository.
+      # Resolves the site's base URL, and re-asserts the "GitHub Actions"
+      # source in case someone flips it back to branch-based publishing. It
+      # cannot create the site from scratch — see the header — so a failure
+      # here means Pages is not enabled on the repository, which is exactly the
+      # condition that should stop the run rather than pass quietly.
       - name: Configure Pages
-        id: configure
-        continue-on-error: true
         uses: actions/configure-pages@v5
         with:
           enablement: true
 
       - name: Deploy
         id: deployment
-        if: steps.configure.outcome == 'success'
         uses: actions/deploy-pages@v4
-
-      # Green, but loud: the site was built and uploaded, and this says exactly
-      # what is standing between it and a URL.
-      - name: Report that Pages is unavailable
-        if: steps.configure.outcome != 'success'
-        run: |
-          echo "::notice title=Documentation site not published::GitHub Pages is not \
-          available for this repository, so the built site was not deployed. It is \
-          attached to this run as the 'github-pages' artifact. GitHub Pages requires \
-          a public repository (or a paid plan for private ones), and the Pages source \
-          set to 'GitHub Actions'. See docs/development/documentation-site.md."

@@ -99,29 +99,42 @@ authenticates to Pages with the run's OIDC token (`id-token: write`).
 
 ### What the repository has to allow
 
-!!! warning "Pages is not available for private repositories on the Free plan"
-
-    `blechschmidt/secsy-pki` is private, and GitHub answers
-    `Your current plan does not support GitHub Pages for this repository`.
-    **Until the repository is made public** (or the account moves to a plan that
-    includes Pages for private repositories), nothing is published at the URL
-    above. No change to this workflow is needed when that happens — the next
-    push publishes.
-
-The deploy job treats that as a skip rather than a failure: `configure-pages`
-runs with `continue-on-error`, and if it does not succeed the job emits a notice
-explaining why and finishes green. The strict build still gates the change, and
-the rendered site is still attached to the run as the **`github-pages`
-artifact**, so it can be downloaded and opened locally in the meantime.
-
-Two more settings matter once Pages *is* available:
+Two repository settings gate publishing. Both are one-time, both need a
+repository **admin**, and neither can be done by the workflow itself:
 
 * **Settings → Pages → Build and deployment → Source: GitHub Actions.** The
-  workflow calls `actions/configure-pages` with `enablement: true`, which turns
-  this on by itself if the token is allowed to.
-* If the `github-pages` environment restricts deployments to protected
-  branches, add `enterprise` to its deployment-branch rules — otherwise the
-  deploy step fails while the build step stays green.
+  workflow calls `actions/configure-pages` with `enablement: true`, but that
+  only re-asserts the source on a site that already exists. *Creating* the site
+  requires the repository-administration permission, which `GITHUB_TOKEN` does
+  not carry however `permissions:` is written — the step fails with
+  `Create Pages site failed: Resource not accessible by integration`. Enable it
+  in the settings UI, or once via the REST API:
+
+    ```bash
+    gh api -X POST repos/blechschmidt/secsy-pki/pages -f build_type=workflow
+    ```
+
+* **The `github-pages` environment must allow `enterprise` to deploy.** This
+  workflow publishes from `enterprise`, but the environment GitHub creates for
+  Pages permits only the default branch, so the deploy step is rejected with
+  `Branch is not allowed to deploy to github-pages due to environment
+  protection rules`. Add `enterprise` under Settings → Environments →
+  github-pages → deployment branches.
+
+!!! warning "A deploy that does not deploy is a failed deploy"
+
+    The deploy job used to run `configure-pages` under `continue-on-error` and
+    downgrade a failure to a green run with an explanatory notice, on the
+    premise that the repository was private and Pages was out of reach on the
+    Free plan. The repository is public and that premise is gone — but the
+    masking outlived it, and the site sat empty behind **eight consecutive
+    successful runs**, because nobody reads a notice attached to a green check.
+
+    Both steps now fail the job. If the site stops updating, the run is red and
+    says which of the two settings above regressed.
+
+The rendered site is attached to every run — deploying or not — as the
+**`github-pages` artifact**, so it can always be downloaded and opened locally.
 
 ## Changing the look
 
