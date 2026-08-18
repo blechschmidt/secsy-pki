@@ -21,6 +21,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
+	"github.com/blechschmidt/secsy-pki/server/internal/unixsocket"
 )
 
 type Config struct {
@@ -986,9 +987,14 @@ type GRPCConfig struct {
 	// client-CA pool and the cert->principal bindings). A presented cert is
 	// verified-if-given, so Bearer/Basic callers still connect.
 	MTLS bool `yaml:"mtls"`
+	// UnixSocket, when its path is set, serves gRPC on that Unix-domain socket
+	// instead of binding address (Task 185). Clients reach it with a "unix://"
+	// target, which gRPC resolves natively.
+	UnixSocket UnixSocketConfig `yaml:"unix_socket"`
 }
 
 // GRPCAddress returns the configured gRPC listen address, defaulting to ":9443".
+// It is unused in Unix-socket mode, where no TCP port is bound.
 func (c GRPCConfig) GRPCAddress() string {
 	if c.Address == "" {
 		return ":9443"
@@ -2969,6 +2975,43 @@ type ServerConfig struct {
 	// TLS holds serving-TLS options beyond the static tls_cert/tls_key pair —
 	// currently the opt-in self-issued (auto-rotating) serving certificate.
 	TLS ServerTLSConfig `yaml:"tls"`
+	// UnixSocket, when its path is set, moves the HTTP surface off the TCP port
+	// entirely and serves it on a Unix-domain socket instead (Task 185). Host and
+	// Port are then unused: the deployment is reachable only by processes on the
+	// same machine that can open the socket file.
+	UnixSocket UnixSocketConfig `yaml:"unix_socket"`
+}
+
+// UnixSocketConfig exposes a listener on a Unix-domain socket instead of a TCP
+// port, so the REST/HTTP and gRPC surfaces can be restricted to co-located
+// processes with the filesystem as the access-control boundary. Setting path is
+// what enables it; the TCP port is then not bound at all.
+//
+// Because the socket carries no network traffic, TLS is optional on it — the
+// server's usual fail-closed refusal to serve cleartext does not apply (see
+// docs/deployment/unix-socket.md). Configure TLS anyway when a client insists on
+// it; the same certificate settings are used.
+type UnixSocketConfig struct {
+	// Path is the absolute filesystem path to bind. Its parent directory must
+	// exist, and that directory's own permissions are part of the access story.
+	Path string `yaml:"path"`
+	// Mode is the octal permission string for the socket ("0660"). It defaults to
+	// owner-only (0600) so an unset mode cannot silently widen access.
+	Mode string `yaml:"mode"`
+	// Group optionally sets the socket's group (name or numeric GID) so a
+	// co-located proxy or sidecar running under another account can connect with
+	// mode 0660.
+	Group string `yaml:"group"`
+}
+
+// Enabled reports whether a socket path is configured.
+func (c UnixSocketConfig) Enabled() bool { return c.Listener().Enabled() }
+
+// Listener maps the config block onto the listener package's own form, which is
+// where the binding rules (permissions, stale-socket reclaim, peer credentials)
+// live.
+func (c UnixSocketConfig) Listener() unixsocket.Config {
+	return unixsocket.Config{Path: c.Path, Mode: c.Mode, Group: c.Group}
 }
 
 // ServerTLSConfig groups serving-TLS options that go beyond the static
@@ -4006,6 +4049,9 @@ func Load(path string) (*Config, error) {
 	if err := cfg.Server.TLS.SelfIssue.Validate(); err != nil {
 		return nil, err
 	}
+	if err := cfg.validateListeners(); err != nil {
+		return nil, err
+	}
 	// Mirror the validated policy switch into the process-global enforcement
 	// flag. Load is the single path configuration enters a process through, so
 	// this is where key generation, issuance, and the secret layer pick the
@@ -4013,6 +4059,28 @@ func Load(path string) (*Config, error) {
 	fips.SetPolicy(cfg.Security.FIPS)
 
 	return cfg, nil
+}
+
+// validateListeners checks the Unix-domain-socket listener settings (Task 185)
+// before anything tries to bind them, so a path that cannot work — relative,
+// longer than sun_path, an unparsable mode, an unknown group — is a config
+// error at load time and a `secsy-ca doctor` finding, not a startup crash after
+// the HSM has already been opened.
+func (c *Config) validateListeners() error {
+	if err := unixsocket.Validate(c.Server.UnixSocket.Listener()); err != nil {
+		return fmt.Errorf("server.unix_socket: %w", err)
+	}
+	if err := unixsocket.Validate(c.GRPC.UnixSocket.Listener()); err != nil {
+		return fmt.Errorf("grpc.unix_socket: %w", err)
+	}
+	// Two servers cannot share one socket: whichever bound first would be
+	// silently replaced, or the second would fail with a confusing "in use".
+	if c.Server.UnixSocket.Enabled() && c.GRPC.UnixSocket.Enabled() &&
+		c.Server.UnixSocket.Listener().SocketPath() == c.GRPC.UnixSocket.Listener().SocketPath() {
+		return fmt.Errorf("grpc.unix_socket.path must differ from server.unix_socket.path (both are %q)",
+			c.Server.UnixSocket.Listener().SocketPath())
+	}
+	return nil
 }
 
 // validateFIPS rejects configuration that names non-approved algorithms when
@@ -5179,6 +5247,15 @@ func (c *Config) validateTenants(checkRoles func(string, map[string][]string) er
 func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SECSY_KEY_PROVIDER"); v != "" {
 		cfg.KeyProvider.Type = v
+	}
+	// Listener sockets (Task 185). A container or systemd unit frequently knows
+	// the socket path the runtime mounted long after the config file was baked,
+	// so both listeners take it from the environment as well.
+	if v := os.Getenv("SECSY_SERVER_UNIX_SOCKET"); v != "" {
+		cfg.Server.UnixSocket.Path = v
+	}
+	if v := os.Getenv("SECSY_GRPC_UNIX_SOCKET"); v != "" {
+		cfg.GRPC.UnixSocket.Path = v
 	}
 	if v := os.Getenv("SECSY_PKCS11_MODULE"); v != "" {
 		cfg.PKCS11.ModulePath = v

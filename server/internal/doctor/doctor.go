@@ -244,7 +244,7 @@ func Run(ctx context.Context, opts Options) *Report {
 			"audit.chain_head", "certs.ca_expiry", "crl.freshness",
 			"canary.last_probe", "ct.inclusion", "webhook.dead_letters", "ers.freshness",
 			"keychecks.blocklist", "keychecks.profiles", "clock.skew", "time.trusted",
-			"serving.self_issued", "listener.tls",
+			"serving.self_issued", "listener.tls", "listener.unix_socket",
 			"fips.mode", "fips.store_keys", "fips.secret_oaep",
 		} {
 			r.skip(name, "config did not load")
@@ -348,6 +348,10 @@ func Run(ctx context.Context, opts Options) *Report {
 	// 9. Listener TLS: static certificate/key material plus, when reachable, a
 	// live handshake against the configured address.
 	checkListenerTLS(r, cfg, opts)
+
+	// 9b. Unix-domain-socket listeners (Task 185): the filesystem side of the
+	// same question — socket path, permissions, and the directory guarding them.
+	checkUnixSocket(r, cfg)
 
 	// 10. FIPS 140-3 posture (only meaningful with security.fips): module state,
 	// store key-material policy conformance, and the secret-layer SHA-256 OAEP

@@ -15,6 +15,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/grpcapi/pkiv1"
 	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
+	"github.com/blechschmidt/secsy-pki/server/internal/unixsocket"
 )
 
 // Config configures the gRPC listener.
@@ -37,6 +38,13 @@ type Config struct {
 	// explicitly opted into insecure HTTP, e.g. behind a trusted TLS-terminating
 	// proxy or in tests.
 	Insecure bool
+	// UnixSocket, when its path is set, serves gRPC on that Unix-domain socket
+	// and binds no TCP port at all (Task 185). A socket carries no network
+	// traffic and is reachable only through a filesystem path whose permissions
+	// the operator sets, so it satisfies the no-cleartext-on-the-wire rule alone:
+	// TLS becomes optional there rather than required. Clients dial it with a
+	// "unix:///path/to/socket" target, which gRPC resolves natively.
+	UnixSocket unixsocket.Config
 }
 
 // Server wraps a configured *grpc.Server for the PKI service. It reuses the same
@@ -55,10 +63,15 @@ type Server struct {
 // the context/auth/recovery interceptors and TLS credentials, registers the PKI
 // service, a health service, and server reflection. Call Serve to run it.
 func New(cfg Config, api *handlers.API, authMw *middleware.AuthMiddleware) (*Server, error) {
-	if cfg.Address == "" {
+	socket := cfg.UnixSocket.Enabled()
+	if cfg.Address == "" && !socket {
 		return nil, fmt.Errorf("grpc: address is required")
 	}
-	s := &Server{api: api, authMw: authMw, addr: cfg.Address}
+	addr := cfg.Address
+	if socket {
+		addr = cfg.UnixSocket.SocketPath()
+	}
+	s := &Server{api: api, authMw: authMw, addr: addr}
 
 	var opts []grpc.ServerOption
 	switch {
@@ -68,6 +81,10 @@ func New(cfg Config, api *handlers.API, authMw *middleware.AuthMiddleware) (*Ser
 			return nil, err
 		}
 		opts = append(opts, grpc.Creds(creds))
+	case socket:
+		// Plaintext over a Unix socket. Nothing leaves the host, and the socket's
+		// mode/group decides who may connect, so requiring a certificate here
+		// would protect nothing that the filesystem does not already protect.
 	case cfg.Insecure:
 		// Plaintext gRPC; the caller has opted into insecure mode.
 	default:
@@ -116,12 +133,29 @@ func New(cfg Config, api *handlers.API, authMw *middleware.AuthMiddleware) (*Ser
 	// Server reflection so grpcurl and other tooling can discover the schema.
 	reflection.Register(s.grpc)
 
+	lis, err := listen(cfg)
+	if err != nil {
+		return nil, err
+	}
+	s.lis = lis
+	return s, nil
+}
+
+// listen opens the configured listener: a Unix-domain socket when one is
+// configured, a TCP port otherwise.
+func listen(cfg Config) (net.Listener, error) {
+	if cfg.UnixSocket.Enabled() {
+		lis, err := unixsocket.Listen(cfg.UnixSocket)
+		if err != nil {
+			return nil, fmt.Errorf("grpc: %w", err)
+		}
+		return lis, nil
+	}
 	lis, err := net.Listen("tcp", cfg.Address)
 	if err != nil {
 		return nil, fmt.Errorf("grpc: listen on %s: %w", cfg.Address, err)
 	}
-	s.lis = lis
-	return s, nil
+	return lis, nil
 }
 
 // Addr returns the actual address the server is listening on (useful when the

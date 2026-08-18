@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -31,6 +32,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/pqc"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
 	"github.com/blechschmidt/secsy-pki/server/internal/timesource"
+	"github.com/blechschmidt/secsy-pki/server/internal/unixsocket"
 )
 
 // --- 1. configuration --------------------------------------------------------
@@ -1748,6 +1750,14 @@ func checkListenerTLS(r *Report, cfg *config.Config, opts Options) {
 			if cfg.Server.TLS.SelfIssue.Enabled {
 				return checkSelfIssuedListener(cfg, opts)
 			}
+			// Unix-socket mode (Task 185): the missing certificate is not a
+			// finding, because nothing is served over a network. The socket's
+			// ownership and mode are the boundary instead, and listener.unix_socket
+			// diagnoses those.
+			if socket := cfg.Server.UnixSocket.Listener(); socket.Enabled() {
+				return StatusPass, fmt.Sprintf("no listener TLS, and none required: HTTP is served on the unix socket %s and no TCP port is bound (see listener.unix_socket)",
+					socket.SocketPath())
+			}
 			// Mirror the server's own opt-in switch (cmd/server insecureHTTPAllowed).
 			switch strings.ToLower(strings.TrimSpace(os.Getenv("SECSY_ALLOW_INSECURE_HTTP"))) {
 			case "1", "true", "yes":
@@ -1771,12 +1781,8 @@ func checkListenerTLS(r *Report, cfg *config.Config, opts Options) {
 			return status, detail + "; live probe skipped"
 		}
 
-		host := cfg.Server.Host
-		if host == "" || host == "0.0.0.0" || host == "::" {
-			host = "127.0.0.1"
-		}
-		addr := net.JoinHostPort(host, fmt.Sprintf("%d", cfg.Server.Port))
-		conn, err := net.DialTimeout("tcp", addr, opts.DialTimeout)
+		network, addr := listenerTarget(cfg)
+		conn, err := net.DialTimeout(network, addr, opts.DialTimeout)
 		if err != nil {
 			return status, detail + fmt.Sprintf("; listener %s not reachable (server not running?)", addr)
 		}
@@ -1807,12 +1813,8 @@ func checkSelfIssuedListener(cfg *config.Config, opts Options) (Status, string) 
 	if opts.SkipListener {
 		return StatusPass, "self-issued serving certificate (no static key pair on disk); live probe skipped"
 	}
-	host := cfg.Server.Host
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	addr := net.JoinHostPort(host, fmt.Sprintf("%d", cfg.Server.Port))
-	conn, err := net.DialTimeout("tcp", addr, opts.DialTimeout)
+	network, addr := listenerTarget(cfg)
+	conn, err := net.DialTimeout(network, addr, opts.DialTimeout)
 	if err != nil {
 		return StatusPass, fmt.Sprintf("self-issued serving certificate; listener %s not reachable (server not running?)", addr)
 	}
@@ -1831,6 +1833,115 @@ func checkSelfIssuedListener(cfg *config.Config, opts Options) (Status, string) 
 	status, msg := expiryStatus(leaf.NotAfter, time.Now(), opts)
 	return status, fmt.Sprintf("self-issued serving certificate (CN=%q): live handshake OK on %s (%s); %s",
 		leaf.Subject.CommonName, addr, tls.VersionName(tlsConn.ConnectionState().Version), msg)
+}
+
+// listenerTarget returns the network and address the running server's HTTP
+// listener can be probed on: the Unix socket when one is configured (no TCP port
+// is bound in that mode), otherwise the configured host:port with a wildcard
+// bind address resolved to the loopback interface.
+func listenerTarget(cfg *config.Config) (network, addr string) {
+	if socket := cfg.Server.UnixSocket.Listener(); socket.Enabled() {
+		return "unix", socket.SocketPath()
+	}
+	host := cfg.Server.Host
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return "tcp", net.JoinHostPort(host, fmt.Sprintf("%d", cfg.Server.Port))
+}
+
+// --- 9b. Unix-domain-socket listeners ------------------------------------------
+
+// checkUnixSocket diagnoses the Unix-domain-socket listeners (Task 185). In
+// socket mode the filesystem, not a certificate, decides who may talk to the
+// PKI, so the things that go wrong are filesystem things: a parent directory
+// that does not exist yet (the server will refuse to start), a path already
+// occupied by something that is not a socket, a bound socket whose permissions
+// no longer match the config because the process was started with an older one,
+// and a directory any local user can write to — where a socket can be unlinked
+// and replaced by an impostor while the real server keeps its now-orphaned inode.
+func checkUnixSocket(r *Report, cfg *config.Config) {
+	httpSock := cfg.Server.UnixSocket.Listener()
+	grpcSock := cfg.GRPC.UnixSocket.Listener()
+	grpcOn := cfg.GRPC.Enabled && grpcSock.Enabled()
+	if !httpSock.Enabled() && !grpcOn {
+		r.skip("listener.unix_socket", "no Unix-socket listener configured (server.unix_socket.path / grpc.unix_socket.path)")
+		return
+	}
+	r.run("listener.unix_socket", func() (Status, string) {
+		status := StatusPass
+		var details []string
+		if httpSock.Enabled() {
+			s, d := inspectSocket("http", httpSock)
+			status, details = worse(status, s), append(details, d)
+		}
+		if grpcOn {
+			s, d := inspectSocket("grpc", grpcSock)
+			status, details = worse(status, s), append(details, d)
+		}
+		return status, strings.Join(details, "; ")
+	})
+}
+
+// inspectSocket reports on one configured socket listener.
+func inspectSocket(label string, c unixsocket.Config) (Status, string) {
+	path := c.SocketPath()
+	if err := unixsocket.Validate(c); err != nil {
+		return StatusFail, fmt.Sprintf("%s %s: %v", label, path, err)
+	}
+	mode, _ := c.FileMode() // validated above
+	status := StatusPass
+	detail := fmt.Sprintf("%s %s (mode %#o", label, path, uint32(mode))
+	if g := strings.TrimSpace(c.Group); g != "" {
+		detail += ", group " + g
+	}
+	detail += ")"
+
+	dir := filepath.Dir(path)
+	dirInfo, err := os.Stat(dir)
+	switch {
+	case err != nil:
+		return StatusFail, detail + fmt.Sprintf(": directory %s is not usable: %v (the server will refuse to start)", dir, err)
+	case !dirInfo.IsDir():
+		return StatusFail, detail + fmt.Sprintf(": %s is not a directory", dir)
+	case dirInfo.Mode().Perm()&0o002 != 0 && dirInfo.Mode()&os.ModeSticky == 0:
+		// Anyone who can write the directory can unlink the socket and bind their
+		// own in its place; clients would then hand credentials to the impostor.
+		status = worse(status, StatusWarn)
+		detail += fmt.Sprintf(": directory %s is world-writable without the sticky bit — any local user could replace the socket", dir)
+	}
+
+	if c.WorldAccessible() {
+		status = worse(status, StatusWarn)
+		detail += fmt.Sprintf(": mode %#o lets every local account connect; prefer 0660 with a dedicated group", uint32(mode))
+	}
+
+	info, err := os.Lstat(path)
+	switch {
+	case os.IsNotExist(err):
+		// Normal before the first start, and after a clean shutdown.
+		detail += ": not bound yet (server not running?)"
+	case err != nil:
+		status = worse(status, StatusWarn)
+		detail += fmt.Sprintf(": cannot inspect: %v", err)
+	case info.Mode()&os.ModeSocket == 0:
+		status = worse(status, StatusFail)
+		detail += ": path is occupied by a non-socket file; the server will refuse to remove it and will not start"
+	default:
+		if got := info.Mode().Perm(); got != mode {
+			status = worse(status, StatusWarn)
+			detail += fmt.Sprintf(": the bound socket has mode %#o, not the configured %#o (restart pending?)", uint32(got), uint32(mode))
+		}
+		if conn, derr := net.DialTimeout("unix", path, time.Second); derr == nil {
+			_ = conn.Close()
+			detail += ": bound and accepting connections"
+		} else {
+			// A socket file with nobody behind it is what an unclean shutdown
+			// leaves; the next start reclaims it, so this is not a failure.
+			detail += ": socket file present but nothing is listening (stale; the next start reclaims it)"
+		}
+	}
+	return status, detail
 }
 
 // --- 10. FIPS 140-3 posture ---------------------------------------------------

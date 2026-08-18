@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"runtime"
@@ -66,6 +67,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/timesource"
 	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
 	"github.com/blechschmidt/secsy-pki/server/internal/tsa"
+	"github.com/blechschmidt/secsy-pki/server/internal/unixsocket"
 
 	"github.com/google/uuid"
 )
@@ -670,17 +672,40 @@ func main() {
 			grpcClientCAs = mtlsClientCAs
 		}
 		grpcInsecure := grpcTLSCert == "" && grpcTLSKey == "" && insecureHTTPAllowed()
+		// Unix-socket mode (Task 185): serve gRPC on a socket and bind no port.
+		// The socket replaces the listener certificate as the confidentiality
+		// boundary, so a TLS certificate inherited from the REST listener would
+		// only get in the way — clients dialling "unix://" have no hostname to
+		// verify. An explicit grpc.tls_cert/tls_key still wins.
+		grpcSocket := cfg.GRPC.UnixSocket.Listener()
+		if grpcSocket.Enabled() && cfg.GRPC.TLSCert == "" && cfg.GRPC.TLSKey == "" {
+			// mTLS on a cleartext socket cannot work — there is no handshake in
+			// which to present a certificate — and silently ignoring it would leave
+			// an operator believing client certificates are being enforced.
+			if cfg.GRPC.MTLS {
+				log.Fatalf("grpc.mtls cannot be enforced on the Unix socket %s without TLS: "+
+					"set grpc.tls_cert/tls_key to serve TLS on the socket, or drop grpc.mtls "+
+					"(the socket's ownership and mode are the access boundary there)", grpcSocket.SocketPath())
+			}
+			grpcTLSCert, grpcTLSKey = "", ""
+		}
 		grpcSrv, err := grpcapi.New(grpcapi.Config{
-			Address:   cfg.GRPC.GRPCAddress(),
-			TLSCert:   grpcTLSCert,
-			TLSKey:    grpcTLSKey,
-			ClientCAs: grpcClientCAs,
-			Insecure:  grpcInsecure,
+			Address:    cfg.GRPC.GRPCAddress(),
+			TLSCert:    grpcTLSCert,
+			TLSKey:     grpcTLSKey,
+			ClientCAs:  grpcClientCAs,
+			Insecure:   grpcInsecure,
+			UnixSocket: grpcSocket,
 		}, api, authMw)
 		if err != nil {
 			log.Fatalf("gRPC server setup failed: %v", err)
 		}
-		log.Printf("Starting gRPC server on %s (reflection + health enabled, mTLS=%v)", grpcSrv.Addr(), cfg.GRPC.MTLS)
+		if grpcSocket.Enabled() {
+			log.Printf("Starting gRPC server on unix socket %s (reflection + health enabled, mTLS=%v); no TCP port is bound",
+				unixsocket.Describe(grpcSocket), cfg.GRPC.MTLS)
+		} else {
+			log.Printf("Starting gRPC server on %s (reflection + health enabled, mTLS=%v)", grpcSrv.Addr(), cfg.GRPC.MTLS)
+		}
 		go func() {
 			if err := grpcSrv.Serve(); err != nil {
 				log.Fatalf("gRPC server failed: %v", err)
@@ -1111,6 +1136,24 @@ func main() {
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 
+	// Unix-domain-socket mode (Task 185): when server.unix_socket.path is set the
+	// HTTP surface is served on that socket and the TCP port is not bound at all,
+	// so the deployment is reachable only by processes on this host that can open
+	// the socket file. Binding here — before the TLS branch — means a socket that
+	// cannot be created (occupied path, missing directory, unknown group) stops
+	// startup with a clear error instead of a half-open server.
+	// Closing the listener unlinks the socket; a process that is killed outright
+	// leaves it behind, and the next start reclaims it.
+	socket := cfg.Server.UnixSocket.Listener()
+	var socketListener net.Listener
+	if socket.Enabled() {
+		lis, err := unixsocket.Listen(socket)
+		if err != nil {
+			log.Fatalf("HTTP listener: %v", err)
+		}
+		socketListener = lis
+	}
+
 	selfIssue := cfg.Server.TLS.SelfIssue.Enabled
 	haveDiskCert := cfg.Server.TLSCert != "" && cfg.Server.TLSKey != ""
 	if selfIssue || haveDiskCert {
@@ -1174,8 +1217,38 @@ func main() {
 			Handler:   handler,
 			TLSConfig: tlsCfg,
 		}
-		log.Printf("Starting HTTPS server on %s", addr)
-		if err := server.ListenAndServeTLS(certFile, keyFile); err != nil {
+		// TLS on a Unix socket is unusual but supported: some clients require it,
+		// and a self-issued certificate keeps working because the certificate is
+		// served through tls.Config.GetCertificate either way.
+		var err error
+		if socketListener != nil {
+			log.Printf("Starting HTTPS server on unix socket %s; no TCP port is bound", unixsocket.Describe(socket))
+			err = server.ServeTLS(socketListener, certFile, keyFile)
+		} else {
+			log.Printf("Starting HTTPS server on %s", addr)
+			err = server.ListenAndServeTLS(certFile, keyFile)
+		}
+		if err != nil {
+			log.Fatalf("Server failed: %v", err)
+		}
+	} else if socketListener != nil {
+		// Cleartext on a Unix socket needs no SECSY_ALLOW_INSECURE_HTTP opt-in.
+		// That switch exists to stop credentials and CSRs from crossing a network
+		// in the clear; a socket never reaches a network, and the operating system
+		// enforces who may connect through the socket's ownership and mode. Every
+		// route behind it still authenticates exactly as it does over TLS.
+		log.Printf("Starting HTTP server on unix socket %s; no TCP port is bound, access is governed by the socket's ownership and mode",
+			unixsocket.Describe(socket))
+		if mtlsClientCAs != nil {
+			// Say so rather than degrade quietly: without TLS there is no handshake
+			// in which a client certificate could be presented, so operator auth on
+			// this listener falls back to Basic/Bearer/token credentials. A proxy in
+			// front of the socket may still terminate mutual TLS itself.
+			log.Printf("NOTE: mutual-TLS operator binding is configured but cannot apply to a cleartext unix socket; " +
+				"callers authenticate with Basic/Bearer/API-token credentials (configure server.tls_cert/tls_key to serve TLS on the socket)")
+		}
+		server := &http.Server{Handler: handler}
+		if err := server.Serve(socketListener); err != nil {
 			log.Fatalf("Server failed: %v", err)
 		}
 	} else {
@@ -1185,7 +1258,8 @@ func main() {
 		// explicitly opts in (e.g. when TLS is terminated at a trusted proxy).
 		if !insecureHTTPAllowed() {
 			log.Fatalf("Refusing to start: no TLS configured (set server.tls_cert/tls_key). " +
-				"To run plain HTTP behind a trusted TLS-terminating proxy, set SECSY_ALLOW_INSECURE_HTTP=1.")
+				"To run plain HTTP behind a trusted TLS-terminating proxy, set SECSY_ALLOW_INSECURE_HTTP=1. " +
+				"To serve local processes only, set server.unix_socket.path.")
 		}
 		log.Printf("WARNING: SECSY_ALLOW_INSECURE_HTTP is set — starting cleartext HTTP server on %s. "+
 			"Only do this behind a trusted TLS-terminating proxy.", addr)

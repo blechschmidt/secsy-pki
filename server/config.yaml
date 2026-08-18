@@ -3,6 +3,15 @@ server:
   port: 8443
   tls_cert: "certs/server.crt"
   tls_key: "certs/server.key"
+  # Serve the HTTP surface on a Unix-domain socket INSTEAD of the TCP port above
+  # (host/port are then ignored and no port is bound at all). Access is governed
+  # by the socket's ownership and mode rather than by the network, so TLS is
+  # optional there. grpc.unix_socket does the same for gRPC. See
+  # docs/deployment/unix-socket.md.
+  # unix_socket:
+  #   path: "/run/secsy/api.sock"   # absolute; the parent directory must exist
+  #   mode: "0660"                  # default 0600 (owner only)
+  #   group: "secsy"                # optional group name or numeric GID
   # ocsp_cache_ttl_seconds bounds how long a signed OCSP response is reused from
   # the in-memory cache before being re-signed on the HSM. 0 uses the server
   # default (1h); a negative value disables caching. Revocations invalidate the

@@ -40,7 +40,7 @@ import (
 // round-trip over gRPC against a running server.
 func cmdGRPC(args []string) error {
 	fs := flag.NewFlagSet("grpc", flag.ContinueOnError)
-	addr := fs.String("addr", "localhost:9443", "gRPC server address host:port")
+	addr := fs.String("addr", "localhost:9443", "gRPC server address host:port, or unix:///path/to/socket for a Unix-socket listener")
 	operation := fs.String("operation", "demo", "operation: demo|issue|renew|revoke|suspend|release|get|status|list|crl-metadata|ocsp-metadata|stream-events")
 	caID := fs.String("ca", "", "issuing CA id (required for most operations)")
 	profile := fs.String("profile", "", "certificate profile (issue/renew)")
@@ -461,9 +461,15 @@ type grpcDialOptions struct {
 // dialGRPC establishes a client connection with the requested transport
 // security. It supports plaintext h2c, server-only TLS (with an optional custom
 // CA bundle or verification skip), and mutual-TLS with a client certificate.
+//
+// A "unix://" target (Task 185) defaults to plaintext: gRPC resolves it to a
+// local socket, so there is no network to protect and no hostname a certificate
+// could attest to — the socket's permissions are the access boundary. Naming
+// any TLS material still selects TLS, for a deployment that terminates it on
+// the socket anyway.
 func dialGRPC(o grpcDialOptions) (*grpc.ClientConn, error) {
 	var creds credentials.TransportCredentials
-	if o.plaintext {
+	if o.plaintext || (isUnixTarget(o.addr) && !o.insecureTLS && o.caCert == "" && o.clientCert == "") {
 		creds = insecure.NewCredentials()
 	} else {
 		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: o.serverName}
@@ -495,6 +501,13 @@ func dialGRPC(o grpcDialOptions) (*grpc.ClientConn, error) {
 		return nil, fmt.Errorf("dialing %s: %w", o.addr, err)
 	}
 	return conn, nil
+}
+
+// isUnixTarget reports whether a gRPC target names a Unix-domain socket. gRPC
+// resolves both schemes natively: "unix:" (optionally "unix:///abs/path") for a
+// filesystem socket and "unix-abstract:" for Linux's abstract namespace.
+func isUnixTarget(target string) bool {
+	return strings.HasPrefix(target, "unix:") || strings.HasPrefix(target, "unix-abstract:")
 }
 
 // loadOrGenerateCSR returns a PEM CSR: either read from csrFile, or freshly

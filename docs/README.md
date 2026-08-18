@@ -142,6 +142,7 @@ These pages are also published — with search and navigation — at
 | [Kubernetes deployment](deployment/kubernetes.md) | Container image, Helm chart, cert-manager issuer, kind/SoftHSM smoke test |
 | [Persistence backends (SQLite & PostgreSQL)](deployment/persistence.md) | SQLite and PostgreSQL stores, pooling, and migration between them |
 | [Multi-replica coordination & HA](deployment/high-availability.md) | Multiple replicas with leader-elected singleton background jobs |
+| [Unix-domain-socket listeners](deployment/unix-socket.md) | Serving HTTP/gRPC on a socket instead of a port, with filesystem permissions as the boundary |
 | [Self-managed serving-TLS certificate](deployment/serving-cert.md) | Issuing the server's own HTTPS certificate from an internal CA |
 
 ### 10. Day-2 operations — [`operations/`](operations/README.md)
