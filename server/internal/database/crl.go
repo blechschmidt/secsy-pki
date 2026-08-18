@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // PublishedCRL is a persisted base or delta CRL for a single (CA, scope) pair.
@@ -123,9 +123,9 @@ func isUniqueViolation(err error) bool {
 	if err == nil {
 		return false
 	}
-	var pqErr *pq.Error
-	if errors.As(err, &pqErr) {
-		return pqErr.Code == "23505"
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505"
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "UNIQUE constraint failed") ||

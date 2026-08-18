@@ -15,7 +15,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
-	_ "github.com/lib/pq"
+	_ "github.com/blechschmidt/secsy-pki/server/internal/pgdriver"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -1361,13 +1361,13 @@ func (db *DB) migrate() error {
 
 	// Create built-in restriction sets
 	_, _ = db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
-		BuiltinPermitAllSSH, "Permit all signatures", "ssh", 0)
+		BuiltinPermitAllSSH, "Permit all signatures", "ssh", false)
 	_, _ = db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
-		BuiltinDenyAllSSH, "Disallow all signatures", "ssh", 1)
+		BuiltinDenyAllSSH, "Disallow all signatures", "ssh", true)
 	_, _ = db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
-		BuiltinPermitAllX509, "Permit all signatures", "x509", 0)
+		BuiltinPermitAllX509, "Permit all signatures", "x509", false)
 	_, _ = db.exec(db.insertOrIgnore("restriction_sets", "id, name, type, deny_all", "?, ?, ?, ?"),
-		BuiltinDenyAllX509, "Disallow all signatures", "x509", 1)
+		BuiltinDenyAllX509, "Disallow all signatures", "x509", true)
 
 	// Indexes backing the paginated/filtered inventory list endpoints (Task 83).
 	// The keyset indexes match the (timestamp, tiebreaker) DESC sort so a page can
@@ -2113,7 +2113,7 @@ func (db *DB) GetEffectiveRestrictionSet(caID, userSub string, groupIDs []string
 
 type marshaledRS struct {
 	principals, certTypes, extensions                             string
-	forceEmail, requireReason, denyExt, denyCrit, denyCa          int
+	forceEmail, requireReason, denyExt, denyCrit, denyCa          bool
 	keyUsages, extKeyUsages, sanTypes, sanPatterns, subjectFields string
 }
 
@@ -2123,21 +2123,15 @@ func (db *DB) marshalRS(rs *models.RestrictionSet) marshaledRS {
 	c, _ := json.Marshal(rs.AllowedCertTypes)
 	e, _ := json.Marshal(rs.AllowedExtensions)
 	m.principals, m.certTypes, m.extensions = string(p), string(c), string(e)
-	if rs.ForceKeyIDEmail {
-		m.forceEmail = 1
-	}
-	if rs.RequireReason {
-		m.requireReason = 1
-	}
-	if rs.DenyExtensions {
-		m.denyExt = 1
-	}
-	if rs.DenyCriticalOptions {
-		m.denyCrit = 1
-	}
-	if rs.DenyCA {
-		m.denyCa = 1
-	}
+	// The flag columns are BOOLEAN on PostgreSQL and INTEGER on SQLite (see
+	// boolType in migrate). Binding a Go bool satisfies both — SQLite stores it
+	// as 0/1 — whereas binding an int is rejected by a driver that encodes
+	// against the column's real type.
+	m.forceEmail = rs.ForceKeyIDEmail
+	m.requireReason = rs.RequireReason
+	m.denyExt = rs.DenyExtensions
+	m.denyCrit = rs.DenyCriticalOptions
+	m.denyCa = rs.DenyCA
 
 	ku, _ := json.Marshal(rs.AllowedKeyUsages)
 	eku, _ := json.Marshal(rs.AllowedExtKeyUsages)
@@ -2156,13 +2150,9 @@ func (db *DB) CreateRestrictionSet(rs *models.RestrictionSet) error {
 	if rs.CAID == "" {
 		caID = nil
 	}
-	denyAll := 0
-	if rs.DenyAll {
-		denyAll = 1
-	}
 	_, err := db.exec(
 		`INSERT INTO restriction_sets (id, tenant_id, ca_id, name, type, max_validity_secs, deny_all) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		rs.ID, nullString(rs.TenantID), caID, rs.Name, rs.Type, rs.MaxValiditySecs, denyAll,
+		rs.ID, nullString(rs.TenantID), caID, rs.Name, rs.Type, rs.MaxValiditySecs, rs.DenyAll,
 	)
 	if err != nil {
 		return err
@@ -2171,13 +2161,9 @@ func (db *DB) CreateRestrictionSet(rs *models.RestrictionSet) error {
 }
 
 func (db *DB) UpdateRestrictionSet(rs *models.RestrictionSet) error {
-	denyAll := 0
-	if rs.DenyAll {
-		denyAll = 1
-	}
 	_, err := db.exec(
 		`UPDATE restriction_sets SET name=?, type=?, max_validity_secs=?, deny_all=? WHERE id=?`,
-		rs.Name, rs.Type, rs.MaxValiditySecs, denyAll, rs.ID,
+		rs.Name, rs.Type, rs.MaxValiditySecs, rs.DenyAll, rs.ID,
 	)
 	if err != nil {
 		return err
@@ -2208,17 +2194,19 @@ func (db *DB) upsertRestrictionDetails(rs *models.RestrictionSet) error {
 
 func (db *DB) loadSSHDetails(rs *models.RestrictionSet) {
 	var principals, certTypes, extensions sql.NullString
-	var forceEmail, requireReason, denyExt, denyCrit int
+	// Scanning into a bool works on both backends: database/sql converts SQLite's
+	// 0/1 INTEGER through driver.Bool, and PostgreSQL yields a bool directly.
+	var forceEmail, requireReason, denyExt, denyCrit bool
 	err := db.queryRow(
 		`SELECT allowed_principals, allowed_cert_types, force_key_id_email_reason, require_reason, allowed_extensions, deny_extensions, deny_critical_options, max_valid_after_offset FROM ssh_restriction_details WHERE restriction_set_id = ?`, rs.ID,
 	).Scan(&principals, &certTypes, &forceEmail, &requireReason, &extensions, &denyExt, &denyCrit, &rs.MaxValidAfterOffset)
 	if err != nil {
 		return
 	}
-	rs.ForceKeyIDEmail = forceEmail != 0
-	rs.RequireReason = requireReason != 0
-	rs.DenyExtensions = denyExt != 0
-	rs.DenyCriticalOptions = denyCrit != 0
+	rs.ForceKeyIDEmail = forceEmail
+	rs.RequireReason = requireReason
+	rs.DenyExtensions = denyExt
+	rs.DenyCriticalOptions = denyCrit
 	if principals.Valid {
 		_ = json.Unmarshal([]byte(principals.String), &rs.AllowedPrincipals)
 	}
@@ -2232,14 +2220,14 @@ func (db *DB) loadSSHDetails(rs *models.RestrictionSet) {
 
 func (db *DB) loadX509Details(rs *models.RestrictionSet) {
 	var keyUsages, extKeyUsages, sanTypes, sanPatterns, subjectFields sql.NullString
-	var denyCa int
+	var denyCa bool
 	err := db.queryRow(
 		`SELECT allowed_key_usages, allowed_ext_key_usages, allowed_san_types, allowed_san_patterns, allowed_subject_fields, max_path_length, deny_ca FROM x509_restriction_details WHERE restriction_set_id = ?`, rs.ID,
 	).Scan(&keyUsages, &extKeyUsages, &sanTypes, &sanPatterns, &subjectFields, &rs.MaxPathLength, &denyCa)
 	if err != nil {
 		return
 	}
-	rs.DenyCA = denyCa != 0
+	rs.DenyCA = denyCa
 	if keyUsages.Valid {
 		_ = json.Unmarshal([]byte(keyUsages.String), &rs.AllowedKeyUsages)
 	}
@@ -2260,7 +2248,7 @@ func (db *DB) loadX509Details(rs *models.RestrictionSet) {
 func (db *DB) GetRestrictionSet(id string) (*models.RestrictionSet, error) {
 	var rs models.RestrictionSet
 	var tenantID, caID sql.NullString
-	var denyAll int
+	var denyAll bool
 	err := db.queryRow(
 		`SELECT id, tenant_id, ca_id, name, type, max_validity_secs, deny_all FROM restriction_sets WHERE id = ?`, id,
 	).Scan(&rs.ID, &tenantID, &caID, &rs.Name, &rs.Type, &rs.MaxValiditySecs, &denyAll)
@@ -2270,7 +2258,7 @@ func (db *DB) GetRestrictionSet(id string) (*models.RestrictionSet, error) {
 	if caID.Valid {
 		rs.CAID = caID.String
 	}
-	rs.DenyAll = denyAll != 0
+	rs.DenyAll = denyAll
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -2316,7 +2304,7 @@ func (db *DB) scanRestrictionSets(rows *sql.Rows, err error) ([]models.Restricti
 	for rows.Next() {
 		var rs models.RestrictionSet
 		var tenantID, caID sql.NullString
-		var denyAll int
+		var denyAll bool
 		if err := rows.Scan(&rs.ID, &tenantID, &caID, &rs.Name, &rs.Type, &rs.MaxValiditySecs, &denyAll); err != nil {
 			return nil, err
 		}
@@ -2326,7 +2314,7 @@ func (db *DB) scanRestrictionSets(rows *sql.Rows, err error) ([]models.Restricti
 		if caID.Valid {
 			rs.CAID = caID.String
 		}
-		rs.DenyAll = denyAll != 0
+		rs.DenyAll = denyAll
 		if rs.Type == "" {
 			rs.Type = models.RestrictionSetSSH
 		}

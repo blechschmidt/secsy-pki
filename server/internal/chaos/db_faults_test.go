@@ -26,12 +26,11 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/lib/pq"
-
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
+	_ "github.com/blechschmidt/secsy-pki/server/internal/pgdriver"
 )
 
 // backends returns the DB backends to exercise: SQLite always, plus PostgreSQL

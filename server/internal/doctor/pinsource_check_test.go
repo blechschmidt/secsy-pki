@@ -55,7 +55,13 @@ func writeSecurePin(t *testing.T, content string) string {
 }
 
 func TestCheckPinSourceReachable(t *testing.T) {
-	cfg := pkcs11Cfg(config.PinSourceConfig{Type: "file", File: config.FilePinSourceConfig{Path: writeSecurePin(t, "1234")}})
+	// The PIN is deliberately a distinctive non-numeric string. The detail names
+	// the source *path*, and t.TempDir() embeds a random decimal run in it — a
+	// short numeric PIN like "1234" lands inside that run often enough to trip
+	// the leak assertion below on an unlucky seed, which is a bug in the test
+	// rather than in the redaction it guards.
+	const pin = "correct-horse-battery-staple"
+	cfg := pkcs11Cfg(config.PinSourceConfig{Type: "file", File: config.FilePinSourceConfig{Path: writeSecurePin(t, pin)}})
 	r := &Report{OK: true}
 	checkPinSources(context.Background(), r, cfg, Options{BuildPinSources: buildFrom})
 
@@ -64,7 +70,7 @@ func TestCheckPinSourceReachable(t *testing.T) {
 		t.Fatalf("want pass, got %s: %s", res.Status, res.Detail)
 	}
 	// The detail must describe the source but never leak the PIN.
-	if strings.Contains(res.Detail, "1234") {
+	if strings.Contains(res.Detail, pin) {
 		t.Errorf("pin.source detail leaks the PIN: %s", res.Detail)
 	}
 	if !strings.Contains(res.Detail, "file ") {

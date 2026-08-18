@@ -59,6 +59,36 @@ fleet of replicas does not exhaust the server's `max_connections`. Size
 count*. `conn_max_lifetime` recycles connections so a load balancer or failover
 in front of the cluster cannot leave a replica pinned to a dead backend.
 
+### PostgreSQL driver
+
+The PostgreSQL driver is [`pgx`](https://github.com/jackc/pgx) in its
+`database/sql` compatibility mode, registered under the driver name `postgres`.
+It replaced `lib/pq`, which is in upstream maintenance mode and carries a set of
+protocol-parsing advisories with no fixed release (`GO-2026-6166`,
+`GO-2026-6168` … `GO-2026-6173`: panics and unbounded memory consumption on
+malformed backend frames, a SCRAM iteration-count CPU DoS, wrong-`.pgpass`
+credential disclosure, and GSS authentication completing without mutual proof).
+Those are reachable from a hostile or MITM'd database endpoint — a boundary the
+store cannot trust blindly, since it holds the hash-chained audit log, the
+revocation state, and the CA inventory.
+
+Nothing changes for operators: `database.driver` stays `postgres`, and both DSN
+forms (`postgres://user:pass@host/db?sslmode=require` and the keyword/value
+`host=… user=…` style) are accepted as before.
+
+One deployment note: pgx uses the extended query protocol with server-side
+prepared-statement caching. That is correct against a direct connection or a
+*session*-pooling proxy, but a **transaction**-pooling proxy (PgBouncer in
+`transaction` mode, pgcat) cannot carry prepared statements across the pooled
+backend. Behind such a proxy, append `default_query_exec_mode=simple_protocol`
+to the DSN:
+
+```yaml
+database:
+  driver: "postgres"
+  dsn: "postgres://secsy:secret@pgbouncer:6432/secsy_pki?sslmode=require&default_query_exec_mode=simple_protocol"
+```
+
 ## Invariants preserved on both backends
 
 The correctness guarantees the PKI relies on hold identically on SQLite and

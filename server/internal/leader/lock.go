@@ -11,7 +11,7 @@ import (
 
 	// The election opens its own connection, so the package registers the
 	// PostgreSQL driver itself rather than relying on the store having done so.
-	_ "github.com/lib/pq"
+	_ "github.com/blechschmidt/secsy-pki/server/internal/pgdriver"
 )
 
 // lock is the mutual-exclusion primitive behind the elector: a lease that at
@@ -82,7 +82,7 @@ func (l *pgLock) session(ctx context.Context) (*sql.Conn, error) {
 		return l.conn, nil
 	}
 	if l.db == nil {
-		// lib/pq registers as "postgres"; sql.Open validates the DSN without
+		// pgdriver registers as "postgres"; sql.Open validates the DSN without
 		// connecting, so an unreachable server surfaces on first use below.
 		db, err := sql.Open("postgres", l.dsn)
 		if err != nil {
