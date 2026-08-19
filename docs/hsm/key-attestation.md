@@ -23,6 +23,13 @@ a bundle whose signing keys are not attested, and `hsm-audit verify -key` takes 
 public key and answers the joined question — *has this key signed anything that
 was not published?* See [the audit log](audit-log.md#5-the-signatures-belong-to-a-key-not-to-a-handle).
 
+Both rest on a third claim that neither makes: that the device doing the
+asserting is a genuine YubiHSM. Chain anchoring, below, checks that the
+*certificate* behind these assertions is Yubico-issued;
+[`hsm-attest device`](device-attestation.md) goes the step further of making the
+device prove it holds the corresponding private key, and prints the serial number
+Yubico certified it under.
+
 ## What the device asserts
 
 `attest asymmetric` makes the YubiHSM sign an X.509 certificate over the public

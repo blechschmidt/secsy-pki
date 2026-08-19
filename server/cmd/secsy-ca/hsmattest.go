@@ -31,7 +31,8 @@ func hsmAttestUsage() {
 	fmt.Fprint(os.Stderr, `Usage: secsy-ca hsm-attest <subcommand> [flags]
 
 Ask the YubiHSM to attest a key it holds, and check what the device says about
-it — in particular whether the private key can ever leave the device.
+it — in particular whether the private key can ever leave the device. Or attest
+the device itself, and check what Yubico says about it.
 
 Subcommands:
   key <label>           Attest one key by its HSM label
@@ -40,11 +41,30 @@ Subcommands:
                         CA actually signs with
   audit                 Attest every asymmetric key on the device and report
                         which ones fail policy
+  device                Attest the device itself: verify against Yubico's
+                        published attestation CA that the attached hardware is a
+                        genuine YubiHSM, and print its verified serial number
   verify -file FILE     Verify an attestation offline (no database, no HSM).
                         FILE is either the JSON emitted by -out, or a PEM
-                        attestation certificate.
+                        attestation certificate. A device attestation written by
+                        "device -out" is recognised and verified as one.
 
-Flags (key, ca, audit):
+Flags (device):
+  -challenge STRING     Nonce the device must answer. Defaults to a fresh random
+                        one; supply your own to check a device on someone else's
+                        behalf. Answering it makes the device generate, attest
+                        and delete a throwaway key in a reserved slot, which
+                        costs three device audit-log entries.
+  -no-challenge         Only read and check the device certificate. Read-only,
+                        and a strictly weaker claim: it shows that a genuine
+                        YubiHSM with this serial exists, not that the device
+                        examined is that one.
+  -object-id ID         Reserved slot for the challenge key (default 0xfa00).
+  -expect-serial SERIAL Serial the device must turn out to have.
+  -roots FILE           PEM trust anchors. Defaults to Yubico's published
+                        attestation roots, embedded in this binary.
+
+Flags (key, ca, audit, device):
   -out FILE             Write the attestation as JSON for later verification
                         or for handing to a third party
   -pem FILE             Write the attestation certificate chain as PEM
@@ -63,6 +83,9 @@ Flags (verify):
                         device has these properties.
   -expect-label LABEL   Key label the attestation must assert.
   -expect-serial SERIAL Device serial the attestation must assert.
+  -expect-challenge C   For a device attestation: the challenge it must answer.
+                        Set it to the nonce you chose, or the bundle only proves
+                        possession at some unknown time.
   -require-anchor       Fail unless the device certificate chains to a trusted
                         root, i.e. the attesting device is provably a genuine
                         YubiHSM. On by default; Yubico publishes both the root
@@ -74,6 +97,9 @@ Flags (verify):
   -allow-exportable     Report rather than fail when the key can be exported.
   -allow-imported       Report rather than fail when the key was imported
                         instead of generated inside the HSM.
+  -allow-no-challenge   Accept a device attestation that answers no challenge,
+                        i.e. one that authenticates a certificate rather than a
+                        device.
   -json                 Emit the full machine-readable verdict.
 
 Exit status is 0 when the attestation satisfies the policy and 1 when it does
@@ -102,6 +128,8 @@ func cmdHSMAttest(db *database.DB, cfg *config.Config, args []string) error {
 		return cmdHSMAttestCA(ctx, hsmCfg, cfg, db, rest)
 	case "audit":
 		return cmdHSMAttestAudit(ctx, hsmCfg, cfg, rest)
+	case "device":
+		return cmdHSMAttestDevice(ctx, hsmCfg, cfg, rest)
 	case "help", "-h", "--help":
 		hsmAttestUsage()
 		return nil
@@ -297,6 +325,74 @@ func cmdHSMAttestAudit(ctx context.Context, hsmCfg hsm.Config, cfg *config.Confi
 	return nil
 }
 
+// cmdHSMAttestDevice attests the device rather than a key on it.
+//
+// The other subcommands take the device for granted: they establish what an
+// object on it is, on the strength of a signature by an attestation key nobody
+// checked belonged to real hardware. This one closes that, and it is the
+// prerequisite for reading any of the others as evidence rather than as claims.
+func cmdHSMAttestDevice(ctx context.Context, hsmCfg hsm.Config, cfg *config.Config, args []string) error {
+	fs := flag.NewFlagSet("hsm-attest device", flag.ContinueOnError)
+	f := registerAttestFlags(fs)
+	challenge := fs.String("challenge", "", "nonce the device must answer (default: a fresh random one)")
+	noChallenge := fs.Bool("no-challenge", false, "only read and check the device certificate; do not make the device answer a challenge")
+	objectID := fs.Uint("object-id", uint(hsmattest.DefaultDeviceChallengeKeyID), "reserved object id for the throwaway challenge key")
+	expectSerial := fs.String("expect-serial", "", "serial the device must turn out to have")
+	roots := fs.String("roots", "", "PEM trust anchors (default: embedded Yubico attestation roots)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *noChallenge && *challenge != "" {
+		return fmt.Errorf("hsm-attest device: -challenge and -no-challenge are mutually exclusive")
+	}
+	if *objectID > 0xffff {
+		return fmt.Errorf("hsm-attest device: -object-id 0x%x is not a YubiHSM object handle", *objectID)
+	}
+
+	pol, err := cfg.YubiHSM.DeviceAttestationPolicy()
+	if err != nil {
+		return err
+	}
+	pol.ExpectedSerial = *expectSerial
+	if *roots != "" {
+		r, inter, err := hsmattest.LoadRoots([]string{*roots})
+		if err != nil {
+			return err
+		}
+		pol.Roots, pol.Intermediates = r, inter
+	}
+
+	// A challenge is the difference between authenticating the device and
+	// authenticating a certificate, so it is what happens unless the operator
+	// asks for the read-only form.
+	nonce := *challenge
+	switch {
+	case *noChallenge:
+		nonce = ""
+		pol.RequireProofOfPossession = false
+	case nonce == "":
+		if nonce, err = hsmattest.NewChallenge(); err != nil {
+			return err
+		}
+	}
+	pol.ExpectedChallenge = nonce
+
+	auth := hsmattest.NewDeviceAuthenticator(hsmCfg)
+	auth.ChallengeObjectID = uint16(*objectID)
+	att, err := auth.Attest(ctx, nonce)
+	// Answering a challenge writes three force-audited entries to the device's
+	// 62-entry log ring, so this command owes the ledger a drain on the way out
+	// exactly as a signing command does — including when it failed partway, which
+	// is when unaccounted entries matter most.
+	if nonce != "" {
+		hsmUsed.Store(true)
+	}
+	if err != nil {
+		return err
+	}
+	return reportDeviceAttestation(att, hsmattest.VerifyDevice(att, pol), f)
+}
+
 // cmdHSMAttestVerify is the offline verifier. It reads no config, opens no
 // database and touches no device, so it is dispatched before any of them exist.
 func cmdHSMAttestVerify(args []string) error {
@@ -307,9 +403,11 @@ func cmdHSMAttestVerify(args []string) error {
 	expectKey := fs.String("expect-key", "", "certificate or public key the attested key must equal")
 	expectLabel := fs.String("expect-label", "", "key label the attestation must assert")
 	expectSerial := fs.String("expect-serial", "", "device serial the attestation must assert")
+	expectChallenge := fs.String("expect-challenge", "", "challenge a device attestation must answer")
 	requireAnchor := fs.Bool("require-anchor", true, "fail unless the device certificate chains to a trusted root; -require-anchor=false to opt out")
 	allowExportable := fs.Bool("allow-exportable", false, "report rather than fail when the key is exportable")
 	allowImported := fs.Bool("allow-imported", false, "report rather than fail when the key was imported")
+	allowNoChallenge := fs.Bool("allow-no-challenge", false, "accept a device attestation that answers no challenge")
 	asJSON := fs.Bool("json", false, "emit JSON")
 	path, rest := splitIDAndFlags(args)
 	if err := fs.Parse(rest); err != nil {
@@ -323,7 +421,24 @@ func cmdHSMAttestVerify(args []string) error {
 		return fmt.Errorf("hsm-attest verify: -file is required")
 	}
 
-	att, err := loadAttestation(path, *deviceCert)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading attestation: %w", err)
+	}
+	// A device attestation says what it is, so it is verified as what it is
+	// rather than misread as a key attestation with most of its fields missing.
+	if dev, ok := deviceAttestationFrom(data); ok {
+		return verifyDeviceAttestation(dev, deviceVerifyFlags{
+			roots:            *roots,
+			expectSerial:     *expectSerial,
+			expectChallenge:  *expectChallenge,
+			requireAnchor:    *requireAnchor,
+			allowNoChallenge: *allowNoChallenge,
+			asJSON:           *asJSON,
+		})
+	}
+
+	att, err := loadAttestation(data, *deviceCert)
 	if err != nil {
 		return err
 	}
@@ -404,6 +519,153 @@ func reportAttestation(att *hsmattest.Attestation, res *hsmattest.Result, f atte
 	return nil
 }
 
+// reportDeviceAttestation writes the requested outputs for a device attestation
+// and returns a non-nil error when it failed policy.
+func reportDeviceAttestation(att *hsmattest.DeviceAttestation, res *hsmattest.DeviceResult, f attestFlags) error {
+	if *f.out != "" {
+		data, err := json.MarshalIndent(att, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(*f.out, data, 0o600); err != nil {
+			return err
+		}
+	}
+	if *f.pemOut != "" {
+		chain := att.DeviceCertificatePEM
+		if att.ChallengeCertificatePEM != "" {
+			chain = strings.TrimRight(att.ChallengeCertificatePEM, "\n") + "\n" + chain
+		}
+		if err := os.WriteFile(*f.pemOut, []byte(chain), 0o644); err != nil { //nolint:gosec // public certificates
+			return err
+		}
+	}
+	if *f.asJSON {
+		if err := emitJSON(map[string]any{"attestation": att, "verification": res}); err != nil {
+			return err
+		}
+	} else {
+		printDeviceResult(res)
+		if *f.out != "" {
+			fmt.Fprintf(os.Stderr, "\nDevice attestation written to %s — verify it anywhere with:\n  secsy-ca hsm-attest verify -file %s -expect-challenge %s\n",
+				*f.out, *f.out, att.Challenge)
+		}
+	}
+	if !res.Verified {
+		return fmt.Errorf("device attestation did not satisfy policy: %s", res.Problems[0])
+	}
+	return nil
+}
+
+// deviceVerifyFlags carries the offline verifier's device-related options.
+type deviceVerifyFlags struct {
+	roots            string
+	expectSerial     string
+	expectChallenge  string
+	requireAnchor    bool
+	allowNoChallenge bool
+	asJSON           bool
+}
+
+// verifyDeviceAttestation is the offline half: it checks a bundle a device
+// produced elsewhere, with no device, database or config of its own.
+func verifyDeviceAttestation(att *hsmattest.DeviceAttestation, f deviceVerifyFlags) error {
+	pol := hsmattest.DefaultDevicePolicy()
+	pol.RequireAnchoredChain = f.requireAnchor
+	pol.RequireProofOfPossession = !f.allowNoChallenge
+	pol.ExpectedSerial = f.expectSerial
+	pol.ExpectedChallenge = f.expectChallenge
+	if f.roots != "" {
+		r, inter, err := hsmattest.LoadRoots([]string{f.roots})
+		if err != nil {
+			return err
+		}
+		pol.Roots, pol.Intermediates = r, inter
+	}
+
+	res := hsmattest.VerifyDevice(att, pol)
+	if f.asJSON {
+		if err := emitJSON(res); err != nil {
+			return err
+		}
+	} else {
+		printDeviceResult(res)
+	}
+	if !res.Verified {
+		return fmt.Errorf("device attestation did not satisfy policy: %s", res.Problems[0])
+	}
+	return nil
+}
+
+// deviceAttestationFrom recognises a device attestation bundle by the kind it
+// declares, so that `verify` routes on what the file says it is rather than on
+// which fields happen to be populated.
+func deviceAttestationFrom(data []byte) (*hsmattest.DeviceAttestation, bool) {
+	if !strings.HasPrefix(strings.TrimSpace(string(data)), "{") {
+		return nil, false
+	}
+	var probe struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil || probe.Kind != hsmattest.DeviceAttestationKind {
+		return nil, false
+	}
+	att := &hsmattest.DeviceAttestation{}
+	if err := json.Unmarshal(data, att); err != nil {
+		return nil, false
+	}
+	return att, true
+}
+
+// printDeviceResult renders a device verdict for a human. The serial comes
+// first: "which device is this, and is it real" is the entire question.
+func printDeviceResult(res *hsmattest.DeviceResult) {
+	fmt.Printf("Device serial:    %s\n", orDash(res.Serial))
+	// Only an answered challenge reports the firmware the device is running; the
+	// certificate's own value is what it shipped with, and saying so is better
+	// than either a dash or a number that a firmware update has made wrong.
+	switch {
+	case res.FirmwareVersion != "":
+		fmt.Printf("Firmware:         %s\n", res.FirmwareVersion)
+	case res.FactoryFirmwareVersion != "":
+		fmt.Printf("Firmware:         %s at manufacture (only a challenge reports the running version)\n",
+			res.FactoryFirmwareVersion)
+	default:
+		fmt.Printf("Firmware:         -\n")
+	}
+	fmt.Printf("Certificate:      %s\n", orDash(res.SubjectCommonName))
+	fmt.Printf("Issuing CA:       %s\n", orDash(res.IssuingCA))
+	fmt.Printf("Trust anchor:     %s\n", orDash(res.TrustAnchor))
+	fmt.Println()
+	fmt.Printf("Yubico-certified: %s\n", yesNo(res.ChainAnchored))
+	pop := "no"
+	if res.ProofOfPossession {
+		pop = fmt.Sprintf("yes (challenge %s, object 0x%04x)", res.Challenge, res.ChallengeObjectID)
+	}
+	fmt.Printf("Answered challenge: %s\n", pop)
+	if res.ReportedSerialMatched != nil {
+		agreement := "differs from its certificate"
+		if *res.ReportedSerialMatched {
+			agreement = "agrees with its certificate"
+		}
+		fmt.Printf("Device reports:   %s (%s)\n", res.ReportedSerial, agreement)
+	}
+
+	if len(res.Warnings) > 0 {
+		fmt.Println("\nWarnings:")
+		for _, w := range res.Warnings {
+			fmt.Printf("  - %s\n", w)
+		}
+	}
+	if len(res.Problems) > 0 {
+		fmt.Println("\nProblems:")
+		for _, p := range res.Problems {
+			fmt.Printf("  - %s\n", p)
+		}
+	}
+	fmt.Printf("\n%s\n", res.Summary)
+}
+
 // printAttestationResult renders a verdict for a human.
 func printAttestationResult(res *hsmattest.Result) {
 	fmt.Printf("Key label:        %s\n", orDash(res.KeyLabel))
@@ -448,11 +710,7 @@ func printAttestationResult(res *hsmattest.Result) {
 // loadAttestation reads an attestation from either the JSON form this command
 // emits or a bare PEM certificate, so an operator can verify whatever they were
 // handed without converting it first.
-func loadAttestation(path, deviceCertPath string) (*hsmattest.Attestation, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading attestation: %w", err)
-	}
+func loadAttestation(data []byte, deviceCertPath string) (*hsmattest.Attestation, error) {
 	att := &hsmattest.Attestation{}
 	if trimmed := strings.TrimSpace(string(data)); strings.HasPrefix(trimmed, "{") {
 		if err := json.Unmarshal(data, att); err != nil {

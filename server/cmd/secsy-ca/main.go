@@ -528,9 +528,11 @@ Commands:
                       blocked subject keys are rejected fail-closed at issuance
   hsm-audit           YubiHSM device audit log: provision/collect/timestamp/
                       export, and "verify" a bundle offline (auditor's tool)
-  hsm-attest          YubiHSM key attestation: prove a key was generated inside
-                      the HSM and cannot be exported from it; "verify" checks an
-                      attestation offline (no HSM, no database, no config)
+  hsm-attest          YubiHSM attestation: prove a key was generated inside the
+                      HSM and cannot be exported from it, or that the device
+                      itself is genuine Yubico hardware ("device", printing its
+                      verified serial); "verify" checks either offline (no HSM,
+                      no database, no config)
 
 Run "secsy-ca <command> -h" for command-specific flags.
 `)

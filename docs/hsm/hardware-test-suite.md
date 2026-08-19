@@ -76,7 +76,10 @@ PASS while touching no hardware would be worse than no suite.
 
 - It creates and deletes scratch objects in the `0x7f00`–`0x7f1f` handle range,
   and keys labelled `t172-*` at module-assigned handles. It touches nothing
-  else, and sweeps both before and after every run.
+  else, and sweeps both before and after every run. Tier 3b additionally uses
+  the reserved device-challenge slot `0xfa00`, because that range is fixed by
+  the production code a deployment also runs; it clears the slot before and
+  after itself.
 - **It consumes device audit-log entries.** With forced audit the log is 62
   slots deep and the device refuses every audited operation once it is full. A
   full run produces well over 62 audited operations, so the suite drains the log
@@ -116,6 +119,7 @@ it, so the first failing tier names the layer at fault.
 | 1 | `driver_test.go` | The wire works: device identity is stable, SCP03 survives payloads across every AES-block and USB-packet boundary, the counter chains over 200 exchanges, concurrent callers are serialised without crossing responses, wrong password *and* wrong key id are both rejected, device refusals arrive as typed `DeviceError`s and do not poison the session, cancellation reaches the device, and reading the audit log does not consume it. |
 | 2 | `keys_test.go` | Key lifecycle over the full algorithm matrix: generate / read public half / sign / verify with the standard library on P-256, P-384, P-521 and Ed25519; ECDSA nonces differ and Ed25519 is deterministic; imported keys sign as the key that was imported; capabilities are enforced; delete deletes; two keys from one template differ; and `GET PUBLIC KEY` agrees with the attestation certificate. |
 | 3 | `attestation_test.go` | Attestation says something true: a device-generated non-exportable key verifies, an **exportable** one fails, an **imported** one fails, an attestation binds to a specific public key and rejects another, a flipped signature bit is caught, label resolution is exact, and chain anchoring is reported honestly (see below). |
+| 3b | `device_test.go` | The device the assertions come from is real: its factory certificate chains to Yubico's published attestation root and the serial it asserts is the one `GET DEVICE INFO` reports, it answers a fresh nonce with its attestation key, two challenges produce two different answers and **neither satisfies the other**, the throwaway challenge key is gone when the call returns, and an unexpected serial fails. See [device attestation](device-attestation.md). |
 | 4 | `audit_test.go` | The audit trail can be complete: the device's forced-audit configuration meets the baseline, a fixed setting cannot be downgraded, signatures are attributed to the handle that made them, collection stays continuous across drain seams spanning more than one 62-entry ring, and a **full log stops the device** rather than dropping records. |
 | 5 | `genesis_test.go` | What a factory reset writes, and therefore what the chain anchor is worth: the device-init sentinel's hashed bytes are the constant `0001ffffffffffffffffffffffffffff` on every reset, while the digest the device reports for them differs on every reset and is reproducible from no publicly guessable seed — so the anchor cannot be recomputed and must be pinned out of band. Also that a reset restarts the log at entry 1 with no unlogged-operation counters. Gated on `SECSY_YUBIHSM_RESET=1`; see [why the anchor cannot verify itself](audit-log.md#why-the-anchor-cannot-verify-itself). |
 | 6 | `pkcs11_test.go` | The layer the product signs through: generate/find/sign/verify for every offered key type through `keyprovider`, the readiness probe and hardware RNG, concurrent signing through the session pool over a device that cannot parallelise, the secret-envelope round trip, keys created non-exportable, and PKCS#11 labels and native handles resolving to the same object. |

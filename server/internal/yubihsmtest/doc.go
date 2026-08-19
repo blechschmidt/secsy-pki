@@ -12,6 +12,7 @@
 //	driver_test.go       transport framing and the SCP03 secure channel
 //	keys_test.go         on-device key lifecycle across the algorithm matrix
 //	attestation_test.go  per-key attestation and its trust chain
+//	device_test.go       the device itself, against Yubico's published CA
 //	audit_test.go        the append-only device audit log and its digest chain
 //	genesis_test.go      what a factory reset writes, and what the anchor is worth
 //	pkcs11_test.go       the keyprovider/PKCS#11 layer the product signs through
@@ -42,8 +43,9 @@
 // # What the suite will and will not do to a device
 //
 // It creates and deletes scratch objects in the 0x7f00–0x7f1f handle range and
-// signs with them. It does not touch objects outside that range and does not
-// write device options.
+// signs with them, plus the reserved device-challenge slot 0xfa00, whose range
+// is fixed by the production code rather than by this suite. It does not touch
+// objects outside those and does not write device options.
 //
 // It does, however, consume device audit-log entries. On a device with forced
 // audit the log is 62 slots deep and, once full, the device refuses every

@@ -3903,6 +3903,28 @@ func (y YubiHSMConfig) AttestationPolicy() (hsmattest.Policy, error) {
 	return pol, nil
 }
 
+// DeviceAttestationPolicy builds the device-authenticity policy from
+// configuration.
+//
+// It shares the trust anchors and the anchoring requirement with
+// AttestationPolicy: the two answer different questions about the same PKI, and
+// a deployment that trusts a set of attestation roots for one trusts them for
+// the other. The key-specific settings — exportability, origin, forbidden
+// capabilities — describe an object rather than a device and are deliberately
+// not carried over.
+func (y YubiHSMConfig) DeviceAttestationPolicy() (hsmattest.DevicePolicy, error) {
+	pol := hsmattest.DefaultDevicePolicy()
+	if y.AttestationRequireAnchoredChain != nil {
+		pol.RequireAnchoredChain = *y.AttestationRequireAnchoredChain
+	}
+	roots, inter, err := hsmattest.LoadRoots(y.AttestationRootFiles)
+	if err != nil {
+		return hsmattest.DevicePolicy{}, fmt.Errorf("yubihsm.attestation_root_files: %w", err)
+	}
+	pol.Roots, pol.Intermediates = roots, inter
+	return pol, nil
+}
+
 // UnknownKeys re-decodes raw config YAML in strict mode and returns one
 // human-readable finding per key that does not correspond to any known config
 // field (e.g. "line 12: field pkcs1 not found in type config.Config" — usually
