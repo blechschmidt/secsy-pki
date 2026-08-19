@@ -26,6 +26,21 @@ on:
   # docs/development/ci.md#runner-minutes.
   schedule:
     - cron: "17 3 * * *"
+  # How release.yaml gates a release on this suite. A version tag does not match
+  # the `push` filter above — that is branches only — so without this the tag
+  # would publish an image and a set of binaries that nothing had tested, on the
+  # strength of the branch having been green at some earlier commit.
+  #
+  # No inputs: a release wants this suite exactly as it runs on the branch. The
+  # two `workflow_dispatch` inputs below are baseline-refresh escape hatches for
+  # a human at the Actions tab, and every use of them is already gated on
+  # `github.event_name == 'workflow_dispatch'`, so they stay inert here — a
+  # called run reports the *caller's* event, which for a release is `push`.
+  # That same rule is what skips the four advisory suites: they ask for
+  # `schedule` or `workflow_dispatch`, so a release runs the nine required
+  # gates and does not pay for the nightly-only half.
+  workflow_call:
+
   # Allow manual runs from the Actions tab for debugging / re-runs.
   workflow_dispatch:
     inputs:
@@ -39,8 +54,16 @@ on:
         default: false
 
 # Cancel superseded runs on the same ref to save runner minutes.
+#
+# `github.workflow` is in the key because this workflow is also *called* — by
+# release.yaml — and a called run reports the caller's context. Without it, a
+# release dry run dispatched from `enterprise` computes the same group as the
+# ordinary push run on that branch, and `cancel-in-progress` has one kill the
+# other; a cancelled `ci` job then fails the release. With it, the release's
+# copy is `enterprise-ci-release-…` and the branch's is `enterprise-ci-Enterprise
+# CI (SoftHSM)-…`, so the two coexist and each still supersedes itself.
 concurrency:
-  group: enterprise-ci-${{ github.ref }}
+  group: enterprise-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -373,6 +396,16 @@ jobs:
 
       - name: golangci-lint (make lint)
         run: make lint
+
+      # The release guard's own test suite: it drives scripts/release-guard.sh
+      # against deliberately broken changelogs (undated sections, a version that
+      # is not the newest, sections that do not descend, 1.10.0 against 1.9.0).
+      # It lives on a per-push job rather than in release.yaml because a guard
+      # only exercised by the release it guards is not a guard — the point is to
+      # catch a regression in it now, not at the moment a tag needs it. Needs no
+      # HSM, no database and no Go build; it is a second or two.
+      - name: Release-guard rules (make release-guard-test)
+        run: make release-guard-test
 
   chaos-resilience:
     name: Chaos / fault-injection resilience suite

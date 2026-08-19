@@ -416,6 +416,32 @@ proto: ## Regenerate gRPC/protobuf Go code from proto/pki/v1/pki.proto
 	scripts/gen-proto.sh
 
 # ---------------------------------------------------------------------------
+# Release
+#
+# The same three commands the release workflow runs, in the same order, so a tag
+# can be rehearsed in full before it is pushed — and so a failure at release
+# time is reproducible without pushing another one. See
+# docs/development/releasing.md.
+# ---------------------------------------------------------------------------
+RELEASE_DIST ?= $(DIST)/release
+
+.PHONY: release-guard
+release-guard: ## Check the tag, CHANGELOG.md and go.mod agree (dry run: version from the changelog)
+	scripts/release-guard.sh --repository $(OWNER)/secsy-pki
+
+.PHONY: release-guard-test
+release-guard-test: ## Drive release-guard.sh against deliberately broken changelogs
+	scripts/release-guard-test.sh
+
+.PHONY: release-binaries
+release-binaries: ## Build, run and package the release archives -> dist/release
+	scripts/build-release-binaries.sh --dest $(RELEASE_DIST)
+
+.PHONY: verify-published-image
+verify-published-image: ## Pull $(IMAGE_REF) anonymously and prove it works (add LOCAL=1 for a local build)
+	scripts/verify-published-image.sh --image $(IMAGE_REF) $(if $(LOCAL),--local,)
+
+# ---------------------------------------------------------------------------
 # SBOM generation (CycloneDX)
 # ---------------------------------------------------------------------------
 .PHONY: sbom

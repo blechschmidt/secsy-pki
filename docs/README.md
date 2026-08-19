@@ -139,6 +139,7 @@ These pages are also published — with search and navigation — at
 
 | Page | Covers |
 |------|--------|
+| [The container image](deployment/container.md) | The published image: tags, both architectures, what is inside, and verifying it |
 | [Kubernetes deployment](deployment/kubernetes.md) | Container image, Helm chart, cert-manager issuer, kind/SoftHSM smoke test |
 | [Persistence backends (SQLite & PostgreSQL)](deployment/persistence.md) | SQLite and PostgreSQL stores, pooling, and migration between them |
 | [Multi-replica coordination & HA](deployment/high-availability.md) | Multiple replicas with leader-elected singleton background jobs |
@@ -183,6 +184,7 @@ These pages are also published — with search and navigation — at
 | [Fuzz & property testing](development/fuzzing.md) | Native `go test -fuzz` targets over the untrusted-input parsers |
 | [Resilience & fault-injection testing](development/resilience.md) | Deliberately breaking dependencies to prove the PKI fails closed |
 | [Authorization & tenant-isolation regression matrix](development/authz-regression-matrix.md) | A pinned RBAC/tenant decision for every REST route and RPC |
+| [Releasing](development/releasing.md) | The release guard, what a `v*` tag sets off, the release archives, and the dry run |
 | [Supply-chain security (SBOM, signing, SLSA)](development/supply-chain.md) | SBOMs, cosign signing, SLSA provenance and the govulncheck gate |
 | [Documentation site (GitHub Pages)](development/documentation-site.md) | How these pages are published, and how to build the site locally |
 

@@ -19,6 +19,8 @@ GitHub Actions allowance.
 | **Supply chain** | `supply-chain.yaml` | push/PR on `enterprise`, dispatch | `govulncheck` (gating) and the CycloneDX Go-module SBOM — see [supply-chain security](supply-chain.md) |
 | **Kubernetes smoke** | `k8s-smoke.yaml` | push/PR on `enterprise` touching the image/chart/server | Builds the image and deploys the Helm chart on an ephemeral kind cluster against SoftHSM |
 | **Documentation site** | `docs.yaml` | push/PR on `enterprise` touching docs sources | The `--strict` Material for MkDocs build, and publishing to GitHub Pages — see [documentation site](documentation-site.md) |
+| **Container** | `container.yaml` | push on any branch, PR on `enterprise`, weekly, dispatch, and `workflow_call` from the release | Both architectures of the published image, smoke-tested and — outside pull requests — pushed, signed and pulled back anonymously. The only workflow that publishes the image; see [the container image](../deployment/container.md) |
+| **Release** | `release.yaml` | `v*` tags, dispatch (dry run) | A tag becoming a signed image, release archives and a GitHub release. Calls Enterprise CI and Container rather than repeating them — see [releasing](releasing.md) |
 
 ## Required vs advisory gates
 
@@ -44,7 +46,9 @@ the suite's cost (see below). To run one against a specific commit, dispatch
 GitHub Actions is free for public repositories but **metered for private ones**.
 secsy-pki is private, so every job on every push draws on the account's monthly
 allowance, and the suite is large: a full run is 12 jobs in `enterprise-ci.yaml`
-alone, plus four more workflows.
+alone, plus five more workflows on a push — of which `container.yaml` is the
+most expensive, because it compiles the whole Go tree with cgo once per
+architecture.
 
 The allowance was exhausted on **2026-07-04**. The symptom is distinctive and
 worth recognising, because it looks nothing like a test failure:

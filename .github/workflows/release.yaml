@@ -1,51 +1,129 @@
-name: Release (signed image + SBOM + SLSA provenance)
+name: release
 
-# Supply-chain-hardened release pipeline (Task 48). On a version tag (v*), this:
+# What a `v*` tag does.
 #
-#   1. Runs govulncheck as a gating scan of the Go dependency tree (no publish
-#      happens if a called vulnerability is present).
-#   2. Builds and pushes the multi-stage container image (Task 19) to GHCR,
-#      pinned by its immutable digest for every downstream step.
-#   3. Generates CycloneDX SBOMs for the Go modules and the built image.
-#   4. Signs the image with cosign (keyless / Fulcio-OIDC by default, or a
-#      configurable key via the COSIGN_PRIVATE_KEY secret) and attaches the
-#      image SBOM as a cosign attestation.
-#   5. Emits a SLSA build-provenance attestation attached to the image using
-#      the official slsa-github-generator (SLSA Build L3).
-#   6. Verifies signature, SBOM attestation and provenance before the release
-#      is considered good, and uploads the SBOMs + provenance as release assets.
+# The pipeline is ordered so that everything cheap and reversible happens before
+# anything expensive or permanent. A pushed image tag, a GitHub release and a
+# signature in a public transparency log cannot be taken back, so nothing
+# reaches them until the tag, the changelog, the full SoftHSM suite and the
+# vulnerability scan have all agreed:
 #
-# CI reuses the repo Makefile targets (make sbom / make sign / make verify) so
-# the pipeline and what operators run locally cannot drift.
+#   guard        the tag is semver, CHANGELOG.md has a dated section for it and
+#                that section is the newest. Its body becomes the release body.
+#   ci           the whole enterprise suite, called rather than assumed — a tag
+#                does not match its branch filter, so without this a release
+#                would ride on the branch having been green at some other commit.
+#   govulncheck  a called vulnerability in the dependency tree stops the release.
+#   binaries     the release archives, built from the image's own Dockerfile.
+#   verify       the archives, downloaded and run the way a user gets them.
+#   image        .github/workflows/container.yaml, which builds, pushes, signs
+#                and verifies. This workflow does not build an image of its own.
+#   provenance   SLSA Build L3 on the image, build provenance on the archives.
+#   release      the GitHub release, last, once everything above is green.
+#
+# The binaries and the image are the *same build*: both come out of the
+# Dockerfile, so the released `secsy-ca` and the `secsy-ca` inside the container
+# are the same bytes, rather than two build definitions that agree only until
+# one of them is edited. See docs/development/releasing.md.
+#
+# `workflow_dispatch` is a dry run: everything above happens except the pushing.
+# The guard takes the version from the newest changelog section instead of from
+# a tag, so a dry run checks exactly what the next tag will check.
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing image tag to (re)sign, e.g. v1.2.3"
-        required: false
 
+# The floor; each job asks for what it needs.
+permissions:
+  contents: read
+
+# Releases are never cancelled. A superseded run of most workflows is waste; a
+# superseded release run is a half-published release.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-permissions:
-  contents: read
-
 env:
+  IMAGE: ghcr.io/${{ github.repository }}
   GOTOOLCHAIN: auto
-  REGISTRY: ghcr.io
 
 jobs:
-  # -------------------------------------------------------------------------
-  # Gating vulnerability scan. Nothing is published if this fails.
-  # -------------------------------------------------------------------------
+  # --------------------------------------------------------------------------- #
+  # 1. Refuse the release before anything is built
+  # --------------------------------------------------------------------------- #
+  guard:
+    name: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+      minor: ${{ steps.check.outputs.minor }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # The rules live in a script, not here, so the same check runs on a laptop
+      # before the tag is pushed (`make release-guard`). Its own test suite —
+      # scripts/release-guard-test.sh, run by the static-analysis gate — drives
+      # it against deliberately broken changelogs: a guard exercised only by the
+      # release it guards is not a guard.
+      - name: Check the tag, the version and the changelog agree
+        id: check
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            scripts/release-guard.sh --ref "${GITHUB_REF}" \
+              --repository "${REPOSITORY}" --notes release-notes.md
+          else
+            echo "::notice::dry run — taking the version from the newest changelog section, no tag involved"
+            scripts/release-guard.sh --repository "${REPOSITORY}" --notes release-notes.md
+          fi
+
+      - name: Show the notes that will become the release body
+        run: |
+          set -euo pipefail
+          {
+            echo "## Release notes for ${{ steps.check.outputs.tag }}"
+            cat release-notes.md
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+
+  # --------------------------------------------------------------------------- #
+  # 2. The gates
+  # --------------------------------------------------------------------------- #
+  #
+  # The full enterprise suite, at this commit. Called rather than trusted: a
+  # `v*` tag does not match enterprise-ci's branch filter, so nothing else runs
+  # it for a release.
+  ci:
+    name: ci
+    needs: guard
+    permissions:
+      contents: read
+    uses: ./.github/workflows/enterprise-ci.yaml
+
   govulncheck:
     name: govulncheck (gating)
+    needs: guard
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -55,183 +133,328 @@ jobs:
       - name: Vulnerability scan
         run: make govulncheck
 
-  # -------------------------------------------------------------------------
-  # Build, push, SBOM, sign, attest SBOM. Emits the image digest + name for
-  # the provenance and verify jobs.
-  # -------------------------------------------------------------------------
-  build-sign:
-    name: Build, SBOM & sign
-    needs: [govulncheck]
+  # --------------------------------------------------------------------------- #
+  # 3. The release archives
+  # --------------------------------------------------------------------------- #
+  binaries:
+    name: build the release archives
+    needs: [guard, ci, govulncheck]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
-      contents: write # attach SBOMs/provenance to the GitHub Release
-      packages: write # push image + cosign artifacts to GHCR
-      id-token: write # keyless cosign (Fulcio OIDC)
-    outputs:
-      image: ${{ steps.meta.outputs.image }}
-      digest: ${{ steps.build.outputs.digest }}
-      version: ${{ steps.meta.outputs.version }}
+      contents: read
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # The arm64 binaries are cross-compiled by the Dockerfile, but the script
+      # *runs* each architecture before packaging it, and running the foreign
+      # one needs emulation.
+      - name: Set up QEMU so the arm64 binaries can be run
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build, run and package both architectures
+        run: |
+          scripts/build-release-binaries.sh \
+            --version '${{ needs.guard.outputs.version }}' \
+            --dest dist/release
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: server/go.mod
           cache-dependency-path: server/go.sum
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+      # The Go-module SBOM: what the binaries are made of. The *image* SBOM is a
+      # different document about a different thing (Debian packages included),
+      # and container.yaml produces that one.
+      - name: Generate the Go-module SBOM
+        run: make sbom-gomod
 
-      - name: Install syft
-        uses: anchore/sbom-action/download-syft@v0
-
-      # Lowercase image name (GHCR requires lowercase) + resolved version.
-      - name: Compute image coordinates
-        id: meta
-        run: |
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          image="${REGISTRY}/${owner}/secsy-pki"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
-            version="${{ inputs.tag }}"
-          else
-            version="${GITHUB_REF_NAME}"
-          fi
-          echo "image=${image}"     >> "$GITHUB_OUTPUT"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "owner=${owner}"     >> "$GITHUB_OUTPUT"
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # provenance/sbom off here: the slsa-github-generator produces provenance
-      # and we produce the SBOM explicitly, keeping a single clean manifest that
-      # the generator can reference by digest.
-      - name: Build and push image
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
-            ${{ steps.meta.outputs.image }}:latest
-          build-args: |
-            VERSION=${{ steps.meta.outputs.version }}
-          provenance: false
-          sbom: false
-
-      # Generate SBOMs + sign + attest SBOM, all via the Makefile so local and
-      # CI stay identical. Keyless by default; if the COSIGN_PRIVATE_KEY secret
-      # is set, sign with that key instead (COSIGN_KEY switches the targets).
-      - name: SBOM, sign & attest
-        env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-        run: |
-          set -euo pipefail
-          args=(IMAGE='${{ steps.meta.outputs.image }}'
-                VERSION='${{ steps.meta.outputs.version }}'
-                IMAGE_DIGEST='${{ steps.build.outputs.digest }}'
-                OWNER='${{ steps.meta.outputs.owner }}')
-          if [ -n "${COSIGN_PRIVATE_KEY:-}" ]; then
-            printf '%s' "$COSIGN_PRIVATE_KEY" > /tmp/cosign.key
-            args+=(COSIGN_KEY=/tmp/cosign.key)
-            echo "::notice::Signing with configured COSIGN_PRIVATE_KEY"
-          else
-            echo "::notice::Signing keyless (Fulcio/Rekor OIDC)"
-          fi
-          make sbom "${args[@]}"
-          make sign "${args[@]}"
-          rm -f /tmp/cosign.key
-
-      - name: Upload SBOMs (workflow artifact)
+      - name: Upload the release archives
         uses: actions/upload-artifact@v4
         with:
-          name: sboms
-          path: dist/*.cdx.json
+          name: release-archives
+          path: dist/release/
           if-no-files-found: error
 
-      - name: Attach SBOMs to the GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+      - name: Upload the Go-module SBOM
+        uses: actions/upload-artifact@v4
         with:
-          files: dist/*.cdx.json
+          name: sbom-gomod
+          path: dist/sbom-gomod.cdx.json
+          if-no-files-found: error
 
-  # -------------------------------------------------------------------------
-  # SLSA Build L3 provenance, generated + attached to the image by the
-  # official generator (its own signed keyless attestation).
-  # -------------------------------------------------------------------------
-  provenance:
-    name: SLSA provenance
-    needs: [build-sign]
+  # --------------------------------------------------------------------------- #
+  # 4. The archives, as a user gets them
+  # --------------------------------------------------------------------------- #
+  #
+  # The build job already ran every binary it compiled. What it did not check is
+  # the *packaging*: that the checksums match, that the tarball extracts, that
+  # what comes out of it still runs, and that the licence and the changelog are
+  # inside. Those are the bytes a user actually downloads, and nothing before
+  # this point has opened them.
+  verify:
+    name: verify the archives (${{ matrix.platform }})
+    needs: [guard, binaries]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
-      actions: read # detect the builder for provenance
-      id-token: write # keyless signing of the provenance
-      packages: write # push the attestation to GHCR
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux_amd64, linux_arm64]
+
+    steps:
+      - name: Set up QEMU for the foreign architecture
+        if: matrix.platform == 'linux_arm64'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Download the release archives
+        uses: actions/download-artifact@v4
+        with:
+          name: release-archives
+          path: dist/release
+
+      - name: Check the checksums, unpack and run it
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          cd dist/release
+          archive="secsy-pki_${VERSION}_${PLATFORM}.tar.gz"
+
+          # Only this platform's line: the other architecture's archive is in the
+          # same directory and `sha256sum -c` fails on a file it cannot open.
+          grep -F "$archive" SHA256SUMS | sha256sum -c -
+          echo "ok: checksum"
+
+          tar -xzf "$archive"
+          dir="secsy-pki_${VERSION}_${PLATFORM}"
+          for expected in LICENSE README.md CHANGELOG.md; do
+            [ -s "${dir}/${expected}" ] || { echo "::error::${archive} carries no ${expected}"; exit 1; }
+          done
+          echo "ok: LICENSE, README.md and CHANGELOG.md are in the archive"
+
+          # Run what was unpacked, on the image's own base rather than the
+          # runner's Ubuntu — the archives are built against bookworm's glibc and
+          # the point is that they run on it.
+          docker_platform="${PLATFORM/_//}"
+          reported="$(docker run --rm --platform "$docker_platform" \
+            -v "${PWD}/${dir}:/out:ro" debian:bookworm-slim /out/secsy-ca version)"
+          echo "$reported"
+          case "$reported" in
+            "secsy-ca ${VERSION} "*) echo "ok: the unpacked binary reports ${VERSION}" ;;
+            *) echo "::error::the unpacked secsy-ca reports '${reported}', expected ${VERSION}"; exit 1 ;;
+          esac
+
+          docker run --rm --platform "$docker_platform" \
+            -v "${PWD}/${dir}:/out:ro" debian:bookworm-slim /out/secsy-pki-server -version
+
+  # --------------------------------------------------------------------------- #
+  # 5. The image
+  # --------------------------------------------------------------------------- #
+  #
+  # container.yaml, called. It builds, pushes, signs, attests and verifies; this
+  # workflow contributes only the three things it cannot work out for itself —
+  # whether to push, whether this version may take `latest`, and the version to
+  # stamp. The tags come off the ref inside it, so the tag that triggered the
+  # release is their only source.
+  image:
+    name: image
+    needs: [guard, ci, govulncheck, verify]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/container.yaml
+    with:
+      push: ${{ github.event_name == 'push' }}
+      latest: ${{ github.event_name == 'push' && needs.guard.outputs.prerelease == 'false' }}
+      sbom-artifact: sbom-image
+      version: ${{ needs.guard.outputs.version }}
+    secrets: inherit
+
+  # --------------------------------------------------------------------------- #
+  # 6. Provenance
+  # --------------------------------------------------------------------------- #
+  #
+  # Two artifacts, two mechanisms, for two audiences.
+  #
+  # The image gets a SLSA Build L3 attestation from the official generator,
+  # which is what `slsa-verifier` reads and what docs/development/supply-chain.md
+  # tells consumers to check. It is separate from the cosign signature and the
+  # CycloneDX attestation container.yaml already applied.
+  #
+  # The archives get GitHub's own build provenance, which is what
+  # `gh attestation verify` reads — the check someone who just downloaded a
+  # tarball can run without installing anything else.
+  provenance-image:
+    name: SLSA provenance (image)
+    needs: [guard, image]
+    if: github.event_name == 'push'
+    permissions:
+      actions: read # the generator reads the workflow run to describe the build
+      id-token: write # keyless signing
+      packages: write # push the attestation next to the image
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.0.0
     with:
-      image: ${{ needs.build-sign.outputs.image }}
-      digest: ${{ needs.build-sign.outputs.digest }}
+      image: ghcr.io/${{ github.repository }}
+      digest: ${{ needs.image.outputs.digest }}
       registry-username: ${{ github.actor }}
     secrets:
       registry-password: ${{ secrets.GITHUB_TOKEN }}
 
-  # -------------------------------------------------------------------------
-  # Post-publish self-verification: the exact commands a consumer runs.
-  # -------------------------------------------------------------------------
-  verify:
-    name: Verify signature, SBOM & provenance
-    needs: [build-sign, provenance]
+  provenance-archives:
+    name: build provenance (archives)
+    needs: [guard, verify]
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      packages: read
+      contents: read
       id-token: write
+      attestations: write
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Download the release archives
+        uses: actions/download-artifact@v4
+        with:
+          name: release-archives
+          path: dist/release
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+      - name: Attest the archives
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/release/*.tar.gz
 
-      - name: Install slsa-verifier
-        uses: slsa-framework/slsa-verifier/actions/installer@v2.6.0
+  # --------------------------------------------------------------------------- #
+  # 7. The release itself
+  # --------------------------------------------------------------------------- #
+  github-release:
+    name: github release
+    needs: [guard, binaries, verify, image, provenance-image, provenance-archives]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the release and upload its assets
 
-      - name: Verify image signature and SBOM attestation
+    steps:
+      - name: Download the release archives
+        uses: actions/download-artifact@v4
+        with:
+          name: release-archives
+          path: dist/release
+
+      - name: Download the release notes
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: notes
+
+      - name: Download the SBOMs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sbom-*
+          path: sbom
+          merge-multiple: true
+
+      - name: Assemble the release body
         env:
-          IMAGE: ${{ needs.build-sign.outputs.image }}
-          DIGEST: ${{ needs.build-sign.outputs.digest }}
-          OWNER: ${{ github.repository_owner }}
-          # Non-empty only when key-based signing is configured.
-          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
+          VERSION: ${{ needs.guard.outputs.version }}
+          MINOR: ${{ needs.guard.outputs.minor }}
+          PRERELEASE: ${{ needs.guard.outputs.prerelease }}
+          DIGEST: ${{ needs.image.outputs.digest }}
         run: |
           set -euo pipefail
-          if [ -n "${COSIGN_PUBLIC_KEY:-}" ]; then
-            # Key-based: verify against the configured public key.
-            printf '%s' "$COSIGN_PUBLIC_KEY" > /tmp/cosign.pub
-            make verify-image verify-sbom IMAGE="$IMAGE" IMAGE_DIGEST="$DIGEST" \
-              COSIGN_VERIFY_FLAGS="--key /tmp/cosign.pub"
-            rm -f /tmp/cosign.pub
+          {
+            cat notes/release-notes.md
+            echo
+            echo "## Install"
+            echo
+            echo "The container image, which carries SoftHSM and OpenSC for a self-contained trial:"
+            echo
+            echo '```bash'
+            echo "docker run --rm ${IMAGE}:${VERSION} -version"
+            echo '```'
+            echo
+            echo "Or the binaries — \`secsy-pki-server\`, \`secsy-ca\`, \`secsy-secret\`,"
+            echo "\`secsy-ssh\`, \`secsy-verify\` and \`secsy-agent\`, built against glibc 2.36"
+            echo "so they run on Debian 12, RHEL 9, Ubuntu 22.04 and anything newer:"
+            echo
+            echo '```bash'
+            echo "curl -LO https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/secsy-pki_${VERSION}_linux_amd64.tar.gz"
+            echo "curl -LO https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/SHA256SUMS"
+            echo "sha256sum --ignore-missing -c SHA256SUMS"
+            echo "tar -xzf secsy-pki_${VERSION}_linux_amd64.tar.gz"
+            echo '```'
+            echo
+            echo "| Image | Value |"
+            echo "|---|---|"
+            if [ "$PRERELEASE" = "true" ]; then
+              echo "| Tags | \`${VERSION}\`, \`${MINOR}\` (a pre-release does not take \`latest\`) |"
+            else
+              echo "| Tags | \`${VERSION}\`, \`${MINOR}\`, \`latest\` |"
+            fi
+            echo "| Platforms | \`linux/amd64\`, \`linux/arm64\` |"
+            echo "| Digest | \`${DIGEST}\` |"
+            echo
+            echo "## Provenance"
+            echo
+            echo "The image is signed with cosign and carries a CycloneDX SBOM attestation and"
+            echo "a SLSA Build L3 provenance attestation; the archives carry GitHub build"
+            echo "provenance. Verify before trusting:"
+            echo
+            echo '```bash'
+            echo "cosign verify \\"
+            echo "  --certificate-identity-regexp '^https://github.com/${GITHUB_REPOSITORY}/' \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\"
+            echo "  ${IMAGE}@${DIGEST}"
+            echo
+            echo "slsa-verifier verify-image ${IMAGE}@${DIGEST} \\"
+            echo "  --source-uri github.com/${GITHUB_REPOSITORY}"
+            echo
+            echo "gh attestation verify secsy-pki_${VERSION}_linux_amd64.tar.gz \\"
+            echo "  --repo ${GITHUB_REPOSITORY}"
+            echo '```'
+            echo
+            echo "SBOMs for the Go modules and for the image are attached below, as is"
+            echo "\`SHA256SUMS\` for the archives."
+          } >body.md
+          cat body.md
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.guard.outputs.tag }}
+          VERSION: ${{ needs.guard.outputs.version }}
+          PRERELEASE: ${{ needs.guard.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          assets=(dist/release/* sbom/*)
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::${TAG} already has a release; updating it"
+            gh release edit "$TAG" --title "secsy-pki ${VERSION}" --notes-file body.md
+            gh release upload "$TAG" "${assets[@]}" --clobber
           else
-            # Keyless: pin the certificate identity to this repo's workflows.
-            make verify-image verify-sbom IMAGE="$IMAGE" IMAGE_DIGEST="$DIGEST" \
-              OWNER="${OWNER,,}"
+            flags=(--title "secsy-pki ${VERSION}" --notes-file body.md --verify-tag)
+            if [ "$PRERELEASE" = "true" ]; then
+              flags+=(--prerelease)
+            fi
+            gh release create "$TAG" "${flags[@]}" "${assets[@]}"
           fi
 
-      - name: Verify SLSA provenance
-        env:
-          IMAGE: ${{ needs.build-sign.outputs.image }}
-          DIGEST: ${{ needs.build-sign.outputs.digest }}
-        run: |
-          set -euo pipefail
-          slsa-verifier verify-image "${IMAGE}@${DIGEST}" \
-            --source-uri "github.com/${GITHUB_REPOSITORY}" \
-            --print-provenance > /dev/null
-          echo "SLSA provenance verified"
+          gh release view "$TAG"

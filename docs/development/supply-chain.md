@@ -218,17 +218,33 @@ graph; a per-binary SBOM of a default build does not.
 ## 5. How it fits together in CI
 
 ```
+any push ─▶ container.yaml            (the only workflow that builds/pushes the image)
+             ├─ build:    build both architectures, run them, no credential held
+             ├─ publish:  push ─▶ make sbom-image ─▶ make sign (cosign) ─▶ make verify
+             └─ verify:   pull it back anonymously, by tag, with no permissions
+
 tag v* ──▶ release.yaml
-             ├─ govulncheck (gate; nothing published on failure)
-             ├─ build-sign:  build+push image ─▶ make sbom ─▶ make sign (cosign)
-             │                                              └─ SBOMs ─▶ Release assets
+             ├─ guard:       tag + CHANGELOG.md + go.mod agree, or nothing runs
+             ├─ ci:          the whole SoftHSM suite, called at this commit
+             ├─ govulncheck: (gate; nothing published on failure)
+             ├─ binaries:    release archives from the image's own Dockerfile
+             │                 └─ make sbom-gomod ─▶ Release assets
+             ├─ verify:      the archives, unpacked and run
+             ├─ image:       calls container.yaml  ─▶ signed image + SBOM attestation
              ├─ provenance:  slsa-github-generator ─▶ SLSA attestation on the image
-             └─ verify:      cosign verify + verify-attestation + slsa-verifier
+             │               attest-build-provenance ─▶ provenance on the archives
+             └─ release:     the GitHub release, last
 
 push/PR ──▶ supply-chain.yaml
              ├─ govulncheck (gate)
              └─ sbom (Go-module CycloneDX SBOM artifact)
 ```
+
+The image is signed on **every** publish, not only on releases: an admission
+policy that requires a signature cannot make an exception for `edge`, and a
+signing path exercised only at release time is a signing path that breaks at
+release time. See [releasing](releasing.md) for the release order and
+[the container image](../deployment/container.md) for the tags.
 
 See the [operator runbook](../operations/runbook.md) for the incident procedure when
 verification fails in the field, and [Kubernetes deployment](../deployment/kubernetes.md) for

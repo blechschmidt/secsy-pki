@@ -1,0 +1,610 @@
+name: container
+
+# The container, continuously.
+#
+# This is the only workflow that builds the published image and the only one
+# that pushes it. Every commit on every branch produces one, and a `v*` tag
+# produces the released one — same file, same steps, the tags being the only
+# difference.
+#
+# The tag set follows the ref, and `docker/metadata-action` derives it rather
+# than a chain of `if`s here:
+#
+#   push to a branch      enterprise, feature-x   the branch it came from
+#                         sha-1a2b3c4             that commit, immutably
+#                         edge                    additionally, on the default branch
+#
+#   push of v1.2.3        1.2.3, 1.2              the version, and its minor line
+#                         sha-1a2b3c4             that commit, immutably
+#                         latest                  only when the caller says so
+#
+# `type=semver` fires only on a tag shaped `v*.*.*` and `type=ref,event=branch`
+# only on a branch, so the two columns cannot both appear and neither needs to
+# be guarded by hand.
+#
+# release.yaml does not build its own image. It calls this workflow
+# (`workflow_call`, below) once the release guard and the full SoftHSM CI gate
+# have passed, which is what keeps a version tag meaning "this was checked" —
+# and, more mundanely, what stops two workflows racing to push `1.2.3` from two
+# separate builds of the same commit. `latest` is an input rather than a rule
+# here because only the guard knows whether the version is a pre-release.
+#
+# Two things go wrong without a continuous build.
+#
+# The first is that the Dockerfile would only be exercised at release time.
+# Nothing in server/ knows it is also compiled into an image, so a new cgo
+# dependency, a binary that moved or a file the build stage stopped copying
+# breaks the image silently and surfaces halfway through a release — the one
+# moment where a red job is most expensive and least welcome. k8s-smoke.yaml
+# builds the image on Dockerfile/server/deploy changes, which catches much of
+# that; what it does not cover is the second architecture, the registry, the
+# manifest and the push itself, all of which are only exercised here.
+#
+# The second is that there is no way to run unreleased work without a Go
+# toolchain, a C compiler and a PKCS#11 module. `edge` is that: what the
+# enterprise branch does today, on both architectures, pullable by anyone, and
+# explicitly *not* `latest`.
+#
+# The image tags are documented in docs/deployment/container.md; the split of
+# responsibility with release.yaml is described in docs/development/releasing.md.
+
+on:
+  push:
+    # Both halves named, deliberately: a `push` filter that mentions tags and
+    # not branches means "tags only", silently.
+    branches:
+      - "**"
+    # A `v*` tag arrives here through release.yaml's `workflow_call`, not
+    # through this filter, so the image is pushed only after the release guard
+    # and the CI gate have passed. Triggering on it directly as well would mean
+    # two runs of this file building the same commit and racing to push `1.2.3`,
+    # with whichever finished last deciding what the tag resolves to.
+    tags-ignore:
+      - "v*"
+  pull_request:
+    branches: [enterprise]
+  schedule:
+    # Mondays, 04:40 UTC. Nothing in the repository changes, and that is the
+    # point: the image is debian:bookworm-slim plus Debian's SoftHSM, OpenSC and
+    # ca-certificates, all of which take security updates on their own schedule.
+    # Without a rebuild, `edge` ages into whatever its base image was on the day
+    # it was built — and for a PKI whose trust store is one of those packages,
+    # that ages badly. Off the hour and off Sunday night, where every other cron
+    # on GitHub is.
+    - cron: "40 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      push:
+        description: "Push to GHCR (off = build and smoke-test only)"
+        type: boolean
+        default: true
+
+  # How release.yaml gets its image. Every input is something this workflow
+  # cannot work out for itself: whether the run is a real push or a dry run,
+  # whether the version being released is allowed to take `latest`, and where to
+  # leave the standalone SBOM. The version *tags* are not among them — they are
+  # read off the ref, so the tag that triggered the release is their single
+  # source and cannot disagree with an argument passed alongside it.
+  workflow_call:
+    inputs:
+      push:
+        description: "Push to GHCR (off = build and smoke-test only)"
+        type: boolean
+        default: true
+      latest:
+        description: "Also tag this image `latest` (a release that is not a pre-release)"
+        type: boolean
+        default: false
+      sbom-artifact:
+        description: "Upload the CycloneDX image SBOM under this artifact name (empty = skip)"
+        type: string
+        default: ""
+      version:
+        description: "The version being released; stamped into the binaries and marks the image a release rather than a development build (empty = development)"
+        type: string
+        default: ""
+    outputs:
+      digest:
+        description: "Digest of the pushed manifest, for provenance and release notes"
+        value: ${{ jobs.publish.outputs.digest }}
+      tags:
+        description: "Newline-separated list of tags that were pushed"
+        value: ${{ jobs.publish.outputs.tags }}
+
+# The floor. The publishing job asks for more, next to the reason.
+permissions:
+  contents: read
+
+# A superseded pull-request build is worth cancelling; a push to a branch is
+# not, because the run that would be cancelled may be the one that publishes
+# `edge`, and the registry would then be a commit behind the branch with nothing
+# to say so.
+concurrency:
+  group: container-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Lowercase already for this repository, which is what GHCR requires of an
+  # image name. A fork publishes to its own namespace without editing anything.
+  IMAGE: ghcr.io/${{ github.repository }}
+  # Both jobs build the same Dockerfile, so they share a cache scope — the
+  # publish job's build is then a hit on everything the build job just produced.
+  # That matters more here than in most projects: the build stage compiles the
+  # whole Go tree with cgo, twice, once per architecture.
+  CACHE_SCOPE: container
+  PLATFORMS: linux/amd64,linux/arm64
+
+jobs:
+  # --------------------------------------------------------------------------- #
+  # 1. Build it and run it — on every event, holding nothing
+  # --------------------------------------------------------------------------- #
+  #
+  # Deliberately separate from the job below, and deliberately without
+  # `packages: write`. This is the job that executes the Dockerfile as written in
+  # a pull request; the credential that can write to the registry is held only by
+  # a job that runs after this one has passed, on a ref that has already been
+  # merged.
+  build:
+    name: build and smoke-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # The arm64 half is *cross-compiled* by the Dockerfile, so QEMU is not
+      # needed to build it. It is needed to run it: the smoke test below
+      # executes the arm64 image on this amd64 runner.
+      - name: Set up QEMU for the arm64 image
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # A development stamp that says where the image came from. Release builds
+      # get the version instead, passed down by release.yaml.
+      - name: Work out the version to stamp into the binaries
+        id: version
+        run: |
+          set -euo pipefail
+          version='${{ inputs.version }}'
+          if [ -z "$version" ]; then
+            version="${GITHUB_REF_NAME//\//-}-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=${version}" >>"$GITHUB_OUTPUT"
+          echo "stamping ${version}"
+
+      # `load: true` needs a single platform — a multi-architecture result is a
+      # manifest list, which the local daemon cannot hold. So the native build is
+      # its own pass, and it is the one that gets run.
+      - name: Build linux/amd64 and load it
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: secsy-pki:smoke
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
+          cache-to: type=gha,scope=${{ env.CACHE_SCOPE }},mode=max
+
+      # An image that builds is not an image that works. The checks are the ones
+      # scripts/verify-published-image.sh runs against a published image, pointed
+      # at the local one instead — so a break is found here, before the push,
+      # by the same code that would otherwise find it afterwards. The strongest
+      # of them initializes a SoftHSM token inside the container and mints an
+      # HSM-backed root CA through PKCS#11 as the image's non-root user: the
+      # product's whole reason for existing, in one command, and something no
+      # `--version` check would notice was broken.
+      - name: Run the image
+        run: |
+          scripts/verify-published-image.sh \
+            --image secsy-pki:smoke --local \
+            --expect-version '${{ steps.version.outputs.version }}'
+
+      # amd64 is a complete cache hit from the pass above, so what this actually
+      # costs is the arm64 layers. It is here rather than only in the publish job
+      # so that an arm64 break is a red pull request instead of a red enterprise
+      # branch: the Dockerfile cross-compiles cgo for it, which is the part of
+      # this build most likely to break and the part nothing else compiles.
+      - name: Build both architectures
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ env.PLATFORMS }}
+          push: false
+          # Explicit rather than left to the default: with neither `push` nor
+          # `load`, buildx warns that the result goes nowhere. It going nowhere
+          # is the point — what is wanted is the cache entry and the proof that
+          # both architectures compile — so it is said outright.
+          outputs: type=cacheonly
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
+          cache-to: type=gha,scope=${{ env.CACHE_SCOPE }},mode=max
+
+      # The arm64 binaries, executed. The build above proves they *compile*;
+      # emulation is what proves the cross-linked cgo halves — the PKCS#11
+      # binding and the SQLite driver, both C — actually load and run. A broken
+      # cross-link is a working amd64 image and an arm64 one that dies on start,
+      # and the index would carry both.
+      #
+      # Loaded through the action rather than a raw `docker buildx build`,
+      # because `type=gha` needs the Actions cache token and that is handed to
+      # JavaScript actions, not to `run:` steps — a hand-rolled invocation gets
+      # "token not set for github actions cache", drops the import and rebuilds
+      # from scratch. The layers are already local from the step above, so this
+      # resolves to an export rather than a build.
+      - name: Load the arm64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          load: true
+          push: false
+          tags: secsy-pki:smoke-arm64
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
+
+      - name: Run the arm64 image under emulation
+        run: |
+          set -euo pipefail
+          docker run --rm --platform linux/arm64 secsy-pki:smoke-arm64 -version
+          docker run --rm --platform linux/arm64 --entrypoint secsy-ca secsy-pki:smoke-arm64 version
+
+  # --------------------------------------------------------------------------- #
+  # 2. Tag it and push it
+  # --------------------------------------------------------------------------- #
+  publish:
+    name: push to ghcr.io
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    # Every push publishes, whatever branch it is on: the branch tag is only
+    # useful while the branch exists, and "run what is on my colleague's branch"
+    # is the case it is for. A branch tag is rewritten in place on each push, so
+    # the registry grows a tag per branch rather than per commit; the per-commit
+    # record is `sha-…`, which is immutable and does accumulate. Neither is
+    # reclaimed when the branch is deleted — GHCR has no idea the branch existed
+    # — so pruning is a registry retention policy, not something this workflow
+    # can do.
+    #
+    # Not a pull request, though. A fork's token could not push anyway, and a
+    # same-repo one should not: a pull request builds code nobody has reviewed
+    # yet, and an image published from it is indistinguishable in the registry
+    # from one built from a merged commit.
+    #
+    # The `workflow_dispatch` clause covers two callers at once — a manual run of
+    # this workflow with the box unticked, and release.yaml's dry run, which
+    # reaches here as a `workflow_call` whose event is still the caller's
+    # `workflow_dispatch`. Both mean "build it, do not push it".
+    if: >-
+      github.event_name != 'pull_request'
+      && (github.event_name != 'workflow_dispatch' || inputs.push)
+
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      tags: ${{ steps.meta.outputs.tags }}
+
+    # Said once here because the metadata step below has to give each of these
+    # to `labels` *and* to `annotations`, which are two separate inputs writing
+    # to two separate places — the image config and the manifest — and a
+    # copy-paste that drifted would leave a tag describing itself one way to
+    # `docker inspect` and another to anything reading the registry.
+    env:
+      DESCRIPTION: ${{ inputs.version != '' && format('secsy-pki {0} — HSM-backed enterprise PKI and secret encryption.', inputs.version) || format('Development build of secsy-pki from {0}. Not a release; see the X.Y.Z tags for those.', github.ref_name) }}
+      DOCUMENTATION: https://blechschmidt.github.io/secsy-pki/docs/deployment/container/
+
+    permissions:
+      contents: read
+      # The whole reason this job is separate. GITHUB_TOKEN with this pushes to
+      # ghcr.io under the repository's own namespace; there is no registry
+      # credential in this repository to store, rotate or leak.
+      packages: write
+      # cosign signs keyless against Fulcio, exchanging this run's OIDC token
+      # for a short-lived certificate. Same argument: no signing key to hold.
+      id-token: write
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU for the arm64 image
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Work out the version to stamp into the binaries
+        id: version
+        run: |
+          set -euo pipefail
+          version='${{ inputs.version }}'
+          if [ -z "$version" ]; then
+            version="${GITHUB_REF_NAME//\//-}-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=${version}" >>"$GITHUB_OUTPUT"
+
+      # The tag set, derived from the ref rather than decided here. Each `type=`
+      # below is inert unless the ref is of its kind, so a branch push and a
+      # version tag select disjoint halves of this list without a condition being
+      # written.
+      #
+      # `latest` is what an unqualified `docker pull` gets, so it has to keep
+      # meaning "the newest release" and never "whatever the enterprise branch
+      # was this morning" nor "the newest pre-release". `flavor: latest=false`
+      # turns off the action's own `auto` handling — which would otherwise hand
+      # it to any semver tag, pre-release included — and the single `type=raw`
+      # below gives it out only on the say-so of release.yaml's guard, which is
+      # the one place that knows whether 1.2.3-rc1 is a pre-release. A push to a
+      # branch cannot reach it: `inputs.latest` is unset there, and unset is
+      # false.
+      - name: Work out the tags and the labels
+        id: meta
+        uses: docker/metadata-action@v5
+        env:
+          # Where the annotations below are attached. The action's default is
+          # `manifest` alone, which puts them on each architecture's own manifest
+          # and leaves the index — the thing the *tag* resolves to — carrying
+          # nothing at all. A registry UI, a scanner or a `docker buildx
+          # imagetools inspect` then sees an unlabelled image, because none of
+          # them descend into a per-architecture entry to find out what the tag
+          # is. Both levels, so either way of looking finds it.
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index,manifest
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
+          tags: |
+            type=raw,value=edge,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ inputs.latest == true }}
+            type=sha
+          labels: |
+            org.opencontainers.image.description=${{ env.DESCRIPTION }}
+            org.opencontainers.image.documentation=${{ env.DOCUMENTATION }}
+          # The same two again, and not redundantly: the action derives its
+          # `annotations` output from the labels it generated itself, not from
+          # the `labels` input above, so anything custom given only there reaches
+          # the image config and never the manifest.
+          annotations: |
+            org.opencontainers.image.description=${{ env.DESCRIPTION }}
+            org.opencontainers.image.documentation=${{ env.DOCUMENTATION }}
+
+      - name: Build both architectures and push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          # Labels live on each architecture's own image config, so `docker
+          # buildx imagetools inspect` of the *index* shows none of them.
+          # Annotations are the copy that lives on the manifest; the metadata
+          # step prefixes each with the level it belongs to.
+          annotations: ${{ steps.meta.outputs.annotations }}
+          # In-toto attestations on the manifest itself, so buildx and syft find
+          # them with no side channel to consult. The cosign signature and the
+          # CycloneDX attestation below are the ones consumers verify (see
+          # docs/development/supply-chain.md); these are what make the image
+          # self-describing to a scanner that knows nothing about cosign.
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
+          cache-to: type=gha,scope=${{ env.CACHE_SCOPE }},mode=max
+
+      # Signing runs on every publish, not only on releases. An admission policy
+      # that requires a signature cannot make an exception for `edge`, and a
+      # signing path exercised only at release time is a signing path that breaks
+      # at release time. Driven through the Makefile so that what CI does and
+      # what `make sign` does locally cannot drift.
+      - name: SBOM, sign & attest
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          args=(IMAGE='${{ env.IMAGE }}'
+                VERSION='${{ steps.version.outputs.version }}'
+                IMAGE_DIGEST='${{ steps.push.outputs.digest }}'
+                OWNER='${{ github.repository_owner }}')
+          if [ -n "${COSIGN_PRIVATE_KEY:-}" ]; then
+            printf '%s' "$COSIGN_PRIVATE_KEY" >/tmp/cosign.key
+            args+=(COSIGN_KEY=/tmp/cosign.key)
+            echo "::notice::Signing with the configured COSIGN_PRIVATE_KEY"
+            # The matching public half, derived rather than taken from a second
+            # secret. The verify step below has to check the signature the same
+            # way it was made, and keying that off a separately-configured
+            # COSIGN_PUBLIC_KEY means a deployment that set only the private one
+            # signs with a key and then verifies keyless — which fails, and
+            # fails *after* the push and the transparency-log entry, the two
+            # things that cannot be undone.
+            cosign public-key --key /tmp/cosign.key >/tmp/cosign.pub
+          else
+            echo "::notice::Signing keyless (Fulcio/Rekor OIDC)"
+          fi
+          make sbom-image "${args[@]}"
+          make sign "${args[@]}"
+          rm -f /tmp/cosign.key
+
+      # The same commands a consumer runs, against what was just pushed. A
+      # signature nobody verified is a signature nobody knows is verifiable.
+      - name: Verify the signature and the SBOM attestation
+        run: |
+          set -euo pipefail
+          if [ -f /tmp/cosign.pub ]; then
+            make verify IMAGE='${{ env.IMAGE }}' IMAGE_DIGEST='${{ steps.push.outputs.digest }}' \
+              COSIGN_VERIFY_FLAGS="--key /tmp/cosign.pub"
+            rm -f /tmp/cosign.pub
+          else
+            make verify IMAGE='${{ env.IMAGE }}' IMAGE_DIGEST='${{ steps.push.outputs.digest }}' \
+              OWNER='${{ github.repository_owner }}'
+          fi
+
+      # A standalone copy of the image SBOM for the GitHub release to carry as a
+      # plain file, for anyone who does not want to talk to a registry to read
+      # one. The cosign attestation above is the authoritative copy; this is the
+      # readable one, and only a release has somewhere to put it.
+      - name: Upload the image SBOM
+        if: inputs.sbom-artifact != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.sbom-artifact }}
+          path: dist/sbom-image.cdx.json
+          if-no-files-found: error
+
+      # The build job ran an image it had built locally. This runs the one that
+      # is actually in the registry, pulled back by digest — the only way to
+      # catch a manifest that pushed but cannot be resolved, an index whose
+      # arm64 entry points at the wrong blob, or a tag that landed on nothing.
+      - name: Pull the published image back and run it
+        run: |
+          scripts/verify-published-image.sh \
+            --image '${{ env.IMAGE }}@${{ steps.push.outputs.digest }}' \
+            --allow-login \
+            --platforms '${{ env.PLATFORMS }}' \
+            --expect-version '${{ steps.version.outputs.version }}'
+
+      - name: Report what was published
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Container published"
+            echo
+            echo "\`${IMAGE}@${DIGEST}\`"
+            echo
+            echo "| Tag |"
+            echo "|---|"
+            printf '%s\n' "$TAGS" | while IFS= read -r tag; do
+              [ -n "$tag" ] && echo "| \`${tag}\` |"
+            done
+            echo
+            if [ -n "${VERSION}" ]; then
+              example="${IMAGE}:${VERSION}"
+              echo "Release build of ${VERSION}."
+            else
+              example="${IMAGE}:${GITHUB_REF_NAME//\//-}"
+              echo "Development build. \`latest\` still points at the newest release."
+            fi
+            echo
+            echo '```bash'
+            echo "docker run --rm ${example} -version"
+            echo '```'
+            echo
+            echo "Verify it before running it:"
+            echo
+            echo '```bash'
+            echo "cosign verify \\"
+            echo "  --certificate-identity-regexp '^https://github.com/${GITHUB_REPOSITORY}/' \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\"
+            echo "  ${IMAGE}@${DIGEST}"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  # --------------------------------------------------------------------------- #
+  # 3. Check it from outside
+  # --------------------------------------------------------------------------- #
+  #
+  # The job above pulled its own push back and ran it. What it cannot check is
+  # anything about how the image looks to *someone else*, because it holds a
+  # credential for the registry and a local copy of every layer:
+  #
+  #   * GHCR creates a package **private** on first push and no workflow flips
+  #     it. A logged-in runner cannot tell that apart from a public one, so the
+  #     failure is silent — green pipeline here, `denied` on every other machine
+  #     on earth, and docs/deployment/container.md's "no login needed" quietly
+  #     false. This is the check that exists for that.
+  #   * The tag. The job above verifies `@sha256:…`; a reader types `:edge`.
+  #   * A cold pull. Nothing there has to fetch a layer.
+  #
+  # So: no `packages` permission, an explicit logout first, and the tag rather
+  # than the digest. scripts/verify-published-image.sh holds the checks and runs
+  # the same way on a laptop.
+  verify:
+    name: verify it from outside
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # Deliberately the workflow's floor, and deliberately not `packages: read`:
+    # a token that can read a private package would make the one thing this job
+    # is for — proving no token is needed — unfalsifiable.
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      # docker/login-action stored a credential in ~/.docker/config.json in the
+      # job above; this is a different runner and should have none, but a pull
+      # that silently succeeded on one left behind would defeat the point.
+      - name: Make sure we are not logged in to the registry
+        run: docker logout ghcr.io
+
+      - name: Set up QEMU so the arm64 half can be inspected
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Pull it as a stranger would, and run it
+        env:
+          # The first tag the metadata step produced: `edge` on the default
+          # branch, the branch name elsewhere, the version on a release. Taken
+          # from the push rather than rebuilt here, so the two cannot disagree
+          # about what was published.
+          TAGS: ${{ needs.publish.outputs.tags }}
+          PLATFORMS: ${{ env.PLATFORMS }}
+        run: |
+          set -euo pipefail
+          tag="$(printf '%s\n' "$TAGS" | head -n 1)"
+          echo "checking $tag"
+
+          # Captured rather than piped straight into the summary so the result
+          # reads as output there instead of one run-on paragraph — and so a
+          # failure is still reported before the step exits on it.
+          status=0
+          scripts/verify-published-image.sh --image "$tag" --platforms "$PLATFORMS" \
+            | tee verify.log || status=$?
+          {
+            echo "### Verified from outside"
+            echo
+            echo '```'
+            cat verify.log
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+          exit "$status"

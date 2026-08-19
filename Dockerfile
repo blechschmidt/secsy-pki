@@ -13,15 +13,44 @@
 # OpenSC tooling. SoftHSM lets the same image self-test in kind/CI and gives
 # operators pkcs11-tool for debugging; for production the real vendor PKCS#11
 # module is bind-mounted over /usr/lib and selected via pkcs11.module_path.
+#
+# Stage 3 (artifacts) is a scratch stage holding nothing but the binaries, so
+# that `docker buildx build --target artifacts --output type=local,dest=…`
+# exports them for the release archives. The image and the released binaries are
+# then the same build, compiled the same way against the same glibc, rather than
+# a Dockerfile and a release script that agree only until one of them is edited.
+# scripts/build-release-binaries.sh drives it.
+#
+# Multi-architecture: the builder is pinned to the *build* platform and
+# cross-compiles to the target, because the alternative — an emulated arm64
+# builder — runs the whole cgo compile under QEMU and takes the better part of
+# an hour. Go cross-compiles natively; only the C half needs a cross toolchain,
+# which is one apt package per architecture.
 # ---------------------------------------------------------------------------
 
 ARG GO_VERSION=1.25
-FROM golang:${GO_VERSION}-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-bookworm AS builder
 
-# gcc/libc headers for cgo (sqlite + pkcs11).
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc libc6-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Supplied by BuildKit, not by the caller: the architecture this stage runs on
+# and the one it is producing binaries for. Equal for a native build.
+ARG BUILDARCH
+ARG TARGETARCH
+
+# gcc/libc headers for cgo (sqlite + pkcs11), plus the cross toolchain when the
+# target is not what we are running on. `libc6-dev-<arch>-cross` carries the
+# target's headers and the crt objects the linker needs.
+RUN set -eux; \
+    packages="gcc libc6-dev"; \
+    if [ "${TARGETARCH}" != "${BUILDARCH}" ]; then \
+      case "${TARGETARCH}" in \
+        amd64) packages="${packages} gcc-x86-64-linux-gnu libc6-dev-amd64-cross" ;; \
+        arm64) packages="${packages} gcc-aarch64-linux-gnu libc6-dev-arm64-cross" ;; \
+        *) echo "unsupported TARGETARCH=${TARGETARCH}; add its cross toolchain here" >&2; exit 1 ;; \
+      esac; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ${packages}; \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src/server
 
@@ -44,9 +73,20 @@ ARG VERSION=dev
 # produce an image whose server does not report FIPS mode at startup.
 ARG GOFIPS140=off
 ENV GOFIPS140=${GOFIPS140}
+# The cache mounts are keyed by target architecture: two platforms of one
+# `buildx --platform a,b` run this stage concurrently, and a shared build cache
+# would have them contending on the same lock for entries neither can use — the
+# compiled objects are per-GOARCH.
 RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/root/.cache/go-build,id=go-build-${TARGETARCH} \
     set -eux; \
+    export GOARCH="${TARGETARCH}"; \
+    if [ "${TARGETARCH}" != "${BUILDARCH}" ]; then \
+      case "${TARGETARCH}" in \
+        amd64) export CC=x86_64-linux-gnu-gcc ;; \
+        arm64) export CC=aarch64-linux-gnu-gcc ;; \
+      esac; \
+    fi; \
     ldflags="-s -w -X main.version=${VERSION}"; \
     go build -tags sqlite -ldflags "$ldflags" -o /out/secsy-pki-server ./cmd/server; \
     go build -tags sqlite -ldflags "$ldflags" -o /out/secsy-ca       ./cmd/secsy-ca; \
@@ -55,9 +95,26 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build           -ldflags "$ldflags" -o /out/secsy-verify   ./cmd/verify; \
     go build           -ldflags "$ldflags" -o /out/secsy-agent    ./cmd/secsy-agent; \
     if [ "${GOFIPS140}" != "off" ]; then \
+      if [ "${TARGETARCH}" != "${BUILDARCH}" ]; then \
+        echo "!! refusing to cross-build a FIPS image: the fips140=on check below cannot run a ${TARGETARCH} binary here" >&2; \
+        exit 1; \
+      fi; \
       /out/secsy-pki-server -version; \
       /out/secsy-pki-server -version | grep -q 'fips140=on'; \
     fi
+
+# ---------------------------------------------------------------------------
+# The released binaries, and nothing else. Exported rather than run:
+#
+#   docker buildx build --target artifacts --platform linux/amd64,linux/arm64 \
+#     --output type=local,dest=dist/release .
+#
+# writes dist/release/linux_amd64/… and dist/release/linux_arm64/…, which is
+# what scripts/build-release-binaries.sh packages into the release archives.
+# Deliberately not the last stage in this file: `docker build` with no --target
+# builds the last one, and that has to stay the runtime image.
+FROM scratch AS artifacts
+COPY --from=builder /out/ /
 
 # ---------------------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
