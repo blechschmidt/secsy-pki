@@ -8,7 +8,7 @@ Secsy PKI manages a public key infrastructure where CA private keys are stored o
 
 ## Enterprise Edition
 
-The **enterprise edition** (this branch) extends the base CA into a full HSM-backed enterprise PKI and secret-management platform. On top of per-key SSH/X.509 signing it adds:
+The **enterprise edition** (this repository) extends the base CA into a full HSM-backed enterprise PKI and secret-management platform. On top of per-key SSH/X.509 signing it adds:
 
 - **Backend-agnostic key provider** — one abstraction (`internal/keyprovider`) routes every key operation to a PKCS#11 HSM (YubiHSM, network HSM), SoftHSM for dev/CI, or an on-disk software keystore. Keys are generated on the device and never exported.
 - **X.509 CA lifecycle** — bootstrap root and intermediate CAs, then issue, renew, and revoke end-entity certificates from CSRs using named profiles. All signing (leaves, CRLs, OCSP) happens on the HSM.

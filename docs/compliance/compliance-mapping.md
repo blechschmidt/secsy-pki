@@ -7,7 +7,7 @@ feature, package, and file that implements them — with an explicit
 **gaps & assumptions** column. It is the technical companion to the
 [Certificate Policy / CPS](certificate-policy.md).
 
-Every entry was checked against the code on the `enterprise` branch. The goal is
+Every entry was checked against the code on the `main` branch. The goal is
 an **accurate** map, not an aspirational one: where a requirement is only
 partially met, is config-dependent, or is an operator responsibility the
 software cannot discharge, the row says so plainly.

@@ -1,8 +1,8 @@
 name: Enterprise CI (SoftHSM)
 
 # Runs the HSM-backed enterprise integration suite against a real PKCS#11
-# token (SoftHSM) on every push to the enterprise branch, and on pull requests
-# that target it. The suite drives the full product flow:
+# token (SoftHSM) on every push to `main`, and on pull requests that target it.
+# The suite drives the full product flow:
 #
 #   initialize token -> generate HSM CA key -> issue root + intermediate + leaf
 #   -> verify the chain -> revoke a cert and validate CRL/OCSP
@@ -14,9 +14,9 @@ name: Enterprise CI (SoftHSM)
 
 on:
   push:
-    branches: [enterprise]
+    branches: [main]
   pull_request:
-    branches: [enterprise]
+    branches: [main]
   # Nightly full run. Every push gets the REQUIRED gates; the four advisory
   # (continue-on-error) suites — chaos, -race, interop and the benchmark diff —
   # run here instead. They cannot fail a build by construction, but together
@@ -57,7 +57,7 @@ on:
 #
 # `github.workflow` is in the key because this workflow is also *called* — by
 # release.yaml — and a called run reports the caller's context. Without it, a
-# release dry run dispatched from `enterprise` computes the same group as the
+# release dry run dispatched from `main` computes the same group as the
 # ordinary push run on that branch, and `cancel-in-progress` has one kill the
 # other; a cancelled `ci` job then fails the release. With it, the release's
 # copy is `enterprise-ci-release-…` and the branch's is `enterprise-ci-Enterprise
@@ -360,7 +360,7 @@ jobs:
     # persistence driver and its dependents type-check without a token. It runs
     # the same `make vet` / `make lint` targets developers use locally, and
     # golangci-lint is pinned to the Makefile's GOLANGCI_LINT_VERSION so CI and
-    # local runs cannot drift. Kept green on the enterprise branch and PRs.
+    # local runs cannot drift. Kept green on `main` and PRs.
     env:
       GOTOOLCHAIN: auto
       # Keep in lockstep with GOLANGCI_LINT_VERSION in the root Makefile.

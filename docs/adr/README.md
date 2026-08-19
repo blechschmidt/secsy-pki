@@ -2,7 +2,7 @@
 
 This directory records the load-bearing design decisions of the secsy-pki
 **enterprise edition**. Each ADR captures one decision that is already
-implemented on the `enterprise` branch: the context that forced it, the choice
+implemented on the `main` branch: the context that forced it, the choice
 made, and the consequences operators live with.
 
 ADRs are immutable once accepted. If a decision changes, add a new ADR that

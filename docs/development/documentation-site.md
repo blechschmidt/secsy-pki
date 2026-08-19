@@ -17,13 +17,13 @@ every page carries an **edit** link back to the file it came from.
 
 | Piece | Where |
 |-------|-------|
-| Theme, extensions, validation policy | [`website/mkdocs.yml`](https://github.com/blechschmidt/secsy-pki/blob/enterprise/website/mkdocs.yml) (base config; the build appends the generated `nav:`) |
-| Landing page | [`website/index.md`](https://github.com/blechschmidt/secsy-pki/blob/enterprise/website/index.md) — the only page written for the site |
-| Styling, favicon | [`website/assets/`](https://github.com/blechschmidt/secsy-pki/tree/enterprise/website/assets) |
-| Edit-link fix-ups for the two synthesized pages | [`website/hooks.py`](https://github.com/blechschmidt/secsy-pki/blob/enterprise/website/hooks.py) |
-| Pinned toolchain | [`website/requirements.txt`](https://github.com/blechschmidt/secsy-pki/blob/enterprise/website/requirements.txt) |
-| Staging + navigation generator | [`scripts/build-docs.py`](https://github.com/blechschmidt/secsy-pki/blob/enterprise/scripts/build-docs.py) |
-| Publishing workflow | [`.github/workflows/docs.yaml`](https://github.com/blechschmidt/secsy-pki/blob/enterprise/.github/workflows/docs.yaml) |
+| Theme, extensions, validation policy | [`website/mkdocs.yml`](https://github.com/blechschmidt/secsy-pki/blob/main/website/mkdocs.yml) (base config; the build appends the generated `nav:`) |
+| Landing page | [`website/index.md`](https://github.com/blechschmidt/secsy-pki/blob/main/website/index.md) — the only page written for the site |
+| Styling, favicon | [`website/assets/`](https://github.com/blechschmidt/secsy-pki/tree/main/website/assets) |
+| Edit-link fix-ups for the two synthesized pages | [`website/hooks.py`](https://github.com/blechschmidt/secsy-pki/blob/main/website/hooks.py) |
+| Pinned toolchain | [`website/requirements.txt`](https://github.com/blechschmidt/secsy-pki/blob/main/website/requirements.txt) |
+| Staging + navigation generator | [`scripts/build-docs.py`](https://github.com/blechschmidt/secsy-pki/blob/main/scripts/build-docs.py) |
+| Publishing workflow | [`.github/workflows/docs.yaml`](https://github.com/blechschmidt/secsy-pki/blob/main/.github/workflows/docs.yaml) |
 
 ## Building it locally
 
@@ -48,7 +48,7 @@ keep resolving untouched. It rewrites only what cannot survive the move:
 
 * **Links to files the site does not carry** — Go packages, the Helm chart,
   scripts, `config.yaml`, the `Makefile` — become links to that file on GitHub
-  (branch `enterprise`; override with `DOCS_REF`). Readers land on the real
+  (branch `main`; override with `DOCS_REF`). Readers land on the real
   source instead of a 404.
 * **Links to a directory** (`examples/ssh-pki/`) become links to its
   `README.md`, because a static site has no directory listing.
@@ -60,7 +60,7 @@ Everything else is copied byte for byte.
 ### The navigation is derived, not maintained
 
 The site's menu is generated from the indexes
-[`scripts/check-docs.sh`](https://github.com/blechschmidt/secsy-pki/blob/enterprise/scripts/check-docs.sh)
+[`scripts/check-docs.sh`](https://github.com/blechschmidt/secsy-pki/blob/main/scripts/check-docs.sh)
 already enforces:
 
 * [`docs/README.md`](../README.md) gives the **section order** and the short,
@@ -90,8 +90,8 @@ therefore check different things, and both run in CI.
 
 ## Publishing
 
-[`.github/workflows/docs.yaml`](https://github.com/blechschmidt/secsy-pki/blob/enterprise/.github/workflows/docs.yaml)
-builds the site on every push to `enterprise` that touches documentation, and
+[`.github/workflows/docs.yaml`](https://github.com/blechschmidt/secsy-pki/blob/main/.github/workflows/docs.yaml)
+builds the site on every push to `main` that touches documentation, and
 deploys it to GitHub Pages with `actions/deploy-pages`. Pull requests build the
 site too — the same strict build — but do not deploy, so a broken link is
 caught in review rather than in production. The workflow needs no secrets: it
@@ -114,12 +114,13 @@ repository **admin**, and neither can be done by the workflow itself:
     gh api -X POST repos/blechschmidt/secsy-pki/pages -f build_type=workflow
     ```
 
-* **The `github-pages` environment must allow `enterprise` to deploy.** This
-  workflow publishes from `enterprise`, but the environment GitHub creates for
-  Pages permits only the default branch, so the deploy step is rejected with
-  `Branch is not allowed to deploy to github-pages due to environment
-  protection rules`. Add `enterprise` under Settings → Environments →
-  github-pages → deployment branches.
+* **The `github-pages` environment must allow the publishing branch to deploy.**
+  The environment GitHub creates for Pages permits only the default branch, and
+  a branch it does not permit is rejected with `Branch is not allowed to deploy
+  to github-pages due to environment protection rules`. This workflow publishes
+  from `main`, which *is* the default branch, so nothing has to be added today —
+  but move the deploy to any other branch and it must be added under Settings →
+  Environments → github-pages → deployment branches.
 
 !!! warning "A deploy that does not deploy is a failed deploy"
 

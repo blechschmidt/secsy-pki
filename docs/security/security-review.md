@@ -1,11 +1,11 @@
-# Security review & hardening — enterprise branch
+# Security review & hardening — `main` branch
 
 This document records the Task 12 security review of the secsy-pki **enterprise**
 branch, the findings, and the fixes applied. It is a living record: re-run the
 verification steps (below) after significant changes.
 
 - **Date:** 2026-07-02
-- **Scope:** the `enterprise` branch — HSM-backed CA (`internal/ca`, `internal/pki`),
+- **Scope:** the `main` branch — HSM-backed CA (`internal/ca`, `internal/pki`),
   key-provider abstraction (`internal/keyprovider`), envelope secret encryption
   (`internal/secret`), RBAC/audit/config (`internal/rbac`, `internal/audit`,
   `internal/middleware`, `internal/handlers`), and the CLIs/server

@@ -73,7 +73,7 @@ target's package and prints a `go test -run=<Target>/<hash>` reproducer.
 ## CI
 
 `.github/workflows/enterprise-ci.yaml` runs a dedicated `fuzz-smoke` job on
-every push/PR to the `enterprise` branch. It needs no SoftHSM (all targets run
+every push/PR to the `main` branch. It needs no SoftHSM (all targets run
 in software), and it:
 
 1. replays every seed corpus as unit tests (fails on any committed crasher), then

@@ -14,12 +14,12 @@ GitHub Actions allowance.
 
 | Workflow | File | Triggers | What it gates |
 |----------|------|----------|---------------|
-| **Enterprise CI (SoftHSM)** | `enterprise-ci.yaml` | push/PR on `enterprise`, nightly, dispatch | The main suite: the HSM-backed integration flow plus the static-analysis, coverage, OpenAPI, docs-structure, FIPS, fuzz and Postgres/DR gates |
-| **Test** | `test.yaml` | push/PR on `enterprise`, dispatch | The upstream project's original job. Its unique coverage is the root-package `integration_test.go`, which drives a live server over HTTP behind a real OIDC provider (KeyCloak); everything else it runs is a subset of Enterprise CI |
-| **Supply chain** | `supply-chain.yaml` | push/PR on `enterprise`, dispatch | `govulncheck` (gating) and the CycloneDX Go-module SBOM — see [supply-chain security](supply-chain.md) |
-| **Kubernetes smoke** | `k8s-smoke.yaml` | push/PR on `enterprise` touching the image/chart/server | Builds the image and deploys the Helm chart on an ephemeral kind cluster against SoftHSM |
-| **Documentation site** | `docs.yaml` | push/PR on `enterprise` touching docs sources | The `--strict` Material for MkDocs build, and publishing to GitHub Pages — see [documentation site](documentation-site.md) |
-| **Container** | `container.yaml` | push on any branch, PR on `enterprise`, weekly, dispatch, and `workflow_call` from the release | Both architectures of the published image, smoke-tested and — outside pull requests — pushed, signed and pulled back anonymously. The only workflow that publishes the image; see [the container image](../deployment/container.md) |
+| **Enterprise CI (SoftHSM)** | `enterprise-ci.yaml` | push/PR on `main`, nightly, dispatch | The main suite: the HSM-backed integration flow plus the static-analysis, coverage, OpenAPI, docs-structure, FIPS, fuzz and Postgres/DR gates |
+| **Test** | `test.yaml` | push/PR on `main`, dispatch | The upstream project's original job. Its unique coverage is the root-package `integration_test.go`, which drives a live server over HTTP behind a real OIDC provider (KeyCloak); everything else it runs is a subset of Enterprise CI |
+| **Supply chain** | `supply-chain.yaml` | push/PR on `main`, dispatch | `govulncheck` (gating) and the CycloneDX Go-module SBOM — see [supply-chain security](supply-chain.md) |
+| **Kubernetes smoke** | `k8s-smoke.yaml` | push/PR on `main` touching the image/chart/server | Builds the image and deploys the Helm chart on an ephemeral kind cluster against SoftHSM |
+| **Documentation site** | `docs.yaml` | push/PR on `main` touching docs sources | The `--strict` Material for MkDocs build, and publishing to GitHub Pages — see [documentation site](documentation-site.md) |
+| **Container** | `container.yaml` | push on any branch, PR on `main`, weekly, dispatch, and `workflow_call` from the release | Both architectures of the published image, smoke-tested and — outside pull requests — pushed, signed and pulled back anonymously. The only workflow that publishes the image; see [the container image](../deployment/container.md) |
 | **Release** | `release.yaml` | `v*` tags, dispatch (dry run) | A tag becoming a signed image, release archives and a GitHub release. Calls Enterprise CI and Container rather than repeating them — see [releasing](releasing.md) |
 
 ## Required vs advisory gates
@@ -94,7 +94,7 @@ Work down this list — the first two cost nothing and explain most red runs:
 The job-level detail the UI hides is available from the API:
 
 ```sh
-gh run list --branch enterprise --limit 10
+gh run list --branch main --limit 10
 gh run view <run-id> --log-failed
 ```
 

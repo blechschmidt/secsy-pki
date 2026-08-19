@@ -184,7 +184,7 @@ server module (`-tags sqlite`). Unlike a naïve dependency diff it only fails on
 vulnerabilities that are actually **reachable** from the code, keeping the gate
 low-noise. It runs:
 
-- on **every push/PR** to `enterprise` (`supply-chain.yaml`), and
+- on **every push/PR** to `main` (`supply-chain.yaml`), and
 - as a **pre-publish gate** on every release (`release.yaml`) — no signed image
   is produced if a reachable vulnerability is present.
 

@@ -3,7 +3,7 @@
 # window; it trades against load on the KRL endpoint.
 [Unit]
 Description=Periodic Secsy PKI SSH CA KRL refresh
-Documentation=https://github.com/blechschmidt/secsy-pki/blob/enterprise/examples/ssh-pki/README.md
+Documentation=https://github.com/blechschmidt/secsy-pki/blob/main/examples/ssh-pki/README.md
 
 [Timer]
 OnBootSec=3min

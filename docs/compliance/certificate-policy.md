@@ -33,7 +33,7 @@ Software capabilities are described in the present tense ("the CA signs on the
 HSM"); they are accurate for a default enterprise build and verifiable against
 the cited code.
 
-- **Software version / scope:** secsy-pki enterprise branch (this repository).
+- **Software version / scope:** secsy-pki `main` branch (this repository).
 - **Document status:** `[OPERATOR: draft | approved]`
 - **Policy OID(s):** `[OPERATOR: your registered arc, asserted via profiles.*.policies — see §7.1.6]`
 - **Effective date / version:** `[OPERATOR: …]`

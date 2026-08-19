@@ -121,7 +121,7 @@ expect_fail "rejects a tag without the v prefix" \
 
 expect_fail "rejects a ref that is not a tag" \
 	"must be a tag ref" \
-	--ref refs/heads/enterprise "${GOOD[@]}"
+	--ref refs/heads/main "${GOOD[@]}"
 
 # --- the section itself ------------------------------------------------------
 changelog undated.md <<'EOF'

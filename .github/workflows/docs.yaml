@@ -24,9 +24,11 @@ name: Documentation site (GitHub Pages)
 #     which no workflow token carries. Until an admin has enabled it once, that
 #     step fails with "Create Pages site failed: Resource not accessible by
 #     integration".
-#   * `enterprise` allowed in the `github-pages` environment's deployment-branch
-#     rules. This workflow deploys from `enterprise`, and the environment
-#     GitHub creates for Pages allows only the default branch by default.
+#   * the deploying branch allowed in the `github-pages` environment's
+#     deployment-branch rules. This workflow deploys from `main`, which is the
+#     default branch, and the environment GitHub creates for Pages allows the
+#     default branch — so this holds as configured. It is named here because it
+#     stops holding the moment the deploy moves to any other branch.
 #
 # Neither is tolerated silently. This job used to run configure-pages under
 # `continue-on-error` and downgrade a failure to a green "Pages is unavailable"
@@ -41,7 +43,7 @@ on:
   # Kept in sync between push and pull_request by hand: GitHub Actions does not
   # support YAML anchors in workflow files.
   push:
-    branches: [enterprise]
+    branches: [main]
     paths:
       - "docs/**"
       - "examples/**"
@@ -54,7 +56,7 @@ on:
       - "Makefile"
       - ".github/workflows/docs.yaml"
   pull_request:
-    branches: [enterprise]
+    branches: [main]
     paths:
       - "docs/**"
       - "examples/**"

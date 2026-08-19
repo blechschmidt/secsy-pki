@@ -14,7 +14,7 @@ groups:
         annotations:
           summary: "secsy-pki target down ({{ $labels.instance }})"
           description: "Prometheus has failed to scrape {{ $labels.job }}/{{ $labels.instance }} for >3m. Check the pod/readiness probe."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#observability-alert-response"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#observability-alert-response"
 
   # --- HSM / key provider ----------------------------------------------------
   - name: secsy-pki.hsm
@@ -30,7 +30,7 @@ groups:
         annotations:
           summary: "HSM/key-provider probe down ({{ $labels.instance }})"
           description: "secsy_component_up{component=hsm}=0 for >2m. The HSM/PKCS#11 token is unreachable — no certificates, CRLs, OCSP, or TSA tokens can be signed."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#hsm-probe-down"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#hsm-probe-down"
 
       - alert: SecsyPKIHSMPoolExhausted
         # Requests are waiting for an HSM concurrency-guard slot: the session
@@ -43,7 +43,7 @@ groups:
         annotations:
           summary: "HSM session pool saturated ({{ $labels.instance }})"
           description: "Requests have been queued for an HSM slot for >10m (queue_depth>0). Raise rateLimit.hsmConcurrency / session-pool size, or investigate slow signing. See docs/security/rate-limiting.md and docs/development/benchmarks.md."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#hsm-pool-exhaustion"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#hsm-pool-exhaustion"
 
       - alert: SecsyPKIHSMGuardShedding
         # The guard is actively rejecting HSM-bound requests (HTTP 503). This is
@@ -56,7 +56,7 @@ groups:
         annotations:
           summary: "HSM guard shedding load ({{ $labels.instance }})"
           description: "The HSM concurrency guard is rejecting >0.1 req/s (503) over 5m. The pool is saturated and clients are being shed. Scale replicas or the pool; check for a stalled HSM."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#hsm-pool-exhaustion"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#hsm-pool-exhaustion"
 
       - alert: SecsyPKIHSMSignLatencyHigh
         # p99 HSM sign latency is elevated — throughput ceiling and a leading
@@ -69,7 +69,7 @@ groups:
         annotations:
           summary: "HSM sign latency p99 high ({{ $labels.job }})"
           description: "p99 HSM sign latency has exceeded 2s for >10m. Expect issuance/CRL/OCSP slowdowns. Check HSM health, network to a network-HSM, and session-pool sizing."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#hsm-pool-exhaustion"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#hsm-pool-exhaustion"
 
       - alert: SecsyPKIHSMTokenDown
         # A token in a multi-token HA set is unhealthy and has been failed over
@@ -83,7 +83,7 @@ groups:
         annotations:
           summary: "HSM token {{ $labels.token }} down ({{ $labels.job }})"
           description: "secsy_hsm_token_up{token={{ $labels.token }}}=0 for >5m. This HSM token has been taken out of rotation; the set is running on fewer replicas. Check the device/partition and see docs/hsm/high-availability.md."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#hsm-probe-down"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#hsm-probe-down"
 
       - alert: SecsyPKIHSMTokenFlapping
         # A token is repeatedly failing over — a flaky device/network to a network
@@ -96,7 +96,7 @@ groups:
         annotations:
           summary: "HSM token {{ $labels.token }} flapping ({{ $labels.job }})"
           description: "Token {{ $labels.token }} has been failing over at >0.1/s for >15m. The device or its network path is unstable. Investigate the HSM; consider raising pkcs11.failure_threshold. See docs/hsm/high-availability.md."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#hsm-probe-down"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#hsm-probe-down"
 
   # --- Error-budget SLOs -----------------------------------------------------
   # The Google-SRE-style multi-window multi-burn-rate alerts and their SLI
@@ -119,7 +119,7 @@ groups:
         annotations:
           summary: "Expired certificates present ({{ $labels.job }})"
           description: "{{ $value }} monitored certificate(s) are expired as of the last scan. Auto-renewal did not keep up — check the monitor and renewal profiles."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#certificate-expiry-backlog"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#certificate-expiry-backlog"
 
       - alert: SecsyPKIExpiryBacklog
         # A growing count of certificates in the critical window signals the
@@ -132,7 +132,7 @@ groups:
         annotations:
           summary: "Certificate expiry backlog ({{ $labels.job }})"
           description: "{{ $value }} certificate(s) are in the critical expiry window (default <7d). Verify auto-renewal is enabled and succeeding, or renew manually. Tune the threshold to your fleet size."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#certificate-expiry-backlog"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#certificate-expiry-backlog"
 
       - alert: SecsyPKIMonitorStalled
         # The expiry monitor has not completed a scan in far longer than its
@@ -145,7 +145,7 @@ groups:
         annotations:
           summary: "Expiry monitor stalled ({{ $labels.job }})"
           description: "No completed monitor scan in >36h (2.5x the 12h default interval). Expiry metrics and auto-renewal are not updating. Adjust the threshold if monitor.intervalHours differs."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#monitor-and-audit-health"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#monitor-and-audit-health"
 
       - alert: SecsyPKIAutoRenewFailing
         # Auto-renewal attempts are erroring — the safety net is broken even if
@@ -158,7 +158,7 @@ groups:
         annotations:
           summary: "Auto-renewal failing ({{ $labels.job }})"
           description: "The expiry monitor's auto-renewal has been erroring for >30m. Certificates will expire if not renewed manually. Check signing, profiles, and RBAC."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#certificate-expiry-backlog"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#certificate-expiry-backlog"
 
   # --- Revocation (OCSP / CRL) -----------------------------------------------
   - name: secsy-pki.revocation
@@ -175,7 +175,7 @@ groups:
         annotations:
           summary: "OCSP error rate high ({{ $labels.job }})"
           description: ">5% of OCSP responses are errors over 10m. Relying parties may fail validation. Check HSM signing and the responder. See RUNBOOK 'OCSP / CRL outage'."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#ocsp--crl-outage"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#ocsp--crl-outage"
 
       - alert: SecsyPKICRLServingErrors
         # CRL distribution is erroring, so clients cannot fetch fresh revocation.
@@ -187,7 +187,7 @@ groups:
         annotations:
           summary: "CRL serving errors ({{ $labels.job }})"
           description: "The CRL endpoint has been returning errors for >10m. Clients may fall back to a stale/cached CRL. Check signing and the store. See RUNBOOK 'OCSP / CRL outage'."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#ocsp--crl-outage"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#ocsp--crl-outage"
 
       - alert: SecsyPKICRLNotRegenerating
         # Best-effort CRL/delta staleness: no fresh CRL has been signed on the
@@ -207,7 +207,7 @@ groups:
         annotations:
           summary: "CRL not regenerating ({{ $labels.job }})"
           description: "No base CRL has been signed on the HSM in >25h while CRLs are still being requested. Served CRLs may go stale past nextUpdate. Tune the window to your crl.baseValidityHours; verify HSM signing and the CRL scheduler."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#crldelta-staleness"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#crldelta-staleness"
 
       - alert: SecsyPKIOCSPPresignStale
         # The pre-signed OCSP response set is aging with no fresh batch behind
@@ -224,7 +224,7 @@ groups:
         annotations:
           summary: "OCSP pre-signing stale ({{ $labels.job }})"
           description: "The last successful OCSP pre-signing batch was {{ $value | humanizeDuration }} ago (>12h). Pre-signed responses are aging toward their NextUpdate; check HSM availability and the presign loop logs. See docs/operations/ocsp-presign-publish.md."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#ocsp--crl-outage"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#ocsp--crl-outage"
 
       - alert: SecsyPKIPublishStale
         # The static artifact snapshot (CDN origin) has not been republished.
@@ -238,7 +238,7 @@ groups:
         annotations:
           summary: "Static artifact publishing stale ({{ $labels.job }})"
           description: "The last successful artifact publish was {{ $value | humanizeDuration }} ago (>12h). CDN-served revocation data is aging toward expiry (see manifest.json earliest_expiry). Check the publish loop and backend (dir/S3) reachability. See docs/operations/ocsp-presign-publish.md."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#ocsp--crl-outage"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#ocsp--crl-outage"
 
   # --- Rate limiting ---------------------------------------------------------
   - name: secsy-pki.ratelimit
@@ -259,7 +259,7 @@ groups:
         annotations:
           summary: "Rate-limit rejections spiking ({{ $labels.job }})"
           description: ">30% of public-endpoint requests have been throttled (429) over 10m. Investigate a possible abuse source, or relax the tier in rate_limit config. See docs/security/rate-limiting.md."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#rate-limit-guard-rejections-spiking"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#rate-limit-guard-rejections-spiking"
 
   # --- Audit-log SIEM export health ------------------------------------------
   - name: secsy-pki.audit
@@ -275,7 +275,7 @@ groups:
         annotations:
           summary: "Audit export lagging (sink {{ $labels.sink }})"
           description: "{{ $value }} audit events are undelivered to SIEM sink '{{ $labels.sink }}' for >15m. Check the sink's reachability. See docs/security/audit-siem-export.md."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#monitor-and-audit-health"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#monitor-and-audit-health"
 
       - alert: SecsyPKIAuditExportStalled
         # The sink has a backlog but has not acknowledged a batch in a while:
@@ -290,7 +290,7 @@ groups:
         annotations:
           summary: "Audit export stalled (sink {{ $labels.sink }})"
           description: "SIEM sink '{{ $labels.sink }}' has a backlog but has not acknowledged a batch in >30m. Delivery is stuck — audit events are not reaching the SIEM. See docs/security/audit-siem-export.md."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#monitor-and-audit-health"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#monitor-and-audit-health"
 
       - alert: SecsyPKIAuditAnchorStale
         # The audit chain has unattested events but has not been re-anchored in
@@ -308,7 +308,7 @@ groups:
         annotations:
           summary: "Audit-chain anchor stale ({{ $labels.instance }})"
           description: "The newest audit-chain anchor is older than 48h while unanchored events exist. The anchor job is not running or its TSA is failing; events since the last anchor lack external truncation evidence. Run 'secsy-ca audit anchor' and check the TSA."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#audit-chain-anchoring"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#audit-chain-anchoring"
 
       - alert: SecsyPKIAuditAnchorFailures
         # Anchoring attempts are erroring (TSA down/rejecting, or the anchor
@@ -322,7 +322,7 @@ groups:
         annotations:
           summary: "Audit-chain anchoring failing ({{ $labels.instance }})"
           description: "More than one audit-anchor attempt failed in the last 6h. Check the TSA (internal /tsa health, or the external audit.anchor.tsa_url) and the audit.anchor error events in the log."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#audit-chain-anchoring"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#audit-chain-anchoring"
 
       - alert: SecsyPKITrustedTimeCheckFailing
         # The fail-closed trusted-time check (time.source) is failing: the host
@@ -338,7 +338,7 @@ groups:
         annotations:
           summary: "Trusted-time check failing: {{ $labels.reason }} ({{ $labels.instance }})"
           description: "The host clock could not be confirmed against the trusted time source ({{ $labels.reason }}). Under the default fail-closed policy the TSA is returning timeNotAvailable and audit anchoring is blocked (drift always fails closed; unreachable fails closed unless on_source_error=fail_open). If reason=drift, discipline the host clock (NTP); if reason=unreachable, restore reachability to the configured time.source servers. Check the time.check audit events and 'secsy-ca doctor' (time.trusted)."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#trusted-time-source"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#trusted-time-source"
 
       - alert: SecsyPKIClockDriftHigh
         # The measured host-vs-trusted offset is large (>5s) but has not yet
@@ -352,7 +352,7 @@ groups:
         annotations:
           summary: "Host clock drift high vs trusted source {{ $labels.source }} ({{ $labels.instance }})"
           description: "The host clock is more than 5s from trusted source {{ $labels.source }}. It has not yet crossed the fail-closed drift threshold, but timestamping will start failing closed if the drift grows. Check NTP discipline on the host."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#trusted-time-source"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#trusted-time-source"
 
   # --- Multi-replica coordination -------------------------------------------
   - name: secsy-pki.coordination
@@ -373,7 +373,7 @@ groups:
         annotations:
           summary: "No background-job leader elected ({{ $labels.job }})"
           description: "secsy_leader_is_leader is 0 on every replica for >10m: no instance is running the singleton background jobs. Check replica connectivity to PostgreSQL, and pg_locks for an orphaned advisory-lock session."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#observability-alert-response"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#observability-alert-response"
 
       - alert: SecsyPKILeadershipFlapping
         # Leadership keeps changing hands: a leader that repeatedly fails lease
@@ -388,7 +388,7 @@ groups:
         annotations:
           summary: "Background-job leadership flapping ({{ $labels.job }})"
           description: "More than 6 leadership transitions across the fleet in 30m. The leader cannot hold its advisory-lock lease — check PostgreSQL health/latency and the 'leader:' lines in the server logs."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#observability-alert-response"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#observability-alert-response"
 
   - name: secsy-pki.canary
     rules:
@@ -408,7 +408,7 @@ groups:
         annotations:
           summary: "Issuance canary failing on {{ $labels.ca }} at {{ $labels.stage }} ({{ $labels.job }})"
           description: "Synthetic issuance probes against CA {{ $labels.ca }} keep failing at the {{ $labels.stage }} stage. Real clients hit the same path. Run `secsy-ca doctor` (canary.last_probe surfaces the last outcome), inspect the canary.probe audit events, and check HSM, OCSP, and CRL health for the failing stage."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#observability-alert-response"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#observability-alert-response"
 
       - alert: SecsyPKICanaryStalled
         # The canary has succeeded before (the gauge exists) but no probe has
@@ -425,7 +425,7 @@ groups:
         annotations:
           summary: "Issuance canary stalled for {{ $labels.ca }} ({{ $labels.job }})"
           description: "No fully successful canary probe for CA {{ $labels.ca }} in >1h (4x the 15m default interval). The issuance path has stopped being continuously proven healthy. Check the canary job (leader election, server logs) and `secsy-ca doctor`; adjust the threshold if canary.interval_minutes differs."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#observability-alert-response"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#observability-alert-response"
 
   # --- Backup & restore-verification -----------------------------------------
   - name: secsy-pki.backup
@@ -444,7 +444,7 @@ groups:
         annotations:
           summary: "Scheduled backup stale ({{ $labels.job }})"
           description: "The last successful scheduled backup was {{ $value | humanizeDuration }} ago (>2d). The off-box DR copy is aging; check the backup job (leader election, destination reachability) and `secsy-ca doctor` (backup.freshness). See docs/operations/backup.md."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#observability-alert-response"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#observability-alert-response"
 
       - alert: SecsyPKIBackupRestoreVerificationFailing
         # A restore-verification drill (Task 94) failed: the newest published
@@ -461,7 +461,7 @@ groups:
         annotations:
           summary: "Backup restore-verification failing ({{ $labels.job }})"
           description: "A backup restore-verification drill failed — the newest backup could not be proven restorable, so recovery would fail when it is needed. Run `secsy-ca backup verify-restore`, inspect the backup.verify audit events (they name the failing stage), and check the backup destination and KEK. See docs/operations/backup.md."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#observability-alert-response"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#observability-alert-response"
 
       - alert: SecsyPKIBackupRestoreVerificationStale
         # Restore-verification has succeeded before (the gauge exists) but has not
@@ -477,4 +477,4 @@ groups:
         annotations:
           summary: "Backup restore-verification stalled ({{ $labels.job }})"
           description: "No backup has been proven restorable in {{ $value | humanizeDuration }} (>2d). Backups are no longer continuously verified. Check the backup-verify job (leader election, server logs) and `secsy-ca doctor` (backup.restore-verified); adjust the threshold if backup.verify.interval_hours differs. See docs/operations/backup.md."
-          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/enterprise/docs/operations/runbook.md#observability-alert-response"
+          runbook_url: "https://github.com/blechschmidt/secsy-pki/blob/main/docs/operations/runbook.md#observability-alert-response"

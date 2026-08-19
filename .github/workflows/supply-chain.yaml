@@ -15,9 +15,9 @@ name: Supply chain (govulncheck + SBOM)
 
 on:
   push:
-    branches: [enterprise]
+    branches: [main]
   pull_request:
-    branches: [enterprise]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:

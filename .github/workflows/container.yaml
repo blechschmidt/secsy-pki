@@ -10,7 +10,7 @@ name: container
 # The tag set follows the ref, and `docker/metadata-action` derives it rather
 # than a chain of `if`s here:
 #
-#   push to a branch      enterprise, feature-x   the branch it came from
+#   push to a branch      main, feature-x         the branch it came from
 #                         sha-1a2b3c4             that commit, immutably
 #                         edge                    additionally, on the default branch
 #
@@ -41,9 +41,9 @@ name: container
 # manifest and the push itself, all of which are only exercised here.
 #
 # The second is that there is no way to run unreleased work without a Go
-# toolchain, a C compiler and a PKCS#11 module. `edge` is that: what the
-# enterprise branch does today, on both architectures, pullable by anyone, and
-# explicitly *not* `latest`.
+# toolchain, a C compiler and a PKCS#11 module. `edge` is that: what `main`
+# does today, on both architectures, pullable by anyone, and explicitly *not*
+# `latest`.
 #
 # The image tags are documented in docs/deployment/container.md; the split of
 # responsibility with release.yaml is described in docs/development/releasing.md.
@@ -62,7 +62,7 @@ on:
     tags-ignore:
       - "v*"
   pull_request:
-    branches: [enterprise]
+    branches: [main]
   schedule:
     # Mondays, 04:40 UTC. Nothing in the repository changes, and that is the
     # point: the image is debian:bookworm-slim plus Debian's SoftHSM, OpenSC and
@@ -211,7 +211,7 @@ jobs:
 
       # amd64 is a complete cache hit from the pass above, so what this actually
       # costs is the arm64 layers. It is here rather than only in the publish job
-      # so that an arm64 break is a red pull request instead of a red enterprise
+      # so that an arm64 break is a red pull request instead of a red default
       # branch: the Dockerfile cross-compiles cgo for it, which is the part of
       # this build most likely to break and the part nothing else compiles.
       - name: Build both architectures
@@ -355,8 +355,8 @@ jobs:
       # written.
       #
       # `latest` is what an unqualified `docker pull` gets, so it has to keep
-      # meaning "the newest release" and never "whatever the enterprise branch
-      # was this morning" nor "the newest pre-release". `flavor: latest=false`
+      # meaning "the newest release" and never "whatever `main` was this
+      # morning" nor "the newest pre-release". `flavor: latest=false`
       # turns off the action's own `auto` handling — which would otherwise hand
       # it to any semver tag, pre-release included — and the single `type=raw`
       # below gives it out only on the say-so of release.yaml's guard, which is

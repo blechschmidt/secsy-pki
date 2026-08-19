@@ -3,7 +3,7 @@
 > This document has two parts:
 >
 > - **[Part I — Current architecture](#part-i--current-architecture)** describes
->   the enterprise system as it stands on the `enterprise` branch: an HSM-backed
+>   the enterprise system as it stands on the `main` branch: an HSM-backed
 >   X.509 + SSH certificate authority with envelope-based secret encryption,
 >   multi-protocol enrollment, governance, and multi-tenant/HA operation.
 > - **[Part II — Original starting-point audit](#part-ii--original-starting-point-audit-historical)**

@@ -48,7 +48,7 @@ BASE_CONFIG = os.path.join(ROOT, "website", "mkdocs.yml")
 REPO_URL = "https://github.com/blechschmidt/secsy-pki"
 # The branch off-site links point at. Overridable so a fork or a release branch
 # can publish links into its own tree.
-REF = os.environ.get("DOCS_REF", "enterprise")
+REF = os.environ.get("DOCS_REF", "main")
 
 # Inline links, optionally with a "title", and reference-style definitions.
 LINK_RE = re.compile(r'(?P<open>\]\(\s*)(?P<target>[^)\s]+)(?P<rest>\s*(?:"[^"]*")?\s*\))')

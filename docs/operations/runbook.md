@@ -6,7 +6,7 @@ assumes the CA is already deployed and issuing; for first-time setup follow the
 pressure: symptom → diagnosis → procedure.
 
 Every CLI command and endpoint below is verified against the code on the
-`enterprise` branch. Binaries are `secsy-ca`, `secsy-secret`, and
+`main` branch. Binaries are `secsy-ca`, `secsy-secret`, and
 `secsy-pki-server`; see the [tools table](../README.md#the-tools-at-a-glance).
 The design decisions behind these procedures are recorded in
 [Architecture Decision Records](../adr/README.md).

@@ -11,7 +11,7 @@ name: Kubernetes smoke (kind + SoftHSM)
 
 on:
   push:
-    branches: [enterprise]
+    branches: [main]
     paths:
       - "Dockerfile"
       - ".dockerignore"
@@ -20,7 +20,7 @@ on:
       - "server/**"
       - ".github/workflows/k8s-smoke.yaml"
   pull_request:
-    branches: [enterprise]
+    branches: [main]
     paths:
       - "Dockerfile"
       - ".dockerignore"

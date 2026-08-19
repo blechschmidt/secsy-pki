@@ -23,7 +23,7 @@ copyright: Copyright &copy; 2026 Secsy PKI contributors — MIT licensed
 
 repo_url: https://github.com/blechschmidt/secsy-pki
 repo_name: blechschmidt/secsy-pki
-edit_uri: edit/enterprise/
+edit_uri: edit/main/
 
 # Resolved from dist/, where build-docs.py writes the assembled config.
 docs_dir: docs-src

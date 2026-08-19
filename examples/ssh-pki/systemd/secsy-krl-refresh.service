@@ -4,7 +4,7 @@
 #   systemctl daemon-reload && systemctl enable --now secsy-krl-refresh.timer
 [Unit]
 Description=Refresh Secsy PKI SSH CA revocation list (KRL)
-Documentation=https://github.com/blechschmidt/secsy-pki/blob/enterprise/examples/ssh-pki/README.md
+Documentation=https://github.com/blechschmidt/secsy-pki/blob/main/examples/ssh-pki/README.md
 Wants=network-online.target
 After=network-online.target
 

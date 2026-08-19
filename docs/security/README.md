@@ -15,7 +15,7 @@ operation and the export path that ships it to a SIEM.
 | [**Rate limiting & abuse protection**](rate-limiting.md) | Tiered token-bucket rate limiting (global / per-IP / per-account) and a bounded in-flight HSM concurrency guard for the public ACME/OCSP/CRL/SCEP/EST endpoints, with `429`/`503` + `Retry-After` and Prometheus throttle/queue metrics |
 | [**Audit log export to SIEM**](audit-siem-export.md) | Streaming the audit event log to syslog (TCP/TLS)/CEF/webhook with at-least-once delivery & a durable cursor, plus `secsy-ca audit verify` (tamper detection) and `audit export` (offline batch) |
 | [**FIPS 140-3 mode**](fips.md) | Running as a FIPS-capable PKI: the `make build-fips`/`GOFIPS140` build on the Go Cryptographic Module (verified at build time, reported by `-version`, the startup log, and `/healthz` build info), the fail-closed `security.fips` algorithm policy (no Ed25519 leaves, no SHA-1 anywhere, no RSA<2048, no software-PQC paths — enforced at config load, key generation, and issuance), the SoftHSM SHA-1-OAEP refusal + KEK re-wrap migration, the `fips.*` doctor checks, and the module-boundary-vs-HSM-validation scope |
-| [**Security review & hardening**](security-review.md) | The security review of the enterprise branch: findings, fixes, residual risks, and how to re-verify |
+| [**Security review & hardening**](security-review.md) | The security review of the `main` branch: findings, fixes, residual risks, and how to re-verify |
 
 ---
 
