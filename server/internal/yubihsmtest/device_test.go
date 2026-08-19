@@ -33,10 +33,28 @@ import (
 // reserved challenge slot. The production path clears its own leftovers, so
 // doing it here keeps that recovery path from being what these tests exercise
 // by accident.
+//
+// It deletes only an object whose label carries the challenge prefix — the same
+// rule the production code applies, and for the same reason: 0xfa00 is outside
+// the suite's own scratch range (deleteScratch refuses it, correctly), so
+// anything else sitting there was put there by an operator and is not this
+// suite's to destroy.
 func clearChallengeSlot(t *testing.T) {
 	t.Helper()
+	const slot = hsmattest.DefaultDeviceChallengeKeyID
 	withClient(t, func(ctx context.Context, c *yubihsm.Client) {
-		deleteScratch(ctx, c, hsmattest.DefaultDeviceChallengeKeyID)
+		info, err := c.GetObjectInfo(ctx, slot, yubihsm.ObjectTypeAsymmetricKey)
+		if err != nil {
+			return // the usual case: the slot is free
+		}
+		if !strings.HasPrefix(info.Label, hsmattest.DeviceChallengeLabelPrefix) {
+			t.Fatalf("object 0x%04x is labelled %q and is not a leftover device challenge; "+
+				"refusing to delete it", slot, info.Label)
+		}
+		if err := c.DeleteObject(ctx, slot, yubihsm.ObjectTypeAsymmetricKey); err != nil {
+			t.Fatalf("deleting the leftover challenge key at 0x%04x: %v", slot, err)
+		}
+		t.Logf("removed a leftover challenge key from 0x%04x", slot)
 	})
 }
 
@@ -178,14 +196,17 @@ func TestDeviceChallengeLeavesNoKeyBehind(t *testing.T) {
 		t.Fatalf("attesting the device: %v", err)
 	}
 
+	var survivor string
 	withClient(t, func(ctx context.Context, c *yubihsm.Client) {
-		info, err := c.GetObjectInfo(ctx, hsmattest.DefaultDeviceChallengeKeyID, yubihsm.ObjectTypeAsymmetricKey)
-		if err == nil {
-			deleteScratch(ctx, c, hsmattest.DefaultDeviceChallengeKeyID)
-			t.Fatalf("the challenge key survived at 0x%04x (label %q)",
-				hsmattest.DefaultDeviceChallengeKeyID, info.Label)
+		if info, err := c.GetObjectInfo(ctx, hsmattest.DefaultDeviceChallengeKeyID, yubihsm.ObjectTypeAsymmetricKey); err == nil {
+			survivor = info.Label
 		}
 	})
+	if survivor != "" {
+		clearChallengeSlot(t)
+		t.Fatalf("the challenge key survived at 0x%04x (label %q)",
+			hsmattest.DefaultDeviceChallengeKeyID, survivor)
+	}
 }
 
 // The read-only form has to work on a device the caller may not write to, and
