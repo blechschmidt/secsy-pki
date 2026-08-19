@@ -428,6 +428,11 @@ signs carry device-asserted extensions, two of which matter here — the **devic
 serial** (`1.3.6.1.4.1.41482.4.2`) and the attested object's 40-byte **label**
 (`1.3.6.1.4.1.41482.4.9`), which is supplied by the host at key generation.
 
+(The same generate-attest-delete primitive, with a verifier's nonce in the label
+instead of a log digest, is how [`hsm-attest device`](device-attestation.md)
+authenticates the hardware itself. Here the label is the payload and the serial
+is the evidence; there it is the other way round.)
+
 A **commitment** exploits exactly that. On a fixed cadence, the CA:
 
 1. computes the current audit head and digests it into a 40-character label —

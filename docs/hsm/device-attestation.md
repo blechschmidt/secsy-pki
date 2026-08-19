@@ -22,7 +22,7 @@ Issuing CA:       Yubico YubiHSM 6742036 Sub-CA
 Trust anchor:     Yubico YubiHSM Root CA
 
 Yubico-certified: yes
-Answered challenge: yes (challenge 7b1c9f0a…, object 0xfa00)
+Answered challenge: yes (challenge 1db1da8a31ecd76598d036768ba6405a, object 0xfa00)
 Device reports:   31650425 (agrees with its certificate)
 
 verified: this is YubiHSM serial 31650425 — its attestation key answered the
