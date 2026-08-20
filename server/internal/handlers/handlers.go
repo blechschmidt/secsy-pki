@@ -64,6 +64,14 @@ type API struct {
 	secretTransforms map[string]*secret.TransformTemplate
 	policy           Policy
 	monitorOpts      monitor.Options
+	// configGrants holds the declarative per-resource grants from the rbac.grants
+	// config blocks (Task 191), unioned with the resource_grants table on every
+	// per-resource authorization decision. Held behind an atomic pointer so a
+	// configuration reload can swap the rule set without tearing a concurrent
+	// decision. principalResolver reconstructs another subject's roles for
+	// effective-access review; nil disables that half of the introspection.
+	configGrants      atomic.Pointer[[]rbac.Grant]
+	principalResolver PrincipalResolver
 	// Escrow configuration for the secret layer. escrowSpecs/escrowThreshold are
 	// installed from config; escrowPolicy is the lazily-built, cached policy (its
 	// construction self-tests the agent keys on the HSM, so it is deferred to the
@@ -630,6 +638,14 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("POST /api/keys/{id}/permissions", protected(http.HandlerFunc(a.GrantPermission)))
 	mux.Handle("DELETE /api/keys/{id}/permissions", protected(http.HandlerFunc(a.RevokePermission)))
 
+	// Resource-scoped grants (Task 191): delegate one CA or key to a user or
+	// group. Addressed by ?resource=<type>/<id> rather than a path segment so the
+	// same endpoints serve every resource type.
+	mux.Handle("GET /api/grants", protected(http.HandlerFunc(a.ListResourceGrants)))
+	mux.Handle("POST /api/grants", protected(http.HandlerFunc(a.CreateResourceGrant)))
+	mux.Handle("DELETE /api/grants", protected(http.HandlerFunc(a.DeleteResourceGrant)))
+	mux.Handle("GET /api/grants/effective", protected(http.HandlerFunc(a.EffectiveResourceAccess)))
+
 	mux.Handle("GET /api/restriction-sets", protected(http.HandlerFunc(a.ListAllRestrictionSets)))
 	mux.Handle("POST /api/restriction-sets", protected(http.HandlerFunc(a.CreateRestrictionSetGlobal)))
 	mux.Handle("GET /api/keys/{id}/restriction-sets", protected(http.HandlerFunc(a.ListRestrictionSets)))
@@ -818,24 +834,49 @@ func (a *API) Me(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) ListCAs(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
-	if !a.canRead(user) {
-		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
+	// A principal with no role at all may still have been delegated individual
+	// CAs, so grant-derived visibility is resolved before the read gate — its
+	// grants ARE its read standing. A platform operator already sees every CA,
+	// so it skips the scan entirely.
+	var granted map[string]bool
+	if user != nil && !user.IsRoot && len(user.Roles) == 0 {
+		granted = a.visibleCAIDsFromGrants(user, rbac.ResourceCA)
+	}
+	if !a.canRead(user) && len(granted) == 0 {
+		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor) or a grant on a CA")
 		return
 	}
 	// Platform operators (root or a platform-wide role) see every tenant's CAs;
-	// a tenant-scoped principal sees only the CAs of the tenants it belongs to.
+	// a tenant-scoped principal sees only the CAs of the tenants it belongs to,
+	// plus any individual CA delegated to it.
 	var cas []models.CA
 	var err error
 	if user.IsRoot || len(user.Roles) > 0 {
 		cas, err = a.db.ListCAs()
 	} else {
+		seen := make(map[string]bool)
 		for _, tid := range user.TenantsWithRoles() {
 			ts, terr := a.db.ListCAsForTenant(tid)
 			if terr != nil {
 				err = terr
 				break
 			}
+			for _, c := range ts {
+				seen[c.ID] = true
+			}
 			cas = append(cas, ts...)
+		}
+		if err == nil && len(granted) > 0 {
+			all, aerr := a.db.ListCAs()
+			if aerr != nil {
+				err = aerr
+			} else {
+				for _, c := range all {
+					if granted[c.ID] && !seen[c.ID] {
+						cas = append(cas, c)
+					}
+				}
+			}
 		}
 	}
 	if err != nil {
@@ -849,15 +890,12 @@ func (a *API) ListCAs(w http.ResponseWriter, r *http.Request) {
 }
 
 // authorizeCARead loads a CA and verifies the caller may read it: an assigned
-// role plus membership in the CA's tenant. It records the resolved tenant on the
-// request context and, on denial or error, writes the response and returns
-// (nil, false). This is the shared read-side tenant guard for CA-scoped GETs.
+// role plus membership in the CA's tenant, or a resource grant on this specific
+// CA (Task 191). It records the resolved tenant on the request context and, on
+// denial or error, writes the response and returns (nil, false). This is the
+// shared read-side tenant guard for CA-scoped GETs.
 func (a *API) authorizeCARead(w http.ResponseWriter, r *http.Request, caID string) (*models.CA, bool) {
 	user := middleware.GetUserInfo(r.Context())
-	if !a.canRead(user) {
-		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
-		return nil, false
-	}
 	ca, err := a.db.GetCA(caID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "database error: %v", err)
@@ -868,6 +906,16 @@ func (a *API) authorizeCARead(w http.ResponseWriter, r *http.Request, caID strin
 		return nil, false
 	}
 	middleware.SetTenant(r.Context(), ca.TenantID)
+	// A delegated operator holds no role in the CA's tenant — its whole point is
+	// authority over this one authority — so a grant conferring audit:read here
+	// satisfies both gates on its own.
+	if a.grantAllows(user, rbac.Resource{Type: rbac.ResourceCA, ID: caID}, rbac.ActionReadAudit) {
+		return ca, true
+	}
+	if !a.canRead(user) {
+		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor) or a grant on this CA")
+		return nil, false
+	}
 	if !a.isTenantMember(user, ca.TenantID) {
 		// Do not disclose existence to non-members: 404 rather than 403.
 		writeError(w, http.StatusNotFound, "CA not found")
@@ -1021,21 +1069,8 @@ func (a *API) GetPublicKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) DeleteCA(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserInfo(r.Context())
 	id := r.PathValue("id")
-	tenantID, err := a.db.GetCATenant(id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "database error: %v", err)
-		return
-	}
-	if tenantID == "" {
-		writeError(w, http.StatusNotFound, "CA not found")
-		return
-	}
-	middleware.SetTenant(r.Context(), tenantID)
-	if !a.canInTenant(user, tenantID, rbac.ActionManageCA) {
-		a.recordEvent(r, audit.ActionCADelete, id, "", audit.ResultDenied, "ca:manage capability required")
-		writeError(w, http.StatusForbidden, "ca:manage capability required for tenant %q", tenantID)
+	if _, ok := a.authorizeCAManage(w, r, id, audit.ActionCADelete); !ok {
 		return
 	}
 
@@ -1043,6 +1078,11 @@ func (a *API) DeleteCA(w http.ResponseWriter, r *http.Request) {
 		a.recordEvent(r, audit.ActionCADelete, id, "", audit.ResultError, err.Error())
 		writeError(w, http.StatusInternalServerError, "failed to delete CA: %v", err)
 		return
+	}
+	// Drop the CA's resource grants with it, so an identifier that is later
+	// reused cannot inherit authority delegated to the CA that is gone.
+	if err := a.db.DeleteResourceGrantsFor(rbac.Resource{Type: rbac.ResourceCA, ID: id}); err != nil {
+		log.Printf("CA %s deleted but its resource grants could not be removed: %v", id, err)
 	}
 	a.recordEvent(r, audit.ActionCADelete, id, "", audit.ResultSuccess, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -2300,9 +2340,9 @@ func (a *API) CreateRestrictionSet(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
 
 	if !user.IsRoot {
-		hasAccess, err := a.checkPermission(user, caID, models.PermConfigureCA)
+		hasAccess, err := a.canConfigureCA(user, caID)
 		if err != nil || !hasAccess {
-			writeError(w, http.StatusForbidden, "need CONFIGURE_CA permission")
+			writeError(w, http.StatusForbidden, "need the ca:configure capability, a CONFIGURE_CA permission, or an administrative grant on ca/%s", caID)
 			return
 		}
 	}
@@ -2339,9 +2379,9 @@ func (a *API) UpdateRestrictionSet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !user.IsRoot {
-		hasAccess, err := a.checkPermission(user, existing.CAID, models.PermConfigureCA)
+		hasAccess, err := a.canConfigureCA(user, existing.CAID)
 		if err != nil || !hasAccess {
-			writeError(w, http.StatusForbidden, "need CONFIGURE_CA permission")
+			writeError(w, http.StatusForbidden, "need the ca:configure capability, a CONFIGURE_CA permission, or an administrative grant on ca/%s", existing.CAID)
 			return
 		}
 	}
@@ -2372,9 +2412,9 @@ func (a *API) DeleteRestrictionSet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !user.IsRoot {
-		hasAccess, err := a.checkPermission(user, existing.CAID, models.PermConfigureCA)
+		hasAccess, err := a.canConfigureCA(user, existing.CAID)
 		if err != nil || !hasAccess {
-			writeError(w, http.StatusForbidden, "need CONFIGURE_CA permission")
+			writeError(w, http.StatusForbidden, "need the ca:configure capability, a CONFIGURE_CA permission, or an administrative grant on ca/%s", existing.CAID)
 			return
 		}
 	}
@@ -2391,9 +2431,9 @@ func (a *API) SetDefaultRestrictionSet(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
 
 	if !user.IsRoot {
-		hasAccess, err := a.checkPermission(user, caID, models.PermConfigureCA)
+		hasAccess, err := a.canConfigureCA(user, caID)
 		if err != nil || !hasAccess {
-			writeError(w, http.StatusForbidden, "need CONFIGURE_CA permission")
+			writeError(w, http.StatusForbidden, "need the ca:configure capability, a CONFIGURE_CA permission, or an administrative grant on ca/%s", caID)
 			return
 		}
 	}

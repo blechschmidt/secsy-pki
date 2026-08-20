@@ -315,6 +315,45 @@ rbac:
   groups: {}
   #   "group-uuid-for-pki-ops": [issuer]
 
+  # grants delegate authority over ONE named CA or key to users and groups.
+  # Where subjects/groups above are tenant-wide ("what class of operator is
+  # this?"), a grant answers "who owns this particular authority?" — the
+  # mechanism that lets a platform admin keep the root CA while a specific group
+  # administers only its own subordinate.
+  #
+  #   resource  the object, "<type>/<id>": ca/<ca-id> (an X.509 or SSH
+  #             certification authority) or signing-key/<name>
+  #   role      ca-admin | ca-manager | ca-issuer | ca-auditor for authorities;
+  #             key-admin | key-signer | key-auditor for signing keys.
+  #             `secsy-ca grant roles` prints what each confers. The *-admin
+  #             roles additionally allow delegating that one resource onward.
+  #   scope     self (default — this resource only) or subtree (this CA and
+  #             every CA beneath it, including ones created later; CAs only)
+  #   users     principal subjects or VERIFIED email addresses
+  #   groups    group ids, matched against both the internal /api/groups store
+  #             and the groups asserted by the identity provider (OIDC claim /
+  #             LDAP directory membership)
+  #
+  # Grants are ADDITIVE: they widen what a user or group may do at one resource
+  # and never remove authority a role already confers. Grants may also be
+  # delegated at runtime (`secsy-ca grant`, POST /api/grants, console "Access");
+  # the two sources are unioned at decision time, and entries declared here are
+  # read-only through the API. An entry naming no users and no groups is
+  # rejected at startup. See docs/security/resource-grants.md and
+  # examples/delegated-ca-administration/.
+  grants: []
+  #   - resource: ca/1660ce02-bfb4-4a9f-8f38-1e91855d9531
+  #     role: ca-manager
+  #     groups: [pki-payments]
+  #   - resource: ca/1660ce02-bfb4-4a9f-8f38-1e91855d9531
+  #     role: ca-admin
+  #     scope: subtree
+  #     groups: [pki-payments-leads]
+  #     users: ["payments-lead@example.com"]
+  #   - resource: signing-key/release
+  #     role: key-signer
+  #     groups: [ci-release]
+
 # tenants declares the isolated organizations this deployment serves. The
 # built-in "default" tenant always exists; declaring tenants here provisions
 # additional ones (idempotently) and their per-tenant RBAC assignments. A tenant

@@ -548,6 +548,31 @@ func (db *DB) migrate() error {
 			x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL,
 			UNIQUE(ca_id, entity_type, entity_id, permission)
 		)`,
+		// Resource-scoped grants (Task 191): the runtime-delegated half of the
+		// per-CA / per-key permission model. Unlike `permissions` above — which is
+		// bound to X.509 CAs and a fixed three-verb vocabulary — a grant addresses
+		// any individually-authorizable resource (X.509 CA, SSH CA, named signing
+		// key) and carries a role plus a scope, so "this group administers this
+		// sub-CA and everything under it" is one row.
+		//
+		// There is deliberately NO foreign key to cas: the table spans three
+		// independent ID namespaces, and a dangling grant is inert (it can only
+		// ever authorize a resource that does not exist). Grants are cleaned up
+		// explicitly when a resource is deleted.
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS resource_grants (
+			id TEXT PRIMARY KEY,
+			resource_type TEXT NOT NULL,
+			resource_id TEXT NOT NULL,
+			entity_type TEXT NOT NULL CHECK(entity_type IN ('user', 'group')),
+			entity_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			scope TEXT NOT NULL DEFAULT 'self',
+			created_at %s,
+			created_by TEXT,
+			UNIQUE(resource_type, resource_id, entity_type, entity_id, role)
+		)`, currentTimestamp),
+		`CREATE INDEX IF NOT EXISTS idx_resource_grants_resource ON resource_grants(resource_type, resource_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_resource_grants_entity ON resource_grants(entity_type, entity_id)`,
 		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS audit_log (
 			id TEXT PRIMARY KEY,
 			timestamp %s,

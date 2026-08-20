@@ -9,7 +9,6 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
-	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 )
 
 // CreateCrossSign cross-signs a subject public key with the issuer CA identified
@@ -18,24 +17,13 @@ import (
 // or root-transition topologies. The subject may be a CA already in this
 // deployment, an externally supplied certificate, or a CSR.
 func (a *API) CreateCrossSign(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserInfo(r.Context())
 	issuerID := r.PathValue("id")
 
-	// The cross-sign inherits the issuer's tenant; the caller must hold ca:manage
-	// within it.
-	tenantID, err := a.db.GetCATenant(issuerID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "issuer CA lookup failed: %v", err)
-		return
-	}
-	if tenantID == "" {
-		writeError(w, http.StatusNotFound, "issuer CA %q not found", issuerID)
-		return
-	}
-	middleware.SetTenant(r.Context(), tenantID)
-	if !a.canInTenant(user, tenantID, rbac.ActionManageCA) {
-		a.recordEvent(r, audit.ActionCACrossSign, issuerID, "", audit.ResultDenied, "ca:manage capability required")
-		writeError(w, http.StatusForbidden, "ca:manage capability required for tenant %q", tenantID)
+	// The cross-sign inherits the issuer's tenant; the caller must be able to
+	// administer the ISSUING CA — ca:manage in its tenant or a resource grant on
+	// it (Task 191) — because cross-signing spends that CA's key.
+	tenantID, ok := a.authorizeCAManage(w, r, issuerID, audit.ActionCACrossSign)
+	if !ok {
 		return
 	}
 
@@ -70,7 +58,7 @@ func (a *API) CreateCrossSign(w http.ResponseWriter, r *http.Request) {
 		CertPEM:     []byte(req.CertificatePEM),
 		CSRPEM:      []byte(req.CSRPEM),
 		MaxPathLen:  req.MaxPathLen,
-		RequestedBy: userSubject(user),
+		RequestedBy: userSubject(middleware.GetUserInfo(r.Context())),
 	}
 	if req.ValidityDays > 0 {
 		spec.Validity = time.Duration(req.ValidityDays) * 24 * time.Hour
@@ -100,21 +88,9 @@ func (a *API) CreateCrossSign(w http.ResponseWriter, r *http.Request) {
 // ListCrossSigns returns the cross-sign relationships related to CA {id}, both
 // those it issued and those certifying its key.
 func (a *API) ListCrossSigns(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserInfo(r.Context())
 	caID := r.PathValue("id")
 
-	tenantID, err := a.db.GetCATenant(caID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "CA lookup failed: %v", err)
-		return
-	}
-	if tenantID == "" {
-		writeError(w, http.StatusNotFound, "CA %q not found", caID)
-		return
-	}
-	middleware.SetTenant(r.Context(), tenantID)
-	if !a.canInTenant(user, tenantID, rbac.ActionManageCA) {
-		writeError(w, http.StatusForbidden, "ca:manage capability required for tenant %q", tenantID)
+	if _, ok := a.authorizeCAManage(w, r, caID, ""); !ok {
 		return
 	}
 

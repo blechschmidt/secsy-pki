@@ -30,6 +30,10 @@ var migrationTables = []string{
 	"groups_",
 	"group_members",
 	"permissions",
+	// Resource-scoped grants (Task 191). No foreign key (the table spans the CA,
+	// SSH-CA, and signing-key namespaces), but it is copied alongside the other
+	// authorization tables so a migrated store carries the same delegations.
+	"resource_grants",
 	// Per-CA counters and issuance/revocation records.
 	"ca_serial_counters",
 	"ca_crl_counters",

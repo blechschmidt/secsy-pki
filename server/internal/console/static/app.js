@@ -333,6 +333,7 @@ function switchView(name) {
   if (name === 'dns') loadDNS();
   if (name === 'tenants') loadTenants();
   if (name === 'tokens') loadTokens();
+  if (name === 'access') loadAccess();
   if (name === 'webhooks') loadWebhooks();
 }
 document.querySelectorAll('header nav button').forEach(b =>
@@ -2719,6 +2720,147 @@ async function loadTokens() {
   });
 }
 $('refreshTokens').onclick = loadTokens;
+
+// ---- Access: per-CA / per-key grants (Task 191) --------------------------
+// The console's view of the resource-scoped permission model: who has been
+// delegated authority over one individual CA or signing key, and what that
+// actually lets them do. Config-declared grants appear alongside stored ones and
+// are shown read-only, because removing them means editing rbac.grants.
+
+// accessResourceSpec resolves the selected resource: the free-text field wins so
+// a signing key (which has no entry in the CA list) can be addressed by name.
+function accessResourceSpec() {
+  const custom = $('accessResourceCustom').value.trim();
+  return custom || $('accessResource').value || '';
+}
+
+async function loadAccess() {
+  // Populate the CA picker from the authorities the caller can already see —
+  // which, for a delegated operator, is exactly the CAs it was granted.
+  const sel = $('accessResource');
+  const prev = sel.value;
+  sel.innerHTML = cas.map(c => `<option value="ca/${c.id}">${escapeHTML(c.label)} — ca/${escapeHTML(c.id)}</option>`).join('');
+  if (prev) sel.value = prev;
+  await loadAccessGrants();
+}
+
+async function loadAccessGrants() {
+  const rows = $('accessRows');
+  const resource = accessResourceSpec();
+  if (!resource) {
+    rows.innerHTML = '<tr><td colspan="6" class="muted">Select a resource.</td></tr>';
+    return;
+  }
+  let grants;
+  try {
+    grants = await api('GET', '/api/grants?resource=' + encodeURIComponent(resource));
+    $('accessDenied').classList.add('hidden');
+  } catch (e) {
+    rows.innerHTML = '';
+    showError($('accessDenied'), 'Listing grants failed: ' + e.message);
+    return;
+  }
+  if (!grants.length) {
+    rows.innerHTML = `<tr><td colspan="6" class="muted">No grants on ${escapeHTML(resource)}. Access here comes from platform or tenant roles only.</td></tr>`;
+    return;
+  }
+  rows.innerHTML = grants.map((g, i) => {
+    const fromConfig = g.source === 'config';
+    const revoke = fromConfig
+      ? '<span class="muted" title="Declared in rbac.grants; remove it from the configuration file">config-managed</span>'
+      : `<button class="btn danger sm" data-i="${i}">Revoke</button>`;
+    return `<tr>
+      <td><code>${escapeHTML(g.role)}</code></td>
+      <td>${escapeHTML(g.entity_type)}:${escapeHTML(g.entity_id)}</td>
+      <td>${escapeHTML(g.scope || 'self')}</td>
+      <td>${fromConfig ? '<span class="badge">config</span>' : '<span class="badge ok">database</span>'}</td>
+      <td>${g.created_at ? escapeHTML(fmtTime(g.created_at)) : '—'}</td>
+      <td style="white-space:nowrap">${revoke}</td>
+    </tr>`;
+  }).join('');
+  rows.querySelectorAll('button[data-i]').forEach(b => {
+    b.onclick = () => revokeAccessGrant(resource, grants[Number(b.dataset.i)]);
+  });
+}
+
+async function revokeAccessGrant(resource, g) {
+  if (!confirm(`Revoke ${g.role} on ${resource} from ${g.entity_type}:${g.entity_id}?`)) return;
+  try {
+    await api('DELETE', '/api/grants', {
+      resource, entity_type: g.entity_type, entity_id: g.entity_id, role: g.role,
+    });
+  } catch (e) {
+    showError($('accessDenied'), 'Revoking the grant failed: ' + e.message);
+    return;
+  }
+  await loadAccessGrants();
+}
+
+$('accessGrantBtn').onclick = async () => {
+  const resource = accessResourceSpec();
+  const entityID = $('accessEntityID').value.trim();
+  if (!resource || !entityID) {
+    showError($('accessGrantError'), 'A resource and a group/user identifier are required.');
+    return;
+  }
+  try {
+    await api('POST', '/api/grants', {
+      resource,
+      entity_type: $('accessEntityType').value,
+      entity_id: entityID,
+      role: $('accessRole').value,
+      scope: $('accessScope').value,
+    });
+    $('accessGrantError').classList.add('hidden');
+    $('accessEntityID').value = '';
+  } catch (e) {
+    showError($('accessGrantError'), 'Granting failed: ' + e.message);
+    return;
+  }
+  await loadAccessGrants();
+};
+
+$('accessEffectiveBtn').onclick = async () => {
+  const resource = accessResourceSpec();
+  const out = $('accessEffectiveOut');
+  if (!resource) {
+    showError($('accessEffectiveError'), 'Select a resource first.');
+    return;
+  }
+  let q = '/api/grants/effective?resource=' + encodeURIComponent(resource);
+  const subject = $('accessSubject').value.trim();
+  if (subject) q += '&subject=' + encodeURIComponent(subject);
+  let eff;
+  try {
+    eff = await api('GET', q);
+    $('accessEffectiveError').classList.add('hidden');
+  } catch (e) {
+    out.innerHTML = '';
+    showError($('accessEffectiveError'), 'Effective-access lookup failed: ' + e.message);
+    return;
+  }
+  const chips = (label, vals) => vals && vals.length
+    ? `<div class="field"><label>${label}</label><div>${vals.map(v => `<code>${escapeHTML(String(v))}</code>`).join(' ')}</div></div>`
+    : '';
+  const grantRows = (eff.grants || []).map(g =>
+    `<tr><td><code>${escapeHTML(g.resource_type)}/${escapeHTML(g.resource_id)}</code></td>
+         <td><code>${escapeHTML(g.role)}</code></td>
+         <td>${escapeHTML(g.entity_type)}:${escapeHTML(g.entity_id)}</td>
+         <td>${escapeHTML(g.scope || 'self')}</td></tr>`).join('');
+  out.innerHTML = `
+    <div class="field"><label>Subject</label><div>${escapeHTML(eff.subject || '(me)')}${eff.is_root ? ' <span class="badge">root</span>' : ''}</div></div>
+    ${eff.tenant_id ? `<div class="field"><label>Tenant</label><div>${escapeHTML(eff.tenant_id)}</div></div>` : ''}
+    ${chips('Platform roles', eff.platform_roles)}
+    ${chips('Tenant roles', eff.tenant_roles)}
+    ${chips('Resource roles (from grants)', eff.resource_roles)}
+    ${chips('Effective capabilities here', eff.actions)}
+    ${grantRows ? `<div class="field"><label>Matching grants</label><table><thead><tr><th>Resource</th><th>Role</th><th>Entity</th><th>Scope</th></tr></thead><tbody>${grantRows}</tbody></table></div>` : ''}
+    ${(eff.actions || []).length ? '' : '<div class="muted">No capabilities at this resource.</div>'}`;
+};
+
+$('refreshAccess').onclick = loadAccess;
+$('accessResource').onchange = loadAccessGrants;
+$('accessResourceCustom').onchange = loadAccessGrants;
 
 // tokenStatus derives a lifecycle label if the server did not send one.
 function tokenStatus(t) {

@@ -426,6 +426,10 @@ func resolveConsolePrincipal(
 		EmailVerified: emailVerified,
 		Name:          name,
 		Roles:         platform,
+		// Carry the resolved group identities onto the principal: resource-scoped
+		// grants (Task 191) may name an existing IdP/directory group directly, and
+		// that membership is only knowable here, at login.
+		Groups: dedupStrings(groups),
 	}
 	if len(tenantRoles) > 0 {
 		info.TenantRoles = tenantRoles

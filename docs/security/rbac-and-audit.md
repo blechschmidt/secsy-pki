@@ -6,12 +6,21 @@ on the HSM-backed CA (Tasks 4–6) and secret-encryption (Task 7) features.
 
 ## 1. Role-based access control (RBAC)
 
-Two complementary authorization layers govern every protected endpoint:
+Complementary authorization layers govern every protected endpoint:
 
 | Layer | Scope | Configured in | Answers |
 |-------|-------|---------------|---------|
 | **Org-wide roles** | whole system | `rbac:` config block | "what class of user is this?" |
+| **Tenant roles** | one tenant | `tenants[].rbac` | "what class of user is this *within this organization*?" ([multi-tenancy](multi-tenancy.md)) |
+| **Resource grants** | a single CA or key | `rbac.grants`, `/api/grants` | "who *owns* this particular authority?" ([resource grants](resource-grants.md)) |
 | **Per-CA permissions** | a single CA | `/api/keys/{id}/permissions` | "may this subject sign with *this* CA?" |
+
+The layers are **additive**: a principal's authority is the union, and a grant
+can only widen what a role already allows. Resource grants are the general
+mechanism for per-CA and per-key delegation — including *administering* one CA,
+which the three-verb per-CA permission model below cannot express. See
+[per-CA & per-key authorization](resource-grants.md) for the full model, the
+role vocabulary, `self` vs `subtree` scope, and effective-access review.
 
 The built-in **root** user (HTTP basic auth) is always a superuser and can be
 disabled in production (`policy.allow_root_basic_auth: false`).
@@ -43,7 +52,9 @@ rbac:
 Endpoints check a coarse capability (`cert:issue`, `audit:read`, `ca:manage`,
 `ca:configure`, `rbac:manage`, `hsm:manage`, `secret:encrypt`,
 `secret:decrypt`, `token:manage`, `server:profile`). `admin`/root satisfy all of
-them. `token:manage` (mint/revoke API tokens) and `server:profile` (capture
+them. One capability — `resource:delegate` — is reachable *only* through a
+[resource grant](resource-grants.md): it is the right to hand one specific CA or
+key onward, and no platform or tenant role confers it. `token:manage` (mint/revoke API tokens) and `server:profile` (capture
 runtime pprof profiles — a raw dump of process memory, so as sensitive as
 `hsm:manage`) are **admin-only**: no lesser role grants them. For **signing**
 endpoints,

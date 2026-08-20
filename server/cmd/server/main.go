@@ -505,6 +505,30 @@ func main() {
 		RequireReason:       cfg.Policy.RequireReason,
 		MaxCertValidityDays: cfg.Policy.MaxCertValidityDays,
 	})
+	// Resource-scoped grants (Task 191): the declarative half of the per-CA /
+	// per-key permission model. Config validation already proved these parse, so a
+	// failure here is a programming error rather than operator input.
+	resourceGrants, gerr := cfg.AllResourceGrants()
+	if gerr != nil {
+		log.Fatalf("Failed to resolve rbac.grants: %v", gerr)
+	}
+	api.SetResourceGrants(resourceGrants)
+	if len(resourceGrants) > 0 {
+		log.Printf("Resource grants: %d configured delegation(s) over individual CAs/keys", len(resourceGrants))
+	}
+	// Effective-access review needs to reconstruct another subject's standing;
+	// it resolves through the same assignments the auth middleware uses so the
+	// answer matches what that subject would receive at login.
+	api.SetPrincipalResolver(func(subject string, groups []string) ([]string, map[string][]string) {
+		platform := dedupRoles(tenantAssignments.PlatformRolesFor(subject, "", false, groups))
+		tenant := make(map[string][]string)
+		for _, tid := range tenantAssignments.Tenants() {
+			if roles := tenantAssignments.TenantRolesFor(tid, subject, "", false, groups); len(roles) > 0 {
+				tenant[tid] = dedupRoles(roles)
+			}
+		}
+		return platform, tenant
+	})
 	// Post-quantum hybrid KEK wrapping for the secret layer (Task 137): seal new
 	// envelopes with an additional ML-KEM-1024 encapsulation for KEK families
 	// that have ML-KEM material provisioned.
@@ -2419,6 +2443,22 @@ func dedupRoles(roles []rbac.Role) []string {
 			seen[r] = true
 			out = append(out, string(r))
 		}
+	}
+	return out
+}
+
+// dedupStrings collapses a string slice to unique values, preserving order and
+// dropping blanks. Used for the group identities carried on a principal, which
+// are unioned from the IdP claim and the internal group table and so can repeat.
+func dedupStrings(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	var out []string
+	for _, s := range in {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
 	}
 	return out
 }

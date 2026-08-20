@@ -2179,6 +2179,103 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
 
   # ---------------------------------------------------------------------------
+  # Resource-scoped grants: per-CA / per-key delegation to users and groups
+  # ---------------------------------------------------------------------------
+  /api/grants:
+    get:
+      operationId: listResourceGrants
+      tags: [RBAC]
+      summary: List the grants recorded on one resource
+      description: >-
+        Lists the delegations recorded on a single CA or key, from both sources:
+        entries stored through this API (source=database) and entries declared in
+        the rbac.grants configuration block (source=config, read-only here).
+        Requires rbac:manage within the resource's tenant, or an administrative
+        grant on the resource itself.
+      parameters:
+        - $ref: "#/components/parameters/GrantResource"
+      responses:
+        "200":
+          description: The grants recorded on the resource.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ResourceGrant" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      operationId: createResourceGrant
+      tags: [RBAC]
+      summary: Delegate one CA or key to a user or group
+      description: >-
+        Grants a resource role at a single resource. Grants are additive: they
+        widen what the named user or group may do there and never remove
+        authority a platform or tenant role already confers.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResourceGrantRequest" }
+      responses:
+        "200":
+          description: The stored grant.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResourceGrant" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    delete:
+      operationId: deleteResourceGrant
+      tags: [RBAC]
+      summary: Revoke a resource grant
+      description: >-
+        Removes a stored grant. Grants declared in configuration are the reviewed
+        baseline and cannot be removed here; attempting to do so returns 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResourceGrantRequest" }
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: The grant is declared in configuration and must be removed there.
+
+  /api/grants/effective:
+    get:
+      operationId: getEffectiveResourceAccess
+      tags: [RBAC]
+      summary: Show what a principal may do at a resource, and why
+      description: >-
+        Reports the capability set a principal holds at one resource together
+        with the platform roles, tenant roles, and individual grants that produced
+        it. A caller may always introspect itself; naming another subject is an
+        access-control review and requires the same authority as administering
+        grants.
+      parameters:
+        - $ref: "#/components/parameters/GrantResource"
+        - name: subject
+          in: query
+          required: false
+          schema: { type: string }
+          description: >-
+            The subject to evaluate. Defaults to the caller. Only group
+            memberships recorded in the database can be reconstructed for another
+            subject; groups asserted by an identity provider are known only at
+            that subject's own login.
+      responses:
+        "200":
+          description: The effective access at the resource.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EffectiveResourceAccess" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ---------------------------------------------------------------------------
   # Restriction sets
   # ---------------------------------------------------------------------------
   /api/restriction-sets:
@@ -3518,6 +3615,16 @@ components:
       required: true
       description: CA / signing-key id.
       schema: { type: string }
+    GrantResource:
+      name: resource
+      in: query
+      required: true
+      description: >-
+        The individually-authorizable object, in "<type>/<id>" form:
+        "ca/<ca-id>" for an X.509 or SSH certification authority, or
+        "signing-key/<name>" for a named signing key on the secret layer.
+      schema: { type: string }
+      example: ca/3f9c1b7e-2a44-4c8e-9f01-6d2b8e5a7c30
     CertSerial:
       name: serial
       in: path
@@ -5352,6 +5459,88 @@ components:
         permission: { $ref: "#/components/schemas/Permission" }
         ssh_restriction_set_id: { type: string }
         x509_restriction_set_id: { type: string }
+
+    ResourceRole:
+      type: string
+      description: >-
+        A named bundle of capabilities granted at ONE resource. The ca-* roles
+        apply to certification authorities, the key-* roles to named signing
+        keys. ca-admin/key-admin additionally confer resource:delegate, the
+        right to hand the same resource onward.
+      enum: [ca-admin, ca-manager, ca-issuer, ca-auditor, key-admin, key-signer, key-auditor]
+
+    GrantScope:
+      type: string
+      description: >-
+        How far a grant reaches. "self" is exactly the named resource (the
+        default); "subtree" additionally covers every CA beneath the named one,
+        including CAs created later.
+      enum: [self, subtree]
+      default: self
+
+    ResourceGrant:
+      type: object
+      description: One stored delegation of a resource role at a single CA or key.
+      properties:
+        id: { type: string }
+        resource_type: { type: string, enum: [ca, signing-key] }
+        resource_id: { type: string }
+        entity_type: { type: string, enum: [user, group] }
+        entity_id: { type: string }
+        role: { $ref: "#/components/schemas/ResourceRole" }
+        scope: { $ref: "#/components/schemas/GrantScope" }
+        created_at: { type: string, format: date-time }
+        created_by: { type: string }
+        source:
+          type: string
+          enum: [database, config]
+          description: >-
+            Where the rule lives. Only "database" grants can be revoked through
+            the API; "config" grants are declared in rbac.grants and must be
+            removed from the configuration file.
+
+    ResourceGrantRequest:
+      type: object
+      required: [resource, entity_type, entity_id, role]
+      properties:
+        resource:
+          type: string
+          description: The target, in "<type>/<id>" form (e.g. "ca/3f9c…").
+        entity_type: { type: string, enum: [user, group] }
+        entity_id:
+          type: string
+          description: >-
+            A principal subject or verified email address (entity_type=user), or
+            a group identifier matched against both internal database groups and
+            the groups asserted by the identity provider (entity_type=group).
+        role: { $ref: "#/components/schemas/ResourceRole" }
+        scope: { $ref: "#/components/schemas/GrantScope" }
+
+    EffectiveResourceAccess:
+      type: object
+      description: >-
+        What a principal may do at one resource, and the rules that produced it.
+      properties:
+        resource: { type: string }
+        subject: { type: string }
+        tenant_id: { type: string }
+        is_root: { type: boolean }
+        platform_roles: { type: array, items: { type: string } }
+        tenant_roles: { type: array, items: { type: string } }
+        resource_roles:
+          type: array
+          items: { $ref: "#/components/schemas/ResourceRole" }
+          description: >-
+            Grant-derived roles held here, including ones inherited from an
+            ancestor CA through a subtree-scoped grant.
+        actions:
+          type: array
+          items: { type: string }
+          description: The resulting capability set at this resource.
+        grants:
+          type: array
+          items: { $ref: "#/components/schemas/ResourceGrant" }
+          description: The individual grants that matched, for traceability.
 
     PermissionGrant:
       type: object

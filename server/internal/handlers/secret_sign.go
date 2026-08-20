@@ -98,10 +98,10 @@ func ctxActor(ctx context.Context) string {
 // key-management capability), records the audit event and metric, and returns the
 // key's public view. The private key never leaves the provider.
 func (a *API) CreateSigningKeyOp(ctx context.Context, ip string, tenant *models.Tenant, name, algorithm string) (*SigningKeyInfo, error) {
-	if !a.canInTenant(middleware.GetUserInfo(ctx), tenant.ID, rbac.ActionManageSigningKey) {
+	if !a.canOnSigningKey(ctx, tenant.ID, name, rbac.ActionManageSigningKey) {
 		metrics.SecretSigningKey.Inc(metrics.ResultDenied)
 		a.recordEventCtx(ctx, ip, audit.ActionSecretSigningKeyCreate, name, "", audit.ResultDenied, "secret:signing-key capability required")
-		return nil, &secretForbiddenError{fmt.Sprintf("secret:signing-key capability required for tenant %q", tenant.ID)}
+		return nil, &secretForbiddenError{fmt.Sprintf("secret:signing-key capability required for tenant %q, or an admin grant on signing-key/%s", tenant.ID, name)}
 	}
 	alg, err := secret.NormalizeSigningAlgorithm(algorithm)
 	if err != nil {
@@ -138,8 +138,16 @@ func (a *API) CreateSigningKeyOp(ctx context.Context, ip string, tenant *models.
 // ListSigningKeysOp returns the tenant's signing keys (public metadata only). It
 // authorizes secret:signing-key.
 func (a *API) ListSigningKeysOp(ctx context.Context, ip string, tenant *models.Tenant) ([]*SigningKeyInfo, error) {
-	if !a.canInTenant(middleware.GetUserInfo(ctx), tenant.ID, rbac.ActionManageSigningKey) {
-		return nil, &secretForbiddenError{fmt.Sprintf("secret:signing-key capability required for tenant %q", tenant.ID)}
+	// A principal delegated individual keys holds no tenant-wide capability, so
+	// its grants are what make those keys visible. Without this it would be told
+	// it may sign with a key it cannot see (Task 191).
+	tenantWide := a.canInTenant(middleware.GetUserInfo(ctx), tenant.ID, rbac.ActionManageSigningKey)
+	var granted map[string]bool
+	if !tenantWide {
+		granted = a.signingKeysVisibleByGrant(middleware.GetUserInfo(ctx))
+		if len(granted) == 0 {
+			return nil, &secretForbiddenError{fmt.Sprintf("secret:signing-key capability required for tenant %q, or a grant on a signing key", tenant.ID)}
+		}
 	}
 	rows, err := a.db.ListSigningKeys(tenant.ID)
 	if err != nil {
@@ -147,6 +155,9 @@ func (a *API) ListSigningKeysOp(ctx context.Context, ip string, tenant *models.T
 	}
 	out := make([]*SigningKeyInfo, 0, len(rows))
 	for _, row := range rows {
+		if !tenantWide && !granted[row.Name] {
+			continue
+		}
 		info, err := signingKeyInfo(row)
 		if err != nil {
 			return nil, err
@@ -160,8 +171,8 @@ func (a *API) ListSigningKeysOp(ctx context.Context, ip string, tenant *models.T
 // key). It authorizes secret:sign — exporting the already-public half is a
 // signing-service operation, not key management.
 func (a *API) GetSigningKeyPublicOp(ctx context.Context, ip string, tenant *models.Tenant, name string) (*SigningKeyInfo, error) {
-	if !a.canInTenant(middleware.GetUserInfo(ctx), tenant.ID, rbac.ActionSign) {
-		return nil, &secretForbiddenError{fmt.Sprintf("secret:sign capability required for tenant %q", tenant.ID)}
+	if !a.canOnSigningKey(ctx, tenant.ID, name, rbac.ActionSign) {
+		return nil, &secretForbiddenError{fmt.Sprintf("secret:sign capability required for tenant %q, or a grant on signing-key/%s", tenant.ID, name)}
 	}
 	row, err := a.resolveSigningKey(tenant.ID, name)
 	if err != nil {
@@ -207,10 +218,10 @@ type SignOpResult struct {
 // signing operation), records the audit event and metric, and returns the
 // signature with the algorithm/hash used.
 func (a *API) SignOp(ctx context.Context, ip string, tenant *models.Tenant, keyName string, message, digest []byte, hash string) (*SignOpResult, error) {
-	if !a.canInTenant(middleware.GetUserInfo(ctx), tenant.ID, rbac.ActionSign) {
+	if !a.canOnSigningKey(ctx, tenant.ID, keyName, rbac.ActionSign) {
 		metrics.SecretSign.Inc("sign", metrics.ResultDenied)
 		a.recordEventCtx(ctx, ip, audit.ActionSecretSign, keyName, "", audit.ResultDenied, "secret:sign capability required")
-		return nil, &secretForbiddenError{fmt.Sprintf("secret:sign capability required for tenant %q", tenant.ID)}
+		return nil, &secretForbiddenError{fmt.Sprintf("secret:sign capability required for tenant %q, or a grant on signing-key/%s", tenant.ID, keyName)}
 	}
 	data, preHashed, err := resolveSignData(message, digest)
 	if err != nil {
@@ -264,10 +275,10 @@ type SignVerifyResult struct {
 // malformed key is an error. Verification uses only public material, so it is not
 // metered against the HSM quota.
 func (a *API) VerifySignatureOp(ctx context.Context, ip string, tenant *models.Tenant, keyName string, message, digest, sig []byte, hash string) (*SignVerifyResult, error) {
-	if !a.canInTenant(middleware.GetUserInfo(ctx), tenant.ID, rbac.ActionSign) {
+	if !a.canOnSigningKey(ctx, tenant.ID, keyName, rbac.ActionSign) {
 		metrics.SecretSign.Inc("verify", metrics.ResultDenied)
 		a.recordEventCtx(ctx, ip, audit.ActionSecretSignVerify, keyName, "", audit.ResultDenied, "secret:sign capability required")
-		return nil, &secretForbiddenError{fmt.Sprintf("secret:sign capability required for tenant %q", tenant.ID)}
+		return nil, &secretForbiddenError{fmt.Sprintf("secret:sign capability required for tenant %q, or a grant on signing-key/%s", tenant.ID, keyName)}
 	}
 	data, preHashed, err := resolveSignData(message, digest)
 	if err != nil {

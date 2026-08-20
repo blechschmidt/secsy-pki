@@ -58,6 +58,7 @@
         <button data-view="secrets">Secrets</button>
         <button data-view="tenants">Tenants</button>
         <button data-view="tokens">API Tokens</button>
+        <button data-view="access">Access</button>
         <button data-view="webhooks">Webhooks</button>
       </nav>
       <span class="user" id="userBox"></span>
@@ -1635,6 +1636,83 @@
               </div>
               <button class="btn ghost sm" id="tokenSecretCopy">Copy</button>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-access">
+        <h2>Access</h2>
+        <p class="sub">Delegate authority over <strong>one</strong> CA or key to a user or group, so a platform administrator can keep the root CA while a specific group administers a single subordinate. Grants are <strong>additive</strong>: they widen what the named user or group may do at that one resource and never remove authority a platform or tenant role already confers. Managing grants requires <code>rbac:manage</code> in the resource's tenant, or an administrative grant on the resource itself.</p>
+        <div id="accessDenied" class="notice err hidden"></div>
+        <div class="toolbar">
+          <div class="field" style="margin:0;min-width:340px">
+            <label for="accessResource">Resource</label>
+            <select id="accessResource"></select>
+          </div>
+          <div class="field" style="margin:0;min-width:220px">
+            <label for="accessResourceCustom">…or a signing key by name</label>
+            <input id="accessResourceCustom" placeholder="signing-key/release">
+          </div>
+          <div class="spacer"></div>
+          <button class="btn ghost sm" id="refreshAccess">Refresh</button>
+        </div>
+        <div class="panel">
+          <table>
+            <thead><tr><th>Role</th><th>Entity</th><th>Scope</th><th>Source</th><th>Granted</th><th></th></tr></thead>
+            <tbody id="accessRows"><tr><td colspan="6" class="muted">Select a resource.</td></tr></tbody>
+          </table>
+        </div>
+
+        <div class="row" style="align-items:stretch;margin-top:14px">
+          <div class="panel" style="flex:1;min-width:320px">
+            <h2 style="font-size:15px">Grant access</h2>
+            <div id="accessGrantError" class="notice err hidden"></div>
+            <div class="field">
+              <label for="accessRole">Role</label>
+              <select id="accessRole">
+                <optgroup label="certification authority">
+                  <option value="ca-admin">ca-admin — administer and delegate this CA</option>
+                  <option value="ca-manager" selected>ca-manager — administer this CA (cannot delegate)</option>
+                  <option value="ca-issuer">ca-issuer — issue/renew/revoke on this CA</option>
+                  <option value="ca-auditor">ca-auditor — read-only on this CA</option>
+                </optgroup>
+                <optgroup label="signing key">
+                  <option value="key-admin">key-admin — administer and delegate this key</option>
+                  <option value="key-signer">key-signer — sign/verify with this key</option>
+                  <option value="key-auditor">key-auditor — read-only on this key</option>
+                </optgroup>
+              </select>
+            </div>
+            <div class="field">
+              <label for="accessEntityType">Grant to</label>
+              <select id="accessEntityType">
+                <option value="group" selected>group (internal or identity-provider group)</option>
+                <option value="user">user (subject or verified email address)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="accessEntityID">Group / user identifier</label>
+              <input id="accessEntityID" placeholder="pki-payments">
+            </div>
+            <div class="field">
+              <label for="accessScope">Scope</label>
+              <select id="accessScope">
+                <option value="self" selected>self — this resource only</option>
+                <option value="subtree">subtree — this CA and every CA beneath it</option>
+              </select>
+            </div>
+            <button class="btn" id="accessGrantBtn">Grant</button>
+          </div>
+          <div class="panel" style="flex:1;min-width:320px">
+            <h2 style="font-size:15px">Effective access</h2>
+            <p class="sub">What a principal may actually do at the selected resource, and the rules that produced it. Leave the subject blank to review your own access.</p>
+            <div id="accessEffectiveError" class="notice err hidden"></div>
+            <div class="field">
+              <label for="accessSubject">Subject (blank = me)</label>
+              <input id="accessSubject" placeholder="alice@example.com">
+            </div>
+            <button class="btn ghost" id="accessEffectiveBtn">Show effective access</button>
+            <div id="accessEffectiveOut" style="margin-top:12px"></div>
           </div>
         </div>
       </section>

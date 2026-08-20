@@ -243,6 +243,12 @@ const (
 	Rsa   ExportPKCS12RequestKeyType = "rsa"
 )
 
+// Defines values for GrantScope.
+const (
+	Self    GrantScope = "self"
+	Subtree GrantScope = "subtree"
+)
+
 // Defines values for HoldResultStatus.
 const (
 	HoldResultStatusAlreadyHeld HoldResultStatus = "already-held"
@@ -363,6 +369,41 @@ const (
 const (
 	NotReady ReadinessStatus = "not_ready"
 	Ready    ReadinessStatus = "ready"
+)
+
+// Defines values for ResourceGrantEntityType.
+const (
+	ResourceGrantEntityTypeGroup ResourceGrantEntityType = "group"
+	ResourceGrantEntityTypeUser  ResourceGrantEntityType = "user"
+)
+
+// Defines values for ResourceGrantResourceType.
+const (
+	ResourceGrantResourceTypeCa         ResourceGrantResourceType = "ca"
+	ResourceGrantResourceTypeSigningKey ResourceGrantResourceType = "signing-key"
+)
+
+// Defines values for ResourceGrantSource.
+const (
+	Config   ResourceGrantSource = "config"
+	Database ResourceGrantSource = "database"
+)
+
+// Defines values for ResourceGrantRequestEntityType.
+const (
+	ResourceGrantRequestEntityTypeGroup ResourceGrantRequestEntityType = "group"
+	ResourceGrantRequestEntityTypeUser  ResourceGrantRequestEntityType = "user"
+)
+
+// Defines values for ResourceRole.
+const (
+	CaAdmin    ResourceRole = "ca-admin"
+	CaAuditor  ResourceRole = "ca-auditor"
+	CaIssuer   ResourceRole = "ca-issuer"
+	CaManager  ResourceRole = "ca-manager"
+	KeyAdmin   ResourceRole = "key-admin"
+	KeyAuditor ResourceRole = "key-auditor"
+	KeySigner  ResourceRole = "key-signer"
 )
 
 // Defines values for RestrictionSetType.
@@ -1739,6 +1780,24 @@ type DiscoveryScanRequest struct {
 	Targets *[]string `json:"targets,omitempty"`
 }
 
+// EffectiveResourceAccess What a principal may do at one resource, and the rules that produced it.
+type EffectiveResourceAccess struct {
+	// Actions The resulting capability set at this resource.
+	Actions *[]string `json:"actions,omitempty"`
+
+	// Grants The individual grants that matched, for traceability.
+	Grants        *[]ResourceGrant `json:"grants,omitempty"`
+	IsRoot        *bool            `json:"is_root,omitempty"`
+	PlatformRoles *[]string        `json:"platform_roles,omitempty"`
+	Resource      *string          `json:"resource,omitempty"`
+
+	// ResourceRoles Grant-derived roles held here, including ones inherited from an ancestor CA through a subtree-scoped grant.
+	ResourceRoles *[]ResourceRole `json:"resource_roles,omitempty"`
+	Subject       *string         `json:"subject,omitempty"`
+	TenantId      *string         `json:"tenant_id,omitempty"`
+	TenantRoles   *[]string       `json:"tenant_roles,omitempty"`
+}
+
 // EncryptRequest defines model for EncryptRequest.
 type EncryptRequest struct {
 	// Context base64-encoded optional AAD
@@ -1896,6 +1955,9 @@ type ExportPKCS12Response struct {
 	Profile *string `json:"profile,omitempty"`
 	Serial  *string `json:"serial,omitempty"`
 }
+
+// GrantScope How far a grant reaches. "self" is exactly the named resource (the default); "subtree" additionally covers every CA beneath the named one, including CAs created later.
+type GrantScope string
 
 // Group defines model for Group.
 type Group struct {
@@ -2731,6 +2793,57 @@ type RenewCertRequest struct {
 	ValidityDays *int    `json:"validity_days,omitempty"`
 }
 
+// ResourceGrant One stored delegation of a resource role at a single CA or key.
+type ResourceGrant struct {
+	CreatedAt    *time.Time                 `json:"created_at,omitempty"`
+	CreatedBy    *string                    `json:"created_by,omitempty"`
+	EntityId     *string                    `json:"entity_id,omitempty"`
+	EntityType   *ResourceGrantEntityType   `json:"entity_type,omitempty"`
+	Id           *string                    `json:"id,omitempty"`
+	ResourceId   *string                    `json:"resource_id,omitempty"`
+	ResourceType *ResourceGrantResourceType `json:"resource_type,omitempty"`
+
+	// Role A named bundle of capabilities granted at ONE resource. The ca-* roles apply to certification authorities, the key-* roles to named signing keys. ca-admin/key-admin additionally confer resource:delegate, the right to hand the same resource onward.
+	Role *ResourceRole `json:"role,omitempty"`
+
+	// Scope How far a grant reaches. "self" is exactly the named resource (the default); "subtree" additionally covers every CA beneath the named one, including CAs created later.
+	Scope *GrantScope `json:"scope,omitempty"`
+
+	// Source Where the rule lives. Only "database" grants can be revoked through the API; "config" grants are declared in rbac.grants and must be removed from the configuration file.
+	Source *ResourceGrantSource `json:"source,omitempty"`
+}
+
+// ResourceGrantEntityType defines model for ResourceGrant.EntityType.
+type ResourceGrantEntityType string
+
+// ResourceGrantResourceType defines model for ResourceGrant.ResourceType.
+type ResourceGrantResourceType string
+
+// ResourceGrantSource Where the rule lives. Only "database" grants can be revoked through the API; "config" grants are declared in rbac.grants and must be removed from the configuration file.
+type ResourceGrantSource string
+
+// ResourceGrantRequest defines model for ResourceGrantRequest.
+type ResourceGrantRequest struct {
+	// EntityId A principal subject or verified email address (entity_type=user), or a group identifier matched against both internal database groups and the groups asserted by the identity provider (entity_type=group).
+	EntityId   string                         `json:"entity_id"`
+	EntityType ResourceGrantRequestEntityType `json:"entity_type"`
+
+	// Resource The target, in "<type>/<id>" form (e.g. "ca/3f9c…").
+	Resource string `json:"resource"`
+
+	// Role A named bundle of capabilities granted at ONE resource. The ca-* roles apply to certification authorities, the key-* roles to named signing keys. ca-admin/key-admin additionally confer resource:delegate, the right to hand the same resource onward.
+	Role ResourceRole `json:"role"`
+
+	// Scope How far a grant reaches. "self" is exactly the named resource (the default); "subtree" additionally covers every CA beneath the named one, including CAs created later.
+	Scope *GrantScope `json:"scope,omitempty"`
+}
+
+// ResourceGrantRequestEntityType defines model for ResourceGrantRequest.EntityType.
+type ResourceGrantRequestEntityType string
+
+// ResourceRole A named bundle of capabilities granted at ONE resource. The ca-* roles apply to certification authorities, the key-* roles to named signing keys. ca-admin/key-admin additionally confer resource:delegate, the right to hand the same resource onward.
+type ResourceRole string
+
 // RestrictionSet defines model for RestrictionSet.
 type RestrictionSet struct {
 	AllowedCertTypes     *[]string           `json:"allowed_cert_types,omitempty"`
@@ -3550,6 +3663,9 @@ type CertStatusFilter string
 // Cursor defines model for Cursor.
 type Cursor = string
 
+// GrantResource defines model for GrantResource.
+type GrantResource = string
+
 // GroupId defines model for GroupId.
 type GroupId = string
 
@@ -3784,6 +3900,21 @@ type StreamEventLogParams struct {
 	Tenant *string `form:"tenant,omitempty" json:"tenant,omitempty"`
 }
 
+// ListResourceGrantsParams defines parameters for ListResourceGrants.
+type ListResourceGrantsParams struct {
+	// Resource The individually-authorizable object, in "<type>/<id>" form: "ca/<ca-id>" for an X.509 or SSH certification authority, or "signing-key/<name>" for a named signing key on the secret layer.
+	Resource GrantResource `form:"resource" json:"resource"`
+}
+
+// GetEffectiveResourceAccessParams defines parameters for GetEffectiveResourceAccess.
+type GetEffectiveResourceAccessParams struct {
+	// Resource The individually-authorizable object, in "<type>/<id>" form: "ca/<ca-id>" for an X.509 or SSH certification authority, or "signing-key/<name>" for a named signing key on the secret layer.
+	Resource GrantResource `form:"resource" json:"resource"`
+
+	// Subject The subject to evaluate. Defaults to the caller. Only group memberships recorded in the database can be reconstructed for another subject; groups asserted by an identity provider are known only at that subject's own login.
+	Subject *string `form:"subject,omitempty" json:"subject,omitempty"`
+}
+
 // GetMyRestrictionsParams defines parameters for GetMyRestrictions.
 type GetMyRestrictionsParams struct {
 	Format *string `form:"format,omitempty" json:"format,omitempty"`
@@ -3967,6 +4098,12 @@ type RunDiscoveryScanJSONRequestBody = DiscoveryScanRequest
 
 // VerifyEvidenceRecordJSONRequestBody defines body for VerifyEvidenceRecord for application/json ContentType.
 type VerifyEvidenceRecordJSONRequestBody = VerifyEvidenceRecordRequest
+
+// DeleteResourceGrantJSONRequestBody defines body for DeleteResourceGrant for application/json ContentType.
+type DeleteResourceGrantJSONRequestBody = ResourceGrantRequest
+
+// CreateResourceGrantJSONRequestBody defines body for CreateResourceGrant for application/json ContentType.
+type CreateResourceGrantJSONRequestBody = ResourceGrantRequest
 
 // CreateGroupJSONRequestBody defines body for CreateGroup for application/json ContentType.
 type CreateGroupJSONRequestBody = CreateGroupRequest
@@ -4370,6 +4507,22 @@ type ClientInterface interface {
 
 	// VerifyEventLog request
 	VerifyEventLog(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteResourceGrantWithBody request with any body
+	DeleteResourceGrantWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	DeleteResourceGrant(ctx context.Context, body DeleteResourceGrantJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListResourceGrants request
+	ListResourceGrants(ctx context.Context, params *ListResourceGrantsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateResourceGrantWithBody request with any body
+	CreateResourceGrantWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreateResourceGrant(ctx context.Context, body CreateResourceGrantJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetEffectiveResourceAccess request
+	GetEffectiveResourceAccess(ctx context.Context, params *GetEffectiveResourceAccessParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListGroups request
 	ListGroups(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5636,6 +5789,78 @@ func (c *Client) StreamEventLog(ctx context.Context, params *StreamEventLogParam
 
 func (c *Client) VerifyEventLog(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewVerifyEventLogRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteResourceGrantWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteResourceGrantRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteResourceGrant(ctx context.Context, body DeleteResourceGrantJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteResourceGrantRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListResourceGrants(ctx context.Context, params *ListResourceGrantsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListResourceGrantsRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateResourceGrantWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateResourceGrantRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateResourceGrant(ctx context.Context, body CreateResourceGrantJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateResourceGrantRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetEffectiveResourceAccess(ctx context.Context, params *GetEffectiveResourceAccessParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetEffectiveResourceAccessRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -10247,6 +10472,192 @@ func NewVerifyEventLogRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewDeleteResourceGrantRequest calls the generic DeleteResourceGrant builder with application/json body
+func NewDeleteResourceGrantRequest(server string, body DeleteResourceGrantJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewDeleteResourceGrantRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewDeleteResourceGrantRequestWithBody generates requests for DeleteResourceGrant with any type of body
+func NewDeleteResourceGrantRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/grants")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("DELETE", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewListResourceGrantsRequest generates requests for ListResourceGrants
+func NewListResourceGrantsRequest(server string, params *ListResourceGrantsParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/grants")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "resource", runtime.ParamLocationQuery, params.Resource); err != nil {
+			return nil, err
+		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+			return nil, err
+		} else {
+			for k, v := range parsed {
+				for _, v2 := range v {
+					queryValues.Add(k, v2)
+				}
+			}
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewCreateResourceGrantRequest calls the generic CreateResourceGrant builder with application/json body
+func NewCreateResourceGrantRequest(server string, body CreateResourceGrantJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateResourceGrantRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewCreateResourceGrantRequestWithBody generates requests for CreateResourceGrant with any type of body
+func NewCreateResourceGrantRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/grants")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGetEffectiveResourceAccessRequest generates requests for GetEffectiveResourceAccess
+func NewGetEffectiveResourceAccessRequest(server string, params *GetEffectiveResourceAccessParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/grants/effective")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "resource", runtime.ParamLocationQuery, params.Resource); err != nil {
+			return nil, err
+		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+			return nil, err
+		} else {
+			for k, v := range parsed {
+				for _, v2 := range v {
+					queryValues.Add(k, v2)
+				}
+			}
+		}
+
+		if params.Subject != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "subject", runtime.ParamLocationQuery, *params.Subject); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewListGroupsRequest generates requests for ListGroups
 func NewListGroupsRequest(server string) (*http.Request, error) {
 	var err error
@@ -14077,6 +14488,22 @@ type ClientWithResponsesInterface interface {
 	// VerifyEventLogWithResponse request
 	VerifyEventLogWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*VerifyEventLogResponse, error)
 
+	// DeleteResourceGrantWithBodyWithResponse request with any body
+	DeleteResourceGrantWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DeleteResourceGrantResponse, error)
+
+	DeleteResourceGrantWithResponse(ctx context.Context, body DeleteResourceGrantJSONRequestBody, reqEditors ...RequestEditorFn) (*DeleteResourceGrantResponse, error)
+
+	// ListResourceGrantsWithResponse request
+	ListResourceGrantsWithResponse(ctx context.Context, params *ListResourceGrantsParams, reqEditors ...RequestEditorFn) (*ListResourceGrantsResponse, error)
+
+	// CreateResourceGrantWithBodyWithResponse request with any body
+	CreateResourceGrantWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateResourceGrantResponse, error)
+
+	CreateResourceGrantWithResponse(ctx context.Context, body CreateResourceGrantJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateResourceGrantResponse, error)
+
+	// GetEffectiveResourceAccessWithResponse request
+	GetEffectiveResourceAccessWithResponse(ctx context.Context, params *GetEffectiveResourceAccessParams, reqEditors ...RequestEditorFn) (*GetEffectiveResourceAccessResponse, error)
+
 	// ListGroupsWithResponse request
 	ListGroupsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListGroupsResponse, error)
 
@@ -15724,6 +16151,98 @@ func (r VerifyEventLogResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r VerifyEventLogResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type DeleteResourceGrantResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *StatusResponse
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteResourceGrantResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteResourceGrantResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListResourceGrantsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *[]ResourceGrant
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListResourceGrantsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListResourceGrantsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type CreateResourceGrantResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ResourceGrant
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateResourceGrantResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateResourceGrantResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetEffectiveResourceAccessResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *EffectiveResourceAccess
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r GetEffectiveResourceAccessResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetEffectiveResourceAccessResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -18499,6 +19018,58 @@ func (c *ClientWithResponses) VerifyEventLogWithResponse(ctx context.Context, re
 		return nil, err
 	}
 	return ParseVerifyEventLogResponse(rsp)
+}
+
+// DeleteResourceGrantWithBodyWithResponse request with arbitrary body returning *DeleteResourceGrantResponse
+func (c *ClientWithResponses) DeleteResourceGrantWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DeleteResourceGrantResponse, error) {
+	rsp, err := c.DeleteResourceGrantWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteResourceGrantResponse(rsp)
+}
+
+func (c *ClientWithResponses) DeleteResourceGrantWithResponse(ctx context.Context, body DeleteResourceGrantJSONRequestBody, reqEditors ...RequestEditorFn) (*DeleteResourceGrantResponse, error) {
+	rsp, err := c.DeleteResourceGrant(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteResourceGrantResponse(rsp)
+}
+
+// ListResourceGrantsWithResponse request returning *ListResourceGrantsResponse
+func (c *ClientWithResponses) ListResourceGrantsWithResponse(ctx context.Context, params *ListResourceGrantsParams, reqEditors ...RequestEditorFn) (*ListResourceGrantsResponse, error) {
+	rsp, err := c.ListResourceGrants(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListResourceGrantsResponse(rsp)
+}
+
+// CreateResourceGrantWithBodyWithResponse request with arbitrary body returning *CreateResourceGrantResponse
+func (c *ClientWithResponses) CreateResourceGrantWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateResourceGrantResponse, error) {
+	rsp, err := c.CreateResourceGrantWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateResourceGrantResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreateResourceGrantWithResponse(ctx context.Context, body CreateResourceGrantJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateResourceGrantResponse, error) {
+	rsp, err := c.CreateResourceGrant(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateResourceGrantResponse(rsp)
+}
+
+// GetEffectiveResourceAccessWithResponse request returning *GetEffectiveResourceAccessResponse
+func (c *ClientWithResponses) GetEffectiveResourceAccessWithResponse(ctx context.Context, params *GetEffectiveResourceAccessParams, reqEditors ...RequestEditorFn) (*GetEffectiveResourceAccessResponse, error) {
+	rsp, err := c.GetEffectiveResourceAccess(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetEffectiveResourceAccessResponse(rsp)
 }
 
 // ListGroupsWithResponse request returning *ListGroupsResponse
@@ -21499,6 +22070,138 @@ func ParseVerifyEventLogResponse(rsp *http.Response) (*VerifyEventLogResponse, e
 			return nil, err
 		}
 		response.JSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteResourceGrantResponse parses an HTTP response from a DeleteResourceGrantWithResponse call
+func ParseDeleteResourceGrantResponse(rsp *http.Response) (*DeleteResourceGrantResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteResourceGrantResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest StatusResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListResourceGrantsResponse parses an HTTP response from a ListResourceGrantsWithResponse call
+func ParseListResourceGrantsResponse(rsp *http.Response) (*ListResourceGrantsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListResourceGrantsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest []ResourceGrant
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateResourceGrantResponse parses an HTTP response from a CreateResourceGrantWithResponse call
+func ParseCreateResourceGrantResponse(rsp *http.Response) (*CreateResourceGrantResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateResourceGrantResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ResourceGrant
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetEffectiveResourceAccessResponse parses an HTTP response from a GetEffectiveResourceAccessWithResponse call
+func ParseGetEffectiveResourceAccessResponse(rsp *http.Response) (*GetEffectiveResourceAccessResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetEffectiveResourceAccessResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest EffectiveResourceAccess
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
 
 	}
 

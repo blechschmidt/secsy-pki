@@ -1,10 +1,11 @@
 // Package rbac defines coarse-grained, organization-wide roles for PKI
 // operations and the capabilities each role grants.
 //
-// It complements — rather than replaces — the existing per-CA permission model
-// (SIGN_CERTIFICATE / MANAGE_PERMISSIONS / CONFIGURE_CA on individual CAs).
-// Roles are assigned centrally in configuration and answer the question "what
-// class of user is this?" across the whole system:
+// It complements — rather than replaces — the resource-scoped grant model in
+// grant.go, which authorizes a user or group at ONE named CA or key, and the
+// original per-CA permission model (SIGN_CERTIFICATE / MANAGE_PERMISSIONS /
+// CONFIGURE_CA on individual CAs). Roles are assigned centrally in configuration
+// and answer the question "what class of user is this?" across the whole system:
 //
 //   - admin   — full control, equivalent to the built-in root user.
 //   - issuer  — may issue/renew/revoke certificates on any CA (still subject to
@@ -69,6 +70,16 @@ const (
 	ActionConfigureCA Action = "ca:configure"
 	// ActionManageRBAC covers managing groups and per-CA permission grants.
 	ActionManageRBAC Action = "rbac:manage"
+	// ActionDelegate covers granting and revoking resource-scoped authority at a
+	// SINGLE resource — the delegation half of the per-CA / per-key grant model
+	// (Task 191, see grant.go). It is never granted by a platform or tenant role:
+	// tenant-wide delegation is rbac:manage, and this action exists so that the
+	// holder of a ca-admin grant on one subordinate CA can hand that same CA to
+	// its team without gaining any authority over its siblings, its parent, or
+	// the tenant's role assignments. A ca-manager deliberately lacks it, so
+	// day-to-day operation of a CA cannot be escalated into control over who else
+	// may operate it.
+	ActionDelegate Action = "resource:delegate"
 	// ActionManageHSM covers HSM provisioning, attestation, and factory reset.
 	ActionManageHSM Action = "hsm:manage"
 	// ActionEncrypt / ActionDecrypt cover the secret envelope endpoints.
@@ -171,6 +182,20 @@ const (
 	// a profile spans the whole process, not one tenant's data.
 	ActionProfile Action = "server:profile"
 )
+
+// AllActions is every capability the system recognizes. It backs
+// effective-permission introspection (Task 191), which replays the real
+// authorization decision for each action rather than reimplementing it — so the
+// reported capability set cannot drift from what the gates enforce.
+var AllActions = []Action{
+	ActionIssue, ActionReadAudit, ActionManageCA, ActionConfigureCA,
+	ActionManageRBAC, ActionDelegate, ActionManageHSM,
+	ActionEncrypt, ActionDecrypt, ActionDataKey, ActionHMAC, ActionRandom,
+	ActionTransform, ActionSign, ActionManageSigningKey, ActionManageEscrow,
+	ActionRecover, ActionRotateKEK, ActionSignArtifact,
+	ActionReadApproval, ActionApprove, ActionManageTokens, ActionManageWebhooks,
+	ActionProfile,
+}
 
 // roleActions is the static capability grant per role. admin is handled
 // separately as an allow-all superuser so new actions are covered by default.

@@ -14,7 +14,6 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
-	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 )
 
 // bulkRevokeParams builds the canonical parameter string that pins a bulk
@@ -55,20 +54,12 @@ func (a *API) BulkRevokeCertificates(w http.ResponseWriter, r *http.Request) {
 	user := middleware.GetUserInfo(r.Context())
 	caID := r.PathValue("id")
 
-	tenantID, err := a.db.GetCATenant(caID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "database error: %v", err)
-		return
-	}
-	if tenantID == "" {
-		writeError(w, http.StatusNotFound, "CA not found")
-		return
-	}
-	middleware.SetTenant(r.Context(), tenantID)
-	if !a.canInTenant(user, tenantID, rbac.ActionManageCA) {
+	// ca:manage in the CA's tenant, or an administrative resource grant on this
+	// specific CA (Task 191) — the team that owns a subordinate may run an
+	// incident-response mass revocation on it without tenant-wide authority.
+	_, ok := a.authorizeCAManage(w, r, caID, audit.ActionCertRevokeBulk)
+	if !ok {
 		metrics.RevocationsBulk.Inc(metrics.ResultDenied)
-		a.recordEvent(r, audit.ActionCertRevokeBulk, caID, "", audit.ResultDenied, "ca:manage capability required")
-		writeError(w, http.StatusForbidden, "bulk revocation requires the ca:manage capability for tenant %q", tenantID)
 		return
 	}
 

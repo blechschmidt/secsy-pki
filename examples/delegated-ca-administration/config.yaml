@@ -1,0 +1,142 @@
+# =============================================================================
+# Example: delegated CA administration — the platform team owns the root,
+#          each product team owns its own subordinate CA
+# =============================================================================
+# The role model in `rbac.subjects` / `rbac.groups` is tenant-wide: an `admin`
+# there administers EVERY CA. This example uses **resource grants** to express
+# the narrower, more common arrangement:
+#
+#   * the platform team administers the whole PKI, including the root CA;
+#   * the payments team administers exactly ONE subordinate CA;
+#   * the web team administers exactly ONE OTHER subordinate CA;
+#   * a security auditor can read one CA without any tenant-wide access;
+#   * a release pipeline can sign with ONE named key and no others.
+#
+# Grants are ADDITIVE: they widen what a named user or group may do at one
+# resource and never remove authority a platform or tenant role already confers.
+# A principal holding no role at all but holding a grant can see and operate
+# exactly the resource it was given — that is the least-privilege case here.
+#
+# See examples/delegated-ca-administration/README.md for the walkthrough, which
+# includes the commands that create the CAs whose ids appear below. Reference:
+# docs/security/resource-grants.md, docs/security/rbac-and-audit.md.
+
+server:
+  host: "0.0.0.0"
+  port: 8443
+  tls_cert: "certs/server.crt"
+  tls_key: "certs/server.key"
+
+database:
+  driver: "sqlite"
+  dsn: "secsy-pki.db"
+
+root_user:
+  username: "root"
+  password: "change-me-in-production"
+
+key_provider:
+  type: "pkcs11"
+
+pkcs11:
+  module_path: "/usr/lib/softhsm/libsofthsm2.so"
+  token_label: "secsy-ca"
+  pin: "1234"
+  session_pool_size: 8
+
+# --- Operator authentication --------------------------------------------------
+# Grants may name a group asserted by the identity provider, so an existing
+# enterprise group can be handed a CA without mirroring its membership here.
+# The `groups` claim resolved at login is what `rbac.grants[].groups` matches.
+auth:
+  oidc:
+    enabled: true
+    issuer_url: "https://idp.example.com/"
+    client_id: "secsy-pki-console"
+    client_secret: "change-me"
+    redirect_url: "https://pki.example.com/auth/callback"
+    scopes: [openid, profile, email, groups]
+    groups_claim: "groups"
+    # A delegated operator needs no tenant-wide role at all — its grants are its
+    # authority — so logins that resolve to zero roles must be permitted.
+    allow_zero_role: true
+
+# --- Authorization ------------------------------------------------------------
+rbac:
+  # Tenant-wide roles. Keep this list SHORT: everyone here administers every CA
+  # in the deployment, which is exactly what the grants below avoid needing.
+  subjects:
+    "platform-ops@example.com": [admin]
+  groups:
+    # Read-only oversight across the whole deployment. Note the contrast with
+    # `sec-audit-payments` further down, which sees one CA and nothing else.
+    "pki-platform-auditors": [auditor]
+
+  # --- Resource grants: per-CA and per-key delegation -------------------------
+  # Each entry delegates ONE resource. Replace the ids with your own —
+  # `secsy-ca list` prints them, and `secsy-ca grant roles` prints what each
+  # role confers. A grant naming no users and no groups is rejected at startup,
+  # so a typo'd key cannot silently authorize nobody.
+  grants:
+    # -- The payments team runs its own subordinate CA ------------------------
+    # ca-manager is full day-to-day operation of that one CA: rotate and retire
+    # its key, publish its chain, issue and revoke against it, edit its profiles
+    # and restriction sets. It deliberately CANNOT delegate — day-to-day
+    # operation must not be escalatable into control over who else may operate.
+    - resource: ca/1660ce02-bfb4-4a9f-8f38-1e91855d9531   # "sub-payments"
+      role: ca-manager
+      groups: [pki-payments]
+
+    # The team's leads own the payments BRANCH, not just the one CA: scope
+    # `subtree` reaches every CA beneath it, including ones created later, so a
+    # new regional sub-CA does not need a new grant. ca-admin adds
+    # `resource:delegate`, letting the leads hand the branch onward themselves
+    # without any authority over the rest of the PKI.
+    - resource: ca/1660ce02-bfb4-4a9f-8f38-1e91855d9531   # "sub-payments"
+      role: ca-admin
+      scope: subtree
+      groups: [pki-payments-leads]
+      users: ["payments-lead@example.com"]
+
+    # -- The web team runs a different subordinate ----------------------------
+    # Nothing here reaches the payments branch, and nothing in the payments
+    # entries reaches this one. Siblings are isolated from each other.
+    - resource: ca/92930351-1b5e-446e-b9a4-b1b4199c05ba   # "sub-web"
+      role: ca-manager
+      groups: [pki-web]
+
+    # -- Least-privilege audit of a single authority --------------------------
+    # ca-auditor confers only `audit:read` AT THIS CA: the group can see the CA,
+    # its inventory, and its trail, and can see nothing else in the deployment.
+    - resource: ca/1660ce02-bfb4-4a9f-8f38-1e91855d9531   # "sub-payments"
+      role: ca-auditor
+      groups: [sec-audit-payments]
+
+    # -- A CI pipeline gets exactly the key it signs with ---------------------
+    # key-signer may sign, verify, and export the public half of THIS key. It
+    # cannot create or replace the key (that is key-admin), and it cannot touch
+    # any other key in the tenant.
+    - resource: signing-key/release
+      role: key-signer
+      groups: [ci-release]
+
+    # NOTE: the root CA appears in NO grant. Authority over it comes only from a
+    # platform/tenant admin role, so no product team can reach it. Delegation
+    # adds an owner and never removes one: `platform-ops@example.com` above
+    # still administers every CA listed here.
+
+# --- Guardrails that apply regardless of who is asking -----------------------
+# A grant decides WHO MAY ASK; it never decides WHAT MAY BE MINTED. Profiles,
+# restriction sets, and every pre-issuance gate still apply to a delegated
+# operator exactly as they do to a tenant issuer.
+policy:
+  max_cert_validity_days: 397
+  require_reason: true
+
+profiles:
+  - name: payments-service
+    description: "Internal TLS for payments services"
+    key_usages: [digitalSignature, keyEncipherment]
+    ext_key_usages: [serverAuth, clientAuth]
+    default_validity_days: 30
+    max_validity_days: 90

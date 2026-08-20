@@ -256,6 +256,14 @@ func rbacMg(m, pat, path, b string) rc {
 		extra: map[string][]int{subjAdminA: den403}}
 }
 
+// grantMg: resource-scoped grant administration (Task 191). Authority is
+// rbac:manage WITHIN the resource's tenant, or resource:delegate on the resource
+// itself, so a tenant admin is capable in its own tenant and denied in another's.
+func grantMg(m, pat, path, b string) rc {
+	return rc{method: m, pattern: pat, path: path, body: b, capable: subjAdminA, denied: den403,
+		tenantScoped: true, cross: subjAdminB, crossDenied: den403}
+}
+
 // cfgCA: root or a per-CA CONFIGURE_CA grant (restriction-set management).
 func cfgCA(m, pat, path, b string) rc {
 	return rc{method: m, pattern: pat, path: path, body: b, capable: subjRoot, denied: den403,
@@ -421,6 +429,17 @@ func authzMatrix() []rc {
 		rbacMg("GET", "/api/keys/{id}/permissions", "/api/keys/ca-a/permissions", ""),
 		rbacMg("POST", "/api/keys/{id}/permissions", "/api/keys/ca-a/permissions", `{"entity_type":"user","entity_id":"x","permission":"SIGN_CERTIFICATE"}`),
 		rbacMg("DELETE", "/api/keys/{id}/permissions", "/api/keys/ca-a/permissions", `{"entity_type":"user","entity_id":"x","permission":"SIGN_CERTIFICATE"}`),
+
+		// Resource-scoped grants (Task 191): per-CA / per-key delegation. The
+		// resource is named in the query string (GET/DELETE) or the body (POST).
+		grantMg("GET", "/api/grants", "/api/grants?resource=ca/ca-a", ""),
+		grantMg("POST", "/api/grants", "/api/grants",
+			`{"resource":"ca/ca-a","entity_type":"group","entity_id":"team","role":"ca-manager"}`),
+		grantMg("DELETE", "/api/grants", "/api/grants",
+			`{"resource":"ca/ca-a","entity_type":"group","entity_id":"team","role":"ca-manager"}`),
+		// Effective-access review of ANOTHER subject is an access-control review and
+		// carries the same authority as administering grants.
+		grantMg("GET", "/api/grants/effective", "/api/grants/effective?resource=ca/ca-a&subject=someone-else", ""),
 
 		// Restriction sets.
 		rdG("GET", "/api/restriction-sets", "/api/restriction-sets", ""),

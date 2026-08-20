@@ -23,6 +23,7 @@ config key that does not exist.
 | [`github-oidc-signing/`](github-oidc-signing) | **Keyless software signing from GitHub Actions through OIDC** | GitHub's OIDC identity federated to the `signer` role — *no long-lived secret in the repo*; HSM-backed CMS signatures with RFC 3161 timestamps; a reusable release workflow and a downstream `openssl cms` verify script |
 | [`acme-tls/`](acme-tls) | **Automated internal TLS** for services and ingress | RFC 8555 ACME server bound to an issuing CA; `certbot` / `acme.sh` / `lego` / Caddy / cert-manager clients; rate limiting for the public endpoint |
 | [`mtls-internal/`](mtls-internal) | **Private CA for service-to-service mTLS** | `server` / `client` leaf profiles, a scoped API-token service account for CI issuance, and machine mTLS operator auth |
+| [`delegated-ca-administration/`](delegated-ca-administration) | **Per-CA / per-key authorization** — the platform team keeps the root CA while each product team administers only its own subordinate | `rbac.grants` delegating one CA (or one signing key) to a group; `self` vs `subtree` scope; least-privilege audit of a single authority; `secsy-ca grant` and the console **Access** page |
 
 ## Common prerequisites
 

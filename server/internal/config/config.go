@@ -2456,6 +2456,38 @@ type SigningSignerConfig struct {
 type RBACConfig struct {
 	Subjects map[string][]string `yaml:"subjects"`
 	Groups   map[string][]string `yaml:"groups"`
+	// Grants delegate authority over ONE named CA or key to users and groups
+	// (Task 191). Where Subjects/Groups above answer "what class of operator is
+	// this across the tenant?", a grant answers "who owns this particular
+	// authority?" — the mechanism that lets a platform admin keep the root CA
+	// while a product team administers only its own subordinate.
+	//
+	// Grants configured here are declarative and immutable at runtime: they are
+	// reviewable in version control and survive a database rebuild. Grants may
+	// additionally be delegated at runtime through the API/CLI, which stores them
+	// in the resource_grants table; the two sources are unioned at decision time.
+	Grants []ResourceGrantConfig `yaml:"grants"`
+}
+
+// ResourceGrantConfig is one declarative grant entry. A single entry may name
+// several users and groups, which keeps the common "this team owns this CA"
+// rule to one reviewable block.
+type ResourceGrantConfig struct {
+	// Resource is the object being delegated, in "<type>/<id>" form —
+	// "ca/<ca-id>", "ssh-ca/<ssh-ca-id>", or "signing-key/<key-name>".
+	Resource string `yaml:"resource"`
+	// Role is the capability bundle granted at that resource: ca-admin,
+	// ca-manager, ca-issuer, ca-auditor for authorities; key-admin, key-signer,
+	// key-auditor for signing keys.
+	Role string `yaml:"role"`
+	// Scope is "self" (default — exactly this resource) or "subtree" (this CA and
+	// every CA beneath it, including ones created later).
+	Scope string `yaml:"scope"`
+	// Users are principal subjects or verified email addresses.
+	Users []string `yaml:"users"`
+	// Groups are group identifiers, matched against both internal database groups
+	// and the groups asserted by the identity provider (OIDC claim / LDAP).
+	Groups []string `yaml:"groups"`
 }
 
 // TenantConfig declares an isolated organization served by this deployment.
@@ -5228,7 +5260,78 @@ func (c *Config) validateRBAC() error {
 	if err := check("groups", c.RBAC.Groups); err != nil {
 		return err
 	}
+	if _, err := c.RBAC.ResourceGrants("rbac"); err != nil {
+		return err
+	}
 	return c.validateTenants(check)
+}
+
+// ResourceGrants expands the declarative grant entries into the flat
+// rbac.Grant rules the authorization evaluator consumes, rejecting malformed
+// entries with a message that names the offending block. prefix identifies the
+// config path for error messages ("rbac" or "tenants[\"acme\"].rbac").
+//
+// An entry naming no user and no group is rejected rather than ignored: a grant
+// that authorizes nobody is always a mistake, and silently accepting it hides a
+// typo'd key from the operator who expected a team to gain access.
+func (c RBACConfig) ResourceGrants(prefix string) ([]rbac.Grant, error) {
+	var out []rbac.Grant
+	for i, e := range c.Grants {
+		where := fmt.Sprintf("%s.grants[%d]", prefix, i)
+		res, err := rbac.ParseResource(e.Resource)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", where, err)
+		}
+		if len(e.Users) == 0 && len(e.Groups) == 0 {
+			return nil, fmt.Errorf("%s: grant on %s names no users and no groups", where, res)
+		}
+		add := func(entityType string, ids []string) error {
+			for _, id := range ids {
+				if strings.TrimSpace(id) == "" {
+					return fmt.Errorf("%s: empty %s entry", where, entityType)
+				}
+				g := rbac.Grant{
+					Resource:   res,
+					EntityType: entityType,
+					EntityID:   strings.TrimSpace(id),
+					Role:       rbac.ResourceRole(e.Role),
+					Scope:      rbac.GrantScope(e.Scope),
+				}.Normalized()
+				if err := g.Validate(); err != nil {
+					return fmt.Errorf("%s: %w", where, err)
+				}
+				out = append(out, g)
+			}
+			return nil
+		}
+		if err := add(rbac.EntityUser, e.Users); err != nil {
+			return nil, err
+		}
+		if err := add(rbac.EntityGroup, e.Groups); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// AllResourceGrants returns every declarative grant in the deployment: the
+// platform-level rbac.grants block plus each tenant's own. Tenant blocks may
+// only name resources, never widen the role vocabulary, so no extra scoping is
+// needed here — a grant is already bound to one resource, and that resource
+// already belongs to exactly one tenant.
+func (c *Config) AllResourceGrants() ([]rbac.Grant, error) {
+	out, err := c.RBAC.ResourceGrants("rbac")
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range c.Tenants {
+		g, err := t.RBAC.ResourceGrants(fmt.Sprintf("tenants[%q].rbac", t.ID))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, g...)
+	}
+	return out, nil
 }
 
 // validateTenants rejects duplicate/reserved tenant identifiers and unknown
@@ -5257,6 +5360,9 @@ func (c *Config) validateTenants(checkRoles func(string, map[string][]string) er
 			return err
 		}
 		if err := checkRoles(fmt.Sprintf("tenants[%q].rbac.groups", t.ID), t.RBAC.Groups); err != nil {
+			return err
+		}
+		if _, err := t.RBAC.ResourceGrants(fmt.Sprintf("tenants[%q].rbac", t.ID)); err != nil {
 			return err
 		}
 	}

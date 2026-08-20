@@ -6,6 +6,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
+	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 )
 
 // Store is the persistence abstraction for the PKI's shared state. It captures
@@ -442,6 +443,16 @@ type RBACStore interface {
 	RevokePermission(caID, entityType, entityID string, perm models.Permission) error
 	GetPermissions(caID string) ([]models.PermissionEntry, error)
 	HasPermission(caID, userSub string, perm models.Permission, groupIDs []string) (bool, error)
+
+	// Resource-scoped grants (Task 191): per-CA / per-key delegation to users and
+	// groups. GetCAAncestors backs subtree-scoped inheritance.
+	PutResourceGrant(g *models.ResourceGrant) error
+	DeleteResourceGrant(res rbac.Resource, entityType, entityID string, role rbac.ResourceRole) (bool, error)
+	DeleteResourceGrantsFor(res rbac.Resource) error
+	ListResourceGrants(res rbac.Resource) ([]models.ResourceGrant, error)
+	ListResourceGrantsAt(resources []rbac.Resource) ([]models.ResourceGrant, error)
+	ListAllResourceGrants() ([]models.ResourceGrant, error)
+	GetCAAncestors(caID string) ([]string, error)
 
 	CreateRestrictionSet(rs *models.RestrictionSet) error
 	UpdateRestrictionSet(rs *models.RestrictionSet) error

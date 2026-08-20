@@ -118,24 +118,14 @@ func (a *API) InitRootCA(w http.ResponseWriter, r *http.Request) {
 // IssueIntermediateCA generates an intermediate CA key inside the key provider
 // and issues an intermediate certificate signed by the parent CA on the device.
 func (a *API) IssueIntermediateCA(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserInfo(r.Context())
 	parentID := r.PathValue("id")
 
-	// The intermediate inherits the parent's tenant; the caller must hold
-	// ca:manage within that tenant.
-	tenantID, err := a.db.GetCATenant(parentID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "parent CA lookup failed: %v", err)
-		return
-	}
-	if tenantID == "" {
-		writeError(w, http.StatusNotFound, "parent CA %q not found", parentID)
-		return
-	}
-	middleware.SetTenant(r.Context(), tenantID)
-	if !a.canInTenant(user, tenantID, rbac.ActionManageCA) {
-		a.recordEvent(r, audit.ActionCAIssueIntermediate, parentID, "", audit.ResultDenied, "ca:manage capability required")
-		writeError(w, http.StatusForbidden, "ca:manage capability required for tenant %q", tenantID)
+	// The intermediate inherits the parent's tenant; the caller must be able to
+	// administer the PARENT — through ca:manage in that tenant or a resource grant
+	// on the parent CA (Task 191). Authority over the parent is what authorizes
+	// growing the hierarchy beneath it.
+	tenantID, ok := a.authorizeCAManage(w, r, parentID, audit.ActionCAIssueIntermediate)
+	if !ok {
 		return
 	}
 	// A suspended tenant cannot grow its CA hierarchy (its existing CAs keep

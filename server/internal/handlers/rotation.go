@@ -12,7 +12,6 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
-	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 )
 
 // Intermediate-CA key-rotation endpoints (Task 24 brought the capability to the
@@ -59,27 +58,12 @@ type RetireCAResponse struct {
 	OutstandingLeaves int        `json:"outstanding_leaves"`
 }
 
-// authorizeCARotation loads the tenant of CA {id} and checks the caller holds
-// ca:manage within it, writing the error response on failure. It returns the
-// tenant id and whether the caller may proceed.
+// authorizeCARotation loads the tenant of CA {id} and checks the caller may
+// administer that specific CA — via ca:manage in its tenant or a resource grant
+// on the CA itself (Task 191) — writing the error response on failure. It
+// returns the tenant id and whether the caller may proceed.
 func (a *API) authorizeCARotation(w http.ResponseWriter, r *http.Request, caID, action string) (string, bool) {
-	user := middleware.GetUserInfo(r.Context())
-	tenantID, err := a.db.GetCATenant(caID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "CA lookup failed: %v", err)
-		return "", false
-	}
-	if tenantID == "" {
-		writeError(w, http.StatusNotFound, "CA %q not found", caID)
-		return "", false
-	}
-	middleware.SetTenant(r.Context(), tenantID)
-	if !a.canInTenant(user, tenantID, rbac.ActionManageCA) {
-		a.recordEvent(r, action, caID, "", audit.ResultDenied, "ca:manage capability required")
-		writeError(w, http.StatusForbidden, "ca:manage capability required for tenant %q", tenantID)
-		return "", false
-	}
-	return tenantID, true
+	return a.authorizeCAManage(w, r, caID, action)
 }
 
 // RotateIntermediateCA performs an HSM-backed signing-key rollover of an

@@ -305,6 +305,9 @@ func run(args []string) error {
 		return cmdTenant(db, cmdArgs)
 	case "token":
 		return cmdToken(db, cfg, cmdArgs)
+	case "grant":
+		// Per-CA / per-key delegation to users and groups (Task 191).
+		return cmdGrant(db, cfg, cmdArgs)
 	case "webhook":
 		return cmdWebhook(db, cfg, cmdArgs)
 	case "blocked-keys":
@@ -524,6 +527,9 @@ Commands:
                       audit chain, expiry, CRL freshness, clock, TLS); exit 0/1/2
   token               Manage native scoped API tokens / service accounts
                       (create/list/revoke); create prints the secret once
+  grant               Delegate ONE CA or key to a user or group
+                      (add/remove/list/effective/roles), e.g. let a group
+                      administer a single sub-CA without tenant-wide authority
   blocked-keys        Manage the compromised-key blocklist (add/list/remove);
                       blocked subject keys are rejected fail-closed at issuance
   hsm-audit           YubiHSM device audit log: provision/collect/timestamp/

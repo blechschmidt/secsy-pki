@@ -8,6 +8,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/nameconstraints"
+	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 )
 
 // DefaultTenantID is the reserved identifier of the built-in tenant. Every
@@ -1122,6 +1123,68 @@ type PermissionEntry struct {
 	X509RestrictionSetID *string    `json:"x509_restriction_set_id,omitempty" db:"x509_restriction_set_id"`
 }
 
+// ResourceGrant is a stored, runtime-delegated authorization binding one user
+// or group to one resource role at one individually-addressed CA or key
+// (Task 191). It is the persisted counterpart of the declarative `rbac.grants`
+// configuration block: both are expanded into rbac.Grant rules and unioned at
+// decision time, so an operator can review the durable baseline in version
+// control while still delegating day-to-day ownership through the API.
+type ResourceGrant struct {
+	ID           string            `json:"id" db:"id"`
+	ResourceType rbac.ResourceType `json:"resource_type" db:"resource_type"`
+	ResourceID   string            `json:"resource_id" db:"resource_id"`
+	EntityType   string            `json:"entity_type" db:"entity_type"` // "user" or "group"
+	EntityID     string            `json:"entity_id" db:"entity_id"`
+	Role         rbac.ResourceRole `json:"role" db:"role"`
+	Scope        rbac.GrantScope   `json:"scope" db:"scope"`
+	CreatedAt    time.Time         `json:"created_at" db:"created_at"`
+	CreatedBy    string            `json:"created_by,omitempty" db:"created_by"`
+}
+
+// Grant projects the stored row onto the evaluator's rule type.
+func (g *ResourceGrant) Grant() rbac.Grant {
+	return rbac.Grant{
+		Resource:   rbac.Resource{Type: g.ResourceType, ID: g.ResourceID},
+		EntityType: g.EntityType,
+		EntityID:   g.EntityID,
+		Role:       g.Role,
+		Scope:      g.Scope,
+	}.Normalized()
+}
+
+// ResourceGrantRequest is the API/CLI payload that creates or removes a stored
+// grant. Resource is the canonical "<type>/<id>" string.
+type ResourceGrantRequest struct {
+	Resource   string            `json:"resource"`
+	EntityType string            `json:"entity_type"`
+	EntityID   string            `json:"entity_id"`
+	Role       rbac.ResourceRole `json:"role"`
+	Scope      rbac.GrantScope   `json:"scope,omitempty"`
+}
+
+// EffectiveResourceAccess reports what a principal may actually do at one
+// resource and why — the introspection an operator needs to answer "who can
+// administer this CA?" without replaying the decision by hand.
+type EffectiveResourceAccess struct {
+	Resource string `json:"resource"`
+	Subject  string `json:"subject"`
+	// TenantID is the tenant the resource belongs to (empty for resources with no
+	// tenant binding, such as a not-yet-created CA).
+	TenantID string `json:"tenant_id,omitempty"`
+	// Root/PlatformRoles/TenantRoles record the coarse-grained standing that
+	// applies here independently of any grant.
+	IsRoot        bool     `json:"is_root"`
+	PlatformRoles []string `json:"platform_roles,omitempty"`
+	TenantRoles   []string `json:"tenant_roles,omitempty"`
+	// ResourceRoles are the grant-derived roles held at this resource, including
+	// ones inherited from an ancestor CA through a subtree-scoped grant.
+	ResourceRoles []rbac.ResourceRole `json:"resource_roles,omitempty"`
+	// Actions is the resulting capability set at this resource, sorted.
+	Actions []rbac.Action `json:"actions"`
+	// Grants are the individual rules that matched, for traceability.
+	Grants []rbac.Grant `json:"grants,omitempty"`
+}
+
 // RestrictionSetType distinguishes between SSH and X.509 restriction sets.
 type RestrictionSetType string
 
@@ -1295,6 +1358,14 @@ type UserInfo struct {
 	// holds a platform role, or holds a role for that specific tenant here — the
 	// mechanism that forbids cross-tenant access.
 	TenantRoles map[string][]string `json:"tenant_roles,omitempty"`
+	// Groups are the group identities asserted by the identity provider at
+	// authentication: the OIDC groups claim, or the directory groups an LDAP/AD
+	// login resolved. They are carried on the principal because resource-scoped
+	// grants (Task 191) may name an existing enterprise group directly, so the
+	// authorization layer needs the caller's IdP group membership — not just the
+	// internal groups recorded in the database — to match a grant. Empty for
+	// principals with no directory identity (root, API tokens, mTLS bindings).
+	Groups []string `json:"groups,omitempty"`
 }
 
 // TenantsWithRoles returns the set of tenant IDs the subject holds at least one

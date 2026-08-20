@@ -273,10 +273,16 @@ const (
 	ActionSecretSignVerify       = "secret.sign_verify"
 	ActionPermissionGrant        = "permission.grant"
 	ActionPermissionRevoke       = "permission.revoke"
-	ActionGroupCreate            = "group.create"
-	ActionGroupDelete            = "group.delete"
-	ActionHSMProvisionAudit      = "hsm.provision_audit"
-	ActionHSMFactoryReset        = "hsm.factory_reset"
+	// Resource-scoped grant lifecycle (Task 191): delegating or withdrawing
+	// authority over one individually-addressed CA or key. Kept distinct from the
+	// legacy per-CA permission.* actions above so an access review can tell a
+	// three-verb CA ACL change apart from a role-bearing resource delegation.
+	ActionResourceGrant     = "resource.grant"
+	ActionResourceRevoke    = "resource.revoke"
+	ActionGroupCreate       = "group.create"
+	ActionGroupDelete       = "group.delete"
+	ActionHSMProvisionAudit = "hsm.provision_audit"
+	ActionHSMFactoryReset   = "hsm.factory_reset"
 	// ActionHSMKeyAttestation records one YubiHSM key attestation (Task 168):
 	// the device was asked to attest an asymmetric key, and the result was
 	// checked against the configured policy. Detail carries the verdict, so the

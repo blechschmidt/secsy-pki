@@ -148,10 +148,11 @@ func (a *API) canReadAnyTenant(user *models.UserInfo) bool {
 // a specific CA. It first resolves the CA's owning tenant and records it on the
 // request context so any resulting audit event is attributed to that tenant.
 // Access is satisfied by the issue capability WITHIN the CA's tenant (a
-// platform/tenant issuer role) OR a per-CA SIGN_CERTIFICATE grant. A principal
-// whose roles live in a different tenant is denied here — this is where
-// cross-tenant issuance is blocked. Restriction sets are still enforced
-// downstream regardless of how access was granted.
+// platform/tenant issuer role), a resource grant on this CA or a subtree-scoped
+// grant on one of its ancestors (Task 191), OR a legacy per-CA SIGN_CERTIFICATE
+// permission. A principal whose roles live in a different tenant is denied here
+// — this is where cross-tenant issuance is blocked. Restriction sets are still
+// enforced downstream regardless of how access was granted.
 func (a *API) canIssueOn(ctx context.Context, user *models.UserInfo, caID string) (bool, error) {
 	tenantID, err := a.db.GetCATenant(caID)
 	if err != nil {
@@ -166,10 +167,28 @@ func (a *API) canIssueOn(ctx context.Context, user *models.UserInfo, caID string
 		// tenant-scoped principal is denied rather than allowed to probe.
 		return a.can(user, rbac.ActionIssue), nil
 	}
-	if a.canInTenant(user, tenantID, rbac.ActionIssue) {
+	if a.canOnResource(user, rbac.Resource{Type: rbac.ResourceCA, ID: caID}, tenantID, rbac.ActionIssue) {
 		return true, nil
 	}
 	return a.checkPermission(user, caID, models.PermSignCertificate)
+}
+
+// canConfigureCA reports whether the user may edit a CA's profiles, restriction
+// sets, and defaults.
+//
+// Restriction-set management is deliberately NARROWER than tenant
+// administration: holding admin in a tenant does not by itself authorize editing
+// a CA's issuance guardrails, which is why the caller checks IsRoot separately
+// and this consults only per-CA authority. That boundary is preserved here — the
+// resource grant is added as a second way to hold per-CA authority alongside the
+// legacy CONFIGURE_CA permission, and no tenant-wide role is consulted, so the
+// set of principals that can reach these endpoints only ever grows by explicit
+// delegation.
+func (a *API) canConfigureCA(user *models.UserInfo, caID string) (bool, error) {
+	if a.grantAllows(user, rbac.Resource{Type: rbac.ResourceCA, ID: caID}, rbac.ActionConfigureCA) {
+		return true, nil
+	}
+	return a.checkPermission(user, caID, models.PermConfigureCA)
 }
 
 // clientIP extracts the best-effort client IP, honoring X-Forwarded-For when

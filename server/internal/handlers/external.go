@@ -104,22 +104,10 @@ func (a *API) GetExternalCACSR(w http.ResponseWriter, r *http.Request) {
 // supplied — it must verify against the external chain, which is then served
 // via /api/ca/{id}/chain.
 func (a *API) ImportExternalCACert(w http.ResponseWriter, r *http.Request) {
-	user := middleware.GetUserInfo(r.Context())
 	caID := r.PathValue("id")
 
-	tenantID, err := a.db.GetCATenant(caID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "CA lookup failed: %v", err)
-		return
-	}
-	if tenantID == "" {
-		writeError(w, http.StatusNotFound, "CA %q not found", caID)
-		return
-	}
-	middleware.SetTenant(r.Context(), tenantID)
-	if !a.canInTenant(user, tenantID, rbac.ActionManageCA) {
-		a.recordEvent(r, audit.ActionCAImportCert, caID, "", audit.ResultDenied, "ca:manage capability required")
-		writeError(w, http.StatusForbidden, "ca:manage capability required for tenant %q", tenantID)
+	tenantID, ok := a.authorizeCAManage(w, r, caID, audit.ActionCAImportCert)
+	if !ok {
 		return
 	}
 	// A suspended tenant cannot activate new issuing capacity.
