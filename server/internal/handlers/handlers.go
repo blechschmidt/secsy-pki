@@ -755,6 +755,16 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 		// Verification needs no device, so it is available to an auditor who has
 		// only been handed an attestation.
 		mux.Handle("POST /api/hsm/attestation:verify", protected(http.HandlerFunc(a.VerifyHSMAttestation)))
+		// Task 189/190: device authenticity. The attestations above are signed by
+		// a key on the device; this establishes the device holding it, so an
+		// operator can answer "is this genuine Yubico hardware, and which serial"
+		// from the console rather than only from a host shell.
+		mux.Handle("POST /api/hsm/attest-device", protected(http.HandlerFunc(a.AttestDevice)))
+		mux.Handle("POST /api/hsm/device-attestation:verify", protected(http.HandlerFunc(a.VerifyDeviceAttestation)))
+		// Task 190: the read-only reconciliation view behind the audit bundle, so
+		// the console can show whether the device log is being accounted for
+		// without downloading and re-verifying the whole thing.
+		mux.Handle("GET /api/hsm/audit-status", protected(http.HandlerFunc(a.HSMAuditStatus)))
 	}
 
 	// OpenAPI spec + docs UI. The spec is served at the conventional

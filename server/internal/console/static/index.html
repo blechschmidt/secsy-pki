@@ -45,6 +45,7 @@
         <button data-view="issue">Issue</button>
         <button data-view="p12">PKCS#12</button>
         <button data-view="cas">Authorities</button>
+        <button data-view="hsm">HSM</button>
         <button data-view="ssh">SSH CA</button>
         <button data-view="signing">Signing</button>
         <button data-view="acme">ACME</button>
@@ -883,6 +884,22 @@
           <span class="muted" id="auditPage" style="margin-top:6px"></span>
           <button class="btn ghost sm" id="auditNext">Older →</button>
         </div>
+
+        <!-- RFC 4998 Evidence Records (Task 161) -->
+        <div class="panel" style="margin-top:14px">
+          <h2 style="font-size:15px">Evidence record (RFC 4998)</h2>
+          <p class="sub">An evidence record preserves a proof over time: nested RFC 3161 timestamp chains that keep an audit-chain head or a signed artifact verifiable long after the original signature algorithm has weakened. Verify one by its stored id, or paste a base64 DER record an archivist handed you — the console counterpart of <code>secsy-ca ers verify</code>.</p>
+          <div id="ersError" class="notice err hidden" style="margin-bottom:8px"></div>
+          <div class="row">
+            <div class="field" style="flex:1;min-width:220px"><label for="ersID">Stored record id</label><input id="ersID" placeholder="er-…"></div>
+            <button class="btn" id="ersVerifyBtn" style="margin-top:16px">Verify</button>
+          </div>
+          <div class="field">
+            <label for="ersRecord">…or a record (base64 DER)</label>
+            <textarea id="ersRecord" placeholder="MIIF…" style="min-height:80px;font-family:monospace;font-size:12px"></textarea>
+          </div>
+          <div id="ersResult" class="hidden" style="margin-top:10px"></div>
+        </div>
       </section>
 
       <!-- Four-eyes / maker-checker approvals -->
@@ -1009,6 +1026,103 @@
         <div id="validateResult"></div>
       </section>
 
+      <!-- YubiHSM: device authenticity, key attestation, and the device audit log -->
+      <section class="view" id="view-hsm">
+        <h2>Hardware security module</h2>
+        <p class="sub">The device this PKI's private keys live inside. Prove the hardware is genuine Yubico silicon and learn its serial, attest that a key was born on the device and cannot leave it, and read the device's own tamper-evident operation log — the counterparts of <code>secsy-ca hsm-attest</code> and <code>secsy-ca hsm-audit</code>. Producing evidence needs <code>hsm:manage</code>; checking it needs only <code>audit:read</code>, so an auditor can verify a claim without holding the capability that administers the device.</p>
+        <div id="hsmDisabled" class="notice err hidden">No YubiHSM is configured on this server (<code>yubihsm.connector_url</code> unset), so the device endpoints are not registered.</div>
+        <div id="hsmMsg" class="notice hidden" style="margin-bottom:12px"></div>
+
+        <div id="hsmBody" class="hidden">
+          <div class="row" style="align-items:stretch">
+            <div class="panel" style="flex:1;min-width:300px">
+              <h2 style="font-size:15px">Device</h2>
+              <div id="hsmInfo" class="muted">Loading…</div>
+              <div class="toolbar" style="margin-top:10px">
+                <button class="btn ghost sm" id="hsmRefresh">Refresh</button>
+                <button class="btn ghost sm" id="hsmDevCertBtn" title="Download the factory attestation certificate from opaque object 0">Device certificate (PEM)</button>
+              </div>
+            </div>
+            <div class="panel" style="flex:1.3;min-width:340px">
+              <h2 style="font-size:15px">Audit-log reconciliation</h2>
+              <p class="sub">Every signature the device performs is recorded in its own log; the CA records every signature it asked for. The two counts agreeing is what says no key was used behind the CA's back.</p>
+              <div id="hsmAuditStatus" class="muted">Loading…</div>
+              <div class="toolbar" style="margin-top:10px">
+                <button class="btn ghost sm" id="hsmBundleBtn" title="Download the self-contained bundle an auditor checks offline with 'secsy-ca hsm-audit verify'">Audit bundle</button>
+                <button class="btn ghost sm" id="hsmSignedLogBtn">Signed log</button>
+                <button class="btn ghost sm" id="hsmCombinedLogBtn">Combined log</button>
+                <button class="btn ghost sm" id="hsmProvisionBtn" title="Irreversibly commission a factory-reset device for forced audit logging">Provision audit</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Device authenticity (Task 189) -->
+          <div class="panel">
+            <h2 style="font-size:15px">Device authenticity</h2>
+            <p class="sub">Reads the device attestation certificate, verifies it against Yubico's published attestation CA, and makes the device answer a nonce by attesting a throwaway key labelled with it. Chain verification alone authenticates a <i>certificate</i> — anyone can replay a copy; only the device holding the attestation private key can answer a fresh challenge. The verified serial is the answer.</p>
+            <div id="hsmDeviceError" class="notice err hidden" style="margin-bottom:8px"></div>
+            <div class="row">
+              <div class="field" style="flex:2;min-width:220px"><label for="hsmChallenge">Challenge <span class="muted">(optional — blank generates a fresh nonce)</span></label><input id="hsmChallenge" placeholder="a nonce you chose"></div>
+              <div class="field" style="flex:1;min-width:160px"><label for="hsmExpectSerial">Expected serial <span class="muted">(optional)</span></label><input id="hsmExpectSerial" placeholder="must match"></div>
+              <label class="muted" style="display:flex;gap:6px;align-items:center;margin-top:16px" title="Read and check the certificate only; do not write a challenge key to the device">
+                <input type="checkbox" id="hsmNoChallenge"> read-only (no challenge)
+              </label>
+              <button class="btn" id="hsmAttestDeviceBtn" style="margin-top:16px">Attest device</button>
+            </div>
+            <div id="hsmDeviceResult" class="hidden" style="margin-top:12px"></div>
+          </div>
+
+          <!-- Key attestation (Task 168) -->
+          <div class="panel">
+            <h2 style="font-size:15px">Key attestation</h2>
+            <p class="sub">Ask the device to attest one asymmetric key: that it was generated inside the HSM and holds no capability permitting export. Attesting <b>by CA</b> additionally binds the result to that CA's certificate, so the verdict describes the key the CA actually signs with rather than merely some object on the device.</p>
+            <div id="hsmKeyError" class="notice err hidden" style="margin-bottom:8px"></div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:220px"><label for="hsmAttestCA">Certificate authority</label><select id="hsmAttestCA"></select></div>
+              <button class="btn" id="hsmAttestCABtn" style="margin-top:16px">Attest CA key</button>
+              <div class="field" style="flex:1;min-width:200px"><label for="hsmAttestLabel">…or an HSM key label</label><input id="hsmAttestLabel" placeholder="ca-root"></div>
+              <button class="btn ghost" id="hsmAttestLabelBtn" style="margin-top:16px">Attest by label</button>
+            </div>
+            <div id="hsmKeyResult" class="hidden" style="margin-top:12px"></div>
+          </div>
+
+          <!-- Offline verification (Task 168/189) -->
+          <div class="panel">
+            <h2 style="font-size:15px">Verify an attestation</h2>
+            <p class="sub">Check a bundle you were handed. Nothing here touches the device or the database — the point of an attestation is that a third party can evaluate it independently. Device and key bundles are told apart automatically, exactly as <code>secsy-ca hsm-attest verify</code> does.</p>
+            <div id="hsmVerifyError" class="notice err hidden" style="margin-bottom:8px"></div>
+            <div class="field">
+              <label for="hsmVerifyInput">Attestation (JSON bundle)</label>
+              <textarea id="hsmVerifyInput" placeholder='{"kind":"yubihsm-device-attestation", …}' style="min-height:110px;font-family:monospace;font-size:12px"></textarea>
+            </div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:180px"><label for="hsmVerifyChallenge">Expected challenge <span class="muted">(optional)</span></label><input id="hsmVerifyChallenge" placeholder="the nonce you chose"></div>
+              <div class="field" style="flex:1;min-width:160px"><label for="hsmVerifySerial">Expected serial <span class="muted">(optional)</span></label><input id="hsmVerifySerial"></div>
+              <div class="field" style="flex:1;min-width:200px"><label for="hsmVerifyKey">Expected public key <span class="muted">(key bundles; PEM)</span></label><input id="hsmVerifyKey" placeholder="paste a PUBLIC KEY or CERTIFICATE"></div>
+              <label class="muted" style="display:flex;gap:6px;align-items:center;margin-top:16px" title="Accept a device bundle that answers no challenge (a weaker claim)">
+                <input type="checkbox" id="hsmVerifyAllowNoChallenge"> allow no challenge
+              </label>
+              <button class="btn" id="hsmVerifyBtn" style="margin-top:16px">Verify</button>
+            </div>
+            <div id="hsmVerifyResult" class="hidden" style="margin-top:12px"></div>
+          </div>
+
+          <!-- Device log (Task 167) -->
+          <div class="panel">
+            <h2 style="font-size:15px">Device audit log</h2>
+            <p class="sub">The YubiHSM's own append-only record of the commands it executed, read straight from the device. Each entry carries a hash chaining it to its predecessor, so a removed or altered entry breaks the chain.</p>
+            <div class="toolbar">
+              <div class="spacer"></div>
+              <button class="btn ghost sm" id="hsmLogRefresh">Load log</button>
+            </div>
+            <table>
+              <thead><tr><th>#</th><th>Command</th><th>Session key</th><th>Target key</th><th>Result</th><th>Tick</th><th>Chain hash</th></tr></thead>
+              <tbody id="hsmLogRows"><tr><td colspan="7" class="muted">Not loaded.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       <!-- Trust bundle / chain -->
       <section class="view" id="view-bundle">
         <h2>Trust bundle &amp; chain</h2>
@@ -1028,6 +1142,15 @@
             <label>Issuer chain (PEM)</label>
             <textarea id="chainPEM" readonly style="min-height:200px"></textarea>
           </div>
+        </div>
+        <!-- Alternate chains (RFC 8555 §7.4.2 / cross-signing) -->
+        <div class="panel">
+          <h2 style="font-size:15px">Alternate chains</h2>
+          <p class="sub">Every path a relying party could use to reach a trust anchor for this CA: the native chain plus one per cross-signature. Serving an alternate lets a client that trusts an older root validate the same leaf — the console counterpart of <code>secsy-ca list-cross-signs -chains</code>.</p>
+          <table>
+            <thead><tr><th>Source</th><th>Trust anchor</th><th>Depth</th><th></th></tr></thead>
+            <tbody id="altChainRows"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
+          </table>
         </div>
         <div class="panel hidden" id="svidPanel">
           <div class="field">
@@ -1270,8 +1393,130 @@
               <div class="field" style="margin-top:10px"><label for="sigOut">Signature (base64) <span class="muted">— filled by Sign; paste one here to verify</span></label><textarea id="sigOut" style="min-height:60px;font-family:monospace;font-size:12px"></textarea></div>
               <button class="btn ghost" id="sigVerifyBtn">Verify signature</button>
               <div id="sigVerifyResult" class="muted" style="margin-top:8px"></div>
+              <!-- Verify against a supplied public key: no stored key needed, so a
+                   relying party can check a signature this PKI produced. -->
+              <div class="field" style="margin-top:12px">
+                <label for="sigVerifyPub">…or verify against a supplied public key <span class="muted">(SPKI PEM; leave blank to use the named key)</span></label>
+                <textarea id="sigVerifyPub" placeholder="-----BEGIN PUBLIC KEY-----" style="min-height:70px;font-family:monospace;font-size:12px"></textarea>
+              </div>
+              <div class="field">
+                <label for="sigVerifyAlg">Algorithm <span class="muted">(required with a supplied key)</span></label>
+                <select id="sigVerifyAlg">
+                  <option value="">—</option>
+                  <option value="ecdsa-p256">ecdsa-p256</option>
+                  <option value="ecdsa-p384">ecdsa-p384</option>
+                  <option value="ecdsa-p521">ecdsa-p521</option>
+                  <option value="ed25519">ed25519</option>
+                  <option value="rsa-pss-2048">rsa-pss-2048</option>
+                  <option value="rsa-pss-3072">rsa-pss-3072</option>
+                  <option value="rsa-pss-4096">rsa-pss-4096</option>
+                  <option value="rsa-pkcs1v15-2048">rsa-pkcs1v15-2048</option>
+                  <option value="rsa-pkcs1v15-3072">rsa-pkcs1v15-3072</option>
+                  <option value="rsa-pkcs1v15-4096">rsa-pkcs1v15-4096</option>
+                </select>
+              </div>
             </div>
           </div>
+        </div>
+
+        <!-- Format-preserving encryption / tokenization (Task 144) -->
+        <h2 style="font-size:15px;margin-top:22px">Tokenization <span class="muted" style="font-weight:normal;font-size:13px">— format-preserving encryption (FF1, NIST SP 800-38G) through a named template</span></h2>
+        <div class="panel">
+          <p class="muted" style="margin-top:0">Encode a value into a token of the same shape (a card number stays a card number), then decode it back. The per-template key is derived from a KEK-sealed seed, so a deterministic template makes tokens searchable while the plaintext never leaves the envelope. Templates are defined in <code>secret.transforms</code>; you need <code>secret:transform</code> plus any per-template role allowlist.</p>
+          <div id="fpeError" class="notice err hidden" style="margin-bottom:8px"></div>
+          <div class="row">
+            <div class="field" style="flex:1;min-width:180px"><label for="fpeTemplate">Template</label><input id="fpeTemplate" placeholder="pan"></div>
+            <div class="field" style="flex:2;min-width:220px"><label for="fpeValue">Value</label><input id="fpeValue" placeholder="4111111111111111"></div>
+            <div class="field" style="flex:1;min-width:160px"><label for="fpeTweak">Tweak <span class="muted">(optional)</span></label><input id="fpeTweak" placeholder="per-request AAD"></div>
+            <button class="btn" id="fpeEncodeBtn" style="margin-top:16px">Encode →</button>
+            <button class="btn ghost" id="fpeDecodeBtn" style="margin-top:16px">← Decode</button>
+          </div>
+          <div class="field" style="margin-top:8px">
+            <label for="fpeOut">Result</label>
+            <input id="fpeOut" readonly style="font-family:monospace">
+          </div>
+          <div id="fpeMeta" class="muted"></div>
+        </div>
+
+        <!-- Stored-secret registry (Tasks 72/73) -->
+        <h2 style="font-size:15px;margin-top:22px">Stored secrets <span class="muted" style="font-weight:normal;font-size:13px">— server-held envelopes with version history, TTL and rotation reminders</span></h2>
+        <div class="panel">
+          <p class="muted" style="margin-top:0">The registry is what makes a fleet-wide re-wrap enumerable: each named secret keeps its envelope on the server, every write appends a value version, and nothing is ever overwritten. Reading needs <code>secret:decrypt</code>; writing needs <code>secret:encrypt</code>. Equivalent to <code>secsy-secret put / get / versions / rollback / list-secrets</code>.</p>
+          <div id="storeError" class="notice err hidden" style="margin-bottom:8px"></div>
+          <div class="toolbar">
+            <div class="spacer"></div>
+            <button class="btn ghost sm" id="storeRefresh">Refresh</button>
+          </div>
+          <table>
+            <thead><tr><th>Name</th><th>Version</th><th>KEK</th><th>Escrow</th><th>Expires</th><th>Rotate every</th><th>Value changed</th><th></th></tr></thead>
+            <tbody id="storeRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+          </table>
+          <div class="row" style="margin-top:12px;align-items:stretch">
+            <div class="panel" style="flex:1;min-width:300px">
+              <h2 style="font-size:14px">Create / update</h2>
+              <p class="muted" style="margin-top:0">An existing name appends a new version rather than replacing the old one.</p>
+              <div class="row">
+                <div class="field" style="flex:1;min-width:150px"><label for="storeName">Name</label><input id="storeName" placeholder="db-password"></div>
+                <div class="field" style="width:110px"><label for="storeTTL">TTL (days)</label><input id="storeTTL" type="number" min="0" placeholder="none"></div>
+                <div class="field" style="width:130px"><label for="storeRotate">Rotate every (days)</label><input id="storeRotate" type="number" min="0" placeholder="none"></div>
+              </div>
+              <div class="field"><label for="storeValue">Value</label><textarea id="storeValue" placeholder="secret to seal…" style="min-height:70px"></textarea></div>
+              <div class="row">
+                <div class="field" style="flex:1;min-width:150px"><label for="storeContext">Context / AAD <span class="muted">(optional)</span></label><input id="storeContext" placeholder="needed verbatim to decrypt"></div>
+                <div class="field" style="flex:1;min-width:150px"><label for="storeComment">Comment <span class="muted">(optional)</span></label><input id="storeComment" placeholder="why this changed"></div>
+              </div>
+              <label class="muted hidden" id="storeEscrowLabel" style="display:flex;gap:6px;align-items:center;margin-bottom:10px"><input type="checkbox" id="storeEscrow"> escrow to recovery agents</label>
+              <button class="btn" id="storePutBtn">Save version</button>
+            </div>
+            <div class="panel" style="flex:1;min-width:300px">
+              <h2 style="font-size:14px">Version history <span class="muted" id="storeHistName"></span></h2>
+              <div id="storeHistEmpty" class="muted">Select “versions” on a secret to see its history.</div>
+              <table class="hidden" id="storeHistTable">
+                <thead><tr><th>Version</th><th>KEK</th><th>By</th><th>Comment</th><th>Created</th><th></th></tr></thead>
+                <tbody id="storeHistRows"></tbody>
+              </table>
+              <div class="field hidden" id="storeRevealBox" style="margin-top:10px">
+                <label id="storeRevealLabel">Plaintext</label>
+                <textarea id="storeReveal" readonly style="min-height:70px"></textarea>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TTL / rotation reminders (Task 73) -->
+        <div class="panel">
+          <h2 style="font-size:15px">Lifecycle attention</h2>
+          <p class="sub">Stored secrets past (or approaching) their TTL, and those whose rotation interval has come due — the console counterpart of <code>secsy-secret lifecycle</code>.</p>
+          <div class="toolbar">
+            <div class="spacer"></div>
+            <button class="btn ghost sm" id="lifecycleRefresh">Refresh</button>
+          </div>
+          <table>
+            <thead><tr><th>Secret</th><th>State</th><th>Severity</th><th>Version</th><th>Expires</th><th>Rotation due</th><th>Detail</th></tr></thead>
+            <tbody id="lifecycleRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+          </table>
+        </div>
+
+        <!-- KEK rotation lifecycle (Task 63) -->
+        <h2 style="font-size:15px;margin-top:22px">KEK rotation <span class="muted" style="font-weight:normal;font-size:13px">— generate the next key-encryption key, re-wrap onto it, retire the old one</span></h2>
+        <div id="kekSection" class="panel">
+          <p class="muted" style="margin-top:0">Rotation generates a fresh KEK inside the HSM and makes it active. Existing envelopes keep decrypting under the retiring version, so nothing breaks; re-wrapping moves stored data keys onto the active version, and only once none remain can the old version be retired. Data ciphertext and escrow shares are never touched. Requires <code>secret:rotate</code>; rotate and retire additionally demand a passkey step-up.</p>
+          <div id="kekError" class="notice err hidden" style="margin-bottom:8px"></div>
+          <div id="kekSummary" class="muted" style="margin-bottom:10px">Loading…</div>
+          <table>
+            <thead><tr><th>Version</th><th>Label</th><th>Status</th><th>Secrets</th><th></th></tr></thead>
+            <tbody id="kekRows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+          </table>
+          <div class="toolbar" style="margin-top:12px">
+            <div class="field" style="margin:0;width:150px"><label for="kekKeyType">New key type</label>
+              <select id="kekKeyType"><option value="rsa-4096">rsa-4096</option><option value="rsa-2048">rsa-2048</option></select>
+            </div>
+            <button class="btn" id="kekRotateBtn" style="margin-top:16px">Rotate KEK</button>
+            <button class="btn ghost" id="kekRewrapBtn" style="margin-top:16px" title="Re-wrap every stored data key onto the active KEK version">Re-wrap all</button>
+            <div class="spacer"></div>
+            <button class="btn ghost sm" id="kekRefresh" style="margin-top:16px">Refresh</button>
+          </div>
+          <div id="kekResult" class="notice hidden" style="margin-top:10px"></div>
         </div>
       </section>
 

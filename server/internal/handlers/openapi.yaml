@@ -3171,6 +3171,80 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/hsm/attest-device:
+    post:
+      operationId: attestHSMDevice
+      tags: [HSM]
+      summary: Attest that the attached device is a genuine YubiHSM
+      description: >
+        Establishes the hardware itself rather than an object on it: the device
+        certificate is read from opaque object 0, verified against Yubico's
+        published attestation CA, and — unless no_challenge is set — the device
+        is made to answer a nonce by attesting a throwaway key whose label
+        encodes it. Only a device holding the attestation private key can answer,
+        which is the difference between authenticating a device and
+        authenticating a copy of its certificate. The verified serial number is
+        returned in verification.serial. Answering a challenge writes three
+        force-audited entries to the device log and briefly occupies a reserved
+        object slot.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HSMDeviceAttestRequest" }
+      responses:
+        "200":
+          description: Attestation and verdict.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HSMDeviceAttestationResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/hsm/device-attestation:verify:
+    post:
+      operationId: verifyHSMDeviceAttestation
+      tags: [HSM]
+      summary: Verify a YubiHSM device attestation
+      description: >
+        Verifies a caller-supplied device-attestation bundle. Touches no device
+        and no database, so an auditor holding only the bundle can check it here
+        — including that it answers the nonce they chose.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HSMDeviceAttestationVerifyRequest" }
+      responses:
+        "200":
+          description: Verdict.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  verification: { $ref: "#/components/schemas/HSMDeviceAttestationResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/hsm/audit-status:
+    get:
+      operationId: getHSMAuditStatus
+      tags: [HSM]
+      summary: HSM audit-log reconciliation status
+      description: >
+        Reports whether the device audit subsystem is provisioned and whether the
+        collected device log still reconciles with the CA's own signature ledger.
+        A gap between signatures and ledger_entries is what says a signature was
+        produced that the CA did not request. Changes nothing.
+      responses:
+        "200":
+          description: Audit subsystem status.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HSMAuditStatus" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   # ---------------------------------------------------------------------------
   # ACME directory (RFC 8555) — protocol endpoints authenticate via JWS.
   # ---------------------------------------------------------------------------
@@ -3659,6 +3733,139 @@ components:
         require_anchored_chain:
           type: boolean
           description: Override the configured chain-anchoring requirement.
+    HSMDeviceAttestRequest:
+      type: object
+      properties:
+        challenge:
+          type: string
+          description: >
+            The nonce the device must answer. Omit to have the server generate a
+            fresh one; supply your own to obtain proof of possession in answer to
+            *your* request rather than one the audited party chose.
+        no_challenge:
+          type: boolean
+          description: >
+            Read and check the device certificate without making the device
+            answer anything. Read-only, and a weaker claim: it establishes that a
+            genuine YubiHSM with this serial exists, not that it is the device on
+            the other end of the connection.
+        object_id:
+          type: integer
+          description: >
+            Reserved handle for the throwaway challenge key (0xfa00..0xfaff).
+            Zero uses the default slot.
+        expected_serial:
+          type: string
+          description: The serial the device must turn out to have.
+    HSMDeviceAttestation:
+      type: object
+      description: A self-contained claim that a particular YubiHSM is genuine hardware.
+      properties:
+        kind: { type: string }
+        device_certificate_pem:
+          type: string
+          description: The device's factory attestation certificate (opaque object 0).
+        challenge: { type: string }
+        challenge_certificate_pem:
+          type: string
+          description: >
+            The attestation certificate the device signed over a throwaway key
+            labelled with the challenge — the proof of possession.
+        challenge_object_id: { type: integer }
+        reported_serial:
+          type: string
+          description: >
+            The serial the device gave over the authenticated session. A claim,
+            not evidence; verification reports when it disagrees with the
+            certified serial.
+        produced_at: { type: string, format: date-time }
+    HSMDeviceAttestationResult:
+      type: object
+      description: The verdict on one device attestation.
+      properties:
+        verified: { type: boolean }
+        serial:
+          type: string
+          description: >
+            The device serial as asserted by the Yubico-signed device attestation
+            certificate — the only serial here that is evidence rather than a
+            claim.
+        firmware_version: { type: string }
+        factory_firmware_version: { type: string }
+        subject_common_name: { type: string }
+        chain_anchored:
+          type: boolean
+          description: The device certificate chains to a trusted attestation root.
+        trust_anchor: { type: string }
+        issuing_ca: { type: string }
+        proof_of_possession:
+          type: boolean
+          description: >
+            A certificate signed by this device's attestation key was produced in
+            answer to the challenge.
+        challenge: { type: string }
+        challenge_object_id: { type: integer }
+        reported_serial: { type: string }
+        reported_serial_matched: { type: boolean }
+        checks:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              passed: { type: boolean }
+              detail: { type: string }
+        problems: { type: array, items: { type: string } }
+        warnings: { type: array, items: { type: string } }
+        summary: { type: string }
+    HSMDeviceAttestationResponse:
+      type: object
+      properties:
+        attestation: { $ref: "#/components/schemas/HSMDeviceAttestation" }
+        verification: { $ref: "#/components/schemas/HSMDeviceAttestationResult" }
+    HSMDeviceAttestationVerifyRequest:
+      type: object
+      required: [attestation]
+      properties:
+        attestation: { $ref: "#/components/schemas/HSMDeviceAttestation" }
+        expected_challenge: { type: string }
+        expected_serial: { type: string }
+        allow_no_challenge:
+          type: boolean
+          description: Accept a bundle that answers no challenge.
+        require_anchored_chain:
+          type: boolean
+          description: Override the configured chain-anchoring requirement.
+    HSMAuditStatus:
+      type: object
+      description: Device audit-log provisioning and reconciliation state.
+      properties:
+        provisioned: { type: boolean }
+        anchor:
+          type: string
+          description: The genesis anchor pinned at commissioning.
+        options_error:
+          type: string
+          description: >
+            Set when the device is not configured to guarantee that every
+            signature is logged.
+        stored_entries: { type: integer }
+        signatures:
+          type: integer
+          description: Successful signing operations found in the collected device log.
+        ledger_entries:
+          type: integer
+          description: >
+            Signatures the CA recorded requesting. It should equal signatures; a
+            difference is a signature the CA did not ask for.
+        log_used: { type: string }
+        signing_keys: { type: array, items: { type: integer } }
+        can_attest: { type: boolean }
+        can_commit: { type: boolean }
+        freshness_proofs: { type: integer }
+        last_attested_at: { type: string, format: date-time }
+        commitments: { type: integer }
+        last_committed_at: { type: string, format: date-time }
     StatusResponse:
       type: object
       properties:

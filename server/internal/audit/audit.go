@@ -286,6 +286,14 @@ const (
 	// obtained but did not satisfy the policy; Detail distinguishes them, and
 	// the second is a finding rather than an outage.
 	ActionHSMKeyAttestation = "hsm.key_attestation"
+	// ActionHSMDeviceAttestation records one YubiHSM device-authenticity
+	// attestation (Task 189): the device was asked to prove it is genuine Yubico
+	// hardware with the serial it claims, optionally by answering a nonce. Detail
+	// carries the verdict and the certified serial, so the log retains which
+	// physical device was on the other end of the cable and when that was last
+	// established. Like the key attestation above, ResultError covers both an
+	// unreachable device and an attestation that failed the policy.
+	ActionHSMDeviceAttestation = "hsm.device_attestation"
 	// Key-ceremony, backup, and disaster-recovery lifecycle operations. A
 	// ceremony records its start, each operator's M-of-N confirmation, and its
 	// completion (or abort) alongside the underlying ca.init_root /

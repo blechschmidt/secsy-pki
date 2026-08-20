@@ -321,9 +321,10 @@ function switchView(name) {
   if (name === 'discovery') loadDiscovery();
   if (name === 'ct') loadCT();
   if (name === 'cas') loadAuthorities();
+  if (name === 'hsm') loadHSM();
   if (name === 'ssh') loadSSH();
   if (name === 'signing') loadSigning();
-  if (name === 'secrets' && secretServiceEnabled) loadSigningKeys();
+  if (name === 'secrets' && secretServiceEnabled) loadSecretsPage();
   if (name === 'acme') loadACME();
   if (name === 'audit') loadAudit();
   if (name === 'approvals') loadApprovals();
@@ -1304,6 +1305,33 @@ async function loadBundle() {
     $('svidMintPanel').classList.remove('hidden');
     $('svidJWTPanel').classList.remove('hidden');
   } catch (_) { /* SPIFFE not enabled for this server */ }
+  loadAlternateChains(id);
+}
+
+// loadAlternateChains lists every path to a trust anchor for this CA: the native
+// chain plus one per cross-signature. A client that trusts only an older root
+// validates the same leaf through the alternate, which is the whole point of
+// cross-signing — so each is offered as a downloadable bundle.
+async function loadAlternateChains(id) {
+  const tbody = $('altChainRows');
+  if (!tbody) return;
+  try {
+    const res = await api('GET', `/api/ca/${id}/chains`);
+    const chains = res.chains || [];
+    if (!chains.length) { tbody.innerHTML = '<tr><td colspan="4" class="muted">No chains published for this CA.</td></tr>'; return; }
+    tbody.innerHTML = chains.map((c, i) => `<tr>
+      <td>${c.native ? 'native <span class="muted">(primary)</span>' : 'cross-sign'}</td>
+      <td>${escapeHTML(c.issuer_label || c.issuer_ca_id || '')}</td>
+      <td>${(c.pem.match(/BEGIN CERTIFICATE/g) || []).length} certs</td>
+      <td><button class="btn ghost sm" data-altchain="${i}">Download PEM</button></td>
+    </tr>`).join('');
+    tbody.querySelectorAll('[data-altchain]').forEach(b => b.onclick = () => {
+      const c = chains[parseInt(b.dataset.altchain, 10)];
+      downloadBlob(c.pem, `chain-${c.native ? 'native' : 'crosssign'}-${b.dataset.altchain}.pem`, 'application/x-pem-file');
+    });
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">Unavailable (${escapeHTML(e.message)}).</td></tr>`;
+  }
 }
 
 // Mint an X.509-SVID under the selected CA (SPIFFE workload identity).
@@ -1739,7 +1767,16 @@ let secretServiceEnabled = false;
 async function loadSecretInfo() {
   try {
     const info = await api('GET', '/api/secret/info');
-    let text = `KEK ${info.kek_label} · ${info.provider} · ${info.key_bits}-bit · wrap ${info.wrap_alg} · data ${info.data_alg}`;
+    let text = `KEK ${info.kek_label} (family ${info.kek_family} v${info.kek_version}) · ${info.provider} · ` +
+      `${info.key_bits}-bit · wrap ${info.wrap_alg} · data ${info.data_alg}`;
+    // Post-quantum hybrid state (Task 137): "available" means the ML-KEM material
+    // is provisioned, "enabled" that new envelopes actually carry an
+    // encapsulation. Both are reported because a deployment that provisioned the
+    // material and forgot to enable it has harvest-now-decrypt-later exposure it
+    // believes it does not have.
+    if (info.pqc_hybrid_available) {
+      text += ` · PQC hybrid ${info.pqc_kem || 'ml-kem'} ${info.pqc_hybrid_enabled ? 'enabled' : 'provisioned but OFF'}`;
+    }
     if (info.escrow_available) {
       text += ` · escrow ${info.escrow_threshold}-of-${info.escrow_agents} recovery agents (recovery via secsy-secret recover, dual control)`;
       $('encEscrowLabel').classList.remove('hidden');
@@ -1750,6 +1787,9 @@ async function loadSecretInfo() {
     $('secretDisabled').classList.add('hidden');
     secretServiceEnabled = true;
     if ($('sigKeysSection')) $('sigKeysSection').classList.remove('hidden');
+    // Escrow-on-write is offered for stored secrets on the same condition as
+    // ad-hoc encryption: only when the deployment actually has recovery agents.
+    $('storeEscrowLabel').classList.toggle('hidden', !info.escrow_available);
     loadSigningKeys();
   } catch (e) {
     // 404 when the feature is disabled (routes not registered).
@@ -1758,6 +1798,17 @@ async function loadSecretInfo() {
     secretServiceEnabled = false;
     if ($('sigKeysSection')) $('sigKeysSection').classList.add('hidden');
   }
+}
+
+// loadSecretsPage refreshes every panel on the Secrets view. Each loader is
+// independently fault-tolerant: the secret layer's capabilities are split
+// (decrypt / encrypt / rotate / signing-key), so an operator holding only some
+// of them still gets a working page with the rest reporting why.
+function loadSecretsPage() {
+  loadSigningKeys();
+  loadStoredSecrets();
+  loadSecretLifecycle();
+  loadKEKStatus();
 }
 
 // ---- Secret-layer signing keys (Task 155) --------------------------------
@@ -1829,19 +1880,33 @@ $('sigSignBtn').onclick = async () => {
   } catch (e) { showError(err, 'Sign failed: ' + e.message); }
 };
 
+// Verification takes two forms and the console picks by what was filled in: a
+// pasted public key verifies without any stored key at all, which is what a
+// relying party outside this PKI actually has. Otherwise the named key's public
+// half is used server-side.
 $('sigVerifyBtn').onclick = async () => {
   const err = $('sigError'); err.classList.add('hidden');
-  const name = $('sigKeyName').value.trim();
-  if (!name) { showError(err, 'A key name is required.'); return; }
   const sig = $('sigOut').value.trim();
   if (!sig) { showError(err, 'A base64 signature is required — sign first, or paste one.'); return; }
+  const pub = $('sigVerifyPub').value.trim();
+  const name = $('sigKeyName').value.trim();
+  if (!pub && !name) { showError(err, 'A key name or a supplied public key is required.'); return; }
+  const body = { message: b64(new TextEncoder().encode($('sigMessage').value)), signature: sig };
+  if ($('sigHash').value) body.hash = $('sigHash').value;
   try {
-    const body = { message: b64(new TextEncoder().encode($('sigMessage').value)), signature: sig };
-    if ($('sigHash').value) body.hash = $('sigHash').value;
-    const res = await api('POST', `/api/secret/signing-keys/${encodeURIComponent(name)}/verify`, body);
+    let res;
+    if (pub) {
+      const alg = $('sigVerifyAlg').value;
+      if (!alg) { showError(err, 'Verifying against a supplied public key needs its algorithm.'); return; }
+      res = await api('POST', '/api/secret/verify', { ...body, public_key_pem: pub, algorithm: alg });
+    } else {
+      res = await api('POST', `/api/secret/signing-keys/${encodeURIComponent(name)}/verify`, body);
+    }
     const el = $('sigVerifyResult');
     el.style.color = res.valid ? 'var(--ok)' : 'var(--crit)';
-    el.textContent = res.valid ? `✓ valid signature (${res.algorithm})` : '✗ INVALID — signature does not match';
+    el.textContent = res.valid
+      ? `✓ valid signature (${res.algorithm}${pub ? ', supplied key' : ''})`
+      : '✗ INVALID — signature does not match';
   } catch (e) { showError(err, 'Verify failed: ' + e.message); }
 };
 $('encBtn').onclick = async () => {
@@ -1911,6 +1976,573 @@ $('rndBtn').onclick = async () => {
     $('rndSource').textContent = `source: ${res.source}`;
   } catch (e) { alert('Random failed: ' + e.message); }
 };
+
+// ---- Hardware security module (Tasks 167/168/189) ------------------------
+// Three claims, kept visually separate because they establish different things:
+// the device is genuine hardware (device attestation), a key on it was born
+// there and cannot leave (key attestation), and every signature it produced is
+// accounted for (audit log). None implies the others.
+
+// checkList renders the itemized verdict both attestation kinds carry.
+function checkList(checks) {
+  if (!checks || !checks.length) return '';
+  return `<table style="margin-top:8px"><thead><tr><th></th><th>Check</th><th>Detail</th></tr></thead><tbody>` +
+    checks.map(c => `<tr>
+      <td style="color:${c.passed ? 'var(--ok)' : 'var(--crit)'}">${c.passed ? '✓' : '✗'}</td>
+      <td class="mono">${escapeHTML(c.name)}</td>
+      <td class="muted">${escapeHTML(c.detail || '')}</td>
+    </tr>`).join('') + '</tbody></table>';
+}
+
+// findingList renders problems and warnings, in that order of urgency.
+function findingList(res) {
+  let out = '';
+  (res.problems || []).forEach(p => { out += `<div style="color:var(--crit)">✗ ${escapeHTML(p)}</div>`; });
+  (res.warnings || []).forEach(w => { out += `<div class="muted">⚠ ${escapeHTML(w)}</div>`; });
+  return out;
+}
+
+// renderDeviceVerdict leads with the serial: it is the answer the operation
+// exists to produce, and burying it under a checklist would miss the point.
+function renderDeviceVerdict(el, res) {
+  el.className = 'notice ' + (res.verified ? 'ok' : 'err');
+  el.innerHTML =
+    `<div style="font-size:15px"><b>${res.verified ? '✓ genuine YubiHSM' : '✗ NOT ESTABLISHED'}</b>` +
+    (res.serial ? ` — serial <b class="mono">${escapeHTML(res.serial)}</b>` : '') + '</div>' +
+    `<div class="muted">${escapeHTML(res.summary || '')}</div>` +
+    `<div class="muted" style="margin-top:6px">` +
+      `chain anchored: ${res.chain_anchored ? 'yes' : 'no'}` +
+      (res.trust_anchor ? ` (${escapeHTML(res.trust_anchor)})` : '') +
+      ` · proof of possession: ${res.proof_of_possession ? 'yes' : 'no'}` +
+      (res.firmware_version ? ` · firmware ${escapeHTML(res.firmware_version)}` : '') +
+    '</div>' +
+    findingList(res) + checkList(res.checks);
+  el.classList.remove('hidden');
+}
+
+// renderKeyVerdict leads with the two properties that decide whether a CA key
+// is really confined to hardware.
+function renderKeyVerdict(el, res) {
+  el.className = 'notice ' + (res.verified ? 'ok' : 'err');
+  el.innerHTML =
+    `<div style="font-size:15px"><b>${res.verified ? '✓ attested' : '✗ NOT ESTABLISHED'}</b>` +
+    (res.key_label ? ` — <span class="mono">${escapeHTML(res.key_label)}</span>` : '') + '</div>' +
+    `<div class="muted">${escapeHTML(res.summary || '')}</div>` +
+    `<div class="muted" style="margin-top:6px">` +
+      `non-exportable: ${res.non_exportable ? 'yes' : '<b>NO</b>'}` +
+      ` · generated on device: ${res.generated_on_device ? 'yes' : '<b>NO</b>'}` +
+      ` · device-bound: ${res.device_bound ? 'yes' : 'no'}` +
+      ` · chain anchored: ${res.chain_anchored ? 'yes' : 'no'}` +
+      (res.device_serial ? ` · device ${escapeHTML(res.device_serial)}` : '') +
+      (res.spki_fingerprint ? `<br>SPKI ${escapeHTML(res.spki_fingerprint)}` : '') +
+    '</div>' +
+    findingList(res) + checkList(res.checks);
+  el.classList.remove('hidden');
+}
+
+// lastAttestation keeps the most recent bundle so it can be downloaded and
+// handed to an auditor — the evidence, not just this server's conclusion.
+let lastAttestation = null;
+
+async function loadHSM() {
+  const msg = $('hsmMsg');
+  msg.className = 'notice hidden';
+  // The CA dropdown mirrors the other pages: only X.509 CAs have a key label to
+  // resolve, and the key-attestation endpoint says so plainly if one does not.
+  $('hsmAttestCA').innerHTML = x509CAs.map(c => `<option value="${c.id}">${escapeHTML(c.label)}</option>`).join('');
+  try {
+    const info = await api('GET', '/api/hsm/info');
+    $('hsmDisabled').classList.add('hidden');
+    $('hsmBody').classList.remove('hidden');
+    if (!info.available) {
+      $('hsmInfo').innerHTML = `<span style="color:var(--crit)">device unreachable</span>` +
+        (info.error ? `<div class="muted">${escapeHTML(info.error)}</div>` : '');
+    } else {
+      $('hsmInfo').innerHTML =
+        `serial <b class="mono">${escapeHTML(info.serial || '?')}</b><br>` +
+        `firmware ${escapeHTML(info.version || '?')}${info.part_number ? ' · ' + escapeHTML(info.part_number) : ''}<br>` +
+        `log ${escapeHTML(info.log_used || '?')} · forced audit ${info.force_audit ? 'on' : 'off'} · ` +
+        `audit subsystem ${info.audit_provisioned ? 'provisioned' : 'not provisioned'}` +
+        `<div class="muted" style="margin-top:6px">This serial is the device's own claim over the session. ` +
+        `Attest it below to have Yubico's attestation CA certify it instead.</div>`;
+    }
+  } catch (e) {
+    // The /api/hsm/* routes exist only when a YubiHSM is configured.
+    $('hsmDisabled').classList.remove('hidden');
+    $('hsmBody').classList.add('hidden');
+    return;
+  }
+  loadHSMAuditStatus();
+}
+
+async function loadHSMAuditStatus() {
+  const el = $('hsmAuditStatus');
+  try {
+    const st = await api('GET', '/api/hsm/audit-status');
+    if (!st.provisioned) {
+      el.innerHTML = '<span class="muted">Not provisioned. Until the device is commissioned for forced audit logging, ' +
+        'nothing proves the log is complete — provisioning is irreversible and needs a factory-reset device.</span>';
+      return;
+    }
+    const gap = (st.signatures || 0) - (st.ledger_entries || 0);
+    el.innerHTML =
+      `anchor <span class="mono">${escapeHTML((st.anchor || '').slice(0, 24))}…</span><br>` +
+      `${st.stored_entries} entries collected · ${st.signatures} signature(s) on the device · ` +
+      `${st.ledger_entries} recorded by the CA ` +
+      (gap === 0
+        ? '<span style="color:var(--ok)">✓ reconciled</span>'
+        : `<span style="color:var(--crit)"><b>✗ ${Math.abs(gap)} unaccounted</b></span>`) + '<br>' +
+      `<span class="muted">${st.freshness_proofs || 0} timestamp(s)` +
+      (st.last_attested_at ? `, newest ${fmtTime(st.last_attested_at)}` : '') +
+      ` · ${st.commitments || 0} serial binding(s)` +
+      (st.last_committed_at ? `, newest ${fmtTime(st.last_committed_at)}` : '') + '</span>' +
+      (st.options_error ? `<div style="color:var(--crit)">✗ ${escapeHTML(st.options_error)}</div>` : '');
+  } catch (e) {
+    el.innerHTML = `<span class="muted">Unavailable (${escapeHTML(e.message)}).</span>`;
+  }
+}
+$('hsmRefresh').onclick = loadHSM;
+
+// downloadAPI streams an authenticated download through the API helper, since a
+// bare <a href> would carry no Authorization header or session CSRF token.
+async function downloadAPI(path, filename, type) {
+  const msg = $('hsmMsg');
+  msg.className = 'notice hidden';
+  try {
+    const text = await api('GET', path, undefined, true);
+    downloadBlob(text, filename, type || 'application/json');
+  } catch (e) {
+    showError(msg, `${filename}: ${e.message}`); msg.className = 'notice err';
+  }
+}
+$('hsmDevCertBtn').onclick = () => downloadAPI('/api/hsm/attestation', 'device-attestation.pem', 'application/x-pem-file');
+$('hsmBundleBtn').onclick = () => downloadAPI('/api/hsm/audit-bundle', 'hsm-audit-bundle.json');
+$('hsmSignedLogBtn').onclick = () => downloadAPI('/api/hsm/signed-audit-log', 'signed-audit-log.json');
+$('hsmCombinedLogBtn').onclick = () => downloadAPI('/api/hsm/combined-audit-log', 'combined-audit-log.json');
+
+$('hsmProvisionBtn').onclick = async () => {
+  if (!confirm('Provision this device for forced audit logging?\n\nThis is IRREVERSIBLE: the device will refuse to sign once its log fills, and the setting cannot be turned off without a factory reset that destroys every key on it.')) return;
+  const msg = $('hsmMsg');
+  msg.className = 'notice hidden';
+  try {
+    const res = await api('POST', '/api/hsm/provision-audit', {});
+    msg.textContent = `Provisioned. ${res.output || ''}`;
+    msg.className = 'notice ok';
+    loadHSM();
+  } catch (e) { showError(msg, 'Provisioning failed: ' + e.message); msg.className = 'notice err'; }
+};
+
+// Device authenticity: the challenge is what separates "this certificate is
+// genuine" from "this device is genuine", so it happens unless explicitly opted
+// out of, and the verdict says which of the two was established.
+$('hsmAttestDeviceBtn').onclick = async () => {
+  const err = $('hsmDeviceError'); err.classList.add('hidden');
+  const btn = $('hsmAttestDeviceBtn');
+  const body = {};
+  const ch = $('hsmChallenge').value.trim();
+  if ($('hsmNoChallenge').checked) body.no_challenge = true;
+  else if (ch) body.challenge = ch;
+  const exp = $('hsmExpectSerial').value.trim();
+  if (exp) body.expected_serial = exp;
+  btn.disabled = true;
+  try {
+    const res = await api('POST', '/api/hsm/attest-device', body);
+    lastAttestation = res.attestation;
+    renderDeviceVerdict($('hsmDeviceResult'), res.verification || {});
+    // Offer the evidence, not only the conclusion.
+    const el = $('hsmDeviceResult');
+    const dl = document.createElement('button');
+    dl.className = 'btn ghost sm';
+    dl.style.marginTop = '8px';
+    dl.textContent = 'Download bundle';
+    dl.onclick = () => downloadBlob(JSON.stringify(res.attestation, null, 2), 'device-attestation.json', 'application/json');
+    el.appendChild(dl);
+  } catch (e) { showError(err, 'Attestation failed: ' + e.message); }
+  finally { btn.disabled = false; }
+};
+
+async function attestKey(path, btn) {
+  const err = $('hsmKeyError'); err.classList.add('hidden');
+  btn.disabled = true;
+  try {
+    const res = await api('GET', path);
+    lastAttestation = res.attestation;
+    renderKeyVerdict($('hsmKeyResult'), res.verification || {});
+    const el = $('hsmKeyResult');
+    const dl = document.createElement('button');
+    dl.className = 'btn ghost sm';
+    dl.style.marginTop = '8px';
+    dl.textContent = 'Download attestation';
+    dl.onclick = () => downloadBlob(JSON.stringify(res.attestation, null, 2), 'key-attestation.json', 'application/json');
+    el.appendChild(dl);
+  } catch (e) { showError(err, 'Attestation failed: ' + e.message); }
+  finally { btn.disabled = false; }
+}
+$('hsmAttestCABtn').onclick = () => {
+  const id = $('hsmAttestCA').value;
+  if (!id) { showError($('hsmKeyError'), 'Select a CA.'); return; }
+  attestKey(`/api/ca/${encodeURIComponent(id)}/key-attestation`, $('hsmAttestCABtn'));
+};
+$('hsmAttestLabelBtn').onclick = () => {
+  const label = $('hsmAttestLabel').value.trim();
+  if (!label) { showError($('hsmKeyError'), 'A key label is required.'); return; }
+  attestKey(`/api/hsm/keys/${encodeURIComponent(label)}/attestation`, $('hsmAttestLabelBtn'));
+};
+
+// Verification routes on the bundle's own "kind" marker rather than on which
+// fields happen to be populated — the same discrimination the CLI verifier
+// makes, and for the same reason: reading a device bundle as a key attestation
+// would report a pile of missing fields instead of a serial number.
+$('hsmVerifyBtn').onclick = async () => {
+  const err = $('hsmVerifyError'); err.classList.add('hidden');
+  $('hsmVerifyResult').classList.add('hidden');
+  const raw = $('hsmVerifyInput').value.trim();
+  if (!raw) { showError(err, 'Paste an attestation bundle.'); return; }
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch (_) { showError(err, 'That is not a JSON attestation bundle. Export one from this page, or use "secsy-ca hsm-attest verify" for a bare PEM.'); return; }
+  // An exported response wraps the bundle; a bare bundle is also accepted.
+  const att = parsed.attestation || parsed;
+  try {
+    let res;
+    if (att.kind === 'yubihsm-device-attestation' || att.challenge_certificate_pem) {
+      const body = { attestation: att };
+      if ($('hsmVerifyChallenge').value.trim()) body.expected_challenge = $('hsmVerifyChallenge').value.trim();
+      if ($('hsmVerifySerial').value.trim()) body.expected_serial = $('hsmVerifySerial').value.trim();
+      if ($('hsmVerifyAllowNoChallenge').checked) body.allow_no_challenge = true;
+      res = await api('POST', '/api/hsm/device-attestation:verify', body);
+      renderDeviceVerdict($('hsmVerifyResult'), res.verification || {});
+    } else {
+      const body = {
+        certificate_pem: att.certificate_pem,
+        device_certificate_pem: att.device_certificate_pem,
+      };
+      if ($('hsmVerifySerial').value.trim()) body.expected_serial = $('hsmVerifySerial').value.trim();
+      if ($('hsmVerifyKey').value.trim()) body.expected_public_key_pem = $('hsmVerifyKey').value.trim();
+      res = await api('POST', '/api/hsm/attestation:verify', body);
+      renderKeyVerdict($('hsmVerifyResult'), res.verification || {});
+    }
+  } catch (e) { showError(err, 'Verification failed: ' + e.message); }
+};
+
+// hsmCommandName maps the YubiHSM command byte onto its name. Only the commands
+// a CA deployment actually produces are named; anything else shows as its byte,
+// which is still enough to look up in the device reference.
+const HSM_COMMANDS = {
+  0x03: 'session-open', 0x04: 'session-auth', 0x05: 'session-cmd', 0x06: 'device-info',
+  0x08: 'reset', 0x40: 'close-session', 0x41: 'get-storage-info', 0x43: 'put-opaque',
+  0x44: 'get-opaque', 0x45: 'put-authkey', 0x46: 'put-asymmetric-key', 0x47: 'generate-asymmetric-key',
+  0x48: 'sign-pkcs1', 0x49: 'list-objects', 0x4a: 'decrypt-pkcs1', 0x4b: 'export-wrapped',
+  0x4c: 'import-wrapped', 0x4d: 'put-wrap-key', 0x4e: 'get-log-entries', 0x4f: 'get-object-info',
+  0x50: 'set-option', 0x51: 'get-option', 0x52: 'get-pseudo-random', 0x53: 'put-hmac-key',
+  0x54: 'sign-hmac', 0x55: 'get-public-key', 0x56: 'sign-pss', 0x57: 'sign-ecdsa',
+  0x58: 'derive-ecdh', 0x59: 'delete-object', 0x5a: 'decrypt-oaep', 0x5b: 'generate-hmac-key',
+  0x5c: 'generate-wrap-key', 0x5d: 'verify-hmac', 0x5e: 'sign-ssh-certificate', 0x5f: 'put-template',
+  0x60: 'get-template', 0x61: 'decrypt-otp', 0x64: 'attest-asymmetric-key', 0x65: 'put-otp-aead-key',
+  0x67: 'set-log-index', 0x6a: 'sign-eddsa', 0x6b: 'blink-device', 0x6c: 'change-authkey',
+};
+function hsmCommandName(c) {
+  return HSM_COMMANDS[c] || '0x' + Number(c).toString(16).padStart(2, '0');
+}
+
+$('hsmLogRefresh').onclick = async () => {
+  const tbody = $('hsmLogRows');
+  tbody.innerHTML = '<tr><td colspan="7" class="muted">Loading…</td></tr>';
+  try {
+    const res = await api('GET', '/api/hsm/audit-log');
+    const entries = res.entries || [];
+    if (!entries.length) { tbody.innerHTML = '<tr><td colspan="7" class="muted">The device log is empty.</td></tr>'; return; }
+    tbody.innerHTML = entries.map(e => `<tr>
+      <td>${e.number}</td>
+      <td class="mono">${escapeHTML(hsmCommandName(e.command))}</td>
+      <td class="mono">0x${Number(e.session_key || 0).toString(16).padStart(4, '0')}</td>
+      <td class="mono">0x${Number(e.target_key || 0).toString(16).padStart(4, '0')}</td>
+      <td>${e.result === 0x83 ? '<span style="color:var(--ok)">ok</span>' : '0x' + Number(e.result).toString(16)}</td>
+      <td>${e.tick}</td>
+      <td class="mono">${escapeHTML((e.hash || '').slice(0, 16))}…${e.hash_valid === false ? ' <span style="color:var(--crit)">✗ chain broken</span>' : ''}</td>
+    </tr>`).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="muted">Unavailable (${escapeHTML(e.message)}).</td></tr>`;
+  }
+};
+
+// ---- Format-preserving encryption / tokenization (Task 144) ---------------
+// encode/decode a value through a named FF1 template. Success and failure both
+// land in the same result box; the deterministic flag matters because it is what
+// decides whether tokens can be searched on.
+async function runTransform(direction) {
+  const err = $('fpeError'); err.classList.add('hidden');
+  $('fpeOut').value = ''; $('fpeMeta').textContent = '';
+  const template = $('fpeTemplate').value.trim();
+  const value = $('fpeValue').value;
+  if (!template || !value) { showError(err, 'A template and a value are required.'); return; }
+  const body = { template, value };
+  const tweak = $('fpeTweak').value;
+  if (tweak) body.tweak = b64(new TextEncoder().encode(tweak));
+  try {
+    const res = await api('POST', `/api/secret/transform/${direction}`, body);
+    $('fpeOut').value = res.result;
+    $('fpeMeta').textContent = `${direction}d through “${res.template}”` +
+      (res.deterministic ? ' · deterministic (tokens are searchable)' : ' · randomized');
+  } catch (e) { showError(err, `${direction} failed: ${e.message}`); }
+}
+$('fpeEncodeBtn').onclick = () => runTransform('encode');
+$('fpeDecodeBtn').onclick = () => runTransform('decode');
+
+// ---- Stored-secret registry (Tasks 72/73) --------------------------------
+// The registry holds named envelopes server-side. Reading a value is two calls
+// by design — fetch the envelope, then decrypt it — because the decrypt gate is
+// where the secret layer authorizes and audits plaintext access; the console
+// must not be able to shortcut it.
+let storedSecrets = [];
+
+async function loadStoredSecrets() {
+  const tbody = $('storeRows');
+  if (!tbody) return;
+  try {
+    const res = await api('GET', '/api/secret/store');
+    storedSecrets = res.secrets || [];
+    if (!storedSecrets.length) { tbody.innerHTML = '<tr><td colspan="8" class="muted">No stored secrets yet.</td></tr>'; return; }
+    tbody.innerHTML = storedSecrets.map(s => `<tr>
+      <td class="mono">${escapeHTML(s.name)}</td>
+      <td>v${s.current_version}</td>
+      <td>${escapeHTML(s.kek_label || '')} v${s.kek_version}</td>
+      <td>${s.escrowed ? 'yes' : '—'}</td>
+      <td>${s.expires_at ? fmtTime(s.expires_at) : '—'}</td>
+      <td>${s.rotate_every_days > 0 ? s.rotate_every_days + 'd' : '—'}</td>
+      <td>${s.value_changed_at ? fmtTime(s.value_changed_at) : fmtTime(s.created_at)}</td>
+      <td>
+        <button class="btn ghost sm" data-secret-reveal="${escapeHTML(s.id)}" title="Fetch the envelope and decrypt it">Reveal</button>
+        <button class="btn ghost sm" data-secret-versions="${escapeHTML(s.id)}">Versions</button>
+        <button class="btn ghost sm" data-secret-edit="${escapeHTML(s.id)}" title="Load this secret's name into the form">Update</button>
+        <button class="btn ghost sm" data-secret-del="${escapeHTML(s.id)}">Delete</button>
+      </td>
+    </tr>`).join('');
+    tbody.querySelectorAll('[data-secret-reveal]').forEach(b => b.onclick = () => revealStoredSecret(b.dataset.secretReveal));
+    tbody.querySelectorAll('[data-secret-versions]').forEach(b => b.onclick = () => loadSecretVersions(b.dataset.secretVersions));
+    tbody.querySelectorAll('[data-secret-edit]').forEach(b => b.onclick = () => {
+      const s = storedSecrets.find(x => x.id === b.dataset.secretEdit);
+      if (s) { $('storeName').value = s.name; $('storeValue').focus(); }
+    });
+    tbody.querySelectorAll('[data-secret-del]').forEach(b => b.onclick = () => deleteStoredSecret(b.dataset.secretDel));
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="muted">The stored-secret registry needs the secret:decrypt capability (${escapeHTML(e.message)}).</td></tr>`;
+  }
+}
+
+// secretByID resolves a row for the labels below without a second round-trip.
+function secretByID(id) { return storedSecrets.find(s => s.id === id) || { id, name: id }; }
+
+// revealStoredSecret fetches the envelope and runs it back through the decrypt
+// endpoint. A context-bound secret cannot be revealed here without its AAD, so
+// the shared Context field is offered as the source.
+async function revealStoredSecret(id, version) {
+  const err = $('storeError'); err.classList.add('hidden');
+  const s = secretByID(id);
+  try {
+    const path = version
+      ? `/api/secret/store/${encodeURIComponent(id)}/versions/${version}`
+      : `/api/secret/store/${encodeURIComponent(id)}`;
+    const rec = await api('GET', path);
+    const body = { envelope: rec.envelope };
+    const ctx = $('storeContext').value;
+    if (ctx) body.context = b64(new TextEncoder().encode(ctx));
+    const out = await api('POST', '/api/secret/decrypt', body);
+    $('storeRevealLabel').textContent = `Plaintext — ${s.name} v${version || rec.current_version || rec.version}`;
+    $('storeReveal').value = new TextDecoder().decode(unb64(out.plaintext));
+    $('storeRevealBox').classList.remove('hidden');
+  } catch (e) {
+    showError(err, `Reveal failed: ${e.message}` +
+      (s.context_bound ? ' — this secret is context-bound; enter its context above first.' : ''));
+  }
+}
+
+async function loadSecretVersions(id) {
+  const err = $('storeError'); err.classList.add('hidden');
+  try {
+    const res = await api('GET', `/api/secret/store/${encodeURIComponent(id)}/versions`);
+    $('storeHistName').textContent = `— ${res.name}`;
+    const rows = (res.versions || []).map(v => `<tr>
+      <td>v${v.version}${v.current ? ' <span class="muted">(current)</span>' : ''}</td>
+      <td>${escapeHTML(v.kek_label || '')} v${v.kek_version}</td>
+      <td>${escapeHTML(v.created_by || '')}</td>
+      <td>${escapeHTML(v.comment || '')}</td>
+      <td>${fmtTime(v.created_at)}</td>
+      <td>
+        <button class="btn ghost sm" data-ver-reveal="${v.version}">Reveal</button>
+        ${v.current ? '' : `<button class="btn ghost sm" data-ver-roll="${v.version}" title="Append a copy of this version as the new current value">Roll back</button>`}
+      </td>
+    </tr>`).join('');
+    $('storeHistRows').innerHTML = rows || '<tr><td colspan="6" class="muted">No versions.</td></tr>';
+    $('storeHistTable').classList.remove('hidden');
+    $('storeHistEmpty').classList.add('hidden');
+    $('storeHistRows').querySelectorAll('[data-ver-reveal]').forEach(b =>
+      b.onclick = () => revealStoredSecret(id, parseInt(b.dataset.verReveal, 10)));
+    $('storeHistRows').querySelectorAll('[data-ver-roll]').forEach(b =>
+      b.onclick = () => rollbackStoredSecret(id, parseInt(b.dataset.verRoll, 10)));
+  } catch (e) { showError(err, 'Version history failed: ' + e.message); }
+}
+
+// rollbackStoredSecret makes an older value current again. History is never
+// rewritten — the old value is appended as a new version — so the audit trail
+// still shows that a rollback happened and when.
+async function rollbackStoredSecret(id, version) {
+  const s = secretByID(id);
+  if (!confirm(`Make version ${version} of "${s.name}" current again?\n\nThe old value is appended as a new version; nothing in the history is rewritten.`)) return;
+  const err = $('storeError'); err.classList.add('hidden');
+  try {
+    await api('POST', `/api/secret/store/${encodeURIComponent(id)}/rollback`,
+      { version, comment: `rolled back to v${version} from the console` });
+    await loadStoredSecrets();
+    await loadSecretVersions(id);
+  } catch (e) { showError(err, 'Rollback failed: ' + e.message); }
+}
+
+async function deleteStoredSecret(id) {
+  const s = secretByID(id);
+  if (!confirm(`Delete stored secret "${s.name}" and its entire version history?\n\nThis cannot be undone.`)) return;
+  const err = $('storeError'); err.classList.add('hidden');
+  try {
+    await api('DELETE', `/api/secret/store/${encodeURIComponent(id)}`);
+    $('storeHistTable').classList.add('hidden');
+    $('storeHistEmpty').classList.remove('hidden');
+    await loadStoredSecrets();
+  } catch (e) { showError(err, 'Delete failed: ' + e.message); }
+}
+
+// storePutBtn creates a secret or appends a version to an existing one. Which
+// of the two it is depends on whether the name is already taken, so the console
+// resolves the name first rather than making the operator pick an endpoint.
+$('storePutBtn').onclick = async () => {
+  const err = $('storeError'); err.classList.add('hidden');
+  const name = $('storeName').value.trim();
+  if (!name) { showError(err, 'A name is required.'); return; }
+  const ttl = parseInt($('storeTTL').value, 10);
+  const rot = parseInt($('storeRotate').value, 10);
+  const body = { plaintext: b64(new TextEncoder().encode($('storeValue').value)) };
+  const ctx = $('storeContext').value;
+  if (ctx) body.context = b64(new TextEncoder().encode(ctx));
+  if ($('storeEscrow').checked) body.escrow = true;
+  if (!isNaN(ttl)) body.ttl_days = ttl;
+  if (!isNaN(rot)) body.rotate_every_days = rot;
+  const comment = $('storeComment').value.trim();
+  if (comment) body.comment = comment;
+  $('storePutBtn').disabled = true;
+  try {
+    const existing = storedSecrets.find(s => s.name === name);
+    if (existing) {
+      await api('PUT', `/api/secret/store/${encodeURIComponent(existing.id)}`, body);
+    } else {
+      await api('POST', '/api/secret/store', { name, ...body });
+    }
+    $('storeValue').value = ''; $('storeComment').value = '';
+    await loadStoredSecrets();
+    await loadSecretLifecycle();
+  } catch (e) { showError(err, 'Save failed: ' + e.message); }
+  finally { $('storePutBtn').disabled = false; }
+};
+$('storeRefresh').onclick = loadStoredSecrets;
+
+// severityClass maps a lifecycle severity onto the shared notice palette.
+function severityClass(sev) {
+  return sev === 'expired' || sev === 'critical' ? 'crit' : 'warn';
+}
+
+async function loadSecretLifecycle() {
+  const tbody = $('lifecycleRows');
+  if (!tbody) return;
+  try {
+    const res = await api('GET', '/api/secret/lifecycle');
+    const items = res.items || [];
+    if (!items.length) { tbody.innerHTML = '<tr><td colspan="7" class="muted">Nothing needs attention.</td></tr>'; return; }
+    tbody.innerHTML = items.map(i => `<tr>
+      <td class="mono">${escapeHTML(i.name)}</td>
+      <td>${escapeHTML(i.state)}</td>
+      <td><span class="badge ${severityClass(i.severity)}">${escapeHTML(i.severity)}</span></td>
+      <td>v${i.current_version}</td>
+      <td>${i.expires_at ? fmtTime(i.expires_at) : '—'}</td>
+      <td>${i.rotation_due_at ? fmtTime(i.rotation_due_at) : '—'}</td>
+      <td class="muted">${escapeHTML(i.detail || '')}</td>
+    </tr>`).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="muted">Unavailable (${escapeHTML(e.message)}).</td></tr>`;
+  }
+}
+$('lifecycleRefresh').onclick = loadSecretLifecycle;
+
+// ---- KEK rotation lifecycle (Task 63) ------------------------------------
+// Rotation is deliberately three steps — rotate, re-wrap, retire — because a
+// version may only be withdrawn once nothing still depends on it. The console
+// mirrors that: retire is offered per row, and the server refuses while secrets
+// remain, which is the safety property worth surfacing rather than hiding.
+async function loadKEKStatus() {
+  const tbody = $('kekRows');
+  if (!tbody) return;
+  try {
+    const st = await api('GET', '/api/secret/kek/status');
+    $('kekSummary').textContent =
+      `family ${st.family} · active v${st.active_version} (${st.active_label}) · ` +
+      `${st.stored_secrets} stored secret(s), ${st.secrets_on_old_kek} not yet on the active version` +
+      (st.never_rotated ? ' · never rotated' : '');
+    const versions = st.versions || [];
+    tbody.innerHTML = versions.map(v => `<tr>
+      <td>v${v.version}</td>
+      <td class="mono">${escapeHTML(v.label)}</td>
+      <td>${escapeHTML(v.status)}</td>
+      <td>${v.secrets}</td>
+      <td>${v.status === 'retiring' ? `<button class="btn ghost sm" data-kek-retire="${v.version}">Retire</button>` : ''}</td>
+    </tr>`).join('') || '<tr><td colspan="5" class="muted">No versions recorded.</td></tr>';
+    tbody.querySelectorAll('[data-kek-retire]').forEach(b =>
+      b.onclick = () => retireKEK(parseInt(b.dataset.kekRetire, 10)));
+    $('kekError').classList.add('hidden');
+  } catch (e) {
+    $('kekSummary').textContent = '';
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">KEK rotation needs the secret:rotate capability (${escapeHTML(e.message)}).</td></tr>`;
+  }
+}
+$('kekRefresh').onclick = loadKEKStatus;
+
+function showKEKResult(text, cls) {
+  const el = $('kekResult');
+  el.textContent = text;
+  el.className = 'notice ' + (cls || '');
+}
+
+$('kekRotateBtn').onclick = async () => {
+  if (!confirm('Generate a new KEK version in the HSM and make it active?\n\nExisting envelopes keep decrypting under the retiring version; re-wrap moves them onto the new one.')) return;
+  $('kekError').classList.add('hidden');
+  $('kekRotateBtn').disabled = true;
+  try {
+    const res = await api('POST', '/api/secret/kek/rotate', { key_type: $('kekKeyType').value });
+    showKEKResult(`Rotated ${res.family}: v${res.old_version} (${res.old_label}) → v${res.new_version} (${res.new_label}). Re-wrap next, then retire the old version.`, 'ok');
+    await loadKEKStatus();
+  } catch (e) { showError($('kekError'), 'Rotate failed: ' + e.message); }
+  finally { $('kekRotateBtn').disabled = false; }
+};
+
+$('kekRewrapBtn').onclick = async () => {
+  $('kekError').classList.add('hidden');
+  $('kekRewrapBtn').disabled = true;
+  try {
+    const r = await api('POST', '/api/secret/rewrap', { all: true });
+    showKEKResult(`Re-wrapped ${r.rewrapped}/${r.total} onto v${r.active_version} (${r.active_label}) · ` +
+      `${r.skipped} already current, ${r.conflicts} conflict(s), ${r.failed} failed.` +
+      ((r.errors && r.errors.length) ? '\n' + r.errors.join('\n') : ''),
+      r.failed > 0 ? 'err' : 'ok');
+    await loadKEKStatus();
+  } catch (e) { showError($('kekError'), 'Re-wrap failed: ' + e.message); }
+  finally { $('kekRewrapBtn').disabled = false; }
+};
+
+async function retireKEK(version) {
+  if (!confirm(`Retire KEK version ${version}?\n\nIt is withdrawn from service; the server refuses while any secret still depends on it.`)) return;
+  $('kekError').classList.add('hidden');
+  try {
+    const v = await api('POST', '/api/secret/kek/retire', { version });
+    showKEKResult(`Retired v${v.version} (${v.label}) — status ${v.status}.`, 'ok');
+    await loadKEKStatus();
+  } catch (e) { showError($('kekError'), 'Retire failed: ' + e.message); }
+}
 
 // ---- Tenant administration (Task 61) --------------------------------------
 // Lifecycle (suspend/reactivate), per-tenant quotas, and the usage report.
@@ -2922,6 +3554,46 @@ $('auditNext').onclick = () => {
   auditOffset += parseInt($('auditLimit').value, 10);
   loadAudit();
 };
+
+// ---- RFC 4998 Evidence Records (Task 161) --------------------------------
+// An evidence record keeps a proof verifiable after the algorithms under it
+// weaken, by nesting RFC 3161 timestamp chains. Verification re-derives every
+// digest, so the response reports per-chain and per-object results rather than a
+// bare boolean — a record can be internally sound while covering an object the
+// caller did not supply.
+$('ersVerifyBtn').onclick = async () => {
+  const err = $('ersError'); err.classList.add('hidden');
+  const out = $('ersResult'); out.classList.add('hidden');
+  const id = $('ersID').value.trim();
+  const record = $('ersRecord').value.trim();
+  if (!id && !record) { showError(err, 'A stored record id or a base64 DER record is required.'); return; }
+  if (id && record) { showError(err, 'Supply an id or a record, not both.'); return; }
+  try {
+    const res = await api('POST', '/api/ers/verify', id ? { id } : { record });
+    renderERSResult(out, res);
+  } catch (e) {
+    // A record that does not verify answers 409 with the same body shape, which
+    // is a verdict rather than an error the operator should have to decode.
+    showError(err, 'Verification failed: ' + e.message);
+  }
+};
+
+function renderERSResult(el, res) {
+  el.className = 'notice ' + (res.valid ? 'ok' : 'err');
+  const chains = (res.chains || []).map(c =>
+    `<tr><td class="mono">${escapeHTML(c.algorithm || '')}</td><td>${fmtTime(c.timestamp)}</td>` +
+    `<td>${(c.tokens || []).length} token(s)</td>` +
+    `<td class="muted">${escapeHTML(((c.tokens || [])[0] || {}).issuer || '')}</td></tr>`).join('');
+  const objects = (res.objects || []).map(o =>
+    `<tr><td class="mono">${escapeHTML(o.id || '')}</td><td>${escapeHTML(o.digest_algorithm || '')}</td>` +
+    `<td class="mono">${escapeHTML((o.digest || '').slice(0, 24))}…</td>` +
+    `<td style="color:${o.verified ? 'var(--ok)' : 'var(--crit)'}">${o.verified ? '✓' : '✗'}</td></tr>`).join('');
+  el.innerHTML =
+    `<div style="font-size:15px"><b>${res.valid ? '✓ record verifies' : '✗ record does NOT verify'}</b></div>` +
+    (chains ? `<table style="margin-top:8px"><thead><tr><th>Hash algorithm</th><th>Timestamped</th><th>Tokens</th><th>TSA</th></tr></thead><tbody>${chains}</tbody></table>` : '') +
+    (objects ? `<table style="margin-top:8px"><thead><tr><th>Object</th><th>Digest algorithm</th><th>Digest</th><th></th></tr></thead><tbody>${objects}</tbody></table>` : '');
+  el.classList.remove('hidden');
+}
 
 async function loadAudit() {
   const tbody = $('auditRows');

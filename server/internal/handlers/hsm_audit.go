@@ -44,6 +44,35 @@ func (a *API) hsmAuditManaged() bool {
 	return true
 }
 
+// HSMAuditStatus reports the audit subsystem's state without changing anything
+// (Task 190: the read-only half of `secsy-ca hsm-audit status`, so an operator
+// can watch the device log being accounted for without a host shell).
+//
+// It is gated on audit:read for the same reason the bundle below is: checking
+// that the ledger and the device still agree is an auditor's job, and the
+// reconciliation counts here are exactly the signal that goes quiet first when
+// collection breaks.
+//
+// Unlike the bundle this answers before provisioning too. "Not provisioned" is
+// the single most important thing this endpoint can say, and reporting it as a
+// 404 would leave a client unable to tell an uncommissioned device apart from a
+// server that has no HSM at all.
+func (a *API) HSMAuditStatus(w http.ResponseWriter, r *http.Request) {
+	user := middleware.GetUserInfo(r.Context())
+	if !a.can(user, rbac.ActionReadAudit) {
+		writeError(w, http.StatusForbidden, "audit:read capability required (admin or auditor role)")
+		return
+	}
+
+	svc := hsmaudit.NewService(hsmaudit.NewHardwareDevice(a.hsmCfg), a.db)
+	st, err := svc.Status(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "reading HSM audit status: %v", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
 // ExportHSMAuditBundle serves the self-contained, remotely verifiable audit
 // bundle (Task 167).
 //

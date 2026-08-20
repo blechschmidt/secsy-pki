@@ -1978,6 +1978,116 @@ type HSMAuditLog struct {
 	Entries      *[]HSMAuditEntry `json:"entries,omitempty"`
 }
 
+// HSMAuditStatus Device audit-log provisioning and reconciliation state.
+type HSMAuditStatus struct {
+	// Anchor The genesis anchor pinned at commissioning.
+	Anchor          *string    `json:"anchor,omitempty"`
+	CanAttest       *bool      `json:"can_attest,omitempty"`
+	CanCommit       *bool      `json:"can_commit,omitempty"`
+	Commitments     *int       `json:"commitments,omitempty"`
+	FreshnessProofs *int       `json:"freshness_proofs,omitempty"`
+	LastAttestedAt  *time.Time `json:"last_attested_at,omitempty"`
+	LastCommittedAt *time.Time `json:"last_committed_at,omitempty"`
+
+	// LedgerEntries Signatures the CA recorded requesting. It should equal signatures; a difference is a signature the CA did not ask for.
+	LedgerEntries *int    `json:"ledger_entries,omitempty"`
+	LogUsed       *string `json:"log_used,omitempty"`
+
+	// OptionsError Set when the device is not configured to guarantee that every signature is logged.
+	OptionsError *string `json:"options_error,omitempty"`
+	Provisioned  *bool   `json:"provisioned,omitempty"`
+
+	// Signatures Successful signing operations found in the collected device log.
+	Signatures    *int   `json:"signatures,omitempty"`
+	SigningKeys   *[]int `json:"signing_keys,omitempty"`
+	StoredEntries *int   `json:"stored_entries,omitempty"`
+}
+
+// HSMDeviceAttestRequest defines model for HSMDeviceAttestRequest.
+type HSMDeviceAttestRequest struct {
+	// Challenge The nonce the device must answer. Omit to have the server generate a fresh one; supply your own to obtain proof of possession in answer to *your* request rather than one the audited party chose.
+	Challenge *string `json:"challenge,omitempty"`
+
+	// ExpectedSerial The serial the device must turn out to have.
+	ExpectedSerial *string `json:"expected_serial,omitempty"`
+
+	// NoChallenge Read and check the device certificate without making the device answer anything. Read-only, and a weaker claim: it establishes that a genuine YubiHSM with this serial exists, not that it is the device on the other end of the connection.
+	NoChallenge *bool `json:"no_challenge,omitempty"`
+
+	// ObjectId Reserved handle for the throwaway challenge key (0xfa00..0xfaff). Zero uses the default slot.
+	ObjectId *int `json:"object_id,omitempty"`
+}
+
+// HSMDeviceAttestation A self-contained claim that a particular YubiHSM is genuine hardware.
+type HSMDeviceAttestation struct {
+	Challenge *string `json:"challenge,omitempty"`
+
+	// ChallengeCertificatePem The attestation certificate the device signed over a throwaway key labelled with the challenge — the proof of possession.
+	ChallengeCertificatePem *string `json:"challenge_certificate_pem,omitempty"`
+	ChallengeObjectId       *int    `json:"challenge_object_id,omitempty"`
+
+	// DeviceCertificatePem The device's factory attestation certificate (opaque object 0).
+	DeviceCertificatePem *string    `json:"device_certificate_pem,omitempty"`
+	Kind                 *string    `json:"kind,omitempty"`
+	ProducedAt           *time.Time `json:"produced_at,omitempty"`
+
+	// ReportedSerial The serial the device gave over the authenticated session. A claim, not evidence; verification reports when it disagrees with the certified serial.
+	ReportedSerial *string `json:"reported_serial,omitempty"`
+}
+
+// HSMDeviceAttestationResponse defines model for HSMDeviceAttestationResponse.
+type HSMDeviceAttestationResponse struct {
+	// Attestation A self-contained claim that a particular YubiHSM is genuine hardware.
+	Attestation *HSMDeviceAttestation `json:"attestation,omitempty"`
+
+	// Verification The verdict on one device attestation.
+	Verification *HSMDeviceAttestationResult `json:"verification,omitempty"`
+}
+
+// HSMDeviceAttestationResult The verdict on one device attestation.
+type HSMDeviceAttestationResult struct {
+	// ChainAnchored The device certificate chains to a trusted attestation root.
+	ChainAnchored     *bool   `json:"chain_anchored,omitempty"`
+	Challenge         *string `json:"challenge,omitempty"`
+	ChallengeObjectId *int    `json:"challenge_object_id,omitempty"`
+	Checks            *[]struct {
+		Detail *string `json:"detail,omitempty"`
+		Name   *string `json:"name,omitempty"`
+		Passed *bool   `json:"passed,omitempty"`
+	} `json:"checks,omitempty"`
+	FactoryFirmwareVersion *string   `json:"factory_firmware_version,omitempty"`
+	FirmwareVersion        *string   `json:"firmware_version,omitempty"`
+	IssuingCa              *string   `json:"issuing_ca,omitempty"`
+	Problems               *[]string `json:"problems,omitempty"`
+
+	// ProofOfPossession A certificate signed by this device's attestation key was produced in answer to the challenge.
+	ProofOfPossession     *bool   `json:"proof_of_possession,omitempty"`
+	ReportedSerial        *string `json:"reported_serial,omitempty"`
+	ReportedSerialMatched *bool   `json:"reported_serial_matched,omitempty"`
+
+	// Serial The device serial as asserted by the Yubico-signed device attestation certificate — the only serial here that is evidence rather than a claim.
+	Serial            *string   `json:"serial,omitempty"`
+	SubjectCommonName *string   `json:"subject_common_name,omitempty"`
+	Summary           *string   `json:"summary,omitempty"`
+	TrustAnchor       *string   `json:"trust_anchor,omitempty"`
+	Verified          *bool     `json:"verified,omitempty"`
+	Warnings          *[]string `json:"warnings,omitempty"`
+}
+
+// HSMDeviceAttestationVerifyRequest defines model for HSMDeviceAttestationVerifyRequest.
+type HSMDeviceAttestationVerifyRequest struct {
+	// AllowNoChallenge Accept a bundle that answers no challenge.
+	AllowNoChallenge *bool `json:"allow_no_challenge,omitempty"`
+
+	// Attestation A self-contained claim that a particular YubiHSM is genuine hardware.
+	Attestation       HSMDeviceAttestation `json:"attestation"`
+	ExpectedChallenge *string              `json:"expected_challenge,omitempty"`
+	ExpectedSerial    *string              `json:"expected_serial,omitempty"`
+
+	// RequireAnchoredChain Override the configured chain-anchoring requirement.
+	RequireAnchoredChain *bool `json:"require_anchored_chain,omitempty"`
+}
+
 // HSMInfo defines model for HSMInfo.
 type HSMInfo struct {
 	AuditProvisioned     *bool   `json:"audit_provisioned,omitempty"`
@@ -3864,8 +3974,14 @@ type CreateGroupJSONRequestBody = CreateGroupRequest
 // AddGroupMemberJSONRequestBody defines body for AddGroupMember for application/json ContentType.
 type AddGroupMemberJSONRequestBody = AddGroupMemberRequest
 
+// AttestHSMDeviceJSONRequestBody defines body for AttestHSMDevice for application/json ContentType.
+type AttestHSMDeviceJSONRequestBody = HSMDeviceAttestRequest
+
 // VerifyHSMAttestationJSONRequestBody defines body for VerifyHSMAttestation for application/json ContentType.
 type VerifyHSMAttestationJSONRequestBody = HSMAttestationVerifyRequest
+
+// VerifyHSMDeviceAttestationJSONRequestBody defines body for VerifyHSMDeviceAttestation for application/json ContentType.
+type VerifyHSMDeviceAttestationJSONRequestBody = HSMDeviceAttestationVerifyRequest
 
 // CreateCAJSONRequestBody defines body for CreateCA for application/json ContentType.
 type CreateCAJSONRequestBody = CreateCARequest
@@ -4280,6 +4396,11 @@ type ClientInterface interface {
 	// GetHealth request
 	GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// AttestHSMDeviceWithBody request with any body
+	AttestHSMDeviceWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	AttestHSMDevice(ctx context.Context, body AttestHSMDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetHSMAttestation request
 	GetHSMAttestation(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -4291,8 +4412,16 @@ type ClientInterface interface {
 	// GetHSMAuditLog request
 	GetHSMAuditLog(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetHSMAuditStatus request
+	GetHSMAuditStatus(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ExportCombinedAuditLog request
 	ExportCombinedAuditLog(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// VerifyHSMDeviceAttestationWithBody request with any body
+	VerifyHSMDeviceAttestationWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	VerifyHSMDeviceAttestation(ctx context.Context, body VerifyHSMDeviceAttestationJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// FactoryResetHSM request
 	FactoryResetHSM(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -5625,6 +5754,30 @@ func (c *Client) GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (
 	return c.Client.Do(req)
 }
 
+func (c *Client) AttestHSMDeviceWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAttestHSMDeviceRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) AttestHSMDevice(ctx context.Context, body AttestHSMDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAttestHSMDeviceRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) GetHSMAttestation(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetHSMAttestationRequest(c.Server)
 	if err != nil {
@@ -5673,8 +5826,44 @@ func (c *Client) GetHSMAuditLog(ctx context.Context, reqEditors ...RequestEditor
 	return c.Client.Do(req)
 }
 
+func (c *Client) GetHSMAuditStatus(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetHSMAuditStatusRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) ExportCombinedAuditLog(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewExportCombinedAuditLogRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyHSMDeviceAttestationWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyHSMDeviceAttestationRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyHSMDeviceAttestation(ctx context.Context, body VerifyHSMDeviceAttestationJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyHSMDeviceAttestationRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -10308,6 +10497,46 @@ func NewGetHealthRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewAttestHSMDeviceRequest calls the generic AttestHSMDevice builder with application/json body
+func NewAttestHSMDeviceRequest(server string, body AttestHSMDeviceJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewAttestHSMDeviceRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewAttestHSMDeviceRequestWithBody generates requests for AttestHSMDevice with any type of body
+func NewAttestHSMDeviceRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/hsm/attest-device")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewGetHSMAttestationRequest generates requests for GetHSMAttestation
 func NewGetHSMAttestationRequest(server string) (*http.Request, error) {
 	var err error
@@ -10402,6 +10631,33 @@ func NewGetHSMAuditLogRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewGetHSMAuditStatusRequest generates requests for GetHSMAuditStatus
+func NewGetHSMAuditStatusRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/hsm/audit-status")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewExportCombinedAuditLogRequest generates requests for ExportCombinedAuditLog
 func NewExportCombinedAuditLogRequest(server string) (*http.Request, error) {
 	var err error
@@ -10425,6 +10681,46 @@ func NewExportCombinedAuditLogRequest(server string) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewVerifyHSMDeviceAttestationRequest calls the generic VerifyHSMDeviceAttestation builder with application/json body
+func NewVerifyHSMDeviceAttestationRequest(server string, body VerifyHSMDeviceAttestationJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewVerifyHSMDeviceAttestationRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewVerifyHSMDeviceAttestationRequestWithBody generates requests for VerifyHSMDeviceAttestation with any type of body
+func NewVerifyHSMDeviceAttestationRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/hsm/device-attestation:verify")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -13806,6 +14102,11 @@ type ClientWithResponsesInterface interface {
 	// GetHealthWithResponse request
 	GetHealthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHealthResponse, error)
 
+	// AttestHSMDeviceWithBodyWithResponse request with any body
+	AttestHSMDeviceWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AttestHSMDeviceResponse, error)
+
+	AttestHSMDeviceWithResponse(ctx context.Context, body AttestHSMDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*AttestHSMDeviceResponse, error)
+
 	// GetHSMAttestationWithResponse request
 	GetHSMAttestationWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHSMAttestationResponse, error)
 
@@ -13817,8 +14118,16 @@ type ClientWithResponsesInterface interface {
 	// GetHSMAuditLogWithResponse request
 	GetHSMAuditLogWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHSMAuditLogResponse, error)
 
+	// GetHSMAuditStatusWithResponse request
+	GetHSMAuditStatusWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHSMAuditStatusResponse, error)
+
 	// ExportCombinedAuditLogWithResponse request
 	ExportCombinedAuditLogWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ExportCombinedAuditLogResponse, error)
+
+	// VerifyHSMDeviceAttestationWithBodyWithResponse request with any body
+	VerifyHSMDeviceAttestationWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyHSMDeviceAttestationResponse, error)
+
+	VerifyHSMDeviceAttestationWithResponse(ctx context.Context, body VerifyHSMDeviceAttestationJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyHSMDeviceAttestationResponse, error)
 
 	// FactoryResetHSMWithResponse request
 	FactoryResetHSMWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*FactoryResetHSMResponse, error)
@@ -15579,6 +15888,30 @@ func (r GetHealthResponse) StatusCode() int {
 	return 0
 }
 
+type AttestHSMDeviceResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *HSMDeviceAttestationResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r AttestHSMDeviceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r AttestHSMDeviceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type GetHSMAttestationResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -15650,6 +15983,29 @@ func (r GetHSMAuditLogResponse) StatusCode() int {
 	return 0
 }
 
+type GetHSMAuditStatusResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *HSMAuditStatus
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r GetHSMAuditStatusResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetHSMAuditStatusResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type ExportCombinedAuditLogResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -15666,6 +16022,33 @@ func (r ExportCombinedAuditLogResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r ExportCombinedAuditLogResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type VerifyHSMDeviceAttestationResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *struct {
+		// Verification The verdict on one device attestation.
+		Verification *HSMDeviceAttestationResult `json:"verification,omitempty"`
+	}
+	JSON400 *BadRequest
+	JSON403 *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r VerifyHSMDeviceAttestationResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r VerifyHSMDeviceAttestationResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -18197,6 +18580,23 @@ func (c *ClientWithResponses) GetHealthWithResponse(ctx context.Context, reqEdit
 	return ParseGetHealthResponse(rsp)
 }
 
+// AttestHSMDeviceWithBodyWithResponse request with arbitrary body returning *AttestHSMDeviceResponse
+func (c *ClientWithResponses) AttestHSMDeviceWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AttestHSMDeviceResponse, error) {
+	rsp, err := c.AttestHSMDeviceWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAttestHSMDeviceResponse(rsp)
+}
+
+func (c *ClientWithResponses) AttestHSMDeviceWithResponse(ctx context.Context, body AttestHSMDeviceJSONRequestBody, reqEditors ...RequestEditorFn) (*AttestHSMDeviceResponse, error) {
+	rsp, err := c.AttestHSMDevice(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAttestHSMDeviceResponse(rsp)
+}
+
 // GetHSMAttestationWithResponse request returning *GetHSMAttestationResponse
 func (c *ClientWithResponses) GetHSMAttestationWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHSMAttestationResponse, error) {
 	rsp, err := c.GetHSMAttestation(ctx, reqEditors...)
@@ -18232,6 +18632,15 @@ func (c *ClientWithResponses) GetHSMAuditLogWithResponse(ctx context.Context, re
 	return ParseGetHSMAuditLogResponse(rsp)
 }
 
+// GetHSMAuditStatusWithResponse request returning *GetHSMAuditStatusResponse
+func (c *ClientWithResponses) GetHSMAuditStatusWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHSMAuditStatusResponse, error) {
+	rsp, err := c.GetHSMAuditStatus(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetHSMAuditStatusResponse(rsp)
+}
+
 // ExportCombinedAuditLogWithResponse request returning *ExportCombinedAuditLogResponse
 func (c *ClientWithResponses) ExportCombinedAuditLogWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ExportCombinedAuditLogResponse, error) {
 	rsp, err := c.ExportCombinedAuditLog(ctx, reqEditors...)
@@ -18239,6 +18648,23 @@ func (c *ClientWithResponses) ExportCombinedAuditLogWithResponse(ctx context.Con
 		return nil, err
 	}
 	return ParseExportCombinedAuditLogResponse(rsp)
+}
+
+// VerifyHSMDeviceAttestationWithBodyWithResponse request with arbitrary body returning *VerifyHSMDeviceAttestationResponse
+func (c *ClientWithResponses) VerifyHSMDeviceAttestationWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyHSMDeviceAttestationResponse, error) {
+	rsp, err := c.VerifyHSMDeviceAttestationWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyHSMDeviceAttestationResponse(rsp)
+}
+
+func (c *ClientWithResponses) VerifyHSMDeviceAttestationWithResponse(ctx context.Context, body VerifyHSMDeviceAttestationJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyHSMDeviceAttestationResponse, error) {
+	rsp, err := c.VerifyHSMDeviceAttestation(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyHSMDeviceAttestationResponse(rsp)
 }
 
 // FactoryResetHSMWithResponse request returning *FactoryResetHSMResponse
@@ -21289,6 +21715,46 @@ func ParseGetHealthResponse(rsp *http.Response) (*GetHealthResponse, error) {
 	return response, nil
 }
 
+// ParseAttestHSMDeviceResponse parses an HTTP response from a AttestHSMDeviceWithResponse call
+func ParseAttestHSMDeviceResponse(rsp *http.Response) (*AttestHSMDeviceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &AttestHSMDeviceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest HSMDeviceAttestationResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseGetHSMAttestationResponse parses an HTTP response from a GetHSMAttestationWithResponse call
 func ParseGetHSMAttestationResponse(rsp *http.Response) (*GetHSMAttestationResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -21384,6 +21850,39 @@ func ParseGetHSMAuditLogResponse(rsp *http.Response) (*GetHSMAuditLogResponse, e
 	return response, nil
 }
 
+// ParseGetHSMAuditStatusResponse parses an HTTP response from a GetHSMAuditStatusWithResponse call
+func ParseGetHSMAuditStatusResponse(rsp *http.Response) (*GetHSMAuditStatusResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetHSMAuditStatusResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest HSMAuditStatus
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseExportCombinedAuditLogResponse parses an HTTP response from a ExportCombinedAuditLogWithResponse call
 func ParseExportCombinedAuditLogResponse(rsp *http.Response) (*ExportCombinedAuditLogResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -21404,6 +21903,49 @@ func ParseExportCombinedAuditLogResponse(rsp *http.Response) (*ExportCombinedAud
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseVerifyHSMDeviceAttestationResponse parses an HTTP response from a VerifyHSMDeviceAttestationWithResponse call
+func ParseVerifyHSMDeviceAttestationResponse(rsp *http.Response) (*VerifyHSMDeviceAttestationResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &VerifyHSMDeviceAttestationResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest struct {
+			// Verification The verdict on one device attestation.
+			Verification *HSMDeviceAttestationResult `json:"verification,omitempty"`
+		}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
 
 	}
 

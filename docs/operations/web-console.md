@@ -29,22 +29,26 @@ with fast/slow burn-rate paging.
 | **Validate** | [Chain / path validation](../ca/chain-validation.md): build and validate a pasted leaf (+ optional intermediates) against a selected CA's trust anchors and read a structured verdict — chain-built, validity window, **live CRL+OCSP revocation** (incl. reversible on-hold), name-constraint & certificate-policy conformance, and weak key/signature flags per chain certificate; nothing is signed | `/api/validate` |
 | **PKCS#12** | Server-side keygen + issue + download a password-protected `.p12` (key + leaf + full chain) for S/MIME / device enrollment; subject/SANs, key type, encoder, and optional M-of-N escrow of the subject key | `/api/ca/{id}/pkcs12`, `/api/profiles` |
 | **Authorities** | CA hierarchy table with rollover state; **create root**, **issue intermediate**, **external subordinate CA** (generate HSM key + PKCS#10 CSR for an offline/third-party parent, download/re-download the CSR, import the signed certificate + external chain with validation warnings), **rotate** an intermediate's signing key (dual-chain overlap), **retire** a drained superseded key, **cross-sign** (local CA or external cert/CSR) with alternate-chain downloads, and the **HSM key inventory** (non-extractability verdict, admin-only) | `/api/ca/init-root`, `/api/ca/{id}/issue-intermediate`, `/api/ca/csr`, `/api/ca/{id}/csr`, `/api/ca/{id}/import-cert`, `/api/rotations`, `/api/ca/{id}/rotation`, `/rotate`, `/retire`, `/cross-signs`, `/api/inventory/keys` |
+| **HSM** | The device the private keys live inside, when a YubiHSM is configured. **Device** metadata (serial, firmware, log usage, forced-audit state) and the factory attestation certificate; **device authenticity** — a challenge-response that proves the hardware is genuine Yubico silicon and reports its **verified serial** (see [device attestation](../hsm/device-attestation.md)); **key attestation** by CA or by HSM label (non-exportable / generated-on-device, bound to the CA certificate's key); **offline verification** of a pasted device or key bundle, needing no device; and the **device audit log** with the [reconciliation status](../hsm/audit-log.md) (device signatures vs. the CA's own ledger) plus the audit-bundle / signed-log / combined-log downloads and audit provisioning. Producing evidence needs `hsm:manage`; checking it needs only `audit:read` | `/api/hsm/info`, `/attestation`, `/attest-device`, `/attestation:verify`, `/device-attestation:verify`, `/keys/{label}/attestation`, `/api/ca/{id}/key-attestation`, `/api/hsm/audit-status`, `/audit-log`, `/audit-bundle`, `/signed-audit-log`, `/combined-audit-log`, `/provision-audit` |
 | **SSH CA** | Create SSH CAs, sign user/host public keys under profiles, browse/revoke signed certificates, download the CA public key and the KRL | `/api/ssh/cas[...]`, `/api/ssh/profiles` |
 | **Signing** | Artifact code-signing: configured signer list (with each signer's default **CAdES level**), detached CMS signature over an uploaded file or a digest with a per-signature **CAdES baseline level** selector (**B** signed attrs / **T** + RFC 3161 timestamp / **LT** + embedded revocation), and signature verification against the PKI's anchors with an optional **require-level** gate and require-timestamp check; results report the achieved level and any LTV material (see [artifact-signing.md](../signing/artifact-signing.md#cades-baseline-levels-b--t--lt)) | `/api/sign`, `/api/sign/verify`, `/api/sign/signers` |
 | **ACME** | The [ACME server](../protocols/acme.md) at a glance: the offered challenge types (http-01 / dns-01 / tls-alpn-01), and browse of ACME accounts (with **status** and validated **contacts**, per [account & authorization lifecycle](../protocols/acme.md)) and orders | `/api/acme/accounts`, `/api/acme/orders` |
-| **Audit** | The tamper-evident event log with action/actor filters and paging, hash-chain verification, and SIEM exports (NDJSON, CEF, RFC 5424 syslog) | `/api/events`, `/api/events/verify`, `/api/events/export` |
+| **Audit** | The tamper-evident event log with action/actor filters and paging, hash-chain verification, SIEM exports (NDJSON, CEF, RFC 5424 syslog), a live SSE tail, and an **RFC 4998 evidence-record** verifier (by stored id or a pasted base64 DER record) reporting the nested timestamp chains and per-object digest results | `/api/events`, `/api/events/verify`, `/api/events/export`, `/api/events/stream`, `/api/ers/verify` |
 | **Approvals** | The [four-eyes / maker-checker](../security/approvals.md) queue: pending sensitive operations (CA create/rotate/retire, bulk revoke, KEK rotation, token create) and the per-profile manual **issuance** gate; **approve**/**reject** with a distinct approver, and **fetch the issued certificate** once an issuance approval clears | `/api/approvals`, `/api/approvals/{id}/approve`, `/reject`, `/certificate` |
 | **Compliance** | CA/B-Forum conformance evidence (lint split, blocked issuance, audit-chain status) plus an **ad-hoc lint** panel for any pasted certificate | `/api/report/compliance`, `/api/lint` |
-| **Trust Bundle** | Issuer chain (AIA bundle, key-rollover aware), SPIFFE trust bundle (JWKS), and **X.509-SVID minting** when SPIFFE issuance is enabled | `/api/ca/{id}/chain`, `/svid/bundle`, `/svid` |
+| **Trust Bundle** | Issuer chain (AIA bundle, key-rollover aware), **alternate chains** (one per cross-signature plus the native chain, each downloadable — the path a client that trusts only an older root would use), SPIFFE trust bundle (JWKS), and **X.509-SVID / JWT-SVID minting** when SPIFFE issuance is enabled | `/api/ca/{id}/chain`, `/chains`, `/svid/bundle`, `/svid`, `/svid/jwt` |
 | **DNS Records** | Generate [DANE TLSA and SSHFP](dns-records.md) pinning records in zone-file format for material this PKI issues: a TLSA panel (CA + host/port, optional leaf serial) and an SSHFP panel (SSH CA + serial, or a pasted host public key) | `/api/ca/{id}/dns-records/tlsa`, `/api/ssh/cas/{id}/dns-records/sshfp` |
-| **Secrets** | HSM-backed envelope encryption/decryption (each with an optional **context / AAD** binding), KEK metadata, and — when configured — M-of-N **escrow on encrypt** with the policy shape displayed. A **Crypto service** panel exposes the stateless [encryption-as-a-service](../secrets/password-encryption.md#stateless-crypto-service-data-key-keyed-hmac-random) endpoints: mint a **data key** (returned in the clear and KEK-wrapped, optional AAD), compute and **verify a keyed HMAC** (versioned MAC key), and draw **CSPRNG random bytes** (HSM RNG when available, hex/base64). A **Digital signatures** panel manages named, HSM-backed [asymmetric signing keys](../secrets/password-encryption.md#digital-signatures-named-signing-keys-sign--verify): create a key (ECDSA / Ed25519 / RSA-PSS / RSA-PKCS#1 v1.5, algorithm fixed at creation), export its public half (SPKI PEM), and **sign / verify** arbitrary data — the private half is generated non-extractable on the token | `/api/secret/info`, `/encrypt`, `/decrypt`, `/datakey`, `/hmac`, `/hmac/verify`, `/random`, `/signing-keys[...]`, `/verify` |
+| **Secrets** | HSM-backed envelope encryption/decryption (each with an optional **context / AAD** binding), KEK metadata including the [post-quantum hybrid](../secrets/password-encryption.md#post-quantum-hybrid-mode-ml-kem-1024-harvest-now-decrypt-later-resistance) state, and — when configured — M-of-N **escrow on encrypt** with the policy shape displayed. A **Crypto service** panel exposes the stateless [encryption-as-a-service](../secrets/password-encryption.md#stateless-crypto-service-data-key-keyed-hmac-random) endpoints: mint a **data key** (returned in the clear and KEK-wrapped, optional AAD), compute and **verify a keyed HMAC** (versioned MAC key), and draw **CSPRNG random bytes** (HSM RNG when available, hex/base64). A **Digital signatures** panel manages named, HSM-backed [asymmetric signing keys](../secrets/password-encryption.md#digital-signatures-named-signing-keys-sign--verify): create a key, export its public half (SPKI PEM), and **sign / verify** arbitrary data — either against the stored key or against a **supplied public key**, which is what a relying party outside this PKI holds. A **Tokenization** panel drives [format-preserving encryption](../secrets/password-encryption.md#format-preserving-encryption--tokenization-ff1) (FF1) through a named template. A **Stored secrets** panel is the registry: create or update a named secret (every write appends a version), browse **version history**, reveal any version, **roll back** to an older one, and delete — plus a **Lifecycle attention** table of TTL/rotation-due secrets. A **KEK rotation** panel runs the three-step [rotate → re-wrap → retire](../secrets/password-encryption.md#cli--secsy-secret) lifecycle with the per-version secret counts that decide when retirement is safe | `/api/secret/info`, `/encrypt`, `/decrypt`, `/datakey`, `/hmac`, `/hmac/verify`, `/random`, `/signing-keys[...]`, `/verify`, `/transform/encode`, `/decode`, `/store[...]`, `/lifecycle`, `/kek/status`, `/kek/rotate`, `/kek/retire`, `/rewrap` |
 | **Tenants** | Tenant lifecycle (create/suspend/reactivate), per-tenant quotas, and usage reports (platform-admin only) | `/api/tenants[...]` |
 | **API Tokens** | Native scoped [API tokens / service accounts](../security/authentication.md#4-native-scoped-api-tokens-service-accounts): create a `secsy_pat_` token (name, roles, tenant/platform scope, expiry) with the secret shown **once**, list tokens with status, and revoke | `/api/tokens`, `/api/tokens/{id}` |
 
 ## CLI ↔ console parity
 
 Task 62 made every server-side capability the `secsy-ca` / `secsy-secret`
-CLIs expose reachable from the console as well. The mapping:
+CLIs expose reachable from the console as well, and Task 190 re-audited the
+whole CLI surface against it and closed the gaps that had opened since (the
+YubiHSM attestation/audit commands, the stored-secret registry, KEK rotation,
+tokenization, evidence records, and alternate chains). The mapping:
 
 | CLI | Console |
 |---|---|
@@ -63,15 +67,23 @@ CLIs expose reachable from the console as well. The mapping:
 | `ca csr`, `ca import-cert` | Authorities page (external subordinate CA panel; CSR / Import cert actions on pending rows) |
 | `ssh ca-init / sign-user / sign-host / revoke / krl / list / profiles` | SSH CA page |
 | `sign` (incl. `-level b\|t\|lt`), `verify-signature` (incl. `-require-level`) | Signing page (CAdES level selector + require-level gate) |
-| `svid`, `svid-bundle` | Trust Bundle page (SVID mint panel, bundle download) |
+| `svid`, `svid jwt`, `svid-bundle` | Trust Bundle page (X.509-SVID and JWT-SVID mint panels, bundle download) |
+| `list-cross-signs -chains` | Trust Bundle page (**Alternate chains** table, per-chain PEM download) |
 | `lint` | Compliance page (lint panel) |
 | `validate-cert` | Validate page (chain/path validation) |
 | `inventory` | Authorities page (HSM key inventory) |
 | `audit verify`, `audit export` (json/cef/rfc5424) | Audit page |
+| `ers verify` (by id or record) | Audit page (**Evidence record (RFC 4998)** panel) |
+| `hsm-attest device` (device authenticity + verified serial), `hsm-attest key`, `hsm-attest ca`, `hsm-attest verify` | HSM page (Device authenticity / Key attestation / Verify an attestation panels) |
+| `hsm-audit status`, `hsm-audit provision`, `hsm-audit export` | HSM page (reconciliation strip, Provision audit, Audit bundle / Signed log / Combined log downloads, device log table) |
 | `discover` | Discovery page |
+| `webhook create/list/enable/disable/test/deliveries/delete` | Webhooks page |
 | `tenant list/create/suspend/activate/quota/usage` | Tenants page |
-| `secsy-secret encrypt/decrypt/kek-info`, `encrypt -escrow`, `escrow-config` (status), `datakey`, `hmac`, `hmac-verify`, `random` | Secrets page (envelope encrypt/decrypt + Crypto service panel) |
-| `secsy-secret signing-key create/list/public`, `sign`, `verify` | Secrets page (**Digital signatures** panel — signing-key management, public-key export, sign/verify) |
+| `secsy-secret encrypt/decrypt/kek-info`, `encrypt -escrow`, `escrow-config` (status), `pqc-info`, `datakey`, `hmac`, `hmac-verify`, `random` | Secrets page (envelope encrypt/decrypt + KEK/PQC/escrow summary + Crypto service panel) |
+| `secsy-secret signing-key create/list/public`, `sign`, `verify` (incl. `-public-key`) | Secrets page (**Digital signatures** panel — signing-key management, public-key export, sign/verify against the stored key **or a supplied public key**) |
+| `secsy-secret transform encode/decode` | Secrets page (**Tokenization** panel — FF1 template encode/decode) |
+| `secsy-secret put/get/list-secrets/versions/rollback`, `lifecycle` | Secrets page (**Stored secrets** panel — create/update, reveal, version history, roll back, delete; **Lifecycle attention** table) |
+| `secsy-secret kek-versions`, `rotate-kek`, `rewrap`, `retire-kek` | Secrets page (**KEK rotation** panel — lineage table with per-version secret counts, rotate / re-wrap all / retire) |
 
 ### Deliberately CLI-only
 
@@ -98,17 +110,49 @@ Some commands are host-local or dual-control ceremonies and are intentionally
 - `secsy-secret recover` and escrow recovery — a dual-control quorum ceremony
   requiring recovery-agent key access on the HSM; the console shows escrow
   status and can escrow-on-encrypt, but recovery stays offline by design.
+- `secsy-secret pqc-enable` / `pqc-reseal` — provisioning and re-sealing the
+  ML-KEM hybrid material, which is key provisioning like `init-kek`. The
+  resulting state (`available` / `enabled`) is shown on the Secrets page.
+- `secsy-secret exec` — injects decrypted secrets into a child process's
+  environment on the machine it runs on; there is no browser equivalent.
 - `cmp` / `grpc` — protocol client tools for testing the CMP and gRPC
   endpoints (the endpoints themselves serve machine enrollment, not the
   console).
+- `hsm-audit verify` — the auditor's offline verifier. It deliberately reads no
+  config, no database and no device, so that a third party can check the CA's
+  claims on a machine with access to none of them; running it *inside* the
+  audited server would defeat the argument. The console instead serves the
+  bundle (`Audit bundle`) for exactly that offline check.
+- `hsm-audit collect` / `timestamp` / `commit` — collection now happens
+  automatically after every HSM operation, and the RFC 3161 freshness proofs and
+  device-signed serial bindings are scheduled attestation ceremonies needing the
+  TSA-role key provider. Their results are visible on the HSM page's
+  reconciliation strip.
+- `hsm-attest audit` — attests *every* asymmetric key on the device in one pass
+  for an inventory report; the console attests one key at a time, by CA or by
+  label, which is the interactive question.
+- `delegated-credential` (RFC 9345) — minting one requires the *leaf's* private
+  key, which the CA never holds and which must not be uploaded to a browser. The
+  Issue page reports whether a profile makes a certificate delegation-eligible;
+  minting stays where the key is.
+- `inventory retention` — ages out long-expired terminal inventory rows; a
+  background job with a manual CLI trigger, not an interactive operation.
+- `ct verify-inclusion`, `svid jwt-verify` — on-demand scans and client-side
+  checks; the recorded results are on the CT Inclusion and Trust Bundle pages.
+- `ers generate` / `renew` / `export` / `list` — evidence-record production is a
+  scheduled TSA ceremony; the console verifies records (`ers verify`), which is
+  the part a relying party performs.
 
 ## End-to-end coverage
 
 `server/internal/e2e/console_test.go` drives every console workflow against a
 real SoftHSM-backed server (assets, issuance, revocation+CRL, renewal, CA
-lifecycle incl. rotation/retirement, cross-signing, SSH CA, signing endpoints,
-lint, key inventory, audit list/verify/export, secrets round-trip incl. the
-escrow-status shape). Run it with the SoftHSM environment exported:
+lifecycle incl. rotation/retirement, cross-signing and alternate chains, SSH CA,
+signing endpoints, lint, key inventory, audit list/verify/export, secrets
+round-trip incl. the escrow-status shape, the stored-secret registry with
+version history and rollback, and the KEK rotate → re-wrap → retire lifecycle
+including its refusal to retire a version secrets still depend on). Run it with
+the SoftHSM environment exported:
 
 ```sh
 eval "$(scripts/setup-softhsm.sh --export-env)"

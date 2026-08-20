@@ -523,6 +523,14 @@ func authzMatrix() []rc {
 		// audit bundle is: an auditor must be able to check the evidence without
 		// holding the capability that administers the device.
 		platRd("POST", "/api/hsm/attestation:verify", "/api/hsm/attestation:verify"),
+		// Task 189/190 device authenticity, split the same way: producing one
+		// makes the device answer a nonce (hsm:manage), checking one is pure
+		// arithmetic over bytes an auditor was handed (audit:read).
+		hsmMg("POST", "/api/hsm/attest-device", "/api/hsm/attest-device", `{"no_challenge":true}`),
+		platRd("POST", "/api/hsm/device-attestation:verify", "/api/hsm/device-attestation:verify"),
+		// Task 190 audit reconciliation view: audit:read, like the bundle it
+		// summarizes.
+		platRd("GET", "/api/hsm/audit-status", "/api/hsm/audit-status"),
 
 		// OpenAPI spec + docs UI (public).
 		pub("GET", "/openapi.json", "/openapi.json"),

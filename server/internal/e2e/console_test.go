@@ -208,6 +208,29 @@ func (e *consoleEnv) req(t *testing.T, method, path string, body any) (int, []by
 	return resp.StatusCode, data
 }
 
+// consoleDecrypt runs an envelope back through the decrypt endpoint, which is
+// exactly what the console's stored-secret "Reveal" action does: the registry
+// hands out the envelope, and turning it into plaintext goes through the gate
+// that authorizes and audits plaintext access.
+func consoleDecrypt(t *testing.T, e *consoleEnv, envelope json.RawMessage) []byte {
+	t.Helper()
+	status, body := e.req(t, "POST", "/api/secret/decrypt", map[string]any{"envelope": envelope})
+	if status != http.StatusOK {
+		t.Fatalf("decrypt stored envelope = %d: %s", status, body)
+	}
+	var dec struct {
+		Plaintext string `json:"plaintext"`
+	}
+	if err := json.Unmarshal(body, &dec); err != nil {
+		t.Fatalf("decode decrypt: %v", err)
+	}
+	out, err := base64.StdEncoding.DecodeString(dec.Plaintext)
+	if err != nil {
+		t.Fatalf("decode plaintext b64: %v", err)
+	}
+	return out
+}
+
 // get fetches a path without authentication (for public assets/endpoints).
 func (e *consoleEnv) getPublic(t *testing.T, path string) (int, string, []byte) {
 	t.Helper()
@@ -239,7 +262,16 @@ func TestConsoleFlow(t *testing.T) {
 			"PSD2 authorization", "Private-key usage period", "Context / AAD",
 			// Task 158 console catch-up: secret-layer signing keys (155) and
 			// the key-compromise / SPKI-fingerprint search (154).
-			"Digital signatures", "Key-compromise search"} {
+			"Digital signatures", "Key-compromise search",
+			// Task 190 CLI↔UI parity: the CLI surfaces that had no console at
+			// all — the HSM page (hsm-attest / hsm-audit), the stored-secret
+			// registry and its lifecycle report (secsy-secret put/get/versions/
+			// rollback/lifecycle), KEK rotation (rotate-kek/rewrap/retire-kek),
+			// FF1 tokenization (transform), evidence records (ers verify), and
+			// alternate chains (list-cross-signs -chains).
+			"Hardware security module", "Device authenticity", "Key attestation",
+			"Stored secrets", "Lifecycle attention", "KEK rotation",
+			"Tokenization", "Evidence record (RFC 4998)", "Alternate chains"} {
 			if !strings.Contains(string(body), want) {
 				t.Errorf("console index missing %q", want)
 			}
@@ -261,7 +293,11 @@ func TestConsoleFlow(t *testing.T) {
 			"issueQCField", "private_key_usage_period", "delegation_usage",
 			// Task 158 console catch-up: secret-layer signing keys (155) and
 			// the key-compromise / SPKI-fingerprint search (154).
-			"loadSigningKeys", "runKeyCompromiseSearch", "public_key_sha256"} {
+			"loadSigningKeys", "runKeyCompromiseSearch", "public_key_sha256",
+			// Task 190 CLI↔UI parity: the loaders behind the new surfaces.
+			"loadHSM", "loadHSMAuditStatus", "attest-device", "loadStoredSecrets",
+			"loadSecretLifecycle", "loadKEKStatus", "runTransform",
+			"loadAlternateChains", "/api/ers/verify"} {
 			if !bytes.Contains(body, []byte(want)) {
 				t.Errorf("app.js does not contain expected console code %q", want)
 			}
@@ -819,6 +855,29 @@ func TestConsoleFlow(t *testing.T) {
 		if !bytes.Contains(chain, []byte("BEGIN CERTIFICATE")) {
 			t.Errorf("chain is not a PEM bundle: %s", chain)
 		}
+
+		// Task 190: the Alternate chains table lists every path to a trust
+		// anchor. With no cross-signature yet there is exactly one — the native
+		// chain — and it has to be marked as such, because that marker is what
+		// the console labels "primary".
+		status, body := env.req(t, "GET", "/api/ca/"+env.interID+"/chains", nil)
+		if status != http.StatusOK {
+			t.Fatalf("alternate chains = %d: %s", status, body)
+		}
+		var alt struct {
+			Chains []struct {
+				Native      bool   `json:"native"`
+				IssuerLabel string `json:"issuer_label"`
+				PEM         string `json:"pem"`
+			} `json:"chains"`
+		}
+		if err := json.Unmarshal(body, &alt); err != nil {
+			t.Fatalf("decode chains: %v", err)
+		}
+		if len(alt.Chains) == 0 || !alt.Chains[0].Native ||
+			!strings.Contains(alt.Chains[0].PEM, "BEGIN CERTIFICATE") {
+			t.Fatalf("expected a native chain with a PEM bundle: %s", body)
+		}
 	})
 
 	// --- 13. Secret envelope seal + recover (Secrets view). ---
@@ -969,6 +1028,226 @@ func TestConsoleFlow(t *testing.T) {
 		}
 		if verified.Valid {
 			t.Error("a tampered message must not verify")
+		}
+
+		// Task 190: verifying against a *supplied* public key needs no stored
+		// key at all, which is what a relying party outside this PKI holds. The
+		// console offers it in the same panel; it must reach the same verdict.
+		status, body = env.req(t, "POST", "/api/secret/verify", map[string]any{
+			"algorithm": "ecdsa-p256", "public_key_pem": created.PublicKeyPEM,
+			"message": msg, "signature": signed.Signature,
+		})
+		if status != http.StatusOK {
+			t.Fatalf("standalone verify = %d: %s", status, body)
+		}
+		verified.Valid = false
+		if err := json.Unmarshal(body, &verified); err != nil || !verified.Valid {
+			t.Fatalf("standalone verify did not accept a good signature (%v): %s", err, body)
+		}
+	})
+
+	// --- 13c. Stored-secret registry (Secrets view → Stored secrets), Task 190.
+	// The console's registry panel is a put/list/versions/reveal/rollback loop,
+	// and every step of it is a `secsy-secret` subcommand that previously had no
+	// UI at all. Reveal is deliberately two calls — fetch the envelope, then
+	// decrypt it — because the decrypt gate is where plaintext access is
+	// authorized and audited. ---
+	t.Run("StoredSecretRegistry", func(t *testing.T) {
+		const name = "console-db-password"
+		v1, v2 := []byte("first-value"), []byte("second-value")
+
+		status, body := env.req(t, "POST", "/api/secret/store", map[string]any{
+			"name":              name,
+			"plaintext":         base64.StdEncoding.EncodeToString(v1),
+			"ttl_days":          30,
+			"rotate_every_days": 7,
+			"comment":           "initial",
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("store secret = %d: %s", status, body)
+		}
+		var rec struct {
+			ID             string `json:"id"`
+			Name           string `json:"name"`
+			CurrentVersion int    `json:"current_version"`
+		}
+		if err := json.Unmarshal(body, &rec); err != nil {
+			t.Fatalf("decode store: %v", err)
+		}
+		if rec.ID == "" || rec.CurrentVersion != 1 {
+			t.Fatalf("unexpected store response: %s", body)
+		}
+
+		// A second write appends a version rather than replacing the first —
+		// which is exactly why the console's rollback action is meaningful.
+		status, body = env.req(t, "PUT", "/api/secret/store/"+rec.ID, map[string]any{
+			"plaintext": base64.StdEncoding.EncodeToString(v2),
+			"comment":   "rotated",
+		})
+		if status != http.StatusOK {
+			t.Fatalf("put secret = %d: %s", status, body)
+		}
+
+		status, body = env.req(t, "GET", "/api/secret/store", nil)
+		if status != http.StatusOK {
+			t.Fatalf("list stored secrets = %d: %s", status, body)
+		}
+		if !bytes.Contains(body, []byte(name)) {
+			t.Errorf("stored secret %q missing from listing: %s", name, body)
+		}
+
+		// Reveal the current value the way the console does.
+		status, body = env.req(t, "GET", "/api/secret/store/"+rec.ID, nil)
+		if status != http.StatusOK {
+			t.Fatalf("get stored secret = %d: %s", status, body)
+		}
+		var withEnv struct {
+			CurrentVersion int             `json:"current_version"`
+			Envelope       json.RawMessage `json:"envelope"`
+		}
+		if err := json.Unmarshal(body, &withEnv); err != nil {
+			t.Fatalf("decode get: %v", err)
+		}
+		if withEnv.CurrentVersion != 2 {
+			t.Fatalf("current version = %d, want 2 after the second put: %s", withEnv.CurrentVersion, body)
+		}
+		if got := consoleDecrypt(t, env, withEnv.Envelope); !bytes.Equal(got, v2) {
+			t.Fatalf("current value = %q, want %q", got, v2)
+		}
+
+		// Version history drives the console's history table, and revealing an
+		// older version must still return the older plaintext.
+		status, body = env.req(t, "GET", "/api/secret/store/"+rec.ID+"/versions", nil)
+		if status != http.StatusOK {
+			t.Fatalf("list versions = %d: %s", status, body)
+		}
+		var hist struct {
+			Versions []struct {
+				Version int  `json:"version"`
+				Current bool `json:"current"`
+			} `json:"versions"`
+		}
+		if err := json.Unmarshal(body, &hist); err != nil {
+			t.Fatalf("decode versions: %v", err)
+		}
+		if len(hist.Versions) != 2 {
+			t.Fatalf("version history has %d entries, want 2: %s", len(hist.Versions), body)
+		}
+		status, body = env.req(t, "GET", "/api/secret/store/"+rec.ID+"/versions/1", nil)
+		if status != http.StatusOK {
+			t.Fatalf("get version 1 = %d: %s", status, body)
+		}
+		if err := json.Unmarshal(body, &withEnv); err != nil {
+			t.Fatalf("decode version 1: %v", err)
+		}
+		if got := consoleDecrypt(t, env, withEnv.Envelope); !bytes.Equal(got, v1) {
+			t.Fatalf("version 1 = %q, want %q", got, v1)
+		}
+
+		// Rolling back appends a copy of v1 as v3; history is never rewritten.
+		status, body = env.req(t, "POST", "/api/secret/store/"+rec.ID+"/rollback", map[string]any{"version": 1})
+		if status != http.StatusOK {
+			t.Fatalf("rollback = %d: %s", status, body)
+		}
+		if err := json.Unmarshal(body, &rec); err != nil {
+			t.Fatalf("decode rollback: %v", err)
+		}
+		if rec.CurrentVersion != 3 {
+			t.Fatalf("rollback produced version %d, want a new version 3: %s", rec.CurrentVersion, body)
+		}
+		_, body = env.req(t, "GET", "/api/secret/store/"+rec.ID, nil)
+		if err := json.Unmarshal(body, &withEnv); err != nil {
+			t.Fatalf("decode post-rollback get: %v", err)
+		}
+		if got := consoleDecrypt(t, env, withEnv.Envelope); !bytes.Equal(got, v1) {
+			t.Fatalf("after rollback the current value is %q, want %q", got, v1)
+		}
+
+		// The lifecycle report is what the console's "attention" table renders.
+		// A 7-day rotation interval on a secret written now is not yet due, so
+		// the assertion is on the shape rather than on this row appearing.
+		status, body = env.req(t, "GET", "/api/secret/lifecycle", nil)
+		if status != http.StatusOK {
+			t.Fatalf("lifecycle report = %d: %s", status, body)
+		}
+		if !bytes.Contains(body, []byte(`"items"`)) {
+			t.Errorf("lifecycle report missing items: %s", body)
+		}
+
+		status, body = env.req(t, "DELETE", "/api/secret/store/"+rec.ID, nil)
+		if status != http.StatusNoContent {
+			t.Fatalf("delete stored secret = %d: %s", status, body)
+		}
+	})
+
+	// --- 13d. KEK rotation (Secrets view → KEK rotation), Task 190. The console
+	// exposes the three-step rotate → re-wrap → retire lifecycle; the ordering
+	// constraint (a version may not be retired while secrets still depend on it)
+	// is the safety property worth proving here. ---
+	t.Run("KEKRotation", func(t *testing.T) {
+		// A stored secret on the current KEK, so re-wrap has something to move.
+		status, body := env.req(t, "POST", "/api/secret/store", map[string]any{
+			"name": "console-rotating-secret", "plaintext": base64.StdEncoding.EncodeToString([]byte("payload")),
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("store secret for rotation = %d: %s", status, body)
+		}
+
+		status, body = env.req(t, "GET", "/api/secret/kek/status", nil)
+		if status != http.StatusOK {
+			t.Fatalf("kek status = %d: %s", status, body)
+		}
+		var before struct {
+			ActiveVersion int `json:"active_version"`
+		}
+		if err := json.Unmarshal(body, &before); err != nil {
+			t.Fatalf("decode kek status: %v", err)
+		}
+
+		status, body = env.req(t, "POST", "/api/secret/kek/rotate", map[string]any{"key_type": "rsa-2048"})
+		if status != http.StatusOK {
+			t.Fatalf("rotate kek = %d: %s", status, body)
+		}
+		var rot struct {
+			OldVersion int `json:"old_version"`
+			NewVersion int `json:"new_version"`
+		}
+		if err := json.Unmarshal(body, &rot); err != nil {
+			t.Fatalf("decode rotate: %v", err)
+		}
+		if rot.NewVersion != before.ActiveVersion+1 {
+			t.Fatalf("rotate produced version %d, want %d: %s", rot.NewVersion, before.ActiveVersion+1, body)
+		}
+
+		// Retiring the superseded version before re-wrapping must fail: secrets
+		// still depend on it. This is the console's ordering guarantee.
+		status, body = env.req(t, "POST", "/api/secret/kek/retire", map[string]any{"version": rot.OldVersion})
+		if status == http.StatusOK {
+			t.Fatalf("retiring v%d succeeded while secrets still depend on it: %s", rot.OldVersion, body)
+		}
+
+		status, body = env.req(t, "POST", "/api/secret/rewrap", map[string]any{"all": true})
+		if status != http.StatusOK {
+			t.Fatalf("rewrap = %d: %s", status, body)
+		}
+		var rw struct {
+			ActiveVersion int `json:"active_version"`
+			Rewrapped     int `json:"rewrapped"`
+			Failed        int `json:"failed"`
+		}
+		if err := json.Unmarshal(body, &rw); err != nil {
+			t.Fatalf("decode rewrap: %v", err)
+		}
+		if rw.ActiveVersion != rot.NewVersion || rw.Failed != 0 {
+			t.Fatalf("rewrap landed on v%d with %d failures: %s", rw.ActiveVersion, rw.Failed, body)
+		}
+
+		status, body = env.req(t, "POST", "/api/secret/kek/retire", map[string]any{"version": rot.OldVersion})
+		if status != http.StatusOK {
+			t.Fatalf("retire after rewrap = %d: %s", status, body)
+		}
+		if !bytes.Contains(body, []byte(`"retired"`)) {
+			t.Errorf("retire response does not report the retired status: %s", body)
 		}
 	})
 

@@ -105,6 +105,20 @@ closes.
 The bundle contains certificates rather than conclusions, so every claim in the
 report is re-derived by the verifier instead of being taken from the producer.
 
+The same exchange works over the API, which is what the operator console's
+[HSM page](../operations/web-console.md) drives — `POST /api/hsm/attest-device`
+(taking an optional `challenge`, `no_challenge` or `expected_serial`) to produce
+one, and `POST /api/hsm/device-attestation:verify` to check a bundle. Producing
+needs `hsm:manage` because it reaches the device; verifying needs only
+`audit:read`, so an auditor can evaluate the evidence without holding the
+capability that administers the hardware.
+
+Both go through the [native driver](yubihsm-native-driver.md), which claims the
+USB interface exclusively. On a server whose CA keys are reached through a
+`yhusb://` PKCS#11 module the module already holds the device, and attestation
+fails with a message saying so; run a `yubihsm-connector` and point both at its
+`http://` URL to let them share it.
+
 ## Options
 
 | Flag | Effect |
