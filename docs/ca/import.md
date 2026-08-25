@@ -22,7 +22,7 @@ a successful command imply otherwise.
 | Command | Does |
 |---|---|
 | `secsy-ca ca import` | Adopt an existing CA: import its private key **and** install its existing certificate, producing an ordinary, issuing CA record |
-| `secsy-ca import-key` | Place an existing private key into the key provider under a label (any role: CA, TSA, signing, secret) |
+| `secsy-ca import-key` | Place an existing private key into the key provider under a label, on the CA, TSA, or signing backend |
 | `secsy-secret signing-key import` | Adopt an existing application signing key into the named-signing-key registry |
 
 All three are **CLI-only by design**. Their input is raw private key material,
@@ -160,8 +160,9 @@ key, an SSH CA key, or staging a CA key for `ca import -existing-key`:
 secsy-ca import-key -label legacy-tsa -key tsa.key -role tsa
 ```
 
-`-role` (`ca` | `tsa` | `signing` | `secret`) selects which backend receives the
-key, since those roles may resolve to different providers. `-usage decrypt`
+`-role` (`ca` | `tsa` | `signing`) selects which backend receives the key,
+since those roles may resolve to different providers; an unknown role is
+rejected rather than quietly falling back to the CA backend. `-usage decrypt`
 imports an RSA key-encryption key for the [envelope layer](../secrets/password-encryption.md)
 instead of a signing key.
 

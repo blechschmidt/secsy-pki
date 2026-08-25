@@ -119,7 +119,7 @@ func cmdImportKey(db *database.DB, cfg *config.Config, caProvider keyprovider.Pr
 	label := fs.String("label", "", "label to store the key under in the provider (required)")
 	id := fs.String("id", "", "optional hex CKA_ID for the imported key (PKCS#11 only)")
 	usage := fs.String("usage", "sign", "key usage: sign (default) or decrypt (an RSA key-encryption key)")
-	role := fs.String("role", "ca", "key-provider role that receives the key: ca, tsa, signing, or secret")
+	role := fs.String("role", "ca", "key-provider role that receives the key: ca, tsa, or signing")
 	keyFlags := addImportKeyFlags(fs)
 	jsonOut := fs.Bool("json", false, "emit the imported key's metadata as JSON on stdout")
 	if err := fs.Parse(args); err != nil {
@@ -129,16 +129,22 @@ func cmdImportKey(db *database.DB, cfg *config.Config, caProvider keyprovider.Pr
 		fs.Usage()
 		return fmt.Errorf("-label is required")
 	}
+	// An unknown role must not fall through to the CA backend: writing a key to
+	// a different HSM than the operator named is precisely the mistake that is
+	// discovered later, by the role that cannot find its key.
+	switch *role {
+	case "", "ca", "tsa", "signing":
+	default:
+		return fmt.Errorf("unknown -role %q (want ca, tsa, or signing)", *role)
+	}
 	provider := caProvider
-	if *role != "" && *role != "ca" {
-		if cfg.KeyProviderTypeForRole(*role) != cfg.KeyProviderTypeForRole("ca") {
-			rp, err := buildProvider(cfg, *role)
-			if err != nil {
-				return fmt.Errorf("initializing the %s key provider: %w", *role, err)
-			}
-			defer rp.Close()
-			provider = rp
+	if *role != "" && *role != "ca" && cfg.KeyProviderTypeForRole(*role) != cfg.KeyProviderTypeForRole("ca") {
+		rp, err := buildProvider(cfg, *role)
+		if err != nil {
+			return fmt.Errorf("initializing the %s key provider: %w", *role, err)
 		}
+		defer rp.Close()
+		provider = rp
 	}
 	keyUsage := keyprovider.KeyUsageSign
 	switch strings.ToLower(*usage) {
