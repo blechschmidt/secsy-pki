@@ -27,15 +27,22 @@ The [`Dockerfile`](../../Dockerfile) is multi-stage:
 - **runtime** (`debian:bookworm-slim`) ships `ca-certificates`, plus `softhsm2`
   and `opensc` (for `softhsm2-util`/`pkcs11-tool`). It runs as non-root UID/GID
   `65532` and serves the SPA from `/app/web/static`.
+- **runtime-yubihsm** — the same, plus Yubico's PKCS#11 module and the
+  `libyubihsm` transports. Published under every tag with `-yubihsm` appended;
+  see [the container image](container.md#the-yubihsm-variant).
 
 ```bash
 docker build -t secsy-pki:0.1.0 --build-arg VERSION=0.1.0 .
+docker build -t secsy-pki:0.1.0-yubihsm --target runtime-yubihsm --build-arg VERSION=0.1.0 .
 docker run --rm secsy-pki:0.1.0 secsy-ca help
 ```
 
 For a **production HSM**, the vendor PKCS#11 module is provided at runtime — bind
 it into the container (`hsm.module.mode=hostPath`) or bake it into a derived
 image (`hsm.module.mode=image`). SoftHSM in the base image is only for dev/CI.
+For a YubiHSM 2 neither is needed: the `-yubihsm` tag of the same release
+already carries the module, at `/usr/lib/pkcs11/yubihsm_pkcs11.so` on both
+architectures.
 
 ---
 

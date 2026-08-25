@@ -14,6 +14,7 @@
 #   make govulncheck                 # gating vulnerability scan of the Go deps
 #   make sbom                        # CycloneDX SBOMs -> dist/
 #   make image IMAGE=... VERSION=... # build the container image
+#   make image-yubihsm               # …and the -yubihsm variant of it
 #   make sign  IMAGE=... VERSION=... # cosign sign + SBOM attest (keyless OIDC)
 #   make verify IMAGE=... VERSION=...# cosign verify + verify-attestation
 # ---------------------------------------------------------------------------
@@ -438,8 +439,9 @@ release-binaries: ## Build, run and package the release archives -> dist/release
 	scripts/build-release-binaries.sh --dest $(RELEASE_DIST)
 
 .PHONY: verify-published-image
-verify-published-image: ## Pull $(IMAGE_REF) anonymously and prove it works (add LOCAL=1 for a local build)
-	scripts/verify-published-image.sh --image $(IMAGE_REF) $(if $(LOCAL),--local,)
+verify-published-image: ## Pull $(IMAGE_REF) anonymously and prove it works (LOCAL=1 for a local build, YUBIHSM=1 for the -yubihsm variant)
+	scripts/verify-published-image.sh --image $(IMAGE_REF)$(if $(YUBIHSM),-yubihsm,) \
+	  $(if $(LOCAL),--local,) $(if $(YUBIHSM),--expect-yubihsm,)
 
 # ---------------------------------------------------------------------------
 # SBOM generation (CycloneDX)
@@ -470,6 +472,12 @@ sbom-image: | $(DIST) ## CycloneDX SBOM of the container image (needs syft + bui
 image: ## Build the container image (docker buildx)
 	@echo "==> docker build $(IMAGE_REF)"
 	docker build -t $(IMAGE_REF) --build-arg VERSION=$(VERSION) .
+
+.PHONY: image-yubihsm
+image-yubihsm: ## Build the YubiHSM container variant (tag <version>-yubihsm)
+	@echo "==> docker build $(IMAGE_REF)-yubihsm"
+	docker build -t $(IMAGE_REF)-yubihsm --target runtime-yubihsm \
+	  --build-arg VERSION=$(VERSION) .
 
 # ---------------------------------------------------------------------------
 # Signing + attestation (cosign)

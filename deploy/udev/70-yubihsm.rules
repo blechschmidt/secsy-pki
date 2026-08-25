@@ -1,0 +1,27 @@
+# udev rule granting a non-root account access to an attached YubiHSM 2.
+#
+# Install on the *host*, as root, then reload:
+#
+#   install -m 0644 70-yubihsm.rules /etc/udev/rules.d/70-yubihsm.rules
+#   udevadm control --reload-rules
+#   udevadm trigger --subsystem-match=usb --attr-match=idVendor=1050
+#
+# Why it is needed at all: secsy-pki reaches the device over Linux usbfs — the
+# native SCP03 driver directly, Yubico's PKCS#11 module through libusb — and
+# both open /dev/bus/usb/<bus>/<device>, which is root-only by default. Running
+# the CA as root to work around that trades one problem for a worse one.
+#
+# In a container the same rule still belongs on the host: udev does not run
+# inside the container, and the device node passed in with `--device` keeps the
+# host's numeric owner and group. Match them with `--group-add`; see
+# docs/deployment/container.md.
+#
+# GROUP is the account that runs secsy-pki. Change it. The published container
+# image runs as uid/gid 65532, so a host group with gid 65532 lines the two up
+# without a --group-add at all.
+#
+# 1050:0030 is the YubiHSM 2 (Yubico's vendor id, the HSM's product id) — not a
+# YubiKey, which is a different product id and should not be swept in by a
+# broader match.
+
+SUBSYSTEM=="usb", ATTR{idVendor}=="1050", ATTR{idProduct}=="0030", MODE="0660", GROUP="secsy", TAG+="uaccess"

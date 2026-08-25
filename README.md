@@ -326,6 +326,8 @@ database:
 
 The server auto-generates `yubihsm_pkcs11.conf` from the `yubihsm.connector_url` config setting. You can also set `YUBIHSM_PKCS11_CONF` manually if needed.
 
+Yubico's PKCS#11 module is not part of this repository — install the YubiHSM 2 SDK, or pull the `-yubihsm` container image, which has the module and the libyubihsm transports baked in for both architectures. See [the container image](docs/deployment/container.md#the-yubihsm-variant).
+
 Open https://localhost:8443 and log in as `root`.
 
 ## secsy-ssh: SSH Client Wrapper

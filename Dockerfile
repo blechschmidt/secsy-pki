@@ -14,6 +14,12 @@
 # operators pkcs11-tool for debugging; for production the real vendor PKCS#11
 # module is bind-mounted over /usr/lib and selected via pkcs11.module_path.
 #
+# Stage 4 (runtime-yubihsm) is the one exception to that last sentence: the
+# runtime with Yubico's PKCS#11 module and the libyubihsm transports already in
+# it, published under every tag with `-yubihsm` appended. It is defined after
+# the artifacts stage because it derives from the runtime, and a stage can only
+# refer to one that came before it.
+#
 # Stage 3 (artifacts) is a scratch stage holding nothing but the binaries, so
 # that `docker buildx build --target artifacts --output type=local,dest=…`
 # exports them for the release archives. The image and the released binaries are
@@ -111,8 +117,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 #
 # writes dist/release/linux_amd64/… and dist/release/linux_arm64/…, which is
 # what scripts/build-release-binaries.sh packages into the release archives.
-# Deliberately not the last stage in this file: `docker build` with no --target
-# builds the last one, and that has to stay the runtime image.
+# Not the last stage in this file: `docker build` with no --target builds the
+# last one, and that has to keep meaning the plain runtime image — which is what
+# the `default` alias at the bottom is for.
 FROM scratch AS artifacts
 COPY --from=builder /out/ /
 
@@ -165,3 +172,86 @@ EXPOSE 8443
 
 ENTRYPOINT ["secsy-pki-server"]
 CMD ["-config", "/etc/secsy/config.yaml"]
+
+# ---------------------------------------------------------------------------
+# The `-yubihsm` variant: the runtime above plus everything a YubiHSM 2 needs.
+#
+# Published as a separate tag rather than folded into the default image, because
+# the default is what every deployment pulls and most of them have no YubiHSM;
+# and rather than left to the operator, because the usual answer — bind-mount
+# the vendor module over /usr/lib — asks whoever runs the container to match a
+# glibc, an OpenSSL and a multiarch path against a base image they did not
+# build. Getting it wrong yields an image that starts and cannot sign.
+#
+# Nothing here is needed by the *native* driver (internal/yubihsm speaks SCP03
+# over usbfs with no libusb, no cgo and no vendor code — see
+# docs/hsm/yubihsm-native-driver.md). It is needed by the other half: live PKI
+# signing goes through PKCS#11, and PKCS#11 needs Yubico's module.
+#
+# Debian's own archive, not Yubico's tarball. The tarball is amd64-only, which
+# would make this variant single-architecture while the default image is not;
+# Debian builds the same source for both, signs it, and tracks it for security
+# updates, which is also what makes the weekly rebuild in container.yaml mean
+# something here.
+#
+# The packages live in bookworm-backports; bookworm itself has none of them.
+# Deliberately *without* `-t bookworm-backports`: that flag raises every
+# backported package to priority 990 for the whole transaction, so a dependency
+# resolution could quietly pull a backported libssl3 or libc6 underneath the
+# rest of the image. Backports is NotAutomatic (priority 100), which is enough
+# to install a package that exists nowhere else and not enough to displace one
+# that does — exactly the rule wanted here.
+FROM runtime AS runtime-yubihsm
+
+USER root
+
+# libyubihsm-usb2 is named explicitly and must stay that way. libyubihsm2's
+# dependency is the *alternative* `libyubihsm-http2 | libyubihsm-usb2`, so apt
+# satisfies it with the first and direct USB support is silently absent — an
+# image whose PKCS#11 module works against a yubihsm-connector and fails against
+# the device plugged into the host, which is the common case.
+RUN set -eux; \
+    echo 'deb http://deb.debian.org/debian bookworm-backports main' \
+        > /etc/apt/sources.list.d/backports.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        yubihsm-pkcs11 \
+        libyubihsm-usb2 \
+        libyubihsm-http2 \
+        yubihsm-shell \
+        yubihsm-connector; \
+    rm -rf /var/lib/apt/lists/*
+
+# Debian installs the module to the multiarch directory, so its path differs
+# between the amd64 and arm64 halves of the same tag — and a config file cannot
+# say "whichever". The symlink is the architecture-independent path the
+# documentation uses, so one pkcs11.module_path is correct on both.
+# Found by glob rather than by naming the triplet: `dpkg-architecture` lives in
+# dpkg-dev, which is not in a slim base and is not worth adding for one string.
+# The count is asserted, so a second module appearing under a different triplet
+# fails the build instead of being resolved by shell-glob ordering.
+RUN set -eux; \
+    set -- /usr/lib/*/pkcs11/yubihsm_pkcs11.so; \
+    [ "$#" -eq 1 ] || { echo "expected exactly one yubihsm_pkcs11.so, found $#: $*" >&2; exit 1; }; \
+    mkdir -p /usr/lib/pkcs11; \
+    ln -sf "$1" /usr/lib/pkcs11/yubihsm_pkcs11.so
+
+# udev does not run in a container, so the device node arrives with whatever
+# ownership the host gave it and this file cannot change that. It is shipped to
+# be copied *out* — `docker run --rm --entrypoint cat … /usr/share/secsy-pki/udev/70-yubihsm.rules`
+# — so the rule the host needs comes from the same place as the software that
+# needs it. docs/deployment/container.md has the full recipe.
+COPY deploy/udev/70-yubihsm.rules /usr/share/secsy-pki/udev/70-yubihsm.rules
+
+USER 65532:65532
+
+# The image `docker build .` produces when no --target is given: the plain
+# runtime, unchanged. BuildKit builds only the stages a target needs, so naming
+# this one last leaves runtime-yubihsm out of an ordinary build entirely — and
+# an alias stage with no instructions of its own cannot drift from what it
+# aliases. The variants are selected explicitly:
+#
+#   docker build --target runtime         .   (or no --target at all)
+#   docker build --target runtime-yubihsm .
+#   docker build --target artifacts       .   --output type=local,dest=…
+FROM runtime AS default

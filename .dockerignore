@@ -10,6 +10,13 @@ deploy
 scripts
 *.md
 
+# …except the one deployment file the image itself ships: the `-yubihsm` variant
+# carries the host udev rule under /usr/share so the rule and the software that
+# needs it come from the same place. Re-including a path under an excluded
+# directory works here in a way it would not in .gitignore — Docker applies the
+# patterns in order and does descend to find the exception.
+!deploy/udev/70-yubihsm.rules
+
 # Local/build state that must never leak into an image layer.
 server/secsy-pki.db
 server/secsy-pki.db-shm

@@ -23,6 +23,7 @@
 #   verify-published-image.sh --image ghcr.io/owner/secsy-pki:1.2.3
 #                             [--expect-version 1.2.3] [--allow-login]
 #                             [--platforms linux/amd64,linux/arm64] [--local]
+#                             [--expect-yubihsm]
 #
 #   --expect-version  require the binaries to report exactly this version.
 #                     Defaults to the tag when the tag looks like a version.
@@ -38,6 +39,11 @@
 #                     loaded, before any of it is pushed: the same checks that
 #                     would otherwise find a break after the publish, run
 #                     before it.
+#   --expect-yubihsm  this is the `-yubihsm` variant: require Yubico's PKCS#11
+#                     module to be present *and to load*. Without the flag the
+#                     same check runs inverted — the module must be absent —
+#                     because two tags that promise different things and ship
+#                     the same bytes is a defect in whichever one is lying.
 #
 # Runs identically on a laptop and in the verify job of
 # .github/workflows/container.yaml.
@@ -48,11 +54,18 @@ EXPECT_VERSION=""
 PLATFORMS="linux/amd64,linux/arm64"
 ALLOW_LOGIN=0
 LOCAL=0
+EXPECT_YUBIHSM=0
 
 # The image's own defaults, asserted rather than assumed: the Dockerfile's
 # non-root account and the SoftHSM module Debian installs into the runtime.
 EXPECT_UID=65532
 SOFTHSM_MODULE=/usr/lib/softhsm/libsofthsm2.so
+
+# The architecture-independent path the `-yubihsm` stage symlinks into place.
+# Checking this one rather than the multiarch original is deliberate: it is the
+# path the documentation tells operators to put in pkcs11.module_path, and it is
+# the only one that can be correct on both halves of a multi-arch tag.
+YUBIHSM_MODULE=/usr/lib/pkcs11/yubihsm_pkcs11.so
 
 # The six commands the Dockerfile installs, each with the cheapest invocation
 # that makes it start, and how it reports a version — which is not uniform, so
@@ -115,8 +128,12 @@ while [ $# -gt 0 ]; do
 		LOCAL=1
 		shift
 		;;
+	--expect-yubihsm)
+		EXPECT_YUBIHSM=1
+		shift
+		;;
 	-h | --help)
-		sed -n '2,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+		sed -n '2,49p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*) die "unknown argument: $1" ;;
@@ -261,7 +278,97 @@ else
 	bad "the image cannot mint a root CA against its bundled PKCS#11 module"
 fi
 
-# --- 7. The index carries the architectures the tag claims -------------------
+# --- 7. The -yubihsm variant carries what its tag promises --------------------
+#
+# Present *and loadable*. "The .so is in the image" is the check that passes
+# while the image is broken: Yubico's module is dynamically linked against
+# libyubihsm, which in turn dlopens a per-transport backend, and Debian's
+# dependency on those backends is an alternative — `libyubihsm-http2 |
+# libyubihsm-usb2` — that apt satisfies with the first one alone. The result
+# is a module that loads and can reach a yubihsm-connector but not a device on
+# the USB bus, which is how nearly everyone attaches one.
+#
+# So the module is put through pkcs11-tool, which dlopens it, resolves
+# C_GetFunctionList and calls C_Initialize/C_GetInfo. No YubiHSM is attached to
+# a CI runner, and none is needed: initialization is what loads the backend, and
+# the failure this is looking for happens there rather than at the device.
+if [ "$EXPECT_YUBIHSM" -eq 1 ]; then
+	echo "  checking the bundled YubiHSM PKCS#11 module"
+	probe=$(
+		cat <<'INNER'
+set -euo pipefail
+
+module="$(readlink -f MODULE)"
+echo "module:      ${module}"
+
+# Every NEEDED library resolved. This is the failure that a cross-built or
+# mismatched-base image produces, and it is silent until the first signature:
+# the module is a perfectly good file that the loader will not load.
+for so in "$module" /usr/lib/*/libyubihsm_usb.so.2 /usr/lib/*/libyubihsm_http.so.2; do
+    if [ ! -f "$so" ]; then
+        echo "missing: $so" >&2
+        exit 1
+    fi
+    echo "linkage:     $(basename "$so") ok"
+    if ldd "$so" | grep -F 'not found'; then
+        echo "unresolved shared libraries in $so" >&2
+        exit 1
+    fi
+done
+
+# C_Initialize refuses a NULL argument list unless it can read a connector from
+# YUBIHSM_PKCS11_CONF, so it is given one — the same file the server writes for
+# itself from yubihsm.connector_url. yhusb:// is the deployment this variant
+# exists for, and no HSM is needed to exercise it: initializing is what loads
+# the transport backend and makes the module state its identity.
+conf="$(mktemp)"
+printf 'connector = yhusb://\n' >"$conf"
+export YUBIHSM_PKCS11_CONF="$conf"
+
+# The exit status is 1 on a machine with no YubiHSM attached — "No slot with a
+# token was found", which is the correct answer here and not the thing being
+# checked. What is being read is C_GetInfo's reply, below.
+pkcs11-tool --module "$module" --show-info 2>&1 || true
+
+yubihsm-shell --version
+echo "yubihsm-connector $(yubihsm-connector version)"
+test -f /usr/share/secsy-pki/udev/70-yubihsm.rules
+echo "udev rule:   shipped for the host to install"
+INNER
+	)
+	probe="${probe//MODULE/$YUBIHSM_MODULE}"
+	if out="$(docker run --rm --entrypoint bash "$IMAGE" -c "$probe" 2>&1)"; then
+		printf '%s\n' "$out" | sed 's/^/        /'
+		# C_GetInfo answers with the module's own identity, so a module that
+		# loaded but is the wrong one — SoftHSM reached through a stale symlink,
+		# say — cannot pass as this one.
+		case "$out" in
+		*"YubiHSM PKCS#11 Library"*) ok "Yubico's PKCS#11 module loads and initializes" ;;
+		*) bad "${YUBIHSM_MODULE} did not identify itself as the YubiHSM PKCS#11 library" ;;
+		esac
+		# Named separately because Debian's dependency on it is an alternative
+		# that apt satisfies with the HTTP backend alone; without it the module
+		# reaches a yubihsm-connector and never a device on the USB bus.
+		case "$out" in
+		*libyubihsm_usb*) ok "the direct-USB backend is installed" ;;
+		*) bad "libyubihsm-usb is missing — the module could reach a connector but never a device on the USB bus" ;;
+		esac
+	else
+		printf '%s\n' "$out" | sed 's/^/        /'
+		bad "the -yubihsm variant cannot load ${YUBIHSM_MODULE}"
+	fi
+else
+	# The inverse, and not a formality. The two tags exist to be different; a
+	# default image that quietly grew the vendor module would make the variant
+	# pointless and its extra ~4 MB a surprise to everyone pulling the default.
+	if docker run --rm --entrypoint test "$IMAGE" -e "$YUBIHSM_MODULE" 2>/dev/null; then
+		bad "the default image ships ${YUBIHSM_MODULE}; that belongs only in the -yubihsm variant"
+	else
+		ok "no vendor PKCS#11 module in the default image"
+	fi
+fi
+
+# --- 8. The index carries the architectures the tag claims -------------------
 #
 # An amd64 machine pulls and runs a multi-arch index perfectly happily while the
 # arm64 entry is missing, because it never looks at that entry. So the index is

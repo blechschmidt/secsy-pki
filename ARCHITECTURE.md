@@ -247,7 +247,9 @@ terraform/         Provisions HSM keys via a custom terraform-provider-pkcs11 (Y
 `github.com/coreos/go-oidc/v3` (OIDC); `golang.org/x/crypto` (SSH/crypto);
 `lib/pq` + `mattn/go-sqlite3` (DB); `google/uuid`. No HSM connector library is
 vendored — the runtime relies on a system PKCS#11 module (`yubihsm_pkcs11.so` in
-production, `libsofthsm2.so` in CI/tests).
+production, `libsofthsm2.so` in CI/tests). For YubiHSM 2 that module is shipped
+in the `-yubihsm` container variant rather than vendored into the tree; see
+[docs/deployment/container.md](docs/deployment/container.md#the-yubihsm-variant).
 
 ---
 

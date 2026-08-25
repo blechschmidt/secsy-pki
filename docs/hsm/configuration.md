@@ -58,6 +58,13 @@ pkcs11:
   - YubiHSM: `/usr/lib/pkcs11/yubihsm_pkcs11.so`
   - SoftHSM (Debian/Ubuntu): `/usr/lib/softhsm/libsofthsm2.so` or
     `/usr/lib/x86_64-linux-gnu/softhsm/libsofthsm2.so`
+
+  Debian installs both under a multiarch directory
+  (`/usr/lib/x86_64-linux-gnu/…`, `/usr/lib/aarch64-linux-gnu/…`) and this
+  setting cannot say "whichever". The published
+  [`-yubihsm` container image](../deployment/container.md#the-yubihsm-variant)
+  symlinks the YubiHSM module to the architecture-independent path above so the
+  same config file is correct on `amd64` and `arm64`.
 - `pin` is the **user** PIN used to log into the token for signing. Storing it
   here (or in `SECSY_USER_PIN`) leaves an HSM credential in plaintext at rest;
   prefer an external

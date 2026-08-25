@@ -70,11 +70,13 @@ verifies while describing the wrong hardware.
 ## Requirements
 
 Direct USB access needs read/write permission on the device node. Running as
-root works; for a service account, a udev rule is the usual answer:
+root works; for a service account, a udev rule is the usual answer, and
+[`deploy/udev/70-yubihsm.rules`](../../deploy/udev/70-yubihsm.rules) is that
+rule:
 
 ```
 # /etc/udev/rules.d/70-yubihsm.rules
-SUBSYSTEM=="usb", ATTR{idVendor}=="1050", ATTR{idProduct}=="0030", MODE="0660", GROUP="secsy"
+SUBSYSTEM=="usb", ATTR{idVendor}=="1050", ATTR{idProduct}=="0030", MODE="0660", GROUP="secsy", TAG+="uaccess"
 ```
 
 Only one process may hold the device's USB interface at a time. If
@@ -85,6 +87,13 @@ point secsy-pki at the connector's URL instead of at USB.
 The driver is Linux-only for direct USB. On other platforms, run a
 `yubihsm-connector` and use an `http://` URL; the security properties are the
 same either way.
+
+In a container, udev does not run: the device node passed in with `--device`
+keeps the host's numeric owner and group, so the rule still belongs on the host
+and the container joins the group it names. The published
+[`-yubihsm` image](../deployment/container.md#the-yubihsm-variant) carries the
+rule at `/usr/share/secsy-pki/udev/70-yubihsm.rules` to be copied out, along
+with `yubihsm-connector` and the PKCS#11 module live signing needs.
 
 ## Configuration
 

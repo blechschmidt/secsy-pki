@@ -22,6 +22,15 @@ name: container
 # only on a branch, so the two columns cannot both appear and neither needs to
 # be guarded by hand.
 #
+# Every one of those tags is published twice: once for the default image and
+# once, with `-yubihsm` appended, for the variant that carries Yubico's PKCS#11
+# module and the libyubihsm transports (`edge` and `edge-yubihsm`, `1.2.3` and
+# `1.2.3-yubihsm`, and so on). Same commit, same Dockerfile, one stage further
+# on. They are derived from one set of tag rules and a `flavor: suffix`, so the
+# pair cannot drift apart or come to mean different commits — and a step below
+# refuses to push if the suffix ever stops being applied, because a variant
+# landing on `latest` is not something a later run can undo.
+#
 # release.yaml does not build its own image. It calls this workflow
 # (`workflow_call`, below) once the release guard and the full SoftHSM CI gate
 # have passed, which is what keeps a version tag meaning "this was checked" —
@@ -110,6 +119,12 @@ on:
       tags:
         description: "Newline-separated list of tags that were pushed"
         value: ${{ jobs.publish.outputs.tags }}
+      yubihsm-digest:
+        description: "Digest of the pushed -yubihsm manifest, for provenance and release notes"
+        value: ${{ jobs.publish.outputs.yubihsm-digest }}
+      yubihsm-tags:
+        description: "Newline-separated list of -yubihsm tags that were pushed"
+        value: ${{ jobs.publish.outputs.yubihsm-tags }}
 
 # The floor. The publishing job asks for more, next to the reason.
 permissions:
@@ -260,6 +275,82 @@ jobs:
           docker run --rm --platform linux/arm64 secsy-pki:smoke-arm64 -version
           docker run --rm --platform linux/arm64 --entrypoint secsy-ca secsy-pki:smoke-arm64 version
 
+      # --- the -yubihsm variant -------------------------------------------- #
+      #
+      # The same Dockerfile, one stage further on: the runtime image plus
+      # Yubico's PKCS#11 module and the libyubihsm transports it dlopens. Built
+      # here rather than in a job of its own because the expensive half — the
+      # cgo compile of the whole Go tree, twice — is a stage both variants
+      # share and this job has just produced it. A parallel job would hold no
+      # cache the moment it started and would compile all of it again.
+      - name: Build the -yubihsm variant (linux/amd64) and load it
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime-yubihsm
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: secsy-pki:smoke-yubihsm
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
+          cache-to: type=gha,scope=${{ env.CACHE_SCOPE }},mode=max
+
+      # Everything the plain image is checked for, plus the module: present, its
+      # shared libraries resolvable, and initializing far enough to state its own
+      # identity. No YubiHSM is attached to a runner and none is needed — the
+      # failure this is looking for happens in the loader, not at the device.
+      - name: Run the -yubihsm image
+        run: |
+          scripts/verify-published-image.sh \
+            --image secsy-pki:smoke-yubihsm --local --expect-yubihsm \
+            --expect-version '${{ steps.version.outputs.version }}'
+
+      - name: Build both architectures of the -yubihsm variant
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime-yubihsm
+          platforms: ${{ env.PLATFORMS }}
+          push: false
+          outputs: type=cacheonly
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
+          cache-to: type=gha,scope=${{ env.CACHE_SCOPE }},mode=max
+
+      - name: Load the arm64 -yubihsm image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime-yubihsm
+          platforms: linux/arm64
+          load: true
+          push: false
+          tags: secsy-pki:smoke-yubihsm-arm64
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
+
+      # The module is architecture-specific and Debian installs it under a
+      # multiarch path, which the build stage resolves by glob and symlinks to
+      # the one path documentation and config files can name. Emulating arm64 is
+      # how that symlink gets checked on the half of the index this runner is
+      # not — a glob that resolved to the build architecture would look perfect
+      # here and leave every arm64 pull with a dangling module_path.
+      - name: Run the arm64 -yubihsm image under emulation
+        run: |
+          set -euo pipefail
+          docker run --rm --platform linux/arm64 --entrypoint bash secsy-pki:smoke-yubihsm-arm64 -c '
+            set -eux
+            readlink -f /usr/lib/pkcs11/yubihsm_pkcs11.so | grep -q aarch64-linux-gnu
+            # An `if`, not `cmd && exit 1`: under set -e a grep that matches
+            # nothing — the healthy case — would end the script as a failure.
+            if ldd /usr/lib/pkcs11/yubihsm_pkcs11.so | grep -F "not found"; then exit 1; fi
+            yubihsm-shell --version
+          '
+
   # --------------------------------------------------------------------------- #
   # 2. Tag it and push it
   # --------------------------------------------------------------------------- #
@@ -294,6 +385,8 @@ jobs:
     outputs:
       digest: ${{ steps.push.outputs.digest }}
       tags: ${{ steps.meta.outputs.tags }}
+      yubihsm-digest: ${{ steps.push-yubihsm.outputs.digest }}
+      yubihsm-tags: ${{ steps.meta-yubihsm.outputs.tags }}
 
     # Said once here because the metadata step below has to give each of these
     # to `labels` *and* to `annotations`, which are two separate inputs writing
@@ -302,6 +395,7 @@ jobs:
     # `docker inspect` and another to anything reading the registry.
     env:
       DESCRIPTION: ${{ inputs.version != '' && format('secsy-pki {0} — HSM-backed enterprise PKI and secret encryption.', inputs.version) || format('Development build of secsy-pki from {0}. Not a release; see the X.Y.Z tags for those.', github.ref_name) }}
+      DESCRIPTION_YUBIHSM: ${{ inputs.version != '' && format('secsy-pki {0}, with the YubiHSM 2 PKCS#11 module and libyubihsm transports baked in.', inputs.version) || format('Development build of secsy-pki from {0}, with the YubiHSM 2 PKCS#11 module and libyubihsm transports baked in. Not a release.', github.ref_name) }}
       DOCUMENTATION: https://blechschmidt.github.io/secsy-pki/docs/deployment/container/
 
     permissions:
@@ -423,6 +517,91 @@ jobs:
           cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
           cache-to: type=gha,scope=${{ env.CACHE_SCOPE }},mode=max
 
+      # --- the -yubihsm variant -------------------------------------------- #
+      #
+      # The same tag set with `-yubihsm` appended to every entry, so the two
+      # images stay in lockstep by construction: `edge` and `edge-yubihsm` are
+      # always the same commit, `1.2.3-yubihsm` is always the release `1.2.3`
+      # with the vendor module added, and neither can exist without the other.
+      #
+      # `onlatest=true` is belt and braces rather than load-bearing. `latest`
+      # here comes from the `type=raw` line below, and a `flavor` suffix is
+      # appended to a raw value unconditionally; `onlatest` governs only the
+      # `latest` tag the action would generate for itself, which `latest=false`
+      # has turned off. It is set anyway so that turning `latest=false` back to
+      # `auto` some day cannot quietly produce an unsuffixed `latest` resolving
+      # to the variant.
+      - name: Work out the -yubihsm tags and the labels
+        id: meta-yubihsm
+        uses: docker/metadata-action@v5
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: index,manifest
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
+            suffix=-yubihsm,onlatest=true
+          tags: |
+            type=raw,value=edge,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ inputs.latest == true }}
+            type=sha
+          labels: |
+            org.opencontainers.image.description=${{ env.DESCRIPTION_YUBIHSM }}
+            org.opencontainers.image.documentation=${{ env.DOCUMENTATION }}
+          annotations: |
+            org.opencontainers.image.description=${{ env.DESCRIPTION_YUBIHSM }}
+            org.opencontainers.image.documentation=${{ env.DOCUMENTATION }}
+
+      # The suffix is the entire mechanism keeping these tags distinct from the
+      # ones pushed above, and it comes from a `flavor:` option whose behaviour
+      # around `latest` is a documented flag rather than something self-evident.
+      # So it is checked rather than trusted: a suffix that silently stopped
+      # applying would push the variant over `edge`, `latest` and `1.2.3`
+      # themselves — overwriting, with a larger image, the exact tags the job
+      # above just verified. Cheap to assert, unrecoverable to get wrong.
+      - name: Check every -yubihsm tag carries the suffix
+        env:
+          TAGS: ${{ steps.meta-yubihsm.outputs.tags }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAGS//[[:space:]]/}" ]; then
+            echo "::error::the metadata step produced no -yubihsm tags at all"
+            exit 1
+          fi
+          status=0
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            case "$tag" in
+            *-yubihsm) echo "  ok    ${tag}" ;;
+            *)
+              echo "::error::${tag} is missing the -yubihsm suffix; it would overwrite the default image"
+              status=1
+              ;;
+            esac
+          done <<<"$TAGS"
+          exit "$status"
+
+      - name: Build both architectures of the -yubihsm variant and push
+        id: push-yubihsm
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime-yubihsm
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ steps.meta-yubihsm.outputs.tags }}
+          labels: ${{ steps.meta-yubihsm.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          annotations: ${{ steps.meta-yubihsm.outputs.annotations }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
+          cache-to: type=gha,scope=${{ env.CACHE_SCOPE }},mode=max
+
       # Signing runs on every publish, not only on releases. An admission policy
       # that requires a signature cannot make an exception for `edge`, and a
       # signing path exercised only at release time is a signing path that breaks
@@ -436,7 +615,6 @@ jobs:
           set -euo pipefail
           args=(IMAGE='${{ env.IMAGE }}'
                 VERSION='${{ steps.version.outputs.version }}'
-                IMAGE_DIGEST='${{ steps.push.outputs.digest }}'
                 OWNER='${{ github.repository_owner }}')
           if [ -n "${COSIGN_PRIVATE_KEY:-}" ]; then
             printf '%s' "$COSIGN_PRIVATE_KEY" >/tmp/cosign.key
@@ -453,34 +631,47 @@ jobs:
           else
             echo "::notice::Signing keyless (Fulcio/Rekor OIDC)"
           fi
-          make sbom-image "${args[@]}"
-          make sign "${args[@]}"
+          # Both manifests, each with an SBOM of its own. The variants differ by
+          # exactly the packages this is meant to describe, so one SBOM standing
+          # in for both would be accurate about neither — and the -yubihsm image
+          # is the one where "what vendor code is in here" is the question being
+          # asked. SBOM_IMAGE overrides the Makefile's default output path.
+          digests=('${{ steps.push.outputs.digest }}' '${{ steps.push-yubihsm.outputs.digest }}')
+          sboms=(dist/sbom-image.cdx.json dist/sbom-image-yubihsm.cdx.json)
+          for i in "${!digests[@]}"; do
+            echo "::group::sign ${digests[$i]}"
+            make sbom-image "${args[@]}" IMAGE_DIGEST="${digests[$i]}" SBOM_IMAGE="${sboms[$i]}"
+            make sign       "${args[@]}" IMAGE_DIGEST="${digests[$i]}" SBOM_IMAGE="${sboms[$i]}"
+            echo "::endgroup::"
+          done
           rm -f /tmp/cosign.key
 
       # The same commands a consumer runs, against what was just pushed. A
       # signature nobody verified is a signature nobody knows is verifiable.
-      - name: Verify the signature and the SBOM attestation
+      - name: Verify the signatures and the SBOM attestations
         run: |
           set -euo pipefail
+          args=(IMAGE='${{ env.IMAGE }}')
           if [ -f /tmp/cosign.pub ]; then
-            make verify IMAGE='${{ env.IMAGE }}' IMAGE_DIGEST='${{ steps.push.outputs.digest }}' \
-              COSIGN_VERIFY_FLAGS="--key /tmp/cosign.pub"
-            rm -f /tmp/cosign.pub
+            args+=(COSIGN_VERIFY_FLAGS="--key /tmp/cosign.pub")
           else
-            make verify IMAGE='${{ env.IMAGE }}' IMAGE_DIGEST='${{ steps.push.outputs.digest }}' \
-              OWNER='${{ github.repository_owner }}'
+            args+=(OWNER='${{ github.repository_owner }}')
           fi
+          for digest in '${{ steps.push.outputs.digest }}' '${{ steps.push-yubihsm.outputs.digest }}'; do
+            make verify "${args[@]}" IMAGE_DIGEST="$digest"
+          done
+          rm -f /tmp/cosign.pub
 
-      # A standalone copy of the image SBOM for the GitHub release to carry as a
-      # plain file, for anyone who does not want to talk to a registry to read
-      # one. The cosign attestation above is the authoritative copy; this is the
-      # readable one, and only a release has somewhere to put it.
-      - name: Upload the image SBOM
+      # A standalone copy of each image SBOM for the GitHub release to carry as
+      # a plain file, for anyone who does not want to talk to a registry to read
+      # one. The cosign attestations above are the authoritative copies; these
+      # are the readable ones, and only a release has somewhere to put them.
+      - name: Upload the image SBOMs
         if: inputs.sbom-artifact != ''
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.sbom-artifact }}
-          path: dist/sbom-image.cdx.json
+          path: dist/sbom-image*.cdx.json
           if-no-files-found: error
 
       # The build job ran an image it had built locally. This runs the one that
@@ -495,23 +686,41 @@ jobs:
             --platforms '${{ env.PLATFORMS }}' \
             --expect-version '${{ steps.version.outputs.version }}'
 
+      - name: Pull the published -yubihsm image back and run it
+        run: |
+          scripts/verify-published-image.sh \
+            --image '${{ env.IMAGE }}@${{ steps.push-yubihsm.outputs.digest }}' \
+            --allow-login --expect-yubihsm \
+            --platforms '${{ env.PLATFORMS }}' \
+            --expect-version '${{ steps.version.outputs.version }}'
+
       - name: Report what was published
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
           DIGEST: ${{ steps.push.outputs.digest }}
+          TAGS_YUBIHSM: ${{ steps.meta-yubihsm.outputs.tags }}
+          DIGEST_YUBIHSM: ${{ steps.push-yubihsm.outputs.digest }}
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           {
             echo "### Container published"
             echo
-            echo "\`${IMAGE}@${DIGEST}\`"
+            echo "| Image | Digest |"
+            echo "|---|---|"
+            echo "| default | \`${DIGEST}\` |"
+            echo "| \`-yubihsm\` | \`${DIGEST_YUBIHSM}\` |"
             echo
-            echo "| Tag |"
-            echo "|---|"
-            printf '%s\n' "$TAGS" | while IFS= read -r tag; do
-              [ -n "$tag" ] && echo "| \`${tag}\` |"
-            done
+            echo "| Tag | \`-yubihsm\` tag |"
+            echo "|---|---|"
+            # Two lists produced from the same tag rules with only a suffix
+            # between them, so they are the same length and in the same order —
+            # paired here rather than printed as two tables, because seeing them
+            # side by side is what makes a missing counterpart obvious.
+            paste -d'\t' <(printf '%s\n' "$TAGS") <(printf '%s\n' "$TAGS_YUBIHSM") |
+              while IFS=$'\t' read -r tag variant; do
+                [ -n "$tag" ] && echo "| \`${tag}\` | \`${variant}\` |"
+              done
             echo
             if [ -n "${VERSION}" ]; then
               example="${IMAGE}:${VERSION}"
@@ -523,15 +732,20 @@ jobs:
             echo
             echo '```bash'
             echo "docker run --rm ${example} -version"
+            echo
+            echo "# the same build with Yubico's PKCS#11 module and libyubihsm baked in"
+            echo "docker run --rm ${example}-yubihsm -version"
             echo '```'
             echo
-            echo "Verify it before running it:"
+            echo "Verify them before running them:"
             echo
             echo '```bash'
-            echo "cosign verify \\"
-            echo "  --certificate-identity-regexp '^https://github.com/${GITHUB_REPOSITORY}/' \\"
-            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\"
-            echo "  ${IMAGE}@${DIGEST}"
+            for target in "${IMAGE}@${DIGEST}" "${IMAGE}@${DIGEST_YUBIHSM}"; do
+              echo "cosign verify \\"
+              echo "  --certificate-identity-regexp '^https://github.com/${GITHUB_REPOSITORY}/' \\"
+              echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\"
+              echo "  ${target}"
+            done
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"
 
@@ -583,23 +797,37 @@ jobs:
 
       - name: Pull it as a stranger would, and run it
         env:
-          # The first tag the metadata step produced: `edge` on the default
+          # The first tag each metadata step produced: `edge` on the default
           # branch, the branch name elsewhere, the version on a release. Taken
           # from the push rather than rebuilt here, so the two cannot disagree
           # about what was published.
           TAGS: ${{ needs.publish.outputs.tags }}
+          TAGS_YUBIHSM: ${{ needs.publish.outputs.yubihsm-tags }}
           PLATFORMS: ${{ env.PLATFORMS }}
         run: |
           set -euo pipefail
           tag="$(printf '%s\n' "$TAGS" | head -n 1)"
-          echo "checking $tag"
+          tag_yubihsm="$(printf '%s\n' "$TAGS_YUBIHSM" | head -n 1)"
 
-          # Captured rather than piped straight into the summary so the result
-          # reads as output there instead of one run-on paragraph — and so a
-          # failure is still reported before the step exits on it.
+          # Both, because they are separate GHCR pushes of separate manifests
+          # under separate tags. They share a package, so in practice they share
+          # its visibility — but "in practice" is what this job exists to stop
+          # anyone having to say, and the -yubihsm tag is the one an operator
+          # with hardware will actually pull.
+          refs=("$tag" "$tag_yubihsm")
+          extra=("" "--expect-yubihsm")
+
           status=0
-          scripts/verify-published-image.sh --image "$tag" --platforms "$PLATFORMS" \
-            | tee verify.log || status=$?
+          : >verify.log
+          for i in "${!refs[@]}"; do
+            echo "checking ${refs[$i]}"
+            # Captured rather than piped straight into the summary so the result
+            # reads as output there instead of one run-on paragraph — and so a
+            # failure is still reported before the step exits on it.
+            scripts/verify-published-image.sh --image "${refs[$i]}" \
+              --platforms "$PLATFORMS" ${extra[$i]:+"${extra[$i]}"} \
+              | tee -a verify.log || status=$?
+          done
           {
             echo "### Verified from outside"
             echo

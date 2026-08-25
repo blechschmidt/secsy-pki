@@ -17,8 +17,9 @@ name: release
 #   binaries     the release archives, built from the image's own Dockerfile.
 #   verify       the archives, downloaded and run the way a user gets them.
 #   image        .github/workflows/container.yaml, which builds, pushes, signs
-#                and verifies. This workflow does not build an image of its own.
-#   provenance   SLSA Build L3 on the image, build provenance on the archives.
+#                and verifies both images — the default one and the `-yubihsm`
+#                variant. This workflow does not build an image of its own.
+#   provenance   SLSA Build L3 on each image, build provenance on the archives.
 #   release      the GitHub release, last, once everything above is green.
 #
 # The binaries and the image are the *same build*: both come out of the
@@ -291,10 +292,11 @@ jobs:
   #
   # Two artifacts, two mechanisms, for two audiences.
   #
-  # The image gets a SLSA Build L3 attestation from the official generator,
+  # Each image gets a SLSA Build L3 attestation from the official generator,
   # which is what `slsa-verifier` reads and what docs/development/supply-chain.md
   # tells consumers to check. It is separate from the cosign signature and the
-  # CycloneDX attestation container.yaml already applied.
+  # CycloneDX attestation container.yaml already applied. Attestations bind to a
+  # digest, so the `-yubihsm` variant — a different manifest — needs its own.
   #
   # The archives get GitHub's own build provenance, which is what
   # `gh attestation verify` reads — the check someone who just downloaded a
@@ -311,6 +313,27 @@ jobs:
     with:
       image: ghcr.io/${{ github.repository }}
       digest: ${{ needs.image.outputs.digest }}
+      registry-username: ${{ github.actor }}
+    secrets:
+      registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+  # The `-yubihsm` variant is a separate manifest under a separate digest, so it
+  # needs its own attestation — provenance is bound to a digest, and the one
+  # above says nothing about this image. A second job rather than a matrix
+  # because the generator is a reusable workflow: `uses:` cannot be combined
+  # with `strategy` on the same job.
+  provenance-image-yubihsm:
+    name: SLSA provenance (image, -yubihsm)
+    needs: [guard, image]
+    if: github.event_name == 'push'
+    permissions:
+      actions: read
+      id-token: write
+      packages: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.0.0
+    with:
+      image: ghcr.io/${{ github.repository }}
+      digest: ${{ needs.image.outputs.yubihsm-digest }}
       registry-username: ${{ github.actor }}
     secrets:
       registry-password: ${{ secrets.GITHUB_TOKEN }}
@@ -343,7 +366,16 @@ jobs:
   # --------------------------------------------------------------------------- #
   github-release:
     name: github release
-    needs: [guard, binaries, verify, image, provenance-image, provenance-archives]
+    needs:
+      [
+        guard,
+        binaries,
+        verify,
+        image,
+        provenance-image,
+        provenance-image-yubihsm,
+        provenance-archives,
+      ]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -376,6 +408,7 @@ jobs:
           MINOR: ${{ needs.guard.outputs.minor }}
           PRERELEASE: ${{ needs.guard.outputs.prerelease }}
           DIGEST: ${{ needs.image.outputs.digest }}
+          DIGEST_YUBIHSM: ${{ needs.image.outputs.yubihsm-digest }}
         run: |
           set -euo pipefail
           {
@@ -387,6 +420,14 @@ jobs:
             echo
             echo '```bash'
             echo "docker run --rm ${IMAGE}:${VERSION} -version"
+            echo '```'
+            echo
+            echo "Or the \`-yubihsm\` variant of the same build, which adds Yubico's PKCS#11"
+            echo "module and the libyubihsm transports so a YubiHSM 2 works with nothing"
+            echo "mounted in from the host:"
+            echo
+            echo '```bash'
+            echo "docker run --rm --device /dev/bus/usb ${IMAGE}:${VERSION}-yubihsm -version"
             echo '```'
             echo
             echo "Or the binaries — \`secsy-pki-server\`, \`secsy-ca\`, \`secsy-secret\`,"
@@ -404,11 +445,14 @@ jobs:
             echo "|---|---|"
             if [ "$PRERELEASE" = "true" ]; then
               echo "| Tags | \`${VERSION}\`, \`${MINOR}\` (a pre-release does not take \`latest\`) |"
+              echo "| YubiHSM tags | \`${VERSION}-yubihsm\`, \`${MINOR}-yubihsm\` |"
             else
               echo "| Tags | \`${VERSION}\`, \`${MINOR}\`, \`latest\` |"
+              echo "| YubiHSM tags | \`${VERSION}-yubihsm\`, \`${MINOR}-yubihsm\`, \`latest-yubihsm\` |"
             fi
             echo "| Platforms | \`linux/amd64\`, \`linux/arm64\` |"
             echo "| Digest | \`${DIGEST}\` |"
+            echo "| Digest (\`-yubihsm\`) | \`${DIGEST_YUBIHSM}\` |"
             echo
             echo "## Provenance"
             echo

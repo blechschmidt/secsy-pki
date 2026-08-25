@@ -12,8 +12,21 @@ version being released becomes the body of the GitHub release. See
 
 ## [Unreleased]
 
-Nothing yet. Add entries here as changes land; the release that follows moves
-them into a dated section of their own.
+### Added
+
+**A `-yubihsm` container variant.** Every published image tag now has a
+counterpart with `-yubihsm` appended — `latest-yubihsm`, `1.2.3-yubihsm`,
+`edge-yubihsm` — built from the same commit in the same job, for `linux/amd64`
+and `linux/arm64`. It carries Yubico's PKCS#11 module, `libyubihsm` with both
+the USB and HTTP transports, `yubihsm-shell`, `yubihsm-connector` and the host
+udev rule, so a YubiHSM 2 needs nothing mounted in from the host. The module is
+symlinked to `/usr/lib/pkcs11/yubihsm_pkcs11.so` so one `pkcs11.module_path` is
+correct on both architectures. Both images are signed, carry a CycloneDX SBOM
+attestation of their own and, on a release, SLSA Build L3 provenance.
+`verify-published-image.sh --expect-yubihsm` requires the module to be present
+and to load; without the flag it requires the default image *not* to carry it,
+so the two tags cannot quietly converge. See
+[docs/deployment/container.md](docs/deployment/container.md#the-yubihsm-variant).
 
 ## [1.0.0] - 2026-08-19
 
