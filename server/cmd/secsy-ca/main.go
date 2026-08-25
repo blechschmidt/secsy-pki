@@ -315,8 +315,14 @@ func run(args []string) error {
 	case "issue-intermediate":
 		return cmdIssueIntermediate(db, mgr, cmdArgs)
 	case "ca":
-		// Externally-signed subordinate CA flow: "ca csr" / "ca import-cert".
-		return cmdCA(db, mgr, cmdArgs)
+		// Externally-signed subordinate CA flow ("ca csr" / "ca import-cert")
+		// and adoption of an existing CA ("ca import", Task 194).
+		return cmdCA(db, mgr, provider, cfg, cmdArgs)
+	case "import-key":
+		// Place an existing private key into the key provider (Task 194). A
+		// -role selects which backend receives it, since a TSA or signing key
+		// may live on a different one than the CA.
+		return cmdImportKey(db, cfg, provider, cmdArgs)
 	case "list":
 		return cmdList(db)
 	case "issue":
@@ -463,6 +469,11 @@ Commands:
                       external parent (offline corporate root / bridge) to sign
   ca import-cert      Validate and install the externally signed CA certificate
                       (+ optional external chain for chain serving)
+  ca import           Adopt a CA that already exists: import its private key
+                      into the provider and install its certificate, so a
+                      legacy CA keeps issuing here without being re-keyed
+  import-key          Import an existing private key into the key provider
+                      (PEM/DER/PKCS#12/OpenSSH, optionally passphrase-protected)
   list                List configured CAs
   version             Print version, Go runtime, and FIPS 140-3 mode
   issue               Sign a CSR into an end-entity certificate (by profile)

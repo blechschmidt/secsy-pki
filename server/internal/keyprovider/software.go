@@ -103,20 +103,6 @@ func (p *SoftwareProvider) GenerateKey(_ context.Context, spec KeySpec) (*KeyInf
 	} else if spec.Usage != "" && spec.Usage != KeyUsageSign {
 		return nil, fmt.Errorf("keyprovider: unsupported key usage %q", spec.Usage)
 	}
-	path, err := p.keyPath(spec.Label)
-	if err != nil {
-		return nil, err
-	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if _, statErr := os.Stat(path); statErr == nil {
-		return nil, fmt.Errorf("keyprovider: key %q already exists", spec.Label)
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return nil, fmt.Errorf("keyprovider: checking for existing key %q: %w", spec.Label, statErr)
-	}
-
 	priv, err := generatePrivateKey(keyType)
 	if err != nil {
 		return nil, err
@@ -126,32 +112,55 @@ func (p *SoftwareProvider) GenerateKey(_ context.Context, spec KeySpec) (*KeyInf
 	if err != nil {
 		return nil, fmt.Errorf("keyprovider: marshaling private key: %w", err)
 	}
-	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	if err := p.writeKeyFile(spec.Label, der); err != nil {
+		return nil, err
+	}
 
-	// Write atomically: write to a temp file then rename, so a crash mid-write
-	// never leaves a truncated key in place.
-	tmp, err := os.CreateTemp(p.dir, spec.Label+"-*.tmp")
+	return p.keyInfo(spec.Label, spec.ID, keyType, priv.Public())
+}
+
+// writeKeyFile installs PKCS#8 key material in the keystore under label,
+// refusing to overwrite an existing key. It is shared by generation and import
+// (Task 194) so both land on disk the same way: 0600, and atomically — written
+// to a temp file and renamed, so a crash mid-write never leaves a truncated key
+// in place of a working one.
+func (p *SoftwareProvider) writeKeyFile(label string, der []byte) error {
+	path, err := p.keyPath(label)
 	if err != nil {
-		return nil, fmt.Errorf("keyprovider: creating temp key file: %w", err)
+		return err
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if _, statErr := os.Stat(path); statErr == nil {
+		return fmt.Errorf("keyprovider: key %q already exists", label)
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("keyprovider: checking for existing key %q: %w", label, statErr)
+	}
+
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	tmp, err := os.CreateTemp(p.dir, label+"-*.tmp")
+	if err != nil {
+		return fmt.Errorf("keyprovider: creating temp key file: %w", err)
 	}
 	tmpName := tmp.Name()
 	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
-		return nil, fmt.Errorf("keyprovider: chmod temp key file: %w", err)
+		return fmt.Errorf("keyprovider: chmod temp key file: %w", err)
 	}
 	if _, err := tmp.Write(pemBytes); err != nil {
 		_ = tmp.Close()
-		return nil, fmt.Errorf("keyprovider: writing key file: %w", err)
+		return fmt.Errorf("keyprovider: writing key file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return nil, fmt.Errorf("keyprovider: closing key file: %w", err)
+		return fmt.Errorf("keyprovider: closing key file: %w", err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		return nil, fmt.Errorf("keyprovider: installing key file: %w", err)
+		return fmt.Errorf("keyprovider: installing key file: %w", err)
 	}
-
-	return p.keyInfo(spec.Label, spec.ID, keyType, priv.Public())
+	return nil
 }
 
 func (p *SoftwareProvider) FindKey(_ context.Context, ref KeyRef) (*KeyInfo, error) {

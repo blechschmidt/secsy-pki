@@ -131,6 +131,14 @@ Some commands are host-local or dual-control ceremonies and are intentionally
 - `hsm-attest audit` — attests *every* asymmetric key on the device in one pass
   for an inventory report; the console attests one key at a time, by CA or by
   label, which is the interactive question.
+- `ca import`, `import-key`, `secsy-secret signing-key import` — [importing
+  existing key material](../ca/import.md). Their input is a private key file,
+  and the point of the operation is to stop that material being copied around;
+  uploading it to a browser would do the opposite. It is read once, from a local
+  path, on an operator's shell. The *result* is fully visible in the console:
+  the adopted CA appears on the Authorities page and issues like any other, the
+  key shows in the HSM key inventory, and the HSM page attests it (reporting,
+  correctly, that it was imported rather than generated).
 - `delegated-credential` (RFC 9345) — minting one requires the *leaf's* private
   key, which the CA never holds and which must not be uploaded to a browser. The
   Issue page reports whether a profile makes a certificate delegation-eligible;

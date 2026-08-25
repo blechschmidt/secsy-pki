@@ -120,6 +120,14 @@ const (
 	// carries the reason.
 	ActionKeyBlock   = "key.block"
 	ActionKeyUnblock = "key.unblock"
+	// ActionKeyImport records an existing private key being placed into the key
+	// provider (Task 194). It is the provenance record for the one operation
+	// that puts key material the PKI did not generate under its control: the
+	// detail carries the backend, the key type, the source file format, and
+	// whether the post-import signing self-check passed. A key with this event in
+	// its history is a key that existed outside the provider first, which is
+	// exactly what hardware attestation will independently report.
+	ActionKeyImport = "key.import"
 	// ActionCertAttestation records the outcome of the enrollment key-attestation
 	// gate (Task 49) on the EST/SCEP/ACME device-enrollment paths: ResultSuccess
 	// when a hardware attestation verified (or a permissive-mode check let a
@@ -269,6 +277,11 @@ const (
 	// (detail: algorithm/hash and, for verify, the valid/invalid outcome; the
 	// signed data and the signature are never logged).
 	ActionSecretSigningKeyCreate = "secret.signing_key_create"
+	// ActionSecretSigningKeyImport records an existing signing key being adopted
+	// into the registry rather than generated (Task 194) — the provenance marker
+	// distinguishing a key that lived outside the provider first from one that
+	// never did. The detail carries the algorithm, key id, and source file format.
+	ActionSecretSigningKeyImport = "secret.signing_key_import"
 	ActionSecretSign             = "secret.sign"
 	ActionSecretSignVerify       = "secret.sign_verify"
 	ActionPermissionGrant        = "permission.grant"
@@ -358,6 +371,14 @@ const (
 	// CSR and certificates cross the trust boundary — never key material.
 	ActionCACSR        = "ca.csr"
 	ActionCAImportCert = "ca.import_cert"
+	// ActionCAImport records an existing certificate authority being adopted
+	// (Task 194): its key moved into the key provider (or an already-present key
+	// claimed) and its existing certificate installed, so a CA created elsewhere
+	// continues its life here without re-keying. It is distinct from
+	// ActionCAImportCert, which installs a certificate for a key this PKI
+	// generated itself. The detail records the subject, serial, whether key
+	// material was written, and the adopted key's fingerprint.
+	ActionCAImport = "ca.import"
 	// ACME (RFC 8555) protocol operations. The actor for these is the ACME
 	// account ("acme:<account-id>") rather than an OIDC/root principal, since
 	// ACME clients authenticate with their own account keys.

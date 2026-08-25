@@ -406,6 +406,26 @@ picker), shows and downloads a key's SPKI public-key PEM, and signs / verifies a
 text message against a named key — the same authorized, audited, quota-metered
 operations as the CLI and API.
 
+### Adopting a key you already sign with
+
+A key whose public half is compiled into clients that have already shipped
+cannot be rotated cheaply — but it can stop living in the application's config
+and move into the HSM. `signing-key import` adopts it into the registry, after
+which it is indistinguishable from a generated key except in provenance:
+
+```console
+$ secsy-secret signing-key import -name release-signing -key app-signing.key -out pub.pem
+$ diff app-signing.pub pub.pem     # identical: existing verifiers keep working
+```
+
+The algorithm is derived from the key for ECDSA and Ed25519; an **RSA key needs
+an explicit `-algorithm`**, because the same key can be used with PSS or PKCS#1
+v1.5 and the choice has to match what the existing verifiers already do. Like
+the CA-side commands this is deliberately CLI-only, and it records a
+`secret.signing_key_import` audit event. See
+[importing existing keys](../ca/import.md) for the accepted file formats, the
+passphrase handling, and what import can and cannot launder.
+
 ## Format-preserving encryption & tokenization (FF1)
 
 Where envelope encryption turns a value into an opaque blob, a **transform**

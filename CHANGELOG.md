@@ -14,6 +14,43 @@ version being released becomes the body of the GitHub release. See
 
 ### Added
 
+**Importing existing keys, and adopting a CA that already exists.** An
+organization migrating onto secsy-pki generally cannot re-key: its root
+certificate is already in trust stores it does not control. `secsy-ca ca import`
+takes such a CA's private key *and* its existing certificate and produces an
+ordinary, issuing CA record — after which certificates it signs still verify
+against the root the world already trusts. `secsy-ca import-key` places a bare
+key into any provider role (`ca`/`tsa`/`signing`/`secret`, signing or RSA-KEK
+usage), and `secsy-secret signing-key import` adopts an application signing key
+whose public half is already embedded in shipped clients.
+
+Key files are accepted in the formats operators actually hold: PKCS#8 (plain and
+PBES2/PBKDF2-encrypted), PKCS#1, SEC1, legacy `DEK-Info` PEM, OpenSSH (including
+bcrypt-encrypted), PKCS#12 — which supplies the certificate too, so a `.p12` is
+a complete adoption — and bare DER. Passphrases come from a file or the
+environment, never a flag.
+
+Adoption is fail-closed at every step: the key must match the certificate
+(checked *before* anything is written, so a mismatch strands nothing on the
+token), the certificate must be a currently valid CA certificate, a self-signed
+one must verify under its own key, the key must pass the weak/compromised-key
+gate, and the provider must demonstrably sign a random challenge with it before
+a CA record is persisted. Subordinates link automatically to a parent already in
+the PKI, or record the supplied chain as external chain material. The new
+`keyprovider.KeyImporter` capability is implemented by the software and PKCS#11
+backends — a high-availability set imports onto every token, and reports which
+tokens hold the key if one rejects it — while the cloud-KMS backends report
+plainly that they cannot. On a token the imported key gets exactly the
+least-privilege template a generated key gets (`CKA_SENSITIVE`,
+`CKA_EXTRACTABLE=false`, single-purpose).
+
+What it deliberately does not do is launder provenance: hardware attestation
+still reports the key as imported, every copy made before the import is still a
+copy, and the CLI says so. The commands are CLI-only by design — their input is
+raw private key material. New `key.import`, `ca.import` and
+`secret.signing_key_import` audit events; adoption passes the four-eyes
+`ca.create` gate. See [docs/ca/import.md](docs/ca/import.md).
+
 **A `-yubihsm` container variant.** Every published image tag now has a
 counterpart with `-yubihsm` appended — `latest-yubihsm`, `1.2.3-yubihsm`,
 `edge-yubihsm` — built from the same commit in the same job, for `linux/amd64`

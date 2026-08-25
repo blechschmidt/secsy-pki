@@ -17,6 +17,12 @@ This complements [cross-signing](cross-signing.md): cross-signing re-certifies
 an *existing* key under a second issuer we operate, whereas this flow creates a
 *new* subordinate whose only issuer is a parent we do **not** operate.
 
+It is also distinct from [adopting an existing CA](import.md). Here the key is
+generated in our HSM and only the certificate is imported, so the key never
+existed outside the device. `ca import` is for the case where both already
+exist elsewhere — a legacy CA being migrated — and it imports the key too, with
+the provenance consequences that carries.
+
 ---
 
 ## The flow

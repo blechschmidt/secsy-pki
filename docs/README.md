@@ -54,6 +54,7 @@ These pages are also published — with search and navigation — at
 | [Intermediate key rotation](ca/rotation.md) | Intermediate signing-key rollover with a dual-chain overlap window |
 | [Cross-signing & bridge CAs](ca/cross-signing.md) | Bridge CAs and root transitions through alternate trust chains |
 | [Externally-signed subordinate CA](ca/external-ca.md) | A subordinate CA signed by an offline or third-party root |
+| [Importing existing keys & adopting a CA](ca/import.md) | Migrating a CA or signing key that already exists into the provider, without re-keying |
 | [SSH certificate authority](ca/ssh-ca.md) | HSM-backed OpenSSH user and host certificates, KRL revocation |
 | [PKCS#12 (.p12/.pfx) export](ca/pkcs12.md) | Server-side key generation with password-protected bundle delivery |
 | [Chain / path validation](ca/chain-validation.md) | Validating a supplied chain: path building, revocation, policy, key strength |

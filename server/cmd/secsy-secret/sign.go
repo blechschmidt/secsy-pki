@@ -36,21 +36,24 @@ import (
 // key is a first-class named resource.
 func cmdSigningKey(cfg *config.Config, provider keyprovider.Provider, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: secsy-secret signing-key <create|list|public> [flags]")
+		return fmt.Errorf("usage: secsy-secret signing-key <create|import|list|public> [flags]")
 	}
 	sub, rest := args[0], args[1:]
 	switch sub {
 	case "create":
 		return cmdSigningKeyCreate(cfg, provider, rest)
+	case "import":
+		// Adopt an existing key rather than generating one (Task 194).
+		return cmdSigningKeyImport(cfg, provider, rest)
 	case "list", "ls":
 		return cmdSigningKeyList(cfg, provider, rest)
 	case "public", "public-key", "pub":
 		return cmdSigningKeyPublic(cfg, provider, rest)
 	case "-h", "--help", "help":
-		fmt.Fprintln(os.Stderr, "signing-key sub-commands: create, list, public")
+		fmt.Fprintln(os.Stderr, "signing-key sub-commands: create, import, list, public")
 		return nil
 	default:
-		return fmt.Errorf("unknown signing-key sub-command %q (want create|list|public)", sub)
+		return fmt.Errorf("unknown signing-key sub-command %q (want create|import|list|public)", sub)
 	}
 }
 

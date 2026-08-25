@@ -62,6 +62,14 @@ key's. A key without it has no command path off the device at all.
 only establishes that no copy can leave *now* — not that none was made before.
 The verifier reports the two independently and, by default, requires both.
 
+This is exactly what an imported key looks like from the outside, and it is the
+correct outcome: [`ca import` / `import-key`](../ca/import.md) store adopted key
+material with the same non-extractable, sensitive, single-purpose template a
+generated key gets, but they cannot rewrite where it came from. A CA migrated
+off a software key will fail an origin check until it is re-keyed — scope
+`-allow-imported` (or `attestation_allow_imported_keys`) to that CA rather than
+turning it on for the deployment.
+
 The capability table in `internal/hsmattest/capabilities.go` was extracted
 mechanically from Yubico's own `libyubihsm` rather than transcribed from
 documentation, because a single wrong bit would silently invert a security

@@ -11,16 +11,22 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
+	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 )
 
-// cmdCA dispatches the "ca" command group: the externally-signed subordinate CA
-// flow, where the CA key lives in our HSM but the parent is external (an
-// offline corporate root or a third-party bridge CA).
+// cmdCA dispatches the "ca" command group, which covers the two ways a CA can
+// exist here without having been created here: the externally-signed
+// subordinate flow, where the key lives in our HSM but the parent is external
+// (an offline corporate root or a third-party bridge); and adoption of a CA that
+// already exists in full, key and certificate both (Task 194) — the migration
+// path off a legacy PKI.
 //
 //	secsy-ca ca csr         generate an HSM-backed CA key + PKCS#10 CSR
 //	secsy-ca ca import-cert validate/install the externally signed certificate
-func cmdCA(db *database.DB, mgr *ca.Manager, args []string) error {
+//	secsy-ca ca import      adopt an existing CA (its key *and* its certificate)
+func cmdCA(db *database.DB, mgr *ca.Manager, provider keyprovider.Provider, cfg *config.Config, args []string) error {
 	if len(args) == 0 {
 		caUsage()
 		return fmt.Errorf("a ca subcommand is required")
@@ -31,6 +37,8 @@ func cmdCA(db *database.DB, mgr *ca.Manager, args []string) error {
 		return cmdCACSR(db, mgr, rest)
 	case "import-cert":
 		return cmdCAImportCert(db, mgr, rest)
+	case "import":
+		return cmdCAImport(db, mgr, provider, cfg, rest)
 	case "help", "-h", "--help":
 		caUsage()
 		return nil
@@ -41,7 +49,7 @@ func cmdCA(db *database.DB, mgr *ca.Manager, args []string) error {
 }
 
 func caUsage() {
-	fmt.Fprint(os.Stderr, `secsy-ca ca — externally-signed subordinate CA (offline/third-party root)
+	fmt.Fprint(os.Stderr, `secsy-ca ca — CAs that were not created here
 
 Usage:
   secsy-ca ca csr -label <label> -cn <name> [flags]   Generate an HSM-backed CA
@@ -54,6 +62,12 @@ Usage:
       install the certificate the external parent signed. The public key must
       match the HSM key; -chain imports the external parents (up to the external
       root) so the served chain reaches the external trust anchor.
+  secsy-ca ca import -label <label> -key <file> [-cert <file>] [flags]
+      Adopt a CA that already exists: import its private key into the key
+      provider and install its existing certificate, so a CA created elsewhere
+      keeps issuing here without re-keying. Use -existing-key <label> instead of
+      -key when the key is already in the provider. A PKCS#12 (.p12) file
+      supplies key and certificate together.
 
 Run "secsy-ca ca <subcommand> -h" for the full flag list.
 `)
