@@ -92,17 +92,33 @@ func importKeyOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, cfg PKCS1
 		return nil, err
 	}
 
-	if _, err := ctx.CreateObject(session, privAttrs); err != nil {
+	// An import that fails after the objects exist must not leave them behind:
+	// a half-imported key under the CA's label blocks the retry with a confusing
+	// "already exists", and — worse — is indistinguishable from a good one to
+	// anything that only looks up by label. Every failure path below therefore
+	// unwinds what it created.
+	var created []pkcs11.ObjectHandle
+	defer func() {
+		if err != nil {
+			for _, h := range created {
+				_ = ctx.DestroyObject(session, h)
+			}
+		}
+	}()
+
+	privHandle, err := ctx.CreateObject(session, privAttrs)
+	if err != nil {
 		return nil, fmt.Errorf("import: creating private key object on the token: %w", err)
 	}
+	created = append(created, privHandle)
 
 	// The public half is created as its own object because key lookup resolves
 	// the public key from CKO_PUBLIC_KEY. Modules that synthesize the public
 	// object from the private key (YubiHSM does) reject the create; that is not
 	// an error as long as the key then resolves, which the read-back confirms.
-	pubCreateErr := error(nil)
-	if _, err := ctx.CreateObject(session, pubAttrs); err != nil {
-		pubCreateErr = err
+	pubHandle, pubCreateErr := ctx.CreateObject(session, pubAttrs)
+	if pubCreateErr == nil {
+		created = append(created, pubHandle)
 	}
 
 	loc := KeyLocator{Label: label, ID: id}
@@ -112,15 +128,18 @@ func importKeyOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, cfg PKCS1
 	}
 	if ko.pubKey == nil {
 		if pubCreateErr != nil {
-			return nil, fmt.Errorf("import: the token exposes no public key object for %s and rejected creating one: %w", loc.Describe(), pubCreateErr)
+			err = fmt.Errorf("import: the token exposes no public key object for %s and rejected creating one: %w", loc.Describe(), pubCreateErr)
+			return nil, err
 		}
-		return nil, fmt.Errorf("import: the token exposes no public key object for %s", loc.Describe())
+		err = fmt.Errorf("import: the token exposes no public key object for %s", loc.Describe())
+		return nil, err
 	}
 	// The token is authoritative: compare what it stored against what we sent,
 	// so a module that silently truncated or re-encoded the material is caught
 	// here rather than by a verifier months later.
 	if !publicKeysEqual(ko.pubKey, publicOf(priv)) {
-		return nil, fmt.Errorf("import: the public key read back from the token does not match the imported private key")
+		err = fmt.Errorf("import: the public key read back from the token does not match the imported private key")
+		return nil, err
 	}
 
 	sshPub, err := ssh.NewPublicKey(ko.pubKey)
