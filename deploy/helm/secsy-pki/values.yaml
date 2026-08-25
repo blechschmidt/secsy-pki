@@ -267,8 +267,18 @@ hsm:
   #              container provisions a token so /readyz passes.
   #   hostPath – bind-mount a vendor module + config from the node (e.g. a
   #              network-HSM client installed on the host).
-  #   image    – the module is already present in a custom image; just point
-  #              modulePath at it.
+  #   image    – the module is already present in the image; just point
+  #              modulePath at it. This is the mode for the published `-yubihsm`
+  #              tag, which carries Yubico's module for both architectures:
+  #
+  #                image.tag:              1.2.3-yubihsm
+  #                hsm.module.mode:        image
+  #                hsm.module.modulePath:  /usr/lib/pkcs11/yubihsm_pkcs11.so
+  #
+  #              The device still has to reach the pod — a USB device plugin, or
+  #              a yubihsm-connector reachable over the network with
+  #              yubihsm.connector_url pointed at it. See
+  #              docs/deployment/container.md.
   module:
     mode: softhsm
     # Path to the PKCS#11 .so inside the container. For softhsm mode this is the
