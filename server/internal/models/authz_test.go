@@ -11,6 +11,8 @@ import (
 	"sort"
 	"testing"
 	"time"
+
+	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 )
 
 func ptrTime(t time.Time) *time.Time { return &t }
@@ -131,6 +133,42 @@ func TestUserInfoTenantsWithRoles(t *testing.T) {
 	sort.Strings(got)
 	if !reflect.DeepEqual(got, []string{"acme", "globex"}) {
 		t.Errorf("tenants = %v, want [acme globex]", got)
+	}
+}
+
+func TestResourceGrantProjection(t *testing.T) {
+	// A stored row projects onto the evaluator's rule type verbatim, with the
+	// scope default applied — the persisted and the config-declared form of the
+	// same delegation must compare equal, or a grant made through the API would
+	// not match the rule an operator reviewed in version control.
+	stored := &ResourceGrant{
+		ID:           "g-1",
+		ResourceType: rbac.ResourceCA,
+		ResourceID:   "ca-sub",
+		EntityType:   rbac.EntityGroup,
+		EntityID:     "platform-team",
+		Role:         rbac.ResourceRoleCAAdmin,
+		CreatedAt:    time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC),
+		CreatedBy:    "root",
+	}
+	want := rbac.Grant{
+		Resource:   rbac.Resource{Type: rbac.ResourceCA, ID: "ca-sub"},
+		EntityType: rbac.EntityGroup,
+		EntityID:   "platform-team",
+		Role:       rbac.ResourceRoleCAAdmin,
+		Scope:      rbac.ScopeSelf, // empty scope normalizes to "self"
+	}
+	if got := stored.Grant(); !reflect.DeepEqual(got, want) {
+		t.Errorf("Grant() = %+v, want %+v", got, want)
+	}
+	if err := stored.Grant().Validate(); err != nil {
+		t.Errorf("projected grant does not validate: %v", err)
+	}
+
+	// An explicit scope is carried through untouched.
+	stored.Scope = rbac.ScopeSubtree
+	if got := stored.Grant().Scope; got != rbac.ScopeSubtree {
+		t.Errorf("Grant().Scope = %q, want %q", got, rbac.ScopeSubtree)
 	}
 }
 
