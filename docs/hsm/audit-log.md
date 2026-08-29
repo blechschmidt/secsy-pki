@@ -550,6 +550,125 @@ output backed by half an argument.
 way out, after closing its key provider. Without that, a deployment driven only
 by the CLI would have nothing that ever emptied the ring.
 
+### What counts as "an operation"
+
+Two chokepoints announce device work, because there are two routes to the
+hardware and only one of them is the signing path.
+
+- **The key provider.** Every signature, decryption, key wrap, key generation,
+  key import and hardware-RNG read the product performs goes through
+  `internal/keyprovider`, whose recording wrapper signals the collector as each
+  one completes. This covers CA issuance, CRL and OCSP signing, the TSA, the SSH
+  CA, SVIDs, artifact signing and every background job — including code added
+  later that never heard of the audit subsystem.
+- **The native driver.** Key attestation, device attestation, audit-head
+  commitments and option changes never touch a key provider; they reach the
+  device through `internal/yubihsm` directly. Each is force-audited, so each
+  writes a log entry. The driver announces every command it sends, except the
+  three the drain itself issues (GET DEVICE INFO, GET LOG ENTRIES, SET LOG
+  INDEX), which are unaudited and would otherwise have each drain ask for
+  another one.
+
+Signals coalesce into a single pending token, so a burst of issuance costs one
+drain in flight plus at most one queued behind it — not one device round trip
+per signature.
+
+## Where the collected records go
+
+Acknowledging the ring is irreversible and the device keeps no copy, so whatever
+holds the records afterwards *is* the audit log. Two copies do, and they are
+written before the acknowledgement, in this order:
+
+1. **The append-only file**, if one is configured.
+2. **The database** (`hsm_log_entries`), which also carries the collection tail.
+3. Only then is the device told to free the slots.
+
+A failure at either sink aborts the cycle. The entries stay on the device, where
+the next drain finds them, and on a force-audited device a persistently failing
+drain eventually stops the HSM — loud and safe, rather than a silently missing
+segment. The file is written first deliberately: the database's tail decides
+which entries a later cycle considers new, so a store write that landed first
+would make a failed file write unrepeatable.
+
+### Why an append-only file as well as the database
+
+The database copy is the one the running system uses, and it is not append-only.
+Anyone holding the database credentials can `UPDATE hsm_log_entries` or
+`DELETE FROM` it. An *edit* is detectable — the device's digest chain will not
+re-derive — but deleting the newest rows is not detectable from the database
+alone, because a shorter chain is a perfectly valid chain.
+
+The file exists for that adversary, and only pays off when the filesystem is
+made to enforce it:
+
+```console
+# touch /var/lib/secsy-pki/hsm-audit.jsonl
+# chown secsy-pki /var/lib/secsy-pki/hsm-audit.jsonl
+# chattr +a /var/lib/secsy-pki/hsm-audit.jsonl     # append-only inode
+```
+
+With the attribute set, even root cannot truncate or rewrite the file without
+first clearing it — itself a privileged, auditable act — while the CA keeps
+appending normally. The writer only ever appends: it opens `O_APPEND`, never
+seeks, never truncates, and never rewrites a byte, including its header. A WORM
+mount or a log shipper tailing the file off the host achieves the same end by
+different means, and shipping it off the host is the stronger version, since it
+puts a copy where the CA operator cannot reach it at all.
+
+### The format
+
+One JSON record per line. `record` is the device's own 32-byte log record —
+sixteen field bytes exactly as they arrived on the wire, then the sixteen-byte
+chain digest — and it is what verification hashes. The decoded `entry` beside it
+is for reading and grepping, and is checked against `record` rather than
+believed.
+
+```json
+{"type":"header","version":1,"at":"2026-08-28T23:14:29Z","writer":"ca-1/33054/fd72c426"}
+{"type":"resume","at":"2026-08-28T23:14:30Z","device":"31650425","after":0,"reason":"file opened at entry 294: entries before it, if any, are only in the database"}
+{"type":"entry","at":"2026-08-28T23:14:30Z","device":"31650425","record":"012656002200017e60ffffd6011cdc67133a6f209dcab6c374e1516f48653501","entry":{"number":294,"command":86,"length":34,"session_key":1,"target_key":32352,"second_key":65535,"result":214,"tick":18668647,"hash":"133a6f209dcab6c374e1516f48653501"},"command_name":"SIGN ECDSA","success":true}
+```
+
+A `resume` record is how the file states its own discontinuities: a file switched
+on partway through a device's life, or one that a drain could not reach for a
+while, says so rather than presenting two disjoint runs as one. Re-delivered
+entries — the device resends everything it has not been told to forget — are
+recognised and not appended twice, and a re-delivery that *contradicts* a record
+already in the file is refused outright.
+
+### Verifying the file
+
+`verify-file` reads nothing else: not the database, not the device, not the
+configuration. It re-derives every digest from the raw records, so an auditor
+holding a shipped copy can run the same check with any SHA-256.
+
+```console
+$ secsy-ca hsm-audit verify-file -file hsm-audit.jsonl -serial 31650425 -tail 299
+File:            hsm-audit.jsonl
+Device:          31650425
+Records:         8 (6 device log entr(ies), 6 signature(s))
+Entry range:     294 - 299
+Coverage:        a suffix of the device history (this file does not start at a factory reset)
+  gap:           after entry 0, next entry 294 — file opened at entry 294: entries before it, if any, are only in the database
+Verdict:         OK — every record chains, but the file documents 1 gap(s)
+```
+
+Two limits are worth stating plainly, because both are properties of hash chains
+rather than of this implementation:
+
+- **A chain cannot detect its own truncation.** Remove the newest records and
+  what remains still verifies. `-tail` is the answer: the collection tail from
+  `hsm-audit status` is an independent statement of how far collection got, and
+  the two cannot both be faked without access to both copies. `hsm-audit status`
+  makes the same comparison automatically and warns when the file lags.
+- **The file does not prove which device it came from.** No YubiHSM log record
+  carries a serial number or a signature. `-anchor` binds it to a known
+  commissioning; the device commitments in an exported bundle
+  ([fact 7](#7-the-log-came-from-the-device-it-names)) bind it to hardware.
+
+`-strict` additionally fails on any documented gap, for an auditor whose
+requirement is "this file is the whole history".
+
 ## Configuration
 
 ```yaml
@@ -563,6 +682,11 @@ yubihsm:
   # anyway, with nothing to prompt it.
   audit_collect_per_operation: true            # default
   audit_collect_backstop_seconds: 300          # default 5m
+
+  # Append-only second copy of the collected records, one JSON record per line.
+  # Empty (the default) means the database is the only copy. Protect the path
+  # with `chattr +a`, a WORM mount, or a log shipper.
+  audit_log_file: /var/lib/secsy-pki/hsm-audit.jsonl
 
   # Freshness attestation. The interval is also the resolution of the
   # interval-bounding guarantee.
@@ -588,6 +712,16 @@ backstop interval. There is no good reason to: entries then sit in the device's
 volatile 62-entry ring for up to that long, which is both the window a power cut
 would destroy and, on a busy CA, long enough to fill the ring and stop issuance.
 
+**On a force-audited device the setting is ignored and collection stays
+per-operation.** There, a full ring is not a buffer that overflows into older
+entries but a hard stop — the HSM refuses every audited command — so honouring
+the knob would let a configuration change take the CA offline minutes later,
+presenting as an HSM failure rather than as the setting that caused it. The
+server reads the device's options at startup, says so in the log, and keeps
+draining. It also warns at startup about the converse case: a device that
+force-audits but has no pinned audit state, where nothing drains the log at all
+and the HSM will stop after 62 entries.
+
 With `audit_freshness_tsa_url` unset both jobs fall back to the TSA configured for
 [audit-chain anchoring](../signing/timestamping.md), then to the internal authority.
 
@@ -606,7 +740,14 @@ Signing keys:    0x1939
 Last attested:   2026-08-16T16:18:40Z (12m3s ago, 4 proof(s))
 Device binding:  2026-08-16T16:18:41Z (12m2s ago, 4 commitment(s))
 Audit config:    forced (irreversible until factory reset)
+Log file:        /var/lib/secsy-pki/hsm-audit.jsonl (47 entr(ies) up to 47, verified)
+                 agrees with the database at entry 47
 ```
+
+The last two lines are the truncation cross-check: the file verifies its own
+chain, and its position is compared against the database's collection tail. A
+file that lags has lost records the database still holds, and neither copy can
+fake the other's position.
 
 | Command | Purpose |
 | --- | --- |
@@ -617,6 +758,7 @@ Audit config:    forced (irreversible until factory reset)
 | `hsm-audit commit` | Have the device sign, and the TSA date, a binding of the current head to its serial |
 | `hsm-audit export -out FILE` | Write a remotely verifiable bundle, attesting every key that signed |
 | `hsm-audit verify -bundle FILE` | Check a bundle — **needs no config, database or HSM** |
+| `hsm-audit verify-file -file FILE` | Check an append-only device-log file — **needs no config, database or HSM** |
 
 `GET /api/hsm/audit-bundle` (capability `audit:read`) serves the same bundle over
 HTTP, with its SHA-256 in an `X-Bundle-Fingerprint` header, so an auditor can

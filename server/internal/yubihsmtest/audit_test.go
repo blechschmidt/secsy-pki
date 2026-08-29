@@ -162,7 +162,11 @@ func TestForcedAuditCannotBeDowngraded(t *testing.T) {
 // but never say *which* key performed them — which is the difference between
 // Task 167's claim and Task 170's.
 func TestSignaturesAppearInTheLogAgainstTheirKey(t *testing.T) {
-	requireDevice(t)
+	// On an uncommissioned device every audit level is off and nothing at all is
+	// logged, so without this the test would report that the device records no
+	// signatures — which says nothing about the device and everything about how
+	// it was configured. See requireAuditedCommands.
+	requireAuditedCommands(t, hsm.CmdGenerateAsymmetricKey, hsm.CmdSignECDSA, hsm.CmdDeleteObject)
 	keepLogSpace(t, 20)
 	c, ctx := client(t)
 
@@ -223,7 +227,7 @@ func TestSignaturesAppearInTheLogAgainstTheirKey(t *testing.T) {
 // the digest). Neither shows up in a run that never fills the ring, which is
 // why this test deliberately produces more than 62 audited operations.
 func TestCollectionSurvivesMoreEntriesThanTheLogHolds(t *testing.T) {
-	requireDevice(t)
+	requireAuditedCommands(t, hsm.CmdGenerateAsymmetricKey, hsm.CmdSignECDSA, hsm.CmdDeleteObject)
 	keepLogSpace(t, 10)
 
 	store := hsmaudit.NewMemStore()
@@ -336,7 +340,10 @@ func assertCollected(t *testing.T, res *hsmaudit.CollectResult) {
 // and then sign invisibly. This test fills the ring deliberately and checks the
 // device stops.
 func TestFullLogStopsTheDevice(t *testing.T) {
-	requireDevice(t)
+	// The fill has to be made of audited operations, and force-audit has to be
+	// on for a full log to block rather than overwrite — neither of which is
+	// true of a device out of the box.
+	requireAuditedCommands(t, hsm.CmdGenerateAsymmetricKey, hsm.CmdSignECDSA, hsm.CmdDeleteObject)
 	c, ctx := client(t)
 
 	force, err := c.GetOption(ctx, yubihsm.OptionForceAudit)

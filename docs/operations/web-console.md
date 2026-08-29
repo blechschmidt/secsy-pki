@@ -123,6 +123,14 @@ Some commands are host-local or dual-control ceremonies and are intentionally
   claims on a machine with access to none of them; running it *inside* the
   audited server would defeat the argument. The console instead serves the
   bundle (`Audit bundle`) for exactly that offline check.
+- `hsm-audit verify-file` — the same argument for the [append-only device-log
+  file](../hsm/audit-log.md#verifying-the-file). The file exists so that a copy
+  can live somewhere the CA operator cannot rewrite it, which usually means off
+  the host entirely; whoever holds that copy has none of this deployment's
+  config or database, and offering the check from inside the audited server
+  would answer the wrong question. `hsm-audit status` does report the file's
+  position and cross-checks it against the database's collection tail, and that
+  is on the HSM page.
 - `hsm-audit collect` / `timestamp` / `commit` — collection now happens
   automatically after every HSM operation, and the RFC 3161 freshness proofs and
   device-signed serial bindings are scheduled attestation ceremonies needing the

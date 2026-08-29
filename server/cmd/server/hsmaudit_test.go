@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
+	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsmaudit"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 )
@@ -58,15 +63,90 @@ func TestHSMAuditBackstopResolution(t *testing.T) {
 // it is complete, and a log sitting undrained in a volatile 62-entry ring is
 // the part of it most likely to be lost.
 func TestPerOperationCollectionDefaultsOn(t *testing.T) {
-	if !perOperationCollection(&config.Config{}) {
+	unforced := &optionsDevice{opts: &hsmaudit.Options{ForceAudit: hsmaudit.AuditOff}}
+	if !perOperationCollection(&config.Config{}, unforced) {
 		t.Fatal("per-operation collection is off by default")
 	}
 	on, off := true, false
-	if !perOperationCollection(&config.Config{YubiHSM: config.YubiHSMConfig{AuditCollectPerOperation: &on}}) {
+	if !perOperationCollection(&config.Config{YubiHSM: config.YubiHSMConfig{AuditCollectPerOperation: &on}}, unforced) {
 		t.Fatal("explicitly enabling per-operation collection turned it off")
 	}
-	if perOperationCollection(&config.Config{YubiHSM: config.YubiHSMConfig{AuditCollectPerOperation: &off}}) {
-		t.Fatal("an operator could not turn per-operation collection off")
+	if perOperationCollection(&config.Config{YubiHSM: config.YubiHSMConfig{AuditCollectPerOperation: &off}}, unforced) {
+		t.Fatal("an operator could not turn per-operation collection off on a device that is not force-audited")
+	}
+	if unforced.calls == 0 {
+		t.Fatal("the device was never asked whether it force-audits")
+	}
+}
+
+// On a force-audited device the drain is not a preference. The device stops
+// serving audited commands once 62 entries accumulate, so honouring
+// audit_collect_per_operation: false there would let a configuration knob take
+// the CA offline — and do it silently, minutes after startup, presenting as an
+// HSM failure rather than as the setting that caused it.
+func TestPerOperationCollectionIgnoresTheKnobOnAForceAuditedDevice(t *testing.T) {
+	off := false
+	cfg := &config.Config{YubiHSM: config.YubiHSMConfig{AuditCollectPerOperation: &off}}
+
+	for _, level := range []hsmaudit.AuditLevel{hsmaudit.AuditOn, hsmaudit.AuditFixed} {
+		dev := &optionsDevice{opts: &hsmaudit.Options{ForceAudit: level}}
+		if !perOperationCollection(cfg, dev) {
+			t.Errorf("force-audit=%s: per-operation collection was turned off; the device will wedge", level)
+		}
+	}
+
+	// A device that cannot be asked is treated as force-audited. Guessing the
+	// other way turns an unreachable device into an undrained one.
+	unreadable := &optionsDevice{err: errors.New("device busy")}
+	if !perOperationCollection(cfg, unreadable) {
+		t.Error("per-operation collection was turned off although the device options could not be read")
+	}
+}
+
+// optionsDevice is a hsmaudit.Device that only answers Options; the wiring
+// under test asks nothing else, and a fake that pretended to serve log entries
+// would invite a future test to depend on behaviour it does not have.
+type optionsDevice struct {
+	opts  *hsmaudit.Options
+	err   error
+	calls int
+}
+
+func (d *optionsDevice) Options(context.Context) (*hsmaudit.Options, error) {
+	d.calls++
+	return d.opts, d.err
+}
+
+func (d *optionsDevice) Info(context.Context) (*hsmaudit.DeviceInfo, error) {
+	return nil, errors.New("optionsDevice: Info is not implemented")
+}
+
+func (d *optionsDevice) FetchLog(context.Context) (*hsm.LogResponse, error) {
+	return nil, errors.New("optionsDevice: FetchLog is not implemented")
+}
+
+func (d *optionsDevice) ConsumeLog(context.Context, uint16) error {
+	return errors.New("optionsDevice: ConsumeLog is not implemented")
+}
+
+func (d *optionsDevice) ProvisionAudit(context.Context, []uint8) (string, error) {
+	return "", errors.New("optionsDevice: ProvisionAudit is not implemented")
+}
+
+// The append-only log file is opened before the first drain, and a path that
+// cannot be written has to be found then rather than at the first collection.
+func TestOpenAuditLogFile(t *testing.T) {
+	if got := openAuditLogFile(&config.Config{}); got != nil {
+		t.Fatal("a file was opened although none is configured")
+	}
+	path := filepath.Join(t.TempDir(), "nested", "hsm-audit.jsonl")
+	f := openAuditLogFile(&config.Config{YubiHSM: config.YubiHSMConfig{AuditLogFile: path}})
+	if f == nil {
+		t.Fatal("the configured log file was not opened")
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("the configured log file was not created: %v", err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -48,6 +49,23 @@ Subcommands:
                         what ties it to real hardware
   export  -out FILE     Write a remotely verifiable audit bundle
   verify  -bundle FILE  Verify a bundle offline (no database, no HSM)
+  verify-file -file F   Verify an append-only device log file offline: every
+                        record's digest is re-derived from the raw device
+                        records, with no database, device or configuration
+
+Collection flags (collect):
+  -log-file FILE        Append collected records to this append-only file as
+                        well as the database. Defaults to yubihsm.audit_log_file
+
+Log-file flags (verify-file):
+  -anchor HEX           Genesis anchor recorded when the device was commissioned
+  -serial SERIAL        Expected device serial number
+  -tail N               Entry number the file must reach, as reported by
+                        hsm-audit status. No chain can detect its own truncation,
+                        so this is what catches records removed from the end of
+                        the file
+  -strict               Also fail when the file documents gaps in its coverage
+  -json                 Emit the full machine-readable verdict
 
 Verification flags (verify):
   -key FILE             Certificate or public key to prove. Repeatable. Answers
@@ -120,17 +138,21 @@ func cmdHSMAudit(db *database.DB, cfg *config.Config, args []string) error {
 
 	switch sub {
 	case "status":
-		return cmdHSMAuditStatus(ctx, svc, rest)
+		return cmdHSMAuditStatus(ctx, svc, cfg, rest)
 	case "provision":
 		return cmdHSMAuditProvision(ctx, svc, rest)
 	case "collect":
-		return cmdHSMAuditCollect(ctx, dev, db, rest)
+		return cmdHSMAuditCollect(ctx, dev, db, cfg, rest)
 	case "timestamp":
 		return cmdHSMAuditTimestamp(ctx, svc, db, cfg, rest)
 	case "commit":
 		return cmdHSMAuditCommit(ctx, svc, db, cfg, rest)
 	case "export":
 		return cmdHSMAuditExport(ctx, svc, rest)
+	case "verify-file":
+		// Normally dispatched in main before any config is read; reachable here
+		// only if a caller routed to cmdHSMAudit directly.
+		return cmdHSMAuditVerifyFile(rest)
 	case "help", "-h", "--help":
 		hsmAuditUsage()
 		return nil
@@ -140,7 +162,7 @@ func cmdHSMAudit(db *database.DB, cfg *config.Config, args []string) error {
 	}
 }
 
-func cmdHSMAuditStatus(ctx context.Context, svc *hsmaudit.Service, args []string) error {
+func cmdHSMAuditStatus(ctx context.Context, svc *hsmaudit.Service, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("hsm-audit status", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit JSON")
 	if err := fs.Parse(args); err != nil {
@@ -153,6 +175,7 @@ func cmdHSMAuditStatus(ctx context.Context, svc *hsmaudit.Service, args []string
 	if *asJSON {
 		return json.NewEncoder(os.Stdout).Encode(st)
 	}
+	defer func() { printAuditLogFileStatus(cfg, st.Tail) }()
 	if st.Device != nil {
 		fmt.Printf("Device:          %s (firmware %s)\n", st.Device.Serial, st.Device.Version)
 		fmt.Printf("Device log:      %s used\n", st.LogUsed)
@@ -246,13 +269,28 @@ func cmdHSMAuditProvision(ctx context.Context, svc *hsmaudit.Service, args []str
 	return nil
 }
 
-func cmdHSMAuditCollect(ctx context.Context, dev hsmaudit.Device, store hsmaudit.Store, args []string) error {
+func cmdHSMAuditCollect(ctx context.Context, dev hsmaudit.Device, store hsmaudit.Store, cfg *config.Config, args []string) error {
 	fs := flag.NewFlagSet("hsm-audit collect", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit JSON")
+	logFile := fs.String("log-file", "", "append-only file to write collected records to "+
+		"(default: yubihsm.audit_log_file from the configuration)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	res, err := hsmaudit.NewCollector(dev, store, 0, nil).Collect(ctx)
+	c := hsmaudit.NewCollector(dev, store, 0, nil)
+	path := *logFile
+	if path == "" && cfg != nil {
+		path = cfg.YubiHSM.AuditLogFile
+	}
+	if strings.TrimSpace(path) != "" {
+		f, err := hsmaudit.OpenLogFile(path)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = f.Close() }()
+		c.AddSink(f)
+	}
+	res, err := c.Collect(ctx)
 	if err != nil {
 		return err
 	}
@@ -261,7 +299,197 @@ func cmdHSMAuditCollect(ctx context.Context, dev hsmaudit.Device, store hsmaudit
 	}
 	fmt.Printf("Collected %d entr(ies) (%d signature(s)); collection now at entry %d; device log %s used.\n",
 		res.Collected, res.Signatures, res.Tail.Number, res.LogUsed)
+	if strings.TrimSpace(path) != "" {
+		fmt.Printf("Records appended to %s\n", path)
+	}
 	return nil
+}
+
+// printAuditLogFileStatus reports on the append-only device-log file and
+// cross-checks it against the collection tail the database holds.
+//
+// The cross-check is the part that matters. A file verifies its own chain, but
+// no chain can detect its own truncation — remove the newest records and what
+// is left is a shorter, perfectly valid chain. The database's tail is an
+// independent statement of how far collection has got, so comparing the two
+// catches a truncation of either copy: one of them lags, and neither can fake
+// the other's position.
+//
+// It says so explicitly when no file is configured, rather than printing
+// nothing: "the database is the only copy of this log" is exactly the sort of
+// fact an operator should learn from a status command rather than from an
+// incident.
+func printAuditLogFileStatus(cfg *config.Config, dbTail hsmaudit.Tail) {
+	if cfg == nil {
+		return
+	}
+	path := strings.TrimSpace(cfg.YubiHSM.AuditLogFile)
+	if path == "" {
+		fmt.Println("Log file:        none — the database is the only copy of the device log " +
+			"(set yubihsm.audit_log_file for an append-only second copy)")
+		return
+	}
+	res, err := hsmaudit.VerifyLogFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		// Configured but not yet written: the ordinary state between setting the
+		// path and the first drain, and not something to alarm an operator with.
+		fmt.Printf("Log file:        %s (not written yet — it is created by the first collection)\n", path)
+		return
+	}
+	if err != nil {
+		fmt.Printf("Log file:        %s — UNREADABLE: %v\n", path, err)
+		return
+	}
+	verdict := "verified"
+	if !res.OK {
+		verdict = fmt.Sprintf("FAILED VERIFICATION (%d problem(s))", len(res.Problems))
+	} else if !res.Continuous {
+		verdict = fmt.Sprintf("verified, %d documented gap(s)", len(res.Gaps))
+	}
+	fmt.Printf("Log file:        %s (%d entr(ies) up to %d, %s)\n", path, res.Entries, res.Last, verdict)
+	switch {
+	case dbTail.Number == 0:
+	case res.Last == dbTail.Number && strings.EqualFold(res.Tail.Digest, dbTail.Digest):
+		fmt.Println("                 agrees with the database at entry " + fmt.Sprint(dbTail.Number))
+	case res.Last == dbTail.Number:
+		fmt.Printf("                 WARNING: both copies end at entry %d but with different digests "+
+			"(%s in the file, %s in the database): one of them was altered\n",
+			dbTail.Number, res.Tail.Digest, strings.ToLower(dbTail.Digest))
+	default:
+		fmt.Printf("                 WARNING: the file ends at entry %d but the database has collected to %d. "+
+			"A file that lags has lost records the database still holds — no chain can detect its own "+
+			"truncation, which is why this comparison exists. Protect it with `chattr +a`.\n",
+			res.Last, dbTail.Number)
+	}
+}
+
+// cmdHSMAuditVerifyFile checks an append-only device-log file on its own terms.
+//
+// Like `verify`, it is dispatched before the database or the key provider is
+// opened, because the whole point of the file is to be checkable somewhere the
+// CA is not: an auditor holding a copy shipped off the host has neither.
+func cmdHSMAuditVerifyFile(args []string) error {
+	fs := flag.NewFlagSet("hsm-audit verify-file", flag.ContinueOnError)
+	path := fs.String("file", "", "append-only device log file to verify (required)")
+	anchor := fs.String("anchor", "", "genesis anchor recorded when the device was commissioned")
+	serial := fs.String("serial", "", "expected device serial number")
+	tail := fs.Uint("tail", 0, "entry number the file must reach — the collection tail the CA reports, "+
+		"obtained independently. No chain can detect its own truncation, so this is what catches records "+
+		"removed from the end")
+	strict := fs.Bool("strict", false, "also fail when the file documents gaps in its own coverage")
+	asJSON := fs.Bool("json", false, "emit the full machine-readable verdict")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *path == "" {
+		return fmt.Errorf("hsm-audit verify-file: -file is required")
+	}
+	res, err := hsmaudit.VerifyLogFile(*path)
+	if err != nil {
+		return err
+	}
+
+	// The anchor and serial are checked here rather than inside verification
+	// because they are the auditor's inputs, not the file's: a file cannot
+	// attest to the values it would be checked against.
+	var extra []string
+	switch {
+	case *anchor == "":
+	case !res.FromGenesis:
+		extra = append(extra, "an anchor was supplied but the file does not start at the device-init "+
+			"sentinel, so there is nothing for it to pin")
+	case !strings.EqualFold(strings.TrimSpace(*anchor), res.Anchor):
+		// The same verdict the bundle path reaches on a mismatched anchor: the
+		// chain may be internally consistent and still be some other device's
+		// history, or a fabricated one, rather than the one commissioned.
+		extra = append(extra, fmt.Sprintf(
+			"file anchor %s does not match the pinned anchor %s: this is a different device history "+
+				"(the device was reset, or the file was fabricated)",
+			res.Anchor, strings.ToLower(strings.TrimSpace(*anchor))))
+	}
+	if *serial != "" && !strings.EqualFold(strings.TrimSpace(*serial), res.Device) {
+		extra = append(extra, fmt.Sprintf("file names device %q, expected %q", res.Device, *serial))
+	}
+	if *tail != 0 && uint(res.Last) != *tail {
+		extra = append(extra, fmt.Sprintf(
+			"the file ends at entry %d but should reach %d: %d record(s) were removed from the end, "+
+				"which the chain alone cannot show — a truncated chain is still a valid chain",
+			res.Last, *tail, int(*tail)-int(res.Last)))
+	}
+
+	if *asJSON {
+		if err := json.NewEncoder(os.Stdout).Encode(res); err != nil {
+			return err
+		}
+	} else {
+		printLogFileResult(res, *tail != 0, *anchor != "")
+		for _, e := range extra {
+			fmt.Printf("  ! %s\n", e)
+		}
+	}
+
+	if err := res.Err(); err != nil {
+		return err
+	}
+	if len(extra) > 0 {
+		return fmt.Errorf("hsm-audit verify-file: %s", strings.Join(extra, "; "))
+	}
+	if *strict && !res.Continuous {
+		return fmt.Errorf("hsm-audit verify-file: the file documents %d gap(s) in its own coverage; "+
+			"the entries inside them are only in the database", len(res.Gaps))
+	}
+	return nil
+}
+
+func printLogFileResult(res *hsmaudit.LogFileResult, checkedTail, checkedAnchor bool) {
+	fmt.Printf("File:            %s\n", res.Path)
+	fmt.Printf("Device:          %s\n", orNone(res.Device))
+	fmt.Printf("Records:         %d (%d device log entr(ies), %d signature(s))\n",
+		res.Records, res.Entries, res.Signatures)
+	if res.Entries > 0 {
+		fmt.Printf("Entry range:     %d - %d\n", res.First, res.Last)
+	}
+	if res.FromGenesis {
+		fmt.Println("Coverage:        from the device-init sentinel (the device's whole history)")
+		fmt.Printf("Anchor:          %s\n", res.Anchor)
+	} else {
+		fmt.Println("Coverage:        a suffix of the device history (this file does not start at a factory reset)")
+	}
+	for _, g := range res.Gaps {
+		fmt.Printf("  gap:           after entry %d, next entry %d — %s\n", g.After, g.Before, g.Reason)
+	}
+	for _, p := range res.Problems {
+		if p.Number != 0 {
+			fmt.Printf("  PROBLEM:       entry %d: %s (%s)\n", p.Number, p.Detail, p.Kind)
+			continue
+		}
+		fmt.Printf("  PROBLEM:       %s (%s)\n", p.Detail, p.Kind)
+	}
+	switch {
+	case !res.OK:
+		fmt.Println("Verdict:         FAILED — this file is not a faithful copy of the device log")
+	case res.Continuous:
+		fmt.Println("Verdict:         OK — every record chains, with no gaps")
+	default:
+		fmt.Printf("Verdict:         OK — every record chains, but the file documents %d gap(s)\n", len(res.Gaps))
+	}
+	if res.OK && !checkedTail {
+		fmt.Println("Note:             this checks the file against itself. Records removed from the *end* leave a")
+		fmt.Println("                  shorter chain that still verifies, so pass -tail with the collection tail the")
+		fmt.Println("                  CA reports, and keep the file append-only (`chattr +a`) on the CA host.")
+	}
+	if res.OK && !checkedAnchor && res.FromGenesis {
+		fmt.Println("Note:             no -anchor was supplied, so the chain was checked for internal consistency")
+		fmt.Println("                  only. Pass the anchor pinned when the device was commissioned to establish")
+		fmt.Println("                  that this is that device's history rather than some other consistent one.")
+	}
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "(unnamed)"
+	}
+	return s
 }
 
 // cmdHSMAuditTimestamp obtains one freshness attestation on demand.

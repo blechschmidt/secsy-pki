@@ -146,6 +146,12 @@ func WithSession(ctx context.Context, cfg Config, fn func(*Client) error) error 
 }
 
 // send transmits a command inside the secure channel and returns its payload.
+//
+// Every command that reaches the device notifies the command observer, whether
+// it succeeded or not: the device logs a rejected command too, and an entry
+// nobody collects is one a later fetch reports as a gap. The notification is
+// deferred so it happens after the device has acted and the entry exists. See
+// observer.go.
 func (c *Client) send(ctx context.Context, cmd byte, data []byte) ([]byte, error) {
 	if c.closed && cmd != cmdCloseSession {
 		return nil, fmt.Errorf("yubihsm: client is closed")
@@ -157,6 +163,11 @@ func (c *Client) send(ctx context.Context, cmd byte, data []byte) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
+	// From here the command is going to the device, so it is notified even if
+	// the transport then fails: a command whose response was lost may well have
+	// been executed, and assuming otherwise would leave its log entry
+	// uncollected.
+	defer notifyCommand(cmd)
 	outer, counterBlock := c.session.wrap(inner)
 	raw, err := c.transport.Transact(ctx, outer)
 	if err != nil {

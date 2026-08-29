@@ -3832,6 +3832,23 @@ type YubiHSMConfig struct {
 	// between the operation and the drain, and on an idle deployment this is
 	// what turns a wedged device into a visible failure rather than silence.
 	AuditCollectBackstopSeconds int `yaml:"audit_collect_backstop_seconds"`
+	// AuditLogFile is an append-only file that collected device log records are
+	// written to, one JSON record per line, in addition to the database. Empty
+	// turns it off.
+	//
+	// The database copy is the one the running system uses, and it is not
+	// append-only: anyone holding the database credentials can rewrite or delete
+	// rows, and while an edit is detectable through the device's digest chain,
+	// deleting the newest rows is not detectable at all — a shorter chain is a
+	// valid chain. This file exists for that threat. Put it on a path the CA
+	// process can append to and nothing can rewrite (`chattr +a`, a WORM mount,
+	// or a log shipper that forwards it off the host) and the operator running
+	// the CA can no longer quietly shorten its own audit trail.
+	//
+	// Each record carries the device's own 32-byte log record verbatim, so
+	// `secsy-ca hsm-audit verify-file` re-derives the digest chain from the file
+	// alone, without the database or the device.
+	AuditLogFile string `yaml:"audit_log_file"`
 	// AuditCollectIntervalSeconds was the fixed drain cadence before collection
 	// became operation-driven.
 	//

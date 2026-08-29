@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/anchor"
@@ -15,6 +16,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/leader"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/tsa"
+	"github.com/blechschmidt/secsy-pki/server/internal/yubihsm"
 )
 
 // HSM audit-log collection and signature-ledger recording (Task 167, Task 181).
@@ -62,6 +64,7 @@ func setupHSMAudit(cfg *config.Config, db *database.DB) {
 		return
 	}
 	if st == nil {
+		warnUncollectedForcedAudit(cfg)
 		return
 	}
 
@@ -73,6 +76,9 @@ func setupHSMAudit(cfg *config.Config, db *database.DB) {
 	backstop := hsmAuditBackstop(cfg)
 	c := hsmaudit.NewCollector(dev, db, backstop, log.Default())
 	c.OnFailure(func(error) { metrics.HSMAuditCollectionFailures.Inc() })
+	if f := openAuditLogFile(cfg); f != nil {
+		c.AddSink(f)
+	}
 	hsmAuditCollector = c
 
 	rec, err := hsmaudit.EnableRecording(context.Background(), db)
@@ -83,7 +89,13 @@ func setupHSMAudit(cfg *config.Config, db *database.DB) {
 		log.Printf("HSM signature-ledger recording enabled: every signature is recorded for audit reconciliation")
 	}
 
-	if perOperationCollection(cfg) {
+	if perOperationCollection(cfg, dev) {
+		// Two chokepoints, because there are two routes to the device. The key
+		// provider carries everything the product signs with; the native driver
+		// carries key and device attestation, audit-head commitments and option
+		// changes, none of which pass a key provider and all of which leave log
+		// entries on a force-audited device.
+		yubihsm.SetCommandObserver(func(byte) { c.Notify() })
 		log.Printf("HSM audit collection enabled (device %s, anchor %s, after every HSM operation, backstop %s)",
 			st.DeviceSerial, st.Anchor, backstop)
 	} else {
@@ -116,14 +128,105 @@ func setupHSMAuditCollector(elector *leader.Elector) {
 // collection is turned off, without every call site testing a flag.
 var hsmAuditNotify = func() { hsmAuditCollector.Notify() }
 
+// openAuditLogFile opens the configured append-only device-log file.
+//
+// The sink is deliberately not retained for a shutdown close. Every record is
+// written with a direct write plus an fsync before the collector acknowledges
+// anything on the device, so there is nothing buffered for a Close to flush,
+// and the file descriptor is released by process exit either way. Holding a
+// package-level handle in order to close it would suggest a durability step
+// that does not exist.
+//
+// A file that cannot be opened is fatal, not a warning. The point of the file is
+// to be a copy the operator of this host cannot quietly remove, so starting
+// without it — after somebody configured it — would silently deliver the
+// opposite of what was asked for. Failing here is loud, happens at startup
+// rather than at the first drain, and names the path.
+func openAuditLogFile(cfg *config.Config) *hsmaudit.LogFile {
+	path := strings.TrimSpace(cfg.YubiHSM.AuditLogFile)
+	if path == "" {
+		return nil
+	}
+	f, err := hsmaudit.OpenLogFile(path)
+	if err != nil {
+		log.Fatalf("FATAL: yubihsm.audit_log_file is set to %s but it cannot be opened for append: %v", path, err)
+	}
+	if n, _, ok := f.Last(); ok {
+		log.Printf("HSM audit log file %s open for append (continues from entry %d)", path, n)
+	} else {
+		log.Printf("HSM audit log file %s open for append (new file)", path)
+	}
+	return f
+}
+
 // perOperationCollection reports whether the drain follows every HSM operation.
+//
 // Unset means on: an operator who has gone to the trouble of commissioning a
 // force-audited device wants its log collected promptly, not eventually.
-func perOperationCollection(cfg *config.Config) bool {
-	if v := cfg.YubiHSM.AuditCollectPerOperation; v != nil {
-		return *v
+//
+// An explicit `false` is honoured only on a device that is not force-audited.
+// With force-audit on, the 62-entry ring is not a buffer that overflows into
+// older entries — it is a hard stop, after which the HSM refuses every audited
+// command and the CA stops issuing. Letting configuration disable the drain
+// there would let a deployment turn a tuning knob and get an outage, so the
+// device's setting wins and says so.
+func perOperationCollection(cfg *config.Config, dev hsmaudit.Device) bool {
+	v := cfg.YubiHSM.AuditCollectPerOperation
+	if v == nil || *v {
+		return true
 	}
-	return true
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	forced, err := hsmaudit.ForceAuditEnabled(ctx, dev)
+	if err != nil {
+		log.Printf("WARNING: could not read the device audit options to check force-audit (%v); "+
+			"keeping per-operation collection on, because a force-audited device wedges without it", err)
+		return true
+	}
+	if forced {
+		log.Printf("WARNING: yubihsm.audit_collect_per_operation is false, but the attached device has " +
+			"force-audit enabled: it stops accepting audited commands once 62 entries accumulate. " +
+			"Per-operation collection stays on.")
+		return true
+	}
+	return false
+}
+
+// warnUncollectedForcedAudit reports a device that force-audits but has no
+// pinned audit state, so nothing in this process will drain its log.
+//
+// This is the one configuration that fails silently and then stops the CA: the
+// collector is gated on provisioning, because without a pinned anchor a
+// collected chain cannot be attributed to a known device history — but the
+// device does not care why nobody is draining it, and refuses every audited
+// command as soon as its 62 slots fill. An operator who force-audited a device
+// by hand (yubihsm-shell, an inherited HSM) and never ran `hsm-audit provision`
+// gets no other indication until issuance stops.
+//
+// The probe is skipped entirely when no YubiHSM is configured. An unset
+// hsm.Config carries an empty connector URL, which the driver resolves to the
+// default direct-USB one — so probing unconditionally would have every
+// SoftHSM or software-backed deployment reach for whichever device happens to
+// be plugged into the machine.
+func warnUncollectedForcedAudit(cfg *config.Config) {
+	if cfg.YubiHSM.ConnectorURL == "" && cfg.YubiHSM.AuthKeyID == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	dev := hsmaudit.NewHardwareDevice(hsm.Config{
+		ConnectorURL: cfg.YubiHSM.ConnectorURL,
+		AuthKeyID:    cfg.YubiHSM.AuthKeyID,
+		Password:     cfg.YubiHSM.Password,
+	})
+	forced, err := hsmaudit.ForceAuditEnabled(ctx, dev)
+	if err != nil || !forced {
+		return
+	}
+	log.Printf("WARNING: the attached YubiHSM has force-audit enabled but this deployment has no pinned " +
+		"audit state, so nothing here drains its log. The device holds 62 log entries and then refuses " +
+		"every audited command — including signing. Run `secsy-ca hsm-audit provision` to commission it, " +
+		"or `secsy-ca hsm-audit collect` to drain it by hand.")
 }
 
 // hsmAuditBackstop resolves the sweep cadence used when no operation prompts a

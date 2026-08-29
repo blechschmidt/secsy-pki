@@ -122,6 +122,7 @@ type CollectResult struct {
 type Collector struct {
 	dev      Device
 	store    Store
+	sinks    []EntrySink
 	backstop time.Duration
 	logger   *log.Logger
 
@@ -159,6 +160,23 @@ func NewCollector(dev Device, store Store, backstop time.Duration, logger *log.L
 
 // OnFailure registers a callback invoked whenever a cycle fails verification.
 func (c *Collector) OnFailure(fn func(error)) { c.onFailure = fn }
+
+// AddSink registers an additional durable destination for collected entries —
+// the append-only file, in this build (see logfile.go).
+//
+// Sinks are written before the store and long before the device is
+// acknowledged, and a sink failure aborts the cycle, so a sink is a copy the
+// deployment genuinely has rather than one it merely attempted. That ordering
+// is deliberate and not interchangeable with the store's: the store's tail is
+// what decides which entries a later cycle considers new, so a store write that
+// landed first would make a failed sink write unrepeatable — the retry would
+// find nothing fresh to hand it, and the sink would be permanently missing
+// records nobody would ever notice.
+func (c *Collector) AddSink(s EntrySink) {
+	if s != nil {
+		c.sinks = append(c.sinks, s)
+	}
+}
 
 // Notify signals that an operation reached the HSM, so the loop should drain
 // the entry it produced.
@@ -288,6 +306,14 @@ func (c *Collector) collectLocked(ctx context.Context) (*CollectResult, error) {
 	}
 
 	if len(fresh) > 0 {
+		// Sinks first, then the store: the store's tail governs re-delivery, so
+		// a sink that failed after the tail advanced could never be caught up.
+		// See AddSink.
+		for _, s := range c.sinks {
+			if err := s.AppendEntries(ctx, st.DeviceSerial, fresh); err != nil {
+				return res, fmt.Errorf("writing %d device log entr(ies) to %s: %w", len(fresh), s.Describe(), err)
+			}
+		}
 		if err := c.store.AppendLogEntries(ctx, fresh); err != nil {
 			return res, fmt.Errorf("persisting %d device log entr(ies): %w", len(fresh), err)
 		}

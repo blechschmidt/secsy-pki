@@ -57,8 +57,9 @@ func (p *hookedProvider) reached() []string {
 func (p *hookedProvider) Name() string { return "hooked" }
 func (p *hookedProvider) Close() error { return nil }
 
-func (p *hookedProvider) GenerateKey(context.Context, KeySpec) (*KeyInfo, error) {
-	return nil, fmt.Errorf("not needed")
+func (p *hookedProvider) GenerateKey(_ context.Context, spec KeySpec) (*KeyInfo, error) {
+	p.note("generate")
+	return &KeyInfo{Label: spec.Label, ID: "1940", KeyType: spec.KeyType}, nil
 }
 
 func (p *hookedProvider) FindKey(_ context.Context, ref KeyRef) (*KeyInfo, error) {
@@ -178,9 +179,17 @@ func TestOnOperationFiresForEveryBackendOperation(t *testing.T) {
 		t.Fatalf("random: %v", err)
 	}
 
-	// Four operations reached the device, so four entries need collecting.
-	if got := hooks.Load(); got != 4 {
-		t.Fatalf("the drain hook fired %d time(s) for 4 backend operations (%v): "+
+	// Key generation is not a signature and gets no ledger row, but on a
+	// force-audited YubiHSM it is one of the commands that must be logged — a
+	// key created off the books could sign off the books — so its entry needs
+	// collecting exactly like a signature's.
+	if _, err := p.GenerateKey(ctx, KeySpec{Label: "new", KeyType: KeyTypeECDSAP256}); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	// Five operations reached the device, so five entries need collecting.
+	if got := hooks.Load(); got != 5 {
+		t.Fatalf("the drain hook fired %d time(s) for 5 backend operations (%v): "+
 			"an operation whose entry nothing collects is one that sits in a volatile ring",
 			got, base.reached())
 	}

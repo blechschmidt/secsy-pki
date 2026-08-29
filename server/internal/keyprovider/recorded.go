@@ -164,6 +164,20 @@ func (p *recordingProvider) Random(ctx context.Context, n int) ([]byte, error) {
 	return rp.Random(ctx, n)
 }
 
+// GenerateKey creates the key and then marks the device as operated.
+//
+// Key generation is not a signature and gets no ledger row, but on a
+// force-audited YubiHSM it is one of the commands that must leave a log entry —
+// a key created off the books could sign off the books — so it has to prompt a
+// drain exactly like a signature does. Without this a deployment could create
+// keys all day and leave every one of those entries sitting in the device's
+// volatile 62-entry ring, where a power cut loses them and a full ring stops
+// the HSM.
+func (p *recordingProvider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInfo, error) {
+	defer p.operated()
+	return p.Provider.GenerateKey(ctx, spec)
+}
+
 func (p *recordingProvider) Signer(ctx context.Context, ref KeyRef) (Signer, error) {
 	s, err := p.Provider.Signer(ctx, ref)
 	if err != nil {

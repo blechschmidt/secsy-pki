@@ -198,6 +198,30 @@ func (o *Options) Verify() error {
 	return nil
 }
 
+// ForceAuditEnabled reports whether the device is set to refuse auditable
+// commands rather than overwrite log entries once its ring is full.
+//
+// "On" counts as well as "fixed". The two differ in whether an operator can
+// turn the setting off again, which is what Verify cares about — but for
+// deciding how urgently the log has to be drained they are identical: both make
+// a full ring stop the HSM, so both make collection a liveness requirement
+// rather than housekeeping.
+func (o *Options) ForceAuditEnabled() bool { return o != nil && o.ForceAudit != AuditOff }
+
+// ForceAuditEnabled reads dev's options and reports whether force-audit is on.
+//
+// It is the question the drain wiring asks at startup: a force-audited device
+// stops serving the CA once 62 unacknowledged entries accumulate, so on such a
+// device per-operation collection is not a tuning preference that configuration
+// may switch off.
+func ForceAuditEnabled(ctx context.Context, dev Device) (bool, error) {
+	opts, err := dev.Options(ctx)
+	if err != nil {
+		return false, err
+	}
+	return opts.ForceAuditEnabled(), nil
+}
+
 // DeviceInfo identifies the device an export came from.
 type DeviceInfo struct {
 	Serial     string `json:"serial"`

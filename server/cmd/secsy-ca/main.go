@@ -94,6 +94,12 @@ func run(args []string) error {
 	if command == "hsm-audit" && len(cmdArgs) > 0 && cmdArgs[0] == "verify" {
 		return cmdHSMAuditVerify(cmdArgs[1:])
 	}
+	// verify-file is config-free for the same reason, and more so: the
+	// append-only log file exists precisely so a copy can live off the CA host,
+	// and whoever ends up holding that copy has none of the CA's configuration.
+	if command == "hsm-audit" && len(cmdArgs) > 0 && cmdArgs[0] == "verify-file" {
+		return cmdHSMAuditVerifyFile(cmdArgs[1:])
+	}
 	// The key-attestation verifier (Task 168) is config-free for the same reason:
 	// checking whether a CA's key is confined to hardware is a claim a relying
 	// party evaluates from the attestation alone, on a machine with no HSM, no
