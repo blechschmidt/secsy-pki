@@ -65,6 +65,33 @@ and to load; without the flag it requires the default image *not* to carry it,
 so the two tags cannot quietly converge. See
 [docs/deployment/container.md](docs/deployment/container.md#the-yubihsm-variant).
 
+**An append-only second copy of the YubiHSM device audit log, and a drain that
+follows every operation.** On a force-audited YubiHSM the 62-entry log ring is
+not a buffer that overflows into older entries — once full, the device refuses
+every audited command, including signing. Collection was already driven by
+operations, but only those passing through `internal/keyprovider`; key
+attestation, device attestation, audit-head commitments and option changes reach
+the hardware directly and left entries nothing drained. A process-wide observer
+on the driver's single command path now covers those too, so a deployment that
+mostly attests can no longer wedge its own HSM. An explicit
+`audit_collect_per_operation: false` is ignored on a force-audited device rather
+than allowed to take the CA offline minutes after startup.
+
+Because acknowledging the ring is irreversible and the device keeps no copy,
+whatever holds the records afterwards *is* the audit log — and the database is
+not append-only: anyone with its credentials can delete the newest rows, which
+no digest chain can detect, since a shorter chain is a valid chain. The new
+`yubihsm.audit_log_file` writes a second copy as one JSON record per line,
+carrying the device's own 32-byte record verbatim, meant for `chattr +a`, a WORM
+mount, or a log shipper that moves it off the host. Sinks are written before the
+database and long before the acknowledgement, and a sink failure aborts the
+cycle. `secsy-ca hsm-audit verify-file` re-derives the chain from the raw
+records with no database, device or configuration, and `-anchor` / `-serial` /
+`-tail` bind the file to a known commissioning, a device and an independently
+obtained collection tail. `hsm-audit status` makes the tail comparison
+automatically. See
+[docs/hsm/audit-log.md](docs/hsm/audit-log.md#where-the-collected-records-go).
+
 ## [1.0.0] - 2026-08-19
 
 The first tagged release of the enterprise edition: an HSM-backed X.509 and SSH
