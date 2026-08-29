@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"strings"
 	"sync/atomic"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
@@ -10,6 +12,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsmaudit"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
+	"github.com/blechschmidt/secsy-pki/server/internal/yubihsm"
 )
 
 // Signature-ledger recording and device-log collection for the CLI (Task 167,
@@ -56,6 +59,9 @@ func installSignatureRecorder(db *database.DB) {
 		return
 	}
 	signatureRecorder = rec
+	if rec != nil {
+		yubihsm.SetCommandObserver(func(byte) { markHSMUsed() })
+	}
 }
 
 // recordSignatures wraps p so its signatures reach the ledger and its device
@@ -65,8 +71,18 @@ func recordSignatures(p keyprovider.Provider) keyprovider.Provider {
 	if signatureRecorder == nil {
 		return p
 	}
-	return keyprovider.Record(p, signatureRecorder, keyprovider.OnOperation(func() { hsmUsed.Store(true) }))
+	return keyprovider.Record(p, signatureRecorder, keyprovider.OnOperation(markHSMUsed))
 }
+
+// markHSMUsed records that this process reached the device.
+//
+// It is also installed as the native driver's command observer, so the commands
+// that do not pass a key provider — key and device attestation, audit-head
+// commitments, provisioning — count as HSM use too. `secsy-ca hsm-attest key`
+// on a force-audited device writes three log entries and never touches a key
+// provider; before the driver hook, none of them was drained by the process
+// that produced them.
+func markHSMUsed() { hsmUsed.Store(true) }
 
 // collectAfterHSMUse drains the device log if this process used the HSM.
 //
@@ -89,7 +105,22 @@ func collectAfterHSMUse(cfg *config.Config, db *database.DB) {
 		AuthKeyID:    cfg.YubiHSM.AuthKeyID,
 		Password:     cfg.YubiHSM.Password,
 	})
-	res, err := hsmaudit.NewCollector(dev, db, 0, log.Default()).Collect(context.Background())
+	c := hsmaudit.NewCollector(dev, db, 0, log.Default())
+	// The CLI writes the same append-only file the server does. Both processes
+	// append to it under the collection lease, and O_APPEND keeps a batch from
+	// interleaving with the other writer's — so an operator's `secsy-ca issue`
+	// leaves its device entries in the file exactly as the server's issuance
+	// would, rather than only in the database.
+	f, err := openConfiguredAuditLogFile(cfg)
+	if err != nil {
+		log.Printf("WARNING: HSM device log not collected after this command: %v", err)
+		return
+	}
+	if f != nil {
+		defer func() { _ = f.Close() }()
+		c.AddSink(f)
+	}
+	res, err := c.Collect(context.Background())
 	if err != nil {
 		log.Printf("WARNING: HSM device log not collected after this command: %v. "+
 			"The entries remain on the device; run `secsy-ca hsm-audit collect` once it is reachable.", err)
@@ -99,4 +130,25 @@ func collectAfterHSMUse(cfg *config.Config, db *database.DB) {
 		log.Printf("HSM audit: collected %d device log entr(ies) (%d signature(s)); device log %s used.",
 			res.Collected, res.Signatures, res.LogUsed)
 	}
+}
+
+// openConfiguredAuditLogFile opens the append-only device-log file, or returns
+// (nil, nil) when none is configured.
+//
+// Unlike the server, which refuses to start without a file it was told to
+// write, the CLI reports the failure to its caller: a `secsy-ca` invocation has
+// already done its work by the time the drain runs, and an unwritable evidence
+// file must not turn a completed issuance into a failed command. The entries
+// stay on the device either way, so the next drain — this file having been
+// fixed — still collects them.
+func openConfiguredAuditLogFile(cfg *config.Config) (*hsmaudit.LogFile, error) {
+	path := strings.TrimSpace(cfg.YubiHSM.AuditLogFile)
+	if path == "" {
+		return nil, nil
+	}
+	f, err := hsmaudit.OpenLogFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening the append-only HSM audit log file: %w", err)
+	}
+	return f, nil
 }
