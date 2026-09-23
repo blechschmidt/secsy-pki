@@ -16,6 +16,7 @@
 //	audit_test.go        the append-only device audit log and its digest chain
 //	genesis_test.go      what a factory reset writes, and what the anchor is worth
 //	pkcs11_test.go       the keyprovider/PKCS#11 layer the product signs through
+//	import_test.go       existing key material imported onto the device
 //	pki_test.go          the product itself: CA, CRL, OCSP, SSH CA, TSA, secrets
 //
 // The tiers are deliberately ordered bottom-up: a failure in driver_test.go

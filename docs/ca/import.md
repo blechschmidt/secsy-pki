@@ -151,6 +151,76 @@ that gate exists to prevent.
 
 ---
 
+## Key material the backends accept
+
+Format is one question, the key itself is another. Every import — `ca import`,
+`import-key`, and the secret layer's `signing-key import` — runs the same
+checks on the key material before any backend is touched.
+
+| Algorithm | Accepted |
+|---|---|
+| RSA | **2048, 3072, or 4096 bits**, public exponent **65537** |
+| ECDSA | P-256, P-384, P-521 |
+| Ed25519 | yes |
+| ML-DSA (post-quantum) | no — no backend here accepts foreign ML-DSA material |
+
+The RSA sizes are matched **exactly**, not rounded to the nearest name. A
+2560-bit key is refused rather than recorded as `rsa-3072`: that string ends up
+on the CA record and in every inventory and compliance report derived from it,
+where it would overstate the modulus forever. The three sizes are also precisely
+what a YubiHSM 2 holds, so there is nowhere for a fourth to go.
+
+On top of that, imported key material passes the same
+[key-quality gate](../issuance/key-checks.md) that subject public keys pass
+before they are certified — ROCA (CVE-2017-15361), exponent policy, and modulus
+sanity. Moving a broken key into an HSM does not repair it; the HSM cannot
+un-factor a ROCA modulus, and the one command whose purpose is to give a key a
+*better* home should not be the one that launders it.
+
+### Importing RSA onto a YubiHSM
+
+A YubiHSM 2 is stricter than a software token, and it is terse about it. It
+implements exactly `rsa2048`, `rsa3072` and `rsa4096`, and exactly one public
+exponent. Anything else comes back as a single undifferentiated
+`CKR_ATTRIBUTE_VALUE_INVALID` — the same code for "wrong size", "wrong
+exponent" and "unsupported algorithm" — after a round trip over USB, which
+tells an operator holding a valid-looking key file nothing at all.
+
+So both constraints are checked on the host, and the rejection says which one
+was hit:
+
+```
+$ secsy-ca import-key -label legacy-root -key odd.key
+error: keyprovider: import: RSA key is 2560 bits; only 2048, 3072, or 4096 are
+       supported (an HSM holds exactly these sizes, and this PKI has no
+       key-type name for any other)
+
+$ secsy-ca import-key -label legacy-root -key e3.key
+error: keyprovider: the key fails the key-quality gate and must not be imported:
+       RSA public exponent 3 is below the required minimum of 65537
+```
+
+What does work is the ordinary case, and it is fast — the device stores primes
+rather than searching for them, so import takes a second or two where
+*generating* an RSA-4096 key on the same hardware takes minutes:
+
+| Key | Import | Generate (for comparison) |
+|---|---|---|
+| RSA-2048 | ~0.9 s | ~5 s |
+| RSA-3072 | ~1.8 s | ~40 s |
+| RSA-4096 | ~2.3 s | minutes |
+
+(Measured on a YubiHSM 2, firmware 2.4.0, over direct USB.)
+
+All of this is exercised against real hardware by the
+[YubiHSM conformance suite](../hsm/hardware-test-suite.md) — the three sizes
+round-tripped through PKCS#11 and signing with both PKCS#1 v1.5 and PSS, a
+decrypt-only RSA KEK unwrapping, the requested `CKA_ID` being honoured, the
+attestation reporting the imported key honestly, and each rejection above
+arriving as a sentence rather than as a status code.
+
+---
+
 ## Importing a bare key
 
 `secsy-ca import-key` is the building block — a TSA key, an artifact-signing

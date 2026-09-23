@@ -34,11 +34,13 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/fips"
+	"github.com/blechschmidt/secsy-pki/server/internal/keycheck"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
@@ -95,8 +97,9 @@ func CanImport(p Provider) bool {
 }
 
 // validateImportSpec applies the checks every backend shares: a label, usable
-// key material, an algorithm the deployment's crypto policy permits, and the
-// RSA-only rule for key-encryption keys. It returns the canonical key type.
+// key material, an algorithm the deployment's crypto policy permits, the
+// key-quality gate, and the RSA-only rule for key-encryption keys. It returns
+// the canonical key type.
 func validateImportSpec(spec ImportSpec) (string, error) {
 	if spec.Label == "" {
 		return "", fmt.Errorf("keyprovider: key label is required")
@@ -111,6 +114,9 @@ func validateImportSpec(spec ImportSpec) (string, error) {
 	if err := fips.CheckKeyType(keyType); err != nil {
 		return "", fmt.Errorf("keyprovider: %w", err)
 	}
+	if err := checkImportKeyQuality(spec.PrivateKey); err != nil {
+		return "", err
+	}
 	switch spec.Usage {
 	case "", KeyUsageSign:
 	case KeyUsageDecrypt:
@@ -124,6 +130,40 @@ func validateImportSpec(spec ImportSpec) (string, error) {
 		return "", fmt.Errorf("keyprovider: private key of type %T cannot be used", spec.PrivateKey)
 	}
 	return keyType, nil
+}
+
+// checkImportKeyQuality runs the same structural weak-key gate that every
+// subject public key passes before it is certified (CA/Browser Forum BR
+// §6.1.1.3): ROCA, exponent policy, and modulus sanity.
+//
+// The CA-adoption path already ran this, but `import-key` and the secret layer's
+// signing-key import did not — so a ROCA-vulnerable key, or one with e=3, could
+// be written to a token by the one command whose whole purpose is to give a key
+// a *more* trustworthy home. Checking here covers every caller and every backend
+// at once, because this is the single function all of them go through.
+//
+// The gate is stateless: the persisted compromised-key blocklist lives in the ca
+// package, which consults it on top of this for an adopted CA key. Only the
+// structural checks belong here, where there is no database to consult.
+//
+// On a YubiHSM the exponent rule is doubly useful. The device accepts e=65537
+// and nothing else, so a key with e=3 was going to fail there regardless — this
+// turns "CKR_ATTRIBUTE_VALUE_INVALID" into a sentence naming the problem.
+func checkImportKeyQuality(priv crypto.PrivateKey) error {
+	signer, ok := priv.(crypto.Signer)
+	if !ok {
+		return nil // The type check in validateImportSpec reports this.
+	}
+	res := keycheck.Inspect(signer.Public(), keycheck.DefaultPolicy(nil))
+	if res.OK() {
+		return nil
+	}
+	details := make([]string, 0, len(res.Findings))
+	for _, f := range res.Findings {
+		details = append(details, f.Detail)
+	}
+	return fmt.Errorf("keyprovider: the key fails the key-quality gate and must not be imported: %s",
+		strings.Join(details, "; "))
 }
 
 // VerifyKeyUsable proves that the referenced key is present in the provider and

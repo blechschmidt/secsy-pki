@@ -9,6 +9,8 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
+	"math/big"
+	"strings"
 	"testing"
 )
 
@@ -207,4 +209,122 @@ func TestInstrumentedProviderForwardsImport(t *testing.T) {
 	if !publicKeysMatch(info.PublicKey, key.Public()) {
 		t.Error("the wrapper returned a different key")
 	}
+}
+
+// TestImportKeyQualityGate covers the weak-key checks every import passes
+// (Task 196).
+//
+// The CA-adoption path ran this gate from the start; `import-key` and the
+// secret layer's signing-key import did not, so the single command whose
+// purpose is to give a key a *more* trustworthy home would happily write a
+// known-broken one onto a token. The gate now lives in the shared validation,
+// so every caller and every backend inherits it.
+//
+// The exponent case is also a hardware-compatibility check in disguise: a
+// YubiHSM 2 accepts e=65537 and nothing else, and its refusal is an
+// undifferentiated CKR_ATTRIBUTE_VALUE_INVALID. Catching it here turns that
+// into a sentence, before the device is touched.
+func TestImportKeyQualityGate(t *testing.T) {
+	weakExponent := rsaKeyWithExponent(t, 2048, 3)
+
+	cases := []struct {
+		name string
+		key  crypto.PrivateKey
+		want string
+	}{
+		{"exponent below 65537", weakExponent, "exponent 3"},
+		{"even modulus", evenModulusKey(), "even"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := softwareTestProvider(t)
+			_, err := ImportKey(context.Background(), p, ImportSpec{Label: "weak", PrivateKey: tc.key})
+			if err == nil {
+				t.Fatal("the key-quality gate accepted a key it must reject")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the rejection does not explain the defect (%q): %v", tc.want, err)
+			}
+		})
+	}
+
+	// A sound key must still pass: the gate has to be a filter, not a wall.
+	good, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := softwareTestProvider(t)
+	if _, err := ImportKey(context.Background(), p, ImportSpec{Label: "good", PrivateKey: good}); err != nil {
+		t.Fatalf("a sound RSA-2048 key was rejected: %v", err)
+	}
+}
+
+// TestImportKeyRejectsUnnamedRSASize checks the size vocabulary at the provider
+// boundary. The message has to reach the operator through the wrapping, which
+// is the part a unit test on PrivateKeyType alone would not catch.
+func TestImportKeyRejectsUnnamedRSASize(t *testing.T) {
+	p := softwareTestProvider(t)
+	odd := &rsa.PrivateKey{PublicKey: rsa.PublicKey{N: oddModulus(2560), E: 65537}}
+	_, err := ImportKey(context.Background(), p, ImportSpec{Label: "odd", PrivateKey: odd})
+	if err == nil {
+		t.Fatal("a 2560-bit RSA key was accepted")
+	}
+	for _, want := range []string{"2560 bits", "2048, 3072, or 4096"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the rejection does not mention %q: %v", want, err)
+		}
+	}
+}
+
+func oddModulus(bits int) *big.Int {
+	n := new(big.Int).Lsh(big.NewInt(1), uint(bits-1))
+	return n.Add(n, big.NewInt(1))
+}
+
+// evenModulusKey is structurally impossible for a real RSA key (a product of
+// two odd primes is odd) and stands in for malformed or crafted key material.
+func evenModulusKey() *rsa.PrivateKey {
+	return &rsa.PrivateKey{PublicKey: rsa.PublicKey{N: oddModulus(2048).Add(oddModulus(2048), big.NewInt(1)), E: 65537}}
+}
+
+// rsaKeyWithExponent builds a valid RSA key with a chosen public exponent,
+// which crypto/rsa will not do: GenerateKey fixes e at 65537.
+func rsaKeyWithExponent(t *testing.T, bits, e int) *rsa.PrivateKey {
+	t.Helper()
+	one := big.NewInt(1)
+	E := big.NewInt(int64(e))
+	for attempt := 0; attempt < 400; attempt++ {
+		half := bits / 2
+		p, err := rand.Prime(rand.Reader, half)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q, err := rand.Prime(rand.Reader, bits-half)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Cmp(q) == 0 {
+			continue
+		}
+		n := new(big.Int).Mul(p, q)
+		if n.BitLen() != bits {
+			continue
+		}
+		phi := new(big.Int).Mul(new(big.Int).Sub(p, one), new(big.Int).Sub(q, one))
+		if new(big.Int).GCD(nil, nil, phi, E).Cmp(one) != 0 {
+			continue
+		}
+		d := new(big.Int).ModInverse(E, phi)
+		if d == nil {
+			continue
+		}
+		k := &rsa.PrivateKey{PublicKey: rsa.PublicKey{N: n, E: e}, D: d, Primes: []*big.Int{p, q}}
+		k.Precompute()
+		if k.Validate() != nil {
+			continue
+		}
+		return k
+	}
+	t.Fatalf("could not build a %d-bit RSA key with exponent %d", bits, e)
+	return nil
 }

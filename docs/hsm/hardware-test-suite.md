@@ -124,6 +124,7 @@ it, so the first failing tier names the layer at fault.
 | 4b | `audit_sink_test.go` | Where the drained entries end up, since acknowledging the ring destroys the device's only copy: a spread of operations — generate, sign ECDSA, sign EdDSA, attest, delete, and the same through PKCS#11 — each reaches **both** the database and the append-only file, the file verifies from its raw device records alone, every command the driver sends prompts a drain while the drain's own three commands do not, and 100 operations across a 62-entry ring complete without the device ever refusing. |
 | 5 | `genesis_test.go` | What a factory reset writes, and therefore what the chain anchor is worth: the device-init sentinel's hashed bytes are the constant `0001ffffffffffffffffffffffffffff` on every reset, while the digest the device reports for them differs on every reset and is reproducible from no publicly guessable seed — so the anchor cannot be recomputed and must be pinned out of band. Also that a reset restarts the log at entry 1 with no unlogged-operation counters. Gated on `SECSY_YUBIHSM_RESET=1`; see [why the anchor cannot verify itself](audit-log.md#why-the-anchor-cannot-verify-itself). |
 | 6 | `pkcs11_test.go` | The layer the product signs through: generate/find/sign/verify for every offered key type through `keyprovider`, the readiness probe and hardware RNG, concurrent signing through the session pool over a device that cannot parallelise, the secret-envelope round trip, keys created non-exportable, and PKCS#11 labels and native handles resolving to the same object. |
+| 6b | `import_test.go` | Existing key material going the other way — onto the device. RSA-2048/3072/4096 imported through `keyprovider`, each proved to be the key that was sent by signing with both PKCS#1 v1.5 and PSS and verifying under the host key; a decrypt-only RSA KEK unwrapping what the host wrapped; a requested `CKA_ID` honoured so the handle a config names is the handle the key is at; the imported key attesting as **imported** and still **non-exportable**; a legacy RSA CA issuing a leaf that verifies under the root certificate published before the migration; and the sizes and exponents the device cannot hold being refused on the host with a sentence rather than `CKR_ATTRIBUTE_VALUE_INVALID` from the far side of USB. |
 | 7 | `pki_test.go` | The product itself, on the device: a root CA, an intermediate signed by it, a leaf whose chain verifies as a TLS client would build it, revocation and a signature-checked CRL, and an SSH CA whose certificate `ssh.CertChecker` accepts for its principal and rejects for another. Needs `-tags sqlite`. |
 
 ---
@@ -167,9 +168,24 @@ chain rather than merely reporting where it terminates. A device whose sub-CA
 postdates the binary fails with the URL that fixes it. See
 [key attestation](key-attestation.md).
 
-**RSA is slow.** On a YubiHSM 2, RSA-3072 key generation measured 25-45
-seconds and RSA-4096 about 1m33s. Any timeout on an issuance or key-ceremony
-path has to accommodate that; ECDSA is about a second.
+**RSA is slow — to *generate*.** On a YubiHSM 2, RSA-3072 key generation
+measured 25-45 seconds and RSA-4096 about 1m33s. Any timeout on an issuance or
+key-ceremony path has to accommodate that; ECDSA is about a second. Importing
+the same keys takes 0.9-2.3 seconds, because the device is storing primes
+rather than searching for them — so a migration is not subject to the ceremony
+timeouts a generation is.
+
+**The device takes three RSA sizes and one exponent, and will not say which is
+wrong.** A YubiHSM 2 implements `rsa2048`, `rsa3072` and `rsa4096` with public
+exponent 65537. A 2560-bit key, or a 2048-bit key with e=3, is refused with
+`CKR_ATTRIBUTE_VALUE_INVALID` — the same code that covers an unsupported
+algorithm — after a round trip, with nothing to distinguish the causes. SoftHSM
+accepts all of them, so the import path looked healthy under test and failed
+opaquely on hardware. Both constraints are now checked on the host before the
+device is touched (see [import](../ca/import.md#importing-rsa-onto-a-yubihsm)),
+and tier 6b asserts on the substance of each message: an unhelpful rejection is
+the failure mode being guarded against, so "it errored" would not be the
+property worth testing.
 
 ---
 

@@ -92,6 +92,38 @@ obtained collection tail. `hsm-audit status` makes the tail comparison
 automatically. See
 [docs/hsm/audit-log.md](docs/hsm/audit-log.md#where-the-collected-records-go).
 
+### Fixed
+
+**Importing RSA keys onto a YubiHSM now fails on the host, with a reason.** The
+import path worked against SoftHSM and against a YubiHSM for the ordinary cases
+— RSA-2048, 3072 and 4096 all land on the device and sign, in about a second
+each — but the device is far stricter than a software token and terse about it:
+it implements exactly those three modulus sizes and the single public exponent
+65537, and refuses everything else with one undifferentiated
+`CKR_ATTRIBUTE_VALUE_INVALID` covering "wrong size", "wrong exponent" and
+"unsupported algorithm" alike, arriving after a round trip over USB. An
+operator migrating a legacy CA met that code holding a key file that looked
+perfectly valid.
+
+Both constraints are now checked before the device is touched. RSA sizes are
+matched exactly instead of being rounded up to the next name — a 2560-bit key
+was previously accepted and recorded as `rsa-3072`, a mislabel that would have
+propagated into the CA record and every inventory and compliance report derived
+from it, while the token rejected the key anyway. And the weak-key gate that
+subject public keys have always passed before being certified (ROCA, exponent
+policy, modulus sanity) now runs on imported key material too: it guarded `ca
+import` from the start but not `import-key` or the secret layer's signing-key
+import, so the one command whose purpose is to give a key a *better* home could
+write a known-broken one onto a token.
+
+A new hardware tier (`internal/yubihsmtest/import_test.go`) holds this to the
+device: the three sizes round-tripped through PKCS#11 and signed with both
+PKCS#1 v1.5 and PSS, a decrypt-only RSA KEK unwrapping, a requested `CKA_ID`
+honoured, the imported key attesting as imported *and* non-exportable, a legacy
+RSA CA issuing a leaf that verifies under the root published before the
+migration, and each rejection arriving as a sentence. See
+[docs/ca/import.md](docs/ca/import.md#importing-rsa-onto-a-yubihsm).
+
 ## [1.0.0] - 2026-08-19
 
 The first tagged release of the enterprise edition: an HSM-backed X.509 and SSH

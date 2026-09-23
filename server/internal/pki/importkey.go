@@ -24,8 +24,10 @@ import (
 	"crypto/elliptic"
 	"crypto/rsa"
 	"encoding/asn1"
+	"errors"
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 
 	"github.com/miekg/pkcs11"
@@ -108,7 +110,8 @@ func importKeyOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, cfg PKCS1
 
 	privHandle, err := ctx.CreateObject(session, privAttrs)
 	if err != nil {
-		return nil, fmt.Errorf("import: creating private key object on the token: %w", err)
+		err = fmt.Errorf("import: creating private key object on the token: %w%s", err, importRejectionHint(priv, err))
+		return nil, err
 	}
 	created = append(created, privHandle)
 
@@ -151,6 +154,32 @@ func importKeyOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, cfg PKCS1
 		KeyType:      keyType,
 		SSHPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub))),
 	}, nil
+}
+
+// importRejectionHint explains a C_CreateObject rejection the caller can act on,
+// or "" when there is nothing useful to add.
+//
+// A token that will not take a key says CKR_ATTRIBUTE_VALUE_INVALID and stops
+// there: one status code for "wrong modulus size", "wrong public exponent" and
+// "this module does not import that algorithm at all". On a YubiHSM the two RSA
+// causes are the common ones and are both device constraints the operator cannot
+// argue with, so name them — the alternative is an operator staring at 0x13 with
+// a perfectly valid-looking key file.
+//
+// The caller-side checks (PrivateKeyType for the size, the keyprovider key-quality
+// gate for the exponent) catch both before reaching the token; this hint covers
+// the case where a module enforces something those checks do not know about.
+func importRejectionHint(priv crypto.PrivateKey, err error) string {
+	if err == nil || !errors.Is(err, pkcs11.Error(pkcs11.CKR_ATTRIBUTE_VALUE_INVALID)) {
+		return ""
+	}
+	k, ok := priv.(*rsa.PrivateKey)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf(" — the token rejected the key's attributes; this key is %d bits with public exponent %d, "+
+		"and an HSM typically accepts only %s with exponent 65537 (a YubiHSM 2 accepts nothing else)",
+		k.N.BitLen(), k.E, joinBits(SupportedRSABits))
 }
 
 // importTemplates builds the CKO_PRIVATE_KEY and CKO_PUBLIC_KEY attribute
@@ -300,25 +329,40 @@ func padScalar(d *big.Int, size int) []byte {
 	return out
 }
 
+// SupportedRSABits are the RSA modulus sizes this PKI names, generates, and can
+// therefore adopt. The list is not a policy choice so much as a vocabulary one:
+// every key type in the system is one of the KeyType* strings, and there is no
+// string for a 2560-bit key. It also happens to be exactly what a YubiHSM 2
+// holds — rsa2048, rsa3072, rsa4096 — so a size outside it has nowhere to go.
+var SupportedRSABits = []int{2048, 3072, 4096}
+
 // PrivateKeyType returns the canonical key-type identifier for an in-memory
-// private key, using the same vocabulary as generated keys. RSA moduli below
-// 2048 bits are refused outright: they are unusable for issuance under this
-// PKI's own key-check gate, so accepting one onto a token would only move a
-// dead key into expensive storage.
+// private key, using the same vocabulary as generated keys.
+//
+// The RSA sizes are matched exactly rather than rounded to the next name up. An
+// earlier version reported a 2560-bit key as "rsa-3072", which is the kind of
+// wrong that survives: the string goes into the CA record, into inventory
+// reports, and into compliance exports, all of them then claiming a modulus
+// strength the key does not have. And the token would reject the key anyway —
+// only the three named sizes exist on a YubiHSM — so the rounding bought a
+// mislabel in exchange for turning a clear rejection into CKR_ATTRIBUTE_VALUE_INVALID.
 func PrivateKeyType(priv crypto.PrivateKey) (string, error) {
 	switch k := priv.(type) {
 	case *rsa.PrivateKey:
 		bits := k.N.BitLen()
-		switch {
-		case bits < 2048:
-			return "", fmt.Errorf("import: RSA key is %d bits; the minimum is 2048", bits)
-		case bits <= 2048:
+		switch bits {
+		case 2048:
 			return "rsa-2048", nil
-		case bits <= 3072:
+		case 3072:
 			return "rsa-3072", nil
-		default:
+		case 4096:
 			return "rsa-4096", nil
 		}
+		if bits < 2048 {
+			return "", fmt.Errorf("import: RSA key is %d bits; the minimum is 2048", bits)
+		}
+		return "", fmt.Errorf("import: RSA key is %d bits; only %s are supported (an HSM holds exactly these sizes, and this PKI has no key-type name for any other)",
+			bits, joinBits(SupportedRSABits))
 	case *ecdsa.PrivateKey:
 		switch k.Curve {
 		case elliptic.P256():
@@ -334,6 +378,22 @@ func PrivateKeyType(priv crypto.PrivateKey) (string, error) {
 		return "ed25519", nil
 	default:
 		return "", fmt.Errorf("import: unsupported private key type %T", priv)
+	}
+}
+
+// joinBits renders a bit-size list as "2048, 3072, or 4096".
+func joinBits(bits []int) string {
+	parts := make([]string, len(bits))
+	for i, b := range bits {
+		parts[i] = strconv.Itoa(b)
+	}
+	switch len(parts) {
+	case 0:
+		return ""
+	case 1:
+		return parts[0]
+	default:
+		return strings.Join(parts[:len(parts)-1], ", ") + ", or " + parts[len(parts)-1]
 	}
 }
 
