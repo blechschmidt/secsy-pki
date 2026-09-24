@@ -108,9 +108,22 @@ func (c Config) withDefaults() Config {
 		c.Clock = time.Now
 	}
 	if c.Client == nil {
-		c.Client = &http.Client{}
+		c.Client = newHTTPClient()
 	}
 	return c
+}
+
+// newHTTPClient builds the delivery client. Redirects are deliberately NOT
+// followed: net/http rewrites a 302/303 into a bodyless GET, so the endpoint
+// would never receive the signed payload while the final 200 marked the delivery
+// succeeded — silent event loss with no retry and no dead-letter. On a 307/308 it
+// would instead replay the body *and* the signature header to the redirect
+// target, including a cross-host one. Surfacing the 3xx as the response makes it
+// an ordinary non-2xx failure, which retries and eventually dead-letters.
+func newHTTPClient() *http.Client {
+	return &http.Client{
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 }
 
 // Engine is the leader-elected outbound webhook delivery worker. It runs two
@@ -169,19 +182,27 @@ func (e *Engine) now() time.Time { return e.cfg.Clock() }
 // tests and could back a manual "flush now" trigger. Because the fan-out cursor
 // is persisted, successive RunOnce calls resume where the previous left off.
 func (e *Engine) RunOnce(ctx context.Context) {
-	cursor := e.initCursor()
-	e.fanOutOnce(ctx, &cursor)
+	if cursor, ok := e.initCursor(); ok {
+		e.fanOutOnce(ctx, &cursor)
+	}
 	e.deliverDueOnce(ctx)
 }
 
 // --- fan-out: audit log -> delivery queue ---
 
 func (e *Engine) runFanOut(ctx context.Context) {
-	cursor := e.initCursor()
+	cursor, ready := e.initCursor()
 	ticker := time.NewTicker(e.cfg.PollInterval)
 	defer ticker.Stop()
 	for {
-		e.fanOutOnce(ctx, &cursor)
+		// A cursor that could not be read leaves the sweep skipped rather than
+		// guessed at; retry the load on each tick until the store answers.
+		if !ready {
+			cursor, ready = e.initCursor()
+		}
+		if ready {
+			e.fanOutOnce(ctx, &cursor)
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -194,30 +215,42 @@ func (e *Engine) runFanOut(ctx context.Context) {
 // initCursor loads the fan-out cursor, seeding it to the current log head on the
 // very first run so enabling the feature does not replay the entire certificate
 // history — subscriptions receive only events committed from enablement forward.
-func (e *Engine) initCursor() int64 {
+// It reports whether the cursor is usable. A read failure must NOT be treated as
+// "never initialized": that seeds the cursor at the current head, overwriting a
+// good persisted value and silently dropping every event committed since the last
+// sweep, with no retry and no dead-letter. Since initCursor runs on every start
+// and every leadership handover, a transient store error would lose a window of
+// events permanently. On failure the caller skips the sweep and retries.
+func (e *Engine) initCursor() (int64, bool) {
 	inited, err := e.store.WebhookCursorInitialized()
 	if err != nil {
-		e.cfg.Logger.Printf("webhook: reading fan-out cursor state: %v; starting from head", err)
-		inited = false
+		e.cfg.Logger.Printf("webhook: reading fan-out cursor state: %v; skipping this sweep (will retry)", err)
+		return 0, false
 	}
 	if !inited {
 		head, err := e.store.MaxEventSeq()
 		if err != nil {
-			e.cfg.Logger.Printf("webhook: reading log head: %v; starting from genesis", err)
-			head = 0
+			// Seeding at genesis here would replay the entire certificate history
+			// to every subscriber's endpoint on the first sweep after a transient
+			// store error. Retry instead.
+			e.cfg.Logger.Printf("webhook: reading log head: %v; skipping this sweep (will retry)", err)
+			return 0, false
 		}
 		if err := e.store.SetWebhookCursor(head); err != nil {
 			e.cfg.Logger.Printf("webhook: seeding fan-out cursor: %v", err)
+			return 0, false
 		}
 		e.cfg.Logger.Printf("webhook fan-out initialized at seq=%d (future events only)", head)
-		return head
+		return head, true
 	}
 	cursor, err := e.store.GetWebhookCursor()
 	if err != nil {
-		e.cfg.Logger.Printf("webhook: loading fan-out cursor: %v; starting from genesis", err)
-		return 0
+		// Never fall back to genesis: that would replay the entire certificate
+		// history to every subscriber's endpoint.
+		e.cfg.Logger.Printf("webhook: loading fan-out cursor: %v; skipping this sweep (will retry)", err)
+		return 0, false
 	}
-	return cursor
+	return cursor, true
 }
 
 // fanOutOnce drains new events into the delivery queue. On any error it returns
@@ -306,8 +339,11 @@ func (e *Engine) runDelivery(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		// A full batch means there may be more backlog; loop immediately to drain
-		// it rather than waiting a whole poll interval.
+		// A full batch of *progress* means there may be more backlog; loop
+		// immediately to drain it rather than waiting a whole poll interval. The
+		// count deliberately excludes rows that stayed pending-and-due (a store
+		// error left them unclaimed): counting those would fast-drain forever,
+		// re-POSTing to the endpoint with no backoff at all.
 		if n >= e.cfg.BatchSize {
 			continue
 		}
@@ -319,39 +355,50 @@ func (e *Engine) runDelivery(ctx context.Context) {
 	}
 }
 
+// deliverDueOnce runs one delivery sweep and returns the number of rows whose
+// durable state it actually advanced — not the number it listed. A row left
+// pending-and-due by a store error is still claimable next sweep, so counting it
+// as drained would make runDelivery spin (see the comment there).
 func (e *Engine) deliverDueOnce(ctx context.Context) int {
 	due, err := e.store.ListDueWebhookDeliveries(e.now(), e.cfg.BatchSize)
 	if err != nil {
 		e.cfg.Logger.Printf("webhook delivery: listing due deliveries: %v", err)
 		return 0
 	}
+	progressed := 0
 	for i := range due {
 		if ctx.Err() != nil {
 			break
 		}
-		e.attemptDelivery(ctx, &due[i])
+		if e.attemptDelivery(ctx, &due[i]) {
+			progressed++
+		}
 	}
 	e.refreshGauges()
-	return len(due)
+	return progressed
 }
 
 // attemptDelivery makes one POST and transitions the delivery: success ->
 // delivered, failure with budget remaining -> retry (backed off), budget
 // exhausted -> dead-letter. A delivery whose subscription vanished or was
 // disabled is canceled rather than retried against a paused endpoint.
-func (e *Engine) attemptDelivery(ctx context.Context, d *models.WebhookDelivery) {
+//
+// It reports whether the row's durable state advanced. false means the row is
+// still pending and due — the caller must not treat it as drained.
+func (e *Engine) attemptDelivery(ctx context.Context, d *models.WebhookDelivery) bool {
 	sub, err := e.store.GetWebhookSubscription(d.SubscriptionID)
 	if err != nil {
 		e.cfg.Logger.Printf("webhook delivery: loading subscription %s: %v", d.SubscriptionID, err)
-		return // transient; leave pending for the next poll
+		return false // transient; leave pending for the next poll
 	}
 	if sub == nil || !sub.Enabled {
-		if n, cerr := e.store.CancelPendingWebhookDeliveries(d.SubscriptionID); cerr != nil {
+		n, cerr := e.store.CancelPendingWebhookDeliveries(d.SubscriptionID)
+		if cerr != nil {
 			e.cfg.Logger.Printf("webhook delivery: canceling deliveries for %s: %v", d.SubscriptionID, cerr)
-		} else {
-			metrics.RecordWebhookCanceled(int(n))
+			return false
 		}
-		return
+		metrics.RecordWebhookCanceled(int(n))
+		return true
 	}
 
 	start := e.now()
@@ -362,11 +409,11 @@ func (e *Engine) attemptDelivery(ctx context.Context, d *models.WebhookDelivery)
 	if postErr == nil && statusCode >= 200 && statusCode < 300 {
 		if err := e.store.MarkWebhookDeliverySucceeded(d.ID, now, statusCode); err != nil {
 			e.cfg.Logger.Printf("webhook delivery: marking %s delivered: %v", d.ID, err)
-			return
+			return false
 		}
 		metrics.RecordWebhookDelivered(dur)
 		e.auditDeliver(sub, d, audit.ResultSuccess, fmt.Sprintf("status=%d", statusCode))
-		return
+		return true
 	}
 
 	errMsg := deliveryErrorMessage(statusCode, postErr)
@@ -374,21 +421,22 @@ func (e *Engine) attemptDelivery(ctx context.Context, d *models.WebhookDelivery)
 	if attemptsAfter >= d.MaxAttempts {
 		if err := e.store.MarkWebhookDeliveryDead(d.ID, now, statusCode, errMsg); err != nil {
 			e.cfg.Logger.Printf("webhook delivery: dead-lettering %s: %v", d.ID, err)
-			return
+			return false
 		}
 		metrics.RecordWebhookDead(dur)
 		e.cfg.Logger.Printf("webhook delivery %s to sub %s dead-lettered after %d attempts: %s",
 			d.ID, sub.ID, attemptsAfter, errMsg)
 		e.auditDeliver(sub, d, audit.ResultError, fmt.Sprintf("dead-lettered after %d attempts: %s", attemptsAfter, errMsg))
-		return
+		return true
 	}
 
 	next := now.Add(e.backoff(attemptsAfter))
 	if err := e.store.MarkWebhookDeliveryRetry(d.ID, now, next, statusCode, errMsg); err != nil {
 		e.cfg.Logger.Printf("webhook delivery: scheduling retry for %s: %v", d.ID, err)
-		return
+		return false
 	}
 	metrics.RecordWebhookRetry(dur)
+	return true
 }
 
 // backoff returns the delay before the next attempt after a delivery has failed
@@ -488,7 +536,7 @@ func SendTest(ctx context.Context, sub *models.WebhookSubscription, timeout time
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	return post(ctx, &http.Client{}, timeout, time.Now, sub, d)
+	return post(ctx, newHTTPClient(), timeout, time.Now, sub, d)
 }
 
 // NewTestDelivery builds a durable test-delivery row for a subscription, for the

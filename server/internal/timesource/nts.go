@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -50,6 +51,13 @@ const (
 	efUniqueIdentifier = 0x0104
 	efNTSCookie        = 0x0204
 	efNTSAuthenticator = 0x0404
+
+	// maxEFValueLen is the largest extension-field value that can be
+	// length-encoded: the 16-bit length field covers the 4-byte header plus the
+	// zero-padded value and must itself be a multiple of 4, leaving 65532-4
+	// octets. Cookie bodies come from the NTS-KE server, whose record length is
+	// also 16-bit, so an unencodable one is reachable from the wire.
+	maxEFValueLen = 65532 - 4
 
 	// NTP timestamp epoch offset: seconds between 1900-01-01 and 1970-01-01.
 	ntpUnixEpochOffset = 2208988800
@@ -312,6 +320,12 @@ func (p *ntsProvider) ntpQuery(ctx context.Context, ke *ntsKEResult) (Reading, e
 // Unique Identifier EF, a NTS Cookie EF, and the NTS Authenticator EF (an
 // AES-SIV tag over the preceding bytes, with an empty encrypted payload).
 func buildNTPRequest(c2s *aesSIV, uniqueID, cookie []byte) ([]byte, error) {
+	// Fail closed rather than emitting a packet whose extension-field length
+	// silently wrapped around 16 bits.
+	if len(cookie) > maxEFValueLen {
+		return nil, fmt.Errorf("NTS cookie of %d bytes exceeds the %d-byte extension-field maximum", len(cookie), maxEFValueLen)
+	}
+
 	pkt := make([]byte, 48)
 	pkt[0] = 0x23 // LI=0, VN=4, Mode=3 (client)
 
@@ -530,7 +544,15 @@ func splitHostPortDefault(addr string, defaultPort int) (host string, port int, 
 	}
 	h, p, splitErr := net.SplitHostPort(addr)
 	if splitErr != nil {
-		return addr, defaultPort, nil //nolint:nilerr // an unsplittable address is treated as a bare host on the default port — the documented fallback.
+		// An unsplittable address is treated as a bare host on the default port —
+		// the documented fallback. Strip the brackets from a bracketed IPv6
+		// literal ("[::1]"): callers pass the host straight to net.JoinHostPort,
+		// which re-adds them, so leaving them on yields "[[::1]]:4460".
+		host = addr
+		if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+			host = host[1 : len(host)-1]
+		}
+		return host, defaultPort, nil //nolint:nilerr // the documented bare-host fallback.
 	}
 	pn, convErr := strconv.Atoi(p)
 	if convErr != nil {
@@ -539,15 +561,12 @@ func splitHostPortDefault(addr string, defaultPort int) (host string, port int, 
 	return h, pn, nil
 }
 
-// readFull reads exactly len(buf) bytes or returns an error.
+// readFull reads exactly len(buf) bytes or returns an error. io.ReadFull is used
+// rather than a hand-rolled loop because a Reader may legally return the final
+// bytes together with io.EOF in a single call; treating that as a failure would
+// abort an NTS-KE handshake whose records all arrived (and leave the checker
+// fail-closed for no reason).
 func readFull(conn net.Conn, buf []byte) error {
-	total := 0
-	for total < len(buf) {
-		n, err := conn.Read(buf[total:])
-		total += n
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err := io.ReadFull(conn, buf)
+	return err
 }

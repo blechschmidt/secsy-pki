@@ -58,15 +58,32 @@ type Session struct {
 	CSRFToken string
 	Created   time.Time
 	Expires   time.Time
-	// StepUpUntil is the instant until which a WebAuthn step-up remains valid for
+
+	// mu guards stepUpUntil, the only field mutated after construction. A session
+	// is handed out by pointer and read concurrently by every request the operator
+	// makes (the step-up gate in the auth middleware reads it on the hot path)
+	// while a finished WebAuthn ceremony writes it, so the deadline must be
+	// synchronized: an unsynchronized time.Time (a multi-word struct) can be read
+	// torn, making the step-up gate mis-evaluate.
+	mu sync.RWMutex
+	// stepUpUntil is the instant until which a WebAuthn step-up remains valid for
 	// this session. Zero (or past) means no active step-up; a high-risk operation
-	// then requires a fresh assertion.
-	StepUpUntil time.Time
+	// then requires a fresh assertion. Access it only via stepUpValid/markStepUp.
+	stepUpUntil time.Time
 }
 
 // stepUpValid reports whether the session currently has an unexpired step-up.
 func (s *Session) stepUpValid(now time.Time) bool {
-	return !s.StepUpUntil.IsZero() && now.Before(s.StepUpUntil)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return !s.stepUpUntil.IsZero() && now.Before(s.stepUpUntil)
+}
+
+// markStepUp records a successful step-up as valid until the given instant.
+func (s *Session) markStepUp(until time.Time) {
+	s.mu.Lock()
+	s.stepUpUntil = until
+	s.mu.Unlock()
 }
 
 // StepUpValid reports whether the session currently holds a valid WebAuthn
@@ -174,7 +191,7 @@ func (s *SessionStore) MarkStepUp(id string) bool {
 	if !ok {
 		return false
 	}
-	sess.StepUpUntil = s.now().Add(s.stepUp)
+	sess.markStepUp(s.now().Add(s.stepUp))
 	return true
 }
 

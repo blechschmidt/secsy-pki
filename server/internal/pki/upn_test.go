@@ -209,3 +209,141 @@ func issueTestUPNCert(t *testing.T, upns, dns []string, cn string) *x509.Certifi
 	}
 	return cert
 }
+
+// issueTestUPNCSR builds a PKCS#10 request whose extensionRequest attribute
+// carries a hand-rolled subjectAltName with the given UPN otherNames and DNS
+// names, then parses it back — i.e. exactly the path an EST/SCEP/MS-WSTEP client
+// takes when it asks for a smartcard-logon certificate.
+func issueTestUPNCSR(t *testing.T, upns, dns []string) *x509.CertificateRequest {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sanExt, err := SubjectAltNameExtension(dns, nil, nil, nil, upns, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject:         pkix.Name{CommonName: "enrolling-device"},
+		DNSNames:        dns,
+		ExtraExtensions: []pkix.Extension{sanExt},
+	}, key)
+	if err != nil {
+		t.Fatalf("CreateCertificateRequest: %v", err)
+	}
+	csr, err := x509.ParseCertificateRequest(der)
+	if err != nil {
+		t.Fatalf("ParseCertificateRequest rejected the hand-rolled SAN: %v", err)
+	}
+	if err := csr.CheckSignature(); err != nil {
+		t.Fatalf("CheckSignature: %v", err)
+	}
+	return csr
+}
+
+// TestUPNsFromCSRRoundTrip is the enrollment-side counterpart of
+// TestUPNCertificateGoParser: crypto/x509 discards otherName SANs from a parsed
+// CSR, so a device's requested UPN survives only if it is recovered from the raw
+// extension. Every EST/SCEP/MS-WSTEP issuance path calls this to decide which
+// Active Directory principal the certificate will authenticate as.
+func TestUPNsFromCSRRoundTrip(t *testing.T) {
+	upns := []string{"alice@EXAMPLE.COM", "svc-01@corp.example.com"}
+	dns := []string{"device01.example.com"}
+	csr := issueTestUPNCSR(t, upns, dns)
+
+	got := UPNsFromCSR(csr)
+	if len(got) != len(upns) {
+		t.Fatalf("UPNsFromCSR = %q, want %q", got, upns)
+	}
+	for i, want := range upns {
+		if got[i] != want {
+			t.Errorf("UPN[%d] = %q, want %q (order must be preserved)", i, got[i], want)
+		}
+	}
+	// The hand-rolled SAN must still be a SAN crypto/x509 itself understands, so
+	// the DNS names in the same extension are not lost.
+	if len(csr.DNSNames) != 1 || csr.DNSNames[0] != dns[0] {
+		t.Errorf("DNSNames = %q, want %q", csr.DNSNames, dns)
+	}
+	// And crypto/x509 really does drop the otherName, which is why this exists.
+	if len(csr.EmailAddresses) != 0 || len(csr.URIs) != 0 {
+		t.Errorf("unexpected typed SANs: emails=%q uris=%v", csr.EmailAddresses, csr.URIs)
+	}
+}
+
+// TestUPNsFromCSRWithoutUPNs: a CSR with no UPN — with or without other SANs —
+// must yield nothing rather than an empty-string principal.
+func TestUPNsFromCSRWithoutUPNs(t *testing.T) {
+	if got := UPNsFromCSR(issueTestUPNCSR(t, nil, []string{"plain.example.com"})); got != nil {
+		t.Errorf("UPNsFromCSR (DNS only) = %q, want nil", got)
+	}
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "no-extensions"},
+	}, key)
+	if err != nil {
+		t.Fatalf("CreateCertificateRequest: %v", err)
+	}
+	csr, err := x509.ParseCertificateRequest(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := UPNsFromCSR(csr); got != nil {
+		t.Errorf("UPNsFromCSR (no extensions) = %q, want nil", got)
+	}
+}
+
+// TestUPNsFromCSRIgnoresUndecodableSAN feeds the extractor the shapes a hostile
+// or buggy client can put in an extensionRequest attribute. A CSR arrives
+// unauthenticated at the EST/SCEP endpoints, so the requirement is that a
+// malformed subjectAltName yields no UPN instead of panicking or inventing one —
+// and that a second, well-formed SAN is still honored.
+func TestUPNsFromCSRIgnoresUndecodableSAN(t *testing.T) {
+	good, err := SubjectAltNameExtension(nil, nil, nil, nil, []string{"bob@EXAMPLE.COM"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		exts []pkix.Extension
+		want []string
+	}{
+		{"empty value", []pkix.Extension{{Id: OIDSubjectAltName}}, nil},
+		{"not DER", []pkix.Extension{{Id: OIDSubjectAltName, Value: []byte("nope")}}, nil},
+		{"not a SEQUENCE", []pkix.Extension{{Id: OIDSubjectAltName, Value: []byte{0x05, 0x00}}}, nil},
+		{"truncated SEQUENCE", []pkix.Extension{{Id: OIDSubjectAltName, Value: []byte{0x30, 0x7F, 0x86, 0x01}}}, nil},
+		{"length claims 64 KiB", []pkix.Extension{{Id: OIDSubjectAltName, Value: []byte{0x30, 0x82, 0xFF, 0xFF}}}, nil},
+		{"otherName with a foreign type-id", []pkix.Extension{{Id: OIDSubjectAltName, Value: []byte{
+			0x30, 0x08, 0xA0, 0x06, 0x06, 0x01, 0x2A, 0xA0, 0x01, 0x00,
+		}}}, nil},
+		{"a different extension entirely", []pkix.Extension{{Id: oidExtensionKeyUsage, Value: []byte{0x03, 0x02, 0x07, 0x80}}}, nil},
+		// A malformed SAN must not mask a well-formed one that follows it.
+		{"malformed then valid", []pkix.Extension{
+			{Id: OIDSubjectAltName, Value: []byte("nope")},
+			good,
+		}, []string{"bob@EXAMPLE.COM"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// UPNsFromCSR reads only csr.Extensions, so the request is built
+			// directly: a CSR carrying a malformed SAN would not survive
+			// x509.ParseCertificateRequest, yet these bytes can still reach the
+			// extractor through other callers of the same field.
+			got := UPNsFromCSR(&x509.CertificateRequest{Extensions: tc.exts})
+			if len(got) != len(tc.want) {
+				t.Fatalf("UPNsFromCSR = %q, want %q", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("UPN[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}

@@ -215,6 +215,14 @@ func BuildExecEnv(spec ExecSpec, source SecretSource) (argv []string, env []stri
 		}
 	}
 	for _, et := range spec.EnvTemplates {
+		// The name is emitted verbatim as "NAME=value", so a name carrying an
+		// '=' (or a newline) would splice a second assignment into the child's
+		// environment and shadow an inherited variable the shadowing pass below
+		// cannot see. ParseEnvTemplate screens CLI input; this guards every
+		// other caller.
+		if !envVarNameRe.MatchString(et.Var) {
+			return nil, nil, nil, fmt.Errorf("secret: environment variable name %q is not portable", et.Var)
+		}
 		v, err := expand(et.Value)
 		if err != nil {
 			return nil, nil, nil, err

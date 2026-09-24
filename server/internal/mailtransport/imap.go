@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -40,6 +41,14 @@ type IMAPConfig struct {
 const (
 	imapDefaultTimeout     = 30 * time.Second
 	imapDefaultMaxMessages = 64
+	// imapMaxLiteralSize caps the byte count the client will accept for a
+	// server-announced literal ("{n}"). The count is attacker-controlled input
+	// from the remote server, so it must never reach make([]byte, n) unchecked: a
+	// count above the address-space limit panics the poll goroutine
+	// ("makeslice: len out of range") and a merely enormous one commits the
+	// process to reading that many bytes into memory. 32 MiB is far above any
+	// plausible S/MIME challenge reply while keeping the worst case bounded.
+	imapMaxLiteralSize = 32 << 20
 )
 
 // IMAPInbox reads challenge replies over IMAP4rev1. It implements acme.MailInbox
@@ -232,9 +241,29 @@ func (c *imapConn) starttls(tlsCfg *tls.Config) error {
 
 func (c *imapConn) login(user, pass string) error {
 	if err := c.simpleCommand("LOGIN " + quoteIMAP(user) + " " + quoteIMAP(pass)); err != nil {
-		return fmt.Errorf("imap: LOGIN: %w", err)
+		// The error carries the server's own response text, and a server that
+		// echoes the rejected command (a common reply to BAD) echoes the password
+		// with it. Fetch/Ack errors are logged verbatim by the poll loop, so redact
+		// before the credential can reach the log.
+		return fmt.Errorf("imap: LOGIN: %w", redactPassword(err, pass))
 	}
 	return nil
+}
+
+// redactPassword rewrites err's message with every occurrence of the password —
+// raw or as the IMAP quoted-string that was put on the wire — replaced by a
+// placeholder. It returns err unchanged when there is nothing to redact, so the
+// error chain is preserved in the common case.
+func redactPassword(err error, pass string) error {
+	if err == nil || pass == "" {
+		return err
+	}
+	msg := err.Error()
+	redacted := strings.NewReplacer(quoteIMAP(pass), `"[redacted]"`, pass, "[redacted]").Replace(msg)
+	if redacted == msg {
+		return err
+	}
+	return errors.New(redacted)
 }
 
 func (c *imapConn) selectMailbox(mailbox string) error {
@@ -294,6 +323,17 @@ func (c *imapConn) fetchBody(uid string) ([]byte, error) {
 
 // storeSeen adds the \Seen flag to the given UIDs.
 func (c *imapConn) storeSeen(uids []string) error {
+	for _, uid := range uids {
+		// The UIDs are interpolated into a command line, so anything other than a
+		// plain number is refused rather than escaped: IMAP is line-oriented, so a
+		// CRLF inside a "UID" would inject a second, caller-chosen command into the
+		// authenticated session (and "1:*" would silently widen the STORE to the
+		// whole mailbox). Every UID this client ever acks comes from UID SEARCH and
+		// is numeric.
+		if !numericUID(uid) {
+			return fmt.Errorf("imap: UID STORE: invalid UID %q", uid)
+		}
+	}
 	set := strings.Join(uids, ",")
 	if err := c.simpleCommand("UID STORE " + set + " +FLAGS.SILENT (\\Seen)"); err != nil {
 		return fmt.Errorf("imap: UID STORE: %w", err)
@@ -327,6 +367,9 @@ func (c *imapConn) readResponseLit(tag string, onLine func(string), onLiteral fu
 		}
 		// A line ending in {n} announces an n-byte literal that follows inline.
 		if n, ok := literalSize(line); ok {
+			if n > imapMaxLiteralSize {
+				return "", fmt.Errorf("literal too large: %d bytes (max %d)", n, imapMaxLiteralSize)
+			}
 			buf := make([]byte, n)
 			if _, err := io.ReadFull(c.r, buf); err != nil {
 				return "", fmt.Errorf("reading %d-byte literal: %w", n, err)
@@ -356,6 +399,20 @@ func literalSize(line string) (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// numericUID reports whether s is a non-empty run of ASCII digits, i.e. a single
+// IMAP UID and not a sequence set, a range, or a protocol-injecting string.
+func numericUID(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // quoteIMAP wraps a string as an IMAP quoted-string, escaping backslashes and

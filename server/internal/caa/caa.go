@@ -146,8 +146,10 @@ func (rc RequestContext) methodFor(name string) string {
 // Enabled reports whether the policy performs any checking at all.
 func (p Policy) Enabled() bool { return p.Mode != ModeOff }
 
-// enforcing reports whether findings block issuance under this policy.
-func (p Policy) enforcing() bool { return p.Mode == ModeEnforce }
+// enforcing reports whether findings block issuance under this policy. The zero
+// Mode is ModeEnforce (see Policy.Mode), so an unset policy blocks — anything
+// else would make a Policy that was never configured fail open.
+func (p Policy) enforcing() bool { return p.Mode == ModeEnforce || p.Mode == "" }
 
 // Reason classifies why a DNS name failed its CAA check.
 type Reason string

@@ -106,10 +106,20 @@ func resolveTSACAID(db *database.DB, caID, caLabel string) (string, error) {
 
 // caChain returns the certificate chain for caID: the CA certificate followed
 // by its parents up to the root.
+//
+// cas.parent_id is a self-referencing foreign key, so a corrupt hierarchy can
+// contain a cycle (a CA pointing at itself, or two pointing at each other). The
+// walk therefore stops at the first CA it has already visited: without that
+// guard this loops forever while appending a certificate each iteration, and
+// since LoadAuthorityConfig runs at server startup the process would hang
+// there. The same guard protects the other parent-chain walks (see
+// ca.Manager.issuerChainDER and database.GetCAAncestors).
 func caChain(db *database.DB, caID string) ([]*x509.Certificate, error) {
 	var chain []*x509.Certificate
+	seen := make(map[string]bool)
 	id := caID
-	for id != "" {
+	for id != "" && !seen[id] {
+		seen[id] = true
 		m, err := db.GetCA(id)
 		if err != nil {
 			return nil, fmt.Errorf("loading CA %q: %w", id, err)
@@ -169,6 +179,16 @@ func hashByName(name string) crypto.Hash {
 }
 
 // parseDottedOID parses a dotted-decimal OID into an asn1.ObjectIdentifier.
+//
+// It rejects anything that cannot be DER-encoded, not merely anything that is
+// not a number. The configured policy OID is asserted verbatim in every token
+// this TSA signs, and encoding/asn1 is unhelpful in both directions here: it
+// refuses an out-of-range leading arc pair (X.690 §8.19 packs the first two
+// arcs into one subidentifier, so arc1 must be 0..2 and arc2 < 40 unless
+// arc1 == 2) only at marshal time — which would turn every /tsa request into an
+// internal error — and it does not refuse a NEGATIVE arc at all, silently
+// emitting a zero-length OBJECT IDENTIFIER that no verifier can decode. Both
+// failures are caught here so a bad policy_oid stops the server at startup.
 func parseDottedOID(s string) (asn1.ObjectIdentifier, error) {
 	parts := strings.Split(s, ".")
 	oid := make(asn1.ObjectIdentifier, 0, len(parts))
@@ -177,10 +197,16 @@ func parseDottedOID(s string) (asn1.ObjectIdentifier, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid OID component %q", p)
 		}
+		if n < 0 {
+			return nil, fmt.Errorf("invalid OID component %q: components must not be negative", p)
+		}
 		oid = append(oid, n)
 	}
 	if len(oid) < 2 {
 		return nil, fmt.Errorf("OID %q has fewer than two components", s)
+	}
+	if _, err := asn1.Marshal(oid); err != nil {
+		return nil, fmt.Errorf("OID %q cannot be DER-encoded: %w", s, err)
 	}
 	return oid, nil
 }

@@ -507,7 +507,13 @@ func (gs *GrantSet) ResourcesFor(t ResourceType, id Identity) []string {
 	return out
 }
 
-// SortGrants orders grants deterministically for display and comparison.
+// SortGrants orders grants deterministically for display and comparison. Scope
+// is the final tiebreak even though it is not part of a grant's identity (see
+// Key): the configured and the stored grants are unioned before sorting, and
+// those two sources can each hold the same rule at a different scope. Without
+// this last comparison such a pair would compare equal, and since the union is
+// assembled from a map walk (All) their printed order would change from run to
+// run.
 func SortGrants(gs []Grant) {
 	sort.Slice(gs, func(i, j int) bool {
 		a, b := gs[i], gs[j]
@@ -523,7 +529,10 @@ func SortGrants(gs []Grant) {
 		if a.EntityID != b.EntityID {
 			return a.EntityID < b.EntityID
 		}
-		return a.Role < b.Role
+		if a.Role != b.Role {
+			return a.Role < b.Role
+		}
+		return a.Scope < b.Scope
 	})
 }
 

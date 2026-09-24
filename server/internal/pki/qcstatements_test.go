@@ -226,3 +226,56 @@ func TestQCTypeAndRoleOIDLookup(t *testing.T) {
 		t.Error("PSD2RoleOID(PSP_XX) should not resolve")
 	}
 }
+
+// TestQCTypeNames covers the rendering used in `secsy-ca` output and compliance
+// exports: the three ETSI QcType OIDs map to their short selectors, anything else
+// falls back to its dotted form rather than being dropped (a certificate claiming
+// an unknown qualified type must not be reported as claiming none), and the
+// output is sorted so two runs over the same set compare equal.
+func TestQCTypeNames(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []asn1.ObjectIdentifier
+		want []string
+	}{
+		{"none", nil, nil},
+		{"empty", []asn1.ObjectIdentifier{}, nil},
+		{"esign", []asn1.ObjectIdentifier{OIDEtsiQctEsign}, []string{"esign"}},
+		{"eseal", []asn1.ObjectIdentifier{OIDEtsiQctEseal}, []string{"eseal"}},
+		{"web", []asn1.ObjectIdentifier{OIDEtsiQctWeb}, []string{"web"}},
+		// Sorted output, regardless of the order in the certificate.
+		{"all three, reversed", []asn1.ObjectIdentifier{OIDEtsiQctWeb, OIDEtsiQctEseal, OIDEtsiQctEsign},
+			[]string{"eseal", "esign", "web"}},
+		{"unknown OID falls back to its dotted form",
+			[]asn1.ObjectIdentifier{{0, 4, 0, 1862, 1, 6, 99}}, []string{"0.4.0.1862.1.6.99"}},
+		// A mix sorts by the rendered string, so the numeric form leads.
+		{"known and unknown", []asn1.ObjectIdentifier{OIDEtsiQctWeb, {1, 2, 3, 4}},
+			[]string{"1.2.3.4", "web"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := QCTypeNames(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("QCTypeNames = %q, want %q", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("QCTypeNames[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+
+	// QCTypeOID is the inverse for the three named selectors; the two tables must
+	// not drift apart, or a profile that requests "eseal" gets a certificate whose
+	// type renders as something else.
+	for _, name := range []string{"esign", "eseal", "web"} {
+		oid, ok := QCTypeOID(name)
+		if !ok {
+			t.Fatalf("QCTypeOID(%q) did not resolve", name)
+		}
+		if got := QCTypeNames([]asn1.ObjectIdentifier{oid}); len(got) != 1 || got[0] != name {
+			t.Errorf("QCTypeNames(QCTypeOID(%q)) = %q, want [%q]", name, got, name)
+		}
+	}
+}

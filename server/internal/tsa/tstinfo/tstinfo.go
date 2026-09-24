@@ -26,6 +26,16 @@ import (
 	"math/big"
 	"time"
 
+	// Register the hash implementations DigestForOID can return so a plain
+	// import of this package guarantees they are linked in. Callers do
+	// info.Hash.New() on the result, and crypto.Hash.New panics when the
+	// implementation is absent; internal/tsa carries the same blank imports,
+	// but this package is imported on its own (internal/hsmaudit, and through
+	// it the database layer) and so needs them in its own right.
+	_ "crypto/sha1"
+	_ "crypto/sha256"
+	_ "crypto/sha512"
+
 	"github.com/blechschmidt/secsy-pki/server/internal/cms"
 )
 
@@ -73,10 +83,17 @@ type timeStampRespParsed struct {
 // pkiStatusInfoParsed decodes just the leading status integer of a
 // PKIStatusInfo; statusString/failInfo are optional trailing fields we surface
 // only in the error message.
+//
+// StatusString is a PKIFreeText (SEQUENCE OF UTF8String) and is decoded as a
+// SEQUENCE OF ANY rather than a bare optional asn1.RawValue for the same reason
+// parsedTSTInfo uses concrete field types: an optional RawValue matches ANY tag,
+// so on a response that omits the OPTIONAL statusString it would swallow the
+// failInfo BIT STRING and report no failure bits at all. The element type stays
+// RawValue so an exotic string choice inside the free text is still tolerated.
 type pkiStatusInfoParsed struct {
 	Status       int
-	StatusString asn1.RawValue  `asn1:"optional"`
-	FailInfo     asn1.BitString `asn1:"optional"`
+	StatusString []asn1.RawValue `asn1:"optional"`
+	FailInfo     asn1.BitString  `asn1:"optional"`
 }
 
 // messageImprint is the RFC 3161 MessageImprint: the hash algorithm and the
@@ -167,8 +184,16 @@ func ParseTokenInfo(tokenDER []byte) (*TokenInfo, error) {
 		return nil, errors.New("tsa: TimeStampToken has no encapsulated TSTInfo")
 	}
 	var info parsedTSTInfo
-	if _, err := asn1.Unmarshal(parsed.Content, &info); err != nil {
+	rest, err := asn1.Unmarshal(parsed.Content, &info)
+	if err != nil {
 		return nil, fmt.Errorf("tsa: parsing TSTInfo: %w", err)
+	}
+	// The eContent holds exactly one TSTInfo. Bytes after it give the token two
+	// readings — one for a parser that stops at the SEQUENCE and another for one
+	// that keeps going — so they are refused here just as ExtractToken and
+	// ParseRequest refuse trailing data after their structures.
+	if len(rest) != 0 {
+		return nil, errors.New("tsa: trailing data after TSTInfo")
 	}
 	if info.Version != 1 {
 		return nil, fmt.Errorf("tsa: unsupported TSTInfo version %d", info.Version)

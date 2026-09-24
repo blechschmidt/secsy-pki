@@ -94,6 +94,84 @@ automatically. See
 
 ### Fixed
 
+**A stability pass over the code the test suite had never executed.** Coverage
+had grown unevenly: the well-trodden issuance paths were thoroughly tested while
+several protocol parsers, background workers and authorization primitives had no
+test touching them at all. Those gaps were filled — the HSM-free suite went from
+62.9% to 79.4% of statements, with fifteen packages taken past 90% — and the new
+tests found eleven genuine defects, all fixed. The ones worth knowing about:
+
+*Two remotely reachable crashes.* The hand-rolled IMAP client used to read ACME
+`email-reply-00` challenge replies allocated a buffer straight from the byte count
+a server announces in a `{n}` literal. A single reply line announcing a literal of
+2^50 bytes panicked with `makeslice: len out of range`, and that panic unwound
+through the challenge poller goroutine, which has no recover — so a hostile or
+merely broken mail server could **terminate the CA process**. A merely enormous
+count instead committed the process to reading that many bytes into memory. The
+count is now bounded before it reaches an allocation. Separately, `POST
+/api/ers/verify` panicked on any Evidence Record submitted without an `objects`
+array — a combination the API's own documentation describes as valid — because the
+reduction check indexed element zero of the caller's (empty) object list. Any
+read-capable caller could crash the handler.
+
+*A hang at server start-up.* `cas.parent_id` is a self-referencing foreign key, so
+a CA row can point at itself or two rows at each other. The TSA's chain builder
+had no visited set and looped forever, appending a certificate per iteration —
+inside `LoadAuthorityConfig`, which runs at server start and in four `secsy-ca`
+commands. Two sibling code paths already guarded against exactly this.
+
+*A data race in an authorization gate.* An operator session is handed out by
+pointer and read by every request, including the WebAuthn step-up check on the
+authorization hot path, while a completed ceremony wrote the step-up deadline with
+no synchronization. A `time.Time` is a multi-word struct, so the gate could read a
+torn value and reach an unspecified verdict. The deadline is now behind a mutex.
+
+*Three fail-open gates that fail closed now.* An RFC 8555 external-account binding
+whose protected header omitted `url` — the only field binding a MAC to one
+endpoint — was accepted as "bound to nothing", making a captured binding replayable
+at any endpoint sharing the HMAC key; `url` is mandatory per §7.3.4 and is now
+required. A zero-value CAA policy evaluated as non-enforcing despite documenting
+the opposite, leaving a never-configured gate enabled but toothless. And a TSA
+`policy_oid` with a negative arc passed start-up validation and then made the
+authority emit tokens carrying a zero-length OBJECT IDENTIFIER that no verifier can
+decode, while an out-of-range arc turned every `/tsa` request into a 500.
+
+*Webhook delivery could spin, silently drop events, or lose them to a redirect.*
+The delivery loop re-ran immediately whenever a sweep reported a full batch, but
+the count was rows *listed* rather than rows whose state actually advanced — so a
+batch of rows stuck behind a store error made the worker re-POST to the customer
+endpoint continuously with no backoff. A redirecting endpoint was followed, and
+since `net/http` rewrites a 302 into a bodyless GET, the receiver never saw the
+signed payload while the final 2xx marked the delivery succeeded; a 307 instead
+replayed the body *and* its signature header to the redirect target. Redirects are
+now surfaced as the ordinary non-2xx failures they are. And a transient failure
+reading the fan-out cursor at start-up — which happens on every leadership
+handover — was treated as "never initialized" and re-seeded the cursor to the
+current log head, permanently discarding every event since the last sweep; the
+sweep is now skipped and retried instead.
+
+*Three smaller ones.* The IMAP client put the mailbox password into the error it
+returned when a server echoed the rejected `LOGIN` command, and the poll loop logs
+those errors verbatim; UIDs were interpolated into `UID STORE` unvalidated, so a
+non-numeric UID could inject a second command into the authenticated session.
+`secsy-secret exec` emitted an `EnvTemplate` name verbatim as `NAME=value`, so a
+name containing `=` spliced an extra assignment into the child's environment and
+could shadow its `PATH`. An NTS handshake was abandoned when a peer's final read
+returned its data together with `io.EOF` — permitted by `io.Reader` — which would
+have made the TSA refuse to sign for no reason. Evidence-record verification also
+reported objects as "covered" by a chain that had failed structurally.
+
+Also fixed: a DNS TTL of 0 was read as "unset" rather than as the minimum when
+computing a CAA answer's cache lifetime; an IMAP/NTS host given as a bracketed
+IPv6 literal without a port was re-bracketed into something undialable; an
+oversized NTS cookie silently produced a corrupt packet instead of an error;
+`SortGrants` was not a total order, so a grant list containing one rule at two
+scopes printed in a different order run to run; a time-stamp token's optional
+`statusString` was decoded as `ANY` and swallowed the `failInfo` of every
+conforming third-party TSA that omits it; and `crypto/sha1|sha256|sha512` were
+blank-imported in the wrong package, so a caller importing the token decoder on
+its own could reach a `Hash.New()` on an unlinked hash.
+
 **Importing RSA keys onto a YubiHSM now fails on the host, with a reason.** The
 import path worked against SoftHSM and against a YubiHSM for the ordinary cases
 — RSA-2048, 3072 and 4096 all land on the device and sign, in about a second

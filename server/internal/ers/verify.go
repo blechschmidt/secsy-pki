@@ -92,6 +92,19 @@ func Verify(er *EvidenceRecord, opts VerifyOptions) (*VerifyResult, error) {
 		objCovered[i] = true
 	}
 
+	// revokeCoverage marks every object uncovered. It is called on the chain
+	// failures that short-circuit before the per-object folding below: a chain
+	// that does not verify proves nothing about the objects it had to re-attest,
+	// so reporting them as covered would claim a proof that does not exist.
+	revokeCoverage := func(ci int) {
+		for i := range objCovered {
+			objCovered[i] = false
+			if objReason[i] == "" {
+				objReason[i] = fmt.Sprintf("chain %d invalid", ci)
+			}
+		}
+	}
+
 	var lastGenOverall time.Time
 	for ci, chain := range seq {
 		cr := ChainResult{Index: ci, Timestamps: len(chain), Valid: true}
@@ -100,6 +113,7 @@ func Verify(er *EvidenceRecord, opts VerifyOptions) (*VerifyResult, error) {
 			cr.Valid, cr.Reason = false, err.Error()
 			res.Valid, res.Reason = false, fmt.Sprintf("chain %d: %v", ci, err)
 			res.Chains = append(res.Chains, cr)
+			revokeCoverage(ci)
 			continue
 		}
 		cr.Hash = HashName(hash)
@@ -110,6 +124,7 @@ func Verify(er *EvidenceRecord, opts VerifyOptions) (*VerifyResult, error) {
 			cr.Valid, cr.Reason = false, err.Error()
 			res.Valid, res.Reason = false, fmt.Sprintf("chain %d: %v", ci, err)
 			res.Chains = append(res.Chains, cr)
+			revokeCoverage(ci)
 			continue
 		}
 
@@ -235,12 +250,24 @@ func checkReduction(hash crypto.Hash, reduced []partialHashtree, members [][]byt
 		}
 		return nil
 	}
+	if len(reduced[0]) == 0 {
+		return fmt.Errorf("archive timestamp's first partial hash tree is empty")
+	}
 	for _, m := range members {
 		if !containsHash(reduced[0], m) {
 			return fmt.Errorf("protected object is absent from the reduced hash tree")
 		}
 	}
-	root, err := recomputeRoot(hash, members[0], reduced)
+	// members is empty for a structure-only verification (VerifyOptions.Objects
+	// unset, which the API documents): there is no object to prove, but the
+	// reduction must still recompute to the token's imprint. Anchor the walk on
+	// reduced[0][0] — a member of the first list by construction — so the
+	// recomputed root is identical to the member-anchored one.
+	leaf := reduced[0][0]
+	if len(members) > 0 {
+		leaf = members[0]
+	}
+	root, err := recomputeRoot(hash, leaf, reduced)
 	if err != nil {
 		return err
 	}

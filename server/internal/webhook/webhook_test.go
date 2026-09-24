@@ -159,7 +159,7 @@ func newEngine(store Store, clock *fakeClock) *Engine {
 		BackoffMax:      10 * time.Second,
 		AuditDeliveries: true,
 		Clock:           clock.now,
-		Client:          &http.Client{},
+		Client:          newHTTPClient(), // the production client: redirects are not followed
 	})
 }
 
@@ -182,7 +182,7 @@ func TestFanOutDeliverAndSignature(t *testing.T) {
 	// Seed and persist the cursor exactly as production start-up does (it lands on
 	// the current head, which the event above already predates), then rewind the
 	// local cursor BEFORE the event so fan-out actually delivers it.
-	_ = e.initCursor()
+	_, _ = e.initCursor()
 	cursor := ev.Seq - 1
 	ctx := context.Background()
 	e.fanOutOnce(ctx, &cursor)
@@ -393,7 +393,10 @@ func TestCursorInitializesToHead(t *testing.T) {
 	sub := mkSub(t, db, "w1", models.DefaultTenantID, "tenant", "http://127.0.0.1:1/hook", nil)
 
 	e := newEngine(db, newFakeClock())
-	cursor := e.initCursor() // must seed to head (2), not genesis
+	cursor, ok := e.initCursor() // must seed to head (2), not genesis
+	if !ok {
+		t.Fatalf("initCursor reported not-ready against a healthy store")
+	}
 
 	// A new event after enablement is the only one that should be delivered.
 	appendLifecycle(t, db, audit.ActionCertIssue, models.DefaultTenantID, "ca-1", "03")

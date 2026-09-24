@@ -281,7 +281,11 @@ func parseResponse(resp []byte, id uint16, _ uint16) ([]dnsmessage.Resource, uin
 			}
 			continue
 		}
-		if minTTL == 0 || (ah.TTL > 0 && ah.TTL < minTTL) {
+		// Track the true minimum over the records we keep. A TTL of 0 is a
+		// legitimate "do not cache" value, so it must not be read as "no TTL seen
+		// yet": len(answers) is the only "first record" test that stays correct
+		// when a record carries TTL 0.
+		if len(answers) == 0 || ah.TTL < minTTL {
 			minTTL = ah.TTL
 		}
 		answers = append(answers, dnsmessage.Resource{Header: ah, Body: body})

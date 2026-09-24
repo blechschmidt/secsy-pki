@@ -221,11 +221,13 @@ func (s *Server) verifyEAB(r *http.Request, eab json.RawMessage, accountKey *jos
 			return "", newProblem(probServerInternal, http.StatusInternalServerError, "misconfigured EAB key")
 		}
 	}
-	// The EAB url header must match the newAccount URL.
-	if u, ok := prot.ExtraHeaders[jose.HeaderKey("url")]; ok {
-		if str, _ := u.(string); str != "" && str != s.requestURL(r) {
-			return "", newProblem(probMalformed, http.StatusBadRequest, "external account binding url mismatch")
-		}
+	// The EAB url header must match the newAccount URL. RFC 8555 §7.3.4 makes
+	// "url" mandatory in the EAB protected header, and it is the only thing that
+	// stops a binding minted for another endpoint from being replayed here — so a
+	// missing or empty value is rejected rather than read as "bound to nothing".
+	eabURL, _ := prot.ExtraHeaders[jose.HeaderKey("url")].(string)
+	if eabURL == "" || eabURL != s.requestURL(r) {
+		return "", newProblem(probMalformed, http.StatusBadRequest, "external account binding url mismatch")
 	}
 	payload, err := inner.Verify(macKey)
 	if err != nil {
