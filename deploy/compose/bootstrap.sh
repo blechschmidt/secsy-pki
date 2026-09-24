@@ -43,6 +43,22 @@ note() { printf '   %s\n' "$*"; }
 : "${SECSY_USER_PIN:?SECSY_USER_PIN must be set (see .env.example)}"
 : "${SECSY_ROOT_PASSWORD:?SECSY_ROOT_PASSWORD must be set (see .env.example)}"
 
+# Compose's ${VAR:?} catches an *unset* variable, which leaves the likelier
+# mistake uncaught: `cp .env.example .env` and run. That sets every variable —
+# to values published in this repository — and the stack would come up with a
+# CA whose HSM PIN and superuser password are on GitHub. Refuse the placeholders
+# by name, once, here: this runs before the token is initialized, so there is
+# nothing to undo afterwards.
+for var in SECSY_USER_PIN SECSY_SO_PIN SECSY_ROOT_PASSWORD POSTGRES_PASSWORD; do
+	case "${!var-}" in
+	change-me*)
+		echo "bootstrap: ${var} is still the .env.example placeholder (${!var})." >&2
+		echo "           Edit .env and set a real value — these are published in the repository." >&2
+		exit 1
+		;;
+	esac
+done
+
 # --- the PKCS#11 token -------------------------------------------------------
 #
 # `--free` takes the first uninitialized slot. Guarded on the label rather than
