@@ -376,7 +376,7 @@ at the network layer if that matters to you.
 | Endpoint | Meaning |
 |----------|---------|
 | `/healthz` | The process is alive. Also reports the build: version, Go runtime, FIPS posture |
-| `/readyz` | It can actually serve: database reachable, key provider usable, and on multiple replicas the leader-election detail |
+| `/readyz` | It can actually serve: database reachable and key provider usable — 503 until both are. Also reports whether this replica holds background-job leadership, which never affects readiness (a follower serves traffic normally) |
 | `/metrics` | Prometheus exposition — ~150 series, including `secsy_component_up` per subsystem ([metrics & monitoring](../operations/observability.md)) |
 
 `/readyz` is the one to gate traffic on. The Helm chart wires both as probes
