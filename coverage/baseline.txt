@@ -13,7 +13,7 @@
 # See TESTING.md#test-coverage-gate and docs/development/coverage.md.
 #
 # Format: <package-or-total>\t<percent>.  Generated — do not hand-edit.
-total	68.0
+total	68.5
 internal/acme	80.4
 internal/agent	65.1
 internal/anchor	94.8
@@ -48,7 +48,7 @@ internal/fips	80.8
 internal/fpe	85.5
 internal/grpcapi	69.3
 internal/grpcapi/pkiv1	0.0
-internal/handlers	62.8
+internal/handlers	67.3
 internal/hsm	22.5
 internal/hsmattest	77.0
 internal/hsmaudit	79.6
@@ -76,7 +76,7 @@ internal/rbac	100.0
 internal/report	50.0
 internal/retention	73.3
 internal/scep	68.5
-internal/secret	80.9
+internal/secret	81.1
 internal/servingcert	83.5
 internal/siem	73.1
 internal/signing	79.9
