@@ -150,7 +150,7 @@ docker volume create secsy-data && docker volume create secsy-tokens
 docker run --rm \
   -v secsy-data:/app/data -v secsy-tokens:/var/lib/softhsm/tokens \
   -v "$PWD/config.yaml:/etc/secsy/config.yaml:ro" \
-  -e SECSY_USER_PIN -e SECSY_ROOT_PASSWORD \
+  -e SECSY_USER_PIN -e SECSY_SO_PIN -e SECSY_ROOT_PASSWORD \
   --entrypoint bash ghcr.io/blechschmidt/secsy-pki:1.2.3 -c '
     softhsm2-util --init-token --free --label secsy \
       --pin "$SECSY_USER_PIN" --so-pin "$SECSY_SO_PIN"
@@ -201,12 +201,15 @@ curl --cacert root.pem https://localhost:8443/healthz
 # {"build":{…,"version":"1.2.3"},"status":"ok"}
 ```
 
-Then issue something. `GET /api/keys` lists the CAs and their ids; the issuing
-CA's id goes in the path:
+Then issue something. `GET /api/keys` lists the CAs, and the issuing CA's **id**
+— not its label — goes in the path:
 
 ```bash
 openssl req -new -newkey ec:<(openssl ecparam -name prime256v1) -nodes \
   -keyout app.key -subj "/CN=app.internal.example" -out app.csr
+
+CA_ID=$(curl -s --cacert root.pem -u root:"$SECSY_ROOT_PASSWORD" \
+  https://localhost:8443/api/keys | jq -r '.[] | select(.label=="issuing-ca") | .id')
 
 curl --cacert root.pem -u root:"$SECSY_ROOT_PASSWORD" \
   -H 'Content-Type: application/json' \
