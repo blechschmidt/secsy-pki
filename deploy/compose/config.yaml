@@ -1,0 +1,70 @@
+# =============================================================================
+# secsy-pki — Docker Compose evaluation stack
+# =============================================================================
+# Paths here are *container* paths, which is the one thing that makes a container
+# config different from any other: /app/data and /var/lib/softhsm/tokens are the
+# two directories the image prepares for its non-root user, and they are where
+# the compose volumes are mounted. Writing state anywhere else in this file gets
+# a permission error, or — worse — succeeds into the container's writable layer
+# and is silently discarded when the container is replaced.
+#
+# Nothing secret is in this file. The HSM PIN and the root password come from the
+# environment (see .env.example), so this can be committed and mounted read-only.
+#
+# Walkthrough: docs/deployment/container.md#running-a-stack-with-compose
+
+server:
+  host: "0.0.0.0"
+  port: 8443
+
+  # HTTPS with no certificate files to manage: the server issues its own
+  # listener certificate from the issuing CA that bootstrap.sh created, keeps the
+  # private key inside the PKCS#11 token, and re-issues it before expiry. So
+  # there is no key on disk and no cert/key pair to mount.
+  #
+  # The certificate is signed by *this* PKI, so clients must trust its root —
+  # curl will say "self-signed certificate in certificate chain" until you give
+  # it the root (see the walkthrough), which is the correct behaviour and not a
+  # reason to reach for -k.
+  tls:
+    self_issue:
+      enabled: true
+      ca_id: "issuing-ca"
+      # "secsy-pki" is the service name, i.e. how other containers on the compose
+      # network reach it; localhost/127.0.0.1 cover the published port.
+      dnsnames: ["localhost", "secsy-pki"]
+      ips: ["127.0.0.1"]
+
+database:
+  driver: "sqlite"
+  # Inside the `data` volume. A bare "secsy-pki.db" would resolve against the
+  # working directory (/app) and land in the container layer, not the volume.
+  dsn: "/app/data/secsy-pki.db"
+  # Override both from the environment to move to PostgreSQL — that is all
+  # docker-compose.postgres.yaml does.
+
+root_user:
+  username: "root"
+  # password: intentionally absent. SECSY_ROOT_PASSWORD supplies it; the config
+  # fails to load if neither is set, so this cannot silently start open.
+
+key_provider:
+  type: "pkcs11"
+
+pkcs11:
+  # SoftHSM, which ships in the image. For real hardware, override
+  # SECSY_PKCS11_MODULE (and use the -yubihsm image for a YubiHSM 2).
+  module_path: "/usr/lib/softhsm/libsofthsm2.so"
+  token_label: "secsy"
+  # The PIN is read from the environment at startup rather than written here.
+  # Note the shape: pin_source is a block with a `type`, not a "env:VAR" string.
+  pin_source:
+    type: "env"
+    env:
+      var: "SECSY_USER_PIN"
+  session_pool_size: 8
+
+# Keep the demo honest: leaves are short-lived, so the renewal path is exercised
+# rather than deferred for a year.
+policy:
+  max_cert_validity_days: 90

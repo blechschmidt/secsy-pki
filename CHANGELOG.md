@@ -14,6 +14,25 @@ version being released becomes the body of the GitHub release. See
 
 ### Added
 
+**A documented way to run the container, and a Compose stack that proves it.**
+The container page covered the image — tags, architectures, provenance, the build
+— and stopped short of running it, so the path from `docker pull` to an issued
+certificate was left to the reader. It now documents a first run end to end
+(provision the token and CAs, serve with a self-issued listener certificate,
+fetch the root out of band, issue over verified TLS), the two config paths and
+why the CLIs do not inherit the server's, which volumes hold state and what a
+relative `database.dsn` silently costs, the `SECSY_*` overrides that configure a
+deployment without editing YAML, running the CLI tools via `exec` or a one-shot
+container, `/healthz`/`/readyz`/`/metrics` — including a healthcheck for an image
+that deliberately ships no `curl` — upgrades, and a troubleshooting list quoting
+the errors the container actually prints.
+
+[`deploy/compose/`](deploy/compose/) is the stack those examples were verified
+against: a one-shot `bootstrap` that provisions the PKCS#11 token and CA
+hierarchy, guarded against the real state so `up` is repeatable, and a `server`
+gated on it with `service_completed_successfully`. An overlay swaps SQLite for
+PostgreSQL without touching the config file.
+
 **Importing existing keys, and adopting a CA that already exists.** An
 organization migrating onto secsy-pki generally cannot re-key: its root
 certificate is already in trust stores it does not control. `secsy-ca ca import`
@@ -136,6 +155,26 @@ restriction sets remain the one feature reachable only from the legacy SPA and
 the API.
 
 ### Fixed
+
+**`server.tls.self_issue.ca_id` rejected the CA label it documented.** The
+config comment and [the guide](docs/deployment/serving-cert.md) both described
+`ca_id` as naming the issuing CA "by id or label", and every comparable
+subsystem — ACME, SCEP, EST, BRSKI — resolves its configured reference through
+`resolveCAID`. This one passed the raw string to an issuer that addresses CAs by
+id alone, so a label arrived as an unknown id and the server fail-closed at
+startup with `CA "issuing-ca" not found`. The label was also the only form a
+deployment could write down in advance, the id being a UUID minted later by
+`init-root`. References are now resolved id-first, then by label.
+
+**The documentation gate computed anchors GitHub does not produce.**
+`scripts/check-docs.sh` stripped underscores from headings as if they were
+emphasis markers, so a heading naming a config key — `pin_source` — got an anchor
+that exists neither on GitHub nor on the rendered site. The gate therefore
+rejected the correct cross-page link and would have accepted a broken one.
+
+**A `pin_source` example that could not parse.** The container page showed
+`pin_source: "env:SECSY_USER_PIN"`; it is a block with a `type`, and a string
+there aborts startup with `cannot unmarshal !!str into config.PinSourceConfig`.
 
 **Four timestamps that reported the year 1 instead of being absent.**
 `omitempty` does not omit a zero `time.Time` — it is a struct, not a scalar — so

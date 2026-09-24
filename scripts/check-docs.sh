@@ -58,7 +58,12 @@ def slugify(heading):
     s = heading.strip().lower()
     s = re.sub(r'`', '', s)
     s = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', s)      # [text](url) -> text
-    s = re.sub(r'[*_]', '', s)
+    # Emphasis markers only. NOT underscore: GitHub keeps it (it is a word
+    # character), and headings here name config keys — `pin_source`,
+    # `max_open_conns` — so stripping it would compute an anchor that does not
+    # exist on GitHub or the docs site, and the gate would then reject the
+    # correct link and pass a broken one.
+    s = re.sub(r'[*]', '', s)
     s = re.sub(r'[^\w\s-]', '', s)
     return re.sub(r'\s', '-', s.strip())
 

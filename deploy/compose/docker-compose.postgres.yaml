@@ -1,0 +1,70 @@
+# =============================================================================
+# Overlay: PostgreSQL instead of SQLite
+# =============================================================================
+#   docker compose -f docker-compose.yaml -f docker-compose.postgres.yaml up -d
+#
+# An overlay rather than a second full stack, and rather than a compose profile:
+# a profile would still need `depends_on: db`, and compose resolves a dependency
+# on a profiled service by enabling it — so the database would start even for the
+# SQLite stack. Two files keep each one honest.
+#
+# Nothing in config.yaml changes. The driver and DSN come from the environment
+# (SECSY_DATABASE_DRIVER / SECSY_DATABASE_DSN override the file), which is also
+# how you would point this at a managed PostgreSQL: drop the `db` service, set
+# SECSY_DATABASE_DSN in .env, and keep this overlay for the driver.
+#
+# PostgreSQL is what multi-replica deployments need: it is the backend that
+# carries the advisory-lock leader election, so only one replica runs each
+# singleton background job. See docs/deployment/high-availability.md.
+
+name: secsy-pki
+
+x-postgres-env: &postgres-env
+  SECSY_DATABASE_DRIVER: postgres
+  SECSY_DATABASE_DSN: >-
+    postgres://${POSTGRES_USER:-secsy}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-secsy_pki}?sslmode=disable
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-secsy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-secsy_pki}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-secsy} -d ${POSTGRES_DB:-secsy_pki}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  bootstrap:
+    environment:
+      <<: *postgres-env
+      SECSY_USER_PIN: ${SECSY_USER_PIN:?set SECSY_USER_PIN in .env}
+      SECSY_ROOT_PASSWORD: ${SECSY_ROOT_PASSWORD:?set SECSY_ROOT_PASSWORD in .env}
+      SECSY_SO_PIN: ${SECSY_SO_PIN:?set SECSY_SO_PIN in .env}
+    depends_on:
+      db:
+        # The schema is created on first connection, so the database has to be
+        # accepting connections — not merely started — before bootstrap runs.
+        condition: service_healthy
+
+  server:
+    environment:
+      <<: *postgres-env
+      SECSY_USER_PIN: ${SECSY_USER_PIN:?set SECSY_USER_PIN in .env}
+      SECSY_ROOT_PASSWORD: ${SECSY_ROOT_PASSWORD:?set SECSY_ROOT_PASSWORD in .env}
+      # Sized for a single replica. Divide across replicas so a scaled-out
+      # deployment does not exhaust PostgreSQL's max_connections.
+      SECSY_DATABASE_MAX_OPEN_CONNS: ${SECSY_DATABASE_MAX_OPEN_CONNS:-10}
+    depends_on:
+      db:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:

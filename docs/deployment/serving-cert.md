@@ -30,7 +30,7 @@ server:
   tls:
     self_issue:
       enabled: true
-      ca_id: "web-ica"             # internal CA that issues the serving cert (required)
+      ca_id: "web-ica"             # internal CA that issues the serving cert (id or label; required)
       profile: "server"            # serverAuth TLS-leaf profile (default: server)
       common_name: ""              # default: first dnsname, then a stable fallback
       dnsnames: ["pki.example.com", "localhost"]
@@ -45,7 +45,10 @@ server:
 
 When `self_issue.enabled` is true it **supersedes** the static `tls_cert`/`tls_key`
 pair. `ca_id` is required and must name an internal CA that can issue under a
-serverAuth profile. The listener comes up on the freshly issued certificate; if
+serverAuth profile. It accepts either the CA's id or its **label**, and the label
+is usually the only form available: the id is a UUID minted by
+`init-root`/`issue-intermediate`, which a config written before the CA exists
+cannot know. The listener comes up on the freshly issued certificate; if
 the very first issuance fails the server fails to start (fail-closed), so a
 misconfigured `ca_id`/`profile` surfaces immediately rather than serving a stale
 or absent certificate.

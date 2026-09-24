@@ -1,0 +1,93 @@
+# =============================================================================
+# secsy-pki — single-node stack (SQLite + SoftHSM)
+# =============================================================================
+#   cp .env.example .env     # then edit the PIN and password
+#   docker compose up -d
+#   docker compose logs -f server
+#
+# Two services: a one-shot `bootstrap` that provisions the PKCS#11 token and the
+# CA hierarchy, and the `server` that waits for it to succeed. The split exists
+# because the server deliberately will not create a CA for itself — see
+# bootstrap.sh — and because a bootstrap failure should stop the stack rather
+# than become a server that crash-loops with a confusing error.
+#
+# This stack is for evaluation and development. SoftHSM's "HSM" is a directory of
+# files in a Docker volume; for production use a real PKCS#11 device and read
+# docs/deployment/container.md and docs/hsm/production-migration.md.
+#
+# PostgreSQL instead of SQLite:
+#   docker compose -f docker-compose.yaml -f docker-compose.postgres.yaml up -d
+
+name: secsy-pki
+
+# The image and the two state volumes are identical in both services: the
+# bootstrap writes the token and the database that the server then reads, and
+# they must be the same build, because a bootstrap from a different version could
+# write a schema the server does not understand.
+x-secsy-common: &secsy-common
+  image: ${SECSY_IMAGE:-ghcr.io/blechschmidt/secsy-pki}:${SECSY_TAG:-latest}
+  environment: &secsy-env
+    # The PKCS#11 user PIN, read via config.yaml's pin_source. Required.
+    SECSY_USER_PIN: ${SECSY_USER_PIN:?set SECSY_USER_PIN in .env}
+    # The initial superuser password, kept out of the mounted config.
+    SECSY_ROOT_PASSWORD: ${SECSY_ROOT_PASSWORD:?set SECSY_ROOT_PASSWORD in .env}
+
+services:
+  bootstrap:
+    <<: *secsy-common
+    # Runs a script, not the server. The image's entrypoint is the server
+    # binary, so it is replaced rather than passed arguments.
+    entrypoint: ["bash", "/opt/secsy/bootstrap.sh"]
+    environment:
+      <<: *secsy-env
+      # Only needed to *initialize* a token; ignored once one exists.
+      SECSY_SO_PIN: ${SECSY_SO_PIN:?set SECSY_SO_PIN in .env}
+    volumes:
+      - ./config.yaml:/etc/secsy/config.yaml:ro
+      - ./bootstrap.sh:/opt/secsy/bootstrap.sh:ro
+      - data:/app/data
+      - tokens:/var/lib/softhsm/tokens
+    # A one-shot job: it must be allowed to exit 0 and stay exited.
+    restart: "no"
+
+  server:
+    <<: *secsy-common
+    depends_on:
+      bootstrap:
+        # Not merely "started": the server needs the CA to exist, and a failed
+        # bootstrap must fail the `up` instead of starting a server that cannot
+        # find its issuing CA.
+        condition: service_completed_successfully
+    volumes:
+      - ./config.yaml:/etc/secsy/config.yaml:ro
+      - data:/app/data
+      - tokens:/var/lib/softhsm/tokens
+    ports:
+      - "${SECSY_HTTPS_PORT:-8443}:8443"
+    # There is no curl or wget in the image — it is a PKI, not a toolbox — so the
+    # probe speaks HTTP through openssl, which is present because the SoftHSM and
+    # OpenSC tooling needs it. /readyz reports 503 until the database, the key
+    # provider and (on multiple replicas) leader election are all in order, which
+    # is what makes it the right endpoint here rather than /healthz.
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - |
+          printf 'GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' \
+            | openssl s_client -quiet -connect 127.0.0.1:8443 2>/dev/null \
+            | grep -q '200 OK'
+      interval: 10s
+      timeout: 5s
+      # The first issuance of the serving certificate happens on the HSM during
+      # startup, so allow for a slow token rather than reporting unhealthy once.
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  # The database: every CA record, issued certificate, revocation and audit-log
+  # entry. Losing it loses the PKI's memory even though the keys survive.
+  data:
+  # The SoftHSM token store — the CA private keys themselves. On a real HSM this
+  # volume is irrelevant, because the keys never leave the device.
+  tokens:

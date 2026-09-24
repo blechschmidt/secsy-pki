@@ -140,7 +140,7 @@ These pages are also published — with search and navigation — at
 
 | Page | Covers |
 |------|--------|
-| [The container image](deployment/container.md) | The published image: tags, both architectures, what is inside, and verifying it |
+| [The container image](deployment/container.md) | The published image: tags, both architectures, what is inside, running it (first run, config paths, state, env overrides, CLI, Compose, health probes, upgrades), and verifying it |
 | [Kubernetes deployment](deployment/kubernetes.md) | Container image, Helm chart, cert-manager issuer, kind/SoftHSM smoke test |
 | [Persistence backends (SQLite & PostgreSQL)](deployment/persistence.md) | SQLite and PostgreSQL stores, pooling, and migration between them |
 | [Multi-replica coordination & HA](deployment/high-availability.md) | Multiple replicas with leader-elected singleton background jobs |

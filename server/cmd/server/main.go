@@ -1719,6 +1719,27 @@ func parseRSAPrivateKey(der []byte) (*rsa.PrivateKey, error) {
 // resolveCAID resolves a configured (caID, caLabel) pair to a concrete CA id,
 // verifying the CA exists and is an X.509 issuer. It centralizes the lookup
 // shared by the ACME/SCEP/EST config builders.
+// resolveCARef resolves a single CA reference that may be *either* an id or a
+// label — the form config comments describe as "by id or label" — to the id
+// that ca.Manager and the stores address CAs by. Unlike resolveCAID it takes one
+// value rather than an id/label pair, for the config blocks that expose only one
+// key. The id is tried first: ids are UUIDs and labels are operator-chosen, so
+// the ambiguity is theoretical, but resolving a real id before a same-named
+// label keeps the precedence explicit rather than incidental.
+func resolveCARef(db *database.DB, ref, proto string) (string, error) {
+	if strings.TrimSpace(ref) == "" {
+		return "", fmt.Errorf("no %s issuing CA configured (set ca_id)", proto)
+	}
+	if c, err := db.GetCA(ref); err != nil {
+		return "", fmt.Errorf("looking up %s CA %q: %w", proto, ref, err)
+	} else if c != nil {
+		return resolveCAID(db, ref, "", proto)
+	}
+	// Not an id. Fall through to the label path, which also produces the
+	// "not found" error when it is neither.
+	return resolveCAID(db, "", ref, proto)
+}
+
 func resolveCAID(db *database.DB, caID, caLabel, proto string) (string, error) {
 	if caID == "" && caLabel != "" {
 		found, err := db.GetCAByLabel(caLabel)
@@ -3002,8 +3023,22 @@ func buildSelfIssuedServingCert(ctx context.Context, cfg *config.Config, db *dat
 	if err != nil {
 		return nil, err
 	}
+	// ca_id is documented — in this config's own comment and in
+	// docs/deployment/serving-cert.md — as naming the issuing CA "by id or
+	// label", and resolveCAID is what every other subsystem (ACME, SCEP, EST,
+	// BRSKI) puts its configured reference through. This one passed the raw
+	// string to an issuer that addresses CAs by id alone, so a label reached
+	// ca.Manager as an unknown id and the server fail-closed at startup with
+	// `CA "issuing-ca" not found` — the documented form being the one that could
+	// not work. A label is the only form a deployment can write down in advance:
+	// the id is a UUID minted by `init-root`/`issue-intermediate`, which a config
+	// file baked before the CA exists cannot know.
+	caID, err := resolveCARef(db, sc.CAID, "serving-tls")
+	if err != nil {
+		return nil, err
+	}
 	return servingcert.New(ctx, ca.NewManager(db, provider), provider, servingcert.Config{
-		CAID:        sc.CAID,
+		CAID:        caID,
 		Profile:     sc.ResolvedProfile(),
 		CommonName:  sc.ResolvedCommonName(),
 		DNSNames:    sc.DNSNames,
