@@ -343,7 +343,7 @@ func TestHashNameRoundTrip(t *testing.T) {
 		t.Fatal("algorithmIdentifier must refuse an algorithm outside the SHA-2 family")
 	}
 	// hashRank must order the family so "weaker than the target" is well defined.
-	if !(hashRank(crypto.SHA256) < hashRank(crypto.SHA384) && hashRank(crypto.SHA384) < hashRank(crypto.SHA512)) {
+	if hashRank(crypto.SHA256) >= hashRank(crypto.SHA384) || hashRank(crypto.SHA384) >= hashRank(crypto.SHA512) {
 		t.Fatal("hashRank must order SHA-256 < SHA-384 < SHA-512")
 	}
 	if hashRank(crypto.SHA1) != 0 {

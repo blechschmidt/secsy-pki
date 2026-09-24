@@ -78,10 +78,10 @@ func (c fakeClock) Now(context.Context) (time.Time, error) {
 // memAnchorStore is an in-memory Store: no SQLite needed for the pure
 // error-propagation paths, and every method can be made to fail independently.
 type memAnchorStore struct {
-	mu      sync.Mutex
-	headSeq int64
-	headHsh string
-	headAct string
+	mu        sync.Mutex
+	headSeq   int64
+	headHsh   string
+	headAct   string
 	anchors   []audit.Anchor
 	events    []audit.Event
 	headReads int

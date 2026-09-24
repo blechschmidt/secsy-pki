@@ -416,8 +416,8 @@ func TestAzurePublicKeyRoundTrip(t *testing.T) {
 				// A JWK coordinate is fixed-width by spec, but a peer that trims
 				// leading zeros must still decode to the same point.
 				trimmed := ecJWK(kty, c.name, &key.PublicKey)
-				trimmed.X = key.PublicKey.X.Bytes()
-				trimmed.Y = key.PublicKey.Y.Bytes()
+				trimmed.X = key.X.Bytes()
+				trimmed.Y = key.Y.Bytes()
 				got2, err := azurePublicKey(trimmed)
 				if err != nil {
 					t.Fatalf("azurePublicKey with minimal-length coordinates: %v", err)
@@ -463,7 +463,7 @@ func TestAzurePublicKeyRejectsMalformedBundles(t *testing.T) {
 		{"EC without curve", noCurve},
 		{"EC with unknown curve", &azkeys.JSONWebKey{
 			Kty: azureKeyTypePtr(azkeys.KeyTypeEC), Crv: &unknownCurve,
-			X: ecKey.PublicKey.X.Bytes(), Y: ecKey.PublicKey.Y.Bytes(),
+			X: ecKey.X.Bytes(), Y: ecKey.Y.Bytes(),
 		}},
 		{"unknown key type", &azkeys.JSONWebKey{Kty: &unknownKty, N: rsaPub.N.Bytes(), E: []byte{1, 0, 1}}},
 	} {
@@ -524,7 +524,9 @@ func TestAzurePublicKeyCorruptCoordinatesNeverYieldAUsableKey(t *testing.T) {
 			if pub.Equal(&key.PublicKey) {
 				t.Fatal("a corrupted coordinate decoded to the original key")
 			}
-			if pub.Curve.IsOnCurve(pub.X, pub.Y) {
+			// ecdh.NewPublicKey performs the on-curve check that the deprecated
+			// elliptic.Curve.IsOnCurve used to expose, through a supported API.
+			if _, err := pub.ECDH(); err == nil {
 				t.Fatal("a corrupted coordinate produced a point on the curve")
 			}
 			if _, err := x509.MarshalPKIXPublicKey(pub); err == nil {

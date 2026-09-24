@@ -576,7 +576,7 @@ func tokenOffset(t *testing.T, token, blob []byte) int {
 	if at < 0 {
 		t.Fatalf("a %d-byte region is not present in the token", len(blob))
 	}
-	if bytes.Index(token[at+1:], blob) >= 0 {
+	if bytes.Contains(token[at+1:], blob) {
 		t.Fatalf("a %d-byte region occurs more than once in the token", len(blob))
 	}
 	return at

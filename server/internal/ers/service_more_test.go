@@ -308,7 +308,7 @@ func TestStoreFailuresSurface(t *testing.T) {
 	if !strings.Contains(logged.String(), "corrupt") {
 		t.Fatalf("the corrupt record should have been logged: %q", logged.String())
 	}
-	if ev := fs2.memStore.lastEvent(t); ev.Action != audit.ActionERSRenew || ev.Result != audit.ResultError {
+	if ev := fs2.lastEvent(t); ev.Action != audit.ActionERSRenew || ev.Result != audit.ResultError {
 		t.Fatalf("a failed renewal must append an error audit event, got %s/%s", ev.Action, ev.Result)
 	}
 }

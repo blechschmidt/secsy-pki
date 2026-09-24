@@ -502,7 +502,7 @@ func TestInstrumentedProviderDoesNotMutateArguments(t *testing.T) {
 	if base.gotOpts != crypto.SignerOpts(crypto.SHA384) {
 		t.Errorf("provider received opts %v, want SHA-384: a rewritten hash signs with the wrong algorithm", base.gotOpts)
 	}
-	if base.gotRand != io.Reader(rand.Reader) {
+	if base.gotRand != rand.Reader {
 		t.Error("provider received a different entropy source than the caller passed")
 	}
 

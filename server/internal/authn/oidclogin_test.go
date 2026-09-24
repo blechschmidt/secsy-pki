@@ -25,7 +25,7 @@ import (
 // must match, and no failure path may establish a session.
 
 const (
-	testIdPAuthURL  = "https://idp.example.com/authorize"
+	testIDPAuthURL  = "https://idp.example.com/authorize"
 	testRedirectURL = "https://pki.example.com/auth/callback"
 )
 
@@ -36,7 +36,7 @@ func newTestOIDCLogin(t *testing.T, mgr *Manager) *OIDCLogin {
 	t.Helper()
 	provider := (&oidc.ProviderConfig{
 		IssuerURL: "https://idp.example.com",
-		AuthURL:   testIdPAuthURL,
+		AuthURL:   testIDPAuthURL,
 		TokenURL:  "https://idp.example.com/token",
 		JWKSURL:   "https://idp.example.com/jwks",
 		Algorithms: []string{
@@ -63,7 +63,7 @@ func newTestOIDCLogin(t *testing.T, mgr *Manager) *OIDCLogin {
 // an incompletely configured login must not produce a handler that would skip
 // token verification or redirect to an unintended place.
 func TestNewOIDCLoginRequiresCompleteConfig(t *testing.T) {
-	provider := (&oidc.ProviderConfig{IssuerURL: "https://idp.example.com", AuthURL: testIdPAuthURL}).
+	provider := (&oidc.ProviderConfig{IssuerURL: "https://idp.example.com", AuthURL: testIDPAuthURL}).
 		NewProvider(context.Background())
 	verifier := provider.Verifier(&oidc.Config{ClientID: "console"})
 	resolve := func(*oidc.IDToken, map[string]interface{}) (*models.UserInfo, error) { return nil, nil }
@@ -137,7 +137,7 @@ func TestOIDCBeginIssuesFreshStateNoncePKCE(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		loc, cookie := beginLogin(t, l)
 		q := loc.Query()
-		if !strings.HasPrefix(loc.String(), testIdPAuthURL) {
+		if !strings.HasPrefix(loc.String(), testIDPAuthURL) {
 			t.Fatalf("redirect = %s, want the IdP authorization endpoint", loc)
 		}
 		if q.Get("response_type") != "code" {
@@ -359,13 +359,18 @@ func TestOIDCSignIsKeyedAndDeterministic(t *testing.T) {
 	a := newTestOIDCLogin(t, mgr)
 	b := newTestOIDCLogin(t, mgr)
 
-	if a.sign("payload") != a.sign("payload") {
+	// The two calls are bound to locals so the comparison is not a syntactically
+	// identical expression: sign() is a method, and a version of it that mixed in
+	// a nonce or a timestamp would break the stateless cookie, so this comparison
+	// is a real assertion rather than a tautology.
+	first, second := a.sign("payload"), a.sign("payload")
+	if first != second {
 		t.Error("sign must be deterministic for a given key")
 	}
-	if a.sign("payload") == a.sign("payload2") {
+	if other := a.sign("payload2"); first == other {
 		t.Error("sign must depend on the payload")
 	}
-	if a.sign("payload") == b.sign("payload") {
+	if theirs := b.sign("payload"); first == theirs {
 		t.Error("two logins must use independent signing keys")
 	}
 	if string(a.txKey) == string(b.txKey) {
