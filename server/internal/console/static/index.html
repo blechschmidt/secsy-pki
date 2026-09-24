@@ -55,6 +55,7 @@
         <button data-view="validate">Validate</button>
         <button data-view="bundle">Trust Bundle</button>
         <button data-view="dns">DNS Records</button>
+        <button data-view="ops">Operations</button>
         <button data-view="secrets">Secrets</button>
         <button data-view="tenants">Tenants</button>
         <button data-view="tokens">API Tokens</button>
@@ -179,6 +180,46 @@
           </div>
           <div id="bulkResultBox" class="hidden" style="margin-top:12px"></div>
         </div>
+
+        <!-- RFC 9345 TLS delegated credential (Task 198) -->
+        <div class="panel" style="margin-top:16px">
+          <h2 style="font-size:15px">Mint a TLS delegated credential (RFC 9345)</h2>
+          <p class="sub">A short-lived credential a TLS terminator presents alongside the leaf certificate, so a fleet member can serve the certificate's identity without ever holding its private key — <code>secsy-ca delegated-credential mint</code>. It is signed by the <b>leaf's</b> private key, which this CA keeps for no ordinary issuance: the leaf must have been exported as a PKCS#12 with its subject key escrowed (M-of-N), and the envelope plus a quorum of recovery-agent ids must be presented here. The key is recovered only long enough to sign and is zeroized immediately. The leaf must also be delegation-eligible (a <code>delegation_usage</code> profile). It is minted under the CA selected above.</p>
+          <div id="dcMsg" class="notice hidden"></div>
+          <div class="row">
+            <div class="field" style="flex:1;min-width:200px"><label for="dcSerial">Certificate serial (decimal, under the selected CA)</label><input id="dcSerial" placeholder="1234567890…"></div>
+            <div class="field" style="width:150px"><label for="dcValidHours">TTL (hours, max 168)</label><input id="dcValidHours" type="number" min="1" max="168" placeholder="24"></div>
+            <div class="field" style="width:150px"><label for="dcEndpoint">Endpoint</label>
+              <select id="dcEndpoint">
+                <option value="server">server</option>
+                <option value="client">client</option>
+              </select>
+            </div>
+            <div class="field" style="width:160px"><label for="dcKeyType">Delegated key type</label>
+              <select id="dcKeyType">
+                <option value="ecdsa-p256">ecdsa-p256</option>
+                <option value="ecdsa-p384">ecdsa-p384</option>
+                <option value="ecdsa-p521">ecdsa-p521</option>
+                <option value="rsa-2048">rsa-2048</option>
+                <option value="rsa-3072">rsa-3072</option>
+                <option value="ed25519">ed25519</option>
+              </select>
+            </div>
+          </div>
+          <div class="field"><label for="dcEscrowEnvelope">Escrow envelope (the JSON stored at PKCS#12 export)</label>
+            <textarea id="dcEscrowEnvelope" placeholder='{"alg":…}' style="min-height:70px"></textarea>
+          </div>
+          <div class="row">
+            <div class="field" style="flex:1;min-width:220px"><label for="dcAgents">Recovery agents (comma-separated ids; a quorum)</label><input id="dcAgents" placeholder="agent-a, agent-b"></div>
+            <div class="field" style="flex:1;min-width:180px"><label for="dcSignAlg">Signing scheme override <span class="muted">(optional)</span></label><input id="dcSignAlg" placeholder="derived from the leaf key"></div>
+            <div class="field" style="flex:1;min-width:180px"><label for="dcExpectAlg">Handshake scheme override <span class="muted">(optional)</span></label><input id="dcExpectAlg" placeholder="derived from the delegated key"></div>
+          </div>
+          <div class="field"><label for="dcPubKey">Delegated public key (optional — a PUBLIC KEY PEM or base64 SPKI; supplying one keeps its private half with you and no key is generated)</label>
+            <textarea id="dcPubKey" placeholder="-----BEGIN PUBLIC KEY-----" style="min-height:60px"></textarea>
+          </div>
+          <button class="btn" id="dcBtn">Mint delegated credential</button>
+          <div id="dcResult" class="notice hidden" style="margin-top:12px"></div>
+        </div>
       </section>
 
       <!-- Certificate inventory -->
@@ -234,6 +275,19 @@
             <thead><tr><th>Serial</th><th>Common name</th><th>Profile</th><th>CA</th><th>Not after</th><th>Status</th><th>CT</th><th>Lint</th></tr></thead>
             <tbody id="invRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
           </table>
+        </div>
+
+        <!-- Certificate-inventory retention (Task 198) -->
+        <div class="panel">
+          <h2 style="font-size:15px">Inventory retention</h2>
+          <p class="sub">The archival job that keeps the hot inventory bounded: only long-expired, terminal, non-held, non-approval-pinned rows are eligible. The authoritative revocation table is never touched, so OCSP and CRL answers for every retained serial are unaffected — the console counterpart of <code>secsy-ca inventory retention</code>.</p>
+          <div class="toolbar">
+            <div class="spacer"></div>
+            <button class="btn ghost sm" id="invRetPreview" title="Report exactly what a pass would do, mutating nothing">Preview</button>
+            <button class="btn danger sm" id="invRetRun" title="Execute a retention pass now; eligible rows leave the hot inventory">Run retention</button>
+          </div>
+          <div id="invRetStatus" class="muted" style="margin-bottom:8px">Loading…</div>
+          <div id="invRetResult" class="notice hidden"></div>
         </div>
       </section>
 
@@ -316,8 +370,15 @@
               <option value="unknown_log">unknown log</option>
             </select>
           </div>
+          <div class="field" style="margin:0">
+            <label for="ctVerifyMax">Max certificates</label>
+            <input id="ctVerifyMax" type="number" min="1" placeholder="configured" style="width:120px">
+          </div>
+          <div class="spacer"></div>
+          <button class="btn sm" id="ctVerifyBtn" style="margin-top:16px" title="Fetch each log's signed tree head and verify the Merkle inclusion proofs now, instead of waiting for the background monitor's next tick">Verify inclusion now</button>
           <button class="btn ghost sm" id="ctRefresh" style="margin-top:16px">Refresh</button>
         </div>
+        <div id="ctVerifyResult" class="notice hidden"></div>
         <div id="ctCounts" class="muted" style="margin-bottom:12px"></div>
         <div class="panel">
           <table>
@@ -619,6 +680,80 @@
           </div>
         </div>
 
+        <!-- Adopting key material that already exists (Task 198) -->
+        <div class="row" style="align-items:stretch;margin-top:14px">
+          <div class="panel" style="flex:1.4;min-width:340px">
+            <h2 style="font-size:15px">Adopt an existing CA</h2>
+            <p class="sub"><b>This form carries a PRIVATE KEY</b> unless the key is already on the provider. Bring a certificate authority that exists elsewhere under this PKI — the counterpart of <code>secsy-ca ca import</code>. The material is sent once over this session, written into the key provider, and never echoed back to this page. An import cannot undo the key's origin: attestation will report it as imported rather than generated, so destroy every remaining copy of the key file once the CA has been exercised. Adoption passes the same four-eyes gate as creating a root.</p>
+            <div id="caImpError" class="notice err hidden"></div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:170px"><label for="caImpLabel">Label (unique CA / key label)</label><input id="caImpLabel" placeholder="legacy-root"></div>
+              <div class="field" style="flex:1;min-width:150px"><label for="caImpTenant">Tenant <span class="muted">(id or slug; blank = default)</span></label><input id="caImpTenant" placeholder="default"></div>
+              <div class="field" style="flex:1;min-width:170px"><label for="caImpParent">Parent CA in this PKI <span class="muted">(blank discovers it)</span></label>
+                <select id="caImpParent"><option value="">— discover / external parent —</option></select>
+              </div>
+            </div>
+            <div class="field"><label for="caImpKeySource">Private key</label>
+              <select id="caImpKeySource">
+                <option value="material">upload key material</option>
+                <option value="existing">the key is already on the HSM — give its label</option>
+              </select>
+            </div>
+            <div class="field hidden" id="caImpExistingRow"><label for="caImpExistingLabel">Existing provider key label</label><input id="caImpExistingLabel" placeholder="legacy-root"></div>
+            <div id="caImpMaterialRow">
+              <div class="field"><label for="caImpKeyPEM">Key (PEM — PKCS#8, PKCS#1, SEC1 or OpenSSH; encrypted forms accepted)</label>
+                <textarea id="caImpKeyPEM" placeholder="-----BEGIN PRIVATE KEY-----" style="min-height:70px"></textarea>
+              </div>
+              <div class="row">
+                <div class="field" style="flex:1;min-width:210px"><label for="caImpKeyFile">…or a container file (PKCS#12/.pfx or bare DER — read as base64, never displayed)</label><input id="caImpKeyFile" type="file"></div>
+                <div class="field" style="flex:1;min-width:150px"><label for="caImpPass">Passphrase <span class="muted">(encrypted material)</span></label><input id="caImpPass" type="password" autocomplete="new-password"></div>
+              </div>
+            </div>
+            <div class="field"><label for="caImpCert">CA certificate (PEM — optional only when a PKCS#12 carries it; trailing certificates count as chain)</label>
+              <textarea id="caImpCert" placeholder="-----BEGIN CERTIFICATE-----" style="min-height:70px"></textarea>
+            </div>
+            <div class="field"><label for="caImpChain">Issuing chain (PEM, optional — for a subordinate whose parent is outside this PKI)</label>
+              <textarea id="caImpChain" placeholder="-----BEGIN CERTIFICATE-----" style="min-height:60px"></textarea>
+            </div>
+            <button class="btn" id="caImpBtn">Adopt CA</button>
+            <div id="caImpResult" class="notice hidden" style="margin-top:12px"></div>
+          </div>
+          <div class="panel" style="flex:1;min-width:300px">
+            <h2 style="font-size:15px">Import a key into the provider</h2>
+            <p class="sub"><b>This form carries a PRIVATE KEY.</b> Place an existing key on the key provider under a label without creating a CA — <code>secsy-ca import-key</code> — for a TSA or code-signing key that must keep its identity across a migration. The key is never echoed back, and a signing key is proved usable by a signature before the import reports success.</p>
+            <div id="keyImpError" class="notice err hidden"></div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:150px"><label for="keyImpLabel">Label</label><input id="keyImpLabel" placeholder="tsa"></div>
+              <div class="field" style="width:150px"><label for="keyImpID">CKA_ID <span class="muted">(hex, PKCS#11)</span></label><input id="keyImpID" placeholder="optional"></div>
+            </div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:120px"><label for="keyImpRole">Role (which backend)</label>
+                <select id="keyImpRole">
+                  <option value="ca">ca</option>
+                  <option value="tsa">tsa</option>
+                  <option value="signing">signing</option>
+                </select>
+              </div>
+              <div class="field" style="flex:1;min-width:120px"><label for="keyImpUsage">Usage</label>
+                <select id="keyImpUsage">
+                  <option value="sign">sign</option>
+                  <option value="decrypt">decrypt</option>
+                  <option value="kek">kek (RSA key-encryption)</option>
+                </select>
+              </div>
+            </div>
+            <div class="field"><label for="keyImpKeyPEM">Key (PEM)</label>
+              <textarea id="keyImpKeyPEM" placeholder="-----BEGIN PRIVATE KEY-----" style="min-height:70px"></textarea>
+            </div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:200px"><label for="keyImpKeyFile">…or a container file (PKCS#12 / DER)</label><input id="keyImpKeyFile" type="file"></div>
+              <div class="field" style="flex:1;min-width:150px"><label for="keyImpPass">Passphrase <span class="muted">(encrypted material)</span></label><input id="keyImpPass" type="password" autocomplete="new-password"></div>
+            </div>
+            <button class="btn" id="keyImpBtn">Import key</button>
+            <div id="keyImpResult" class="notice hidden" style="margin-top:12px"></div>
+          </div>
+        </div>
+
         <div class="row" style="align-items:stretch;margin-top:14px">
           <div class="panel" style="flex:1;min-width:320px">
             <h2 style="font-size:15px">Cross-signing</h2>
@@ -802,6 +937,67 @@
             <button class="btn" id="verifyBtn">Verify signature</button>
           </div>
         </div>
+
+        <!-- Provisioning the two signing credentials (Task 198) -->
+        <div class="row" style="align-items:stretch">
+          <div class="panel" style="flex:1;min-width:320px">
+            <h2 style="font-size:15px">Provision a code-signing credential</h2>
+            <p class="sub">Generate a code-signing key on the signing-role backend and issue its certificate under an existing CA, through the ordinary lint-gated issuance path — <code>secsy-ca signing-key</code>. A key already stored under the label is reused, so reissuing a certificate does not rotate the key. The private key never leaves the provider; what comes back is the certificate and the configuration that must reference it.</p>
+            <div id="signProvError" class="notice err hidden"></div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:170px"><label for="signProvCA">Issuing CA</label><select id="signProvCA"></select></div>
+              <div class="field" style="flex:1;min-width:140px"><label for="signProvLabel">Key label</label><input id="signProvLabel" placeholder="codesign"></div>
+            </div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:150px"><label for="signProvKeyType">Key type</label>
+                <select id="signProvKeyType">
+                  <option value="ecdsa-p256">ecdsa-p256</option>
+                  <option value="ecdsa-p384">ecdsa-p384</option>
+                  <option value="rsa-2048">rsa-2048</option>
+                  <option value="rsa-4096">rsa-4096</option>
+                </select>
+              </div>
+              <div class="field" style="flex:1;min-width:140px"><label for="signProvProfile">Profile <span class="muted">(needs codeSigning EKU)</span></label><input id="signProvProfile" placeholder="code-signing"></div>
+              <div class="field" style="width:130px"><label for="signProvDays">Validity (days)</label><input id="signProvDays" type="number" min="1" placeholder="profile default"></div>
+            </div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:170px"><label for="signProvCN">Common name</label><input id="signProvCN" placeholder="the key label"></div>
+              <div class="field" style="flex:1;min-width:150px"><label for="signProvO">Organization</label><input id="signProvO" placeholder="optional"></div>
+              <label class="muted" style="display:flex;gap:6px;align-items:center;margin-top:16px" title="Append the issuing CA chain after the credential's own certificate">
+                <input type="checkbox" id="signProvChain"> include chain
+              </label>
+            </div>
+            <button class="btn" id="signProvBtn">Provision signing key</button>
+            <div id="signProvResult" class="notice hidden" style="margin-top:12px"></div>
+          </div>
+          <div class="panel" style="flex:1;min-width:320px">
+            <h2 style="font-size:15px">Provision the RFC 3161 TSA credential</h2>
+            <p class="sub">Generate the timestamp authority's signing key on the tsa-role backend and issue it a dedicated TSA certificate — <code>secsy-ca tsa-key</code>. The certificate carries id-kp-timeStamping as its sole, critical extended key usage, which no issuance profile emits, so it is minted directly rather than through a profile. RSA only: <code>openssl ts -verify</code> interop and the CMS signer both require it.</p>
+            <div id="tsaProvError" class="notice err hidden"></div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:170px"><label for="tsaProvCA">Issuing CA</label><select id="tsaProvCA"></select></div>
+              <div class="field" style="flex:1;min-width:140px"><label for="tsaProvLabel">Key label</label><input id="tsaProvLabel" placeholder="tsa"></div>
+            </div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:150px"><label for="tsaProvKeyType">Key type</label>
+                <select id="tsaProvKeyType">
+                  <option value="rsa-2048">rsa-2048</option>
+                  <option value="rsa-4096">rsa-4096</option>
+                </select>
+              </div>
+              <div class="field" style="width:130px"><label for="tsaProvDays">Validity (days)</label><input id="tsaProvDays" type="number" min="1" placeholder="1185"></div>
+            </div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:170px"><label for="tsaProvCN">Common name</label><input id="tsaProvCN" placeholder="Time-Stamp Authority"></div>
+              <div class="field" style="flex:1;min-width:150px"><label for="tsaProvO">Organization</label><input id="tsaProvO" placeholder="optional"></div>
+              <label class="muted" style="display:flex;gap:6px;align-items:center;margin-top:16px" title="Append the issuing CA chain after the TSA certificate">
+                <input type="checkbox" id="tsaProvChain"> include chain
+              </label>
+            </div>
+            <button class="btn" id="tsaProvBtn">Provision TSA key</button>
+            <div id="tsaProvResult" class="notice hidden" style="margin-top:12px"></div>
+          </div>
+        </div>
       </section>
 
       <!-- ACME (RFC 8555) service view: challenge capabilities + accounts/orders -->
@@ -854,12 +1050,17 @@
           </div>
           <div class="spacer"></div>
           <button class="btn ghost sm" id="auditVerifyBtn" style="margin-top:16px" title="Recompute the hash chain over every event">Verify chain</button>
+          <label class="muted" style="display:flex;gap:6px;align-items:center;margin-top:16px" title="Anchor even when the head has not moved since the last anchor">
+            <input type="checkbox" id="auditAnchorForce"> force
+          </label>
+          <button class="btn ghost sm" id="auditAnchorBtn" style="margin-top:16px" title="Timestamp the current chain head with the deployment's TSA so the tip stays provable offline">Anchor chain head</button>
           <button class="btn ghost sm" id="auditExportJSON" style="margin-top:16px">Export JSON</button>
           <button class="btn ghost sm" id="auditExportCEF" style="margin-top:16px">CEF</button>
           <button class="btn ghost sm" id="auditExportSyslog" style="margin-top:16px">Syslog</button>
           <button class="btn ghost sm" id="auditRefresh" style="margin-top:16px">Refresh</button>
         </div>
         <div id="auditVerify" class="notice hidden" style="margin-bottom:12px"></div>
+        <div id="auditAnchorResult" class="notice hidden" style="margin-bottom:12px"></div>
         <!-- Live tail: stream new events over Server-Sent Events as they are sealed. -->
         <div class="toolbar" style="margin-bottom:6px">
           <button class="btn ghost sm" id="auditLiveToggle" title="Stream new audit events in real time as they are appended to the chain">▶ Live tail</button>
@@ -885,22 +1086,7 @@
           <span class="muted" id="auditPage" style="margin-top:6px"></span>
           <button class="btn ghost sm" id="auditNext">Older →</button>
         </div>
-
-        <!-- RFC 4998 Evidence Records (Task 161) -->
-        <div class="panel" style="margin-top:14px">
-          <h2 style="font-size:15px">Evidence record (RFC 4998)</h2>
-          <p class="sub">An evidence record preserves a proof over time: nested RFC 3161 timestamp chains that keep an audit-chain head or a signed artifact verifiable long after the original signature algorithm has weakened. Verify one by its stored id, or paste a base64 DER record an archivist handed you — the console counterpart of <code>secsy-ca ers verify</code>.</p>
-          <div id="ersError" class="notice err hidden" style="margin-bottom:8px"></div>
-          <div class="row">
-            <div class="field" style="flex:1;min-width:220px"><label for="ersID">Stored record id</label><input id="ersID" placeholder="er-…"></div>
-            <button class="btn" id="ersVerifyBtn" style="margin-top:16px">Verify</button>
-          </div>
-          <div class="field">
-            <label for="ersRecord">…or a record (base64 DER)</label>
-            <textarea id="ersRecord" placeholder="MIIF…" style="min-height:80px;font-family:monospace;font-size:12px"></textarea>
-          </div>
-          <div id="ersResult" class="hidden" style="margin-top:10px"></div>
-        </div>
+        <p class="sub" style="margin-top:14px">Long-term preservation of this chain — RFC 4998 evidence records over a range of events — lives under <b>Compliance</b>.</p>
       </section>
 
       <!-- Four-eyes / maker-checker approvals -->
@@ -908,6 +1094,7 @@
         <h2>Approvals</h2>
         <p class="sub">Four-eyes / maker-checker queue for high-risk operations (CA creation/rotation/retirement, bulk revocation, secret KEK rotation). A request needs a configured number of <em>distinct</em> approvers — never the requester — before the guarded operation can execute. Self-approval is refused.</p>
         <div id="approvalsDisabled" class="notice hidden" style="margin-bottom:12px">The approval gate is disabled (<code>approvals.enabled</code> is false); guarded operations execute immediately.</div>
+        <div id="approvalsExpireResult" class="notice hidden" style="margin-bottom:12px"></div>
         <div class="toolbar">
           <div class="field" style="margin:0"><label for="approvalsStatus">Status</label>
             <select id="approvalsStatus">
@@ -921,6 +1108,7 @@
           </div>
           <div class="field" style="margin:0"><label for="approvalsClass">Class</label><input id="approvalsClass" placeholder="e.g. cert.issue" style="width:150px"></div>
           <div class="spacer"></div>
+          <button class="btn ghost sm" id="approvalsExpireBtn" style="margin-top:16px" title="Retire every request whose approval window has elapsed, so the queue stops showing requests that can never execute">Expire stale requests</button>
           <button class="btn ghost sm" id="approvalsRefresh" style="margin-top:16px">Refresh</button>
         </div>
         <div class="panel">
@@ -995,6 +1183,120 @@
             <thead><tr><th>Check code</th><th>Mode</th><th>Description</th></tr></thead>
             <tbody id="lintRows"></tbody>
           </table>
+        </div>
+
+        <!-- Compromised-key blocklist (Task 120) -->
+        <div class="panel" style="margin-top:14px">
+          <h2 style="font-size:15px">Compromised-key blocklist</h2>
+          <p class="sub">Public keys this deployment refuses to certify. The pre-issuance key-quality gate rejects a blocked SubjectPublicKeyInfo fail-closed on every issuance surface and for every tenant, so this is the incident-response control for a leaked key — the console counterpart of <code>secsy-ca blocked-keys list|add|remove</code>. An entry holds no key material, only the SHA-256 fingerprint. Blocking and un-blocking both require <code>ca:configure</code>.</p>
+          <div id="bkMsg" class="notice hidden"></div>
+          <div class="toolbar">
+            <span class="muted" id="bkCount" style="margin-top:0"></span>
+            <div class="spacer"></div>
+            <button class="btn ghost sm" id="bkRefresh">Refresh</button>
+          </div>
+          <table>
+            <thead><tr><th>Fingerprint</th><th>Reason</th><th>Source</th><th>Added by</th><th>Added</th><th></th></tr></thead>
+            <tbody id="bkRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+          </table>
+          <div class="row" style="margin-top:14px">
+            <div class="field" style="width:220px">
+              <label for="bkKind">Block the key in a</label>
+              <select id="bkKind">
+                <option value="certificate">certificate</option>
+                <option value="csr">certificate request (CSR)</option>
+                <option value="public_key">public key (SubjectPublicKeyInfo)</option>
+              </select>
+            </div>
+            <div class="field" style="flex:1;min-width:240px">
+              <label for="bkFingerprint">…or a pre-computed fingerprint <span class="muted">(leave the material empty)</span></label>
+              <input id="bkFingerprint" placeholder="SHA256:… , hex, or aa:bb:cc:…">
+            </div>
+          </div>
+          <div class="field">
+            <label for="bkMaterial">Material (PEM, or a bare base64 DER body)</label>
+            <textarea id="bkMaterial" placeholder="-----BEGIN CERTIFICATE-----" style="min-height:80px"></textarea>
+          </div>
+          <div class="row">
+            <div class="field" style="flex:2;min-width:220px"><label for="bkReason">Reason <span class="muted">(recorded and audited)</span></label><input id="bkReason" placeholder="key compromise, INC-1234"></div>
+            <div class="field" style="flex:1;min-width:150px"><label for="bkSource">Source <span class="muted">(optional)</span></label><input id="bkSource" placeholder="api"></div>
+            <button class="btn" id="bkAddBtn" style="margin-top:16px">Block key</button>
+          </div>
+        </div>
+
+        <!-- RFC 4998 Evidence Records (Task 161) -->
+        <div class="panel">
+          <h2 style="font-size:15px">Evidence records (RFC 4998)</h2>
+          <p class="sub">Long-term preservation: nested RFC 3161 archive-timestamp chains that keep a range of the audit chain verifiable long after the algorithms under it have weakened — the console counterpart of <code>secsy-ca ers list|generate|renew|export|verify</code>. A record whose TSA certificate is about to expire needs a <b>time-stamp</b> renewal; a weakening digest needs a <b>hash-tree</b> renewal, which adds a chain under a stronger algorithm. Listing, exporting and verifying are reads; generating and renewing require the platform <code>ca:manage</code> capability and an archive-timestamp source.</p>
+          <div id="ersAdminMsg" class="notice hidden"></div>
+          <div class="toolbar">
+            <div class="field" style="margin:0"><label for="ersLimit">Page size</label>
+              <select id="ersLimit"><option>50</option><option selected>200</option><option>1000</option></select>
+            </div>
+            <label class="muted" style="display:flex;gap:6px;align-items:center;margin-top:16px" title="Renew by adding a new chain under a stronger digest (algorithm deprecation) instead of a fresh timestamp token">
+              <input type="checkbox" id="ersRenewHashTree"> renew as hash-tree
+            </label>
+            <div class="field" style="margin:0"><label for="ersRenewHash">Hash-tree target</label>
+              <select id="ersRenewHash">
+                <option value="">configured default</option>
+                <option value="sha256">sha256</option>
+                <option value="sha384">sha384</option>
+                <option value="sha512">sha512</option>
+              </select>
+            </div>
+            <div class="spacer"></div>
+            <span class="muted" id="ersCount" style="margin-top:16px"></span>
+            <button class="btn ghost sm" id="ersRefresh" style="margin-top:16px">Refresh</button>
+          </div>
+          <table>
+            <thead><tr><th>Record</th><th>Scope</th><th>Covers</th><th>Digest</th><th>Chains</th><th>Newest stamp</th><th>TSA expiry</th><th></th></tr></thead>
+            <tbody id="ersRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+          </table>
+          <div class="toolbar" style="margin-top:10px">
+            <button class="btn ghost sm" id="ersPrev">← Newer</button>
+            <span class="muted" id="ersPage" style="margin-top:6px"></span>
+            <button class="btn ghost sm" id="ersNext">Older →</button>
+          </div>
+          <div id="ersExportOut" style="margin-top:12px"></div>
+        </div>
+
+        <div class="row" style="align-items:stretch">
+          <div class="panel" style="flex:1;min-width:320px">
+            <h2 style="font-size:15px">Generate an evidence record</h2>
+            <p class="sub">Preserve an inclusive range of audit-log sequence numbers — <code>secsy-ca ers generate -audit-from -audit-to</code>. The artifact scope (arbitrary files) is a CLI-only form here: it would need the protected bytes re-supplied at every later renewal and verification, which a browser session cannot promise.</p>
+            <div id="ersGenError" class="notice err hidden"></div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:110px"><label for="ersGenFrom">From sequence</label><input id="ersGenFrom" type="number" min="1" placeholder="1"></div>
+              <div class="field" style="flex:1;min-width:110px"><label for="ersGenTo">To sequence</label><input id="ersGenTo" type="number" min="1" placeholder="the chain head"></div>
+              <div class="field" style="width:130px"><label for="ersGenHash">Digest</label>
+                <select id="ersGenHash">
+                  <option value="">configured default</option>
+                  <option value="sha256">sha256</option>
+                  <option value="sha384">sha384</option>
+                  <option value="sha512">sha512</option>
+                </select>
+              </div>
+            </div>
+            <div class="field">
+              <label for="ersGenDesc">Description <span class="muted">(artifact scope only — an audit range is labelled by the server)</span></label>
+              <input id="ersGenDesc" placeholder="audit events 101-160">
+            </div>
+            <button class="btn" id="ersGenBtn">Generate</button>
+          </div>
+          <div class="panel" style="flex:1;min-width:320px">
+            <h2 style="font-size:15px">Verify an evidence record</h2>
+            <p class="sub">Re-derive every digest and check every timestamp chain — <code>secsy-ca ers verify</code>. Verify a stored record by id (the per-row button does the same), or paste a base64 DER record an archivist handed you. A record that does not hold up is a verdict, not an error.</p>
+            <div id="ersError" class="notice err hidden" style="margin-bottom:8px"></div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:220px"><label for="ersID">Stored record id</label><input id="ersID" placeholder="er-…"></div>
+              <button class="btn" id="ersVerifyBtn" style="margin-top:16px">Verify</button>
+            </div>
+            <div class="field">
+              <label for="ersRecord">…or a record (base64 DER)</label>
+              <textarea id="ersRecord" placeholder="MIIF…" style="min-height:80px;font-family:monospace;font-size:12px"></textarea>
+            </div>
+            <div id="ersResult" class="hidden" style="margin-top:10px"></div>
+          </div>
         </div>
       </section>
 
@@ -1081,10 +1383,31 @@
             <div class="row">
               <div class="field" style="flex:1;min-width:220px"><label for="hsmAttestCA">Certificate authority</label><select id="hsmAttestCA"></select></div>
               <button class="btn" id="hsmAttestCABtn" style="margin-top:16px">Attest CA key</button>
-              <div class="field" style="flex:1;min-width:200px"><label for="hsmAttestLabel">…or an HSM key label</label><input id="hsmAttestLabel" placeholder="ca-root"></div>
+              <div class="field" style="flex:1;min-width:200px"><label for="hsmAttestLabel">…or an HSM key label</label>
+                <input id="hsmAttestLabel" placeholder="ca-root" list="hsmAttestLabels" autocomplete="off">
+                <datalist id="hsmAttestLabels"></datalist>
+              </div>
               <button class="btn ghost" id="hsmAttestLabelBtn" style="margin-top:16px">Attest by label</button>
             </div>
             <div id="hsmKeyResult" class="hidden" style="margin-top:12px"></div>
+          </div>
+
+          <!-- Device-wide attestation audit (Task 198) -->
+          <div class="panel">
+            <h2 style="font-size:15px">Device-wide attestation audit</h2>
+            <p class="sub">Attest <i>every</i> asymmetric key the provider holds in one pass and report which ones fail policy — the counterpart of <code>secsy-ca hsm-attest audit</code>. It answers a question no single-key check can: not "is this key safe" but "is <b>anything</b> on this device exportable". A key created exportable-under-wrap, or imported rather than generated, stays invisible until something enumerates them. Each key is judged on the device's own assertions, with no expected key imposed, and a key that cannot be attested is a row carrying its error rather than a failed pass.</p>
+            <div id="hsmAuditAttestError" class="notice err hidden" style="margin-bottom:8px"></div>
+            <div class="toolbar">
+              <div id="hsmAuditAttestSummary" class="muted">Not run.</div>
+              <div class="spacer"></div>
+              <button class="btn" id="hsmAuditAttestBtn" title="One device round-trip per key; each consumes a device audit-log entry">Attest every key</button>
+            </div>
+            <div id="hsmAuditAttestResult" class="hidden" style="margin-top:10px">
+              <table>
+                <thead><tr><th>Key label</th><th>CA</th><th>Exportable</th><th>Origin</th><th>Capabilities</th><th>Verdict</th></tr></thead>
+                <tbody id="hsmAuditAttestRows"></tbody>
+              </table>
+            </div>
           </div>
 
           <!-- Offline verification (Task 168/189) -->
@@ -1195,6 +1518,21 @@
             <textarea id="svidJWTOut" readonly style="min-height:100px"></textarea>
           </div>
         </div>
+        <div class="panel hidden" id="svidJWTVerifyPanel">
+          <h2 style="font-size:15px">Validate a JWT-SVID</h2>
+          <p class="sub">Check a token against the trust bundle above and say exactly <em>why</em> it is rejected — expired, not addressed to this audience, signed by a key outside the bundle, or a trust domain this deployment does not accept. The counterpart of <code>secsy-ca svid jwt-verify</code>. Pure public-key math: nothing is minted, no key is opened, and the answer stays available through an HSM outage.</p>
+          <div id="svidVerifyError" class="notice err hidden"></div>
+          <div class="field">
+            <label for="svidVerifyToken">JWT-SVID (compact JWS)</label>
+            <textarea id="svidVerifyToken" placeholder="eyJhbGciOi…" style="min-height:90px"></textarea>
+          </div>
+          <div class="row">
+            <div class="field" style="flex:1;min-width:220px"><label for="svidVerifyAud">Audience <span class="muted">(required — your own identity)</span></label><input id="svidVerifyAud" placeholder="spiffe://example.org/server"></div>
+            <div class="field" style="flex:1;min-width:220px"><label for="svidVerifyDomains">Trust domains <span class="muted">(optional, comma-separated; can only narrow)</span></label><input id="svidVerifyDomains" placeholder="example.org"></div>
+            <button class="btn" id="svidVerifyBtn" style="margin-top:16px">Validate</button>
+          </div>
+          <div id="svidVerifyResult" class="hidden" style="margin-top:12px"></div>
+        </div>
       </section>
 
       <!-- DNS pinning records (DANE TLSA / SSHFP) -->
@@ -1238,6 +1576,77 @@
             <textarea id="dnsSshfpOut" readonly style="min-height:110px;font-family:monospace"></textarea>
             <button class="btn ghost sm" id="dnsSshfpCopy" style="margin-top:8px">Copy</button>
           </div>
+        </div>
+      </section>
+
+      <!-- Operations: the run-book operations that used to need a shell on the CA host (Task 198) -->
+      <section class="view" id="view-ops">
+        <h2>Operations</h2>
+        <p class="sub">Preflight diagnostics, the disaster-recovery manifest and its restore drill, and the static CRL/OCSP/chain snapshot relying parties fetch. Each panel is triggered deliberately; a server started without the operations dependencies answers 503 and says so in the panel.</p>
+
+        <!-- Preflight diagnostics -->
+        <div class="panel">
+          <h2 style="font-size:15px">Preflight diagnostics</h2>
+          <p class="sub">The read-only health suite over configuration, storage, the key provider, revocation freshness, publishing and the audit chain — the console counterpart of <code>secsy-ca doctor</code>. Nothing is changed. A warn or fail carries the hint that resolves it.</p>
+          <div class="toolbar">
+            <label class="muted" style="display:flex;gap:6px;align-items:center" title="Also run the slow probes that reach out to the key provider, the publish destination and the notification sinks">
+              <input type="checkbox" id="opsDoctorDeep"> deep checks
+            </label>
+            <div class="spacer"></div>
+            <button class="btn sm" id="opsDoctorRun">Run diagnostics</button>
+          </div>
+          <div id="opsDoctorBanner" class="notice hidden"></div>
+          <div id="opsDoctorMeta" class="muted" style="margin-bottom:12px"></div>
+          <table>
+            <thead><tr><th>Status</th><th>Check</th><th>Detail</th><th>Elapsed</th></tr></thead>
+            <tbody id="opsDoctorRows"><tr><td colspan="4" class="muted">Not run yet.</td></tr></tbody>
+          </table>
+        </div>
+
+        <!-- Disaster-recovery manifest -->
+        <div class="panel">
+          <h2 style="font-size:15px">Disaster-recovery manifest</h2>
+          <p class="sub">The recovery anchor: every CA's public material, the provider key inventory, and the tip of the tamper-evident audit chain, tied together so a restore can be verified end to end — the console counterpart of <code>secsy-ca backup</code>. It never contains private key material.</p>
+          <div class="toolbar">
+            <div class="spacer"></div>
+            <button class="btn sm" id="opsBackupDownload">Download DR manifest</button>
+          </div>
+          <div id="opsBackupMsg" class="notice hidden"></div>
+          <div id="opsBackupSummary" class="muted" style="margin-bottom:8px"></div>
+          <div id="opsBackupNotes"></div>
+        </div>
+
+        <!-- Restore drill -->
+        <div class="panel">
+          <h2 style="font-size:15px">Restore drill</h2>
+          <p class="sub">Fetch the newest scheduled encrypted backup, decrypt it, restore it into a scratch database and walk the restored store's integrity gate — <code>secsy-ca backup verify-restore</code>. An untested backup is not a backup. The live deployment is untouched, and the drill can take minutes.</p>
+          <div class="toolbar">
+            <div class="spacer"></div>
+            <button class="btn sm" id="opsRestoreRun">Run restore drill</button>
+          </div>
+          <div id="opsRestoreResult" class="notice hidden"></div>
+        </div>
+
+        <!-- Static-artifact publishing -->
+        <div class="panel">
+          <h2 style="font-size:15px">Static-artifact publishing</h2>
+          <p class="sub">Write the CRL / pre-signed OCSP / chain snapshot a CDN serves, or re-read the published snapshot and check every object against its own manifest — <code>secsy-ca publish</code> and <code>secsy-ca publish -verify</code>.</p>
+          <div class="toolbar">
+            <div class="field" style="margin:0;flex:1">
+              <label for="opsPublishCAs">CAs (comma-separated ids or labels; empty publishes the configured set)</label>
+              <input id="opsPublishCAs" placeholder="all CAs" style="width:100%">
+            </div>
+            <label class="muted" style="display:flex;gap:6px;align-items:center;margin-top:16px" title="Publish only CRLs, chains and CA certificates — no pre-signed OCSP responses">
+              <input type="checkbox" id="opsPublishSkipOCSP"> skip OCSP
+            </label>
+            <button class="btn sm" id="opsPublishRun" style="margin-top:16px">Publish snapshot</button>
+            <button class="btn ghost sm" id="opsPublishVerify" style="margin-top:16px">Verify published snapshot</button>
+          </div>
+          <div id="opsPublishResult" class="notice hidden"></div>
+          <table class="hidden" id="opsPublishArtifacts">
+            <thead><tr><th>Path</th><th>Kind</th><th>Size</th><th>SHA-256</th></tr></thead>
+            <tbody id="opsPublishArtifactRows"></tbody>
+          </table>
         </div>
       </section>
 
@@ -1417,6 +1826,41 @@
                 </select>
               </div>
             </div>
+          </div>
+
+          <!-- Adoption of an existing signing key (Task 198): the console half of
+               `secsy-secret signing-key import`. The only form on this page whose
+               body carries a private key, and it says so. -->
+          <div class="panel">
+            <h2 style="font-size:14px">Import an existing signing key</h2>
+            <p class="muted" style="margin-top:0">Adopt a key you already have — one whose public half is embedded in shipped clients cannot be rotated cheaply, but it can be moved off an application server and into the HSM. <b>This form carries a private key.</b> It is sent once over this authenticated session, written into the provider non-extractable, never echoed back and never logged; the field is cleared as soon as the import succeeds. An imported key is <b>not</b> equivalent to a generated one: hardware attestation will report it as imported, and any copy made before the import remains a copy — destroy the remaining copies once the key has been exercised. Requires <code>secret:signing-key</code>, like creation. The counterpart of <code>secsy-secret signing-key import</code>.</p>
+            <div id="sigKeyImportError" class="notice err hidden" style="margin-bottom:8px"></div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:180px"><label for="sigKeyImportName">Key name</label><input id="sigKeyImportName" placeholder="legacy-app-signer"></div>
+              <div class="field" style="width:220px"><label for="sigKeyImportAlg">Algorithm</label>
+                <select id="sigKeyImportAlg">
+                  <option value="">derive from the key</option>
+                  <option value="ecdsa-p256">ecdsa-p256</option>
+                  <option value="ecdsa-p384">ecdsa-p384</option>
+                  <option value="ecdsa-p521">ecdsa-p521</option>
+                  <option value="ed25519">ed25519</option>
+                  <option value="rsa-pss-2048">rsa-pss-2048</option>
+                  <option value="rsa-pss-3072">rsa-pss-3072</option>
+                  <option value="rsa-pss-4096">rsa-pss-4096</option>
+                  <option value="rsa-pkcs1v15-2048">rsa-pkcs1v15-2048</option>
+                  <option value="rsa-pkcs1v15-3072">rsa-pkcs1v15-3072</option>
+                  <option value="rsa-pkcs1v15-4096">rsa-pkcs1v15-4096</option>
+                </select>
+              </div>
+              <div class="field" style="flex:1;min-width:180px"><label for="sigKeyImportPass">Passphrase <span class="muted">(only if the container is encrypted)</span></label><input id="sigKeyImportPass" type="password" autocomplete="new-password" placeholder="leave blank if unencrypted"></div>
+            </div>
+            <p class="muted" style="margin:0 0 4px">An RSA key must name its algorithm: the same key works with PSS and with PKCS#1 v1.5, and the choice has to match what the existing verifiers already do. An EC or Ed25519 key determines its own.</p>
+            <div class="field">
+              <label for="sigKeyImportPem">Existing private key <span class="muted">— PEM (PKCS#8 plain or encrypted, PKCS#1, SEC1, OpenSSH), or base64 of a raw DER / PKCS#12 container</span></label>
+              <textarea id="sigKeyImportPem" placeholder="-----BEGIN PRIVATE KEY-----" autocomplete="off" spellcheck="false" style="min-height:90px;font-family:monospace;font-size:12px"></textarea>
+            </div>
+            <button class="btn" id="sigKeyImportBtn">Import key</button>
+            <div id="sigKeyImportResult" class="muted" style="margin-top:8px"></div>
           </div>
         </div>
 
@@ -1713,6 +2157,55 @@
             </div>
             <button class="btn ghost" id="accessEffectiveBtn">Show effective access</button>
             <div id="accessEffectiveOut" style="margin-top:12px"></div>
+          </div>
+        </div>
+
+        <!-- Resource-role catalog (Task 191) -->
+        <div class="panel">
+          <h2 style="font-size:15px">Role catalog</h2>
+          <p class="sub">Every grantable role, the resource types it is meaningful on, and the capabilities it confers <em>at the resource it is granted on</em> — the console counterpart of <code>secsy-ca grant roles</code>. Read straight out of the evaluator, so it cannot drift from what a grant actually does. The Role picker above is populated from this catalog.</p>
+          <table>
+            <thead><tr><th>Role</th><th>Applies to</th><th>Capabilities conferred</th></tr></thead>
+            <tbody id="accessRoleRows"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody>
+          </table>
+          <table style="margin-top:12px">
+            <thead><tr><th>Scope</th><th>Meaning</th></tr></thead>
+            <tbody id="accessScopeRows"><tr><td colspan="2" class="muted">Loading…</td></tr></tbody>
+          </table>
+          <p class="sub" id="accessRoleNote" style="margin:12px 0 0"></p>
+        </div>
+
+        <!-- Internal user groups -->
+        <div class="panel">
+          <h2 style="font-size:15px">User groups</h2>
+          <p class="sub">Groups managed in this deployment's database, for granting to a set of people without mirroring an enterprise directory. A grant matches an internal group by its <b>id</b> (identity-provider groups match by the claim value the provider asserts instead), so <b>Use in grant</b> fills the grant form above with the id rather than the name. Creating a group and changing its membership require <code>rbac:manage</code>.</p>
+          <div id="groupMsg" class="notice hidden"></div>
+          <div class="toolbar">
+            <div class="field" style="margin:0;flex:1;min-width:200px">
+              <label for="groupNewName">New group name</label>
+              <input id="groupNewName" placeholder="pki-payments">
+            </div>
+            <button class="btn sm" id="groupCreateBtn" style="margin-top:16px">Create group</button>
+            <div class="spacer"></div>
+            <button class="btn ghost sm" id="groupRefresh" style="margin-top:16px">Refresh</button>
+          </div>
+          <table>
+            <thead><tr><th>Name</th><th>Id</th><th>Tenant</th><th></th></tr></thead>
+            <tbody id="groupRows"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
+          </table>
+          <div class="hidden" id="groupMembersBox" style="margin-top:14px">
+            <h2 style="font-size:14px" id="groupMembersTitle"></h2>
+            <table>
+              <thead><tr><th>Member (subject)</th><th></th></tr></thead>
+              <tbody id="groupMemberRows"><tr><td colspan="2" class="muted">Loading…</td></tr></tbody>
+            </table>
+            <div class="row" style="margin-top:10px">
+              <div class="field" style="flex:1;min-width:220px;margin:0">
+                <label for="groupMemberSub">Add a member (subject, as the identity provider asserts it)</label>
+                <input id="groupMemberSub" placeholder="alice@example.com">
+              </div>
+              <button class="btn sm" id="groupMemberAddBtn" style="margin-top:16px">Add member</button>
+            </div>
           </div>
         </div>
       </section>

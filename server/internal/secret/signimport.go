@@ -23,12 +23,26 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
+
+// ErrSigningKeyMaterial marks an import the SUPPLIED MATERIAL made impossible:
+// an unsupported key type or curve, an RSA key with no algorithm named, an
+// algorithm that does not match the key that arrived.
+//
+// It is separated from every other way ImportSigningKey can fail — the
+// duplicate-name lookup, the write into the provider, the post-import signature
+// proof, the registry INSERT — because those are the service's failures, not the
+// caller's, and one of them is load-bearing: the INSERT runs AFTER the key is
+// already in the provider. Reporting that as a bad request invites the operator
+// to retry the same body, and each retry mints a fresh id, hence a fresh label,
+// hence another stranded non-extractable key. Classify with errors.Is.
+var ErrSigningKeyMaterial = errors.New("secret: the supplied key cannot be adopted as a signing key")
 
 // ImportSigningKeySpec describes an existing signing key to adopt.
 type ImportSigningKeySpec struct {
@@ -51,21 +65,21 @@ type ImportSigningKeySpec struct {
 // like a generated one.
 func ImportSigningKey(ctx context.Context, provider keyprovider.Provider, store SigningKeyStore, spec ImportSigningKeySpec) (*models.SigningKey, error) {
 	if strings.TrimSpace(spec.Name) == "" {
-		return nil, fmt.Errorf("signing key name is required")
+		return nil, fmt.Errorf("%w: signing key name is required", ErrSigningKeyMaterial)
 	}
 	if strings.TrimSpace(spec.TenantID) == "" {
 		return nil, fmt.Errorf("tenant is required")
 	}
 	if spec.PrivateKey == nil {
-		return nil, fmt.Errorf("no private key supplied")
+		return nil, fmt.Errorf("%w: no private key supplied", ErrSigningKeyMaterial)
 	}
 	signer, ok := spec.PrivateKey.(crypto.Signer)
 	if !ok {
-		return nil, fmt.Errorf("the supplied private key of type %T cannot sign", spec.PrivateKey)
+		return nil, fmt.Errorf("%w: a private key of type %T cannot sign", ErrSigningKeyMaterial, spec.PrivateKey)
 	}
 	alg, err := resolveImportAlgorithm(spec.PrivateKey, spec.Algorithm)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrSigningKeyMaterial, err)
 	}
 	aspec, _ := alg.spec()
 

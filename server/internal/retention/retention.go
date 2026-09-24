@@ -89,11 +89,14 @@ func (r *Runner) SetClock(now func() time.Time) { r.now = now }
 
 // Result is the outcome of one retention pass (real or dry-run).
 type Result struct {
-	Mode        string    `json:"mode"`
-	DryRun      bool      `json:"dry_run"`
-	Window      string    `json:"window"`                 // resolved min_age
-	Cutoff      time.Time `json:"cutoff"`                 // not_after < cutoff is eligible
-	PruneCutoff time.Time `json:"prune_cutoff,omitempty"` // prune mode only
+	Mode   string    `json:"mode"`
+	DryRun bool      `json:"dry_run"`
+	Window string    `json:"window"` // resolved min_age
+	Cutoff time.Time `json:"cutoff"` // not_after < cutoff is eligible
+	// PruneCutoff is the hard-delete horizon, set only in prune mode. It is a
+	// pointer because `omitempty` does not omit a zero time.Time: a value struct
+	// would serialize as 0001-01-01 in archive mode and read as a real horizon.
+	PruneCutoff *time.Time `json:"prune_cutoff,omitempty"`
 	// Eligible is the count of retention-eligible rows in the hot table at run
 	// start (an upper bound: it does not subtract approval-pinned serials).
 	Eligible int `json:"eligible"`
@@ -118,6 +121,13 @@ type Result struct {
 
 // Run executes one pass immediately, then on every interval tick until ctx is
 // cancelled. It blocks; callers register it as a leader-elected background job.
+//
+// It holds no lock of its own, because leader election is what makes it a
+// singleton ACROSS replicas. A process that can also start a pass from somewhere
+// else — the server, whose POST /api/inventory/retention/run drives another Runner
+// over the same rows — must serialize the two itself, and therefore drives RunOnce
+// on its own schedule under its own single-flight rather than calling this (see
+// cmd/server/retention.go).
 func (r *Runner) Run(ctx context.Context) {
 	r.logger.Printf("certificate inventory retention started (mode=%s, interval=%s, min_age=%s, prune_after=%s, batch=%d, driver=%s)",
 		r.cfg.ResolvedMode(), r.cfg.Interval(), humanDays(r.cfg.MinAge()), humanDays(r.cfg.PruneAfter()), r.cfg.Batch(), r.db.Driver())
@@ -173,13 +183,15 @@ func (r *Runner) Plan(ctx context.Context) (Result, error) {
 // Snapshot returns the current retention state (cheap counts, no scan) for the
 // `inventory retention status` command.
 type Snapshot struct {
-	Mode        string    `json:"mode"`
-	Window      string    `json:"window"`
-	Cutoff      time.Time `json:"cutoff"`
-	PruneCutoff time.Time `json:"prune_cutoff,omitempty"`
-	Eligible    int       `json:"eligible"`
-	Prunable    int       `json:"prunable"`
-	ArchiveSize int       `json:"archive_size"`
+	Mode   string    `json:"mode"`
+	Window string    `json:"window"`
+	Cutoff time.Time `json:"cutoff"`
+	// PruneCutoff is set only in prune mode; see Result.PruneCutoff for why it is
+	// a pointer.
+	PruneCutoff *time.Time `json:"prune_cutoff,omitempty"`
+	Eligible    int        `json:"eligible"`
+	Prunable    int        `json:"prunable"`
+	ArchiveSize int        `json:"archive_size"`
 }
 
 // Snapshot reads the current eligibility/archive counts without mutating.
@@ -197,7 +209,7 @@ func (r *Runner) Snapshot(ctx context.Context) (Snapshot, error) {
 		return s, fmt.Errorf("counting archive: %w", err)
 	}
 	if s.Mode == config.RetentionModePrune {
-		s.PruneCutoff = pruneCutoff
+		s.PruneCutoff = &pruneCutoff
 		archPrune, aerr := r.db.CountArchiveEligible(pruneCutoff)
 		if aerr != nil {
 			return s, fmt.Errorf("counting prunable archive: %w", aerr)
@@ -223,7 +235,7 @@ func (r *Runner) pass(dryRun bool) (Result, error) {
 
 	res := Result{Mode: mode, DryRun: dryRun, Window: humanDays(minAge), Cutoff: cutoff, Started: start}
 	if mode == config.RetentionModePrune {
-		res.PruneCutoff = pruneCutoff
+		res.PruneCutoff = &pruneCutoff
 	}
 
 	excl, err := r.db.OpenApprovalSerials()

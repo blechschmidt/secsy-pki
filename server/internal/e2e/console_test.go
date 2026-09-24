@@ -271,7 +271,23 @@ func TestConsoleFlow(t *testing.T) {
 			// alternate chains (list-cross-signs -chains).
 			"Hardware security module", "Device authenticity", "Key attestation",
 			"Stored secrets", "Lifecycle attention", "KEK rotation",
-			"Tokenization", "Evidence record (RFC 4998)", "Alternate chains"} {
+			"Tokenization", "Evidence records (RFC 4998)", "Alternate chains",
+			// Task 198 CLI↔UI parity: the administrative surfaces that had no
+			// REST counterpart at all until now — preflight diagnostics
+			// (doctor), DR export and the restore drill (backup,
+			// backup verify-restore), static-artifact publishing (publish),
+			// inventory retention, the compromised-key blocklist, evidence-record
+			// generation, key/CA adoption (import-key, ca import), TSA and
+			// code-signing provisioning (tsa-key, signing-key), device-wide
+			// attestation (hsm-attest audit), the resource-role catalog and
+			// group management (grant roles / -group), and JWT-SVID validation.
+			"Preflight diagnostics", "Disaster-recovery manifest", "Restore drill",
+			"Static-artifact publishing", "Inventory retention",
+			"Compromised-key blocklist", "Generate an evidence record",
+			"Adopt an existing CA", "Import a key into the provider",
+			"Provision a code-signing credential", "Provision the RFC 3161 TSA credential",
+			"Device-wide attestation audit", "Role catalog", "User groups",
+			"Validate a JWT-SVID"} {
 			if !strings.Contains(string(body), want) {
 				t.Errorf("console index missing %q", want)
 			}
@@ -297,7 +313,14 @@ func TestConsoleFlow(t *testing.T) {
 			// Task 190 CLI↔UI parity: the loaders behind the new surfaces.
 			"loadHSM", "loadHSMAuditStatus", "attest-device", "loadStoredSecrets",
 			"loadSecretLifecycle", "loadKEKStatus", "runTransform",
-			"loadAlternateChains", "/api/ers/verify"} {
+			"loadAlternateChains", "/api/ers/verify",
+			// Task 198: the loaders and endpoints behind the new admin surfaces.
+			"loadOps", "/api/doctor", "/api/backup", "/api/backup/verify-restore",
+			"/api/publish", "/api/inventory/retention", "/api/events/anchor",
+			"/api/blocked-keys", "/api/ers/generate", "/api/ct/verify-inclusion",
+			"/api/approvals/expire", "/api/keys/import", "/api/ca/import",
+			"/api/sign/signers", "/api/tsa/key", "/api/hsm/attestation-audit",
+			"/api/secret/signing-keys/import", "/api/grants/roles", "/api/groups"} {
 			if !bytes.Contains(body, []byte(want)) {
 				t.Errorf("app.js does not contain expected console code %q", want)
 			}

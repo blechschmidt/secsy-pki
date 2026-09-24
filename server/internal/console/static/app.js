@@ -63,6 +63,23 @@ function showError(el, msg) {
   el.classList.remove('hidden');
 }
 
+// postVerdict posts to an endpoint whose NEGATIVE answer is a verdict rather than
+// a fault: POST /api/ers/verify and POST /api/ca/{id}/svid/jwt/verify both answer
+// 409 with the very body they would have sent on 200 ({valid:false, reason:…}).
+// api() throws on every non-2xx, but in raw mode the thrown message is the
+// response text — so the verdict is recovered from it and rendered as the answer,
+// instead of reaching the operator as a bare "HTTP 409".
+async function postVerdict(path, body) {
+  try {
+    return JSON.parse(await api('POST', path, body, true));
+  } catch (e) {
+    let data = null;
+    try { data = JSON.parse(e.message); } catch (_) { /* a real transport/auth error */ }
+    if (data && typeof data.valid === 'boolean') return data;
+    throw e;
+  }
+}
+
 // ---- Authentication ------------------------------------------------------
 async function bootAuth() {
   try {
@@ -331,6 +348,7 @@ function switchView(name) {
   if (name === 'compliance') loadCompliance();
   if (name === 'bundle') loadBundle();
   if (name === 'dns') loadDNS();
+  if (name === 'ops') loadOps();
   if (name === 'tenants') loadTenants();
   if (name === 'tokens') loadTokens();
   if (name === 'access') loadAccess();
@@ -362,6 +380,14 @@ async function loadCAs() {
   $('bundleCA').innerHTML = opts || empty;
   $('validateCA').innerHTML = opts || empty;
   $('interParent').innerHTML = activeOpts || empty;
+  // An adopted CA's parent is optional (blank lets the server discover it, and an
+  // externally-signed subordinate has no parent here at all), so this select keeps
+  // its own empty choice rather than borrowing the "— no CAs —" placeholder.
+  $('caImpParent').innerHTML = '<option value="">— discover / external parent —</option>' + activeOpts;
+  // The two provisioning forms issue a credential, so they offer the same active
+  // issuers the ordinary issuance forms do.
+  $('signProvCA').innerHTML = activeOpts || empty;
+  $('tsaProvCA').innerHTML = activeOpts || empty;
   $('csIssuer').innerHTML = activeOpts || empty;
   $('csSubject').innerHTML = '<option value="">— external (paste below) —</option>' + opts;
   $('csListCA').innerHTML = opts || empty;
@@ -767,6 +793,18 @@ $('bulkExecute').onclick = async () => {
       confirm_count: confirmed,
       operation_id: bulkPlan.operation_id,
     });
+    // The four-eyes gate answers 202 and revokes nothing. The approval pins this
+    // exact selection (filter + reason + confirmed count), so the operator must
+    // re-run the same preview and execute once it is signed off.
+    const held = heldForApproval(result);
+    if (held) {
+      $('bulkResultBox').innerHTML = `<div class="notice warn">${escapeHTML(held)} Preview and execute the same selection again to consume the approval.</div>`;
+      $('bulkResultBox').classList.remove('hidden');
+      $('bulkPlanBox').classList.add('hidden');
+      bulkPlan = null;
+      loadApprovals();
+      return;
+    }
     $('bulkResultBox').innerHTML = `<div class="crl-status">Bulk revocation complete: <b>${result.revoked}</b> revoked`
       + ` in ${result.batches} batch(es), CRL scopes regenerated: ${escapeHTML((result.crl_scopes || []).join(', ') || 'none')}`
       + `, ${Number(result.duration_seconds || 0).toFixed(2)}s (operation <span class="mono">${escapeHTML(result.operation_id)}</span>)`
@@ -787,6 +825,101 @@ $('bulkExecute').onclick = async () => {
     $('bulkConfirmCount').value = '';
   }
 };
+
+// ---- TLS delegated credentials (RFC 9345, Task 198) ------------------------
+// Mirrors `secsy-ca delegated-credential mint`, with the difference that decides
+// the form: the CLI is handed the leaf's private key as a file, while the server
+// can only obtain it by recovering the M-of-N escrow envelope taken at PKCS#12
+// export — so the envelope and a quorum of recovery-agent ids are what this panel
+// asks for. There is no REST counterpart of `delegated-credential verify` (it is
+// pure offline crypto over a wire credential and a certificate), so verification
+// is not offered here.
+
+// dcSPKIBase64 accepts what an operator actually holds — a PUBLIC KEY PEM — and
+// yields the base64 DER SubjectPublicKeyInfo the endpoint wants. A PEM body is
+// already that base64, so the armour and the line breaks are all that must go;
+// bare base64 passes through unchanged.
+function dcSPKIBase64(text) {
+  return text.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '');
+}
+
+$('dcBtn').onclick = async () => {
+  const out = $('dcResult'), msg = $('dcMsg');
+  msg.className = 'notice hidden';
+  out.classList.add('hidden');
+  const id = selectedCertCA();
+  if (!id) { notice(msg, 'err', 'Select a certificate authority above.'); return; }
+  const serial = $('dcSerial').value.trim();
+  if (!serial) { notice(msg, 'err', 'Give the decimal serial of the leaf to delegate for.'); return; }
+  const agents = csvList($('dcAgents').value);
+  if (!agents.length) { notice(msg, 'err', 'List the recovery agents that unseal the escrow envelope.'); return; }
+  const env = $('dcEscrowEnvelope').value.trim();
+  if (!env) { notice(msg, 'err', 'Paste the escrow envelope stored when the leaf was exported as a PKCS#12.'); return; }
+  // The envelope travels as JSON, not as a string, so it is parsed here — a typo
+  // in a pasted envelope deserves its own message rather than a decoder error.
+  let envelope;
+  try { envelope = JSON.parse(env); }
+  catch (_) { notice(msg, 'err', 'The escrow envelope is not valid JSON — paste the whole envelope object.'); return; }
+  const body = {
+    serial, recovery_agents: agents, escrow_envelope: envelope,
+    dc_key_type: $('dcKeyType').value,
+  };
+  const hours = parseInt($('dcValidHours').value, 10);
+  if (hours > 0) body.valid_for_seconds = hours * 3600;
+  if ($('dcEndpoint').value === 'client') body.client = true;
+  const signAlg = $('dcSignAlg').value.trim(); if (signAlg) body.signature_scheme = signAlg;
+  const expectAlg = $('dcExpectAlg').value.trim(); if (expectAlg) body.expected_cert_verify_algorithm = expectAlg;
+  const pub = dcSPKIBase64($('dcPubKey').value.trim()); if (pub) body.dc_public_key = pub;
+  $('dcBtn').disabled = true;
+  try {
+    const res = await api('POST', `/api/ca/${id}/delegated-credential`, body);
+    renderDelegatedCredential(res);
+  } catch (e) { notice(msg, 'err', e.message); }
+  finally { $('dcBtn').disabled = false; }
+};
+
+// renderDelegatedCredential shows the credential's terms and offers the bytes.
+// The wire credential and the delegated public key are public material and are
+// shown; the delegated PRIVATE key (present only when the server generated the
+// keypair) is offered as a download and never written into the page.
+function renderDelegatedCredential(res) {
+  const out = $('dcResult');
+  out.className = 'notice ok';
+  out.innerHTML =
+    `<div style="font-size:15px"><b>✓ ${escapeHTML(res.endpoint || '')} delegated credential</b> for serial ` +
+    `<span class="mono">${escapeHTML(shortSerial(res.serial || ''))}</span></div>` +
+    `<div class="muted" style="margin-top:6px">` +
+      `valid ${escapeHTML(fmtDuration(res.valid_time_seconds))} from the certificate notBefore, until ` +
+      `${escapeHTML(fmtTime(res.not_after))}<br>` +
+      `signed with ${escapeHTML(res.algorithm || '')} · handshake scheme ` +
+      `${escapeHTML(res.expected_cert_verify_algorithm || '')}` +
+      (res.dc_private_key_pem
+        ? '<br>the delegated keypair was generated here — download the private key now, it is not stored'
+        : '<br>the delegated public key was supplied, so its private half stayed with you') +
+    '</div>' +
+    `<div class="mono" style="margin-top:8px;word-break:break-all">${escapeHTML(res.delegated_credential || '')}</div>`;
+  out.classList.remove('hidden');
+  const add = (text, content, filename, type) => {
+    const b = document.createElement('button');
+    b.className = 'btn ghost sm';
+    b.style.margin = '8px 8px 0 0';
+    b.textContent = text;
+    b.onclick = () => downloadBlob(content, filename, type);
+    out.appendChild(b);
+  };
+  const stem = res.serial || 'credential';
+  // The wire credential is what a TLS terminator loads, so it is offered as the
+  // raw bytes the base64 encodes rather than as the encoding.
+  if (res.delegated_credential) {
+    add('Download wire credential', unb64(res.delegated_credential), `${stem}.dc.bin`, 'application/octet-stream');
+  }
+  if (res.dc_public_key_pem) {
+    add('Download delegated public key', res.dc_public_key_pem, `${stem}.dc-pub.pem`, 'application/x-pem-file');
+  }
+  if (res.dc_private_key_pem) {
+    add('Download delegated private key', res.dc_private_key_pem, `${stem}.dc-key.pem`, 'application/x-pem-file');
+  }
+}
 
 // ---- Monitor view --------------------------------------------------------
 $('monRefresh').onclick = loadMonitor;
@@ -1080,6 +1213,40 @@ function ctRowHTML(r) {
   </tr>`;
 }
 
+// Mirrors `secsy-ca ct verify-inclusion`: run the inclusion check now instead of
+// waiting for the leader-elected background monitor's next tick. It drives the
+// same monitor over the same configured logs, so the console can never report a
+// different posture than the CLI. "failed" and "new_misbehavior" are the
+// mis-issuance / log-misbehavior signal — a log that did not merge a certificate
+// it signed an SCT for — so a non-zero count is an error verdict however cleanly
+// the run itself completed.
+$('ctVerifyBtn').onclick = async () => {
+  const out = $('ctVerifyResult'), btn = $('ctVerifyBtn');
+  const body = {};
+  const max = parseInt($('ctVerifyMax').value, 10);
+  if (max > 0) body.max = max;
+  btn.disabled = true;
+  notice(out, '', 'Fetching signed tree heads and verifying Merkle audit paths…');
+  try {
+    const res = await api('POST', '/api/ct/verify-inclusion', body);
+    const bits = [`${res.certs || 0} certificate(s) examined, ${res.checked || 0} SCT(s) checked: ` +
+      `${res.included || 0} included, ${res.pending || 0} pending, ${res.failed || 0} failed, ` +
+      `${res.unknown_log || 0} from an unknown log, ${res.errors || 0} fetch error(s).`];
+    if (res.new_misbehavior) {
+      bits.push(`${res.new_misbehavior} SCT(s) newly transitioned to FAILED: a log did not include a certificate it promised to log. Investigate before the next issuance.`);
+    } else if (res.failed) {
+      bits.push('Failed SCTs remain from an earlier scan — filter the table by "failed" to see them.');
+    }
+    if (res.error) bits.push('Scan error: ' + res.error);
+    notice(out, (res.failed || res.new_misbehavior) ? 'err' : 'ok', bits.join(' '));
+    loadCT(); // the standing table and counts have moved
+  } catch (e) {
+    // 503 = no CT logs are configured (or the configured ones are unusable); the
+    // server's message names which, so it is surfaced verbatim.
+    notice(out, 'err', 'Inclusion verification failed: ' + e.message);
+  } finally { btn.disabled = false; }
+};
+
 // ---- Inventory view ------------------------------------------------------
 let inventoryCache = []; // last-loaded records, filtered client-side for search
 
@@ -1101,6 +1268,9 @@ function inventoryQuery() {
 async function loadInventory() {
   const tbody = $('invRows');
   tbody.innerHTML = '<tr><td colspan="8" class="muted">Loading…</td></tr>';
+  // The retention posture explains why the listing above is (or is not)
+  // shrinking, so it is refreshed alongside it and fails independently.
+  loadRetentionStatus();
   try {
     const inv = await api('GET', '/api/report/inventory' + inventoryQuery());
     inventoryCache = inv.certificates || [];
@@ -1225,6 +1395,10 @@ async function loadCompliance() {
   const roll = $('compRoll');
   roll.className = 'notice hidden';
   $('compStats').innerHTML = '';
+  // The blocklist and the evidence records are deployment-global rather than
+  // per-CA, so they reload with the view but ignore the CA filter above.
+  loadBlockedKeys();
+  loadEvidenceRecords();
   try {
     const q = $('compCA').value ? '?ca_id=' + encodeURIComponent($('compCA').value) : '';
     const rep = await api('GET', '/api/report/compliance' + q);
@@ -1276,6 +1450,279 @@ function statCard(num, lbl, cls) {
   return `<div class="stat ${cls}"><div class="num">${escapeHTML(String(num))}</div><div class="lbl">${escapeHTML(lbl)}</div></div>`;
 }
 
+// ---- Compromised-key blocklist (Task 120, Compliance view) -----------------
+// Mirrors `secsy-ca blocked-keys list|add|remove`. The store is deployment-global
+// — a compromised key is compromised for every tenant — and holds no key
+// material, only the SubjectPublicKeyInfo SHA-256 fingerprint the pre-issuance
+// gate compares against.
+async function loadBlockedKeys() {
+  const tbody = $('bkRows');
+  tbody.innerHTML = '<tr><td colspan="6" class="muted">Loading…</td></tr>';
+  let keys = [];
+  try {
+    const rep = await api('GET', '/api/blocked-keys');
+    keys = rep.blocked_keys || [];
+    $('bkCount').textContent = `${rep.total || 0} key(s) blocked deployment-wide`;
+  } catch (e) {
+    $('bkCount').textContent = '';
+    tbody.innerHTML = `<tr><td colspan="6" class="muted">${escapeHTML(e.message)}</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = keys.length ? keys.map((k, i) => `
+    <tr>
+      <td class="mono">${escapeHTML(k.fingerprint || '')}</td>
+      <td>${escapeHTML(k.reason || '')}</td>
+      <td>${escapeHTML(k.source || '')}</td>
+      <td>${escapeHTML(k.added_by || '')}</td>
+      <td style="white-space:nowrap">${fmtTime(k.added_at)}</td>
+      <td style="white-space:nowrap"><button class="btn danger sm" data-bk="${i}">Unblock</button></td>
+    </tr>`).join('')
+    : '<tr><td colspan="6" class="muted">No keys are blocked.</td></tr>';
+  tbody.querySelectorAll('button[data-bk]').forEach(b => {
+    b.onclick = () => unblockKey(keys[Number(b.dataset.bk)]);
+  });
+}
+
+// Mirrors `secsy-ca blocked-keys add`. Exactly one input names the key: pasted
+// material (certificate / CSR / public key, PEM or bare base64 DER) or a
+// pre-computed fingerprint. 201 created the entry, 200 means it was already
+// blocked — which is reported plainly rather than as a success.
+$('bkAddBtn').onclick = async () => {
+  const msg = $('bkMsg'), btn = $('bkAddBtn');
+  msg.className = 'notice hidden';
+  const fp = $('bkFingerprint').value.trim();
+  const material = $('bkMaterial').value.trim();
+  if (fp && material) {
+    notice(msg, 'err', 'Give the material or a fingerprint, not both — naming the key two ways hides which one you meant to block.');
+    return;
+  }
+  if (!fp && !material) {
+    notice(msg, 'err', 'Paste the certificate, CSR or public key to block, or enter a pre-computed fingerprint.');
+    return;
+  }
+  const body = {};
+  if (fp) body.fingerprint = fp;
+  else body[$('bkKind').value] = material;
+  const reason = $('bkReason').value.trim(); if (reason) body.reason = reason;
+  const source = $('bkSource').value.trim(); if (source) body.source = source;
+  btn.disabled = true;
+  try {
+    const res = await api('POST', '/api/blocked-keys', body);
+    notice(msg, res.newly_added ? 'ok' : 'warn', res.newly_added
+      ? `Blocked ${res.fingerprint} — every issuance surface now refuses this key, for every tenant.`
+      : `Already blocked since ${fmtTime(res.added_at)} by ${res.added_by || 'unknown'} ` +
+        `(source ${res.source || '—'}${res.reason ? ', reason: ' + res.reason : ''}). ` +
+        'Nothing changed: the original entry and its justification stand.');
+    $('bkMaterial').value = $('bkFingerprint').value = $('bkReason').value = '';
+    loadBlockedKeys();
+  } catch (e) {
+    // 403 = ca:configure is required; 400 names the input that could not be read.
+    notice(msg, 'err', 'Blocking failed: ' + e.message);
+  } finally { btn.disabled = false; }
+};
+
+// Mirrors `secsy-ca blocked-keys remove`. Un-blocking re-admits a key the CA was
+// refusing to certify, which is the security-relevant half of the pair — hence
+// the confirmation and the recorded justification. The canonical fingerprint is
+// standard-alphabet base64 and may contain '/', so it is percent-encoded.
+async function unblockKey(k) {
+  const msg = $('bkMsg');
+  if (!confirm(`Un-block this key?\n\n${k.fingerprint}\n\nThe CA will certify it again on every issuance surface and for every tenant. Do this only if the key was never compromised.`)) return;
+  const reason = prompt('Why is this key being un-blocked? (recorded in the audit log)');
+  if (reason === null) return; // cancelled
+  try {
+    const q = reason.trim() ? '?reason=' + encodeURIComponent(reason.trim()) : '';
+    const res = await api('DELETE', '/api/blocked-keys/' + encodeURIComponent(k.fingerprint) + q);
+    notice(msg, res.removed ? 'ok' : 'warn', res.removed
+      ? `Un-blocked ${res.fingerprint}.`
+      : `${res.fingerprint} was not on the blocklist (${res.status}); nothing changed.`);
+    loadBlockedKeys();
+  } catch (e) { notice(msg, 'err', 'Un-blocking failed: ' + e.message); }
+}
+$('bkRefresh').onclick = loadBlockedKeys;
+
+// ---- RFC 4998 Evidence Records (Task 161, Compliance view) ----------------
+// An evidence record keeps a proof verifiable after the algorithms under it
+// weaken, by nesting RFC 3161 archive-timestamp chains. Mirrors
+// `secsy-ca ers list|generate|renew|export`; verification lives below.
+let ersOffset = 0;
+
+async function loadEvidenceRecords() {
+  const tbody = $('ersRows');
+  tbody.innerHTML = '<tr><td colspan="8" class="muted">Loading…</td></tr>';
+  const limit = parseInt($('ersLimit').value, 10) || 200;
+  let items = [];
+  try {
+    const rep = await api('GET', `/api/ers?limit=${limit}&offset=${ersOffset}`);
+    items = rep.items || [];
+    $('ersCount').textContent = rep.total
+      ? `${rep.total} record(s) · showing ${ersOffset + 1}–${ersOffset + items.length}`
+      : 'no records';
+    $('ersPage').textContent = `offset ${ersOffset}`;
+  } catch (e) {
+    $('ersCount').textContent = '';
+    tbody.innerHTML = `<tr><td colspan="8" class="muted">${escapeHTML(e.message)}</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = items.length ? items.map(ersRowHTML).join('')
+    : '<tr><td colspan="8" class="muted">No evidence records. Generate one to start preserving a range of the audit chain.</td></tr>';
+  tbody.querySelectorAll('button[data-ers]').forEach(b => {
+    const rec = items[Number(b.dataset.i)];
+    if (b.dataset.ers === 'export') b.onclick = () => exportEvidenceRecord(rec.id);
+    if (b.dataset.ers === 'renew') b.onclick = () => renewEvidenceRecord(rec);
+    if (b.dataset.ers === 'verify') b.onclick = () => {
+      $('ersID').value = rec.id;
+      $('ersRecord').value = '';
+      runERSVerify();
+    };
+  });
+}
+
+// ersRowHTML renders one stored record. The TSA expiry is badged rather than
+// merely printed: an expired embedded TSA certificate is precisely what a
+// time-stamp renewal exists to stay ahead of, so a lapsed record is worthless
+// and must not read like a healthy one.
+function ersRowHTML(r, i) {
+  const covers = r.scope === 'audit'
+    ? `seq ${r.first_seq}–${r.last_seq}`
+    : `${(r.object_ids || []).length} object(s)`;
+  let tsa = '<span class="muted">—</span>';
+  if (r.tsa_not_after) {
+    const left = (new Date(r.tsa_not_after) - Date.now()) / 86400000;
+    const cls = left <= 0 ? 'fail' : left < 30 ? 'warn' : 'pass';
+    tsa = `<span class="badge ${cls}">${escapeHTML(fmtTime(r.tsa_not_after))}</span>`;
+  }
+  return `<tr>
+    <td class="mono" title="${escapeHTML(r.description || '')}">${escapeHTML(r.id || '')}</td>
+    <td>${escapeHTML(r.scope || '')}</td>
+    <td class="mono">${escapeHTML(covers)}</td>
+    <td>${escapeHTML(r.digest_alg || '')}</td>
+    <td>${r.chains || 0}</td>
+    <td style="white-space:nowrap">${fmtTime(r.last_gen_time)}</td>
+    <td style="white-space:nowrap">${tsa}</td>
+    <td style="white-space:nowrap">
+      <button class="btn ghost sm" data-ers="export" data-i="${i}">Export</button>
+      <button class="btn ghost sm" data-ers="renew" data-i="${i}">Renew</button>
+      <button class="btn ghost sm" data-ers="verify" data-i="${i}">Verify</button>
+    </td>
+  </tr>`;
+}
+
+// ersSummary describes a record the way `ers generate|renew -json` reports it.
+function ersSummary(r, lead) {
+  return `${lead}: ${r.scope} scope, ${r.digest_alg}, ${r.chains} chain(s), newest stamp ${fmtTime(r.last_gen_time)}` +
+    (r.tsa_not_after ? `, TSA certificate valid until ${fmtTime(r.tsa_not_after)}` : '') + '.';
+}
+
+// Mirrors `secsy-ca ers generate -audit-from N -audit-to M`. Only the audit-range
+// scope is offered: an artifact-scope record's protected bytes are never stored,
+// so every later renewal and verification would need them re-supplied — a promise
+// a browser session cannot keep, and the CLI takes files directly.
+$('ersGenBtn').onclick = async () => {
+  const err = $('ersGenError'), msg = $('ersAdminMsg');
+  err.classList.add('hidden');
+  msg.className = 'notice hidden';
+  const from = parseInt($('ersGenFrom').value, 10), to = parseInt($('ersGenTo').value, 10);
+  if (!(from > 0) || !(to > 0)) { showError(err, 'An inclusive audit-sequence range is required — both bounds, 1 or greater.'); return; }
+  if (to < from) { showError(err, 'The range ends before it starts.'); return; }
+  const body = { audit_from: from, audit_to: to };
+  if ($('ersGenHash').value) body.hash = $('ersGenHash').value;
+  const desc = $('ersGenDesc').value.trim(); if (desc) body.description = desc;
+  $('ersGenBtn').disabled = true;
+  try {
+    const res = await api('POST', '/api/ers/generate', body);
+    notice(msg, 'ok', ersSummary(res, `Generated ${res.id}`));
+    ersOffset = 0;
+    loadEvidenceRecords();
+  } catch (e) {
+    // 400 = the range is past the event-log head; 503 = no archive-timestamp
+    // source is configured (neither ers.tsa_url nor a TSA-role key).
+    showError(err, e.message);
+  } finally { $('ersGenBtn').disabled = false; }
+};
+
+// Mirrors `secsy-ca ers renew` and `ers renew -hashtree`. The panel's two renewal
+// controls decide the kind and the target digest, so a per-row button needs no
+// modal of its own — only the confirmation that says which renewal is about to
+// happen.
+async function renewEvidenceRecord(rec) {
+  const msg = $('ersAdminMsg');
+  const hashTree = $('ersRenewHashTree').checked;
+  const target = $('ersRenewHash').value;
+  const ask = hashTree
+    ? `Add a hash-tree chain to ${rec.id}${target ? ' under ' + target : ''}?\n\nEvery protected object is re-hashed under a stronger digest — the renewal for algorithm deprecation.`
+    : `Add a fresh archive time-stamp to ${rec.id}?\n\nThis is the renewal that must happen before the embedded TSA certificate expires.`;
+  if (!confirm(ask)) return;
+  const body = { id: rec.id };
+  if (hashTree) {
+    body.hashtree = true;
+    if (target) body.hash = target;
+  }
+  try {
+    const res = await api('POST', '/api/ers/renew', body);
+    notice(msg, 'ok', ersSummary(res, `Renewed ${res.id} (${res.kind})`));
+    loadEvidenceRecords();
+  } catch (e) {
+    // A hash-tree renewal of an artifact-scope record needs the original object
+    // bytes re-supplied, which only the CLI can do; the server says exactly that.
+    notice(msg, 'err', `Renewing ${rec.id} failed: ${e.message}`);
+  }
+}
+
+// Mirrors `secsy-ca ers export`: the decoded structure plus the record itself.
+// The DER is taken from the JSON body's base64 "record" — the same bytes
+// ?format=der streams — because api()'s raw mode decodes a response as text,
+// which would corrupt binary, and base64 is how every other binary download in
+// this console is carried.
+async function exportEvidenceRecord(id) {
+  const out = $('ersExportOut');
+  out.innerHTML = '<p class="muted">Exporting…</p>';
+  let res;
+  try {
+    res = await api('GET', '/api/ers/export?id=' + encodeURIComponent(id));
+  } catch (e) {
+    out.innerHTML = `<div class="notice err">Export failed: ${escapeHTML(e.message)}</div>`;
+    return;
+  }
+  const info = res.info || {};
+  const stamps = (info.timestamps || []).map(t => `<tr>
+      <td>${t.chain}</td>
+      <td>${t.index}</td>
+      <td>${escapeHTML(t.hash || '')}</td>
+      <td style="white-space:nowrap">${fmtTime(t.gen_time)}</td>
+      <td>${escapeHTML(t.tsa_subject || '—')}</td>
+      <td style="white-space:nowrap">${t.tsa_not_after ? fmtTime(t.tsa_not_after) : '—'}</td>
+    </tr>`).join('');
+  out.innerHTML =
+    `<div class="notice ok"><b>${escapeHTML(res.id || '')}</b> — ${escapeHTML(res.scope || '')} scope, ` +
+    `ERS version ${info.version || 0}, ${info.chains || 0} chain(s), ` +
+    `digests ${escapeHTML((info.digest_algorithms || []).join(', '))} (current ${escapeHTML(info.current_hash || '')}), ` +
+    `first stamped ${fmtTime(info.first_gen_time)}, latest ${fmtTime(info.latest_gen_time)}, ` +
+    `${res.size || 0} bytes of DER.</div>` +
+    (stamps
+      ? `<table style="margin-top:8px"><thead><tr><th>Chain</th><th>Index</th><th>Algorithm</th><th>Stamped</th><th>TSA</th><th>TSA expires</th></tr></thead><tbody>${stamps}</tbody></table>`
+      : '<p class="muted">This record carries no archive time-stamp.</p>');
+  if (res.record) {
+    const dl = document.createElement('button');
+    dl.className = 'btn ghost sm';
+    dl.style.marginTop = '8px';
+    dl.textContent = 'Download evidence record (DER)';
+    dl.onclick = () => downloadBlob(unb64(res.record), `evidence-record-${res.id}.der`, 'application/octet-stream');
+    out.appendChild(dl);
+  }
+}
+
+$('ersRefresh').onclick = () => { ersOffset = 0; loadEvidenceRecords(); };
+$('ersLimit').onchange = () => { ersOffset = 0; loadEvidenceRecords(); };
+$('ersPrev').onclick = () => {
+  ersOffset = Math.max(0, ersOffset - (parseInt($('ersLimit').value, 10) || 200));
+  loadEvidenceRecords();
+};
+$('ersNext').onclick = () => {
+  ersOffset += parseInt($('ersLimit').value, 10) || 200;
+  loadEvidenceRecords();
+};
+
 // ---- Trust bundle / chain view -------------------------------------------
 $('bundleRefresh').onclick = loadBundle;
 $('bundleCA').onchange = loadBundle;
@@ -1299,12 +1746,18 @@ async function loadBundle() {
   // just hides the panel (and the mint forms with it).
   $('svidMintPanel').classList.add('hidden');
   $('svidJWTPanel').classList.add('hidden');
+  $('svidJWTVerifyPanel').classList.add('hidden');
+  // A verdict belongs to the CA it was reached under, so it does not survive a
+  // change of issuer.
+  $('svidVerifyResult').classList.add('hidden');
+  $('svidVerifyError').classList.add('hidden');
   try {
     const bundle = await api('GET', `/api/ca/${id}/svid/bundle`, undefined, true);
     $('svidBundle').value = bundle;
     $('svidPanel').classList.remove('hidden');
     $('svidMintPanel').classList.remove('hidden');
     $('svidJWTPanel').classList.remove('hidden');
+    $('svidJWTVerifyPanel').classList.remove('hidden');
   } catch (_) { /* SPIFFE not enabled for this server */ }
   loadAlternateChains(id);
 }
@@ -1378,6 +1831,57 @@ $('svidJWTMintBtn').onclick = async () => {
   } catch (e) { showError(err, e.message); }
   finally { $('svidJWTMintBtn').disabled = false; }
 };
+
+// Validate a JWT-SVID against this CA's trust bundle — mirrors
+// `secsy-ca svid jwt-verify`. A rejected token is a verdict, not a fault: the
+// server answers 409 with the same body shape, so postVerdict recovers it and the
+// rejection is rendered as a clear failure with the server's reason.
+$('svidVerifyBtn').onclick = async () => {
+  const id = $('bundleCA').value;
+  const err = $('svidVerifyError'), out = $('svidVerifyResult'), btn = $('svidVerifyBtn');
+  err.classList.add('hidden');
+  out.classList.add('hidden');
+  const token = $('svidVerifyToken').value.trim();
+  const aud = $('svidVerifyAud').value.trim();
+  if (!token) { showError(err, 'Paste the JWT-SVID to validate.'); return; }
+  // The audience is mandatory by the SPIFFE spec: a validator must reject a token
+  // not addressed to it, and defaulting this would quietly turn that rule off.
+  if (!aud) { showError(err, 'An audience is required — a JWT-SVID must be addressed to its validator.'); return; }
+  const body = { token, audience: aud };
+  const domains = csvList($('svidVerifyDomains').value);
+  if (domains.length) body.trust_domains = domains;
+  btn.disabled = true;
+  try {
+    const res = await postVerdict(`/api/ca/${id}/svid/jwt/verify`, body);
+    renderJWTSVIDVerdict(out, res);
+  } catch (e) { showError(err, e.message); }
+  finally { btn.disabled = false; }
+};
+
+// renderJWTSVIDVerdict paints the verdict. On a negative one only valid/reason are
+// set, so the reason is the whole answer and nothing else is invented around it.
+function renderJWTSVIDVerdict(el, res) {
+  el.className = 'notice ' + (res.valid ? 'ok' : 'err');
+  if (!res.valid) {
+    el.innerHTML = '<div style="font-size:15px"><b>✗ rejected</b></div>' +
+      `<div style="margin-top:6px">${escapeHTML(res.reason || 'the token did not validate')}</div>`;
+    el.classList.remove('hidden');
+    return;
+  }
+  const rows = [
+    ['SPIFFE ID', escapeHTML(res.spiffe_id || '')],
+    ['Trust domain', escapeHTML(res.trust_domain || '')],
+    ['Path', escapeHTML(res.path || '')],
+    ['Audience', (res.audience || []).map(a => `<code>${escapeHTML(a)}</code>`).join(' ')],
+    ['Signed by', `<span class="mono">${escapeHTML(res.key_id || '')}</span> (${escapeHTML(res.algorithm || '')})`],
+    ['Issued', res.issued_at ? escapeHTML(fmtTime(res.issued_at)) : '<span class="muted">no iat claim</span>'],
+    ['Expires', res.expires_at ? escapeHTML(fmtTime(res.expires_at)) : '<span class="muted">—</span>'],
+  ];
+  el.innerHTML = '<div style="font-size:15px"><b>✓ valid</b></div>' +
+    '<table style="margin-top:8px"><tbody>' + rows.map(([k, v]) =>
+      `<tr><th style="text-align:left;width:150px">${k}</th><td>${v}</td></tr>`).join('') + '</tbody></table>';
+  el.classList.remove('hidden');
+}
 
 // ---- DNS pinning records (DANE TLSA / SSHFP) -----------------------------
 async function loadDNS() {
@@ -1866,6 +2370,50 @@ $('sigKeyCreateBtn').onclick = async () => {
   } catch (e) { showError(err, 'Create failed: ' + e.message); }
 };
 
+// Adoption of an existing key (Task 198): the console half of `secsy-secret
+// signing-key import`, and the one control on this page whose request body
+// carries a private key. The material is read from the field, sent once, and the
+// field is cleared the moment the server confirms — nothing keeps key material in
+// the DOM, and the response (which never contains any) is rendered as metadata.
+$('sigKeyImportBtn').onclick = async () => {
+  const err = $('sigKeyImportError');
+  err.classList.add('hidden');
+  const out = $('sigKeyImportResult');
+  out.textContent = '';
+  out.style.color = '';
+  const name = $('sigKeyImportName').value.trim();
+  const material = $('sigKeyImportPem').value.trim();
+  if (!name) { showError(err, 'A key name is required.'); return; }
+  if (!material) { showError(err, 'Paste the existing private key.'); return; }
+  const body = { name };
+  // PEM travels as text; anything else is treated as base64 of a raw container
+  // (bare DER, PKCS#12) — the same discrimination the CLI's file loader makes on
+  // the bytes it read.
+  if (material.includes('-----BEGIN')) body.key_pem = material;
+  else body.key_base64 = material;
+  if ($('sigKeyImportAlg').value) body.algorithm = $('sigKeyImportAlg').value;
+  if ($('sigKeyImportPass').value) body.passphrase = $('sigKeyImportPass').value;
+  const btn = $('sigKeyImportBtn');
+  btn.disabled = true;
+  try {
+    const k = await api('POST', '/api/secret/signing-keys/import', body);
+    $('sigKeyImportPem').value = '';
+    $('sigKeyImportPass').value = '';
+    $('sigKeyImportName').value = '';
+    out.style.color = 'var(--ok)';
+    out.textContent = `✓ imported ${k.name} · ${k.algorithm} · ${k.key_type} · held by ${k.provider}`
+      + ' — attestation will report this key as imported rather than generated. Destroy the remaining copies of it.';
+    // The public half is the useful output, and it goes to the same box the
+    // create form fills, so verifiers are handed it the same way.
+    $('sigKeyPub').value = k.public_key_pem || '';
+    $('sigKeyPubBox').classList.remove('hidden');
+    $('sigKeyPubDownload').onclick = (e) => { e.preventDefault(); downloadBlob(k.public_key_pem || '', k.name + '.pub.pem', 'application/x-pem-file'); };
+    $('sigKeyName').value = k.name;
+    await loadSigningKeys();
+  } catch (e) { showError(err, 'Import failed: ' + e.message); }
+  finally { btn.disabled = false; }
+};
+
 $('sigSignBtn').onclick = async () => {
   const err = $('sigError'); err.classList.add('hidden');
   const name = $('sigKeyName').value.trim();
@@ -2074,6 +2622,21 @@ async function loadHSM() {
     return;
   }
   loadHSMAuditStatus();
+  loadHSMKeyLabels();
+}
+
+// loadHSMKeyLabels fills the datalist behind the free-text label field, so
+// attesting an arbitrary key (`secsy-ca hsm-attest key`) is a pick rather than a
+// recollection. It stays a convenience only: the field remains free text, because
+// an object the inventory cannot enumerate is exactly the one worth attesting.
+async function loadHSMKeyLabels() {
+  try {
+    const inv = await api('GET', '/api/inventory/keys');
+    $('hsmAttestLabels').innerHTML = (inv.keys || []).map(k => {
+      const hint = [k.key_type, k.ca_label].filter(Boolean).join(' · ');
+      return `<option value="${escapeHTML(k.label)}">${escapeHTML(hint)}</option>`;
+    }).join('');
+  } catch (_) { /* 403 for non-admins, 501 when the provider cannot enumerate keys */ }
 }
 
 async function loadHSMAuditStatus() {
@@ -2189,6 +2752,58 @@ $('hsmAttestLabelBtn').onclick = () => {
   if (!label) { showError($('hsmKeyError'), 'A key label is required.'); return; }
   attestKey(`/api/hsm/keys/${encodeURIComponent(label)}/attestation`, $('hsmAttestLabelBtn'));
 };
+
+// Device-wide attestation audit (Task 198): the console half of `secsy-ca
+// hsm-attest audit`. One key that could not be attested is a row carrying its
+// error, not a failed request, so the operator still sees the verdict on every
+// other key — which is the whole point of an inventory pass.
+$('hsmAuditAttestBtn').onclick = async () => {
+  const err = $('hsmAuditAttestError');
+  err.classList.add('hidden');
+  const btn = $('hsmAuditAttestBtn');
+  const sum = $('hsmAuditAttestSummary');
+  btn.disabled = true;
+  sum.textContent = 'Attesting every key on the device…';
+  try {
+    renderAttestationAudit(await api('GET', '/api/hsm/attestation-audit'));
+  } catch (e) {
+    sum.textContent = 'Not run.';
+    showError(err, 'Attestation audit failed: ' + e.message);
+  } finally { btn.disabled = false; }
+};
+
+// renderAttestationAudit draws the rollup and the per-key verdict table, with the
+// same columns the CLI's audit table prints.
+function renderAttestationAudit(res) {
+  const keys = res.keys || [];
+  const bad = (res.failed || 0) + (res.errors || 0);
+  $('hsmAuditAttestSummary').innerHTML =
+    `<span style="color:var(--${bad ? 'crit' : 'ok'})">${bad ? '✗' : '✓'} ${escapeHTML(res.summary || '')}</span>` +
+    ` <span class="muted">· ${res.verified || 0} verified · ${res.exportable || 0} exportable · ` +
+    `${res.imported || 0} imported · provider ${escapeHTML(res.provider || '')}</span>`;
+  const tbody = $('hsmAuditAttestRows');
+  if (!keys.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="muted">No keys on the device.</td></tr>';
+  } else {
+    tbody.innerHTML = keys.map(k => {
+      const v = k.verification || {};
+      let verdict;
+      if (k.error) verdict = `<span style="color:var(--crit)">ERROR: ${escapeHTML(k.error)}</span>`;
+      else if (v.verified) verdict = '<span style="color:var(--ok)">ok</span>';
+      else verdict = `<span style="color:var(--crit)">FAIL: ${escapeHTML((v.problems || [])[0] || 'did not satisfy policy')}</span>`;
+      return `<tr>
+        <td class="mono">${escapeHTML(k.label || '')}${k.key_type ? `<br><span class="muted">${escapeHTML(k.key_type)}</span>` : ''}</td>
+        <td>${escapeHTML(k.ca_label || '')}</td>
+        <td>${k.error ? '<span class="muted">?</span>'
+                      : (v.non_exportable ? 'no' : '<b style="color:var(--crit)">yes</b>')}</td>
+        <td>${escapeHTML(v.origin || '')}</td>
+        <td class="muted">${escapeHTML((v.capabilities || []).join(', '))}</td>
+        <td>${verdict}</td>
+      </tr>`;
+    }).join('');
+  }
+  $('hsmAuditAttestResult').classList.remove('hidden');
+}
 
 // Verification routes on the bundle's own "kind" marker rather than on which
 // fields happen to be populated — the same discrimination the CLI verifier
@@ -2741,8 +3356,188 @@ async function loadAccess() {
   const prev = sel.value;
   sel.innerHTML = cas.map(c => `<option value="ca/${c.id}">${escapeHTML(c.label)} — ca/${escapeHTML(c.id)}</option>`).join('');
   if (prev) sel.value = prev;
+  loadResourceRoles();
+  loadGroups();
   await loadAccessGrants();
 }
+
+// loadResourceRoles renders the grantable-role catalog and drives the grant
+// form's Role picker from it — the console counterpart of `secsy-ca grant roles`.
+// The catalog is generated from the evaluator's own bundle table, so a role or
+// capability added there appears here without a console change; the markup's
+// hard-coded <optgroup> list is left in place only as the fallback for a server
+// that does not answer (an older build, or a read the caller is denied).
+async function loadResourceRoles() {
+  const roleRows = $('accessRoleRows'), scopeRows = $('accessScopeRows');
+  let cat;
+  try {
+    cat = await api('GET', '/api/grants/roles');
+  } catch (e) {
+    roleRows.innerHTML = `<tr><td colspan="3" class="muted">Catalog unavailable (${escapeHTML(e.message)}); the Role picker keeps its built-in list.</td></tr>`;
+    scopeRows.innerHTML = '<tr><td colspan="2" class="muted">—</td></tr>';
+    return;
+  }
+  const roles = cat.roles || [];
+  roleRows.innerHTML = roles.length ? roles.map(r => `
+    <tr>
+      <td><code>${escapeHTML(r.role)}</code></td>
+      <td>${(r.applies_to || []).map(t => `<code>${escapeHTML(t)}</code>`).join(' ')}</td>
+      <td>${(r.actions || []).map(a => `<code>${escapeHTML(a)}</code>`).join(' ')}</td>
+    </tr>`).join('') : '<tr><td colspan="3" class="muted">No grantable roles.</td></tr>';
+  scopeRows.innerHTML = (cat.scopes || []).map(s =>
+    `<tr><td><code>${escapeHTML(s.scope)}</code></td><td>${escapeHTML(s.description || '')}</td></tr>`).join('')
+    || '<tr><td colspan="2" class="muted">—</td></tr>';
+  $('accessRoleNote').textContent = cat.note || '';
+
+  // Rebuild the picker, grouped by the resource types each role applies to, so an
+  // operator cannot pick a role the grant endpoints would refuse on the selected
+  // resource. The current selection survives a refresh.
+  if (!roles.length) return;
+  const sel = $('accessRole');
+  const prev = sel.value;
+  const byType = new Map();
+  roles.forEach(r => {
+    const key = (r.applies_to || []).join(', ') || 'any resource';
+    if (!byType.has(key)) byType.set(key, []);
+    byType.get(key).push(r);
+  });
+  sel.innerHTML = Array.from(byType.entries()).map(([type, rs]) =>
+    `<optgroup label="${escapeHTML(type)}">` + rs.map(r =>
+      `<option value="${escapeHTML(r.role)}">${escapeHTML(r.role)} — ${escapeHTML((r.actions || []).join(' '))}</option>`
+    ).join('') + '</optgroup>').join('');
+  if (prev && roles.some(r => r.role === prev)) sel.value = prev;
+}
+
+// ---- Internal user groups (Access view) -----------------------------------
+// The grant form can target a group, but nothing in the console could create one
+// or say who is in it. A grant matches an internal group by its ID (that is what
+// the membership lookup feeding the evaluator returns), while an
+// identity-provider group matches by the claim value — so the id is what the
+// "Use in grant" shortcut fills in.
+let accessGroups = [];
+let selectedGroupID = null;
+
+async function loadGroups() {
+  const tbody = $('groupRows');
+  tbody.innerHTML = '<tr><td colspan="4" class="muted">Loading…</td></tr>';
+  try {
+    accessGroups = await api('GET', '/api/groups');
+  } catch (e) {
+    accessGroups = [];
+    tbody.innerHTML = `<tr><td colspan="4" class="muted">${escapeHTML(e.message)}</td></tr>`;
+    return;
+  }
+  if (!accessGroups.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="muted">No internal groups. Grants can still target an identity-provider group by its claim value.</td></tr>';
+    $('groupMembersBox').classList.add('hidden');
+    selectedGroupID = null;
+    return;
+  }
+  tbody.innerHTML = accessGroups.map((g, i) => `
+    <tr>
+      <td>${escapeHTML(g.name || '')}</td>
+      <td class="mono">${escapeHTML(g.id || '')}</td>
+      <td>${escapeHTML(g.tenant_id || '')}</td>
+      <td style="white-space:nowrap">
+        <button class="btn ghost sm" data-grp="members" data-i="${i}">Members</button>
+        <button class="btn ghost sm" data-grp="use" data-i="${i}">Use in grant</button>
+        <button class="btn danger sm" data-grp="delete" data-i="${i}">Delete</button>
+      </td>
+    </tr>`).join('');
+  tbody.querySelectorAll('button[data-grp]').forEach(b => {
+    const g = accessGroups[Number(b.dataset.i)];
+    if (b.dataset.grp === 'members') b.onclick = () => showGroupMembers(g);
+    if (b.dataset.grp === 'use') b.onclick = () => useGroupInGrant(g);
+    if (b.dataset.grp === 'delete') b.onclick = () => deleteGroup(g);
+  });
+  // Keep an expanded membership list in step with a reload.
+  if (selectedGroupID) {
+    const still = accessGroups.find(g => g.id === selectedGroupID);
+    if (still) showGroupMembers(still); else $('groupMembersBox').classList.add('hidden');
+  }
+}
+
+async function showGroupMembers(g) {
+  selectedGroupID = g.id;
+  const box = $('groupMembersBox'), rows = $('groupMemberRows');
+  $('groupMembersTitle').textContent = `Members of ${g.name || g.id}`;
+  box.classList.remove('hidden');
+  rows.innerHTML = '<tr><td colspan="2" class="muted">Loading…</td></tr>';
+  let members;
+  try {
+    members = await api('GET', `/api/groups/${encodeURIComponent(g.id)}/members`);
+  } catch (e) {
+    rows.innerHTML = `<tr><td colspan="2" class="muted">${escapeHTML(e.message)}</td></tr>`;
+    return;
+  }
+  rows.innerHTML = members.length ? members.map((sub, i) => `
+    <tr>
+      <td class="mono">${escapeHTML(sub)}</td>
+      <td style="white-space:nowrap"><button class="btn ghost sm" data-mem="${i}">Remove</button></td>
+    </tr>`).join('') : '<tr><td colspan="2" class="muted">No members: this group confers nothing yet.</td></tr>';
+  rows.querySelectorAll('button[data-mem]').forEach(b => {
+    b.onclick = () => removeGroupMember(g, members[Number(b.dataset.mem)]);
+  });
+}
+
+$('groupCreateBtn').onclick = async () => {
+  const msg = $('groupMsg'), name = $('groupNewName').value.trim();
+  msg.className = 'notice hidden';
+  if (!name) { notice(msg, 'err', 'A group name is required.'); return; }
+  try {
+    const g = await api('POST', '/api/groups', { name });
+    notice(msg, 'ok', `Created group "${g.name}" — grant to it with entity id ${g.id}.`);
+    $('groupNewName').value = '';
+    await loadGroups();
+  } catch (e) { notice(msg, 'err', 'Creating the group failed: ' + e.message); }
+};
+
+// Deleting a group silently strips every grant made to it from everyone in it, so
+// it is confirmed.
+async function deleteGroup(g) {
+  const msg = $('groupMsg');
+  if (!confirm(`Delete group "${g.name || g.id}"?\n\nEvery grant made to this group stops applying to its members.`)) return;
+  try {
+    await api('DELETE', '/api/groups/' + encodeURIComponent(g.id));
+    if (selectedGroupID === g.id) { selectedGroupID = null; $('groupMembersBox').classList.add('hidden'); }
+    notice(msg, 'ok', `Deleted group "${g.name || g.id}".`);
+    await loadGroups();
+  } catch (e) { notice(msg, 'err', 'Deleting the group failed: ' + e.message); }
+}
+
+$('groupMemberAddBtn').onclick = async () => {
+  const msg = $('groupMsg'), sub = $('groupMemberSub').value.trim();
+  msg.className = 'notice hidden';
+  if (!selectedGroupID) { notice(msg, 'err', 'Open a group\'s members first.'); return; }
+  if (!sub) { notice(msg, 'err', 'A subject is required.'); return; }
+  const g = accessGroups.find(x => x.id === selectedGroupID) || { id: selectedGroupID };
+  try {
+    await api('POST', `/api/groups/${encodeURIComponent(g.id)}/members`, { user_sub: sub });
+    notice(msg, 'ok', `Added ${sub} to "${g.name || g.id}" — it now holds every grant made to this group.`);
+    $('groupMemberSub').value = '';
+    await showGroupMembers(g);
+  } catch (e) { notice(msg, 'err', 'Adding the member failed: ' + e.message); }
+};
+
+async function removeGroupMember(g, sub) {
+  const msg = $('groupMsg');
+  if (!confirm(`Remove ${sub} from "${g.name || g.id}"?\n\nIt loses every grant this group carries.`)) return;
+  try {
+    await api('DELETE', `/api/groups/${encodeURIComponent(g.id)}/members/${encodeURIComponent(sub)}`);
+    notice(msg, 'ok', `Removed ${sub} from "${g.name || g.id}".`);
+    await showGroupMembers(g);
+  } catch (e) { notice(msg, 'err', 'Removing the member failed: ' + e.message); }
+}
+
+// useGroupInGrant points the grant form at this group. The id, not the name, is
+// what the evaluator matches an internal group's membership against.
+function useGroupInGrant(g) {
+  $('accessEntityType').value = 'group';
+  $('accessEntityID').value = g.id;
+  notice($('groupMsg'), 'ok', `Grant form set to group "${g.name || g.id}" (${g.id}) — pick a role and resource above, then Grant.`);
+}
+
+$('groupRefresh').onclick = loadGroups;
 
 async function loadAccessGrants() {
   const rows = $('accessRows');
@@ -3144,6 +3939,10 @@ $('rootCreateBtn').onclick = async () => {
   $('rootCreateBtn').disabled = true;
   try {
     const ca = await api('POST', '/api/ca/init-root', body);
+    // The four-eyes gate answers 202 without creating anything, so the hold must
+    // be reported before any field of the (absent) CA is read.
+    const held = heldForApproval(ca);
+    if (held) { notice($('casMsg'), 'warn', held); loadApprovals(); return; }
     notice($('casMsg'), 'ok', `Root CA "${ca.label}" created — key generated inside the HSM.`);
     $('rootLabel').value = $('rootCN').value = $('rootO').value = '';
     await loadAuthorities();
@@ -3167,6 +3966,8 @@ $('interCreateBtn').onclick = async () => {
   $('interCreateBtn').disabled = true;
   try {
     const ca = await api('POST', `/api/ca/${parent}/issue-intermediate`, body);
+    const held = heldForApproval(ca);
+    if (held) { notice($('casMsg'), 'warn', held); loadApprovals(); return; }
     notice($('casMsg'), 'ok', `Intermediate CA "${ca.label}" issued under ${caLabel(parent)}.`);
     $('interLabel').value = $('interCN').value = $('interO').value = '';
     await loadAuthorities();
@@ -3188,6 +3989,8 @@ $('extCsrBtn').onclick = async () => {
   $('extCsrBtn').disabled = true;
   try {
     const res = await api('POST', '/api/ca/csr', body);
+    const held = heldForApproval(res);
+    if (held) { notice($('casMsg'), 'warn', held); loadApprovals(); return; }
     notice($('casMsg'), 'ok',
       `Key for "${res.ca.label}" generated inside the HSM; the CA is pending until the signed certificate is imported. `
       + `Submit the downloaded CSR to the external parent for signing.`);
@@ -3230,6 +4033,8 @@ $('importConfirm').onclick = async () => {
     const res = await api('POST', `/api/ca/${importTarget}/import-cert`, body);
     $('importCertModal').classList.add('hidden');
     importTarget = null;
+    const held = heldForApproval(res);
+    if (held) { notice($('casMsg'), 'warn', held); loadApprovals(); return; }
     const warn = (res.warnings || []).length ? ` Warnings: ${res.warnings.join(' • ')}` : '';
     notice($('casMsg'), (res.warnings || []).length ? 'warn' : 'ok',
       `Imported certificate for "${res.ca.label}" — the CA is now active and its served chain includes the external parent(s).${warn}`);
@@ -3237,6 +4042,176 @@ $('importConfirm').onclick = async () => {
     await loadAuthorities();
   } catch (e) { showError($('importError'), e.message); }
   finally { $('importConfirm').disabled = false; }
+};
+
+// -- adopt existing key material (Task 198) --
+// Both forms below carry a private key. They are the only console forms that do,
+// so they follow one rule: the material goes into the request body and nowhere
+// else — never into a result box, never back into an input — and every field that
+// held it is cleared once the server has it.
+
+// MAX_KEY_IMPORT_BYTES keeps a mis-chosen file from being base64-expanded into a
+// request the server would reject anyway: it caps the whole body at 1 MiB, and a
+// key container is a few tens of kilobytes.
+const MAX_KEY_IMPORT_BYTES = 512 * 1024;
+
+// keyImportMaterial collects the private-key half of an import request: the PEM
+// textarea, or a container file (PKCS#12/DER) read to base64 — the two encodings
+// the endpoints accept, of which exactly one may be supplied. The file is read
+// straight into the body, so a container never appears on the page.
+async function keyImportMaterial(pemID, fileID, passID) {
+  const pem = $(pemID).value.trim();
+  const input = $(fileID);
+  const file = input.files && input.files[0];
+  if (pem && file) throw new Error('supply the key as PEM or as a container file, not both');
+  if (!pem && !file) throw new Error('paste the private key (PEM) or choose a container file');
+  if (file && file.size > MAX_KEY_IMPORT_BYTES) throw new Error('that file is larger than 512 KiB — it is not a key container');
+  const body = pem ? { key_pem: pem } : { key_base64: await readFileB64(input) };
+  const pass = $(passID).value;
+  if (pass) body.passphrase = pass;
+  return body;
+}
+
+// heldForApproval reports the four-eyes message when a guarded operation answered
+// 202 instead of performing the work. api() returns the body for any 2xx, so the
+// hold arrives as data rather than as an error — the same discrimination the
+// issuance form makes on res.status, over the shape writeApprovalPending sends
+// ({status, message, approval}) with the flatter issuance shape as a fallback.
+function heldForApproval(res) {
+  if (!res || res.status !== 'pending_approval') return null;
+  const pa = res.approval || res;
+  const id = pa.id || pa.approval_id || '(unknown)';
+  const need = pa.required_approvals || 0;
+  const have = pa.approvals_count || 0;
+  return `Held for four-eyes approval: request ${id} needs ${need} distinct approver(s) ` +
+    `(${have} recorded so far). Approve it under Approvals, then submit this form again.`;
+}
+
+// Mirrors `secsy-ca ca import`: adopt an existing authority, its key and its
+// certificate. Guarded by the same maker-checker class as creating a root.
+$('caImpKeySource').onchange = () => {
+  const existing = $('caImpKeySource').value === 'existing';
+  $('caImpExistingRow').classList.toggle('hidden', !existing);
+  $('caImpMaterialRow').classList.toggle('hidden', existing);
+  // Whichever half was abandoned is emptied rather than merely hidden: a private
+  // key left sitting in a hidden field is a private key still on the page.
+  if (existing) { $('caImpKeyPEM').value = $('caImpPass').value = ''; $('caImpKeyFile').value = ''; }
+  else { $('caImpExistingLabel').value = ''; }
+};
+$('caImpBtn').onclick = async () => {
+  const err = $('caImpError'), out = $('caImpResult');
+  err.classList.add('hidden');
+  out.classList.add('hidden');
+  const body = { label: $('caImpLabel').value.trim() };
+  if (!body.label) { showError(err, 'A label is required.'); return; }
+  const tenant = $('caImpTenant').value.trim(); if (tenant) body.tenant = tenant;
+  const parent = $('caImpParent').value; if (parent) body.parent = parent;
+  const cert = $('caImpCert').value.trim(); if (cert) body.certificate = cert;
+  const chain = $('caImpChain').value.trim(); if (chain) body.chain = chain;
+  $('caImpBtn').disabled = true;
+  try {
+    if ($('caImpKeySource').value === 'existing') {
+      const label = $('caImpExistingLabel').value.trim();
+      if (!label) throw new Error('give the label the key is already stored under');
+      body.existing_key_label = label;
+      if (!cert) throw new Error('a certificate is required when adopting a key by label');
+    } else {
+      Object.assign(body, await keyImportMaterial('caImpKeyPEM', 'caImpKeyFile', 'caImpPass'));
+    }
+    const res = await api('POST', '/api/ca/import', body);
+    const held = heldForApproval(res);
+    if (held) {
+      notice(out, 'warn', held);
+      out.classList.remove('hidden');
+      loadApprovals();
+      return;
+    }
+    renderCAImportResult(res);
+    // Clear the whole form: the key material and its passphrase must not survive
+    // the request, and a successful adoption is not resubmittable anyway.
+    $('caImpLabel').value = $('caImpTenant').value = $('caImpExistingLabel').value = '';
+    $('caImpKeyPEM').value = $('caImpPass').value = $('caImpCert').value = $('caImpChain').value = '';
+    $('caImpKeyFile').value = '';
+    await loadAuthorities();
+  } catch (e) { showError(err, e.message); }
+  finally { $('caImpBtn').disabled = false; }
+};
+
+// renderCAImportResult paints what the adoption established. The warnings lead,
+// because they are the part an operator must act on — a CA adopted with a weak
+// key or an unverifiable chain is still adopted.
+function renderCAImportResult(res) {
+  const out = $('caImpResult');
+  const ca = res.ca || {};
+  const warnings = res.warnings || [];
+  out.className = 'notice ' + (warnings.length ? 'warn' : 'ok');
+  out.innerHTML =
+    `<div style="font-size:15px"><b>${warnings.length ? '⚠' : '✓'} adopted ${escapeHTML(ca.label || '')}</b>` +
+    (res.self_signed ? ' <span class="badge ok">self-signed root</span>' : ' <span class="badge warning">subordinate</span>') +
+    '</div>' +
+    `<div class="muted" style="margin-top:6px">` +
+      escapeHTML(ca.subject || '') +
+      `<br>${escapeHTML(ca.key_type || '')} · serial ${escapeHTML(shortSerial(ca.serial || ''))} · ` +
+      `expires ${escapeHTML(fmtTime(ca.not_after))} · status ${escapeHTML(ca.status || 'active')}` +
+      `<br>key ${res.key_imported ? 'imported into the provider' : 'adopted in place (already on the provider)'}` +
+      (res.source_format ? ` from ${escapeHTML(res.source_format)}` : '') +
+      (res.key_fingerprint ? `<br>key fingerprint <span class="mono">${escapeHTML(res.key_fingerprint)}</span>` : '') +
+    '</div>' +
+    (warnings.length
+      ? '<div style="margin-top:8px"><b>Warnings</b><ul style="margin:4px 0 0">' +
+        warnings.map(w => `<li>${escapeHTML(w)}</li>`).join('') + '</ul></div>'
+      : '') +
+    (res.notice ? `<div class="muted" style="margin-top:8px">${escapeHTML(res.notice)}</div>` : '');
+  out.classList.remove('hidden');
+  if (res.chain_pem) {
+    const dl = document.createElement('button');
+    dl.className = 'btn ghost sm';
+    dl.style.marginTop = '8px';
+    dl.textContent = 'Download served chain (PEM)';
+    dl.onclick = () => downloadBlob(res.chain_pem, `${ca.label || 'ca'}-chain.pem`, 'application/x-pem-file');
+    out.appendChild(dl);
+  }
+}
+
+// Mirrors `secsy-ca import-key`: put an existing key on a role's backend under a
+// label, with no CA record attached.
+$('keyImpBtn').onclick = async () => {
+  const err = $('keyImpError'), out = $('keyImpResult');
+  err.classList.add('hidden');
+  out.classList.add('hidden');
+  const body = {
+    label: $('keyImpLabel').value.trim(),
+    role: $('keyImpRole').value,
+    usage: $('keyImpUsage').value,
+  };
+  if (!body.label) { showError(err, 'A label is required.'); return; }
+  const id = $('keyImpID').value.trim(); if (id) body.id = id;
+  $('keyImpBtn').disabled = true;
+  try {
+    Object.assign(body, await keyImportMaterial('keyImpKeyPEM', 'keyImpKeyFile', 'keyImpPass'));
+    const res = await api('POST', '/api/keys/import', body);
+    out.className = 'notice ok';
+    out.innerHTML =
+      `<div style="font-size:15px"><b>✓ imported ${escapeHTML(res.label || '')}</b> — ` +
+      `${escapeHTML(res.key_type || '')}` +
+      (res.verified
+        ? ' <span class="badge pass">signature verified</span>'
+        : ' <span class="badge none">no signature check (decrypt-only)</span>') + '</div>' +
+      `<div class="muted" style="margin-top:6px">` +
+        `provider ${escapeHTML(res.provider || '')} · role ${escapeHTML(res.role || '')} · ` +
+        `usage ${escapeHTML(res.usage || '')} · read as ${escapeHTML(res.source_format || '')}` +
+        (res.id ? ` · CKA_ID <span class="mono">${escapeHTML(res.id)}</span>` : '') +
+        (res.uri ? `<br><span class="mono">${escapeHTML(res.uri)}</span>` : '') +
+        (res.ssh_public_key ? `<br><span class="mono">${escapeHTML(res.ssh_public_key)}</span>` : '') +
+      '</div>' +
+      (res.notice ? `<div style="margin-top:8px">${escapeHTML(res.notice)}</div>` : '');
+    out.classList.remove('hidden');
+    $('keyImpLabel').value = $('keyImpID').value = '';
+    $('keyImpKeyPEM').value = $('keyImpPass').value = '';
+    $('keyImpKeyFile').value = '';
+    loadKeyInventory();
+  } catch (e) { showError(err, e.message); }
+  finally { $('keyImpBtn').disabled = false; }
 };
 
 // -- rotate / retire modals --
@@ -3263,6 +4238,8 @@ $('rotateConfirm').onclick = async () => {
     const res = await api('POST', `/api/ca/${rotateTarget}/rotate`, body);
     $('rotateModal').classList.add('hidden');
     rotateTarget = null;
+    const held = heldForApproval(res);
+    if (held) { notice($('casMsg'), 'warn', held); loadApprovals(); return; }
     const until = res.retire_after ? ` The old key can be retired after ${fmtTime(res.retire_after)} (once its leaves drain).` : '';
     notice($('casMsg'), 'ok',
       `Rotated: new key "${res.new_ca.label}" is now the active issuer; "${res.old_ca.label}" is superseded and keeps validating its leaves.${until} `
@@ -3297,6 +4274,8 @@ $('retireConfirm').onclick = async () => {
     });
     $('retireModal').classList.add('hidden');
     retireTarget = null;
+    const held = heldForApproval(res);
+    if (held) { notice($('casMsg'), 'warn', held); loadApprovals(); return; }
     notice($('casMsg'), 'ok',
       `Retired "${res.retired_ca.label}": its certificate (serial ${shortSerial(res.revoked_serial)}) is revoked under the parent and the parent CRL was refreshed.`);
     await loadAuthorities();
@@ -3329,6 +4308,8 @@ $('crossSignBtn').onclick = async () => {
   $('crossSignBtn').disabled = true;
   try {
     const res = await api('POST', `/api/ca/${issuer}/cross-signs`, body);
+    const held = heldForApproval(res);
+    if (held) { notice($('casMsg'), 'warn', held); loadApprovals(); return; }
     $('csResult').value = (res.chain_pem || res.certificate_pem || '');
     $('csResultBox').classList.remove('hidden');
     notice($('casMsg'), 'ok', `Cross-signed ${res.cross_sign.subject} under ${caLabel(issuer)} — alternate chain ready.`);
@@ -3632,6 +4613,80 @@ $('verifyBtn').onclick = async () => {
   finally { $('verifyBtn').disabled = false; }
 };
 
+// -- provisioning the two signing credentials (Task 198) --
+// Both endpoints answer with the same shape — the key that is now on the backend,
+// the certificate it was issued, and the configuration stanza that ties the two
+// together — so one renderer serves both. The config hint is the point of the
+// call: until it is applied, the credential exists but nothing uses it.
+function renderProvisioned(out, res, filename) {
+  const key = res.key || {}, cert = res.certificate || {};
+  out.className = 'notice ok';
+  out.innerHTML =
+    `<div style="font-size:15px"><b>✓ ${escapeHTML(key.label || '')}</b> — ${escapeHTML(key.key_type || '')}` +
+    (key.reused
+      ? ' <span class="badge warning">existing key reused</span>'
+      : ' <span class="badge ok">key generated</span>') + '</div>' +
+    `<div class="muted" style="margin-top:6px">` +
+      `provider ${escapeHTML(key.provider || '')} · role ${escapeHTML(key.role || '')}` +
+      (res.profile ? ` · profile ${escapeHTML(res.profile)}` : '') +
+      (key.uri ? `<br><span class="mono">${escapeHTML(key.uri)}</span>` : '') +
+      `<br>${escapeHTML(cert.subject || '')}` +
+      `<br>serial ${escapeHTML(shortSerial(cert.serial || ''))} · issued by ` +
+      `${escapeHTML(cert.ca_label || cert.ca_id || '')} · valid ${escapeHTML(fmtTime(cert.not_before))} → ` +
+      `${escapeHTML(fmtTime(cert.not_after))}` +
+    '</div>' +
+    `<pre class="mono" style="white-space:pre-wrap;margin:10px 0 0">${escapeHTML(res.config_hint || '')}</pre>`;
+  out.classList.remove('hidden');
+  const dl = document.createElement('button');
+  dl.className = 'btn ghost sm';
+  dl.style.marginTop = '8px';
+  dl.textContent = 'Download certificate (PEM)';
+  dl.onclick = () => downloadBlob(cert.certificate_pem || '', filename, 'application/x-pem-file');
+  out.appendChild(dl);
+}
+
+// Mirrors `secsy-ca signing-key`: an artifact code-signing key plus its
+// certificate, issued through the ordinary lint-gated path.
+$('signProvBtn').onclick = async () => {
+  const err = $('signProvError'), out = $('signProvResult');
+  err.classList.add('hidden');
+  out.classList.add('hidden');
+  const ca = $('signProvCA').value;
+  if (!ca) { showError(err, 'Select an issuing CA.'); return; }
+  const body = { ca, key_type: $('signProvKeyType').value, chain: $('signProvChain').checked };
+  const label = $('signProvLabel').value.trim(); if (label) body.label = label;
+  const profile = $('signProvProfile').value.trim(); if (profile) body.profile = profile;
+  const cn = $('signProvCN').value.trim(); if (cn) body.common_name = cn;
+  const org = $('signProvO').value.trim(); if (org) body.organization = org;
+  const days = parseInt($('signProvDays').value, 10); if (days > 0) body.validity_days = days;
+  $('signProvBtn').disabled = true;
+  try {
+    const res = await api('POST', '/api/sign/signers', body);
+    renderProvisioned(out, res, `${(res.key && res.key.label) || 'codesign'}.pem`);
+  } catch (e) { showError(err, e.message); }
+  finally { $('signProvBtn').disabled = false; }
+};
+
+// Mirrors `secsy-ca tsa-key`: the RFC 3161 timestamp authority's credential.
+$('tsaProvBtn').onclick = async () => {
+  const err = $('tsaProvError'), out = $('tsaProvResult');
+  err.classList.add('hidden');
+  out.classList.add('hidden');
+  const ca = $('tsaProvCA').value;
+  if (!ca) { showError(err, 'Select an issuing CA.'); return; }
+  const body = { ca, key_type: $('tsaProvKeyType').value, chain: $('tsaProvChain').checked };
+  const label = $('tsaProvLabel').value.trim(); if (label) body.label = label;
+  const cn = $('tsaProvCN').value.trim(); if (cn) body.common_name = cn;
+  const org = $('tsaProvO').value.trim(); if (org) body.organization = org;
+  const days = parseInt($('tsaProvDays').value, 10); if (days > 0) body.validity_days = days;
+  $('tsaProvBtn').disabled = true;
+  try {
+    const res = await api('POST', '/api/tsa/key', body);
+    renderProvisioned(out, res, `${(res.key && res.key.label) || 'tsa'}.pem`);
+  } catch (e) { showError(err, e.message); }
+  finally { $('tsaProvBtn').disabled = false; }
+};
+
 // ---- ACME service view (challenge capabilities + accounts/orders) -----------
 $('acmeRefresh').onclick = loadACME;
 
@@ -3697,13 +4752,15 @@ $('auditNext').onclick = () => {
   loadAudit();
 };
 
-// ---- RFC 4998 Evidence Records (Task 161) --------------------------------
-// An evidence record keeps a proof verifiable after the algorithms under it
-// weaken, by nesting RFC 3161 timestamp chains. Verification re-derives every
-// digest, so the response reports per-chain and per-object results rather than a
-// bare boolean — a record can be internally sound while covering an object the
-// caller did not supply.
-$('ersVerifyBtn').onclick = async () => {
+// ---- RFC 4998 Evidence Record verification (Task 161) --------------------
+// Verification re-derives every digest, so the response reports per-chain and
+// per-object results rather than a bare boolean — a record can be internally
+// sound while covering an object the caller did not supply. Mirrors
+// `secsy-ca ers verify`; the listing, generation, renewal and export of records
+// live with the rest of the ERS panel in the Compliance view.
+$('ersVerifyBtn').onclick = () => runERSVerify();
+
+async function runERSVerify() {
   const err = $('ersError'); err.classList.add('hidden');
   const out = $('ersResult'); out.classList.add('hidden');
   const id = $('ersID').value.trim();
@@ -3711,14 +4768,13 @@ $('ersVerifyBtn').onclick = async () => {
   if (!id && !record) { showError(err, 'A stored record id or a base64 DER record is required.'); return; }
   if (id && record) { showError(err, 'Supply an id or a record, not both.'); return; }
   try {
-    const res = await api('POST', '/api/ers/verify', id ? { id } : { record });
-    renderERSResult(out, res);
+    // A record that does not verify answers 409 with the same body shape: that is
+    // a verdict, and postVerdict renders it as one rather than as an error.
+    renderERSResult(out, await postVerdict('/api/ers/verify', id ? { id } : { record }));
   } catch (e) {
-    // A record that does not verify answers 409 with the same body shape, which
-    // is a verdict rather than an error the operator should have to decode.
     showError(err, 'Verification failed: ' + e.message);
   }
-};
+}
 
 function renderERSResult(el, res) {
   el.className = 'notice ' + (res.valid ? 'ok' : 'err');
@@ -3973,6 +5029,27 @@ async function fetchApprovalCert(id) {
   }
 }
 
+// Mirrors `secsy-ca approvals expire`: retire every request whose approval window
+// has elapsed. The gate already treats such a request as expired the moment it is
+// next touched, but until something sweeps them the queue keeps listing requests
+// that can never execute.
+$('approvalsExpireBtn').onclick = async () => {
+  const out = $('approvalsExpireResult'), btn = $('approvalsExpireBtn');
+  btn.disabled = true;
+  try {
+    const res = await api('POST', '/api/approvals/expire');
+    const gate = res.enabled ? ''
+      : ' The approval gate is currently disabled, so anything swept was left over from when it was on.';
+    notice(out, res.expired ? 'warn' : 'ok', res.expired
+      ? `${res.expired} stale request(s) expired.${gate}`
+      : `Nothing to sweep: no request's approval window has elapsed.${gate}`);
+    loadApprovals();
+  } catch (e) {
+    // 503 = the approval workflow was never installed on this server.
+    notice(out, 'err', 'Expiry sweep failed: ' + e.message);
+  } finally { btn.disabled = false; }
+};
+
 $('approvalsRefresh').onclick = () => loadApprovals();
 $('approvalsStatus').onchange = () => loadApprovals();
 $('approvalsClass').addEventListener('keydown', e => { if (e.key === 'Enter') loadApprovals(); });
@@ -4009,6 +5086,344 @@ $('lintBtn').onclick = async () => {
     }
   } catch (e) { notice(out, 'err', e.message); }
   finally { $('lintBtn').disabled = false; }
+};
+
+// ---- Operations view (Task 198) -------------------------------------------
+// The run-book operations that previously needed a shell on the CA host:
+// preflight diagnostics, the DR manifest, its restore drill, and the static
+// artifact snapshot. Every endpoint here answers 503 with an explanatory message
+// on a server started without the operations dependencies, and several report a
+// failed verdict with a non-2xx status that api() turns into a thrown error — so
+// each panel renders the server's own message rather than going blank.
+$('opsDoctorRun').onclick = runDoctor;
+$('opsBackupDownload').onclick = downloadDRManifest;
+$('opsRestoreRun').onclick = runRestoreDrill;
+$('opsPublishRun').onclick = publishSnapshot;
+$('opsPublishVerify').onclick = verifyPublishedSnapshot;
+
+// doctorStatusClass maps a diagnostic status onto the shared badge palette.
+const doctorStatusClass = { pass: 'pass', warn: 'warn', fail: 'fail', skip: 'none' };
+
+// opsDoctorRan keeps a first visit from being blank without re-running the suite
+// on every later navigation — the button is how it is refreshed after that.
+let opsDoctorRan = false;
+
+// loadOps hosts the four operator panels. Only the read-only diagnostics suite
+// (`secsy-ca doctor`) runs by itself, and only on the first visit; the DR
+// manifest (`secsy-ca backup`), the restore drill (`secsy-ca backup
+// verify-restore`) and publishing (`secsy-ca publish`, `secsy-ca publish
+// -verify`) are deliberate, operator-triggered actions.
+function loadOps() {
+  if (!opsDoctorRan) runDoctor();
+}
+
+// runDoctor mirrors `secsy-ca doctor`: the read-only preflight suite. The report
+// is the answer, so every verdict arrives as HTTP 200 and is rendered as a
+// banner; only a transport/authorization failure lands in the catch.
+async function runDoctor() {
+  const banner = $('opsDoctorBanner'), meta = $('opsDoctorMeta'), tbody = $('opsDoctorRows');
+  const btn = $('opsDoctorRun');
+  opsDoctorRan = true;
+  btn.disabled = true;
+  notice(banner, '', 'Running the diagnostic suite…');
+  banner.classList.remove('hidden');
+  meta.textContent = '';
+  tbody.innerHTML = '<tr><td colspan="4" class="muted">Running…</td></tr>';
+  try {
+    const rep = await api('GET', '/api/doctor' + ($('opsDoctorDeep').checked ? '?deep=true' : ''));
+    const s = rep.summary || {};
+    const cls = rep.verdict === 'ok' ? 'ok' : (rep.verdict === 'warn' ? 'warn' : 'err');
+    const mark = rep.verdict === 'ok' ? '✓' : (rep.verdict === 'warn' ? '⚠' : '✗');
+    notice(banner, cls, `${mark} Verdict ${rep.verdict} (exit code ${rep.exit_code}) — ` +
+      `${s.pass || 0} pass · ${s.warn || 0} warn · ${s.fail || 0} fail · ${s.skip || 0} skip`);
+    meta.textContent = `config ${rep.config_path || '(none)'} · checked ${fmtTime(rep.checked_at)} · ` +
+      `${rep.deep ? 'deep' : 'shallow'} probes · timeout ${rep.timeout_seconds}s`;
+    tbody.innerHTML = (rep.checks || []).length ? (rep.checks || []).map(c => {
+      let html = `<tr>
+        <td>${checkBadge(doctorStatusClass[c.status] || 'none', c.status)}</td>
+        <td class="mono">${escapeHTML(c.name)}</td>
+        <td>${escapeHTML(c.message)}</td>
+        <td class="muted">${escapeHTML(c.elapsed_ms)} ms</td>
+      </tr>`;
+      // The hint is the fix, so it rides directly beneath the row that needs it.
+      if (c.hint && (c.status === 'warn' || c.status === 'fail')) {
+        html += `<tr><td></td><td colspan="3" class="muted">hint: ${escapeHTML(c.hint)}</td></tr>`;
+      }
+      return html;
+    }).join('') : '<tr><td colspan="4" class="muted">The suite reported no checks.</td></tr>';
+  } catch (e) {
+    notice(banner, 'err', 'Diagnostics unavailable: ' + e.message);
+    meta.textContent = '';
+    tbody.innerHTML = '<tr><td colspan="4" class="muted">—</td></tr>';
+  } finally { btn.disabled = false; }
+}
+
+// downloadDRManifest mirrors `secsy-ca backup`: the disaster-recovery metadata
+// bundle (public material only — never a private key), offered as a file and
+// summarized inline. It is fetched raw so the file the operator archives is the
+// server's exact bytes, then parsed for the summary.
+async function downloadDRManifest() {
+  const msg = $('opsBackupMsg'), sum = $('opsBackupSummary'), notes = $('opsBackupNotes');
+  const btn = $('opsBackupDownload');
+  btn.disabled = true;
+  msg.className = 'notice hidden';
+  sum.textContent = 'Exporting…';
+  notes.innerHTML = '';
+  try {
+    const text = await api('GET', '/api/backup', undefined, true);
+    const res = JSON.parse(text);
+    const m = res.manifest || {};
+    downloadBlob(text, 'dr-manifest.json', 'application/json');
+    notice(msg, m.audit_chain_valid ? 'ok' : 'warn', m.audit_chain_valid
+      ? '✓ Exported — the audit chain verified at export time.'
+      : '⚠ Exported, but the audit chain did NOT verify at export time; investigate before relying on this anchor.');
+    sum.textContent =
+      `${(m.cas || []).length} CA(s) · audit head seq ${m.audit_head_seq} · ` +
+      `chain ${m.audit_chain_valid ? 'valid' : 'INVALID'} · ${m.audit_event_count} event(s) · ` +
+      `key provider ${m.key_provider || '—'} · driver ${m.db_driver || '—'} · ` +
+      `scheduled backups ${res.scheduled_backup_enabled ? 'enabled' : 'disabled'}` +
+      (res.scheduled_destination ? ` → ${res.scheduled_destination}` : '') +
+      (res.config_path ? ` · config ${res.config_path}` : '');
+    // The notes say what the bundle deliberately does NOT carry, and where that
+    // material actually lives — the most load-bearing part of a DR runbook.
+    notes.innerHTML = (m.notes || []).length
+      ? '<div class="muted" style="margin-bottom:4px">Not in this bundle:</div>' +
+        '<ul class="muted" style="margin:0">' + m.notes.map(n => `<li>${escapeHTML(n)}</li>`).join('') + '</ul>'
+      : '';
+  } catch (e) {
+    notice(msg, 'err', 'DR manifest export failed: ' + e.message);
+    sum.textContent = '';
+  } finally { btn.disabled = false; }
+}
+
+// runRestoreDrill mirrors `secsy-ca backup verify-restore`. A failed drill
+// answers HTTP 500 and a deployment that has never published a scheduled backup
+// answers 404, both carrying the result body — api() throws on either, so the
+// thrown message is rendered as the verdict instead of being swallowed.
+async function runRestoreDrill() {
+  const out = $('opsRestoreResult'), btn = $('opsRestoreRun');
+  btn.disabled = true;
+  notice(out, '', 'Fetching, decrypting and restoring the newest scheduled backup — this can take minutes…');
+  out.classList.remove('hidden');
+  try {
+    const res = await api('POST', '/api/backup/verify-restore', {});
+    out.className = 'notice ' + (res.ok ? 'ok' : 'err');
+    out.innerHTML =
+      `<div style="font-size:15px"><b>${res.ok ? '✓ backup restores' : '✗ RESTORE NOT PROVEN'}</b>` +
+      (res.backend ? ` — backend ${escapeHTML(res.backend)}` : '') + '</div>' +
+      `<div class="muted" style="margin-top:6px">` +
+        `started ${escapeHTML(fmtTime(res.started_at))}` +
+        (res.driver ? ` · driver ${escapeHTML(res.driver)}` : '') +
+        (res.artifact_file ? ` · artifact ${escapeHTML(res.artifact_file)}` : '') +
+        (res.artifact_size ? ` (${escapeHTML(res.artifact_size)} bytes)` : '') +
+        (res.backup_created_at ? ` · taken ${escapeHTML(fmtTime(res.backup_created_at))}` : '') +
+        `<br>integrity ${res.integrity_ok ? 'ok' : 'FAILED'} · fingerprint ${res.fingerprint_match ? 'matches' : 'MISMATCH'}` +
+        (res.manifest_head ? `<br>manifest head ${escapeHTML(res.manifest_head)}` : '') +
+        (res.restored_head ? `<br>restored head ${escapeHTML(res.restored_head)}` : '') +
+        (res.artifact_sha256 ? `<br>artifact sha256 ${escapeHTML(res.artifact_sha256)}` : '') +
+        (res.stage ? `<br>stage ${escapeHTML(res.stage)}` : '') +
+        (res.error ? `<br>${escapeHTML(res.error)}` : '') +
+      '</div>' + checkList((res.checks || []).map(c => ({ name: c.name, passed: c.ok, detail: c.detail })));
+  } catch (e) {
+    notice(out, 'err', '✗ Restore drill did not prove a restore: ' + e.message);
+  } finally { btn.disabled = false; }
+}
+
+// publishSnapshot mirrors `secsy-ca publish`: replace the static CRL / pre-signed
+// OCSP / chain snapshot relying parties fetch. HTTP 409 means another publish is
+// already in flight (the destination is single-writer), which is a retry rather
+// than a failure — so it is called out as such.
+async function publishSnapshot() {
+  const out = $('opsPublishResult'), btn = $('opsPublishRun');
+  btn.disabled = true;
+  notice(out, '', 'Building and writing the snapshot…');
+  out.classList.remove('hidden');
+  renderPublishArtifacts(null);
+  try {
+    const body = {};
+    const cas = csvList($('opsPublishCAs').value);
+    if (cas.length) body.cas = cas;
+    if ($('opsPublishSkipOCSP').checked) body.skip_ocsp = true;
+    const res = await api('POST', '/api/publish', body);
+    const skipped = (res.skipped || []).map(s =>
+      `${escapeHTML(s.label || s.id)} (${escapeHTML(s.reason)})`).join(', ');
+    out.className = 'notice ok';
+    out.innerHTML =
+      `<div style="font-size:15px"><b>✓ snapshot v${escapeHTML(res.version)} published</b> — ` +
+      `${escapeHTML(res.artifact_count)} artifact(s) for ${escapeHTML(res.ca_count)} CA(s)</div>` +
+      `<div class="muted" style="margin-top:6px">` +
+        `${escapeHTML(res.backend)} → ${escapeHTML(res.destination)} · generated ${escapeHTML(fmtTime(res.generated_at))} · ` +
+        `${escapeHTML(res.duration_ms)} ms<br>` +
+        `OCSP ${res.include_ocsp ? (res.ocsp_fresh ? 'included (freshly signed)' : 'included (reused presign batch)') : 'skipped'}` +
+        (res.earliest_expiry ? ` · earliest artifact expiry ${escapeHTML(fmtTime(res.earliest_expiry))}` : '') +
+        (skipped ? `<br>skipped: ${skipped}` : '') +
+      '</div>' +
+      publishCATable(res.cas);
+    renderPublishArtifacts(res.artifacts);
+  } catch (e) {
+    notice(out, 'err', 'Publish failed: ' + e.message);
+  } finally { btn.disabled = false; }
+}
+
+// verifyPublishedSnapshot mirrors `secsy-ca publish -verify`: re-read the
+// published snapshot and check every object against its own manifest. A failed
+// integrity audit is a HTTP 200 carrying ok:false — a verdict, not a transport
+// error — so the banner is driven by ok, never by the status code.
+async function verifyPublishedSnapshot() {
+  const out = $('opsPublishResult'), btn = $('opsPublishVerify');
+  btn.disabled = true;
+  notice(out, '', 'Re-reading and digesting every published artifact…');
+  out.classList.remove('hidden');
+  renderPublishArtifacts(null);
+  try {
+    const res = await api('POST', '/api/publish/verify', {});
+    out.className = 'notice ' + (res.ok ? 'ok' : 'err');
+    out.innerHTML =
+      `<div style="font-size:15px"><b>${res.ok ? '✓ published snapshot intact' : '✗ INTEGRITY AUDIT FAILED'}</b>` +
+      (res.version ? ` — v${escapeHTML(res.version)}` : '') + '</div>' +
+      `<div class="muted" style="margin-top:6px">` +
+        `${escapeHTML(res.backend)} → ${escapeHTML(res.destination)} · ` +
+        `${escapeHTML(res.verified_artifacts)} artifact(s) re-read for ${escapeHTML(res.ca_count)} CA(s) · ` +
+        `${escapeHTML(res.duration_ms)} ms` +
+        (res.generated_at ? `<br>generated ${escapeHTML(fmtTime(res.generated_at))}` : '') +
+        (res.earliest_expiry ? ` · earliest artifact expiry ${escapeHTML(fmtTime(res.earliest_expiry))}` : '') +
+        (res.error ? `<br>${escapeHTML(res.error)}` : '') +
+      '</div>' +
+      publishCATable(res.cas);
+    renderPublishArtifacts(res.artifacts);
+  } catch (e) {
+    notice(out, 'err', 'Verification failed: ' + e.message);
+  } finally { btn.disabled = false; }
+}
+
+// publishCATable renders the per-CA summary both publish operations return.
+function publishCATable(cas) {
+  if (!cas || !cas.length) return '';
+  return '<table style="margin-top:8px"><thead><tr><th>CA</th><th>Pre-signed OCSP</th><th>CRL shards</th></tr></thead><tbody>' +
+    cas.map(c => `<tr><td>${escapeHTML(c.label || c.id)}</td>` +
+      `<td>${escapeHTML(c.ocsp_responses)}</td><td>${escapeHTML(c.crl_shards)}</td></tr>`).join('') +
+    '</tbody></table>';
+}
+
+// renderPublishArtifacts lists the integrity record of every published object.
+function renderPublishArtifacts(artifacts) {
+  const table = $('opsPublishArtifacts'), tbody = $('opsPublishArtifactRows');
+  if (!artifacts || !artifacts.length) {
+    tbody.innerHTML = '';
+    table.classList.add('hidden');
+    return;
+  }
+  tbody.innerHTML = artifacts.map(a => `<tr>
+    <td class="mono">${escapeHTML(a.path)}</td>
+    <td>${escapeHTML(a.kind)}</td>
+    <td>${escapeHTML(a.size)}</td>
+    <td class="mono" title="${escapeHTML(a.sha256)}">${escapeHTML((a.sha256 || '').slice(0, 16))}…</td>
+  </tr>`).join('');
+  table.classList.remove('hidden');
+}
+
+// ---- Certificate-inventory retention (Task 198) ---------------------------
+$('invRetPreview').onclick = () => runRetention(true);
+$('invRetRun').onclick = () => runRetention(false);
+
+// loadRetentionStatus mirrors `secsy-ca inventory retention status`: the resolved
+// policy, how much is eligible right now, and the newest recorded pass. The
+// endpoints work whether or not the background loop is enabled, so whether it
+// runs at all is stated explicitly.
+async function loadRetentionStatus() {
+  const el = $('invRetStatus');
+  el.textContent = 'Loading…';
+  try {
+    const st = await api('GET', '/api/inventory/retention');
+    el.textContent =
+      (st.enabled
+        ? `Background loop enabled, every ${st.interval || '—'}`
+        : 'Background loop DISABLED — retention runs only when triggered here or from the CLI') +
+      ` · mode ${st.mode || '—'} · window ${st.window || '—'} · cutoff ${fmtTime(st.cutoff)}` +
+      (st.prune_cutoff ? ` · prune cutoff ${fmtTime(st.prune_cutoff)}` : '') +
+      ` · ${st.eligible} eligible · ${st.prunable} prunable · ${st.archive_size} archived` +
+      (st.last_run ? ` · last run ${fmtTime(st.last_run.timestamp)} (${st.last_run.result})` : ' · never run');
+  } catch (e) {
+    el.textContent = 'Retention status unavailable: ' + e.message;
+  }
+}
+
+// runRetention mirrors `secsy-ca inventory retention dry-run` (preview) and
+// `secsy-ca inventory retention run`. A real pass permanently removes rows from
+// the hot inventory, so it is confirmed first.
+async function runRetention(dryRun) {
+  if (!dryRun && !confirm('Run a retention pass now?\n\nEligible certificate-inventory rows are archived and, in prune mode, permanently deleted from the hot inventory. This cannot be undone. The authoritative revocation records (OCSP/CRL) are not affected.')) return;
+  const out = $('invRetResult');
+  const btns = [$('invRetPreview'), $('invRetRun')];
+  btns.forEach(b => { b.disabled = true; });
+  notice(out, '', dryRun ? 'Planning a pass…' : 'Running the retention pass…');
+  out.classList.remove('hidden');
+  try {
+    const res = await api('POST', '/api/inventory/retention/run', { dry_run: dryRun });
+    out.className = 'notice ' + (res.error ? 'err' : 'ok');
+    out.innerHTML =
+      `<div style="font-size:15px"><b>${res.dry_run ? 'Preview' : 'Retention pass'} — mode ${escapeHTML(res.mode)}</b></div>` +
+      `<div class="muted" style="margin-top:6px">` +
+        `${escapeHTML(res.eligible)} eligible · ${escapeHTML(res.archived)} archived · ` +
+        `${escapeHTML(res.pruned)} pruned · ${escapeHTML(res.backlog)} still backlogged · ` +
+        `archive holds ${escapeHTML(res.archive_size)} · ${escapeHTML(res.protected_by_approvals)} pinned by approvals<br>` +
+        `window ${escapeHTML(res.window)} · cutoff ${escapeHTML(fmtTime(res.cutoff))}` +
+        (res.prune_cutoff ? ` · prune cutoff ${escapeHTML(fmtTime(res.prune_cutoff))}` : '') +
+        ` · started ${escapeHTML(fmtTime(res.started))} · ${escapeHTML(res.duration_ms)} ms<br>` +
+        `manifest digest <span class="mono">${escapeHTML(res.digest)}</span>` +
+        (res.error ? `<br>${escapeHTML(res.error)}` : '') +
+      '</div>';
+  } catch (e) {
+    // A pass that failed part-way answers 500 with the committed counts in the
+    // body; api() surfaces only its error string, so say that the counts are in
+    // the status line the refresh below repaints.
+    notice(out, 'err', (dryRun ? 'Preview' : 'Retention pass') + ' failed: ' + e.message);
+  } finally {
+    btns.forEach(b => { b.disabled = false; });
+    loadRetentionStatus();
+  }
+}
+
+// ---- Audit-chain anchoring (Task 198) -------------------------------------
+// anchorAuditChain mirrors `secsy-ca audit anchor`: timestamp the current chain
+// head with the deployment's TSA so the tip stays provable offline, long after
+// the process that sealed it is gone. An unchanged head is reported as skipped —
+// informational, not a failure, and deliberately mints no redundant token.
+$('auditAnchorBtn').onclick = async () => {
+  const out = $('auditAnchorResult'), btn = $('auditAnchorBtn');
+  btn.disabled = true;
+  notice(out, '', 'Timestamping the chain head…');
+  out.classList.remove('hidden');
+  try {
+    const res = await api('POST', '/api/events/anchor', { force: $('auditAnchorForce').checked });
+    const source = res.tsa_source || (res.anchor && res.anchor.tsa_source) || 'internal';
+    if (res.skipped) {
+      notice(out, '', `No anchor created — ${res.reason || 'the head has not moved since the last anchor'} ` +
+        `(TSA ${source}). Tick "force" to anchor anyway.`);
+      return;
+    }
+    const a = res.anchor || {};
+    out.className = 'notice ok';
+    out.innerHTML =
+      `<div style="font-size:15px"><b>✓ chain head anchored at seq ${escapeHTML(a.seq)}</b></div>` +
+      `<div class="muted" style="margin-top:6px">` +
+        `head hash <span class="mono">${escapeHTML(a.head_hash)}</span><br>` +
+        `TSA ${escapeHTML(source)} · genTime ${escapeHTML(fmtTime(a.gen_time))}` +
+        (a.created_at ? ` · recorded ${escapeHTML(fmtTime(a.created_at))}` : '') +
+      '</div>';
+    // Offer the evidence itself: the DER TimeStampToken an auditor can re-verify
+    // offline (openssl ts -verify) against the TSA certificate.
+    if (a.token) {
+      const dl = document.createElement('button');
+      dl.className = 'btn ghost sm';
+      dl.style.marginTop = '8px';
+      dl.textContent = 'Download token (.tst)';
+      dl.onclick = () => downloadBlob(unb64(a.token), `audit-anchor-${a.seq}.tst`, 'application/timestamp-reply');
+      out.appendChild(dl);
+    }
+  } catch (e) {
+    notice(out, 'err', 'Anchoring failed: ' + e.message);
+  } finally { btn.disabled = false; }
 };
 
 // ---- Helpers -------------------------------------------------------------

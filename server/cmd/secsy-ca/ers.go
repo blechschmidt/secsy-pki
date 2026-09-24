@@ -571,7 +571,7 @@ func printErsInfo(rec models.EvidenceRecord, info ers.Info) {
 	fmt.Fprintln(tw, "  CHAIN\tINDEX\tHASH\tGEN TIME\tTSA EXPIRES\tTSA SUBJECT")
 	for _, ts := range info.Timestamps {
 		exp := "-"
-		if !ts.TSANotAfter.IsZero() {
+		if ts.TSANotAfter != nil {
 			exp = ts.TSANotAfter.Format("2006-01-02")
 		}
 		fmt.Fprintf(tw, "  %d\t%d\t%s\t%s\t%s\t%s\n",

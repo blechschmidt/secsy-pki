@@ -203,6 +203,30 @@ func platAdm(m, pat, path, b string) rc {
 		extra: map[string][]int{subjAdminA: den403}}
 }
 
+// platCAMg: PLATFORM-wide ca:manage (a.can, not canInTenant) — provisioning the
+// deployment's own signing credentials or adopting raw key material. A tenant
+// admin holds ca:manage only within its tenant, so it is a denied witness.
+func platCAMg(m, pat, path, b string) rc {
+	return rc{method: m, pattern: pat, path: path, body: b, capable: subjPlatAdmin, denied: den403,
+		extra: map[string][]int{subjAdminA: den403}}
+}
+
+// platCfg: PLATFORM-wide ca:configure — deployment-global issuance/inventory
+// policy (the compromised-key blocklist, inventory retention). A TENANT admin
+// holds no platform capability, so it is a denied witness.
+func platCfg(m, pat, path, b string) rc {
+	return rc{method: m, pattern: pat, path: path, body: b, capable: subjRoot, denied: den403,
+		extra: map[string][]int{subjAdminA: den403}}
+}
+
+// aprSweep: PLATFORM-wide approval:approve — the cross-tenant expiry sweep. A
+// tenant approver may decide its own tenant's requests but must not sweep the
+// whole deployment, so a tenant admin is a denied witness.
+func aprSweep(m, pat, path, b string) rc {
+	return rc{method: m, pattern: pat, path: path, body: b, capable: subjPlatAdmin, denied: den403,
+		extra: map[string][]int{subjAdminA: den403}}
+}
+
 // memRd: tenant-member read — non-members get 404 (non-disclosure).
 func memRd(m, pat, path string) rc {
 	return rc{method: m, pattern: pat, path: path, capable: subjAdminA, denied: den404,
@@ -327,6 +351,13 @@ func authzMatrix() []rc {
 		caRd("GET", "/api/ca/{id}/csr", "/api/ca/ca-a/csr"),
 		caMg("POST", "/api/ca/{id}/import-cert", "/api/ca/ca-a/import-cert", `{}`),
 
+		// Key/CA adoption (Task 198). Raw key import into a shared backend is
+		// platform hsm:manage — it can shadow the labels config names and binds to
+		// no tenant resource. Adopting a CA is ca:manage in the target tenant,
+		// exactly like init-root, so the tenant comes from the body.
+		hsmMg("POST", "/api/keys/import", "/api/keys/import", `{}`),
+		caMgBody("POST", "/api/ca/import", "/api/ca/import", `{"tenant":"a","label":"authz-import"}`),
+
 		// Cross-signing.
 		caMg("POST", "/api/ca/{id}/cross-signs", "/api/ca/ca-a/cross-signs", `{}`),
 		caMg("GET", "/api/ca/{id}/cross-signs", "/api/ca/ca-a/cross-signs", ""),
@@ -358,6 +389,9 @@ func authzMatrix() []rc {
 		// trust-domain allowlist and are tenant-scoped.
 		iss("POST", "/api/ca/{id}/svid", "/api/ca/ca-a/svid", `{}`),
 		iss("POST", "/api/ca/{id}/svid/jwt", "/api/ca/ca-a/svid/jwt", `{}`),
+		// Verifying a JWT-SVID is the read side of minting: per-CA read access,
+		// public-key math only. `{}` fails validation before any bundle is built.
+		caRdBody("POST", "/api/ca/{id}/svid/jwt/verify", "/api/ca/ca-a/svid/jwt/verify", `{}`),
 		pub("GET", "/api/ca/{id}/svid/bundle", "/api/ca/ca-a/svid/bundle"),
 
 		// Expiry monitoring.
@@ -374,6 +408,10 @@ func authzMatrix() []rc {
 
 		// CT inclusion state.
 		rdG("GET", "/api/ct/inclusion", "/api/ct/inclusion", ""),
+		// On-demand inclusion sweep: same gate as the discovery scan, since it
+		// actively probes external logs. No ops deps here, so a capable caller
+		// gets 503 — not denied, which is what the reachability probe asserts.
+		platIss("POST", "/api/ct/verify-inclusion", "/api/ct/verify-inclusion", `{}`),
 
 		// SSH certificate authority.
 		caMgBody("POST", "/api/ssh/cas", "/api/ssh/cas", `{"label":"authz-ssh","tenant_id":"a",`+bogusKey+`}`),
@@ -391,6 +429,11 @@ func authzMatrix() []rc {
 		signR("POST", "/api/sign", "/api/sign", `{"signer":"release","artifact":"eA=="}`),
 		rdG("POST", "/api/sign/verify", "/api/sign/verify", `{}`),
 		rdG("GET", "/api/sign/signers", "/api/sign/signers", ""),
+		// Signer / TSA credential provisioning (Task 198): platform ca:manage,
+		// because the credential is deployment infrastructure (config reaches it
+		// through signing.signers[] / tsa.key_label) rather than a tenant resource.
+		platCAMg("POST", "/api/sign/signers", "/api/sign/signers", `{}`),
+		platCAMg("POST", "/api/tsa/key", "/api/tsa/key", `{}`),
 
 		// Public revocation material + CRL freshness.
 		pub("GET", "/api/ca/{id}/crl", "/api/ca/ca-a/crl"),
@@ -461,6 +504,14 @@ func authzMatrix() []rc {
 		// Live audit-event feed (SSE): read-gated like /api/events; streaming, so
 		// the reachability probe is skipped (see rdGStream).
 		rdGStream("GET", "/api/events/stream", "/api/events/stream"),
+		// On-demand RFC 3161 anchoring of the chain head (Task 198): platform
+		// ca:manage, and every request-shape error is answered before requireOps,
+		// so the capable witness reaches a non-denied status without ops deps.
+		// platCAMg, not platAdm: the capable witness must be a platform ADMIN whose
+		// ca:manage comes from the role bundle through rbac.Can, because root
+		// short-circuits on IsRoot and would still pass if ca:manage were dropped
+		// from that bundle. Same gate, same builder, as POST /api/sign/signers.
+		platCAMg("POST", "/api/events/anchor", "/api/events/anchor", `{}`),
 
 		// Four-eyes approval workflow (engine enabled in the harness).
 		aprRd("GET", "/api/approvals", "/api/approvals"),
@@ -468,6 +519,8 @@ func authzMatrix() []rc {
 		aprDec("POST", "/api/approvals/{id}/approve", "/api/approvals/apr-approve/approve", `{}`),
 		aprDec("POST", "/api/approvals/{id}/reject", "/api/approvals/apr-reject/reject", `{}`),
 		iss("GET", "/api/approvals/{id}/certificate", "/api/approvals/apr-cert/certificate", ""),
+		// The cross-tenant expiry sweep is platform approval:approve (Task 198).
+		aprSweep("POST", "/api/approvals/expire", "/api/approvals/expire", ""),
 
 		// Ad-hoc lint + provider key inventory.
 		rdG("POST", "/api/lint", "/api/lint", `{}`),
@@ -479,7 +532,43 @@ func authzMatrix() []rc {
 		// tenant-scoped: an empty body reaches the handler (400) past auth, which is
 		// what the matrix asserts for a capable principal.
 		rdG("POST", "/api/ers/verify", "/api/ers/verify", `{}`),
+		// The rest of the Evidence-Record surface (Task 198): reads share verify's
+		// gate; minting/refreshing archive timestamps is platform ca:manage — hence
+		// platCAMg, whose capable witness exercises rbac.Can rather than root's
+		// IsRoot short-circuit.
+		rdG("GET", "/api/ers", "/api/ers", ""),
+		rdG("GET", "/api/ers/export", "/api/ers/export?id=missing", ""),
+		platCAMg("POST", "/api/ers/generate", "/api/ers/generate", `{}`),
+		platCAMg("POST", "/api/ers/renew", "/api/ers/renew", `{}`),
 		hsmMg("GET", "/api/inventory/keys", "/api/inventory/keys", ""),
+
+		// Compromised-key blocklist (Task 120/198): read is canRead, mutation is
+		// platform ca:configure. The path form is the hex digest (path-safe); the
+		// handler canonicalizes it.
+		rdG("GET", "/api/blocked-keys", "/api/blocked-keys", ""),
+		platCfg("POST", "/api/blocked-keys", "/api/blocked-keys", `{"fingerprint":"`+strings.Repeat("ab", 32)+`","reason":"authz"}`),
+		platCfg("DELETE", "/api/blocked-keys/{fingerprint}", "/api/blocked-keys/"+strings.Repeat("ab", 32), ""),
+
+		// Certificate-inventory retention (Task 157/198). The harness installs no
+		// ops deps, so a permitted caller gets 503 rather than 200 — the
+		// reachability probe accepts that, and the row's job is to show a
+		// tenant-scoped caller is refused. dry_run keeps the probe from touching
+		// fixtures if ops deps are ever installed here.
+		platRd("GET", "/api/inventory/retention", "/api/inventory/retention"),
+		platCfg("POST", "/api/inventory/retention/run", "/api/inventory/retention/run", `{"dry_run":true}`),
+
+		// Operator operations (Task 198): diagnostics, DR, publishing. Publishing
+		// swaps the artifacts every relying party consumes, so it is platform
+		// ca:configure; verifying the published snapshot is deliberately lower —
+		// its whole value is being usable while the signing path is down.
+		platRd("GET", "/api/doctor", "/api/doctor"),
+		hsmMg("GET", "/api/backup", "/api/backup", ""),
+		hsmMg("POST", "/api/backup/verify-restore", "/api/backup/verify-restore", `{}`),
+		platCfg("POST", "/api/publish", "/api/publish", `{}`),
+		platRd("POST", "/api/publish/verify", "/api/publish/verify"),
+
+		// Static resource-role catalog (Task 191/198): read-gated policy docs.
+		rdG("GET", "/api/grants/roles", "/api/grants/roles", ""),
 
 		// ACME operator visibility.
 		rdG("GET", "/api/acme/accounts", "/api/acme/accounts", ""),
@@ -502,6 +591,11 @@ func authzMatrix() []rc {
 		// secret:signing-key, sign/verify/get-public-key need secret:sign; all are
 		// tenant-scoped (admin holds every capability, so secretR covers both).
 		secretR("POST", "/api/secret/signing-keys", "/api/secret/signing-keys", `{}`),
+		// Import (Task 198) carries private key material but is authorized exactly
+		// like creation — the privileged secret:signing-key capability on the
+		// header-selected tenant, checked before the body is parsed. The empty body
+		// fails validation AFTER that gate, which is what makes it a usable probe.
+		secretR("POST", "/api/secret/signing-keys/import", "/api/secret/signing-keys/import", `{}`),
 		secretR("GET", "/api/secret/signing-keys", "/api/secret/signing-keys", ""),
 		secretR("GET", "/api/secret/signing-keys/{name}", "/api/secret/signing-keys/k-a", ""),
 		secretR("POST", "/api/secret/signing-keys/{name}/sign", "/api/secret/signing-keys/k-a/sign", `{}`),
@@ -538,6 +632,9 @@ func authzMatrix() []rc {
 		// that a tenant admin is still refused.
 		hsmMg("GET", "/api/hsm/keys/{label}/attestation", "/api/hsm/keys/authz-key/attestation", ""),
 		hsmMg("GET", "/api/ca/{id}/key-attestation", "/api/ca/authz-ca/key-attestation", ""),
+		// The whole-device pass (Task 198) enumerates every key and attests each,
+		// so it is hsm:manage for both halves of what it does.
+		hsmMg("GET", "/api/hsm/attestation-audit", "/api/hsm/attestation-audit", ""),
 		// Verifying one touches nothing, and is audit:read for the same reason the
 		// audit bundle is: an auditor must be able to check the evidence without
 		// holding the capability that administers the device.

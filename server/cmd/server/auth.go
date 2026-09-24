@@ -30,6 +30,12 @@ var defaultStepUpOperations = []string{
 	"cert.revoke", "cert.revoke_bulk", "ca.init_root", "ca.issue_intermediate",
 	"ca.cross_sign", "ca.rotate", "ca.retire", "ca.manage",
 	"ssh.ca_init", "ssh.revoke", "hsm.factory_reset",
+	// Adopting foreign key material and provisioning the deployment's own signing
+	// credentials (Task 198) belong here for the same reason as init-root: they
+	// change what this PKI will sign with. Un-blocking a compromised key and
+	// pruning the issued-certificate inventory destroy evidence, so they join too.
+	"key.import", "ca.import", "signing.key_provision", "tsa.key_provision",
+	"key.unblock", "inventory.retention", "publish.snapshot",
 }
 
 // setupOperatorAuth wires the strong operator-authentication stack (Task 50):

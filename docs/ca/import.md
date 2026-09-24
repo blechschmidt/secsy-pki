@@ -25,11 +25,19 @@ a successful command imply otherwise.
 | `secsy-ca import-key` | Place an existing private key into the key provider under a label, on the CA, TSA, or signing backend |
 | `secsy-secret signing-key import` | Adopt an existing application signing key into the named-signing-key registry |
 
-All three are **CLI-only by design**. Their input is raw private key material,
-and the one thing that must not happen to raw private key material is another
-copy of it travelling somewhere — least of all through a browser to a network
-API. It is read once, from a local path, on an operator's shell. See
-[deliberately CLI-only](../operations/web-console.md#deliberately-cli-only).
+The shell is the **preferred** place to run all three. Their input is raw private
+key material, and the fewer copies of it that travel anywhere the better: read it
+once, from a local path, on an operator's shell.
+
+All three are nonetheless reachable from the console (Task 198): the
+**Authorities** view carries an *Adopt an existing CA* panel for
+`secsy-ca ca import` and an *Import a key into the provider* panel for
+`secsy-ca import-key`, and the **Secrets** view an *Import an existing signing
+key* panel for `secsy-secret signing-key import`. Each is labelled as carrying a
+private key, size-limits the body before decoding it, and echoes no part of the
+material back — and `ca import` can instead name a key that is **already** on the
+provider, which moves no key material at all. See the
+[CLI ↔ console parity matrix](../operations/cli-console-parity.md).
 
 ---
 

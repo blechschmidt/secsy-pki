@@ -1272,8 +1272,12 @@ type WebAuthnConfig struct {
 	// (default 5).
 	StepUpTTLMinutes int `yaml:"step_up_ttl_minutes"`
 	// StepUpOperations names the high-risk operations gated behind step-up.
-	// Recognized: cert.revoke, ca.manage, ca.init_root, ca.issue_intermediate,
-	// ca.cross_sign, hsm.factory_reset. Empty applies a safe default set.
+	// Recognized: cert.revoke, cert.revoke_bulk, cert.issue_bulk, ca.manage,
+	// ca.init_root, ca.issue_intermediate, ca.csr, ca.import_cert, ca.cross_sign,
+	// ca.rotate, ca.retire, ca.import, key.import, key.unblock,
+	// signing.key_provision, tsa.key_provision, inventory.retention,
+	// publish.snapshot, ssh.ca_init, ssh.revoke, secret.kek_rotate,
+	// secret.kek_retire, hsm.factory_reset. Empty applies a safe default set.
 	StepUpOperations []string `yaml:"step_up_operations"`
 }
 

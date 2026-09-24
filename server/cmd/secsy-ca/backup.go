@@ -247,7 +247,7 @@ func printVerifyResult(res *backup.VerifyResult) {
 	if res.ArtifactSize > 0 {
 		fmt.Printf("  artifact:      %s (%d bytes, sha256 %s)\n", res.ArtifactFile, res.ArtifactSize, shortHash(res.ArtifactSHA256))
 	}
-	if !res.CreatedAt.IsZero() {
+	if res.CreatedAt != nil {
 		fmt.Printf("  backed up at:  %s\n", res.CreatedAt.Format(time.RFC3339))
 	}
 	for _, c := range res.Checks {

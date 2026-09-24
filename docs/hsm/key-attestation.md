@@ -145,6 +145,12 @@ OBJECT  LABEL            EXPORTABLE  ORIGIN     CAPABILITIES                    
 0x7e58  legacy-signer    yes         generated  sign-ecdsa,exportable-under-wrap  FAIL: key holds the exportable-under-wrap capability…
 ```
 
+The same pass is `GET /api/hsm/attestation-audit` (hsm:manage), and the operator
+console runs it from the HSM view's **Device-wide attestation audit** panel. It
+returns a verdict per key plus a rollup; a key that cannot be attested is a row
+carrying its error rather than a failed request, so one unattestable object does
+not cost the verdict on the rest.
+
 ## Verifying one remotely
 
 Verification needs nothing but the bytes — no device, no database, no config —

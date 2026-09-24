@@ -44,120 +44,32 @@ with fast/slow burn-rate paging.
 
 ## CLI ↔ console parity
 
-Task 62 made every server-side capability the `secsy-ca` / `secsy-secret`
-CLIs expose reachable from the console as well, and Task 190 re-audited the
-whole CLI surface against it and closed the gaps that had opened since (the
-YubiHSM attestation/audit commands, the stored-secret registry, KEK rotation,
-tokenization, evidence records, and alternate chains). The mapping:
+Tasks 62, 190 and 198 each audited the whole CLI surface against the console by
+hand, and the mapping drifted between every audit — this page used to carry its
+own copy of it, and that copy went stale (it listed `doctor`, `backup`,
+`publish`, `blocked-keys`, `tsa-key`, `ca import` and the evidence-record
+commands as CLI-only long after each of them had a console control).
 
-| CLI | Console |
-|---|---|
-| `init-root`, `issue-intermediate`, `list` | Authorities page |
-| `issue` (incl. `-dry-run` preview, `-psd2-*` eIDAS PSD2, `-pkup` private-key usage period), `renew`, `revoke`, `revoke-bulk`, `gen-crl` (incl. delta/shards) | Issue (incl. **Preview (dry run)**, PSD2 & PKUP override controls) + Certificates pages (bulk revocation panel with dry-run count confirmation) |
-| `suspend`, `release` (reversible `certificateHold`) | Certificates page (Suspend / Release actions; **held** status filter) |
-| `export-p12` | PKCS#12 page |
-| `list-certs` (incl. `-status`/`-profile`/`-q` filters + keyset paging), `expiring`, `monitor-run`, `profiles` | Certificates, Inventory, Expiry Monitor, Issue pages |
-| `list-certs --by-public-key <fp\|@file>`, `revoke-bulk --by-public-key` (key-compromise) | Inventory page (**Key-compromise search** panel — SPKI-fingerprint / public-key search across all readable CAs) |
-| `approvals list/approve/reject/certificate` | Approvals page (queue, approve/reject, fetch issued cert) |
-| `token create/list/revoke` | API Tokens page |
-| `ct inclusion-status` (read) / `ct verify-inclusion` (on-demand scan, CLI-only) | CT Inclusion page (status table) |
-| `dns-records tlsa`, `dns-records sshfp` | DNS Records page |
-| `rotate-intermediate`, `rotation-status`, `list-rotations`, `retire-intermediate`, `publish-chain` | Authorities page (rotate/retire actions, status badges) + Trust Bundle chain download |
-| `cross-sign`, `list-cross-signs` | Authorities page (cross-signing panels) |
-| `ca csr`, `ca import-cert` | Authorities page (external subordinate CA panel; CSR / Import cert actions on pending rows) |
-| `ssh ca-init / sign-user / sign-host / revoke / krl / list / profiles` | SSH CA page |
-| `sign` (incl. `-level b\|t\|lt`), `verify-signature` (incl. `-require-level`) | Signing page (CAdES level selector + require-level gate) |
-| `svid`, `svid jwt`, `svid-bundle` | Trust Bundle page (X.509-SVID and JWT-SVID mint panels, bundle download) |
-| `list-cross-signs -chains` | Trust Bundle page (**Alternate chains** table, per-chain PEM download) |
-| `lint` | Compliance page (lint panel) |
-| `validate-cert` | Validate page (chain/path validation) |
-| `inventory` | Authorities page (HSM key inventory) |
-| `audit verify`, `audit export` (json/cef/rfc5424) | Audit page |
-| `ers verify` (by id or record) | Audit page (**Evidence record (RFC 4998)** panel) |
-| `hsm-attest device` (device authenticity + verified serial), `hsm-attest key`, `hsm-attest ca`, `hsm-attest verify` | HSM page (Device authenticity / Key attestation / Verify an attestation panels) |
-| `hsm-audit status`, `hsm-audit provision`, `hsm-audit export` | HSM page (reconciliation strip, Provision audit, Audit bundle / Signed log / Combined log downloads, device log table) |
-| `discover` | Discovery page |
-| `webhook create/list/enable/disable/test/deliveries/delete` | Webhooks page |
-| `tenant list/create/suspend/activate/quota/usage` | Tenants page |
-| `secsy-secret encrypt/decrypt/kek-info`, `encrypt -escrow`, `escrow-config` (status), `pqc-info`, `datakey`, `hmac`, `hmac-verify`, `random` | Secrets page (envelope encrypt/decrypt + KEK/PQC/escrow summary + Crypto service panel) |
-| `secsy-secret signing-key create/list/public`, `sign`, `verify` (incl. `-public-key`) | Secrets page (**Digital signatures** panel — signing-key management, public-key export, sign/verify against the stored key **or a supplied public key**) |
-| `secsy-secret transform encode/decode` | Secrets page (**Tokenization** panel — FF1 template encode/decode) |
-| `secsy-secret put/get/list-secrets/versions/rollback`, `lifecycle` | Secrets page (**Stored secrets** panel — create/update, reveal, version history, roll back, delete; **Lifecycle attention** table) |
-| `secsy-secret kek-versions`, `rotate-kek`, `rewrap`, `retire-kek` | Secrets page (**KEK rotation** panel — lineage table with per-version secret counts, rotate / re-wrap all / retire) |
+So the mapping now lives in one place, and a test keeps it true:
+
+**→ [CLI ↔ console parity matrix](cli-console-parity.md)** — every top-level
+`secsy-ca` / `secsy-secret` command against the console view that offers it, the
+sub-commands and routes that have no console control, and the remaining gaps.
+
+`server/internal/console/parity_test.go` enforces it: it parses the route
+registrations, this console's bundle and both CLIs' command dispatch, and fails
+when any of them is unaccounted for — or when a command is missing from that
+page. A new route or command cannot ship without a parity decision.
 
 ### Deliberately CLI-only
 
-Some commands are host-local or dual-control ceremonies and are intentionally
-**not** exposed over the network API (and therefore not in the console):
+Some commands are host-local, dual-control ceremonies, or offline by design, and
+are intentionally **not** exposed over the network API. The authoritative list,
+with the reason for each, is
+[in the parity matrix](cli-console-parity.md#deliberately-cli-only) — together
+with [the sub-commands](cli-console-parity.md#sub-commands-that-stay-cli-only)
+that stay on the command line even though their parent command does not.
 
-- `ceremony` — interactive M-of-N operator quorum for root/intermediate
-  creation (the API's init-root/issue-intermediate are step-up gated instead).
-- `backup` / `restore`, `db migrate` / `db verify` — disaster recovery and
-  store administration against local files/DSNs.
-- `doctor` — local preflight diagnostics (config/HSM/DB/listener); the
-  console-visible health signals live in `/healthz`, `/readyz`, and the
-  Compliance page.
-- `publish` — writes static CRL/OCSP artifacts to a local directory or S3.
-- `blocked-keys add/list/remove` — curating the operator-managed
-  weak/compromised-key blocklist (SPKI SHA-256 fingerprints) that feeds the
-  pre-issuance [key-checks](../issuance/key-checks.md) gate. It is a security-admin store
-  with **no network API** by design, so the blocklist is curated only from an
-  authenticated host shell, never the console. The gate's effect is visible in
-  the key-check verdicts and in the Issue page's dry-run preview.
-- `tsa-key`, `signing-key`, `secsy-secret init-kek`, `escrow-init-agent` —
-  key provisioning for server-role keys; they require key-provider role
-  wiring and a restart to take effect.
-- `secsy-secret recover` and escrow recovery — a dual-control quorum ceremony
-  requiring recovery-agent key access on the HSM; the console shows escrow
-  status and can escrow-on-encrypt, but recovery stays offline by design.
-- `secsy-secret pqc-enable` / `pqc-reseal` — provisioning and re-sealing the
-  ML-KEM hybrid material, which is key provisioning like `init-kek`. The
-  resulting state (`available` / `enabled`) is shown on the Secrets page.
-- `secsy-secret exec` — injects decrypted secrets into a child process's
-  environment on the machine it runs on; there is no browser equivalent.
-- `cmp` / `grpc` — protocol client tools for testing the CMP and gRPC
-  endpoints (the endpoints themselves serve machine enrollment, not the
-  console).
-- `hsm-audit verify` — the auditor's offline verifier. It deliberately reads no
-  config, no database and no device, so that a third party can check the CA's
-  claims on a machine with access to none of them; running it *inside* the
-  audited server would defeat the argument. The console instead serves the
-  bundle (`Audit bundle`) for exactly that offline check.
-- `hsm-audit verify-file` — the same argument for the [append-only device-log
-  file](../hsm/audit-log.md#verifying-the-file). The file exists so that a copy
-  can live somewhere the CA operator cannot rewrite it, which usually means off
-  the host entirely; whoever holds that copy has none of this deployment's
-  config or database, and offering the check from inside the audited server
-  would answer the wrong question. `hsm-audit status` does report the file's
-  position and cross-checks it against the database's collection tail, and that
-  is on the HSM page.
-- `hsm-audit collect` / `timestamp` / `commit` — collection now happens
-  automatically after every HSM operation, and the RFC 3161 freshness proofs and
-  device-signed serial bindings are scheduled attestation ceremonies needing the
-  TSA-role key provider. Their results are visible on the HSM page's
-  reconciliation strip.
-- `hsm-attest audit` — attests *every* asymmetric key on the device in one pass
-  for an inventory report; the console attests one key at a time, by CA or by
-  label, which is the interactive question.
-- `ca import`, `import-key`, `secsy-secret signing-key import` — [importing
-  existing key material](../ca/import.md). Their input is a private key file,
-  and the point of the operation is to stop that material being copied around;
-  uploading it to a browser would do the opposite. It is read once, from a local
-  path, on an operator's shell. The *result* is fully visible in the console:
-  the adopted CA appears on the Authorities page and issues like any other, the
-  key shows in the HSM key inventory, and the HSM page attests it (reporting,
-  correctly, that it was imported rather than generated).
-- `delegated-credential` (RFC 9345) — minting one requires the *leaf's* private
-  key, which the CA never holds and which must not be uploaded to a browser. The
-  Issue page reports whether a profile makes a certificate delegation-eligible;
-  minting stays where the key is.
-- `inventory retention` — ages out long-expired terminal inventory rows; a
-  background job with a manual CLI trigger, not an interactive operation.
-- `ct verify-inclusion`, `svid jwt-verify` — on-demand scans and client-side
-  checks; the recorded results are on the CT Inclusion and Trust Bundle pages.
-- `ers generate` / `renew` / `export` / `list` — evidence-record production is a
-  scheduled TSA ceremony; the console verifies records (`ers verify`), which is
-  the part a relying party performs.
 
 ## End-to-end coverage
 

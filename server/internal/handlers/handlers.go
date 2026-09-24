@@ -163,6 +163,13 @@ type API struct {
 	// the trust anchors and the properties a key must show. nil falls back to
 	// hsmattest.DefaultPolicy. Set via SetKeyAttestationPolicy.
 	attestPolicy *hsmattest.Policy
+	// ops bundles the dependencies of the operator-operations endpoints that give
+	// the console the CLI's administrative surface (Task 198): preflight
+	// diagnostics, DR backup/restore verification, static-artifact publishing,
+	// inventory retention, evidence records, key/CA import and signer
+	// provisioning. nil (tests, CLI) makes each of them answer 503 rather than
+	// half-work. Set via SetOps; see ops.go.
+	ops *OpsDeps
 }
 
 // LeaderInfo is the read-only view of the multi-replica coordination elector
@@ -486,6 +493,14 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/ca/{id}/csr", protected(http.HandlerFunc(a.GetExternalCACSR)))
 	mux.Handle("POST /api/ca/{id}/import-cert", protectStepUp("ca.import_cert", http.HandlerFunc(a.ImportExternalCACert)))
 
+	// Bringing existing key material under this PKI (Task 194/196, REST surface
+	// for console parity in Task 198): the counterparts of `secsy-ca import-key`
+	// and `secsy-ca ca import`. Both carry a private key in the body, so both are
+	// step-up gated and size-limited; adopting a CA additionally passes the same
+	// four-eyes gate as init-root.
+	mux.Handle("POST /api/keys/import", protectStepUp("key.import", http.HandlerFunc(a.ImportKey)))
+	mux.Handle("POST /api/ca/import", protectStepUp("ca.import", http.HandlerFunc(a.ImportCA)))
+
 	// Cross-signing and bridge-CA support (Task 47). Creating a cross-sign and
 	// listing relationships are management operations (ca:manage); the alternate
 	// chains a cross-sign publishes are public, like the overlap chain, so relying
@@ -545,6 +560,10 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	if a.spiffeEnabled() {
 		mux.Handle("POST /api/ca/{id}/svid", protected(http.HandlerFunc(a.IssueSVID)))
 		mux.Handle("POST /api/ca/{id}/svid/jwt", protected(http.HandlerFunc(a.IssueJWTSVID)))
+		// Validate a JWT-SVID against this CA's JWKS trust bundle (Task 198): the
+		// read-side counterpart of minting, and public-key math only, so it keeps
+		// working through an HSM outage.
+		mux.Handle("POST /api/ca/{id}/svid/jwt/verify", protected(http.HandlerFunc(a.VerifyJWTSVID)))
 		mux.HandleFunc("GET /api/ca/{id}/svid/bundle", a.GetSVIDBundle)
 	}
 
@@ -569,6 +588,10 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	// honored the SCTs embedded at issuance. Read-gated; "failed" rows are the
 	// mis-issuance / log-misbehavior signal.
 	mux.Handle("GET /api/ct/inclusion", protected(http.HandlerFunc(a.ListSCTInclusion)))
+	// On-demand CT inclusion verification (Task 198): run one scan now instead of
+	// waiting for the leader-elected monitor's next tick. Drives the same
+	// ctmonitor over the same configured logs; HSM-free, issue-gated.
+	mux.Handle("POST /api/ct/verify-inclusion", protected(http.HandlerFunc(a.VerifyCTInclusion)))
 
 	// HSM-backed SSH certificate authority (Task 57). CA creation is a key
 	// ceremony (step-up gated like X.509 root init); signing and revocation
@@ -597,6 +620,15 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("POST /api/sign", protected(http.HandlerFunc(a.SignArtifact)))
 	mux.Handle("POST /api/sign/verify", protected(http.HandlerFunc(a.VerifyArtifact)))
 	mux.Handle("GET /api/sign/signers", protected(http.HandlerFunc(a.ListSigners)))
+	// Provisioning a code-signing credential (Task 198), the REST counterpart of
+	// `secsy-ca signing-key`: a key on the signing-role backend plus its
+	// certificate off the lint-gated code-signing profile. GET lists the signers
+	// installed by config; POST mints a new one.
+	mux.Handle("POST /api/sign/signers", protectStepUp("signing.key_provision", http.HandlerFunc(a.ProvisionSigner)))
+	// Provisioning the RFC 3161 TSA signing credential (Task 198), the REST
+	// counterpart of `secsy-ca tsa-key`. Distinct from the public /tsa token
+	// endpoint: this mints the key and certificate that endpoint signs with.
+	mux.Handle("POST /api/tsa/key", protectStepUp("tsa.key_provision", http.HandlerFunc(a.ProvisionTSAKey)))
 
 	// Public revocation endpoints — relying parties fetch these without auth.
 	// The complete/base CRL, its delta, and — when partitioning is enabled — the
@@ -645,6 +677,10 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("POST /api/grants", protected(http.HandlerFunc(a.CreateResourceGrant)))
 	mux.Handle("DELETE /api/grants", protected(http.HandlerFunc(a.DeleteResourceGrant)))
 	mux.Handle("GET /api/grants/effective", protected(http.HandlerFunc(a.EffectiveResourceAccess)))
+	// Resource-role catalog (Task 191) — the REST counterpart of `secsy-ca grant
+	// roles`: what each grantable role means, straight out of internal/rbac, so an
+	// operator can pick a role in the console without consulting the docs.
+	mux.Handle("GET /api/grants/roles", protected(http.HandlerFunc(a.ListResourceRoles)))
 
 	mux.Handle("GET /api/restriction-sets", protected(http.HandlerFunc(a.ListAllRestrictionSets)))
 	mux.Handle("POST /api/restriction-sets", protected(http.HandlerFunc(a.CreateRestrictionSetGlobal)))
@@ -665,6 +701,10 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	// Live audit-event feed (Server-Sent Events): the tenant/RBAC-scoped, real-time
 	// companion to GET /api/events, fed from the audit-append chokepoint.
 	mux.Handle("GET /api/events/stream", protected(http.HandlerFunc(a.StreamEventLog)))
+	// Anchor the event log's head into an RFC 3161 timestamp token on demand
+	// (Task 198) — before a maintenance window or an evidence export, rather than
+	// waiting for the background anchor job. Needs the TSA-role key provider.
+	mux.Handle("POST /api/events/anchor", protected(http.HandlerFunc(a.AnchorAuditChain)))
 
 	// Four-eyes / maker-checker approval workflow (Task 81). Read is gated by the
 	// endpoints themselves (approval:read); approve/reject enforce approval:approve
@@ -676,11 +716,48 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("POST /api/approvals/{id}/reject", protected(http.HandlerFunc(a.RejectApproval)))
 	// Deliver the certificate for an approved per-profile issuance request (Task 84).
 	mux.Handle("GET /api/approvals/{id}/certificate", protected(http.HandlerFunc(a.GetApprovalCertificate)))
+	// On-demand expiry sweep — the REST counterpart of `secsy-ca approvals expire`.
+	// Cross-tenant, so it is gated on the platform-wide approval:approve.
+	mux.Handle("POST /api/approvals/expire", protected(http.HandlerFunc(a.ExpireApprovals)))
 
 	// Ad-hoc certificate linting and the key-provider inventory — REST
 	// counterparts of `secsy-ca lint` and `secsy-ca inventory` (Task 62).
 	mux.Handle("POST /api/lint", protected(http.HandlerFunc(a.LintCertificate)))
 	mux.Handle("GET /api/inventory/keys", protected(http.HandlerFunc(a.ListProviderKeys)))
+
+	// Compromised-key blocklist (Task 120) — the REST counterpart of
+	// `secsy-ca blocked-keys list|add|remove`. Reading is role-gated; adding and
+	// removing are platform ca:configure, since the list is deployment-global
+	// issuance policy and an issuer must never be able to un-block a key.
+	mux.Handle("GET /api/blocked-keys", protected(http.HandlerFunc(a.ListBlockedKeys)))
+	mux.Handle("POST /api/blocked-keys", protected(http.HandlerFunc(a.BlockKey)))
+	mux.Handle("DELETE /api/blocked-keys/{fingerprint}", protectStepUp("key.unblock", http.HandlerFunc(a.UnblockKey)))
+
+	// Certificate-inventory retention (Task 157) — the REST counterpart of
+	// `secsy-ca inventory retention status|dry-run|run`; the POST's dry_run flag
+	// selects preview vs execution. Config-driven, so it answers 503 when the
+	// server was started without the operations dependencies.
+	mux.Handle("GET /api/inventory/retention", protected(http.HandlerFunc(a.InventoryRetentionStatus)))
+	mux.Handle("POST /api/inventory/retention/run", protectStepUp("inventory.retention", http.HandlerFunc(a.RunInventoryRetention)))
+
+	// Preflight diagnostics (Task 198): the REST form of `secsy-ca doctor`. Runs
+	// the same read-only doctor suite over the same config file and returns the
+	// report structured; a failing check is data, so it always answers 200.
+	mux.Handle("GET /api/doctor", protected(http.HandlerFunc(a.Doctor)))
+
+	// Disaster recovery (Task 198): the REST forms of `secsy-ca backup` and
+	// `secsy-ca backup verify-restore`. The export is CA metadata + the DR manifest
+	// and never private key material; the drill proves the newest scheduled
+	// encrypted backup actually restores.
+	mux.Handle("GET /api/backup", protected(http.HandlerFunc(a.ExportBackup)))
+	mux.Handle("POST /api/backup/verify-restore", protected(http.HandlerFunc(a.VerifyBackupRestore)))
+
+	// Static-artifact publishing (Task 198): the REST forms of `secsy-ca publish`
+	// and `secsy-ca publish -verify`. Publishing regenerates stale CRLs and swaps
+	// the snapshot every relying party consumes; verify is a read-only manifest/
+	// digest audit that deliberately needs neither the HSM nor the database.
+	mux.Handle("POST /api/publish", protectStepUp("publish.snapshot", http.HandlerFunc(a.PublishSnapshot)))
+	mux.Handle("POST /api/publish/verify", protected(http.HandlerFunc(a.VerifyPublishedSnapshot)))
 
 	// Certificate chain/path validation (Task 123): build and validate a supplied
 	// leaf (+ optional intermediates) against a named CA's configured trust
@@ -693,6 +770,13 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	// standalone DER — end to end. Read-gated pure read (no HSM, no signing);
 	// records the ers.verify outcome.
 	mux.Handle("POST /api/ers/verify", protected(http.HandlerFunc(a.VerifyEvidenceRecord)))
+	// The rest of the Evidence-Record surface (Task 198): list and export are pure
+	// reads over the store, like verify; generate and renew mint/refresh archive
+	// timestamps and therefore build the TSA-role key provider lazily.
+	mux.Handle("GET /api/ers", protected(http.HandlerFunc(a.ListEvidenceRecords)))
+	mux.Handle("GET /api/ers/export", protected(http.HandlerFunc(a.ExportEvidenceRecord)))
+	mux.Handle("POST /api/ers/generate", protected(http.HandlerFunc(a.GenerateEvidenceRecord)))
+	mux.Handle("POST /api/ers/renew", protected(http.HandlerFunc(a.RenewEvidenceRecord)))
 
 	// ACME operator visibility (the ACME protocol endpoints are mounted
 	// separately, authenticated by account keys). Read-gated like other inventory.
@@ -723,6 +807,10 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 		// sign/verify. Creating/listing keys needs the privileged secret:signing-key
 		// capability; sign/verify/get-public-key need the day-to-day secret:sign.
 		mux.Handle("POST /api/secret/signing-keys", protected(http.HandlerFunc(a.CreateSigningKey)))
+		// Adoption of an existing application signing key, mirroring
+		// `secsy-secret signing-key import`: same secret:signing-key gate as
+		// creation, with the request body carrying the private material.
+		mux.Handle("POST /api/secret/signing-keys/import", protected(http.HandlerFunc(a.ImportSigningKeyHandler)))
 		mux.Handle("GET /api/secret/signing-keys", protected(http.HandlerFunc(a.ListSigningKeysHandler)))
 		mux.Handle("GET /api/secret/signing-keys/{name}", protected(http.HandlerFunc(a.GetSigningKey)))
 		mux.Handle("POST /api/secret/signing-keys/{name}/sign", protected(http.HandlerFunc(a.SignWithKey)))
@@ -768,6 +856,10 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 		// generated on-device, non-exportable, and which key exactly.
 		mux.Handle("GET /api/hsm/keys/{label}/attestation", protected(http.HandlerFunc(a.GetHSMKeyAttestation)))
 		mux.Handle("GET /api/ca/{id}/key-attestation", protected(http.HandlerFunc(a.GetCAKeyAttestation)))
+		// The whole-device posture pass, mirroring `secsy-ca hsm-attest audit`:
+		// attest every key the provider holds, because "is anything on this
+		// device exportable" is not answerable one key at a time.
+		mux.Handle("GET /api/hsm/attestation-audit", protected(http.HandlerFunc(a.GetHSMAttestationAudit)))
 		// Verification needs no device, so it is available to an auditor who has
 		// only been handed an attestation.
 		mux.Handle("POST /api/hsm/attestation:verify", protected(http.HandlerFunc(a.VerifyHSMAttestation)))

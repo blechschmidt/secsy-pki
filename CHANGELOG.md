@@ -92,7 +92,69 @@ obtained collection tail. `hsm-audit status` makes the tail comparison
 automatically. See
 [docs/hsm/audit-log.md](docs/hsm/audit-log.md#where-the-collected-records-go).
 
+**Everything the CLI can do, the operator console can now do too.** Thirteen
+administrative capabilities existed only as `secsy-ca` / `secsy-secret`
+subcommands with no REST counterpart at all, so no amount of front-end work could
+have surfaced them. They now have one: preflight diagnostics (`GET /api/doctor`),
+the disaster-recovery export and restore drill (`GET /api/backup`,
+`POST /api/backup/verify-restore`), static-artifact publishing and its offline
+integrity audit (`POST /api/publish`, `/api/publish/verify`), certificate-inventory
+retention (`GET /api/inventory/retention`, `POST /api/inventory/retention/run`),
+the compromised-key blocklist (`/api/blocked-keys`), the rest of the RFC 4998
+evidence-record surface (`GET /api/ers`, `/api/ers/export`,
+`POST /api/ers/generate`, `/api/ers/renew`), on-demand audit-chain anchoring
+(`POST /api/events/anchor`), on-demand CT inclusion verification
+(`POST /api/ct/verify-inclusion`), key and CA adoption (`POST /api/keys/import`,
+`/api/ca/import`, `/api/secret/signing-keys/import`), TSA and code-signing
+credential provisioning (`POST /api/tsa/key`, `/api/sign/signers`), device-wide
+key attestation (`GET /api/hsm/attestation-audit`), the resource-role catalog
+(`GET /api/grants/roles`), the four-eyes expiry sweep
+(`POST /api/approvals/expire`), and JWT-SVID validation
+(`POST /api/ca/{id}/svid/jwt/verify`). Each mirrors its command's semantics
+rather than approximating them — the verification paths deliberately open no key
+provider, so a chain, a published snapshot or a JWT-SVID can still be checked
+while the HSM is down, and each answers 503 with a reason when the deployment did
+not configure the feature instead of half-working.
+
+The console grew an **Operations** view for the diagnostics/DR/publishing group
+and gained controls for all of the above, plus three endpoints that existed but
+which nothing had ever called: per-key HSM attestation, delegated-credential
+minting, and group management. Adopting a CA, importing a key, provisioning a
+signer, un-blocking a key, running retention and publishing join the WebAuthn
+step-up set, since each changes what this PKI will sign with or destroys
+evidence.
+
+Three previous audits of this same invariant (Tasks 62, 190, 143) each drifted
+within a few releases, so it is now enforced rather than asserted:
+`internal/console/parity_test.go` parses the route table and both CLIs' command
+dispatch and fails when a route or a command has no declared console view or
+documented exemption — the same forcing function the authorization matrix uses.
+It ships with the matrix it enforces,
+[docs/operations/cli-console-parity.md](docs/operations/cli-console-parity.md),
+which replaces the hand-maintained lists that had gone stale. Per-CA issuance
+restriction sets remain the one feature reachable only from the legacy SPA and
+the API.
+
 ### Fixed
+
+**Four timestamps that reported the year 1 instead of being absent.**
+`omitempty` does not omit a zero `time.Time` — it is a struct, not a scalar — so
+`prune_cutoff` (retention status and run results), `backup_created_at` (the
+restore drill) and `tsa_not_after` (per-timestamp evidence-record detail) shipped
+`0001-01-01T00:00:00Z` where they meant "not applicable". A consumer reading
+`prune_cutoff` as present-means-prune-mode misread every archive-mode response,
+and a UI badging TSA expiry marked a timestamp with no embedded certificate as
+long expired. All four are now `*time.Time` and genuinely absent, matching what
+the OpenAPI spec always said.
+
+**The console silently swallowed a four-eyes hold.** Eight guarded flows —
+root-CA creation, intermediate issuance, the external-CA CSR, certificate
+import, cross-signing, key rotation, retirement and bulk revocation — ignored the
+`202 pending_approval` response and reported success with an `undefined` in it.
+They now name the approval request and point at the Approvals view, as the CLI
+does. A JWT-SVID or evidence record that fails verification answers 409 with a
+reason and no `error` field, which the console's REST helper turned into a bare
+`HTTP 409`; the reason is now surfaced.
 
 **A stability pass over the code the test suite had never executed.** Coverage
 had grown unevenly: the well-trodden issuance paths were thoroughly tested while

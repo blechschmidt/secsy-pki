@@ -223,11 +223,51 @@ const (
 	DiscoveryFindingSeverityWarning  DiscoveryFindingSeverity = "warning"
 )
 
+// Defines values for DoctorCheckStatus.
+const (
+	DoctorCheckStatusFail DoctorCheckStatus = "fail"
+	DoctorCheckStatusPass DoctorCheckStatus = "pass"
+	DoctorCheckStatusSkip DoctorCheckStatus = "skip"
+	DoctorCheckStatusWarn DoctorCheckStatus = "warn"
+)
+
+// Defines values for DoctorReportVerdict.
+const (
+	DoctorReportVerdictFail DoctorReportVerdict = "fail"
+	DoctorReportVerdictOk   DoctorReportVerdict = "ok"
+	DoctorReportVerdictWarn DoctorReportVerdict = "warn"
+)
+
 // Defines values for EventResult.
 const (
 	EventResultDenied  EventResult = "denied"
 	EventResultError   EventResult = "error"
 	EventResultSuccess EventResult = "success"
+)
+
+// Defines values for EvidenceRecordScope.
+const (
+	EvidenceRecordScopeArtifact EvidenceRecordScope = "artifact"
+	EvidenceRecordScopeAudit    EvidenceRecordScope = "audit"
+)
+
+// Defines values for EvidenceRecordExportScope.
+const (
+	EvidenceRecordExportScopeArtifact EvidenceRecordExportScope = "artifact"
+	EvidenceRecordExportScopeAudit    EvidenceRecordExportScope = "audit"
+)
+
+// Defines values for EvidenceRecordResultKind.
+const (
+	Generated EvidenceRecordResultKind = "generated"
+	Hashtree  EvidenceRecordResultKind = "hashtree"
+	Timestamp EvidenceRecordResultKind = "timestamp"
+)
+
+// Defines values for EvidenceRecordResultScope.
+const (
+	Artifact EvidenceRecordResultScope = "artifact"
+	Audit    EvidenceRecordResultScope = "audit"
 )
 
 // Defines values for ExportPKCS12RequestEncoder.
@@ -243,6 +283,13 @@ const (
 	Rsa   ExportPKCS12RequestKeyType = "rsa"
 )
 
+// Defines values for GenerateEvidenceRecordRequestHash.
+const (
+	GenerateEvidenceRecordRequestHashSha256 GenerateEvidenceRecordRequestHash = "sha256"
+	GenerateEvidenceRecordRequestHashSha384 GenerateEvidenceRecordRequestHash = "sha384"
+	GenerateEvidenceRecordRequestHashSha512 GenerateEvidenceRecordRequestHash = "sha512"
+)
+
 // Defines values for GrantScope.
 const (
 	Self    GrantScope = "self"
@@ -254,6 +301,47 @@ const (
 	HoldResultStatusAlreadyHeld HoldResultStatus = "already-held"
 	HoldResultStatusHeld        HoldResultStatus = "held"
 	HoldResultStatusReleased    HoldResultStatus = "released"
+)
+
+// Defines values for ImportKeyRequestRole.
+const (
+	ImportKeyRequestRoleCa      ImportKeyRequestRole = "ca"
+	ImportKeyRequestRoleSigning ImportKeyRequestRole = "signing"
+	ImportKeyRequestRoleTsa     ImportKeyRequestRole = "tsa"
+)
+
+// Defines values for ImportKeyRequestUsage.
+const (
+	ImportKeyRequestUsageDecrypt ImportKeyRequestUsage = "decrypt"
+	ImportKeyRequestUsageKek     ImportKeyRequestUsage = "kek"
+	ImportKeyRequestUsageSign    ImportKeyRequestUsage = "sign"
+)
+
+// Defines values for ImportKeyResultRole.
+const (
+	ImportKeyResultRoleCa      ImportKeyResultRole = "ca"
+	ImportKeyResultRoleSigning ImportKeyResultRole = "signing"
+	ImportKeyResultRoleTsa     ImportKeyResultRole = "tsa"
+)
+
+// Defines values for ImportKeyResultUsage.
+const (
+	ImportKeyResultUsageDecrypt ImportKeyResultUsage = "decrypt"
+	ImportKeyResultUsageSign    ImportKeyResultUsage = "sign"
+)
+
+// Defines values for ImportSigningKeyRequestAlgorithm.
+const (
+	ImportSigningKeyRequestAlgorithmEcdsaP256       ImportSigningKeyRequestAlgorithm = "ecdsa-p256"
+	ImportSigningKeyRequestAlgorithmEcdsaP384       ImportSigningKeyRequestAlgorithm = "ecdsa-p384"
+	ImportSigningKeyRequestAlgorithmEcdsaP521       ImportSigningKeyRequestAlgorithm = "ecdsa-p521"
+	ImportSigningKeyRequestAlgorithmEd25519         ImportSigningKeyRequestAlgorithm = "ed25519"
+	ImportSigningKeyRequestAlgorithmRsaPkcs1v152048 ImportSigningKeyRequestAlgorithm = "rsa-pkcs1v15-2048"
+	ImportSigningKeyRequestAlgorithmRsaPkcs1v153072 ImportSigningKeyRequestAlgorithm = "rsa-pkcs1v15-3072"
+	ImportSigningKeyRequestAlgorithmRsaPkcs1v154096 ImportSigningKeyRequestAlgorithm = "rsa-pkcs1v15-4096"
+	ImportSigningKeyRequestAlgorithmRsaPss2048      ImportSigningKeyRequestAlgorithm = "rsa-pss-2048"
+	ImportSigningKeyRequestAlgorithmRsaPss3072      ImportSigningKeyRequestAlgorithm = "rsa-pss-3072"
+	ImportSigningKeyRequestAlgorithmRsaPss4096      ImportSigningKeyRequestAlgorithm = "rsa-pss-4096"
 )
 
 // Defines values for IssuedCertificateCtStatus.
@@ -350,6 +438,33 @@ const (
 	PreviewGateStatusWarn    PreviewGateStatus = "warn"
 )
 
+// Defines values for ProvisionedKeyRefRole.
+const (
+	Signing ProvisionedKeyRefRole = "signing"
+	Tsa     ProvisionedKeyRefRole = "tsa"
+)
+
+// Defines values for PublishManifestArtifactKind.
+const (
+	CaCert   PublishManifestArtifactKind = "ca_cert"
+	Chain    PublishManifestArtifactKind = "chain"
+	Crl      PublishManifestArtifactKind = "crl"
+	DeltaCrl PublishManifestArtifactKind = "delta_crl"
+	Ocsp     PublishManifestArtifactKind = "ocsp"
+)
+
+// Defines values for PublishResponseBackend.
+const (
+	PublishResponseBackendDir PublishResponseBackend = "dir"
+	PublishResponseBackendS3  PublishResponseBackend = "s3"
+)
+
+// Defines values for PublishVerifyResponseBackend.
+const (
+	PublishVerifyResponseBackendDir PublishVerifyResponseBackend = "dir"
+	PublishVerifyResponseBackendS3  PublishVerifyResponseBackend = "s3"
+)
+
 // Defines values for RandomRequestFormat.
 const (
 	Base64 RandomRequestFormat = "base64"
@@ -369,6 +484,13 @@ const (
 const (
 	NotReady ReadinessStatus = "not_ready"
 	Ready    ReadinessStatus = "ready"
+)
+
+// Defines values for RenewEvidenceRecordRequestHash.
+const (
+	RenewEvidenceRecordRequestHashSha256 RenewEvidenceRecordRequestHash = "sha256"
+	RenewEvidenceRecordRequestHashSha384 RenewEvidenceRecordRequestHash = "sha384"
+	RenewEvidenceRecordRequestHashSha512 RenewEvidenceRecordRequestHash = "sha512"
 )
 
 // Defines values for ResourceGrantEntityType.
@@ -406,10 +528,28 @@ const (
 	KeySigner  ResourceRole = "key-signer"
 )
 
+// Defines values for ResourceRoleInfoAppliesTo.
+const (
+	ResourceRoleInfoAppliesToCa         ResourceRoleInfoAppliesTo = "ca"
+	ResourceRoleInfoAppliesToSigningKey ResourceRoleInfoAppliesTo = "signing-key"
+)
+
 // Defines values for RestrictionSetType.
 const (
 	RestrictionSetTypeSsh  RestrictionSetType = "ssh"
 	RestrictionSetTypeX509 RestrictionSetType = "x509"
+)
+
+// Defines values for RetentionRunResultMode.
+const (
+	RetentionRunResultModeArchive RetentionRunResultMode = "archive"
+	RetentionRunResultModePrune   RetentionRunResultMode = "prune"
+)
+
+// Defines values for RetentionStatusMode.
+const (
+	RetentionStatusModeArchive RetentionStatusMode = "archive"
+	RetentionStatusModePrune   RetentionStatusMode = "prune"
 )
 
 // Defines values for RevokeResultStatus.
@@ -476,6 +616,20 @@ const (
 	User SignRequestCertType = "user"
 )
 
+// Defines values for SignerProvisionRequestKeyType.
+const (
+	SignerProvisionRequestKeyTypeEcdsaP256 SignerProvisionRequestKeyType = "ecdsa-p256"
+	SignerProvisionRequestKeyTypeEcdsaP384 SignerProvisionRequestKeyType = "ecdsa-p384"
+	SignerProvisionRequestKeyTypeRsa2048   SignerProvisionRequestKeyType = "rsa-2048"
+	SignerProvisionRequestKeyTypeRsa4096   SignerProvisionRequestKeyType = "rsa-4096"
+)
+
+// Defines values for TSAKeyRequestKeyType.
+const (
+	TSAKeyRequestKeyTypeRsa2048 TSAKeyRequestKeyType = "rsa-2048"
+	TSAKeyRequestKeyTypeRsa4096 TSAKeyRequestKeyType = "rsa-4096"
+)
+
 // Defines values for TenantStatus.
 const (
 	TenantStatusActive    TenantStatus = "active"
@@ -494,12 +648,18 @@ const (
 	Suspended TenantUsageReportStatus = "suspended"
 )
 
+// Defines values for UnblockKeyResultStatus.
+const (
+	NotBlocked UnblockKeyResultStatus = "not_blocked"
+	Unblocked  UnblockKeyResultStatus = "unblocked"
+)
+
 // Defines values for ValidationCheckStatus.
 const (
-	Fail    ValidationCheckStatus = "fail"
-	Pass    ValidationCheckStatus = "pass"
-	Skipped ValidationCheckStatus = "skipped"
-	Warn    ValidationCheckStatus = "warn"
+	ValidationCheckStatusFail    ValidationCheckStatus = "fail"
+	ValidationCheckStatusPass    ValidationCheckStatus = "pass"
+	ValidationCheckStatusSkipped ValidationCheckStatus = "skipped"
+	ValidationCheckStatusWarn    ValidationCheckStatus = "warn"
 )
 
 // Defines values for ValidationRevocationState.
@@ -519,16 +679,16 @@ const (
 
 // Defines values for VerifyWithPublicKeyRequestAlgorithm.
 const (
-	VerifyWithPublicKeyRequestAlgorithmEcdsaP256       VerifyWithPublicKeyRequestAlgorithm = "ecdsa-p256"
-	VerifyWithPublicKeyRequestAlgorithmEcdsaP384       VerifyWithPublicKeyRequestAlgorithm = "ecdsa-p384"
-	VerifyWithPublicKeyRequestAlgorithmEcdsaP521       VerifyWithPublicKeyRequestAlgorithm = "ecdsa-p521"
-	VerifyWithPublicKeyRequestAlgorithmEd25519         VerifyWithPublicKeyRequestAlgorithm = "ed25519"
-	VerifyWithPublicKeyRequestAlgorithmRsaPkcs1v152048 VerifyWithPublicKeyRequestAlgorithm = "rsa-pkcs1v15-2048"
-	VerifyWithPublicKeyRequestAlgorithmRsaPkcs1v153072 VerifyWithPublicKeyRequestAlgorithm = "rsa-pkcs1v15-3072"
-	VerifyWithPublicKeyRequestAlgorithmRsaPkcs1v154096 VerifyWithPublicKeyRequestAlgorithm = "rsa-pkcs1v15-4096"
-	VerifyWithPublicKeyRequestAlgorithmRsaPss2048      VerifyWithPublicKeyRequestAlgorithm = "rsa-pss-2048"
-	VerifyWithPublicKeyRequestAlgorithmRsaPss3072      VerifyWithPublicKeyRequestAlgorithm = "rsa-pss-3072"
-	VerifyWithPublicKeyRequestAlgorithmRsaPss4096      VerifyWithPublicKeyRequestAlgorithm = "rsa-pss-4096"
+	EcdsaP256       VerifyWithPublicKeyRequestAlgorithm = "ecdsa-p256"
+	EcdsaP384       VerifyWithPublicKeyRequestAlgorithm = "ecdsa-p384"
+	EcdsaP521       VerifyWithPublicKeyRequestAlgorithm = "ecdsa-p521"
+	Ed25519         VerifyWithPublicKeyRequestAlgorithm = "ed25519"
+	RsaPkcs1v152048 VerifyWithPublicKeyRequestAlgorithm = "rsa-pkcs1v15-2048"
+	RsaPkcs1v153072 VerifyWithPublicKeyRequestAlgorithm = "rsa-pkcs1v15-3072"
+	RsaPkcs1v154096 VerifyWithPublicKeyRequestAlgorithm = "rsa-pkcs1v15-4096"
+	RsaPss2048      VerifyWithPublicKeyRequestAlgorithm = "rsa-pss-2048"
+	RsaPss3072      VerifyWithPublicKeyRequestAlgorithm = "rsa-pss-3072"
+	RsaPss4096      VerifyWithPublicKeyRequestAlgorithm = "rsa-pss-4096"
 )
 
 // Defines values for VerifyWithPublicKeyRequestHash.
@@ -571,18 +731,24 @@ const (
 	UnknownLog ListSCTInclusionParamsStatus = "unknown_log"
 )
 
+// Defines values for ExportEvidenceRecordParamsFormat.
+const (
+	ExportEvidenceRecordParamsFormatDer  ExportEvidenceRecordParamsFormat = "der"
+	ExportEvidenceRecordParamsFormatJson ExportEvidenceRecordParamsFormat = "json"
+)
+
 // Defines values for ExportEventLogParamsFormat.
 const (
-	Cef     ExportEventLogParamsFormat = "cef"
-	Json    ExportEventLogParamsFormat = "json"
-	Rfc5424 ExportEventLogParamsFormat = "rfc5424"
+	ExportEventLogParamsFormatCef     ExportEventLogParamsFormat = "cef"
+	ExportEventLogParamsFormatJson    ExportEventLogParamsFormat = "json"
+	ExportEventLogParamsFormatRfc5424 ExportEventLogParamsFormat = "rfc5424"
 )
 
 // Defines values for ListExpiringCertificatesParamsSeverity.
 const (
-	ListExpiringCertificatesParamsSeverityCritical ListExpiringCertificatesParamsSeverity = "critical"
-	ListExpiringCertificatesParamsSeverityExpired  ListExpiringCertificatesParamsSeverity = "expired"
-	ListExpiringCertificatesParamsSeverityWarning  ListExpiringCertificatesParamsSeverity = "warning"
+	Critical ListExpiringCertificatesParamsSeverity = "critical"
+	Expired  ListExpiringCertificatesParamsSeverity = "expired"
+	Warning  ListExpiringCertificatesParamsSeverity = "warning"
 )
 
 // ACMEAccount defines model for ACMEAccount.
@@ -744,6 +910,12 @@ type AlternateChain struct {
 	Pem *string `json:"pem,omitempty"`
 }
 
+// AnchorAuditChainRequest defines model for AnchorAuditChainRequest.
+type AnchorAuditChainRequest struct {
+	// Force Anchor even when the head has not moved since the last anchor. Without it an unchanged head is reported as skipped, so a console button cannot mint a pile of redundant tokens over one head.
+	Force *bool `json:"force,omitempty"`
+}
+
 // ApprovalDecision One approver's vote on a request.
 type ApprovalDecision struct {
 	Approver     *string                   `json:"approver,omitempty"`
@@ -766,6 +938,14 @@ type ApprovalList struct {
 	// Enabled Whether the approval gate is enabled in configuration.
 	Enabled  *bool              `json:"enabled,omitempty"`
 	Requests *[]PendingApproval `json:"requests,omitempty"`
+}
+
+// ApprovalPendingResponse Returned (202) when a guarded administrative operation is held for four-eyes approval. Nothing was performed; re-run the request once the approval threshold is met. The pending-approval id is also returned in the X-Secsy-Approval-Id header.
+type ApprovalPendingResponse struct {
+	// Approval A four-eyes / maker-checker approval request. The guarded operation is held until required_approvals DISTINCT approvers (never the requester) sign off, then re-running it consumes the approval (status executed).
+	Approval *PendingApproval `json:"approval,omitempty"`
+	Message  *string          `json:"message,omitempty"`
+	Status   *string          `json:"status,omitempty"`
 }
 
 // ArtifactSignRequest defines model for ArtifactSignRequest.
@@ -903,6 +1083,34 @@ type ArtifactVerifyResponse struct {
 // ArtifactVerifyResponseLevel The achieved CAdES baseline level, on a valid signature.
 type ArtifactVerifyResponseLevel string
 
+// AuditAnchor The event log's head bound into an RFC 3161 timestamp token, so a whole-chain truncation or rewrite behind that point is detectable.
+type AuditAnchor struct {
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+	GenTime   *time.Time `json:"gen_time,omitempty"`
+	HeadHash  *string    `json:"head_hash,omitempty"`
+	Id        *string    `json:"id,omitempty"`
+	Seq       *int64     `json:"seq,omitempty"`
+
+	// Token Base64-encoded DER TimeStampToken (a CMS SignedData), so an auditor can archive it or re-verify it offline (openssl ts -verify) against the TSA certificate.
+	Token *string `json:"token,omitempty"`
+
+	// TsaSource Where the token came from: empty for the deployment's internal TSA, or the external TSA URL.
+	TsaSource *string `json:"tsa_source,omitempty"`
+}
+
+// AuditAnchorResult defines model for AuditAnchorResult.
+type AuditAnchorResult struct {
+	// Anchor The persisted anchor on success; absent when skipped.
+	Anchor *AuditAnchor `json:"anchor,omitempty"`
+	Reason *string      `json:"reason,omitempty"`
+
+	// Skipped True when nothing needed anchoring; reason says why.
+	Skipped *bool `json:"skipped,omitempty"`
+
+	// TsaSource Where the token came from: "internal" for the deployment's own TSA, else the external TSA URL. Reported separately from the anchor row (whose tsa_source is empty for the internal authority) so the console can always name the authority without special-casing the empty string.
+	TsaSource *string `json:"tsa_source,omitempty"`
+}
+
 // AuditLogEntry defines model for AuditLogEntry.
 type AuditLogEntry struct {
 	CaId             *string                  `json:"ca_id,omitempty"`
@@ -953,6 +1161,150 @@ type AuthConfig struct {
 
 	// WebauthnEnabled WebAuthn/passkey step-up is configured for high-risk operations.
 	WebauthnEnabled *bool `json:"webauthn_enabled,omitempty"`
+}
+
+// BackupCARef The restore-verifiable summary of one CA: identifiers, the provider key label, and the public-key fingerprint a restore matches against the key the token still holds.
+type BackupCARef struct {
+	Id        *string    `json:"id,omitempty"`
+	KeyLabel  *string    `json:"key_label,omitempty"`
+	KeyType   *string    `json:"key_type,omitempty"`
+	Label     *string    `json:"label,omitempty"`
+	NotAfter  *time.Time `json:"not_after,omitempty"`
+	Pkcs11Uri *string    `json:"pkcs11_uri,omitempty"`
+
+	// PublicKeyFingerprintSha256 The SSH SHA-256 fingerprint of the stored public key, or "unknown" when it could not be parsed.
+	PublicKeyFingerprintSha256 *string `json:"public_key_fingerprint_sha256,omitempty"`
+	Serial                     *string `json:"serial,omitempty"`
+	Subject                    *string `json:"subject,omitempty"`
+}
+
+// BackupExport The DR manifest plus the full CA records — the manifest.json and cas.json of the CLI bundle delivered as one document.
+type BackupExport struct {
+	// Cas The complete CA records: the engine-agnostic recovery input. Public material only — certificates, CSRs, external chains, public keys, key URIs.
+	Cas *[]CA `json:"cas,omitempty"`
+
+	// ConfigPath The configuration file the running process answers for, so a recovery runbook records which config produced this state.
+	ConfigPath *string `json:"config_path,omitempty"`
+
+	// Manifest The disaster-recovery anchor: it ties the metadata store, the key inventory and the audit-log head together so a restore can be verified end to end. The manifest.json of `secsy-ca backup -out`, field for field. It never contains private key material.
+	Manifest *BackupManifest `json:"manifest,omitempty"`
+
+	// ScheduledBackupEnabled Whether the scheduled backup loop runs at all.
+	ScheduledBackupEnabled *bool `json:"scheduled_backup_enabled,omitempty"`
+
+	// ScheduledDestination Where the scheduled ENCRYPTED backups are written ("dir:&lt;path&gt;" or "s3://bucket/prefix") — the authoritative artifact this response deliberately does not contain.
+	ScheduledDestination *string `json:"scheduled_destination,omitempty"`
+}
+
+// BackupManifest The disaster-recovery anchor: it ties the metadata store, the key inventory and the audit-log head together so a restore can be verified end to end. The manifest.json of `secsy-ca backup -out`, field for field. It never contains private key material.
+type BackupManifest struct {
+	AuditChainValid *bool          `json:"audit_chain_valid,omitempty"`
+	AuditEventCount *int           `json:"audit_event_count,omitempty"`
+	AuditHeadHash   *string        `json:"audit_head_hash,omitempty"`
+	AuditHeadSeq    *int64         `json:"audit_head_seq,omitempty"`
+	Cas             *[]BackupCARef `json:"cas,omitempty"`
+	CreatedAt       *time.Time     `json:"created_at,omitempty"`
+	DbDriver        *string        `json:"db_driver,omitempty"`
+
+	// KeyInventory The provider's key list. Absent when the provider cannot enumerate, or when it is unreachable (then notes says so and the export still succeeds).
+	KeyInventory *[]ProviderKeyDescriptor `json:"key_inventory,omitempty"`
+
+	// KeyProvider The backend holding the (non-extractable) private keys this metadata refers to.
+	KeyProvider *string `json:"key_provider,omitempty"`
+
+	// Notes What is NOT in this bundle and where to get it. Never empty.
+	Notes   *[]string `json:"notes,omitempty"`
+	Version *int      `json:"version,omitempty"`
+}
+
+// BackupVerifyRestoreResult The restore-verification drill, exactly as `secsy-ca backup verify-restore -json` prints it, plus the verdict.
+type BackupVerifyRestoreResult struct {
+	ArtifactFile   *string `json:"artifact_file,omitempty"`
+	ArtifactSha256 *string `json:"artifact_sha256,omitempty"`
+	ArtifactSize   *int    `json:"artifact_size,omitempty"`
+
+	// Backend "dir" or "s3".
+	Backend *string `json:"backend,omitempty"`
+
+	// BackupCreatedAt When the backup being verified was produced. Absent when the drill did not get as far as reading the artifact's manifest.
+	BackupCreatedAt  *time.Time             `json:"backup_created_at,omitempty"`
+	Checks           *[]StoreIntegrityCheck `json:"checks,omitempty"`
+	Driver           *string                `json:"driver,omitempty"`
+	Error            *string                `json:"error,omitempty"`
+	FingerprintMatch *bool                  `json:"fingerprint_match,omitempty"`
+	IntegrityOk      *bool                  `json:"integrity_ok,omitempty"`
+
+	// ManifestHead The audit-chain head hash the artifact manifest recorded.
+	ManifestHead *string `json:"manifest_head,omitempty"`
+
+	// Ok True only when the drill proved the backup restorable.
+	Ok *bool `json:"ok,omitempty"`
+
+	// RestoredHead The head hash the restored scratch store actually has.
+	RestoredHead *string `json:"restored_head,omitempty"`
+
+	// Skipped There is simply no backup published to verify yet. Answered with 404; not counted, audited, or alerted.
+	Skipped *bool `json:"skipped,omitempty"`
+
+	// Stage Where a failure occurred (empty on success/skip).
+	Stage     *string    `json:"stage,omitempty"`
+	StartedAt *time.Time `json:"started_at,omitempty"`
+}
+
+// BlockKeyRequest Names the key to block exactly one way. Supplying two inputs is a 400: naming the key twice would hide which one the operator meant to block.
+type BlockKeyRequest struct {
+	// Certificate A certificate (PEM, or bare base64 DER) whose subject public key to block.
+	Certificate *string `json:"certificate,omitempty"`
+
+	// Csr A PKCS#10 request (PEM, or bare base64 DER) whose public key to block. The self-signature is deliberately not verified: an attacker-generated request is exactly the material an operator needs to block.
+	Csr *string `json:"csr,omitempty"`
+
+	// Fingerprint A pre-computed SubjectPublicKeyInfo SHA-256 fingerprint: the canonical "SHA256:&lt;base64&gt;" form, or a hex digest (the colon-grouped form openssl prints is accepted).
+	Fingerprint *string `json:"fingerprint,omitempty"`
+
+	// PublicKey A SubjectPublicKeyInfo public key (PEM, or bare base64 DER).
+	PublicKey *string `json:"public_key,omitempty"`
+
+	// Reason The operator's justification, recorded and audited.
+	Reason *string `json:"reason,omitempty"`
+
+	// Source Where the block originated.
+	Source *string `json:"source,omitempty"`
+}
+
+// BlockKeyResult The stored entry, plus whether this call created it.
+type BlockKeyResult struct {
+	AddedAt     *time.Time `json:"added_at,omitempty"`
+	AddedBy     *string    `json:"added_by,omitempty"`
+	Fingerprint *string    `json:"fingerprint,omitempty"`
+
+	// NewlyAdded False when the key was already on the blocklist. The request is idempotent: the existing entry, with its original justification and timestamp, is left untouched and returned.
+	NewlyAdded *bool   `json:"newly_added,omitempty"`
+	Reason     *string `json:"reason,omitempty"`
+	Source     *string `json:"source,omitempty"`
+}
+
+// BlockedKey One blocklist entry. It holds no key material; the key is named only by its SubjectPublicKeyInfo SHA-256 fingerprint.
+type BlockedKey struct {
+	AddedAt *time.Time `json:"added_at,omitempty"`
+
+	// AddedBy The principal that added the entry.
+	AddedBy *string `json:"added_by,omitempty"`
+
+	// Fingerprint The SubjectPublicKeyInfo SHA-256 fingerprint and primary key, in the canonical "SHA256:&lt;base64&gt;" form.
+	Fingerprint *string `json:"fingerprint,omitempty"`
+
+	// Reason The operator's justification (e.g. "key compromise, INC-1234").
+	Reason *string `json:"reason,omitempty"`
+
+	// Source Where the block originated (e.g. "cli", "api", "incident-response").
+	Source *string `json:"source,omitempty"`
+}
+
+// BlockedKeyList defines model for BlockedKeyList.
+type BlockedKeyList struct {
+	BlockedKeys *[]BlockedKey `json:"blocked_keys,omitempty"`
+	Total       *int          `json:"total,omitempty"`
 }
 
 // BulkIssueConflict confirm_count did not equal the number of items; nothing was issued.
@@ -1381,6 +1733,36 @@ type CTResponse struct {
 // CTResponseStatus defines model for CTResponse.Status.
 type CTResponseStatus string
 
+// CTVerifyInclusionRequest defines model for CTVerifyInclusionRequest.
+type CTVerifyInclusionRequest struct {
+	// Max Bounds how many certificates this run examines, NARROWING certificate_transparency.inclusion_monitor.max_certs_per_run. Zero, negative, or a value at or above the configured bound uses the configured bound: a request can ask for a smaller scan, never for a larger one, because every certificate examined costs round trips to third-party logs.
+	Max *int `json:"max,omitempty"`
+}
+
+// CTVerifyInclusionResponse One scan's outcome plus the standing backlog counts, so the console can render the run and the overall state from one call.
+type CTVerifyInclusionResponse struct {
+	// Certs Certificates examined.
+	Certs   *int `json:"certs,omitempty"`
+	Checked *int `json:"checked,omitempty"`
+
+	// Counts The standing per-status SCT tally after the scan, keyed exactly as GET /api/ct/inclusion reports it (included, pending, failed, unknown_log).
+	Counts *map[string]int `json:"counts,omitempty"`
+
+	// Error Set, with HTTP 500, when the scan itself failed (e.g. enumerating the store). Per-SCT failures are not errors — they are the "failed" tally.
+	Error  *string `json:"error,omitempty"`
+	Errors *int    `json:"errors,omitempty"`
+
+	// Failed SCTs a log did not honour within its Maximum Merge Delay — the log-misbehavior signal. Not a request error.
+	Failed   *int `json:"failed,omitempty"`
+	Included *int `json:"included,omitempty"`
+
+	// NewMisbehavior SCTs that transitioned into the failed state this scan (the events that would be alerted).
+	NewMisbehavior *int       `json:"new_misbehavior,omitempty"`
+	Pending        *int       `json:"pending,omitempty"`
+	StartedAt      *time.Time `json:"started_at,omitempty"`
+	UnknownLog     *int       `json:"unknown_log,omitempty"`
+}
+
 // CertItem defines model for CertItem.
 type CertItem struct {
 	CaId             *string           `json:"ca_id,omitempty"`
@@ -1780,6 +2162,65 @@ type DiscoveryScanRequest struct {
 	Targets *[]string `json:"targets,omitempty"`
 }
 
+// DoctorCheck One diagnostic result.
+type DoctorCheck struct {
+	ElapsedMs *int64 `json:"elapsed_ms,omitempty"`
+
+	// Hint Where remediation starts, scoped to the check's AREA rather than the individual failure. Present only for warn/fail.
+	Hint *string `json:"hint,omitempty"`
+
+	// Message The one-line human explanation of the outcome.
+	Message *string `json:"message,omitempty"`
+
+	// Name Identifies the check, dotted by area (e.g. "keyprovider.ca").
+	Name   *string            `json:"name,omitempty"`
+	Status *DoctorCheckStatus `json:"status,omitempty"`
+}
+
+// DoctorCheckStatus defines model for DoctorCheck.Status.
+type DoctorCheckStatus string
+
+// DoctorReport The structured diagnostic report plus the overall verdict.
+type DoctorReport struct {
+	// CheckedAt When the run started (UTC).
+	CheckedAt *time.Time `json:"checked_at,omitempty"`
+
+	// Checks The individual results in execution order. Never null.
+	Checks *[]DoctorCheck `json:"checks,omitempty"`
+
+	// ConfigPath The configuration file this process answers for, so an operator knows WHICH file the diagnosis is about. Empty when the server was started without one.
+	ConfigPath *string `json:"config_path,omitempty"`
+
+	// Deep Whether the full store-integrity gate ran.
+	Deep *bool `json:"deep,omitempty"`
+
+	// ExitCode The tri-state code `secsy-ca doctor` would exit with for this report (0 pass, 1 failure(s), 2 warning(s) only), so a pipeline driving the API keys off the same number as one driving the CLI.
+	ExitCode *int `json:"exit_code,omitempty"`
+
+	// Ok True when no check failed; warnings do not clear it.
+	Ok *bool `json:"ok,omitempty"`
+
+	// Summary The diagnostic results counted by status.
+	Summary *DoctorSummary `json:"summary,omitempty"`
+
+	// TimeoutSeconds The time budget the run was given.
+	TimeoutSeconds *int `json:"timeout_seconds,omitempty"`
+
+	// Verdict "ok" (nothing to do), "warn" (operational, needs attention) or "fail" (broken or will refuse to serve).
+	Verdict *DoctorReportVerdict `json:"verdict,omitempty"`
+}
+
+// DoctorReportVerdict "ok" (nothing to do), "warn" (operational, needs attention) or "fail" (broken or will refuse to serve).
+type DoctorReportVerdict string
+
+// DoctorSummary The diagnostic results counted by status.
+type DoctorSummary struct {
+	Fail *int `json:"fail,omitempty"`
+	Pass *int `json:"pass,omitempty"`
+	Skip *int `json:"skip,omitempty"`
+	Warn *int `json:"warn,omitempty"`
+}
+
 // EffectiveResourceAccess What a principal may do at one resource, and the rules that produced it.
 type EffectiveResourceAccess struct {
 	// Actions The resulting capability set at this resource.
@@ -1859,6 +2300,44 @@ type EventVerifyResult struct {
 	Valid     *bool   `json:"valid,omitempty"`
 }
 
+// EvidenceRecord One stored Evidence Record's preservation metadata. The Evidence Record DER itself is never inlined here — fetch it from GET /api/ers/export.
+type EvidenceRecord struct {
+	// Chains The number of ArchiveTimeStampChains (grows by one per hash-tree renewal).
+	Chains    *int       `json:"chains,omitempty"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+
+	// Description A human label (e.g. "audit events 101-160").
+	Description *string `json:"description,omitempty"`
+
+	// DigestAlg The hash algorithm of the current (newest) ArchiveTimeStamp chain — the algorithm a hash-tree renewal would replace.
+	DigestAlg *string `json:"digest_alg,omitempty"`
+
+	// FirstSeq Start of the inclusive event-log sequence range covered, for the "audit" scope; 0 otherwise.
+	FirstSeq *int64  `json:"first_seq,omitempty"`
+	Id       *string `json:"id,omitempty"`
+
+	// LastGenTime The genTime of the newest ArchiveTimeStamp.
+	LastGenTime *time.Time `json:"last_gen_time,omitempty"`
+
+	// LastSeq End of that range; 0 for the "artifact" scope.
+	LastSeq *int64 `json:"last_seq,omitempty"`
+
+	// ObjectIds The stable identifiers of the covered data objects, in the order supplied at generation.
+	ObjectIds *[]string `json:"object_ids,omitempty"`
+
+	// RenewedAt When the record was last renewed; absent until first renewal.
+	RenewedAt *time.Time `json:"renewed_at,omitempty"`
+
+	// Scope What is protected: "audit" (a range of event-log events, re-derivable from first_seq..last_seq) or "artifact" (external bytes the caller supplies at verify/renew time).
+	Scope *EvidenceRecordScope `json:"scope,omitempty"`
+
+	// TsaNotAfter The expiry of the newest embedded TSA certificate, which drives time-stamp renewal. Absent when the token omitted its certificate.
+	TsaNotAfter *time.Time `json:"tsa_not_after,omitempty"`
+}
+
+// EvidenceRecordScope What is protected: "audit" (a range of event-log events, re-derivable from first_seq..last_seq) or "artifact" (external bytes the caller supplies at verify/renew time).
+type EvidenceRecordScope string
+
 // EvidenceRecordChainResult Per-ArchiveTimeStampChain verification outcome.
 type EvidenceRecordChainResult struct {
 	FirstGenTime *time.Time `json:"first_gen_time,omitempty"`
@@ -1870,11 +2349,135 @@ type EvidenceRecordChainResult struct {
 	Valid        *bool      `json:"valid,omitempty"`
 }
 
+// EvidenceRecordExport defines model for EvidenceRecordExport.
+type EvidenceRecordExport struct {
+	// Chains The number of ArchiveTimeStampChains (grows by one per hash-tree renewal).
+	Chains    *int       `json:"chains,omitempty"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+
+	// Description A human label (e.g. "audit events 101-160").
+	Description *string `json:"description,omitempty"`
+
+	// DigestAlg The hash algorithm of the current (newest) ArchiveTimeStamp chain — the algorithm a hash-tree renewal would replace.
+	DigestAlg *string `json:"digest_alg,omitempty"`
+
+	// FirstSeq Start of the inclusive event-log sequence range covered, for the "audit" scope; 0 otherwise.
+	FirstSeq *int64  `json:"first_seq,omitempty"`
+	Id       *string `json:"id,omitempty"`
+
+	// Info The decoded structure of an Evidence Record.
+	Info *EvidenceRecordInfo `json:"info,omitempty"`
+
+	// LastGenTime The genTime of the newest ArchiveTimeStamp.
+	LastGenTime *time.Time `json:"last_gen_time,omitempty"`
+
+	// LastSeq End of that range; 0 for the "artifact" scope.
+	LastSeq *int64 `json:"last_seq,omitempty"`
+
+	// ObjectIds The stable identifiers of the covered data objects, in the order supplied at generation.
+	ObjectIds *[]string `json:"object_ids,omitempty"`
+
+	// Record Base64-encoded DER of the RFC 4998 EvidenceRecord — the bytes `ers export -out FILE` writes, and exactly what POST /api/ers/verify accepts in its own "record" field. Also retrievable raw via ?format=der.
+	Record *string `json:"record,omitempty"`
+
+	// RenewedAt When the record was last renewed; absent until first renewal.
+	RenewedAt *time.Time `json:"renewed_at,omitempty"`
+
+	// Scope What is protected: "audit" (a range of event-log events, re-derivable from first_seq..last_seq) or "artifact" (external bytes the caller supplies at verify/renew time).
+	Scope *EvidenceRecordExportScope `json:"scope,omitempty"`
+
+	// Size The DER length in bytes.
+	Size *int `json:"size,omitempty"`
+
+	// TsaNotAfter The expiry of the newest embedded TSA certificate, which drives time-stamp renewal. Absent when the token omitted its certificate.
+	TsaNotAfter *time.Time `json:"tsa_not_after,omitempty"`
+}
+
+// EvidenceRecordExportScope What is protected: "audit" (a range of event-log events, re-derivable from first_seq..last_seq) or "artifact" (external bytes the caller supplies at verify/renew time).
+type EvidenceRecordExportScope string
+
+// EvidenceRecordInfo The decoded structure of an Evidence Record.
+type EvidenceRecordInfo struct {
+	Chains *int `json:"chains,omitempty"`
+
+	// CurrentHash The hash algorithm of the newest ArchiveTimeStampChain.
+	CurrentHash      *string                        `json:"current_hash,omitempty"`
+	DigestAlgorithms *[]string                      `json:"digest_algorithms,omitempty"`
+	FirstGenTime     *time.Time                     `json:"first_gen_time,omitempty"`
+	LatestGenTime    *time.Time                     `json:"latest_gen_time,omitempty"`
+	Timestamps       *[]EvidenceRecordTimestampInfo `json:"timestamps,omitempty"`
+	Version          *int                           `json:"version,omitempty"`
+}
+
 // EvidenceRecordObjectResult Per-protected-object coverage outcome.
 type EvidenceRecordObjectResult struct {
 	Covered *bool   `json:"covered,omitempty"`
 	Id      *string `json:"id,omitempty"`
 	Reason  *string `json:"reason,omitempty"`
+}
+
+// EvidenceRecordPage defines model for EvidenceRecordPage.
+type EvidenceRecordPage struct {
+	Items  *[]EvidenceRecord `json:"items,omitempty"`
+	Limit  *int              `json:"limit,omitempty"`
+	Offset *int              `json:"offset,omitempty"`
+	Total  *int              `json:"total,omitempty"`
+}
+
+// EvidenceRecordResult defines model for EvidenceRecordResult.
+type EvidenceRecordResult struct {
+	// Chains The number of ArchiveTimeStampChains (grows by one per hash-tree renewal).
+	Chains    *int       `json:"chains,omitempty"`
+	CreatedAt *time.Time `json:"created_at,omitempty"`
+
+	// Description A human label (e.g. "audit events 101-160").
+	Description *string `json:"description,omitempty"`
+
+	// DigestAlg The hash algorithm of the current (newest) ArchiveTimeStamp chain — the algorithm a hash-tree renewal would replace.
+	DigestAlg *string `json:"digest_alg,omitempty"`
+
+	// FirstSeq Start of the inclusive event-log sequence range covered, for the "audit" scope; 0 otherwise.
+	FirstSeq *int64  `json:"first_seq,omitempty"`
+	Id       *string `json:"id,omitempty"`
+
+	// Kind "generated" for a new record, or the renewal that was performed.
+	Kind *EvidenceRecordResultKind `json:"kind,omitempty"`
+
+	// LastGenTime The genTime of the newest ArchiveTimeStamp.
+	LastGenTime *time.Time `json:"last_gen_time,omitempty"`
+
+	// LastSeq End of that range; 0 for the "artifact" scope.
+	LastSeq *int64 `json:"last_seq,omitempty"`
+
+	// ObjectIds The stable identifiers of the covered data objects, in the order supplied at generation.
+	ObjectIds *[]string `json:"object_ids,omitempty"`
+
+	// RenewedAt When the record was last renewed; absent until first renewal.
+	RenewedAt *time.Time `json:"renewed_at,omitempty"`
+
+	// Scope What is protected: "audit" (a range of event-log events, re-derivable from first_seq..last_seq) or "artifact" (external bytes the caller supplies at verify/renew time).
+	Scope *EvidenceRecordResultScope `json:"scope,omitempty"`
+
+	// TsaNotAfter The expiry of the newest embedded TSA certificate, which drives time-stamp renewal. Absent when the token omitted its certificate.
+	TsaNotAfter *time.Time `json:"tsa_not_after,omitempty"`
+}
+
+// EvidenceRecordResultKind "generated" for a new record, or the renewal that was performed.
+type EvidenceRecordResultKind string
+
+// EvidenceRecordResultScope What is protected: "audit" (a range of event-log events, re-derivable from first_seq..last_seq) or "artifact" (external bytes the caller supplies at verify/renew time).
+type EvidenceRecordResultScope string
+
+// EvidenceRecordTimestampInfo One ArchiveTimeStamp, for inspection and renewal decisioning.
+type EvidenceRecordTimestampInfo struct {
+	Chain   *int       `json:"chain,omitempty"`
+	GenTime *time.Time `json:"gen_time,omitempty"`
+	Hash    *string    `json:"hash,omitempty"`
+	Index   *int       `json:"index,omitempty"`
+
+	// TsaNotAfter The embedded TSA certificate's expiry, absent when the token omits its certificate. Time-stamp renewal is driven off the newest one.
+	TsaNotAfter *time.Time `json:"tsa_not_after,omitempty"`
+	TsaSubject  *string    `json:"tsa_subject,omitempty"`
 }
 
 // EvidenceRecordVerifyResult The end-to-end verification verdict for an Evidence Record.
@@ -1885,6 +2488,15 @@ type EvidenceRecordVerifyResult struct {
 	Objects       *[]EvidenceRecordObjectResult `json:"objects,omitempty"`
 	Reason        *string                       `json:"reason,omitempty"`
 	Valid         *bool                         `json:"valid,omitempty"`
+}
+
+// ExpireApprovalsResult defines model for ExpireApprovalsResult.
+type ExpireApprovalsResult struct {
+	// Enabled Whether the approval gate itself is on, so a zero count from a deployment that has since disabled the gate is not mistaken for "nothing to clean up".
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Expired Requests moved from pending/approved to expired by this sweep.
+	Expired *int `json:"expired,omitempty"`
 }
 
 // ExpiryReport defines model for ExpiryReport.
@@ -1956,6 +2568,30 @@ type ExportPKCS12Response struct {
 	Serial  *string `json:"serial,omitempty"`
 }
 
+// GenerateEvidenceRecordRequest Names exactly one scope to preserve: an inclusive audit-event range, or one or more artifact objects.
+type GenerateEvidenceRecordRequest struct {
+	// AuditFrom Start of the inclusive event-log sequence range. Required together with audit_to and mutually exclusive with objects.
+	AuditFrom *int64 `json:"audit_from,omitempty"`
+
+	// AuditTo End of the inclusive event-log sequence range. Clamped down to the current chain head — a record cannot cover events that do not exist — and the resulting span may cover at most 100000 events; a wider range is a 400 asking for it to be split.
+	AuditTo *int64 `json:"audit_to,omitempty"`
+
+	// Description The human label for an artifact-scope record. Ignored for an audit range, which the preservation service labels itself ("audit events N-M") so every consumer names the same range identically.
+	Description *string `json:"description,omitempty"`
+
+	// Hash The hash-tree algorithm. Empty uses the configured ers.hash.
+	Hash *GenerateEvidenceRecordRequestHash `json:"hash,omitempty"`
+
+	// ObjectIds Optional label per object. When given it must have one non-empty entry per object; otherwise objects are labelled "object:&lt;index&gt;". These labels are the only human record of what an artifact-scope record covers.
+	ObjectIds *[]string `json:"object_ids,omitempty"`
+
+	// Objects Base64-encoded artifact bytes to preserve. They are NOT stored: renewing or verifying an artifact-scope record later requires re-supplying exactly these bytes.
+	Objects *[]string `json:"objects,omitempty"`
+}
+
+// GenerateEvidenceRecordRequestHash The hash-tree algorithm. Empty uses the configured ers.hash.
+type GenerateEvidenceRecordRequestHash string
+
 // GrantScope How far a grant reaches. "self" is exactly the named resource (the default); "subtree" additionally covers every CA beneath the named one, including CAs created later.
 type GrantScope string
 
@@ -2001,6 +2637,36 @@ type HMACVerifyResponse struct {
 
 	// Version MAC-key version the verification was performed against
 	Version *int `json:"version,omitempty"`
+}
+
+// HSMAttestationAudit The whole-device verdict: one entry per key plus the rollup an operator reads first.
+type HSMAttestationAudit struct {
+	// Errors Keys that could not be attested at all.
+	Errors *int `json:"errors,omitempty"`
+
+	// Exportable Attested keys whose capabilities permit export — the headline finding this pass exists to surface.
+	Exportable *int `json:"exportable,omitempty"`
+
+	// Failed Keys the device attested but which failed policy.
+	Failed *int `json:"failed,omitempty"`
+
+	// Imported Attested keys that were not generated on the device, so a copy may have existed before they arrived.
+	Imported *int `json:"imported,omitempty"`
+
+	// Keys One entry per enumerated key, label-sorted.
+	Keys *[]HSMKeyAuditEntry `json:"keys,omitempty"`
+
+	// Provider The backend that was enumerated.
+	Provider *string `json:"provider,omitempty"`
+
+	// Summary The one-line verdict.
+	Summary *string `json:"summary,omitempty"`
+
+	// Total Every key the provider holds.
+	Total *int `json:"total,omitempty"`
+
+	// Verified Keys that satisfied the attestation policy in full.
+	Verified *int `json:"verified,omitempty"`
 }
 
 // HSMAttestationVerifyRequest defines model for HSMAttestationVerifyRequest.
@@ -2230,6 +2896,27 @@ type HSMKeyAttestationResult struct {
 	Warnings *[]string `json:"warnings,omitempty"`
 }
 
+// HSMKeyAuditEntry One key's line in the device-wide attestation audit. attestation and verification are present when the device answered; error is present when it did not, and the two cases are mutually exclusive.
+type HSMKeyAuditEntry struct {
+	// Attestation A self-contained YubiHSM key attestation. It carries certificates rather than only conclusions so a third party can re-derive the verdict.
+	Attestation *HSMKeyAttestation `json:"attestation,omitempty"`
+
+	// CaLabel The CA bound to this key; absent when no CA record references it (a KEK, TSA, signing or orphaned key). This is what turns "some object is exportable" into "which of our authorities is affected".
+	CaLabel *string `json:"ca_label,omitempty"`
+
+	// Error Why this key could not be attested. A datum about one key, not a failure of the audit.
+	Error *string `json:"error,omitempty"`
+
+	// KeyType What the key inventory reports for the key, so an error row still says what the unattestable object is.
+	KeyType *string `json:"key_type,omitempty"`
+
+	// Label The provider label the key was attested by.
+	Label *string `json:"label,omitempty"`
+
+	// Verification The verdict on one key attestation.
+	Verification *HSMKeyAttestationResult `json:"verification,omitempty"`
+}
+
 // HoldResult Outcome of a certificate suspend (hold) or release.
 type HoldResult struct {
 	Serial *string           `json:"serial,omitempty"`
@@ -2238,6 +2925,140 @@ type HoldResult struct {
 
 // HoldResultStatus defines model for HoldResult.Status.
 type HoldResultStatus string
+
+// ImportCARequest An existing certificate authority to adopt. Supply exactly one of the key material (key_pem/key_base64) and existing_key_label.
+type ImportCARequest struct {
+	// Certificate The CA's existing certificate (PEM); trailing certificates in the same PEM are treated as chain material. Optional when the supplied key is a PKCS#12 container, which carries its own certificate.
+	Certificate *string `json:"certificate,omitempty"`
+
+	// Chain The issuing chain (PEM) of a subordinate CA whose parent is not in this PKI, so the served chain reaches the external anchor.
+	Chain *string `json:"chain,omitempty"`
+
+	// ExistingKeyLabel Adopt a key already present in the provider under this label instead of importing one.
+	ExistingKeyLabel *string `json:"existing_key_label,omitempty"`
+
+	// KeyBase64 Base64 of the raw container bytes (bare DER, PKCS#12/PFX).
+	KeyBase64 *string `json:"key_base64,omitempty"`
+
+	// KeyPem The private key as text (any PEM form the parser accepts).
+	KeyPem *string `json:"key_pem,omitempty"`
+
+	// Label The CA name / key label to record the adopted CA under; must be unused.
+	Label string `json:"label"`
+
+	// Parent Id or label of a CA already in this PKI that issued this certificate. Empty discovers the parent automatically.
+	Parent *string `json:"parent,omitempty"`
+
+	// Passphrase Decrypts an encrypted container. Omit for unencrypted material.
+	Passphrase *string `json:"passphrase,omitempty"`
+
+	// Tenant Owning tenant id or slug. Empty adopts into the built-in default tenant.
+	Tenant *string `json:"tenant,omitempty"`
+}
+
+// ImportCAResult The adopted CA, field-for-field as `secsy-ca ca import -json` emits it, plus the source format and the provenance notice.
+type ImportCAResult struct {
+	Ca *CA `json:"ca,omitempty"`
+
+	// ChainPem The issuing chain that will be served after the CA's own certificate.
+	ChainPem       *string `json:"chain_pem,omitempty"`
+	KeyFingerprint *string `json:"key_fingerprint,omitempty"`
+
+	// KeyImported False when an already-present key was adopted by label.
+	KeyImported *bool `json:"key_imported,omitempty"`
+
+	// Notice The provenance notice, set only when key material was actually written into the provider.
+	Notice     *string `json:"notice,omitempty"`
+	SelfSigned *bool   `json:"self_signed,omitempty"`
+
+	// SourceFormat The encoding imported key material arrived in; empty when an already-present key was adopted by label.
+	SourceFormat *string `json:"source_format,omitempty"`
+
+	// Warnings Non-fatal findings about the adopted certificate.
+	Warnings *[]string `json:"warnings,omitempty"`
+}
+
+// ImportKeyRequest An existing private key to place in a role's provider. Supply exactly one of key_pem and key_base64; neither field, nor passphrase, is ever echoed, logged, or audited.
+type ImportKeyRequest struct {
+	// Id Optional secondary identifier (a hex CKA_ID for PKCS#11).
+	Id *string `json:"id,omitempty"`
+
+	// KeyBase64 Base64 of the raw container bytes, for encodings that are not text (bare DER, PKCS#12/PFX). A base64'd PEM is accepted too.
+	KeyBase64 *string `json:"key_base64,omitempty"`
+
+	// KeyPem The key as text: any PEM form the parser accepts (PKCS#8 plain or encrypted, PKCS#1, SEC1, legacy DEK-Info, OpenSSH).
+	KeyPem *string `json:"key_pem,omitempty"`
+
+	// Label The identifier the key is stored under in the provider.
+	Label string `json:"label"`
+
+	// Passphrase Decrypts an encrypted container. Omit for unencrypted material.
+	Passphrase *string `json:"passphrase,omitempty"`
+
+	// Role The key-provider role that receives the key. A role whose configured backend type matches the CA's is served by the already-open CA provider; only a genuinely different backend has a second one opened.
+	Role *ImportKeyRequestRole `json:"role,omitempty"`
+
+	// Usage "sign" (default), or "decrypt"/"kek" for an RSA key-encryption key.
+	Usage *ImportKeyRequestUsage `json:"usage,omitempty"`
+}
+
+// ImportKeyRequestRole The key-provider role that receives the key. A role whose configured backend type matches the CA's is served by the already-open CA provider; only a genuinely different backend has a second one opened.
+type ImportKeyRequestRole string
+
+// ImportKeyRequestUsage "sign" (default), or "decrypt"/"kek" for an RSA key-encryption key.
+type ImportKeyRequestUsage string
+
+// ImportKeyResult The adopted key, field-for-field as `secsy-ca import-key -json` emits it, plus the role/usage it was filed under and the provenance notice the CLI writes to stderr.
+type ImportKeyResult struct {
+	Id      *string `json:"id,omitempty"`
+	KeyType *string `json:"key_type,omitempty"`
+	Label   *string `json:"label,omitempty"`
+
+	// Notice What an import cannot give the operator: the key existed outside the provider before it arrived, so attestation will report it as imported rather than generated and any copy made before the import remains a copy. Extended when the receiving backend is the software keystore.
+	Notice   *string              `json:"notice,omitempty"`
+	Provider *string              `json:"provider,omitempty"`
+	Role     *ImportKeyResultRole `json:"role,omitempty"`
+
+	// SourceFormat The encoding the key was read from (pkcs8, pkcs12, ...).
+	SourceFormat *string `json:"source_format,omitempty"`
+
+	// SshPublicKey The key's OpenSSH authorized_keys form, when derivable.
+	SshPublicKey *string `json:"ssh_public_key,omitempty"`
+
+	// Uri The provider reference for the key (pkcs11: or software: URI).
+	Uri   *string               `json:"uri,omitempty"`
+	Usage *ImportKeyResultUsage `json:"usage,omitempty"`
+
+	// Verified The provider signed a challenge with the key after the import and the signature verified. A decrypt-only key cannot sign and is exempt, so it reports false.
+	Verified *bool `json:"verified,omitempty"`
+}
+
+// ImportKeyResultRole defines model for ImportKeyResult.Role.
+type ImportKeyResultRole string
+
+// ImportKeyResultUsage defines model for ImportKeyResult.Usage.
+type ImportKeyResultUsage string
+
+// ImportSigningKeyRequest An existing private key to adopt as a named signing key. Supply exactly one of key_pem and key_base64; neither field, nor passphrase, is ever echoed, logged or audited.
+type ImportSigningKeyRequest struct {
+	// Algorithm The fixed signing algorithm. Optional for an EC or Ed25519 key, which determines its own; REQUIRED for an RSA key, since the same key works with PSS and with PKCS#1 v1.5 and the choice must match what existing verifiers already do.
+	Algorithm *ImportSigningKeyRequestAlgorithm `json:"algorithm,omitempty"`
+
+	// KeyBase64 Base64 of the raw container bytes, for encodings that are not text (bare DER, PKCS#12/PFX). A base64'd PEM is accepted too.
+	KeyBase64 *string `json:"key_base64,omitempty"`
+
+	// KeyPem The key as text: any PEM form the parser accepts (PKCS#8 plain or encrypted, PKCS#1, SEC1, legacy DEK-Info, OpenSSH).
+	KeyPem *string `json:"key_pem,omitempty"`
+
+	// Name Tenant-unique name for the adopted signing key.
+	Name string `json:"name"`
+
+	// Passphrase Decrypts an encrypted container. Omit for unencrypted material.
+	Passphrase *string `json:"passphrase,omitempty"`
+}
+
+// ImportSigningKeyRequestAlgorithm The fixed signing algorithm. Optional for an EC or Ed25519 key, which determines its own; REQUIRED for an RSA key, since the same key works with PSS and with PKCS#1 v1.5 and the choice must match what existing verifiers already do.
+type ImportSigningKeyRequestAlgorithm string
 
 // IssueCertRequest defines model for IssueCertRequest.
 type IssueCertRequest struct {
@@ -2356,6 +3177,33 @@ type JWTSVIDResponse struct {
 	// Token compact-serialized signed JWT-SVID
 	Token       *string `json:"token,omitempty"`
 	TrustDomain *string `json:"trust_domain,omitempty"`
+}
+
+// JWTSVIDVerifyResult The verdict. On success it carries the validated claims — never any key material beyond the public "kid" the token itself advertises.
+type JWTSVIDVerifyResult struct {
+	// Algorithm The JWS "alg" (e.g. ES256).
+	Algorithm *string `json:"algorithm,omitempty"`
+
+	// Audience The token's full aud set (the requested audience is one member).
+	Audience *[]string `json:"audience,omitempty"`
+
+	// ExpiresAt The exp claim.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+
+	// IssuedAt The iat claim; omitted when the token carries none.
+	IssuedAt *time.Time `json:"issued_at,omitempty"`
+
+	// KeyId The "kid" header the signature was verified under.
+	KeyId *string `json:"key_id,omitempty"`
+	Path  *string `json:"path,omitempty"`
+
+	// Reason The failure cause when valid is false (e.g. an expired token, an absent audience, or a signature from a key outside the trust bundle).
+	Reason      *string `json:"reason,omitempty"`
+	SpiffeId    *string `json:"spiffe_id,omitempty"`
+	TrustDomain *string `json:"trust_domain,omitempty"`
+
+	// Valid The verdict. False is accompanied by reason and HTTP 409.
+	Valid *bool `json:"valid,omitempty"`
 }
 
 // KeyInventoryResponse defines model for KeyInventoryResponse.
@@ -2733,6 +3581,21 @@ type Profile struct {
 	RequireApproval *bool `json:"require_approval,omitempty"`
 }
 
+// ProviderKeyDescriptor One key the provider holds, as the provider itself describes it — proof of which keys the token must hold after recovery, and that they are non-extractable.
+type ProviderKeyDescriptor struct {
+	// Extractable Whether the private key may be read off the backend. For an HSM-backed CA/KEK key this must be false; the software backend always reports true, since keys live as on-disk files.
+	Extractable *bool `json:"extractable,omitempty"`
+
+	// Id The secondary identifier (hex CKA_ID for PKCS#11), if any.
+	Id      *string `json:"id,omitempty"`
+	KeyType *string `json:"key_type,omitempty"`
+	Label   *string `json:"label,omitempty"`
+
+	// Sensitive Whether the backend refuses to expose the private value via attribute reads. Hardware tokens report true for protected keys.
+	Sensitive *bool   `json:"sensitive,omitempty"`
+	Uri       *string `json:"uri,omitempty"`
+}
+
 // ProviderKeyEntry defines model for ProviderKeyEntry.
 type ProviderKeyEntry struct {
 	// CaLabel The CA bound to this key; empty for KEK/TSA/signing keys.
@@ -2744,6 +3607,147 @@ type ProviderKeyEntry struct {
 	Label       *string `json:"label,omitempty"`
 	Sensitive   *bool   `json:"sensitive,omitempty"`
 }
+
+// ProvisionedCertificate The certificate a provisioning call issued.
+type ProvisionedCertificate struct {
+	CaId    *string `json:"ca_id,omitempty"`
+	CaLabel *string `json:"ca_label,omitempty"`
+
+	// CertificatePem The credential's certificate, followed by the issuer chain when the request asked for it. This is the content of the file that tsa.certificate_file / signing.signers[].certificate_file must point at.
+	CertificatePem *string    `json:"certificate_pem,omitempty"`
+	NotAfter       *time.Time `json:"not_after,omitempty"`
+	NotBefore      *time.Time `json:"not_before,omitempty"`
+	Serial         *string    `json:"serial,omitempty"`
+	Subject        *string    `json:"subject,omitempty"`
+}
+
+// ProvisionedKeyRef The key a provisioning call put in place.
+type ProvisionedKeyRef struct {
+	KeyType *string `json:"key_type,omitempty"`
+
+	// Label The provider key label; the value for tsa.key_label / signing.signers[].key_label.
+	Label    *string `json:"label,omitempty"`
+	Provider *string `json:"provider,omitempty"`
+
+	// Reused A key already under this label was adopted rather than a new one generated, which is what makes a certificate reissue idempotent without rotating the key.
+	Reused *bool                  `json:"reused,omitempty"`
+	Role   *ProvisionedKeyRefRole `json:"role,omitempty"`
+
+	// Uri The provider reference for the key, when the backend reports one.
+	Uri *string `json:"uri,omitempty"`
+}
+
+// ProvisionedKeyRefRole defines model for ProvisionedKeyRef.Role.
+type ProvisionedKeyRefRole string
+
+// PublishManifestArtifact The integrity record for one published artifact.
+type PublishManifestArtifact struct {
+	ContentType *string                      `json:"content_type,omitempty"`
+	Kind        *PublishManifestArtifactKind `json:"kind,omitempty"`
+	NotAfter    *time.Time                   `json:"not_after,omitempty"`
+	Path        *string                      `json:"path,omitempty"`
+	Sha256      *string                      `json:"sha256,omitempty"`
+	Size        *int                         `json:"size,omitempty"`
+}
+
+// PublishManifestArtifactKind defines model for PublishManifestArtifact.Kind.
+type PublishManifestArtifactKind string
+
+// PublishManifestCA One published CA's summary.
+type PublishManifestCA struct {
+	// CrlShards Partition shards (0 when unsharded).
+	CrlShards *int    `json:"crl_shards,omitempty"`
+	Id        *string `json:"id,omitempty"`
+	Label     *string `json:"label,omitempty"`
+
+	// OcspResponses Pre-signed responses published (0 when OCSP publishing is disabled).
+	OcspResponses *int `json:"ocsp_responses,omitempty"`
+}
+
+// PublishRequest Every field is optional; the zero value publishes exactly what the configured schedule would.
+type PublishRequest struct {
+	// Cas Restrict the snapshot to these CA ids or labels. Empty uses the configured publish.cas, and when that is empty too, every unexpired X.509 CA. An unknown or non-X.509 name is a 400, so a typo cannot silently publish a partial snapshot.
+	Cas *[]string `json:"cas,omitempty"`
+
+	// OcspValiditySeconds Override the pre-signed OCSP response validity. 0 uses the configured presign validity; setting it forces a fresh presign batch, since the shared one carries the configured validity.
+	OcspValiditySeconds *int `json:"ocsp_validity_seconds,omitempty"`
+
+	// SkipOcsp Publish only CRLs, chains and CA certificates.
+	SkipOcsp *bool `json:"skip_ocsp,omitempty"`
+
+	// TimeoutSeconds Bounds the run (default 120, capped at 600).
+	TimeoutSeconds *int `json:"timeout_seconds,omitempty"`
+}
+
+// PublishResponse The snapshot that is now current.
+type PublishResponse struct {
+	ArtifactCount *int                       `json:"artifact_count,omitempty"`
+	Artifacts     *[]PublishManifestArtifact `json:"artifacts,omitempty"`
+	Backend       *PublishResponseBackend    `json:"backend,omitempty"`
+	CaCount       *int                       `json:"ca_count,omitempty"`
+	Cas           *[]PublishManifestCA       `json:"cas,omitempty"`
+
+	// Destination The resolved target.
+	Destination *string `json:"destination,omitempty"`
+	DurationMs  *int64  `json:"duration_ms,omitempty"`
+
+	// EarliestExpiry The soonest validity horizon among the snapshot's artifacts — after it, the snapshot is serving at least one expired artifact and must have been replaced.
+	EarliestExpiry *time.Time `json:"earliest_expiry,omitempty"`
+	GeneratedAt    *time.Time `json:"generated_at,omitempty"`
+
+	// IncludeOcsp Whether pre-signed OCSP responses were published.
+	IncludeOcsp *bool `json:"include_ocsp,omitempty"`
+
+	// OcspFresh Whether those responses were signed for this snapshot (as the CLI does) rather than reused from the background presign batch (as the server loop does).
+	OcspFresh *bool `json:"ocsp_fresh,omitempty"`
+
+	// Skipped The CAs deliberately left out; empty when a snapshot covers everything, or when the caller named the CAs explicitly.
+	Skipped *[]PublishSkippedCA `json:"skipped,omitempty"`
+	Version *int                `json:"version,omitempty"`
+}
+
+// PublishResponseBackend defines model for PublishResponse.Backend.
+type PublishResponseBackend string
+
+// PublishSkippedCA A CA left out of the snapshot, and why.
+type PublishSkippedCA struct {
+	Id    *string `json:"id,omitempty"`
+	Label *string `json:"label,omitempty"`
+
+	// Reason "not an X.509 CA" (no CA certificate — e.g. an SSH-only signing key) or "CA certificate expired".
+	Reason *string `json:"reason,omitempty"`
+}
+
+// PublishVerifyRequest defines model for PublishVerifyRequest.
+type PublishVerifyRequest struct {
+	// TimeoutSeconds Bounds the audit (default 60, capped at 600).
+	TimeoutSeconds *int `json:"timeout_seconds,omitempty"`
+}
+
+// PublishVerifyResponse The findings of re-reading the published snapshot and checking it against its own manifest.
+type PublishVerifyResponse struct {
+	Artifacts      *[]PublishManifestArtifact    `json:"artifacts,omitempty"`
+	Backend        *PublishVerifyResponseBackend `json:"backend,omitempty"`
+	CaCount        *int                          `json:"ca_count,omitempty"`
+	Cas            *[]PublishManifestCA          `json:"cas,omitempty"`
+	Destination    *string                       `json:"destination,omitempty"`
+	DurationMs     *int64                        `json:"duration_ms,omitempty"`
+	EarliestExpiry *time.Time                    `json:"earliest_expiry,omitempty"`
+
+	// Error The first integrity finding (the audit is fail-fast, exactly as `secsy-ca publish -verify` is); empty when ok.
+	Error       *string    `json:"error,omitempty"`
+	GeneratedAt *time.Time `json:"generated_at,omitempty"`
+
+	// Ok True when the manifest was found and every artifact it lists re-read with the recorded digest and size.
+	Ok *bool `json:"ok,omitempty"`
+
+	// VerifiedArtifacts How many objects were re-read and digest-checked.
+	VerifiedArtifacts *int `json:"verified_artifacts,omitempty"`
+	Version           *int `json:"version,omitempty"`
+}
+
+// PublishVerifyResponseBackend defines model for PublishVerifyResponse.Backend.
+type PublishVerifyResponseBackend string
 
 // RandomRequest defines model for RandomRequest.
 type RandomRequest struct {
@@ -2793,6 +3797,24 @@ type RenewCertRequest struct {
 	ValidityDays *int    `json:"validity_days,omitempty"`
 }
 
+// RenewEvidenceRecordRequest defines model for RenewEvidenceRecordRequest.
+type RenewEvidenceRecordRequest struct {
+	// Hash The target algorithm for a hash-tree renewal. Empty uses the configured ers.hash when it is stronger than SHA-256, else sha512.
+	Hash *RenewEvidenceRecordRequestHash `json:"hash,omitempty"`
+
+	// Hashtree Perform a hash-tree renewal (a new chain under a stronger algorithm, for algorithm deprecation) instead of the default time-stamp renewal (a fresh token before the TSA certificate expires).
+	Hashtree *bool `json:"hashtree,omitempty"`
+
+	// Id The stored record to renew.
+	Id string `json:"id"`
+
+	// Objects Base64-encoded protected objects, required for a hash-tree renewal of an artifact-scope record (whose bytes the server never stored). An audit-scope record re-derives its objects from the event log.
+	Objects *[]string `json:"objects,omitempty"`
+}
+
+// RenewEvidenceRecordRequestHash The target algorithm for a hash-tree renewal. Empty uses the configured ers.hash when it is stronger than SHA-256, else sha512.
+type RenewEvidenceRecordRequestHash string
+
 // ResourceGrant One stored delegation of a resource role at a single CA or key.
 type ResourceGrant struct {
 	CreatedAt    *time.Time                 `json:"created_at,omitempty"`
@@ -2841,8 +3863,39 @@ type ResourceGrantRequest struct {
 // ResourceGrantRequestEntityType defines model for ResourceGrantRequest.EntityType.
 type ResourceGrantRequestEntityType string
 
+// ResourceGrantScopeInfo defines model for ResourceGrantScopeInfo.
+type ResourceGrantScopeInfo struct {
+	Description *string `json:"description,omitempty"`
+
+	// Scope How far a grant reaches. "self" is exactly the named resource (the default); "subtree" additionally covers every CA beneath the named one, including CAs created later.
+	Scope *GrantScope `json:"scope,omitempty"`
+}
+
 // ResourceRole A named bundle of capabilities granted at ONE resource. The ca-* roles apply to certification authorities, the key-* roles to named signing keys. ca-admin/key-admin additionally confer resource:delegate, the right to hand the same resource onward.
 type ResourceRole string
+
+// ResourceRoleCatalog The same three things `secsy-ca grant roles` prints — the roles with their capabilities, the scopes, and the additive-authority note. Derived from the RBAC bundle table, so it cannot drift from the evaluator.
+type ResourceRoleCatalog struct {
+	// Note The standing caveat an operator choosing a delegation must read.
+	Note   *string                   `json:"note,omitempty"`
+	Roles  *[]ResourceRoleInfo       `json:"roles,omitempty"`
+	Scopes *[]ResourceGrantScopeInfo `json:"scopes,omitempty"`
+}
+
+// ResourceRoleInfo One grantable resource role and what it confers.
+type ResourceRoleInfo struct {
+	// Actions The capability bundle the role confers AT THE RESOURCE IT IS GRANTED ON, sorted. There is no allow-all resource role: every capability a grant confers is listed explicitly.
+	Actions *[]string `json:"actions,omitempty"`
+
+	// AppliesTo The resource types the role is meaningful on. A role granted on any other type would confer nothing, so the grant endpoints refuse it.
+	AppliesTo *[]ResourceRoleInfoAppliesTo `json:"applies_to,omitempty"`
+
+	// Role A named bundle of capabilities granted at ONE resource. The ca-* roles apply to certification authorities, the key-* roles to named signing keys. ca-admin/key-admin additionally confer resource:delegate, the right to hand the same resource onward.
+	Role *ResourceRole `json:"role,omitempty"`
+}
+
+// ResourceRoleInfoAppliesTo defines model for ResourceRoleInfo.AppliesTo.
+type ResourceRoleInfoAppliesTo string
 
 // RestrictionSet defines model for RestrictionSet.
 type RestrictionSet struct {
@@ -2871,6 +3924,80 @@ type RestrictionSet struct {
 
 // RestrictionSetType defines model for RestrictionSet.Type.
 type RestrictionSetType string
+
+// RetentionRunRequest defines model for RetentionRunRequest.
+type RetentionRunRequest struct {
+	// DryRun Report exactly what a pass would do, mutating nothing and recording no audit event.
+	DryRun *bool `json:"dry_run,omitempty"`
+}
+
+// RetentionRunResult The outcome of one pass, matching `secsy-ca inventory retention run -json` exactly.
+type RetentionRunResult struct {
+	ArchiveSize *int `json:"archive_size,omitempty"`
+
+	// Archived Rows moved to the archive (dry run: would move).
+	Archived *int `json:"archived,omitempty"`
+
+	// Backlog Eligible rows remaining after the run; trends to the approval-pinned residue, normally zero.
+	Backlog *int       `json:"backlog,omitempty"`
+	Cutoff  *time.Time `json:"cutoff,omitempty"`
+
+	// Digest "sha256:&lt;hex&gt;" over the archived (and pruned) manifest — a tamper-evident fingerprint also recorded in the audit log.
+	Digest     *string `json:"digest,omitempty"`
+	DryRun     *bool   `json:"dry_run,omitempty"`
+	DurationMs *int64  `json:"duration_ms,omitempty"`
+
+	// Eligible Retention-eligible rows in the hot table at run start. An upper bound: it does not subtract approval-pinned serials.
+	Eligible *int `json:"eligible,omitempty"`
+
+	// Error Set, with HTTP 500, when the pass failed part-way. The counts above still report the work that committed before the failure.
+	Error *string                 `json:"error,omitempty"`
+	Mode  *RetentionRunResultMode `json:"mode,omitempty"`
+
+	// ProtectedByApprovals Serials skipped because an open approval pins them.
+	ProtectedByApprovals *int `json:"protected_by_approvals,omitempty"`
+
+	// PruneCutoff Prune mode only; absent otherwise.
+	PruneCutoff *time.Time `json:"prune_cutoff,omitempty"`
+
+	// Pruned Archive rows hard-deleted (dry run: would delete).
+	Pruned  *int       `json:"pruned,omitempty"`
+	Started *time.Time `json:"started,omitempty"`
+	Window  *string    `json:"window,omitempty"`
+}
+
+// RetentionRunResultMode defines model for RetentionRunResult.Mode.
+type RetentionRunResultMode string
+
+// RetentionStatus The resolved retention policy and current eligibility, field-for-field as `secsy-ca inventory retention status -json` prints it.
+type RetentionStatus struct {
+	// ArchiveSize Archive table row count.
+	ArchiveSize *int `json:"archive_size,omitempty"`
+
+	// Cutoff A certificate whose notAfter is before this instant is eligible.
+	Cutoff   *time.Time `json:"cutoff,omitempty"`
+	Eligible *int       `json:"eligible,omitempty"`
+
+	// Enabled Whether the leader-elected background loop runs. Independent of the retention endpoints, which work either way.
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Interval The resolved background-loop period (e.g. "24h0m0s").
+	Interval *string              `json:"interval,omitempty"`
+	LastRun  *Event               `json:"last_run,omitempty"`
+	Mode     *RetentionStatusMode `json:"mode,omitempty"`
+
+	// Prunable Archive plus hot rows past prune_cutoff; 0 in archive mode.
+	Prunable *int `json:"prunable,omitempty"`
+
+	// PruneCutoff The hard-delete horizon in prune mode. ABSENT outside prune mode — there is no such horizon to report, and a zero time would read as a real one.
+	PruneCutoff *time.Time `json:"prune_cutoff,omitempty"`
+
+	// Window The resolved minimum age a row must reach to be eligible.
+	Window *string `json:"window,omitempty"`
+}
+
+// RetentionStatusMode defines model for RetentionStatus.Mode.
+type RetentionStatusMode string
 
 // RetireCARequest defines model for RetireCARequest.
 type RetireCARequest struct {
@@ -3297,6 +4424,51 @@ type SignResponse struct {
 	KeyId       *string `json:"key_id,omitempty"`
 }
 
+// SignerProvisionRequest defines model for SignerProvisionRequest.
+type SignerProvisionRequest struct {
+	// Ca The issuing CA id or label.
+	Ca string `json:"ca"`
+
+	// Chain Append the issuing CA chain after the signer certificate.
+	Chain *bool `json:"chain,omitempty"`
+
+	// CommonName Certificate subject CN (default: the key label).
+	CommonName *string `json:"common_name,omitempty"`
+
+	// KeyType The families the CMS signer supports.
+	KeyType *SignerProvisionRequestKeyType `json:"key_type,omitempty"`
+
+	// Label The provider key label for the signing key.
+	Label *string `json:"label,omitempty"`
+
+	// Organization Certificate subject O (optional).
+	Organization *string `json:"organization,omitempty"`
+
+	// Profile The issuance profile, which must carry the codeSigning EKU. Issuance runs the ordinary CA path, so the fail-closed pre-issuance lint gate applies.
+	Profile *string `json:"profile,omitempty"`
+
+	// ValidityDays Certificate validity in days (0 = the profile's default).
+	ValidityDays *int `json:"validity_days,omitempty"`
+}
+
+// SignerProvisionRequestKeyType The families the CMS signer supports.
+type SignerProvisionRequestKeyType string
+
+// SignerProvisionResponse defines model for SignerProvisionResponse.
+type SignerProvisionResponse struct {
+	// Certificate The certificate a provisioning call issued.
+	Certificate *ProvisionedCertificate `json:"certificate,omitempty"`
+
+	// ConfigHint What to add under signing.signers in configuration.
+	ConfigHint *string `json:"config_hint,omitempty"`
+
+	// Key The key a provisioning call put in place.
+	Key *ProvisionedKeyRef `json:"key,omitempty"`
+
+	// Profile The profile the certificate was actually issued under.
+	Profile *string `json:"profile,omitempty"`
+}
+
 // SigningKey The public view of a named signing key — never any private material.
 type SigningKey struct {
 	Algorithm *string    `json:"algorithm,omitempty"`
@@ -3331,6 +4503,13 @@ type StatusResponse struct {
 	Status *string `json:"status,omitempty"`
 }
 
+// StoreIntegrityCheck One HSM-independent store-integrity finding.
+type StoreIntegrityCheck struct {
+	Detail *string `json:"detail,omitempty"`
+	Name   *string `json:"name,omitempty"`
+	Ok     *bool   `json:"ok,omitempty"`
+}
+
 // TLSARecord One RFC 6698 DANE TLSA resource record.
 type TLSARecord struct {
 	// Data Lowercase-hex certificate-association data.
@@ -3350,6 +4529,45 @@ type TLSARecord struct {
 
 	// Zone Full zone-file presentation-format line.
 	Zone string `json:"zone"`
+}
+
+// TSAKeyRequest defines model for TSAKeyRequest.
+type TSAKeyRequest struct {
+	// Ca The issuing CA id or label.
+	Ca string `json:"ca"`
+
+	// Chain Append the issuing CA chain after the TSA certificate.
+	Chain *bool `json:"chain,omitempty"`
+
+	// CommonName Certificate subject CN.
+	CommonName *string `json:"common_name,omitempty"`
+
+	// KeyType Must be RSA — `openssl ts -verify` interop and the CMS signer both require it.
+	KeyType *TSAKeyRequestKeyType `json:"key_type,omitempty"`
+
+	// Label The provider key label for the TSA signing key.
+	Label *string `json:"label,omitempty"`
+
+	// Organization Certificate subject O (optional).
+	Organization *string `json:"organization,omitempty"`
+
+	// ValidityDays Certificate validity in days. Refused when it would outlive the issuing CA.
+	ValidityDays *int `json:"validity_days,omitempty"`
+}
+
+// TSAKeyRequestKeyType Must be RSA — `openssl ts -verify` interop and the CMS signer both require it.
+type TSAKeyRequestKeyType string
+
+// TSAKeyResponse defines model for TSAKeyResponse.
+type TSAKeyResponse struct {
+	// Certificate The certificate a provisioning call issued.
+	Certificate *ProvisionedCertificate `json:"certificate,omitempty"`
+
+	// ConfigHint What to set in configuration (tsa.key_label, tsa.certificate_file).
+	ConfigHint *string `json:"config_hint,omitempty"`
+
+	// Key The key a provisioning call put in place.
+	Key *ProvisionedKeyRef `json:"key,omitempty"`
 }
 
 // Tenant defines model for Tenant.
@@ -3454,6 +4672,17 @@ type TransformResponse struct {
 	Result   *string `json:"result,omitempty"`
 	Template *string `json:"template,omitempty"`
 }
+
+// UnblockKeyResult defines model for UnblockKeyResult.
+type UnblockKeyResult struct {
+	// Fingerprint The canonicalized fingerprint that was acted on.
+	Fingerprint *string                 `json:"fingerprint,omitempty"`
+	Removed     *bool                   `json:"removed,omitempty"`
+	Status      *UnblockKeyResultStatus `json:"status,omitempty"`
+}
+
+// UnblockKeyResultStatus defines model for UnblockKeyResult.Status.
+type UnblockKeyResultStatus string
 
 // UpdateTenantRequest Partial update: absent fields are left unchanged. quotas, when present, replaces the whole quota set.
 type UpdateTenantRequest struct {
@@ -3561,6 +4790,18 @@ type VerifyEvidenceRecordRequest struct {
 
 	// Record Base64-encoded DER of a standalone Evidence Record.
 	Record *string `json:"record,omitempty"`
+}
+
+// VerifyJWTSVIDRequest defines model for VerifyJWTSVIDRequest.
+type VerifyJWTSVIDRequest struct {
+	// Audience The relying party's own identity, which must appear in the token's "aud" set. Mandatory: the SPIFFE JWT-SVID spec requires a validator to reject a token not addressed to it, and defaulting this would quietly turn that rule off.
+	Audience string `json:"audience"`
+
+	// Token The compact JWT-SVID to validate.
+	Token string `json:"token"`
+
+	// TrustDomains Optionally NARROWS the trust domains the token's subject may belong to. Empty uses the deployment's configured allowlist, which is applied as a fail-closed backstop regardless, so a request can never widen what this deployment accepts.
+	TrustDomains *[]string `json:"trust_domains,omitempty"`
 }
 
 // VerifySignatureRequest Supply exactly one of message or digest.
@@ -3748,6 +4989,12 @@ type ListAuditLogParams struct {
 	Export *string `form:"export,omitempty" json:"export,omitempty"`
 }
 
+// UnblockKeyParams defines parameters for UnblockKey.
+type UnblockKeyParams struct {
+	// Reason The operator's justification, recorded in the audit trail. Carried as a query parameter because DELETE bodies are not universally forwarded by proxies.
+	Reason *string `form:"reason,omitempty" json:"reason,omitempty"`
+}
+
 // ListIssuedCertificatesParams defines parameters for ListIssuedCertificates.
 type ListIssuedCertificatesParams struct {
 	// Limit Page size (1–500).
@@ -3860,6 +5107,48 @@ type ListDiscoveredCertificatesParams struct {
 	// ExpiresBefore Restrict to certificates whose notAfter is before this instant (RFC 3339 or YYYY-MM-DD).
 	ExpiresBefore *CertExpiresBefore `form:"expires_before,omitempty" json:"expires_before,omitempty"`
 }
+
+// RunDoctorParams defines parameters for RunDoctor.
+type RunDoctorParams struct {
+	// Deep Also run the full store-integrity gate, which walks the entire audit chain.
+	Deep *bool `form:"deep,omitempty" json:"deep,omitempty"`
+
+	// Timeout Time budget in seconds (default 60, capped at 300). A value at or above the cap is clamped to it.
+	Timeout *int `form:"timeout,omitempty" json:"timeout,omitempty"`
+
+	// ExpiryWarnDays Warn threshold in days for certificate-expiry headroom (0 = the suite's default).
+	ExpiryWarnDays *int `form:"expiry_warn_days,omitempty" json:"expiry_warn_days,omitempty"`
+
+	// ExpiryFailDays Fail threshold in days for certificate-expiry headroom (0 = the suite's default).
+	ExpiryFailDays *int `form:"expiry_fail_days,omitempty" json:"expiry_fail_days,omitempty"`
+
+	// AuditSample How many audit events to sample when not running deep (0 = the suite's default).
+	AuditSample *int `form:"audit_sample,omitempty" json:"audit_sample,omitempty"`
+
+	// NoListener Skip the listener/socket checks.
+	NoListener *bool `form:"no_listener,omitempty" json:"no_listener,omitempty"`
+}
+
+// ListEvidenceRecordsParams defines parameters for ListEvidenceRecords.
+type ListEvidenceRecordsParams struct {
+	// Limit Page size (default 200, capped at 1000; 0 means the cap).
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Offset Row offset.
+	Offset *int `form:"offset,omitempty" json:"offset,omitempty"`
+}
+
+// ExportEvidenceRecordParams defines parameters for ExportEvidenceRecord.
+type ExportEvidenceRecordParams struct {
+	// Id The stored Evidence Record's id.
+	Id string `form:"id" json:"id"`
+
+	// Format Output encoding; defaults to json.
+	Format *ExportEvidenceRecordParamsFormat `form:"format,omitempty" json:"format,omitempty"`
+}
+
+// ExportEvidenceRecordParamsFormat defines parameters for ExportEvidenceRecord.
+type ExportEvidenceRecordParamsFormat string
 
 // ListEventLogParams defines parameters for ListEventLog.
 type ListEventLogParams struct {
@@ -3988,6 +5277,12 @@ type CreateSigningKeyParams struct {
 	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
 }
 
+// ImportSigningKeyParams defines parameters for ImportSigningKey.
+type ImportSigningKeyParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
 // GetSigningKeyParams defines parameters for GetSigningKey.
 type GetSigningKeyParams struct {
 	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
@@ -4042,8 +5337,14 @@ type ApproveApprovalJSONRequestBody = ApprovalDecisionRequest
 // RejectApprovalJSONRequestBody defines body for RejectApproval for application/json ContentType.
 type RejectApprovalJSONRequestBody = ApprovalDecisionRequest
 
+// BlockKeyJSONRequestBody defines body for BlockKey for application/json ContentType.
+type BlockKeyJSONRequestBody = BlockKeyRequest
+
 // CreateExternalCACSRJSONRequestBody defines body for CreateExternalCACSR for application/json ContentType.
 type CreateExternalCACSRJSONRequestBody = CAExternalCSRRequest
+
+// ImportCAJSONRequestBody defines body for ImportCA for application/json ContentType.
+type ImportCAJSONRequestBody = ImportCARequest
 
 // InitRootCAJSONRequestBody defines body for InitRootCA for application/json ContentType.
 type InitRootCAJSONRequestBody = CAInitRootRequest
@@ -4093,11 +5394,26 @@ type IssueSVIDJSONRequestBody = SVIDRequest
 // IssueJWTSVIDJSONRequestBody defines body for IssueJWTSVID for application/json ContentType.
 type IssueJWTSVIDJSONRequestBody = JWTSVIDRequest
 
+// VerifyJWTSVIDJSONRequestBody defines body for VerifyJWTSVID for application/json ContentType.
+type VerifyJWTSVIDJSONRequestBody = VerifyJWTSVIDRequest
+
+// VerifyCTInclusionJSONRequestBody defines body for VerifyCTInclusion for application/json ContentType.
+type VerifyCTInclusionJSONRequestBody = CTVerifyInclusionRequest
+
 // RunDiscoveryScanJSONRequestBody defines body for RunDiscoveryScan for application/json ContentType.
 type RunDiscoveryScanJSONRequestBody = DiscoveryScanRequest
 
+// GenerateEvidenceRecordJSONRequestBody defines body for GenerateEvidenceRecord for application/json ContentType.
+type GenerateEvidenceRecordJSONRequestBody = GenerateEvidenceRecordRequest
+
+// RenewEvidenceRecordJSONRequestBody defines body for RenewEvidenceRecord for application/json ContentType.
+type RenewEvidenceRecordJSONRequestBody = RenewEvidenceRecordRequest
+
 // VerifyEvidenceRecordJSONRequestBody defines body for VerifyEvidenceRecord for application/json ContentType.
 type VerifyEvidenceRecordJSONRequestBody = VerifyEvidenceRecordRequest
+
+// AnchorAuditChainJSONRequestBody defines body for AnchorAuditChain for application/json ContentType.
+type AnchorAuditChainJSONRequestBody = AnchorAuditChainRequest
 
 // DeleteResourceGrantJSONRequestBody defines body for DeleteResourceGrant for application/json ContentType.
 type DeleteResourceGrantJSONRequestBody = ResourceGrantRequest
@@ -4120,8 +5436,14 @@ type VerifyHSMAttestationJSONRequestBody = HSMAttestationVerifyRequest
 // VerifyHSMDeviceAttestationJSONRequestBody defines body for VerifyHSMDeviceAttestation for application/json ContentType.
 type VerifyHSMDeviceAttestationJSONRequestBody = HSMDeviceAttestationVerifyRequest
 
+// RunInventoryRetentionJSONRequestBody defines body for RunInventoryRetention for application/json ContentType.
+type RunInventoryRetentionJSONRequestBody = RetentionRunRequest
+
 // CreateCAJSONRequestBody defines body for CreateCA for application/json ContentType.
 type CreateCAJSONRequestBody = CreateCARequest
+
+// ImportKeyJSONRequestBody defines body for ImportKey for application/json ContentType.
+type ImportKeyJSONRequestBody = ImportKeyRequest
 
 // SetDefaultRestrictionSetJSONRequestBody defines body for SetDefaultRestrictionSet for application/json ContentType.
 type SetDefaultRestrictionSetJSONRequestBody = SetDefaultRestrictionSetRequest
@@ -4150,6 +5472,12 @@ type RunExpiryScanJSONRequestBody = ScanRequest
 // ParseCSRJSONRequestBody defines body for ParseCSR for application/json ContentType.
 type ParseCSRJSONRequestBody = ParseCSRRequest
 
+// PublishSnapshotJSONRequestBody defines body for PublishSnapshot for application/json ContentType.
+type PublishSnapshotJSONRequestBody = PublishRequest
+
+// VerifyPublishedSnapshotJSONRequestBody defines body for VerifyPublishedSnapshot for application/json ContentType.
+type VerifyPublishedSnapshotJSONRequestBody = PublishVerifyRequest
+
 // CreateGlobalRestrictionSetJSONRequestBody defines body for CreateGlobalRestrictionSet for application/json ContentType.
 type CreateGlobalRestrictionSetJSONRequestBody = RestrictionSet
 
@@ -4177,6 +5505,9 @@ type GenerateRandomJSONRequestBody = RandomRequest
 // CreateSigningKeyJSONRequestBody defines body for CreateSigningKey for application/json ContentType.
 type CreateSigningKeyJSONRequestBody = CreateSigningKeyRequest
 
+// ImportSigningKeyJSONRequestBody defines body for ImportSigningKey for application/json ContentType.
+type ImportSigningKeyJSONRequestBody = ImportSigningKeyRequest
+
 // SignWithKeyJSONRequestBody defines body for SignWithKey for application/json ContentType.
 type SignWithKeyJSONRequestBody = SecretSignRequest
 
@@ -4194,6 +5525,9 @@ type VerifyWithPublicKeyJSONRequestBody = VerifyWithPublicKeyRequest
 
 // SignArtifactJSONRequestBody defines body for SignArtifact for application/json ContentType.
 type SignArtifactJSONRequestBody = ArtifactSignRequest
+
+// ProvisionArtifactSignerJSONRequestBody defines body for ProvisionArtifactSigner for application/json ContentType.
+type ProvisionArtifactSignerJSONRequestBody = SignerProvisionRequest
 
 // VerifyArtifactSignatureJSONRequestBody defines body for VerifyArtifactSignature for application/json ContentType.
 type VerifyArtifactSignatureJSONRequestBody = ArtifactVerifyRequest
@@ -4221,6 +5555,9 @@ type SetTenantStatusJSONRequestBody = TenantStatusRequest
 
 // CreateTokenJSONRequestBody defines body for CreateToken for application/json ContentType.
 type CreateTokenJSONRequestBody = CreateTokenRequest
+
+// ProvisionTSAKeyJSONRequestBody defines body for ProvisionTSAKey for application/json ContentType.
+type ProvisionTSAKeyJSONRequestBody = TSAKeyRequest
 
 // ValidateChainJSONRequestBody defines body for ValidateChain for application/json ContentType.
 type ValidateChainJSONRequestBody = ValidateChainRequest
@@ -4316,6 +5653,9 @@ type ClientInterface interface {
 	// ListApprovals request
 	ListApprovals(ctx context.Context, params *ListApprovalsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ExpireApprovals request
+	ExpireApprovals(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetApproval request
 	GetApproval(ctx context.Context, id ApprovalId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -4338,10 +5678,32 @@ type ClientInterface interface {
 	// GetAuthConfig request
 	GetAuthConfig(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ExportBackup request
+	ExportBackup(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// VerifyBackupRestore request
+	VerifyBackupRestore(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListBlockedKeys request
+	ListBlockedKeys(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// BlockKeyWithBody request with any body
+	BlockKeyWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	BlockKey(ctx context.Context, body BlockKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// UnblockKey request
+	UnblockKey(ctx context.Context, fingerprint string, params *UnblockKeyParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// CreateExternalCACSRWithBody request with any body
 	CreateExternalCACSRWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	CreateExternalCACSR(ctx context.Context, body CreateExternalCACSRJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ImportCAWithBody request with any body
+	ImportCAWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ImportCA(ctx context.Context, body ImportCAJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// InitRootCAWithBody request with any body
 	InitRootCAWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4480,8 +5842,18 @@ type ClientInterface interface {
 
 	IssueJWTSVID(ctx context.Context, id CAId, body IssueJWTSVIDJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// VerifyJWTSVIDWithBody request with any body
+	VerifyJWTSVIDWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	VerifyJWTSVID(ctx context.Context, id CAId, body VerifyJWTSVIDJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListSCTInclusion request
 	ListSCTInclusion(ctx context.Context, params *ListSCTInclusionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// VerifyCTInclusionWithBody request with any body
+	VerifyCTInclusionWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	VerifyCTInclusion(ctx context.Context, body VerifyCTInclusionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListDiscoveredCertificates request
 	ListDiscoveredCertificates(ctx context.Context, params *ListDiscoveredCertificatesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4491,6 +5863,25 @@ type ClientInterface interface {
 
 	RunDiscoveryScan(ctx context.Context, body RunDiscoveryScanJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// RunDoctor request
+	RunDoctor(ctx context.Context, params *RunDoctorParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListEvidenceRecords request
+	ListEvidenceRecords(ctx context.Context, params *ListEvidenceRecordsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ExportEvidenceRecord request
+	ExportEvidenceRecord(ctx context.Context, params *ExportEvidenceRecordParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GenerateEvidenceRecordWithBody request with any body
+	GenerateEvidenceRecordWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	GenerateEvidenceRecord(ctx context.Context, body GenerateEvidenceRecordJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RenewEvidenceRecordWithBody request with any body
+	RenewEvidenceRecordWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	RenewEvidenceRecord(ctx context.Context, body RenewEvidenceRecordJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// VerifyEvidenceRecordWithBody request with any body
 	VerifyEvidenceRecordWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -4498,6 +5889,11 @@ type ClientInterface interface {
 
 	// ListEventLog request
 	ListEventLog(ctx context.Context, params *ListEventLogParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// AnchorAuditChainWithBody request with any body
+	AnchorAuditChainWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	AnchorAuditChain(ctx context.Context, body AnchorAuditChainJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ExportEventLog request
 	ExportEventLog(ctx context.Context, params *ExportEventLogParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4523,6 +5919,9 @@ type ClientInterface interface {
 
 	// GetEffectiveResourceAccess request
 	GetEffectiveResourceAccess(ctx context.Context, params *GetEffectiveResourceAccessParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListResourceRoles request
+	ListResourceRoles(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListGroups request
 	ListGroups(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4556,6 +5955,9 @@ type ClientInterface interface {
 
 	// GetHSMAttestation request
 	GetHSMAttestation(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetHSMAttestationAudit request
+	GetHSMAttestationAudit(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// VerifyHSMAttestationWithBody request with any body
 	VerifyHSMAttestationWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4594,6 +5996,14 @@ type ClientInterface interface {
 	// ListProviderKeys request
 	ListProviderKeys(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetInventoryRetentionStatus request
+	GetInventoryRetentionStatus(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RunInventoryRetentionWithBody request with any body
+	RunInventoryRetentionWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	RunInventoryRetention(ctx context.Context, body RunInventoryRetentionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListCAs request
 	ListCAs(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -4601,6 +6011,11 @@ type ClientInterface interface {
 	CreateCAWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	CreateCA(ctx context.Context, body CreateCAJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ImportKeyWithBody request with any body
+	ImportKeyWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ImportKey(ctx context.Context, body ImportKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// DeleteCA request
 	DeleteCA(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4677,6 +6092,16 @@ type ClientInterface interface {
 	// ListProfiles request
 	ListProfiles(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// PublishSnapshotWithBody request with any body
+	PublishSnapshotWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PublishSnapshot(ctx context.Context, body PublishSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// VerifyPublishedSnapshotWithBody request with any body
+	VerifyPublishedSnapshotWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	VerifyPublishedSnapshot(ctx context.Context, body VerifyPublishedSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListAllRestrictionSets request
 	ListAllRestrictionSets(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -4737,6 +6162,11 @@ type ClientInterface interface {
 
 	CreateSigningKey(ctx context.Context, params *CreateSigningKeyParams, body CreateSigningKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ImportSigningKeyWithBody request with any body
+	ImportSigningKeyWithBody(ctx context.Context, params *ImportSigningKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ImportSigningKey(ctx context.Context, params *ImportSigningKeyParams, body ImportSigningKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetSigningKey request
 	GetSigningKey(ctx context.Context, name string, params *GetSigningKeyParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -4772,6 +6202,11 @@ type ClientInterface interface {
 
 	// ListArtifactSigners request
 	ListArtifactSigners(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ProvisionArtifactSignerWithBody request with any body
+	ProvisionArtifactSignerWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ProvisionArtifactSigner(ctx context.Context, body ProvisionArtifactSignerJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// VerifyArtifactSignatureWithBody request with any body
 	VerifyArtifactSignatureWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4853,6 +6288,11 @@ type ClientInterface interface {
 
 	// RevokeToken request
 	RevokeToken(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ProvisionTSAKeyWithBody request with any body
+	ProvisionTSAKeyWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ProvisionTSAKey(ctx context.Context, body ProvisionTSAKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ValidateChainWithBody request with any body
 	ValidateChainWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -4937,6 +6377,18 @@ func (c *Client) ListACMEOrders(ctx context.Context, params *ListACMEOrdersParam
 
 func (c *Client) ListApprovals(ctx context.Context, params *ListApprovalsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListApprovalsRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ExpireApprovals(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewExpireApprovalsRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -5043,6 +6495,78 @@ func (c *Client) GetAuthConfig(ctx context.Context, reqEditors ...RequestEditorF
 	return c.Client.Do(req)
 }
 
+func (c *Client) ExportBackup(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewExportBackupRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyBackupRestore(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyBackupRestoreRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListBlockedKeys(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListBlockedKeysRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) BlockKeyWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewBlockKeyRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) BlockKey(ctx context.Context, body BlockKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewBlockKeyRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UnblockKey(ctx context.Context, fingerprint string, params *UnblockKeyParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUnblockKeyRequest(c.Server, fingerprint, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) CreateExternalCACSRWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewCreateExternalCACSRRequestWithBody(c.Server, contentType, body)
 	if err != nil {
@@ -5057,6 +6581,30 @@ func (c *Client) CreateExternalCACSRWithBody(ctx context.Context, contentType st
 
 func (c *Client) CreateExternalCACSR(ctx context.Context, body CreateExternalCACSRJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewCreateExternalCACSRRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ImportCAWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewImportCARequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ImportCA(ctx context.Context, body ImportCAJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewImportCARequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -5679,8 +7227,56 @@ func (c *Client) IssueJWTSVID(ctx context.Context, id CAId, body IssueJWTSVIDJSO
 	return c.Client.Do(req)
 }
 
+func (c *Client) VerifyJWTSVIDWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyJWTSVIDRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyJWTSVID(ctx context.Context, id CAId, body VerifyJWTSVIDJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyJWTSVIDRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) ListSCTInclusion(ctx context.Context, params *ListSCTInclusionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListSCTInclusionRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyCTInclusionWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyCTInclusionRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyCTInclusion(ctx context.Context, body VerifyCTInclusionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyCTInclusionRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -5727,6 +7323,90 @@ func (c *Client) RunDiscoveryScan(ctx context.Context, body RunDiscoveryScanJSON
 	return c.Client.Do(req)
 }
 
+func (c *Client) RunDoctor(ctx context.Context, params *RunDoctorParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRunDoctorRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListEvidenceRecords(ctx context.Context, params *ListEvidenceRecordsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListEvidenceRecordsRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ExportEvidenceRecord(ctx context.Context, params *ExportEvidenceRecordParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewExportEvidenceRecordRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GenerateEvidenceRecordWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGenerateEvidenceRecordRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GenerateEvidenceRecord(ctx context.Context, body GenerateEvidenceRecordJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGenerateEvidenceRecordRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RenewEvidenceRecordWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRenewEvidenceRecordRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RenewEvidenceRecord(ctx context.Context, body RenewEvidenceRecordJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRenewEvidenceRecordRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) VerifyEvidenceRecordWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewVerifyEvidenceRecordRequestWithBody(c.Server, contentType, body)
 	if err != nil {
@@ -5753,6 +7433,30 @@ func (c *Client) VerifyEvidenceRecord(ctx context.Context, body VerifyEvidenceRe
 
 func (c *Client) ListEventLog(ctx context.Context, params *ListEventLogParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListEventLogRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) AnchorAuditChainWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAnchorAuditChainRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) AnchorAuditChain(ctx context.Context, body AnchorAuditChainJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAnchorAuditChainRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -5861,6 +7565,18 @@ func (c *Client) CreateResourceGrant(ctx context.Context, body CreateResourceGra
 
 func (c *Client) GetEffectiveResourceAccess(ctx context.Context, params *GetEffectiveResourceAccessParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetEffectiveResourceAccessRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListResourceRoles(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListResourceRolesRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -6005,6 +7721,18 @@ func (c *Client) AttestHSMDevice(ctx context.Context, body AttestHSMDeviceJSONRe
 
 func (c *Client) GetHSMAttestation(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetHSMAttestationRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetHSMAttestationAudit(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetHSMAttestationAuditRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -6171,6 +7899,42 @@ func (c *Client) ListProviderKeys(ctx context.Context, reqEditors ...RequestEdit
 	return c.Client.Do(req)
 }
 
+func (c *Client) GetInventoryRetentionStatus(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetInventoryRetentionStatusRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RunInventoryRetentionWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRunInventoryRetentionRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RunInventoryRetention(ctx context.Context, body RunInventoryRetentionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRunInventoryRetentionRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) ListCAs(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListCAsRequest(c.Server)
 	if err != nil {
@@ -6197,6 +7961,30 @@ func (c *Client) CreateCAWithBody(ctx context.Context, contentType string, body 
 
 func (c *Client) CreateCA(ctx context.Context, body CreateCAJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewCreateCARequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ImportKeyWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewImportKeyRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ImportKey(ctx context.Context, body ImportKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewImportKeyRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -6543,6 +8331,54 @@ func (c *Client) ListProfiles(ctx context.Context, reqEditors ...RequestEditorFn
 	return c.Client.Do(req)
 }
 
+func (c *Client) PublishSnapshotWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPublishSnapshotRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PublishSnapshot(ctx context.Context, body PublishSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPublishSnapshotRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyPublishedSnapshotWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyPublishedSnapshotRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) VerifyPublishedSnapshot(ctx context.Context, body VerifyPublishedSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewVerifyPublishedSnapshotRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) ListAllRestrictionSets(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListAllRestrictionSetsRequest(c.Server)
 	if err != nil {
@@ -6819,6 +8655,30 @@ func (c *Client) CreateSigningKey(ctx context.Context, params *CreateSigningKeyP
 	return c.Client.Do(req)
 }
 
+func (c *Client) ImportSigningKeyWithBody(ctx context.Context, params *ImportSigningKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewImportSigningKeyRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ImportSigningKey(ctx context.Context, params *ImportSigningKeyParams, body ImportSigningKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewImportSigningKeyRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) GetSigningKey(ctx context.Context, name string, params *GetSigningKeyParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetSigningKeyRequest(c.Server, name, params)
 	if err != nil {
@@ -6977,6 +8837,30 @@ func (c *Client) SignArtifact(ctx context.Context, body SignArtifactJSONRequestB
 
 func (c *Client) ListArtifactSigners(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListArtifactSignersRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ProvisionArtifactSignerWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewProvisionArtifactSignerRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ProvisionArtifactSigner(ctx context.Context, body ProvisionArtifactSignerJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewProvisionArtifactSignerRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -7337,6 +9221,30 @@ func (c *Client) CreateToken(ctx context.Context, body CreateTokenJSONRequestBod
 
 func (c *Client) RevokeToken(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewRevokeTokenRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ProvisionTSAKeyWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewProvisionTSAKeyRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ProvisionTSAKey(ctx context.Context, body ProvisionTSAKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewProvisionTSAKeyRequest(c.Server, body)
 	if err != nil {
 		return nil, err
 	}
@@ -7793,6 +9701,33 @@ func NewListApprovalsRequest(server string, params *ListApprovalsParams) (*http.
 	return req, nil
 }
 
+// NewExpireApprovalsRequest generates requests for ExpireApprovals
+func NewExpireApprovalsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/approvals/expire")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewGetApprovalRequest generates requests for GetApproval
 func NewGetApprovalRequest(server string, id ApprovalId) (*http.Request, error) {
 	var err error
@@ -8079,6 +10014,183 @@ func NewGetAuthConfigRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewExportBackupRequest generates requests for ExportBackup
+func NewExportBackupRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/backup")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewVerifyBackupRestoreRequest generates requests for VerifyBackupRestore
+func NewVerifyBackupRestoreRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/backup/verify-restore")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewListBlockedKeysRequest generates requests for ListBlockedKeys
+func NewListBlockedKeysRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/blocked-keys")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewBlockKeyRequest calls the generic BlockKey builder with application/json body
+func NewBlockKeyRequest(server string, body BlockKeyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewBlockKeyRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewBlockKeyRequestWithBody generates requests for BlockKey with any type of body
+func NewBlockKeyRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/blocked-keys")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewUnblockKeyRequest generates requests for UnblockKey
+func NewUnblockKeyRequest(server string, fingerprint string, params *UnblockKeyParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "fingerprint", runtime.ParamLocationPath, fingerprint)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/blocked-keys/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Reason != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "reason", runtime.ParamLocationQuery, *params.Reason); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("DELETE", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewCreateExternalCACSRRequest calls the generic CreateExternalCACSR builder with application/json body
 func NewCreateExternalCACSRRequest(server string, body CreateExternalCACSRJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -8100,6 +10212,46 @@ func NewCreateExternalCACSRRequestWithBody(server string, contentType string, bo
 	}
 
 	operationPath := fmt.Sprintf("/api/ca/csr")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewImportCARequest calls the generic ImportCA builder with application/json body
+func NewImportCARequest(server string, body ImportCAJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewImportCARequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewImportCARequestWithBody generates requests for ImportCA with any type of body
+func NewImportCARequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/import")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -9896,6 +12048,53 @@ func NewIssueJWTSVIDRequestWithBody(server string, id CAId, contentType string, 
 	return req, nil
 }
 
+// NewVerifyJWTSVIDRequest calls the generic VerifyJWTSVID builder with application/json body
+func NewVerifyJWTSVIDRequest(server string, id CAId, body VerifyJWTSVIDJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewVerifyJWTSVIDRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewVerifyJWTSVIDRequestWithBody generates requests for VerifyJWTSVID with any type of body
+func NewVerifyJWTSVIDRequestWithBody(server string, id CAId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ca/%s/svid/jwt/verify", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewListSCTInclusionRequest generates requests for ListSCTInclusion
 func NewListSCTInclusionRequest(server string, params *ListSCTInclusionParams) (*http.Request, error) {
 	var err error
@@ -9989,6 +12188,46 @@ func NewListSCTInclusionRequest(server string, params *ListSCTInclusionParams) (
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewVerifyCTInclusionRequest calls the generic VerifyCTInclusion builder with application/json body
+func NewVerifyCTInclusionRequest(server string, body VerifyCTInclusionJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewVerifyCTInclusionRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewVerifyCTInclusionRequestWithBody generates requests for VerifyCTInclusion with any type of body
+func NewVerifyCTInclusionRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ct/verify-inclusion")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -10127,6 +12366,341 @@ func NewRunDiscoveryScanRequestWithBody(server string, contentType string, body 
 	}
 
 	operationPath := fmt.Sprintf("/api/discovery/scan")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewRunDoctorRequest generates requests for RunDoctor
+func NewRunDoctorRequest(server string, params *RunDoctorParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/doctor")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Deep != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "deep", runtime.ParamLocationQuery, *params.Deep); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Timeout != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "timeout", runtime.ParamLocationQuery, *params.Timeout); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.ExpiryWarnDays != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "expiry_warn_days", runtime.ParamLocationQuery, *params.ExpiryWarnDays); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.ExpiryFailDays != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "expiry_fail_days", runtime.ParamLocationQuery, *params.ExpiryFailDays); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.AuditSample != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "audit_sample", runtime.ParamLocationQuery, *params.AuditSample); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.NoListener != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "no_listener", runtime.ParamLocationQuery, *params.NoListener); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewListEvidenceRecordsRequest generates requests for ListEvidenceRecords
+func NewListEvidenceRecordsRequest(server string, params *ListEvidenceRecordsParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ers")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "limit", runtime.ParamLocationQuery, *params.Limit); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Offset != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "offset", runtime.ParamLocationQuery, *params.Offset); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewExportEvidenceRecordRequest generates requests for ExportEvidenceRecord
+func NewExportEvidenceRecordRequest(server string, params *ExportEvidenceRecordParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ers/export")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "id", runtime.ParamLocationQuery, params.Id); err != nil {
+			return nil, err
+		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+			return nil, err
+		} else {
+			for k, v := range parsed {
+				for _, v2 := range v {
+					queryValues.Add(k, v2)
+				}
+			}
+		}
+
+		if params.Format != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "format", runtime.ParamLocationQuery, *params.Format); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGenerateEvidenceRecordRequest calls the generic GenerateEvidenceRecord builder with application/json body
+func NewGenerateEvidenceRecordRequest(server string, body GenerateEvidenceRecordJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewGenerateEvidenceRecordRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewGenerateEvidenceRecordRequestWithBody generates requests for GenerateEvidenceRecord with any type of body
+func NewGenerateEvidenceRecordRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ers/generate")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewRenewEvidenceRecordRequest calls the generic RenewEvidenceRecord builder with application/json body
+func NewRenewEvidenceRecordRequest(server string, body RenewEvidenceRecordJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRenewEvidenceRecordRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewRenewEvidenceRecordRequestWithBody generates requests for RenewEvidenceRecord with any type of body
+func NewRenewEvidenceRecordRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ers/renew")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -10295,6 +12869,46 @@ func NewListEventLogRequest(server string, params *ListEventLogParams) (*http.Re
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewAnchorAuditChainRequest calls the generic AnchorAuditChain builder with application/json body
+func NewAnchorAuditChainRequest(server string, body AnchorAuditChainJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewAnchorAuditChainRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewAnchorAuditChainRequestWithBody generates requests for AnchorAuditChain with any type of body
+func NewAnchorAuditChainRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/events/anchor")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -10658,6 +13272,33 @@ func NewGetEffectiveResourceAccessRequest(server string, params *GetEffectiveRes
 	return req, nil
 }
 
+// NewListResourceRolesRequest generates requests for ListResourceRoles
+func NewListResourceRolesRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/grants/roles")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewListGroupsRequest generates requests for ListGroups
 func NewListGroupsRequest(server string) (*http.Request, error) {
 	var err error
@@ -10958,6 +13599,33 @@ func NewGetHSMAttestationRequest(server string) (*http.Request, error) {
 	}
 
 	operationPath := fmt.Sprintf("/api/hsm/attestation")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetHSMAttestationAuditRequest generates requests for GetHSMAttestationAudit
+func NewGetHSMAttestationAuditRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/hsm/attestation-audit")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -11305,6 +13973,73 @@ func NewListProviderKeysRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewGetInventoryRetentionStatusRequest generates requests for GetInventoryRetentionStatus
+func NewGetInventoryRetentionStatusRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/inventory/retention")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewRunInventoryRetentionRequest calls the generic RunInventoryRetention builder with application/json body
+func NewRunInventoryRetentionRequest(server string, body RunInventoryRetentionJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRunInventoryRetentionRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewRunInventoryRetentionRequestWithBody generates requests for RunInventoryRetention with any type of body
+func NewRunInventoryRetentionRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/inventory/retention/run")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewListCAsRequest generates requests for ListCAs
 func NewListCAsRequest(server string) (*http.Request, error) {
 	var err error
@@ -11353,6 +14088,46 @@ func NewCreateCARequestWithBody(server string, contentType string, body io.Reade
 	}
 
 	operationPath := fmt.Sprintf("/api/keys")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewImportKeyRequest calls the generic ImportKey builder with application/json body
+func NewImportKeyRequest(server string, body ImportKeyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewImportKeyRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewImportKeyRequestWithBody generates requests for ImportKey with any type of body
+func NewImportKeyRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/keys/import")
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -12207,6 +14982,86 @@ func NewListProfilesRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewPublishSnapshotRequest calls the generic PublishSnapshot builder with application/json body
+func NewPublishSnapshotRequest(server string, body PublishSnapshotJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPublishSnapshotRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewPublishSnapshotRequestWithBody generates requests for PublishSnapshot with any type of body
+func NewPublishSnapshotRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/publish")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewVerifyPublishedSnapshotRequest calls the generic VerifyPublishedSnapshot builder with application/json body
+func NewVerifyPublishedSnapshotRequest(server string, body VerifyPublishedSnapshotJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewVerifyPublishedSnapshotRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewVerifyPublishedSnapshotRequestWithBody generates requests for VerifyPublishedSnapshot with any type of body
+func NewVerifyPublishedSnapshotRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/publish/verify")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewListAllRestrictionSetsRequest generates requests for ListAllRestrictionSets
 func NewListAllRestrictionSetsRequest(server string) (*http.Request, error) {
 	var err error
@@ -12836,6 +15691,61 @@ func NewCreateSigningKeyRequestWithBody(server string, params *CreateSigningKeyP
 	return req, nil
 }
 
+// NewImportSigningKeyRequest calls the generic ImportSigningKey builder with application/json body
+func NewImportSigningKeyRequest(server string, params *ImportSigningKeyParams, body ImportSigningKeyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewImportSigningKeyRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewImportSigningKeyRequestWithBody generates requests for ImportSigningKey with any type of body
+func NewImportSigningKeyRequestWithBody(server string, params *ImportSigningKeyParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/signing-keys/import")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewGetSigningKeyRequest generates requests for GetSigningKey
 func NewGetSigningKeyRequest(server string, name string, params *GetSigningKeyParams) (*http.Request, error) {
 	var err error
@@ -13237,6 +16147,46 @@ func NewListArtifactSignersRequest(server string) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	return req, nil
+}
+
+// NewProvisionArtifactSignerRequest calls the generic ProvisionArtifactSigner builder with application/json body
+func NewProvisionArtifactSignerRequest(server string, body ProvisionArtifactSignerJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewProvisionArtifactSignerRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewProvisionArtifactSignerRequestWithBody generates requests for ProvisionArtifactSigner with any type of body
+func NewProvisionArtifactSignerRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/sign/signers")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
 
 	return req, nil
 }
@@ -14060,6 +17010,46 @@ func NewRevokeTokenRequest(server string, id string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewProvisionTSAKeyRequest calls the generic ProvisionTSAKey builder with application/json body
+func NewProvisionTSAKeyRequest(server string, body ProvisionTSAKeyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewProvisionTSAKeyRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewProvisionTSAKeyRequestWithBody generates requests for ProvisionTSAKey with any type of body
+func NewProvisionTSAKeyRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/tsa/key")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewValidateChainRequest calls the generic ValidateChain builder with application/json body
 func NewValidateChainRequest(server string, body ValidateChainJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -14296,6 +17286,9 @@ type ClientWithResponsesInterface interface {
 	// ListApprovalsWithResponse request
 	ListApprovalsWithResponse(ctx context.Context, params *ListApprovalsParams, reqEditors ...RequestEditorFn) (*ListApprovalsResponse, error)
 
+	// ExpireApprovalsWithResponse request
+	ExpireApprovalsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ExpireApprovalsResponse, error)
+
 	// GetApprovalWithResponse request
 	GetApprovalWithResponse(ctx context.Context, id ApprovalId, reqEditors ...RequestEditorFn) (*GetApprovalResponse, error)
 
@@ -14318,10 +17311,32 @@ type ClientWithResponsesInterface interface {
 	// GetAuthConfigWithResponse request
 	GetAuthConfigWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetAuthConfigResponse, error)
 
+	// ExportBackupWithResponse request
+	ExportBackupWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ExportBackupResponse, error)
+
+	// VerifyBackupRestoreWithResponse request
+	VerifyBackupRestoreWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*VerifyBackupRestoreResponse, error)
+
+	// ListBlockedKeysWithResponse request
+	ListBlockedKeysWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListBlockedKeysResponse, error)
+
+	// BlockKeyWithBodyWithResponse request with any body
+	BlockKeyWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*BlockKeyResponse, error)
+
+	BlockKeyWithResponse(ctx context.Context, body BlockKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*BlockKeyResponse, error)
+
+	// UnblockKeyWithResponse request
+	UnblockKeyWithResponse(ctx context.Context, fingerprint string, params *UnblockKeyParams, reqEditors ...RequestEditorFn) (*UnblockKeyResponse, error)
+
 	// CreateExternalCACSRWithBodyWithResponse request with any body
 	CreateExternalCACSRWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateExternalCACSRResponse, error)
 
 	CreateExternalCACSRWithResponse(ctx context.Context, body CreateExternalCACSRJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateExternalCACSRResponse, error)
+
+	// ImportCAWithBodyWithResponse request with any body
+	ImportCAWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ImportCAResponse, error)
+
+	ImportCAWithResponse(ctx context.Context, body ImportCAJSONRequestBody, reqEditors ...RequestEditorFn) (*ImportCAResponse, error)
 
 	// InitRootCAWithBodyWithResponse request with any body
 	InitRootCAWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*InitRootCAResponse, error)
@@ -14460,8 +17475,18 @@ type ClientWithResponsesInterface interface {
 
 	IssueJWTSVIDWithResponse(ctx context.Context, id CAId, body IssueJWTSVIDJSONRequestBody, reqEditors ...RequestEditorFn) (*IssueJWTSVIDResponse, error)
 
+	// VerifyJWTSVIDWithBodyWithResponse request with any body
+	VerifyJWTSVIDWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyJWTSVIDResponse, error)
+
+	VerifyJWTSVIDWithResponse(ctx context.Context, id CAId, body VerifyJWTSVIDJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyJWTSVIDResponse, error)
+
 	// ListSCTInclusionWithResponse request
 	ListSCTInclusionWithResponse(ctx context.Context, params *ListSCTInclusionParams, reqEditors ...RequestEditorFn) (*ListSCTInclusionResponse, error)
+
+	// VerifyCTInclusionWithBodyWithResponse request with any body
+	VerifyCTInclusionWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyCTInclusionResponse, error)
+
+	VerifyCTInclusionWithResponse(ctx context.Context, body VerifyCTInclusionJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyCTInclusionResponse, error)
 
 	// ListDiscoveredCertificatesWithResponse request
 	ListDiscoveredCertificatesWithResponse(ctx context.Context, params *ListDiscoveredCertificatesParams, reqEditors ...RequestEditorFn) (*ListDiscoveredCertificatesResponse, error)
@@ -14471,6 +17496,25 @@ type ClientWithResponsesInterface interface {
 
 	RunDiscoveryScanWithResponse(ctx context.Context, body RunDiscoveryScanJSONRequestBody, reqEditors ...RequestEditorFn) (*RunDiscoveryScanResponse, error)
 
+	// RunDoctorWithResponse request
+	RunDoctorWithResponse(ctx context.Context, params *RunDoctorParams, reqEditors ...RequestEditorFn) (*RunDoctorResponse, error)
+
+	// ListEvidenceRecordsWithResponse request
+	ListEvidenceRecordsWithResponse(ctx context.Context, params *ListEvidenceRecordsParams, reqEditors ...RequestEditorFn) (*ListEvidenceRecordsResponse, error)
+
+	// ExportEvidenceRecordWithResponse request
+	ExportEvidenceRecordWithResponse(ctx context.Context, params *ExportEvidenceRecordParams, reqEditors ...RequestEditorFn) (*ExportEvidenceRecordResponse, error)
+
+	// GenerateEvidenceRecordWithBodyWithResponse request with any body
+	GenerateEvidenceRecordWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*GenerateEvidenceRecordResponse, error)
+
+	GenerateEvidenceRecordWithResponse(ctx context.Context, body GenerateEvidenceRecordJSONRequestBody, reqEditors ...RequestEditorFn) (*GenerateEvidenceRecordResponse, error)
+
+	// RenewEvidenceRecordWithBodyWithResponse request with any body
+	RenewEvidenceRecordWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RenewEvidenceRecordResponse, error)
+
+	RenewEvidenceRecordWithResponse(ctx context.Context, body RenewEvidenceRecordJSONRequestBody, reqEditors ...RequestEditorFn) (*RenewEvidenceRecordResponse, error)
+
 	// VerifyEvidenceRecordWithBodyWithResponse request with any body
 	VerifyEvidenceRecordWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyEvidenceRecordResponse, error)
 
@@ -14478,6 +17522,11 @@ type ClientWithResponsesInterface interface {
 
 	// ListEventLogWithResponse request
 	ListEventLogWithResponse(ctx context.Context, params *ListEventLogParams, reqEditors ...RequestEditorFn) (*ListEventLogResponse, error)
+
+	// AnchorAuditChainWithBodyWithResponse request with any body
+	AnchorAuditChainWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AnchorAuditChainResponse, error)
+
+	AnchorAuditChainWithResponse(ctx context.Context, body AnchorAuditChainJSONRequestBody, reqEditors ...RequestEditorFn) (*AnchorAuditChainResponse, error)
 
 	// ExportEventLogWithResponse request
 	ExportEventLogWithResponse(ctx context.Context, params *ExportEventLogParams, reqEditors ...RequestEditorFn) (*ExportEventLogResponse, error)
@@ -14503,6 +17552,9 @@ type ClientWithResponsesInterface interface {
 
 	// GetEffectiveResourceAccessWithResponse request
 	GetEffectiveResourceAccessWithResponse(ctx context.Context, params *GetEffectiveResourceAccessParams, reqEditors ...RequestEditorFn) (*GetEffectiveResourceAccessResponse, error)
+
+	// ListResourceRolesWithResponse request
+	ListResourceRolesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListResourceRolesResponse, error)
 
 	// ListGroupsWithResponse request
 	ListGroupsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListGroupsResponse, error)
@@ -14536,6 +17588,9 @@ type ClientWithResponsesInterface interface {
 
 	// GetHSMAttestationWithResponse request
 	GetHSMAttestationWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHSMAttestationResponse, error)
+
+	// GetHSMAttestationAuditWithResponse request
+	GetHSMAttestationAuditWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHSMAttestationAuditResponse, error)
 
 	// VerifyHSMAttestationWithBodyWithResponse request with any body
 	VerifyHSMAttestationWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyHSMAttestationResponse, error)
@@ -14574,6 +17629,14 @@ type ClientWithResponsesInterface interface {
 	// ListProviderKeysWithResponse request
 	ListProviderKeysWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListProviderKeysResponse, error)
 
+	// GetInventoryRetentionStatusWithResponse request
+	GetInventoryRetentionStatusWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetInventoryRetentionStatusResponse, error)
+
+	// RunInventoryRetentionWithBodyWithResponse request with any body
+	RunInventoryRetentionWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RunInventoryRetentionResponse, error)
+
+	RunInventoryRetentionWithResponse(ctx context.Context, body RunInventoryRetentionJSONRequestBody, reqEditors ...RequestEditorFn) (*RunInventoryRetentionResponse, error)
+
 	// ListCAsWithResponse request
 	ListCAsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListCAsResponse, error)
 
@@ -14581,6 +17644,11 @@ type ClientWithResponsesInterface interface {
 	CreateCAWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateCAResponse, error)
 
 	CreateCAWithResponse(ctx context.Context, body CreateCAJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateCAResponse, error)
+
+	// ImportKeyWithBodyWithResponse request with any body
+	ImportKeyWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ImportKeyResponse, error)
+
+	ImportKeyWithResponse(ctx context.Context, body ImportKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*ImportKeyResponse, error)
 
 	// DeleteCAWithResponse request
 	DeleteCAWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*DeleteCAResponse, error)
@@ -14657,6 +17725,16 @@ type ClientWithResponsesInterface interface {
 	// ListProfilesWithResponse request
 	ListProfilesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListProfilesResponse, error)
 
+	// PublishSnapshotWithBodyWithResponse request with any body
+	PublishSnapshotWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PublishSnapshotResponse, error)
+
+	PublishSnapshotWithResponse(ctx context.Context, body PublishSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*PublishSnapshotResponse, error)
+
+	// VerifyPublishedSnapshotWithBodyWithResponse request with any body
+	VerifyPublishedSnapshotWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyPublishedSnapshotResponse, error)
+
+	VerifyPublishedSnapshotWithResponse(ctx context.Context, body VerifyPublishedSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyPublishedSnapshotResponse, error)
+
 	// ListAllRestrictionSetsWithResponse request
 	ListAllRestrictionSetsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListAllRestrictionSetsResponse, error)
 
@@ -14717,6 +17795,11 @@ type ClientWithResponsesInterface interface {
 
 	CreateSigningKeyWithResponse(ctx context.Context, params *CreateSigningKeyParams, body CreateSigningKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateSigningKeyResponse, error)
 
+	// ImportSigningKeyWithBodyWithResponse request with any body
+	ImportSigningKeyWithBodyWithResponse(ctx context.Context, params *ImportSigningKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ImportSigningKeyResponse, error)
+
+	ImportSigningKeyWithResponse(ctx context.Context, params *ImportSigningKeyParams, body ImportSigningKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*ImportSigningKeyResponse, error)
+
 	// GetSigningKeyWithResponse request
 	GetSigningKeyWithResponse(ctx context.Context, name string, params *GetSigningKeyParams, reqEditors ...RequestEditorFn) (*GetSigningKeyResponse, error)
 
@@ -14752,6 +17835,11 @@ type ClientWithResponsesInterface interface {
 
 	// ListArtifactSignersWithResponse request
 	ListArtifactSignersWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListArtifactSignersResponse, error)
+
+	// ProvisionArtifactSignerWithBodyWithResponse request with any body
+	ProvisionArtifactSignerWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ProvisionArtifactSignerResponse, error)
+
+	ProvisionArtifactSignerWithResponse(ctx context.Context, body ProvisionArtifactSignerJSONRequestBody, reqEditors ...RequestEditorFn) (*ProvisionArtifactSignerResponse, error)
 
 	// VerifyArtifactSignatureWithBodyWithResponse request with any body
 	VerifyArtifactSignatureWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyArtifactSignatureResponse, error)
@@ -14833,6 +17921,11 @@ type ClientWithResponsesInterface interface {
 
 	// RevokeTokenWithResponse request
 	RevokeTokenWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*RevokeTokenResponse, error)
+
+	// ProvisionTSAKeyWithBodyWithResponse request with any body
+	ProvisionTSAKeyWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ProvisionTSAKeyResponse, error)
+
+	ProvisionTSAKeyWithResponse(ctx context.Context, body ProvisionTSAKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*ProvisionTSAKeyResponse, error)
 
 	// ValidateChainWithBodyWithResponse request with any body
 	ValidateChainWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ValidateChainResponse, error)
@@ -14986,6 +18079,31 @@ func (r ListApprovalsResponse) StatusCode() int {
 	return 0
 }
 
+type ExpireApprovalsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ExpireApprovalsResult
+	JSON403      *Error
+	JSON500      *Error
+	JSON503      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r ExpireApprovalsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ExpireApprovalsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type GetApprovalResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -15119,6 +18237,129 @@ func (r GetAuthConfigResponse) StatusCode() int {
 	return 0
 }
 
+type ExportBackupResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *BackupExport
+	JSON403      *Forbidden
+	JSON500      *Error
+	JSON503      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r ExportBackupResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ExportBackupResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type VerifyBackupRestoreResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *BackupVerifyRestoreResult
+	JSON403      *Forbidden
+	JSON404      *BackupVerifyRestoreResult
+	JSON500      *BackupVerifyRestoreResult
+	JSON503      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r VerifyBackupRestoreResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r VerifyBackupRestoreResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListBlockedKeysResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *BlockedKeyList
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListBlockedKeysResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListBlockedKeysResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type BlockKeyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *BlockKeyResult
+	JSON201      *BlockKeyResult
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r BlockKeyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r BlockKeyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type UnblockKeyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *UnblockKeyResult
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r UnblockKeyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r UnblockKeyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type CreateExternalCACSRResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -15137,6 +18378,31 @@ func (r CreateExternalCACSRResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r CreateExternalCACSRResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ImportCAResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *ImportCAResult
+	JSON202      *ApprovalPendingResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ImportCAResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ImportCAResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -15968,6 +19234,32 @@ func (r IssueJWTSVIDResponse) StatusCode() int {
 	return 0
 }
 
+type VerifyJWTSVIDResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *JWTSVIDVerifyResult
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *NotFound
+	JSON409      *JWTSVIDVerifyResult
+}
+
+// Status returns HTTPResponse.Status
+func (r VerifyJWTSVIDResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r VerifyJWTSVIDResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type ListSCTInclusionResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -15986,6 +19278,32 @@ func (r ListSCTInclusionResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r ListSCTInclusionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type VerifyCTInclusionResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *CTVerifyInclusionResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON500      *CTVerifyInclusionResponse
+	JSON503      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r VerifyCTInclusionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r VerifyCTInclusionResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -16040,6 +19358,134 @@ func (r RunDiscoveryScanResponse) StatusCode() int {
 	return 0
 }
 
+type RunDoctorResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *DoctorReport
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON503      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r RunDoctorResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RunDoctorResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListEvidenceRecordsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *EvidenceRecordPage
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListEvidenceRecordsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListEvidenceRecordsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ExportEvidenceRecordResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *EvidenceRecordExport
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *NotFound
+	JSON500      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r ExportEvidenceRecordResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ExportEvidenceRecordResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GenerateEvidenceRecordResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *EvidenceRecordResult
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON500      *Error
+	JSON503      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r GenerateEvidenceRecordResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GenerateEvidenceRecordResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type RenewEvidenceRecordResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *EvidenceRecordResult
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *NotFound
+	JSON500      *Error
+	JSON503      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r RenewEvidenceRecordResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RenewEvidenceRecordResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type VerifyEvidenceRecordResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -16082,6 +19528,33 @@ func (r ListEventLogResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r ListEventLogResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type AnchorAuditChainResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *AuditAnchorResult
+	JSON201      *AuditAnchorResult
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON500      *Error
+	JSON503      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r AnchorAuditChainResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r AnchorAuditChainResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -16243,6 +19716,29 @@ func (r GetEffectiveResourceAccessResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetEffectiveResourceAccessResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListResourceRolesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ResourceRoleCatalog
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListResourceRolesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListResourceRolesResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -16447,6 +19943,30 @@ func (r GetHSMAttestationResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetHSMAttestationResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetHSMAttestationAuditResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *HSMAttestationAudit
+	JSON403      *Forbidden
+	JSON501      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r GetHSMAttestationAuditResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetHSMAttestationAuditResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -16710,6 +20230,58 @@ func (r ListProviderKeysResponse) StatusCode() int {
 	return 0
 }
 
+type GetInventoryRetentionStatusResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *RetentionStatus
+	JSON403      *Forbidden
+	JSON500      *Error
+	JSON503      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r GetInventoryRetentionStatusResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetInventoryRetentionStatusResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type RunInventoryRetentionResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *RetentionRunResult
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON409      *Error
+	JSON500      *RetentionRunResult
+	JSON503      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r RunInventoryRetentionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RunInventoryRetentionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type ListCAsResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -16751,6 +20323,32 @@ func (r CreateCAResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r CreateCAResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ImportKeyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *ImportKeyResult
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON500      *Error
+	JSON503      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r ImportKeyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ImportKeyResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -17190,6 +20788,59 @@ func (r ListProfilesResponse) StatusCode() int {
 	return 0
 }
 
+type PublishSnapshotResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *PublishResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON409      *Error
+	JSON500      *Error
+	JSON503      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r PublishSnapshotResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PublishSnapshotResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type VerifyPublishedSnapshotResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *PublishVerifyResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *PublishVerifyResponse
+	JSON503      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r VerifyPublishedSnapshotResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r VerifyPublishedSnapshotResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type ListAllRestrictionSetsResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -17520,6 +21171,30 @@ func (r CreateSigningKeyResponse) StatusCode() int {
 	return 0
 }
 
+type ImportSigningKeyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *SigningKey
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ImportSigningKeyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ImportSigningKeyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type GetSigningKeyResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -17707,6 +21382,33 @@ func (r ListArtifactSignersResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r ListArtifactSignersResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ProvisionArtifactSignerResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *SignerProvisionResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *Error
+	JSON500      *Error
+	JSON503      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r ProvisionArtifactSignerResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ProvisionArtifactSignerResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -18213,6 +21915,33 @@ func (r RevokeTokenResponse) StatusCode() int {
 	return 0
 }
 
+type ProvisionTSAKeyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *TSAKeyResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *Error
+	JSON500      *Error
+	JSON503      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r ProvisionTSAKeyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ProvisionTSAKeyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type ValidateChainResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -18402,6 +22131,15 @@ func (c *ClientWithResponses) ListApprovalsWithResponse(ctx context.Context, par
 	return ParseListApprovalsResponse(rsp)
 }
 
+// ExpireApprovalsWithResponse request returning *ExpireApprovalsResponse
+func (c *ClientWithResponses) ExpireApprovalsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ExpireApprovalsResponse, error) {
+	rsp, err := c.ExpireApprovals(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseExpireApprovalsResponse(rsp)
+}
+
 // GetApprovalWithResponse request returning *GetApprovalResponse
 func (c *ClientWithResponses) GetApprovalWithResponse(ctx context.Context, id ApprovalId, reqEditors ...RequestEditorFn) (*GetApprovalResponse, error) {
 	rsp, err := c.GetApproval(ctx, id, reqEditors...)
@@ -18472,6 +22210,59 @@ func (c *ClientWithResponses) GetAuthConfigWithResponse(ctx context.Context, req
 	return ParseGetAuthConfigResponse(rsp)
 }
 
+// ExportBackupWithResponse request returning *ExportBackupResponse
+func (c *ClientWithResponses) ExportBackupWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ExportBackupResponse, error) {
+	rsp, err := c.ExportBackup(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseExportBackupResponse(rsp)
+}
+
+// VerifyBackupRestoreWithResponse request returning *VerifyBackupRestoreResponse
+func (c *ClientWithResponses) VerifyBackupRestoreWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*VerifyBackupRestoreResponse, error) {
+	rsp, err := c.VerifyBackupRestore(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyBackupRestoreResponse(rsp)
+}
+
+// ListBlockedKeysWithResponse request returning *ListBlockedKeysResponse
+func (c *ClientWithResponses) ListBlockedKeysWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListBlockedKeysResponse, error) {
+	rsp, err := c.ListBlockedKeys(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListBlockedKeysResponse(rsp)
+}
+
+// BlockKeyWithBodyWithResponse request with arbitrary body returning *BlockKeyResponse
+func (c *ClientWithResponses) BlockKeyWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*BlockKeyResponse, error) {
+	rsp, err := c.BlockKeyWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseBlockKeyResponse(rsp)
+}
+
+func (c *ClientWithResponses) BlockKeyWithResponse(ctx context.Context, body BlockKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*BlockKeyResponse, error) {
+	rsp, err := c.BlockKey(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseBlockKeyResponse(rsp)
+}
+
+// UnblockKeyWithResponse request returning *UnblockKeyResponse
+func (c *ClientWithResponses) UnblockKeyWithResponse(ctx context.Context, fingerprint string, params *UnblockKeyParams, reqEditors ...RequestEditorFn) (*UnblockKeyResponse, error) {
+	rsp, err := c.UnblockKey(ctx, fingerprint, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUnblockKeyResponse(rsp)
+}
+
 // CreateExternalCACSRWithBodyWithResponse request with arbitrary body returning *CreateExternalCACSRResponse
 func (c *ClientWithResponses) CreateExternalCACSRWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateExternalCACSRResponse, error) {
 	rsp, err := c.CreateExternalCACSRWithBody(ctx, contentType, body, reqEditors...)
@@ -18487,6 +22278,23 @@ func (c *ClientWithResponses) CreateExternalCACSRWithResponse(ctx context.Contex
 		return nil, err
 	}
 	return ParseCreateExternalCACSRResponse(rsp)
+}
+
+// ImportCAWithBodyWithResponse request with arbitrary body returning *ImportCAResponse
+func (c *ClientWithResponses) ImportCAWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ImportCAResponse, error) {
+	rsp, err := c.ImportCAWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseImportCAResponse(rsp)
+}
+
+func (c *ClientWithResponses) ImportCAWithResponse(ctx context.Context, body ImportCAJSONRequestBody, reqEditors ...RequestEditorFn) (*ImportCAResponse, error) {
+	rsp, err := c.ImportCA(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseImportCAResponse(rsp)
 }
 
 // InitRootCAWithBodyWithResponse request with arbitrary body returning *InitRootCAResponse
@@ -18932,6 +22740,23 @@ func (c *ClientWithResponses) IssueJWTSVIDWithResponse(ctx context.Context, id C
 	return ParseIssueJWTSVIDResponse(rsp)
 }
 
+// VerifyJWTSVIDWithBodyWithResponse request with arbitrary body returning *VerifyJWTSVIDResponse
+func (c *ClientWithResponses) VerifyJWTSVIDWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyJWTSVIDResponse, error) {
+	rsp, err := c.VerifyJWTSVIDWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyJWTSVIDResponse(rsp)
+}
+
+func (c *ClientWithResponses) VerifyJWTSVIDWithResponse(ctx context.Context, id CAId, body VerifyJWTSVIDJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyJWTSVIDResponse, error) {
+	rsp, err := c.VerifyJWTSVID(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyJWTSVIDResponse(rsp)
+}
+
 // ListSCTInclusionWithResponse request returning *ListSCTInclusionResponse
 func (c *ClientWithResponses) ListSCTInclusionWithResponse(ctx context.Context, params *ListSCTInclusionParams, reqEditors ...RequestEditorFn) (*ListSCTInclusionResponse, error) {
 	rsp, err := c.ListSCTInclusion(ctx, params, reqEditors...)
@@ -18939,6 +22764,23 @@ func (c *ClientWithResponses) ListSCTInclusionWithResponse(ctx context.Context, 
 		return nil, err
 	}
 	return ParseListSCTInclusionResponse(rsp)
+}
+
+// VerifyCTInclusionWithBodyWithResponse request with arbitrary body returning *VerifyCTInclusionResponse
+func (c *ClientWithResponses) VerifyCTInclusionWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyCTInclusionResponse, error) {
+	rsp, err := c.VerifyCTInclusionWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyCTInclusionResponse(rsp)
+}
+
+func (c *ClientWithResponses) VerifyCTInclusionWithResponse(ctx context.Context, body VerifyCTInclusionJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyCTInclusionResponse, error) {
+	rsp, err := c.VerifyCTInclusion(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyCTInclusionResponse(rsp)
 }
 
 // ListDiscoveredCertificatesWithResponse request returning *ListDiscoveredCertificatesResponse
@@ -18967,6 +22809,67 @@ func (c *ClientWithResponses) RunDiscoveryScanWithResponse(ctx context.Context, 
 	return ParseRunDiscoveryScanResponse(rsp)
 }
 
+// RunDoctorWithResponse request returning *RunDoctorResponse
+func (c *ClientWithResponses) RunDoctorWithResponse(ctx context.Context, params *RunDoctorParams, reqEditors ...RequestEditorFn) (*RunDoctorResponse, error) {
+	rsp, err := c.RunDoctor(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRunDoctorResponse(rsp)
+}
+
+// ListEvidenceRecordsWithResponse request returning *ListEvidenceRecordsResponse
+func (c *ClientWithResponses) ListEvidenceRecordsWithResponse(ctx context.Context, params *ListEvidenceRecordsParams, reqEditors ...RequestEditorFn) (*ListEvidenceRecordsResponse, error) {
+	rsp, err := c.ListEvidenceRecords(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListEvidenceRecordsResponse(rsp)
+}
+
+// ExportEvidenceRecordWithResponse request returning *ExportEvidenceRecordResponse
+func (c *ClientWithResponses) ExportEvidenceRecordWithResponse(ctx context.Context, params *ExportEvidenceRecordParams, reqEditors ...RequestEditorFn) (*ExportEvidenceRecordResponse, error) {
+	rsp, err := c.ExportEvidenceRecord(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseExportEvidenceRecordResponse(rsp)
+}
+
+// GenerateEvidenceRecordWithBodyWithResponse request with arbitrary body returning *GenerateEvidenceRecordResponse
+func (c *ClientWithResponses) GenerateEvidenceRecordWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*GenerateEvidenceRecordResponse, error) {
+	rsp, err := c.GenerateEvidenceRecordWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGenerateEvidenceRecordResponse(rsp)
+}
+
+func (c *ClientWithResponses) GenerateEvidenceRecordWithResponse(ctx context.Context, body GenerateEvidenceRecordJSONRequestBody, reqEditors ...RequestEditorFn) (*GenerateEvidenceRecordResponse, error) {
+	rsp, err := c.GenerateEvidenceRecord(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGenerateEvidenceRecordResponse(rsp)
+}
+
+// RenewEvidenceRecordWithBodyWithResponse request with arbitrary body returning *RenewEvidenceRecordResponse
+func (c *ClientWithResponses) RenewEvidenceRecordWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RenewEvidenceRecordResponse, error) {
+	rsp, err := c.RenewEvidenceRecordWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRenewEvidenceRecordResponse(rsp)
+}
+
+func (c *ClientWithResponses) RenewEvidenceRecordWithResponse(ctx context.Context, body RenewEvidenceRecordJSONRequestBody, reqEditors ...RequestEditorFn) (*RenewEvidenceRecordResponse, error) {
+	rsp, err := c.RenewEvidenceRecord(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRenewEvidenceRecordResponse(rsp)
+}
+
 // VerifyEvidenceRecordWithBodyWithResponse request with arbitrary body returning *VerifyEvidenceRecordResponse
 func (c *ClientWithResponses) VerifyEvidenceRecordWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyEvidenceRecordResponse, error) {
 	rsp, err := c.VerifyEvidenceRecordWithBody(ctx, contentType, body, reqEditors...)
@@ -18991,6 +22894,23 @@ func (c *ClientWithResponses) ListEventLogWithResponse(ctx context.Context, para
 		return nil, err
 	}
 	return ParseListEventLogResponse(rsp)
+}
+
+// AnchorAuditChainWithBodyWithResponse request with arbitrary body returning *AnchorAuditChainResponse
+func (c *ClientWithResponses) AnchorAuditChainWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AnchorAuditChainResponse, error) {
+	rsp, err := c.AnchorAuditChainWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAnchorAuditChainResponse(rsp)
+}
+
+func (c *ClientWithResponses) AnchorAuditChainWithResponse(ctx context.Context, body AnchorAuditChainJSONRequestBody, reqEditors ...RequestEditorFn) (*AnchorAuditChainResponse, error) {
+	rsp, err := c.AnchorAuditChain(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseAnchorAuditChainResponse(rsp)
 }
 
 // ExportEventLogWithResponse request returning *ExportEventLogResponse
@@ -19070,6 +22990,15 @@ func (c *ClientWithResponses) GetEffectiveResourceAccessWithResponse(ctx context
 		return nil, err
 	}
 	return ParseGetEffectiveResourceAccessResponse(rsp)
+}
+
+// ListResourceRolesWithResponse request returning *ListResourceRolesResponse
+func (c *ClientWithResponses) ListResourceRolesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListResourceRolesResponse, error) {
+	rsp, err := c.ListResourceRoles(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListResourceRolesResponse(rsp)
 }
 
 // ListGroupsWithResponse request returning *ListGroupsResponse
@@ -19175,6 +23104,15 @@ func (c *ClientWithResponses) GetHSMAttestationWithResponse(ctx context.Context,
 		return nil, err
 	}
 	return ParseGetHSMAttestationResponse(rsp)
+}
+
+// GetHSMAttestationAuditWithResponse request returning *GetHSMAttestationAuditResponse
+func (c *ClientWithResponses) GetHSMAttestationAuditWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHSMAttestationAuditResponse, error) {
+	rsp, err := c.GetHSMAttestationAudit(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetHSMAttestationAuditResponse(rsp)
 }
 
 // VerifyHSMAttestationWithBodyWithResponse request with arbitrary body returning *VerifyHSMAttestationResponse
@@ -19292,6 +23230,32 @@ func (c *ClientWithResponses) ListProviderKeysWithResponse(ctx context.Context, 
 	return ParseListProviderKeysResponse(rsp)
 }
 
+// GetInventoryRetentionStatusWithResponse request returning *GetInventoryRetentionStatusResponse
+func (c *ClientWithResponses) GetInventoryRetentionStatusWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetInventoryRetentionStatusResponse, error) {
+	rsp, err := c.GetInventoryRetentionStatus(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetInventoryRetentionStatusResponse(rsp)
+}
+
+// RunInventoryRetentionWithBodyWithResponse request with arbitrary body returning *RunInventoryRetentionResponse
+func (c *ClientWithResponses) RunInventoryRetentionWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RunInventoryRetentionResponse, error) {
+	rsp, err := c.RunInventoryRetentionWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRunInventoryRetentionResponse(rsp)
+}
+
+func (c *ClientWithResponses) RunInventoryRetentionWithResponse(ctx context.Context, body RunInventoryRetentionJSONRequestBody, reqEditors ...RequestEditorFn) (*RunInventoryRetentionResponse, error) {
+	rsp, err := c.RunInventoryRetention(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRunInventoryRetentionResponse(rsp)
+}
+
 // ListCAsWithResponse request returning *ListCAsResponse
 func (c *ClientWithResponses) ListCAsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListCAsResponse, error) {
 	rsp, err := c.ListCAs(ctx, reqEditors...)
@@ -19316,6 +23280,23 @@ func (c *ClientWithResponses) CreateCAWithResponse(ctx context.Context, body Cre
 		return nil, err
 	}
 	return ParseCreateCAResponse(rsp)
+}
+
+// ImportKeyWithBodyWithResponse request with arbitrary body returning *ImportKeyResponse
+func (c *ClientWithResponses) ImportKeyWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ImportKeyResponse, error) {
+	rsp, err := c.ImportKeyWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseImportKeyResponse(rsp)
+}
+
+func (c *ClientWithResponses) ImportKeyWithResponse(ctx context.Context, body ImportKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*ImportKeyResponse, error) {
+	rsp, err := c.ImportKey(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseImportKeyResponse(rsp)
 }
 
 // DeleteCAWithResponse request returning *DeleteCAResponse
@@ -19561,6 +23542,40 @@ func (c *ClientWithResponses) ListProfilesWithResponse(ctx context.Context, reqE
 	return ParseListProfilesResponse(rsp)
 }
 
+// PublishSnapshotWithBodyWithResponse request with arbitrary body returning *PublishSnapshotResponse
+func (c *ClientWithResponses) PublishSnapshotWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PublishSnapshotResponse, error) {
+	rsp, err := c.PublishSnapshotWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePublishSnapshotResponse(rsp)
+}
+
+func (c *ClientWithResponses) PublishSnapshotWithResponse(ctx context.Context, body PublishSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*PublishSnapshotResponse, error) {
+	rsp, err := c.PublishSnapshot(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePublishSnapshotResponse(rsp)
+}
+
+// VerifyPublishedSnapshotWithBodyWithResponse request with arbitrary body returning *VerifyPublishedSnapshotResponse
+func (c *ClientWithResponses) VerifyPublishedSnapshotWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyPublishedSnapshotResponse, error) {
+	rsp, err := c.VerifyPublishedSnapshotWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyPublishedSnapshotResponse(rsp)
+}
+
+func (c *ClientWithResponses) VerifyPublishedSnapshotWithResponse(ctx context.Context, body VerifyPublishedSnapshotJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyPublishedSnapshotResponse, error) {
+	rsp, err := c.VerifyPublishedSnapshot(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseVerifyPublishedSnapshotResponse(rsp)
+}
+
 // ListAllRestrictionSetsWithResponse request returning *ListAllRestrictionSetsResponse
 func (c *ClientWithResponses) ListAllRestrictionSetsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListAllRestrictionSetsResponse, error) {
 	rsp, err := c.ListAllRestrictionSets(ctx, reqEditors...)
@@ -19759,6 +23774,23 @@ func (c *ClientWithResponses) CreateSigningKeyWithResponse(ctx context.Context, 
 	return ParseCreateSigningKeyResponse(rsp)
 }
 
+// ImportSigningKeyWithBodyWithResponse request with arbitrary body returning *ImportSigningKeyResponse
+func (c *ClientWithResponses) ImportSigningKeyWithBodyWithResponse(ctx context.Context, params *ImportSigningKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ImportSigningKeyResponse, error) {
+	rsp, err := c.ImportSigningKeyWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseImportSigningKeyResponse(rsp)
+}
+
+func (c *ClientWithResponses) ImportSigningKeyWithResponse(ctx context.Context, params *ImportSigningKeyParams, body ImportSigningKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*ImportSigningKeyResponse, error) {
+	rsp, err := c.ImportSigningKey(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseImportSigningKeyResponse(rsp)
+}
+
 // GetSigningKeyWithResponse request returning *GetSigningKeyResponse
 func (c *ClientWithResponses) GetSigningKeyWithResponse(ctx context.Context, name string, params *GetSigningKeyParams, reqEditors ...RequestEditorFn) (*GetSigningKeyResponse, error) {
 	rsp, err := c.GetSigningKey(ctx, name, params, reqEditors...)
@@ -19877,6 +23909,23 @@ func (c *ClientWithResponses) ListArtifactSignersWithResponse(ctx context.Contex
 		return nil, err
 	}
 	return ParseListArtifactSignersResponse(rsp)
+}
+
+// ProvisionArtifactSignerWithBodyWithResponse request with arbitrary body returning *ProvisionArtifactSignerResponse
+func (c *ClientWithResponses) ProvisionArtifactSignerWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ProvisionArtifactSignerResponse, error) {
+	rsp, err := c.ProvisionArtifactSignerWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseProvisionArtifactSignerResponse(rsp)
+}
+
+func (c *ClientWithResponses) ProvisionArtifactSignerWithResponse(ctx context.Context, body ProvisionArtifactSignerJSONRequestBody, reqEditors ...RequestEditorFn) (*ProvisionArtifactSignerResponse, error) {
+	rsp, err := c.ProvisionArtifactSigner(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseProvisionArtifactSignerResponse(rsp)
 }
 
 // VerifyArtifactSignatureWithBodyWithResponse request with arbitrary body returning *VerifyArtifactSignatureResponse
@@ -20140,6 +24189,23 @@ func (c *ClientWithResponses) RevokeTokenWithResponse(ctx context.Context, id st
 	return ParseRevokeTokenResponse(rsp)
 }
 
+// ProvisionTSAKeyWithBodyWithResponse request with arbitrary body returning *ProvisionTSAKeyResponse
+func (c *ClientWithResponses) ProvisionTSAKeyWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ProvisionTSAKeyResponse, error) {
+	rsp, err := c.ProvisionTSAKeyWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseProvisionTSAKeyResponse(rsp)
+}
+
+func (c *ClientWithResponses) ProvisionTSAKeyWithResponse(ctx context.Context, body ProvisionTSAKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*ProvisionTSAKeyResponse, error) {
+	rsp, err := c.ProvisionTSAKey(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseProvisionTSAKeyResponse(rsp)
+}
+
 // ValidateChainWithBodyWithResponse request with arbitrary body returning *ValidateChainResponse
 func (c *ClientWithResponses) ValidateChainWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ValidateChainResponse, error) {
 	rsp, err := c.ValidateChainWithBody(ctx, contentType, body, reqEditors...)
@@ -20348,6 +24414,53 @@ func ParseListApprovalsResponse(rsp *http.Response) (*ListApprovalsResponse, err
 	return response, nil
 }
 
+// ParseExpireApprovalsResponse parses an HTTP response from a ExpireApprovalsWithResponse call
+func ParseExpireApprovalsResponse(rsp *http.Response) (*ExpireApprovalsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ExpireApprovalsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ExpireApprovalsResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseGetApprovalResponse parses an HTTP response from a GetApprovalWithResponse call
 func ParseGetApprovalResponse(rsp *http.Response) (*GetApprovalResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -20511,6 +24624,227 @@ func ParseGetAuthConfigResponse(rsp *http.Response) (*GetAuthConfigResponse, err
 	return response, nil
 }
 
+// ParseExportBackupResponse parses an HTTP response from a ExportBackupWithResponse call
+func ParseExportBackupResponse(rsp *http.Response) (*ExportBackupResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ExportBackupResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest BackupExport
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseVerifyBackupRestoreResponse parses an HTTP response from a VerifyBackupRestoreWithResponse call
+func ParseVerifyBackupRestoreResponse(rsp *http.Response) (*VerifyBackupRestoreResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &VerifyBackupRestoreResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest BackupVerifyRestoreResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest BackupVerifyRestoreResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest BackupVerifyRestoreResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListBlockedKeysResponse parses an HTTP response from a ListBlockedKeysWithResponse call
+func ParseListBlockedKeysResponse(rsp *http.Response) (*ListBlockedKeysResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListBlockedKeysResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest BlockedKeyList
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseBlockKeyResponse parses an HTTP response from a BlockKeyWithResponse call
+func ParseBlockKeyResponse(rsp *http.Response) (*BlockKeyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &BlockKeyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest BlockKeyResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest BlockKeyResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseUnblockKeyResponse parses an HTTP response from a UnblockKeyWithResponse call
+func ParseUnblockKeyResponse(rsp *http.Response) (*UnblockKeyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &UnblockKeyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest UnblockKeyResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseCreateExternalCACSRResponse parses an HTTP response from a CreateExternalCACSRWithResponse call
 func ParseCreateExternalCACSRResponse(rsp *http.Response) (*CreateExternalCACSRResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -20531,6 +24865,53 @@ func ParseCreateExternalCACSRResponse(rsp *http.Response) (*CreateExternalCACSRR
 			return nil, err
 		}
 		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseImportCAResponse parses an HTTP response from a ImportCAWithResponse call
+func ParseImportCAResponse(rsp *http.Response) (*ImportCAResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ImportCAResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest ImportCAResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 202:
+		var dest ApprovalPendingResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON202 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
 		var dest BadRequest
@@ -21777,6 +26158,60 @@ func ParseIssueJWTSVIDResponse(rsp *http.Response) (*IssueJWTSVIDResponse, error
 	return response, nil
 }
 
+// ParseVerifyJWTSVIDResponse parses an HTTP response from a VerifyJWTSVIDWithResponse call
+func ParseVerifyJWTSVIDResponse(rsp *http.Response) (*VerifyJWTSVIDResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &VerifyJWTSVIDResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest JWTSVIDVerifyResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest JWTSVIDVerifyResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseListSCTInclusionResponse parses an HTTP response from a ListSCTInclusionWithResponse call
 func ParseListSCTInclusionResponse(rsp *http.Response) (*ListSCTInclusionResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -21811,6 +26246,60 @@ func ParseListSCTInclusionResponse(rsp *http.Response) (*ListSCTInclusionRespons
 			return nil, err
 		}
 		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseVerifyCTInclusionResponse parses an HTTP response from a VerifyCTInclusionWithResponse call
+func ParseVerifyCTInclusionResponse(rsp *http.Response) (*VerifyCTInclusionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &VerifyCTInclusionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest CTVerifyInclusionResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest CTVerifyInclusionResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
 
 	}
 
@@ -21897,6 +26386,265 @@ func ParseRunDiscoveryScanResponse(rsp *http.Response) (*RunDiscoveryScanRespons
 	return response, nil
 }
 
+// ParseRunDoctorResponse parses an HTTP response from a RunDoctorWithResponse call
+func ParseRunDoctorResponse(rsp *http.Response) (*RunDoctorResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RunDoctorResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest DoctorReport
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListEvidenceRecordsResponse parses an HTTP response from a ListEvidenceRecordsWithResponse call
+func ParseListEvidenceRecordsResponse(rsp *http.Response) (*ListEvidenceRecordsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListEvidenceRecordsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest EvidenceRecordPage
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseExportEvidenceRecordResponse parses an HTTP response from a ExportEvidenceRecordWithResponse call
+func ParseExportEvidenceRecordResponse(rsp *http.Response) (*ExportEvidenceRecordResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ExportEvidenceRecordResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest EvidenceRecordExport
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case rsp.StatusCode == 200:
+		// Content-type (application/octet-stream) unsupported
+
+	}
+
+	return response, nil
+}
+
+// ParseGenerateEvidenceRecordResponse parses an HTTP response from a GenerateEvidenceRecordWithResponse call
+func ParseGenerateEvidenceRecordResponse(rsp *http.Response) (*GenerateEvidenceRecordResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GenerateEvidenceRecordResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest EvidenceRecordResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRenewEvidenceRecordResponse parses an HTTP response from a RenewEvidenceRecordWithResponse call
+func ParseRenewEvidenceRecordResponse(rsp *http.Response) (*RenewEvidenceRecordResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RenewEvidenceRecordResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest EvidenceRecordResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseVerifyEvidenceRecordResponse parses an HTTP response from a VerifyEvidenceRecordWithResponse call
 func ParseVerifyEvidenceRecordResponse(rsp *http.Response) (*VerifyEvidenceRecordResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -21971,6 +26719,67 @@ func ParseListEventLogResponse(rsp *http.Response) (*ListEventLogResponse, error
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseAnchorAuditChainResponse parses an HTTP response from a AnchorAuditChainWithResponse call
+func ParseAnchorAuditChainResponse(rsp *http.Response) (*AnchorAuditChainResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &AnchorAuditChainResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AuditAnchorResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest AuditAnchorResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
 
 	}
 
@@ -22191,6 +27000,39 @@ func ParseGetEffectiveResourceAccessResponse(rsp *http.Response) (*GetEffectiveR
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
 		var dest EffectiveResourceAccess
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListResourceRolesResponse parses an HTTP response from a ListResourceRolesWithResponse call
+func ParseListResourceRolesResponse(rsp *http.Response) (*ListResourceRolesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListResourceRolesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ResourceRoleCatalog
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
@@ -22478,6 +27320,46 @@ func ParseGetHSMAttestationResponse(rsp *http.Response) (*GetHSMAttestationRespo
 			return nil, err
 		}
 		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetHSMAttestationAuditResponse parses an HTTP response from a GetHSMAttestationAuditWithResponse call
+func ParseGetHSMAttestationAuditResponse(rsp *http.Response) (*GetHSMAttestationAuditResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetHSMAttestationAuditResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest HSMAttestationAudit
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 501:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON501 = &dest
 
 	}
 
@@ -22839,6 +27721,114 @@ func ParseListProviderKeysResponse(rsp *http.Response) (*ListProviderKeysRespons
 	return response, nil
 }
 
+// ParseGetInventoryRetentionStatusResponse parses an HTTP response from a GetInventoryRetentionStatusWithResponse call
+func ParseGetInventoryRetentionStatusResponse(rsp *http.Response) (*GetInventoryRetentionStatusResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetInventoryRetentionStatusResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest RetentionStatus
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRunInventoryRetentionResponse parses an HTTP response from a RunInventoryRetentionWithResponse call
+func ParseRunInventoryRetentionResponse(rsp *http.Response) (*RunInventoryRetentionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RunInventoryRetentionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest RetentionRunResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest RetentionRunResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseListCAsResponse parses an HTTP response from a ListCAsWithResponse call
 func ParseListCAsResponse(rsp *http.Response) (*ListCAsResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -22906,6 +27896,60 @@ func ParseCreateCAResponse(rsp *http.Response) (*CreateCAResponse, error) {
 			return nil, err
 		}
 		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseImportKeyResponse parses an HTTP response from a ImportKeyWithResponse call
+func ParseImportKeyResponse(rsp *http.Response) (*ImportKeyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ImportKeyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest ImportKeyResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
 
 	}
 
@@ -23508,6 +28552,121 @@ func ParseListProfilesResponse(rsp *http.Response) (*ListProfilesResponse, error
 	return response, nil
 }
 
+// ParsePublishSnapshotResponse parses an HTTP response from a PublishSnapshotWithResponse call
+func ParsePublishSnapshotResponse(rsp *http.Response) (*PublishSnapshotResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PublishSnapshotResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PublishResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseVerifyPublishedSnapshotResponse parses an HTTP response from a VerifyPublishedSnapshotWithResponse call
+func ParseVerifyPublishedSnapshotResponse(rsp *http.Response) (*VerifyPublishedSnapshotResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &VerifyPublishedSnapshotResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PublishVerifyResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest PublishVerifyResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseListAllRestrictionSetsResponse parses an HTTP response from a ListAllRestrictionSetsWithResponse call
 func ParseListAllRestrictionSetsResponse(rsp *http.Response) (*ListAllRestrictionSetsResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -24002,6 +29161,46 @@ func ParseCreateSigningKeyResponse(rsp *http.Response) (*CreateSigningKeyRespons
 	return response, nil
 }
 
+// ParseImportSigningKeyResponse parses an HTTP response from a ImportSigningKeyWithResponse call
+func ParseImportSigningKeyResponse(rsp *http.Response) (*ImportSigningKeyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ImportSigningKeyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest SigningKey
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseGetSigningKeyResponse parses an HTTP response from a GetSigningKeyWithResponse call
 func ParseGetSigningKeyResponse(rsp *http.Response) (*GetSigningKeyResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -24323,6 +29522,67 @@ func ParseListArtifactSignersResponse(rsp *http.Response) (*ListArtifactSignersR
 			return nil, err
 		}
 		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseProvisionArtifactSignerResponse parses an HTTP response from a ProvisionArtifactSignerWithResponse call
+func ParseProvisionArtifactSignerResponse(rsp *http.Response) (*ProvisionArtifactSignerResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ProvisionArtifactSignerResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest SignerProvisionResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
 
 	}
 
@@ -25135,6 +30395,67 @@ func ParseRevokeTokenResponse(rsp *http.Response) (*RevokeTokenResponse, error) 
 			return nil, err
 		}
 		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseProvisionTSAKeyResponse parses an HTTP response from a ProvisionTSAKeyWithResponse call
+func ParseProvisionTSAKeyResponse(rsp *http.Response) (*ProvisionTSAKeyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ProvisionTSAKeyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest TSAKeyResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
 
 	}
 

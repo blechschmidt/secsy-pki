@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto"
 	"crypto/x509"
 	"encoding/json"
@@ -118,22 +119,36 @@ func (a *API) GetCAKeyAttestation(w http.ResponseWriter, r *http.Request) {
 	a.attestAndRespond(w, r, label, &caID, pol)
 }
 
-// attestAndRespond performs the device round-trip, verifies, audits and writes.
-func (a *API) attestAndRespond(w http.ResponseWriter, r *http.Request, label string, caID *string, pol hsmattest.Policy) {
+// attestKeyVerdict performs the device round-trip for one key by label and
+// returns the attestation with this server's verdict on it.
+//
+// It is the single path to the device for key attestation: attestAndRespond (the
+// by-label and by-CA endpoints) and the device-wide audit pass in
+// hsm_attest_audit.go both go through here, so the drain discipline, the error
+// metric and the verdict metric cannot drift apart between them.
+func (a *API) attestKeyVerdict(ctx context.Context, label string, pol hsmattest.Policy) (*hsmattest.Attestation, *hsmattest.Result, error) {
 	// Attestation is a force-audited device command that consumes a log entry,
 	// so drain first for the same reason the other device endpoints do: a full
 	// ring makes the device refuse the command outright.
 	a.consumeHSMAuditLogs("")
-	att, err := hsmattest.NewDeviceAttester(a.hsmCfg).AttestKey(r.Context(), label)
+	att, err := hsmattest.NewDeviceAttester(a.hsmCfg).AttestKey(ctx, label)
 	a.consumeHSMAuditLogs("")
 	if err != nil {
 		metrics.KeyAttestations.Inc("error")
+		return nil, nil, err
+	}
+	res := hsmattest.Verify(att, pol)
+	metrics.RecordKeyAttestation(res)
+	return att, res, nil
+}
+
+// attestAndRespond performs the device round-trip, verifies, audits and writes.
+func (a *API) attestAndRespond(w http.ResponseWriter, r *http.Request, label string, caID *string, pol hsmattest.Policy) {
+	att, res, err := a.attestKeyVerdict(r.Context(), label, pol)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "attesting key %q: %v", label, err)
 		return
 	}
-
-	res := hsmattest.Verify(att, pol)
-	metrics.RecordKeyAttestation(res)
 
 	detail := res.Summary
 	if caID != nil {

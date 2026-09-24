@@ -475,6 +475,55 @@ paths:
             text/plain:
               schema: { type: string }
 
+  /api/keys/import:
+    post:
+      operationId: importKey
+      tags: [Certificate Authorities]
+      summary: Import an existing private key into a role's key provider
+      description: >-
+        Places an existing private key under a chosen label in the key provider
+        that serves a signing role — the REST form of `secsy-ca import-key`.
+        Supply the container either as text in key_pem (any PEM form the parser
+        accepts: PKCS#8 plain or encrypted, PKCS#1, SEC1, legacy DEK-Info,
+        OpenSSH) or as base64 of the raw bytes in key_base64 (bare DER,
+        PKCS#12/PFX) — exactly one, never both. The shared host-side gates run
+        before any backend is touched: the crypto-policy algorithm check, exact
+        RSA size matching, and the key-quality gate (ROCA, exponent policy,
+        modulus sanity). A sign-usage key is then proved usable by signing a
+        challenge through the provider before this call reports success; a
+        decrypt/kek key cannot sign and reports verified=false. The body is
+        size-limited to 1 MiB, and no field of it is ever echoed, logged, or
+        written to an audit detail. Requires platform hsm:manage; step-up gated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ImportKeyRequest" }
+      responses:
+        "201":
+          description: The adopted key and the provenance notice.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportKeyResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500":
+          description: >-
+            The key was written to the provider but does not sign correctly —
+            remove it before using it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: >-
+            No key provider is installed for the requested role, or the backend
+            refused or could not be reached while storing the key. A host-side
+            rejection (crypto policy, RSA size, key quality, a label already in
+            use) is a 400; a backend that is down is deliberately not.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/ca/init-root:
     post:
       operationId: initRootCA
@@ -591,6 +640,48 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/ca/import:
+    post:
+      operationId: importCA
+      tags: [Certificate Authorities]
+      summary: Adopt an existing certificate authority (key and certificate)
+      description: >-
+        Brings an existing CA under this PKI — the REST form of
+        `secsy-ca ca import`. The resulting CA record is indistinguishable from
+        one the CLI wrote: the certificate (and any trailing chain material) is
+        validated, the parent is discovered in the local hierarchy or taken from
+        `parent`, and the key is either imported from the request body or adopted
+        from a label already present in the provider (supply exactly one of
+        key_pem/key_base64 and existing_key_label). A PKCS#12 container carries
+        its own certificate and chain, so `certificate` may then be omitted.
+        Requires ca:manage in the target tenant, is step-up gated, and passes the
+        same four-eyes gate as init-root — keyed on the CLI's resource key
+        ("ca-label:&lt;label&gt;"), so the console and `secsy-ca` queue against one
+        request. The body is size-limited to 1 MiB, and the key material is never
+        echoed, logged, audited, or recorded in the approval request's params.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ImportCARequest" }
+      responses:
+        "201":
+          description: The adopted CA, its served chain, and any validation warnings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportCAResult" }
+        "202":
+          description: >-
+            The adoption was held for four-eyes approval. Nothing was created;
+            re-run the request once the approval threshold is met. The
+            pending-approval id is also returned in the X-Secsy-Approval-Id
+            header.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApprovalPendingResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/ca/{id}/cross-signs:
     parameters:
@@ -1245,6 +1336,99 @@ paths:
               schema: { $ref: "#/components/schemas/ParsedCSR" }
         "400": { $ref: "#/components/responses/BadRequest" }
 
+  # ---------------------------------------------------------------------------
+  # Compromised-key blocklist (Task 120)
+  # ---------------------------------------------------------------------------
+  /api/blocked-keys:
+    get:
+      operationId: listBlockedKeys
+      tags: [Certificate Lifecycle]
+      summary: List the compromised-key blocklist
+      description: >-
+        Every blocklist entry, newest first — the REST form of
+        `secsy-ca blocked-keys list`. A key on this list is rejected fail-closed
+        by the pre-issuance key-quality gate on every issuance surface. Entries
+        are keyed by the SubjectPublicKeyInfo SHA-256 fingerprint
+        ("SHA256:&lt;base64&gt;") and hold no key material, and the store is
+        deployment-global. Read-gated (any assigned role).
+      responses:
+        "200":
+          description: The blocklist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlockedKeyList" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      operationId: blockKey
+      tags: [Certificate Lifecycle]
+      summary: Block a compromised key
+      description: >-
+        Adds a key to the deployment-wide blocklist — the REST form of
+        `secsy-ca blocked-keys add`. Name the key exactly one way: a certificate,
+        a PKCS#10 CSR, a SubjectPublicKeyInfo public key (each PEM or bare
+        base64 DER, whose subject public key is fingerprinted), or a
+        pre-computed fingerprint. The request is idempotent: a key already on
+        the list answers 200 with the stored entry (its original justification
+        and timestamp) and newly_added=false. Requires platform ca:configure —
+        deliberately not cert:issue, so the ability to mint certificates does not
+        carry the ability to un-block a compromised key.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BlockKeyRequest" }
+      responses:
+        "200":
+          description: The key was already blocked; the stored entry is unchanged.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlockKeyResult" }
+        "201":
+          description: The entry was created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlockKeyResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/blocked-keys/{fingerprint}:
+    delete:
+      operationId: unblockKey
+      tags: [Certificate Lifecycle]
+      summary: Un-block a key
+      description: >-
+        Removes an entry from the blocklist — the REST form of
+        `secsy-ca blocked-keys remove`. Tolerant of a fingerprint that is not on
+        the list (200 with removed=false), so a repeated un-block is not an
+        error. Requires platform ca:configure; step-up gated, because
+        un-blocking re-admits a key the CA was refusing to certify.
+      parameters:
+        - name: fingerprint
+          in: path
+          required: true
+          description: >-
+            The SubjectPublicKeyInfo SHA-256 fingerprint in any accepted form.
+            The canonical "SHA256:&lt;base64&gt;" form contains standard-alphabet
+            base64, so a '/' in the digest must be percent-encoded (%2F); the hex
+            form is path-safe as written.
+          schema: { type: string }
+        - name: reason
+          in: query
+          required: false
+          description: >-
+            The operator's justification, recorded in the audit trail. Carried as
+            a query parameter because DELETE bodies are not universally forwarded
+            by proxies.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The removal outcome (including "the key was not blocked").
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UnblockKeyResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /api/keys/{id}/my-restrictions:
     parameters:
       - $ref: "#/components/parameters/CAId"
@@ -1409,6 +1593,100 @@ paths:
             application/x-pem-file:
               schema: { type: string }
 
+  /api/publish:
+    post:
+      operationId: publishSnapshot
+      tags: [Revocation]
+      summary: Publish a static snapshot of the revocation and trust artifacts
+      description: >-
+        Writes the PKI's public artifacts — CRLs, delta CRLs, partition shards,
+        issuer chains, CA certificates and pre-signed OCSP responses — as one
+        atomic snapshot to the configured directory or S3-compatible store, so a
+        CDN can front the AIA/CDP/OCSP URLs stamped into certificates. The REST
+        form of `secsy-ca publish`, driving the same publish package over the same
+        configured destination as the leader-elected background loop. Stale CRLs
+        are regenerated and signed on the HSM on the way into the snapshot. Every
+        request field is optional; the zero value publishes exactly what the
+        configured schedule would. Requires platform ca:configure; step-up gated.
+        One publish runs at a time against a shared destination — a concurrent
+        caller is told to retry.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PublishRequest" }
+      responses:
+        "200":
+          description: The snapshot that is now current.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublishResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: >-
+            Another publish is already running against the destination, or no
+            publishable X.509 CA exists (every CA has no certificate or has
+            expired). Nothing was written.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: Building or writing the snapshot failed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: >-
+            No publish destination is configured, or this server was started
+            without the operations dependencies / a key provider factory.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/publish/verify:
+    post:
+      operationId: verifyPublishedSnapshot
+      tags: [Revocation]
+      summary: Audit the published snapshot against its own manifest
+      description: >-
+        Re-reads every artifact the published manifest lists and checks it
+        against the recorded digest and size — the REST form of
+        `secsy-ca publish -verify`. Read-only: it never writes, signs, or
+        replaces a snapshot, and it needs neither the HSM nor the database, so an
+        auditor can prove artifact integrity during an outage. A failed integrity
+        audit is a finding, not a broken request: it answers 200 with ok=false
+        and the first finding in error (the audit is fail-fast). Requires the
+        platform-wide audit:read capability.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PublishVerifyRequest" }
+      responses:
+        "200":
+          description: >-
+            The audit ran. ok=true means the manifest was found and every
+            artifact re-read with the recorded digest and size; ok=false carries
+            the integrity finding.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublishVerifyResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: No published snapshot at the destination (the manifest is unreadable).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublishVerifyResponse" }
+        "503":
+          description: >-
+            No publish destination is configured, or this server was started
+            without the operations dependencies.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/ca/{id}/dns-records/tlsa:
     parameters:
       - $ref: "#/components/parameters/CAId"
@@ -1514,6 +1792,48 @@ paths:
               schema: { $ref: "#/components/schemas/JWTSVIDResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ca/{id}/svid/jwt/verify:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    post:
+      operationId: verifyJWTSVID
+      tags: [Certificate Lifecycle]
+      summary: Validate a SPIFFE JWT-SVID
+      description: >-
+        Validates a compact JWT-SVID against the CA's JWKS trust bundle and says
+        exactly why a token was rejected — the REST form of
+        `secsy-ca svid jwt-verify`. The audience is mandatory: the SPIFFE
+        JWT-SVID spec requires a validator to reject a token not addressed to it.
+        trust_domains can only NARROW the deployment's configured allowlist,
+        which is applied as a fail-closed backstop regardless. Pure public-key
+        math — no key provider is opened and no private material is read, so it
+        keeps working through an HSM outage. Authorized by the per-CA read gate
+        (an assigned role plus membership in the CA's tenant, or a resource grant
+        on the CA); a non-member gets 404. Available only when SPIFFE issuance is
+        enabled.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VerifyJWTSVIDRequest" }
+      responses:
+        "200":
+          description: The token is valid; the validated claims are returned.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JWTSVIDVerifyResult" }
+        "409":
+          description: >-
+            The token is not valid (expired, wrong audience, a signature from a
+            key outside the trust bundle, or a trust domain this deployment does
+            not permit). The reason is in the body.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JWTSVIDVerifyResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /api/ca/{id}/svid/bundle:
     parameters:
@@ -1723,6 +2043,50 @@ paths:
               schema: { $ref: "#/components/schemas/SCTInclusionList" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ct/verify-inclusion:
+    post:
+      operationId: verifyCTInclusion
+      tags: [Certificate Transparency]
+      summary: Run a Certificate Transparency inclusion-verification scan now
+      description: >-
+        Triggers the inclusion check GET /api/ct/inclusion only reports on — the
+        REST form of `secsy-ca ct verify-inclusion`. It drives the same monitor
+        the leader-elected background job and the CLI drive, over the same
+        configured logs: for every SCT whose log's Maximum Merge Delay has
+        elapsed it fetches a signed tree head and a Merkle audit path and
+        verifies inclusion. HSM-free. Per-SCT verification failures are not
+        request errors — they are the "failed" tally, which is the
+        log-misbehavior signal. The body is optional; omitting it scans with the
+        configured per-run bound. No alert fan-out is dispatched (the operator is
+        reading the result). Requires the platform-wide cert:issue capability.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CTVerifyInclusionRequest" }
+      responses:
+        "200":
+          description: The scan completed; the per-run tallies and standing counts.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CTVerifyInclusionResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500":
+          description: >-
+            The scan itself failed (e.g. enumerating the store); the body carries
+            the partial tallies and the error.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CTVerifyInclusionResponse" }
+        "503":
+          description: >-
+            No CT logs are configured, the configured logs are unusable, or this
+            server was started without the operations dependencies.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   # ---------------------------------------------------------------------------
   # SSH certificate authority (Task 57)
@@ -2029,6 +2393,103 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/ArtifactSignerInfo" }
         "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      operationId: provisionArtifactSigner
+      tags: [Artifact Signing]
+      summary: Provision a code-signing key and certificate
+      description: >-
+        Generates (or reuses) an artifact code-signing key on the signing-role
+        backend and issues its certificate through the ordinary CA path — the
+        REST form of `secsy-ca signing-key`. Because issuance goes the ordinary
+        route under the code-signing profile, the fail-closed pre-issuance lint
+        gate and any profile gates run, and the certificate is recorded for
+        renewal and revocation like any other leaf. A key already stored under
+        the label is adopted rather than regenerated, which makes a certificate
+        reissue idempotent without rotating the key. The private key never leaves
+        the provider: only the certificate comes back, plus the configuration
+        hint naming what to set under signing.signers. Requires PLATFORM
+        ca:manage (the credential is deployment infrastructure, not a tenant
+        resource); step-up gated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SignerProvisionRequest" }
+      responses:
+        "201":
+          description: The provisioned key, its certificate, and the configuration hint.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SignerProvisionResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: The named issuing CA does not exist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: Loading the CA, or building the issuer chain, failed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: >-
+            No key provider is installed for the signing role, or this server was
+            started without the operations dependencies.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/tsa/key:
+    post:
+      operationId: provisionTSAKey
+      tags: [Artifact Signing]
+      summary: Provision the RFC 3161 timestamp-authority key and certificate
+      description: >-
+        Generates (or reuses) the TSA signing key on the tsa-role backend and
+        issues it a timestamping certificate under an existing CA — the REST form
+        of `secsy-ca tsa-key`. The certificate is hand-crafted rather than issued
+        through a profile, because RFC 3161 §2.3 requires id-kp-timeStamping to be
+        the SOLE extended key usage and to be marked critical, which no profile
+        emits; it is re-checked against that rule before the call reports success.
+        The key must be RSA — `openssl ts -verify` interop and the CMS signer both
+        require it. A key already stored under the label is adopted rather than
+        regenerated. The private key never leaves the provider: only the
+        certificate comes back, plus the configuration hint naming tsa.key_label
+        and tsa.certificate_file. Requires PLATFORM ca:manage; step-up gated.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TSAKeyRequest" }
+      responses:
+        "201":
+          description: The provisioned key, its certificate, and the configuration hint.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TSAKeyResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: The named issuing CA does not exist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: >-
+            Allocating a serial, opening the issuing CA signer, or the
+            post-issuance TSA-certificate check failed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: >-
+            No key provider is installed for the TSA role, or this server was
+            started without the operations dependencies.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   # ---------------------------------------------------------------------------
   # RBAC
@@ -2244,6 +2705,28 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "409":
           description: The grant is declared in configuration and must be removed there.
+
+  /api/grants/roles:
+    get:
+      operationId: listResourceRoles
+      tags: [RBAC]
+      summary: The grantable resource-role catalog
+      description: >-
+        Reports which role names POST /api/grants accepts, which resource types
+        each is meaningful on, and the capability bundle each confers at the
+        resource it is granted on — plus the grant scopes and the
+        additive-authority caveat. The REST form of `secsy-ca grant roles`. The
+        catalog is derived from the RBAC bundle table, so it cannot drift from the
+        evaluator. Pure policy documentation: no store access, and nothing about
+        any actual grant (those are GET /api/grants). Read-gated (any assigned
+        role).
+      responses:
+        "200":
+          description: The resource-role catalog.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResourceRoleCatalog" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/grants/effective:
     get:
@@ -2483,6 +2966,56 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/EventVerifyResult" }
 
+  /api/events/anchor:
+    post:
+      operationId: anchorAuditChain
+      tags: [Audit]
+      summary: Anchor the audit-chain head in an RFC 3161 timestamp token
+      description: >-
+        Binds the tamper-evident event log's current head (seq, hash) into an
+        RFC 3161 timestamp token and persists it, so verification can later detect
+        a whole-chain truncation or rewrite BEHIND that point — the one attack the
+        hash chain alone cannot catch, because an attacker who can rewrite the log
+        can re-chain it consistently. The REST form of `secsy-ca audit anchor`,
+        using the same token source as the background job: the configured external
+        TSA URL, else the in-process authority over the TSA-role key provider. The
+        body is optional; without force an unchanged head is reported as skipped
+        (200, nothing created) so a console button cannot mint a pile of redundant
+        tokens over one head. Requires PLATFORM ca:manage — creating an anchor is
+        held higher than GET /api/events/verify, which validates the stored ones.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AnchorAuditChainRequest" }
+      responses:
+        "200":
+          description: >-
+            Nothing needed anchoring (the head has not moved since the last
+            anchor and force was not set). No token was minted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditAnchorResult" }
+        "201":
+          description: The persisted anchor and its timestamp token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditAnchorResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500":
+          description: Anchoring failed (timestamp source or storage).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: >-
+            No timestamp source is available: configure an external TSA URL or the
+            internal tsa: block (key_label + certificate_file).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/events/export:
     get:
       operationId: exportEventLog
@@ -2617,6 +3150,167 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/ers:
+    get:
+      operationId: listEvidenceRecords
+      tags: [Audit]
+      summary: List stored RFC 4998 Evidence Records
+      description: >-
+        A page of stored Evidence Records, newest first — the REST form of
+        `secsy-ca ers list`. The rows carry preservation metadata (scope, hash
+        algorithm, chain count, the covered event-log sequence range, and the
+        embedded TSA certificate's expiry that drives renewal); the Evidence
+        Record DER itself is never inlined here — fetch it from
+        GET /api/ers/export. A pure read: no HSM, no signing, no audit event.
+        Read-gated (any assigned role), the same standing as POST /api/ers/verify.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Page size (default 200, capped at 1000; 0 means the cap).
+          schema: { type: integer, minimum: 0 }
+        - name: offset
+          in: query
+          required: false
+          description: Row offset.
+          schema: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: A page of Evidence Records.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvidenceRecordPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/ers/generate:
+    post:
+      operationId: generateEvidenceRecord
+      tags: [Audit]
+      summary: Generate an RFC 4998 Evidence Record
+      description: >-
+        Mints a new Evidence Record over either an inclusive audit-event range or
+        one or more artifact objects — the REST form of `secsy-ca ers generate`.
+        Exactly one scope must be named. Artifact bytes are NOT stored: renewing
+        or verifying an artifact-scope record later requires re-supplying exactly
+        these bytes. An audit-scope record is labelled by the preservation service
+        itself ("audit events N-M"), so description is ignored for a range.
+        Requires PLATFORM ca:manage: minting signs with the deployment's timestamp
+        authority over the shared audit chain. Needs an archive-timestamp source —
+        the configured external TSA URL, else the TSA-role key provider.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenerateEvidenceRecordRequest" }
+      responses:
+        "201":
+          description: The persisted Evidence Record.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvidenceRecordResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500":
+          description: The timestamp source or storage failed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: >-
+            No timestamp source is available: configure an external TSA URL or the
+            internal tsa: block (key_label + certificate_file).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/ers/renew:
+    post:
+      operationId: renewEvidenceRecord
+      tags: [Audit]
+      summary: Renew a stored Evidence Record
+      description: >-
+        Renews a stored record — the REST form of `secsy-ca ers renew`. The
+        default is a TIME-STAMP renewal: a fresh archive timestamp before the
+        current TSA certificate expires. hashtree=true performs a HASH-TREE
+        renewal instead: a new chain under a stronger algorithm, for algorithm
+        deprecation. A hash-tree renewal of an artifact-scope record needs the
+        original object bytes re-supplied in objects (the server never stored
+        them); an audit-scope record re-derives its objects from the event log.
+        Same gate and timestamp-source dependence as generation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RenewEvidenceRecordRequest" }
+      responses:
+        "200":
+          description: The renewed Evidence Record.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvidenceRecordResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500":
+          description: >-
+            The stored record is corrupt, or the renewal, encoding, or
+            persistence failed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: >-
+            No timestamp source is available: configure an external TSA URL or the
+            internal tsa: block (key_label + certificate_file).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/ers/export:
+    get:
+      operationId: exportEvidenceRecord
+      tags: [Audit]
+      summary: Export one Evidence Record (JSON or raw DER)
+      description: >-
+        Hands out a stored Evidence Record — the REST form of
+        `secsy-ca ers export`. format=der streams the raw RFC 4998 DER (what
+        `-out FILE` writes) as an octet-stream attachment; the default JSON body
+        carries the row, the decoded structure (chains, digest algorithms, and
+        every ArchiveTimeStamp with its genTime and TSA certificate expiry), and
+        the same DER base64-encoded — which is exactly what POST /api/ers/verify
+        accepts in its own "record" field, so an export can be fed straight back
+        in. Read-gated like the listing, and HSM-free: an Evidence Record is a set
+        of hashes and RFC 3161 tokens over data the holder must already have, so
+        handing it out discloses no event or artifact content.
+      parameters:
+        - name: id
+          in: query
+          required: true
+          description: The stored Evidence Record's id.
+          schema: { type: string }
+        - name: format
+          in: query
+          required: false
+          description: Output encoding; defaults to json.
+          schema: { type: string, enum: [json, der], default: json }
+      responses:
+        "200":
+          description: The Evidence Record.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvidenceRecordExport" }
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500":
+          description: The stored Evidence Record is corrupt.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/ers/verify:
     post:
       operationId: verifyEvidenceRecord
@@ -2671,6 +3365,91 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "501":
           description: The configured key provider cannot enumerate keys.
+
+  /api/inventory/retention:
+    get:
+      operationId: getInventoryRetentionStatus
+      tags: [Audit]
+      summary: Certificate-inventory retention policy and eligibility
+      description: >-
+        The resolved retention policy, how much is eligible right now, and the
+        newest recorded run — the REST form of
+        `secsy-ca inventory retention status`. Only long-expired, terminal,
+        non-held, non-approval-pinned rows are eligible, and the authoritative
+        revoked_certificates table is never touched (OCSP/CRL for every retained
+        serial is unaffected). A pure read: cheap counts, no scan, no mutation.
+        Requires the PLATFORM-wide audit:read capability — the counts span every
+        tenant's inventory.
+      responses:
+        "200":
+          description: The retention posture.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RetentionStatus" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500":
+          description: The configured retention policy is invalid, or the counts could not be read.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: This server was started without the operations dependencies.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/inventory/retention/run:
+    post:
+      operationId: runInventoryRetention
+      tags: [Audit]
+      summary: Run (or preview) one certificate-inventory retention pass
+      description: >-
+        Drives one pass of the same retention runner the leader-elected background
+        loop uses, over the same configured policy. One endpoint serves both CLI
+        subcommands: dry_run=true is `secsy-ca inventory retention dry-run`
+        (reports exactly what would happen, mutating nothing and recording no
+        audit event) and the default is `... run`. A real pass archives and — in
+        prune mode — hard-deletes inventory rows across every tenant, so it
+        requires the platform-wide ca:configure capability and is step-up gated;
+        the dry run shares that gate on purpose. A real pass is single-flighted
+        against the leader-elected background loop in the same process, and runs
+        detached from the request's cancellation under its own time budget — hanging
+        up does not abandon it between batches.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RetentionRunRequest" }
+      responses:
+        "200":
+          description: The pass completed (or was planned, for a dry run).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RetentionRunResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: >-
+            Another retention pass is already running — the background loop's or
+            another request's. Retry when it completes; the work is periodic and
+            idempotent, so nothing is lost by losing the race.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: >-
+            The pass failed part-way. The counts still report the work that
+            committed before the failure — batches are independent transactions,
+            so a partial pass is a real, durable outcome — and error names the
+            failure.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RetentionRunResult" }
+        "503":
+          description: This server was started without the operations dependencies.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   # ---------------------------------------------------------------------------
   # ACME operator visibility
@@ -2983,6 +3762,48 @@ paths:
         "409":
           description: A signing key with this name already exists for the tenant.
 
+  /api/secret/signing-keys/import:
+    post:
+      operationId: importSigningKey
+      tags: [Secrets]
+      summary: Import an existing key as a named signing key
+      description: >-
+        Adopt an existing private key into the named-signing-key registry — the
+        REST form of `secsy-secret signing-key import`. A key whose public half is
+        already embedded in shipped clients cannot be rotated cheaply, but it can
+        be moved off an application server and into the HSM. Supply the container
+        either as text in key_pem (any PEM form the parser accepts: PKCS#8 plain or
+        encrypted, PKCS#1, SEC1, legacy DEK-Info, OpenSSH) or as base64 of the raw
+        bytes in key_base64 (bare DER, PKCS#12/PFX) — exactly one, never both. The
+        algorithm may be omitted for an EC or Ed25519 key, which determines it; an
+        RSA key must name one, because the same key works with PSS and with PKCS#1
+        v1.5 and the choice has to match what existing verifiers already do. The
+        material is written into the provider non-extractable, and the provider is
+        made to sign a challenge with it before this call reports success. The body
+        is size-limited to 1 MiB and no field of it is ever echoed, logged or
+        written to an audit detail. Authorization, the response and the 201 are
+        identical to creation, so an adopted key is indistinguishable from a
+        generated one; only hardware attestation can still tell, and it will report
+        the key as imported rather than generated. Requires the
+        secret:signing-key capability on the tenant.
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ImportSigningKeyRequest" }
+      responses:
+        "201":
+          description: The adopted key's public view.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SigningKey" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: A signing key with this name already exists for the tenant.
+
   /api/secret/signing-keys/{name}:
     get:
       operationId: getSigningKey
@@ -3243,6 +4064,40 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/hsm/attestation-audit:
+    get:
+      operationId: getHSMAttestationAudit
+      tags: [HSM]
+      summary: Attest every key on the device
+      description: >
+        Attests EVERY asymmetric key the configured provider holds and reports the
+        per-key verdicts with a rollup — the REST form of
+        `secsy-ca hsm-attest audit`. This answers the question no single-key check
+        can: not "is this key safe" but "is anything on this device exportable".
+        A key mistakenly created with exportable-under-wrap, or imported rather
+        than generated, stays invisible until something enumerates them. Each key
+        is judged on the device's own assertions, with no expected label or public
+        key imposed, because the pass is an inventory. A key that cannot be
+        attested is a row carrying its error rather than a failed request, so one
+        unattestable object does not cost the verdict on the rest; findings are
+        likewise reported with 200, since the request succeeded and the verdicts
+        are the answer. Costs one device round-trip (and one device audit-log
+        entry) per key. Requires platform hsm:manage.
+      responses:
+        "200":
+          description: Per-key verdicts and the rollup.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HSMAttestationAudit" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501":
+          description: >-
+            The configured key provider cannot enumerate its keys, so the device
+            cannot be audited as a whole.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/hsm/attestation:verify:
     post:
       operationId: verifyHSMAttestation
@@ -3372,6 +4227,157 @@ paths:
               schema: { type: string }
 
   # ---------------------------------------------------------------------------
+  # Preflight diagnostics and disaster recovery
+  # ---------------------------------------------------------------------------
+  /api/doctor:
+    get:
+      operationId: runDoctor
+      tags: [Operations]
+      summary: Run the preflight diagnostic suite
+      description: >-
+        Runs the same suite `secsy-ca doctor` runs, over the same configuration
+        file, and returns the report structured rather than rendered: key
+        providers, the store, the audit chain, expiry headroom, CRL freshness,
+        backup/retention/ERS freshness, clock and trusted time, listener TLS and
+        FIPS posture. Two properties are load-bearing. A failing check is DATA,
+        not an error — the request answers 200 with the full report whatever the
+        checks find. And it is safe to call while the HSM is down: every
+        unreachable dependency degrades to a fail/skip result, and everything the
+        run opened is closed before it returns. Read-only by construction: it
+        never generates keys, issues, writes rows, or migrates. Requires the
+        PLATFORM-wide audit:read capability — the report is infrastructure truth
+        about the whole node, not one tenant's data.
+      parameters:
+        - name: deep
+          in: query
+          required: false
+          description: >-
+            Also run the full store-integrity gate, which walks the entire audit
+            chain.
+          schema: { type: boolean, default: false }
+        - name: timeout
+          in: query
+          required: false
+          description: >-
+            Time budget in seconds (default 60, capped at 300). A value at or
+            above the cap is clamped to it.
+          schema: { type: integer, minimum: 0 }
+        - name: expiry_warn_days
+          in: query
+          required: false
+          description: Warn threshold in days for certificate-expiry headroom (0 = the suite's default).
+          schema: { type: integer, minimum: 0 }
+        - name: expiry_fail_days
+          in: query
+          required: false
+          description: Fail threshold in days for certificate-expiry headroom (0 = the suite's default).
+          schema: { type: integer, minimum: 0 }
+        - name: audit_sample
+          in: query
+          required: false
+          description: How many audit events to sample when not running deep (0 = the suite's default).
+          schema: { type: integer, minimum: 0 }
+        - name: no_listener
+          in: query
+          required: false
+          description: Skip the listener/socket checks.
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: The diagnostic report, whatever its verdict.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DoctorReport" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503":
+          description: This server was started without the operations dependencies.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/backup:
+    get:
+      operationId: exportBackup
+      tags: [Operations]
+      summary: Export the disaster-recovery metadata bundle
+      description: >-
+        The DR manifest plus the full CA records — the manifest.json and cas.json
+        of `secsy-ca backup -out` delivered as one document. The manifest ties the
+        metadata store, the key inventory and the audit-chain head together so a
+        restore can be verified end to end. PRIVATE KEY MATERIAL IS NEVER
+        INCLUDED: only certificates, key identifiers, public-key fingerprints and
+        the audit anchor leave the process. It works during an HSM outage — an
+        unreachable provider costs the key inventory (recorded as a note), not the
+        export. The complete audit log and the store snapshot are deliberately not
+        inlined; the notes name where to get them. Requires the platform-wide
+        hsm:manage capability: this response names every CA, every key label the
+        token holds, and the deployment's audit-chain head.
+      responses:
+        "200":
+          description: The DR manifest and CA records.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupExport" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500":
+          description: Listing the CAs failed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: This server was started without the operations dependencies.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/backup/verify-restore:
+    post:
+      operationId: verifyBackupRestore
+      tags: [Operations]
+      summary: Prove the newest scheduled backup can be restored
+      description: >-
+        Runs the same restore-verification drill the leader-elected background job
+        runs — the REST form of `secsy-ca backup verify-restore`. The newest
+        published artifact is fetched, digest-checked against the outer manifest,
+        decrypted through the secret-envelope ring, restored into an isolated
+        scratch database (always torn down), run through the HSM-independent
+        integrity gate, and its restored audit-head fingerprint matched against the
+        artifact manifest. It never mutates the live store beyond the backup.verify
+        audit event the verifier appends. Status codes mirror the CLI's exits so a
+        monitoring caller can trip on the status alone. Same gate as the export
+        (platform hsm:manage): it binds the backup KEK on the HSM and reads the
+        whole encrypted artifact.
+      responses:
+        "200":
+          description: The drill proved the backup restorable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupVerifyRestoreResult" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: >-
+            There is no backup at the destination to verify yet (skipped=true).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupVerifyRestoreResult" }
+        "500":
+          description: >-
+            The drill ran and FAILED; the body names the stage and the error.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupVerifyRestoreResult" }
+        "503":
+          description: >-
+            No backup KEK is configured (set backup.kek_label or
+            secret.kek_label), the backup destination could not be opened, the
+            verifier could not be built, or this server was started without the
+            operations dependencies.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ---------------------------------------------------------------------------
   # Operations
   # ---------------------------------------------------------------------------
   /metrics:
@@ -3482,6 +4488,46 @@ paths:
               schema: { $ref: "#/components/schemas/ApprovalList" }
         "403":
           description: The caller lacks the approval:read capability.
+
+  /api/approvals/expire:
+    post:
+      operationId: expireApprovals
+      tags: [Approvals]
+      summary: Sweep approval requests whose window has elapsed
+      description: >-
+        Retires every request whose approval window has elapsed — the REST form of
+        `secsy-ca approvals expire`. The gate already treats an elapsed request as
+        expired the moment it is next touched, but until something sweeps it the
+        queue still shows it as pending and the cert.issue.denied domain event for
+        an expired per-profile issuance never fires. The sweep fires the same
+        terminal hook the server and the CLI install, so that event and metric are
+        emitted whichever surface swept it, and it is driven by a copy of the
+        installed policy with enforcement forced on, so requests left behind by a
+        since-disabled gate can still be cleaned up (enabled echoes the real
+        setting). A sweep can only ever move a request to expired, never authorize
+        an operation. Requires the PLATFORM-wide approval:approve capability — the
+        sweep is cross-tenant by construction.
+      responses:
+        "200":
+          description: How many requests were retired.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExpireApprovalsResult" }
+        "403":
+          description: The caller lacks the platform-wide approval:approve capability.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500":
+          description: Expiring the stale requests failed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: The approval workflow is not enabled on this server.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/approvals/{id}:
     get:
@@ -3820,6 +4866,58 @@ components:
       properties:
         attestation: { $ref: "#/components/schemas/HSMKeyAttestation" }
         verification: { $ref: "#/components/schemas/HSMKeyAttestationResult" }
+    HSMKeyAuditEntry:
+      type: object
+      description: >
+        One key's line in the device-wide attestation audit. attestation and
+        verification are present when the device answered; error is present when it
+        did not, and the two cases are mutually exclusive.
+      properties:
+        label: { type: string, description: The provider label the key was attested by. }
+        key_type:
+          type: string
+          description: >
+            What the key inventory reports for the key, so an error row still says
+            what the unattestable object is.
+        ca_label:
+          type: string
+          description: >
+            The CA bound to this key; absent when no CA record references it (a
+            KEK, TSA, signing or orphaned key). This is what turns "some object is
+            exportable" into "which of our authorities is affected".
+        attestation: { $ref: "#/components/schemas/HSMKeyAttestation" }
+        verification: { $ref: "#/components/schemas/HSMKeyAttestationResult" }
+        error:
+          type: string
+          description: >
+            Why this key could not be attested. A datum about one key, not a
+            failure of the audit.
+    HSMAttestationAudit:
+      type: object
+      description: >
+        The whole-device verdict: one entry per key plus the rollup an operator
+        reads first.
+      properties:
+        provider: { type: string, description: The backend that was enumerated. }
+        keys:
+          type: array
+          items: { $ref: "#/components/schemas/HSMKeyAuditEntry" }
+          description: One entry per enumerated key, label-sorted.
+        total: { type: integer, description: Every key the provider holds. }
+        verified: { type: integer, description: Keys that satisfied the attestation policy in full. }
+        failed: { type: integer, description: Keys the device attested but which failed policy. }
+        errors: { type: integer, description: Keys that could not be attested at all. }
+        exportable:
+          type: integer
+          description: >
+            Attested keys whose capabilities permit export — the headline finding
+            this pass exists to surface.
+        imported:
+          type: integer
+          description: >
+            Attested keys that were not generated on the device, so a copy may have
+            existed before they arrived.
+        summary: { type: string, description: The one-line verdict. }
     HSMAttestationVerifyRequest:
       type: object
       required: [certificate_pem]
@@ -6604,6 +7702,37 @@ components:
             The fixed signing algorithm (curve/modulus and, for RSA, the PSS-vs-PKCS#1-v1.5 scheme).
             ed25519 signs the message directly and takes no hash.
 
+    ImportSigningKeyRequest:
+      type: object
+      description: >-
+        An existing private key to adopt as a named signing key. Supply exactly one
+        of key_pem and key_base64; neither field, nor passphrase, is ever echoed,
+        logged or audited.
+      required: [name]
+      properties:
+        name: { type: string, description: Tenant-unique name for the adopted signing key. }
+        algorithm:
+          type: string
+          enum: [ecdsa-p256, ecdsa-p384, ecdsa-p521, ed25519, rsa-pss-2048, rsa-pss-3072, rsa-pss-4096, rsa-pkcs1v15-2048, rsa-pkcs1v15-3072, rsa-pkcs1v15-4096]
+          description: >-
+            The fixed signing algorithm. Optional for an EC or Ed25519 key, which
+            determines its own; REQUIRED for an RSA key, since the same key works
+            with PSS and with PKCS#1 v1.5 and the choice must match what existing
+            verifiers already do.
+        key_pem:
+          type: string
+          description: >-
+            The key as text: any PEM form the parser accepts (PKCS#8 plain or
+            encrypted, PKCS#1, SEC1, legacy DEK-Info, OpenSSH).
+        key_base64:
+          type: string
+          description: >-
+            Base64 of the raw container bytes, for encodings that are not text
+            (bare DER, PKCS#12/PFX). A base64'd PEM is accepted too.
+        passphrase:
+          type: string
+          description: Decrypts an encrypted container. Omit for unencrypted material.
+
     SigningKey:
       type: object
       description: The public view of a named signing key — never any private material.
@@ -6742,3 +7871,1331 @@ components:
               status: { type: string, enum: [up, down, skipped, leader, follower] }
               error: { type: string }
               detail: { type: string }
+
+    # -------------------------------------------------------------------------
+    # Key / CA import (Task 198)
+    # -------------------------------------------------------------------------
+    ImportKeyRequest:
+      type: object
+      description: >-
+        An existing private key to place in a role's provider. Supply exactly one
+        of key_pem and key_base64; neither field, nor passphrase, is ever echoed,
+        logged, or audited.
+      required: [label]
+      properties:
+        label:
+          type: string
+          description: The identifier the key is stored under in the provider.
+        id:
+          type: string
+          description: Optional secondary identifier (a hex CKA_ID for PKCS#11).
+        usage:
+          type: string
+          enum: [sign, decrypt, kek]
+          default: sign
+          description: >-
+            "sign" (default), or "decrypt"/"kek" for an RSA key-encryption key.
+        role:
+          type: string
+          enum: [ca, tsa, signing]
+          default: ca
+          description: >-
+            The key-provider role that receives the key. A role whose configured
+            backend type matches the CA's is served by the already-open CA
+            provider; only a genuinely different backend has a second one opened.
+        key_pem:
+          type: string
+          description: >-
+            The key as text: any PEM form the parser accepts (PKCS#8 plain or
+            encrypted, PKCS#1, SEC1, legacy DEK-Info, OpenSSH).
+        key_base64:
+          type: string
+          description: >-
+            Base64 of the raw container bytes, for encodings that are not text
+            (bare DER, PKCS#12/PFX). A base64'd PEM is accepted too.
+        passphrase:
+          type: string
+          description: Decrypts an encrypted container. Omit for unencrypted material.
+
+    ImportKeyResult:
+      type: object
+      description: >-
+        The adopted key, field-for-field as `secsy-ca import-key -json` emits it,
+        plus the role/usage it was filed under and the provenance notice the CLI
+        writes to stderr.
+      properties:
+        label: { type: string }
+        id: { type: string }
+        key_type: { type: string }
+        uri:
+          type: string
+          description: "The provider reference for the key (pkcs11: or software: URI)."
+        ssh_public_key:
+          type: string
+          description: The key's OpenSSH authorized_keys form, when derivable.
+        source_format:
+          type: string
+          description: The encoding the key was read from (pkcs8, pkcs12, ...).
+        provider: { type: string }
+        role: { type: string, enum: [ca, tsa, signing] }
+        usage: { type: string, enum: [sign, decrypt] }
+        verified:
+          type: boolean
+          description: >-
+            The provider signed a challenge with the key after the import and the
+            signature verified. A decrypt-only key cannot sign and is exempt, so
+            it reports false.
+        notice:
+          type: string
+          description: >-
+            What an import cannot give the operator: the key existed outside the
+            provider before it arrived, so attestation will report it as imported
+            rather than generated and any copy made before the import remains a
+            copy. Extended when the receiving backend is the software keystore.
+
+    ImportCARequest:
+      type: object
+      description: >-
+        An existing certificate authority to adopt. Supply exactly one of the key
+        material (key_pem/key_base64) and existing_key_label.
+      required: [label]
+      properties:
+        label:
+          type: string
+          description: The CA name / key label to record the adopted CA under; must be unused.
+        tenant:
+          type: string
+          description: >-
+            Owning tenant id or slug. Empty adopts into the built-in default
+            tenant.
+        certificate:
+          type: string
+          description: >-
+            The CA's existing certificate (PEM); trailing certificates in the same
+            PEM are treated as chain material. Optional when the supplied key is a
+            PKCS#12 container, which carries its own certificate.
+        chain:
+          type: string
+          description: >-
+            The issuing chain (PEM) of a subordinate CA whose parent is not in this
+            PKI, so the served chain reaches the external anchor.
+        parent:
+          type: string
+          description: >-
+            Id or label of a CA already in this PKI that issued this certificate.
+            Empty discovers the parent automatically.
+        existing_key_label:
+          type: string
+          description: >-
+            Adopt a key already present in the provider under this label instead
+            of importing one.
+        key_pem:
+          type: string
+          description: The private key as text (any PEM form the parser accepts).
+        key_base64:
+          type: string
+          description: Base64 of the raw container bytes (bare DER, PKCS#12/PFX).
+        passphrase:
+          type: string
+          description: Decrypts an encrypted container. Omit for unencrypted material.
+
+    ImportCAResult:
+      type: object
+      description: >-
+        The adopted CA, field-for-field as `secsy-ca ca import -json` emits it,
+        plus the source format and the provenance notice.
+      properties:
+        ca: { $ref: "#/components/schemas/CA" }
+        warnings:
+          type: array
+          description: Non-fatal findings about the adopted certificate.
+          items: { type: string }
+        chain_pem:
+          type: string
+          description: The issuing chain that will be served after the CA's own certificate.
+        key_imported:
+          type: boolean
+          description: False when an already-present key was adopted by label.
+        key_fingerprint: { type: string }
+        self_signed: { type: boolean }
+        source_format:
+          type: string
+          description: >-
+            The encoding imported key material arrived in; empty when an
+            already-present key was adopted by label.
+        notice:
+          type: string
+          description: >-
+            The provenance notice, set only when key material was actually written
+            into the provider.
+
+    ApprovalPendingResponse:
+      type: object
+      description: >-
+        Returned (202) when a guarded administrative operation is held for
+        four-eyes approval. Nothing was performed; re-run the request once the
+        approval threshold is met. The pending-approval id is also returned in the
+        X-Secsy-Approval-Id header.
+      properties:
+        status: { type: string, example: pending_approval }
+        message: { type: string }
+        approval: { $ref: "#/components/schemas/PendingApproval" }
+
+    # -------------------------------------------------------------------------
+    # Signing-credential provisioning (Task 198)
+    # -------------------------------------------------------------------------
+    ProvisionedKeyRef:
+      type: object
+      description: The key a provisioning call put in place.
+      properties:
+        label:
+          type: string
+          description: >-
+            The provider key label; the value for tsa.key_label /
+            signing.signers[].key_label.
+        key_type: { type: string }
+        uri:
+          type: string
+          description: The provider reference for the key, when the backend reports one.
+        reused:
+          type: boolean
+          description: >-
+            A key already under this label was adopted rather than a new one
+            generated, which is what makes a certificate reissue idempotent
+            without rotating the key.
+        provider: { type: string }
+        role: { type: string, enum: [tsa, signing] }
+
+    ProvisionedCertificate:
+      type: object
+      description: The certificate a provisioning call issued.
+      properties:
+        serial: { type: string }
+        subject: { type: string }
+        not_before: { type: string, format: date-time }
+        not_after: { type: string, format: date-time }
+        certificate_pem:
+          type: string
+          description: >-
+            The credential's certificate, followed by the issuer chain when the
+            request asked for it. This is the content of the file that
+            tsa.certificate_file / signing.signers[].certificate_file must point
+            at.
+        ca_id: { type: string }
+        ca_label: { type: string }
+
+    SignerProvisionRequest:
+      type: object
+      required: [ca]
+      properties:
+        ca:
+          type: string
+          description: The issuing CA id or label.
+        label:
+          type: string
+          default: codesign
+          description: The provider key label for the signing key.
+        key_type:
+          type: string
+          enum: [ecdsa-p256, ecdsa-p384, rsa-2048, rsa-4096]
+          default: ecdsa-p256
+          description: The families the CMS signer supports.
+        common_name:
+          type: string
+          description: "Certificate subject CN (default: the key label)."
+        organization:
+          type: string
+          description: Certificate subject O (optional).
+        validity_days:
+          type: integer
+          description: Certificate validity in days (0 = the profile's default).
+        profile:
+          type: string
+          default: code-signing
+          description: >-
+            The issuance profile, which must carry the codeSigning EKU. Issuance
+            runs the ordinary CA path, so the fail-closed pre-issuance lint gate
+            applies.
+        chain:
+          type: boolean
+          description: Append the issuing CA chain after the signer certificate.
+
+    SignerProvisionResponse:
+      type: object
+      properties:
+        key: { $ref: "#/components/schemas/ProvisionedKeyRef" }
+        certificate: { $ref: "#/components/schemas/ProvisionedCertificate" }
+        profile:
+          type: string
+          description: The profile the certificate was actually issued under.
+        config_hint:
+          type: string
+          description: What to add under signing.signers in configuration.
+
+    TSAKeyRequest:
+      type: object
+      required: [ca]
+      properties:
+        ca:
+          type: string
+          description: The issuing CA id or label.
+        label:
+          type: string
+          default: tsa
+          description: The provider key label for the TSA signing key.
+        key_type:
+          type: string
+          enum: [rsa-2048, rsa-4096]
+          default: rsa-2048
+          description: >-
+            Must be RSA — `openssl ts -verify` interop and the CMS signer both
+            require it.
+        common_name:
+          type: string
+          default: Time-Stamp Authority
+          description: Certificate subject CN.
+        organization:
+          type: string
+          description: Certificate subject O (optional).
+        validity_days:
+          type: integer
+          default: 1185
+          description: >-
+            Certificate validity in days. Refused when it would outlive the
+            issuing CA.
+        chain:
+          type: boolean
+          description: Append the issuing CA chain after the TSA certificate.
+
+    TSAKeyResponse:
+      type: object
+      properties:
+        key: { $ref: "#/components/schemas/ProvisionedKeyRef" }
+        certificate: { $ref: "#/components/schemas/ProvisionedCertificate" }
+        config_hint:
+          type: string
+          description: What to set in configuration (tsa.key_label, tsa.certificate_file).
+
+    # -------------------------------------------------------------------------
+    # Compromised-key blocklist (Task 120)
+    # -------------------------------------------------------------------------
+    BlockedKey:
+      type: object
+      description: >-
+        One blocklist entry. It holds no key material; the key is named only by
+        its SubjectPublicKeyInfo SHA-256 fingerprint.
+      properties:
+        fingerprint:
+          type: string
+          description: >-
+            The SubjectPublicKeyInfo SHA-256 fingerprint and primary key, in the
+            canonical "SHA256:&lt;base64&gt;" form.
+        reason:
+          type: string
+          description: The operator's justification (e.g. "key compromise, INC-1234").
+        source:
+          type: string
+          description: >-
+            Where the block originated (e.g. "cli", "api",
+            "incident-response").
+        added_by:
+          type: string
+          description: The principal that added the entry.
+        added_at: { type: string, format: date-time }
+
+    BlockedKeyList:
+      type: object
+      properties:
+        blocked_keys:
+          type: array
+          items: { $ref: "#/components/schemas/BlockedKey" }
+        total: { type: integer }
+
+    BlockKeyRequest:
+      type: object
+      description: >-
+        Names the key to block exactly one way. Supplying two inputs is a 400:
+        naming the key twice would hide which one the operator meant to block.
+      properties:
+        certificate:
+          type: string
+          description: >-
+            A certificate (PEM, or bare base64 DER) whose subject public key to
+            block.
+        csr:
+          type: string
+          description: >-
+            A PKCS#10 request (PEM, or bare base64 DER) whose public key to block.
+            The self-signature is deliberately not verified: an attacker-generated
+            request is exactly the material an operator needs to block.
+        public_key:
+          type: string
+          description: A SubjectPublicKeyInfo public key (PEM, or bare base64 DER).
+        fingerprint:
+          type: string
+          description: >-
+            A pre-computed SubjectPublicKeyInfo SHA-256 fingerprint: the canonical
+            "SHA256:&lt;base64&gt;" form, or a hex digest (the colon-grouped form
+            openssl prints is accepted).
+        reason:
+          type: string
+          description: The operator's justification, recorded and audited.
+        source:
+          type: string
+          default: api
+          description: Where the block originated.
+
+    BlockKeyResult:
+      type: object
+      description: The stored entry, plus whether this call created it.
+      properties:
+        fingerprint: { type: string }
+        reason: { type: string }
+        source: { type: string }
+        added_by: { type: string }
+        added_at: { type: string, format: date-time }
+        newly_added:
+          type: boolean
+          description: >-
+            False when the key was already on the blocklist. The request is
+            idempotent: the existing entry, with its original justification and
+            timestamp, is left untouched and returned.
+
+    UnblockKeyResult:
+      type: object
+      properties:
+        status: { type: string, enum: [unblocked, not_blocked] }
+        fingerprint:
+          type: string
+          description: The canonicalized fingerprint that was acted on.
+        removed: { type: boolean }
+
+    # -------------------------------------------------------------------------
+    # Certificate-inventory retention (Task 157)
+    # -------------------------------------------------------------------------
+    RetentionStatus:
+      type: object
+      description: >-
+        The resolved retention policy and current eligibility, field-for-field as
+        `secsy-ca inventory retention status -json` prints it.
+      properties:
+        enabled:
+          type: boolean
+          description: >-
+            Whether the leader-elected background loop runs. Independent of the
+            retention endpoints, which work either way.
+        interval:
+          type: string
+          description: The resolved background-loop period (e.g. "24h0m0s").
+        mode: { type: string, enum: [archive, prune] }
+        window:
+          type: string
+          description: The resolved minimum age a row must reach to be eligible.
+        cutoff:
+          type: string
+          format: date-time
+          description: A certificate whose notAfter is before this instant is eligible.
+        prune_cutoff:
+          type: string
+          format: date-time
+          description: >-
+            The hard-delete horizon in prune mode. ABSENT outside prune mode —
+            there is no such horizon to report, and a zero time would read as a
+            real one.
+        eligible: { type: integer }
+        prunable:
+          type: integer
+          description: Archive plus hot rows past prune_cutoff; 0 in archive mode.
+        archive_size:
+          type: integer
+          description: Archive table row count.
+        last_run:
+          $ref: "#/components/schemas/Event"
+
+    RetentionRunRequest:
+      type: object
+      properties:
+        dry_run:
+          type: boolean
+          description: >-
+            Report exactly what a pass would do, mutating nothing and recording no
+            audit event.
+
+    RetentionRunResult:
+      type: object
+      description: >-
+        The outcome of one pass, matching `secsy-ca inventory retention run -json`
+        exactly.
+      properties:
+        mode: { type: string, enum: [archive, prune] }
+        dry_run: { type: boolean }
+        window: { type: string }
+        cutoff: { type: string, format: date-time }
+        prune_cutoff:
+          type: string
+          format: date-time
+          description: Prune mode only; absent otherwise.
+        eligible:
+          type: integer
+          description: >-
+            Retention-eligible rows in the hot table at run start. An upper bound:
+            it does not subtract approval-pinned serials.
+        archived:
+          type: integer
+          description: "Rows moved to the archive (dry run: would move)."
+        pruned:
+          type: integer
+          description: "Archive rows hard-deleted (dry run: would delete)."
+        backlog:
+          type: integer
+          description: >-
+            Eligible rows remaining after the run; trends to the approval-pinned
+            residue, normally zero.
+        archive_size: { type: integer }
+        protected_by_approvals:
+          type: integer
+          description: Serials skipped because an open approval pins them.
+        digest:
+          type: string
+          description: >-
+            "sha256:&lt;hex&gt;" over the archived (and pruned) manifest — a
+            tamper-evident fingerprint also recorded in the audit log.
+        started: { type: string, format: date-time }
+        duration_ms: { type: integer, format: int64 }
+        error:
+          type: string
+          description: >-
+            Set, with HTTP 500, when the pass failed part-way. The counts above
+            still report the work that committed before the failure.
+
+    # -------------------------------------------------------------------------
+    # Approval expiry sweep (Task 81)
+    # -------------------------------------------------------------------------
+    ExpireApprovalsResult:
+      type: object
+      properties:
+        expired:
+          type: integer
+          description: >-
+            Requests moved from pending/approved to expired by this sweep.
+        enabled:
+          type: boolean
+          description: >-
+            Whether the approval gate itself is on, so a zero count from a
+            deployment that has since disabled the gate is not mistaken for
+            "nothing to clean up".
+
+    # -------------------------------------------------------------------------
+    # Resource-role catalog (Task 191)
+    # -------------------------------------------------------------------------
+    ResourceRoleInfo:
+      type: object
+      description: One grantable resource role and what it confers.
+      properties:
+        role: { $ref: "#/components/schemas/ResourceRole" }
+        applies_to:
+          type: array
+          description: >-
+            The resource types the role is meaningful on. A role granted on any
+            other type would confer nothing, so the grant endpoints refuse it.
+          items: { type: string, enum: [ca, signing-key] }
+        actions:
+          type: array
+          description: >-
+            The capability bundle the role confers AT THE RESOURCE IT IS GRANTED
+            ON, sorted. There is no allow-all resource role: every capability a
+            grant confers is listed explicitly.
+          items: { type: string }
+
+    ResourceGrantScopeInfo:
+      type: object
+      properties:
+        scope: { $ref: "#/components/schemas/GrantScope" }
+        description: { type: string }
+
+    ResourceRoleCatalog:
+      type: object
+      description: >-
+        The same three things `secsy-ca grant roles` prints — the roles with their
+        capabilities, the scopes, and the additive-authority note. Derived from the
+        RBAC bundle table, so it cannot drift from the evaluator.
+      properties:
+        roles:
+          type: array
+          items: { $ref: "#/components/schemas/ResourceRoleInfo" }
+        scopes:
+          type: array
+          items: { $ref: "#/components/schemas/ResourceGrantScopeInfo" }
+        note:
+          type: string
+          description: The standing caveat an operator choosing a delegation must read.
+
+    # -------------------------------------------------------------------------
+    # Preflight diagnostics (`secsy-ca doctor`)
+    # -------------------------------------------------------------------------
+    DoctorCheck:
+      type: object
+      description: One diagnostic result.
+      properties:
+        name:
+          type: string
+          description: Identifies the check, dotted by area (e.g. "keyprovider.ca").
+        status: { type: string, enum: [pass, warn, fail, skip] }
+        message:
+          type: string
+          description: The one-line human explanation of the outcome.
+        elapsed_ms: { type: integer, format: int64 }
+        hint:
+          type: string
+          description: >-
+            Where remediation starts, scoped to the check's AREA rather than the
+            individual failure. Present only for warn/fail.
+
+    DoctorSummary:
+      type: object
+      description: The diagnostic results counted by status.
+      properties:
+        pass: { type: integer }
+        warn: { type: integer }
+        fail: { type: integer }
+        skip: { type: integer }
+
+    DoctorReport:
+      type: object
+      description: The structured diagnostic report plus the overall verdict.
+      properties:
+        checked_at:
+          type: string
+          format: date-time
+          description: When the run started (UTC).
+        config_path:
+          type: string
+          description: >-
+            The configuration file this process answers for, so an operator knows
+            WHICH file the diagnosis is about. Empty when the server was started
+            without one.
+        verdict:
+          type: string
+          enum: [ok, warn, fail]
+          description: >-
+            "ok" (nothing to do), "warn" (operational, needs attention) or "fail"
+            (broken or will refuse to serve).
+        ok:
+          type: boolean
+          description: True when no check failed; warnings do not clear it.
+        exit_code:
+          type: integer
+          description: >-
+            The tri-state code `secsy-ca doctor` would exit with for this report
+            (0 pass, 1 failure(s), 2 warning(s) only), so a pipeline driving the
+            API keys off the same number as one driving the CLI.
+        deep:
+          type: boolean
+          description: Whether the full store-integrity gate ran.
+        timeout_seconds:
+          type: integer
+          description: The time budget the run was given.
+        summary: { $ref: "#/components/schemas/DoctorSummary" }
+        checks:
+          type: array
+          description: The individual results in execution order. Never null.
+          items: { $ref: "#/components/schemas/DoctorCheck" }
+
+    # -------------------------------------------------------------------------
+    # Disaster recovery (`secsy-ca backup`, `... backup verify-restore`)
+    # -------------------------------------------------------------------------
+    BackupCARef:
+      type: object
+      description: >-
+        The restore-verifiable summary of one CA: identifiers, the provider key
+        label, and the public-key fingerprint a restore matches against the key the
+        token still holds.
+      properties:
+        id: { type: string }
+        label: { type: string }
+        key_label: { type: string }
+        subject: { type: string }
+        serial: { type: string }
+        key_type: { type: string }
+        pkcs11_uri: { type: string }
+        public_key_fingerprint_sha256:
+          type: string
+          description: >-
+            The SSH SHA-256 fingerprint of the stored public key, or "unknown"
+            when it could not be parsed.
+        not_after: { type: string, format: date-time }
+
+    ProviderKeyDescriptor:
+      type: object
+      description: >-
+        One key the provider holds, as the provider itself describes it — proof of
+        which keys the token must hold after recovery, and that they are
+        non-extractable.
+      properties:
+        label: { type: string }
+        id:
+          type: string
+          description: The secondary identifier (hex CKA_ID for PKCS#11), if any.
+        key_type: { type: string }
+        uri: { type: string }
+        extractable:
+          type: boolean
+          description: >-
+            Whether the private key may be read off the backend. For an HSM-backed
+            CA/KEK key this must be false; the software backend always reports
+            true, since keys live as on-disk files.
+        sensitive:
+          type: boolean
+          description: >-
+            Whether the backend refuses to expose the private value via attribute
+            reads. Hardware tokens report true for protected keys.
+
+    BackupManifest:
+      type: object
+      description: >-
+        The disaster-recovery anchor: it ties the metadata store, the key inventory
+        and the audit-log head together so a restore can be verified end to end.
+        The manifest.json of `secsy-ca backup -out`, field for field. It never
+        contains private key material.
+      properties:
+        version: { type: integer }
+        created_at: { type: string, format: date-time }
+        key_provider:
+          type: string
+          description: >-
+            The backend holding the (non-extractable) private keys this metadata
+            refers to.
+        db_driver: { type: string }
+        cas:
+          type: array
+          items: { $ref: "#/components/schemas/BackupCARef" }
+        key_inventory:
+          type: array
+          description: >-
+            The provider's key list. Absent when the provider cannot enumerate, or
+            when it is unreachable (then notes says so and the export still
+            succeeds).
+          items: { $ref: "#/components/schemas/ProviderKeyDescriptor" }
+        audit_head_seq: { type: integer, format: int64 }
+        audit_head_hash: { type: string }
+        audit_chain_valid: { type: boolean }
+        audit_event_count: { type: integer }
+        notes:
+          type: array
+          description: What is NOT in this bundle and where to get it. Never empty.
+          items: { type: string }
+
+    BackupExport:
+      type: object
+      description: >-
+        The DR manifest plus the full CA records — the manifest.json and cas.json
+        of the CLI bundle delivered as one document.
+      properties:
+        manifest: { $ref: "#/components/schemas/BackupManifest" }
+        cas:
+          type: array
+          description: >-
+            The complete CA records: the engine-agnostic recovery input. Public
+            material only — certificates, CSRs, external chains, public keys, key
+            URIs.
+          items: { $ref: "#/components/schemas/CA" }
+        config_path:
+          type: string
+          description: >-
+            The configuration file the running process answers for, so a recovery
+            runbook records which config produced this state.
+        scheduled_destination:
+          type: string
+          description: >-
+            Where the scheduled ENCRYPTED backups are written ("dir:&lt;path&gt;" or
+            "s3://bucket/prefix") — the authoritative artifact this response
+            deliberately does not contain.
+        scheduled_backup_enabled:
+          type: boolean
+          description: Whether the scheduled backup loop runs at all.
+
+    StoreIntegrityCheck:
+      type: object
+      description: One HSM-independent store-integrity finding.
+      properties:
+        name: { type: string }
+        ok: { type: boolean }
+        detail: { type: string }
+
+    BackupVerifyRestoreResult:
+      type: object
+      description: >-
+        The restore-verification drill, exactly as
+        `secsy-ca backup verify-restore -json` prints it, plus the verdict.
+      properties:
+        ok:
+          type: boolean
+          description: True only when the drill proved the backup restorable.
+        started_at: { type: string, format: date-time }
+        backend: { type: string, description: '"dir" or "s3".' }
+        driver: { type: string }
+        artifact_file: { type: string }
+        artifact_size: { type: integer }
+        artifact_sha256: { type: string }
+        backup_created_at:
+          type: string
+          format: date-time
+          description: >-
+            When the backup being verified was produced. Absent when the drill did
+            not get as far as reading the artifact's manifest.
+        manifest_head:
+          type: string
+          description: The audit-chain head hash the artifact manifest recorded.
+        restored_head:
+          type: string
+          description: The head hash the restored scratch store actually has.
+        integrity_ok: { type: boolean }
+        fingerprint_match: { type: boolean }
+        checks:
+          type: array
+          items: { $ref: "#/components/schemas/StoreIntegrityCheck" }
+        skipped:
+          type: boolean
+          description: >-
+            There is simply no backup published to verify yet. Answered with 404;
+            not counted, audited, or alerted.
+        stage:
+          type: string
+          description: Where a failure occurred (empty on success/skip).
+        error: { type: string }
+
+    # -------------------------------------------------------------------------
+    # Static-artifact publishing (`secsy-ca publish`)
+    # -------------------------------------------------------------------------
+    PublishRequest:
+      type: object
+      description: >-
+        Every field is optional; the zero value publishes exactly what the
+        configured schedule would.
+      properties:
+        cas:
+          type: array
+          description: >-
+            Restrict the snapshot to these CA ids or labels. Empty uses the
+            configured publish.cas, and when that is empty too, every unexpired
+            X.509 CA. An unknown or non-X.509 name is a 400, so a typo cannot
+            silently publish a partial snapshot.
+          items: { type: string }
+        skip_ocsp:
+          type: boolean
+          description: Publish only CRLs, chains and CA certificates.
+        ocsp_validity_seconds:
+          type: integer
+          minimum: 0
+          description: >-
+            Override the pre-signed OCSP response validity. 0 uses the configured
+            presign validity; setting it forces a fresh presign batch, since the
+            shared one carries the configured validity.
+        timeout_seconds:
+          type: integer
+          minimum: 0
+          description: Bounds the run (default 120, capped at 600).
+
+    PublishVerifyRequest:
+      type: object
+      properties:
+        timeout_seconds:
+          type: integer
+          minimum: 0
+          description: Bounds the audit (default 60, capped at 600).
+
+    PublishManifestCA:
+      type: object
+      description: One published CA's summary.
+      properties:
+        id: { type: string }
+        label: { type: string }
+        ocsp_responses:
+          type: integer
+          description: >-
+            Pre-signed responses published (0 when OCSP publishing is disabled).
+        crl_shards:
+          type: integer
+          description: Partition shards (0 when unsharded).
+
+    PublishManifestArtifact:
+      type: object
+      description: The integrity record for one published artifact.
+      properties:
+        path: { type: string }
+        kind: { type: string, enum: [crl, delta_crl, chain, ca_cert, ocsp] }
+        sha256: { type: string }
+        size: { type: integer }
+        content_type: { type: string }
+        not_after: { type: string, format: date-time }
+
+    PublishSkippedCA:
+      type: object
+      description: A CA left out of the snapshot, and why.
+      properties:
+        id: { type: string }
+        label: { type: string }
+        reason:
+          type: string
+          description: >-
+            "not an X.509 CA" (no CA certificate — e.g. an SSH-only signing key)
+            or "CA certificate expired".
+
+    PublishResponse:
+      type: object
+      description: The snapshot that is now current.
+      properties:
+        backend: { type: string, enum: [dir, s3] }
+        destination: { type: string, description: The resolved target. }
+        version: { type: integer }
+        generated_at: { type: string, format: date-time }
+        earliest_expiry:
+          type: string
+          format: date-time
+          description: >-
+            The soonest validity horizon among the snapshot's artifacts — after it,
+            the snapshot is serving at least one expired artifact and must have
+            been replaced.
+        include_ocsp:
+          type: boolean
+          description: Whether pre-signed OCSP responses were published.
+        ocsp_fresh:
+          type: boolean
+          description: >-
+            Whether those responses were signed for this snapshot (as the CLI does)
+            rather than reused from the background presign batch (as the server
+            loop does).
+        cas:
+          type: array
+          items: { $ref: "#/components/schemas/PublishManifestCA" }
+        skipped:
+          type: array
+          description: >-
+            The CAs deliberately left out; empty when a snapshot covers everything,
+            or when the caller named the CAs explicitly.
+          items: { $ref: "#/components/schemas/PublishSkippedCA" }
+        artifacts:
+          type: array
+          items: { $ref: "#/components/schemas/PublishManifestArtifact" }
+        artifact_count: { type: integer }
+        ca_count: { type: integer }
+        duration_ms: { type: integer, format: int64 }
+
+    PublishVerifyResponse:
+      type: object
+      description: >-
+        The findings of re-reading the published snapshot and checking it against
+        its own manifest.
+      properties:
+        backend: { type: string, enum: [dir, s3] }
+        destination: { type: string }
+        ok:
+          type: boolean
+          description: >-
+            True when the manifest was found and every artifact it lists re-read
+            with the recorded digest and size.
+        error:
+          type: string
+          description: >-
+            The first integrity finding (the audit is fail-fast, exactly as
+            `secsy-ca publish -verify` is); empty when ok.
+        version: { type: integer }
+        generated_at: { type: string, format: date-time }
+        earliest_expiry: { type: string, format: date-time }
+        cas:
+          type: array
+          items: { $ref: "#/components/schemas/PublishManifestCA" }
+        artifacts:
+          type: array
+          items: { $ref: "#/components/schemas/PublishManifestArtifact" }
+        verified_artifacts:
+          type: integer
+          description: How many objects were re-read and digest-checked.
+        ca_count: { type: integer }
+        duration_ms: { type: integer, format: int64 }
+
+    # -------------------------------------------------------------------------
+    # Evidence Record administration (RFC 4998, Task 161)
+    # -------------------------------------------------------------------------
+    EvidenceRecord:
+      type: object
+      description: >-
+        One stored Evidence Record's preservation metadata. The Evidence Record DER
+        itself is never inlined here — fetch it from GET /api/ers/export.
+      properties:
+        id: { type: string }
+        scope:
+          type: string
+          enum: [audit, artifact]
+          description: >-
+            What is protected: "audit" (a range of event-log events, re-derivable
+            from first_seq..last_seq) or "artifact" (external bytes the caller
+            supplies at verify/renew time).
+        description:
+          type: string
+          description: A human label (e.g. "audit events 101-160").
+        first_seq:
+          type: integer
+          format: int64
+          description: >-
+            Start of the inclusive event-log sequence range covered, for the
+            "audit" scope; 0 otherwise.
+        last_seq:
+          type: integer
+          format: int64
+          description: End of that range; 0 for the "artifact" scope.
+        object_ids:
+          type: array
+          description: >-
+            The stable identifiers of the covered data objects, in the order
+            supplied at generation.
+          items: { type: string }
+        digest_alg:
+          type: string
+          description: >-
+            The hash algorithm of the current (newest) ArchiveTimeStamp chain — the
+            algorithm a hash-tree renewal would replace.
+        chains:
+          type: integer
+          description: >-
+            The number of ArchiveTimeStampChains (grows by one per hash-tree
+            renewal).
+        created_at: { type: string, format: date-time }
+        renewed_at:
+          type: string
+          format: date-time
+          description: When the record was last renewed; absent until first renewal.
+        last_gen_time:
+          type: string
+          format: date-time
+          description: The genTime of the newest ArchiveTimeStamp.
+        tsa_not_after:
+          type: string
+          format: date-time
+          description: >-
+            The expiry of the newest embedded TSA certificate, which drives
+            time-stamp renewal. Absent when the token omitted its certificate.
+
+    EvidenceRecordPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/EvidenceRecord" }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+
+    GenerateEvidenceRecordRequest:
+      type: object
+      description: >-
+        Names exactly one scope to preserve: an inclusive audit-event range, or one
+        or more artifact objects.
+      properties:
+        audit_from:
+          type: integer
+          format: int64
+          description: >-
+            Start of the inclusive event-log sequence range. Required together with
+            audit_to and mutually exclusive with objects.
+        audit_to:
+          type: integer
+          format: int64
+          description: >-
+            End of the inclusive event-log sequence range. Clamped down to the
+            current chain head — a record cannot cover events that do not exist —
+            and the resulting span may cover at most 100000 events; a wider range
+            is a 400 asking for it to be split.
+        objects:
+          type: array
+          description: >-
+            Base64-encoded artifact bytes to preserve. They are NOT stored:
+            renewing or verifying an artifact-scope record later requires
+            re-supplying exactly these bytes.
+          items: { type: string }
+        object_ids:
+          type: array
+          description: >-
+            Optional label per object. When given it must have one non-empty entry
+            per object; otherwise objects are labelled "object:&lt;index&gt;". These
+            labels are the only human record of what an artifact-scope record
+            covers.
+          items: { type: string }
+        description:
+          type: string
+          description: >-
+            The human label for an artifact-scope record. Ignored for an audit
+            range, which the preservation service labels itself ("audit events
+            N-M") so every consumer names the same range identically.
+        hash:
+          type: string
+          enum: [sha256, sha384, sha512]
+          description: The hash-tree algorithm. Empty uses the configured ers.hash.
+
+    RenewEvidenceRecordRequest:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          description: The stored record to renew.
+        hashtree:
+          type: boolean
+          description: >-
+            Perform a hash-tree renewal (a new chain under a stronger algorithm,
+            for algorithm deprecation) instead of the default time-stamp renewal
+            (a fresh token before the TSA certificate expires).
+        hash:
+          type: string
+          enum: [sha256, sha384, sha512]
+          description: >-
+            The target algorithm for a hash-tree renewal. Empty uses the configured
+            ers.hash when it is stronger than SHA-256, else sha512.
+        objects:
+          type: array
+          description: >-
+            Base64-encoded protected objects, required for a hash-tree renewal of
+            an artifact-scope record (whose bytes the server never stored). An
+            audit-scope record re-derives its objects from the event log.
+          items: { type: string }
+
+    EvidenceRecordResult:
+      type: object
+      description: >-
+        The persisted row (flattened, exactly as `secsy-ca ers generate|renew
+        -json` emits it) plus the kind of operation that produced it.
+      allOf:
+        - $ref: "#/components/schemas/EvidenceRecord"
+        - type: object
+          properties:
+            kind:
+              type: string
+              enum: [generated, timestamp, hashtree]
+              description: >-
+                "generated" for a new record, or the renewal that was performed.
+
+    EvidenceRecordTimestampInfo:
+      type: object
+      description: One ArchiveTimeStamp, for inspection and renewal decisioning.
+      properties:
+        chain: { type: integer }
+        index: { type: integer }
+        hash: { type: string }
+        gen_time: { type: string, format: date-time }
+        tsa_subject: { type: string }
+        tsa_not_after:
+          type: string
+          format: date-time
+          description: >-
+            The embedded TSA certificate's expiry, absent when the token omits its
+            certificate. Time-stamp renewal is driven off the newest one.
+
+    EvidenceRecordInfo:
+      type: object
+      description: The decoded structure of an Evidence Record.
+      properties:
+        version: { type: integer }
+        chains: { type: integer }
+        digest_algorithms:
+          type: array
+          items: { type: string }
+        current_hash:
+          type: string
+          description: The hash algorithm of the newest ArchiveTimeStampChain.
+        first_gen_time: { type: string, format: date-time }
+        latest_gen_time: { type: string, format: date-time }
+        timestamps:
+          type: array
+          items: { $ref: "#/components/schemas/EvidenceRecordTimestampInfo" }
+
+    EvidenceRecordExport:
+      type: object
+      description: >-
+        The row, the decoded structure, and the Evidence Record DER itself, so the
+        console can offer a download without a second call.
+      allOf:
+        - $ref: "#/components/schemas/EvidenceRecord"
+        - type: object
+          properties:
+            info: { $ref: "#/components/schemas/EvidenceRecordInfo" }
+            record:
+              type: string
+              description: >-
+                Base64-encoded DER of the RFC 4998 EvidenceRecord — the bytes
+                `ers export -out FILE` writes, and exactly what POST /api/ers/verify
+                accepts in its own "record" field. Also retrievable raw via
+                ?format=der.
+            size:
+              type: integer
+              description: The DER length in bytes.
+
+    # -------------------------------------------------------------------------
+    # Audit-chain anchoring (`secsy-ca audit anchor`)
+    # -------------------------------------------------------------------------
+    AuditAnchor:
+      type: object
+      description: >-
+        The event log's head bound into an RFC 3161 timestamp token, so a
+        whole-chain truncation or rewrite behind that point is detectable.
+      properties:
+        id: { type: string }
+        seq: { type: integer, format: int64 }
+        head_hash: { type: string }
+        token:
+          type: string
+          description: >-
+            Base64-encoded DER TimeStampToken (a CMS SignedData), so an auditor can
+            archive it or re-verify it offline (openssl ts -verify) against the TSA
+            certificate.
+        tsa_source:
+          type: string
+          description: >-
+            Where the token came from: empty for the deployment's internal TSA, or
+            the external TSA URL.
+        gen_time: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+
+    AnchorAuditChainRequest:
+      type: object
+      properties:
+        force:
+          type: boolean
+          description: >-
+            Anchor even when the head has not moved since the last anchor. Without
+            it an unchanged head is reported as skipped, so a console button cannot
+            mint a pile of redundant tokens over one head.
+
+    AuditAnchorResult:
+      type: object
+      properties:
+        skipped:
+          type: boolean
+          description: True when nothing needed anchoring; reason says why.
+        reason: { type: string }
+        tsa_source:
+          type: string
+          description: >-
+            Where the token came from: "internal" for the deployment's own TSA,
+            else the external TSA URL. Reported separately from the anchor row
+            (whose tsa_source is empty for the internal authority) so the console
+            can always name the authority without special-casing the empty string.
+        anchor:
+          allOf:
+            - $ref: "#/components/schemas/AuditAnchor"
+          description: The persisted anchor on success; absent when skipped.
+
+    # -------------------------------------------------------------------------
+    # CT inclusion verification on demand (Task 93)
+    # -------------------------------------------------------------------------
+    CTVerifyInclusionRequest:
+      type: object
+      properties:
+        max:
+          type: integer
+          description: >-
+            Bounds how many certificates this run examines, NARROWING
+            certificate_transparency.inclusion_monitor.max_certs_per_run. Zero,
+            negative, or a value at or above the configured bound uses the
+            configured bound: a request can ask for a smaller scan, never for a
+            larger one, because every certificate examined costs round trips to
+            third-party logs.
+
+    CTVerifyInclusionResponse:
+      type: object
+      description: >-
+        One scan's outcome plus the standing backlog counts, so the console can
+        render the run and the overall state from one call.
+      properties:
+        started_at: { type: string, format: date-time }
+        certs:
+          type: integer
+          description: Certificates examined.
+        checked: { type: integer }
+        included: { type: integer }
+        pending: { type: integer }
+        failed:
+          type: integer
+          description: >-
+            SCTs a log did not honour within its Maximum Merge Delay — the
+            log-misbehavior signal. Not a request error.
+        unknown_log: { type: integer }
+        errors: { type: integer }
+        new_misbehavior:
+          type: integer
+          description: >-
+            SCTs that transitioned into the failed state this scan (the events that
+            would be alerted).
+        counts:
+          type: object
+          additionalProperties: { type: integer }
+          description: >-
+            The standing per-status SCT tally after the scan, keyed exactly as
+            GET /api/ct/inclusion reports it (included, pending, failed,
+            unknown_log).
+        error:
+          type: string
+          description: >-
+            Set, with HTTP 500, when the scan itself failed (e.g. enumerating the
+            store). Per-SCT failures are not errors — they are the "failed" tally.
+
+    # -------------------------------------------------------------------------
+    # JWT-SVID validation (`secsy-ca svid jwt-verify`)
+    # -------------------------------------------------------------------------
+    VerifyJWTSVIDRequest:
+      type: object
+      required: [token, audience]
+      properties:
+        token:
+          type: string
+          description: The compact JWT-SVID to validate.
+        audience:
+          type: string
+          description: >-
+            The relying party's own identity, which must appear in the token's
+            "aud" set. Mandatory: the SPIFFE JWT-SVID spec requires a validator to
+            reject a token not addressed to it, and defaulting this would quietly
+            turn that rule off.
+        trust_domains:
+          type: array
+          description: >-
+            Optionally NARROWS the trust domains the token's subject may belong to.
+            Empty uses the deployment's configured allowlist, which is applied as a
+            fail-closed backstop regardless, so a request can never widen what this
+            deployment accepts.
+          items: { type: string }
+
+    JWTSVIDVerifyResult:
+      type: object
+      description: >-
+        The verdict. On success it carries the validated claims — never any key
+        material beyond the public "kid" the token itself advertises.
+      properties:
+        valid:
+          type: boolean
+          description: The verdict. False is accompanied by reason and HTTP 409.
+        reason:
+          type: string
+          description: >-
+            The failure cause when valid is false (e.g. an expired token, an absent
+            audience, or a signature from a key outside the trust bundle).
+        spiffe_id: { type: string }
+        trust_domain: { type: string }
+        path: { type: string }
+        audience:
+          type: array
+          description: The token's full aud set (the requested audience is one member).
+          items: { type: string }
+        key_id:
+          type: string
+          description: The "kid" header the signature was verified under.
+        algorithm:
+          type: string
+          description: The JWS "alg" (e.g. ES256).
+        issued_at:
+          type: string
+          format: date-time
+          description: The iat claim; omitted when the token carries none.
+        expires_at:
+          type: string
+          format: date-time
+          description: The exp claim.

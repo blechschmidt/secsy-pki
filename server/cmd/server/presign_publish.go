@@ -84,6 +84,12 @@ func setupOCSPPresign(cfg *config.Config, db *database.DB, provider keyprovider.
 // regeneration path, and one replica producing snapshots prevents racing
 // atomic swaps against the same target. A handover is idempotent — the new
 // leader's first snapshot simply supersedes the old leader's last one.
+//
+// Leader election bounds the replica count to one; it says nothing about what
+// else in THAT process publishes. POST /api/publish writes the same destination
+// from the same binary, so each pass also takes handlers.TryPublishLock — the
+// same process-wide single-flight the endpoint takes — and skips this tick rather
+// than swapping into an operator's half-written snapshot.
 func setupPublish(cfg *config.Config, db *database.DB, provider keyprovider.Provider, presigner *ca.OCSPPresigner, elector *leader.Elector) {
 	pub := cfg.Publish
 	if !pub.Enabled {
@@ -110,6 +116,13 @@ func setupPublish(cfg *config.Config, db *database.DB, provider keyprovider.Prov
 
 	elector.Register("artifact-publish", func(ctx context.Context) {
 		runPublish := func() {
+			release, free := handlers.TryPublishLock()
+			if !free {
+				log.Printf("Static artifact publishing: skipping this tick — an operator-triggered publish is in flight")
+				return
+			}
+			defer release()
+
 			artifacts, cas, err := publish.BuildSnapshot(ctx, src, opts)
 			if err != nil {
 				log.Printf("WARNING: publish snapshot build failed (previous snapshot remains current): %v", err)

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
+	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
 
 // Task 194: adopting an application's existing signing key. The property that
@@ -170,5 +171,73 @@ func TestImportSigningKeyDuplicateName(t *testing.T) {
 	}
 	if len(keys) != 1 {
 		t.Fatalf("provider holds %d keys, want 1", len(keys))
+	}
+}
+
+// insertFailingStore is a SigningKeyStore whose INSERT fails. That is the failure
+// mode the classification below exists for: it happens AFTER the key has been
+// written into the provider, non-extractably, under a label only the row that
+// failed to commit would have pointed at.
+type insertFailingStore struct{ *fakeSigningKeyStore }
+
+func (insertFailingStore) InsertSigningKey(*models.SigningKey) error {
+	return errors.New("storing the signing key: database is locked")
+}
+
+// TestImportSigningKeyErrorClassification pins which failures are the CALLER's.
+//
+// Only material/algorithm rejections carry ErrSigningKeyMaterial, and only the
+// host-side provider gates carry keyprovider.ErrImportRejected. Everything else —
+// notably the registry INSERT — must carry NEITHER, because an API that answers
+// "bad request" there invites the operator to retry the same body, and every retry
+// mints a fresh id, hence a fresh label, hence another stranded non-extractable
+// key on a device nobody can delete from. The REST surface classifies on exactly
+// these sentinels (handlers/secret_sign_import.go), so this is where the split is
+// guaranteed rather than in a status-code assertion.
+func TestImportSigningKeyErrorClassification(t *testing.T) {
+	ctx := context.Background()
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name         string
+		store        SigningKeyStore
+		spec         ImportSigningKeySpec
+		wantMaterial bool
+	}{
+		// The caller's: decided entirely by what arrived in the request.
+		{"no key material", newFakeSigningKeyStore(),
+			ImportSigningKeySpec{TenantID: "t", Name: "n"}, true},
+		{"rsa without an algorithm", newFakeSigningKeyStore(),
+			ImportSigningKeySpec{TenantID: "t", Name: "n", PrivateKey: rsaKey}, true},
+		{"algorithm contradicts the key", newFakeSigningKeyStore(),
+			ImportSigningKeySpec{TenantID: "t", Name: "n", PrivateKey: ecKey, Algorithm: AlgECDSAP521}, true},
+		{"unsupported algorithm", newFakeSigningKeyStore(),
+			ImportSigningKeySpec{TenantID: "t", Name: "n", PrivateKey: ecKey, Algorithm: "rsa-1024"}, true},
+		{"unsupported key type", newFakeSigningKeyStore(),
+			ImportSigningKeySpec{TenantID: "t", Name: "n", PrivateKey: struct{}{}}, true},
+		// Ours: the key is already in the provider by the time this fails.
+		{"the registry insert fails", insertFailingStore{newFakeSigningKeyStore()},
+			ImportSigningKeySpec{TenantID: "t", Name: "n", PrivateKey: ecKey}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ImportSigningKey(ctx, newSoftwareProvider(t), tc.store, tc.spec)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if got := errors.Is(err, ErrSigningKeyMaterial); got != tc.wantMaterial {
+				t.Errorf("errors.Is(err, ErrSigningKeyMaterial) = %v, want %v for %v",
+					got, tc.wantMaterial, err)
+			}
+			if !tc.wantMaterial && errors.Is(err, keyprovider.ErrImportRejected) {
+				t.Errorf("a service-side failure must not look like a provider rejection either: %v", err)
+			}
+		})
 	}
 }

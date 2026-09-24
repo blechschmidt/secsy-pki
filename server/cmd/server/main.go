@@ -557,6 +557,19 @@ func main() {
 	// transport that triggered it (including the background expiry sweep below).
 	approvalEngine.SetTerminalHook(issueapproval.NewTerminalHook(db))
 	api.SetApprovals(approvalEngine)
+	// Install the dependency bundle behind the operator-operations endpoints
+	// (Task 198) — preflight diagnostics, DR backup/restore verification, static
+	// artifact publishing, inventory retention, evidence records, key/CA adoption
+	// and signer provisioning. These mirror `secsy-ca` commands that read the same
+	// configuration and, in several cases, need a key provider for a role other
+	// than "ca", which is why they share one optional bundle instead of a setter
+	// each. Without it every one of them answers 503 rather than half-working.
+	api.SetOps(&handlers.OpsDeps{
+		Config:      cfg,
+		ProviderFor: func(role string) (keyprovider.Provider, error) { return buildRoleProvider(cfg, role) },
+		ConfigPath:  *cfgPath,
+	})
+
 	// Native scoped API tokens (Task 86): apply the lifetime policy and seed the
 	// active-token gauge from the store so the metric is correct from startup.
 	api.SetAPITokenMaxLifetime(cfg.Auth.APITokenMaxLifetime())

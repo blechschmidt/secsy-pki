@@ -31,6 +31,53 @@ type KeyInventoryResponse struct {
 	UnboundCount     int                `json:"unbound_count"`
 }
 
+// providerKeyDescriptors enumerates the keys the configured key provider holds,
+// label-sorted. It writes its own error response — 501 when the backend cannot
+// enumerate at all, 500 when the enumeration fails — and reports false when it
+// did, so the caller simply returns.
+//
+// This is the one enumeration path: GET /api/inventory/keys and the device-wide
+// attestation audit (hsm_attest_audit.go) share it, so "which keys does this
+// deployment hold" has a single answer and a single failure story. Every
+// descriptor is an asymmetric private-key object (that is what the providers'
+// ListKeys enumerates), which is the filter `secsy-ca hsm-attest audit` applies
+// by hand to the raw device object list.
+func (a *API) providerKeyDescriptors(w http.ResponseWriter, r *http.Request) ([]keyprovider.KeyDescriptor, bool) {
+	lister, ok := a.keyProvider.(keyprovider.KeyLister)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "the configured key provider (%s) does not support key inventory", a.keyProvider.Name())
+		return nil, false
+	}
+	keys, err := lister.ListKeys(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "listing keys: %v", err)
+		return nil, false
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i].Label < keys[j].Label })
+	return keys, true
+}
+
+// caLabelsByKeyLabel maps a provider key label to the label of the CA that
+// references it, mirroring the CLI's inventory annotation. A key no CA record
+// points at is absent, which is what makes an unbound key visible. Shared with
+// the device-wide attestation audit, so one key's "which CA is this" answer is
+// the same on both endpoints.
+func (a *API) caLabelsByKeyLabel() (map[string]string, error) {
+	cas, err := a.db.ListCAs()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(cas))
+	for _, c := range cas {
+		label := pki.ExtractKeyLabel(c.PKCS11URI)
+		if label == "" {
+			label = c.Label
+		}
+		out[label] = c.Label
+	}
+	return out, nil
+}
+
 // ListProviderKeys handles GET /api/inventory/keys: enumerate the keys the
 // configured key provider holds and verify none is extractable. hsm:manage
 // (admin) gated — the inventory names every key label on the token.
@@ -41,33 +88,17 @@ func (a *API) ListProviderKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lister, ok := a.keyProvider.(keyprovider.KeyLister)
+	keys, ok := a.providerKeyDescriptors(w, r)
 	if !ok {
-		writeError(w, http.StatusNotImplemented, "the configured key provider (%s) does not support key inventory", a.keyProvider.Name())
-		return
-	}
-	keys, err := lister.ListKeys(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "listing keys: %v", err)
 		return
 	}
 
-	// Map provider key labels to the CA that references them, mirroring the CLI.
-	cas, err := a.db.ListCAs()
+	caByLabel, err := a.caLabelsByKeyLabel()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "listing CAs: %v", err)
 		return
 	}
-	caByLabel := map[string]string{}
-	for _, c := range cas {
-		label := pki.ExtractKeyLabel(c.PKCS11URI)
-		if label == "" {
-			label = c.Label
-		}
-		caByLabel[label] = c.Label
-	}
 
-	sort.Slice(keys, func(i, j int) bool { return keys[i].Label < keys[j].Label })
 	resp := KeyInventoryResponse{Provider: a.keyProvider.Name(), Keys: []ProviderKeyEntry{}}
 	for _, k := range keys {
 		entry := ProviderKeyEntry{

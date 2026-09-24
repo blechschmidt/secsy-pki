@@ -122,8 +122,10 @@ type VerifyResult struct {
 	ArtifactFile   string    `json:"artifact_file,omitempty"`
 	ArtifactSize   int       `json:"artifact_size,omitempty"`
 	ArtifactSHA256 string    `json:"artifact_sha256,omitempty"`
-	// CreatedAt is when the backup being verified was produced.
-	CreatedAt time.Time `json:"backup_created_at,omitempty"`
+	// CreatedAt is when the backup being verified was produced. A pointer so an
+	// unread manifest omits the field rather than reporting 0001-01-01, which
+	// `omitempty` does not suppress on a value time.Time.
+	CreatedAt *time.Time `json:"backup_created_at,omitempty"`
 	// ManifestHead is the audit-chain head hash the artifact manifest recorded;
 	// RestoredHead is the head hash the restored scratch store actually has.
 	ManifestHead     string                    `json:"manifest_head,omitempty"`
@@ -204,7 +206,7 @@ func (v *Verifier) verify(ctx context.Context, res *VerifyResult) {
 		return
 	}
 	res.Driver = outer.DBDriver
-	res.CreatedAt = outer.CreatedAt
+	res.CreatedAt = &outer.CreatedAt
 	artifactPath := outer.ArtifactFile
 	if artifactPath == "" {
 		artifactPath = ArtifactName

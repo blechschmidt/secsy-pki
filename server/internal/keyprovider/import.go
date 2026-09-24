@@ -80,6 +80,19 @@ type KeyImporter interface {
 // existing key.
 var ErrImportUnsupported = errors.New("keyprovider: this backend cannot import an existing key")
 
+// ErrImportRejected marks a HOST-SIDE rejection of an import: the request itself
+// cannot be honored, whatever the backend's state. Missing label, unusable key
+// material, a key type or exact RSA size the crypto policy forbids, a key that
+// fails the key-quality gate, a label already in use.
+//
+// It exists so a caller can tell those apart from a BACKEND failure — an
+// unreachable token, a refused C_CreateObject, a dead session — which carries no
+// sentinel precisely because it is not the caller's mistake. An API that reports
+// a dead HSM as "bad request" sends the operator auditing their key file; one
+// that reports a ROCA-vulnerable key as a service outage sends them rebooting the
+// token. Classify with errors.Is, never by matching message text.
+var ErrImportRejected = errors.New("keyprovider: the key cannot be imported as specified")
+
 // ImportKey imports spec into p when p supports it, and returns a wrapped
 // ErrImportUnsupported naming the backend when it does not.
 func ImportKey(ctx context.Context, p Provider, spec ImportSpec) (*KeyInfo, error) {
@@ -100,34 +113,39 @@ func CanImport(p Provider) bool {
 // key material, an algorithm the deployment's crypto policy permits, the
 // key-quality gate, and the RSA-only rule for key-encryption keys. It returns
 // the canonical key type.
+//
+// Every failure here is host-side — none of it touches the backend — so all of
+// it is tagged ErrImportRejected: this is the single function every provider's
+// ImportKey goes through, which makes it the one place the caller/backend split
+// can be established for all of them at once.
 func validateImportSpec(spec ImportSpec) (string, error) {
 	if spec.Label == "" {
-		return "", fmt.Errorf("keyprovider: key label is required")
+		return "", fmt.Errorf("%w: key label is required", ErrImportRejected)
 	}
 	if spec.PrivateKey == nil {
-		return "", fmt.Errorf("keyprovider: no private key supplied for import")
+		return "", fmt.Errorf("%w: no private key supplied for import", ErrImportRejected)
 	}
 	keyType, err := pki.PrivateKeyType(spec.PrivateKey)
 	if err != nil {
-		return "", fmt.Errorf("keyprovider: %w", err)
+		return "", fmt.Errorf("%w: %w", ErrImportRejected, err)
 	}
 	if err := fips.CheckKeyType(keyType); err != nil {
-		return "", fmt.Errorf("keyprovider: %w", err)
+		return "", fmt.Errorf("%w: %w", ErrImportRejected, err)
 	}
 	if err := checkImportKeyQuality(spec.PrivateKey); err != nil {
-		return "", err
+		return "", err // already tagged
 	}
 	switch spec.Usage {
 	case "", KeyUsageSign:
 	case KeyUsageDecrypt:
 		if _, ok := spec.PrivateKey.(*rsa.PrivateKey); !ok {
-			return "", fmt.Errorf("keyprovider: a key-encryption key must be RSA, got %s", keyType)
+			return "", fmt.Errorf("%w: a key-encryption key must be RSA, got %s", ErrImportRejected, keyType)
 		}
 	default:
-		return "", fmt.Errorf("keyprovider: unsupported key usage %q", spec.Usage)
+		return "", fmt.Errorf("%w: unsupported key usage %q", ErrImportRejected, spec.Usage)
 	}
 	if _, ok := spec.PrivateKey.(crypto.Signer); !ok {
-		return "", fmt.Errorf("keyprovider: private key of type %T cannot be used", spec.PrivateKey)
+		return "", fmt.Errorf("%w: private key of type %T cannot be used", ErrImportRejected, spec.PrivateKey)
 	}
 	return keyType, nil
 }
@@ -162,8 +180,8 @@ func checkImportKeyQuality(priv crypto.PrivateKey) error {
 	for _, f := range res.Findings {
 		details = append(details, f.Detail)
 	}
-	return fmt.Errorf("keyprovider: the key fails the key-quality gate and must not be imported: %s",
-		strings.Join(details, "; "))
+	return fmt.Errorf("%w: it fails the key-quality gate and must not be imported: %s",
+		ErrImportRejected, strings.Join(details, "; "))
 }
 
 // VerifyKeyUsable proves that the referenced key is present in the provider and
@@ -244,10 +262,19 @@ func publicKeysMatch(a, b crypto.PublicKey) bool {
 // The software backend cannot make an imported key any less copyable than the
 // file it came from — that is the honest difference between it and a token, and
 // the reason the CLI says so when adopting a CA onto it.
-func (p *SoftwareProvider) ImportKey(_ context.Context, spec ImportSpec) (*KeyInfo, error) {
+func (p *SoftwareProvider) ImportKey(ctx context.Context, spec ImportSpec) (*KeyInfo, error) {
 	keyType, err := validateImportSpec(spec)
 	if err != nil {
 		return nil, err
+	}
+	// Duplicate-label check up front, as the PKCS#11 backend does it: writeKeyFile
+	// also refuses, but it is shared with GenerateKey and so cannot tag the failure
+	// as an import rejection — and a label already in use is the caller's choice to
+	// fix, not a backend that is down.
+	if _, ferr := p.FindKey(ctx, KeyRef{Label: spec.Label}); ferr == nil {
+		return nil, fmt.Errorf("%w: a key labeled %q already exists in the keystore", ErrImportRejected, spec.Label)
+	} else if !errors.Is(ferr, ErrKeyNotFound) {
+		return nil, fmt.Errorf("keyprovider: checking for existing key %q: %w", spec.Label, ferr)
 	}
 	signer := spec.PrivateKey.(crypto.Signer)
 
@@ -271,7 +298,7 @@ func (p *PKCS11Provider) ImportKey(ctx context.Context, spec ImportSpec) (*KeyIn
 	// CKA_LABEL resolve ambiguously, and the private and public halves of a
 	// signer can then come from different key pairs.
 	if _, err := p.FindKey(ctx, KeyRef{Label: spec.Label}); err == nil {
-		return nil, fmt.Errorf("keyprovider: a key labeled %q already exists on the token", spec.Label)
+		return nil, fmt.Errorf("%w: a key labeled %q already exists on the token", ErrImportRejected, spec.Label)
 	} else if !errors.Is(err, ErrKeyNotFound) {
 		return nil, fmt.Errorf("keyprovider: checking for existing key %q: %w", spec.Label, err)
 	}
@@ -282,7 +309,7 @@ func (p *PKCS11Provider) ImportKey(ctx context.Context, spec ImportSpec) (*KeyIn
 	}
 	loc, err := locatorFor(KeyRef{Label: spec.Label, ID: spec.ID})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrImportRejected, err)
 	}
 	imported, err := pool.ImportKey(ctx, spec.Label, loc.ID, spec.PrivateKey, importUsage(spec.Usage))
 	if err != nil {

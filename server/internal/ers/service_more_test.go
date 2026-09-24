@@ -1007,7 +1007,7 @@ func TestInfoSummary(t *testing.T) {
 		if !strings.Contains(ti.TSASubject, "ERS Test TSA") {
 			t.Fatalf("timestamp %d TSA subject = %q", i, ti.TSASubject)
 		}
-		if ti.TSANotAfter.IsZero() {
+		if ti.TSANotAfter == nil {
 			t.Fatalf("timestamp %d has no TSA expiry", i)
 		}
 	}

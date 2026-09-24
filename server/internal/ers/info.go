@@ -17,9 +17,11 @@ type TimestampInfo struct {
 	Hash       string    `json:"hash"`
 	GenTime    time.Time `json:"gen_time"`
 	TSASubject string    `json:"tsa_subject,omitempty"`
-	// TSANotAfter is the embedded TSA certificate's expiry (zero when the token
-	// omits its certificate). Time-stamp renewal is driven off the newest one.
-	TSANotAfter time.Time `json:"tsa_not_after,omitempty"`
+	// TSANotAfter is the embedded TSA certificate's expiry, nil when the token
+	// omits its certificate. Time-stamp renewal is driven off the newest one. A
+	// pointer because `omitempty` does not omit a zero time.Time, and a consumer
+	// reading 0001-01-01 would conclude the timestamp had expired.
+	TSANotAfter *time.Time `json:"tsa_not_after,omitempty"`
 }
 
 // Info is a structured summary of an EvidenceRecord for display and export.
@@ -130,7 +132,7 @@ func (er *EvidenceRecord) Info() Info {
 			}
 			if cert := tokenSigner(ats.TimeStamp.FullBytes); cert != nil {
 				ti.TSASubject = cert.Subject.String()
-				ti.TSANotAfter = cert.NotAfter
+				ti.TSANotAfter = &cert.NotAfter
 			}
 			info.Timestamps = append(info.Timestamps, ti)
 		}
