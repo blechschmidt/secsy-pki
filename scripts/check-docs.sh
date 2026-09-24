@@ -147,6 +147,11 @@ for page in sorted(os.listdir(docs)):
         problems.append(f"docs/{page} sits outside a topic section")
 
 # ------------------------------------- 4. docs paths quoted in code and config
+# Tracked files only, deliberately. Scanning untracked ones too would catch a
+# stale path in a new file before it is committed — but it would also make this
+# gate's verdict depend on whatever uncommitted work happens to be in the tree,
+# so it could fail on one machine and pass in CI with the same commit. A gate
+# that is not a function of the commit is not a gate. `git add` first, then run.
 tracked = subprocess.run(["git", "grep", "-Il", "docs/"], capture_output=True,
                          text=True).stdout.split()
 for f in tracked:
