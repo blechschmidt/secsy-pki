@@ -683,6 +683,11 @@ func TestConsoleParityViewsExist(t *testing.T) {
 //     whose classification was made by reading the bundle, not by this probe.
 //   - A parameter at the END with nothing after it ("GET /api/webhooks/{id}")
 //     leaves only the prefix, which its siblings satisfy.
+//   - A longer path that merely CONTAINS a probe. This is a substring test, so a
+//     typo'd "/api/doctorr" in the bundle still satisfies "/api/doctor".
+//     Demanding a path boundary after the probe would reject the legitimate
+//     "/api/ca/" prefix form, so the looser test is deliberate: it is aimed at
+//     "nothing calls this at all", not at spelling.
 //   - Reachability. A literal present in a dead code path, behind a control
 //     nothing renders, or in a comment still counts as referenced. Only the
 //     end-to-end suite (internal/e2e/console_test.go) can speak to that.
