@@ -259,7 +259,8 @@ On PostgreSQL the database volume is not needed at all; see
 
 A container is configured by environment, and the config file is often baked
 before the deployment knows the values. These variables **override** the file, so
-credentials need not be in it:
+credentials need not be in it. This is the subset that matters in a container;
+`applyEnvOverrides` in `server/internal/config/config.go` is the full list:
 
 | Variable | Overrides | Notes |
 |----------|-----------|-------|
@@ -273,7 +274,7 @@ credentials need not be in it:
 | `SECSY_KMS_*`, `VAULT_ADDR`/`VAULT_TOKEN`, `SECSY_VAULT_ROLE_ID`/`…_SECRET_ID` | the [cloud-KMS](../hsm/cloud-kms.md) and [Vault Transit](../hsm/vault-transit.md) backends | Cloud credentials themselves come from the SDK's own chain, never from config |
 | `SECSY_ACME_*`, `SECSY_MONITOR_*` | the [ACME server](../protocols/acme.md) and [expiry monitor](../operations/expiry-monitoring.md) | Enable/disable and retarget without a config edit |
 | `SECSY_SERVER_UNIX_SOCKET`, `SECSY_GRPC_UNIX_SOCKET` | the listener paths | A runtime often knows the mounted socket path long after the config was written ([Unix sockets](unix-socket.md)) |
-| `SECSY_ALLOW_INSECURE_HTTP` | nothing — it is a guard | Serves the API in **cleartext**. Only for a trusted TLS-terminating proxy on the same pod/host; the server refuses cleartext without it and logs a warning with it |
+| `SECSY_ALLOW_INSECURE_HTTP` | nothing — it is a guard | Set to `1`, `true` or `yes` to serve the API in **cleartext**. Only for a trusted TLS-terminating proxy on the same pod/host; without it the server refuses to start with no `tls_cert`, and with it it logs a warning on every start |
 | `SOFTHSM2_CONF` | — | Preset to `/etc/softhsm/softhsm2.conf`. The Debian package's own config is unreadable to non-root, so the image ships a world-readable one pointing at `/var/lib/softhsm/tokens` |
 
 `pin_source` is a **block**, not a string:
