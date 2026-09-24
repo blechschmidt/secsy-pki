@@ -98,8 +98,11 @@ automatically. See
 had grown unevenly: the well-trodden issuance paths were thoroughly tested while
 several protocol parsers, background workers and authorization primitives had no
 test touching them at all. Those gaps were filled — the HSM-free suite went from
-62.9% to 79.4% of statements, with fifteen packages taken past 90% — and the new
-tests found eleven genuine defects, all fixed. The ones worth knowing about:
+62.9% to 68.0% of statements, and thirteen packages now sit above 90%, among them
+the CAA gate (39.5% → 97.5%), the resource-scoped RBAC grant model (46% → 100%),
+the webhook worker (59.9% → 98%), the mail transports (31.6% → 99.6%) and the
+RFC 3161 token decoder (0% → 100%) — and the new tests found eleven genuine
+defects, all fixed. The ones worth knowing about:
 
 *Two remotely reachable crashes.* The hand-rolled IMAP client used to read ACME
 `email-reply-00` challenge replies allocated a buffer straight from the byte count
