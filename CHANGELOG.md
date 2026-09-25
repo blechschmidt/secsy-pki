@@ -154,6 +154,40 @@ which replaces the hand-maintained lists that had gone stale. Per-CA issuance
 restriction sets remain the one feature reachable only from the legacy SPA and
 the API.
 
+### Changed
+
+**The `-yubihsm` image builds Yubico's PKCS#11 module from upstream source
+instead of installing Debian's package.** `bookworm-backports` carries
+yubihsm-shell **2.6.0**; upstream is on **2.8.0**, and `bookworm` proper has no
+`yubihsm` packages at all, so the one component the tag exists to provide was
+also the only one pinned two minor releases behind — on a project whose YubiHSM
+support tracks the current firmware and command set. A new `yubihsm-builder`
+stage now compiles the whole upstream tree for both architectures:
+`yubihsm_pkcs11.so`, `libyubihsm` with its USB and HTTP transports,
+`libykhsmauth`, and the `yubihsm-shell`/`-wrap`/`-auth` tools.
+
+Debian's security tracking of that package is replaced rather than dropped. The
+release tarball is pinned by **SHA-256** and checked against Yubico's **detached
+OpenPGP signature**, required to come from the fingerprint pinned in the
+`Dockerfile` — the public key is vendored at
+`deploy/yubihsm/yubico-release-signing-key.asc`, so editing that file does not
+change which key is trusted. The digest alone says nothing about who produced the
+bytes and the signature alone says nothing about which release was wanted, so
+both are checked. The weekly image rebuild still refreshes the libcrypto,
+libcurl and libusb it links against; a new upstream release is a
+`YUBIHSM_SHELL_VERSION` bump.
+
+The module is installed at `/usr/local/lib/pkcs11/yubihsm_pkcs11.so` and still
+symlinked to `/usr/lib/pkcs11/yubihsm_pkcs11.so`, so **no configuration
+changes** — and because that path no longer resolves into a multiarch directory,
+the glob-and-count the old stage needed is gone. `yubihsm-connector`, a separate
+upstream project whose version need not match, stays on backports. The image
+records what it built at `/usr/share/secsy-pki/yubihsm-shell-version`, and
+`verify-published-image.sh --expect-yubihsm` holds the loaded module's own
+`C_GetInfo` version against it — which is what would catch a silent fall back to
+the distribution package. Roughly 16 MB on top of the default image, as before.
+See [docs/deployment/container.md](docs/deployment/container.md#built-from-upstream-source-not-from-debian).
+
 ### Fixed
 
 **`server.tls.self_issue.ca_id` rejected the CA label it documented.** The

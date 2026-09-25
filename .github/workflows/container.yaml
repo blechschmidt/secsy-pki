@@ -80,6 +80,12 @@ on:
     # it was built — and for a PKI whose trust store is one of those packages,
     # that ages badly. Off the hour and off Sunday night, where every other cron
     # on GitHub is.
+    #
+    # One thing a rebuild does *not* refresh: the yubihsm-shell release the
+    # `-yubihsm` variant compiles. It is pinned by version and digest in the
+    # Dockerfile, so a new upstream release is picked up by editing those, not by
+    # waiting for Monday. The libcrypto/libcurl/libusb it links against do come
+    # from the base image and are refreshed here.
     - cron: "40 4 * * 1"
   workflow_dispatch:
     inputs:
@@ -333,22 +339,38 @@ jobs:
             VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
 
-      # The module is architecture-specific and Debian installs it under a
-      # multiarch path, which the build stage resolves by glob and symlinks to
-      # the one path documentation and config files can name. Emulating arm64 is
-      # how that symlink gets checked on the half of the index this runner is
-      # not — a glob that resolved to the build architecture would look perfect
-      # here and leave every arm64 pull with a dangling module_path.
+      # The module is compiled from source by a stage pinned to the *build*
+      # platform, so the arm64 half of the index is where a mistake in the cross
+      # toolchain plumbing shows up — as an amd64 `.so` inside an arm64 image,
+      # which looks perfect on this runner and leaves every arm64 pull unable to
+      # sign. Emulation is what catches it, and the strongest available proof is
+      # that the module *loads*: pkcs11-tool dlopens it, which an x86-64 object
+      # under an aarch64 loader cannot survive.
+      #
+      # Not the full verify-published-image.sh: that script runs `docker run`
+      # without `--platform`, and against a foreign-architecture image docker
+      # writes a platform-mismatch warning onto stderr that the script then reads
+      # as the output of every version command. The amd64 pass above is where it
+      # runs; this is the arm64-specific half it cannot cover.
       - name: Run the arm64 -yubihsm image under emulation
         run: |
           set -euo pipefail
           docker run --rm --platform linux/arm64 --entrypoint bash secsy-pki:smoke-yubihsm-arm64 -c '
             set -eux
-            readlink -f /usr/lib/pkcs11/yubihsm_pkcs11.so | grep -q aarch64-linux-gnu
+            module=$(readlink -f /usr/lib/pkcs11/yubihsm_pkcs11.so)
+            # ELF e_machine: 2 bytes little-endian at offset 18, b700 = AArch64.
+            # Read off the header rather than the path, which no longer names an
+            # architecture now that the module is built into /usr/local instead
+            # of a multiarch directory.
+            [ "$(od -An -tx1 -j18 -N2 "$module" | tr -d " \n")" = b700 ]
             # An `if`, not `cmd && exit 1`: under set -e a grep that matches
             # nothing — the healthy case — would end the script as a failure.
-            if ldd /usr/lib/pkcs11/yubihsm_pkcs11.so | grep -F "not found"; then exit 1; fi
-            yubihsm-shell --version
+            if ldd "$module" | grep -F "not found"; then exit 1; fi
+            printf "connector = yhusb://\n" >/tmp/yubihsm_pkcs11.conf
+            YUBIHSM_PKCS11_CONF=/tmp/yubihsm_pkcs11.conf \
+              pkcs11-tool --module "$module" --show-info 2>&1 | grep -F "YubiHSM PKCS#11 Library"
+            # Both halves of the source build, at the version the build recorded.
+            yubihsm-shell --version | grep -Fqx "yubihsm-shell $(cat /usr/share/secsy-pki/yubihsm-shell-version)"
           '
 
   # --------------------------------------------------------------------------- #

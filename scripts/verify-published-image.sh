@@ -61,10 +61,11 @@ EXPECT_YUBIHSM=0
 EXPECT_UID=65532
 SOFTHSM_MODULE=/usr/lib/softhsm/libsofthsm2.so
 
-# The architecture-independent path the `-yubihsm` stage symlinks into place.
-# Checking this one rather than the multiarch original is deliberate: it is the
-# path the documentation tells operators to put in pkcs11.module_path, and it is
-# the only one that can be correct on both halves of a multi-arch tag.
+# Where the `-yubihsm` stage symlinks its source-built module. Checking the
+# symlink rather than /usr/local/lib/pkcs11/… behind it is deliberate: this is
+# the path the documentation, the example configs and the Helm values all tell
+# operators to put in pkcs11.module_path, so it is the one whose breakage they
+# would notice.
 YUBIHSM_MODULE=/usr/lib/pkcs11/yubihsm_pkcs11.so
 
 # The six commands the Dockerfile installs, each with the cheapest invocation
@@ -281,17 +282,22 @@ fi
 # --- 7. The -yubihsm variant carries what its tag promises --------------------
 #
 # Present *and loadable*. "The .so is in the image" is the check that passes
-# while the image is broken: Yubico's module is dynamically linked against
-# libyubihsm, which in turn dlopens a per-transport backend, and Debian's
-# dependency on those backends is an alternative — `libyubihsm-http2 |
-# libyubihsm-usb2` — that apt satisfies with the first one alone. The result
-# is a module that loads and can reach a yubihsm-connector but not a device on
-# the USB bus, which is how nearly everyone attaches one.
+# while the image is broken: the module is dynamically linked against
+# libyubihsm, which in turn dlopens a per-transport backend, so a transport that
+# did not get built or did not get copied leaves a module that loads and can
+# reach a yubihsm-connector but not a device on the USB bus — which is how
+# nearly everyone attaches one.
 #
 # So the module is put through pkcs11-tool, which dlopens it, resolves
 # C_GetFunctionList and calls C_Initialize/C_GetInfo. No YubiHSM is attached to
 # a CI runner, and none is needed: initialization is what loads the backend, and
 # the failure this is looking for happens there rather than at the device.
+#
+# And it is the *right* module: the Dockerfile builds yubihsm-shell from
+# upstream's signed release and records the version it built in the image, so
+# C_GetInfo's answer can be held against it. That is what distinguishes the
+# source build from a silent fall back to Debian's package, which is two minor
+# versions behind and would otherwise pass every other check here.
 if [ "$EXPECT_YUBIHSM" -eq 1 ]; then
 	echo "  checking the bundled YubiHSM PKCS#11 module"
 	probe=$(
@@ -301,10 +307,31 @@ set -euo pipefail
 module="$(readlink -f MODULE)"
 echo "module:      ${module}"
 
-# Every NEEDED library resolved. This is the failure that a cross-built or
-# mismatched-base image produces, and it is silent until the first signature:
-# the module is a perfectly good file that the loader will not load.
-for so in "$module" /usr/lib/*/libyubihsm_usb.so.2 /usr/lib/*/libyubihsm_http.so.2; do
+# The upstream release the image was built from, as recorded by the build stage.
+upstream="$(cat /usr/share/secsy-pki/yubihsm-shell-version)"
+echo "upstream:    yubihsm-shell ${upstream}"
+
+# The module is built for the architecture of the image it is in. Read off the
+# ELF header rather than the path, which no longer encodes the architecture now
+# that the module is installed under /usr/local instead of a multiarch
+# directory: e_machine is 2 bytes little-endian at offset 18, and the values
+# below are the two platforms published. A wrong-arch module would also fail to
+# load below, but it fails here with a legible reason.
+machine="$(od -An -tx1 -j18 -N2 "$module" | tr -d ' \n')"
+case "$(uname -m):${machine}" in
+x86_64:3e00 | aarch64:b700) echo "machine:     ${machine} matches $(uname -m)" ;;
+*) echo "module e_machine ${machine} is not $(uname -m)" >&2; exit 1 ;;
+esac
+
+# Every NEEDED library resolved, for the module and for each library out of the
+# same source tree. This is the failure that a cross-built or mismatched-base
+# image produces, and it is silent until the first signature: the module is a
+# perfectly good file that the loader will not load.
+for so in "$module" \
+    /usr/local/lib/libyubihsm.so.2 \
+    /usr/local/lib/libyubihsm_usb.so.2 \
+    /usr/local/lib/libyubihsm_http.so.2 \
+    /usr/local/lib/libykhsmauth.so.2; do
     if [ ! -f "$so" ]; then
         echo "missing: $so" >&2
         exit 1
@@ -327,10 +354,20 @@ export YUBIHSM_PKCS11_CONF="$conf"
 
 # The exit status is 1 on a machine with no YubiHSM attached — "No slot with a
 # token was found", which is the correct answer here and not the thing being
-# checked. What is being read is C_GetInfo's reply, below.
-pkcs11-tool --module "$module" --show-info 2>&1 || true
+# checked. What is being read is C_GetInfo's reply.
+info="$(pkcs11-tool --module "$module" --show-info 2>&1 || true)"
+printf '%s\n' "$info"
 
-yubihsm-shell --version
+# C_GetInfo reports CK_VERSION, which has no room for a patch level, so the
+# module packs one in: minor becomes minor*10 + patch (2.8.0 -> "2.80"). Both
+# numbers are printed on their own lines for the caller to compare, rather than
+# grepped for here: an expected-value line and the output it is checked against
+# in one blob of text is a comparison that passes against itself.
+IFS=. read -r up_major up_minor up_patch <<<"${upstream}"
+echo "want-ckver:  ${up_major}.$((up_minor * 10 + up_patch))"
+echo "got-ckver:   $(printf '%s\n' "$info" | sed -n 's/^Library  *YubiHSM PKCS#11 Library (ver \(.*\))$/\1/p')"
+
+echo "got-shell:   $(yubihsm-shell --version | sed -n 's/^yubihsm-shell //p')"
 echo "yubihsm-connector $(yubihsm-connector version)"
 test -f /usr/share/secsy-pki/udev/70-yubihsm.rules
 echo "udev rule:   shipped for the host to install"
@@ -339,6 +376,7 @@ INNER
 	probe="${probe//MODULE/$YUBIHSM_MODULE}"
 	if out="$(docker run --rm --entrypoint bash "$IMAGE" -c "$probe" 2>&1)"; then
 		printf '%s\n' "$out" | sed 's/^/        /'
+		field() { printf '%s\n' "$out" | sed -n "s/^$1: *//p"; }
 		# C_GetInfo answers with the module's own identity, so a module that
 		# loaded but is the wrong one — SoftHSM reached through a stale symlink,
 		# say — cannot pass as this one.
@@ -346,13 +384,44 @@ INNER
 		*"YubiHSM PKCS#11 Library"*) ok "Yubico's PKCS#11 module loads and initializes" ;;
 		*) bad "${YUBIHSM_MODULE} did not identify itself as the YubiHSM PKCS#11 library" ;;
 		esac
-		# Named separately because Debian's dependency on it is an alternative
-		# that apt satisfies with the HTTP backend alone; without it the module
-		# reaches a yubihsm-connector and never a device on the USB bus.
+		# The Cryptoki version the loaded module reports, against the one the
+		# recorded upstream release implies. This is the check that a Debian
+		# package or a stale layer has not displaced the source build.
+		want_ckver="$(field want-ckver)"
+		got_ckver="$(field got-ckver)"
+		if [ -z "$want_ckver" ] || [ -z "$got_ckver" ]; then
+			bad "the probe did not report both module versions (want='${want_ckver}' got='${got_ckver}')"
+		elif [ "$want_ckver" = "$got_ckver" ]; then
+			ok "the module is the recorded upstream build (ver ${got_ckver})"
+		else
+			bad "the module reports ver ${got_ckver}, not the ${want_ckver} the image was built from"
+		fi
+		# The vendor tools come out of the same source tree as the module, so a
+		# version skew between them means one of the two was not replaced.
+		upstream="$(field upstream | sed 's/^yubihsm-shell //')"
+		if [ -n "$upstream" ] && [ "$(field got-shell)" = "$upstream" ]; then
+			ok "yubihsm-shell is the same ${upstream} build as the module"
+		else
+			bad "yubihsm-shell reports '$(field got-shell)', not the recorded ${upstream:-version}"
+		fi
+		# Named separately because the module dlopens its transports by SONAME:
+		# without the USB one it reaches a yubihsm-connector and never a device
+		# on the USB bus.
 		case "$out" in
 		*libyubihsm_usb*) ok "the direct-USB backend is installed" ;;
-		*) bad "libyubihsm-usb is missing — the module could reach a connector but never a device on the USB bus" ;;
+		*) bad "libyubihsm_usb is missing — the module could reach a connector but never a device on the USB bus" ;;
 		esac
+		# The label exists because the image SBOM is catalogued from dpkg and a
+		# source build has no dpkg entry, so this is the only place a scanner
+		# learns what vendor code is in here. Checked against the build's own
+		# record, because a label nobody compares is a label that goes stale.
+		label="$(docker image inspect --format \
+			'{{index .Config.Labels "io.secsy-pki.yubihsm-shell.version"}}' "$IMAGE" 2>/dev/null || true)"
+		if [ -n "$upstream" ] && [ "$label" = "$upstream" ]; then
+			ok "the io.secsy-pki.yubihsm-shell.version label says ${label}"
+		else
+			bad "the io.secsy-pki.yubihsm-shell.version label says '${label}', not ${upstream:-the recorded version}"
+		fi
 	else
 		printf '%s\n' "$out" | sed 's/^/        /'
 		bad "the -yubihsm variant cannot load ${YUBIHSM_MODULE}"

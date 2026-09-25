@@ -440,24 +440,98 @@ Every tag has one; they are built from the same commit in the same job, so
 |-------|----------------|
 | `yubihsm_pkcs11.so` | Yubico's PKCS#11 module. Live CA signing goes through PKCS#11 |
 | `libyubihsm` + the **USB** and **HTTP** transports | What the module loads to reach the device |
-| `yubihsm-shell` | Vendor CLI, for diagnosing the device by hand |
+| `libykhsmauth` | YubiKey-held authentication keys, which the module links against |
+| `yubihsm-shell`, `yubihsm-wrap`, `yubihsm-auth` | Vendor CLIs, for working on the device by hand |
 | `yubihsm-connector` | The USB-to-HTTP bridge, when the device must be shared |
 | `/usr/share/secsy-pki/udev/70-yubihsm.rules` | The host udev rule, shipped to be copied out |
 
-Roughly 17 MB on top of the default image. The packages are Debian's, from
-`bookworm-backports` — Yubico's own tarball is amd64-only, which would leave
-this variant with one architecture while the default image has two.
+Roughly 16 MB on top of the default image.
 
-**None of it is needed by the native driver.** `internal/yubihsm` speaks the
+### Built from upstream source, not from Debian
+
+Everything in that table except `yubihsm-connector` is compiled during the image
+build from Yubico's own [`yubihsm-shell`](https://developers.yubico.com/yubihsm-shell/)
+release tarball, for both architectures. The version built is recorded in the
+image:
+
+```console
+$ docker run --rm --entrypoint cat ghcr.io/blechschmidt/secsy-pki:1.2.3-yubihsm \
+    /usr/share/secsy-pki/yubihsm-shell-version
+2.8.0
+```
+
+It used to come from `bookworm-backports`, which carries **2.6.0** — two minor
+releases behind, and what is in between is not cosmetic for a CA. From upstream's
+changelog: 2.7.2 fixes a PKCS#11 bug where generating an RSA key pair "can
+potentially result in the wrong type of object being created" and stops command
+audit being enabled for command `0x05` — the audit subsystem
+[this project reads and pins](../hsm/audit-log.md); 2.7.3 fixes capabilities on
+public wrap keys; 2.8.0 adds YubiKey-held session authentication. `bookworm`
+proper has no `yubihsm` packages at all, so staying with Debian meant staying on
+backports' schedule for the single package this tag exists to provide, and left
+the vendor module the oldest thing in the image.
+
+Building from source gives up Debian's security tracking of that package, so the
+provenance is replaced rather than dropped. The build:
+
+1. downloads the release tarball named by `YUBIHSM_SHELL_VERSION` in the
+   `Dockerfile`, and checks it against the **SHA-256 digest** pinned beside it;
+2. verifies Yubico's **detached OpenPGP signature** over those same bytes against
+   the key vendored at `deploy/yubihsm/yubico-release-signing-key.asc`, requiring
+   the signature to come from the fingerprint pinned in the `Dockerfile` — so
+   replacing the key file does not replace the trust anchor;
+3. cross-compiles it with cmake for the target architecture and installs it under
+   `/usr/local`, stripped.
+
+The digest says nothing about who produced the bytes and the signature says
+nothing about which release was wanted, so both are checked. The weekly rebuild
+still refreshes the libcrypto, libcurl and libusb it links against, because those
+come from the base image; picking up a **new upstream release** is a
+`YUBIHSM_SHELL_VERSION` bump in a commit, not something that happens on its own.
+
+The image SBOM is catalogued from `dpkg`, which knows nothing about a source
+build, so the same facts are carried as labels for anything reading the image
+from outside:
+
+```console
+$ docker image inspect ghcr.io/blechschmidt/secsy-pki:1.2.3-yubihsm \
+    --format '{{json .Config.Labels}}' | jq 'with_entries(select(.key|startswith("io.secsy-pki")))'
+{
+  "io.secsy-pki.yubihsm-shell.version": "2.8.0",
+  "io.secsy-pki.yubihsm-shell.sha256": "627a06899096f8bc81a806ef415e00cf7f08a3fc38f4b6b3f39b8129e64dd481",
+  "io.secsy-pki.yubihsm-shell.source": "https://developers.yubico.com/yubihsm-shell/Releases/yubihsm-shell-2.8.0.tar.gz"
+}
+```
+
+`scripts/verify-published-image.sh --expect-yubihsm` holds all of it together: it
+loads the module, reads the version back out of `C_GetInfo`, and requires it, the
+`yubihsm-shell` binary and the label to agree with what the build recorded — which
+is what would catch a silent fall back to the distribution package.
+
+To build a one-off image against a different release:
+
+```bash
+docker build --target runtime-yubihsm \
+  --build-arg YUBIHSM_SHELL_VERSION=2.8.1 \
+  --build-arg YUBIHSM_SHELL_SHA256=<sha256 of yubihsm-shell-2.8.1.tar.gz> \
+  -t secsy-pki:local-yubihsm .
+```
+
+`yubihsm-connector` stays on `bookworm-backports`: it is a separate upstream
+project, a small Go daemon whose version does not have to match the module's.
+
+**None of this is needed by the native driver.** `internal/yubihsm` speaks the
 device's SCP03 protocol over usbfs directly, with no libusb, no cgo and no
 vendor code, and that is what reads the audit log and issues attestations
 ([native YubiHSM 2 driver](../hsm/yubihsm-native-driver.md)). What needs the
 vendor module is the other half: **live signing goes through PKCS#11**, and
 PKCS#11 needs Yubico's `.so`.
 
-Point the config at the architecture-independent path — the image symlinks it
-to whichever multiarch directory Debian used, so one value is right on `amd64`
-and `arm64` alike:
+### Pointing the config at it
+
+The module is installed at `/usr/local/lib/pkcs11/yubihsm_pkcs11.so` and
+symlinked to the architecture-independent path below, which is the one to
+configure — it is correct on `amd64` and `arm64` alike:
 
 ```yaml
 key_provider:
