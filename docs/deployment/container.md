@@ -730,10 +730,13 @@ pushes it. It runs on **every commit on every branch**, on pull requests
 `workflow_call` from the release workflow.
 
 The weekly rebuild is not busywork: the image is `debian:bookworm-slim` plus
-Debian's SoftHSM, OpenSC and `ca-certificates` — and, in the variant, Debian's
-YubiHSM packages — all of which take security updates on their own schedule.
-Without it, `edge` ages into whatever its base image was on the day it was built
-— and for a PKI whose trust store is one of those packages, that ages badly.
+Debian's SoftHSM, OpenSC and `ca-certificates`, all of which take security
+updates on their own schedule. Without it, `edge` ages into whatever its base
+image was on the day it was built — and for a PKI whose trust store is one of
+those packages, that ages badly. The one thing it does not refresh is the
+[yubihsm-shell release](#built-from-upstream-source-not-from-debian) the variant
+compiles, which is pinned by version and digest; the libraries that release links
+against do come from the base image.
 
 Three jobs, in order:
 
