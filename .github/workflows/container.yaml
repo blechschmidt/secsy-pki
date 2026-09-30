@@ -81,11 +81,11 @@ on:
     # that ages badly. Off the hour and off Sunday night, where every other cron
     # on GitHub is.
     #
-    # One thing a rebuild does *not* refresh: the yubihsm-shell release the
-    # `-yubihsm` variant compiles. It is pinned by version and digest in the
-    # Dockerfile, so a new upstream release is picked up by editing those, not by
-    # waiting for Monday. The libcrypto/libcurl/libusb it links against do come
-    # from the base image and are refreshed here.
+    # One thing a rebuild does *not* refresh: the yubihsm-shell and
+    # yubihsm-connector releases the `-yubihsm` variant compiles. Each is pinned
+    # by version and digest in the Dockerfile, so a new upstream release is picked
+    # up by editing those, not by waiting for Monday. The libcrypto/libcurl/libusb
+    # they link against do come from the base image and are refreshed here.
     - cron: "40 4 * * 1"
   workflow_dispatch:
     inputs:
@@ -369,8 +369,11 @@ jobs:
             printf "connector = yhusb://\n" >/tmp/yubihsm_pkcs11.conf
             YUBIHSM_PKCS11_CONF=/tmp/yubihsm_pkcs11.conf \
               pkcs11-tool --module "$module" --show-info 2>&1 | grep -F "YubiHSM PKCS#11 Library"
-            # Both halves of the source build, at the version the build recorded.
+            # Every part of the source build, at the version the build recorded.
             yubihsm-shell --version | grep -Fqx "yubihsm-shell $(cat /usr/share/secsy-pki/yubihsm-shell-version)"
+            if ldd /usr/local/bin/yubihsm-connector | grep -F "not found"; then exit 1; fi
+            [ "$(od -An -tx1 -j18 -N2 /usr/local/bin/yubihsm-connector | tr -d " \n")" = b700 ]
+            yubihsm-connector version | grep -Fqx "$(cat /usr/share/secsy-pki/yubihsm-connector-version)"
           '
 
   # --------------------------------------------------------------------------- #

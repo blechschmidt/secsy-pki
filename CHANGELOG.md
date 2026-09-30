@@ -192,6 +192,28 @@ That upgrade turned out to fix something concrete rather than only being
 hygienic: **2.6.0 could not put an RSA key on a YubiHSM at all** through this
 project's templates — see Fixed, below.
 
+**`yubihsm-connector` is now built from source too, and the `-yubihsm` image no
+longer uses `bookworm-backports` at all.** It was the last Debian-supplied
+YubiHSM component, left there on the reasoning that a USB-to-HTTP bridge need not
+match the module's version. That is still true and was the wrong question:
+backports carries **3.0.5**, and 3.0.6 bounds the size of data read from the
+device "to avoid potential buffer overflow" and fixes a memory leak when device
+initialization fails, while 3.0.7 refreshes its dependencies. Being a Go binary,
+a distribution build also freezes in whatever Go standard library *its* builder
+had. It is compiled in a new `yubihsm-connector-builder` stage from Yubico's
+signed release — the same digest-and-signature pair as `yubihsm-shell`, against
+the same vendored key, which signs both projects — for both architectures, cgo
+against the target's `libusb` through `google/gousb`. Its pins are
+`YUBIHSM_CONNECTOR_VERSION`/`_SHA256`, and `YUBIHSM_SHELL_SIGNING_KEY` is
+renamed `YUBIHSM_SIGNING_FINGERPRINT` now that it covers both (and because what
+it holds is a fingerprint, not a key).
+
+With that, the `-yubihsm` stage configures no backports apt source at all, so
+nothing can be resolved out of it; the image carries zero `yubihsm` dpkg entries.
+`verify-published-image.sh --expect-yubihsm` and the emulated arm64 smoke test
+both hold the running binary's reported version, its linkage and its
+`io.secsy-pki.yubihsm-connector.version` label against what the build recorded.
+
 ### Fixed
 
 **RSA keys could not be imported into or generated on a YubiHSM through Yubico's

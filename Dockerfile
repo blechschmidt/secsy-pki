@@ -51,13 +51,25 @@ ARG GO_VERSION=1.25
 # the build stage is what stops a wrong digest being pinned by accident.
 ARG YUBIHSM_SHELL_VERSION=2.8.0
 ARG YUBIHSM_SHELL_SHA256=627a06899096f8bc81a806ef415e00cf7f08a3fc38f4b6b3f39b8129e64dd481
+
+# yubihsm-connector is a second upstream project — the Go daemon that bridges the
+# device's USB interface to libyubihsm's HTTP transport, for deployments that
+# would rather not hand the container the USB device — so it carries its own pin.
+# It used to be installed from bookworm-backports, which is two releases behind:
+# 3.0.6 bounds the size of data read from the device "to avoid potential buffer
+# overflow" and fixes a memory leak when device initialization fails, and a
+# Debian-built Go binary additionally carries whatever Go standard library its
+# builder had. Compiling it here puts both on the image's own Go toolchain.
+ARG YUBIHSM_CONNECTOR_VERSION=3.0.7
+ARG YUBIHSM_CONNECTOR_SHA256=87cb2b21d67662930e452ba39cb05db478c1526b0ea5787758cc36344e1bf76e
+
 # Primary fingerprint of the Yubico developer key the release tarballs are
 # signed with, listed under "developers who are currently releasing code" at
-# https://developers.yubico.com/Software_Projects/Software_Signing.html. The
-# public key itself is vendored at deploy/yubihsm/yubico-release-signing-key.asc
-# and asserted against this fingerprint, so replacing the file does not replace
-# the trust anchor.
-ARG YUBIHSM_SHELL_SIGNING_KEY=1D7308B0055F5AEF36944A8F27A9C24D9588EA0F
+# https://developers.yubico.com/Software_Projects/Software_Signing.html. One key
+# signs both projects above. The public key itself is vendored at
+# deploy/yubihsm/yubico-release-signing-key.asc and asserted against this
+# fingerprint, so replacing the file does not replace the trust anchor.
+ARG YUBIHSM_SIGNING_FINGERPRINT=1D7308B0055F5AEF36944A8F27A9C24D9588EA0F
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-bookworm AS builder
 
 # Supplied by BuildKit, not by the caller: the architecture this stage runs on
@@ -236,7 +248,7 @@ ARG BUILDARCH
 ARG TARGETARCH
 ARG YUBIHSM_SHELL_VERSION
 ARG YUBIHSM_SHELL_SHA256
-ARG YUBIHSM_SHELL_SIGNING_KEY
+ARG YUBIHSM_SIGNING_FINGERPRINT
 
 # Build dependencies, from upstream's own debian/control. Three groups, because
 # only the middle one is architecture-dependent:
@@ -308,10 +320,10 @@ RUN set -eux; \
     mkdir -m 700 -p "${GNUPGHOME}"; \
     gpg --batch --quiet --import /tmp/yubico-release-signing-key.asc; \
     gpg --batch --status-file /tmp/gpg.status --verify "${tarball}.sig" "${tarball}"; \
-    grep -qE "^\[GNUPG:\] VALIDSIG [0-9A-F]+ .* ${YUBIHSM_SHELL_SIGNING_KEY}\$" /tmp/gpg.status \
-      || { echo "!! ${tarball} is not signed by ${YUBIHSM_SHELL_SIGNING_KEY}" >&2; \
+    grep -qE "^\[GNUPG:\] VALIDSIG [0-9A-F]+ .* ${YUBIHSM_SIGNING_FINGERPRINT}\$" /tmp/gpg.status \
+      || { echo "!! ${tarball} is not signed by ${YUBIHSM_SIGNING_FINGERPRINT}" >&2; \
            cat /tmp/gpg.status >&2; exit 1; }; \
-    echo "verified ${tarball}: sha256 ${YUBIHSM_SHELL_SHA256}, signed by ${YUBIHSM_SHELL_SIGNING_KEY}"; \
+    echo "verified ${tarball}: sha256 ${YUBIHSM_SHELL_SHA256}, signed by ${YUBIHSM_SIGNING_FINGERPRINT}"; \
     tar xzf "${tarball}"; \
     rm -rf "${GNUPGHOME}" /tmp/yubico-release-signing-key.asc "${tarball}" "${tarball}.sig"
 
@@ -356,6 +368,90 @@ RUN set -eux; \
     echo "${YUBIHSM_SHELL_VERSION}" > /out/yubihsm-shell-version
 
 # ---------------------------------------------------------------------------
+# yubihsm-connector, likewise from Yubico's signed release rather than Debian's.
+#
+# A separate stage from yubihsm-builder because it is a separate language: this
+# one needs a Go toolchain and that one needs cmake, and neither needs the
+# other's. It is cgo all the same — the connector talks to the device through
+# google/gousb, which is a binding to libusb — so a cross build needs the
+# target's libusb and headers exactly as the cmake build does, and gets them the
+# same way.
+#
+# `go generate` is not optional: upstream keeps the version in a JSON file and
+# generates version.go from it, so skipping it produces a binary that does not
+# compile rather than one that misreports itself. The version check in the
+# runtime stage below reads that generated value back.
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-bookworm AS yubihsm-connector-builder
+
+ARG BUILDARCH
+ARG TARGETARCH
+ARG YUBIHSM_CONNECTOR_VERSION
+ARG YUBIHSM_CONNECTOR_SHA256
+ARG YUBIHSM_SIGNING_FINGERPRINT
+
+RUN set -eux; \
+    packages="ca-certificates curl gnupg pkg-config gcc libc6-dev"; \
+    if [ "${TARGETARCH}" = "${BUILDARCH}" ]; then \
+      packages="${packages} libusb-1.0-0-dev"; \
+    else \
+      case "${TARGETARCH}" in \
+        amd64) triplet=x86_64-linux-gnu; \
+               packages="${packages} gcc-x86-64-linux-gnu libc6-dev-amd64-cross" ;; \
+        arm64) triplet=aarch64-linux-gnu; \
+               packages="${packages} gcc-aarch64-linux-gnu libc6-dev-arm64-cross" ;; \
+        *) echo "unsupported TARGETARCH=${TARGETARCH}; add its cross toolchain here" >&2; exit 1 ;; \
+      esac; \
+      dpkg --add-architecture "${TARGETARCH}"; \
+      packages="${packages} libusb-1.0-0-dev:${TARGETARCH}"; \
+      echo "${triplet}" > /tmp/target-triplet; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ${packages}; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /usr/src
+
+COPY deploy/yubihsm/yubico-release-signing-key.asc /tmp/yubico-release-signing-key.asc
+
+# The same two-sided proof the yubihsm-shell fetch above makes, against the same
+# vendored key and the same pinned fingerprint: the digest says which release was
+# wanted, the signature says Yubico produced it.
+RUN set -eux; \
+    tarball="yubihsm-connector-${YUBIHSM_CONNECTOR_VERSION}.tar.gz"; \
+    base="https://developers.yubico.com/yubihsm-connector/Releases"; \
+    curl -fsSL --retry 3 --retry-connrefused -o "${tarball}"     "${base}/${tarball}"; \
+    curl -fsSL --retry 3 --retry-connrefused -o "${tarball}.sig" "${base}/${tarball}.sig"; \
+    echo "${YUBIHSM_CONNECTOR_SHA256}  ${tarball}" | sha256sum -c -; \
+    export GNUPGHOME=/tmp/gnupg; \
+    mkdir -m 700 -p "${GNUPGHOME}"; \
+    gpg --batch --quiet --import /tmp/yubico-release-signing-key.asc; \
+    gpg --batch --status-file /tmp/gpg.status --verify "${tarball}.sig" "${tarball}"; \
+    grep -qE "^\[GNUPG:\] VALIDSIG [0-9A-F]+ .* ${YUBIHSM_SIGNING_FINGERPRINT}\$" /tmp/gpg.status \
+      || { echo "!! ${tarball} is not signed by ${YUBIHSM_SIGNING_FINGERPRINT}" >&2; \
+           cat /tmp/gpg.status >&2; exit 1; }; \
+    echo "verified ${tarball}: sha256 ${YUBIHSM_CONNECTOR_SHA256}, signed by ${YUBIHSM_SIGNING_FINGERPRINT}"; \
+    tar xzf "${tarball}"; \
+    rm -rf "${GNUPGHOME}" /tmp/yubico-release-signing-key.asc "${tarball}" "${tarball}.sig"
+
+# PKG_CONFIG_LIBDIR is set rather than prepended, so the build machine's own
+# libusb-1.0.pc is out of reach and a cross build cannot silently link the host's
+# copy — the same reasoning as the cmake stage's.
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build,id=go-build-connector-${TARGETARCH} \
+    set -eux; \
+    cd "yubihsm-connector-${YUBIHSM_CONNECTOR_VERSION}"; \
+    go generate; \
+    export CGO_ENABLED=1 GOFLAGS=-trimpath GOARCH="${TARGETARCH}"; \
+    if [ "${TARGETARCH}" != "${BUILDARCH}" ]; then \
+      triplet="$(cat /tmp/target-triplet)"; \
+      export CC="${triplet}-gcc"; \
+      export PKG_CONFIG_LIBDIR="/usr/lib/${triplet}/pkgconfig:/usr/share/pkgconfig"; \
+      unset PKG_CONFIG_PATH; \
+    fi; \
+    go build -ldflags "-s -w" -o /out/yubihsm-connector .; \
+    echo "${YUBIHSM_CONNECTOR_VERSION}" > /out/yubihsm-connector-version
+
+# ---------------------------------------------------------------------------
 # The `-yubihsm` variant: the runtime above plus everything a YubiHSM 2 needs.
 #
 # Published as a separate tag rather than folded into the default image, because
@@ -373,17 +469,23 @@ FROM runtime AS runtime-yubihsm
 
 ARG YUBIHSM_SHELL_VERSION
 ARG YUBIHSM_SHELL_SHA256
+ARG YUBIHSM_CONNECTOR_VERSION
+ARG YUBIHSM_CONNECTOR_SHA256
 
 # What syft cannot tell you any more. The image SBOM is built by cataloguing
-# dpkg's database, and a source build has no dpkg entry — so the one component
-# this tag exists to add would be the one component the SBOM does not name.
-# These labels put it back where a scanner, a registry UI or `docker inspect`
-# will find it, with enough detail to re-fetch the tarball and check it against
-# the digest the image was built from. /usr/share/secsy-pki/yubihsm-shell-version
-# is the same fact for anything already inside the container.
+# dpkg's database, and a source build has no dpkg entry — so the components this
+# tag exists to add would be the ones the SBOM does not name. These labels put
+# them back where a scanner, a registry UI or `docker inspect` will find them,
+# with enough detail to re-fetch each tarball and check it against the digest the
+# image was built from. /usr/share/secsy-pki/yubihsm-shell-version and its
+# -connector- sibling are the same facts for anything already inside the
+# container.
 LABEL io.secsy-pki.yubihsm-shell.version="${YUBIHSM_SHELL_VERSION}" \
       io.secsy-pki.yubihsm-shell.sha256="${YUBIHSM_SHELL_SHA256}" \
-      io.secsy-pki.yubihsm-shell.source="https://developers.yubico.com/yubihsm-shell/Releases/yubihsm-shell-${YUBIHSM_SHELL_VERSION}.tar.gz"
+      io.secsy-pki.yubihsm-shell.source="https://developers.yubico.com/yubihsm-shell/Releases/yubihsm-shell-${YUBIHSM_SHELL_VERSION}.tar.gz" \
+      io.secsy-pki.yubihsm-connector.version="${YUBIHSM_CONNECTOR_VERSION}" \
+      io.secsy-pki.yubihsm-connector.sha256="${YUBIHSM_CONNECTOR_SHA256}" \
+      io.secsy-pki.yubihsm-connector.source="https://developers.yubico.com/yubihsm-connector/Releases/yubihsm-connector-${YUBIHSM_CONNECTOR_VERSION}.tar.gz"
 
 USER root
 
@@ -393,18 +495,11 @@ USER root
 # and the -dev list in the build stage are two halves of the same statement, and
 # a NEEDED entry that nothing installs is caught by the ldd check below.
 #
-# yubihsm-connector is the one thing still installed from bookworm-backports. It
-# is a separate upstream project — a Go daemon that bridges USB to the HTTP
-# transport, useful for deployments that would rather not give the container the
-# USB device — and nothing about it has to match the module's version, so there
-# is no reason to compile it here.
+# No bookworm-backports any more. Every YubiHSM component in this image is now
+# compiled from a Yubico release that was checked by digest and signature, so the
+# archive that used to supply the last of them — yubihsm-connector — is not
+# configured at all, and a dependency resolution cannot reach into it.
 #
-# Deliberately *without* `-t bookworm-backports`: that flag raises every
-# backported package to priority 990 for the whole transaction, so a dependency
-# resolution could quietly pull a backported libssl3 or libc6 underneath the
-# rest of the image. Backports is NotAutomatic (priority 100), which is enough
-# to install a package that exists nowhere else and not enough to displace one
-# that does — exactly the rule wanted here.
 # `--no-upgrade` is what keeps the two published tags of one commit differing by
 # exactly the YubiHSM payload. libcrypto and libz are already in the runtime
 # stage, and naming them without it makes apt *upgrade* them to whatever the
@@ -414,8 +509,6 @@ USER root
 # rebuild's job. The flag applies only to packages named on the command line, so
 # a genuinely missing dependency is still installed.
 RUN set -eux; \
-    echo 'deb http://deb.debian.org/debian bookworm-backports main' \
-        > /etc/apt/sources.list.d/backports.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends --no-upgrade \
         libssl3 \
@@ -423,12 +516,13 @@ RUN set -eux; \
         libusb-1.0-0 \
         libedit2 \
         libpcsclite1 \
-        zlib1g \
-        yubihsm-connector; \
+        zlib1g; \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=yubihsm-builder /out/usr/local/ /usr/local/
 COPY --from=yubihsm-builder /out/yubihsm-shell-version /usr/share/secsy-pki/yubihsm-shell-version
+COPY --from=yubihsm-connector-builder /out/yubihsm-connector /usr/local/bin/yubihsm-connector
+COPY --from=yubihsm-connector-builder /out/yubihsm-connector-version /usr/share/secsy-pki/yubihsm-connector-version
 
 # /usr/lib/pkcs11/yubihsm_pkcs11.so is the path every config example, doc page
 # and Helm value in this repository names, and it stays that path — now a
@@ -453,7 +547,11 @@ RUN set -eux; \
         echo "!! unresolved shared libraries in $so" >&2; exit 1; \
       fi; \
     done; \
-    yubihsm-shell --version | grep -Fqx "yubihsm-shell ${YUBIHSM_SHELL_VERSION}"
+    yubihsm-shell --version | grep -Fqx "yubihsm-shell ${YUBIHSM_SHELL_VERSION}"; \
+    if ldd /usr/local/bin/yubihsm-connector | grep -F 'not found'; then \
+      echo "!! unresolved shared libraries in yubihsm-connector" >&2; exit 1; \
+    fi; \
+    yubihsm-connector version | grep -Fqx "${YUBIHSM_CONNECTOR_VERSION}"
 
 # udev does not run in a container, so the device node arrives with whatever
 # ownership the host gave it and this file cannot change that. It is shipped to

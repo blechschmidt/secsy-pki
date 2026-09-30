@@ -414,7 +414,19 @@ echo "want-ckver:  ${up_major}.$((up_minor * 10 + up_patch))"
 echo "got-ckver:   $(printf '%s\n' "$info" | sed -n 's/^Library  *YubiHSM PKCS#11 Library (ver \(.*\))$/\1/p')"
 
 echo "got-shell:   $(yubihsm-shell --version | sed -n 's/^yubihsm-shell //p')"
-echo "yubihsm-connector $(yubihsm-connector version)"
+
+# yubihsm-connector, likewise built from a signed Yubico release rather than
+# installed from bookworm-backports. Same shape of check as the module's: the
+# recorded version against what the binary itself reports, plus its linkage,
+# since it is cgo against libusb and a cross build can leave that unresolved.
+echo "want-conn:   $(cat /usr/share/secsy-pki/yubihsm-connector-version)"
+echo "got-conn:    $(yubihsm-connector version)"
+if ldd /usr/local/bin/yubihsm-connector | grep -F 'not found'; then
+    echo "unresolved shared libraries in yubihsm-connector" >&2
+    exit 1
+fi
+echo "linkage:     yubihsm-connector ok"
+
 test -f /usr/share/secsy-pki/udev/70-yubihsm.rules
 echo "udev rule:   shipped for the host to install"
 INNER
@@ -457,17 +469,34 @@ INNER
 		*libyubihsm_usb*) ok "the direct-USB backend is installed" ;;
 		*) bad "libyubihsm_usb is missing — the module could reach a connector but never a device on the USB bus" ;;
 		esac
-		# The label exists because the image SBOM is catalogued from dpkg and a
+		# The connector is a second upstream project on its own pin, so it gets
+		# its own comparison rather than being folded into the one above. Debian's
+		# is two releases behind — 3.0.6 bounds the size of data read from the
+		# device — which is exactly the skew this catches.
+		want_conn="$(field want-conn)"
+		got_conn="$(field got-conn)"
+		if [ -z "$want_conn" ] || [ -z "$got_conn" ]; then
+			bad "the probe did not report both connector versions (want='${want_conn}' got='${got_conn}')"
+		elif [ "$want_conn" = "$got_conn" ]; then
+			ok "yubihsm-connector is the recorded upstream build (${got_conn})"
+		else
+			bad "yubihsm-connector reports '${got_conn}', not the ${want_conn} the image was built from"
+		fi
+		# The labels exist because the image SBOM is catalogued from dpkg and a
 		# source build has no dpkg entry, so this is the only place a scanner
 		# learns what vendor code is in here. Checked against the build's own
 		# record, because a label nobody compares is a label that goes stale.
-		label="$(docker image inspect --format \
-			'{{index .Config.Labels "io.secsy-pki.yubihsm-shell.version"}}' "$IMAGE" 2>/dev/null || true)"
-		if [ -n "$upstream" ] && [ "$label" = "$upstream" ]; then
-			ok "the io.secsy-pki.yubihsm-shell.version label says ${label}"
-		else
-			bad "the io.secsy-pki.yubihsm-shell.version label says '${label}', not ${upstream:-the recorded version}"
-		fi
+		for pair in "yubihsm-shell:${upstream}" "yubihsm-connector:${want_conn}"; do
+			component="${pair%%:*}"
+			recorded="${pair#*:}"
+			label="$(docker image inspect --format \
+				"{{index .Config.Labels \"io.secsy-pki.${component}.version\"}}" "$IMAGE" 2>/dev/null || true)"
+			if [ -n "$recorded" ] && [ "$label" = "$recorded" ]; then
+				ok "the io.secsy-pki.${component}.version label says ${label}"
+			else
+				bad "the io.secsy-pki.${component}.version label says '${label}', not ${recorded:-the recorded version}"
+			fi
+		done
 	else
 		printf '%s\n' "$out" | sed 's/^/        /'
 		bad "the -yubihsm variant cannot load ${YUBIHSM_MODULE}"

@@ -442,52 +442,61 @@ Every tag has one; they are built from the same commit in the same job, so
 | `libyubihsm` + the **USB** and **HTTP** transports | What the module loads to reach the device |
 | `libykhsmauth` | YubiKey-held authentication keys, which the module links against |
 | `yubihsm-shell`, `yubihsm-wrap`, `yubihsm-auth` | Vendor CLIs, for working on the device by hand |
-| `yubihsm-connector` | The USB-to-HTTP bridge, when the device must be shared |
+| `yubihsm-connector` | The USB-to-HTTP bridge, when the device must be shared. Listens on `:12345`; `/connector/status` reports the device it can see |
 | `/usr/share/secsy-pki/udev/70-yubihsm.rules` | The host udev rule, shipped to be copied out |
 
 Roughly 16 MB on top of the default image.
 
 ### Built from upstream source, not from Debian
 
-Everything in that table except `yubihsm-connector` is compiled during the image
-build from Yubico's own [`yubihsm-shell`](https://developers.yubico.com/yubihsm-shell/)
-release tarball, for both architectures. The version built is recorded in the
-image:
+**Nothing** in that table comes from a Debian package. Everything is compiled
+during the image build from Yubico's own signed release tarballs, for both
+architectures, out of two upstream projects on separate version pins:
+[`yubihsm-shell`](https://developers.yubico.com/yubihsm-shell/) (the PKCS#11
+module, `libyubihsm` and its transports, `libykhsmauth`, and the three CLIs) and
+[`yubihsm-connector`](https://developers.yubico.com/yubihsm-connector/). The
+`-yubihsm` image configures no `bookworm-backports` apt source at all, so nothing
+can be resolved out of it. Both versions are recorded in the image:
 
 ```console
-$ docker run --rm --entrypoint cat ghcr.io/blechschmidt/secsy-pki:1.2.3-yubihsm \
-    /usr/share/secsy-pki/yubihsm-shell-version
+$ docker run --rm --entrypoint sh ghcr.io/blechschmidt/secsy-pki:1.2.3-yubihsm -c \
+    'cat /usr/share/secsy-pki/yubihsm-shell-version /usr/share/secsy-pki/yubihsm-connector-version'
 2.8.0
+3.0.7
 ```
 
-It used to come from `bookworm-backports`, which carries **2.6.0** — two minor
-releases behind, and what is in between is not cosmetic for a CA. From upstream's
-changelog: 2.7.2 fixes a PKCS#11 bug where generating an RSA key pair "can
-potentially result in the wrong type of object being created" and stops command
-audit being enabled for command `0x05` — the audit subsystem
+The module used to come from `bookworm-backports`, which carries **2.6.0** — two
+minor releases behind, and what is in between is not cosmetic for a CA. From
+upstream's changelog: 2.7.2 fixes a PKCS#11 bug where generating an RSA key pair
+"can potentially result in the wrong type of object being created" — which is
+[the bug below](#if-you-supply-your-own-module-272-or-newer), and it broke RSA
+import on this image for as long as the module came from Debian — and stops
+command audit being enabled for command `0x05`, the audit subsystem
 [this project reads and pins](../hsm/audit-log.md); 2.7.3 fixes capabilities on
 public wrap keys; 2.8.0 adds YubiKey-held session authentication. `bookworm`
 proper has no `yubihsm` packages at all, so staying with Debian meant staying on
 backports' schedule for the single package this tag exists to provide, and left
 the vendor module the oldest thing in the image.
 
-Building from source gives up Debian's security tracking of that package, so the
-provenance is replaced rather than dropped. The build:
+Building from source gives up Debian's security tracking of those packages, so
+the provenance is replaced rather than dropped. For each of the two tarballs the
+build:
 
-1. downloads the release tarball named by `YUBIHSM_SHELL_VERSION` in the
-   `Dockerfile`, and checks it against the **SHA-256 digest** pinned beside it;
+1. downloads the release named by its `_VERSION` build arg in the `Dockerfile`,
+   and checks it against the **SHA-256 digest** pinned beside it;
 2. verifies Yubico's **detached OpenPGP signature** over those same bytes against
-   the key vendored at `deploy/yubihsm/yubico-release-signing-key.asc`, requiring
-   the signature to come from the fingerprint pinned in the `Dockerfile` — so
-   replacing the key file does not replace the trust anchor;
-3. cross-compiles it with cmake for the target architecture and installs it under
+   the key vendored at `deploy/yubihsm/yubico-release-signing-key.asc` — one key
+   signs both projects — requiring the signature to come from the fingerprint
+   pinned in the `Dockerfile`, so replacing the key file does not replace the
+   trust anchor;
+3. cross-compiles it for the target architecture and installs it under
    `/usr/local`, stripped.
 
 The digest says nothing about who produced the bytes and the signature says
 nothing about which release was wanted, so both are checked. The weekly rebuild
-still refreshes the libcrypto, libcurl and libusb it links against, because those
-come from the base image; picking up a **new upstream release** is a
-`YUBIHSM_SHELL_VERSION` bump in a commit, not something that happens on its own.
+still refreshes the libcrypto, libcurl and libusb they link against, because those
+come from the base image; picking up a **new upstream release** is a `_VERSION`
+bump in a commit, not something that happens on its own.
 
 The image SBOM is catalogued from `dpkg`, which knows nothing about a source
 build, so the same facts are carried as labels for anything reading the image
@@ -499,14 +508,19 @@ $ docker image inspect ghcr.io/blechschmidt/secsy-pki:1.2.3-yubihsm \
 {
   "io.secsy-pki.yubihsm-shell.version": "2.8.0",
   "io.secsy-pki.yubihsm-shell.sha256": "627a06899096f8bc81a806ef415e00cf7f08a3fc38f4b6b3f39b8129e64dd481",
-  "io.secsy-pki.yubihsm-shell.source": "https://developers.yubico.com/yubihsm-shell/Releases/yubihsm-shell-2.8.0.tar.gz"
+  "io.secsy-pki.yubihsm-shell.source": "https://developers.yubico.com/yubihsm-shell/Releases/yubihsm-shell-2.8.0.tar.gz",
+  "io.secsy-pki.yubihsm-connector.version": "3.0.7",
+  "io.secsy-pki.yubihsm-connector.sha256": "87cb2b21d67662930e452ba39cb05db478c1526b0ea5787758cc36344e1bf76e",
+  "io.secsy-pki.yubihsm-connector.source": "https://developers.yubico.com/yubihsm-connector/Releases/yubihsm-connector-3.0.7.tar.gz"
 }
 ```
 
 `scripts/verify-published-image.sh --expect-yubihsm` holds all of it together: it
 loads the module, reads the version back out of `C_GetInfo`, and requires it, the
-`yubihsm-shell` binary and the label to agree with what the build recorded — which
-is what would catch a silent fall back to the distribution package.
+`yubihsm-shell` binary and the label to agree with what the build recorded — then
+the same comparison for `yubihsm-connector`, plus a linkage check on each, since
+both are cgo and a cross build is where an unresolved `libusb` would appear. That
+is what would catch a silent fall back to a distribution package.
 
 To build a one-off image against a different release:
 
@@ -515,10 +529,23 @@ docker build --target runtime-yubihsm \
   --build-arg YUBIHSM_SHELL_VERSION=2.8.1 \
   --build-arg YUBIHSM_SHELL_SHA256=<sha256 of yubihsm-shell-2.8.1.tar.gz> \
   -t secsy-pki:local-yubihsm .
+
+# or the connector alone
+docker build --target runtime-yubihsm \
+  --build-arg YUBIHSM_CONNECTOR_VERSION=3.0.8 \
+  --build-arg YUBIHSM_CONNECTOR_SHA256=<sha256 of yubihsm-connector-3.0.8.tar.gz> \
+  -t secsy-pki:local-yubihsm .
 ```
 
-`yubihsm-connector` stays on `bookworm-backports`: it is a separate upstream
-project, a small Go daemon whose version does not have to match the module's.
+`yubihsm-connector` is built the same way, and for the same kind of reason.
+Backports carries **3.0.5**; 3.0.6 bounds the size of data read from the device
+"to avoid potential buffer overflow" and fixes a memory leak when device
+initialization fails, and 3.0.7 refreshes its dependencies. It is a Go binary, so
+a distribution build also freezes in whatever Go standard library *its* builder
+had — compiling it here puts it on the same toolchain as the rest of the image.
+It is cgo against `libusb` (through `google/gousb`), so it cross-compiles with
+the target's `libusb` exactly as the cmake build does. Its pins are
+`YUBIHSM_CONNECTOR_VERSION` and `YUBIHSM_CONNECTOR_SHA256`.
 
 #### If you supply your own module: 2.7.2 or newer
 
@@ -767,9 +794,9 @@ Debian's SoftHSM, OpenSC and `ca-certificates`, all of which take security
 updates on their own schedule. Without it, `edge` ages into whatever its base
 image was on the day it was built — and for a PKI whose trust store is one of
 those packages, that ages badly. The one thing it does not refresh is the
-[yubihsm-shell release](#built-from-upstream-source-not-from-debian) the variant
-compiles, which is pinned by version and digest; the libraries that release links
-against do come from the base image.
+[Yubico releases](#built-from-upstream-source-not-from-debian) the variant
+compiles, each pinned by version and digest; the libraries they link against do
+come from the base image.
 
 Three jobs, in order:
 
