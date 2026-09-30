@@ -692,11 +692,11 @@ func generateKeyPairOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, cfg
 			pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
 			pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, true),
 			pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, false),
-			// Least privilege: a CA key signs only. Assert it is never usable to
-			// decrypt or unwrap rather than relying on token defaults.
+			// Least privilege: a CA key signs only. Assert it is never usable
+			// to decrypt rather than relying on token defaults; CKA_UNWRAP is
+			// asserted after the switch, where the module gets a say.
 			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
 			pkcs11.NewAttribute(pkcs11.CKA_DECRYPT, false),
-			pkcs11.NewAttribute(pkcs11.CKA_UNWRAP, false),
 			pkcs11.NewAttribute(pkcs11.CKA_LABEL, label),
 		}
 	case "ecdsa-sha2-nistp256":
@@ -718,11 +718,11 @@ func generateKeyPairOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, cfg
 			pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
 			pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, true),
 			pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, false),
-			// Least privilege: a CA key signs only. Assert it is never usable to
-			// decrypt or unwrap rather than relying on token defaults.
+			// Least privilege: a CA key signs only. Assert it is never usable
+			// to decrypt rather than relying on token defaults; CKA_UNWRAP is
+			// asserted after the switch, where the module gets a say.
 			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
 			pkcs11.NewAttribute(pkcs11.CKA_DECRYPT, false),
-			pkcs11.NewAttribute(pkcs11.CKA_UNWRAP, false),
 			pkcs11.NewAttribute(pkcs11.CKA_LABEL, label),
 		}
 	case "ecdsa-sha2-nistp384":
@@ -744,11 +744,11 @@ func generateKeyPairOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, cfg
 			pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
 			pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, true),
 			pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, false),
-			// Least privilege: a CA key signs only. Assert it is never usable to
-			// decrypt or unwrap rather than relying on token defaults.
+			// Least privilege: a CA key signs only. Assert it is never usable
+			// to decrypt rather than relying on token defaults; CKA_UNWRAP is
+			// asserted after the switch, where the module gets a say.
 			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
 			pkcs11.NewAttribute(pkcs11.CKA_DECRYPT, false),
-			pkcs11.NewAttribute(pkcs11.CKA_UNWRAP, false),
 			pkcs11.NewAttribute(pkcs11.CKA_LABEL, label),
 		}
 	case "ecdsa-sha2-nistp521":
@@ -770,11 +770,11 @@ func generateKeyPairOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, cfg
 			pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
 			pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, true),
 			pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, false),
-			// Least privilege: a CA key signs only. Assert it is never usable to
-			// decrypt or unwrap rather than relying on token defaults.
+			// Least privilege: a CA key signs only. Assert it is never usable
+			// to decrypt rather than relying on token defaults; CKA_UNWRAP is
+			// asserted after the switch, where the module gets a say.
 			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
 			pkcs11.NewAttribute(pkcs11.CKA_DECRYPT, false),
-			pkcs11.NewAttribute(pkcs11.CKA_UNWRAP, false),
 			pkcs11.NewAttribute(pkcs11.CKA_LABEL, label),
 		}
 	case "rsa-2048", "rsa-3072", "rsa-4096":
@@ -800,16 +800,22 @@ func generateKeyPairOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, cfg
 			pkcs11.NewAttribute(pkcs11.CKA_PRIVATE, true),
 			pkcs11.NewAttribute(pkcs11.CKA_SENSITIVE, true),
 			pkcs11.NewAttribute(pkcs11.CKA_EXTRACTABLE, false),
-			// Least privilege: a CA key signs only. Assert it is never usable to
-			// decrypt or unwrap rather than relying on token defaults.
+			// Least privilege: a CA key signs only. Assert it is never usable
+			// to decrypt rather than relying on token defaults; CKA_UNWRAP is
+			// asserted after the switch, where the module gets a say.
 			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
 			pkcs11.NewAttribute(pkcs11.CKA_DECRYPT, false),
-			pkcs11.NewAttribute(pkcs11.CKA_UNWRAP, false),
 			pkcs11.NewAttribute(pkcs11.CKA_LABEL, label),
 		}
 	default:
 		return nil, fmt.Errorf("unsupported key type for HSM generation: %s", keyType)
 	}
+
+	// The last of the least-privilege assertions, added here rather than in each
+	// arm because whether it can be made at all depends on the module and not on
+	// the key type. See module_quirks.go: asserting it against Yubico's module
+	// before 2.7.2 would produce a wrap-key instead of an RSA signing key.
+	privAttrs = append(privAttrs, unwrapFalseAttr(ctx)...)
 
 	pubHandle, _, err := ctx.GenerateKeyPair(session, mechanism, pubAttrs, privAttrs)
 	if err != nil {

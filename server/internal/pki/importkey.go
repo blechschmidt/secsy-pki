@@ -89,7 +89,7 @@ func importKeyOnSession(ctx *pkcs11.Ctx, session pkcs11.SessionHandle, cfg PKCS1
 		}
 	}
 
-	privAttrs, pubAttrs, err := importTemplates(priv, label, id, usage)
+	privAttrs, pubAttrs, err := importTemplates(ctx, priv, label, id, usage)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +185,10 @@ func importRejectionHint(priv crypto.PrivateKey, err error) string {
 // importTemplates builds the CKO_PRIVATE_KEY and CKO_PUBLIC_KEY attribute
 // templates for one key. The private template is the same least-privilege set
 // generation uses; see generateKeyPairOnSession and generateRSAKEKOnSession.
-func importTemplates(priv crypto.PrivateKey, label string, id []byte, usage ImportKeyUsage) (privAttrs, pubAttrs []*pkcs11.Attribute, err error) {
+//
+// ctx is the module the objects will be created on, consulted for the one
+// template attribute whose acceptability depends on it; see module_quirks.go.
+func importTemplates(ctx *pkcs11.Ctx, priv crypto.PrivateKey, label string, id []byte, usage ImportKeyUsage) (privAttrs, pubAttrs []*pkcs11.Attribute, err error) {
 	privAttrs = []*pkcs11.Attribute{
 		pkcs11.NewAttribute(pkcs11.CKA_CLASS, pkcs11.CKO_PRIVATE_KEY),
 		pkcs11.NewAttribute(pkcs11.CKA_TOKEN, true),
@@ -214,8 +217,8 @@ func importTemplates(priv crypto.PrivateKey, label string, id []byte, usage Impo
 	default:
 		privAttrs = append(privAttrs,
 			pkcs11.NewAttribute(pkcs11.CKA_SIGN, true),
-			pkcs11.NewAttribute(pkcs11.CKA_DECRYPT, false),
-			pkcs11.NewAttribute(pkcs11.CKA_UNWRAP, false))
+			pkcs11.NewAttribute(pkcs11.CKA_DECRYPT, false))
+		privAttrs = append(privAttrs, unwrapFalseAttr(ctx)...)
 		pubAttrs = append(pubAttrs,
 			pkcs11.NewAttribute(pkcs11.CKA_VERIFY, true))
 	}
