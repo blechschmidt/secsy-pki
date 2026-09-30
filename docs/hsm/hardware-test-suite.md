@@ -68,6 +68,46 @@ rather than skipping. That is deliberate: you asked for hardware tests, so an
 unplugged or busy device is a result, not a non-event. A suite that reported
 PASS while touching no hardware would be worse than no suite.
 
+### The container tier
+
+The suite above runs `go test` on your host, against whatever
+`yubihsm_pkcs11.so` that host happens to have. What operators run is the
+container, whose module is a different build — and, before the image compiled it
+from source, was a different *version*. Neither the suite nor a passing CI run
+can see that difference, so there is a second script for it:
+
+```bash
+./scripts/yubihsm-container-test.sh                       # the published main-yubihsm image
+./scripts/yubihsm-container-test.sh --image secsy-pki:local-yubihsm
+make test-yubihsm-container                               # same as the first form
+```
+
+Everything it checks runs **inside the image, as the image's own non-root user**,
+reaching the device the way [container deployment](../deployment/container.md)
+tells operators to — `--device` plus `--group-add`, with the udev rule the image
+ships installed on the host. Nothing is compiled from the working tree; the
+binaries under test are the ones in the image.
+
+It settles, in order: the module the image carries and its version; that the
+device answers over `yhusb://` from inside as uid 65532; that `secsy-ca
+import-key` places RSA-2048, RSA-3072 and RSA-4096 keys and that each is
+**verified by signing on the device**; that the resulting object really is an
+`asymmetric-key` with the right algorithm, may sign, and is neither exportable
+under wrap nor unwrap-capable; that `secsy-ca inventory` finds them; that `ca
+import` adopts a legacy RSA CA whose certificate was self-signed *before* the
+migration and `issue` then produces a leaf which `openssl verify` accepts under
+it; and that `init-root -key-type rsa-4096` generates in the device — the
+sibling of the import bug below, so importing alone proves half of it.
+
+`--legacy-module DIR` repeats the import against a pre-2.7.2 module mounted over
+the image's, which is the shape of a deployment that supplies its own vendor
+stack. `--help` prints a recipe for building such a directory out of Debian's
+packages. The claim it checks is that the template adapts and the import still
+works, not that the old module is fine.
+
+It owns object ids `0x7d00`–`0x7d0f` and labels `t201-c-*`, which do not overlap
+the ranges the Go suite uses, and deletes what it created.
+
 ---
 
 ## What it does to a device
@@ -143,6 +183,24 @@ Every secret in such a deployment would have been unencryptable. The attributes
 were never used (the envelope layer unwraps with `C_Decrypt`, not
 `C_UnwrapKey`), so the fix was to drop them. SoftHSM draws no distinction
 between object types, which is why this survived until the suite ran.
+
+**A `CKA_UNWRAP = FALSE` in an RSA template made Yubico's module create a
+wrap-key.** Before 2.7.2 the module tested the *presence* of the attribute
+rather than its value — `if (template.unwrap)`, against an enum whose
+`ATTRIBUTE_FALSE` is 1 — so an assertion that a key must **not** unwrap produced
+a device wrap-key instead of an asymmetric key. This was on the import path
+(`C_CreateObject`) and both generate paths, inside the RSA arm, which is why it
+took RSA and left EC alone. Upstream fixed all three sites in 2.7.2; Debian
+bookworm-backports ships 2.6.0 and bookworm proper ships nothing, so the module
+an operator installs from their distribution is affected today. Two things
+follow, and both are in the tree: the `-yubihsm` image compiles 2.8.0 from
+Yubico's signed release rather than installing Debian's, and the template
+consults the module before asserting the attribute — omitted for the affected
+releases, where a YubiHSM derives capabilities from the template and so omitting
+it means exactly what the explicit `FALSE` was asking for, and kept everywhere
+else, because SoftHSM's default for a private key is `CK_TRUE` and dropping it
+outright would hand every software-token deployment an unwrap-capable CA key.
+See `server/internal/pki/module_quirks.go`.
 
 **A full audit log presents as `CKR_DEVICE_MEMORY`.** The module maps the
 device's log-full refusal onto a PKCS#11 error that reads like exhausted

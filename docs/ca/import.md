@@ -227,6 +227,15 @@ decrypt-only RSA KEK unwrapping, the requested `CKA_ID` being honoured, the
 attestation reporting the imported key honestly, and each rejection above
 arriving as a sentence rather than as a status code.
 
+One thing to check before blaming the key file: **which `yubihsm_pkcs11.so` is
+being used.** Yubico's module before 2.7.2 cannot create an RSA key at all
+through a least-privilege template — it reads `CKA_UNWRAP = FALSE` as "this is a
+wrap key" and creates one, which PKCS#11 then cannot find as a private key.
+secsy-pki detects those releases and adapts the template, so import works
+anyway, but `bookworm-backports` ships 2.6.0 and a mounted host module may well
+be it. The `-yubihsm` container image builds 2.8.0 from source; see
+[if you supply your own module](../deployment/container.md#if-you-supply-your-own-module-272-or-newer).
+
 ---
 
 ## Importing a bare key

@@ -520,6 +520,39 @@ docker build --target runtime-yubihsm \
 `yubihsm-connector` stays on `bookworm-backports`: it is a separate upstream
 project, a small Go daemon whose version does not have to match the module's.
 
+#### If you supply your own module: 2.7.2 or newer
+
+Mounting the host's vendor stack over the image's is a reasonable thing to do —
+it is what the note at the top of this page recommends for any other HSM. For a
+YubiHSM there is a floor, and it is not a preference:
+
+> **`yubihsm_pkcs11.so` must be 2.7.2 or newer to generate or import an RSA key.**
+
+Before 2.7.2 the module decided an RSA key template described a *wrap key* by
+testing whether `CKA_UNWRAP` was **present**, not whether it was true — and a
+least-privilege template says `CKA_UNWRAP = FALSE`, which is present. The object
+it creates is a device wrap-key, which PKCS#11 does not expose as
+`CKO_PRIVATE_KEY`, so `secsy-ca import-key` and `secsy-ca init-root` both
+succeed at creating something and then fail to find it. EC keys are unaffected;
+the branch is inside the RSA arm. Debian's `bookworm-backports` package is
+**2.6.0**, so a module installed from the distribution has this today.
+
+secsy-pki works around it — it asks the module its version through `C_GetInfo`
+and omits the attribute for the affected releases, which on a YubiHSM means the
+same thing (the device derives an object's capabilities from its template, so an
+absent `CKA_UNWRAP` grants no unwrap capability) — so an older module is not
+fatal. It is still a module two minor releases behind on a device holding CA
+keys, and the image already carries a newer one.
+
+To check what a running container is actually using:
+
+```bash
+docker exec <container> yubihsm-shell --version
+```
+
+`scripts/yubihsm-container-test.sh` asserts this end to end against an attached
+device; see [the container tier](../hsm/hardware-test-suite.md#the-container-tier).
+
 **None of this is needed by the native driver.** `internal/yubihsm` speaks the
 device's SCP03 protocol over usbfs directly, with no libusb, no cgo and no
 vendor code, and that is what reads the audit log and issues attestations

@@ -188,7 +188,50 @@ records what it built at `/usr/share/secsy-pki/yubihsm-shell-version`, and
 the distribution package. Roughly 16 MB on top of the default image, as before.
 See [docs/deployment/container.md](docs/deployment/container.md#built-from-upstream-source-not-from-debian).
 
+That upgrade turned out to fix something concrete rather than only being
+hygienic: **2.6.0 could not put an RSA key on a YubiHSM at all** through this
+project's templates — see Fixed, below.
+
 ### Fixed
+
+**RSA keys could not be imported into or generated on a YubiHSM through Yubico's
+PKCS#11 module before 2.7.2, which is the one Debian ships.** The module decided
+whether a key template described a *wrap key* by testing whether `CKA_UNWRAP` was
+**present** rather than whether it was true — `if (template.unwrap)`, against an
+enum whose `ATTRIBUTE_FALSE` is 1 — and a least-privilege template asserts
+`CKA_UNWRAP = FALSE`, which is present. The module therefore created a device
+wrap-key, which PKCS#11 does not expose as `CKO_PRIVATE_KEY`, so `secsy-ca
+import-key` and `secsy-ca init-root` each created an object and then failed to
+find the key they had just created. The branch sits inside the RSA arm, so EC
+keys were unaffected — which is why this went unnoticed while the defaults were
+EC — and it was on the import path and both generate paths alike. Upstream fixed
+all three sites in 2.7.2; `bookworm-backports` carries **2.6.0** and `bookworm`
+proper carries nothing, so a module installed from the distribution has this
+today.
+
+The templates now ask the module what it is, through `C_GetInfo`, and omit the
+attribute for the affected Yubico releases only. Omitting it there is not a
+weakening: a YubiHSM derives an object's capability set from its template, so an
+absent `CKA_UNWRAP` grants no unwrap capability, which is exactly what the
+explicit `FALSE` was asking for. Dropping it everywhere *would* have been a
+weakening — PKCS#11 leaves the default for a private key token-specific and
+SoftHSM's is `CK_TRUE`, so every software-token deployment would have gained an
+unwrap-capable CA key — which is why the fix is a gate and not a deletion. A
+SoftHSM-backed test reads the bit back off the token for both generated and
+imported keys so the assertion cannot silently stop being made, and another
+records SoftHSM's default so the reasoning cannot silently go stale.
+
+**`scripts/yubihsm-container-test.sh`** is the missing half of the validation
+that let the above ship: the Go hardware suite runs on a developer's host against
+the host's module, and could not see that the container's was different. The new
+script runs `secsy-ca` **inside a published image**, as the image's own non-root
+user, against an attached device — importing RSA-2048/3072/4096 and reading each
+object back off the device to confirm it is an `asymmetric-key` that may sign and
+cannot be exported, adopting a legacy RSA CA and verifying a leaf it issues
+against the certificate published before the migration, and generating RSA-4096
+in the device. `--legacy-module` repeats the import against a pre-2.7.2 module
+mounted over the image's. `make test-yubihsm-container`; see
+[the container tier](docs/hsm/hardware-test-suite.md#the-container-tier).
 
 **`server.tls.self_issue.ca_id` rejected the CA label it documented.** The
 config comment and [the guide](docs/deployment/serving-cert.md) both described

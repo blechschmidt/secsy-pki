@@ -246,6 +246,17 @@ fi
 # *on* it and self-sign a root certificate with it. Run as the image's own user,
 # with only the paths the image prepares for it — which is also a check that
 # those paths are writable by that user, something no `--version` would catch.
+#
+# Then the same thing in the other direction: take an RSA key that already exists,
+# put it *into* the token, and adopt the CA it belongs to. Import is the migration
+# path and it is a different PKCS#11 call from generation (C_CreateObject rather
+# than C_GenerateKeyPair) with a different template, so a working ceremony says
+# nothing about it — and it is where a module that mis-reads a template attribute
+# breaks first (see docs/hsm/hardware-test-suite.md). No HSM is needed to catch
+# that class of break: an object that is created and then cannot be found is
+# created and cannot be found on SoftHSM too. What SoftHSM cannot settle is
+# whether the *device* stores the right kind of object, which is what
+# scripts/yubihsm-container-test.sh is for.
 echo "  running an HSM-backed root-CA ceremony inside the image"
 ceremony=$(
 	cat <<'INNER'
@@ -268,15 +279,50 @@ YAML
 secsy-ca -config /app/verify-config.yaml init-root \
   -label verify-root -cn "Published Image Verification Root" -key-type ecdsa-p256
 secsy-ca -config /app/verify-config.yaml list
+
+# --- and now the migration direction: an RSA key that already exists ---------
+#
+# The CA certificate is self-signed here, before the import, standing in for one
+# already distributed and not reissuable. Everything after the import is signed
+# by the key inside the token.
+cd /app
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out legacy.key 2>/dev/null
+openssl req -x509 -new -key legacy.key -sha256 -days 2 \
+  -subj "/CN=Published Image Verification Legacy Root" \
+  -addext "basicConstraints=critical,CA:TRUE" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign" -out legacy-ca.pem 2>/dev/null
+
+# import-key signs a challenge on the token and verifies it under the public half
+# of the file it read, then says so. Requiring the word is requiring that proof:
+# "the object was created" is the outcome this check exists to reject.
+import_out=$(secsy-ca -config /app/verify-config.yaml import-key \
+  -label verify-imported -key legacy.key)
+printf '%s\n' "$import_out"
+printf '%s\n' "$import_out" | grep -q 'Verified:' || {
+  echo "!! import-key did not prove the imported key signs on the token" >&2; exit 1; }
+
+secsy-ca -config /app/verify-config.yaml ca import \
+  -label verify-legacy-ca -existing-key verify-imported -cert legacy-ca.pem
+
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out leaf.key 2>/dev/null
+openssl req -new -key leaf.key -subj "/CN=migrated.example" \
+  -addext "subjectAltName=DNS:migrated.example" -out leaf.csr 2>/dev/null
+secsy-ca -config /app/verify-config.yaml issue \
+  -ca verify-legacy-ca -csr leaf.csr -profile server -validity-days 1 -out leaf.crt
+
+# The signature the token made has to verify under the certificate that was
+# published before the migration, or the key in the token is not the key relying
+# parties already trust.
+openssl verify -CAfile legacy-ca.pem leaf.crt
 INNER
 )
 ceremony="${ceremony//SOFTHSM_MODULE/$SOFTHSM_MODULE}"
 if out="$(docker run --rm --entrypoint bash "$IMAGE" -c "$ceremony" 2>&1)"; then
 	printf '%s\n' "$out" | sed 's/^/        /'
-	ok "generated an HSM-backed root CA through PKCS#11"
+	ok "generated an HSM-backed root CA, and imported an existing RSA CA key, through PKCS#11"
 else
 	printf '%s\n' "$out" | sed 's/^/        /'
-	bad "the image cannot mint a root CA against its bundled PKCS#11 module"
+	bad "the image cannot mint or adopt a CA against its bundled PKCS#11 module"
 fi
 
 # --- 7. The -yubihsm variant carries what its tag promises --------------------

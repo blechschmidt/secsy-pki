@@ -274,6 +274,10 @@ test-yubihsm: ## Run the YubiHSM hardware suite against an attached device (not 
 test-yubihsm-quick: ## test-yubihsm without the slow RSA-4096 case
 	./scripts/yubihsm-test.sh --quick
 
+.PHONY: test-yubihsm-container
+test-yubihsm-container: ## Run the published -yubihsm image against an attached device (RSA import; not CI)
+	./scripts/yubihsm-container-test.sh
+
 .PHONY: bench
 bench: | $(DIST) ## Run the HSM-free benchmark set -> dist/bench-new.txt
 	@echo "==> go test -bench $(BENCH_PATTERN) (-tags $(BENCH_TAGS), count=$(BENCH_COUNT), benchtime=$(BENCH_TIME))"
