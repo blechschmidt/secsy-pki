@@ -14,12 +14,15 @@
 # operators pkcs11-tool for debugging; for production the real vendor PKCS#11
 # module is bind-mounted over /usr/lib and selected via pkcs11.module_path.
 #
-# Stage 5 (runtime-yubihsm) is the one exception to that last sentence: the
+# Stage 6 (runtime-yubihsm) is the one exception to that last sentence: the
 # runtime with Yubico's PKCS#11 module and the libyubihsm transports already in
 # it, published under every tag with `-yubihsm` appended. It is defined after
 # the artifacts stage because it derives from the runtime, and a stage can only
-# refer to one that came before it. Stage 4 (yubihsm-builder) compiles that
-# module from Yubico's own signed release tarball.
+# refer to one that came before it. Its payload comes from two builder stages,
+# one per upstream project and per language: stage 4 (yubihsm-builder) compiles
+# yubihsm-shell with cmake, stage 5 (yubihsm-connector-builder) compiles
+# yubihsm-connector with Go. Both work from Yubico's own signed release
+# tarballs; no part of the YubiHSM payload comes from a Debian package.
 #
 # Stage 3 (artifacts) is a scratch stage holding nothing but the binaries, so
 # that `docker buildx build --target artifacts --output type=local,dest=…`
@@ -32,8 +35,8 @@
 # cross-compiles to the target, because the alternative — an emulated arm64
 # builder — runs the whole cgo compile under QEMU and takes the better part of
 # an hour. Go cross-compiles natively; only the C half needs a cross toolchain,
-# which is one apt package per architecture. yubihsm-builder is cross-compiled
-# the same way and for the same reason.
+# which is one apt package per architecture. Both yubihsm builder stages are
+# cross-compiled the same way and for the same reason.
 # ---------------------------------------------------------------------------
 
 ARG GO_VERSION=1.25
