@@ -93,10 +93,11 @@ device answers over `yhusb://` from inside as uid 65532; that `secsy-ca
 import-key` places RSA-2048, RSA-3072 and RSA-4096 keys and that each is
 **verified by signing on the device**; that the resulting object really is an
 `asymmetric-key` with the right algorithm, may sign, and is neither exportable
-under wrap nor unwrap-capable; that `secsy-ca inventory` finds them; that `ca
-import` adopts a legacy RSA CA whose certificate was self-signed *before* the
-migration and `issue` then produces a leaf which `openssl verify` accepts under
-it; and that `init-root -key-type rsa-2048` generates in the device — the
+under wrap nor unwrap-capable; that `secsy-ca inventory` lists each at the
+expected key type and reports it non-extractable, which is the product's own view
+of that invariant; that `ca import` adopts a legacy RSA CA whose certificate was
+self-signed *before* the migration and `issue` then produces a leaf which
+`openssl verify` accepts under it; and that `init-root -key-type rsa-2048` generates in the device — the
 sibling of the import bug below, so importing alone proves half of it. (2048
 rather than 4096 for generation: the bug is not size-specific, and 4096 bits take
 a minute and a half on this hardware where 2048 take seconds.)
@@ -108,7 +109,15 @@ packages. The claim it checks is that the template adapts and the import still
 works, not that the old module is fine.
 
 It owns object ids `0x7d00`–`0x7d0f` and labels `t201-c-*`, which do not overlap
-the ranges the Go suite uses, and deletes what it created.
+the ranges the Go suite uses, and deletes what it created — both object types, not
+just the one it meant to make, since the failure it is built to detect leaves the
+wrong one behind.
+
+Like the Go suite it **drains the device audit log** when the 62-entry ring runs
+short, for the same reason: a device with force-audit enabled stops accepting
+commands once the log fills, and this script performs enough operations to fill
+it. Draining destroys the device's only copy of those entries, so do not point it
+at a device whose log a deployment is collecting.
 
 ---
 
