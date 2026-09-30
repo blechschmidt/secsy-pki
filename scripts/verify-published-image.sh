@@ -286,23 +286,43 @@ secsy-ca -config /app/verify-config.yaml list
 # already distributed and not reissuable. Everything after the import is signed
 # by the key inside the token.
 cd /app
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out legacy.key 2>/dev/null
+
+# Both RSA sizes a legacy CA is realistically on. 4096 is not a formality here:
+# it is the size an operator migrating an old root most often has, and the one a
+# module with a broken template mis-handles just as surely as 2048 — so a gate
+# that only covered 2048 would be a gate that covered the easy half.
+for bits in 2048 4096; do
+  openssl genpkey -algorithm RSA -pkeyopt "rsa_keygen_bits:${bits}" -out "legacy-${bits}.key" 2>/dev/null
+  # import-key signs a challenge on the token and verifies it under the public
+  # half of the file it read, then says so. Requiring the word is requiring that
+  # proof: "the object was created" is the outcome this check exists to reject.
+  import_out=$(secsy-ca -config /app/verify-config.yaml import-key \
+    -label "verify-imported-${bits}" -key "legacy-${bits}.key")
+  printf '%s\n' "$import_out" | grep -E 'Label:|Key type:|Verified:'
+  printf '%s\n' "$import_out" | grep -q "Key type:  rsa-${bits}" || {
+    echo "!! the RSA-${bits} import did not report key type rsa-${bits}" >&2; exit 1; }
+  printf '%s\n' "$import_out" | grep -q 'Verified:' || {
+    echo "!! import-key did not prove the RSA-${bits} key signs on the token" >&2; exit 1; }
+done
+
+# An imported CA key must be no more exposed than a generated one, which is the
+# claim the import template makes and the one inventory reports on.
+inventory_out=$(secsy-ca -config /app/verify-config.yaml inventory)
+printf '%s\n' "$inventory_out"
+if printf '%s\n' "$inventory_out" | grep -E 'verify-imported-(2048|4096)' | grep -q 'YES'; then
+  echo "!! an imported key is extractable" >&2; exit 1
+fi
+
+# The rest of the migration runs on the 2048 key: adopt a CA whose certificate
+# was self-signed before the import, then issue under it.
+cp legacy-2048.key legacy.key
 openssl req -x509 -new -key legacy.key -sha256 -days 2 \
   -subj "/CN=Published Image Verification Legacy Root" \
   -addext "basicConstraints=critical,CA:TRUE" \
   -addext "keyUsage=critical,keyCertSign,cRLSign" -out legacy-ca.pem 2>/dev/null
 
-# import-key signs a challenge on the token and verifies it under the public half
-# of the file it read, then says so. Requiring the word is requiring that proof:
-# "the object was created" is the outcome this check exists to reject.
-import_out=$(secsy-ca -config /app/verify-config.yaml import-key \
-  -label verify-imported -key legacy.key)
-printf '%s\n' "$import_out"
-printf '%s\n' "$import_out" | grep -q 'Verified:' || {
-  echo "!! import-key did not prove the imported key signs on the token" >&2; exit 1; }
-
 secsy-ca -config /app/verify-config.yaml ca import \
-  -label verify-legacy-ca -existing-key verify-imported -cert legacy-ca.pem
+  -label verify-legacy-ca -existing-key verify-imported-2048 -cert legacy-ca.pem
 
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out leaf.key 2>/dev/null
 openssl req -new -key leaf.key -subj "/CN=migrated.example" \
@@ -319,7 +339,7 @@ INNER
 ceremony="${ceremony//SOFTHSM_MODULE/$SOFTHSM_MODULE}"
 if out="$(docker run --rm --entrypoint bash "$IMAGE" -c "$ceremony" 2>&1)"; then
 	printf '%s\n' "$out" | sed 's/^/        /'
-	ok "generated an HSM-backed root CA, and imported an existing RSA CA key, through PKCS#11"
+	ok "generated an HSM-backed root CA, and imported existing RSA-2048/4096 CA keys, through PKCS#11"
 else
 	printf '%s\n' "$out" | sed 's/^/        /'
 	bad "the image cannot mint or adopt a CA against its bundled PKCS#11 module"
@@ -475,8 +495,11 @@ INNER
 		# device — which is exactly the skew this catches.
 		want_conn="$(field want-conn)"
 		got_conn="$(field got-conn)"
-		if [ -z "$want_conn" ] || [ -z "$got_conn" ]; then
-			bad "the probe did not report both connector versions (want='${want_conn}' got='${got_conn}')"
+		if [ -z "$want_conn" ]; then
+			bad "the image records no yubihsm-connector version, so it predates the source build" \
+				"(the binary in it reports '${got_conn:-nothing}'; Debian's package is 3.0.5)"
+		elif [ -z "$got_conn" ]; then
+			bad "the image records yubihsm-connector ${want_conn} but the binary reports nothing"
 		elif [ "$want_conn" = "$got_conn" ]; then
 			ok "yubihsm-connector is the recorded upstream build (${got_conn})"
 		else
