@@ -228,8 +228,9 @@ script runs `secsy-ca` **inside a published image**, as the image's own non-root
 user, against an attached device — importing RSA-2048/3072/4096 and reading each
 object back off the device to confirm it is an `asymmetric-key` that may sign and
 cannot be exported, adopting a legacy RSA CA and verifying a leaf it issues
-against the certificate published before the migration, and generating RSA-4096
-in the device. `--legacy-module` repeats the import against a pre-2.7.2 module
+against the certificate published before the migration, and generating an RSA key
+in the device — the sibling site of the same module bug, so importing alone proves
+only half of it. `--legacy-module` repeats the import against a pre-2.7.2 module
 mounted over the image's. `make test-yubihsm-container`; see
 [the container tier](docs/hsm/hardware-test-suite.md#the-container-tier).
 

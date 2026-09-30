@@ -96,8 +96,10 @@ import-key` places RSA-2048, RSA-3072 and RSA-4096 keys and that each is
 under wrap nor unwrap-capable; that `secsy-ca inventory` finds them; that `ca
 import` adopts a legacy RSA CA whose certificate was self-signed *before* the
 migration and `issue` then produces a leaf which `openssl verify` accepts under
-it; and that `init-root -key-type rsa-4096` generates in the device — the
-sibling of the import bug below, so importing alone proves half of it.
+it; and that `init-root -key-type rsa-2048` generates in the device — the
+sibling of the import bug below, so importing alone proves half of it. (2048
+rather than 4096 for generation: the bug is not size-specific, and 4096 bits take
+a minute and a half on this hardware where 2048 take seconds.)
 
 `--legacy-module DIR` repeats the import against a pre-2.7.2 module mounted over
 the image's, which is the shape of a deployment that supplies its own vendor

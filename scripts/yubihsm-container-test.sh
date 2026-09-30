@@ -42,8 +42,9 @@
 #     cp -a /usr/lib/*/libyubihsm*.so* /out/lib/'
 #
 # WARNING: this creates and deletes objects on the device, in the reserved id
-# range below, and consumes audit-log entries. Do not point it at a device whose
-# audit log a deployment is collecting.
+# range below, and consumes audit-log entries — draining them when the 62-entry
+# log runs short, which destroys the device's only copy. Do not point it at a
+# device whose audit log a deployment is collecting.
 set -uo pipefail
 
 IMAGE="${SECSY_YUBIHSM_IMAGE:-ghcr.io/blechschmidt/secsy-pki:main-yubihsm}"
@@ -185,9 +186,10 @@ chmod -R a+rwX "$WORK"
 echo "    $WORK"
 
 # secsy runs secsy-ca in the image with the device and the scratch dir attached.
-# The extra mount arguments in SECSY_EXTRA_MOUNTS let the legacy-module pass
-# overlay a different PKCS#11 module without duplicating this function.
-SECSY_EXTRA_MOUNTS=()
+# MODULE_OVERLAY is empty except during the legacy-module pass, which mounts a
+# different PKCS#11 module over the image's — so the overlay reaches the code
+# under test and nothing else.
+MODULE_OVERLAY=()
 secsy() { # secsy <binary> <args...>
 	local bin="$1"
 	shift
@@ -196,17 +198,43 @@ secsy() { # secsy <binary> <args...>
 		-v "$WORK/keys:/keys:ro" \
 		-v "$WORK/data:/app/data" \
 		-v "$WORK/out:/out" \
-		"${SECSY_EXTRA_MOUNTS[@]}" \
+		"${MODULE_OVERLAY[@]}" \
 		--entrypoint "$bin" "$IMAGE" "$@"
 }
 
-# yhs runs the vendor shell in the image. It claims the same USB interface the
-# PKCS#11 module does, so it must not overlap a secsy call — every use below is
-# sequential for that reason.
+# yhs runs the vendor shell in the image, and deliberately *without* the overlay:
+# it is the instrument, not the subject, so it keeps the image's own known-good
+# libyubihsm even while secsy-ca is being driven through an older one. It claims
+# the same USB interface the PKCS#11 module does, so it must not overlap a secsy
+# call — every use below is sequential for that reason.
 yhs() {
-	docker run --rm "${DOCKER_DEV[@]}" "${SECSY_EXTRA_MOUNTS[@]}" \
+	docker run --rm "${DOCKER_DEV[@]}" \
 		--entrypoint yubihsm-shell "$IMAGE" \
 		--connector yhusb:// --authkey "$AUTH_KEY_ID" -p "$PASSWORD" "$@"
+}
+
+# keep_log_space <entries> drains the device audit log when fewer than <entries>
+# slots remain, mirroring keepLogSpace in internal/yubihsmtest.
+#
+# It is not housekeeping. A YubiHSM with force-audit enabled **stops accepting
+# commands** when its 62-entry log fills, so a script that performs forty device
+# operations without draining fails partway through with a refusal that looks
+# like a bug in whatever it was doing at the time. Draining destroys the device's
+# only copy of those entries, which is why the header of this file says not to
+# point it at a device whose log a deployment is collecting.
+keep_log_space() {
+	local want="$1" info used total logs last
+	info=$(yhs -a get-device-info 2>&1) || return 0
+	used=$(sed -n 's|^Log used:[[:space:]]*\([0-9]*\)/.*|\1|p' <<<"$info")
+	total=$(sed -n 's|^Log used:[[:space:]]*[0-9]*/\([0-9]*\).*|\1|p' <<<"$info")
+	[[ -n "$used" && -n "$total" ]] || return 0
+	((total - used >= want)) && return 0
+	logs=$(yhs -a get-logs 2>&1) || return 0
+	last=$(sed -n 's/^item:[[:space:]]*\([0-9]*\) --.*/\1/p' <<<"$logs" | tail -1)
+	[[ -n "$last" ]] || return 0
+	if yhs -a set-log-index --log-index "$last" >/dev/null 2>&1; then
+		echo "    drained the device audit log up to entry #$last ($used/$total were used)"
+	fi
 }
 
 # ---------------------------------------------------------------------------
@@ -255,12 +283,19 @@ check "the image runs as a non-root user (uid $uid_inside)" "$([[ "$uid_inside" 
 # and returns success; what it creates is a wrap-key, which is not exposed as
 # CKO_PRIVATE_KEY, so "the import command exited 0" and "there is an RSA signing
 # key on the device" are different claims and only the second one matters.
+CREATED_IDS=()
+
 import_one() { # import_one <bits> <id-offset>
 	local bits="$1" offset="$2"
 	local id label
 	id=$(printf '%04x' $((ID_BASE + offset)))
 	label="t201-c-rsa$bits"
+	# Recorded before the attempt, not after it succeeds: an import that creates
+	# the wrong kind of object still leaves one behind, and that is exactly the
+	# case this script exists to be able to produce.
+	CREATED_IDS+=("$id")
 
+	keep_log_space 12
 	openssl genpkey -algorithm RSA -pkeyopt "rsa_keygen_bits:$bits" \
 		-out "$WORK/keys/rsa$bits.pem" 2>/dev/null
 	chmod a+r "$WORK/keys/rsa$bits.pem"
@@ -300,16 +335,18 @@ import_one() { # import_one <bits> <id-offset>
 	check "0x$id holds no unwrap capability" \
 		"$([[ "$obj" != *unwrap-data* ]] && echo 0 || echo 1)"
 	sed 's/^/         /' <<<"$obj"
-
-	CREATED_IDS+=("$id")
 }
 
-CREATED_IDS=()
 delete_created() {
-	local id
+	local id type
 	for id in "${CREATED_IDS[@]:-}"; do
 		[[ -n "$id" ]] || continue
-		yhs -a delete-object -i "0x$id" -t asymmetric-key >/dev/null 2>&1
+		# Both types, because the failure mode under test is the object landing as
+		# the wrong one — and a wrap-key left at a handle a later run wants is how
+		# a cleanup bug turns into a confusing second failure.
+		for type in asymmetric-key wrap-key; do
+			yhs -a delete-object -i "0x$id" -t "$type" >/dev/null 2>&1
+		done
 	done
 	CREATED_IDS=()
 }
@@ -322,13 +359,20 @@ import_one 4096 3
 # ---------------------------------------------------------------------------
 # 5. The lookup the product performs on every restart.
 say "The imported keys through secsy-ca inventory"
+keep_log_space 12
 inv=$(secsy secsy-ca -config /etc/secsy/config.yaml inventory 2>&1)
 rc=$?
 if [[ $rc -eq 0 ]]; then
 	for bits in 2048 3072 4096; do
-		check "inventory lists t201-c-rsa$bits" \
-			"$(grep -q "t201-c-rsa$bits" <<<"$inv" && echo 0 || echo 1)"
+		local_row=$(grep "t201-c-rsa$bits" <<<"$inv")
+		check "inventory lists t201-c-rsa$bits as rsa-$bits" \
+			"$([[ "$local_row" == *"rsa-$bits"* ]] && echo 0 || echo 1)"
+		# The EXTRACTABLE column, which `inventory -strict` exits non-zero on.
+		# An imported key must be no more exposed than a generated one.
+		check "inventory reports t201-c-rsa$bits as non-extractable" \
+			"$([[ -n "$local_row" && "$local_row" != *YES* ]] && echo 0 || echo 1)"
 	done
+	sed 's/^/         /' <<<"$inv"
 else
 	check "secsy-ca inventory runs against the device" 1
 	sed 's/^/         /' <<<"$inv"
@@ -340,6 +384,7 @@ fi
 # on the host with the original key, standing in for the published root, and the
 # leaf is then signed by the device.
 say "Adopting a legacy RSA CA and issuing from it on the device"
+keep_log_space 12
 openssl req -x509 -new -key "$WORK/keys/rsa2048.pem" -sha256 -days 2 \
 	-subj "/CN=t201 container legacy root" \
 	-addext "basicConstraints=critical,CA:TRUE" \
@@ -383,16 +428,22 @@ fi
 # 7. Generation is the sibling of the import bug — the same mis-read of
 # CKA_UNWRAP is on C_GenerateKeyPair — so an image that can import RSA has still
 # only proved half of it.
+#
+# RSA-2048 rather than 4096: the branch is not size-specific — it is reached for
+# any CKK_RSA template — and generating 4096 bits on a YubiHSM 2 takes about a
+# minute and a half against 2048's few seconds. Nothing is given up by using the
+# cheap one, and a script that takes two minutes longer gets run less.
 say "Generating an RSA key in the device from inside the container"
+keep_log_space 12
 gen=$(secsy secsy-ca -config /etc/secsy/config.yaml init-root \
-	-label t201-c-gen-rsa4096 -key-type rsa-4096 -validity-days 2 \
+	-label t201-c-gen-rsa -key-type rsa-2048 -validity-days 2 \
 	-cn "t201 container generated root" 2>&1)
 rc=$?
-check "init-root generates an RSA-4096 CA key in the device" "$([[ $rc -eq 0 ]] && echo 0 || echo 1)"
+check "init-root generates an RSA CA key in the device" "$([[ $rc -eq 0 ]] && echo 0 || echo 1)"
 if [[ $rc -ne 0 ]]; then
 	sed 's/^/         /' <<<"$gen"
 else
-	gen_obj=$(yhs -a list-objects -l t201-c-gen-rsa4096 2>&1)
+	gen_obj=$(yhs -a list-objects -l t201-c-gen-rsa 2>&1)
 	check "the generated key is an asymmetric-key on the device, not a wrap-key" \
 		"$([[ "$gen_obj" == *"type: asymmetric-key"* ]] && echo 0 || echo 1)"
 	sed 's/^/         /' <<<"$gen_obj"
@@ -411,9 +462,10 @@ if [[ -n "$LEGACY_MODULE" ]]; then
 	[[ -f "$LEGACY_MODULE/yubihsm_pkcs11.so" ]] || die "$LEGACY_MODULE holds no yubihsm_pkcs11.so"
 	[[ -d "$LEGACY_MODULE/lib" ]] || die "$LEGACY_MODULE holds no lib/ with libyubihsm.so.2"
 	delete_created
+	keep_log_space 20
 	# Mounted over the symlink's target directory as well as the module itself, so
 	# the module's RUNPATH finds the matching libyubihsm rather than the image's.
-	SECSY_EXTRA_MOUNTS=(
+	MODULE_OVERLAY=(
 		-v "$LEGACY_MODULE/yubihsm_pkcs11.so:/usr/local/lib/pkcs11/yubihsm_pkcs11.so:ro"
 		-v "$LEGACY_MODULE/lib:/usr/local/lib/legacy-yubihsm:ro"
 		-e "LD_LIBRARY_PATH=/usr/local/lib/legacy-yubihsm"
@@ -422,7 +474,7 @@ if [[ -n "$LEGACY_MODULE" ]]; then
 	# file — because that is the value the decision is actually made on. The
 	# module reports minor as VERSION_MINOR*10 + VERSION_PATCH, so 2.6.0 prints
 	# "ver 2.60"; anything below 2.72 is affected.
-	legacy_version=$(docker run --rm "${SECSY_EXTRA_MOUNTS[@]}" \
+	legacy_version=$(docker run --rm "${MODULE_OVERLAY[@]}" \
 		-e YUBIHSM_PKCS11_CONF=/tmp/legacy-yh.conf \
 		--entrypoint sh "$IMAGE" -c '
 			printf "connector = yhusb://\n" >/tmp/legacy-yh.conf
@@ -434,7 +486,7 @@ if [[ -n "$LEGACY_MODULE" ]]; then
 		"$([[ -n "$legacy_minor" && "$legacy_minor" -lt 72 ]] && echo 0 || echo 1)"
 	import_one 2048 1
 	import_one 4096 3
-	SECSY_EXTRA_MOUNTS=()
+	MODULE_OVERLAY=()
 fi
 
 # ---------------------------------------------------------------------------
