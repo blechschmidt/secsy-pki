@@ -99,7 +99,7 @@ while [[ $# -gt 0 ]]; do
 		shift
 		;;
 	-h | --help)
-		sed -n '2,46p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+		sed -n '2,47p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*) die "unknown argument: $1" ;;
@@ -133,9 +133,18 @@ dev_group=$(stat -c '%G' "$DEV_NODE")
 dev_gid=$(stat -c '%g' "$DEV_NODE")
 dev_mode=$(stat -c '%a' "$DEV_NODE")
 echo "    node:  $DEV_NODE (group $dev_group/$dev_gid, mode $dev_mode)"
-if [[ "$dev_gid" == "0" && "$dev_mode" != *6 ]]; then
-	die "$DEV_NODE is root-owned and not group-writable, so the image's non-root user
-   cannot open it. Install the udev rule the image ships:
+# libusb needs the node read-write. The container is always given the node's own
+# group (--group-add below), so group rw is enough — including the root:root 0660
+# default, where the added group is 0. What is not enough is 0600, or a mode that
+# only grants read: both leave the image's uid 65532 unable to open it, and the
+# failure arrives as LIBUSB_ERROR_ACCESS from inside a container, which is a poor
+# place to learn about a host permission.
+dev_group_bits=$(((0$dev_mode / 8) % 8))
+dev_other_bits=$((0$dev_mode % 8))
+if (((dev_group_bits & 6) != 6 && (dev_other_bits & 6) != 6)); then
+	die "$DEV_NODE is mode $dev_mode, which grants neither its group nor everyone
+   read-write, so the image's non-root user cannot open it. Install the udev rule
+   the image ships:
      docker run --rm --entrypoint cat $IMAGE \\
        /usr/share/secsy-pki/udev/70-yubihsm.rules | sudo tee /etc/udev/rules.d/70-yubihsm.rules
      sudo groupadd -r secsy    # or edit GROUP= in the rule
