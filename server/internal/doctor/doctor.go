@@ -245,7 +245,7 @@ func Run(ctx context.Context, opts Options) *Report {
 			"canary.last_probe", "ct.inclusion", "webhook.dead_letters", "ers.freshness",
 			"keychecks.blocklist", "keychecks.profiles", "clock.skew", "time.trusted",
 			"serving.self_issued", "listener.tls", "listener.unix_socket",
-			"fips.mode", "fips.store_keys", "fips.secret_oaep",
+			"fips.mode", "fips.store_keys", "fips.secret_oaep", "hsmaudit.drain",
 		} {
 			r.skip(name, "config did not load")
 		}
@@ -352,6 +352,12 @@ func Run(ctx context.Context, opts Options) *Report {
 	// 9b. Unix-domain-socket listeners (Task 185): the filesystem side of the
 	// same question — socket path, permissions, and the directory guarding them.
 	checkUnixSocket(r, cfg)
+
+	// 10d. HSM audit-log drain: on a commissioned YubiHSM, prove the collector
+	// and the signing path are not contending for the same USB interface — the
+	// one audit property whose failure is otherwise invisible until the device
+	// log fills and the HSM stops signing.
+	checkHSMAuditDrain(r, cfg, db, schemaOK)
 
 	// 10. FIPS 140-3 posture (only meaningful with security.fips): module state,
 	// store key-material policy conformance, and the secret-layer SHA-256 OAEP

@@ -13,6 +13,36 @@ import (
 // connection as it reboots.
 var errTransportRead = errors.New("no reply from the device")
 
+// ErrDeviceBusy marks a direct-USB open that failed because another process
+// holds the device's interface.
+//
+// It is a sentinel rather than just a message because the condition has one
+// specific, non-obvious cause and one specific fix, and callers need to act on
+// it rather than merely print it. Only one process may claim the YubiHSM's USB
+// interface, and Yubico's PKCS#11 module claims it for as long as it has a
+// session open — which, behind a session pool, is the whole life of the
+// process. So a deployment that signs through PKCS#11 and drains the device
+// audit log through this driver on the same `yhusb://` device never drains
+// anything: every cycle fails here. The audit subsystem's job is to notice that
+// and say so at startup, instead of letting a force-audited device fill its
+// 62-entry log and stop serving signatures.
+//
+// A yubihsm-connector multiplexes the device, which is why the fix is to run
+// one and point both at an http:// URL.
+var ErrDeviceBusy = errors.New("the YubiHSM USB interface is held by another process")
+
+// IsDirectUSB reports whether url selects the direct-USB transport, where the
+// device cannot be shared between processes. An empty URL does, because that is
+// what OpenTransport resolves it to.
+//
+// It lives next to OpenTransport so the two cannot disagree about what a URL
+// means: a caller checking for "yhusb://" by hand would miss both the empty
+// string and the serial-qualified form.
+func IsDirectUSB(url string) bool {
+	url = strings.TrimSpace(url)
+	return url == "" || url == "yhusb://" || strings.HasPrefix(url, "yhusb://")
+}
+
 // Transport carries whole protocol messages to and from a YubiHSM 2.
 //
 // Two are provided: a direct USB transport that talks to the device the same

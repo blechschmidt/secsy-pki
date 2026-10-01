@@ -68,6 +68,10 @@ func setupHSMAudit(cfg *config.Config, db *database.DB) {
 		return
 	}
 
+	// Before anything else: a deployment whose device log can never be drained
+	// must not start. Collection is not optional housekeeping here — see below.
+	requireDrainableDevice(cfg)
+
 	dev := hsmaudit.NewHardwareDevice(hsm.Config{
 		ConnectorURL: cfg.YubiHSM.ConnectorURL,
 		AuthKeyID:    cfg.YubiHSM.AuthKeyID,
@@ -121,6 +125,34 @@ func setupHSMAuditCollector(elector *leader.Elector) {
 	elector.Register("hsm-audit-collector", func(ctx context.Context) {
 		c.Run(ctx)
 	})
+}
+
+// requireDrainableDevice refuses to start when the audit driver and the signing
+// path would fight over the same USB device — see hsmaudit.DrainContention for
+// what that means and why there is no working configuration of it.
+//
+// A startup refusal rather than a warning, by the same reasoning as
+// openAuditLogFile's: the operator ran `hsm-audit provision` and asked for a
+// collected device log, and silently delivering the opposite is worse than not
+// starting. The diagnosis names the fix, which is one daemon and two config
+// lines.
+//
+// It is a pure configuration check on purpose. Probing the device would only
+// change the wording of the consequence, and would make whether the server
+// boots depend on a USB round trip that the very contention being diagnosed
+// makes flaky.
+func requireDrainableDevice(cfg *config.Config) {
+	if err := drainConflict(cfg); err != nil {
+		log.Fatalf("FATAL: %v", err)
+	}
+}
+
+// drainConflict returns the diagnosis requireDrainableDevice exits on, or nil
+// when the deployment can drain. It is separate so the decision is testable
+// without a process that calls log.Fatalf.
+func drainConflict(cfg *config.Config) error {
+	url := hsm.EffectiveConnectorURL(hsm.Config{ConnectorURL: cfg.YubiHSM.ConnectorURL})
+	return hsmaudit.DrainContention(url, cfg.SigningPKCS11Module())
 }
 
 // hsmAuditNotify signals the collector that an operation reached the HSM. It is

@@ -603,6 +603,10 @@ pkcs11:
     env:
       var: "SECSY_USER_PIN"
 yubihsm:
+  # yhusb:// is exclusive to one process, so it cannot be used by a deployment
+  # that both signs through the PKCS#11 module and collects the device audit log
+  # — run the image's bundled yubihsm-connector and point both at its URL. See
+  # docs/hsm/audit-log.md#the-transport-must-be-shareable.
   connector_url: "yhusb://"          # or http://127.0.0.1:12345 via the connector
 ```
 

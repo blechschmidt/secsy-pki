@@ -573,6 +573,64 @@ Signals coalesce into a single pending token, so a burst of issuance costs one
 drain in flight plus at most one queued behind it — not one device round trip
 per signature.
 
+### The transport must be shareable
+
+A YubiHSM 2 speaks one protocol over one USB interface, and **exactly one
+process may claim that interface at a time**. The two chokepoints above are two
+*routes* to the device, not two users of one connection: the signing path goes
+through Yubico's PKCS#11 module, the drain goes through the native driver,
+because PKCS#11 has no way to express GET LOG ENTRIES.
+
+On `yhusb://` — direct USB, and what an unset `connector_url` resolves to —
+that is fatal. The module claims the interface when it opens a session and
+holds it until it closes one, and the key provider keeps a session pool open for
+the life of the process. Every collection cycle therefore fails:
+
+```
+claiming the YubiHSM USB interface on /dev/bus/usb/003/005: device or resource busy
+```
+
+Nothing about this is a degraded mode. Signing continues, so the deployment
+looks healthy while producing signatures whose device log entries nothing is
+collecting — and then the 62-entry ring fills and a force-audited device refuses
+every audited command, including signing. A device with per-command auditing but
+no force-audit fares no better: the ring overwrites, the collected chain breaks,
+and verification rejects the result.
+
+The fix is a **yubihsm-connector**, the Yubico daemon whose purpose is to
+multiplex the device. Both routes then reach it over HTTP:
+
+```console
+# yubihsm-connector -l 127.0.0.1:12345
+```
+
+```yaml
+yubihsm:
+  connector_url: http://127.0.0.1:12345
+```
+
+```ini
+# yubihsm_pkcs11.conf, read via YUBIHSM_PKCS11_CONF
+connector = http://127.0.0.1:12345
+```
+
+The `-yubihsm` container image ships `yubihsm-connector` alongside the PKCS#11
+module, so nothing extra has to be installed; see
+[the container guide](../deployment/container.md).
+
+The server does not wait to discover this at runtime. On a commissioned device
+it checks the resolved transport against the configured signing path at startup
+and **refuses to start** if they cannot share the device, naming the daemon and
+the two config lines. `secsy-ca doctor` reports the same thing as
+`hsmaudit.drain`. Deployments that do not contend — a cloud-KMS or
+software-backed signing path, or a different PKCS#11 token entirely — are left
+alone, and direct USB is the right transport for them.
+
+The CLIs are unaffected by the module half of this: `secsy-ca` and
+`secsy-secret` drain after closing their key provider, so the interface is free
+by then. They do still need to address the same endpoint the rest of the
+deployment does, so set `connector_url` once, in the shared config.
+
 ## Where the collected records go
 
 Acknowledging the ring is irreversible and the device keeps no copy, so whatever
@@ -673,7 +731,11 @@ requirement is "this file is the whole history".
 
 ```yaml
 yubihsm:
-  connector_url: yhusb://
+  # A yubihsm-connector, not yhusb://: the drain and the PKCS#11 signing path
+  # are two routes to one USB interface and cannot share it directly. See
+  # "The transport must be shareable" above — the server refuses to start on a
+  # commissioned device if they would contend.
+  connector_url: http://127.0.0.1:12345
   auth_key_id: 1
   password: ${YUBIHSM_PASSWORD}
 

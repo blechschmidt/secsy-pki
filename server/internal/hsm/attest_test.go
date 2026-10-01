@@ -99,6 +99,31 @@ func TestConnectorArgFallsBackWhenTheConfigIsUnusable(t *testing.T) {
 	}
 }
 
+// EffectiveConnectorURL is the exported form of the same resolution, used by
+// callers that need to *reason* about the transport rather than use it — the
+// startup check that refuses a deployment whose audit-log drain could never run.
+// It has to see through both invisible cases: an unset connector_url, and a
+// deployment configured only through YUBIHSM_PKCS11_CONF.
+func TestEffectiveConnectorURLResolvesTheSameWayTheDriverDoes(t *testing.T) {
+	t.Setenv("YUBIHSM_PKCS11_CONF", "")
+	if got := EffectiveConnectorURL(Config{}); got != "yhusb://" {
+		t.Errorf("an unset connector URL resolved to %q, want yhusb:// — a caller that saw %q "+
+			"would not recognise direct USB", got, got)
+	}
+
+	conf := filepath.Join(t.TempDir(), "yubihsm_pkcs11.conf")
+	if err := os.WriteFile(conf, []byte("connector = http://127.0.0.1:12345\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("YUBIHSM_PKCS11_CONF", conf)
+	if got := EffectiveConnectorURL(Config{}); got != "http://127.0.0.1:12345" {
+		t.Errorf("EffectiveConnectorURL = %q, want the connector the module is configured with", got)
+	}
+	if got := EffectiveConnectorURL(Config{ConnectorURL: "https://hsm.internal:12345"}); got != "https://hsm.internal:12345" {
+		t.Errorf("an explicit connector was overridden by the module config: %q", got)
+	}
+}
+
 // The digest is stored and transported as lowercase hex throughout the audit
 // subsystem; the chain verifier compares those strings, so a case or field-order
 // change here breaks verification rather than formatting.

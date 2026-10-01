@@ -70,6 +70,19 @@ func (c Config) nativeConfig() yubihsm.Config {
 	}
 }
 
+// EffectiveConnectorURL reports the connector URL the native driver will
+// actually address the device on, after the same fallback chain the PKCS#11
+// module uses: the explicit configuration, else the connector line of
+// YUBIHSM_PKCS11_CONF, else direct USB.
+//
+// Callers that need to reason about the *transport* — rather than merely use it
+// — have to see the resolved value, because the two interesting cases are both
+// invisible in the raw configuration: an empty connector_url is direct USB, and
+// a deployment that set only YUBIHSM_PKCS11_CONF is whatever that file says.
+// Re-deriving either by hand is how the audit path and the signing path end up
+// describing different hardware.
+func EffectiveConnectorURL(cfg Config) string { return connectorArg(cfg) }
+
 func connectorArg(cfg Config) string {
 	if cfg.ConnectorURL != "" {
 		return cfg.ConnectorURL

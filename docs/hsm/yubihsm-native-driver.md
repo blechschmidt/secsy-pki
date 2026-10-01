@@ -58,6 +58,15 @@ transports:
 There is no libusb, no cgo and no vendor binary. The USB transport submits
 `USBDEVFS_BULK` ioctls on `/dev/bus/usb/<bus>/<device>`, located through sysfs.
 
+**Direct USB is exclusive.** One process claims the interface; everyone else
+gets `device or resource busy`. That is a constraint on the *deployment*, not
+just on this driver, because Yubico's PKCS#11 module claims the same interface
+for as long as it holds a session — so a server that signs through the module
+cannot also drain the device audit log, attest a key, or attest the device over
+`yhusb://`. Any deployment that needs two routes to one YubiHSM wants a
+`yubihsm-connector` and an `http://` URL; a commissioned device makes the server
+[refuse to start](audit-log.md#the-transport-must-be-shareable) without one.
+
 Because SCP03 terminates in this process and in the HSM, a `yubihsm-connector`
 in between is a relay that can drop or reorder messages but cannot read a signing
 request, alter an audit-log response, or forge one.

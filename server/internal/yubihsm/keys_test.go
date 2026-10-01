@@ -475,6 +475,29 @@ func TestUSBSerialFromURL(t *testing.T) {
 	}
 }
 
+// IsDirectUSB has to agree with OpenTransport about what every URL means,
+// because callers use it to decide whether two paths can share the device — and
+// a disagreement would clear a deployment whose audit-log drain can never run.
+// The two cases that are easy to get wrong by hand are the empty string, which
+// OpenTransport resolves to direct USB, and the serial-qualified form.
+func TestIsDirectUSB(t *testing.T) {
+	for _, tc := range []struct {
+		url  string
+		want bool
+	}{
+		{"", true},
+		{"  ", true},
+		{"yhusb://", true},
+		{"yhusb://serial=0123456789", true},
+		{"http://127.0.0.1:12345", false},
+		{"https://hsm.internal:12345", false},
+	} {
+		if got := IsDirectUSB(tc.url); got != tc.want {
+			t.Errorf("IsDirectUSB(%q) = %v, want %v", tc.url, got, tc.want)
+		}
+	}
+}
+
 // An unrecognised scheme must be refused rather than silently falling through to
 // direct USB, which would reach for whatever device is plugged into the host
 // when the operator asked for a specific remote one.

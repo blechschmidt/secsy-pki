@@ -306,6 +306,10 @@ block and auto-generates `yubihsm_pkcs11.conf` from it:
 
 ```yaml
 yubihsm:
+  # Direct USB is exclusive to one process. A deployment that collects the
+  # device audit log, or attests keys/devices, while signing through the PKCS#11
+  # module needs a yubihsm-connector and an http:// URL instead — see
+  # docs/hsm/audit-log.md#the-transport-must-be-shareable.
   connector_url: "yhusb://"   # direct USB; or http://127.0.0.1:12345 via yubihsm-connector
   auth_key_id: 1
   password: "password"

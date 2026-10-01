@@ -287,6 +287,12 @@ pkcs11:
   #     token_label: "secsy-ca-b"
 
 yubihsm:
+  # Direct USB belongs to one process at a time, and Yubico's PKCS#11 module
+  # holds it for the life of a session. A deployment that collects the device
+  # audit log (`secsy-ca hsm-audit provision`) while signing through that module
+  # must use a yubihsm-connector instead, or the server refuses to start:
+  #   connector_url: "http://127.0.0.1:12345"
+  # See docs/hsm/audit-log.md#the-transport-must-be-shareable.
   connector_url: "yhusb://"
   auth_key_id: 1
   password: "password"

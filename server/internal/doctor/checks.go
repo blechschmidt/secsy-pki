@@ -25,6 +25,8 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/fips"
+	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
+	"github.com/blechschmidt/secsy-pki/server/internal/hsmaudit"
 	"github.com/blechschmidt/secsy-pki/server/internal/keycheck"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -1860,6 +1862,50 @@ func listenerTarget(cfg *config.Config) (network, addr string) {
 // no longer match the config because the process was started with an older one,
 // and a directory any local user can write to — where a socket can be unlinked
 // and replaced by an impostor while the real server keeps its now-orphaned inode.
+// checkHSMAuditDrain reports whether the deployment's device-log drain can
+// actually reach the YubiHSM while the signing path is live.
+//
+// It is the one HSM-audit property that is invisible from inside the subsystem:
+// every other check — the pinned anchor, the chain, the ledger, the freshness
+// token — reads state that only exists if collection already worked. A
+// deployment where collection can never run shows no symptom here at all until
+// its 62-entry device log fills and the HSM stops signing, which is precisely
+// the kind of failure a preflight exists to move forward in time.
+//
+// Gated on a pinned audit state, because that is what makes a stalled drain
+// consequential: a deployment that never commissioned a device for audited
+// operation has no device log to lose.
+func checkHSMAuditDrain(r *Report, cfg *config.Config, db dbHandle, schemaOK bool) {
+	const name = "hsmaudit.drain"
+	if db == nil || !schemaOK {
+		r.skip(name, "database unavailable")
+		return
+	}
+	st, err := db.LoadAuditState(context.Background())
+	if err != nil {
+		r.run(name, func() (Status, string) {
+			return StatusWarn, fmt.Sprintf("could not read the pinned HSM audit state: %v", err)
+		})
+		return
+	}
+	if st == nil {
+		r.skip(name, "no device commissioned for audited operation (secsy-ca hsm-audit provision)")
+		return
+	}
+	r.run(name, func() (Status, string) {
+		url := hsm.EffectiveConnectorURL(hsm.Config{ConnectorURL: cfg.YubiHSM.ConnectorURL})
+		if err := hsmaudit.DrainContention(url, cfg.SigningPKCS11Module()); err != nil {
+			return StatusFail, err.Error()
+		}
+		if module := cfg.SigningPKCS11Module(); module != "" {
+			return StatusPass, fmt.Sprintf("device %s: the audit driver and the PKCS#11 module share the device over %s",
+				st.DeviceSerial, url)
+		}
+		return StatusPass, fmt.Sprintf("device %s reachable over %s; no PKCS#11 signing path competes for it",
+			st.DeviceSerial, url)
+	})
+}
+
 func checkUnixSocket(r *Report, cfg *config.Config) {
 	httpSock := cfg.Server.UnixSocket.Listener()
 	grpcSock := cfg.GRPC.UnixSocket.Listener()

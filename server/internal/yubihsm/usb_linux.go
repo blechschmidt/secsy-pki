@@ -201,9 +201,10 @@ func (t *usbTransport) claim(ctx context.Context) error {
 		case <-time.After(backoff):
 		}
 	}
-	return fmt.Errorf("claiming the YubiHSM USB interface on %s: %w "+
+	return fmt.Errorf("claiming the YubiHSM USB interface on %s: %w: %w "+
 		"(another process — yubihsm-connector, yubihsm-shell or the PKCS#11 module — is holding the device; "+
-		"run yubihsm-connector and use an http:// connector URL so both can share it)", t.path, err)
+		"run yubihsm-connector and use an http:// connector URL so both can share it)",
+		t.path, ErrDeviceBusy, err)
 }
 
 func (t *usbTransport) Describe() string {

@@ -5731,6 +5731,49 @@ func (c *Config) validatePKCS11HA() error {
 	return nil
 }
 
+// SigningPKCS11Module returns the PKCS#11 module a signing role would drive the
+// attached YubiHSM through, or "" when none would.
+//
+// It answers a question two callers need and neither should answer by hand:
+// does this deployment's signing path compete with the audit driver for the
+// device's USB interface? (hsmaudit.DrainContention turns the answer into a
+// verdict; the server refuses to start on it and `secsy-ca doctor` reports it.)
+//
+// Both conditions are necessary. A deployment signing from a cloud KMS or a
+// software keystore contends for nothing. One signing through a *different*
+// PKCS#11 token — SoftHSM, a smartcard — holds that token's interface rather
+// than the YubiHSM's. The module filename is the evidence available for which
+// device a module drives: Yubico ships it as yubihsm_pkcs11.so, and the pkcs11:
+// URI form is checked too because it can carry the module reference instead.
+// A deployment that renamed the module falls through to the collector's own
+// runtime error, which says the same thing one drain cycle later.
+func (c *Config) SigningPKCS11Module() string {
+	pkcs11 := false
+	for _, role := range []string{"ca", "tsa", "signing"} {
+		if c.KeyProviderTypeForRole(role) == "pkcs11" {
+			pkcs11 = true
+			break
+		}
+	}
+	if !pkcs11 {
+		return ""
+	}
+	refs := []string{c.PKCS11.ModulePath, c.PKCS11.URI}
+	for _, t := range c.PKCS11.Tokens {
+		refs = append(refs, t.URI)
+	}
+	for _, ref := range refs {
+		if !strings.Contains(strings.ToLower(ref), "yubihsm") {
+			continue
+		}
+		if c.PKCS11.ModulePath != "" {
+			return c.PKCS11.ModulePath
+		}
+		return ref
+	}
+	return ""
+}
+
 // KeyProviderTypeForRole returns the resolved backend type for a signing role
 // ("ca", "tsa", or "signing"), applying the per-role override when set and
 // otherwise falling back to the global key_provider.type.

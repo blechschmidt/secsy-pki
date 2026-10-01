@@ -167,3 +167,65 @@ func TestRecordHSMSignaturesIsInertWithoutAProvisionedDevice(t *testing.T) {
 		t.Fatal("the provider was wrapped even though no device is provisioned")
 	}
 }
+
+// drainConflict is what decides whether the server starts at all on a
+// commissioned YubiHSM, so it is worth pinning the two configurations an
+// operator is most likely to land in by accident: the default connector (unset,
+// which is direct USB) with the YubiHSM PKCS#11 module, and the same pair once
+// a yubihsm-connector is in front of the device.
+//
+// The underlying verdict is tested exhaustively in
+// internal/hsmaudit.TestDrainContention and measured on hardware in
+// internal/yubihsmtest. What this test covers is the wiring: that the server
+// resolves the *effective* connector URL — including the YUBIHSM_PKCS11_CONF
+// fallback — rather than reading cfg.YubiHSM.ConnectorURL raw.
+func TestDrainConflictWiring(t *testing.T) {
+	module := "/usr/lib/x86_64-linux-gnu/pkcs11/yubihsm_pkcs11.so"
+	pkcs11 := config.PKCS11Config{ModulePath: module}
+
+	t.Run("the default connector with the YubiHSM module is refused", func(t *testing.T) {
+		t.Setenv("YUBIHSM_PKCS11_CONF", "")
+		cfg := &config.Config{PKCS11: pkcs11}
+		cfg.KeyProvider.Type = "pkcs11"
+		if err := drainConflict(cfg); err == nil {
+			t.Fatal("a direct-USB deployment signing through the YubiHSM module was accepted; " +
+				"it can never drain the device log")
+		}
+	})
+
+	t.Run("a connector URL in the config is accepted", func(t *testing.T) {
+		t.Setenv("YUBIHSM_PKCS11_CONF", "")
+		cfg := &config.Config{PKCS11: pkcs11}
+		cfg.KeyProvider.Type = "pkcs11"
+		cfg.YubiHSM.ConnectorURL = "http://127.0.0.1:12345"
+		if err := drainConflict(cfg); err != nil {
+			t.Fatalf("a connector-backed deployment was refused: %v", err)
+		}
+	})
+
+	// The module's own configuration file is the other place a connector can be
+	// set, and internal/hsm resolves it precisely so the audit path addresses
+	// the same device the signing path does. A check that ignored it would
+	// refuse a deployment that works.
+	t.Run("a connector URL in yubihsm_pkcs11.conf is honoured", func(t *testing.T) {
+		conf := filepath.Join(t.TempDir(), "yubihsm_pkcs11.conf")
+		if err := os.WriteFile(conf, []byte("connector = http://127.0.0.1:12345\n"), 0o600); err != nil {
+			t.Fatalf("writing the module config: %v", err)
+		}
+		t.Setenv("YUBIHSM_PKCS11_CONF", conf)
+		cfg := &config.Config{PKCS11: pkcs11}
+		cfg.KeyProvider.Type = "pkcs11"
+		if err := drainConflict(cfg); err != nil {
+			t.Fatalf("a deployment whose module config names a connector was refused: %v", err)
+		}
+	})
+
+	t.Run("a software-backed signing path is left alone", func(t *testing.T) {
+		t.Setenv("YUBIHSM_PKCS11_CONF", "")
+		cfg := &config.Config{PKCS11: pkcs11}
+		cfg.KeyProvider.Type = "software"
+		if err := drainConflict(cfg); err != nil {
+			t.Fatalf("a software-backed deployment contends for no USB interface, but was refused: %v", err)
+		}
+	})
+}
