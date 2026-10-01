@@ -1228,6 +1228,7 @@ gate.
 | `config.unknown_keys` | strict re-decode flags keys that map to no known field | warn: typo'd keys that would be silently ignored |
 | `keyprovider.<role>` | per signing role (`ca`, `tsa`, `signing`): PKCS#11 module/slot/PIN login, cloud-KMS credentials, or software keystore access | fail: module missing, wrong PIN, token absent, KMS credentials rejected |
 | `hsm.ha_tokens` | every token of a multi-token HA set is actively probed (not just the rotation state, which starts optimistic) | warn: some tokens unreachable; fail: all |
+| `hsmaudit.drain` | on a commissioned YubiHSM, that the device-log collector and the signing path can share the device — direct USB belongs to one process, so a `yhusb://` transport plus Yubico's PKCS#11 module can never drain (see [the audit log](../hsm/audit-log.md#the-transport-must-be-shareable)) | fail: they contend, and the server refuses to start; skip: no device commissioned |
 | `db.connectivity` | store reachable, opened **without** migrating; a missing SQLite file is never created | fail: unreachable/missing |
 | `db.schema` | pending-migration detection against the canonical table list | warn: tables missing (created on next normal start) |
 | `keys.ca` | sign/verify self-test per CA key (X.509 and SSH), against the exact label the issuance path uses; provider key must match the certificate on record; PKCS#11 keys must be non-extractable | fail: key missing, sign fails, key↔cert mismatch; warn: CKA_EXTRACTABLE set |
