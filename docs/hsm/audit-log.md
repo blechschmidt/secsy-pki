@@ -550,6 +550,15 @@ output backed by half an argument.
 way out, after closing its key provider. Without that, a deployment driven only
 by the CLI would have nothing that ever emptied the ring.
 
+So does `secsy-secret`. The secret layer signs (`sign`), generates keys
+(`signing-key`, `init-kek`), unwraps data keys with an on-device RSA-OAEP
+decryption (`decrypt`, `get`, `exec`, `rewrap`) and draws from the device RNG
+(`random`, `datakey`) — every one of those an audited command. It records its
+signatures in the same ledger and drains on the same schedule as `secsy-ca`,
+because a secret-layer signature with no ledger row is not merely unexplained:
+reconciliation reads an unaccounted-for device signature as key abuse, so the
+missing rows would have made the deployment's own HSM look compromised.
+
 ### What counts as "an operation"
 
 Two chokepoints announce device work, because there are two routes to the

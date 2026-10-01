@@ -92,10 +92,21 @@ func run(args []string) error {
 		return cmdPQCInfo(cfg, cmdArgs)
 	}
 
+	// Turn on HSM signature-ledger recording and the post-command device-log
+	// drain before the key provider exists, so no secret-layer signature can be
+	// produced before the thing that accounts for it (see hsmledger.go).
+	//
+	// Deferred ahead of the provider's own Close so it unwinds *after* it: the
+	// PKCS#11 module and the native driver reach the same USB device, and only
+	// one of them may hold it at a time.
+	teardown := setupHSMLedger(cfg)
+	defer teardown()
+
 	provider, err := buildProvider(cfg)
 	if err != nil {
 		return fmt.Errorf("initializing key provider: %w", err)
 	}
+	provider = recordSignatures(provider)
 	defer provider.Close()
 
 	switch command {
