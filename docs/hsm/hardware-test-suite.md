@@ -34,6 +34,19 @@ SECSY_YUBIHSM_TESTS=1 go test -tags sqlite -p 1 -count=1 ./internal/yubihsmtest/
 USB, so two test binaries running at once fight over the interface and report
 `device or resource busy` instead of anything about the code.
 
+For the same reason, the parts of tier 4c that need the device through the
+PKCS#11 module *and* the native driver at once — which is how a running server
+uses it — skip unless a `yubihsm-connector` is multiplexing it:
+
+```bash
+yubihsm-connector -l 127.0.0.1:12345 &
+SECSY_YUBIHSM_CONNECTOR=http://127.0.0.1:12345 ./scripts/yubihsm-test.sh
+```
+
+The skip message says so, and tier 4c's first test is the measurement that
+explains why: see
+[the transport must be shareable](audit-log.md#the-transport-must-be-shareable).
+
 ### Why an environment variable and not a build tag
 
 The suite compiles on every ordinary build and skips at runtime, so it is
@@ -173,6 +186,7 @@ it, so the first failing tier names the layer at fault.
 | 3b | `device_test.go` | The device the assertions come from is real: its factory certificate chains to Yubico's published attestation root and the serial it asserts is the one `GET DEVICE INFO` reports, it answers a fresh nonce with its attestation key, two challenges produce two different answers and **neither satisfies the other**, the throwaway challenge key is gone when the call returns, and an unexpected serial fails. See [device attestation](device-attestation.md). |
 | 4 | `audit_test.go` | The audit trail can be complete: the device's forced-audit configuration meets the baseline, a fixed setting cannot be downgraded, signatures are attributed to the handle that made them, collection stays continuous across drain seams spanning more than one 62-entry ring, and a **full log stops the device** rather than dropping records. |
 | 4b | `audit_sink_test.go` | Where the drained entries end up, since acknowledging the ring destroys the device's only copy: a spread of operations — generate, sign ECDSA, sign EdDSA, attest, delete, and the same through PKCS#11 — each reaches **both** the database and the append-only file, the file verifies from its raw device records alone, every command the driver sends prompts a drain while the drain's own three commands do not, and 100 operations across a 62-entry ring complete without the device ever refusing. |
+| 4c | `steady_state_test.go` | That the audit argument survives ordinary operation. Direct USB is measured to be **exclusive** — a drain while the PKCS#11 module holds a session fails as a recognised device-busy condition, which is the fact the server's startup refusal rests on. Then, through a shareable connector: 70 leaves and a CRL issued by `ca.Manager` with the collector running after **every** operation, the device log never rising above a couple of entries, both durable copies agreeing, and the device log **reconciling exactly** against the signature ledger across two keys — no surplus, which would read as key abuse, and no deficit. The same for the secret layer's signing service, whose signatures reached neither half of the subsystem before Task 202. Needs `-tags sqlite` and a `yubihsm-connector`. |
 | 5 | `genesis_test.go` | What a factory reset writes, and therefore what the chain anchor is worth: the device-init sentinel's hashed bytes are the constant `0001ffffffffffffffffffffffffffff` on every reset, while the digest the device reports for them differs on every reset and is reproducible from no publicly guessable seed — so the anchor cannot be recomputed and must be pinned out of band. Also that a reset restarts the log at entry 1 with no unlogged-operation counters. Gated on `SECSY_YUBIHSM_RESET=1`; see [why the anchor cannot verify itself](audit-log.md#why-the-anchor-cannot-verify-itself). |
 | 6 | `pkcs11_test.go` | The layer the product signs through: generate/find/sign/verify for every offered key type through `keyprovider`, the readiness probe and hardware RNG, concurrent signing through the session pool over a device that cannot parallelise, the secret-envelope round trip, keys created non-exportable, and PKCS#11 labels and native handles resolving to the same object. |
 | 6b | `import_test.go` | Existing key material going the other way — onto the device. RSA-2048/3072/4096 imported through `keyprovider`, each proved to be the key that was sent by signing with both PKCS#1 v1.5 and PSS and verifying under the host key; a decrypt-only RSA KEK unwrapping what the host wrapped; a requested `CKA_ID` honoured so the handle a config names is the handle the key is at; the imported key attesting as **imported** and still **non-exportable**; a legacy RSA CA issuing a leaf that verifies under the root certificate published before the migration; and the sizes and exponents the device cannot hold being refused on the host with a sentence rather than `CKR_ATTRIBUTE_VALUE_INVALID` from the far side of USB. |

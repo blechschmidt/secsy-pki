@@ -59,8 +59,20 @@ go_flags=(-tags sqlite -p 1 -count=1 -timeout 30m)
 
 connector="${SECSY_YUBIHSM_CONNECTOR:-${YUBIHSM_CONNECTOR:-yhusb://}}"
 
+# Tier 4c reaches the device through the PKCS#11 module and the native driver at
+# the same time, which is how a running server uses it and which direct USB
+# cannot do — one process owns the interface. Those tests skip on yhusb:// with
+# a message naming the fix, so say it here too rather than letting a run look
+# complete when part of it was never exercised.
+shareable_note="" shareable_hint=""
+if [[ "$connector" == yhusb://* || -z "$connector" ]]; then
+    shareable_note=" (exclusive; the steady-state audit tests will skip)"
+    shareable_hint="run 'yubihsm-connector -l 127.0.0.1:12345' and set SECSY_YUBIHSM_CONNECTOR to it"
+fi
+
 echo "==> YubiHSM hardware suite"
-echo "    connector:   $connector"
+echo "    connector:   $connector$shareable_note"
+[[ -n "$shareable_hint" ]] && echo "                 $shareable_hint"
 echo "    destructive: $([[ $destructive -eq 1 ]] && echo 'yes (may irreversibly provision the device)' || echo no)"
 echo "    reset:       $([[ $reset -eq 1 ]] && echo 'YES — the genesis tier will factory-reset the device' || echo no)"
 echo "    audit log:   entries will be consumed as the suite runs"

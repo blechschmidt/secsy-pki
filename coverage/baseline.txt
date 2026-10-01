@@ -13,7 +13,7 @@
 # See TESTING.md#test-coverage-gate and docs/development/coverage.md.
 #
 # Format: <package-or-total>\t<percent>.  Generated — do not hand-edit.
-total	68.5
+total	68.6
 internal/acme	80.4
 internal/agent	65.1
 internal/anchor	94.8
@@ -32,7 +32,7 @@ internal/certpolicy	76.8
 internal/certvalidate	79.3
 internal/cmp	65.5
 internal/cms	76.5
-internal/config	57.6
+internal/config	58.3
 internal/console	0.0
 internal/ct	79.3
 internal/ctmonitor	68.2
@@ -40,7 +40,7 @@ internal/database	66.3
 internal/delegatedcred	70.7
 internal/discovery	66.1
 internal/dnsrecords	82.2
-internal/doctor	69.5
+internal/doctor	69.8
 internal/ers	92.5
 internal/est	79.0
 internal/eventstream	97.0
@@ -49,7 +49,7 @@ internal/fpe	85.5
 internal/grpcapi	69.3
 internal/grpcapi/pkiv1	0.0
 internal/handlers	67.3
-internal/hsm	22.5
+internal/hsm	22.7
 internal/hsmattest	77.0
 internal/hsmaudit	79.6
 internal/interop/acmeclient	0.0
@@ -57,7 +57,7 @@ internal/interop/dnsd	0.0
 internal/issueapproval	66.3
 internal/keycheck	84.3
 internal/keyprovider	64.0
-internal/leader	61.7
+internal/leader	61.1
 internal/mailtransport	99.6
 internal/metrics	59.5
 internal/middleware	81.5
@@ -67,7 +67,7 @@ internal/mswstep	77.6
 internal/nameconstraints	74.2
 internal/pgdriver	100.0
 internal/pkcs12	78.2
-internal/pki	59.2
+internal/pki	59.9
 internal/pqc	71.2
 internal/profiling	77.8
 internal/publish	75.4
@@ -90,4 +90,4 @@ internal/tsa/tstinfo	100.0
 internal/unixsocket	84.5
 internal/upn	88.6
 internal/webhook	98.0
-internal/yubihsm	59.4
+internal/yubihsm	59.6
