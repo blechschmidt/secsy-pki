@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -407,7 +408,7 @@ func sweepLabel(t *testing.T, lbl string) {
 		return
 	}
 	defer func() { _ = c.Close() }()
-	for _, o := range labelledObjects(ctx, c, func(l string) bool { return l == lbl }) {
+	for _, o := range labelledObjects(ctx, c, func(l string) bool { return l == yubihsm.DeviceLabel(lbl) }) {
 		if err := c.DeleteObject(ctx, o.ID, o.Type); err != nil {
 			t.Logf("leaving %q (0x%04x) on the device: %v", lbl, o.ID, err)
 		}
@@ -486,5 +487,55 @@ func sweepScratch() {
 			continue
 		}
 		fmt.Fprintf(os.Stderr, "yubihsmtest: swept leftover scratch object 0x%04x\n", o.ID)
+	}
+	sweepMetaOrphans(ctx, c)
+}
+
+// metaObjectLabel matches the bookkeeping objects Yubico's PKCS#11 module
+// creates alongside a key: an opaque object labelled "Meta object for
+// 0xTTTTIIII", where TTTT is the object type and IIII the object id.
+var metaObjectLabel = regexp.MustCompile(`^Meta object for 0x([0-9a-f]{4})([0-9a-f]{4})$`)
+
+// sweepMetaOrphans deletes module meta objects whose key is gone.
+//
+// The module writes one per key it creates and does not remove it when the key
+// is deleted by anything other than itself — which is every sweep in this
+// suite, since they go through the native driver. Each orphan is a small opaque
+// object that nothing will ever read again, and they accumulate one per run
+// until the device answers CKR_DEVICE_MEMORY: the same slow leak the
+// sweepableTypes comment above was written about, in the one object class a
+// label-prefix match cannot see, because the module names them and not us.
+//
+// Only orphans are removed. A meta object whose key still exists is live
+// bookkeeping, and deleting it would make the module lose track of a key it is
+// responsible for.
+func sweepMetaOrphans(ctx context.Context, c *yubihsm.Client) {
+	objs, err := c.ListObjects(ctx, yubihsm.ObjectTypeOpaque)
+	if err != nil {
+		return
+	}
+	for _, o := range objs {
+		info, err := c.GetObjectInfo(ctx, o.ID, o.Type)
+		if err != nil {
+			continue
+		}
+		m := metaObjectLabel.FindStringSubmatch(info.Label)
+		if m == nil {
+			continue
+		}
+		refType, err1 := strconv.ParseUint(m[1], 16, 16)
+		refID, err2 := strconv.ParseUint(m[2], 16, 16)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		if _, err := c.GetObjectInfo(ctx, uint16(refID), byte(refType)); err == nil {
+			continue // the key is still there; this is live bookkeeping
+		}
+		if err := c.DeleteObject(ctx, o.ID, o.Type); err != nil {
+			fmt.Fprintf(os.Stderr, "yubihsmtest: leaving orphaned module meta object 0x%04x (%q) behind: %v\n",
+				o.ID, info.Label, err)
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "yubihsmtest: swept orphaned module meta object 0x%04x (%q)\n", o.ID, info.Label)
 	}
 }

@@ -24,11 +24,14 @@ package yubihsmtest
 // time. See TestDirectUSBCannotBeDrainedWhileTheModuleHoldsIt.
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/big"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,6 +39,7 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsmaudit"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
@@ -433,4 +437,97 @@ func TestSecretLayerSigningIsAuditedAndExtracted(t *testing.T) {
 	t.Logf("%d secret-layer signatures: %d device signature(s) balanced against %d ledger row(s); "+
 		"%d entries in both copies", signatures, rec.TotalDeviceSignatures, rec.TotalLedgerSignatures,
 		fileRes.Entries)
+}
+
+// TestALongLabelledKeyIsAttestableByLabel closes the loop between the ledger
+// and per-key attestation for the secret layer's keys.
+//
+// The audit argument has two halves that meet at a key: the ledger says which
+// signatures a key made, and a per-key attestation says that key's private half
+// has never left the HSM. Both address the key by label — and the secret layer's
+// labels are 42 bytes ("secsy-sig-" plus a 32-hex-digit id), two more than the
+// device's label field holds. Yubico's PKCS#11 module truncates silently and
+// keeps the full string in a side object, so the module finds the key and the
+// native driver — which is the only route to attestation — did not. Every
+// secret-layer signing key was therefore unattestable, with an error saying it
+// did not exist.
+//
+// Only hardware can show this: SoftHSM has no label-length limit and no meta
+// objects, so both halves agree there.
+func TestALongLabelledKeyIsAttestableByLabel(t *testing.T) {
+	requireShareableConnector(t)
+	keepLogSpace(t, 8)
+
+	ctx := testContext(t)
+	p := provider(t)
+
+	db, err := database.New("sqlite", filepath.Join(t.TempDir(), "signing.db"))
+	if err != nil {
+		t.Skipf("this test needs a database; build with -tags sqlite (%v)", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	var keyLabel string
+	t.Cleanup(func() {
+		if keyLabel != "" {
+			sweepLabel(t, keyLabel)
+		}
+	})
+	row, err := secret.CreateSigningKey(ctx, p, db, secret.CreateSigningKeySpec{
+		TenantID:  models.DefaultTenantID,
+		Name:      "t202-attest-" + runID,
+		Algorithm: secret.AlgECDSAP256,
+		CreatedBy: "yubihsmtest",
+	})
+	if err != nil {
+		t.Fatalf("creating a secret-layer signing key: %v", err)
+	}
+	keyLabel = "secsy-sig-" + row.ID
+	if len(keyLabel) <= yubihsm.MaxLabelLen {
+		t.Fatalf("this test needs a label longer than the device's %d-byte field; %q is %d bytes",
+			yubihsm.MaxLabelLen, keyLabel, len(keyLabel))
+	}
+	// The module must hand the device back before the native driver can have it.
+	if err := p.Close(); err != nil {
+		t.Errorf("closing the key provider: %v", err)
+	}
+
+	id, err := hsm.FindAsymmetricKey(ctx, hsmConfig(), keyLabel)
+	if err != nil {
+		t.Fatalf("resolving the %d-byte label %q on the device: %v\n"+
+			"The module truncates to %d bytes, so a lookup comparing the untruncated string "+
+			"finds nothing — see yubihsm.DeviceLabel.", len(keyLabel), keyLabel, err, yubihsm.MaxLabelLen)
+	}
+
+	certPEM, err := hsm.GetKeyAttestationCert(ctx, hsmConfig(), keyLabel)
+	if err != nil {
+		t.Fatalf("attesting the key by label: %v", err)
+	}
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil {
+		t.Fatal("the attestation is not PEM")
+	}
+	att, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("parsing the attestation certificate: %v", err)
+	}
+	// The attestation has to be about *this* key, not merely well-formed: its
+	// subject public key must be the one the secret layer stored.
+	want, err := secret.PublicKey(row)
+	if err != nil {
+		t.Fatalf("reading the stored public key: %v", err)
+	}
+	wantDER, err := x509.MarshalPKIXPublicKey(want)
+	if err != nil {
+		t.Fatalf("encoding the stored public key: %v", err)
+	}
+	gotDER, err := x509.MarshalPKIXPublicKey(att.PublicKey)
+	if err != nil {
+		t.Fatalf("encoding the attested public key: %v", err)
+	}
+	if !bytes.Equal(wantDER, gotDER) {
+		t.Fatal("the attestation certifies a different public key than the ledger records for this key")
+	}
+	t.Logf("key 0x%04x (device label %q, %d-byte requested label) attested, public key matches the ledger's",
+		id, yubihsm.DeviceLabel(keyLabel), len(keyLabel))
 }

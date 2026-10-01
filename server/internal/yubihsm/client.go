@@ -493,6 +493,37 @@ const (
 	objectInfoLen         = objectInfoLabelOffset + labelLen + 8
 )
 
+// MaxLabelLen is the device's object-label field width in bytes.
+//
+// Exported because the limit is not merely an encoding detail: this driver
+// *refuses* a longer label (see keys.go), while Yubico's PKCS#11 module
+// silently truncates to it and keeps the full string in a side "Meta object".
+// So a caller holding a long label cannot assume the device knows it — code
+// that looks an object up by its own label has to truncate the same way, or it
+// will fail to find a key it created.
+const MaxLabelLen = labelLen
+
+// DeviceLabel returns label as the device stores it: truncated to the 40-byte
+// field if it is longer.
+//
+// Callers that look an object up by a label they chose themselves must compare
+// against this, not against their own string. The device cannot report a label
+// it has no room for, so an exact comparison against a 42-byte label — which
+// the product's secret layer produces, "secsy-sig-" plus a 32-hex-digit key id
+// — matches nothing and the key appears not to exist.
+//
+// Truncating is not loosening the match. The device's label field *is* the
+// equivalence class, so this compares the same way the device would; two
+// objects whose labels agree in the first 40 bytes are genuinely
+// indistinguishable by label on this hardware, and a caller that cares has to
+// address them by object id.
+func DeviceLabel(label string) string {
+	if len(label) > MaxLabelLen {
+		return label[:MaxLabelLen]
+	}
+	return label
+}
+
 // GetObjectInfo reads the device's description of one object.
 func (c *Client) GetObjectInfo(ctx context.Context, id uint16, objectType byte) (*ObjectInfo, error) {
 	req := binary.BigEndian.AppendUint16(nil, id)

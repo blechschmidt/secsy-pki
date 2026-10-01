@@ -475,6 +475,33 @@ func TestUSBSerialFromURL(t *testing.T) {
 	}
 }
 
+// DeviceLabel is what makes a label lookup find a key the PKCS#11 module
+// created. The module truncates a CKA_LABEL to the device's 40-byte field, so a
+// caller comparing its own longer string against GET OBJECT INFO matches
+// nothing — which is how a secret-layer signing key ("secsy-sig-" + 32 hex
+// digits = 42 bytes) came to look as though it did not exist.
+func TestDeviceLabel(t *testing.T) {
+	short := "t202-key"
+	if got := DeviceLabel(short); got != short {
+		t.Errorf("DeviceLabel(%q) = %q, want it unchanged", short, got)
+	}
+	exact := strings.Repeat("a", MaxLabelLen)
+	if got := DeviceLabel(exact); got != exact {
+		t.Errorf("a label of exactly %d bytes was truncated to %d", MaxLabelLen, len(got))
+	}
+	long := "secsy-sig-4c2541c4d1db8040a967f8fc726677f8"
+	if len(long) <= MaxLabelLen {
+		t.Fatalf("this case needs a label longer than %d bytes; %q is %d", MaxLabelLen, long, len(long))
+	}
+	got := DeviceLabel(long)
+	if len(got) != MaxLabelLen {
+		t.Errorf("DeviceLabel(%q) is %d bytes, want %d", long, len(got), MaxLabelLen)
+	}
+	if got != long[:MaxLabelLen] {
+		t.Errorf("DeviceLabel truncated to %q, want the leading %d bytes %q", got, MaxLabelLen, long[:MaxLabelLen])
+	}
+}
+
 // IsDirectUSB has to agree with OpenTransport about what every URL means,
 // because callers use it to decide whether two paths can share the device — and
 // a disagreement would clear a deployment whose audit-log drain can never run.

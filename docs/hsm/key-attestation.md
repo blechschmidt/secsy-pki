@@ -101,6 +101,20 @@ and cannot be exported from it
 Exit status is 0 when the attestation satisfies the policy and 1 when it does
 not, so this works as a compliance gate in a pipeline.
 
+### Labels longer than 40 bytes
+
+A YubiHSM's object-label field is 40 bytes. Yubico's PKCS#11 module truncates a
+longer `CKA_LABEL` to it and keeps the full string in a side "Meta object", so
+the device itself only ever knows the first 40 bytes. Label resolution here
+compares against that truncation, which is the only form `GET OBJECT INFO` can
+report — still an exact match, since the device's field *is* the equivalence
+class, and two keys agreeing in their first 40 bytes are refused as ambiguous
+rather than resolved arbitrarily (attest those by `-object-id`).
+
+The product makes such a label: the [secret layer's named signing
+keys](../secrets/password-encryption.md#digital-signatures-named-signing-keys-sign--verify)
+are `secsy-sig-` plus a 32-hex-digit id, which is 42 bytes.
+
 ### Bind it to a CA
 
 An attestation on its own proves that *some* object on the device is

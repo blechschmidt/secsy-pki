@@ -75,6 +75,10 @@ func ListObjects(ctx context.Context, cfg Config) ([]ObjectInfo, error) {
 // different key than the caller named — and an attestation naming the wrong
 // key is worse than none, because it still verifies. A label shared by two
 // objects is likewise refused rather than resolved arbitrarily.
+//
+// "Exactly" means as the *device* holds the label: a request longer than the
+// 40-byte label field is compared against its truncation, because that is the
+// only form the device can report. See findAsymmetricKey.
 func FindAsymmetricKey(ctx context.Context, cfg Config, label string) (uint16, error) {
 	var id uint16
 	err := withClient(ctx, cfg, func(c *yubihsm.Client) error {
@@ -93,13 +97,25 @@ func findAsymmetricKey(ctx context.Context, c *yubihsm.Client, label string) (ui
 	if err != nil {
 		return 0, err
 	}
+	// Compared against the label *as the device holds it*. The field is 40 bytes
+	// and Yubico's PKCS#11 module silently truncates to it (keeping the full
+	// string in a side "Meta object"), so a longer label — the secret layer's
+	// "secsy-sig-" plus a 32-hex-digit key id is 42 bytes — never equals what
+	// GET OBJECT INFO reports, and its key looked as though it did not exist.
+	//
+	// This is still an exact match, not the prefix match the doc comment on
+	// FindAsymmetricKey rules out: the device's label field is the equivalence
+	// class, so this compares the way the device does. Two keys agreeing in
+	// their first 40 bytes really are indistinguishable by label here, and the
+	// ambiguity branch below already tells the operator to use an object id.
+	want := yubihsm.DeviceLabel(label)
 	var matches []uint16
 	for _, h := range handles {
 		info, err := c.GetObjectInfo(ctx, h.ID, h.Type)
 		if err != nil {
 			return 0, err
 		}
-		if info.Label == label {
+		if info.Label == want {
 			matches = append(matches, h.ID)
 		}
 	}
