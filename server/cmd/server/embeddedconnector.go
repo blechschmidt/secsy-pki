@@ -51,9 +51,13 @@ var embeddedConnector *yubihsm.Embedded
 // A configuration that asks for a relay it cannot have is fatal, by the same
 // reasoning as the audit log file's unwritable path: the operator stated how
 // this deployment reaches its HSM, and starting up having silently done
-// something else is worse than not starting. A relay that is simply not needed
-// is not an error and says why at debug level — "no PKCS#11 signing path
-// competes for the device" is a perfectly good deployment.
+// something else is worse than not starting.
+//
+// A relay that is simply not needed is not an error — "no PKCS#11 signing path
+// competes for the device" is a perfectly good deployment — and says so, but
+// only where a YubiHSM is configured at all. An unset yubihsm block means a
+// SoftHSM, cloud-KMS or software-backed deployment that has no business reading
+// a line about a device it does not have.
 func startEmbeddedConnector(cfg *config.Config) {
 	plan := hsm.PlanEmbeddedConnector(embeddedConnectorOptions(cfg))
 	if plan.Err != nil {
