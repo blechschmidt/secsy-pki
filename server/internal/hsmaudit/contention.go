@@ -20,12 +20,18 @@ package hsmaudit
 // overwrote itself and a verifier that rejects the result. There is no audit
 // configuration under which it works.
 //
-// The fix is a yubihsm-connector: a daemon whose entire purpose is to multiplex
-// the device, so the module and the driver both reach it over HTTP. This file
-// exists so that the one thing standing between an operator and that fix — the
-// knowledge that it is required — is detected from configuration alone, at
-// startup and in `secsy-ca doctor`, rather than inferred from a repeating EBUSY
-// in the log.
+// The fix is a connector: something whose entire purpose is to multiplex the
+// device, so the module and the driver both reach it over HTTP. secsy-pki ships
+// one inside the process that needs it (internal/yubihsm.StartEmbedded), which
+// is why the default answer to this condition is no longer "run a daemon" but
+// "the relay is already there". Yubico's yubihsm-connector remains the right
+// answer when the device must be shared with something outside this process, or
+// reached from another host.
+//
+// This file exists so that the one thing standing between an operator and
+// either fix — the knowledge that one is required — is detected from
+// configuration alone, at startup and in `secsy-ca doctor`, rather than
+// inferred from a repeating EBUSY in the log.
 
 import (
 	"errors"
@@ -45,14 +51,17 @@ var ErrDrainContention = errors.New("the YubiHSM audit log cannot be drained whi
 // auditConnectorURL is the connector URL the native driver resolves to — not
 // the raw configuration value, since an empty one means direct USB (see
 // hsm.EffectiveConnectorURL). pkcs11Module is the PKCS#11 module a signing role
-// drives the same device through, or "" when none does.
+// drives the same device through, or "" when none does. embeddedConnector says
+// whether this deployment multiplexes the device in-process
+// (hsm.PlanEmbeddedConnector decides, from the same configuration).
 //
 // It returns nil for every deployment that can share the device: anything on an
-// http:// or https:// connector, and anything whose signing path does not go
-// through a module competing for the same USB interface — a cloud KMS, a
-// software keystore, or a different token entirely.
-func DrainContention(auditConnectorURL, pkcs11Module string) error {
-	if pkcs11Module == "" || !yubihsm.IsDirectUSB(auditConnectorURL) {
+// http:// or https:// connector, anything running the embedded connector, and
+// anything whose signing path does not go through a module competing for the
+// same USB interface — a cloud KMS, a software keystore, or a different token
+// entirely.
+func DrainContention(auditConnectorURL, pkcs11Module string, embeddedConnector bool) error {
+	if pkcs11Module == "" || embeddedConnector || !yubihsm.IsDirectUSB(auditConnectorURL) {
 		return nil
 	}
 	url := auditConnectorURL
@@ -66,7 +75,12 @@ func DrainContention(auditConnectorURL, pkcs11Module string) error {
 		"  which the key provider keeps a session on, so every collection cycle fails with\n"+
 		"  \"device or resource busy\". A commissioned device then fills its 62-entry log and stops\n"+
 		"  serving signatures altogether.\n"+
-		"  Fix: run a yubihsm-connector, which multiplexes the device, and point both paths at it:\n"+
+		"  Fix: let this process multiplex the device itself — one container, no daemon:\n"+
+		"      yubihsm:\n"+
+		"        embedded_connector:\n"+
+		"          enabled: true     (secsy-pki config; or SECSY_YUBIHSM_EMBEDDED_CONNECTOR=1)\n"+
+		"  Or run Yubico's yubihsm-connector, which is the right answer when something outside\n"+
+		"  this process needs the device too:\n"+
 		"      yubihsm-connector -l 127.0.0.1:12345\n"+
 		"      yubihsm.connector_url: http://127.0.0.1:12345   (secsy-pki config)\n"+
 		"      connector = http://127.0.0.1:12345              (yubihsm_pkcs11.conf)\n"+

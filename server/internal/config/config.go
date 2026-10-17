@@ -3808,11 +3808,53 @@ func (k KeyProviderConfig) redacted() KeyProviderConfig {
 	return cp
 }
 
+// EmbeddedConnectorConfig configures the in-process yubihsm-connector.
+//
+// A YubiHSM 2 speaks over one USB interface and the kernel grants it to one
+// claim. Yubico's PKCS#11 module takes that claim for the life of its session
+// pool, which is the life of the signing process — so the audit driver, which
+// has to read the device log because PKCS#11 cannot express GET LOG ENTRIES,
+// never gets it. The deployment looks healthy and its force-audited device
+// fills its 62-entry log and stops serving signatures.
+//
+// The relay removes that by being the single claim: it holds the device and
+// both paths reach it, the module over loopback HTTP and the native driver
+// directly. What it replaces is a second process — Yubico's yubihsm-connector
+// daemon — and in a container deployment a second container with the device
+// node passed to it and a health check in front of it.
+type EmbeddedConnectorConfig struct {
+	// Enabled turns the relay on or off. Unset decides from the rest of the
+	// configuration: on when the device is on direct USB and a YubiHSM PKCS#11
+	// module signs through it, which is precisely the deployment that otherwise
+	// cannot drain its device log at all. Off when nothing competes for the
+	// device, since a relay with no second client only adds a bound port.
+	//
+	// Set it to true to serve a connector URL this configuration already names
+	// (yubihsm.connector_url: http://127.0.0.1:12345), which is how a
+	// single-container deployment gives the server, the CLI and any vendor tool
+	// in the container one endpoint. Set it to false to keep Yubico's daemon.
+	Enabled *bool `yaml:"enabled"`
+	// Listen is the address the connector protocol is served on. Empty derives
+	// it: the host:port of yubihsm.connector_url when that is a local http URL,
+	// else 127.0.0.1:12345, Yubico's port. Keep it on loopback — the protocol
+	// carries an SCP03 channel the relay cannot read, but a relay reachable
+	// from a network is an unauthenticated path to a CA's HSM.
+	Listen string `yaml:"listen"`
+	// Device pins which attached YubiHSM the relay holds, as a yhusb:// URL
+	// (yhusb://serial=0123456789). Empty means the single attached device, and
+	// a host with several attached refuses to guess.
+	Device string `yaml:"device"`
+}
+
 type YubiHSMConfig struct {
 	ConnectorURL         string `yaml:"connector_url"`
 	AuthKeyID            int    `yaml:"auth_key_id"`
 	Password             string `yaml:"password"`
 	SuppressAuditWarning bool   `yaml:"suppress_audit_warning"`
+	// EmbeddedConnector multiplexes the attached YubiHSM inside this process,
+	// so one process — and one container — can both sign through Yubico's
+	// PKCS#11 module and drain the device audit log through the native driver.
+	EmbeddedConnector EmbeddedConnectorConfig `yaml:"embedded_connector"`
 	// AuditCollectPerOperation drains the device audit log after every HSM
 	// operation rather than on a timer (Task 181). Unset means on, and there is
 	// no good reason to turn it off.
@@ -5605,6 +5647,19 @@ func applyYubiHSMEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("SECSY_YUBIHSM_AUDIT_LOG_FILE"); v != "" {
 		cfg.YubiHSM.AuditLogFile = v
+	}
+	// The relay is an override because whether one process has to multiplex the
+	// device is a property of how the deployment is packaged, not of the PKI:
+	// the same config file serves a single container (relay on) and a stack with
+	// Yubico's daemon beside it (relay off), and the orchestrator is what knows
+	// which.
+	if v := os.Getenv("SECSY_YUBIHSM_EMBEDDED_CONNECTOR"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.YubiHSM.EmbeddedConnector.Enabled = &b
+		}
+	}
+	if v := os.Getenv("SECSY_YUBIHSM_EMBEDDED_CONNECTOR_LISTEN"); v != "" {
+		cfg.YubiHSM.EmbeddedConnector.Listen = v
 	}
 }
 

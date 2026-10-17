@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,27 +170,63 @@ func TestRecordHSMSignaturesIsInertWithoutAProvisionedDevice(t *testing.T) {
 }
 
 // drainConflict is what decides whether the server starts at all on a
-// commissioned YubiHSM, so it is worth pinning the two configurations an
-// operator is most likely to land in by accident: the default connector (unset,
-// which is direct USB) with the YubiHSM PKCS#11 module, and the same pair once
-// a yubihsm-connector is in front of the device.
+// commissioned YubiHSM, so it is worth pinning the configurations an operator
+// is most likely to land in: the default connector (unset, which is direct
+// USB) with the YubiHSM PKCS#11 module, with and without the in-process relay,
+// and the same pair once a yubihsm-connector is in front of the device.
 //
 // The underlying verdict is tested exhaustively in
 // internal/hsmaudit.TestDrainContention and measured on hardware in
 // internal/yubihsmtest. What this test covers is the wiring: that the server
 // resolves the *effective* connector URL — including the YUBIHSM_PKCS11_CONF
-// fallback — rather than reading cfg.YubiHSM.ConnectorURL raw.
+// fallback — rather than reading cfg.YubiHSM.ConnectorURL raw, and that it
+// reaches the relay decision from the configuration rather than from whether a
+// relay happens to be running in this process.
 func TestDrainConflictWiring(t *testing.T) {
 	module := "/usr/lib/x86_64-linux-gnu/pkcs11/yubihsm_pkcs11.so"
 	pkcs11 := config.PKCS11Config{ModulePath: module}
+	off := false
 
-	t.Run("the default connector with the YubiHSM module is refused", func(t *testing.T) {
+	t.Run("the default connector with the YubiHSM module is multiplexed in-process", func(t *testing.T) {
+		// The configuration that used to be refused outright. It is now the
+		// single-container deployment: the relay is on by default for exactly
+		// this pair, because it is the one that otherwise cannot drain at all.
 		t.Setenv("YUBIHSM_PKCS11_CONF", "")
 		cfg := &config.Config{PKCS11: pkcs11}
 		cfg.KeyProvider.Type = "pkcs11"
+		if err := drainConflict(cfg); err != nil {
+			t.Fatalf("a direct-USB deployment signing through the YubiHSM module was refused, "+
+				"although the embedded connector resolves it: %v", err)
+		}
+	})
+
+	t.Run("and refused once the relay is turned off", func(t *testing.T) {
+		t.Setenv("YUBIHSM_PKCS11_CONF", "")
+		cfg := &config.Config{PKCS11: pkcs11}
+		cfg.KeyProvider.Type = "pkcs11"
+		cfg.YubiHSM.EmbeddedConnector.Enabled = &off
 		if err := drainConflict(cfg); err == nil {
-			t.Fatal("a direct-USB deployment signing through the YubiHSM module was accepted; " +
-				"it can never drain the device log")
+			t.Fatal("a direct-USB deployment signing through the YubiHSM module, with nothing " +
+				"multiplexing the device, was accepted; it can never drain the device log")
+		}
+	})
+
+	t.Run("a relay that cannot serve the configured URL is refused", func(t *testing.T) {
+		// Not a contention verdict but a configuration one, and it has to come
+		// out of the same call: a relay asked to serve another host would
+		// silently not start, leaving the device undrainable.
+		t.Setenv("YUBIHSM_PKCS11_CONF", "")
+		on := true
+		cfg := &config.Config{PKCS11: pkcs11}
+		cfg.KeyProvider.Type = "pkcs11"
+		cfg.YubiHSM.ConnectorURL = "http://hsm.example.internal:12345"
+		cfg.YubiHSM.EmbeddedConnector.Enabled = &on
+		err := drainConflict(cfg)
+		if err == nil {
+			t.Fatal("a relay asked to serve another host was accepted")
+		}
+		if !strings.Contains(err.Error(), "can only serve a local address") {
+			t.Fatalf("the refusal does not explain why: %v", err)
 		}
 	})
 

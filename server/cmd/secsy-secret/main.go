@@ -534,6 +534,9 @@ func pinSourceSettings(p config.PinSourceConfig) keyprovider.PinSourceSettings {
 
 // buildProvider constructs the configured key provider, mirroring secsy-ca.
 func buildProvider(cfg *config.Config) (keyprovider.Provider, error) {
+	// Multiplex the device in-process first, when this deployment calls for it:
+	// the module reads its connector once, at C_Initialize.
+	ensureEmbeddedConnector(cfg)
 	if cfg.YubiHSM.ConnectorURL != "" && os.Getenv("YUBIHSM_PKCS11_CONF") == "" {
 		confPath := "yubihsm_pkcs11.conf"
 		if err := os.WriteFile(confPath, []byte("connector = "+cfg.YubiHSM.ConnectorURL+"\n"), 0600); err == nil {

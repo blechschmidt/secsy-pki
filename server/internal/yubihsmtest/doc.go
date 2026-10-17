@@ -18,6 +18,7 @@
 //	pkcs11_test.go       the keyprovider/PKCS#11 layer the product signs through
 //	import_test.go       existing key material imported onto the device
 //	pki_test.go          the product itself: CA, CRL, OCSP, SSH CA, TSA, secrets
+//	embedded_test.go     one process holding the device for both routes at once
 //
 // The tiers are deliberately ordered bottom-up: a failure in driver_test.go
 // explains failures in every tier above it, so the first failing tier names the

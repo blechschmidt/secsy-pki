@@ -287,15 +287,37 @@ pkcs11:
   #     token_label: "secsy-ca-b"
 
 yubihsm:
-  # Direct USB belongs to one process at a time, and Yubico's PKCS#11 module
-  # holds it for the life of a session. A deployment that collects the device
-  # audit log (`secsy-ca hsm-audit provision`) while signing through that module
-  # must use a yubihsm-connector instead, or the server refuses to start:
-  #   connector_url: "http://127.0.0.1:12345"
+  # Direct USB belongs to one claim at a time, and Yubico's PKCS#11 module holds
+  # it for the life of a session. A deployment that collects the device audit log
+  # (`secsy-ca hsm-audit provision`) while signing through that module therefore
+  # needs a connector in between, or it can never drain — and the server refuses
+  # to start rather than deliver that.
   # See docs/hsm/audit-log.md#the-transport-must-be-shareable.
   connector_url: "yhusb://"
   auth_key_id: 1
   password: "password"
+
+  # embedded_connector is that connector, inside this process: it claims the
+  # device and serves Yubico's connector protocol on loopback for the module,
+  # while the native audit/attestation driver uses the same claim directly. One
+  # process, one container, no yubihsm-connector daemon.
+  #
+  # Unset decides from the rest of the configuration: on for a direct-USB device
+  # with a YubiHSM PKCS#11 signing path (the case above), off when nothing
+  # competes for the device. Set it to true to serve a connector_url this file
+  # already names — "http://127.0.0.1:12345" is then one endpoint for the
+  # server, the CLI and any vendor tool beside them. Set it to false to keep
+  # Yubico's daemon, which is still the answer when the device is shared outside
+  # this process or attached to another host.
+  embedded_connector:
+    #enabled: true
+    # The address served. Empty takes the host:port of a local connector_url,
+    # else 127.0.0.1:12345. Keep it on loopback: the relay carries an SCP03
+    # channel it cannot read, but it has no authentication of its own.
+    #listen: "127.0.0.1:12345"
+    # Which attached device to hold, when a host has several. Empty refuses to
+    # guess rather than addressing the wrong hardware.
+    #device: "yhusb://serial=0031650425"
 
 # ---------------------------------------------------------------------------
 # Enterprise: RBAC, policy, and custom certificate profiles (Task 8)

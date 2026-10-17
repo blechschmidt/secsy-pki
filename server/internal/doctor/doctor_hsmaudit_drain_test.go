@@ -76,22 +76,70 @@ func TestDoctorHSMAuditDrainPassesWithNoCompetingSigningPath(t *testing.T) {
 }
 
 // The finding itself: a commissioned device reached over direct USB while the
-// signing path drives it through Yubico's PKCS#11 module. Nothing in this
-// deployment can ever drain the device log.
+// signing path drives it through Yubico's PKCS#11 module, with the in-process
+// relay explicitly turned off. Nothing in this deployment can ever drain the
+// device log.
+//
+// The relay has to be turned off for the finding to exist, because this is the
+// configuration it is on by default for — which is the point of it. An operator
+// who disabled it is running Yubico's daemon, and if they have not pointed
+// connector_url at one, this is the check that says so.
 func TestDoctorHSMAuditDrainFailsOnUSBContention(t *testing.T) {
-	f := newFixture(t, yubiHSMRoleConfig)
+	f := newFixture(t, yubiHSMRoleConfig+`yubihsm:
+  embedded_connector:
+    enabled: false
+`)
 	commissionDevice(t, f)
 	r := f.run(t, doctor.Options{})
 	res := assertStatus(t, r, "hsmaudit.drain", doctor.StatusFail)
-	for _, want := range []string{"yubihsm-connector", "yubihsm_pkcs11.so"} {
+	// Both remedies and the module at fault: a finding that does not name what
+	// to do is no better than the EBUSY it replaces.
+	for _, want := range []string{"embedded_connector", "yubihsm-connector", "yubihsm_pkcs11.so"} {
 		if !strings.Contains(res.Detail, want) {
 			t.Errorf("the finding does not mention %q, so it does not tell the operator what to do: %q", want, res.Detail)
 		}
 	}
 }
 
-// With a connector in front of the device both paths reach it over HTTP, which
-// is the supported configuration and must report clean.
+// The same deployment with the relay left at its default: the server will
+// multiplex the device itself, so there is nothing to report.
+//
+// The doctor runs in the operator's own process, where no relay is listening,
+// so this verdict can only come from the configuration — and it has to match
+// the one the server will reach from the same configuration, or a preflight
+// check is worse than none.
+func TestDoctorHSMAuditDrainPassesWithTheEmbeddedConnector(t *testing.T) {
+	f := newFixture(t, yubiHSMRoleConfig)
+	commissionDevice(t, f)
+	r := f.run(t, doctor.Options{})
+	res := assertStatus(t, r, "hsmaudit.drain", doctor.StatusPass)
+	for _, want := range []string{"multiplexes", "http://127.0.0.1:12345"} {
+		if !strings.Contains(res.Detail, want) {
+			t.Errorf("the detail does not say the device is multiplexed in-process (%q): %q", want, res.Detail)
+		}
+	}
+}
+
+// And a configuration that asks for a relay it cannot have is a finding too: a
+// relay can only serve the host its USB device is attached to, so naming
+// another host is a mistake that would otherwise silently leave the device
+// undrainable.
+func TestDoctorHSMAuditDrainFailsOnAnImpossibleRelay(t *testing.T) {
+	f := newFixture(t, yubiHSMRoleConfig+`yubihsm:
+  connector_url: http://hsm.example.internal:12345
+  embedded_connector:
+    enabled: true
+`)
+	commissionDevice(t, f)
+	r := f.run(t, doctor.Options{})
+	res := assertStatus(t, r, "hsmaudit.drain", doctor.StatusFail)
+	if !strings.Contains(res.Detail, "can only serve a local address") {
+		t.Errorf("the finding does not explain why the relay cannot serve that URL: %q", res.Detail)
+	}
+}
+
+// With Yubico's daemon in front of the device both paths reach it over HTTP,
+// which is the other supported configuration and must report clean.
 func TestDoctorHSMAuditDrainPassesThroughAConnector(t *testing.T) {
 	f := newFixture(t, yubiHSMRoleConfig+`yubihsm:
   connector_url: http://127.0.0.1:12345

@@ -1894,10 +1894,27 @@ func checkHSMAuditDrain(r *Report, cfg *config.Config, db dbHandle, schemaOK boo
 	}
 	r.run(name, func() (Status, string) {
 		url := hsm.EffectiveConnectorURL(hsm.Config{ConnectorURL: cfg.YubiHSM.ConnectorURL})
-		if err := hsmaudit.DrainContention(url, cfg.SigningPKCS11Module()); err != nil {
+		module := cfg.SigningPKCS11Module()
+		// The relay is decided from configuration, not probed, because this
+		// check runs in the operator's own process: the server's relay — if it
+		// has one — is not listening here, and a doctor that reported
+		// contention on a deployment the server resolves in-process would send
+		// an operator chasing a problem that does not exist.
+		plan := hsm.PlanEmbeddedConnector(embeddedConnectorOptions(cfg))
+		if plan.Err != nil {
+			return StatusFail, plan.Err.Error()
+		}
+		if err := hsmaudit.DrainContention(url, module, plan.Start); err != nil {
 			return StatusFail, err.Error()
 		}
-		if module := cfg.SigningPKCS11Module(); module != "" {
+		switch {
+		case plan.Start && module != "":
+			return StatusPass, fmt.Sprintf("device %s: this process multiplexes the device on %s, so the "+
+				"PKCS#11 module and the audit driver share one USB claim — no yubihsm-connector daemon needed",
+				st.DeviceSerial, plan.URL)
+		case plan.Start:
+			return StatusPass, fmt.Sprintf("device %s: the embedded connector serves %s", st.DeviceSerial, plan.URL)
+		case module != "":
 			return StatusPass, fmt.Sprintf("device %s: the audit driver and the PKCS#11 module share the device over %s",
 				st.DeviceSerial, url)
 		}
@@ -2094,4 +2111,22 @@ func checkFIPS(ctx context.Context, r *Report, cfg *config.Config, db dbHandle, 
 		}
 		return overall, strings.Join(notes, "; ")
 	})
+}
+
+// embeddedConnectorOptions reads the relay decision's inputs out of the config.
+//
+// The decision itself is hsm.PlanEmbeddedConnector's, which is what keeps the
+// doctor's verdict and the server's from diverging — this only hands it the
+// four configuration values it documents. The server and the CLIs do the same
+// mapping in their own packages, as they do for every other config-to-internal
+// translation in this codebase; what must not drift is the plan, not the
+// struct literal.
+func embeddedConnectorOptions(cfg *config.Config) hsm.EmbeddedConnectorOptions {
+	return hsm.EmbeddedConnectorOptions{
+		Enabled:      cfg.YubiHSM.EmbeddedConnector.Enabled,
+		Listen:       cfg.YubiHSM.EmbeddedConnector.Listen,
+		Device:       cfg.YubiHSM.EmbeddedConnector.Device,
+		ConnectorURL: cfg.YubiHSM.ConnectorURL,
+		PKCS11Module: cfg.SigningPKCS11Module(),
+	}
 }

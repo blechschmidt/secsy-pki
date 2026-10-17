@@ -82,31 +82,38 @@ func markHSMUsed() { hsmUsed.Store(true) }
 // lookup failed would make a database hiccup lock an operator out of their own
 // data, and the device log still bounds what the HSM did regardless.
 func setupHSMLedger(cfg *config.Config) func() {
+	// Every path returns a teardown that releases the device, because the relay
+	// is started by the first key provider and not by this function: a
+	// deployment with no database still signs, and still has to hand the device
+	// back.
 	if cfg.Database.Driver == "" || cfg.Database.DSN == "" {
-		return func() {}
+		return stopEmbeddedConnector
 	}
 	db, err := openAuditDB(cfg)
 	if err != nil {
 		log.Printf("WARNING: could not open the database, HSM signature-ledger recording is off: %v", err)
-		return func() {}
+		return stopEmbeddedConnector
 	}
 	rec, err := hsmaudit.EnableRecording(context.Background(), db)
 	if err != nil {
 		log.Printf("WARNING: could not determine HSM audit state, signature-ledger recording is off: %v", err)
 		_ = db.Close()
-		return func() {}
+		return stopEmbeddedConnector
 	}
 	if rec == nil {
 		// The device was never commissioned for audited operation, so there is
 		// no pinned anchor a ledger could be reconciled against. Nothing to do,
 		// and nothing to warn about: that is the ordinary software-backed case.
 		_ = db.Close()
-		return func() {}
+		return stopEmbeddedConnector
 	}
 	signatureRecorder = rec
 	yubihsm.SetCommandObserver(func(byte) { markHSMUsed() })
 	return func() {
 		collectAfterHSMUse(cfg, db)
+		// After the drain: the relay (when this deployment runs one) is what
+		// the drain reaches the device through.
+		stopEmbeddedConnector()
 		_ = db.Close()
 	}
 }

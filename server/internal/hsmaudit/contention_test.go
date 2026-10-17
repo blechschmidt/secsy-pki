@@ -21,6 +21,7 @@ func TestDrainContention(t *testing.T) {
 		name     string
 		url      string
 		module   string
+		embedded bool
 		conflict bool
 	}{
 		{
@@ -58,11 +59,30 @@ func TestDrainContention(t *testing.T) {
 			url:    "yhusb://",
 			module: "",
 		},
+		{
+			// The single-container deployment: this process holds the USB
+			// interface and relays for the module, so the two no longer
+			// compete for a claim. It is the same configuration as the first
+			// case above and the opposite verdict, which is exactly why the
+			// relay has to be an input here rather than something the check
+			// infers.
+			name:     "the embedded connector resolves direct USB plus a module",
+			url:      "yhusb://",
+			module:   module,
+			embedded: true,
+		},
+		{
+			name:     "and does so for a serial-qualified device too",
+			url:      "yhusb://serial=31650425",
+			module:   module,
+			embedded: true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := DrainContention(tc.url, tc.module)
+			err := DrainContention(tc.url, tc.module, tc.embedded)
 			if tc.conflict != (err != nil) {
-				t.Fatalf("DrainContention(%q, %q) = %v, want conflict=%v", tc.url, tc.module, err, tc.conflict)
+				t.Fatalf("DrainContention(%q, %q, embedded=%v) = %v, want conflict=%v",
+					tc.url, tc.module, tc.embedded, err, tc.conflict)
 			}
 			if !tc.conflict {
 				return
@@ -74,7 +94,10 @@ func TestDrainContention(t *testing.T) {
 			// The whole point of detecting this at startup is that the operator
 			// learns what to do. A diagnosis that does not name the remedy is
 			// no better than the EBUSY it replaces.
-			for _, want := range []string{"yubihsm-connector", "connector_url", tc.module} {
+			// Both remedies: the relay this process can run itself, which is
+			// the one-container answer, and Yubico's daemon, which is still
+			// the answer when something outside this process needs the device.
+			for _, want := range []string{"embedded_connector", "yubihsm-connector", "connector_url", tc.module} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the diagnosis never mentions %q:\n%v", want, err)
 				}
@@ -87,7 +110,7 @@ func TestDrainContention(t *testing.T) {
 // empty string: "the audit driver addresses the device over """ tells an
 // operator nothing about why their configuration is wrong.
 func TestDrainContentionNamesTheDefaultTransport(t *testing.T) {
-	err := DrainContention("", "/usr/lib/pkcs11/yubihsm_pkcs11.so")
+	err := DrainContention("", "/usr/lib/pkcs11/yubihsm_pkcs11.so", false)
 	if err == nil {
 		t.Fatal("an unset connector URL with the YubiHSM module is the conflicting case")
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 )
 
 // errTransportRead marks a failure to read the device's reply, as opposed to a
@@ -27,8 +28,9 @@ var errTransportRead = errors.New("no reply from the device")
 // and say so at startup, instead of letting a force-audited device fill its
 // 62-entry log and stop serving signatures.
 //
-// A yubihsm-connector multiplexes the device, which is why the fix is to run
-// one and point both at an http:// URL.
+// A connector multiplexes the device, which is why the fix is to have one in
+// the path: the embedded one this process can run itself (embedded.go), or
+// Yubico's daemon when something outside this process needs the device too.
 var ErrDeviceBusy = errors.New("the YubiHSM USB interface is held by another process")
 
 // IsDirectUSB reports whether url selects the direct-USB transport, where the
@@ -71,6 +73,13 @@ type Transport interface {
 // trusted with the plaintext protocol stream.
 func OpenTransport(ctx context.Context, url string) (Transport, error) {
 	url = strings.TrimSpace(url)
+	// An embedded connector in this process already holds the device, and the
+	// claim it holds is the only one there is. Anything here addressing that
+	// device gets the shared handle — not a second claim that could only fail,
+	// and not a loopback round trip through our own HTTP server.
+	if t, ok := sharedTransportFor(url); ok {
+		return t, nil
+	}
 	switch {
 	case url == "" || url == "yhusb://":
 		return openUSB(ctx, "")
@@ -95,4 +104,83 @@ func usbSerialFromURL(rest string) string {
 		return v
 	}
 	return rest
+}
+
+// The process's device holder.
+//
+// An embedded connector (see embedded.go) claims the YubiHSM's USB interface for
+// its whole life, which is what lets the PKCS#11 module and this driver share
+// one device. The consequence is that no other code in the process may open
+// that device directly: openUSB would block on the process-wide USB slot and
+// then fail on the kernel's exclusive claim. So the relay registers itself here
+// and OpenTransport routes to it.
+//
+// The registry is package-level rather than threaded through callers for the
+// same reason the command observer is: the native driver is reached from a
+// dozen places — the audit drain, provisioning, key and device attestation,
+// commitments, the doctor, the CLI — each of which opens its own short-lived
+// client from a configuration value. A parameter would have to be added to
+// every one of them, and silently forgotten by the next one written.
+var sharedDevice atomic.Pointer[Embedded]
+
+// setSharedDevice registers e as this process's device holder.
+//
+// Two relays in one process would be two claims on one interface, so the second
+// is refused rather than left to fail later with an EBUSY whose cause is much
+// harder to see from where it surfaces.
+func setSharedDevice(e *Embedded) error {
+	if !sharedDevice.CompareAndSwap(nil, e) {
+		return fmt.Errorf("an embedded YubiHSM connector is already running in this process on %s",
+			sharedDevice.Load().URL())
+	}
+	return nil
+}
+
+// clearSharedDevice deregisters e, if it is still the registered holder.
+func clearSharedDevice(e *Embedded) { sharedDevice.CompareAndSwap(e, nil) }
+
+// sharedTransportFor returns the multiplexed device handle when url addresses
+// the device an embedded connector in this process holds.
+//
+// Both spellings of that device match, because both occur in practice. A
+// yhusb:// URL is what the audit and attestation paths carry when no connector
+// is configured; the relay's own http:// URL is what they carry once the
+// PKCS#11 configuration has been pointed at it, since the native driver resolves
+// its endpoint from the same place the module does (hsm.EffectiveConnectorURL).
+// Routing the second case here as well is what keeps a drain from making an
+// HTTP request to its own process — harmless in itself, but it would put the
+// drain's own traffic through the relay's operation hook and have each cycle
+// signal the need for another.
+//
+// A yhusb:// URL that names a *different* serial does not match. Addressing the
+// wrong hardware is the one failure this subsystem must never have: an audit
+// log or attestation collected from one device while describing another would
+// verify perfectly and mean nothing.
+func sharedTransportFor(url string) (Transport, bool) {
+	e := sharedDevice.Load()
+	if e == nil {
+		return nil, false
+	}
+	url = strings.TrimSpace(url)
+	if IsDirectUSB(url) {
+		serial := usbSerialFromURL(strings.TrimPrefix(url, "yhusb://"))
+		if serial != "" && e.Serial() != "" && !sameSerial(serial, e.Serial()) {
+			return nil, false
+		}
+		return e.Transport(), true
+	}
+	if sameConnectorEndpoint(url, e.URL()) {
+		return e.Transport(), true
+	}
+	return nil, false
+}
+
+// sameSerial compares two device serial numbers.
+//
+// They are compared numerically because the two places a serial comes from
+// disagree on formatting: the USB string descriptor is zero-padded
+// ("0031650425") while the device reports its own serial as a plain integer
+// (31650425), and an operator configuring one will have seen either.
+func sameSerial(a, b string) bool {
+	return a == b || strings.TrimLeft(a, "0") == strings.TrimLeft(b, "0")
 }

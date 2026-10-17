@@ -31,6 +31,10 @@ type fakeDevice struct {
 
 	// handlers answers inner commands; a missing command yields ErrInvalidCommand.
 	handlers map[byte]func(data []byte) ([]byte, error)
+	// plain answers commands sent *outside* a session, which on a real device
+	// is GET DEVICE INFO and little else. A missing command yields
+	// ErrInvalidCommand, as the device does.
+	plain map[byte]func(data []byte) ([]byte, error)
 
 	// tamper, when set, corrupts the response before it is returned.
 	tamper func(resp []byte) []byte
@@ -59,6 +63,7 @@ func newFakeDevice(password string) *fakeDevice {
 		expectKeySetID: 1,
 		sessionID:      3,
 		handlers:       map[byte]func([]byte) ([]byte, error){},
+		plain:          map[byte]func([]byte) ([]byte, error){},
 	}
 }
 
@@ -92,7 +97,15 @@ func (d *fakeDevice) Transact(_ context.Context, msg []byte) ([]byte, error) {
 	case cmdSessionMessage:
 		resp, err = d.sessionMessage(msg)
 	default:
-		resp = errorFrame(ErrInvalidCommand)
+		if h := d.plain[msg[0]]; h != nil {
+			var payload []byte
+			payload, err = h(body)
+			if err == nil {
+				resp, err = frame(msg[0]|responseFlag, payload)
+			}
+		} else {
+			resp = errorFrame(ErrInvalidCommand)
+		}
 	}
 	if err != nil {
 		return nil, err

@@ -107,12 +107,19 @@ func setupHSMAudit(cfg *config.Config, db *database.DB) {
 	}
 
 	if perOperationCollection(cfg, dev) {
-		// Two chokepoints, because there are two routes to the device. The key
-		// provider carries everything the product signs with; the native driver
-		// carries key and device attestation, audit-head commitments and option
-		// changes, none of which pass a key provider and all of which leave log
-		// entries on a force-audited device.
+		// Three chokepoints, because there are three routes to the device. The
+		// key provider carries everything the product signs with; the native
+		// driver carries key and device attestation, audit-head commitments and
+		// option changes, none of which pass a key provider and all of which
+		// leave log entries on a force-audited device; and the embedded
+		// connector carries everything that reaches the hardware through
+		// Yubico's PKCS#11 module — whose traffic is opaque to both of the
+		// others, since the module speaks its own secure channel and this
+		// process only relays it.
 		yubihsm.SetCommandObserver(func(byte) { c.Notify() })
+		if embeddedConnector != nil {
+			embeddedConnector.SetOnOperation(c.Notify)
+		}
 		log.Printf("HSM audit collection enabled (device %s, anchor %s, after every HSM operation, backstop %s)",
 			st.DeviceSerial, st.Anchor, backstop)
 	} else {
@@ -165,7 +172,15 @@ func requireDrainableDevice(cfg *config.Config) {
 // without a process that calls log.Fatalf.
 func drainConflict(cfg *config.Config) error {
 	url := hsm.EffectiveConnectorURL(hsm.Config{ConnectorURL: cfg.YubiHSM.ConnectorURL})
-	return hsmaudit.DrainContention(url, cfg.SigningPKCS11Module())
+	// The relay decision is read from configuration rather than from whether
+	// embeddedConnector is non-nil, so this check means the same thing in the
+	// server and in `secsy-ca doctor` — and so it is not quietly satisfied by a
+	// relay that happens to belong to another process.
+	plan := hsm.PlanEmbeddedConnector(embeddedConnectorOptions(cfg))
+	if plan.Err != nil {
+		return plan.Err
+	}
+	return hsmaudit.DrainContention(url, cfg.SigningPKCS11Module(), plan.Start)
 }
 
 // hsmAuditNotify signals the collector that an operation reached the HSM. It is

@@ -186,6 +186,10 @@ func run(args []string) error {
 	// Enable HSM signature-ledger recording before any key provider is built, so
 	// every signature the CLI produces is accounted for (Task 167).
 	installSignatureRecorder(db)
+	// Release the device after that drain, not before: the relay (when this
+	// deployment runs one) is what the drain reaches the device through, and
+	// deferring it first is what puts it last in the unwind.
+	defer stopEmbeddedConnector()
 	// And drain the device log on the way out if this command used the HSM (Task
 	// 181). Deferred here rather than at each dispatch arm so no command can sign
 	// and leave without it; deferred before the key provider is built so it runs
@@ -1534,6 +1538,10 @@ func buildPinSources(cfg *config.Config) ([]keyprovider.NamedPinSource, error) {
 }
 
 func buildProvider(cfg *config.Config, role string) (keyprovider.Provider, error) {
+	// Multiplex the device in-process first, when this deployment calls for it:
+	// the module reads its connector once, at C_Initialize, so the relay has to
+	// exist before the provider below is constructed.
+	ensureEmbeddedConnector(cfg)
 	// Ensure the YubiHSM PKCS#11 module can find its connector, matching the
 	// server's behavior.
 	if cfg.YubiHSM.ConnectorURL != "" && os.Getenv("YUBIHSM_PKCS11_CONF") == "" {

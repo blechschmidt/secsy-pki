@@ -73,6 +73,11 @@ var usbdevfsBulk = uintptr(3)<<30 | unsafe.Sizeof(bulkTransfer{})<<16 | uintptr(
 // hanging a background collector forever.
 const defaultUSBTimeout = 30 * time.Second
 
+// maxUSBTimeout caps what a caller's own deadline can extend a single transfer
+// to. The usbfs bulk ioctl is not interruptible once submitted, so this is the
+// longest a wedged device can hold the thread that asked it something.
+const maxUSBTimeout = 5 * time.Minute
+
 type usbTransport struct {
 	mu     sync.Mutex
 	f      *os.File
@@ -202,8 +207,10 @@ func (t *usbTransport) claim(ctx context.Context) error {
 		}
 	}
 	return fmt.Errorf("claiming the YubiHSM USB interface on %s: %w: %w "+
-		"(another process — yubihsm-connector, yubihsm-shell or the PKCS#11 module — is holding the device; "+
-		"run yubihsm-connector and use an http:// connector URL so both can share it)",
+		"(something else holds the device: a yubihsm-connector, a yubihsm-shell, the PKCS#11 module, "+
+		"or a secsy-pki process already multiplexing it. If one is serving a connector, address that "+
+		"instead — yubihsm.connector_url: http://127.0.0.1:12345; if nothing is, let this process "+
+		"multiplex the device itself with yubihsm.embedded_connector.enabled)",
 		t.path, ErrDeviceBusy, err)
 }
 
@@ -235,11 +242,16 @@ func (t *usbTransport) Transact(ctx context.Context, msg []byte) ([]byte, error)
 		return nil, fmt.Errorf("YubiHSM USB transport is closed")
 	}
 
+	// A caller's deadline wins outright, in both directions. Shortening it is
+	// obvious; lengthening it matters because the slowest thing a YubiHSM does
+	// — RSA-4096 key generation — runs well past defaultUSBTimeout, and a
+	// client relayed through the embedded connector must not have a key
+	// generation cut off by a bound meant to stop a background drain from
+	// hanging. The ceiling keeps a wedged device from blocking forever
+	// regardless of what the caller asked for.
 	timeout := defaultUSBTimeout
 	if dl, ok := ctx.Deadline(); ok {
-		if d := time.Until(dl); d < timeout {
-			timeout = d
-		}
+		timeout = min(time.Until(dl), maxUSBTimeout)
 	}
 	if timeout <= 0 {
 		return nil, context.DeadlineExceeded
@@ -434,10 +446,4 @@ func readSysfsHex(dir, name string) int {
 		return -1
 	}
 	return int(v)
-}
-
-// sameSerial compares serials ignoring the leading zeros the USB string
-// descriptor carries but the device's own report does not.
-func sameSerial(a, b string) bool {
-	return a == b || strings.TrimLeft(a, "0") == strings.TrimLeft(b, "0")
 }

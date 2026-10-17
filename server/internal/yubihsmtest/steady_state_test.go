@@ -48,19 +48,24 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/yubihsm"
 )
 
-// requireShareableConnector skips a test that needs the device through two
-// routes at once unless the connector can multiplex it.
+// requireShareableConnector makes the device reachable through two routes at
+// once, which is what a test that signs and audits in one process needs.
 //
-// Direct USB cannot: the test below pins that. Rather than silently testing
-// something weaker on a `yhusb://` run, the skip names the daemon that makes
-// the real configuration reachable.
+// Direct USB is exclusive — TestDirectUSBCannotBeDrainedWhileTheModuleHoldsIt
+// pins that on hardware — so a `yhusb://` run used to skip here, with the
+// instruction to go and start Yubico's connector daemon. It no longer has to:
+// the embedded connector (Task 204) multiplexes the device inside this process,
+// which is both the single-container deployment and exactly the configuration
+// the test below is trying to exercise. So the test runs on a direct-USB run,
+// through the relay, and keeps running unchanged against an external connector
+// when one is configured.
 func requireShareableConnector(t *testing.T) {
 	t.Helper()
 	requireDevice(t)
-	if url := connectorURL(); yubihsm.IsDirectUSB(url) {
-		t.Skipf("this test needs the device through the PKCS#11 module and the native driver at the same "+
-			"time, which %s cannot do (see TestDirectUSBCannotBeDrainedWhileTheModuleHoldsIt). "+
-			"Run `yubihsm-connector -l 127.0.0.1:12345` and set SECSY_YUBIHSM_CONNECTOR to it.", url)
+	if yubihsm.IsDirectUSB(connectorURL()) {
+		e := startRelay(t, nil)
+		t.Logf("direct USB is exclusive, so this run reaches the device through the embedded connector on %s",
+			e.URL())
 	}
 }
 
@@ -101,18 +106,23 @@ func TestDirectUSBCannotBeDrainedWhileTheModuleHoldsIt(t *testing.T) {
 
 	_, err := dev.FetchLog(ctx)
 	if err == nil {
-		t.Fatal("the device log was drained while the PKCS#11 module held the USB interface. " +
-			"If that is now genuinely possible, hsmaudit.DrainContention and the server's startup " +
-			"refusal are obsolete and should be removed — but check first that the module had a " +
-			"session open.")
+		t.Fatal("the device log was drained while the PKCS#11 module held the USB interface, with no " +
+			"connector in between. If that is now genuinely possible, hsmaudit.DrainContention and the " +
+			"server's startup refusal are obsolete and should be removed — but check first that the " +
+			"module had a session open, and note that this test deliberately runs without the embedded " +
+			"connector, which is what makes the same configuration work.")
 	}
 	if !errors.Is(err, yubihsm.ErrDeviceBusy) {
 		t.Fatalf("the drain failed, but not as a recognised device-busy condition, so neither the "+
 			"startup check nor the collector's diagnosis would classify it: %v", err)
 	}
-	// The error is what an operator sees first, so it has to carry the fix.
-	if !strings.Contains(err.Error(), "yubihsm-connector") {
-		t.Errorf("the contention error does not name the daemon that resolves it: %v", err)
+	// The error is what an operator sees first, so it has to carry both ways
+	// out: address a connector something else is already serving, or have this
+	// process multiplex the device itself.
+	for _, want := range []string{"yubihsm-connector", "embedded_connector", "connector_url"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the contention error does not mention %q, so it does not say how to resolve it: %v", want, err)
+		}
 	}
 	t.Logf("direct USB is exclusive, as expected: %v", err)
 }

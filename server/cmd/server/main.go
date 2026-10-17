@@ -127,6 +127,15 @@ func main() {
 			cfg.Tracing.Endpoint, cfg.Tracing.Protocol, cfg.Tracing.SampleRatio)
 	}
 
+	// Claim the YubiHSM before anything else reaches for it, when this
+	// deployment multiplexes the device in-process (Task 204). It has to happen
+	// here: the PKCS#11 module reads its connector once, at C_Initialize, so
+	// every key provider built below must already see the relay's endpoint, and
+	// the audit subsystem's device probes a few lines down must be routed to
+	// the relay's single USB claim rather than attempting a second one.
+	startEmbeddedConnector(cfg)
+	defer stopEmbeddedConnector()
+
 	db, err := database.NewWithOptions(cfg.Database.Driver, cfg.Database.DSN, database.PoolOptions{
 		MaxOpenConns:    cfg.Database.MaxOpenConns,
 		MaxIdleConns:    cfg.Database.MaxIdleConns,
