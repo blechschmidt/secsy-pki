@@ -368,6 +368,27 @@ func printAuditLogFileStatus(cfg *config.Config, dbTail hsmaudit.Tail) {
 // Like `verify`, it is dispatched before the database or the key provider is
 // opened, because the whole point of the file is to be checkable somewhere the
 // CA is not: an auditor holding a copy shipped off the host has neither.
+// tailShortfall reports whether a log file ending at last stops short of the
+// entry number want, and by how many records.
+//
+// Device entry numbers are uint16 and wrap, so "short" is a direction around
+// the ring rather than a `<`: the comparison follows the same serial-number
+// rule the collector verifies continuity with (isForward in
+// internal/hsmaudit). want == 0 means no expectation was given.
+func tailShortfall(last, want uint16) (bool, uint16) {
+	if want == 0 || last == want {
+		return false, 0
+	}
+	// want - last is the forward distance from the file's end to the entry it
+	// was supposed to reach. Within half the counter space, want is ahead and
+	// the file is that many records short; beyond it, the file is ahead of the
+	// expectation, which is not a shortfall.
+	if d := want - last; d < 0x8000 {
+		return true, d
+	}
+	return false, 0
+}
+
 func cmdHSMAuditVerifyFile(args []string) error {
 	fs := flag.NewFlagSet("hsm-audit verify-file", flag.ContinueOnError)
 	path := fs.String("file", "", "append-only device log file to verify (required)")
@@ -410,11 +431,18 @@ func cmdHSMAuditVerifyFile(args []string) error {
 	if *serial != "" && !strings.EqualFold(strings.TrimSpace(*serial), res.Device) {
 		extra = append(extra, fmt.Sprintf("file names device %q, expected %q", res.Device, *serial))
 	}
-	if *tail != 0 && uint(res.Last) != *tail {
+	// -tail is a floor: it says the file must *reach* that entry. Being past it
+	// is the normal case, not a fault — a deployment that signs continuously
+	// (an HSM-backed TLS listener signs on every handshake) advances its
+	// collection tail while an auditor is still reading the status output they
+	// took the number from. Requiring equality reported those files as having
+	// had records removed, and printed a negative count doing it. What the flag
+	// is for is a file that stops short.
+	if short, by := tailShortfall(res.Last, uint16(*tail)); *tail != 0 && short {
 		extra = append(extra, fmt.Sprintf(
 			"the file ends at entry %d but should reach %d: %d record(s) were removed from the end, "+
 				"which the chain alone cannot show — a truncated chain is still a valid chain",
-			res.Last, *tail, int(*tail)-int(res.Last)))
+			res.Last, *tail, by))
 	}
 
 	if *asJSON {

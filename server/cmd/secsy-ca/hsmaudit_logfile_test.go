@@ -128,6 +128,50 @@ func TestVerifyFileCatchesTruncationOnlyWithATail(t *testing.T) {
 	if !strings.Contains(err.Error(), "removed from the end") {
 		t.Fatalf("the error does not name the truncation: %v", err)
 	}
+	if strings.Contains(err.Error(), "-1 record") {
+		t.Fatalf("the shortfall is reported as a negative count: %v", err)
+	}
+}
+
+// The other direction is not truncation. A tail is a floor — the entry the file
+// must reach — and a deployment that signs continuously advances its collection
+// tail while an auditor is still reading the status output they took the number
+// from, so a file that has gone further must pass.
+func TestVerifyFileAcceptsAFileAheadOfTheExpectedTail(t *testing.T) {
+	path, last := writeLogFile(t, true)
+
+	if err := cmdHSMAuditVerifyFile([]string{"-file", path, "-tail", strconv.Itoa(int(last) - 3)}); err != nil {
+		t.Fatalf("a file past the expected tail was rejected: %v", err)
+	}
+	if err := cmdHSMAuditVerifyFile([]string{"-file", path, "-tail", strconv.Itoa(int(last))}); err != nil {
+		t.Fatalf("a file at exactly the expected tail was rejected: %v", err)
+	}
+}
+
+// And the ring wraps: entry numbers are uint16, so "short" has to be a
+// direction around the counter rather than a comparison.
+func TestTailShortfallToleratesTheCounterWrap(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		last, want uint16
+		short      bool
+		by         uint16
+	}{
+		{"exactly there", 500, 500, false, 0},
+		{"four short", 496, 500, true, 4},
+		{"four ahead", 504, 500, false, 0},
+		{"short across the wrap", 65534, 2, true, 4},
+		{"ahead across the wrap", 2, 65534, false, 0},
+		{"no expectation", 500, 0, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			short, by := tailShortfall(tc.last, tc.want)
+			if short != tc.short || by != tc.by {
+				t.Fatalf("tailShortfall(%d, %d) = (%v, %d), want (%v, %d)",
+					tc.last, tc.want, short, by, tc.short, tc.by)
+			}
+		})
+	}
 }
 
 // A file opened partway through a device's life is honest but incomplete: it
