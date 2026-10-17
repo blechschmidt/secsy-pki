@@ -1666,10 +1666,23 @@ func TestDeliverySweepStopsMidBatchOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// The first delivery attempt cancels the worker's context, exactly as a
-	// SIGTERM or a lost lease would mid-batch.
-	ep := newEndpoint(t, func(_ int, w http.ResponseWriter, _ *http.Request) {
+	// SIGTERM or a lost lease would mid-batch — and then does not answer.
+	//
+	// Answering with a 200 here is a race the client can win: on a loaded
+	// machine the response reaches the transport before the cancellation does,
+	// the attempt is recorded as delivered rather than as a backed-off retry,
+	// and the pending count below comes out one short. Waiting for the server
+	// side of the cancelled request instead makes the first attempt fail for
+	// the stated reason every time. The deadline is a guard, not a timing
+	// assumption: if the cancellation never reaches the handler the test should
+	// fail rather than hang.
+	ep := newEndpoint(t, func(_ int, _ http.ResponseWriter, r *http.Request) {
 		cancel()
-		w.WriteHeader(http.StatusOK)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(10 * time.Second):
+			t.Error("the cancelled delivery did not abort its in-flight POST")
+		}
 	})
 
 	const subs = 3
