@@ -5565,6 +5565,47 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SECSY_MONITOR_ROTATE_INTERMEDIATES"); v == "1" || v == "true" {
 		cfg.Monitor.RotateIntermediates = true
 	}
+	applyYubiHSMEnvOverrides(cfg)
+}
+
+// applyYubiHSMEnvOverrides resolves the `yubihsm:` settings a container cannot
+// have in its config file.
+//
+// The block addresses the device through the native driver — the transport, the
+// authentication key and its password — and says where the collected device
+// audit log is permanently written. Three of those four are exactly the values
+// a mounted, pre-baked config file does not know:
+//
+//   - the password is a credential, and belongs in the deployment's secret
+//     store rather than in a file on a CA host (the PKCS#11 PIN already had
+//     SECSY_USER_PIN and a pin_source block for the same reason);
+//   - the connector URL changes with the deployment shape — direct USB for a
+//     single-process CLI, a yubihsm-connector's http:// endpoint for a server
+//     that must also drain the device log (see hsmaudit.DrainContention);
+//   - the audit-log path is a mount point the orchestrator chooses, and on a
+//     force-audited device it is the one copy of the log that an operator
+//     holding the database cannot quietly shorten. Having to bake it into the
+//     image's config file is what would push a deployment into not configuring
+//     it at all.
+//
+// Only non-empty values override, as everywhere else here, so an unset variable
+// leaves the file's value alone. An unparseable auth key id is ignored rather
+// than fatal, matching the other integer overrides in this function.
+func applyYubiHSMEnvOverrides(cfg *Config) {
+	if v := os.Getenv("SECSY_YUBIHSM_CONNECTOR_URL"); v != "" {
+		cfg.YubiHSM.ConnectorURL = v
+	}
+	if v := os.Getenv("SECSY_YUBIHSM_AUTH_KEY_ID"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.YubiHSM.AuthKeyID = n
+		}
+	}
+	if v := os.Getenv("SECSY_YUBIHSM_PASSWORD"); v != "" {
+		cfg.YubiHSM.Password = v
+	}
+	if v := os.Getenv("SECSY_YUBIHSM_AUDIT_LOG_FILE"); v != "" {
+		cfg.YubiHSM.AuditLogFile = v
+	}
 }
 
 // defaultKeyProvider fills in a sensible provider type and software defaults

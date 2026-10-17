@@ -236,6 +236,27 @@ anyway, but `bookworm-backports` ships 2.6.0 and a mounted host module may well
 be it. The `-yubihsm` container image builds 2.8.0 from source; see
 [if you supply your own module](../deployment/container.md#if-you-supply-your-own-module-272-or-newer).
 
+#### From the container
+
+The same command, run as the image's non-root user with the device passed
+through, is what `scripts/yubihsm-container-test.sh` exercises against real
+hardware — every encoding above, at every supported size:
+
+```bash
+docker run --rm --device "$dev" --group-add "$(stat -c %g "$dev")" \
+  -v "$PWD/config.yaml:/etc/secsy/config.yaml:ro" -v "$PWD/keys:/keys:ro" \
+  -e SECSY_YUBIHSM_PASSWORD -e SECSY_USER_PIN -e SECSY_KEY_PASSPHRASE \
+  --entrypoint secsy-ca ghcr.io/blechschmidt/secsy-pki:latest-yubihsm \
+  -config /etc/secsy/config.yaml import-key -label legacy-ca -key /keys/legacy-ca.pem
+```
+
+Two container-specific details. The key file is **mounted read-only** and read
+once: nothing writes it back, and nothing about the import puts it in an image
+layer. And the passphrase for an encrypted key arrives as `SECSY_KEY_PASSPHRASE`
+or through a mounted `-pass-file`, never as a flag — which is the same rule as
+on a host, for the same reason, and happens to be the only shape a container
+runtime makes convenient anyway.
+
 ---
 
 ## Importing a bare key

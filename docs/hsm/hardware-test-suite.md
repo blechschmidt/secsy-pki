@@ -106,14 +106,26 @@ device answers over `yhusb://` from inside as uid 65532; that `secsy-ca
 import-key` places RSA-2048, RSA-3072 and RSA-4096 keys and that each is
 **verified by signing on the device**; that the resulting object really is an
 `asymmetric-key` with the right algorithm, may sign, and is neither exportable
-under wrap nor unwrap-capable; that `secsy-ca inventory` lists each at the
-expected key type and reports it non-extractable, which is the product's own view
-of that invariant; that `ca import` adopts a legacy RSA CA whose certificate was
-self-signed *before* the migration and `issue` then produces a leaf which
-`openssl verify` accepts under it; and that `init-root -key-type rsa-2048` generates in the device — the
-sibling of the import bug below, so importing alone proves half of it. (2048
-rather than 4096 for generation: the bug is not size-specific, and 4096 bits take
-a minute and a half on this hardware where 2048 take seconds.)
+under wrap nor unwrap-capable; that the same import works for **every encoding
+`openssl` emits** — PKCS#8, traditional PKCS#1, both of their encrypted forms,
+bare DER and PKCS#12, each generated on the host outside the image, each
+asserted to have been *read as* that format rather than merely accepted, and the
+encrypted ones driven through both ways a passphrase can reach a container
+(`-e SECSY_KEY_PASSPHRASE` and a mounted `-pass-file`); that `secsy-ca
+inventory` lists each at the expected key type and reports it non-extractable,
+which is the product's own view of that invariant; that `ca import` adopts a
+legacy RSA CA whose certificate was self-signed *before* the migration and
+`issue` then produces a leaf which `openssl verify` accepts under it; that
+`init-root -key-type rsa-2048` generates in the device — the sibling of the
+import bug below, so importing alone proves half of it (2048 rather than 4096
+for generation: the bug is not size-specific, and 4096 bits take a minute and a
+half on this hardware where 2048 take seconds); and finally **where the device
+audit log is permanently written**: that `SECSY_YUBIHSM_AUDIT_LOG_FILE` is the
+path `hsm-audit status` then reports and the one the server creates on a mounted
+volume, that the file it creates verifies offline with `hsm-audit verify-file`,
+that an uncommissioned device is refused *with the reason* instead of silently
+writing nothing, and that a destination the server cannot append to stops it
+starting rather than being ignored.
 
 `--legacy-module DIR` repeats the import against a pre-2.7.2 module mounted over
 the image's, which is the shape of a deployment that supplies its own vendor
@@ -121,10 +133,18 @@ stack. `--help` prints a recipe for building such a directory out of Debian's
 packages. The claim it checks is that the template adapts and the import still
 works, not that the old module is fine.
 
-It owns object ids `0x7d00`–`0x7d0f` and labels `t201-c-*`, which do not overlap
-the ranges the Go suite uses, and deletes what it created — both object types, not
-just the one it meant to make, since the failure it is built to detect leaves the
-wrong one behind.
+It owns object ids `0x7d00`–`0x7d1f` and labels `t201-c-*` / `t203-c-*`, which do
+not overlap the ranges the Go suite uses, and deletes what it created — both
+object types, not just the one it meant to make, since the failure it is built to
+detect leaves the wrong one behind.
+
+What it cannot settle is the drain itself, on a device nobody may commission for
+it: `hsm-audit provision` turns on **irreversible** forced audit logging and
+requires a factory-reset device, so a test may not perform it. On an
+uncommissioned device the script therefore asserts the refusal and its wording;
+on a commissioned one it asserts that the records land in the configured file.
+Which branch ran is in the transcript, along with the device's own `force-audit`
+option as the script found it.
 
 Like the Go suite it **drains the device audit log** when the 62-entry ring runs
 short, for the same reason: a device with force-audit enabled stops accepting

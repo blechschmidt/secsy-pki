@@ -275,7 +275,7 @@ test-yubihsm-quick: ## test-yubihsm without the slow RSA-4096 case
 	./scripts/yubihsm-test.sh --quick
 
 .PHONY: test-yubihsm-container
-test-yubihsm-container: ## Run the published -yubihsm image against an attached device (RSA import; not CI)
+test-yubihsm-container: ## Run the -yubihsm image against an attached device (RSA import + audit destination; not CI)
 	./scripts/yubihsm-container-test.sh
 
 .PHONY: bench

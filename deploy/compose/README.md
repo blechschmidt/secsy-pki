@@ -40,5 +40,9 @@ The `.env` defaults are also deliberately unusable as-is: the stack fails to sta
 until the PIN and passwords are changed, rather than coming up with values
 published in this repository.
 
+For a **YubiHSM 2 attached over USB**, use [`../yubihsm/`](../yubihsm/) instead:
+the same shape of stack, on the `-yubihsm` image, with a `yubihsm-connector`
+service that owns the device and the device audit log written to its own volume.
+
 For Kubernetes, use the [Helm chart](../helm/secsy-pki/) instead — it covers
 HSM module mounts, PINs from Secrets, probes and multi-replica coordination.

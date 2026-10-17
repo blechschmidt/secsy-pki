@@ -57,6 +57,15 @@ var hsmAuditCollector *hsmaudit.Collector
 // chain that cannot be attributed to a known device history, and a ledger with
 // no device log to reconcile against proves nothing on its own.
 func setupHSMAudit(cfg *config.Config, db *database.DB) {
+	// The destination first, and before the audit state is even read: an
+	// operator who named a path has stated where this device's log must end up,
+	// and the one thing that must not happen is for the deployment to come up
+	// looking healthy while that path is unwritable. Opening it here means a
+	// typo, a read-only mount or a volume owned by the wrong uid is a startup
+	// failure naming the path, rather than a surprise at the first drain —
+	// which, on a device that is not yet commissioned, could be months away.
+	logFile := openAuditLogFile(cfg)
+
 	st, err := db.LoadAuditState(context.Background())
 	if err != nil {
 		log.Printf("WARNING: could not read HSM audit state, device-log collection "+
@@ -64,7 +73,7 @@ func setupHSMAudit(cfg *config.Config, db *database.DB) {
 		return
 	}
 	if st == nil {
-		warnUncollectedForcedAudit(cfg)
+		warnUncollectedForcedAudit(cfg, logFile)
 		return
 	}
 
@@ -80,8 +89,12 @@ func setupHSMAudit(cfg *config.Config, db *database.DB) {
 	backstop := hsmAuditBackstop(cfg)
 	c := hsmaudit.NewCollector(dev, db, backstop, log.Default())
 	c.OnFailure(func(error) { metrics.HSMAuditCollectionFailures.Inc() })
-	if f := openAuditLogFile(cfg); f != nil {
-		c.AddSink(f)
+	if logFile != nil {
+		c.AddSink(logFile)
+	} else {
+		log.Printf("HSM audit: no yubihsm.audit_log_file is configured, so the database is the only " +
+			"copy of the device log. Set it (or SECSY_YUBIHSM_AUDIT_LOG_FILE) to a path this process " +
+			"can append to and nothing can rewrite for a copy that survives whoever holds the database.")
 	}
 	hsmAuditCollector = c
 
@@ -174,6 +187,10 @@ var hsmAuditNotify = func() { hsmAuditCollector.Notify() }
 // without it — after somebody configured it — would silently deliver the
 // opposite of what was asked for. Failing here is loud, happens at startup
 // rather than at the first drain, and names the path.
+//
+// The path comes from yubihsm.audit_log_file or the SECSY_YUBIHSM_AUDIT_LOG_FILE
+// override, which is how a container names a mounted volume the image's config
+// file could not have known about.
 func openAuditLogFile(cfg *config.Config) *hsmaudit.LogFile {
 	path := strings.TrimSpace(cfg.YubiHSM.AuditLogFile)
 	if path == "" {
@@ -240,7 +257,13 @@ func perOperationCollection(cfg *config.Config, dev hsmaudit.Device) bool {
 // default direct-USB one — so probing unconditionally would have every
 // SoftHSM or software-backed deployment reach for whichever device happens to
 // be plugged into the machine.
-func warnUncollectedForcedAudit(cfg *config.Config) {
+//
+// logFile is the destination the deployment configured, if any. It is named in
+// the warning because configuring one is the step an operator is most likely to
+// believe has already solved this: the path exists, the file was created at
+// startup, and nothing will ever be appended to it until the device is
+// commissioned.
+func warnUncollectedForcedAudit(cfg *config.Config, logFile *hsmaudit.LogFile) {
 	if cfg.YubiHSM.ConnectorURL == "" && cfg.YubiHSM.AuthKeyID == 0 {
 		return
 	}
@@ -255,10 +278,25 @@ func warnUncollectedForcedAudit(cfg *config.Config) {
 	if err != nil || !forced {
 		return
 	}
+	// `hsm-audit provision`, and only provisioning: an uncommissioned device
+	// cannot be drained by this software at all. `hsm-audit collect` refuses
+	// without a pinned anchor, by the same reasoning the collector is gated on,
+	// so telling an operator to reach for it — as this warning used to — sends
+	// them to a command that cannot work. Provisioning in turn requires a
+	// factory-reset device, because a log that does not begin at the reset
+	// cannot be shown to be complete; on a device already in service that means
+	// the honest options are a reset or the vendor shell, and the warning says
+	// so rather than implying a command exists for it.
 	log.Printf("WARNING: the attached YubiHSM has force-audit enabled but this deployment has no pinned " +
 		"audit state, so nothing here drains its log. The device holds 62 log entries and then refuses " +
-		"every audited command — including signing. Run `secsy-ca hsm-audit provision` to commission it, " +
-		"or `secsy-ca hsm-audit collect` to drain it by hand.")
+		"every audited command — including signing. Run `secsy-ca hsm-audit provision` to commission it; " +
+		"it requires a factory-reset device, so a device already in service must either be reset (losing " +
+		"its keys) or have its log drained out of band with `yubihsm-shell -a get-logs` and " +
+		"`-a set-log-index`, which produces no verifiable chain.")
+	if logFile != nil {
+		log.Printf("HSM audit: yubihsm.audit_log_file is set to %s and is writable, but it will stay "+
+			"empty until the device is commissioned — collection is what writes to it.", logFile.Path())
+	}
 }
 
 // hsmAuditBackstop resolves the sweep cadence used when no operation prompts a

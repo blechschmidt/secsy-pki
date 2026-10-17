@@ -682,6 +682,47 @@ mount or a log shipper tailing the file off the host achieves the same end by
 different means, and shipping it off the host is the stronger version, since it
 puts a copy where the CA operator cannot reach it at all.
 
+### In a container
+
+Three things go wrong here that do not go wrong on a host, and all three succeed
+at looking configured:
+
+* a path in the image's writable layer is discarded when the container is
+  replaced — silently, because the write succeeds;
+* a volume mounted from the host arrives owned by root, and the image runs as
+  uid 65532;
+* the config file was baked before the deployment knew the mount point.
+
+So the image ships `/app/audit`, owned by the runtime user, as the place to
+mount a volume for this — Docker seeds a named volume's ownership from the
+image directory it is mounted over — and the path is set from the environment:
+
+```yaml
+# docker-compose.yaml
+    environment:
+      SECSY_YUBIHSM_AUDIT_LOG_FILE: /app/audit/device-log.jsonl
+    volumes:
+      - audit:/app/audit
+```
+
+The server **opens the destination at startup**, before it knows whether the
+device has been commissioned, and refuses to start if it cannot append to it:
+
+```
+FATAL: yubihsm.audit_log_file is set to /audit-ro/device-log.jsonl but it cannot
+be opened for append: opening the HSM audit log file …: read-only file system
+```
+
+That is deliberate. The alternative is a deployment that comes up healthy and
+discovers the problem at the first drain — which, on a device that has not been
+commissioned yet, could be months later, with a force-audited HSM by then
+minting entries that have nowhere to go.
+
+A complete stack, with the connector holding the device and the audit log on its
+own volume, is in
+[`deploy/yubihsm/`](https://github.com/blechschmidt/secsy-pki/tree/main/deploy/yubihsm).
+`scripts/yubihsm-container-test.sh` asserts all of this against a real device.
+
 ### The format
 
 One JSON record per line. `record` is the device's own 32-byte log record —
@@ -746,7 +787,10 @@ yubihsm:
   # commissioned device if they would contend.
   connector_url: http://127.0.0.1:12345
   auth_key_id: 1
-  password: ${YUBIHSM_PASSWORD}
+  # Or leave it out and set SECSY_YUBIHSM_PASSWORD — see "From the environment"
+  # below. This file is read verbatim: a `${VAR}` written here is a literal
+  # password of eight characters, not a reference to anything.
+  password: hunter2
 
   # Device-log collection. Every HSM operation drains the log, which is the
   # default and needs no configuration; the backstop is how often the drain runs
@@ -795,6 +839,30 @@ and the HSM will stop after 62 entries.
 
 With `audit_freshness_tsa_url` unset both jobs fall back to the TSA configured for
 [audit-chain anchoring](../signing/timestamping.md), then to the internal authority.
+
+### From the environment
+
+Four of these settings are the ones a deployment cannot bake into a config file,
+so each has an override that wins over the file when it is non-empty:
+
+| Variable | Sets | Why it is not in the file |
+|----------|------|---------------------------|
+| `SECSY_YUBIHSM_PASSWORD` | `yubihsm.password` | A credential. It belongs wherever the deployment keeps secrets, not in a file on the CA host |
+| `SECSY_YUBIHSM_AUTH_KEY_ID` | `yubihsm.auth_key_id` | Pairs with the password |
+| `SECSY_YUBIHSM_CONNECTOR_URL` | `yubihsm.connector_url` | Depends on the deployment's shape — direct USB for a one-shot CLI, a connector's `http://` endpoint wherever the log is also drained |
+| `SECSY_YUBIHSM_AUDIT_LOG_FILE` | `yubihsm.audit_log_file` | A mount point the orchestrator chooses. Having to bake it in is what pushes a container deployment into not configuring it at all |
+
+They apply to the server and to both CLIs, because all three load configuration
+through the same path. The connector URL is also what the YubiHSM PKCS#11
+module's own `yubihsm_pkcs11.conf` is generated from at startup, so setting it
+once moves the signing path and the audit drain together.
+
+The config file itself does **no** variable expansion: `password: ${FOO}` is a
+six-character password. Use the override.
+
+An example that puts all four together — a compose stack where the connector
+holds the device and the audit log lands on its own volume — is in
+[`deploy/yubihsm/`](https://github.com/blechschmidt/secsy-pki/tree/main/deploy/yubihsm).
 
 ## Operating
 

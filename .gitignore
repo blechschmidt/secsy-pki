@@ -41,5 +41,7 @@ server/server
 # Python bytecode (mkdocs imports website/hooks.py when building the docs site)
 __pycache__/
 
-# Compose stack secrets (PINs, passwords). .env.example is the committed template.
+# Compose stack secrets (PINs, passwords) and the device node of whichever
+# YubiHSM is attached to this host. The .env.example templates are committed.
 deploy/compose/.env
+deploy/yubihsm/.env

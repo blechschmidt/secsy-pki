@@ -320,6 +320,20 @@ Set `YUBIHSM_PKCS11_CONF` yourself if you need to manage that file manually. The
 YubiHSM path also unlocks the hardware audit-log verification described in the
 [README](../../README.md#audit-verification).
 
+Four of these settings also come from the environment, because they are the
+ones a deployment — a container especially — cannot put in a file it baked
+earlier. A non-empty variable wins over the file; an unset one changes nothing:
+
+| Variable | Sets |
+|----------|------|
+| `SECSY_YUBIHSM_PASSWORD` | `yubihsm.password` — a credential, so it belongs in the deployment's secret store |
+| `SECSY_YUBIHSM_AUTH_KEY_ID` | `yubihsm.auth_key_id` |
+| `SECSY_YUBIHSM_CONNECTOR_URL` | `yubihsm.connector_url`, and therefore the generated `yubihsm_pkcs11.conf` too |
+| `SECSY_YUBIHSM_AUDIT_LOG_FILE` | `yubihsm.audit_log_file` — where the device audit log is permanently written ([audit log](audit-log.md#from-the-environment)) |
+
+The config file does no `${VAR}` expansion of its own: a `${FOO}` written in it
+is that literal string. Use the overrides.
+
 ## Configuring the software backend
 
 ```yaml

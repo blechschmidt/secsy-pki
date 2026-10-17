@@ -199,7 +199,18 @@ ENV SOFTHSM2_CONF=/etc/softhsm/softhsm2.conf
 
 # Writable state (SQLite DB, generated config, SoftHSM tokens for CI) lives under
 # /app and /var/lib/softhsm, both owned by the runtime user.
-RUN mkdir -p /app/data /var/lib/softhsm/tokens \
+#
+# /app/audit is the default mount point for yubihsm.audit_log_file — the
+# append-only copy of the HSM device audit log, which on a force-audited device
+# is the record the deployment is obliged to keep. It exists in the image, owned
+# by the runtime user, precisely so that a `docker run -v secsy-audit:/app/audit`
+# inherits that ownership: Docker seeds a named volume from the image directory
+# it is mounted over, so an empty path here would hand the volume to root and the
+# server would refuse to start, as uid 65532, on the file it was told to write.
+# It is deliberately a separate directory from /app/data: the point of the file
+# is to be a copy on a different medium from the database, which an operator
+# holding the database cannot quietly shorten.
+RUN mkdir -p /app/data /app/audit /var/lib/softhsm/tokens \
     && chown -R 65532:65532 /app /var/lib/softhsm
 
 WORKDIR /app

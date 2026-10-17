@@ -14,6 +14,41 @@ version being released becomes the body of the GitHub release. See
 
 ### Added
 
+**A YubiHSM 2 Compose stack, and the device audit log where you say it goes.**
+[`deploy/yubihsm/`](deploy/yubihsm/) is a working deployment for a YubiHSM
+attached over USB: a `yubihsm-connector` service that owns the device node, a
+server that reaches it over HTTP — two services because the PKCS#11 signing
+path and the native audit driver are two routes to one USB interface and cannot
+share `yhusb://` — the device audit log on its own volume, and a `device-env.sh`
+that finds the attached device and writes its node and gid into `.env`.
+
+Four `yubihsm:` settings now also come from the environment, which is what a
+container needs and a mounted config file cannot supply:
+`SECSY_YUBIHSM_PASSWORD` (a credential), `SECSY_YUBIHSM_AUTH_KEY_ID`,
+`SECSY_YUBIHSM_CONNECTOR_URL` (which the generated `yubihsm_pkcs11.conf` follows,
+so the signing path and the drain move together) and
+`SECSY_YUBIHSM_AUDIT_LOG_FILE` — where the device audit log is permanently
+written, which on a force-audited device is the record the deployment is
+obliged to keep. The image ships `/app/audit`, owned by the runtime user, so a
+named volume mounted there is writable by uid 65532 rather than by root.
+
+### Fixed
+
+**A configured audit-log destination is now checked at startup, not at the
+first drain.** The server opened `yubihsm.audit_log_file` inside the branch that
+builds the collector, which only runs once the device has been commissioned — so
+a read-only mount, a volume owned by the wrong uid or a typo in the path
+surfaced at the first collection, which on a device commissioned later could be
+months away, with a force-audited HSM by then minting entries that have nowhere
+to go. It is opened before the audit state is even read; the refusal still names
+the path.
+
+The warning for a device that force-audits with no pinned audit state also sent
+operators to two commands that cannot help them: `hsm-audit collect` refuses
+without a pinned anchor, and `hsm-audit provision` requires a factory-reset
+device. It now says that, and names what is actually left — and reports whether
+the configured destination is writable but idle.
+
 **A documented way to run the container, and a Compose stack that proves it.**
 The container page covered the image — tags, architectures, provenance, the build
 — and stopped short of running it, so the path from `docker pull` to an issued

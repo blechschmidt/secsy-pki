@@ -245,6 +245,7 @@ mount the file at `/app/config.yaml` as well.
 | Path | Contents | If you lose it |
 |------|----------|----------------|
 | `/app/data` | The SQLite database: CA records, every issued certificate, revocations, the hash-chained audit log | The keys survive but the PKI's memory does not — no CRLs, no revocation state, no audit chain |
+| `/app/audit` | **YubiHSM only:** the append-only copy of the device audit log, when `yubihsm.audit_log_file` points here | The database still holds the records, but the copy that whoever holds the database cannot shorten is gone ([audit log](../hsm/audit-log.md#in-a-container)) |
 | `/var/lib/softhsm/tokens` | **SoftHSM only:** the CA private keys | The CAs are gone. Irrelevant on a real HSM, where keys never leave the device |
 
 Anything written elsewhere lands in the container's writable layer and is
@@ -274,6 +275,9 @@ credentials need not be in it. This is the subset that matters in a container;
 | `SECSY_KMS_*`, `VAULT_ADDR`/`VAULT_TOKEN`, `SECSY_VAULT_ROLE_ID`/`…_SECRET_ID` | the [cloud-KMS](../hsm/cloud-kms.md) and [Vault Transit](../hsm/vault-transit.md) backends | Cloud credentials themselves come from the SDK's own chain, never from config |
 | `SECSY_ACME_*`, `SECSY_MONITOR_*` | the [ACME server](../protocols/acme.md) and [expiry monitor](../operations/expiry-monitoring.md) | Enable/disable and retarget without a config edit |
 | `SECSY_SERVER_UNIX_SOCKET`, `SECSY_GRPC_UNIX_SOCKET` | the listener paths | A runtime often knows the mounted socket path long after the config was written ([Unix sockets](unix-socket.md)) |
+| `SECSY_YUBIHSM_PASSWORD`, `SECSY_YUBIHSM_AUTH_KEY_ID` | `yubihsm.password`, `…auth_key_id` | The device credential the native driver authenticates with (audit collection, attestation). A credential, so it belongs here rather than in a mounted file |
+| `SECSY_YUBIHSM_CONNECTOR_URL` | `yubihsm.connector_url` | Also what the PKCS#11 module's generated `yubihsm_pkcs11.conf` gets, so the signing path and the audit drain move together |
+| `SECSY_YUBIHSM_AUDIT_LOG_FILE` | `yubihsm.audit_log_file` | Where the device audit log is permanently written. A mount point — `/app/audit/device-log.jsonl` with a volume on `/app/audit` ([audit log](../hsm/audit-log.md#in-a-container)) |
 | `SECSY_ALLOW_INSECURE_HTTP` | nothing — it is a guard | Set to `1`, `true` or `yes` to serve the API in **cleartext**. Only for a trusted TLS-terminating proxy on the same pod/host; without it the server refuses to start with no `tls_cert`, and with it it logs a warning on every start |
 | `SOFTHSM2_CONF` | — | Preset to `/etc/softhsm/softhsm2.conf`. The Debian package's own config is unreadable to non-root, so the image ships a world-readable one pointing at `/var/lib/softhsm/tokens` |
 
@@ -669,6 +673,58 @@ docker run --rm --device /dev/bus/usb --group-add … --entrypoint secsy-ca \
 ```
 
 See [device attestation](../hsm/device-attestation.md) for what that proves.
+
+### A ready-made stack
+
+[`deploy/yubihsm/`](https://github.com/blechschmidt/secsy-pki/tree/main/deploy/yubihsm)
+is the whole thing assembled: a `yubihsm-connector` service that owns the USB
+node, a server that reaches it over HTTP, the device audit log on its own
+volume, and a `device-env.sh` that finds the attached device and writes its node
+and gid into `.env`.
+
+```bash
+cd deploy/yubihsm
+cp .env.example .env         # the device password, the PKCS#11 PIN, the root password
+./device-env.sh >> .env
+docker compose up -d
+```
+
+Two services for one device is not ceremony: the PKCS#11 signing path and the
+native audit driver are two routes to one USB interface, and on `yhusb://` the
+module holds it for the life of the server while every audit drain fails. On a
+commissioned device secsy-pki refuses to start on that configuration rather than
+deliver it — see
+[the transport must be shareable](../hsm/audit-log.md#the-transport-must-be-shareable).
+
+### Importing a key you already have
+
+The image can take an existing RSA key onto the device, which is what a
+migration from a software CA needs. The key file is read once, from a mount, and
+the private material never leaves it afterwards:
+
+```bash
+openssl genrsa -out legacy-ca.pem 2048          # or whatever you already have
+
+docker run --rm --device "$dev" --group-add "$(stat -c %g "$dev")" \
+  -v "$PWD/config.yaml:/etc/secsy/config.yaml:ro" -v "$PWD:/keys:ro" \
+  -e SECSY_YUBIHSM_PASSWORD -e SECSY_USER_PIN \
+  --entrypoint secsy-ca ghcr.io/blechschmidt/secsy-pki:1.2.3-yubihsm \
+  -config /etc/secsy/config.yaml import-key -label legacy-ca -key /keys/legacy-ca.pem
+```
+
+Every encoding `openssl` emits is accepted — PKCS#8, traditional PKCS#1, both
+of their encrypted forms, bare DER and PKCS#12 — and the transcript names which
+one was parsed. For an encrypted key, the passphrase reaches the container
+through `-e SECSY_KEY_PASSPHRASE` or a mounted `-pass-file`; there is
+deliberately no `-pass` flag, because a passphrase on a command line is in the
+process table. The key is proved on the device before the command reports
+success: it signs a challenge, and the signature is verified under the public
+half of the file that was read.
+
+`scripts/yubihsm-container-test.sh` runs exactly this against an attached
+device, in every encoding and at 2048, 3072 and 4096 bits; see
+[the container tier](../hsm/hardware-test-suite.md#the-container-tier) and
+[importing existing keys](../ca/import.md).
 
 ## Verifying it before you run it
 

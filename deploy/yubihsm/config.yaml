@@ -1,0 +1,101 @@
+# =============================================================================
+# secsy-pki — YubiHSM 2 deployment config (mounted read-only)
+# =============================================================================
+# Paths here are *container* paths. /app/data and /app/audit are the two
+# directories the image prepares for its non-root user and the compose volumes
+# are mounted onto; writing state anywhere else either fails with a permission
+# error or — worse — succeeds into the container's writable layer and is
+# discarded when the container is replaced.
+#
+# Nothing secret is in this file, and nothing host-specific either: the device
+# password, the PKCS#11 PIN, the connector URL and the audit-log destination all
+# arrive from the environment (docker-compose.yaml, .env). That is what lets the
+# same file be committed, mounted read-only, and reused unchanged on another
+# host with a different device.
+#
+# Walkthrough: docs/deployment/container.md#the-yubihsm-variant
+
+server:
+  host: "0.0.0.0"
+  port: 8443
+
+  # HTTPS with no key material on disk: the server issues its own listener
+  # certificate from a CA in the HSM and re-issues it before expiry. Create the
+  # CA first (see README.md) — the server deliberately does not create one for
+  # itself.
+  tls:
+    self_issue:
+      enabled: true
+      ca_id: "issuing-ca"
+      dnsnames: ["localhost", "secsy-pki"]
+      ips: ["127.0.0.1"]
+
+database:
+  driver: "sqlite"
+  dsn: "/app/data/secsy-pki.db"
+
+root_user:
+  username: "root"
+  # password: absent on purpose. SECSY_ROOT_PASSWORD supplies it, and the config
+  # refuses to load with neither, so this cannot silently start open.
+
+key_provider:
+  type: "pkcs11"
+
+pkcs11:
+  # Yubico's module, as installed by the -yubihsm image. The architecture-
+  # independent symlink, so this file is correct on amd64 and arm64 alike.
+  module_path: "/usr/lib/pkcs11/yubihsm_pkcs11.so"
+  token_label: "YubiHSM"
+  # For a YubiHSM the "PIN" is the 4-digit authentication key id followed by its
+  # password: key 1 with password "password" is "0001password".
+  pin_source:
+    type: "env"
+    env:
+      var: "SECSY_USER_PIN"
+  # One session. The device is a single-threaded SCP03 endpoint behind one USB
+  # interface; a larger pool buys queueing inside the module, not parallelism in
+  # the HSM, and multiplies the sessions competing for the connector.
+  session_pool_size: 1
+
+yubihsm:
+  # connector_url, auth_key_id, password and audit_log_file are all set from the
+  # environment in docker-compose.yaml (SECSY_YUBIHSM_*) and deliberately left
+  # out here:
+  #
+  #   connector_url   http://yubihsm-connector:12345 — a yubihsm-connector, NOT
+  #                   yhusb://. Direct USB belongs to one process, and this
+  #                   deployment has two that need the device: the PKCS#11
+  #                   signing path and the native audit driver. secsy-pki
+  #                   refuses to start on a commissioned device if they would
+  #                   contend. See docs/hsm/audit-log.md#the-transport-must-be-shareable.
+  #   password        a credential.
+  #   audit_log_file  /app/audit/device-log.jsonl — a mount point this file
+  #                   cannot know, and the one copy of the device audit log that
+  #                   survives whoever holds the database.
+  #
+  # What is left is the part that is a policy decision rather than a deployment
+  # detail, so it belongs in version control:
+
+  # How often the leader drains the device log with no operation to prompt it.
+  # Collection normally follows the operations themselves — every signature,
+  # attestation and option change signals the collector — so this is the safety
+  # net that covers another process's commands and a signal lost to a crash, and
+  # that turns a wedged device into a visible failure on an idle deployment.
+  audit_collect_backstop_seconds: 300
+
+  # How often an RFC 3161 token attests that the current audit head existed at
+  # that moment, which is what stops an auditor being answered with a bundle
+  # exported before the abuse. Point this at an authority the CA's own operators
+  # do not control; falling back to this PKI's internal TSA proves freshness
+  # against an outsider but not against the operator holding the HSM.
+  audit_freshness_interval_seconds: 21600
+  #audit_freshness_tsa_url: "http://timestamp.digicert.com"
+
+  # How often the device signs a commitment binding the audit head to its own
+  # serial number. A YubiHSM log entry carries no serial and no signature, so
+  # this is the only thing tying the exported log to real hardware.
+  audit_commitment_interval_seconds: 21600
+
+policy:
+  max_cert_validity_days: 90

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# yubihsm-container-test.sh — prove a published container can put an existing RSA
-# key onto an attached YubiHSM 2 (Task 201).
+# yubihsm-container-test.sh — prove a published container can put an externally
+# generated RSA key onto an attached YubiHSM 2, and can be told where the
+# device's audit log is permanently written (Tasks 201, 203).
 #
 # internal/yubihsmtest already settles "the code can import an RSA key" against
 # the device. It does so with `go test`, against whatever PKCS#11 module the
@@ -11,6 +12,14 @@
 # backports' 2.6.0, which stores an RSA key sent with CKA_UNWRAP=FALSE as a
 # device wrap-key and so cannot import or generate RSA at all. A suite that
 # passes on a developer's host says nothing about that.
+#
+# "Externally generated" is meant literally: every key below is produced by the
+# host's `openssl`, outside the image, in each of the encodings openssl actually
+# emits — PKCS#8, traditional PKCS#1, both of their encrypted forms, bare DER
+# and PKCS#12. An operator migrating a CA has whichever one their predecessor
+# chose, not whichever one a test suite found convenient, and the passphrase for
+# the encrypted ones has to reach a container without passing through a command
+# line.
 #
 # So every check below runs inside the image, as the image's own non-root user,
 # reaching the device the way docs/deployment/container.md tells operators to.
@@ -99,7 +108,7 @@ while [[ $# -gt 0 ]]; do
 		shift
 		;;
 	-h | --help)
-		sed -n '2,47p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+		sed -n '2,56p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*) die "unknown argument: $1" ;;
@@ -197,8 +206,11 @@ echo "    $WORK"
 # secsy runs secsy-ca in the image with the device and the scratch dir attached.
 # MODULE_OVERLAY is empty except during the legacy-module pass, which mounts a
 # different PKCS#11 module over the image's — so the overlay reaches the code
-# under test and nothing else.
+# under test and nothing else. EXTRA_RUN_ARGS is empty except where a single
+# call needs more from `docker run` than the rest — an environment variable
+# carrying a key passphrase, or the audit volume.
 MODULE_OVERLAY=()
+EXTRA_RUN_ARGS=()
 secsy() { # secsy <binary> <args...>
 	local bin="$1"
 	shift
@@ -208,6 +220,7 @@ secsy() { # secsy <binary> <args...>
 		-v "$WORK/data:/app/data" \
 		-v "$WORK/out:/out" \
 		"${MODULE_OVERLAY[@]}" \
+		"${EXTRA_RUN_ARGS[@]}" \
 		--entrypoint "$bin" "$IMAGE" "$@"
 }
 
@@ -366,6 +379,110 @@ import_one 3072 2
 import_one 4096 3
 
 # ---------------------------------------------------------------------------
+# 4b. The same import, once per encoding `openssl` actually produces.
+#
+# The sweep above generates with `openssl genpkey`, which on OpenSSL 3 writes
+# unencrypted PKCS#8 — one of six things an operator may be holding. A CA key
+# that predates the migration was written by whichever openssl its generation
+# had: `genrsa` before 3.0 wrote traditional PKCS#1, `-aes256` before 3.0 wrote
+# a Proc-Type/DEK-Info block that modern openssl will not even produce without
+# -traditional, appliances export bare DER, and Windows exports PKCS#12. All of
+# them are RSA keys that must land on the device, and the encoding is not the
+# operator's choice to make years after the fact.
+#
+# Each case asserts the *reported* format as well as the import, because
+# "pkcs1.pem imported" is satisfied by a parser that quietly treated it as
+# something else; the transcript line is what records which decoder ran.
+#
+# The two encrypted cases also settle how a passphrase reaches a container.
+# There is no -pass flag by design — a passphrase on a command line is in the
+# process table and in the shell history — so the only routes in are a mounted
+# file and an environment variable, and both are checked here.
+openssl_form_id=16
+
+import_form() { # import_form <name> <file> <expected-format> [env|passfile]
+	local name="$1" file="$2" want="$3" how="${4:-}"
+	local id label out rc
+	id=$(printf '%04x' $((ID_BASE + openssl_form_id)))
+	openssl_form_id=$((openssl_form_id + 1))
+	label="t203-c-$name"
+	CREATED_IDS+=("$id")
+
+	chmod a+r "$WORK/keys/$(basename "$file")"
+	keep_log_space 12
+
+	EXTRA_RUN_ARGS=()
+	local pass_args=()
+	case "$how" in
+	env) EXTRA_RUN_ARGS=(-e "SECSY_KEY_PASSPHRASE=$FORM_PASSPHRASE") ;;
+	passfile) pass_args=(-pass-file /keys/passphrase.txt) ;;
+	esac
+	out=$(secsy secsy-ca -config /etc/secsy/config.yaml import-key \
+		-label "$label" -id "$id" -key "$file" "${pass_args[@]}" 2>&1)
+	rc=$?
+	EXTRA_RUN_ARGS=()
+
+	if [[ $rc -ne 0 ]]; then
+		check "$name imports into the device" 1
+		sed 's/^/         /' <<<"$out"
+		return
+	fi
+	check "$name imports into the device" 0
+	check "$name is read as $want, not silently as something else" \
+		"$(grep -q "($want)" <<<"$out" && echo 0 || echo 1)"
+	check "$name signs on the device after import" \
+		"$(grep -q 'Verified:' <<<"$out" && echo 0 || echo 1)"
+	local obj
+	obj=$(yhs -a get-object-info -i "0x$id" -t asymmetric-key 2>&1)
+	check "$name landed as an asymmetric-key, not a wrap-key" \
+		"$([[ "$obj" == *"type: asymmetric-key"* ]] && echo 0 || echo 1)"
+	check "$name is not exportable under wrap" \
+		"$([[ "$obj" != *exportable-under-wrap* ]] && echo 0 || echo 1)"
+}
+
+say "Every encoding an externally generated OpenSSL RSA key arrives in"
+FORM_PASSPHRASE="t203-container-passphrase"
+printf '%s' "$FORM_PASSPHRASE" >"$WORK/keys/passphrase.txt"
+
+# Generated on the host, by the host's openssl, outside the image — which is
+# what "externally generated" has to mean for this to prove anything.
+openssl genrsa -out "$WORK/keys/form-pkcs8.pem" 2048 2>/dev/null
+openssl genrsa -traditional -out "$WORK/keys/form-pkcs1.pem" 2048 2>/dev/null
+openssl genrsa -aes256 -passout "pass:$FORM_PASSPHRASE" \
+	-out "$WORK/keys/form-pkcs8enc.pem" 2048 2>/dev/null
+openssl genrsa -aes256 -traditional -passout "pass:$FORM_PASSPHRASE" \
+	-out "$WORK/keys/form-pemenc.pem" 2048 2>/dev/null
+openssl rsa -in "$WORK/keys/form-pkcs8.pem" -outform DER \
+	-out "$WORK/keys/form-bare.der" 2>/dev/null
+openssl req -x509 -new -key "$WORK/keys/form-pkcs8.pem" -sha256 -days 2 \
+	-subj "/CN=t203 container pkcs12" -out "$WORK/keys/form-p12.crt" 2>/dev/null
+openssl pkcs12 -export -inkey "$WORK/keys/form-pkcs8.pem" -in "$WORK/keys/form-p12.crt" \
+	-passout "pass:$FORM_PASSPHRASE" -out "$WORK/keys/form-bundle.p12" 2>/dev/null
+chmod a+r "$WORK/keys"/*
+
+# openssl 3 emits PKCS#8 from `genrsa`; 1.x emitted PKCS#1 from the same
+# command, so both appear here deliberately rather than one standing in for the
+# other. The header of each generated file says which is which:
+for f in form-pkcs8 form-pkcs1 form-pkcs8enc form-pemenc; do
+	printf '    %-18s %s\n' "$f.pem" "$(head -1 "$WORK/keys/$f.pem")"
+done
+
+import_form pkcs8 /keys/form-pkcs8.pem pkcs8
+import_form pkcs1 /keys/form-pkcs1.pem pkcs1
+import_form pkcs8-encrypted /keys/form-pkcs8enc.pem pkcs8-encrypted env
+import_form pem-encrypted /keys/form-pemenc.pem pem-encrypted passfile
+import_form bare-der /keys/form-bare.der der
+import_form pkcs12 /keys/form-bundle.p12 pkcs12 env
+
+# An encrypted key with no passphrase must be refused with advice rather than a
+# parse error, and must not leave a half-made object behind on the device.
+no_pass=$(secsy secsy-ca -config /etc/secsy/config.yaml import-key \
+	-label t203-c-nopass -id "$(printf '%04x' $((ID_BASE + 31)))" \
+	-key /keys/form-pkcs8enc.pem 2>&1)
+check "an encrypted key with no passphrase is refused, naming the way to supply one" \
+	"$(grep -qi 'is encrypted: supply the passphrase' <<<"$no_pass" && echo 0 || echo 1)"
+
+# ---------------------------------------------------------------------------
 # 5. The lookup the product performs on every restart.
 say "The imported keys through secsy-ca inventory"
 keep_log_space 12
@@ -499,16 +616,161 @@ if [[ -n "$LEGACY_MODULE" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 9. Where the device audit log is permanently written.
+#
+# On a force-audited device the log is not diagnostics: the HSM stops accepting
+# audited commands once its 62-entry ring fills, and the entries are gone the
+# moment they are acknowledged. Whatever the deployment keeps is the only
+# record there will ever be — so a container has to be able to say where that
+# copy goes, on a volume that outlives the container, without baking a host
+# path into the image's config file.
+#
+# SECSY_YUBIHSM_AUDIT_LOG_FILE is that knob. The checks below are about the
+# destination being honoured and the failure being loud, which is what a
+# container deployment gets wrong: a path inside the writable layer, a
+# read-only mount, or a volume owned by root while the image runs as 65532 —
+# all three of which succeed at looking configured.
+say "The permanent destination for the device audit log"
+
+mkdir -p "$WORK/audit" "$WORK/audit-ro"
+chmod -R a+rwX "$WORK/audit" "$WORK/audit-ro"
+AUDIT_DEST=/app/audit/device-log.jsonl
+
+# 9a. The CLI, against the real device. `hsm-audit status` reads the device and
+# then reports the configured destination, so this says in one command that the
+# override reached the binary in the image and that the device agrees it is the
+# one being talked about.
+keep_log_space 8
+EXTRA_RUN_ARGS=(-v "$WORK/audit:/app/audit" -e "SECSY_YUBIHSM_AUDIT_LOG_FILE=$AUDIT_DEST")
+status_out=$(secsy secsy-ca -config /etc/secsy/config.yaml hsm-audit status 2>&1)
+EXTRA_RUN_ARGS=()
+sed 's/^/         /' <<<"$status_out"
+check "hsm-audit status reaches the device from inside the container" \
+	"$(grep -q "Device: *$serial" <<<"$status_out" && echo 0 || echo 1)"
+check "the destination from SECSY_YUBIHSM_AUDIT_LOG_FILE is the one reported" \
+	"$(grep -q "Log file: *$AUDIT_DEST" <<<"$status_out" && echo 0 || echo 1)"
+
+# What the device says about force-audit, recorded rather than asserted: this
+# script must run against whatever device is attached, and a commissioned one
+# is not something a test may create (provisioning is irreversible and requires
+# a factory-reset device).
+dev_opts=$(yhs -a get-option --opt-name force-audit 2>&1 | tr -d '\r')
+forced=$(sed -n 's/^Option value is: *//p' <<<"$dev_opts" | tail -1)
+echo "    device force-audit option: ${forced:-unknown}; collection is gated on provisioning"
+provisioned=1
+grep -q '^Provisioned: *yes' <<<"$status_out" && provisioned=0
+
+# 9b. The drain itself. On a commissioned device this appends the device's own
+# records to the file; on one that was never provisioned it must refuse and say
+# why, rather than silently writing nothing — the failure mode that leaves an
+# operator believing their audit log is being kept.
+keep_log_space 8
+EXTRA_RUN_ARGS=(-v "$WORK/audit:/app/audit" -e "SECSY_YUBIHSM_AUDIT_LOG_FILE=$AUDIT_DEST")
+collect_out=$(secsy secsy-ca -config /etc/secsy/config.yaml hsm-audit collect 2>&1)
+collect_rc=$?
+EXTRA_RUN_ARGS=()
+sed 's/^/         /' <<<"$collect_out"
+if [[ $provisioned -eq 0 ]]; then
+	check "hsm-audit collect drains the device into the configured file" \
+		"$([[ $collect_rc -eq 0 ]] && echo 0 || echo 1)"
+	check "the configured file received device log records" \
+		"$(grep -q '"type":"entry"' "$WORK/audit/device-log.jsonl" 2>/dev/null && echo 0 || echo 1)"
+else
+	check "an uncommissioned device is refused with the reason, not silently skipped" \
+		"$([[ $collect_rc -ne 0 ]] && grep -q 'has not been provisioned' <<<"$collect_out" && echo 0 || echo 1)"
+fi
+# Either way the destination itself must exist and be verifiable: the header
+# record is written when the file is opened, which is how an operator finds out
+# the path is wrong before there is anything to lose.
+check "the configured destination was created on the mounted volume" \
+	"$([[ -s "$WORK/audit/device-log.jsonl" ]] && echo 0 || echo 1)"
+# verify-file is dispatched before any config or database is opened — it is the
+# auditor's command — so it needs the volume and nothing else.
+EXTRA_RUN_ARGS=(-v "$WORK/audit:/app/audit")
+verify_out=$(secsy secsy-ca hsm-audit verify-file -file "$AUDIT_DEST" 2>&1)
+EXTRA_RUN_ARGS=()
+check "the file verifies offline, with no database and no device" \
+	"$(grep -q 'Verdict: *OK' <<<"$verify_out" && echo 0 || echo 1)"
+sed 's/^/         /' <<<"$verify_out"
+
+# 9c. The server, which is what actually runs in a deployment. A software key
+# provider and no yubihsm block: this tier is about the destination, and
+# pointing a second process at the device while the checks above hold it would
+# test the USB interface instead.
+cat >"$WORK/config-audit.yaml" <<EOF
+server:
+  host: "127.0.0.1"
+  port: 8443
+database:
+  driver: "sqlite"
+  dsn: "/app/data/audit-dest.db"
+root_user:
+  username: "root"
+  password: "container-test-not-a-deployment"
+key_provider:
+  type: "software"
+software_keystore:
+  directory: "/app/data/keystore"
+EOF
+chmod a+r "$WORK/config-audit.yaml"
+
+docker rm -f secsy-t203-audit >/dev/null 2>&1
+server_log=$(docker run --rm \
+	-v "$WORK/config-audit.yaml:/etc/secsy/config.yaml:ro" \
+	-v "$WORK/data:/app/data" \
+	-v "$WORK/audit:/app/audit" \
+	-e SECSY_ALLOW_INSECURE_HTTP=1 \
+	-e "SECSY_YUBIHSM_AUDIT_LOG_FILE=/app/audit/server-log.jsonl" \
+	--name secsy-t203-audit -d "$IMAGE" -config /etc/secsy/config.yaml 2>&1)
+if [[ $? -eq 0 ]]; then
+	# The destination is opened before anything else in startup, so a second is
+	# plenty; the loop is for a slow host rather than for a slow code path.
+	for _ in 1 2 3 4 5 6 7 8 9 10; do
+		[[ -s "$WORK/audit/server-log.jsonl" ]] && break
+		sleep 1
+	done
+	logs=$(docker logs secsy-t203-audit 2>&1)
+	docker rm -f secsy-t203-audit >/dev/null 2>&1
+	check "the server creates the destination named by the environment, on the volume" \
+		"$([[ -s "$WORK/audit/server-log.jsonl" ]] && echo 0 || echo 1)"
+	check "and says where it is, at startup" \
+		"$(grep -q 'audit log file /app/audit/server-log.jsonl open for append' <<<"$logs" && echo 0 || echo 1)"
+	grep -i 'audit log file' <<<"$logs" | sed 's/^/         /'
+else
+	check "the server starts with an audit destination configured" 1
+	sed 's/^/         /' <<<"$server_log"
+fi
+
+# 9d. And the case that matters most, because it is the one that otherwise
+# fails silently: a destination that cannot be written. The server must refuse
+# to start and name the path, rather than come up looking healthy while the
+# record it was told to keep goes nowhere.
+ro_out=$(docker run --rm \
+	-v "$WORK/config-audit.yaml:/etc/secsy/config.yaml:ro" \
+	-v "$WORK/data:/app/data" \
+	-v "$WORK/audit-ro:/audit-ro:ro" \
+	-e SECSY_ALLOW_INSECURE_HTTP=1 \
+	-e "SECSY_YUBIHSM_AUDIT_LOG_FILE=/audit-ro/device-log.jsonl" \
+	"$IMAGE" -config /etc/secsy/config.yaml 2>&1)
+ro_rc=$?
+check "an unwritable destination stops the server instead of being ignored" \
+	"$([[ $ro_rc -ne 0 ]] && echo 0 || echo 1)"
+check "and the refusal names the path and the setting" \
+	"$(grep -q 'audit_log_file is set to /audit-ro/device-log.jsonl' <<<"$ro_out" && echo 0 || echo 1)"
+sed 's/^/         /' <<<"$(tail -2 <<<"$ro_out")"
+
+# ---------------------------------------------------------------------------
 say "Cleaning up the objects this run created"
 delete_created
-left=$(yhs -a list-objects 2>&1 | grep -c 't201-c-' || true)
-check "no t201-c- objects remain on the device" "$([[ "$left" == "0" ]] && echo 0 || echo 1)"
+left=$(yhs -a list-objects 2>&1 | grep -c -e 't201-c-' -e 't203-c-' || true)
+check "no t201-c-/t203-c- objects remain on the device" "$([[ "$left" == "0" ]] && echo 0 || echo 1)"
 yhs -a get-device-info 2>&1 | sed -n 's/^\(Log used:.*\)/    \1/p'
 
 say "Result"
 printf '    %d passed, %d failed\n' "$pass" "$fail"
 if [[ $fail -eq 0 ]]; then
-	printf '\033[32m==> PASS\033[0m — %s can import an existing RSA key into YubiHSM %s\n' "$IMAGE" "$serial"
+	printf '\033[32m==> PASS\033[0m — %s imports an externally generated RSA key into YubiHSM %s\n' "$IMAGE" "$serial"
+	printf '            and writes the device audit log where it is told to.\n'
 	exit 0
 fi
 printf '\033[31m==> FAIL\033[0m\n'
