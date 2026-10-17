@@ -59,9 +59,12 @@ surprise at the first drain. Verify it any time, offline, with no database and
 no device:
 
 ```bash
-docker compose exec server secsy-ca -config /etc/secsy/config.yaml \
-  hsm-audit verify-file -file /app/audit/device-log.jsonl
+docker compose exec server secsy-ca hsm-audit verify-file -file /app/audit/device-log.jsonl
 ```
+
+No `-config` there on purpose: `verify-file` is dispatched before any
+configuration, database or device is opened, because the file exists precisely
+so a copy can be verified by somebody who has none of them.
 
 To put it on something the CA host cannot rewrite, replace the `audit` volume
 with a bind mount and make the file append-only on the host:
