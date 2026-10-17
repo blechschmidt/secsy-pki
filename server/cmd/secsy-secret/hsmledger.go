@@ -32,6 +32,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -160,7 +161,17 @@ func collectAfterHSMUse(cfg *config.Config, db *database.DB) {
 		c.AddSink(f)
 	}
 	res, err := c.Collect(context.Background())
-	if err != nil {
+	switch {
+	case errors.Is(err, hsmaudit.ErrCollectionLeaseBusy):
+		// Another process is draining the same device into the same database —
+		// on the single-container deployment, the server beside this command.
+		// Its drain covers these entries, so this is a note rather than a
+		// warning: nothing about the audit trail is worse off for this process
+		// not having stored them.
+		log.Printf("HSM audit: this command's device log entries were left to the collector that holds "+
+			"the collection lease: %v", err)
+		return
+	case err != nil:
 		log.Printf("WARNING: HSM device log not collected after this command: %v. "+
 			"The entries remain on the device; run `secsy-ca hsm-audit collect` once it is reachable.", err)
 		return

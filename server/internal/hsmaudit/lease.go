@@ -4,11 +4,24 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
 	"time"
 )
+
+// ErrCollectionLeaseBusy reports that the lease is held by another process and
+// did not come free while this drain waited.
+//
+// It is not necessarily a fault, and callers that drain opportunistically need
+// to be able to tell. A deployment that multiplexes one device in one container
+// (deploy/yubihsm) has a server collector draining after every operation —
+// including every TLS handshake its HSM-backed listener certificate signs — so
+// an operator running a command beside it meets a lease that is legitimately
+// busy. The entries that drain would have stored are on the device and in the
+// holder's path; nothing is lost by this process not storing them.
+var ErrCollectionLeaseBusy = errors.New("another process holds the HSM audit collection lease")
 
 // The collection lease is mutual exclusion between *processes* draining the
 // same device.
@@ -90,10 +103,10 @@ func acquireCollectionLease(ctx context.Context, store Store) (release func(), e
 		}
 		if time.Now().After(deadline) {
 			return func() {}, fmt.Errorf(
-				"another process has held the HSM audit collection lease for over %s: "+
-					"a `secsy-ca hsm-audit` command may be stuck against the device, or a collector "+
-					"crashed mid-drain (the lease frees itself %s after that)",
-				collectionLeaseWait, CollectionLeaseTTL)
+				"%w and did not release it within %s: either a collector is draining this device "+
+					"continuously, or one crashed mid-drain and its lease is still running (it frees "+
+					"itself %s after the last renewal)",
+				ErrCollectionLeaseBusy, collectionLeaseWait, CollectionLeaseTTL)
 		}
 		select {
 		case <-ctx.Done():

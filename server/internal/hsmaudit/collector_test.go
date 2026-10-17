@@ -2,6 +2,7 @@ package hsmaudit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -273,6 +274,12 @@ func TestCollectGivesUpOnALeaseNobodyReleases(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "collection lease") {
 		t.Fatalf("error does not name the lease, so an operator cannot act on it: %v", err)
+	}
+	// And it is identifiable, not merely readable: the CLIs drain
+	// opportunistically after a command and report a busy lease as a note rather
+	// than a warning, which they can only do by recognising this.
+	if !errors.Is(err, ErrCollectionLeaseBusy) {
+		t.Fatalf("a busy lease must be reported as ErrCollectionLeaseBusy so callers can tell it from a fault: %v", err)
 	}
 }
 
