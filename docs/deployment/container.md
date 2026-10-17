@@ -277,7 +277,7 @@ credentials need not be in it. This is the subset that matters in a container;
 | `SECSY_SERVER_UNIX_SOCKET`, `SECSY_GRPC_UNIX_SOCKET` | the listener paths | A runtime often knows the mounted socket path long after the config was written ([Unix sockets](unix-socket.md)) |
 | `SECSY_YUBIHSM_PASSWORD`, `SECSY_YUBIHSM_AUTH_KEY_ID` | `yubihsm.password`, `…auth_key_id` | The device credential the native driver authenticates with (audit collection, attestation). A credential, so it belongs here rather than in a mounted file |
 | `SECSY_YUBIHSM_CONNECTOR_URL` | `yubihsm.connector_url` | Also what the PKCS#11 module's generated `yubihsm_pkcs11.conf` gets, so the signing path and the audit drain move together |
-| `SECSY_YUBIHSM_AUDIT_LOG_FILE` | `yubihsm.audit_log_file` | Where the device audit log is permanently written. A mount point — `/app/audit/device-log.jsonl` with a volume on `/app/audit` ([audit log](../hsm/audit-log.md#in-a-container)) |
+| `SECSY_YUBIHSM_AUDIT_LOG_FILE` | `yubihsm.audit_log_file` | Where the device audit log is permanently written. A mount point — `/app/audit/device-log.jsonl` with a volume or host directory on `/app/audit`, which `deploy/yubihsm/.env` names with `SECSY_AUDIT_DIR` ([audit log](../hsm/audit-log.md#in-a-container)) |
 | `SECSY_ALLOW_INSECURE_HTTP` | nothing — it is a guard | Set to `1`, `true` or `yes` to serve the API in **cleartext**. Only for a trusted TLS-terminating proxy on the same pod/host; without it the server refuses to start with no `tls_cert`, and with it it logs a warning on every start |
 | `SOFTHSM2_CONF` | — | Preset to `/etc/softhsm/softhsm2.conf`. The Debian package's own config is unreadable to non-root, so the image ships a world-readable one pointing at `/var/lib/softhsm/tokens` |
 

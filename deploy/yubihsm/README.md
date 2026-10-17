@@ -75,8 +75,10 @@ and says so if a configuration asks otherwise.
 
 ## Where the device audit log is written
 
-`SECSY_YUBIHSM_AUDIT_LOG_FILE` in `docker-compose.yaml` names it:
-`/app/audit/device-log.jsonl`, on its own volume. The database holds the same
+Two `.env` knobs name it, and both default to the shipped stack:
+`SECSY_YUBIHSM_AUDIT_LOG_FILE` is the path inside the container
+(`/app/audit/device-log.jsonl`) and `SECSY_AUDIT_DIR` is the host directory
+mounted at `/app/audit` (a Docker-managed volume). The database holds the same
 records, and for the running system that copy is the better one — but it is not
 append-only, and anybody who can reach the database can shorten it. The file is
 the copy that survives that: one self-contained JSON record per line, carrying
@@ -98,19 +100,20 @@ No `-config` there on purpose: `verify-file` is dispatched before any
 configuration, database or device is opened, because the file exists precisely
 so a copy can be verified by somebody who has none of them.
 
-To put it on something the CA host cannot rewrite, replace the `audit` volume
-with a bind mount and make the file append-only on the host:
-
-```yaml
-    volumes:
-      - /srv/secsy-audit:/app/audit      # in docker-compose.yaml
-```
+To put it on something the CA host cannot rewrite, name a host directory in
+`.env` and make the file append-only there:
 
 ```bash
 sudo install -d -o 65532 -g 65532 /srv/secsy-audit
-# after the first start, once the file exists:
+echo 'SECSY_AUDIT_DIR=/srv/secsy-audit' >>.env
+docker compose up -d
+# once the file exists:
 sudo chattr +a /srv/secsy-audit/device-log.jsonl
 ```
+
+The directory has to be writable by uid 65532, the image's non-root user, and a
+file already made append-only stays writable by the server — `O_APPEND` is all
+it ever asks for.
 
 ## Before the first start: the CA
 

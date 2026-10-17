@@ -754,10 +754,17 @@ image directory it is mounted over — and the path is set from the environment:
 ```yaml
 # docker-compose.yaml
     environment:
-      SECSY_YUBIHSM_AUDIT_LOG_FILE: /app/audit/device-log.jsonl
+      SECSY_YUBIHSM_AUDIT_LOG_FILE: ${SECSY_YUBIHSM_AUDIT_LOG_FILE:-/app/audit/device-log.jsonl}
     volumes:
-      - audit:/app/audit
+      - ${SECSY_AUDIT_DIR:-audit}:/app/audit
 ```
+
+Both halves are knobs rather than literals, because the two decisions behind
+them belong to the deployment: the path the records are appended to, and the
+host storage that path resolves to. `deploy/yubihsm/.env` is where a deployment
+states them, and pointing `SECSY_AUDIT_DIR` at a host directory is what moves
+the file out of Docker's storage and onto something the CA host can be stopped
+from rewriting.
 
 The server **opens the destination at startup**, before it knows whether the
 device has been commissioned, and refuses to start if it cannot append to it:
@@ -773,7 +780,7 @@ commissioned yet, could be months later, with a force-audited HSM by then
 minting entries that have nowhere to go.
 
 A complete stack — one container holding the device, multiplexing it in-process,
-with the audit log on its own volume — is in
+with the audit log on a volume or a host directory of its own — is in
 [`deploy/yubihsm/`](https://github.com/blechschmidt/secsy-pki/tree/main/deploy/yubihsm),
 alongside the two-service variant for a shared device.
 `scripts/yubihsm-container-test.sh` asserts all of this against a real device.

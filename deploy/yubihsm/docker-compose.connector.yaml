@@ -118,11 +118,14 @@ services:
       # quietly shorten — so it is named here, as a mount point, rather than
       # baked into an image's config file. The server opens it at startup and
       # refuses to start if it cannot append to it.
-      SECSY_YUBIHSM_AUDIT_LOG_FILE: /app/audit/device-log.jsonl
+      #
+      # The same two .env knobs as the single-container stack: the container
+      # path here, and the host directory it resolves to in the mount below.
+      SECSY_YUBIHSM_AUDIT_LOG_FILE: ${SECSY_YUBIHSM_AUDIT_LOG_FILE:-/app/audit/device-log.jsonl}
     volumes:
       - ./config.yaml:/etc/secsy/config.yaml:ro
       - data:/app/data
-      - audit:/app/audit
+      - ${SECSY_AUDIT_DIR:-audit}:/app/audit
     ports:
       - "${SECSY_HTTPS_PORT:-8443}:8443"
     healthcheck:

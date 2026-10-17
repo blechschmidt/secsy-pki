@@ -79,11 +79,21 @@ services:
       # quietly shorten — so it is named here, as a mount point, rather than
       # baked into an image's config file. The server opens it at startup and
       # refuses to start if it cannot append to it.
-      SECSY_YUBIHSM_AUDIT_LOG_FILE: /app/audit/device-log.jsonl
+      #
+      # The path is the container's; what it resolves to on the host is the
+      # mount below. Both are .env knobs, because "where the audit log goes" is
+      # a decision about the host's storage and not about this stack.
+      SECSY_YUBIHSM_AUDIT_LOG_FILE: ${SECSY_YUBIHSM_AUDIT_LOG_FILE:-/app/audit/device-log.jsonl}
     volumes:
       - ./config.yaml:/etc/secsy/config.yaml:ro
       - data:/app/data
-      - audit:/app/audit
+      # The audit destination: the `audit` volume below unless .env names a host
+      # directory instead. A host path is what lets the file live somewhere this
+      # deployment cannot rewrite — an append-only directory, a WORM mount, a
+      # log shipper's spool — which is the point of keeping a copy outside the
+      # database. It is mounted at /app/audit either way, so the file path above
+      # stays inside it.
+      - ${SECSY_AUDIT_DIR:-audit}:/app/audit
     ports:
       - "${SECSY_HTTPS_PORT:-8443}:8443"
     healthcheck:
@@ -103,8 +113,9 @@ volumes:
   # Every CA record, issued certificate, revocation and audit-log entry. The
   # keys are in the HSM and survive losing this; the PKI's memory does not.
   data:
-  # The append-only copy of the device audit log. A separate volume on purpose:
-  # its value is that it is written by a different mechanism to a different
-  # medium than the database. Put it on a WORM mount, `chattr +a` it, or point a
-  # log shipper at it — see docs/hsm/audit-log.md#where-the-collected-records-go.
+  # The append-only copy of the device audit log, when .env does not name a host
+  # directory. A separate volume on purpose: its value is that it is written by
+  # a different mechanism to a different medium than the database. Unused, and
+  # left uncreated, when SECSY_AUDIT_DIR points at a host path — see
+  # docs/hsm/audit-log.md#where-the-collected-records-go.
   audit:
