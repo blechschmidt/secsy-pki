@@ -277,8 +277,14 @@ hsm:
   #
   #              The device still has to reach the pod — a USB device plugin, or
   #              a yubihsm-connector reachable over the network with
-  #              yubihsm.connector_url pointed at it. See
-  #              docs/deployment/container.md.
+  #              yubihsm.connector_url pointed at it.
+  #
+  #              With the device on the pod's own USB (a device plugin), set
+  #              SECSY_YUBIHSM_EMBEDDED_CONNECTOR=1 via extraEnv: the one USB
+  #              claim goes to this process, which then relays for the PKCS#11
+  #              module, so the pod can both sign and drain the device audit log
+  #              without a sidecar. See docs/deployment/container.md and
+  #              docs/hsm/audit-log.md#the-transport-must-be-shareable.
   module:
     mode: softhsm
     # Path to the PKCS#11 .so inside the container. For softhsm mode this is the

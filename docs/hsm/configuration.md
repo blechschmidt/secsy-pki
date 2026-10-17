@@ -306,21 +306,38 @@ block and auto-generates `yubihsm_pkcs11.conf` from it:
 
 ```yaml
 yubihsm:
-  # Direct USB is exclusive to one process. A deployment that collects the
-  # device audit log, or attests keys/devices, while signing through the PKCS#11
-  # module needs a yubihsm-connector and an http:// URL instead — see
+  # Direct USB is exclusive to one claim. A deployment that collects the device
+  # audit log, or attests keys/devices, while signing through the PKCS#11 module
+  # needs a connector in between — see
   # docs/hsm/audit-log.md#the-transport-must-be-shareable.
-  connector_url: "yhusb://"   # direct USB; or http://127.0.0.1:12345 via yubihsm-connector
+  connector_url: "yhusb://"   # direct USB; or an http:// connector URL
   auth_key_id: 1
   password: "password"
   suppress_audit_warning: false
+
+  # The connector this process runs itself, which is what lets one container
+  # both sign and collect: it takes the USB claim and serves Yubico's connector
+  # protocol on loopback for the module, while the native driver uses the same
+  # claim directly.
+  embedded_connector:
+    # Unset decides: on for direct USB with a YubiHSM PKCS#11 signing path —
+    # the configuration that otherwise cannot drain its device log at all — and
+    # off when nothing competes for the device. Set it to true to serve a
+    # connector_url this config already names; false keeps Yubico's daemon.
+    enabled: true
+    # The address served. Empty takes the host:port of a local connector_url,
+    # else 127.0.0.1:12345. Keep it on loopback: the relay carries an SCP03
+    # channel it cannot read, but it has no authentication of its own.
+    listen: "127.0.0.1:12345"
+    # Which attached device to hold, when several are. Empty refuses to guess.
+    device: "yhusb://serial=0031650425"
 ```
 
 Set `YUBIHSM_PKCS11_CONF` yourself if you need to manage that file manually. The
 YubiHSM path also unlocks the hardware audit-log verification described in the
 [README](../../README.md#audit-verification).
 
-Four of these settings also come from the environment, because they are the
+Six of these settings also come from the environment, because they are the
 ones a deployment — a container especially — cannot put in a file it baked
 earlier. A non-empty variable wins over the file; an unset one changes nothing:
 
@@ -330,6 +347,8 @@ earlier. A non-empty variable wins over the file; an unset one changes nothing:
 | `SECSY_YUBIHSM_AUTH_KEY_ID` | `yubihsm.auth_key_id` |
 | `SECSY_YUBIHSM_CONNECTOR_URL` | `yubihsm.connector_url`, and therefore the generated `yubihsm_pkcs11.conf` too |
 | `SECSY_YUBIHSM_AUDIT_LOG_FILE` | `yubihsm.audit_log_file` — where the device audit log is permanently written ([audit log](audit-log.md#from-the-environment)) |
+| `SECSY_YUBIHSM_EMBEDDED_CONNECTOR` | `yubihsm.embedded_connector.enabled` — whether one process multiplexes the device, which is a property of how the deployment is packaged rather than of the PKI |
+| `SECSY_YUBIHSM_EMBEDDED_CONNECTOR_LISTEN` | `yubihsm.embedded_connector.listen` |
 
 The config file does no `${VAR}` expansion of its own: a `${FOO}` written in it
 is that literal string. Use the overrides.

@@ -305,6 +305,12 @@ yubihsm:
   auth_key_id: 1
   password: "password"
   suppress_audit_warning: false
+  # A YubiHSM's USB interface belongs to one claim, and two things here need the
+  # device: the PKCS#11 signing path and the native audit/attestation driver.
+  # The server takes the claim and relays for the module on loopback, so one
+  # process — and one container — does both. On by default for this pair.
+  embedded_connector:
+    enabled: true
 ```
 
 For SoftHSM development, use `module_path: "/usr/lib/softhsm/libsofthsm2.so"`. Run `./scripts/setup-softhsm.sh` to initialize a token, and `eval "$(./scripts/setup-softhsm.sh --export-env)"` to wire the `SECSY_*` environment variables. See [HSM / PKCS#11 configuration](docs/hsm/configuration.md).
@@ -324,7 +330,7 @@ database:
 ./secsy-pki-server -config config.yaml
 ```
 
-The server auto-generates `yubihsm_pkcs11.conf` from the `yubihsm.connector_url` config setting. You can also set `YUBIHSM_PKCS11_CONF` manually if needed.
+The server auto-generates `yubihsm_pkcs11.conf` from the `yubihsm.connector_url` config setting — or from the address of its own [embedded connector](docs/hsm/audit-log.md#the-transport-must-be-shareable) when it is multiplexing the device, so the signing path and the audit driver cannot drift apart. You can also set `YUBIHSM_PKCS11_CONF` manually if needed.
 
 Yubico's PKCS#11 module is not part of this repository — install the YubiHSM 2 SDK, or pull the `-yubihsm` container image, which has the module and the libyubihsm transports baked in for both architectures. See [the container image](docs/deployment/container.md#the-yubihsm-variant).
 

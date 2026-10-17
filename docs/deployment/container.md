@@ -607,11 +607,16 @@ pkcs11:
     env:
       var: "SECSY_USER_PIN"
 yubihsm:
-  # yhusb:// is exclusive to one process, so it cannot be used by a deployment
-  # that both signs through the PKCS#11 module and collects the device audit log
-  # — run the image's bundled yubihsm-connector and point both at its URL. See
-  # docs/hsm/audit-log.md#the-transport-must-be-shareable.
-  connector_url: "yhusb://"          # or http://127.0.0.1:12345 via the connector
+  # yhusb:// is exclusive to one claim, so a deployment that both signs through
+  # the PKCS#11 module and collects the device audit log needs a connector in
+  # between. The server carries one: it claims the device and serves Yubico's
+  # connector protocol on loopback for the module, which is what lets this be a
+  # single container. It is the default for exactly this configuration; naming
+  # it states what the deployment relies on.
+  # See docs/hsm/audit-log.md#the-transport-must-be-shareable.
+  embedded_connector:
+    enabled: true
+  connector_url: "http://127.0.0.1:12345"   # the address the server serves
 ```
 
 Then pass the device through, and give the container an identity that may open
@@ -643,13 +648,19 @@ docker run --rm --entrypoint cat ghcr.io/blechschmidt/secsy-pki:1.2.3-yubihsm \
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
-**Only one process may hold the device's USB interface.** Inside this image both
+**Only one claim on the device's USB interface exists.** Inside this image both
 the PKCS#11 module and the native driver want it, and so does anything else on
-the host that has it open. If that bites, run `yubihsm-connector` — it is in the
-image — and point `yubihsm.connector_url` and `pkcs11.module_path`'s connector
-at `http://…:12345` instead. SCP03 terminates in the process and in the HSM, so
-a connector in between can drop or reorder messages but cannot read a signing
-request or alter an audit-log reply.
+the host that has it open. The server resolves the first two itself — see the
+`embedded_connector` block above — by taking the claim and relaying for the
+module on loopback; that is what makes one container enough, and it is on by
+default for a direct-USB device with a YubiHSM PKCS#11 signing path.
+
+For a device that must be shared *beyond* this container, or one attached to
+another host, run `yubihsm-connector` — it is in the image — set
+`yubihsm.embedded_connector.enabled: false`, and point `yubihsm.connector_url`
+and the module's own `connector` line at `http://…:12345`. SCP03 terminates in
+the process and in the HSM either way, so a relay of either kind can drop or
+reorder messages but cannot read a signing request or alter an audit-log reply.
 
 Check the device is reachable from inside the container before trusting a
 config to it:
@@ -677,10 +688,10 @@ See [device attestation](../hsm/device-attestation.md) for what that proves.
 ### A ready-made stack
 
 [`deploy/yubihsm/`](https://github.com/blechschmidt/secsy-pki/tree/main/deploy/yubihsm)
-is the whole thing assembled: a `yubihsm-connector` service that owns the USB
-node, a server that reaches it over HTTP, the device audit log on its own
-volume, and a `device-env.sh` that finds the attached device and writes its node
-and gid into `.env`.
+is the whole thing assembled: **one** server container that owns the USB node
+and multiplexes it in-process, the device audit log on its own volume, and a
+`device-env.sh` that finds the attached device and writes its node and gid into
+`.env`.
 
 ```bash
 cd deploy/yubihsm
@@ -689,12 +700,22 @@ cp .env.example .env         # the device password, the PKCS#11 PIN, the root pa
 docker compose up -d
 ```
 
-Two services for one device is not ceremony: the PKCS#11 signing path and the
-native audit driver are two routes to one USB interface, and on `yhusb://` the
-module holds it for the life of the server while every audit drain fails. On a
-commissioned device secsy-pki refuses to start on that configuration rather than
-deliver it — see
+One container is the whole point of the arrangement. The PKCS#11 signing path
+and the native audit driver are two routes to one USB interface, and on
+`yhusb://` with nothing between them the module holds it for the life of the
+server while every audit drain fails — a configuration secsy-pki refuses to
+start on a commissioned device rather than deliver. The server's embedded
+connector removes that without a second process, so the device log is drained by
+the operation that produced it, in the process that produced it. See
 [the transport must be shareable](../hsm/audit-log.md#the-transport-must-be-shareable).
+
+`docker-compose.connector.yaml` in the same directory is the two-service
+variant, with Yubico's daemon owning the device — for a device shared beyond
+the CA, or attached to a different host:
+
+```bash
+docker compose -f docker-compose.connector.yaml up -d
+```
 
 ### Importing a key you already have
 

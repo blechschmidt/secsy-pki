@@ -606,8 +606,59 @@ every audited command, including signing. A device with per-command auditing but
 no force-audit fares no better: the ring overwrites, the collected chain breaks,
 and verification rejects the result.
 
-The fix is a **yubihsm-connector**, the Yubico daemon whose purpose is to
-multiplex the device. Both routes then reach it over HTTP:
+What is needed is a **connector**: something that holds the interface and
+relays, so both routes reach the device through it. There are two, and the
+difference between them is only *where the relay runs*.
+
+#### The embedded connector: one process, one container
+
+secsy-pki carries the relay inside the process that needs it. At startup the
+server claims the device, serves Yubico's connector protocol on loopback, and
+writes the module's own configuration to point there — while the audit driver
+uses the same single claim directly, with no HTTP round trip:
+
+```yaml
+yubihsm:
+  embedded_connector:
+    enabled: true          # or SECSY_YUBIHSM_EMBEDDED_CONNECTOR=1
+    listen: "127.0.0.1:12345"   # optional; this is the default
+```
+
+It is also the **default** for exactly the configuration above — direct USB
+with a YubiHSM PKCS#11 signing path — because that deployment cannot otherwise
+collect its device log at all. Setting `enabled` explicitly is a way for a
+deployment to state what it relies on; setting it to `false` keeps Yubico's
+daemon in charge. Nothing competing for the device means no relay: a
+cloud-KMS-backed or native-driver-only deployment is left on direct USB, where
+it already works.
+
+Three things follow from the relay being in-process rather than beside it:
+
+* **One container.** No sidecar with the device node passed to it, no health
+  check gating the CA on a relay's readiness, and no part of the audit trail
+  depending on a second container's lifecycle.
+* **The drain follows the module's operations too.** Every command the module
+  sends arrives at the relay as a request, so the entry it produced is
+  collected by the operation that produced it. Without the relay the module's
+  traffic is invisible in-process — it speaks its own secure channel — and only
+  the backstop sweep would eventually notice.
+* **A CLI in the same container joins it.** `secsy-ca` finds the address
+  already served and uses it instead of competing for a claim it cannot have.
+  Run on its own, with no server up, it starts a relay of its own for the
+  length of the command. Either way, point `connector_url` at the same loopback
+  address in the shared config so every route agrees.
+
+SCP03 terminates in the HSM and in each client, so the relay carries a channel
+it cannot read or forge — the same property Yubico's daemon has. It binds
+loopback, because a connector has no authentication of its own and an
+unauthenticated path to a CA's HSM has no business on a network.
+
+#### Yubico's yubihsm-connector: when the device is shared
+
+The daemon is still the right answer when something outside this process needs
+the device — a vendor CLI, another application, a second deployment — or when
+the HSM is attached to a different host than the CA runs on, because the relay
+has to be where the USB port is:
 
 ```console
 # yubihsm-connector -l 127.0.0.1:12345
@@ -615,6 +666,8 @@ multiplex the device. Both routes then reach it over HTTP:
 
 ```yaml
 yubihsm:
+  embedded_connector:
+    enabled: false
   connector_url: http://127.0.0.1:12345
 ```
 
@@ -627,18 +680,19 @@ The `-yubihsm` container image ships `yubihsm-connector` alongside the PKCS#11
 module, so nothing extra has to be installed; see
 [the container guide](../deployment/container.md).
 
-The server does not wait to discover this at runtime. On a commissioned device
-it checks the resolved transport against the configured signing path at startup
-and **refuses to start** if they cannot share the device, naming the daemon and
-the two config lines. `secsy-ca doctor` reports the same thing as
-`hsmaudit.drain`. Deployments that do not contend — a cloud-KMS or
-software-backed signing path, or a different PKCS#11 token entirely — are left
-alone, and direct USB is the right transport for them.
+#### Either way, it is settled before the first signature
 
-The CLIs are unaffected by the module half of this: `secsy-ca` and
+The server does not wait to discover contention at runtime. On a commissioned
+device it checks the resolved transport against the configured signing path at
+startup, taking the relay decision into account, and **refuses to start** if
+they cannot share the device — naming both fixes and the config lines for each.
+`secsy-ca doctor` reports the same verdict as `hsmaudit.drain`, computed from
+the same configuration so the two cannot disagree.
+
+The CLIs were never blocked by the module half of this: `secsy-ca` and
 `secsy-secret` drain after closing their key provider, so the interface is free
-by then. They do still need to address the same endpoint the rest of the
-deployment does, so set `connector_url` once, in the shared config.
+by then. What the relay adds for them is the ability to run *alongside* a server
+that holds the device.
 
 ## Where the collected records go
 
@@ -718,9 +772,10 @@ discovers the problem at the first drain — which, on a device that has not bee
 commissioned yet, could be months later, with a force-audited HSM by then
 minting entries that have nowhere to go.
 
-A complete stack, with the connector holding the device and the audit log on its
-own volume, is in
-[`deploy/yubihsm/`](https://github.com/blechschmidt/secsy-pki/tree/main/deploy/yubihsm).
+A complete stack — one container holding the device, multiplexing it in-process,
+with the audit log on its own volume — is in
+[`deploy/yubihsm/`](https://github.com/blechschmidt/secsy-pki/tree/main/deploy/yubihsm),
+alongside the two-service variant for a shared device.
 `scripts/yubihsm-container-test.sh` asserts all of this against a real device.
 
 ### The format
@@ -781,7 +836,7 @@ requirement is "this file is the whole history".
 
 ```yaml
 yubihsm:
-  # A yubihsm-connector, not yhusb://: the drain and the PKCS#11 signing path
+  # A connector URL, not a bare yhusb://: the drain and the PKCS#11 signing path
   # are two routes to one USB interface and cannot share it directly. See
   # "The transport must be shareable" above — the server refuses to start on a
   # commissioned device if they would contend.

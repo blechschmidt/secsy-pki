@@ -113,11 +113,14 @@ needs `hsm:manage` because it reaches the device; verifying needs only
 `audit:read`, so an auditor can evaluate the evidence without holding the
 capability that administers the hardware.
 
-Both go through the [native driver](yubihsm-native-driver.md), which claims the
-USB interface exclusively. On a server whose CA keys are reached through a
-`yhusb://` PKCS#11 module the module already holds the device, and attestation
-fails with a message saying so; run a `yubihsm-connector` and point both at its
-`http://` URL to let them share it.
+Both go through the [native driver](yubihsm-native-driver.md), and the USB
+interface has only one claim. A server with the
+[embedded connector](audit-log.md#the-embedded-connector-one-process-one-container)
+running — the default for a direct-USB device with a PKCS#11 signing path —
+holds that claim itself and hands it to the attestation path directly, so this
+works alongside live signing in one process. Without a connector of either kind
+the module already holds the device and attestation fails with a message saying
+so.
 
 ## Options
 

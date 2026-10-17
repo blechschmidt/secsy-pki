@@ -58,17 +58,28 @@ transports:
 There is no libusb, no cgo and no vendor binary. The USB transport submits
 `USBDEVFS_BULK` ioctls on `/dev/bus/usb/<bus>/<device>`, located through sysfs.
 
-**Direct USB is exclusive.** One process claims the interface; everyone else
+**Direct USB is exclusive.** One claim on the interface exists; everyone else
 gets `device or resource busy`. That is a constraint on the *deployment*, not
 just on this driver, because Yubico's PKCS#11 module claims the same interface
 for as long as it holds a session — so a server that signs through the module
 cannot also drain the device audit log, attest a key, or attest the device over
-`yhusb://`. Any deployment that needs two routes to one YubiHSM wants a
-`yubihsm-connector` and an `http://` URL; a commissioned device makes the server
+`yhusb://`. Any deployment that needs two routes to one YubiHSM needs a
+connector in between; a commissioned device makes the server
 [refuse to start](audit-log.md#the-transport-must-be-shareable) without one.
 
-Because SCP03 terminates in this process and in the HSM, a `yubihsm-connector`
-in between is a relay that can drop or reorder messages but cannot read a signing
+The driver supplies that connector itself. `yubihsm.StartEmbedded` claims the
+device, serves Yubico's connector protocol on loopback for the module, and hands
+every in-process caller the same claim directly — `OpenTransport` routes a
+`yhusb://` URL, or the relay's own `http://` URL, to the shared handle rather
+than attempting a second claim that could only fail. That is what lets one
+process, and so one container, both sign and audit; it is
+[on by default](audit-log.md#the-embedded-connector-one-process-one-container)
+for a direct-USB device with a PKCS#11 signing path. Yubico's daemon remains the
+answer when the device must be shared outside the process, or reached from
+another host.
+
+Because SCP03 terminates in this process and in the HSM, a connector of either
+kind is a relay that can drop or reorder messages but cannot read a signing
 request, alter an audit-log response, or forge one.
 
 If more than one YubiHSM is attached and no serial is given, the driver refuses
@@ -90,8 +101,9 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="1050", ATTR{idProduct}=="0030", MODE="0660", 
 
 Only one process may hold the device's USB interface at a time. If
 `yubihsm-connector`, `yubihsm-shell` or the PKCS#11 module has it open, the
-driver reports that rather than hanging — in a deployment that runs a connector,
-point secsy-pki at the connector's URL instead of at USB.
+driver reports that rather than hanging — and names both remedies: the embedded
+connector this process can run itself, or an `http://` URL pointing at a daemon
+that already holds the device.
 
 The driver is Linux-only for direct USB. On other platforms, run a
 `yubihsm-connector` and use an `http://` URL; the security properties are the
@@ -111,12 +123,20 @@ yubihsm:
   connector_url: "yhusb://"   # or yhusb://serial=..., http://host:12345
   auth_key_id: 1
   password: "..."             # derives the SCP03 static keys (PBKDF2-SHA256)
+  embedded_connector:
+    enabled: true             # this process holds the device and relays for the module
 ```
 
 When `connector_url` is empty the driver falls back to the `connector = ...`
 line in the file named by `YUBIHSM_PKCS11_CONF`, so a deployment that configured
 only the PKCS#11 module keeps addressing the same device — the audit log has to
 describe the hardware that holds the CA key, not a different one.
+
+With the embedded connector running, that fallback resolves to the relay's own
+URL, and in-process callers are routed straight to the shared claim rather than
+back through loopback HTTP. A `yhusb://serial=` that names a *different* device
+than the relay holds is not routed at all: addressing the wrong hardware would
+produce an audit log or an attestation that verifies and describes nothing.
 
 A password-derived authentication key is only as strong as the password.
 Production deployments should provision an authentication key from random bytes.

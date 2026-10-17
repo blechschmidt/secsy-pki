@@ -59,16 +59,23 @@ pkcs11:
   session_pool_size: 1
 
 yubihsm:
-  # connector_url, auth_key_id, password and audit_log_file are all set from the
-  # environment in docker-compose.yaml (SECSY_YUBIHSM_*) and deliberately left
-  # out here:
+  # connector_url, auth_key_id, password, audit_log_file and the embedded
+  # connector are all set from the environment in docker-compose.yaml
+  # (SECSY_YUBIHSM_*) and deliberately left out here:
   #
-  #   connector_url   http://yubihsm-connector:12345 — a yubihsm-connector, NOT
-  #                   yhusb://. Direct USB belongs to one process, and this
-  #                   deployment has two that need the device: the PKCS#11
-  #                   signing path and the native audit driver. secsy-pki
-  #                   refuses to start on a commissioned device if they would
-  #                   contend. See docs/hsm/audit-log.md#the-transport-must-be-shareable.
+  #   embedded_connector
+  #                   enabled, because the device is on direct USB and two
+  #                   things in this container need it: the PKCS#11 signing
+  #                   path and the native audit driver. Direct USB belongs to
+  #                   one claim, so the server takes that claim and serves
+  #                   Yubico's connector protocol on loopback for the module.
+  #                   Without it secsy-pki refuses to start on a commissioned
+  #                   device, because the audit drain could never run. See
+  #                   docs/hsm/audit-log.md#the-transport-must-be-shareable.
+  #   connector_url   http://127.0.0.1:12345 — the address the server serves
+  #                   and every route to the device uses, including an
+  #                   operator's `docker compose exec` of secsy-ca. With the
+  #                   two-service variant it is the daemon's address instead.
   #   password        a credential.
   #   audit_log_file  /app/audit/device-log.jsonl — a mount point this file
   #                   cannot know, and the one copy of the device audit log that

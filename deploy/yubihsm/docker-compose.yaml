@@ -1,44 +1,40 @@
 # =============================================================================
-# secsy-pki — YubiHSM 2 on direct USB (yhusb://)
+# secsy-pki — YubiHSM 2 on direct USB (yhusb://), in one container
 # =============================================================================
 #   ./device-env.sh >> .env      # finds the attached device, writes its node+gid
 #   cp .env.example .env         # …or start from the template and edit by hand
 #   docker compose up -d
-#   docker compose logs -f server
+#   docker compose logs -f
 #
-# Two services, and the split is not cosmetic. **A YubiHSM 2 speaks over one USB
-# interface and exactly one process may hold it.** Inside this stack two things
-# need the device: the PKCS#11 module, which the server signs through, and the
-# native driver, which reads the device audit log and issues attestations —
-# PKCS#11 cannot express GET LOG ENTRIES, so they are two routes and not two
-# users of one connection. On `yhusb://` the module wins, holds the interface
-# for the life of the server, and every drain fails with EBUSY while signing
-# carries on. The deployment looks healthy and its force-audited device fills its
-# 62-entry log and then refuses to sign. secsy-pki refuses to start on that
-# configuration rather than deliver it (see hsmaudit.DrainContention).
+# One service. That is worth a word, because a YubiHSM 2 speaks over one USB
+# interface and the kernel grants that interface to one claim — and this
+# container has two things that need the device: Yubico's PKCS#11 module, which
+# every signature goes through, and the native driver, which reads the device
+# audit log and issues attestations, because PKCS#11 cannot express
+# GET LOG ENTRIES.
 #
-# So the `yubihsm-connector` service owns the device — it is Yubico's daemon for
-# exactly this — and everything else reaches it over HTTP. The device itself is
-# still a direct-USB `yhusb://` device; the connector is what makes it shareable.
-# SCP03 terminates in the HSM and in each client, so the connector can drop or
-# reorder messages but cannot read a signing request or alter an audit-log reply.
+# The server resolves that itself. It claims the device at startup and serves
+# Yubico's connector protocol on loopback inside its own process
+# (SECSY_YUBIHSM_EMBEDDED_CONNECTOR below), so the module reaches the device
+# over http://127.0.0.1:12345 while the audit driver uses the same single claim
+# directly. Nothing is relayed off-container and no second process is involved:
+# the device log is drained by the operation that produced it, in the process
+# that produced it.
+#
+# docker-compose.connector.yaml is the two-service variant, with Yubico's
+# yubihsm-connector daemon owning the device. Use it when something outside this
+# container needs the HSM too, or when the device is attached to another host.
 #
 # Full walkthrough: docs/deployment/container.md#the-yubihsm-variant
 
 name: secsy-pki-yubihsm
 
-x-secsy-common: &secsy-common
-  # The -yubihsm tag, which carries Yubico's PKCS#11 module, libyubihsm's USB and
-  # HTTP transports, the vendor CLIs and yubihsm-connector. Every published tag
-  # has one, built from the same commit in the same job.
-  image: ${SECSY_IMAGE:-ghcr.io/blechschmidt/secsy-pki}:${SECSY_TAG:-latest}-yubihsm
-
 services:
-  # ---------------------------------------------------------------------------
-  # The one process that holds the USB interface.
-  yubihsm-connector:
-    <<: *secsy-common
-    entrypoint: ["yubihsm-connector", "-l", "0.0.0.0:12345"]
+  server:
+    # The -yubihsm tag, which carries Yubico's PKCS#11 module, libyubihsm's USB
+    # and HTTP transports and the vendor CLIs. Every published tag has one,
+    # built from the same commit in the same job.
+    image: ${SECSY_IMAGE:-ghcr.io/blechschmidt/secsy-pki}:${SECSY_TAG:-latest}-yubihsm
     devices:
       # The device node, not the whole bus: `--device /dev/bus/usb` would hand
       # the container every USB device on the machine. device-env.sh finds it.
@@ -52,43 +48,23 @@ services:
       # with LIBUSB_ERROR_ACCESS, which is a poor place to learn about a host
       # permission — install deploy/udev/70-yubihsm.rules on the host.
       - ${SECSY_YUBIHSM_DEVICE_GID:?run ./device-env.sh, or set the device gid in .env}
-    # Asks the connector what it can see, over its own HTTP endpoint, with
-    # bash's /dev/tcp — there is no curl or wget in the image, it is a PKI and
-    # not a toolbox. "status=OK" means the daemon is up *and* has the device;
-    # an unplugged HSM reports status=NO_DEVICE and keeps the stack unhealthy
-    # rather than letting the server start into a device that is not there.
-    #
-    # `CMD bash -c`, not `CMD-SHELL`: the latter runs /bin/sh, which on Debian
-    # is dash, which has no /dev/tcp and fails with "Directory nonexistent" —
-    # an unhealthy container for a perfectly healthy connector.
-    healthcheck:
-      test:
-        - "CMD"
-        - "bash"
-        - "-c"
-        - |
-          exec 3<>/dev/tcp/127.0.0.1/12345 &&
-          printf 'GET /connector/status HTTP/1.0\r\n\r\n' >&3 &&
-          grep -q 'status=OK' <&3
-      interval: 10s
-      timeout: 5s
-      start_period: 5s
-      retries: 3
-    restart: unless-stopped
-
-  # ---------------------------------------------------------------------------
-  # The CA. No device passthrough at all: it reaches the HSM over the connector.
-  server:
-    <<: *secsy-common
-    depends_on:
-      yubihsm-connector:
-        condition: service_healthy
     environment:
-      # One URL for both routes to the device. The server writes the module's
-      # own yubihsm_pkcs11.conf from this value at startup when
-      # YUBIHSM_PKCS11_CONF is unset, so the PKCS#11 signing path and the native
-      # audit driver cannot drift apart into different endpoints.
-      SECSY_YUBIHSM_CONNECTOR_URL: http://yubihsm-connector:12345
+      # Multiplex the device inside this process. With it, one container does
+      # both halves of an audited deployment; without it, the PKCS#11 module
+      # takes the USB interface for the life of the server and the audit drain
+      # never runs — which secsy-pki refuses to start rather than deliver, so
+      # this is not a performance knob.
+      #
+      # It is the default for exactly this configuration (direct USB plus a
+      # YubiHSM PKCS#11 signing path) and set explicitly here so the deployment
+      # states what it relies on.
+      SECSY_YUBIHSM_EMBEDDED_CONNECTOR: "1"
+      # One URL for every route to the device, including an operator's
+      # `docker compose exec` of secsy-ca: the server serves it, the server
+      # writes the module's own yubihsm_pkcs11.conf from it, and a CLI in this
+      # container finds the relay already there and uses it instead of
+      # competing for the USB claim.
+      SECSY_YUBIHSM_CONNECTOR_URL: http://127.0.0.1:12345
       SECSY_YUBIHSM_AUTH_KEY_ID: ${SECSY_YUBIHSM_AUTH_KEY_ID:-1}
       # The device password for the native driver, and the PKCS#11 PIN, which
       # for a YubiHSM is the 4-digit auth key id followed by that same password

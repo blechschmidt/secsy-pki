@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 #
 # yubihsm-container-test.sh — prove a published container can put an externally
-# generated RSA key onto an attached YubiHSM 2, and can be told where the
-# device's audit log is permanently written (Tasks 201, 203).
+# generated RSA key onto an attached YubiHSM 2, can be told where the device's
+# audit log is permanently written, and can serve both routes to the device from
+# a single container with no connector daemon beside it (Tasks 201, 203, 204).
 #
 # internal/yubihsmtest already settles "the code can import an RSA key" against
 # the device. It does so with `go test`, against whatever PKCS#11 module the
@@ -760,17 +761,193 @@ check "and the refusal names the path and the setting" \
 sed 's/^/         /' <<<"$(tail -2 <<<"$ro_out")"
 
 # ---------------------------------------------------------------------------
+# 10. One container, both routes to the device (Task 204).
+#
+# The checks above all run one process at a time, which is the easy case. A
+# deployment is not: the server signs through Yubico's PKCS#11 module and the
+# same deployment has to read the device audit log through the native driver,
+# because PKCS#11 cannot express GET LOG ENTRIES. The kernel grants the
+# YubiHSM's USB interface to one claim, the module takes it for the life of its
+# session pool, and so that deployment used to need a second container — Yubico's
+# yubihsm-connector — with the device node handed to it.
+#
+# It no longer does: the server claims the device itself and serves the connector
+# protocol on loopback inside its own process. These checks are the evidence,
+# against the real device, from the published image:
+#
+#   a. the server starts in that configuration and says it is multiplexing;
+#   b. the relay reports the attached device, by serial, over its own endpoint;
+#   c. the server holds the USB claim for its whole life — Yubico's own shell,
+#      pointed straight at the device from the same container, is refused;
+#   d. and every other client reaches the device anyway, through the relay: the
+#      vendor shell, the vendor PKCS#11 module under pkcs11-tool, and
+#      secsy-pki's native driver attesting the device. Three independent
+#      clients, one USB claim, one container.
+#
+# (c) is what makes (d) a property of the relay rather than of a device that
+# happened to be free.
+say "One container serving both routes to the device"
+
+cat >"$WORK/config-single.yaml" <<EOF
+server:
+  host: "127.0.0.1"
+  port: 8443
+database:
+  driver: "sqlite"
+  dsn: "/app/data/single.db"
+root_user:
+  username: "root"
+  password: "container-test-not-a-deployment"
+key_provider:
+  type: "pkcs11"
+pkcs11:
+  module_path: "/usr/lib/pkcs11/yubihsm_pkcs11.so"
+  token_label: "YubiHSM"
+  pin: "$(printf '%04x' "$AUTH_KEY_ID")$PASSWORD"
+  session_pool_size: 1
+yubihsm:
+  # The address the server serves and every route uses, including the
+  # docker-exec calls below. (No backticks in this heredoc: it is unquoted, so
+  # the shell would run what they enclose.) The embedded connector is on by
+  # default for this configuration; the environment sets it explicitly per
+  # deployment.
+  connector_url: "http://127.0.0.1:12345"
+  auth_key_id: $AUTH_KEY_ID
+  password: "$PASSWORD"
+EOF
+chmod a+r "$WORK/config-single.yaml"
+mkdir -p "$WORK/data-single"
+chmod -R a+rwX "$WORK/data-single"
+
+# single_server <embedded> starts the server in one container and waits for the
+# key provider to be open. It prints the container name, or nothing if
+# `docker run` itself failed.
+single_server() { # single_server <0|1>
+	local embedded="$1" name="secsy-t204-single" i
+	docker rm -f "$name" >/dev/null 2>&1
+	docker run -d --name "$name" "${DOCKER_DEV[@]}" \
+		-v "$WORK/config-single.yaml:/etc/secsy/config.yaml:ro" \
+		-v "$WORK/data-single:/app/data" \
+		-v "$WORK/audit:/app/audit" \
+		-e SECSY_ALLOW_INSECURE_HTTP=1 \
+		-e "SECSY_YUBIHSM_EMBEDDED_CONNECTOR=$embedded" \
+		-e "SECSY_YUBIHSM_AUDIT_LOG_FILE=/app/audit/single-log.jsonl" \
+		"$IMAGE" -config /etc/secsy/config.yaml >/dev/null 2>&1 || return 1
+	for i in $(seq 1 40); do
+		if docker logs "$name" 2>&1 | grep -q 'Key provider (ca role)'; then
+			echo "$name"
+			return 0
+		fi
+		docker ps -q -f "name=$name" | grep -q . || break
+		sleep 1
+	done
+	echo "$name"
+	return 0
+}
+
+keep_log_space 12
+container=$(single_server 1)
+[[ -n "$container" ]] || die "the single-container server did not start"
+start_log=$(docker logs "$container" 2>&1)
+check "the server starts with the device on direct USB and a PKCS#11 signing path" \
+	"$(grep -q 'Key provider (ca role)' <<<"$start_log" && echo 0 || echo 1)"
+check "and says it is multiplexing the device in its own process" \
+	"$(grep -q 'Embedded YubiHSM connector serving' <<<"$start_log" && echo 0 || echo 1)"
+grep -E 'Embedded YubiHSM connector|PKCS#11 module pointed at|Key provider \(ca role\)' <<<"$start_log" |
+	sed 's/^/         /'
+
+# 10b. The relay's own endpoint, read from inside the container with bash's
+# /dev/tcp — there is no curl or wget in the image. This is the document
+# Yubico's module gates on, and the serial in it has to be the attached
+# device's: a relay that could not name its device would make the one
+# identifying field in its status document worthless.
+relay_status=$(docker exec "$container" bash -c '
+	exec 3<>/dev/tcp/127.0.0.1/12345 &&
+	printf "GET /connector/status HTTP/1.0\r\n\r\n" >&3 &&
+	cat <&3' 2>&1)
+sed -n 's/^\(status=\|serial=\|implementation=\)/         \1/p' <<<"$relay_status"
+check "the relay inside the container reports a device" \
+	"$(grep -q 'status=OK' <<<"$relay_status" && echo 0 || echo 1)"
+check "and it is the attached device, by serial" \
+	"$(grep -q "serial=$serial" <<<"$relay_status" && echo 0 || echo 1)"
+
+# 10c. The control, and the sharpest check here: the server holds the USB claim
+# for its whole life, not merely while it is signing. Yubico's own shell, in the
+# same container, pointed straight at the device, must be refused.
+#
+# Without this the checks that follow would pass just as well on a device that
+# happened to be free, and the relay would be carrying no weight.
+usb_direct=$(docker exec "$container" yubihsm-shell \
+	--connector yhusb:// --authkey "$AUTH_KEY_ID" -p "$PASSWORD" -a get-device-info 2>&1)
+check "the server holds the USB interface, so nothing else in the container can claim it" \
+	"$(grep -qE "Failed connecting|Connector operation failed|Not connected" <<<"$usb_direct" && echo 0 || echo 1)"
+sed 's/^/         /' <<<"$(head -2 <<<"$usb_direct")"
+
+# 10d. And through the relay the same device is reachable — by the vendor shell,
+# by the vendor PKCS#11 module under a third-party tool, and by secsy-pki's own
+# native driver. Three independent clients, one USB claim, one container.
+via_relay=$(docker exec "$container" yubihsm-shell \
+	--connector http://127.0.0.1:12345 --authkey "$AUTH_KEY_ID" -p "$PASSWORD" -a get-device-info 2>&1)
+check "but the vendor shell reaches it through the relay" \
+	"$(grep -q "Serial number:[[:space:]]*$serial" <<<"$via_relay" && echo 0 || echo 1)"
+sed -n 's/^\(Version number:\|Serial number:\|Log used:\)/         \1/p' <<<"$via_relay"
+
+# The module reads its connector from the file the server wrote at startup,
+# which is the same mechanism the server's own signing path uses — so this also
+# confirms that file names the relay rather than the USB device.
+module_conf=$(docker exec "$container" cat /app/yubihsm_pkcs11.conf 2>&1)
+check "the server pointed the PKCS#11 module at the relay, in a file the module reads" \
+	"$(grep -q 'connector = http://127.0.0.1:12345' <<<"$module_conf" && echo 0 || echo 1)"
+pkcs11_out=$(docker exec -e YUBIHSM_PKCS11_CONF=/app/yubihsm_pkcs11.conf "$container" \
+	pkcs11-tool --module /usr/lib/pkcs11/yubihsm_pkcs11.so -p "$(printf '%04x' "$AUTH_KEY_ID")$PASSWORD" \
+	--list-objects 2>&1)
+check "and Yubico's module opens the token through it, from a second process" \
+	"$(grep -q 'present token' <<<"$pkcs11_out" && echo 0 || echo 1)"
+sed 's/^/         /' <<<"$(head -2 <<<"$pkcs11_out")"
+
+# secsy-pki's native driver is the route the audit drain and the attestation
+# paths take. `hsm-attest device` is the sharpest probe available on an
+# uncommissioned device: it generates and deletes a throwaway key in a reserved
+# slot and verifies the device's answer against Yubico's published CA, so it
+# exercises the signing hardware rather than a status endpoint.
+attest_out=$(docker exec "$container" secsy-ca -config /etc/secsy/config.yaml hsm-attest device 2>&1)
+check "and secsy-pki's own driver attests the device while the server holds it" \
+	"$(grep -q "verified: this is YubiHSM serial $serial" <<<"$attest_out" && echo 0 || echo 1)"
+check "with the device answering a fresh challenge from its attestation key" \
+	"$(grep -q 'Answered challenge: *yes' <<<"$attest_out" && echo 0 || echo 1)"
+grep -E '^(Device serial|Yubico-certified|Answered challenge):|^verified:' <<<"$attest_out" |
+	sed 's/^/         /'
+docker rm -f "$container" >/dev/null 2>&1
+
+# `docker rm -f` returns as soon as the process is signalled, and the kernel
+# releases the USB claim a moment later. Wait for it: the cleanup below talks to
+# the device, and a delete that lands in that window fails silently with EBUSY
+# and leaves objects behind — which then looks like a cleanup bug rather than a
+# race.
+wait_for_device() {
+	local i
+	for i in 1 2 3 4 5 6 7 8 9 10; do
+		yhs -a get-device-info >/dev/null 2>&1 && return 0
+		sleep 1
+	done
+	return 1
+}
+check "the device is free again once the single container is gone" \
+	"$(wait_for_device && echo 0 || echo 1)"
+
+# ---------------------------------------------------------------------------
 say "Cleaning up the objects this run created"
 delete_created
-left=$(yhs -a list-objects 2>&1 | grep -c -e 't201-c-' -e 't203-c-' || true)
-check "no t201-c-/t203-c- objects remain on the device" "$([[ "$left" == "0" ]] && echo 0 || echo 1)"
+left=$(yhs -a list-objects 2>&1 | grep -c -e 't201-c-' -e 't203-c-' -e 't204-c-' || true)
+check "no t201-c-/t203-c-/t204-c- objects remain on the device" "$([[ "$left" == "0" ]] && echo 0 || echo 1)"
 yhs -a get-device-info 2>&1 | sed -n 's/^\(Log used:.*\)/    \1/p'
 
 say "Result"
 printf '    %d passed, %d failed\n' "$pass" "$fail"
 if [[ $fail -eq 0 ]]; then
-	printf '\033[32m==> PASS\033[0m — %s imports an externally generated RSA key into YubiHSM %s\n' "$IMAGE" "$serial"
-	printf '            and writes the device audit log where it is told to.\n'
+	printf '\033[32m==> PASS\033[0m — %s imports an externally generated RSA key into YubiHSM %s,\n' "$IMAGE" "$serial"
+	printf '            writes the device audit log where it is told to, and serves both routes to\n'
+	printf '            the device from one container with no connector daemon beside it.\n'
 	exit 0
 fi
 printf '\033[31m==> FAIL\033[0m\n'
