@@ -258,13 +258,25 @@ func run(args []string) error {
 	// so dispatch them before the provider is built. Provisioning in particular
 	// runs on a device that has no keys yet, where constructing the CA provider
 	// would fail.
+	//
+	// Both of them need the device multiplexed first, and neither gets that for
+	// free: the relay is started by buildProvider, which these arms deliberately
+	// never reach. In a deployment that holds one USB claim and relays for the
+	// PKCS#11 module — the single-container stack in deploy/yubihsm — the
+	// configured connector URL is an address this process has to serve, so
+	// without this the device-log and attestation commands fail against their own
+	// loopback while every signing command works. When something already serves
+	// it (the server, in the container an operator exec'd into) this finds it
+	// and leaves the claim alone.
 	if command == "hsm-audit" {
+		ensureEmbeddedConnector(cfg)
 		return cmdHSMAudit(db, cfg, cmdArgs)
 	}
 	// Key attestation (Task 168) likewise goes through the native driver —
 	// attestation is a vendor command with no PKCS#11 equivalent — and must work
 	// on a device whose keys the CA provider cannot open.
 	if command == "hsm-attest" {
+		ensureEmbeddedConnector(cfg)
 		return cmdHSMAttest(db, cfg, cmdArgs)
 	}
 	// DNS pinning-record generation (Task 98) hashes stored public certificate

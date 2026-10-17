@@ -195,7 +195,14 @@ func cmdHSMAttestCA(ctx context.Context, hsmCfg hsm.Config, cfg *config.Config, 
 		return fmt.Errorf("hsm-attest ca: CA id is required")
 	}
 
-	caRec, err := db.GetCA(caID)
+	// id or label, as everywhere else a CA is named on this CLI: the label is
+	// what an operator chose and what `list` shows first, and attesting the key
+	// behind a CA is a poor place to have to go and look up a UUID.
+	id, err := resolveCA(db, caID)
+	if err != nil {
+		return err
+	}
+	caRec, err := db.GetCA(id)
 	if err != nil {
 		return fmt.Errorf("CA lookup failed: %w", err)
 	}

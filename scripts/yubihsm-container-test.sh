@@ -777,6 +777,8 @@ sed 's/^/         /' <<<"$(tail -2 <<<"$ro_out")"
 #
 #   a. the server starts in that configuration and says it is multiplexing;
 #   b. the relay reports the attached device, by serial, over its own endpoint;
+#   a-. before any of that, a one-off CLI container with no server to borrow a
+#      relay from — the first command this deployment's README asks for;
 #   c. the server holds the USB claim for its whole life — Yubico's own shell,
 #      pointed straight at the device from the same container, is refused;
 #   d. and every other client reaches the device anyway, through the relay: the
@@ -844,6 +846,31 @@ single_server() { # single_server <0|1>
 	echo "$name"
 	return 0
 }
+
+# 10a. Before any server exists: a one-off CLI container.
+#
+# This is the first command deploy/yubihsm/README.md tells an operator to run,
+# and the one case where nothing else has already claimed the device. It reaches
+# the hardware through the native driver with no key provider anywhere, so
+# nothing will have started a relay on its behalf — and the configured connector
+# URL names an address inside *this* container. A CLI that cannot multiplex for
+# itself therefore fails against its own loopback while every signing command
+# works, which is a poor way to find out on the first command of a deployment.
+keep_log_space 10
+cli_attest=$(docker run --rm "${DOCKER_DEV[@]}" \
+	-v "$WORK/config-single.yaml:/etc/secsy/config.yaml:ro" \
+	-v "$WORK/data-single:/app/data" \
+	-v "$WORK/audit:/app/audit" \
+	-e "SECSY_YUBIHSM_AUDIT_LOG_FILE=/app/audit/single-log.jsonl" \
+	--entrypoint secsy-ca "$IMAGE" -config /etc/secsy/config.yaml hsm-attest device 2>&1)
+check "a one-off secsy-ca container multiplexes the device for itself, with no server to borrow from" \
+	"$(grep -q "verified: this is YubiHSM serial $serial" <<<"$cli_attest" && echo 0 || echo 1)"
+check "and says so, so the claim is the CLI's own rather than something it found running" \
+	"$(grep -q 'Embedded YubiHSM connector serving' <<<"$cli_attest" && echo 0 || echo 1)"
+check "and the drain on the way out reached the device too, rather than reporting entries left behind" \
+	"$(grep -q 'device log not collected' <<<"$cli_attest" && echo 1 || echo 0)"
+grep -E 'Embedded YubiHSM connector serving|^verified:|not collected' <<<"$cli_attest" |
+	cut -c1-160 | sed 's/^/         /'
 
 keep_log_space 12
 container=$(single_server 1)
