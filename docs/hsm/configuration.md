@@ -52,6 +52,10 @@ pkcs11:
   token_label: "YubiHSM"                             # select the token by CKA_LABEL
   token_serial: ""                                   # optional: match by serial
   token_manufacturer: ""                             # optional: match by manufacturer
+  token_model: ""                                    # optional: match CK_TOKEN_INFO.model
+  slot_id:                                           # optional: pin the CK_SLOT_ID
+  slot_description: ""                               # optional: match CK_SLOT_INFO.slotDescription
+  slot_manufacturer: ""                              # optional: match CK_SLOT_INFO.manufacturerID
 ```
 
 - `module_path` is the vendor's PKCS#11 shared object. Common paths:
@@ -72,8 +76,16 @@ pkcs11:
   [`pin_source`](#sourcing-the-user-pin-from-a-credential-store-pin_source), which
   fetches it lazily at login from a file, env var, Vault, or a cloud secrets
   manager.
-- `token_label` / `token_serial` / `token_manufacturer` select *which* token to
-  use when a slot exposes more than one. Label alone is enough for SoftHSM.
+- `token_label` / `token_serial` / `token_manufacturer` / `token_model` and
+  `slot_id` / `slot_description` / `slot_manufacturer` select *which* token to
+  use when more than one is present. The first slot matching every **set**
+  selector wins; unset selectors do not constrain the search. Label alone is
+  enough for SoftHSM. These are exactly the RFC 7512 token and slot attributes,
+  so `pkcs11.uri` can supply any of them instead — see
+  [PKCS#11 URIs in the configuration](pkcs11-uris.md).
+
+  `slot_id` is the one that separates two tokens nothing else can: two SoftHSM
+  tokens initialised with the same label, or two identical HSMs in one host.
 
 ### Key labels must be unique
 
@@ -110,8 +122,8 @@ the wrong replica.
 
 The optional `pkcs11.uri` field lets you point at an HSM with a single
 self-describing string instead of a block of fields. It **backfills only the
-fields left unset** — explicit `module_path` / `token_*` / `pin` always win — and
-its `pin-value` / `pin-source` feed the same
+fields left unset** — explicit `module_path` / `token_*` / `slot_*` / `pin`
+always win — and its `pin-value` / `pin-source` feed the same
 [PIN sourcing](#sourcing-the-user-pin-from-a-credential-store-pin_source) as the
 structured `pin_source` block (`pin-source=file:/path` becomes a `file` source).
 Any embedded `pin-value` is **redacted** from a dumped or logged config.
@@ -123,11 +135,27 @@ pkcs11:
   uri: "pkcs11:token=secsy-pki-root?module-path=/usr/lib/softhsm/libsofthsm2.so&pin-source=file:/etc/secsy/hsm.pin"
 ```
 
+`module-name=` is accepted in place of `module-path=` and is resolved the way
+p11-kit resolves it, which is how one config file stays correct across
+distributions whose module directories differ.
+
+**Keys are named the same way.** Every setting that names a key —
+`tsa.key_label`, `signing.signers[].key_label`, `brski.registrar_key_label`,
+`brski.masa.key_label`, `secret.escrow.agents[].key_label`,
+`server.tls.self_issue.key_label` — accepts a bare label, `software:<label>`, or
+a full `pkcs11:` URI, and so do the commands that provision those keys
+(`secsy-ca tsa-key -label …`, `secsy-ca signing-key -label …`). A key URI must
+name an object and must **not** carry the module or a PIN (both are
+deployment-wide, not per-key); a token URI must **not** name an object. Either
+mistake is rejected when the config loads, naming the field.
+
+The full reference is [PKCS#11 URIs in the configuration](pkcs11-uris.md).
+
 `secsy-ca doctor` includes a `pkcs11.uris` check that parses every configured
-`pkcs11:` URI (the config `uri` fields and each CA's stored key URI), warns on an
-embedded plaintext `pin-value` or an unrecognized attribute, and — against a live
-token — confirms each CA key actually resolves under its full object/id/token
-addressing.
+`pkcs11:` URI (the config `uri` fields, every configured key reference written
+as a URI, and each CA's stored key URI), warns on an embedded plaintext
+`pin-value` or an unrecognized attribute, and — against a live token — confirms
+each key actually resolves under its full object/id/token addressing.
 
 ### Sourcing the user PIN from a credential store (`pin_source`)
 
@@ -381,9 +409,21 @@ instead (its `env` type reads any variable without the warning):
 |----------|-----------|
 | `SECSY_KEY_PROVIDER` | `key_provider.type` |
 | `SECSY_PKCS11_MODULE` | `pkcs11.module_path` |
+| `SECSY_PKCS11_URI` | `pkcs11.uri` — the whole token in one variable (module, device, PIN source), which is how a container is pointed at an HSM whose address the image could not know |
 | `SECSY_TOKEN_LABEL` | `pkcs11.token_label` |
+| `SECSY_TOKEN_SERIAL` | `pkcs11.token_serial` |
+| `SECSY_TOKEN_MODEL` | `pkcs11.token_model` |
+| `SECSY_PKCS11_SLOT_ID` | `pkcs11.slot_id` |
 | `SECSY_USER_PIN` | `pkcs11.pin` |
+| `SECSY_PKCS11_SESSION_POOL_SIZE` | `pkcs11.session_pool_size` |
+| `SECSY_PKCS11_SELECTION_POLICY` | `pkcs11.selection_policy` |
+| `SECSY_PKCS11_FAILURE_THRESHOLD` | `pkcs11.failure_threshold` |
+| `SECSY_PKCS11_MODULE_DIRS` | the directories a `module-name=` is resolved against (colon-separated), replacing the built-in list |
 | `SECSY_SOFTWARE_KEYSTORE_DIR` | `software.keystore_dir` |
+
+Explicit config fields win over `pkcs11.uri`, and these variables win over the
+file — so `SECSY_TOKEN_LABEL` still overrides a `token=` carried by
+`SECSY_PKCS11_URI`.
 
 ## SoftHSM for development and CI
 

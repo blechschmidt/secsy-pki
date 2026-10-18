@@ -47,7 +47,7 @@ func runTransform(cfg *config.Config, provider keyprovider.Provider, args []stri
 	}
 	fs := flag.NewFlagSet("transform "+op, flag.ContinueOnError)
 	template := fs.String("template", "", "transform template name from secret.transforms (required)")
-	label := fs.String("kek", "", "explicit KEK label override (default: secret.kek_label from config)")
+	label := fs.String("kek", "", "explicit KEK override: a label or an object-only pkcs11: URI (default: secret.kek_label from config)")
 	value := fs.String("value", "", "the value to "+op+" (plaintext for encode, token for decode)")
 	in := fs.String("in", "", "read the value from this file, or '-' for stdin (alternative to -value)")
 	tweakB64 := fs.String("tweak", "", "base64 per-request tweak (required for a request-tweak template, forbidden for a deterministic one)")

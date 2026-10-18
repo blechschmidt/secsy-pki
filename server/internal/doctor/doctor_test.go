@@ -314,10 +314,12 @@ func TestDoctorHealthyDeployment(t *testing.T) {
 
 func TestDoctorPKCS11URIs(t *testing.T) {
 	cases := []struct {
-		name       string
-		extra      string
-		want       doctor.Status
-		wantDetail string
+		name            string
+		extra           string
+		want            doctor.Status
+		wantDetail      string
+		wantParseStatus doctor.Status
+		wantParseDetail string
 	}{
 		{
 			name:  "none configured",
@@ -330,10 +332,14 @@ func TestDoctorPKCS11URIs(t *testing.T) {
 			want:  doctor.StatusPass,
 		},
 		{
-			name:       "malformed uri fails",
-			extra:      "pkcs11:\n  uri: \"pkcs11:type=bogus\"\n",
-			want:       doctor.StatusFail,
-			wantDetail: "malformed",
+			// A malformed URI no longer reaches this check: config.Load rejects
+			// it, so the server would refuse to start. doctor reports it under
+			// config.parse and skips every check that needs a config.
+			name:            "malformed uri fails the config load",
+			extra:           "pkcs11:\n  uri: \"pkcs11:type=bogus\"\n",
+			want:            doctor.StatusSkip,
+			wantParseStatus: doctor.StatusFail,
+			wantParseDetail: "pkcs11.uri",
 		},
 		{
 			name:       "plaintext pin-value warns",
@@ -349,6 +355,12 @@ func TestDoctorPKCS11URIs(t *testing.T) {
 			c := assertStatus(t, r, "pkcs11.uris", tc.want)
 			if tc.wantDetail != "" && !strings.Contains(c.Detail, tc.wantDetail) {
 				t.Errorf("pkcs11.uris detail = %q, want containing %q", c.Detail, tc.wantDetail)
+			}
+			if tc.wantParseStatus != "" {
+				pc := assertStatus(t, r, "config.parse", tc.wantParseStatus)
+				if tc.wantParseDetail != "" && !strings.Contains(pc.Detail, tc.wantParseDetail) {
+					t.Errorf("config.parse detail = %q, want containing %q", pc.Detail, tc.wantParseDetail)
+				}
 			}
 			// A plaintext pin-value in config must never appear in the report detail.
 			if strings.Contains(c.Detail, "1234") {

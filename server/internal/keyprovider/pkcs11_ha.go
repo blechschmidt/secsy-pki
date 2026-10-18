@@ -82,13 +82,17 @@ type haMember struct {
 	name     string
 	provider *PKCS11Provider
 
-	// cfgLabel / cfgSerial / cfgManufacturer are the token's configured selectors
-	// (post URI-backfill). They seed identity() before the session pool is built;
-	// once it is built the token's actual identity (which also carries model and
-	// slot-id) takes precedence. Immutable after construction.
-	cfgLabel        string
-	cfgSerial       string
-	cfgManufacturer string
+	// cfgLabel / cfgSerial / cfgManufacturer / cfgModel / cfgSlotID are the
+	// token's configured selectors (post URI-backfill). They seed identity()
+	// before the session pool is built; once it is built the token's actual
+	// identity takes precedence. Immutable after construction.
+	cfgLabel            string
+	cfgSerial           string
+	cfgManufacturer     string
+	cfgModel            string
+	cfgSlotID           *uint
+	cfgSlotDescription  string
+	cfgSlotManufacturer string
 
 	mu      sync.Mutex
 	healthy bool
@@ -108,6 +112,7 @@ type haMember struct {
 // which never contradicts a selector (see selectorMatch).
 type tokenIdentity struct {
 	label, serial, model, manufacturer string
+	slotDescription, slotManufacturer  string
 	slotID                             uint
 	slotKnown                          bool
 }
@@ -116,9 +121,15 @@ type tokenIdentity struct {
 // with the token's actual (post-login) identity overlaid where available.
 func (m *haMember) identity() tokenIdentity {
 	id := tokenIdentity{
-		label:        m.cfgLabel,
-		serial:       m.cfgSerial,
-		manufacturer: m.cfgManufacturer,
+		label:            m.cfgLabel,
+		serial:           m.cfgSerial,
+		manufacturer:     m.cfgManufacturer,
+		model:            m.cfgModel,
+		slotDescription:  m.cfgSlotDescription,
+		slotManufacturer: m.cfgSlotManufacturer,
+	}
+	if m.cfgSlotID != nil {
+		id.slotID, id.slotKnown = *m.cfgSlotID, true
 	}
 	if m.provider == nil {
 		return id
@@ -135,6 +146,12 @@ func (m *haMember) identity() tokenIdentity {
 		}
 		if act.Manufacturer != "" {
 			id.manufacturer = act.Manufacturer
+		}
+		if act.SlotDescription != "" {
+			id.slotDescription = act.SlotDescription
+		}
+		if act.SlotManufacturer != "" {
+			id.slotManufacturer = act.SlotManufacturer
 		}
 		id.slotID = act.SlotID
 		id.slotKnown = true
@@ -181,6 +198,12 @@ func (m *haMember) selectorMatch(sel TokenSelector) matchResult {
 		return matchNo
 	}
 	if !check(id.manufacturer, sel.Manufacturer) {
+		return matchNo
+	}
+	if !check(id.slotDescription, sel.SlotDescription) {
+		return matchNo
+	}
+	if !check(id.slotManufacturer, sel.SlotManufacturer) {
 		return matchNo
 	}
 	if sel.SlotID != nil {
@@ -302,18 +325,6 @@ func NewPKCS11HAProvider(s PKCS11Settings) (*PKCS11HAProvider, error) {
 	seen := make(map[string]bool, len(s.Tokens))
 	members := make([]*haMember, 0, len(s.Tokens))
 	for i, tok := range s.Tokens {
-		name := tok.Name
-		if name == "" {
-			name = tok.TokenLabel
-		}
-		if name == "" {
-			name = fmt.Sprintf("token-%d", i)
-		}
-		if seen[name] {
-			return nil, fmt.Errorf("keyprovider: duplicate token name %q in pkcs11 HA set", name)
-		}
-		seen[name] = true
-
 		// Resolve the token's effective PIN source and inline-PIN fallback (per-token
 		// override, else the set-level pin_source / shared pin). The member provider
 		// then resolves the PIN lazily at its own login time.
@@ -326,20 +337,46 @@ func NewPKCS11HAProvider(s PKCS11Settings) (*PKCS11HAProvider, error) {
 			TokenLabel:        tok.TokenLabel,
 			TokenSerial:       tok.TokenSerial,
 			TokenManufacturer: tok.TokenManufacturer,
+			TokenModel:        tok.TokenModel,
+			SlotID:            tok.SlotID,
+			SlotDescription:   tok.SlotDescription,
+			SlotManufacturer:  tok.SlotManufacturer,
 			SessionPoolSize:   s.SessionPoolSize,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("keyprovider: configuring token %q: %w", name, err)
+			return nil, fmt.Errorf("keyprovider: configuring token %d: %w", i, err)
 		}
+		// Name the member for metrics and log lines. An explicit name wins;
+		// otherwise fall back to whatever the member is actually addressed by —
+		// which, for a member written as a URI, lives on the post-backfill
+		// config rather than on the raw TokenSettings.
+		name := tok.Name
+		if name == "" {
+			name = member.cfg.TokenLabel
+		}
+		if name == "" {
+			name = member.cfg.TokenSerial
+		}
+		if name == "" {
+			name = fmt.Sprintf("token-%d", i)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("keyprovider: duplicate token name %q in pkcs11 HA set", name)
+		}
+		seen[name] = true
 		// Seed the member's configured selectors from its effective (post URI-backfill)
 		// config so serial/label token pinning works even before the token is live.
 		members = append(members, &haMember{
-			name:            name,
-			provider:        member,
-			healthy:         true,
-			cfgLabel:        member.cfg.TokenLabel,
-			cfgSerial:       member.cfg.TokenSerial,
-			cfgManufacturer: member.cfg.TokenManufacturer,
+			name:                name,
+			provider:            member,
+			healthy:             true,
+			cfgLabel:            member.cfg.TokenLabel,
+			cfgSerial:           member.cfg.TokenSerial,
+			cfgManufacturer:     member.cfg.TokenManufacturer,
+			cfgModel:            member.cfg.TokenModel,
+			cfgSlotID:           member.cfg.SlotID,
+			cfgSlotDescription:  member.cfg.SlotDescription,
+			cfgSlotManufacturer: member.cfg.SlotManufacturer,
 		})
 		// Start optimistic: pools are built lazily, so a token is assumed healthy
 		// until an operation or probe proves otherwise.
@@ -475,14 +512,15 @@ func (p *PKCS11HAProvider) withFailover(ctx context.Context, op string, sel *Tok
 }
 
 // healthAffecting reports whether an error should count against a token's health.
-// A logical key-not-found is a property of the request, not the token, so it is
-// excluded; everything else (PKCS#11 transport/session errors, unreachable
-// tokens) counts.
+// A logical key-not-found, and a reference pinned to a different token, are
+// properties of the request rather than of the token, so both are excluded;
+// everything else (PKCS#11 transport/session errors, unreachable tokens)
+// counts.
 func healthAffecting(err error) bool {
 	if err == nil {
 		return false
 	}
-	return !errors.Is(err, ErrKeyNotFound)
+	return !errors.Is(err, ErrKeyNotFound) && !errors.Is(err, ErrTokenMismatch)
 }
 
 // GenerateKey creates a key on the primary token, first enforcing the unique
@@ -504,8 +542,22 @@ func (p *PKCS11HAProvider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyI
 			return nil, fmt.Errorf("keyprovider: checking token %q for existing key %q: %w", m.name, spec.Label, err)
 		}
 	}
-	// Generate on the first healthy token (the primary under primary-backup).
-	primary := p.route()[0]
+	// Generate on the first healthy token (the primary under primary-backup),
+	// restricted to the tokens matching any RFC 7512 pin on the spec — so
+	// "create this key on serial 0001234" lands there rather than on whichever
+	// replica happens to be primary.
+	candidates := p.route()
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("keyprovider: no healthy PKCS#11 token to generate %q on", spec.Label)
+	}
+	if !spec.Token.IsZero() {
+		matched, err := selectMatching(candidates, spec.Token)
+		if err != nil {
+			return nil, err
+		}
+		candidates = matched
+	}
+	primary := candidates[0]
 	info, err := primary.provider.GenerateKey(ctx, spec)
 	if err != nil {
 		primary.recordFailure(p.threshold)

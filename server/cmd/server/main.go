@@ -2068,15 +2068,18 @@ type providerBackedSigner struct {
 	pub      crypto.PublicKey
 }
 
-func newProviderBackedSigner(provider keyprovider.Provider, label string) (*providerBackedSigner, error) {
-	if label == "" {
+// newProviderBackedSigner binds a signer to a configured key reference, which
+// may be a bare label or a full RFC 7512 pkcs11: URI.
+func newProviderBackedSigner(provider keyprovider.Provider, keyRef string) (*providerBackedSigner, error) {
+	if keyRef == "" {
 		return nil, fmt.Errorf("key label is empty")
 	}
-	pub, err := provider.PublicKey(context.Background(), keyprovider.KeyRef{Label: label})
+	ref := keyprovider.KeyRefFor(keyRef)
+	pub, err := provider.PublicKey(context.Background(), ref)
 	if err != nil {
-		return nil, fmt.Errorf("loading public key for %q: %w", label, err)
+		return nil, fmt.Errorf("loading public key for %s: %w", keyprovider.DescribeKeyReference(keyRef), err)
 	}
-	return &providerBackedSigner{provider: provider, ref: keyprovider.KeyRef{Label: label}, pub: pub}, nil
+	return &providerBackedSigner{provider: provider, ref: ref, pub: pub}, nil
 }
 
 func (s *providerBackedSigner) Public() crypto.PublicKey { return s.pub }
@@ -2837,129 +2840,11 @@ func buildRoleProvider(cfg *config.Config, role string) (keyprovider.Provider, e
 	return recordHSMSignatures(keyprovider.Instrument(p)), nil
 }
 
-// pkcs11TokenSettings maps the config's optional multi-token HA list onto the
-// keyprovider token-settings type. It returns nil for the single-token case so
-// keyprovider.New selects the direct pooled provider.
-func pkcs11TokenSettings(tokens []config.PKCS11TokenConfig) []keyprovider.TokenSettings {
-	if len(tokens) == 0 {
-		return nil
-	}
-	out := make([]keyprovider.TokenSettings, 0, len(tokens))
-	for _, t := range tokens {
-		out = append(out, keyprovider.TokenSettings{
-			Name:              t.Name,
-			URI:               t.URI,
-			TokenLabel:        t.TokenLabel,
-			TokenSerial:       t.TokenSerial,
-			TokenManufacturer: t.TokenManufacturer,
-			Pin:               t.Pin,
-			PinSource:         pinSourceSettings(t.PinSource),
-		})
-	}
-	return out
-}
-
-// pinSourceSettings maps the config pin_source block onto the keyprovider settings
-// type (mirrors the helper in cmd/secsy-ca and cmd/secsy-secret). It reuses
-// vaultSettings for the embedded Vault connection parameters.
-func pinSourceSettings(p config.PinSourceConfig) keyprovider.PinSourceSettings {
-	return keyprovider.PinSourceSettings{
-		Type: p.Type,
-		Env:  keyprovider.EnvPinSourceSettings{Var: p.Env.Var},
-		File: keyprovider.FilePinSourceSettings{Path: p.File.Path, AllowInsecurePerms: p.File.AllowInsecurePerms},
-		Vault: keyprovider.VaultPinSourceSettings{
-			VaultSettings: vaultSettings(p.Vault.VaultProviderConfig),
-			Path:          p.Vault.Path,
-			Field:         p.Vault.Field,
-			KVVersion:     p.Vault.KVVersion,
-		},
-		AWS:   keyprovider.AWSPinSourceSettings{Region: p.AWS.Region, SecretID: p.AWS.SecretID, Field: p.AWS.Field},
-		Azure: keyprovider.AzurePinSourceSettings{VaultURL: p.Azure.VaultURL, Name: p.Azure.Name, Version: p.Azure.Version, Field: p.Azure.Field},
-		GCP:   gcpPinSourceSettings(p.GCP),
-	}
-}
-
 // keyProviderConfigForRole assembles the keyprovider.Config for a role, resolving
 // the backend type via the config's per-role override. It is shared by the server
 // and (in cmd/secsy-ca) the CLI so both wire identical settings.
 func keyProviderConfigForRole(cfg *config.Config, role string) keyprovider.Config {
-	return keyprovider.Config{
-		Type: keyprovider.ProviderType(cfg.KeyProviderTypeForRole(role)),
-		PKCS11: keyprovider.PKCS11Settings{
-			ModulePath:        cfg.PKCS11.ModulePath,
-			URI:               cfg.PKCS11.URI,
-			Pin:               cfg.PKCS11.Pin,
-			PinSource:         pinSourceSettings(cfg.PKCS11.PinSource),
-			TokenLabel:        cfg.PKCS11.TokenLabel,
-			TokenSerial:       cfg.PKCS11.TokenSerial,
-			TokenManufacturer: cfg.PKCS11.TokenManufacturer,
-			SessionPoolSize:   cfg.PKCS11.SessionPoolSize,
-			Tokens:            pkcs11TokenSettings(cfg.PKCS11.Tokens),
-			SelectionPolicy:   cfg.PKCS11.SelectionPolicy,
-			FailureThreshold:  cfg.PKCS11.FailureThreshold,
-			ProbeInterval:     time.Duration(cfg.PKCS11.ProbeIntervalSeconds) * time.Second,
-		},
-		Software: keyprovider.SoftwareSettings{
-			KeystoreDir: cfg.KeyProvider.Software.KeystoreDir,
-		},
-		KMS: keyprovider.KMSSettings{
-			Backend:   cfg.KeyProvider.KMS.Backend,
-			Region:    cfg.KeyProvider.KMS.Region,
-			KeyPrefix: cfg.KeyProvider.KMS.KeyPrefix,
-			VaultURL:  cfg.KeyProvider.KMS.VaultURL,
-			Vault:     vaultSettings(cfg.KeyProvider.KMS.Vault),
-			GCP:       gcpKMSSettings(cfg.KeyProvider.KMS.GCP),
-		},
-	}
-}
-
-// gcpKMSSettings maps the config's Google Cloud KMS block onto the keyprovider
-// settings type. It is shared by the server and (in cmd/secsy-ca) the CLI so
-// both wire identical Cloud KMS parameters.
-func gcpKMSSettings(g config.GCPProviderConfig) keyprovider.GCPKMSSettings {
-	return keyprovider.GCPKMSSettings{
-		Project:         g.Project,
-		Location:        g.Location,
-		KeyRing:         g.KeyRing,
-		CredentialsFile: g.CredentialsFile,
-		CredentialsJSON: g.CredentialsJSON,
-		ProtectionLevel: g.ProtectionLevel,
-		RSAPSS:          g.RSAPSS,
-		Endpoint:        g.Endpoint,
-	}
-}
-
-// gcpPinSourceSettings maps the config's Google Cloud Secret Manager pin_source
-// block onto the keyprovider settings type. Shared across the three commands.
-func gcpPinSourceSettings(g config.GCPPinSourceConfig) keyprovider.GCPPinSourceSettings {
-	return keyprovider.GCPPinSourceSettings{
-		Project:         g.Project,
-		Secret:          g.Secret,
-		Version:         g.Version,
-		CredentialsFile: g.CredentialsFile,
-		CredentialsJSON: g.CredentialsJSON,
-		Field:           g.Field,
-		Endpoint:        g.Endpoint,
-	}
-}
-
-// vaultSettings maps the config's HashiCorp Vault block onto the keyprovider
-// settings type. It is shared by the server and (in cmd/secsy-ca) the CLI so both
-// wire identical Vault Transit parameters.
-func vaultSettings(v config.VaultProviderConfig) keyprovider.VaultSettings {
-	return keyprovider.VaultSettings{
-		Address:     v.Address,
-		Mount:       v.Mount,
-		Namespace:   v.Namespace,
-		AuthMethod:  v.AuthMethod,
-		Token:       v.Token,
-		RoleID:      v.RoleID,
-		SecretID:    v.SecretID,
-		AppRolePath: v.AppRolePath,
-		CACertFile:  v.CACertFile,
-		Insecure:    v.Insecure,
-		Timeout:     time.Duration(v.TimeoutSeconds) * time.Second,
-	}
+	return cfg.KeyProviderConfigForRole(role)
 }
 
 // newStapledCertificate loads the server's TLS key pair, produces an initial

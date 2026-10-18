@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"strconv"
 	"strings"
 
 	"github.com/miekg/pkcs11"
@@ -28,17 +29,52 @@ type PKCS11Signer struct {
 	isEdDSA    bool
 }
 
+// PKCS11Config addresses one PKCS#11 token. Every selector below corresponds to
+// an RFC 7512 token/slot path attribute, so a "pkcs11:" URI from the
+// configuration can be mapped onto it without losing any of the addressing the
+// URI expresses: token/serial/model/manufacturer select by CK_TOKEN_INFO,
+// slot-id/slot-description/slot-manufacturer by CK_SLOT_ID / CK_SLOT_INFO.
+//
+// A zero-valued selector does not constrain the search; the first slot matching
+// every set selector wins, so a single-token deployment can leave them all empty
+// and a multi-token host can pin exactly one.
 type PKCS11Config struct {
 	ModulePath        string
 	Pin               string
 	TokenLabel        string
 	TokenSerial       string
 	TokenManufacturer string
+	// TokenModel matches CK_TOKEN_INFO.model (RFC 7512 "model").
+	TokenModel string
+	// SlotID, when non-nil, pins the CK_SLOT_ID itself (RFC 7512 "slot-id").
+	// This is the only selector that survives two tokens being otherwise
+	// identical, which is exactly the SoftHSM-in-CI and HSM-replica case.
+	SlotID *uint
+	// SlotDescription / SlotManufacturer match CK_SLOT_INFO (RFC 7512
+	// "slot-description" / "slot-manufacturer") — the reader, not the token, so
+	// they keep addressing a card slot whose token has been swapped.
+	SlotDescription  string
+	SlotManufacturer string
 }
 
-// findToken locates the PKCS#11 slot matching the config's token attributes.
+// findToken locates the PKCS#11 slot matching the config's token/slot selectors.
 func findToken(ctx *pkcs11.Ctx, slots []uint, cfg PKCS11Config) (uint, error) {
 	for _, s := range slots {
+		if cfg.SlotID != nil && s != *cfg.SlotID {
+			continue
+		}
+		if cfg.SlotDescription != "" || cfg.SlotManufacturer != "" {
+			si, err := ctx.GetSlotInfo(s)
+			if err != nil {
+				continue
+			}
+			if cfg.SlotDescription != "" && strings.TrimRight(si.SlotDescription, " ") != cfg.SlotDescription {
+				continue
+			}
+			if cfg.SlotManufacturer != "" && strings.TrimRight(si.ManufacturerID, " ") != cfg.SlotManufacturer {
+				continue
+			}
+		}
 		info, err := ctx.GetTokenInfo(s)
 		if err != nil {
 			continue
@@ -46,6 +82,7 @@ func findToken(ctx *pkcs11.Ctx, slots []uint, cfg PKCS11Config) (uint, error) {
 		label := strings.TrimRight(info.Label, " ")
 		serial := strings.TrimRight(info.SerialNumber, " ")
 		mfr := strings.TrimRight(info.ManufacturerID, " ")
+		model := strings.TrimRight(info.Model, " ")
 		if cfg.TokenLabel != "" && label != cfg.TokenLabel {
 			continue
 		}
@@ -55,25 +92,62 @@ func findToken(ctx *pkcs11.Ctx, slots []uint, cfg PKCS11Config) (uint, error) {
 		if cfg.TokenManufacturer != "" && mfr != cfg.TokenManufacturer {
 			continue
 		}
+		if cfg.TokenModel != "" && model != cfg.TokenModel {
+			continue
+		}
 		return s, nil
 	}
-	return 0, fmt.Errorf("no token found matching label=%q serial=%q manufacturer=%q", cfg.TokenLabel, cfg.TokenSerial, cfg.TokenManufacturer)
+	return 0, fmt.Errorf("no token found matching %s", cfg.describeSelectors())
 }
 
-// BuildPKCS11URI constructs a PKCS#11 URI from the config and key label.
+// describeSelectors renders the configured token/slot selectors for an error
+// message, naming only the ones actually set so the operator sees the query they
+// wrote rather than a wall of empty fields.
+func (cfg PKCS11Config) describeSelectors() string {
+	var parts []string
+	add := func(name, val string) {
+		if val != "" {
+			parts = append(parts, fmt.Sprintf("%s=%q", name, val))
+		}
+	}
+	add("token", cfg.TokenLabel)
+	add("serial", cfg.TokenSerial)
+	add("model", cfg.TokenModel)
+	add("manufacturer", cfg.TokenManufacturer)
+	if cfg.SlotID != nil {
+		parts = append(parts, fmt.Sprintf("slot-id=%d", *cfg.SlotID))
+	}
+	add("slot-description", cfg.SlotDescription)
+	add("slot-manufacturer", cfg.SlotManufacturer)
+	if len(parts) == 0 {
+		return "(any token)"
+	}
+	return strings.Join(parts, " ")
+}
+
+// BuildPKCS11URI constructs an RFC 7512 PKCS#11 URI from the config and key
+// label, carrying through every token/slot selector the config pins so the URI
+// round-trips back to the same token. The attribute order is the historical
+// token-then-object one, which is what already-issued CAs carry in their stored
+// PKCS11URI; RFC 7512 attributes are unordered, so this is cosmetic.
 func BuildPKCS11URI(cfg PKCS11Config, keyLabel string) string {
 	parts := []string{}
-	if cfg.TokenLabel != "" {
-		parts = append(parts, "token="+cfg.TokenLabel)
+	add := func(name, val string) {
+		if val != "" {
+			parts = append(parts, name+"="+encodePath(val))
+		}
 	}
-	if cfg.TokenSerial != "" {
-		parts = append(parts, "serial="+cfg.TokenSerial)
+	add("token", cfg.TokenLabel)
+	add("serial", cfg.TokenSerial)
+	add("model", cfg.TokenModel)
+	add("manufacturer", cfg.TokenManufacturer)
+	if cfg.SlotID != nil {
+		parts = append(parts, "slot-id="+strconv.FormatUint(uint64(*cfg.SlotID), 10))
 	}
-	if cfg.TokenManufacturer != "" {
-		parts = append(parts, "manufacturer="+cfg.TokenManufacturer)
-	}
-	parts = append(parts, "object="+keyLabel, "type=private")
-	return "pkcs11:" + strings.Join(parts, ";")
+	add("slot-description", cfg.SlotDescription)
+	add("slot-manufacturer", cfg.SlotManufacturer)
+	parts = append(parts, "object="+encodePath(keyLabel), "type="+PKCS11TypePrivate)
+	return pkcs11Scheme + strings.Join(parts, ";")
 }
 
 func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {

@@ -259,6 +259,36 @@ pkcs11:
   module_path: "/usr/lib/pkcs11/yubihsm_pkcs11.so"
   pin: "0001password"
   token_label: "YubiHSM"
+
+  # uri is an RFC 7512 pkcs11: URI that backfills every module/token/slot/PIN
+  # field left unset above — the single self-describing string `p11tool
+  # --list-tokens` prints. Explicit fields always win over it. It addresses the
+  # TOKEN, so it may not name an object (object=/id=); a key is named in the
+  # setting that names that key (tsa.key_label, signing.signers[].key_label,
+  # brski.registrar_key_label, secret.escrow.agents[].key_label,
+  # server.tls.self_issue.key_label), each of which accepts a bare label,
+  # "software:<label>", or a full pkcs11: URI. See docs/hsm/pkcs11-uris.md.
+  #
+  #   uri: "pkcs11:token=YubiHSM?module-name=yubihsm_pkcs11&pin-source=file:/etc/secsy/hsm.pin"
+  #
+  # module-name= is resolved the way p11-kit resolves it (p11-kit module
+  # descriptions, then /usr/lib/<triplet>/pkcs11, /usr/lib64/pkcs11,
+  # /usr/local/lib/pkcs11; override with SECSY_PKCS11_MODULE_DIRS), which keeps
+  # one config file correct across distributions. Any embedded pin-value is
+  # redacted from a dumped or logged config.
+  #uri: ""
+
+  # The remaining RFC 7512 token and slot selectors. The first slot matching
+  # every SET selector wins; unset selectors do not constrain the search.
+  # slot_id is the one that separates two tokens nothing else can — two SoftHSM
+  # tokens initialised with the same label, or two identical HSMs in one host.
+  #token_serial: ""        # CK_TOKEN_INFO.serialNumber   (serial=)
+  #token_manufacturer: ""  # CK_TOKEN_INFO.manufacturerID (manufacturer=)
+  #token_model: ""         # CK_TOKEN_INFO.model          (model=)
+  #slot_id: 0              # CK_SLOT_ID                   (slot-id=)
+  #slot_description: ""    # CK_SLOT_INFO.slotDescription (slot-description=)
+  #slot_manufacturer: ""   # CK_SLOT_INFO.manufacturerID  (slot-manufacturer=)
+
   # session_pool_size bounds concurrent PKCS#11 sessions (and thus concurrent
   # on-device operations); requests beyond it queue. 0/omitted uses the default
   # (8). Size it toward the HSM's supported concurrent-session limit. See
@@ -285,6 +315,17 @@ pkcs11:
   #     # pin: "..."                     # optional; falls back to pkcs11.pin
   #   - name: "hsm-b"
   #     token_label: "secsy-ca-b"
+  #
+  # Each member takes the same token/slot selectors as the block above, or its
+  # own `uri` carrying them — which is the natural form here, because replicas
+  # deliberately share a CKA_LABEL and differ only by serial or slot. A member
+  # URI must not repeat the module: one module drives the whole set.
+  #
+  # tokens:
+  #   - name: "primary"
+  #     uri: "pkcs11:serial=0001234567"
+  #   - name: "backup"
+  #     uri: "pkcs11:serial=0007654321"
 
 yubihsm:
   # Direct USB belongs to one claim at a time, and Yubico's PKCS#11 module holds

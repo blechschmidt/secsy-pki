@@ -309,6 +309,34 @@ func checkPKCS11URIs(ctx context.Context, r *Report, cfg *config.Config, db dbHa
 			uris = append(uris, namedURI{name: src, uri: t.URI})
 		}
 
+		// Configured key references written as URIs (tsa.key_label and friends).
+		// These address a key rather than a token, so they are also resolved
+		// live below when a PKCS#11 provider is available.
+		type namedKeyRef struct {
+			name string
+			ref  string
+			role string
+		}
+		var keyRefs []namedKeyRef
+		addKeyRef := func(name, ref, role string) {
+			if isPKCS11URI(ref) {
+				keyRefs = append(keyRefs, namedKeyRef{name: name, ref: ref, role: role})
+			}
+		}
+		addKeyRef("tsa.key_label", cfg.TSA.KeyLabel, "tsa")
+		addKeyRef("brski.registrar_key_label", cfg.BRSKI.RegistrarKeyLabel, "ca")
+		addKeyRef("brski.masa.key_label", cfg.BRSKI.MASA.KeyLabel, "ca")
+		addKeyRef("server.tls.self_issue.key_label", cfg.Server.TLS.SelfIssue.KeyLabel, "ca")
+		for i, sg := range cfg.Signing.Signers {
+			addKeyRef(fmt.Sprintf("signing.signers[%d].key_label", i), sg.KeyLabel, "signing")
+		}
+		for i, a := range cfg.Secret.Escrow.Agents {
+			addKeyRef(fmt.Sprintf("secret.escrow.agents[%d].key_label", i), a.KeyLabel, "ca")
+		}
+		for _, kr := range keyRefs {
+			uris = append(uris, namedURI{name: kr.name, uri: kr.ref})
+		}
+
 		// CA signing-key URIs from the store (only those that are pkcs11: URIs).
 		var cas []models.CA
 		if db != nil && schemaOK {
@@ -364,9 +392,36 @@ func checkPKCS11URIs(ctx context.Context, r *Report, cfg *config.Config, db dbHa
 			}
 		}
 
+		// Configured key URIs: confirm each names an object and lands on a real
+		// key. A configured key that does not resolve is a warning here (the
+		// per-role keys.* checks are the authoritative sign/verify gates) but a
+		// URI that names no object at all is a config error.
+		keysResolved := 0
+		for _, kr := range keyRefs {
+			if p, err := pki.ParsePKCS11URI(kr.ref); err == nil && !p.HasObjectSelector() {
+				failures = append(failures, fmt.Sprintf("%s: names a token but no key (add object= or id=)", kr.name))
+				continue
+			}
+			prov := providers.get(kr.role)
+			if prov == nil || prov.Name() != string(keyprovider.ProviderPKCS11) {
+				continue
+			}
+			if _, err := prov.FindKey(ctx, keyprovider.KeyRefFor(kr.ref)); err != nil {
+				warnings = append(warnings, fmt.Sprintf("%s: key did not resolve on token (%v)", kr.name, err))
+			} else {
+				keysResolved++
+			}
+		}
+		if len(failures) > 0 {
+			return StatusFail, strings.Join(failures, "; ")
+		}
+
 		msg := fmt.Sprintf("%d pkcs11: URI(s) parsed", parsed)
 		if resolved > 0 {
 			msg += fmt.Sprintf("; %d CA key(s) resolved on token", resolved)
+		}
+		if keysResolved > 0 {
+			msg += fmt.Sprintf("; %d configured key URI(s) resolved on token", keysResolved)
 		}
 		if len(warnings) > 0 {
 			return StatusWarn, msg + "; " + strings.Join(warnings, "; ")

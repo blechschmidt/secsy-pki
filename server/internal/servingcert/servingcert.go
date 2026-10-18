@@ -219,12 +219,25 @@ func (s *SelfIssuer) Current() *x509.Certificate {
 	return s.current
 }
 
-// keyLabel resolves the provider label for the serving key.
+// keyLabel renders the configured serving key for a log line or an error. It is
+// the reference as written (with any PIN redacted) rather than only its label,
+// because a key addressed by CKA_ID alone has no label to print. See keyRef for
+// the address the provider is actually called with.
 func (s *SelfIssuer) keyLabel() string {
 	if s.cfg.KeyLabel != "" {
-		return s.cfg.KeyLabel
+		return keyprovider.DescribeKeyReference(s.cfg.KeyLabel)
 	}
 	return "serving-tls-" + s.cfg.CAID
+}
+
+// keyRef resolves the provider reference for the serving key. The configured
+// key_label may be a bare label or a full RFC 7512 pkcs11: URI, so the serving
+// key can be addressed by CKA_ID or pinned to one token like any other key.
+func (s *SelfIssuer) keyRef() keyprovider.KeyRef {
+	if s.cfg.KeyLabel != "" {
+		return keyprovider.KeyRefFor(s.cfg.KeyLabel)
+	}
+	return keyprovider.KeyRef{Label: "serving-tls-" + s.cfg.CAID}
 }
 
 // Run drives the auto-rotation loop until ctx is cancelled. It sleeps until the
@@ -305,7 +318,7 @@ func (s *SelfIssuer) renewBefore(leaf *x509.Certificate) time.Duration {
 // whose private key is a provider-backed signer (so the key stays in the
 // provider) and whose chain runs leaf → issuing CA → root.
 func (s *SelfIssuer) issue(ctx context.Context) (*tls.Certificate, *x509.Certificate, error) {
-	ref := keyprovider.KeyRef{Label: s.keyLabel()}
+	ref := s.keyRef()
 	pub, err := s.ensureKey(ctx, ref)
 	if err != nil {
 		return nil, nil, err
@@ -347,19 +360,21 @@ func (s *SelfIssuer) ensureKey(ctx context.Context, ref keyprovider.KeyRef) (cry
 	if err != nil {
 		info, err = s.keys.GenerateKey(ctx, keyprovider.KeySpec{
 			Label:   ref.Label,
+			ID:      ref.ID,
 			KeyType: s.cfg.keyType(),
 			Usage:   keyprovider.KeyUsageSign,
+			Token:   ref.Token,
 		})
 		if err != nil {
 			if found, ferr := s.keys.FindKey(ctx, ref); ferr == nil {
 				info = found
 			} else {
-				return nil, fmt.Errorf("provisioning serving-tls key %q: %w", ref.Label, err)
+				return nil, fmt.Errorf("provisioning serving-tls key %q: %w", s.keyLabel(), err)
 			}
 		}
 	}
 	if info.PublicKey == nil {
-		return nil, fmt.Errorf("serving-tls key %q has no public key", ref.Label)
+		return nil, fmt.Errorf("serving-tls key %q has no public key", s.keyLabel())
 	}
 	return info.PublicKey, nil
 }

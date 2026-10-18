@@ -85,9 +85,14 @@ type Vault interface {
 type Ring struct {
 	provider keyprovider.Provider
 	family   string
-	active   *Service
-	entries  map[string]models.KEKVersion // by label, every recorded version
-	ordered  []models.KEKVersion          // ascending by version
+	// token is the RFC 7512 token pin the family inherits when its configured
+	// reference is a pkcs11: URI naming a particular token (serial, slot-id,
+	// ...). Every version of the family lives on the token that holds the base
+	// key, so the pin applies to the derived "<family>-vN" labels too.
+	token   keyprovider.TokenSelector
+	active  *Service
+	entries map[string]models.KEKVersion // by label, every recorded version
+	ordered []models.KEKVersion          // ascending by version
 
 	// pqc is the family's ML-KEM-1024 hybrid key material (Task 137), attached by
 	// LoadRingWithPQC when the family has been provisioned for post-quantum
@@ -107,7 +112,8 @@ type Ring struct {
 // version's Service is constructed eagerly (it self-tests the wrap algorithm
 // against the token); handles for older versions are built lazily when an
 // envelope referencing them is opened.
-func LoadRing(ctx context.Context, provider keyprovider.Provider, family string, versions []models.KEKVersion) (*Ring, error) {
+func LoadRing(ctx context.Context, provider keyprovider.Provider, familyRef string, versions []models.KEKVersion) (*Ring, error) {
+	family, token := SplitKEKRef(familyRef)
 	if family == "" {
 		return nil, fmt.Errorf("secret: KEK family is required")
 	}
@@ -141,7 +147,7 @@ func LoadRing(ctx context.Context, provider keyprovider.Provider, family string,
 	if active == nil {
 		return nil, fmt.Errorf("secret: family %q has no active KEK version", family)
 	}
-	svc, err := NewVersionedService(ctx, provider, keyprovider.KeyRef{Label: active.Label}, active.Version)
+	svc, err := NewVersionedService(ctx, provider, keyprovider.KeyRef{Label: active.Label, Token: token}, active.Version)
 	if err != nil {
 		return nil, err
 	}
@@ -150,11 +156,29 @@ func LoadRing(ctx context.Context, provider keyprovider.Provider, family string,
 	return &Ring{
 		provider: provider,
 		family:   family,
+		token:    token,
 		active:   svc,
 		entries:  entries,
 		ordered:  ordered,
 		services: map[string]*Service{active.Label: svc},
 	}, nil
+}
+
+// SplitKEKRef splits a configured KEK reference into the family name and the
+// token pin every version of the family inherits.
+//
+// The family name is persisted into each envelope's wrap header and is what
+// "<family>-v2" is derived from on rotation, so it must be the plain object
+// label even when the configuration addresses the key by URI. The rest of the
+// URI's addressing — which token the family lives on — is kept separately and
+// applied to each version as it is opened. A bare label (the historical form,
+// and what the database stores) yields itself and an empty pin.
+func SplitKEKRef(ref string) (string, keyprovider.TokenSelector) {
+	if !keyprovider.IsPKCS11URI(ref) {
+		return ref, keyprovider.TokenSelector{}
+	}
+	r := keyprovider.KeyRefFor(ref)
+	return r.Label, r.Token
 }
 
 // LoadRingWithPQC is LoadRing with the family's post-quantum ML-KEM material
@@ -316,7 +340,7 @@ func (r *Ring) serviceFor(ctx context.Context, kekLabel string) (*Service, error
 	if svc, ok := r.services[kekLabel]; ok {
 		return svc, nil
 	}
-	svc, err := newDecryptOnlyService(ctx, r.provider, keyprovider.KeyRef{Label: kekLabel}, entry.Version)
+	svc, err := newDecryptOnlyService(ctx, r.provider, keyprovider.KeyRef{Label: kekLabel, Token: r.token}, entry.Version)
 	if err != nil {
 		return nil, err
 	}
@@ -469,7 +493,8 @@ type RotationResult struct {
 // before the lineage is advanced, so a key the token cannot actually unwrap
 // with never becomes active. Existing envelopes are untouched — they keep
 // decrypting under the retiring version until re-wrapped.
-func RotateKEK(ctx context.Context, provider keyprovider.Provider, store KEKStore, family, keyType string) (*RotationResult, error) {
+func RotateKEK(ctx context.Context, provider keyprovider.Provider, store KEKStore, familyRef, keyType string) (*RotationResult, error) {
+	family, token := SplitKEKRef(familyRef)
 	if family == "" {
 		return nil, fmt.Errorf("secret: KEK family is required")
 	}
@@ -485,7 +510,7 @@ func RotateKEK(ctx context.Context, provider keyprovider.Provider, store KEKStor
 	if len(versions) == 0 {
 		// Never rotated: the base key must exist — rotation supersedes a key, it
 		// does not bootstrap one.
-		if _, err := provider.FindKey(ctx, keyprovider.KeyRef{Label: family}); err != nil {
+		if _, err := provider.FindKey(ctx, keyprovider.KeyRef{Label: family, Token: token}); err != nil {
 			return nil, fmt.Errorf("secret: family %q has no existing KEK to rotate (create it with init-kek first): %w", family, err)
 		}
 	} else {
@@ -506,7 +531,7 @@ func RotateKEK(ctx context.Context, provider keyprovider.Provider, store KEKStor
 
 	newLabel := VersionLabel(family, next)
 	adopted := false
-	if _, err := provider.FindKey(ctx, keyprovider.KeyRef{Label: newLabel}); err == nil {
+	if _, err := provider.FindKey(ctx, keyprovider.KeyRef{Label: newLabel, Token: token}); err == nil {
 		// The key exists but the lineage does not know it: a previous rotation
 		// generated it and crashed before the store recorded it. Adopt it instead
 		// of generating a second key under the same label.
@@ -516,6 +541,7 @@ func RotateKEK(ctx context.Context, provider keyprovider.Provider, store KEKStor
 			Label:   newLabel,
 			KeyType: keyType,
 			Usage:   keyprovider.KeyUsageDecrypt,
+			Token:   token,
 		}); err != nil {
 			return nil, fmt.Errorf("secret: generating KEK version %d: %w", next, err)
 		}
@@ -524,7 +550,7 @@ func RotateKEK(ctx context.Context, provider keyprovider.Provider, store KEKStor
 	// Self-test before the lineage advances: locate the key, check its shape,
 	// and negotiate a wrap algorithm (which round-trips a probe value through
 	// the token).
-	if _, err := NewVersionedService(ctx, provider, keyprovider.KeyRef{Label: newLabel}, next); err != nil {
+	if _, err := NewVersionedService(ctx, provider, keyprovider.KeyRef{Label: newLabel, Token: token}, next); err != nil {
 		return nil, fmt.Errorf("secret: new KEK version failed its self-test (lineage not advanced): %w", err)
 	}
 

@@ -151,7 +151,7 @@ func NewEscrowPolicy(ctx context.Context, provider keyprovider.Provider, thresho
 		wrapAlg := AlgRSAOAEPSHA256
 		if spec.KeyLabel != "" {
 			if _, ok := provider.(keyprovider.DecrypterProvider); ok {
-				alg, err := negotiateWrapAlg(ctx, provider, keyprovider.KeyRef{Label: spec.KeyLabel}, pub)
+				alg, err := negotiateWrapAlg(ctx, provider, keyprovider.KeyRefFor(spec.KeyLabel), pub)
 				if err != nil {
 					return nil, fmt.Errorf("secret: recovery agent %q: %w", spec.ID, err)
 				}
@@ -182,7 +182,7 @@ func resolveAgentPublicKey(ctx context.Context, provider keyprovider.Provider, s
 	if spec.KeyLabel == "" {
 		return nil, fmt.Errorf("no public key: set a key_label or an inline public_key")
 	}
-	info, err := provider.FindKey(ctx, keyprovider.KeyRef{Label: spec.KeyLabel})
+	info, err := provider.FindKey(ctx, keyprovider.KeyRefFor(spec.KeyLabel))
 	if err != nil {
 		return nil, fmt.Errorf("locating agent key: %w", err)
 	}
@@ -400,7 +400,7 @@ func (rs *RecoveryService) unwrapAgentShare(ctx context.Context, share EscrowSha
 		return shamirShare{}, err
 	}
 	dp := rs.provider.(keyprovider.DecrypterProvider)
-	dec, err := dp.Decrypter(ctx, keyprovider.KeyRef{Label: share.KeyLabel})
+	dec, err := dp.Decrypter(ctx, keyprovider.KeyRefFor(share.KeyLabel))
 	if err != nil {
 		return shamirShare{}, fmt.Errorf("secret: opening agent %q key: %w", share.AgentID, err)
 	}

@@ -303,13 +303,16 @@ func (s *Service) KEKInfo() KEKInfo {
 }
 
 // ProvisionKEK generates a new RSA key-encryption key on the given provider
-// under label, if one does not already exist. keyType must be an RSA type
-// ("rsa-2048" or "rsa-4096"; empty defaults to rsa-4096). It returns a Service
-// bound to the freshly created KEK. If a key with the label already exists,
-// ProvisionKEK returns an error — rotating a KEK is a deliberate,
-// separately-managed operation, since re-generating over an in-use KEK would
-// render all existing ciphertext undecryptable.
-func ProvisionKEK(ctx context.Context, provider keyprovider.Provider, label, keyType string) (*Service, error) {
+// under labelRef, if one does not already exist. labelRef is a configured key
+// reference: a bare label or an RFC 7512 pkcs11: URI, which additionally pins
+// the token the KEK is created on. keyType must be an RSA type ("rsa-2048" or
+// "rsa-4096"; empty defaults to rsa-4096). It returns a Service bound to the
+// freshly created KEK. If a key with the label already exists, ProvisionKEK
+// returns an error — rotating a KEK is a deliberate, separately-managed
+// operation, since re-generating over an in-use KEK would render all existing
+// ciphertext undecryptable.
+func ProvisionKEK(ctx context.Context, provider keyprovider.Provider, labelRef, keyType string) (*Service, error) {
+	label, token := SplitKEKRef(labelRef)
 	if label == "" {
 		return nil, fmt.Errorf("secret: KEK label is required")
 	}
@@ -320,8 +323,9 @@ func ProvisionKEK(ctx context.Context, provider keyprovider.Provider, label, key
 		Label:   label,
 		KeyType: keyType,
 		Usage:   keyprovider.KeyUsageDecrypt,
+		Token:   token,
 	}); err != nil {
 		return nil, fmt.Errorf("secret: generating KEK: %w", err)
 	}
-	return NewService(ctx, provider, keyprovider.KeyRef{Label: label})
+	return NewService(ctx, provider, keyprovider.KeyRef{Label: label, Token: token})
 }

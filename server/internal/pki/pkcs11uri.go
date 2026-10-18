@@ -214,6 +214,26 @@ func (u *PKCS11URI) HasObjectSelector() bool {
 	return u.Object != "" || len(u.ID) > 0
 }
 
+// HasTokenSelector reports whether the URI constrains which token/slot is used.
+// A key reference that pins a token is routed to that token in a
+// high-availability set instead of to whichever replica answers first.
+func (u *PKCS11URI) HasTokenSelector() bool {
+	return u.Token != "" || u.Serial != "" || u.Model != "" || u.Manufacturer != "" ||
+		u.SlotID != nil || u.SlotDescription != "" || u.SlotManufacturer != ""
+}
+
+// HasModuleSelector reports whether the URI names the PKCS#11 module itself
+// (module-path or module-name).
+func (u *PKCS11URI) HasModuleSelector() bool {
+	return u.ModulePath != "" || u.ModuleName != ""
+}
+
+// HasPIN reports whether the URI carries the user PIN (pin-value) or names
+// where to read it (pin-source).
+func (u *PKCS11URI) HasPIN() bool {
+	return u.PinValue != "" || u.PinSource != ""
+}
+
 // IDHex returns the CKA_ID as a lowercase hex string ("" when no id= is present),
 // matching how HSMKeyInfo.ID and keyprovider.KeyRef.ID carry a CKA_ID.
 func (u *PKCS11URI) IDHex() string {

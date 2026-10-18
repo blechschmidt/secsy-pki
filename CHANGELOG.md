@@ -14,6 +14,32 @@ version being released becomes the body of the GitHub release. See
 
 ### Added
 
+**Everything the configuration names on a token can now be named the way
+PKCS#11 names it.** A `CKA_LABEL` is a nickname, not an identity: high-
+availability replicas deliberately share one, a token can hold two objects with
+the same one, and a key imported by a vendor tool has whatever label that tool
+chose. Every setting that names a key — `tsa.key_label`,
+`signing.signers[].key_label`, `brski.registrar_key_label`,
+`brski.masa.key_label`, `secret.escrow.agents[].key_label`,
+`server.tls.self_issue.key_label` — now accepts a full RFC 7512 `pkcs11:` URI
+alongside the bare label it always took, as do the commands that provision
+those keys (`secsy-ca tsa-key -label`, `signing-key -label`,
+`ca import -existing-key`) and the provisioning API. A key addressed by `id=`
+resolves by `CKA_ID`; one that pins `serial=` or `slot-id=` is routed to that
+device and fails closed rather than signing on another.
+
+The `pkcs11` block gained the RFC 7512 token and slot attributes it was
+missing — `token_model`, `slot_id`, `slot_description`, `slot_manufacturer`,
+per token and per HA member — and `pkcs11.uri` backfills all of them. An HA
+member may now be addressed entirely by its own `uri`, which is the natural
+form when replicas differ only by serial. `module-name=` is resolved the way
+p11-kit resolves it (p11-kit module descriptions, then the conventional module
+directories; override with `SECSY_PKCS11_MODULE_DIRS`), so one config file is
+correct on Debian multiarch, RHEL `lib64` and a from-source `/usr/local` build.
+`SECSY_PKCS11_URI`, `SECSY_TOKEN_MODEL` and `SECSY_PKCS11_SLOT_ID` join the
+environment overrides. New: [`docs/hsm/pkcs11-uris.md`](docs/hsm/pkcs11-uris.md)
+and [`examples/pkcs11-uri-addressing/`](examples/pkcs11-uri-addressing).
+
 **A YubiHSM 2 Compose stack, and the device audit log where you say it goes.**
 [`deploy/yubihsm/`](deploy/yubihsm/) is a working deployment for a YubiHSM
 attached over USB: a `yubihsm-connector` service that owns the device node, a
@@ -32,7 +58,28 @@ written, which on a force-audited device is the record the deployment is
 obliged to keep. The image ships `/app/audit`, owned by the runtime user, so a
 named volume mounted there is writable by uid 65532 rather than by root.
 
+### Changed
+
+**A `pkcs11:` URI the deployment cannot honour in full is now rejected when the
+config loads, naming the YAML path, instead of being half-applied at the first
+signature.** A key reference must name an object and must not carry the module
+or a PIN (both are deployment-wide, not per-key); a token reference must not
+name an object; a KEK reference carries only `object=`, because that label is
+persisted in every envelope's wrap header and is what `<label>-v2` is derived
+from on rotation; a `module-name=` must resolve to a file; and an attribute
+nobody recognises is an error rather than the doctor warning it used to be. The
+`pkcs11.uris` doctor check additionally resolves each configured key URI
+against a live token.
+
 ### Fixed
+
+**SCEP, CMP and the SSH CA now address a CA key by its whole stored URI.** All
+three reduced the CA's `pkcs11:` URI to its `CKA_LABEL` and threw the rest
+away, so a CA key addressed by `CKA_ID` or pinned to one replica of an HA set
+was looked up by a label that may name a different object — or the same object
+on the wrong device. They now resolve it exactly as the X.509 issuance path
+does. The backup restore-verification drill likewise checks the key at the
+address its manifest recorded rather than at the label.
 
 **A configured audit-log destination is now checked at startup, not at the
 first drain.** The server opened `yubihsm.audit_log_file` inside the branch that

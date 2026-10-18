@@ -154,6 +154,11 @@ type TokenIdentity struct {
 	Serial       string
 	Model        string
 	Manufacturer string
+	// SlotDescription / SlotManufacturer come from CK_SLOT_INFO — the reader,
+	// not the token — and back the RFC 7512 slot-description / slot-manufacturer
+	// selectors. They stay the same when the token in that slot is swapped.
+	SlotDescription  string
+	SlotManufacturer string
 }
 
 // NewSessionPool loads (or reuses) the configured module, opens `size`
@@ -197,6 +202,10 @@ func NewSessionPool(cfg PKCS11Config, size int) (_ *SessionPool, err error) {
 		identity.Serial = strings.TrimRight(info.SerialNumber, " ")
 		identity.Model = strings.TrimRight(info.Model, " ")
 		identity.Manufacturer = strings.TrimRight(info.ManufacturerID, " ")
+	}
+	if si, serr := ctx.GetSlotInfo(slotID); serr == nil {
+		identity.SlotDescription = strings.TrimRight(si.SlotDescription, " ")
+		identity.SlotManufacturer = strings.TrimRight(si.ManufacturerID, " ")
 	}
 
 	p := &SessionPool{

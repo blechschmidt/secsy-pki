@@ -136,7 +136,7 @@ func buildLDAPProbe(cfg *config.Config) (doctor.LDAPProber, error) {
 	if len(urls) == 0 {
 		return nil, fmt.Errorf("auth.ldap.url is required")
 	}
-	bindSource, err := keyprovider.NewPinSource(pinSourceSettings(c.BindPasswordSource), c.BindPassword)
+	bindSource, err := keyprovider.NewPinSource(c.BindPasswordSource.Settings(), c.BindPassword)
 	if err != nil {
 		return nil, fmt.Errorf("bind_password_source: %w", err)
 	}

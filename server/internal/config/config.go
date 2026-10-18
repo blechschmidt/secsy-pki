@@ -523,6 +523,11 @@ type BackupConfig struct {
 	// KEKLabel is the secret-layer KEK the artifact is envelope-encrypted under.
 	// Empty inherits secret.kek_label (the deployment-wide KEK); backups require
 	// a KEK, so at least one of the two must be set when enabled.
+	//
+	// Like every KEK reference it may also be written as "pkcs11:object=<label>",
+	// but only the label is kept: a KEK label is persisted in each envelope's
+	// wrap header and keys the rotation lineage, so it cannot carry a CKA_ID or
+	// a token pin. Select the token under pkcs11.uri / pkcs11.token_*.
 	KEKLabel string `yaml:"kek_label"`
 	// IncludeConfig bundles the running config file into the (encrypted) artifact
 	// so a restore has the exact configuration alongside the data. Nil defaults
@@ -2223,8 +2228,9 @@ type BRSKIConfig struct {
 	// the EST default profile). It must be BRSKI-enabled (profiles[].brski.enabled)
 	// when any profile marks the flag.
 	Profile string `yaml:"profile"`
-	// RegistrarKeyLabel is the provider label of the registrar's voucher-request
-	// signing key (typically HSM-backed). Required.
+	// RegistrarKeyLabel names the registrar's voucher-request signing key
+	// (typically HSM-backed). Required. It accepts a bare label,
+	// "software:<label>", or a full RFC 7512 pkcs11: URI.
 	RegistrarKeyLabel string `yaml:"registrar_key_label"`
 	// RegistrarCertFile is a PEM file holding the registrar signing certificate
 	// (first) and any issuer chain. Required.
@@ -2264,7 +2270,8 @@ type BRSKIMASAConfig struct {
 	URL string `yaml:"url"`
 	// Builtin runs the minimal in-process MASA. Requires KeyLabel and CertFile.
 	Builtin bool `yaml:"builtin"`
-	// KeyLabel is the provider label of the built-in MASA's voucher-signing key.
+	// KeyLabel names the built-in MASA's voucher-signing key. It accepts a bare
+	// label, "software:<label>", or a full RFC 7512 pkcs11: URI.
 	KeyLabel string `yaml:"key_label"`
 	// CertFile is a PEM file holding the built-in MASA signing certificate (first)
 	// and any chain the pledge trusts via its pre-installed MASA anchor.
@@ -2381,7 +2388,11 @@ type TSAConfig struct {
 	Enabled bool `yaml:"enabled"`
 	// Path is the URL the TSA mounts under (default /tsa).
 	Path string `yaml:"path"`
-	// KeyLabel is the provider label of the (RSA) TSA signing key.
+	// KeyLabel names the (RSA) TSA signing key in the key provider. It accepts
+	// a bare label, "software:<label>", or a full RFC 7512 pkcs11: URI
+	// ("pkcs11:object=tsa-key;type=private", or "pkcs11:id=%01;serial=0001234"
+	// to address the key by CKA_ID on one particular token). See
+	// docs/hsm/pkcs11-uris.md.
 	KeyLabel string `yaml:"key_label"`
 	// CertificateFile is the PEM file holding the TSA signing certificate written
 	// by `secsy-ca tsa-key`. When it contains multiple certificates, the first is
@@ -2426,8 +2437,9 @@ type SigningConfig struct {
 type SigningSignerConfig struct {
 	// Name is the identity callers reference in sign requests. Required, unique.
 	Name string `yaml:"name"`
-	// KeyLabel is the provider label of the signing key (RSA or ECDSA), created
-	// by `secsy-ca signing-key`.
+	// KeyLabel names the signing key (RSA or ECDSA) created by `secsy-ca
+	// signing-key`. It accepts a bare label, "software:<label>", or a full RFC
+	// 7512 pkcs11: URI. See docs/hsm/pkcs11-uris.md.
 	KeyLabel string `yaml:"key_label"`
 	// CertificateFile is the PEM file written by `secsy-ca signing-key`. When it
 	// contains multiple certificates the first is the signer certificate and the
@@ -2511,6 +2523,8 @@ type TenantConfig struct {
 	Name string `yaml:"name"`
 	// KEKLabel optionally overrides the deployment-wide secret KEK for this
 	// tenant, so its secret envelopes are sealed under a tenant-specific key.
+	// It accepts a bare label or "pkcs11:object=<label>"; see
+	// SecretConfig.KEKLabel for why a KEK reference carries nothing else.
 	KEKLabel string `yaml:"kek_label"`
 	// RBAC assigns tenant-scoped roles to subjects and groups.
 	RBAC RBACConfig `yaml:"rbac"`
@@ -2844,6 +2858,12 @@ type ProfileZLintConfig struct {
 // exist in the configured key provider (create it with `secsy-secret init-kek`).
 // When empty, the secret encrypt/decrypt API endpoints are disabled.
 type SecretConfig struct {
+	// KEKLabel names the RSA key-encryption key. It accepts a bare label or an
+	// object-only RFC 7512 URI ("pkcs11:object=prod-kek"); unlike the other key
+	// settings it may NOT carry a CKA_ID or a token pin, because the label is
+	// persisted in every envelope's wrap header, keys the rotation lineage in
+	// the database, and is what "<label>-v2" is derived from when the KEK
+	// rotates. Select the token under pkcs11.uri / pkcs11.token_*.
 	KEKLabel string `yaml:"kek_label"`
 	// Escrow optionally configures M-of-N key escrow so data keys can be
 	// recovered under dual control when the original requester loses access.
@@ -2979,8 +2999,11 @@ type EscrowConfig struct {
 type RecoveryAgentConfig struct {
 	// ID is the stable, human-meaningful identifier of the recovery agent.
 	ID string `yaml:"id"`
-	// KeyLabel is the agent's key label in the key provider, required for the
-	// agent to participate in a recovery ceremony through this provider.
+	// KeyLabel names the agent's key in the key provider, required for the
+	// agent to participate in a recovery ceremony through this provider. It
+	// accepts a bare label, "software:<label>", or a full RFC 7512 pkcs11: URI
+	// — which is how a recovery agent holding their key on their own token is
+	// addressed unambiguously in a multi-token deployment.
 	KeyLabel string `yaml:"key_label"`
 	// PublicKey is an inline PEM-encoded RSA public key (SPKI or PKCS#1). When
 	// set it overrides the provider lookup for the wrap step.
@@ -3084,8 +3107,9 @@ type SelfIssueConfig struct {
 	// asserts. At least one SAN (or a CommonName) is required when Enabled.
 	DNSNames []string `yaml:"dnsnames"`
 	IPs      []string `yaml:"ips"`
-	// KeyLabel is the provider key label under which the serving key is generated
-	// and reused across rotations. Empty defaults to "serving-tls-<ca_id>".
+	// KeyLabel names the provider key under which the serving key is generated
+	// and reused across rotations. Empty defaults to "serving-tls-<ca_id>". It
+	// accepts a bare label, "software:<label>", or a full RFC 7512 pkcs11: URI.
 	KeyLabel string `yaml:"key_label"`
 	// KeyType is the serving key algorithm (keyprovider key-type string or an
 	// alias such as "ecdsa"/"rsa"). Empty defaults to ecdsa P-256.
@@ -3548,12 +3572,15 @@ type KeyProviderRoles struct {
 
 type PKCS11Config struct {
 	ModulePath string `yaml:"module_path"`
-	// URI is an optional RFC 7512 pkcs11: URI that backfills any of module_path,
-	// token_label / token_serial / token_manufacturer, and the user PIN
-	// (pin-value / pin-source) left unset above — so an operator can point at an
-	// HSM with a single self-describing string. Explicit fields always take
+	// URI is an optional RFC 7512 pkcs11: URI that backfills every module, token,
+	// slot and PIN field left unset above — module_path (from module-path, or
+	// from module-name resolved the way p11-kit resolves it), token_label,
+	// token_serial, token_manufacturer, token_model, slot_id, slot_description,
+	// slot_manufacturer, and the user PIN (pin-value / pin-source) — so an
+	// operator can point at an HSM with the single self-describing string
+	// `p11tool --list-tokens` already printed. Explicit fields always take
 	// precedence over the URI. Any embedded pin-value is redacted from dumped
-	// config. See docs/hsm/configuration.md.
+	// config. See docs/hsm/pkcs11-uris.md.
 	URI string `yaml:"uri"`
 	// Pin is the inline user PIN. It is a plaintext-at-rest credential: prefer
 	// PinSource below to source it from a credential store instead. When PinSource
@@ -3567,6 +3594,18 @@ type PKCS11Config struct {
 	TokenLabel        string          `yaml:"token_label"`
 	TokenSerial       string          `yaml:"token_serial"`
 	TokenManufacturer string          `yaml:"token_manufacturer"`
+	// TokenModel, SlotID, SlotDescription and SlotManufacturer complete the RFC
+	// 7512 token and slot addressing, so every attribute a pkcs11: URI can use
+	// to name a token has a field here too (and `uri` above backfills them).
+	//
+	// slot_id is the one that matters when the others cannot separate two
+	// tokens: two SoftHSM tokens initialised with the same label, or two
+	// identical HSMs in one host. It is a decimal CK_SLOT_ID; leave it unset to
+	// match any slot.
+	TokenModel       string `yaml:"token_model"`
+	SlotID           *uint  `yaml:"slot_id"`
+	SlotDescription  string `yaml:"slot_description"`
+	SlotManufacturer string `yaml:"slot_manufacturer"`
 	// SessionPoolSize bounds the number of concurrent PKCS#11 sessions the key
 	// provider keeps open, and therefore how many signing/decryption operations
 	// may hit the token at once. Requests beyond it queue (bounded backpressure).
@@ -3601,15 +3640,22 @@ type PKCS11TokenConfig struct {
 	// Name is a stable identifier used in per-token health and failover metrics
 	// and in logs. Defaults to token_label when empty.
 	Name string `yaml:"name"`
-	// URI is an optional per-token RFC 7512 pkcs11: URI that backfills this token's
-	// unset label/serial/manufacturer and PIN — the natural way to address a
-	// specific replica by serial in an HA set where replicas share a CKA_LABEL.
-	// Any embedded pin-value is redacted from dumped config.
+	// URI is an optional per-token RFC 7512 pkcs11: URI that backfills this
+	// token's unset label/serial/model/manufacturer/slot selectors and PIN — the
+	// natural way to address a specific replica by serial or slot in an HA set
+	// where replicas share a CKA_LABEL. Any embedded pin-value is redacted from
+	// dumped config.
 	URI string `yaml:"uri"`
-	// TokenLabel / TokenSerial / TokenManufacturer address the token.
+	// TokenLabel / TokenSerial / TokenManufacturer / TokenModel / SlotID /
+	// SlotDescription / SlotManufacturer address the token, exactly as the
+	// identically-named fields on the enclosing pkcs11 block.
 	TokenLabel        string `yaml:"token_label"`
 	TokenSerial       string `yaml:"token_serial"`
 	TokenManufacturer string `yaml:"token_manufacturer"`
+	TokenModel        string `yaml:"token_model"`
+	SlotID            *uint  `yaml:"slot_id"`
+	SlotDescription   string `yaml:"slot_description"`
+	SlotManufacturer  string `yaml:"slot_manufacturer"`
 	// Pin is this token's inline user PIN; when empty the shared pkcs11.pin is used.
 	Pin string `yaml:"pin"`
 	// PinSource overrides the set-level pkcs11.pin_source for this token; when its
@@ -4084,6 +4130,17 @@ func Load(path string) (*Config, error) {
 	if err := cfg.validateKeyProvider(); err != nil {
 		return nil, err
 	}
+
+	// Reject an RFC 7512 URI this deployment cannot honour in full — before the
+	// server starts, rather than at the first signature it would misdirect.
+	if err := cfg.validatePKCS11URIs(); err != nil {
+		return nil, err
+	}
+
+	if err := cfg.validateKeyReferences(); err != nil {
+		return nil, err
+	}
+	cfg.normalizeKeyReferences()
 
 	if err := cfg.validateRBAC(); err != nil {
 		return nil, err
@@ -5547,6 +5604,22 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SECSY_TOKEN_SERIAL"); v != "" {
 		cfg.PKCS11.TokenSerial = v
 	}
+	if v := os.Getenv("SECSY_TOKEN_MODEL"); v != "" {
+		cfg.PKCS11.TokenModel = v
+	}
+	if v := os.Getenv("SECSY_PKCS11_SLOT_ID"); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 32); err == nil {
+			slot := uint(n)
+			cfg.PKCS11.SlotID = &slot
+		}
+	}
+	// One env var that configures the whole token — the module, which device,
+	// and where the PIN comes from. It is how a container is pointed at an HSM
+	// whose address the image could not know, and it backfills only the fields
+	// the file left unset, exactly as pkcs11.uri does.
+	if v := os.Getenv("SECSY_PKCS11_URI"); v != "" {
+		cfg.PKCS11.URI = v
+	}
 	if v := os.Getenv("SECSY_PKCS11_SESSION_POOL_SIZE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.PKCS11.SessionPoolSize = n
@@ -5714,8 +5787,12 @@ func (c *Config) validateProviderType(providerType, field string) error {
 			return fmt.Errorf("key_provider.software.keystore_dir is required for the software provider")
 		}
 	case "pkcs11":
-		if c.PKCS11.ModulePath == "" {
-			return fmt.Errorf("pkcs11.module_path is required for the pkcs11 provider")
+		switch path, err := c.PKCS11.EffectiveModulePath(); {
+		case err != nil:
+			return err
+		case path == "":
+			return fmt.Errorf("pkcs11.module_path is required for the pkcs11 provider " +
+				"(or name the module in pkcs11.uri as ?module-path=... / ?module-name=...)")
 		}
 		if err := c.validatePKCS11HA(); err != nil {
 			return err
@@ -5810,8 +5887,14 @@ func (c *Config) validatePKCS11HA() error {
 	}
 	names := make(map[string]bool, len(c.PKCS11.Tokens))
 	for i, tok := range c.PKCS11.Tokens {
-		if tok.TokenLabel == "" && tok.TokenSerial == "" {
-			return fmt.Errorf("pkcs11.tokens[%d] requires a token_label or token_serial", i)
+		// A member must be distinguishable from the others. Any of the RFC 7512
+		// token/slot selectors does that — written as a field or carried by the
+		// member's own uri, which is the natural form when replicas share a
+		// CKA_LABEL and differ only by serial or slot.
+		if !tok.addressesAToken() {
+			return fmt.Errorf("pkcs11.tokens[%d] does not address a token: set token_label, token_serial, "+
+				"token_model, token_manufacturer, slot_id, slot_description, slot_manufacturer, "+
+				"or a uri carrying one of them", i)
 		}
 		name := tok.Name
 		if name == "" {
@@ -5840,9 +5923,11 @@ func (c *Config) validatePKCS11HA() error {
 // PKCS#11 token — SoftHSM, a smartcard — holds that token's interface rather
 // than the YubiHSM's. The module filename is the evidence available for which
 // device a module drives: Yubico ships it as yubihsm_pkcs11.so, and the pkcs11:
-// URI form is checked too because it can carry the module reference instead.
-// A deployment that renamed the module falls through to the collector's own
-// runtime error, which says the same thing one drain cycle later.
+// URI form is checked too because it can carry the module reference instead,
+// either as module-path= or as a p11-kit module-name= that is resolved here to
+// the path it names. A deployment that renamed the module falls through to the
+// collector's own runtime error, which says the same thing one drain cycle
+// later.
 func (c *Config) SigningPKCS11Module() string {
 	pkcs11 := false
 	for _, role := range []string{"ca", "tsa", "signing"} {
@@ -5862,8 +5947,13 @@ func (c *Config) SigningPKCS11Module() string {
 		if !strings.Contains(strings.ToLower(ref), "yubihsm") {
 			continue
 		}
-		if c.PKCS11.ModulePath != "" {
-			return c.PKCS11.ModulePath
+		// Prefer the resolved library path: callers hand this to the audit
+		// driver as "the module the signing path holds", and a URI string is
+		// not something it can open. Resolution only fails for a module-name
+		// that is not installed, where the raw reference is still the most
+		// informative thing to report.
+		if path, err := c.PKCS11.EffectiveModulePath(); err == nil && path != "" {
+			return path
 		}
 		return ref
 	}

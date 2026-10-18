@@ -367,7 +367,14 @@ func verifyCARef(db *database.DB, provider keyprovider.Provider, ref backupCARef
 
 	// The decisive HSM check: the token must hold the CA's key, and its public
 	// key must match the certificate — proving the key survived recovery.
-	info, err := provider.FindKey(context.Background(), keyprovider.KeyRef{Label: ref.KeyLabel})
+	// Address the key the way the manifest recorded it — the full RFC 7512 URI
+	// when there is one, so a key addressed by CKA_ID or pinned to a token is
+	// checked on the token that actually holds it.
+	keyRef, kerr := keyprovider.KeyRefFromURI(ref.PKCS11URI)
+	if kerr != nil || (keyRef.Label == "" && keyRef.ID == "") {
+		keyRef = keyprovider.KeyRef{Label: ref.KeyLabel}
+	}
+	info, err := provider.FindKey(context.Background(), keyRef)
 	if err != nil {
 		problems = append(problems, fmt.Sprintf("key %q not found in key provider: %v", ref.KeyLabel, err))
 		return problems

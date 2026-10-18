@@ -62,7 +62,10 @@ fi
 cd "$SERVER_DIR"
 
 # Default target: the dedicated end-to-end flow plus the HSM-backed unit suites.
-DEFAULT_PKGS=(./internal/e2e/... ./internal/ca/... ./internal/secret/... ./internal/keyprovider/... ./internal/scep/... ./internal/est/... ./internal/cms/... ./internal/sshca/... ./internal/handlers/... ./internal/doctor/... ./internal/agent/...)
+# internal/config is here for one test: the end-to-end proof that a config file
+# naming its module, token and key only by RFC 7512 URIs produces a provider
+# that signs with that key. It needs a token, so the HSM-free unit job skips it.
+DEFAULT_PKGS=(./internal/e2e/... ./internal/ca/... ./internal/secret/... ./internal/keyprovider/... ./internal/config/... ./internal/scep/... ./internal/est/... ./internal/cms/... ./internal/sshca/... ./internal/handlers/... ./internal/doctor/... ./internal/agent/...)
 
 log "Running end-to-end integration tests against SoftHSM..."
 set -x

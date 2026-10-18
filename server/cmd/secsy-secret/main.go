@@ -28,7 +28,6 @@ import (
 	"io"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
@@ -232,21 +231,41 @@ Run "secsy-secret <command> -h" for command-specific flags.
 `)
 }
 
-// resolveKEK returns the KEK label from a -kek flag if set, otherwise the
-// secret.kek_label from config.
+// resolveKEK returns the KEK family label from a -kek flag if set, otherwise
+// the secret.kek_label from config.
+//
+// Either may be written as an RFC 7512 pkcs11: URI — the same forms config
+// accepts — but only the object= label survives: the family name is persisted
+// in every envelope's wrap header and keys the rotation lineage in the
+// database, so a URI pinning a token or a CKA_ID is rejected here rather than
+// silently dropped. Select the token under pkcs11.uri / pkcs11.token_*.
 func resolveKEK(cfg *config.Config, flagVal string) (string, error) {
 	if flagVal != "" {
-		return flagVal, nil
+		return normalizeKEKRef("-kek", flagVal)
 	}
 	if cfg.Secret.KEKLabel != "" {
+		// Already validated and reduced to a label by the config loader.
 		return cfg.Secret.KEKLabel, nil
 	}
 	return "", fmt.Errorf("no KEK label configured: set secret.kek_label in config or pass -kek")
 }
 
+// normalizeKEKRef validates a KEK reference supplied on the command line and
+// reduces it to the family label.
+func normalizeKEKRef(field, ref string) (string, error) {
+	if err := keyprovider.ValidateKeyReference(field, ref, keyprovider.KeyRefFamilyField); err != nil {
+		return "", err
+	}
+	label := keyprovider.KeyLabelFor(ref)
+	if label == "" {
+		return "", fmt.Errorf("%s: %q names no key", field, ref)
+	}
+	return label, nil
+}
+
 func cmdInitKEK(cfg *config.Config, provider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("init-kek", flag.ContinueOnError)
-	label := fs.String("kek", "", "KEK label (default: secret.kek_label from config)")
+	label := fs.String("kek", "", "KEK: a label or an object-only pkcs11: URI (default: secret.kek_label from config)")
 	keyType := fs.String("key-type", "rsa-4096", "RSA key type for the KEK (rsa-2048 or rsa-4096)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -278,7 +297,7 @@ func cmdInitKEK(cfg *config.Config, provider keyprovider.Provider, args []string
 
 func cmdKEKInfo(cfg *config.Config, provider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("kek-info", flag.ContinueOnError)
-	label := fs.String("kek", "", "explicit KEK label override (default: the family's ACTIVE KEK version)")
+	label := fs.String("kek", "", "explicit KEK override: a label or an object-only pkcs11: URI (default: the family's ACTIVE KEK version)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -297,7 +316,7 @@ func cmdKEKInfo(cfg *config.Config, provider keyprovider.Provider, args []string
 
 func cmdEncrypt(cfg *config.Config, provider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("encrypt", flag.ContinueOnError)
-	label := fs.String("kek", "", "explicit KEK label override (default: the family's ACTIVE KEK version)")
+	label := fs.String("kek", "", "explicit KEK override: a label or an object-only pkcs11: URI (default: the family's ACTIVE KEK version)")
 	in := fs.String("in", "-", "input plaintext file, or '-' for stdin")
 	out := fs.String("out", "-", "output envelope file, or '-' for stdout")
 	context_ := fs.String("context", "", "optional encryption context bound to the ciphertext (required verbatim to decrypt)")
@@ -402,7 +421,7 @@ func agentIDsCSV(policy *secret.EscrowPolicy) string {
 
 func cmdDecrypt(cfg *config.Config, provider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("decrypt", flag.ContinueOnError)
-	label := fs.String("kek", "", "explicit KEK label override (disaster-recovery path; skips the rotation state)")
+	label := fs.String("kek", "", "explicit KEK override: a label or an object-only pkcs11: URI (disaster-recovery path; skips the rotation state)")
 	in := fs.String("in", "-", "input envelope file, or '-' for stdin")
 	id := fs.String("id", "", "decrypt a stored secret from the registry by ID (instead of -in)")
 	out := fs.String("out", "-", "output plaintext file, or '-' for stdout")
@@ -466,72 +485,6 @@ func printKEK(info secret.KEKInfo) {
 	}
 }
 
-// pkcs11TokenSettings maps the config's multi-token HA list onto keyprovider
-// token settings, returning nil for the single-token case.
-func pkcs11TokenSettings(tokens []config.PKCS11TokenConfig) []keyprovider.TokenSettings {
-	if len(tokens) == 0 {
-		return nil
-	}
-	out := make([]keyprovider.TokenSettings, 0, len(tokens))
-	for _, t := range tokens {
-		out = append(out, keyprovider.TokenSettings{
-			Name:              t.Name,
-			URI:               t.URI,
-			TokenLabel:        t.TokenLabel,
-			TokenSerial:       t.TokenSerial,
-			TokenManufacturer: t.TokenManufacturer,
-			Pin:               t.Pin,
-			PinSource:         pinSourceSettings(t.PinSource),
-		})
-	}
-	return out
-}
-
-// vaultSettings maps the config's HashiCorp Vault block onto the keyprovider
-// settings type (mirrors the helper in cmd/secsy-ca and cmd/server).
-func vaultSettings(v config.VaultProviderConfig) keyprovider.VaultSettings {
-	return keyprovider.VaultSettings{
-		Address:     v.Address,
-		Mount:       v.Mount,
-		Namespace:   v.Namespace,
-		AuthMethod:  v.AuthMethod,
-		Token:       v.Token,
-		RoleID:      v.RoleID,
-		SecretID:    v.SecretID,
-		AppRolePath: v.AppRolePath,
-		CACertFile:  v.CACertFile,
-		Insecure:    v.Insecure,
-		Timeout:     time.Duration(v.TimeoutSeconds) * time.Second,
-	}
-}
-
-// pinSourceSettings maps the config pin_source block onto the keyprovider settings
-// type (mirrors the helper in cmd/secsy-ca and cmd/server).
-func pinSourceSettings(p config.PinSourceConfig) keyprovider.PinSourceSettings {
-	return keyprovider.PinSourceSettings{
-		Type: p.Type,
-		Env:  keyprovider.EnvPinSourceSettings{Var: p.Env.Var},
-		File: keyprovider.FilePinSourceSettings{Path: p.File.Path, AllowInsecurePerms: p.File.AllowInsecurePerms},
-		Vault: keyprovider.VaultPinSourceSettings{
-			VaultSettings: vaultSettings(p.Vault.VaultProviderConfig),
-			Path:          p.Vault.Path,
-			Field:         p.Vault.Field,
-			KVVersion:     p.Vault.KVVersion,
-		},
-		AWS:   keyprovider.AWSPinSourceSettings{Region: p.AWS.Region, SecretID: p.AWS.SecretID, Field: p.AWS.Field},
-		Azure: keyprovider.AzurePinSourceSettings{VaultURL: p.Azure.VaultURL, Name: p.Azure.Name, Version: p.Azure.Version, Field: p.Azure.Field},
-		GCP: keyprovider.GCPPinSourceSettings{
-			Project:         p.GCP.Project,
-			Secret:          p.GCP.Secret,
-			Version:         p.GCP.Version,
-			CredentialsFile: p.GCP.CredentialsFile,
-			CredentialsJSON: p.GCP.CredentialsJSON,
-			Field:           p.GCP.Field,
-			Endpoint:        p.GCP.Endpoint,
-		},
-	}
-}
-
 // buildProvider constructs the configured key provider, mirroring secsy-ca.
 func buildProvider(cfg *config.Config) (keyprovider.Provider, error) {
 	// Multiplex the device in-process first, when this deployment calls for it:
@@ -544,21 +497,8 @@ func buildProvider(cfg *config.Config) (keyprovider.Provider, error) {
 		}
 	}
 	return keyprovider.New(keyprovider.Config{
-		Type: keyprovider.ProviderType(cfg.KeyProvider.Type),
-		PKCS11: keyprovider.PKCS11Settings{
-			ModulePath:        cfg.PKCS11.ModulePath,
-			URI:               cfg.PKCS11.URI,
-			Pin:               cfg.PKCS11.Pin,
-			PinSource:         pinSourceSettings(cfg.PKCS11.PinSource),
-			TokenLabel:        cfg.PKCS11.TokenLabel,
-			TokenSerial:       cfg.PKCS11.TokenSerial,
-			TokenManufacturer: cfg.PKCS11.TokenManufacturer,
-			SessionPoolSize:   cfg.PKCS11.SessionPoolSize,
-			Tokens:            pkcs11TokenSettings(cfg.PKCS11.Tokens),
-			SelectionPolicy:   cfg.PKCS11.SelectionPolicy,
-			FailureThreshold:  cfg.PKCS11.FailureThreshold,
-			ProbeInterval:     time.Duration(cfg.PKCS11.ProbeIntervalSeconds) * time.Second,
-		},
+		Type:   keyprovider.ProviderType(cfg.KeyProvider.Type),
+		PKCS11: cfg.PKCS11.KeyProviderSettings(),
 		Software: keyprovider.SoftwareSettings{
 			KeystoreDir: cfg.KeyProvider.Software.KeystoreDir,
 		},

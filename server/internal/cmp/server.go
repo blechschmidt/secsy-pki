@@ -596,11 +596,13 @@ func (s *Server) caSigProtector(ctx context.Context) (sigProtector, [][]byte, er
 	if err != nil {
 		return sigProtector{}, nil, err
 	}
-	label := pki.ExtractKeyLabel(caModel.PKCS11URI)
-	if label == "" {
-		label = caModel.Label
+	// Address the CA key by its full stored RFC 7512 URI (CKA_ID and token
+	// selectors included), not merely by the label it happens to carry.
+	keyRef, err := keyprovider.KeyRefFromURI(caModel.PKCS11URI)
+	if err != nil || (keyRef.Label == "" && keyRef.ID == "") {
+		keyRef = keyprovider.KeyRef{Label: caModel.Label}
 	}
-	signer, err := s.provider.Signer(ctx, keyprovider.KeyRef{Label: label})
+	signer, err := s.provider.Signer(ctx, keyRef)
 	if err != nil {
 		return sigProtector{}, nil, fmt.Errorf("opening CA signer: %w", err)
 	}

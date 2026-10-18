@@ -17,7 +17,6 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
-	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 )
 
 // DefaultCAKeyType is the key type used when an SSH CA is initialized without
@@ -486,12 +485,13 @@ func caPublicKey(ca *models.CA) (ssh.PublicKey, error) {
 	return key, nil
 }
 
-// keyRefForCA resolves the provider key reference for a CA, preferring the
-// object label embedded in its stored key URI.
+// keyRefForCA resolves the provider key reference for a CA from its stored RFC
+// 7512 URI, keeping the CKA_ID and token addressing the URI carries rather than
+// reducing it to a label.
 func keyRefForCA(ca *models.CA) keyprovider.KeyRef {
-	label := pki.ExtractKeyLabel(ca.PKCS11URI)
-	if label == "" {
-		label = ca.Label
+	ref, err := keyprovider.KeyRefFromURI(ca.PKCS11URI)
+	if err != nil || (ref.Label == "" && ref.ID == "") {
+		return keyprovider.KeyRef{Label: ca.Label}
 	}
-	return keyprovider.KeyRef{Label: label}
+	return ref
 }

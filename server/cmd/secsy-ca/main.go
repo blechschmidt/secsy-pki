@@ -1462,91 +1462,10 @@ func writeOutput(path string, data []byte) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// buildProvider constructs the configured key provider for a signing role ("ca"
-// or "tsa"), mirroring the server. The role selects the backend via the per-role
-// override (key_provider.roles), falling back to the global key_provider.type, so
-// a CA on a PKCS#11 HSM and a TSA in cloud KMS can coexist.
-// pkcs11TokenSettings maps the config's multi-token HA list onto keyprovider
-// token settings, returning nil for the single-token case.
-func pkcs11TokenSettings(tokens []config.PKCS11TokenConfig) []keyprovider.TokenSettings {
-	if len(tokens) == 0 {
-		return nil
-	}
-	out := make([]keyprovider.TokenSettings, 0, len(tokens))
-	for _, t := range tokens {
-		out = append(out, keyprovider.TokenSettings{
-			Name:              t.Name,
-			URI:               t.URI,
-			TokenLabel:        t.TokenLabel,
-			TokenSerial:       t.TokenSerial,
-			TokenManufacturer: t.TokenManufacturer,
-			Pin:               t.Pin,
-			PinSource:         pinSourceSettings(t.PinSource),
-		})
-	}
-	return out
-}
-
-// pinSourceSettings maps the config pin_source block onto the keyprovider settings
-// type (mirrors the same helper in cmd/secsy-secret and cmd/server). It reuses the
-// existing vaultSettings helper for the embedded Vault connection parameters.
-func pinSourceSettings(p config.PinSourceConfig) keyprovider.PinSourceSettings {
-	return keyprovider.PinSourceSettings{
-		Type: p.Type,
-		Env:  keyprovider.EnvPinSourceSettings{Var: p.Env.Var},
-		File: keyprovider.FilePinSourceSettings{Path: p.File.Path, AllowInsecurePerms: p.File.AllowInsecurePerms},
-		Vault: keyprovider.VaultPinSourceSettings{
-			VaultSettings: vaultSettings(p.Vault.VaultProviderConfig),
-			Path:          p.Vault.Path,
-			Field:         p.Vault.Field,
-			KVVersion:     p.Vault.KVVersion,
-		},
-		AWS:   keyprovider.AWSPinSourceSettings{Region: p.AWS.Region, SecretID: p.AWS.SecretID, Field: p.AWS.Field},
-		Azure: keyprovider.AzurePinSourceSettings{VaultURL: p.Azure.VaultURL, Name: p.Azure.Name, Version: p.Azure.Version, Field: p.Azure.Field},
-		GCP:   gcpPinSourceSettings(p.GCP),
-	}
-}
-
-// gcpPinSourceSettings maps the config's Google Cloud Secret Manager pin_source
-// block onto the keyprovider settings type (mirrors the helper in cmd/server and
-// cmd/secsy-secret).
-func gcpPinSourceSettings(g config.GCPPinSourceConfig) keyprovider.GCPPinSourceSettings {
-	return keyprovider.GCPPinSourceSettings{
-		Project:         g.Project,
-		Secret:          g.Secret,
-		Version:         g.Version,
-		CredentialsFile: g.CredentialsFile,
-		CredentialsJSON: g.CredentialsJSON,
-		Field:           g.Field,
-		Endpoint:        g.Endpoint,
-	}
-}
-
-// gcpKMSSettings maps the config's Google Cloud KMS block onto the keyprovider
-// settings type (mirrors the helper in cmd/server).
-func gcpKMSSettings(g config.GCPProviderConfig) keyprovider.GCPKMSSettings {
-	return keyprovider.GCPKMSSettings{
-		Project:         g.Project,
-		Location:        g.Location,
-		KeyRing:         g.KeyRing,
-		CredentialsFile: g.CredentialsFile,
-		CredentialsJSON: g.CredentialsJSON,
-		ProtectionLevel: g.ProtectionLevel,
-		RSAPSS:          g.RSAPSS,
-		Endpoint:        g.Endpoint,
-	}
-}
-
 // buildPinSources constructs the PKCS#11 PIN source(s) from config for the doctor
 // "pin.source" reachability check. It performs no I/O.
 func buildPinSources(cfg *config.Config) ([]keyprovider.NamedPinSource, error) {
-	return keyprovider.BuildNamedPinSources(keyprovider.PKCS11Settings{
-		ModulePath: cfg.PKCS11.ModulePath,
-		URI:        cfg.PKCS11.URI,
-		Pin:        cfg.PKCS11.Pin,
-		PinSource:  pinSourceSettings(cfg.PKCS11.PinSource),
-		Tokens:     pkcs11TokenSettings(cfg.PKCS11.Tokens),
-	})
+	return keyprovider.BuildNamedPinSources(cfg.PKCS11.KeyProviderSettings())
 }
 
 func buildProvider(cfg *config.Config, role string) (keyprovider.Provider, error) {
@@ -1563,21 +1482,8 @@ func buildProvider(cfg *config.Config, role string) (keyprovider.Provider, error
 		}
 	}
 	p, err := keyprovider.New(keyprovider.Config{
-		Type: keyprovider.ProviderType(cfg.KeyProviderTypeForRole(role)),
-		PKCS11: keyprovider.PKCS11Settings{
-			ModulePath:        cfg.PKCS11.ModulePath,
-			URI:               cfg.PKCS11.URI,
-			Pin:               cfg.PKCS11.Pin,
-			PinSource:         pinSourceSettings(cfg.PKCS11.PinSource),
-			TokenLabel:        cfg.PKCS11.TokenLabel,
-			TokenSerial:       cfg.PKCS11.TokenSerial,
-			TokenManufacturer: cfg.PKCS11.TokenManufacturer,
-			SessionPoolSize:   cfg.PKCS11.SessionPoolSize,
-			Tokens:            pkcs11TokenSettings(cfg.PKCS11.Tokens),
-			SelectionPolicy:   cfg.PKCS11.SelectionPolicy,
-			FailureThreshold:  cfg.PKCS11.FailureThreshold,
-			ProbeInterval:     time.Duration(cfg.PKCS11.ProbeIntervalSeconds) * time.Second,
-		},
+		Type:   keyprovider.ProviderType(cfg.KeyProviderTypeForRole(role)),
+		PKCS11: cfg.PKCS11.KeyProviderSettings(),
 		Software: keyprovider.SoftwareSettings{
 			KeystoreDir: cfg.KeyProvider.Software.KeystoreDir,
 		},
@@ -1586,8 +1492,8 @@ func buildProvider(cfg *config.Config, role string) (keyprovider.Provider, error
 			Region:    cfg.KeyProvider.KMS.Region,
 			KeyPrefix: cfg.KeyProvider.KMS.KeyPrefix,
 			VaultURL:  cfg.KeyProvider.KMS.VaultURL,
-			Vault:     vaultSettings(cfg.KeyProvider.KMS.Vault),
-			GCP:       gcpKMSSettings(cfg.KeyProvider.KMS.GCP),
+			Vault:     cfg.KeyProvider.KMS.Vault.Settings(),
+			GCP:       cfg.KeyProvider.KMS.GCP.Settings(),
 		},
 	})
 	if err != nil {
@@ -1598,22 +1504,4 @@ func buildProvider(cfg *config.Config, role string) (keyprovider.Provider, error
 	// way a server-issued one is (Task 167). No-op until the device has been
 	// provisioned for audited operation.
 	return recordSignatures(p), nil
-}
-
-// vaultSettings maps the config's HashiCorp Vault block onto the keyprovider
-// settings type (mirrors the same helper in cmd/server).
-func vaultSettings(v config.VaultProviderConfig) keyprovider.VaultSettings {
-	return keyprovider.VaultSettings{
-		Address:     v.Address,
-		Mount:       v.Mount,
-		Namespace:   v.Namespace,
-		AuthMethod:  v.AuthMethod,
-		Token:       v.Token,
-		RoleID:      v.RoleID,
-		SecretID:    v.SecretID,
-		AppRolePath: v.AppRolePath,
-		CACertFile:  v.CACertFile,
-		Insecure:    v.Insecure,
-		Timeout:     time.Duration(v.TimeoutSeconds) * time.Second,
-	}
 }

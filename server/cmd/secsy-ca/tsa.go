@@ -42,7 +42,7 @@ var oidExtKeyUsage = asn1.ObjectIdentifier{2, 5, 29, 37}
 func cmdTSAKey(db *database.DB, _ *ca.Manager, tsaProvider, caProvider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("tsa-key", flag.ContinueOnError)
 	caRef := fs.String("ca", "", "issuing CA id or label (required)")
-	label := fs.String("label", "tsa", "provider key label for the TSA signing key")
+	label := fs.String("label", "tsa", "provider key for the TSA signing key: a label or an RFC 7512 pkcs11: URI")
 	keyType := fs.String("key-type", "rsa-2048", "TSA key type (must be RSA: rsa-2048 or rsa-4096)")
 	cn := fs.String("cn", "Time-Stamp Authority", "TSA certificate subject common name")
 	org := fs.String("o", "", "TSA certificate subject organization")
@@ -158,7 +158,10 @@ func cmdTSAKey(db *database.DB, _ *ca.Manager, tsaProvider, caProvider keyprovid
 // existing key of the given label or generating a new one. Reuse makes cert
 // reissuance idempotent without rotating the key.
 func tsaPublicKey(ctx context.Context, provider keyprovider.Provider, label, keyType string) (*rsa.PublicKey, error) {
-	info, err := provider.FindKey(ctx, keyprovider.KeyRef{Label: label})
+	// label may be a bare label or a full RFC 7512 pkcs11: URI (the same forms
+	// tsa.key_label accepts), so `secsy-ca tsa-key -label <uri>` provisions the
+	// key exactly where the config will later look for it.
+	info, err := provider.FindKey(ctx, keyprovider.KeyRefFor(label))
 	if err == nil {
 		pub, ok := info.PublicKey.(*rsa.PublicKey)
 		if !ok {
@@ -168,7 +171,7 @@ func tsaPublicKey(ctx context.Context, provider keyprovider.Provider, label, key
 		return pub, nil
 	}
 
-	gen, err := provider.GenerateKey(ctx, keyprovider.KeySpec{Label: label, KeyType: keyType, Usage: keyprovider.KeyUsageSign})
+	gen, err := provider.GenerateKey(ctx, keyprovider.KeySpecFor(label, keyType, keyprovider.KeyUsageSign))
 	if err != nil {
 		return nil, fmt.Errorf("generating TSA key %q: %w", label, err)
 	}
@@ -201,13 +204,15 @@ func verifyTSACert(cert *x509.Certificate) error {
 	return nil
 }
 
-// tsaCAKeyRef resolves the provider key reference for an issuing CA.
+// tsaCAKeyRef resolves the provider key reference for an issuing CA from its
+// stored RFC 7512 URI, keeping the CKA_ID and token addressing the URI carries
+// rather than reducing it to a label.
 func tsaCAKeyRef(caModel *models.CA) keyprovider.KeyRef {
-	label := pki.ExtractKeyLabel(caModel.PKCS11URI)
-	if label == "" {
-		label = caModel.Label
+	ref, err := keyprovider.KeyRefFromURI(caModel.PKCS11URI)
+	if err != nil || (ref.Label == "" && ref.ID == "") {
+		return keyprovider.KeyRef{Label: caModel.Label}
 	}
-	return keyprovider.KeyRef{Label: label}
+	return ref
 }
 
 // tsaIssuerChain returns the issuing CA certificate followed by its parents up

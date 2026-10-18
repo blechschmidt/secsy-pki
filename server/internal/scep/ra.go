@@ -50,7 +50,10 @@ func (s *Server) provisionRA(ctx context.Context) (*raIdentity, error) {
 	if encLabel == "" {
 		encLabel = caModel.Label + "-scep-enc"
 	}
-	encRef := keyprovider.KeyRef{Label: encLabel}
+	// The configured reference may be a bare label or a full RFC 7512 pkcs11:
+	// URI, so the RA recipient key can be addressed by CKA_ID or pinned to a
+	// token exactly like any other configured key.
+	encRef := keyprovider.KeyRefFor(encLabel)
 
 	// Find the RA encryption key, generating a decrypt-capable RSA key if absent.
 	info, err := s.provider.FindKey(ctx, encRef)
@@ -58,11 +61,8 @@ func (s *Server) provisionRA(ctx context.Context) (*raIdentity, error) {
 		if !errors.Is(err, keyprovider.ErrKeyNotFound) {
 			return nil, fmt.Errorf("scep: locating RA encryption key: %w", err)
 		}
-		info, err = s.provider.GenerateKey(ctx, keyprovider.KeySpec{
-			Label:   encLabel,
-			KeyType: keyprovider.KeyTypeRSA2048,
-			Usage:   keyprovider.KeyUsageDecrypt,
-		})
+		info, err = s.provider.GenerateKey(ctx,
+			keyprovider.KeySpecFor(encLabel, keyprovider.KeyTypeRSA2048, keyprovider.KeyUsageDecrypt))
 		if err != nil {
 			return nil, fmt.Errorf("scep: generating RA encryption key: %w", err)
 		}

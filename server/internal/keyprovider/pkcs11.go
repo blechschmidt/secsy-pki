@@ -85,6 +85,10 @@ func NewPKCS11Provider(s PKCS11Settings) (*PKCS11Provider, error) {
 			TokenLabel:        s.TokenLabel,
 			TokenSerial:       s.TokenSerial,
 			TokenManufacturer: s.TokenManufacturer,
+			TokenModel:        s.TokenModel,
+			SlotID:            s.SlotID,
+			SlotDescription:   s.SlotDescription,
+			SlotManufacturer:  s.SlotManufacturer,
 		},
 	}, nil
 }
@@ -118,6 +122,51 @@ func (p *PKCS11Provider) getPool(ctx context.Context) (*pki.SessionPool, error) 
 		return nil, err
 	}
 	p.pool = pool
+	return pool, nil
+}
+
+// poolFor returns the session pool after checking that the token it is bound to
+// satisfies sel. A single-token deployment has exactly one token, but a
+// reference that pins a *different* one is still a configuration error: the
+// operator asked for serial X and this process can only reach serial Y, and
+// signing with Y anyway is the silent wrong-key outcome RFC 7512 addressing
+// exists to prevent. An attribute the token does not report cannot contradict
+// anything and is not treated as a mismatch.
+func (p *PKCS11Provider) poolFor(ctx context.Context, sel TokenSelector) (*pki.SessionPool, error) {
+	pool, err := p.getPool(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if sel.IsZero() {
+		return pool, nil
+	}
+	id := pool.Identity()
+	mismatch := func(attr, have, want string) error {
+		return fmt.Errorf("%w: key reference pins %s=%q but the configured token reports %s=%q",
+			ErrTokenMismatch, attr, want, attr, have)
+	}
+	if sel.Label != "" && id.Label != "" && id.Label != sel.Label {
+		return nil, mismatch("token", id.Label, sel.Label)
+	}
+	if sel.Serial != "" && id.Serial != "" && id.Serial != sel.Serial {
+		return nil, mismatch("serial", id.Serial, sel.Serial)
+	}
+	if sel.Model != "" && id.Model != "" && id.Model != sel.Model {
+		return nil, mismatch("model", id.Model, sel.Model)
+	}
+	if sel.Manufacturer != "" && id.Manufacturer != "" && id.Manufacturer != sel.Manufacturer {
+		return nil, mismatch("manufacturer", id.Manufacturer, sel.Manufacturer)
+	}
+	if sel.SlotID != nil && id.SlotID != *sel.SlotID {
+		return nil, fmt.Errorf("%w: key reference pins slot-id=%d but the configured token is in slot %d",
+			ErrTokenMismatch, *sel.SlotID, id.SlotID)
+	}
+	if sel.SlotDescription != "" && id.SlotDescription != "" && id.SlotDescription != sel.SlotDescription {
+		return nil, mismatch("slot-description", id.SlotDescription, sel.SlotDescription)
+	}
+	if sel.SlotManufacturer != "" && id.SlotManufacturer != "" && id.SlotManufacturer != sel.SlotManufacturer {
+		return nil, mismatch("slot-manufacturer", id.SlotManufacturer, sel.SlotManufacturer)
+	}
 	return pool, nil
 }
 
@@ -195,7 +244,7 @@ func (p *PKCS11Provider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInf
 		return nil, fmt.Errorf("keyprovider: checking for existing key %q: %w", spec.Label, err)
 	}
 
-	pool, err := p.getPool(ctx)
+	pool, err := p.poolFor(ctx, spec.Token)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +286,7 @@ func (p *PKCS11Provider) FindKey(ctx context.Context, ref KeyRef) (*KeyInfo, err
 	if err != nil {
 		return nil, err
 	}
-	pool, err := p.getPool(ctx)
+	pool, err := p.poolFor(ctx, ref.Token)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +326,7 @@ func (p *PKCS11Provider) Signer(ctx context.Context, ref KeyRef) (Signer, error)
 	if err != nil {
 		return nil, err
 	}
-	pool, err := p.getPool(ctx)
+	pool, err := p.poolFor(ctx, ref.Token)
 	if err != nil {
 		return nil, err
 	}
@@ -323,12 +372,19 @@ func (p *PKCS11Provider) buildKeyURI(label string, id []byte) string {
 		return pki.BuildPKCS11URI(p.cfg, label)
 	}
 	u := &pki.PKCS11URI{
-		Token:        p.cfg.TokenLabel,
-		Serial:       p.cfg.TokenSerial,
-		Manufacturer: p.cfg.TokenManufacturer,
-		Object:       label,
-		ID:           id,
-		Type:         pki.PKCS11TypePrivate,
+		Token:            p.cfg.TokenLabel,
+		Serial:           p.cfg.TokenSerial,
+		Model:            p.cfg.TokenModel,
+		Manufacturer:     p.cfg.TokenManufacturer,
+		SlotDescription:  p.cfg.SlotDescription,
+		SlotManufacturer: p.cfg.SlotManufacturer,
+		Object:           label,
+		ID:               id,
+		Type:             pki.PKCS11TypePrivate,
+	}
+	if p.cfg.SlotID != nil {
+		slot := int64(*p.cfg.SlotID)
+		u.SlotID = &slot
 	}
 	return u.String()
 }
@@ -363,7 +419,13 @@ func applyPKCS11URI(s PKCS11Settings) (PKCS11Settings, error) {
 		return s, fmt.Errorf("keyprovider: parsing pkcs11 uri: %w", err)
 	}
 	if s.ModulePath == "" {
-		s.ModulePath = u.ModulePath
+		// module-path verbatim, or module-name resolved the way p11-kit resolves
+		// it, so a config can name the module portably across distributions.
+		path, perr := u.ResolveModulePath()
+		if perr != nil {
+			return s, fmt.Errorf("keyprovider: %w", perr)
+		}
+		s.ModulePath = path
 	}
 	if s.TokenLabel == "" {
 		s.TokenLabel = u.Token
@@ -373,6 +435,19 @@ func applyPKCS11URI(s PKCS11Settings) (PKCS11Settings, error) {
 	}
 	if s.TokenManufacturer == "" {
 		s.TokenManufacturer = u.Manufacturer
+	}
+	if s.TokenModel == "" {
+		s.TokenModel = u.Model
+	}
+	if s.SlotID == nil && u.SlotID != nil && *u.SlotID >= 0 {
+		v := uint(*u.SlotID)
+		s.SlotID = &v
+	}
+	if s.SlotDescription == "" {
+		s.SlotDescription = u.SlotDescription
+	}
+	if s.SlotManufacturer == "" {
+		s.SlotManufacturer = u.SlotManufacturer
 	}
 	// Derive the PIN from the URI only when nothing else configures it, so an
 	// explicit pin / pin_source always wins.
@@ -485,7 +560,7 @@ func (p *PKCS11Provider) Decrypter(ctx context.Context, ref KeyRef) (Decrypter, 
 	if err != nil {
 		return nil, err
 	}
-	pool, err := p.getPool(ctx)
+	pool, err := p.poolFor(ctx, ref.Token)
 	if err != nil {
 		return nil, err
 	}

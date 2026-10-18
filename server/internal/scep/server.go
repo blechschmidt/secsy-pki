@@ -454,12 +454,15 @@ func (s *Server) caChain() ([]*x509.Certificate, error) {
 	return chain, nil
 }
 
+// keyRef resolves the CA's signing key from its stored RFC 7512 URI, keeping
+// the CKA_ID and token addressing rather than reducing the URI to a label —
+// the same resolution the issuance path uses (ca.KeyRefForCA).
 func (s *Server) keyRef(caModel *models.CA) keyprovider.KeyRef {
-	label := pki.ExtractKeyLabel(caModel.PKCS11URI)
-	if label == "" {
-		label = caModel.Label
+	ref, err := keyprovider.KeyRefFromURI(caModel.PKCS11URI)
+	if err != nil || (ref.Label == "" && ref.ID == "") {
+		return keyprovider.KeyRef{Label: caModel.Label}
 	}
-	return keyprovider.KeyRef{Label: label}
+	return ref
 }
 
 func (s *Server) signer(ctx context.Context, caModel *models.CA) (keyprovider.Signer, error) {

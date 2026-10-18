@@ -78,7 +78,11 @@ type envelopeOps interface {
 
 func serviceOrRing(cfg *config.Config, provider keyprovider.Provider, explicitKEK string) (*secret.Ring, *secret.Service, error) {
 	if explicitKEK != "" {
-		svc, err := secret.NewService(context.Background(), provider, keyprovider.KeyRef{Label: explicitKEK})
+		label, err := normalizeKEKRef("-kek", explicitKEK)
+		if err != nil {
+			return nil, nil, err
+		}
+		svc, err := secret.NewService(context.Background(), provider, keyprovider.KeyRef{Label: label})
 		return nil, svc, err
 	}
 	family, err := resolveKEK(cfg, "")

@@ -80,16 +80,19 @@ type KeyRef struct {
 // every set field — the unambiguous way to address a specific replica when
 // replicas deliberately share a CKA_LABEL.
 type TokenSelector struct {
-	Label        string // token= (CK_TOKEN_INFO.label)
-	Serial       string // serial= (CK_TOKEN_INFO.serialNumber)
-	Model        string // model= (CK_TOKEN_INFO.model)
-	Manufacturer string // manufacturer= (CK_TOKEN_INFO.manufacturerID)
-	SlotID       *uint  // slot-id= (CK_SLOT_ID)
+	Label            string // token= (CK_TOKEN_INFO.label)
+	Serial           string // serial= (CK_TOKEN_INFO.serialNumber)
+	Model            string // model= (CK_TOKEN_INFO.model)
+	Manufacturer     string // manufacturer= (CK_TOKEN_INFO.manufacturerID)
+	SlotID           *uint  // slot-id= (CK_SLOT_ID)
+	SlotDescription  string // slot-description= (CK_SLOT_INFO.slotDescription)
+	SlotManufacturer string // slot-manufacturer= (CK_SLOT_INFO.manufacturerID)
 }
 
 // IsZero reports whether the selector pins nothing (matches any token).
 func (s TokenSelector) IsZero() bool {
-	return s.Label == "" && s.Serial == "" && s.Model == "" && s.Manufacturer == "" && s.SlotID == nil
+	return s.Label == "" && s.Serial == "" && s.Model == "" && s.Manufacturer == "" &&
+		s.SlotID == nil && s.SlotDescription == "" && s.SlotManufacturer == ""
 }
 
 // Describe renders the selector for error messages.
@@ -109,6 +112,12 @@ func (s TokenSelector) Describe() string {
 	}
 	if s.SlotID != nil {
 		parts = append(parts, fmt.Sprintf("slot-id=%d", *s.SlotID))
+	}
+	if s.SlotDescription != "" {
+		parts = append(parts, fmt.Sprintf("slot-description=%q", s.SlotDescription))
+	}
+	if s.SlotManufacturer != "" {
+		parts = append(parts, fmt.Sprintf("slot-manufacturer=%q", s.SlotManufacturer))
 	}
 	if len(parts) == 0 {
 		return "(any token)"
@@ -184,10 +193,12 @@ func KeyRefFor(ref string) KeyRef {
 func keyRefFromParsedURI(u *pki.PKCS11URI) KeyRef {
 	ref := KeyRef{Label: u.Object, ID: u.IDHex()}
 	ref.Token = TokenSelector{
-		Label:        u.Token,
-		Serial:       u.Serial,
-		Model:        u.Model,
-		Manufacturer: u.Manufacturer,
+		Label:            u.Token,
+		Serial:           u.Serial,
+		Model:            u.Model,
+		Manufacturer:     u.Manufacturer,
+		SlotDescription:  u.SlotDescription,
+		SlotManufacturer: u.SlotManufacturer,
 	}
 	if u.SlotID != nil && *u.SlotID >= 0 {
 		s := uint(*u.SlotID)
@@ -263,6 +274,13 @@ type KeySpec struct {
 	// generated as an RSA key-encryption key (KEK) for envelope encryption; it
 	// must therefore be an RSA key type.
 	Usage string
+	// Token optionally pins generation to a specific token within a PKCS#11
+	// high-availability set, using the same RFC 7512 addressing as KeyRef.Token.
+	// It is populated from a pkcs11: URI's token path attributes, so "generate
+	// the TSA key on the token with serial 0123" is expressible in configuration
+	// rather than only by taking the other replicas offline. Ignored by the
+	// single-token, software, and KMS backends.
+	Token TokenSelector
 }
 
 // KeyInfo describes a key that exists within a provider.
@@ -419,6 +437,16 @@ var ErrKeyNotFound = fmt.Errorf("keyprovider: key not found")
 // backend cannot wrap keys (every backend except Vault Transit).
 var ErrWrapUnsupported = fmt.Errorf("keyprovider: key wrapping not supported by this backend")
 
+// ErrTokenMismatch reports that a key reference pins a token (by RFC 7512
+// serial / slot-id / label / ...) that is not the one this provider drives.
+//
+// Like ErrKeyNotFound it is a property of the request rather than of the
+// token, so the high-availability router must not charge a member's health for
+// it: asking the wrong replica for a pinned key is the router's own doing, and
+// marking that replica unhealthy would eventually take a working device out of
+// rotation.
+var ErrTokenMismatch = fmt.Errorf("keyprovider: key reference pins a different token")
+
 // ErrProbeUnsupported is returned by a wrapper's Ping when the wrapped provider
 // does not implement Prober. Readiness checks treat it as "cannot probe" rather
 // than "unhealthy".
@@ -454,6 +482,14 @@ type PKCS11Settings struct {
 	TokenLabel        string
 	TokenSerial       string
 	TokenManufacturer string
+	// TokenModel / SlotID / SlotDescription / SlotManufacturer complete the RFC
+	// 7512 token and slot addressing, so every attribute a "pkcs11:" URI can use
+	// to name a token is also expressible as a field. SlotID is the only one that
+	// can separate two otherwise-identical tokens on the same host.
+	TokenModel       string
+	SlotID           *uint
+	SlotDescription  string
+	SlotManufacturer string
 	// SessionPoolSize bounds the number of concurrent PKCS#11 sessions (and thus
 	// concurrent on-device operations) the provider keeps open. When <= 0 the
 	// provider uses DefaultSessionPoolSize. It is the primary HSM throughput
@@ -496,11 +532,16 @@ type TokenSettings struct {
 	// does for the single-token backend. It is the natural way to address a
 	// specific replica by serial in an HA set where replicas share a CKA_LABEL.
 	URI string
-	// TokenLabel / TokenSerial / TokenManufacturer address the token, exactly as
-	// on the single-token PKCS11Settings.
+	// TokenLabel / TokenSerial / TokenManufacturer / TokenModel / SlotID /
+	// SlotDescription / SlotManufacturer address the token, exactly as on the
+	// single-token PKCS11Settings.
 	TokenLabel        string
 	TokenSerial       string
 	TokenManufacturer string
+	TokenModel        string
+	SlotID            *uint
+	SlotDescription   string
+	SlotManufacturer  string
 	// Pin is the inline user PIN for this token. When empty the shared
 	// PKCS11Settings.Pin is used (common when every token shares a PIN policy).
 	Pin string

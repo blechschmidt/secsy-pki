@@ -7987,8 +7987,10 @@ components:
         existing_key_label:
           type: string
           description: >-
-            Adopt a key already present in the provider under this label instead
-            of importing one.
+            Adopt a key already present in the provider instead of importing
+            one, named by a bare label or by a full RFC 7512 pkcs11: URI — the
+            latter is how a key whose CKA_LABEL was chosen by the tool that put
+            it there, or shared with another object, is named unambiguously.
         key_pem:
           type: string
           description: The private key as text (any PEM form the parser accepts).
@@ -8094,7 +8096,11 @@ components:
         label:
           type: string
           default: codesign
-          description: The provider key label for the signing key.
+          description: >-
+            The provider key for the signing key: a bare label, or a full RFC
+            7512 pkcs11: URI addressing it by CKA_ID and/or pinning the token
+            it lives on. Whatever is given here is what signing.signers[].key_label
+            must name in configuration.
         key_type:
           type: string
           enum: [ecdsa-p256, ecdsa-p384, rsa-2048, rsa-4096]
@@ -8142,7 +8148,11 @@ components:
         label:
           type: string
           default: tsa
-          description: The provider key label for the TSA signing key.
+          description: >-
+            The provider key for the TSA signing key: a bare label, or a full
+            RFC 7512 pkcs11: URI addressing it by CKA_ID and/or pinning the
+            token it lives on. Whatever is given here is what tsa.key_label
+            must name in configuration.
         key_type:
           type: string
           enum: [rsa-2048, rsa-4096]

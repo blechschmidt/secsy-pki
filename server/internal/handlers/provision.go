@@ -509,12 +509,13 @@ func (a *API) provisioningIssuer(w http.ResponseWriter, ref string) (*models.CA,
 func (a *API) provisionKey(ctx context.Context, provider keyprovider.Provider, label, keyType string) (crypto.PublicKey, *keyprovider.KeyInfo, bool, error) {
 	a.consumeHSMAuditLogs("")
 	defer a.consumeHSMAuditLogs("")
-	if info, err := provider.FindKey(ctx, keyprovider.KeyRef{Label: label}); err == nil {
+	// label may be a bare label or a full RFC 7512 pkcs11: URI, so an operator
+	// can provision the key at the exact address tsa.key_label /
+	// signing.signers[].key_label will later name.
+	if info, err := provider.FindKey(ctx, keyprovider.KeyRefFor(label)); err == nil {
 		return info.PublicKey, info, true, nil
 	}
-	gen, err := provider.GenerateKey(ctx, keyprovider.KeySpec{
-		Label: label, KeyType: keyType, Usage: keyprovider.KeyUsageSign,
-	})
+	gen, err := provider.GenerateKey(ctx, keyprovider.KeySpecFor(label, keyType, keyprovider.KeyUsageSign))
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("generating key %q: %w", label, err)
 	}

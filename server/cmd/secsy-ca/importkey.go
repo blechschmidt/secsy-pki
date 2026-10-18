@@ -237,7 +237,7 @@ func cmdCAImport(db *database.DB, mgr *ca.Manager, provider keyprovider.Provider
 	certFile := fs.String("cert", "", "PEM file with the CA's existing certificate (extra certificates are treated as chain); optional when -key is a PKCS#12 container")
 	chainFile := fs.String("chain", "", "PEM file with the issuing chain, when the parent is not in this PKI")
 	parentRef := fs.String("parent", "", "id or label of a CA already in this PKI that issued this certificate (default: discovered automatically)")
-	existingKey := fs.String("existing-key", "", "adopt a key already in the provider under this label instead of importing one")
+	existingKey := fs.String("existing-key", "", "adopt a key already in the provider, named by label or by an RFC 7512 pkcs11: URI, instead of importing one")
 	keyFlags := addImportKeyFlags(fs)
 	chainOut := fs.String("chain-out", "", "write the combined served chain PEM here")
 	jsonOut := fs.Bool("json", false, "emit the adopted CA record and warnings as JSON on stdout")

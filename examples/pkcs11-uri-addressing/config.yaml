@@ -1,0 +1,100 @@
+# =============================================================================
+# Example: addressing tokens and keys with RFC 7512 PKCS#11 URIs
+# =============================================================================
+# Two HSMs behind one deployment, with each role's key addressed by what it
+# actually is rather than by a CKA_LABEL. This is the configuration shape you
+# want once a label stops being a unique name: HA replicas share one, a token
+# can hold two objects with the same one, and a migrated key has whatever label
+# the tool that imported it chose.
+#
+# Everything below is a `p11tool --list-all` / `pkcs11-tool -O` string pasted
+# into the field that needs it.
+#
+# See examples/pkcs11-uri-addressing/README.md for the walkthrough. Reference:
+# docs/hsm/pkcs11-uris.md, docs/hsm/configuration.md, docs/hsm/high-availability.md.
+
+server:
+  host: "0.0.0.0"
+  port: 8443
+  tls_cert: "certs/server.crt"
+  tls_key: "certs/server.key"
+
+database:
+  driver: "sqlite"
+  dsn: "secsy-pki.db"
+
+root_user:
+  username: "root"
+  password: "change-me-in-production"
+
+key_provider:
+  type: "pkcs11"
+
+# --- The token side ----------------------------------------------------------
+# A token URI addresses the *device*: the module, which token, and how to log
+# in. It may not name an object — that belongs in the field that names the key.
+pkcs11:
+  # The module, named once. `module-path=` is the absolute .so; swap it for
+  # `module-name=yubihsm_pkcs11` to have it resolved the way p11-kit resolves
+  # it, which keeps one config file correct across distributions whose module
+  # directories differ (/usr/lib/<triplet>/pkcs11, /usr/lib64/pkcs11,
+  # /usr/local/lib/pkcs11). Set SECSY_PKCS11_MODULE_DIRS to override the search.
+  uri: "pkcs11:?module-path=/usr/lib/softhsm/libsofthsm2.so"
+
+  # The PIN is a property of the token, never of a key. Sourcing it from a file
+  # keeps it out of this config; `pin-source=file:/etc/secsy/hsm.pin` inside the
+  # URI above would be equivalent.
+  pin_source:
+    type: file
+    file:
+      path: "/etc/secsy/hsm.pin"
+
+  session_pool_size: 8
+
+  # High availability across two devices. Each replica is addressed by its
+  # serial, because they deliberately hold the same key under the same label —
+  # the serial is the only thing that tells them apart.
+  selection_policy: "primary-backup"
+  failure_threshold: 3
+  probe_interval_seconds: 30
+  tokens:
+    - name: "primary"
+      uri: "pkcs11:serial=0001234567"
+    - name: "backup"
+      uri: "pkcs11:serial=0007654321"
+      # A per-token URI must not repeat the module: an HA set is driven through
+      # one module. It may carry its own pin-source if the devices differ.
+
+# --- The key side ------------------------------------------------------------
+# A key URI must name an object (object= and/or id=) and may pin the token it
+# lives on. It may NOT carry the module or a PIN: those are deployment-wide, and
+# a config that tries is rejected at load rather than half-applied.
+
+tsa:
+  enabled: true
+  # The TSA key exists only on the backup device. Pinning it there means an
+  # operation against it is routed to 0007654321 and fails closed if that
+  # device is unreachable — rather than quietly signing on the primary.
+  key_label: "pkcs11:object=tsa-key;serial=0007654321;type=private"
+  certificate_file: "/etc/secsy/tsa.pem"
+
+signing:
+  enabled: true
+  signers:
+    # Addressed by CKA_ID. Use this for a key imported by a vendor migration
+    # tool, where the label is whatever that tool chose (or absent).
+    - name: "release"
+      key_label: "pkcs11:id=%0a%1b%2c;type=private"
+      certificate_file: "/etc/secsy/release-signing.pem"
+    # Addressed by label, the historical form — still correct, and still what
+    # you want when the label really is unique.
+    - name: "nightly"
+      key_label: "nightly-signing"
+      certificate_file: "/etc/secsy/nightly-signing.pem"
+
+secret:
+  # A KEK reference is a label, not an address: it is written into every
+  # envelope's wrap header, keys the rotation lineage, and is what "<label>-v2"
+  # is derived from when the KEK rotates. An object-only URI is accepted and
+  # reduced to its label; an id= or a token pin here is rejected.
+  kek_label: "pkcs11:object=prod-kek"

@@ -34,20 +34,37 @@ func TestSigningPKCS11Module(t *testing.T) {
 			want: module,
 		},
 		{
+			// Callers hand the result to the audit driver as a library path, so
+			// a URI is resolved to the path it names rather than returned raw.
 			name: "an RFC 7512 URI carries the module reference",
 			cfg: func(c *Config) {
 				c.KeyProvider.Type = "pkcs11"
 				c.PKCS11.URI = "pkcs11:token=YubiHSM?module-path=/opt/yubihsm_pkcs11.so"
 			},
-			want: "pkcs11:token=YubiHSM?module-path=/opt/yubihsm_pkcs11.so",
+			want: "/opt/yubihsm_pkcs11.so",
 		},
 		{
+			// A URI pasted out of p11tool names the module it came from, and an
+			// HA set drives every token through one module — so a member naming
+			// it names it for the set.
 			name: "an HA token URI counts too",
 			cfg: func(c *Config) {
 				c.KeyProvider.Type = "pkcs11"
-				c.PKCS11.Tokens = []PKCS11TokenConfig{{URI: "pkcs11:serial=31650425?module-name=yubihsm_pkcs11"}}
+				c.PKCS11.Tokens = []PKCS11TokenConfig{{URI: "pkcs11:serial=31650425?module-path=/opt/yubihsm_pkcs11.so"}}
 			},
-			want: "pkcs11:serial=31650425?module-name=yubihsm_pkcs11",
+			want: "/opt/yubihsm_pkcs11.so",
+		},
+		{
+			// A symbolic module-name that is not installed cannot be resolved;
+			// reporting the reference the operator wrote is more useful than
+			// reporting nothing, and the collector names the real failure one
+			// drain cycle later.
+			name: "an unresolvable module-name falls back to the reference",
+			cfg: func(c *Config) {
+				c.KeyProvider.Type = "pkcs11"
+				c.PKCS11.URI = "pkcs11:token=YubiHSM?module-name=yubihsm_pkcs11_not_installed"
+			},
+			want: "pkcs11:token=YubiHSM?module-name=yubihsm_pkcs11_not_installed",
 		},
 		{
 			// SoftHSM holds SoftHSM's state, not a USB interface. Reporting
@@ -69,6 +86,9 @@ func TestSigningPKCS11Module(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Pin module-name resolution to an empty directory so the result
+			// does not depend on what the host happens to have installed.
+			t.Setenv("SECSY_PKCS11_MODULE_DIRS", t.TempDir())
 			cfg := &Config{}
 			tc.cfg(cfg)
 			if got := cfg.SigningPKCS11Module(); got != tc.want {

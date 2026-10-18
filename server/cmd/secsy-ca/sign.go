@@ -38,7 +38,7 @@ import (
 func cmdSigningKey(db *database.DB, mgr *ca.Manager, signingProvider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("signing-key", flag.ContinueOnError)
 	caRef := fs.String("ca", "", "issuing CA id or label (required)")
-	label := fs.String("label", "codesign", "provider key label for the signing key")
+	label := fs.String("label", "codesign", "provider key for the signing key: a label or an RFC 7512 pkcs11: URI")
 	keyType := fs.String("key-type", "ecdsa-p256", "signing key type (ecdsa-p256, ecdsa-p384, rsa-2048, rsa-4096)")
 	cn := fs.String("cn", "", "certificate subject common name (default: the key label)")
 	org := fs.String("o", "", "certificate subject organization")
@@ -122,12 +122,14 @@ func cmdSigningKey(db *database.DB, mgr *ca.Manager, signingProvider keyprovider
 // existing key (idempotent certificate reissue without key rotation) or
 // generating a new one on the signing-role backend.
 func signingPublicKey(ctx context.Context, provider keyprovider.Provider, label, keyType string) (crypto.PublicKey, error) {
-	info, err := provider.FindKey(ctx, keyprovider.KeyRef{Label: label})
+	// label may be a bare label or a full RFC 7512 pkcs11: URI, matching what
+	// signing.signers[].key_label accepts.
+	info, err := provider.FindKey(ctx, keyprovider.KeyRefFor(label))
 	if err == nil {
 		fmt.Fprintf(os.Stderr, "Reusing existing signing key %q.\n", label)
 		return info.PublicKey, nil
 	}
-	gen, err := provider.GenerateKey(ctx, keyprovider.KeySpec{Label: label, KeyType: keyType, Usage: keyprovider.KeyUsageSign})
+	gen, err := provider.GenerateKey(ctx, keyprovider.KeySpecFor(label, keyType, keyprovider.KeyUsageSign))
 	if err != nil {
 		return nil, fmt.Errorf("generating signing key %q: %w", label, err)
 	}

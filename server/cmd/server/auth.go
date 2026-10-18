@@ -227,7 +227,7 @@ func buildLDAPAuthenticator(c config.AuthLDAPConfig, resolve authn.LDAPPrincipal
 
 	// The service-account bind password flows through the same credential-source
 	// abstraction as the HSM PIN (inline, env, file, Vault, AWS, Azure).
-	bindSource, err := keyprovider.NewPinSource(pinSourceSettings(c.BindPasswordSource), c.BindPassword)
+	bindSource, err := keyprovider.NewPinSource(c.BindPasswordSource.Settings(), c.BindPassword)
 	if err != nil {
 		return nil, fmt.Errorf("bind_password_source: %w", err)
 	}

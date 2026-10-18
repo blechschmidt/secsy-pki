@@ -56,6 +56,11 @@ type ImportCASpec struct {
 	// there out of band by a vendor migration tool, a wrapped restore, or an
 	// earlier `key import`. Nothing is written to the backend in that case; the
 	// key is only verified to match the certificate and to be usable.
+	//
+	// It may be a bare label or a full RFC 7512 pkcs11: URI
+	// ("pkcs11:id=%01%02;type=private"), which is how a key whose CKA_LABEL was
+	// chosen by the tool that put it there — or is shared with another object —
+	// can still be named unambiguously.
 	ExistingKeyLabel string
 	// CertificatePEM is the CA's existing certificate. Trailing certificates in
 	// the same PEM are treated as chain material.
@@ -299,7 +304,10 @@ func (m *Manager) checkImportedKeyQuality(pub crypto.PublicKey) (string, error) 
 // pairing never leaves an orphan key behind on the token.
 func (m *Manager) resolveImportKey(ctx context.Context, spec ImportCASpec, cert *x509.Certificate) (*keyprovider.KeyInfo, bool, error) {
 	if spec.ExistingKeyLabel != "" {
-		info, err := m.provider.FindKey(ctx, keyprovider.KeyRef{Label: spec.ExistingKeyLabel})
+		// The adopted key may be named by a bare label or by a full RFC 7512
+		// pkcs11: URI — a migrated key often has a CKA_LABEL nobody chose, and
+		// addressing it by id= is then the only unambiguous way to adopt it.
+		info, err := m.provider.FindKey(ctx, keyprovider.KeyRefFor(spec.ExistingKeyLabel))
 		if err != nil {
 			if errors.Is(err, keyprovider.ErrKeyNotFound) {
 				return nil, false, fmt.Errorf("no key labeled %q in the %s key provider", spec.ExistingKeyLabel, m.provider.Name())

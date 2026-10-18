@@ -2934,7 +2934,7 @@ type ImportCARequest struct {
 	// Chain The issuing chain (PEM) of a subordinate CA whose parent is not in this PKI, so the served chain reaches the external anchor.
 	Chain *string `json:"chain,omitempty"`
 
-	// ExistingKeyLabel Adopt a key already present in the provider under this label instead of importing one.
+	// ExistingKeyLabel Adopt a key already present in the provider instead of importing one, named by a bare label or by a full RFC 7512 pkcs11: URI — the latter is how a key whose CKA_LABEL was chosen by the tool that put it there, or shared with another object, is named unambiguously.
 	ExistingKeyLabel *string `json:"existing_key_label,omitempty"`
 
 	// KeyBase64 Base64 of the raw container bytes (bare DER, PKCS#12/PFX).
@@ -4438,7 +4438,7 @@ type SignerProvisionRequest struct {
 	// KeyType The families the CMS signer supports.
 	KeyType *SignerProvisionRequestKeyType `json:"key_type,omitempty"`
 
-	// Label The provider key label for the signing key.
+	// Label The provider key for the signing key: a bare label, or a full RFC 7512 pkcs11: URI addressing it by CKA_ID and/or pinning the token it lives on. Whatever is given here is what signing.signers[].key_label must name in configuration.
 	Label *string `json:"label,omitempty"`
 
 	// Organization Certificate subject O (optional).
@@ -4545,7 +4545,7 @@ type TSAKeyRequest struct {
 	// KeyType Must be RSA — `openssl ts -verify` interop and the CMS signer both require it.
 	KeyType *TSAKeyRequestKeyType `json:"key_type,omitempty"`
 
-	// Label The provider key label for the TSA signing key.
+	// Label The provider key for the TSA signing key: a bare label, or a full RFC 7512 pkcs11: URI addressing it by CKA_ID and/or pinning the token it lives on. Whatever is given here is what tsa.key_label must name in configuration.
 	Label *string `json:"label,omitempty"`
 
 	// Organization Certificate subject O (optional).

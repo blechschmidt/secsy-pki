@@ -73,7 +73,7 @@ func openRing(cfg *config.Config, provider keyprovider.Provider, family string) 
 // locally and recover the key later. No plaintext is stored.
 func cmdDataKey(cfg *config.Config, provider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("datakey", flag.ContinueOnError)
-	label := fs.String("kek", "", "explicit KEK label override (default: the family's ACTIVE KEK version)")
+	label := fs.String("kek", "", "explicit KEK override: a label or an object-only pkcs11: URI (default: the family's ACTIVE KEK version)")
 	bits := fs.Int("bits", 256, "data-key strength in bits: 128, 256, or 512")
 	context_ := fs.String("context", "", "optional encryption context bound to the wrapped form (required verbatim to decrypt)")
 	wrappedOnly := fs.Bool("wrapped-only", false, "do not emit the plaintext key, only the wrapped envelope")
@@ -139,7 +139,7 @@ func cmdDataKey(cfg *config.Config, provider keyprovider.Provider, args []string
 // key (provisioned on first use), printing the tag and its key version.
 func cmdHMAC(cfg *config.Config, provider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("hmac", flag.ContinueOnError)
-	label := fs.String("kek", "", "explicit KEK label override (default: secret.kek_label from config)")
+	label := fs.String("kek", "", "explicit KEK override: a label or an object-only pkcs11: URI (default: secret.kek_label from config)")
 	in := fs.String("in", "-", "input data file to authenticate, or '-' for stdin")
 	jsonOut := fs.Bool("json", false, "emit a machine-readable JSON object")
 	if err := fs.Parse(args); err != nil {
@@ -188,7 +188,7 @@ func cmdHMAC(cfg *config.Config, provider keyprovider.Provider, args []string) e
 // non-zero when the tag does not verify, so scripts can branch on $?.
 func cmdHMACVerify(cfg *config.Config, provider keyprovider.Provider, args []string) error {
 	fs := flag.NewFlagSet("hmac-verify", flag.ContinueOnError)
-	label := fs.String("kek", "", "explicit KEK label override (default: secret.kek_label from config)")
+	label := fs.String("kek", "", "explicit KEK override: a label or an object-only pkcs11: URI (default: secret.kek_label from config)")
 	in := fs.String("in", "-", "input data file that was authenticated, or '-' for stdin")
 	macB64 := fs.String("hmac", "", "the base64 HMAC tag to verify (required)")
 	version := fs.Int("version", 0, "MAC key version the tag was produced under (0 = active)")
