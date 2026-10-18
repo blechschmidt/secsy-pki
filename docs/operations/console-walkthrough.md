@@ -607,18 +607,22 @@ The rest of the page covers the disaster-recovery manifest, the restore drill
 and static-artifact publishing; all three are described in the
 [operator runbook](runbook.md).
 
-!!! warning "Known issue: this page disturbs the key provider"
+!!! note "This page used to disturb the key provider (fixed)"
 
-    `GET /api/doctor` builds a second PKCS#11 provider and closes it when the
-    sweep finishes. `C_Finalize` is process-global, and two code paths
-    (`internal/pki/probe.go`, `internal/pki/inventory.go`) call it directly
-    instead of going through the reference-counted module helpers in
-    `internal/pki/pool.go` — so the running server's pooled sessions are
-    invalidated along with the doctor's own. After loading this page the HSM
-    key inventory reports zero keys and secret decryption fails with
-    `CKR_OBJECT_HANDLE_INVALID` until the server is restarted. Prefer
-    `secsy-ca doctor` from a terminal, which runs in its own process, until
-    this is fixed.
+    Through the 1.0 release, loading this page could take the server's HSM keys
+    away until it was restarted: the HSM key inventory reported zero keys and
+    secret decryption failed with `CKR_OBJECT_HANDLE_INVALID`. `GET
+    /api/doctor` builds a second PKCS#11 provider for the sweep and closes it
+    at the end, and that teardown — `C_Logout`, `C_Finalize`, `dlclose` — is
+    process-global rather than per-handle, so it deauthenticated and then
+    finalized the module out from under the *serving* session pool. The token
+    was healthy throughout, which is what made it look like an HSM fault.
+
+    Both the module and the login are now reference-counted across every holder
+    in the process (`internal/pki/pool.go`), so a diagnostic sweep logs out and
+    finalizes only if nothing else is using the token. If you are running an
+    older build, prefer `secsy-ca doctor` from a terminal: it runs in its own
+    process and cannot reach the server's sessions.
 
 ---
 

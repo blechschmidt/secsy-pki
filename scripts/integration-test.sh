@@ -65,7 +65,11 @@ cd "$SERVER_DIR"
 # internal/config is here for one test: the end-to-end proof that a config file
 # naming its module, token and key only by RFC 7512 URIs produces a provider
 # that signs with that key. It needs a token, so the HSM-free unit job skips it.
-DEFAULT_PKGS=(./internal/e2e/... ./internal/ca/... ./internal/secret/... ./internal/keyprovider/... ./internal/config/... ./internal/scep/... ./internal/est/... ./internal/cms/... ./internal/sshca/... ./internal/handlers/... ./internal/doctor/... ./internal/agent/...)
+# internal/pki is the Cryptoki boundary itself: the token-gated tests there
+# assert behaviour no mock reproduces — module quirks that only a real PKCS#11
+# library exhibits, and the module/login reference counting that keeps a
+# diagnostic sweep from tearing the serving session pool down.
+DEFAULT_PKGS=(./internal/e2e/... ./internal/ca/... ./internal/secret/... ./internal/keyprovider/... ./internal/pki/... ./internal/config/... ./internal/scep/... ./internal/est/... ./internal/cms/... ./internal/sshca/... ./internal/handlers/... ./internal/doctor/... ./internal/agent/...)
 
 log "Running end-to-end integration tests against SoftHSM..."
 set -x

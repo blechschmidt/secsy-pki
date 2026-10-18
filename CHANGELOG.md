@@ -73,6 +73,24 @@ against a live token.
 
 ### Fixed
 
+**The day-2 operations page no longer takes the server's HSM keys away.**
+Loading the console's Operations page (or calling `GET /api/doctor`) ran a
+diagnostic sweep that built a second PKCS#11 provider and closed it at the end,
+and that teardown — `C_Logout`, `C_Finalize`, `dlclose` — is process-global
+rather than per-handle. It deauthenticated and then finalized the module out
+from under the *serving* session pool, so the HSM key inventory answered with an
+empty list and secret decryption failed with `CKR_OBJECT_HANDLE_INVALID` until
+the process was restarted; the token was healthy throughout, which made it look
+like an HSM fault. Both halves of the Cryptoki state are now reference-counted
+across every holder in the process, and each short-lived helper (`Probe`,
+`ListKeys`, `GenerateKeyOnHSM`, `GenerateRSAKEKOnHSM`, `NewPKCS11Signer`) takes
+those references instead of loading and tearing down its own module — so the
+real `C_Finalize` and `C_Logout` happen only when the last user lets go. The
+readiness probe also stopped reporting a false "HSM unreachable": probing a
+token this process is already logged in to returned `CKR_USER_ALREADY_LOGGED_IN`
+rather than success. Under concurrency the old path could finalize the module
+while another goroutine was inside `C_Sign`, which crashed the process.
+
 **SCEP, CMP and the SSH CA now address a CA key by its whole stored URI.** All
 three reduced the CA's `pkcs11:` URI to its `CKA_LABEL` and threw the rest
 away, so a CA key addressed by `CKA_ID` or pinned to one replica of an HA set

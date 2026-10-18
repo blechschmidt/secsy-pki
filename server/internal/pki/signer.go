@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/miekg/pkcs11"
 	"golang.org/x/crypto/ssh"
@@ -27,6 +28,16 @@ type PKCS11Signer struct {
 	pubKey     crypto.PublicKey
 	keyType    string
 	isEdDSA    bool
+	// modulePath / slotID identify the shared module reference and the login
+	// reference the signer holds, so Close releases exactly what it took rather
+	// than finalizing a module other holders are still using.
+	modulePath string
+	slotID     uint
+	// closeOnce makes Close idempotent. Both references it drops are shared
+	// counts now, so a second Close would release a reference this signer does
+	// not hold — and could log the token out while the serving pool is still
+	// using it.
+	closeOnce sync.Once
 }
 
 // PKCS11Config addresses one PKCS#11 token. Every selector below corresponds to
@@ -150,25 +161,29 @@ func BuildPKCS11URI(cfg PKCS11Config, keyLabel string) string {
 	return pkcs11Scheme + strings.Join(parts, ";")
 }
 
+// NewPKCS11Signer opens a standalone, long-lived signer on the configured
+// token. It holds one reference to the process-shared module and one login
+// reference until Close, so it coexists with a serving SessionPool on the same
+// token instead of finalizing the module out from under it.
+//
+// Prefer SessionPool for anything that signs more than once: it amortizes the
+// login and bounds concurrency. This entry point exists for the single-shot CLI
+// paths that have no pool.
 func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {
-	ctx := pkcs11.New(cfg.ModulePath)
-	if ctx == nil {
-		return nil, fmt.Errorf("failed to load PKCS#11 module: %s", cfg.ModulePath)
-	}
-	if err := ctx.Initialize(); err != nil {
-		if e, ok := err.(pkcs11.Error); !ok || e != pkcs11.CKR_CRYPTOKI_ALREADY_INITIALIZED {
-			return nil, fmt.Errorf("initializing PKCS#11: %w", err)
-		}
+	ctx, err := acquireModule(cfg.ModulePath)
+	if err != nil {
+		return nil, err
 	}
 
 	// Track resource state so that any error after this point releases the
-	// session, login, and loaded module. Leaking a logged-in session breaks
-	// subsequent operations on tokens (e.g. SoftHSM) whose login state is
-	// per-application rather than per-session: the next Login fails with
-	// CKR_USER_ALREADY_LOGGED_IN. On success, ownership transfers to the
-	// returned signer and cleanup is skipped.
+	// session, the login reference, and the module reference. Leaking a login
+	// reference would keep the application logged in to the token for the life
+	// of the process, because the real C_Logout is deferred to the last holder.
+	// On success, ownership transfers to the returned signer and cleanup is
+	// skipped.
 	var (
 		session   pkcs11.SessionHandle
+		slotID    uint
 		haveSess  bool
 		loggedIn  bool
 		succeeded bool
@@ -178,13 +193,12 @@ func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {
 			return
 		}
 		if loggedIn {
-			ctx.Logout(session)
+			logoutShared(cfg.ModulePath, ctx, session, slotID)
 		}
 		if haveSess {
 			ctx.CloseSession(session)
 		}
-		ctx.Finalize()
-		ctx.Destroy()
+		releaseModule(cfg.ModulePath)
 	}()
 
 	slots, err := ctx.GetSlotList(true)
@@ -192,7 +206,7 @@ func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {
 		return nil, fmt.Errorf("getting slots: %w", err)
 	}
 
-	slotID, err := findToken(ctx, slots, cfg)
+	slotID, err = findToken(ctx, slots, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +217,7 @@ func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {
 	}
 	haveSess = true
 
-	if err := ctx.Login(session, pkcs11.CKU_USER, cfg.Pin); err != nil {
+	if err := loginShared(cfg.ModulePath, ctx, session, slotID, cfg.Pin); err != nil {
 		return nil, fmt.Errorf("logging in: %w", err)
 	}
 	loggedIn = true
@@ -220,6 +234,8 @@ func NewPKCS11Signer(cfg PKCS11Config, keyLabel string) (*PKCS11Signer, error) {
 		pubKey:     ko.pubKey,
 		keyType:    ko.keyType,
 		isEdDSA:    ko.isEdDSA,
+		modulePath: cfg.ModulePath,
+		slotID:     slotID,
 	}
 
 	succeeded = true
@@ -667,11 +683,16 @@ func (s *PKCS11Signer) KeyType() string {
 	return s.keyType
 }
 
+// Close releases the signer's session, its login reference, and its module
+// reference. The token is logged out and the module finalized only if this was
+// the last holder in the process — a signer closing while the server's session
+// pool is live must leave that pool authenticated and its handles valid.
 func (s *PKCS11Signer) Close() {
-	s.ctx.Logout(s.session)
-	s.ctx.CloseSession(s.session)
-	s.ctx.Finalize()
-	s.ctx.Destroy()
+	s.closeOnce.Do(func() {
+		logoutShared(s.modulePath, s.ctx, s.session, s.slotID)
+		s.ctx.CloseSession(s.session)
+		releaseModule(s.modulePath)
+	})
 }
 
 func (s *PKCS11Signer) SSHPublicKey() (ssh.PublicKey, error) {
@@ -698,42 +719,16 @@ const CKK_EC_EDWARDS = 0x00000040 //nolint:staticcheck // ST1003: mirrors the PK
 // Supported key types: "ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384",
 // "ecdsa-sha2-nistp521", "rsa-2048", "rsa-3072", "rsa-4096".
 func GenerateKeyOnHSM(cfg PKCS11Config, label string, keyType string) (*GeneratedHSMKey, error) {
-	ctx := pkcs11.New(cfg.ModulePath)
-	if ctx == nil {
-		return nil, fmt.Errorf("failed to load PKCS#11 module: %s", cfg.ModulePath)
-	}
-	if err := ctx.Initialize(); err != nil {
-		if e, ok := err.(pkcs11.Error); !ok || e != pkcs11.CKR_CRYPTOKI_ALREADY_INITIALIZED {
-			return nil, fmt.Errorf("initializing PKCS#11: %w", err)
-		}
-	}
-	defer func() {
-		ctx.Finalize()
-		ctx.Destroy()
-	}()
-
-	slots, err := ctx.GetSlotList(true)
-	if err != nil {
-		return nil, fmt.Errorf("getting slots: %w", err)
-	}
-
-	slotID, err := findToken(ctx, slots, cfg)
+	var gen *GeneratedHSMKey
+	err := withModuleSession(cfg, true, func(ctx *pkcs11.Ctx, session pkcs11.SessionHandle) error {
+		var gerr error
+		gen, gerr = generateKeyPairOnSession(ctx, session, cfg, label, keyType)
+		return gerr
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	session, err := ctx.OpenSession(slotID, pkcs11.CKF_SERIAL_SESSION|pkcs11.CKF_RW_SESSION)
-	if err != nil {
-		return nil, fmt.Errorf("opening session: %w", err)
-	}
-	defer ctx.CloseSession(session)
-
-	if err := ctx.Login(session, pkcs11.CKU_USER, cfg.Pin); err != nil {
-		return nil, fmt.Errorf("logging in: %w", err)
-	}
-	defer ctx.Logout(session)
-
-	return generateKeyPairOnSession(ctx, session, cfg, label, keyType)
+	return gen, nil
 }
 
 // generateKeyPairOnSession creates a signing key pair on an already

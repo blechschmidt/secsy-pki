@@ -60,6 +60,22 @@ The pool is guarded entirely by the existing `keyprovider` abstraction: the rest
 of the application (CA issuance, OCSP/CRL, secret decrypt) is unchanged and
 still talks to `keyprovider.Provider`.
 
+Both halves of the Cryptoki state are reference-counted, not just the module.
+`C_Initialize`/`C_Finalize` are process-global, and on a token whose login state
+is per-application (SoftHSM again) so is `C_Login`/`C_Logout` — so `pool.go`
+counts the holders of each and defers the real `C_Finalize` and `C_Logout` to
+the last one. Every short-lived helper in `internal/pki` (`Probe`, `ListKeys`,
+`GenerateKeyOnHSM`, `GenerateRSAKEKOnHSM`, `NewPKCS11Signer`) goes through
+`withModuleSession`, which takes those references rather than loading and tearing
+down its own module. That is what lets a diagnostic sweep — `secsy-ca doctor`,
+`GET /api/doctor`, the console's Operations page — probe a token while the
+server is signing with it: before it was refcounted, the sweep's teardown
+deauthenticated and then finalized the module out from under the serving pool,
+and the server reported an empty key list and `CKR_OBJECT_HANDLE_INVALID` until
+it was restarted. The regressions are pinned in
+`server/internal/pki/sharedmodule_softhsm_test.go` and
+`server/internal/handlers/doctor_keyprovider_softhsm_test.go`.
+
 ## Running the suite
 
 ```sh

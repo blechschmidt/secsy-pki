@@ -52,11 +52,14 @@ func TestChaosWrongPINFailsClosed(t *testing.T) {
 
 	ctx := context.Background()
 
-	// The wrong PIN must fail closed. This runs FIRST, before any correct login
-	// exists on this fresh token: SoftHSM's login state is per-application, so a
-	// correct-PIN session opened earlier in the same process would mask a later
-	// wrong-PIN login (it returns CKR_USER_ALREADY_LOGGED_IN). Attempting the bad
-	// PIN on a token with no prior login exercises the genuine C_Login rejection.
+	// The wrong PIN must fail closed. This still runs FIRST so that the genuine
+	// C_Login rejection is what is exercised: SoftHSM's login state is
+	// per-application, so with a correct login already live the token answers
+	// this one CKR_USER_ALREADY_LOGGED_IN without looking at the PIN. (That no
+	// longer masks the bad PIN — pki.loginShared compares it against the one
+	// that established the live login, and the case is covered directly in
+	// pki.TestWrongPINIsStillRejectedWhileServingPoolIsLive — but only this
+	// ordering reaches the token's own refusal.)
 	bad := newProvider("000000")
 	victimLabel := "chaos-pin-victim-" + randSuffix(t)
 	if _, err := bad.GenerateKey(ctx, keyprovider.KeySpec{

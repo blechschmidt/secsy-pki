@@ -3,7 +3,10 @@ package pki
 import (
 	"context"
 	"crypto"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"sync"
@@ -48,6 +51,19 @@ import (
 type sharedModule struct {
 	ctx      *pkcs11.Ctx
 	refCount int
+	// logins counts the live login holders per slot id. On SoftHSM (and on most
+	// tokens) C_Login/C_Logout act on the *application*, not on one session, so
+	// a logout issued by any holder logs the whole process out of that token and
+	// instantly invalidates every other holder's private-object handles. The
+	// logout is therefore deferred until the last holder releases.
+	logins map[uint]int
+	// pinFP fingerprints the PIN that established the live login on each slot
+	// (keyed by slot id). A token that is already logged in answers the next
+	// C_Login with CKR_USER_ALREADY_LOGGED_IN *without looking at the PIN*, so
+	// without this a second holder presenting a wrong PIN would be told the
+	// credentials are fine. Comparing fingerprints is what keeps a diagnostic
+	// sweep able to report a mis-configured PIN while the server is logged in.
+	pinFP map[uint][]byte
 }
 
 var (
@@ -78,12 +94,18 @@ func acquireModule(path string) (*pkcs11.Ctx, error) {
 			return nil, fmt.Errorf("initializing PKCS#11: %w", err)
 		}
 	}
-	modules[path] = &sharedModule{ctx: ctx, refCount: 1}
+	modules[path] = &sharedModule{ctx: ctx, refCount: 1, logins: map[uint]int{}, pinFP: map[uint][]byte{}}
 	return ctx, nil
 }
 
 // releaseModule drops one reference to the module at path, finalizing and
 // destroying the context when the last reference is released.
+//
+// Finalizing early is the single most destructive thing one user of a module can
+// do to another: C_Finalize is process-global, so every other holder's sessions
+// and object handles die with it and every later call returns
+// CKR_CRYPTOKI_NOT_INITIALIZED until the process restarts. Nothing in this
+// package may call ctx.Finalize() outside this function.
 func releaseModule(path string) {
 	moduleMu.Lock()
 	defer moduleMu.Unlock()
@@ -99,6 +121,172 @@ func releaseModule(path string) {
 	m.ctx.Finalize()
 	m.ctx.Destroy()
 	delete(modules, path)
+}
+
+// pinSalt keys the PIN fingerprints below. It is random per process and never
+// leaves it, so the stored digests are useless outside this process image and
+// no second plaintext copy of the PIN is kept for the comparison.
+var pinSalt = func() []byte {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand failing is fatal for everything else this process does.
+		panic("pkcs11: reading random bytes for the PIN fingerprint salt: " + err.Error())
+	}
+	return b
+}()
+
+// pinFingerprint returns the comparable digest of a candidate PIN.
+func pinFingerprint(pin string) []byte {
+	h := hmac.New(sha256.New, pinSalt)
+	h.Write([]byte(pin))
+	return h.Sum(nil)
+}
+
+// takeLogin records one login reference for slotID, remembering the PIN that
+// established the login when this is the first holder.
+func (m *sharedModule) takeLogin(slotID uint, fp []byte) {
+	if m.logins[slotID] == 0 {
+		m.pinFP[slotID] = fp
+	}
+	m.logins[slotID]++
+}
+
+// dropLogin removes one login reference for slotID and reports whether that was
+// the last one — that is, whether the caller must now issue the real C_Logout.
+// Releasing a reference that was never taken is a no-op rather than a negative
+// count, so an unbalanced caller can never trigger a logout that deauthenticates
+// the holders that remain.
+func (m *sharedModule) dropLogin(slotID uint) bool {
+	n := m.logins[slotID]
+	if n <= 0 {
+		return false
+	}
+	if n--; n > 0 {
+		m.logins[slotID] = n
+		return false
+	}
+	delete(m.logins, slotID)
+	delete(m.pinFP, slotID)
+	return true
+}
+
+// loginShared performs C_Login for the user PIN on session (which must belong to
+// slotID on the module at path) and records one login reference.
+//
+// An existing application-wide login is not an error: on tokens whose login
+// state is per-application rather than per-session — SoftHSM among them — the
+// second and later logins return CKR_USER_ALREADY_LOGGED_IN, which means "this
+// application is authenticated to this token", exactly the state the caller
+// asked for. Treating it as success is what lets a diagnostic pass, a CLI
+// helper, and the serving session pool coexist in one process.
+//
+// It is only success for the SAME PIN, though. A token that short-circuits the
+// login never looks at the credential it was handed, so accepting any PIN on
+// that path would turn a mis-configured PIN into "login/credentials OK" for as
+// long as some other holder keeps the token logged in — the opposite of what a
+// diagnostic is for. A second holder presenting a different PIN is therefore
+// refused: Cryptoki offers no way to verify it without logging the live
+// sessions out, and refusing is the answer that cannot mislead.
+//
+// Every successful call must be paired with exactly one logoutShared.
+func loginShared(path string, ctx *pkcs11.Ctx, session pkcs11.SessionHandle, slotID uint, pin string) error {
+	moduleMu.Lock()
+	defer moduleMu.Unlock()
+
+	fp := pinFingerprint(pin)
+	m := modules[path]
+	if err := ctx.Login(session, pkcs11.CKU_USER, pin); err != nil {
+		e, ok := err.(pkcs11.Error)
+		if !ok || e != pkcs11.CKR_USER_ALREADY_LOGGED_IN {
+			return err
+		}
+		// The PIN went unchecked. Accept it only if it matches the one that
+		// established the login we are joining. An unrecorded login (one taken
+		// before this bookkeeping existed, or by another user of the same
+		// library image) leaves nothing to compare against, so it is accepted
+		// as it was before.
+		if m != nil {
+			if known, tracked := m.pinFP[slotID]; tracked && !hmac.Equal(known, fp) {
+				return fmt.Errorf("the configured user PIN differs from the one this process is already logged in to the token with; "+
+					"PKCS#11 cannot verify a second PIN without logging the live sessions out, so it is refused rather than reported OK unchecked "+
+					"(%s)", pkcs11.Error(pkcs11.CKR_USER_ALREADY_LOGGED_IN))
+			}
+		}
+	}
+	if m != nil {
+		m.takeLogin(slotID, fp)
+	}
+	return nil
+}
+
+// logoutShared drops one login reference taken by loginShared, issuing the
+// actual C_Logout only when the last holder releases it. session must still be
+// open and must belong to slotID, because the final logout is performed on it.
+//
+// The deferred logout is what keeps a short-lived helper from signing the
+// serving pool out from under itself: on a per-application-login token a
+// C_Logout makes every private key object on the token invisible, so the server
+// starts reporting an empty key list and CKR_OBJECT_HANDLE_INVALID on handles it
+// resolved a moment earlier.
+func logoutShared(path string, ctx *pkcs11.Ctx, session pkcs11.SessionHandle, slotID uint) {
+	moduleMu.Lock()
+	defer moduleMu.Unlock()
+
+	m, ok := modules[path]
+	if !ok {
+		// The module is already gone (finalized), which logged the application
+		// out as a side effect. Nothing to release.
+		return
+	}
+	if m.dropLogin(slotID) {
+		ctx.Logout(session)
+	}
+}
+
+// withModuleSession runs fn on a freshly opened, authenticated session over the
+// process-shared module context for cfg, and releases everything it opened
+// before returning.
+//
+// It is the one way a short-lived PKCS#11 operation may touch a token in this
+// process. The hand-rolled alternative — pkcs11.New + Initialize + OpenSession +
+// Login ... Logout + Finalize + Destroy — is correct only when nothing else in
+// the process is using the module, and the server is precisely the case where
+// something is: a diagnostic sweep run against a live server used to log the
+// serving session pool out and then finalize the module out from under it. Going
+// through the shared module and the login refcount makes the same helper a
+// no-op for every other holder.
+func withModuleSession(cfg PKCS11Config, rw bool, fn func(ctx *pkcs11.Ctx, session pkcs11.SessionHandle) error) error {
+	ctx, err := acquireModule(cfg.ModulePath)
+	if err != nil {
+		return err
+	}
+	defer releaseModule(cfg.ModulePath)
+
+	slots, err := ctx.GetSlotList(true)
+	if err != nil {
+		return fmt.Errorf("getting slots: %w", err)
+	}
+	slotID, err := findToken(ctx, slots, cfg)
+	if err != nil {
+		return err
+	}
+
+	flags := uint(pkcs11.CKF_SERIAL_SESSION)
+	if rw {
+		flags |= pkcs11.CKF_RW_SESSION
+	}
+	session, err := ctx.OpenSession(slotID, flags)
+	if err != nil {
+		return fmt.Errorf("opening session: %w", err)
+	}
+	defer ctx.CloseSession(session)
+
+	if err := loginShared(cfg.ModulePath, ctx, session, slotID, cfg.Pin); err != nil {
+		return fmt.Errorf("logging in: %w", err)
+	}
+	defer logoutShared(cfg.ModulePath, ctx, session, slotID)
+
+	return fn(ctx, session)
 }
 
 // pooledSession is one long-lived, logged-in session plus a per-session cache of
@@ -134,6 +322,9 @@ type SessionPool struct {
 	ctx  *pkcs11.Ctx
 	free chan *pooledSession
 	size int
+	// slotID is the resolved slot the sessions belong to; the login refcount is
+	// keyed by it, so Close must release against the same slot it logged in to.
+	slotID uint
 
 	// identity is the resolved token's actual identity (label/serial/model/
 	// manufacturer/slot-id), captured once at construction. It lets the HA layer
@@ -213,6 +404,7 @@ func NewSessionPool(cfg PKCS11Config, size int) (_ *SessionPool, err error) {
 		ctx:      ctx,
 		free:     make(chan *pooledSession, size),
 		size:     size,
+		slotID:   slotID,
 		identity: identity,
 	}
 
@@ -221,6 +413,7 @@ func NewSessionPool(cfg PKCS11Config, size int) (_ *SessionPool, err error) {
 	opened := make([]*pooledSession, 0, size)
 	cleanup := func() {
 		for _, s := range opened {
+			logoutShared(cfg.ModulePath, ctx, s.handle, slotID)
 			ctx.CloseSession(s.handle)
 		}
 	}
@@ -231,16 +424,16 @@ func NewSessionPool(cfg PKCS11Config, size int) (_ *SessionPool, err error) {
 			err = fmt.Errorf("opening session %d/%d: %w", i+1, size, oerr)
 			return nil, err
 		}
-		// Login state is per-application on many tokens (SoftHSM included), so a
-		// second login returns CKR_USER_ALREADY_LOGGED_IN; treat that as success.
-		// On tokens with per-session login this logs each session in explicitly.
-		if lerr := ctx.Login(sh, pkcs11.CKU_USER, cfg.Pin); lerr != nil {
-			if e, ok := lerr.(pkcs11.Error); !ok || e != pkcs11.CKR_USER_ALREADY_LOGGED_IN {
-				ctx.CloseSession(sh)
-				cleanup()
-				err = fmt.Errorf("logging in session %d/%d: %w", i+1, size, lerr)
-				return nil, err
-			}
+		// loginShared takes one login reference per session and tolerates the
+		// CKR_USER_ALREADY_LOGGED_IN that a per-application-login token returns
+		// for the second and later logins (including one taken by another pool
+		// or a one-shot helper already running in this process). Close releases
+		// exactly as many references as were taken here.
+		if lerr := loginShared(cfg.ModulePath, ctx, sh, slotID, cfg.Pin); lerr != nil {
+			ctx.CloseSession(sh)
+			cleanup()
+			err = fmt.Errorf("logging in session %d/%d: %w", i+1, size, lerr)
+			return nil, err
 		}
 		opened = append(opened, &pooledSession{handle: sh, keys: map[string]keyObjects{}})
 	}
@@ -460,15 +653,16 @@ func (p *SessionPool) Close() error {
 	// p.size sessions. The channel is deliberately NOT closed: a late release
 	// racing shutdown then lands harmlessly in the (now-empty, size-capacity)
 	// buffer instead of panicking on a send to a closed channel.
-	var loggedOut bool
+	//
+	// Each session releases the login reference it took in NewSessionPool.
+	// logoutShared issues the real C_Logout on the last one — and only if no
+	// other pool or helper in this process still holds the token logged in,
+	// which is the whole point: closing a diagnostic's throwaway pool must not
+	// deauthenticate the pool that is serving traffic. The logout happens before
+	// CloseSession so it lands on a session that is still open.
 	for i := 0; i < p.size; i++ {
 		s := <-p.free
-		if !loggedOut {
-			// One logout suffices for per-application login state; harmless
-			// otherwise. Do it before closing the last session.
-			p.ctx.Logout(s.handle)
-			loggedOut = true
-		}
+		logoutShared(p.cfg.ModulePath, p.ctx, s.handle, p.slotID)
 		p.ctx.CloseSession(s.handle)
 	}
 	releaseModule(p.cfg.ModulePath)

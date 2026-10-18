@@ -136,41 +136,16 @@ func GenerateRSAKEKOnHSM(cfg PKCS11Config, label string, bits int) (*GeneratedHS
 		return nil, fmt.Errorf("unsupported KEK size %d (must be 2048 or 4096)", bits)
 	}
 
-	ctx := pkcs11.New(cfg.ModulePath)
-	if ctx == nil {
-		return nil, fmt.Errorf("failed to load PKCS#11 module: %s", cfg.ModulePath)
-	}
-	if err := ctx.Initialize(); err != nil {
-		if e, ok := err.(pkcs11.Error); !ok || e != pkcs11.CKR_CRYPTOKI_ALREADY_INITIALIZED {
-			return nil, fmt.Errorf("initializing PKCS#11: %w", err)
-		}
-	}
-	defer func() {
-		ctx.Finalize()
-		ctx.Destroy()
-	}()
-
-	slots, err := ctx.GetSlotList(true)
-	if err != nil {
-		return nil, fmt.Errorf("getting slots: %w", err)
-	}
-	slotID, err := findToken(ctx, slots, cfg)
+	var gen *GeneratedHSMKey
+	err := withModuleSession(cfg, true, func(ctx *pkcs11.Ctx, session pkcs11.SessionHandle) error {
+		var gerr error
+		gen, gerr = generateRSAKEKOnSession(ctx, session, cfg, label, bits)
+		return gerr
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	session, err := ctx.OpenSession(slotID, pkcs11.CKF_SERIAL_SESSION|pkcs11.CKF_RW_SESSION)
-	if err != nil {
-		return nil, fmt.Errorf("opening session: %w", err)
-	}
-	defer ctx.CloseSession(session)
-
-	if err := ctx.Login(session, pkcs11.CKU_USER, cfg.Pin); err != nil {
-		return nil, fmt.Errorf("logging in: %w", err)
-	}
-	defer ctx.Logout(session)
-
-	return generateRSAKEKOnSession(ctx, session, cfg, label, bits)
+	return gen, nil
 }
 
 // generateRSAKEKOnSession creates an RSA key-encryption key pair on an already

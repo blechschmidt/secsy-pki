@@ -448,14 +448,15 @@ const SHOTS = [
     clipTo: `panel:Lint a certificate`,
     maxHeight: 1400,
   },
-  // KEEP THIS SHOT LAST. loadOps() calls GET /api/doctor, and the doctor builds
-  // a second PKCS#11 provider and closes it — which finalizes the module for the
-  // whole process, because pki/probe.go and pki/inventory.go call pkcs11.New()
-  // and ctx.Finalize() directly instead of going through the refcounted
-  // getModule/releaseModule pair in pki/pool.go. The running server's pooled
-  // sessions die with it: /api/inventory/keys returns an empty list and the
-  // secret KEK fails with CKR_OBJECT_HANDLE_INVALID until a restart. Any shot
-  // taken after this one photographs an HSM that looks empty.
+  // Last by habit, not by necessity any more. loadOps() calls GET /api/doctor,
+  // which builds a second PKCS#11 provider for the sweep and closes it; that
+  // teardown used to log out and finalize the module for the whole process, so
+  // every shot taken after this one photographed an HSM that looked empty
+  // (/api/inventory/keys returned nothing, the secret KEK failed with
+  // CKR_OBJECT_HANDLE_INVALID). The module and the login are now refcounted
+  // across holders in pki/pool.go, so the sweep is harmless — keep the order
+  // anyway: it costs nothing, and it keeps the heaviest page off the critical
+  // path of the others.
   {
     file: '21-operations.png',
     what: 'the Operations view — diagnostics, DR manifest, restore drill, publishing',

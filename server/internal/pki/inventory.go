@@ -34,55 +34,21 @@ type HSMKeyInfo struct {
 // sensitivity flags). It never reads or returns private key material: only
 // public attributes and the boolean policy flags are fetched.
 //
-// It performs the same connect/login sequence as Probe and NewPKCS11Signer, and
-// releases every resource it opens before returning.
-func ListKeys(cfg PKCS11Config) (keys []HSMKeyInfo, err error) {
-	ctx := pkcs11.New(cfg.ModulePath)
-	if ctx == nil {
-		return nil, fmt.Errorf("failed to load PKCS#11 module: %s", cfg.ModulePath)
-	}
-	if initErr := ctx.Initialize(); initErr != nil {
-		if e, ok := initErr.(pkcs11.Error); !ok || e != pkcs11.CKR_CRYPTOKI_ALREADY_INITIALIZED {
-			ctx.Destroy()
-			return nil, fmt.Errorf("initializing PKCS#11: %w", initErr)
-		}
-	}
-
-	var (
-		session  pkcs11.SessionHandle
-		haveSess bool
-		loggedIn bool
-	)
-	defer func() {
-		if loggedIn {
-			ctx.Logout(session)
-		}
-		if haveSess {
-			ctx.CloseSession(session)
-		}
-		ctx.Finalize()
-		ctx.Destroy()
-	}()
-
-	slots, err := ctx.GetSlotList(true)
-	if err != nil {
-		return nil, fmt.Errorf("getting slots: %w", err)
-	}
-	slotID, err := findToken(ctx, slots, cfg)
+// It performs the same connect/login sequence as Probe and NewPKCS11Signer over
+// the process-shared module context, and releases every resource it opens
+// before returning — including when another holder (the serving session pool)
+// is using the same token concurrently.
+func ListKeys(cfg PKCS11Config) ([]HSMKeyInfo, error) {
+	var keys []HSMKeyInfo
+	err := withModuleSession(cfg, false, func(ctx *pkcs11.Ctx, session pkcs11.SessionHandle) error {
+		var lerr error
+		keys, lerr = listKeysOnSession(ctx, session)
+		return lerr
+	})
 	if err != nil {
 		return nil, err
 	}
-	session, err = ctx.OpenSession(slotID, pkcs11.CKF_SERIAL_SESSION)
-	if err != nil {
-		return nil, fmt.Errorf("opening session: %w", err)
-	}
-	haveSess = true
-	if err := ctx.Login(session, pkcs11.CKU_USER, cfg.Pin); err != nil {
-		return nil, fmt.Errorf("logging in: %w", err)
-	}
-	loggedIn = true
-
-	return listKeysOnSession(ctx, session)
+	return keys, nil
 }
 
 // listKeysOnSession enumerates the private-key objects on an already
