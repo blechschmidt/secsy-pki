@@ -70,6 +70,16 @@ SECTION_EXTRAS = {
 # they are stored in.
 SITE_AUTHORED = {"website/index.md"}
 
+# Binary files under docs/ that pages embed — the console walkthrough's
+# screenshots. They are staged like pages so relative links to them resolve
+# (and are not redirected to GitHub, where a .png blob is an HTML page rather
+# than an image), but copied verbatim rather than run through the rewriter.
+ASSET_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")
+
+
+def is_asset(rel: str) -> bool:
+    return rel.lower().endswith(ASSET_SUFFIXES)
+
 warnings: list[str] = []
 
 
@@ -110,7 +120,7 @@ def staged_files() -> dict[str, str]:
     for dirpath, dirnames, filenames in os.walk(os.path.join(ROOT, "docs")):
         dirnames.sort()
         for name in sorted(filenames):
-            if name.endswith(".md"):
+            if name.endswith(".md") or is_asset(name):
                 rel = os.path.relpath(os.path.join(dirpath, name), ROOT).replace(os.sep, "/")
                 staged[rel] = rel
 
@@ -205,6 +215,9 @@ class Rewriter:
 
 def build_nav(staged: dict[str, str]) -> list:
     """Derive the site navigation from the enforced documentation indexes."""
+    # Navigation is over pages. Embedded images are staged too, and without this
+    # every one of them reports as "in no section listed by docs/README.md".
+    staged = {k: v for k, v in staged.items() if not is_asset(k)}
     docs_map = read(os.path.join(ROOT, "docs", "README.md"))
 
     # Curated short titles: docs/README.md links every page with a nicer label
@@ -322,9 +335,14 @@ def main() -> int:
     os.makedirs(SRC)
 
     rewriter = Rewriter(staged)
+    assets = 0
     for source, dest in sorted(staged.items()):
         target = os.path.join(SRC, dest)
         os.makedirs(os.path.dirname(target), exist_ok=True)
+        if is_asset(source):
+            shutil.copyfile(os.path.join(ROOT, source), target)
+            assets += 1
+            continue
         with open(target, "w", encoding="utf-8") as fh:
             fh.write(rewriter.text(read(os.path.join(ROOT, source)), source, dest))
 
@@ -339,7 +357,8 @@ def main() -> int:
     for message in warnings:
         print(f"build-docs: warning: {message}", file=sys.stderr)
 
-    print(f"build-docs: staged {len(staged)} pages into {os.path.relpath(SRC, ROOT)} "
+    print(f"build-docs: staged {len(staged) - assets} pages + {assets} assets "
+          f"into {os.path.relpath(SRC, ROOT)} "
           f"({rewriter.retargeted} links retargeted, {rewriter.to_github} pointed at GitHub, "
           f"{len(nav)} nav sections) -> {os.path.relpath(OUT_CONFIG, ROOT)}")
     return 1 if rewriter.missing else 0

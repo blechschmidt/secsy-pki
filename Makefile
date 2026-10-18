@@ -183,6 +183,16 @@ docs-serve: $(DOCS_VENV) docs-stage ## Live-preview the documentation site (http
 	@echo "==> mkdocs serve on http://127.0.0.1:$(DOCS_PORT)  (re-run to pick up docs/ edits)"
 	@$(DOCS_MKDOCS) serve --strict -f $(DIST)/mkdocs.yml -a 127.0.0.1:$(DOCS_PORT)
 
+# Console screenshots for docs/operations/console-walkthrough.md. Builds a
+# throwaway PKI (invented company, its own SoftHSM token, its own port),
+# photographs its console with headless Chromium, and destroys it — so no real
+# deployment's subjects, serials or audit trail can reach the published images.
+# Deliberately not a CI job: regenerating binaries on every push is a binary
+# diff on every push. See scripts/screenshots/README.md.
+.PHONY: screenshots
+screenshots: ## Regenerate docs/screenshots/ from a throwaway demo PKI (needs Chrome + node + SoftHSM)
+	@./scripts/screenshots/capture.sh
+
 # ---------------------------------------------------------------------------
 # Data-race detector (Task 109)
 # ---------------------------------------------------------------------------

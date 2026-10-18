@@ -127,7 +127,22 @@ for f in md_files():
 
 # ------------------------------------------------------- 3. every page indexed
 docs = os.path.join(ROOT, "docs")
-sections = sorted(d for d in os.listdir(docs) if os.path.isdir(os.path.join(docs, d)))
+
+
+def is_section(d):
+    """A directory under docs/ is a documentation section when it holds pages.
+
+    docs/screenshots/ holds only the PNGs the console walkthrough embeds. It has
+    no index because there is nothing to index, and demanding one would put an
+    empty section in the site navigation.
+    """
+    path = os.path.join(docs, d)
+    if not os.path.isdir(path):
+        return False
+    return any(f.endswith(".md") for f in os.listdir(path))
+
+
+sections = sorted(d for d in os.listdir(docs) if is_section(d))
 
 map_links = set(link_targets(open(os.path.join(docs, "README.md"), encoding="utf-8").read()))
 for section in sections:

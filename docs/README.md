@@ -22,6 +22,7 @@ These pages are also published — with search and navigation — at
 | **Add secret encryption** | [Password / secret encryption](secrets/password-encryption.md) |
 | **Move to production** | [Production HSM migration](hsm/production-migration.md) → [Key ceremony & DR](hsm/key-ceremony.md) → [Observability](operations/observability.md) |
 | **Run it on Kubernetes** | [Kubernetes deployment](deployment/kubernetes.md) → [Multi-replica coordination](deployment/high-availability.md) |
+| **See the product before reading about it** | [Console walkthrough](operations/console-walkthrough.md) — the operator console end to end, with screenshots |
 | **Operate a live deployment** | [Operator runbook](operations/runbook.md) — keep it bookmarked |
 | **Respond to a key compromise** | [Incident response: mass revocation](operations/incident-response.md) |
 | **Prepare for a WebTrust / CA-Browser-Forum audit** | [Certificate Policy / CPS](compliance/certificate-policy.md) and the [compliance control mapping](compliance/compliance-mapping.md) |
@@ -164,6 +165,7 @@ These pages are also published — with search and navigation — at
 | [Outbound webhooks (eventing)](operations/webhooks.md) | At-least-once delivery with HMAC signatures and dead-lettering |
 | [DANE TLSA & SSHFP DNS records](operations/dns-records.md) | Zone-file pinning records for TLS services and SSH hosts |
 | [Operator web console](operations/web-console.md) | The embedded operator console and its CLI feature-parity map |
+| [Console walkthrough (with screenshots)](operations/console-walkthrough.md) | A guided, illustrated tour of the console in the order an operator meets it: hierarchy → keys → issuance → revocation → proof |
 
 ### 11. Compliance & audit readiness — [`compliance/`](compliance/README.md)
 
