@@ -318,9 +318,28 @@ func (c *Collector) collectLocked(ctx context.Context) (*CollectResult, error) {
 	// checking that the overlapping records still match what we hold, since a
 	// changed re-delivery means one of the two copies is not genuine — and
 	// verify only what is genuinely new.
-	fresh, err := trimToTail(resp.Entries, st.Tail)
+	fresh, placed, err := trimToTail(resp.Entries, st.Tail)
 	if err != nil {
 		return nil, err
+	}
+	// A log that has *restarted* is not a re-delivery, and telling them apart
+	// matters more than anything else this cycle does.
+	//
+	// trimToTail reports "nothing fresh" both for entries we already hold and
+	// for entries whose numbers sit behind a tail they have no relationship to
+	// — which is exactly what a factory-reset device looks like, because its
+	// numbering begins again at 1 while the stored tail still belongs to the
+	// history that was erased. Acknowledging that segment frees the ring slots
+	// of records nothing has stored, and the first of them is the device-init
+	// sentinel: the one entry that cannot be recovered, and the one `provision`
+	// requires. A device reset while its database still held the old pinned
+	// state therefore became unprovisionable, silently, on the first HSM
+	// operation after the reset — which is how this was found, on hardware.
+	//
+	// So fail closed. The entries stay on the device, and an operator has to
+	// decide what the pinned state now means.
+	if !placed {
+		return res, replacedHistoryError(resp.Entries, st)
 	}
 
 	seg := VerifySegment(fresh, &st.Tail, unlogged)
@@ -377,29 +396,56 @@ func (c *Collector) collectLocked(ctx context.Context) (*CollectResult, error) {
 // An entry that the device re-delivers with different content than the copy we
 // persisted cannot be explained innocently: the device log is immutable, so
 // either the stored row was edited or the "device" output was fabricated.
-func trimToTail(entries []hsm.AuditLogEntry, tail Tail) ([]hsm.AuditLogEntry, error) {
+//
+// placed reports whether the segment could be placed against the stored tail at
+// all — the tail entry was re-delivered, or the segment starts past it. It is
+// not the same question as "is anything fresh", and the caller needs both: a
+// segment that cannot be placed is one whose entry numbers bear no relation to
+// the history we hold, which is what a factory-reset device offers, and
+// acknowledging it would free the ring slots of records nothing has stored.
+func trimToTail(entries []hsm.AuditLogEntry, tail Tail) (fresh []hsm.AuditLogEntry, placed bool, err error) {
 	if tail.Number == 0 || len(entries) == 0 {
-		return entries, nil
+		return entries, true, nil
 	}
 	for i, e := range entries {
 		switch {
 		case e.Number == tail.Number:
 			if !strings.EqualFold(e.Hash, tail.Digest) {
-				return nil, fmt.Errorf(
+				return nil, false, fmt.Errorf(
 					"device re-delivered entry %d with digest %s but the stored copy has %s: "+
 						"one of the two records is not genuine",
 					e.Number, strings.ToLower(e.Hash), strings.ToLower(tail.Digest))
 			}
-			return entries[i+1:], nil
+			return entries[i+1:], true, nil
 		case isForward(tail.Number, e.Number) && e.Number != tail.Number:
 			// First entry is already past the tail: nothing to trim. Continuity
 			// from the tail is VerifySegment's job.
-			return entries[i:], nil
+			return entries[i:], true, nil
 		}
 	}
-	// Everything the device offered is at or behind the tail and none of it
-	// matched: the whole segment is stale re-delivery.
-	return nil, nil
+	// Nothing the device offered sits anywhere near the stored tail.
+	return nil, false, nil
+}
+
+// replacedHistoryError describes a device whose log says nothing about the
+// pinned history, in the terms an operator can act on.
+func replacedHistoryError(entries []hsm.AuditLogEntry, st *AuditState) error {
+	if hsm.IsBootSentinel(entries[0]) {
+		return fmt.Errorf(
+			"the device log restarts at a device-init sentinel (entry 1) while the pinned audit state "+
+				"stands at entry %d: device %s has been factory reset since its chain anchor %s was "+
+				"pinned, so the history that anchor describes no longer exists on it. Refusing to "+
+				"acknowledge the %d entr(ies) it now holds — the first of them is the sentinel the next "+
+				"`secsy-ca hsm-audit provision` needs, and acknowledging it would destroy the only copy. "+
+				"Clear the stored audit state deliberately (a reset device is commissioned afresh), then "+
+				"provision",
+			st.Tail.Number, st.DeviceSerial, st.Anchor, len(entries))
+	}
+	return fmt.Errorf(
+		"none of the %d entr(ies) the device offers (entries %d..%d) matches the pinned collection tail "+
+			"at entry %d, so they belong to a history this installation has no record of. Refusing to "+
+			"acknowledge them: they exist in one copy, on the device",
+		len(entries), entries[0].Number, entries[len(entries)-1].Number, st.Tail.Number)
 }
 
 // parseLogUsed parses the device's "used/capacity" report.
