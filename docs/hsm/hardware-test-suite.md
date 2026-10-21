@@ -188,6 +188,23 @@ fresh device. Setting the per-command audit levels to `fixed` survives every
 power cycle, and the only way back is a factory reset that destroys every key on
 the device. Running the hardware tests is not consent to that.
 
+It is worth knowing what the gate costs, though, because the answer is a tier of
+coverage rather than a detail. Six tests in `internal/hsmaudit -tags yubihsm`
+need a **commissioned** device and skip on any other — forced-audit
+irreversibility, signature counting, the RFC 3161 freshness round trip, the
+per-key proof, the exportable-key refusal, and the device-signed serial
+commitment. They are the ones that exercise the audit argument end to end, so a
+device nobody will commission leaves the most interesting half of this suite
+unrun. The round trip is one command each way:
+
+```bash
+secsy-ca hsm-audit reset -confirm <serial>   # dry run without -confirm
+secsy-ca hsm-audit provision                 # irreversible until the next reset
+```
+
+Over USB/IP a reset needs the client to re-import the device afterwards; see
+[the audit-log page](audit-log.md#commissioning).
+
 **`SECSY_YUBIHSM_RESET=1` is a second gate on top of it**, for the genesis tier,
 which factory-resets the device several times. A reset erases more than a
 configuration — every key and every log entry go with it — and it runs
