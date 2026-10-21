@@ -1,10 +1,16 @@
 package hsm
 
 import (
+	"context"
+	"io"
+	"log"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/yubihsm"
 )
@@ -218,5 +224,106 @@ func TestPointPKCS11AtOverridesAnExistingConfig(t *testing.T) {
 	// And the resolution the audit path uses must now agree with the module's.
 	if got := EffectiveConnectorURL(Config{}); got != "http://127.0.0.1:12345" {
 		t.Fatalf("the audit path resolves %q, but the module was pointed at the relay", got)
+	}
+}
+
+// A process that cannot claim the device because another one already serves it
+// must route *both* ways to the device at that relay: the PKCS#11 module, which
+// reads a config file, and the native driver, which resolves a connector URL.
+//
+// Only the module was pointed at it. A container whose config named yhusb:// —
+// the natural spelling when one container holds the device — therefore gave an
+// exec'd `secsy-ca` half a device: it could sign through the module, while
+// `hsm-audit status` and every attestation command resolved yhusb://, reached
+// for the USB claim the server was holding, and reported "Device: unreachable".
+func TestStartEmbeddedConnectorJoinsAnAlreadyServedAddress(t *testing.T) {
+	// Occupy the address with something that answers the connector protocol, as
+	// the server process's relay would: the joining process asks which device is
+	// on the other side, so that a URL naming a different serial is not quietly
+	// answered by this one.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listening: %v", err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A GET DEVICE INFO reply: command|0x80, 2-byte length, then firmware
+		// 2.4.0, serial 31650425 (0x01e2f279), a 62-slot log with none used, and
+		// two algorithm identifiers.
+		body := []byte{2, 4, 0, 0x01, 0xe2, 0xf2, 0x79, 62, 0, 0x01, 0x02}
+		reply := append([]byte{0x86, byte(len(body) >> 8), byte(len(body))}, body...)
+		_, _ = w.Write(reply)
+	}), ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() { _ = srv.Close() }()
+	addr := ln.Addr().String()
+
+	dir := t.TempDir()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+	t.Cleanup(func() { yubihsm.JoinRelay("", "") })
+
+	plan := PlanEmbeddedConnector(EmbeddedConnectorOptions{
+		Enabled:      boolp(true),
+		Listen:       addr,
+		ConnectorURL: "yhusb://",
+		PKCS11Module: "/usr/lib/pkcs11/yubihsm_pkcs11.so",
+	})
+	if plan.Err != nil || !plan.Start {
+		t.Fatalf("the plan should start a relay: start=%v err=%v", plan.Start, plan.Err)
+	}
+
+	e, err := StartEmbeddedConnector(context.Background(), plan, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatalf("joining an already-served address: %v", err)
+	}
+	if e != nil {
+		_ = e.Close()
+		t.Fatal("a relay was started over an address something else already serves")
+	}
+
+	// The module, as before.
+	conf := os.Getenv("YUBIHSM_PKCS11_CONF")
+	data, err := os.ReadFile(conf)
+	if err != nil {
+		t.Fatalf("reading %s: %v", conf, err)
+	}
+	if !strings.Contains(string(data), plan.URL) {
+		t.Fatalf("%s does not name the joined relay: %q", conf, data)
+	}
+
+	// And the native driver, which is the half that was missing.
+	joined, ok := yubihsm.JoinedRelay()
+	if !ok {
+		t.Fatal("the native driver was not routed to the joined relay, so yhusb:// still goes to USB")
+	}
+	if joined != plan.URL {
+		t.Fatalf("the native driver was routed to %q, want the joined relay %q", joined, plan.URL)
+	}
+
+	// The relay was asked which device it holds, so a configuration pinning that
+	// serial is answered by it...
+	info, err := yubihsm.TransportDeviceInfo(context.Background(),
+		yubihsm.Config{ConnectorURL: "yhusb://serial=31650425"})
+	if err != nil {
+		t.Fatalf("the joined relay did not answer for the serial it holds: %v", err)
+	}
+	if info.Serial != "31650425" {
+		t.Fatalf("the joined relay reports serial %q, want 31650425", info.Serial)
+	}
+
+	// ...and one naming a different device is not. Answering for the wrong
+	// hardware is the single failure this subsystem must never have: an audit
+	// log collected from one device while describing another verifies perfectly
+	// and means nothing. Without an attached YubiHSM the attempt falls through to
+	// USB and fails there, which is the correct outcome and the one asserted.
+	if _, err := yubihsm.TransportDeviceInfo(context.Background(),
+		yubihsm.Config{ConnectorURL: "yhusb://serial=99999999"}); err == nil {
+		t.Fatal("the joined relay answered for a serial it does not hold")
 	}
 }

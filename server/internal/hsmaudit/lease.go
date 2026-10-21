@@ -40,12 +40,21 @@ var ErrCollectionLeaseBusy = errors.New("another process holds the HSM audit col
 // ran at the same time.
 //
 // The lease is held for the length of one drain cycle and released in a defer.
+// Cycles are what has to stay rare for that to be true of the lease as well: a
+// collector that signalled itself held the lease continuously and starved every
+// other process of it — see the note on the cycle's silenced context in
+// collector.go. An idle server now drains on the backstop and on real
+// operations only, so an operator's command finds the lease free.
+//
 // It carries an expiry so a process killed mid-cycle cannot wedge collection
 // permanently: after CollectionLeaseTTL another drain takes it over. That
 // window is the one place this design chooses availability over exclusion, and
 // the choice is bounded — a stolen lease can at worst produce the interleaving
 // above, which fails closed by refusing to acknowledge rather than by
-// acknowledging something unverified.
+// acknowledging something unverified. A graceful stop does not need it: the
+// server cancels its background jobs and the defer above runs (cmd/server/
+// shutdown.go), on a context of its own so a cancelled shutdown still frees the
+// lease.
 
 // LeaseOwner identifies this process to the collection lease. It is stable for
 // the process lifetime and unique across processes: host and PID would collide

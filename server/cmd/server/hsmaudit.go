@@ -10,6 +10,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/anchor"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
+	"github.com/blechschmidt/secsy-pki/server/internal/handlers"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsmaudit"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
@@ -49,6 +50,20 @@ import (
 // leader registration happens much later in startup.
 var hsmAuditCollector *hsmaudit.Collector
 
+// hsmAuditLogFile is the append-only device-log file this deployment configured,
+// or nil when it configured none.
+//
+// It is retained — and shared — because the collector loop is not the only thing
+// in this process that drains the device. The freshness and commitment runners
+// and the HTTP bundle export each drain before they can proceed, and each used
+// to do it without sinks, so their entries reached the database and never the
+// file: with a TSA configured the server punched a hole in its own evidence file
+// every audit_freshness_interval_seconds. Sharing one handle rather than opening
+// the path again per service is deliberate — the writer tracks the file's last
+// entry in memory, and a second handle would document a gap for records the
+// first had already written.
+var hsmAuditLogFile *hsmaudit.LogFile
+
 // setupHSMAudit builds the device-log collector and the signature-ledger
 // recorder, and wires the first to the second.
 //
@@ -65,6 +80,14 @@ func setupHSMAudit(cfg *config.Config, db *database.DB) {
 	// failure naming the path, rather than a surprise at the first drain —
 	// which, on a device that is not yet commissioned, could be months away.
 	logFile := openAuditLogFile(cfg)
+	hsmAuditLogFile = logFile
+	if logFile != nil {
+		// The HTTP bundle export drains the device too, so the handler needs the
+		// same destination. Installed before the provisioning check below: an
+		// uncommissioned device exports nothing, but the wiring should not depend
+		// on the order in which those two facts become true.
+		handlers.SetHSMAuditLogSink(logFile)
+	}
 
 	st, err := db.LoadAuditState(context.Background())
 	if err != nil {
@@ -117,15 +140,29 @@ func setupHSMAudit(cfg *config.Config, db *database.DB) {
 		// others, since the module speaks its own secure channel and this
 		// process only relays it.
 		yubihsm.SetCommandObserver(func(byte) { c.Notify() })
-		if embeddedConnector != nil {
+		switch url, joined := yubihsm.JoinedRelay(); {
+		case embeddedConnector != nil:
 			embeddedConnector.SetOnOperation(c.Notify)
+		case joined:
+			// The relay belongs to another process — a second secsy-pki-server
+			// in this deployment, or a yubihsm-connector daemon — so the
+			// module's traffic arrives at *its* HTTP handler and this process
+			// never sees it. Say so rather than appear to have three chokepoints
+			// when it has two: this process's own key-provider and native-driver
+			// operations still signal the drain immediately, and the backstop
+			// sweep covers the module's. The relay's owner, if it is another
+			// secsy-pki-server, drains on its own operations too.
+			log.Printf("NOTE: the YubiHSM connector at %s belongs to another process, so the operations "+
+				"Yubico's PKCS#11 module sends through it do not prompt a drain here. This process's own "+
+				"signatures and audit commands still do, and the %s backstop sweep covers the rest.",
+				url, backstop)
 		}
 		log.Printf("HSM audit collection enabled (device %s, anchor %s, after every HSM operation, backstop %s)",
 			st.DeviceSerial, st.Anchor, backstop)
 	} else {
 		hsmAuditNotify = nil
 		log.Printf("HSM audit collection enabled (device %s, anchor %s, every %s — per-operation collection "+
-			"is disabled, so entries stay in the device's volatile 62-entry ring until the next sweep)",
+			"is disabled, so entries stay in the device's 62-entry ring until the next sweep)",
 			st.DeviceSerial, st.Anchor, backstop)
 	}
 	//nolint:staticcheck // SA1019: honouring the deprecated key is the whole point of reading it here.
@@ -190,12 +227,13 @@ var hsmAuditNotify = func() { hsmAuditCollector.Notify() }
 
 // openAuditLogFile opens the configured append-only device-log file.
 //
-// The sink is deliberately not retained for a shutdown close. Every record is
-// written with a direct write plus an fsync before the collector acknowledges
-// anything on the device, so there is nothing buffered for a Close to flush,
-// and the file descriptor is released by process exit either way. Holding a
-// package-level handle in order to close it would suggest a durability step
-// that does not exist.
+// The handle is retained (hsmAuditLogFile) so every service in this process
+// that drains the device writes the same file through the same writer, but it is
+// deliberately never closed. Every record is written with a direct write plus an
+// fsync before the collector acknowledges anything on the device, so there is
+// nothing buffered for a Close to flush, and the descriptor is released by
+// process exit either way; closing it at shutdown would suggest a durability
+// step that does not exist.
 //
 // A file that cannot be opened is fatal, not a warning. The point of the file is
 // to be a copy the operator of this host cannot quietly remove, so starting
@@ -221,6 +259,19 @@ func openAuditLogFile(cfg *config.Config) *hsmaudit.LogFile {
 		log.Printf("HSM audit log file %s open for append (new file)", path)
 	}
 	return f
+}
+
+// addConfiguredAuditSink hands svc the deployment's append-only file, if it has
+// one.
+//
+// The nil check is on the typed pointer rather than inside AddSink on purpose: a
+// nil *LogFile in an EntrySink interface is not a nil interface, so a Service
+// handed one would accept it and panic at the first drain — which on this path
+// is a background job on a commissioned device, i.e. the worst place to find out.
+func addConfiguredAuditSink(svc *hsmaudit.Service) {
+	if hsmAuditLogFile != nil {
+		svc.AddSink(hsmAuditLogFile)
+	}
 }
 
 // perOperationCollection reports whether the drain follows every HSM operation.
@@ -361,7 +412,12 @@ func setupHSMAuditFreshness(cfg *config.Config, db *database.DB, authority *tsa.
 		Password:     cfg.YubiHSM.Password,
 	})
 	interval := hsmAuditFreshnessInterval(cfg)
-	runner := hsmaudit.NewFreshnessRunner(hsmaudit.NewService(dev, db), ts, interval, log.Default())
+	svc := hsmaudit.NewService(dev, db)
+	// Attestation drains the device first, so this job writes device log entries
+	// too — into the file as well as the database, or it would be the server
+	// itself leaving gaps in its own append-only copy once per interval.
+	addConfiguredAuditSink(svc)
+	runner := hsmaudit.NewFreshnessRunner(svc, ts, interval, log.Default())
 
 	log.Printf("HSM audit freshness attestation enabled (interval %s)", interval)
 	elector.Register("hsm-audit-freshness", func(ctx context.Context) {
@@ -410,6 +466,9 @@ func setupHSMAuditCommitment(cfg *config.Config, db *database.DB, authority *tsa
 		Password:     cfg.YubiHSM.Password,
 	})
 	svc := hsmaudit.NewService(dev, db)
+	// As for freshness above: a commitment is three audited device operations,
+	// and the drain that follows them belongs in the file too.
+	addConfiguredAuditSink(svc)
 	if id := cfg.YubiHSM.AuditCommitmentKeyID; id != 0 {
 		svc.SetCommitmentKeyID(uint16(id))
 	}

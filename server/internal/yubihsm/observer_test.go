@@ -1,6 +1,7 @@
 package yubihsm
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -166,5 +167,82 @@ func TestCommandsWorkWithoutAnObserver(t *testing.T) {
 	c, ctx := testClient(t, d)
 	if _, err := c.Echo(ctx, []byte("hello")); err != nil {
 		t.Fatalf("echo without an observer: %v", err)
+	}
+}
+
+// The exclusion list above is not the whole story, and the gap it left was the
+// one that mattered: the drain reads device info, and in this codebase reading
+// device info also reads two device options, because the collector checks the
+// force-audit setting. GET OPTION is an ordinary command — the provisioning
+// path issues it too, and the device logs PUT OPTION right next to it — so it
+// cannot be silenced by code. Announced, it had every drain cycle signal the
+// need for another one, which on an idle server with a USB device came to about
+// eleven cycles a second, each holding the cross-process collection lease.
+//
+// So the silence is scoped to the caller's context instead, and the collector
+// runs its cycle under one.
+func TestASilencedContextCoversEveryCommandTheDrainIssues(t *testing.T) {
+	d := newFakeDevice("password")
+	d.handlers[cmdGetOption] = func([]byte) ([]byte, error) { return []byte{0x02}, nil }
+	d.handlers[cmdGetLogEntries] = func([]byte) ([]byte, error) { return make([]byte, 5), nil }
+	d.handlers[cmdSetLogIndex] = func([]byte) ([]byte, error) { return nil, nil }
+	d.handlers[cmdGetDeviceInfo] = func([]byte) ([]byte, error) {
+		return []byte{2, 4, 0, 0x01, 0xe2, 0x0b, 0x39, 62, 4}, nil
+	}
+
+	o := installObserver(t)
+	c, ctx := testClient(t, d)
+
+	// Outside a drain, an option read is announced like anything else: whatever
+	// is reading options may well be about to change them.
+	if _, err := c.GetOption(ctx, OptionForceAudit); err != nil {
+		t.Fatalf("get option: %v", err)
+	}
+	if got := o.count(cmdGetOption); got != 1 {
+		t.Fatalf("GET OPTION outside a drain was announced %d time(s), want 1", got)
+	}
+
+	// Inside one, nothing is — including the commands the exclusion list would
+	// not have caught.
+	drain := WithoutCommandObserver(ctx)
+	if !CommandObserverSuppressed(drain) {
+		t.Fatal("WithoutCommandObserver did not silence the context")
+	}
+	if _, err := c.DeviceInfo(drain); err != nil {
+		t.Fatalf("device info: %v", err)
+	}
+	if _, err := c.GetOption(drain, OptionForceAudit); err != nil {
+		t.Fatalf("get option: %v", err)
+	}
+	if _, err := c.GetOption(drain, OptionCommandAudit); err != nil {
+		t.Fatalf("get option: %v", err)
+	}
+	if _, err := c.GetLogEntries(drain); err != nil {
+		t.Fatalf("get log entries: %v", err)
+	}
+	if err := c.SetLogIndex(drain, 12); err != nil {
+		t.Fatalf("set log index: %v", err)
+	}
+	if got := o.count(cmdGetOption); got != 1 {
+		t.Fatalf("a drain's option reads were announced back to it (%d GET OPTION, seen %x)",
+			got, o.seen())
+	}
+	if got := len(o.seen()); got != 1 {
+		t.Fatalf("a drain cycle announced %d command(s): %x", got-1, o.seen()[1:])
+	}
+}
+
+// A plain context — the zero value a caller forgot, or a background one — must
+// not be read as silenced. Failing open here would be the loop again.
+func TestAnOrdinaryContextIsNotSilenced(t *testing.T) {
+	if CommandObserverSuppressed(context.Background()) {
+		t.Fatal("a background context reports itself as silenced")
+	}
+	//nolint:staticcheck // SA1012: a nil context is exactly the case being pinned.
+	if CommandObserverSuppressed(nil) {
+		t.Fatal("a nil context reports itself as silenced")
+	}
+	if !CommandObserverSuppressed(WithoutCommandObserver(nil)) { //nolint:staticcheck // SA1012: likewise.
+		t.Fatal("silencing a nil context produced an unsilenced one")
 	}
 }

@@ -134,21 +134,39 @@ func cmdHSMAudit(db *database.DB, cfg *config.Config, args []string) error {
 	if id := cfg.YubiHSM.AuditCommitmentKeyID; id != 0 {
 		svc.SetCommitmentKeyID(uint16(id))
 	}
+
+	// The append-only file belongs to the Service, not only to the post-command
+	// drain in hsmledger.go. Provision, export, timestamp and commit each drain
+	// the device themselves, and without this their entries reached the database
+	// and nothing else — which left the file starting partway through the
+	// device's life, never covering the sentinel the pinned anchor refers to,
+	// and missing an entry every time one of those commands ran.
+	//
+	// Only for the subcommands that drain, though. Opening the file creates it,
+	// and a read-only command — `status`, which reports on the file and handles
+	// "not written yet" itself — has no business either creating the evidence
+	// file or failing because the path it is told about is somebody else's.
+	withLogFile := func() (*hsmaudit.LogFile, error) {
+		f, err := openConfiguredAuditLogFile(cfg)
+		if err != nil {
+			// Fatal here, unlike after a command has already done its work:
+			// these subcommands are *about* the evidence, and one that wrote a
+			// device log to the database alone while an operator believed it was
+			// landing in the configured file is worth refusing.
+			return nil, err
+		}
+		if f != nil {
+			svc.AddSink(f)
+		}
+		return f, nil
+	}
 	ctx := context.Background()
 
+	// The subcommands that touch no device log first, so none of them opens —
+	// and so creates — the append-only file.
 	switch sub {
 	case "status":
 		return cmdHSMAuditStatus(ctx, svc, cfg, rest)
-	case "provision":
-		return cmdHSMAuditProvision(ctx, svc, rest)
-	case "collect":
-		return cmdHSMAuditCollect(ctx, dev, db, cfg, rest)
-	case "timestamp":
-		return cmdHSMAuditTimestamp(ctx, svc, db, cfg, rest)
-	case "commit":
-		return cmdHSMAuditCommit(ctx, svc, db, cfg, rest)
-	case "export":
-		return cmdHSMAuditExport(ctx, svc, rest)
 	case "verify-file":
 		// Normally dispatched in main before any config is read; reachable here
 		// only if a caller routed to cmdHSMAudit directly.
@@ -156,9 +174,29 @@ func cmdHSMAudit(db *database.DB, cfg *config.Config, args []string) error {
 	case "help", "-h", "--help":
 		hsmAuditUsage()
 		return nil
+	case "provision", "collect", "timestamp", "commit", "export":
 	default:
 		hsmAuditUsage()
 		return fmt.Errorf("hsm-audit: unknown subcommand %q", sub)
+	}
+
+	// Everything left here drains the device before it can proceed, so it is a
+	// writer of the device log and the configured file is one of its sinks.
+	logFile, err := withLogFile()
+	if err != nil {
+		return err
+	}
+	switch sub {
+	case "provision":
+		return cmdHSMAuditProvision(ctx, svc, rest)
+	case "collect":
+		return cmdHSMAuditCollect(ctx, dev, db, logFile, rest)
+	case "timestamp":
+		return cmdHSMAuditTimestamp(ctx, svc, db, cfg, rest)
+	case "commit":
+		return cmdHSMAuditCommit(ctx, svc, db, cfg, rest)
+	default:
+		return cmdHSMAuditExport(ctx, svc, rest)
 	}
 }
 
@@ -269,7 +307,12 @@ func cmdHSMAuditProvision(ctx context.Context, svc *hsmaudit.Service, args []str
 	return nil
 }
 
-func cmdHSMAuditCollect(ctx context.Context, dev hsmaudit.Device, store hsmaudit.Store, cfg *config.Config, args []string) error {
+// cmdHSMAuditCollect drains the device log on demand. configured is the
+// append-only file the configuration names, already open (nil when none is
+// configured); -log-file overrides it with a path of the caller's choosing,
+// which is what an operator reaches for when taking a copy somewhere else.
+func cmdHSMAuditCollect(ctx context.Context, dev hsmaudit.Device, store hsmaudit.Store,
+	configured *hsmaudit.LogFile, args []string) error {
 	fs := flag.NewFlagSet("hsm-audit collect", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit JSON")
 	logFile := fs.String("log-file", "", "append-only file to write collected records to "+
@@ -278,17 +321,18 @@ func cmdHSMAuditCollect(ctx context.Context, dev hsmaudit.Device, store hsmaudit
 		return err
 	}
 	c := hsmaudit.NewCollector(dev, store, 0, nil)
-	path := *logFile
-	if path == "" && cfg != nil {
-		path = cfg.YubiHSM.AuditLogFile
-	}
-	if strings.TrimSpace(path) != "" {
+	path := strings.TrimSpace(*logFile)
+	switch {
+	case path != "":
 		f, err := hsmaudit.OpenLogFile(path)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = f.Close() }()
 		c.AddSink(f)
+	case configured != nil:
+		path = configured.Path()
+		c.AddSink(configured)
 	}
 	res, err := c.Collect(ctx)
 	if err != nil {
@@ -299,7 +343,7 @@ func cmdHSMAuditCollect(ctx context.Context, dev hsmaudit.Device, store hsmaudit
 	}
 	fmt.Printf("Collected %d entr(ies) (%d signature(s)); collection now at entry %d; device log %s used.\n",
 		res.Collected, res.Signatures, res.Tail.Number, res.LogUsed)
-	if strings.TrimSpace(path) != "" {
+	if path != "" {
 		fmt.Printf("Records appended to %s\n", path)
 	}
 	return nil

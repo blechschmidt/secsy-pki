@@ -61,8 +61,9 @@ func TestHSMAuditBackstopResolution(t *testing.T) {
 // Per-operation collection is the default, and stays on unless an operator
 // explicitly turns it off. An unprovisioned or misread config must not quietly
 // fall back to polling: the whole reason the device log is trustworthy is that
-// it is complete, and a log sitting undrained in a volatile 62-entry ring is
-// the part of it most likely to be lost.
+// it is complete, and a log sitting undrained in a 62-entry ring is the part of
+// it most likely to be lost — to a ring that fills, or to a device that is
+// reset, replaced or stolen before anything copied it off.
 func TestPerOperationCollectionDefaultsOn(t *testing.T) {
 	unforced := &optionsDevice{opts: &hsmaudit.Options{ForceAudit: hsmaudit.AuditOff}}
 	if !perOperationCollection(&config.Config{}, unforced) {

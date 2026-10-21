@@ -150,8 +150,9 @@ func WithSession(ctx context.Context, cfg Config, fn func(*Client) error) error 
 // Every command that reaches the device notifies the command observer, whether
 // it succeeded or not: the device logs a rejected command too, and an entry
 // nobody collects is one a later fetch reports as a gap. The notification is
-// deferred so it happens after the device has acted and the entry exists. See
-// observer.go.
+// deferred so it happens after the device has acted and the entry exists, and
+// it is passed the caller's context because a drain cycle's own commands must
+// not ask for another drain. See observer.go.
 func (c *Client) send(ctx context.Context, cmd byte, data []byte) ([]byte, error) {
 	if c.closed && cmd != cmdCloseSession {
 		return nil, fmt.Errorf("yubihsm: client is closed")
@@ -167,7 +168,7 @@ func (c *Client) send(ctx context.Context, cmd byte, data []byte) ([]byte, error
 	// the transport then fails: a command whose response was lost may well have
 	// been executed, and assuming otherwise would leave its log entry
 	// uncollected.
-	defer notifyCommand(cmd)
+	defer notifyCommand(ctx, cmd)
 	outer, counterBlock := c.session.wrap(inner)
 	raw, err := c.transport.Transact(ctx, outer)
 	if err != nil {

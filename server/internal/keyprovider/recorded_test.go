@@ -190,7 +190,7 @@ func TestOnOperationFiresForEveryBackendOperation(t *testing.T) {
 	// Five operations reached the device, so five entries need collecting.
 	if got := hooks.Load(); got != 5 {
 		t.Fatalf("the drain hook fired %d time(s) for 5 backend operations (%v): "+
-			"an operation whose entry nothing collects is one that sits in a volatile ring",
+			"an operation whose entry nothing collects is one that sits in a bounded ring",
 			got, base.reached())
 	}
 }

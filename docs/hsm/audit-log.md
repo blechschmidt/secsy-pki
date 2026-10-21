@@ -17,8 +17,31 @@ worth being exact about what one contains — and about what it does not.
 
 ### The ring
 
-The log is a **62-entry ring buffer in the device's flash**. Two commands reach
-it:
+The log is a **62-entry ring buffer in non-volatile memory** — Yubico's "Log
+Store", which is why the device can log power-on and reboot events and why a
+commissioned device may be moved or power-cycled without losing uncollected
+entries:
+
+> A YubiHSM 2 device maintains a list of recently executed commands in a portion
+> of non-volatile memory known as the Log Store with space for 62 entries.
+> — [Set Command Audit Option](https://docs.yubico.com/hardware/yubihsm-2/hsm-2-user-guide/hsm2-option-audit-guide.html)
+
+What a prompt drain races is therefore not a power cut but the ring filling, and
+what that costs depends on the audit configuration:
+
+- **With force-audit fixed** (what `hsm-audit provision` sets) a full ring is a
+  hard stop: the device refuses every audited command, including signing, until
+  entries are acknowledged. Collection is a liveness requirement, not
+  housekeeping.
+- **With per-command auditing only** a full ring is used as a circular buffer
+  and the oldest entry is overwritten — records destroyed, and a verifier that
+  then sees a gap in the numbering is right to refuse the result.
+
+Either way an uncollected entry exists in exactly one copy, on the device, held
+by whoever holds the device: a factory reset — which anyone with the
+authentication key can perform — erases it, and so does a lost or replaced HSM.
+
+Two commands reach the log:
 
 - `GET LOG ENTRIES` (`0x4d`) returns every entry not yet acknowledged, framed as
   a 2-byte unlogged-boot counter, a 2-byte unlogged-authentication counter, a
@@ -643,10 +666,20 @@ Three things follow from the relay being in-process rather than beside it:
   traffic is invisible in-process — it speaks its own secure channel — and only
   the backstop sweep would eventually notice.
 * **A CLI in the same container joins it.** `secsy-ca` finds the address
-  already served and uses it instead of competing for a claim it cannot have.
-  Run on its own, with no server up, it starts a relay of its own for the
-  length of the command. Either way, point `connector_url` at the same loopback
-  address in the shared config so every route agrees.
+  already served and uses it instead of competing for a claim it cannot have —
+  both of its routes to the device: Yubico's module, which is handed a config
+  file naming the relay, and the native driver that `hsm-audit` and `hsm-attest`
+  use, which is routed there even when `connector_url` says `yhusb://`. (Until
+  that second half existed, an exec'd CLI had half a device: it could sign, and
+  reported `Device: unreachable` for everything that needs the driver.) Run on
+  its own, with no server up, it starts a relay of its own for the length of the
+  command.
+
+  A **server** that finds the address already served joins it too, and says so:
+  the operations the module sends through a relay this process does not own
+  arrive at the owner's handler, so they do not prompt a drain here — this
+  process's own signatures and audit commands still do, and the backstop sweep
+  covers the rest.
 
 SCP03 terminates in the HSM and in each client, so the relay carries a channel
 it cannot read or forge — the same property Yubico's daemon has. It binds
@@ -710,6 +743,31 @@ drain eventually stops the HSM — loud and safe, rather than a silently missing
 segment. The file is written first deliberately: the database's tail decides
 which entries a later cycle considers new, so a store write that landed first
 would make a failed file write unrepeatable.
+
+### Every drain writes both
+
+Six places in the system drain the device: the server's collector, which follows
+the operations; `hsm-audit provision`, `export`, `timestamp`, `commit`; and the
+post-command drain in `secsy-ca` / `secsy-secret`. All six write the configured
+file, which has to be true for the file to mean what it says.
+
+It matters most for provisioning. Those are the entries a device produces
+between its factory reset and its commissioning, starting with the device-init
+sentinel — and **a file that does not begin at that sentinel cannot be pinned to
+the chain anchor at all**, which is the one check that tells a genuine device
+history from a fabricated one:
+
+```console
+$ secsy-ca hsm-audit verify-file -file device-log.jsonl -anchor 11c57b1a… -tail 32
+error: hsm-audit verify-file: an anchor was supplied but the file does not start
+at the device-init sentinel, so there is nothing for it to pin
+```
+
+A file written by a deployment that commissioned its device through
+`hsm-audit provision` starts at the sentinel and reports `the whole device
+history`. The same applies to the server's own interval jobs: freshness
+attestation and the device commitment each drain before they act, so with a TSA
+configured they are writers of the device log too, not merely readers of it.
 
 ### Why an append-only file as well as the database
 
@@ -886,8 +944,9 @@ deprecated at startup.
 
 Turning `audit_collect_per_operation` off reverts to pure polling at the
 backstop interval. There is no good reason to: entries then sit in the device's
-volatile 62-entry ring for up to that long, which is both the window a power cut
-would destroy and, on a busy CA, long enough to fill the ring and stop issuance.
+62-entry ring for up to that long, which on a busy CA is long enough to fill it
+and stop issuance — and which leaves them, until the sweep, in their single
+on-device copy.
 
 **On a force-audited device the setting is ignored and collection stays
 per-operation.** There, a full ring is not a buffer that overflows into older
@@ -963,7 +1022,42 @@ fake the other's position.
 
 `GET /api/hsm/audit-bundle` (capability `audit:read`) serves the same bundle over
 HTTP, with its SHA-256 in an `X-Bundle-Fingerprint` header, so an auditor can
-pull it and verify offline.
+pull it and verify offline — which is the route that needs no shell on the host
+and no lease of its own, since the server drains in its own process.
+
+### Running an operator command beside the server
+
+`provision`, `collect`, `timestamp`, `commit` and `export` all drain the device
+before they can proceed, and draining is mutually exclusive *between processes*:
+two collectors acknowledging the same entries would interleave, and each would
+report the other's progress as a break in the chain. So a drain takes a lease
+(`hsm_collect_lease`) for the length of one cycle — three device round trips —
+and releases it in a defer.
+
+An idle server holds it only for the backstop sweep, so an operator command runs
+beside a running server:
+
+```console
+$ podman exec -e SECSY_YUBIHSM_CONNECTOR_URL=http://127.0.0.1:12345 secsy-pki \
+    secsy-ca -config /etc/secsy/config.yaml hsm-audit export -out /app/data/x.bundle
+```
+
+If the lease is genuinely busy — a burst of issuance, two commands at once — the
+waiting process says so and gives up after 30 seconds:
+
+```
+error: draining device log before export: another process holds the HSM audit
+collection lease and did not release it within 30s …
+```
+
+Retrying is the right response; nothing is lost, because the holder's cycle
+collects the same entries. A lease that stays held with nothing running means a
+collector died mid-cycle, and it frees itself 60 seconds after its last
+renewal. A graceful stop (`SIGTERM`, which is what `systemctl stop`,
+`docker stop` and `podman stop` send) releases it immediately: the server stops
+its listeners, lets in-flight requests finish, stops the background jobs — which
+is where the lease is released — and only then exits, releasing the device claim
+last.
 
 ## Verifying as a third party
 
@@ -1061,9 +1155,34 @@ fabrication.
 | `-attest-roots` / `-require-anchored-attestation` | Attestations must chain to Yubico's embedded roots either way — anchoring is on by default. `-attest-roots` adds anchors for a device whose sub-CA postdates this binary; `-require-anchored-attestation=false` downgrades the requirement to a report — see [key attestation](key-attestation.md#chain-anchoring) |
 | `-allow-unattested-keys` | An unattested signing key fails the bundle. **Do not set it in a real audit**: it downgrades the one check that distinguishes a key's history from a device's |
 | `-allow-unbound-log` | A log no HSM has signed for fails the bundle. **Do not set it in a real audit**: it downgrades the one check that distinguishes a device's log from a JSON file |
+| `-skip-freshness` | A bundle with no freshness proofs, or only stale ones, fails. This is the freshness counterpart of the two flags above, and carries the same warning: it reduces the verdict to "no abuse up to some unstated moment" |
 
 The verifier states these limits in its own output rather than leaving them
 implicit.
+
+#### A deployment with no reachable TSA
+
+Freshness is the one requirement that cannot be satisfied by holding evidence:
+something outside the CA has to date it. A deployment that has configured no
+timestamp authority therefore cannot reach a passing verdict except with
+`-skip-freshness`, which is not an audit — and that includes a deployment
+following the hardening advice to run the server with `--network none`.
+
+That is deliberate, and there are two honest ways out:
+
+- **Enable the internal TSA** (`tsa:`), which needs no network at all: the
+  freshness and commitment jobs fall back to it, every interval is attested, and
+  verification passes with a stated caveat — the tokens are signed with the HSM
+  under audit, so they prove freshness to an outsider but not against an
+  operator holding that HSM. An auditor who will not accept that says so with
+  `-require-external-tsa`.
+- **Give the jobs one route out**, which is all they need:
+  `audit_freshness_tsa_url` is a single HTTP POST every
+  `audit_freshness_interval_seconds` (6h by default), so a proxy or an egress
+  rule narrower than "network access" is enough to make the proof independent.
+
+Either way the bundle says which it was, and `secsy-ca hsm-audit status` reports
+`Last attested: never` until one of them is in place.
 
 ### Comparing two exports
 

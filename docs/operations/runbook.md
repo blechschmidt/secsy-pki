@@ -29,7 +29,8 @@ The design decisions behind these procedures are recorded in
 14. [Supply-chain / image verification failure](#supply-chain--image-verification-failure)
 15. [Preflight diagnostics (`secsy-ca doctor`)](#preflight-diagnostics-secsy-ca-doctor)
 16. [Serving-TLS certificate (self-managed)](#serving-tls-certificate-self-managed)
-17. [First-response quick reference](#first-response-quick-reference)
+17. [Stopping and restarting a node](#stopping-and-restarting-a-node)
+18. [First-response quick reference](#first-response-quick-reference)
 
 ---
 
@@ -1304,6 +1305,46 @@ failure — diagnose it as one:
 (or an ACME-obtained certificate), then restart. The listener then loads the
 static pair as usual.
 
+## Stopping and restarting a node
+
+`SIGTERM` is the graceful stop, which is what `systemctl stop`, `docker stop` and
+`podman stop` send (`SIGINT` behaves identically, for a foreground run). The
+server:
+
+1. stops accepting new connections and lets in-flight requests finish (up to
+   8 seconds — comfortably inside the 10 a container runtime allows before it
+   escalates to `SIGKILL`);
+2. drains the gRPC listener, if one is enabled;
+3. stops the leader-elected background jobs and hands the leadership lock back,
+   so a replica takes over immediately rather than after a lease timeout — and
+   so the **HSM audit collection lease is released** rather than left to expire;
+4. releases the device claim (the embedded YubiHSM connector waits for in-flight
+   relays), closes the key provider and the database, and flushes buffered
+   traces;
+5. exits 0, and unlinks its Unix socket if it was serving one.
+
+```console
+$ podman stop -t 30 secsy-pki
+$ podman logs --tail 5 secsy-pki
+Shutting down: stopping the listener and finishing in-flight requests (up to 8s)
+Shutting down: draining the gRPC listener
+leader: stepped down; singleton jobs stopped
+Background jobs stopped
+secsy-pki-server stopped
+```
+
+A stop that produces none of those lines and a non-zero status is a `SIGKILL`
+(`docker kill`, an OOM kill, or a stop whose timeout ran out). Nothing is
+corrupted by it — every durable write is committed and fsynced before it is
+acknowledged — but two things are left behind for up to a minute:
+
+| Left behind | Effect | Clears itself |
+|---|---|---|
+| The HSM audit collection lease | `hsm-audit export` / `collect` / `timestamp` / `commit` wait 30s and fail, naming the lease | 60s after the last renewal |
+| The leadership lock (PostgreSQL) | Background jobs pause on every replica | When the session lock drops |
+
+Both are safe to wait out; neither needs manual intervention in the database.
+
 ## First-response quick reference
 
 | Situation | First command / check |
@@ -1325,6 +1366,7 @@ static pair as usual.
 | Take a cert out of service (reversibly) | `secsy-ca suspend -ca <ca> -serial <s>` (undo: `release`) |
 | Leaked API token | `secsy-ca token revoke -id <id>` (instant, no restart) |
 | Backup failing to restore | `secsy-ca backup verify-restore` ([DR readiness](#scheduled-backups--restore-verification)) |
+| `hsm-audit` command fails naming the collection lease | Retry; a holder that died frees it 60s after its last renewal ([stopping a node](#stopping-and-restarting-a-node)) |
 | Rotate an intermediate | `rotate-intermediate` → `publish-chain` → (drain) → `retire-intermediate` |
 | Rehearse DR | `./scripts/dr-drill.sh` |
 | Image signature/policy rejected | Verify by digest with pinned identity; treat a bad signature as tampering ([supply-chain](#supply-chain--image-verification-failure)) |

@@ -64,10 +64,11 @@ type RecordOption func(*recordingProvider)
 //
 // It exists so the device audit log can be drained as soon as there is
 // something in it to drain (Task 181). Each of those operations leaves an entry
-// in the YubiHSM's 62-entry log ring, and the ring is volatile: entries live
-// only until a power cut, and a full ring stops the device serving auditable
-// commands at all. Draining on the operation rather than on a timer is what
-// keeps the durable copy within one cycle of the device's own.
+// in the YubiHSM's 62-entry log ring, and that ring is bounded: once it is full
+// a force-audited device stops serving auditable commands at all, and a device
+// that merely has per-command auditing on starts overwriting its oldest entry.
+// Draining on the operation rather than on a timer is what keeps the durable
+// copy within one cycle of the device's own.
 //
 // fn must not block or fail — it runs on the signing path, where an audit
 // mechanism that can stall issuance is worse than a late drain. It is called
@@ -171,8 +172,9 @@ func (p *recordingProvider) Random(ctx context.Context, n int) ([]byte, error) {
 // a key created off the books could sign off the books — so it has to prompt a
 // drain exactly like a signature does. Without this a deployment could create
 // keys all day and leave every one of those entries sitting in the device's
-// volatile 62-entry ring, where a power cut loses them and a full ring stops
-// the HSM.
+// 62-entry ring — which a full ring turns into an HSM that refuses to sign, and
+// which in any case leaves them in one copy, on the device, held by whoever
+// holds the device.
 func (p *recordingProvider) GenerateKey(ctx context.Context, spec KeySpec) (*KeyInfo, error) {
 	defer p.operated()
 	return p.Provider.GenerateKey(ctx, spec)

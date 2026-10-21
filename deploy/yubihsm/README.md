@@ -178,4 +178,4 @@ this deployment, is [docs/hsm/audit-log.md](../../docs/hsm/audit-log.md).
 | `LIBUSB_ERROR_ACCESS` | The node's mode or gid: install `../udev/70-yubihsm.rules`, then re-run `device-env.sh` |
 | Server exits with `yubihsm.audit_log_file … cannot be opened for append` | The audit volume is not writable by uid 65532 |
 | Server exits naming `hsmaudit.drain` | The signing path is on `yhusb://` with no connector of either kind: set `SECSY_YUBIHSM_EMBEDDED_CONNECTOR=1`, or use the two-service variant |
-| `the embedded YubiHSM connector address is already in use` | Another process already serves `127.0.0.1:12345`. A CLI invocation will use it; a server will not start over it |
+| `the embedded YubiHSM connector address is already in use` | Another process already serves `127.0.0.1:12345`, so this one uses it instead of claiming the device — a CLI invocation and a server alike. Both routes to the device (Yubico's PKCS#11 module and the native audit driver) are pointed at that relay. A server that joins one logs a note: the operations the *module* sends through a relay it does not own do not prompt a drain here, and the backstop sweep covers them |

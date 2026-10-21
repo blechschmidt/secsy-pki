@@ -22,8 +22,8 @@ import (
 //
 // Until now the only answer was Yubico's yubihsm-connector: a second process,
 // and in a container deployment a second container, with the device node passed
-// to it and a health check in front of it. That put the sole copy of a volatile
-// audit log behind a sidecar's lifecycle, for a relay.
+// to it and a health check in front of it. That put the only uncollected copy of
+// an audit log behind a sidecar's lifecycle, for a relay.
 //
 // So this process runs the relay. It claims the device before anything else
 // touches it, serves Yubico's connector protocol on loopback, and points the

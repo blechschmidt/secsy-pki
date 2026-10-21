@@ -205,6 +205,37 @@ The file must not be readable by group or other; a looser mode fails closed with
 a `chmod 600` hint (override only with `allow_insecure_perms: true`). Mount it
 from a Kubernetes `Secret`, a tmpfs, or a systemd credential.
 
+**This one is checked at startup**, unlike the sources that resolve over a
+network. A file's permissions will be exactly the same at the first signature as
+they are at boot, so there is nothing to gain by waiting — and a great deal to
+lose, because the server used to start, bind its listener and answer `/healthz`
+with `200` while every signature failed with HTTP 500:
+
+```
+signing oracle responded with HTTP 500: {"error":"signing: resolving signing key
+"sim-test-key": keyprovider: resolving HSM PIN from file /run/secrets/hsm.pin:
+keyprovider: pin_source file /run/secrets/hsm.pin has insecure permissions 0644…"}
+```
+
+Automation that verifies a rollout by polling `/healthz` saw a healthy CA. Now it
+is a boot failure naming the path:
+
+```
+FATAL: the PKCS#11 user PIN cannot be read as configured, so every signature
+would fail while this server looked healthy: keyprovider: pin_source file
+/run/secrets/hsm.pin has insecure permissions 0640: it must not be readable by
+group or other (chmod 600 /run/secrets/hsm.pin), or set
+pin_source.file.allow_insecure_perms to override
+```
+
+0640 (`root:<group>` plus a default umask) is the common form of the mistake, not
+0644, and it is the one that looks deliberate. The check applies only where a
+PKCS#11 backend actually signs, so a software-keystore or cloud-KMS deployment
+carrying an unused `pkcs11` block is unaffected. The network-backed sources are
+left to `secsy-ca doctor`, whose `pin.source` check resolves each one on demand
+— a server that refused to boot because a secrets service was briefly slow would
+be a worse failure than the one being prevented.
+
 #### `env`
 
 ```yaml

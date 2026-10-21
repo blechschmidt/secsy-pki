@@ -35,7 +35,7 @@ import (
 // second process, which in a container deployment meant a second container
 // alongside the CA, with a device node passed to it and a health check in front
 // of it. That is a lot of orchestration for a relay, and it put the one copy of
-// a volatile audit log behind a sidecar's lifecycle.
+// the one uncollected copy of an audit log behind a sidecar's lifecycle.
 //
 // So this is that relay, in-process. It opens the USB device once and is then
 // the only thing in the deployment that holds it. The PKCS#11 module reaches it
@@ -421,8 +421,8 @@ func (e *Embedded) describe() string {
 // as cmdSessionMessage with the real command encrypted under SCP03, so this
 // cannot tell a signature from a key listing — and must not try. It errs toward
 // draining: a spurious signal costs one coalesced cycle that finds nothing,
-// while a missed one leaves an entry in a volatile 62-entry ring that a power
-// cut loses and a full ring turns into a refusal to sign.
+// while a missed one leaves an entry in a 62-entry ring whose last free slot is
+// what stands between a force-audited device and a refusal to sign.
 //
 // Excluded are the two commands a client sends in the clear that are both
 // unaudited and issued when nothing is happening: ECHO, and the device-info

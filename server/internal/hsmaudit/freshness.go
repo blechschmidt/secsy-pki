@@ -303,7 +303,7 @@ func (s *Service) Timestamp(ctx context.Context, ts Timestamper) (*FreshnessProo
 		return nil, fmt.Errorf("no timestamp authority configured: freshness proofs need an RFC 3161 TSA")
 	}
 	if s.dev != nil {
-		if _, err := NewCollector(s.dev, s.store, 0, nil).Collect(ctx); err != nil {
+		if _, err := s.collector().Collect(ctx); err != nil {
 			return nil, fmt.Errorf("draining device log before attesting to its head: %w", err)
 		}
 	}

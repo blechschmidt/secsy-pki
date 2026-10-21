@@ -19,11 +19,12 @@ package main
 // manufactured a false accusation against the deployment's own HSM, in the one
 // subsystem whose alarms have to be believed.
 //
-// Without a drain, the entries stay in a volatile 62-entry ring that a power
-// cut loses and a full log turns into an outage. A deployment whose operators
-// use `secsy-secret` — the normal case; it is the tool the secret layer ships
-// with — would fill that ring from a process that never collected it, and the
-// device would stop serving the CA.
+// Without a drain, the entries stay in a 62-entry ring that a full log turns
+// into an outage — and until they are collected they exist in one copy, on the
+// device, which a factory reset erases. A deployment whose operators use
+// `secsy-secret` — the normal case; it is the tool the secret layer ships with
+// — would fill that ring from a process that never collected it, and the device
+// would stop serving the CA.
 //
 // The wiring mirrors cmd/secsy-ca/hsmledger.go, including the ordering trick in
 // setupHSMLedger: the drain has to run after the key provider's Close, because
@@ -36,6 +37,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
@@ -157,7 +159,6 @@ func collectAfterHSMUse(cfg *config.Config, db *database.DB) {
 		return
 	}
 	if f != nil {
-		defer func() { _ = f.Close() }()
 		c.AddSink(f)
 	}
 	res, err := c.Collect(context.Background())
@@ -183,18 +184,46 @@ func collectAfterHSMUse(cfg *config.Config, db *database.DB) {
 }
 
 // openConfiguredAuditLogFile opens the append-only device-log file, or returns
-// (nil, nil) when none is configured. The failure is reported to the caller
-// rather than being fatal: a `secsy-secret` invocation has already done its
-// work by the time the drain runs, and an unwritable evidence file must not
-// turn a completed operation into a failed command.
+// (nil, nil) when none is configured.
+//
+// One handle per process, memoized: the writer keeps the file's last entry
+// number in memory so a re-delivered segment is not appended twice and a real
+// discontinuity is documented. A second handle on the same path would start
+// from the tail it read at *its* open and then document a gap for records the
+// first handle had already written — a fabricated hole in the one file an
+// auditor is meant to be able to trust. It is deliberately never closed, as in
+// the server: every record is written and fsynced before the collector
+// acknowledges anything on the device, so there is nothing for a Close to
+// flush, and process exit releases the descriptor.
+//
+// Unlike the server, which refuses to start without a file it was told to
+// write, the CLI reports the failure to its caller: a `secsy-secret` invocation has
+// already done its work by the time the post-command drain runs, and an
+// unwritable evidence file must not turn a completed operation into a failed
+// command. The entries stay on the device either way, so the next drain — this
+// file having been fixed — still collects them.
 func openConfiguredAuditLogFile(cfg *config.Config) (*hsmaudit.LogFile, error) {
 	path := strings.TrimSpace(cfg.YubiHSM.AuditLogFile)
 	if path == "" {
 		return nil, nil
 	}
+	auditLogFileOnce.mu.Lock()
+	defer auditLogFileOnce.mu.Unlock()
+	if auditLogFileOnce.file != nil || auditLogFileOnce.err != nil {
+		return auditLogFileOnce.file, auditLogFileOnce.err
+	}
 	f, err := hsmaudit.OpenLogFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("opening the append-only HSM audit log file: %w", err)
+		auditLogFileOnce.err = fmt.Errorf("opening the append-only HSM audit log file: %w", err)
+		return nil, auditLogFileOnce.err
 	}
+	auditLogFileOnce.file = f
 	return f, nil
+}
+
+// auditLogFileOnce memoizes the handle above.
+var auditLogFileOnce struct {
+	mu   sync.Mutex
+	file *hsmaudit.LogFile
+	err  error
 }

@@ -206,6 +206,49 @@ func NewPinSource(settings PinSourceSettings, inlineValue string) (PinSource, er
 // internal predicate.
 func PinSourceIsExternal(t string) bool { return pinSourceIsExternal(t) }
 
+// localPreflighter is a PinSource that can be checked against local state alone
+// — no network, no credential store round trip — and so can be checked at
+// startup rather than at the first HSM login.
+//
+// Only the file source implements it. The others resolve their secret from a
+// network service, where a probe at startup would make the server's ability to
+// boot depend on a service that may legitimately be slow or momentarily
+// unreachable; those are what the doctor's "pin.source" reachability check is
+// for. The file source is different in kind: a group-readable PIN file will
+// still be group-readable at the first signature, so refusing to start is both
+// safe and the only way an operator finds out before issuance does.
+type localPreflighter interface {
+	localPreflight() error
+}
+
+// PreflightPinSources validates every configured PKCS#11 PIN source as far as
+// local state allows, and returns the first problem it finds.
+//
+// It is called at server startup, by the same reasoning as the append-only audit
+// log file's open ("a boot failure naming the path, not a surprise at the first
+// drain"). A source whose correctness cannot be decided locally — Vault, AWS,
+// Azure, GCP, an environment variable read at login — is skipped here and left
+// to `secsy-ca doctor`.
+func PreflightPinSources(s PKCS11Settings) error {
+	sources, err := BuildNamedPinSources(s)
+	if err != nil {
+		return err
+	}
+	for _, named := range sources {
+		p, ok := named.Source.(localPreflighter)
+		if !ok {
+			continue
+		}
+		if err := p.localPreflight(); err != nil {
+			if len(sources) > 1 {
+				return fmt.Errorf("token %q: %w", named.Name, err)
+			}
+			return err
+		}
+	}
+	return nil
+}
+
 // NamedPinSource pairs a constructed PinSource with the token it belongs to (and
 // whether it is external), for diagnostics such as the doctor "pin.source" check.
 type NamedPinSource struct {
@@ -329,19 +372,41 @@ func newFilePinSource(c FilePinSourceSettings) (PinSource, error) {
 	return &filePinSource{path: p, allowInsecure: c.AllowInsecurePerms}, nil
 }
 
-func (s *filePinSource) Resolve(_ context.Context) (string, error) {
+// localPreflight checks everything about the file that can be decided without
+// reading it: that it exists, that it is a file, and that its permissions pass.
+//
+// It is separate from Resolve so a deployment can be told at startup rather than
+// at the first signature. The check itself was always right, but it ran at HSM
+// login time — the first time the session pool is built — so a server with a
+// group-readable PIN file started, bound its listener and answered /healthz with
+// 200 while every signature failed with HTTP 500. Automation that verifies a
+// rollout by polling /healthz, which is most of it, saw a healthy deployment.
+//
+// 0640 root:<group> is the common form of the mistake, not 0644: it is what a
+// `chown root:secsy` plus a default umask produces, and it looks deliberate.
+func (s *filePinSource) localPreflight() error { return s.checkFile() }
+
+// checkFile resolves the file's metadata and applies the permission invariant.
+func (s *filePinSource) checkFile() error {
 	info, err := os.Stat(s.path)
 	if err != nil {
-		return "", fmt.Errorf("keyprovider: pin_source file %s: %w", s.path, err)
+		return fmt.Errorf("keyprovider: pin_source file %s: %w", s.path, err)
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("keyprovider: pin_source file %s: is a directory, not a file", s.path)
+		return fmt.Errorf("keyprovider: pin_source file %s: is a directory, not a file", s.path)
 	}
 	if !s.allowInsecure {
 		if perm := info.Mode().Perm(); perm&0o077 != 0 {
-			return "", fmt.Errorf("keyprovider: pin_source file %s has insecure permissions %#o: it must not be readable by group or other (chmod 600 %s), "+
+			return fmt.Errorf("keyprovider: pin_source file %s has insecure permissions %#o: it must not be readable by group or other (chmod 600 %s), "+
 				"or set pin_source.file.allow_insecure_perms to override", s.path, perm, s.path)
 		}
+	}
+	return nil
+}
+
+func (s *filePinSource) Resolve(_ context.Context) (string, error) {
+	if err := s.checkFile(); err != nil {
+		return "", err
 	}
 	data, err := os.ReadFile(s.path)
 	if err != nil {

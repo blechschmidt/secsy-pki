@@ -11,6 +11,31 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
 )
 
+// hsmAuditLogSink is the append-only device-log file this deployment configured,
+// installed by the server at startup and nil when none is configured.
+//
+// The bundle export below drains the device before it builds a bundle — an
+// export taken without collecting would omit exactly the most recent signatures
+// — so it is one of the writers of the device log, and a writer that skipped
+// the file would leave a hole in it every time an auditor pulled a bundle over
+// HTTP. It is package-level, like SetBuildVersion, because the handler is
+// constructed in several places and the one thing that must not vary between
+// them is where the evidence goes.
+var hsmAuditLogSink hsmaudit.EntrySink
+
+// SetHSMAuditLogSink installs the append-only device-log file every HSM audit
+// drain in this process writes to. Passing nil leaves the database as the only
+// copy, which is what a deployment that configured no file gets.
+func SetHSMAuditLogSink(sink hsmaudit.EntrySink) { hsmAuditLogSink = sink }
+
+// newHSMAuditService builds the audit service for a request, carrying whatever
+// durable destinations this deployment configured.
+func (a *API) newHSMAuditService() *hsmaudit.Service {
+	svc := hsmaudit.NewService(hsmaudit.NewHardwareDevice(a.hsmCfg), a.db)
+	svc.AddSink(hsmAuditLogSink)
+	return svc
+}
+
 // hsmAuditManaged reports whether the HSM audit subsystem (Task 167) owns the
 // device log, in which case the legacy per-request drain must stand down.
 //
@@ -64,7 +89,7 @@ func (a *API) HSMAuditStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	svc := hsmaudit.NewService(hsmaudit.NewHardwareDevice(a.hsmCfg), a.db)
+	svc := a.newHSMAuditService()
 	st, err := svc.Status(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "reading HSM audit status: %v", err)
@@ -98,7 +123,7 @@ func (a *API) ExportHSMAuditBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	svc := hsmaudit.NewService(hsmaudit.NewHardwareDevice(a.hsmCfg), a.db)
+	svc := a.newHSMAuditService()
 	bundle, err := svc.Export(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "exporting HSM audit bundle: %v", err)

@@ -2,6 +2,7 @@ package hsmaudit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
+	"github.com/blechschmidt/secsy-pki/server/internal/yubihsm"
 )
 
 // The collector drains the device's 62-entry log ring into durable storage.
@@ -45,10 +47,10 @@ const DrainThreshold = MaxLogEntries * 3 / 4
 // The polling interval it replaces was a compromise in both directions. Set
 // short, it hammered a device that was doing nothing; set long, it left the
 // most recent operations — exactly the ones an investigation cares about —
-// sitting in a volatile 62-entry ring that a power cut or a full log would
-// destroy. Neither setting could be right, because the correct cadence is not a
-// property of time but of how busy the HSM is, which is precisely what the
-// signal carries.
+// sitting in a 62-entry ring that, once full, either stops the device serving
+// auditable commands or starts overwriting its oldest entry. Neither setting
+// could be right, because the correct cadence is not a property of time but of
+// how busy the HSM is, which is precisely what the signal carries.
 //
 // Signals coalesce into a single pending token, which is what keeps this from
 // becoming one device round trip per signature: a burst of issuance produces
@@ -211,12 +213,24 @@ func (c *Collector) Run(ctx context.Context) {
 	defer t.Stop()
 	for {
 		if res, err := c.Collect(ctx); err != nil {
-			if ctx.Err() != nil {
+			switch {
+			case ctx.Err() != nil:
 				return
-			}
-			c.logger.Printf("ERROR: HSM audit collection failed: %v", err)
-			if c.onFailure != nil {
-				c.onFailure(err)
+			case errors.Is(err, ErrCollectionLeaseBusy):
+				// Another process is draining the same device into the same
+				// database — on the single-container deployment, an operator's
+				// `secsy-ca hsm-audit export` beside this server. Its cycle
+				// covers these entries, so this is a note rather than an
+				// incident: nothing about the audit trail is worse off for this
+				// process not having stored them, and raising the collection
+				// failure alarm here would train an operator to ignore it.
+				c.logger.Printf("HSM audit: this cycle's entries were left to the collector that holds "+
+					"the collection lease: %v", err)
+			default:
+				c.logger.Printf("ERROR: HSM audit collection failed: %v", err)
+				if c.onFailure != nil {
+					c.onFailure(err)
+				}
 			}
 		} else if res.Collected > 0 {
 			c.logger.Printf("HSM audit: collected %d entr(ies) (%d signature(s)), tail now %d, log %s",
@@ -258,7 +272,19 @@ func (c *Collector) Collect(ctx context.Context) (*CollectResult, error) {
 }
 
 // collectLocked is Collect's body, with both locks held.
+//
+// The cycle's context silences the native driver's command observer, because
+// every device command from here on is the drain's own. Without that the drain
+// announced itself: reading device info includes two GET OPTION calls (the
+// force-audit setting is part of what the collector checks), GET OPTION is not
+// one of the command codes the observer can exclude, and so each cycle signalled
+// the need for the next. An idle server drained continuously — about eleven
+// times a second on a USB device — and held the cross-process collection lease
+// almost without interruption, which is what made `hsm-audit export`, `collect`,
+// `timestamp` and `commit` unusable beside a running server.
 func (c *Collector) collectLocked(ctx context.Context) (*CollectResult, error) {
+	ctx = yubihsm.WithoutCommandObserver(ctx)
+
 	st, err := c.store.LoadAuditState(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("loading hsm audit state: %w", err)

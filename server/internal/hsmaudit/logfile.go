@@ -349,6 +349,10 @@ func (l *LogFile) write(recs []LogFileRecord) error {
 		buf = append(buf, line...)
 		buf = append(buf, '\n')
 	}
+	if l.f == nil {
+		return fmt.Errorf("the HSM audit log file %s is closed, so %d record(s) cannot be appended",
+			l.path, len(recs))
+	}
 	if _, err := l.f.Write(buf); err != nil {
 		return fmt.Errorf("appending to the HSM audit log file %s: %w", l.path, err)
 	}

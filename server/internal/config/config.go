@@ -3905,8 +3905,8 @@ type YubiHSMConfig struct {
 	// operation rather than on a timer (Task 181). Unset means on, and there is
 	// no good reason to turn it off.
 	//
-	// The device log is a 62-entry volatile ring, and a force-audited device
-	// refuses every auditable command once it fills. Collecting on the operation
+	// The device log is a 62-entry ring, and a force-audited device refuses
+	// every auditable command once it fills. Collecting on the operation
 	// means the durable copy trails the device's own by one drain cycle no
 	// matter how busy the CA is — where a timer had to be guessed against a
 	// signing rate nobody knows in advance, and was wrong in both directions:

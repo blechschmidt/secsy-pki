@@ -324,7 +324,7 @@ func (s *Service) Commit(ctx context.Context, ts Timestamper) (*Commitment, erro
 			objectID, CommitmentKeyIDMin, CommitmentKeyIDMax)
 	}
 
-	c := NewCollector(s.dev, s.store, 0, nil)
+	c := s.collector()
 	if s.dev != nil {
 		if _, err := c.Collect(ctx); err != nil {
 			return nil, fmt.Errorf("draining device log before committing to its head: %w", err)

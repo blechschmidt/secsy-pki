@@ -474,3 +474,106 @@ func TestEmbeddedRefusesANonUSBDeviceURL(t *testing.T) {
 		t.Fatalf("the refusal does not name the expected form: %v", err)
 	}
 }
+
+// --- joining a relay another process runs ---------------------------------
+
+// A single-container deployment has one relay and several processes that need
+// the device: the server holds it, and every `secsy-ca` an operator execs into
+// that container finds the address already bound and uses it instead. That
+// worked for Yubico's PKCS#11 module, which is handed the address — and not for
+// the native driver, which kept resolving the configured yubihsm.connector_url.
+// With the natural single-container spelling, yhusb://, every command that needs
+// the driver rather than the module (the whole of hsm-audit and hsm-attest)
+// reached for a USB claim another process was holding and reported the device
+// "unreachable". Signing worked; auditing did not.
+func TestJoinedRelayServesDirectUSBURLs(t *testing.T) {
+	d := newFakeDevice("password")
+	d.handlers[cmdEcho] = func(data []byte) ([]byte, error) { return data, nil }
+	e := startTestEmbedded(t, d, nil)
+
+	// Simulate the relay belonging to another process: it keeps serving, but
+	// this process has no in-process handle to it.
+	clearSharedDevice(e)
+	JoinRelay(e.URL(), "31650425")
+	t.Cleanup(func() { JoinRelay("", "") })
+
+	tr, err := OpenTransport(context.Background(), "yhusb://")
+	if err != nil {
+		t.Fatalf("a direct-USB URL was not routed to the joined relay: %v", err)
+	}
+	defer func() { _ = tr.Close() }()
+	if tr.Describe() != e.URL() {
+		t.Fatalf("the transport reports %q, want the joined relay %q", tr.Describe(), e.URL())
+	}
+
+	c, err := OpenOver(context.Background(), tr, Config{AuthKeyID: 1, Password: "password"})
+	if err != nil {
+		t.Fatalf("opening a session through the joined relay: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	if _, err := c.Echo(context.Background(), []byte("hello")); err != nil {
+		t.Fatalf("echo through the joined relay: %v", err)
+	}
+}
+
+// The relay's claim is not this process's to lend out to the wrong device: a URL
+// naming a different serial must not be answered by it. Addressing the wrong
+// hardware is the one failure this subsystem cannot have — an audit log
+// collected from one device while describing another verifies perfectly and
+// means nothing.
+func TestJoinedRelayDoesNotAnswerForAnotherSerial(t *testing.T) {
+	JoinRelay("http://127.0.0.1:12345", "31650425")
+	t.Cleanup(func() { JoinRelay("", "") })
+
+	for _, tc := range []struct {
+		url  string
+		want bool
+	}{
+		{"", true},
+		{"yhusb://", true},
+		{"yhusb://serial=31650425", true},
+		{"yhusb://0031650425", true}, // zero-padded, as the USB descriptor spells it
+		{"yhusb://serial=99999999", false},
+		{"http://10.0.0.1:12345", false}, // an endpoint the operator named explicitly
+	} {
+		got, ok := joinedRelayFor(tc.url)
+		if ok != tc.want {
+			t.Errorf("joinedRelayFor(%q) routed=%v, want %v", tc.url, ok, tc.want)
+		}
+		if ok && got != "http://127.0.0.1:12345" {
+			t.Errorf("joinedRelayFor(%q) = %q, want the joined relay", tc.url, got)
+		}
+	}
+}
+
+// With no relay joined — every deployment that holds the device itself — nothing
+// is rerouted.
+func TestNoJoinedRelayLeavesRoutingAlone(t *testing.T) {
+	JoinRelay("", "")
+	if url, ok := JoinedRelay(); ok {
+		t.Fatalf("a relay is registered as joined (%q) with none set", url)
+	}
+	if _, ok := joinedRelayFor("yhusb://"); ok {
+		t.Fatal("a direct-USB URL was rerouted with no relay joined")
+	}
+}
+
+// An in-process relay still wins: it is the same claim, reached without the HTTP
+// hop, and routing through the hop would put the drain's own traffic through the
+// relay's operation hook.
+func TestAnOwnedRelayTakesPrecedenceOverAJoinedOne(t *testing.T) {
+	d := newFakeDevice("password")
+	e := startTestEmbedded(t, d, nil)
+	JoinRelay("http://127.0.0.1:1", "31650425") // somewhere that cannot answer
+	t.Cleanup(func() { JoinRelay("", "") })
+
+	tr, err := OpenTransport(context.Background(), "yhusb://")
+	if err != nil {
+		t.Fatalf("OpenTransport: %v", err)
+	}
+	defer func() { _ = tr.Close() }()
+	if _, ok := tr.(*sharedTransport); !ok {
+		t.Fatalf("got a %T, want this process's own shared device handle", tr)
+	}
+	_ = e
+}

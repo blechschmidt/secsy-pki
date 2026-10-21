@@ -80,6 +80,12 @@ func OpenTransport(ctx context.Context, url string) (Transport, error) {
 	if t, ok := sharedTransportFor(url); ok {
 		return t, nil
 	}
+	// Failing that, a connector in *another* process may hold it, which this one
+	// has joined rather than competed with. Then the device is reachable, but
+	// only over that connector: the USB claim is somebody else's.
+	if relay, ok := joinedRelayFor(url); ok {
+		return openConnector(relay)
+	}
 	switch {
 	case url == "" || url == "yhusb://":
 		return openUSB(ctx, "")
@@ -173,6 +179,80 @@ func sharedTransportFor(url string) (Transport, bool) {
 		return e.Transport(), true
 	}
 	return nil, false
+}
+
+// The relay this process joined.
+//
+// A single-container deployment runs one relay and several processes that need
+// the device: the server holds it, and every `secsy-ca` the operator execs into
+// that container finds the address already bound. hsm.StartEmbeddedConnector
+// handles that by using the existing relay instead of failing — but it used to
+// point only Yubico's PKCS#11 module at it. The native driver went on resolving
+// the configured yubihsm.connector_url, which for the natural single-container
+// spelling is yhusb://, so every command that needs the driver rather than the
+// module — the whole of hsm-audit and hsm-attest — reached for the USB claim the
+// other process was holding and reported the device "unreachable". Half a device:
+// signing worked, auditing did not.
+//
+// Registering the joined address here closes that. It is deliberately not the
+// same thing as setSharedDevice: there is no in-process handle to share, the
+// relay is somebody else's, and every message takes the HTTP hop that owner's
+// clients take.
+var joinedDevice atomic.Pointer[joinedRelay]
+
+// joinedRelay is a connector another process serves for the local USB device.
+type joinedRelay struct {
+	url string
+	// serial is the device the relay reports holding, or "" when it could not be
+	// read. It exists so a yhusb://serial=N URL naming a *different* device is
+	// not quietly answered by this relay — addressing the wrong hardware is the
+	// one failure the audit subsystem must never have.
+	serial string
+}
+
+// JoinRelay records that url is a yubihsm-connector serving the USB device this
+// process would otherwise have claimed, so direct-USB URLs resolve to it.
+// serial is the device it holds, or "" when that could not be determined.
+//
+// Passing an empty url deregisters, which is what a process does if it later
+// takes the claim itself.
+func JoinRelay(url, serial string) {
+	url = strings.TrimSpace(url)
+	if url == "" {
+		joinedDevice.Store(nil)
+		return
+	}
+	joinedDevice.Store(&joinedRelay{url: url, serial: strings.TrimSpace(serial)})
+}
+
+// JoinedRelay reports the relay this process joined, if any.
+func JoinedRelay() (string, bool) {
+	if j := joinedDevice.Load(); j != nil {
+		return j.url, true
+	}
+	return "", false
+}
+
+// joinedRelayFor returns the joined relay's URL when url addresses the device it
+// holds by direct USB.
+//
+// Only direct-USB URLs are rerouted. An explicit http:// or https:// URL names
+// an endpoint the operator chose and is used as given — including the joined
+// relay's own address, which reaches the same place by the same hop.
+func joinedRelayFor(url string) (string, bool) {
+	j := joinedDevice.Load()
+	if j == nil {
+		return "", false
+	}
+	url = strings.TrimSpace(url)
+	if !IsDirectUSB(url) {
+		return "", false
+	}
+	serial := usbSerialFromURL(strings.TrimPrefix(url, "yhusb://"))
+	if serial != "" && j.serial != "" && !sameSerial(serial, j.serial) {
+		return "", false
+	}
+	return j.url, true
 }
 
 // sameSerial compares two device serial numbers.

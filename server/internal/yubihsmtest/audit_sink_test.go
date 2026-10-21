@@ -465,7 +465,7 @@ func TestEveryDriverCommandPromptsADrain(t *testing.T) {
 	} {
 		if count(cmd) == 0 {
 			t.Errorf("command 0x%02x (%s) reached the device without prompting a drain; "+
-				"on a force-audited device its log entry would sit in the volatile ring",
+				"on a force-audited device its log entry would sit in the ring, uncollected",
 				cmd, hsm.AllCommands[cmd])
 		}
 	}

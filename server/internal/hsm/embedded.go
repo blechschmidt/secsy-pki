@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/yubihsm"
 )
@@ -211,15 +212,44 @@ func StartEmbeddedConnector(ctx context.Context, plan EmbeddedConnectorPlan, log
 		}
 		return e, nil
 	case errors.Is(err, yubihsm.ErrEmbeddedAddrInUse):
+		// Something else — this program's own server process, or a
+		// yubihsm-connector daemon — already holds the device and serves it at
+		// this address. Both routes to the device have to go there: the PKCS#11
+		// module, which reads a config file, and the native driver, which
+		// resolves yubihsm.connector_url. Pointing only the module at it left an
+		// exec'd `secsy-ca` able to sign and unable to read the device log,
+		// because the driver kept resolving yhusb:// and found the claim held.
 		logger.Printf("A YubiHSM connector is already serving %s, so this process will use it rather than "+
 			"claiming the device: %v", plan.URL, err)
+		yubihsm.JoinRelay(plan.URL, joinedRelaySerial(ctx, plan.URL))
 		if cerr := PointPKCS11At(plan.URL, logger); cerr != nil {
 			return nil, cerr
 		}
+		logger.Printf("YubiHSM native driver routed to %s as well: %s is held by that process, "+
+			"so audit and attestation commands reach the device through the relay", plan.URL, plan.DeviceURL)
 		return nil, nil
 	default:
 		return nil, err
 	}
+}
+
+// joinedRelaySerial asks a relay which device it holds, returning "" when it
+// will not say.
+//
+// It is read once, at join time, so that a yhusb://serial=N URL naming a
+// different device is not silently answered by this relay. GET DEVICE INFO needs
+// no session and no authentication key, which matters: the process joining may
+// hold a different authentication key than the one that commissioned the device,
+// and a failure to learn the serial must not stop it from reaching the hardware
+// at all.
+func joinedRelaySerial(ctx context.Context, url string) string {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	info, err := yubihsm.TransportDeviceInfo(ctx, yubihsm.Config{ConnectorURL: url})
+	if err != nil {
+		return ""
+	}
+	return info.Serial
 }
 
 // PointPKCS11At makes Yubico's PKCS#11 module address the device at connectorURL.

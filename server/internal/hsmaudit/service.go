@@ -30,6 +30,7 @@ type Service struct {
 	commitKeyID uint16
 	auditor     Auditor
 	actor       string
+	sinks       []EntrySink
 	now         func() time.Time
 }
 
@@ -86,6 +87,62 @@ func (s *Service) SetAuditor(a Auditor) { s.auditor = a }
 // so the CLI passes its own actor label; "who commissioned this device" is a
 // question the trail should be able to answer.
 func (s *Service) SetActor(actor string) { s.actor = actor }
+
+// AddSink registers a durable destination — in this build the append-only
+// device-log file (see logfile.go) — for every entry this Service's own drains
+// collect.
+//
+// Four operations here drain the device before they can proceed: provisioning,
+// export (twice: once for the log, once for the entries attestation itself
+// produces), freshness attestation and the device commitment. Each built its
+// collector without sinks, so the entries those drains stored reached the
+// database and nothing else. The effect on a deployment that had configured
+// yubihsm.audit_log_file was that the file never contained the provisioning
+// entries — including the device-init sentinel the pinned anchor refers to, so
+// the file could never be checked against the anchor at all — nor anything
+// collected by an export, a timestamp or a commitment. With a TSA configured
+// the server's own freshness and commitment runners punched a fresh hole in it
+// on every interval.
+//
+// The file is documented as "a copy that survives whoever holds the database",
+// which it cannot be while four of the six drains in the system bypass it.
+func (s *Service) AddSink(sink EntrySink) {
+	if sink != nil {
+		s.sinks = append(s.sinks, sink)
+	}
+}
+
+// writeSinks hands entries to every configured sink.
+//
+// It fails closed, like the collector's own sink write: a destination the
+// deployment configured and that could not take the records stops the operation
+// rather than being logged and forgotten. The point of the file is to be a copy
+// the operator of the host cannot quietly drop, which it is not if a write
+// failure is a warning.
+func (s *Service) writeSinks(ctx context.Context, serial string, entries []hsm.AuditLogEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	for _, sink := range s.sinks {
+		if err := sink.AppendEntries(ctx, serial, entries); err != nil {
+			return fmt.Errorf("writing %d device log entr(ies) to %s: %w", len(entries), sink.Describe(), err)
+		}
+	}
+	return nil
+}
+
+// collector builds a drain for this Service's device and store, carrying the
+// sinks the deployment configured.
+//
+// Every collector the package creates comes from here, so a destination handed
+// to the Service cannot be forgotten by one operation and honoured by another.
+func (s *Service) collector() *Collector {
+	c := NewCollector(s.dev, s.store, 0, nil)
+	for _, sink := range s.sinks {
+		c.AddSink(sink)
+	}
+	return c
+}
 
 // EnableRecording returns a signature recorder for store when the device has
 // been provisioned, and nil when it has not.
@@ -205,6 +262,18 @@ func (s *Service) Provision(ctx context.Context) (*ProvisionResult, error) {
 	if seg := VerifyChainFromGenesis(resp.Entries, Unlogged{}); !seg.OK {
 		return nil, fmt.Errorf("initial device log does not verify: %w", seg.Err())
 	}
+	// Sinks before the store, as in the collector and for the same reason: the
+	// stored tail governs what a later drain considers new, so a sink write that
+	// landed after it could never be caught up. This is the one place the
+	// sentinel is ever written, and the file an auditor holds is worth little
+	// without it — a file that does not begin at the factory reset cannot be
+	// pinned to the chain anchor, which `verify-file -anchor` refuses outright.
+	// Provisioning writes these entries itself rather than through a collector
+	// (the anchor is not pinned yet, so a collector would have nothing to verify
+	// against), so the sinks have to be reached from here.
+	if err := s.writeSinks(ctx, info.Serial, resp.Entries); err != nil {
+		return nil, err
+	}
 	if err := s.store.AppendLogEntries(ctx, resp.Entries); err != nil {
 		return nil, fmt.Errorf("storing initial device log: %w", err)
 	}
@@ -246,7 +315,7 @@ func (s *Service) Provision(ctx context.Context) (*ProvisionResult, error) {
 	res := &ProvisionResult{Device: *info, Anchor: anchor, Options: opts}
 	// Provisioning itself is audited (PUT OPTION was fixed first), so drain the
 	// entries it produced.
-	c := NewCollector(s.dev, s.store, 0, nil)
+	c := s.collector()
 	if cr, err := c.Collect(ctx); err != nil {
 		return res, fmt.Errorf("collecting provisioning log entries: %w", err)
 	} else {
@@ -329,7 +398,7 @@ func (s *Service) Export(ctx context.Context) (*Bundle, error) {
 // operation, so the second drain leaves the bundle describing its own
 // production rather than trailing a few unexplained entries into the next one.
 func (s *Service) ExportWithReport(ctx context.Context) (*Bundle, *ExportReport, error) {
-	c := NewCollector(s.dev, s.store, 0, nil)
+	c := s.collector()
 	if _, err := c.Collect(ctx); err != nil {
 		return nil, nil, fmt.Errorf("draining device log before export: %w", err)
 	}

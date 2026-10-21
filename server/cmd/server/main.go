@@ -90,6 +90,27 @@ func main() {
 		return
 	}
 
+	// Exit status, set by the paths below that fail after startup. It is applied
+	// in a defer registered before every other one, so it runs *last* — after the
+	// device claim, the database and the tracer have been released. os.Exit does
+	// not run defers, which is why a plain log.Fatalf at the end of a server's
+	// life is how cleanup gets skipped.
+	exitCode := 0
+	defer func() {
+		if exitCode != 0 {
+			os.Exit(exitCode)
+		}
+	}()
+
+	// SIGTERM and SIGINT stop this process gracefully. Both are how a service
+	// manager asks: `systemctl stop`, `docker stop` and `podman stop` all send
+	// SIGTERM and wait. Unhandled, it killed the process outright — which left
+	// the HSM audit collection lease held for its full TTL, cut the embedded
+	// connector's relay off mid-command, and dropped in-flight signatures. See
+	// shutdown.go.
+	rootCtx, stopSignals := rootContext()
+	defer stopSignals()
+
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
@@ -460,6 +481,20 @@ func main() {
 		}
 	}
 
+	// Check the PKCS#11 PIN sources as far as local state allows, before any
+	// provider is built.
+	//
+	// The PIN is resolved lazily, at the first HSM login, which is the right
+	// design for a credential that comes from Vault or a cloud secrets manager
+	// — but it meant a deployment whose pin_source file was readable by group
+	// or other started, bound its listener and answered /healthz with 200 while
+	// every signature failed with HTTP 500. Automation that verifies a rollout
+	// by polling /healthz saw a healthy CA. A file's permissions will not fix
+	// themselves between startup and the first signature, so this is a boot
+	// failure naming the path — the same call the configured audit log file gets
+	// a few lines above.
+	requirePinSources(cfg)
+
 	// The primary provider serves the CA role: CA-key signing, OCSP responder
 	// keys, ACME/SCEP/EST/CMP issuance, and the secret KEK. Its backend is the
 	// CA-role type (key_provider.roles.ca), falling back to the global type.
@@ -700,6 +735,11 @@ func main() {
 	// and PKCS#11 session-pool contention.
 	setupPProf(cfg, authMw, api, mux)
 
+	// grpcServer is the running gRPC listener, or nil when gRPC is off. It is
+	// held so a stop can drain it: GracefulStop lets in-flight RPCs — an
+	// issuance, a revocation — finish rather than failing them at the socket.
+	var grpcServer *grpcapi.Server
+
 	// gRPC API surface (Task 56): expose the core issuance/revocation/status
 	// operations over gRPC alongside REST, reusing the same handlers.API and auth
 	// middleware so authorization, tenant scoping, and audit behave identically.
@@ -752,8 +792,9 @@ func main() {
 		} else {
 			log.Printf("Starting gRPC server on %s (reflection + health enabled, mTLS=%v)", grpcSrv.Addr(), cfg.GRPC.MTLS)
 		}
+		grpcServer = grpcSrv
 		go func() {
-			if err := grpcSrv.Serve(); err != nil {
+			if err := grpcSrv.Serve(); err != nil && rootCtx.Err() == nil {
 				log.Fatalf("gRPC server failed: %v", err)
 			}
 		}()
@@ -1154,7 +1195,15 @@ func main() {
 	// is acquired, which for a lone replica is the first attempt. The readiness
 	// probe reports this replica's role under the "leadership" component.
 	api.SetLeaderInfo(elector)
-	go elector.Run(context.Background())
+	electorDone := make(chan struct{})
+	go func() {
+		defer close(electorDone)
+		// Under the root context, so a stop cancels the jobs and the elector
+		// hands its lock back for an immediate takeover elsewhere — and so the
+		// collector's drain releases the HSM audit collection lease on the way
+		// out instead of leaving it to expire.
+		elector.Run(rootCtx)
+	}()
 
 	// Cap every request body to guard against memory-exhaustion DoS from an
 	// (authenticated) client. Individual handlers may impose tighter limits.
@@ -1266,16 +1315,16 @@ func main() {
 		// TLS on a Unix socket is unusual but supported: some clients require it,
 		// and a self-issued certificate keeps working because the certificate is
 		// served through tls.Config.GetCertificate either way.
-		var err error
+		start := func() error { return server.ListenAndServeTLS(certFile, keyFile) }
 		if socketListener != nil {
 			log.Printf("Starting HTTPS server on unix socket %s; no TCP port is bound", unixsocket.Describe(socket))
-			err = server.ServeTLS(socketListener, certFile, keyFile)
+			start = func() error { return server.ServeTLS(socketListener, certFile, keyFile) }
 		} else {
 			log.Printf("Starting HTTPS server on %s", addr)
-			err = server.ListenAndServeTLS(certFile, keyFile)
 		}
-		if err != nil {
-			log.Fatalf("Server failed: %v", err)
+		if err := serveUntilShutdown(rootCtx, server, start); err != nil {
+			log.Printf("ERROR: Server failed: %v", err)
+			exitCode = 1
 		}
 	} else if socketListener != nil {
 		// Cleartext on a Unix socket needs no SECSY_ALLOW_INSECURE_HTTP opt-in.
@@ -1294,8 +1343,9 @@ func main() {
 				"callers authenticate with Basic/Bearer/API-token credentials (configure server.tls_cert/tls_key to serve TLS on the socket)")
 		}
 		server := &http.Server{Handler: handler}
-		if err := server.Serve(socketListener); err != nil {
-			log.Fatalf("Server failed: %v", err)
+		if err := serveUntilShutdown(rootCtx, server, func() error { return server.Serve(socketListener) }); err != nil {
+			log.Printf("ERROR: Server failed: %v", err)
+			exitCode = 1
 		}
 	} else {
 		// Fail closed: an enterprise PKI serving bearer tokens, basic-auth root
@@ -1309,9 +1359,31 @@ func main() {
 		}
 		log.Printf("WARNING: SECSY_ALLOW_INSECURE_HTTP is set — starting cleartext HTTP server on %s. "+
 			"Only do this behind a trusted TLS-terminating proxy.", addr)
-		if err := http.ListenAndServe(addr, handler); err != nil {
-			log.Fatalf("Server failed: %v", err)
+		server := &http.Server{Addr: addr, Handler: handler}
+		if err := serveUntilShutdown(rootCtx, server, server.ListenAndServe); err != nil {
+			log.Printf("ERROR: Server failed: %v", err)
+			exitCode = 1
 		}
+	}
+
+	// Past the listener: either a stop was requested or it failed. A failure
+	// leaves the root context uncancelled, so cancel it here — the background
+	// jobs have to stop either way, and the collection lease has to come back.
+	// (stopSignals is idempotent; it is deferred as well, for the paths above
+	// that exit before this point.)
+	stopSignals()
+
+	// Then stop the rest in dependency order — the gRPC listener, then the
+	// background jobs (which is where the HSM audit collection lease is
+	// released) — and let main's defers release the device claim, the key
+	// provider, the database and the tracer once nothing can still be using them.
+	if grpcServer != nil {
+		log.Printf("Shutting down: draining the gRPC listener")
+		grpcServer.GracefulStop()
+	}
+	waitForBackgroundJobs(electorDone)
+	if exitCode == 0 {
+		log.Printf("secsy-pki-server stopped")
 	}
 }
 
@@ -2838,6 +2910,31 @@ func buildRoleProvider(cfg *config.Config, role string) (keyprovider.Provider, e
 	// The ledger wrapper goes outside it so a signature is recorded only once it
 	// has actually been produced (Task 167).
 	return recordHSMSignatures(keyprovider.Instrument(p)), nil
+}
+
+// requirePinSources refuses to start when a PKCS#11 PIN source is misconfigured
+// in a way that is already decidable — today, a PIN file that other local users
+// can read, or one that is missing outright.
+//
+// It applies only where a PKCS#11 backend actually signs. A deployment on a
+// software keystore or a cloud KMS may carry a pkcs11 block it does not use (the
+// config file ships with one), and failing its boot over a credential nothing
+// reads would be a refusal with no consequence behind it.
+func requirePinSources(cfg *config.Config) {
+	pkcs11InUse := false
+	for _, role := range []string{"ca", "tsa", "signing"} {
+		if cfg.KeyProviderTypeForRole(role) == string(keyprovider.ProviderPKCS11) {
+			pkcs11InUse = true
+			break
+		}
+	}
+	if !pkcs11InUse {
+		return
+	}
+	if err := keyprovider.PreflightPinSources(cfg.PKCS11.KeyProviderSettings()); err != nil {
+		log.Fatalf("FATAL: the PKCS#11 user PIN cannot be read as configured, so every signature would "+
+			"fail while this server looked healthy: %v", err)
+	}
 }
 
 // keyProviderConfigForRole assembles the keyprovider.Config for a role, resolving
