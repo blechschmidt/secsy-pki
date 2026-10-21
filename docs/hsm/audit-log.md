@@ -681,6 +681,10 @@ Three things follow from the relay being in-process rather than beside it:
   process's own signatures and audit commands still do, and the backstop sweep
   covers the rest.
 
+  Naming the relay's address in `connector_url` (what `deploy/yubihsm` does from
+  the environment) is still the clearer configuration: every route then agrees
+  from the config alone, rather than one of them being redirected at startup.
+
 SCP03 terminates in the HSM and in each client, so the relay carries a channel
 it cannot read or forge — the same property Yubico's daemon has. It binds
 loopback, because a connector has no authentication of its own and an
