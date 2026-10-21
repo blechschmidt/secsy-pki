@@ -86,3 +86,41 @@ func stopEmbeddedConnector() {
 		log.Printf("WARNING: closing the embedded YubiHSM connector: %v", err)
 	}
 }
+
+// releaseEmbeddedConnector closes this process's relay and forgets it, so a
+// later OpenTransport claims the device itself rather than routing to a handle
+// that is no longer good.
+//
+// One command needs that mid-run: a factory reset reboots the device, which
+// drops off the USB bus and comes back on a new node, leaving the relay holding
+// a stale file descriptor. Everything after the reset — the wait for the device
+// to return, and the operator's next command — has to reach the re-enumerated
+// device, and nothing in the process may still be holding the old claim.
+//
+// It reports whether this process was the relay's owner. A deployment that
+// joined somebody else's relay (the server's, in the single-container stack) has
+// nothing to release here, and the re-enumeration is that owner's to notice.
+func releaseEmbeddedConnector() bool {
+	e := cliConnector
+	if e == nil {
+		return false
+	}
+	// Forgotten before it is closed, not after: closing a USB handle on a device
+	// that has just rebooted can block in the kernel, and the caller is prepared
+	// to abandon this call. Clearing the global first means main's own deferred
+	// close cannot then inherit that block on the way out.
+	cliConnector = nil
+	if err := e.Close(); err != nil {
+		log.Printf("WARNING: closing the embedded YubiHSM connector: %v", err)
+	}
+	return true
+}
+
+// embeddedConnectorIsOurs reports whether this process is the one holding the
+// device's USB claim, as opposed to having joined a relay somebody else serves.
+//
+// Asked before a reset rather than inferred from releaseEmbeddedConnector's
+// return, because that call closes a USB handle and may not come back promptly
+// on a device that has just rebooted — and the answer decides where to look for
+// the device afterwards.
+func embeddedConnectorIsOurs() bool { return cliConnector != nil }

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,12 +17,14 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/anchor"
+	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsm"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsmattest"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsmaudit"
 	"github.com/blechschmidt/secsy-pki/server/internal/tsa"
+	"github.com/blechschmidt/secsy-pki/server/internal/yubihsm"
 )
 
 // `secsy-ca hsm-audit` drives the HSM audit subsystem (Task 167).
@@ -38,6 +41,11 @@ func hsmAuditUsage() {
 
 Subcommands:
   status                Show device audit configuration and collection state
+  reset  -confirm SN    Factory-reset the device: erase every object, every
+                        authentication key and the whole audit log, so its log
+                        restarts at the device-init sentinel that provisioning
+                        requires. Dry run until -confirm names the attached
+                        device's serial
   provision             Commission a factory-reset YubiHSM: force irreversible
                         audit logging and pin the chain anchor
   collect               Drain the device log into durable storage once
@@ -56,6 +64,13 @@ Subcommands:
 Collection flags (collect):
   -log-file FILE        Append collected records to this append-only file as
                         well as the database. Defaults to yubihsm.audit_log_file
+
+Reset flags (reset):
+  -confirm SERIAL       Execute, erasing the device whose serial this names.
+                        Without it the command lists what would be destroyed and
+                        stops
+  -wait DURATION        How long to wait for the device to re-enumerate after
+                        the reset (default 1m30s)
 
 Log-file flags (verify-file):
   -anchor HEX           Genesis anchor recorded when the device was commissioned
@@ -121,11 +136,12 @@ func cmdHSMAudit(db *database.DB, cfg *config.Config, args []string) error {
 	}
 	sub, rest := args[0], args[1:]
 
-	dev := hsmaudit.NewHardwareDevice(hsm.Config{
+	hsmCfg := hsm.Config{
 		ConnectorURL: cfg.YubiHSM.ConnectorURL,
 		AuthKeyID:    cfg.YubiHSM.AuthKeyID,
 		Password:     cfg.YubiHSM.Password,
-	})
+	}
+	dev := hsmaudit.NewHardwareDevice(hsmCfg)
 	svc := hsmaudit.NewService(dev, db)
 	// Provisioning records the pinned chain anchor into the hash-chained event
 	// log, which is what dates it — see hsmaudit.Service.SetAuditor.
@@ -167,6 +183,13 @@ func cmdHSMAudit(db *database.DB, cfg *config.Config, args []string) error {
 	switch sub {
 	case "status":
 		return cmdHSMAuditStatus(ctx, svc, cfg, rest)
+	case "reset":
+		// A reset destroys the device log rather than collecting it, so it is
+		// not one of the subcommands that write the append-only file — and must
+		// not create it: the file an auditor holds begins at the sentinel the
+		// *next* provisioning writes, and a file created here would start one
+		// commissioning too early.
+		return cmdHSMAuditReset(ctx, svc, dev, hsmCfg, db, rest)
 	case "verify-file":
 		// Normally dispatched in main before any config is read; reachable here
 		// only if a caller routed to cmdHSMAudit directly.
@@ -1135,4 +1158,380 @@ func readDigests(path string) ([]string, error) {
 		digests = append(digests, strings.ToLower(strings.Fields(line)[0]))
 	}
 	return digests, sc.Err()
+}
+
+// `secsy-ca hsm-audit reset` — the factory reset the commissioning path needs.
+//
+// A YubiHSM's audit log can only be verified from its beginning, so `provision`
+// refuses a device whose log does not start at the device-init sentinel and tells
+// the operator to reset it first — naming this command. It did not exist. The
+// routes that did were Yubico's shell, which this CLI deliberately does not
+// depend on (Task 171), and POST /api/hsm/factory-reset, which needs a running
+// server holding a step-up-authenticated session against a device that is, by
+// definition, not in service yet. So the one refusal every operator meets on the
+// way in pointed at nothing.
+//
+// Default is a dry run. The reset erases every object on the device — including
+// the authentication keys that reach it — and the only copy of every device log
+// entry that has not been collected, so it executes only when the operator names
+// the serial of the device in front of them.
+
+// resetDeviceObjects renders the inventory a reset would destroy.
+func resetDeviceObjects(objects []hsm.ObjectInfo) string {
+	if len(objects) == 0 {
+		return "  (none)\n"
+	}
+	var b strings.Builder
+	for _, o := range objects {
+		fmt.Fprintf(&b, "  0x%04x  %-20s %-12s %s\n", o.ID, o.Type, o.Algo, o.Label)
+	}
+	return b.String()
+}
+
+// resetConfirmed reports whether the operator named the device they are looking
+// at.
+//
+// Serials are compared numerically because the two places one comes from
+// disagree on formatting: the USB string descriptor is zero-padded
+// ("0031650425") while the device reports its own serial as a plain integer
+// ("31650425"), and an operator will have seen either — both appear in this
+// CLI's own output, the first in the embedded connector's startup line and the
+// second in `hsm-audit status`.
+func resetConfirmed(deviceSerial, confirm string) bool {
+	want := strings.TrimLeft(strings.TrimSpace(deviceSerial), "0")
+	got := strings.TrimLeft(strings.TrimSpace(confirm), "0")
+	return got != "" && got == want
+}
+
+// hsmAuditResetResult is the machine-readable form of what the command saw and
+// did.
+type hsmAuditResetResult struct {
+	Serial   string           `json:"serial"`
+	Firmware string           `json:"firmware"`
+	LogUsed  string           `json:"log_used"`
+	Objects  []hsm.ObjectInfo `json:"objects"`
+	// ObjectsError is set when the device would not list its objects, which is
+	// what a force-audited device with a full log does.
+	ObjectsError string `json:"objects_error,omitempty"`
+	Uncollected  int    `json:"uncollected_entries"`
+	Provisioned  bool   `json:"provisioned"`
+	Executed     bool   `json:"executed"`
+	Returned     bool   `json:"device_returned,omitempty"`
+	NewLogUsed   string `json:"new_log_used,omitempty"`
+	Sentinel     bool   `json:"log_starts_at_sentinel,omitempty"`
+	// SentinelError says why the log could not be read, which is not the same
+	// as having read it and found no sentinel.
+	SentinelError string `json:"sentinel_check_error,omitempty"`
+}
+
+func cmdHSMAuditReset(ctx context.Context, svc *hsmaudit.Service, dev hsmaudit.Device,
+	cfg hsm.Config, db *database.DB, args []string) error {
+	fs := flag.NewFlagSet("hsm-audit reset", flag.ContinueOnError)
+	confirm := fs.String("confirm", "", "serial number of the device to erase; required to execute")
+	wait := fs.Duration("wait", 90*time.Second, "how long to wait for the device to re-enumerate afterwards")
+	asJSON := fs.Bool("json", false, "emit JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	info, err := dev.Info(ctx)
+	if err != nil {
+		return fmt.Errorf("reading device info: %w", err)
+	}
+	res := &hsmAuditResetResult{Serial: info.Serial, Firmware: info.Version, LogUsed: info.LogUsed}
+	// An inventory this command cannot read does not stop it. The device state
+	// that most needs a reset is the one where reading it fails: a force-audited
+	// device whose 62-entry log has filled refuses every auditable command, and
+	// LIST OBJECTS is one — while GET DEVICE INFO, which named the device above,
+	// is not. Refusing to reset a wedged device would withhold the command
+	// exactly where it is the only way out.
+	if objects, err := hsm.ListObjects(ctx, cfg); err != nil {
+		res.ObjectsError = err.Error()
+	} else {
+		res.Objects = objects
+	}
+	// Device log entries the device still holds are the one thing a reset
+	// destroys that nothing can recover: a collected entry is in the database
+	// and the append-only file, an uncollected one exists in a single copy.
+	if lr, err := dev.FetchLog(ctx); err == nil {
+		res.Uncollected = len(lr.Entries)
+	}
+	if st, err := svc.Status(ctx); err == nil {
+		res.Provisioned = st.Provisioned
+	}
+
+	if !resetConfirmed(info.Serial, *confirm) {
+		if strings.TrimSpace(*confirm) != "" {
+			return fmt.Errorf("-confirm %s does not name the attached device, which is serial %s: "+
+				"refusing to erase a device the operator did not mean",
+				strings.TrimSpace(*confirm), info.Serial)
+		}
+		if *asJSON {
+			return json.NewEncoder(os.Stdout).Encode(res)
+		}
+		printResetPlan(res)
+		fmt.Printf("\nDRY RUN — nothing was erased. To execute:\n  secsy-ca hsm-audit reset -confirm %s\n", info.Serial)
+		return nil
+	}
+
+	if !*asJSON {
+		printResetPlan(res)
+		fmt.Println()
+	}
+	log.Printf("factory-resetting YubiHSM %s: erasing %d object(s), %d uncollected device log entr(ies) "+
+		"and the whole audit log", info.Serial, len(res.Objects), res.Uncollected)
+	// Every device call from here on runs under a watchdog, because a reset is
+	// the one operation whose transport cannot be relied on to return. The
+	// device drops off the USB bus as it reboots, and a read waiting on a device
+	// that is no longer there does not always fail: usbfs blocks, and over
+	// USB/IP the client's virtual port can stay in that state until it is
+	// detached — at which point a Go context deadline is decoration. Abandoning
+	// the call is safe where failing to return is not: the erasure either
+	// happened on the device or it did not, and reading the log back is what
+	// settles that, not the reset's own reply.
+	resetErr, answered := runBounded(resetReplyGrace, func() error { return hsm.FactoryReset(ctx, cfg) })
+	if answered && resetErr != nil {
+		recordResetEvent(db, info.Serial, audit.ResultError, resetErr.Error())
+		return resetErr
+	}
+	res.Executed = true
+	// Recorded before the device is waited for: whatever the device did is
+	// already done, and a wait that times out must not be what decides whether
+	// the erasure was logged — this event is the only record of it, since the
+	// device log that would have held one is what the reset destroys.
+	detail := fmt.Sprintf("factory reset: %d object(s) and %d uncollected device log entr(ies) erased; "+
+		"audit log restarted", len(res.Objects), res.Uncollected)
+	if !answered {
+		detail += "; the device did not answer within " + resetReplyGrace.String() +
+			" (expected: it reboots as it resets)"
+	}
+	recordResetEvent(db, info.Serial, audit.ResultSuccess, detail)
+
+	// The relay this process holds — if it is this process that holds it — is
+	// pointed at a device that has just rebooted onto a new USB node, so release
+	// the claim before probing for the device's return. Closing a USB handle on
+	// a device that is no longer there can block for the same reason the reset
+	// can, so this is bounded too; the global is cleared first either way, so
+	// main's own deferred close cannot inherit the block on the way out.
+	probe := hsm.Config{ConnectorURL: cfg.ConnectorURL}
+	ours := embeddedConnectorIsOurs()
+	_, _ = runBounded(resetReplyGrace, func() error { releaseEmbeddedConnector(); return nil })
+	if ours {
+		probe.ConnectorURL = ""
+	}
+	// Factory defaults from here on: the authentication key the configuration
+	// names no longer exists. hsm.Config's zero values are id 1 / "password".
+	back, err := awaitDeviceReturn(ctx, probe, *wait)
+	if err != nil {
+		if *asJSON {
+			_ = json.NewEncoder(os.Stdout).Encode(res)
+		}
+		return fmt.Errorf("the reset was issued, but the device has not come back within %s: %w\n"+
+			"On direct USB it may need a physical replug. Over USB/IP the client's virtual port is left\n"+
+			"holding the connection to the device that rebooted, and the device returns only once it is\n"+
+			"released and re-imported:\n"+
+			"  usbip port                       # find the port holding this device\n"+
+			"  usbip detach -p <port>\n"+
+			"  usbip attach -r <host> -b <busid>\n"+
+			"Its authentication key is now the factory default (id 1, password \"password\"), and\n"+
+			"`secsy-ca hsm-audit status` will show whether the log restarted at the sentinel", *wait, err)
+	}
+	res.Returned = true
+	res.NewLogUsed = back.LogCapacity()
+	// The reset's whole purpose is a log that begins at the device-init
+	// sentinel, so check that rather than making the operator discover it from
+	// the next command's refusal.
+	res.Sentinel, res.SentinelError = checkBootSentinel(ctx, probe)
+
+	if *asJSON {
+		return json.NewEncoder(os.Stdout).Encode(res)
+	}
+	fmt.Printf("Device %s is back (log %s).\n", res.Serial, res.NewLogUsed)
+	fmt.Println(resetSentinelLine(res))
+	fmt.Println("Its authentication key is the factory default: id 1, password \"password\" — change it, or")
+	fmt.Println("set yubihsm.password and pkcs11.pin to match, before putting the device into service.")
+	if res.Provisioned {
+		fmt.Println()
+		fmt.Println("NOTE: this installation still holds the pinned audit state of the history just erased.")
+		fmt.Println("`hsm-audit provision` will refuse until that state is cleared deliberately — it is what")
+		fmt.Println("stops a forged history being pinned over a real one.")
+	}
+	fmt.Println()
+	fmt.Println("Next: secsy-ca hsm-audit provision")
+	return nil
+}
+
+func printResetPlan(res *hsmAuditResetResult) {
+	fmt.Printf("Device:          %s (firmware %s)\n", res.Serial, res.Firmware)
+	fmt.Printf("Device log:      %s used\n", res.LogUsed)
+	fmt.Printf("Provisioned:     %s\n", map[bool]string{true: "yes", false: "no"}[res.Provisioned])
+	if res.ObjectsError != "" {
+		fmt.Printf("Objects:         could not be listed: %s\n"+
+			"                 (a force-audited device with a full log refuses this; the reset below\n"+
+			"                 is what clears it, and it erases every object either way)\n", res.ObjectsError)
+	} else {
+		fmt.Printf("Objects (%d) — a factory reset erases every one of them:\n", len(res.Objects))
+		fmt.Print(resetDeviceObjects(res.Objects))
+	}
+	if res.Uncollected > 0 {
+		fmt.Printf("Uncollected:     %d device log entr(ies) exist only on the device and will be lost;\n"+
+			"                 run `secsy-ca hsm-audit collect` first to keep them\n", res.Uncollected)
+	}
+}
+
+// resetReplyGrace bounds each device call a reset makes unreturnable. Generous
+// relative to a command (milliseconds) because the cost of waiting too long is a
+// slow command, while the cost of giving up early is a report that the device
+// never answered when it was about to.
+const resetReplyGrace = 20 * time.Second
+
+// runBounded runs fn in a goroutine and stops waiting after d, reporting
+// whether it finished.
+//
+// The abandoned goroutine may stay blocked in a syscall for as long as the
+// kernel takes to notice the device is gone. That is acceptable here and only
+// here: the process is on its way out, Go's exit does not wait for goroutines,
+// and the alternative — a command that never returns — is what this replaces.
+func runBounded(d time.Duration, fn func() error) (err error, completed bool) {
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	select {
+	case e := <-done:
+		return e, true
+	case <-time.After(d):
+		return nil, false
+	}
+}
+
+// awaitDeviceReturn waits for the device to finish rebooting and re-enumerating.
+//
+// It settles before it polls. The device drops off the USB bus as it resets, and
+// probing inside the window in which the host has not yet noticed produces a
+// usbfs wait the kernel will not interrupt — at which point a context deadline
+// is decoration. Waiting first and polling after is what survives a reset over
+// USB/IP, where the re-enumeration is a remote event.
+func awaitDeviceReturn(ctx context.Context, cfg hsm.Config, wait time.Duration) (*yubihsm.DeviceInfo, error) {
+	const settle = 5 * time.Second
+	if wait <= settle {
+		wait = settle + 10*time.Second
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(settle):
+	}
+	deadline := time.Now().Add(wait - settle)
+	var lastErr error
+	for {
+		var info *yubihsm.DeviceInfo
+		err, completed := runBounded(10*time.Second, func() error {
+			probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			var e error
+			info, e = yubihsm.TransportDeviceInfo(probeCtx, yubihsm.Config{ConnectorURL: cfg.ConnectorURL})
+			return e
+		})
+		switch {
+		case completed && err == nil:
+			return info, nil
+		case completed:
+			lastErr = err
+		default:
+			// A probe that does not return is the wedged-port case: the device
+			// is not coming back on this port, however long we wait.
+			lastErr = fmt.Errorf("reading device info did not return within 10s; the transport is "+
+				"waiting on a device that is not there (%s)", describeProbe(cfg.ConnectorURL))
+		}
+		if time.Now().After(deadline) {
+			return nil, lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+// checkBootSentinel reads the device's log back and reports whether it now
+// begins at the device-init sentinel.
+//
+// Three outcomes, not two. The first session after a re-enumeration can fail
+// while the device is still settling, and reporting "the log does not start at
+// the sentinel" for a log that could not be read at all would send an operator
+// to factory-reset a device that is already exactly where it should be — which
+// is what the first hardware run of this command did. So it retries briefly and
+// distinguishes "could not read" from "read, and the sentinel is not there".
+func checkBootSentinel(ctx context.Context, cfg hsm.Config) (ok bool, problem string) {
+	var last error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err().Error()
+			case <-time.After(3 * time.Second):
+			}
+		}
+		var lr *hsm.LogResponse
+		err, completed := runBounded(resetReplyGrace, func() error {
+			var e error
+			lr, e = hsm.FetchLog(ctx, cfg)
+			return e
+		})
+		switch {
+		case !completed:
+			last = fmt.Errorf("reading the device log did not return within %s", resetReplyGrace)
+		case err != nil:
+			last = err
+		case len(lr.Entries) == 0:
+			last = errors.New("the device reports no unconsumed log entries, so there is no entry 1 to check")
+		default:
+			return hsm.IsBootSentinel(lr.Entries[0]), ""
+		}
+	}
+	return false, last.Error()
+}
+
+// resetSentinelLine renders what the post-reset log read established.
+func resetSentinelLine(res *hsmAuditResetResult) string {
+	switch {
+	case res.Sentinel:
+		return "Its audit log starts at the device-init sentinel, which is what `provision` requires."
+	case res.SentinelError != "":
+		return "Its audit log could not be read just now (" + res.SentinelError + "),\n" +
+			"so `secsy-ca hsm-audit status` is what will show whether it restarted at the sentinel."
+	default:
+		return "WARNING: its audit log does not start at the device-init sentinel; `provision` will refuse it."
+	}
+}
+
+// describeProbe names the route the probe is taking, since "the device is not
+// there" means something different on each: a replug on direct USB, a re-import
+// over USB/IP, somebody else's problem through a connector.
+func describeProbe(url string) string {
+	if strings.TrimSpace(url) == "" {
+		return "direct USB"
+	}
+	return url
+}
+
+// recordResetEvent appends the erasure to the hash-chained event log, which is
+// the only place it is recorded at all: the device log it would otherwise appear
+// in is precisely what the reset destroys.
+func recordResetEvent(db *database.DB, serial, result, detail string) {
+	if db == nil {
+		return
+	}
+	if err := db.AppendEvent(&audit.Event{
+		Timestamp:  time.Now().UTC(),
+		Actor:      cliActor(),
+		ActorRoles: "system",
+		Action:     audit.ActionHSMFactoryReset,
+		Target:     serial,
+		Result:     result,
+		Detail:     detail,
+	}); err != nil {
+		log.Printf("WARNING: the factory reset of device %s could not be recorded in the event log: %v",
+			serial, err)
+	}
 }

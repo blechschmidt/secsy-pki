@@ -155,9 +155,15 @@ reset cannot be shown to be complete — so this is a decision to make before th
 device holds anything, not after.
 
 ```bash
+secsy hsm-audit reset         # only if the device has been used: it must be factory-reset
 secsy hsm-audit provision     # irreversible: record the printed anchor out of band
 secsy hsm-audit status        # device options, collection tail, and the log file
 ```
+
+`hsm-audit reset` lists what it would erase and stops; `-confirm <serial>`
+executes. Over USB/IP the client has to re-import the device afterwards — the
+reset reboots it, and the virtual port keeps holding the connection to the
+device that rebooted (`usbip detach -p <port>`, then `usbip attach` again).
 
 Until that is done the device's log is not collected at all, and the file above
 stays empty: without a pinned anchor a collected chain cannot be attributed to a
@@ -174,6 +180,7 @@ this deployment, is [docs/hsm/audit-log.md](../../docs/hsm/audit-log.md).
 |---------|-------|
 | `no YubiHSM 2 (1050:0030) is attached` from `device-env.sh` | The device is not plugged in, or not visible to this host (a USB/IP attach may have dropped) |
 | `no YubiHSM 2 found on USB` at startup | The node in `.env` is stale — re-run `./device-env.sh >> .env` |
+| The device disappears after `hsm-audit reset` | Expected: a reset reboots the device onto a new node. Re-run `./device-env.sh >> .env` and recreate the container. Over USB/IP the client's virtual port must be released first (`usbip detach -p <port>`), because it is still holding the connection to the device that rebooted |
 | `the YubiHSM USB interface is held by another process` | Something on the host has the device: a `yubihsm-connector`, a `yubihsm-shell`, or another container with the node passed to it. The relay needs the claim |
 | `LIBUSB_ERROR_ACCESS` | The node's mode or gid: install `../udev/70-yubihsm.rules`, then re-run `device-env.sh` |
 | Server exits with `yubihsm.audit_log_file … cannot be opened for append` | The audit volume is not writable by uid 65532 |

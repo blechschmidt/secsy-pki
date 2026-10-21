@@ -537,7 +537,54 @@ that they are symmetric and known to the host.
 
 Provisioning requires a **factory-reset** device: the log is a bounded ring
 starting at the reset, so a device with prior history has already had operations
-that cannot be shown to be absent.
+that cannot be shown to be absent. A device that has been used refuses:
+
+```console
+$ secsy-ca hsm-audit provision
+error: audit log does not start with a device init entry (entry 1, all 0xff fields).
+The device was not factory reset before provisioning.
+There may be unaudited operations. Please factory reset the device first:
+  secsy-ca hsm-audit reset
+Then re-run provisioning
+```
+
+`hsm-audit reset` is a dry run until it is given the serial of the device in
+front of it, because it erases every object — including the authentication keys
+that reach the device — and the only copy of every log entry that has not been
+collected:
+
+```console
+$ secsy-ca hsm-audit reset
+Device:          31650425 (firmware 2.4.0)
+Device log:      2/62 used
+Provisioned:     no
+Objects (1) — a factory reset erases every one of them:
+  0x0001  authentication-key   aes128-yubico-authentication DEFAULT AUTHKEY CHANGE THIS ASAP
+Uncollected:     2 device log entr(ies) exist only on the device and will be lost;
+                 run `secsy-ca hsm-audit collect` first to keep them
+
+DRY RUN — nothing was erased. To execute:
+  secsy-ca hsm-audit reset -confirm 31650425
+```
+
+Executed, it issues the reset, releases this process's claim on the device, waits
+for the device to come back, and reports whether its log restarted at the
+sentinel — which is the precondition the next command enforces. The erasure is
+recorded in the hash-chained event log, which is the only place it can be
+recorded: the device log that would otherwise hold it is what the reset
+destroys.
+
+The device's authentication key is the factory default again afterwards (id 1,
+password `password`), so set `yubihsm.password` and `pkcs11.pin` to match — or
+change the key — before putting it into service.
+
+> **Over USB/IP the client has to re-import the device.** A reset reboots the
+> device, which drops off the bus and comes back as a new node. On direct USB the
+> host notices by itself; over USB/IP the client's virtual port is left holding
+> the connection to the device that rebooted, and the device returns only once
+> that port is released: `usbip port`, `usbip detach -p <port>`, then
+> `usbip attach -r <host> -b <busid>`. Until then nothing on this host can see
+> the device, and `hsm-audit reset` says so rather than reporting success.
 
 ```console
 $ secsy-ca hsm-audit provision
@@ -1016,6 +1063,7 @@ fake the other's position.
 | Command | Purpose |
 | --- | --- |
 | `hsm-audit status` | Device audit configuration and collection state |
+| `hsm-audit reset -confirm SERIAL` | Factory-reset the device, so its log restarts at the sentinel `provision` requires. Dry run without `-confirm` |
 | `hsm-audit provision` | Commission a factory-reset device; pin the anchor |
 | `hsm-audit collect` | Drain the device log once (the server does this after every HSM operation) |
 | `hsm-audit timestamp` | Obtain one freshness attestation now |
