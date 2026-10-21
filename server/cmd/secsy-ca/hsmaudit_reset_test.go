@@ -219,3 +219,33 @@ func TestResetSentinelLineSeparatesUnreadableFromAbsent(t *testing.T) {
 		t.Errorf("a log that was read and has no sentinel is the one case that warrants the warning, got %q", absent)
 	}
 }
+
+// After the reset, the device has to be looked for where it actually is.
+//
+// An empty connector URL is not "direct USB" at this layer: hsm.Config resolves
+// it through YUBIHSM_PKCS11_CONF, and the module configuration this process
+// wrote points at the relay the reset has just released. The first hardware run
+// reported a log it could not read for a device that was back on the bus,
+// because the read went to that dead loopback address.
+func TestResetProbeNamesDirectUSBExplicitly(t *testing.T) {
+	cfg := hsm.Config{ConnectorURL: "http://127.0.0.1:12345", AuthKeyID: 4, Password: "s3cret"}
+
+	owned := resetProbeConfig(cfg, true)
+	if owned.ConnectorURL != "yhusb://" {
+		t.Errorf("a process that held the device should probe direct USB by name, got %q", owned.ConnectorURL)
+	}
+
+	joined := resetProbeConfig(cfg, false)
+	if joined.ConnectorURL != cfg.ConnectorURL {
+		t.Errorf("a process that joined somebody else's relay should keep using it, got %q", joined.ConnectorURL)
+	}
+
+	// Either way the credentials are the factory defaults, which is what a reset
+	// device has: hsm.Config's zero values mean key 1 / "password".
+	for name, got := range map[string]hsm.Config{"owned": owned, "joined": joined} {
+		if got.AuthKeyID != 0 || got.Password != "" {
+			t.Errorf("%s probe carries the configured credentials (key %d), but the reset erased them",
+				name, got.AuthKeyID)
+		}
+	}
+}

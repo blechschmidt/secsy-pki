@@ -1313,12 +1313,9 @@ func cmdHSMAuditReset(ctx context.Context, svc *hsmaudit.Service, dev hsmaudit.D
 	// a device that is no longer there can block for the same reason the reset
 	// can, so this is bounded too; the global is cleared first either way, so
 	// main's own deferred close cannot inherit the block on the way out.
-	probe := hsm.Config{ConnectorURL: cfg.ConnectorURL}
 	ours := embeddedConnectorIsOurs()
 	_, _ = runBounded(resetReplyGrace, func() error { releaseEmbeddedConnector(); return nil })
-	if ours {
-		probe.ConnectorURL = ""
-	}
+	probe := resetProbeConfig(cfg, ours)
 	// Factory defaults from here on: the authentication key the configuration
 	// names no longer exists. hsm.Config's zero values are id 1 / "password".
 	back, err := awaitDeviceReturn(ctx, probe, *wait)
@@ -1451,6 +1448,25 @@ func awaitDeviceReturn(ctx context.Context, cfg hsm.Config, wait time.Duration) 
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+// resetProbeConfig returns the configuration the post-reset probes use.
+//
+// Direct USB is named explicitly rather than left empty, and the difference is
+// not cosmetic: an empty connector URL is resolved through YUBIHSM_PKCS11_CONF
+// (see hsm.EffectiveConnectorURL), and the module configuration this process
+// wrote points at the relay it has just released — so the probe would address a
+// dead loopback endpoint and report a device that is sitting right there as
+// absent. Which is what the first hardware run did.
+//
+// A process that merely joined somebody else's relay keeps the configured URL:
+// the device is still that owner's claim, and the re-enumeration is theirs to
+// notice.
+func resetProbeConfig(cfg hsm.Config, ownedTheRelay bool) hsm.Config {
+	if ownedTheRelay {
+		return hsm.Config{ConnectorURL: "yhusb://"}
+	}
+	return hsm.Config{ConnectorURL: cfg.ConnectorURL}
 }
 
 // checkBootSentinel reads the device's log back and reports whether it now
