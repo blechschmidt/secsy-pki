@@ -539,6 +539,11 @@ func loadContent(t *testing.T, content string) (*Config, error) {
 }
 
 func TestLoadMissingPassword(t *testing.T) {
+	// The superuser password has three origins now — the file, the environment,
+	// and a named credential file — and this test is about the file having none
+	// of them. Neutralize the ambient ones or it measures the shell.
+	t.Setenv("SECSY_ROOT_PASSWORD", "")
+	t.Setenv("SECSY_ROOT_PASSWORD_FILE", "")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	os.WriteFile(path, []byte(`

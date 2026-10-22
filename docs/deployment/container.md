@@ -265,9 +265,10 @@ credentials need not be in it. This is the subset that matters in a container;
 
 | Variable | Overrides | Notes |
 |----------|-----------|-------|
-| `SECSY_USER_PIN` | `pkcs11.pin` | The HSM user PIN. Prefer a `pin_source` block for anything long-lived — [PIN sourcing](../hsm/configuration.md#sourcing-the-user-pin-from-a-credential-store-pin_source) reads it from Vault, a cloud secrets manager or a mode-0600 file |
+| `SECSY_USER_PIN` | `pkcs11.pin` | The HSM user PIN. Prefer `SECSY_USER_PIN_FILE`, or a `pin_source` block for anything long-lived — [PIN sourcing](../hsm/configuration.md#sourcing-the-user-pin-from-a-credential-store-pin_source) reads it from Vault, a cloud secrets manager or a mode-0600 file |
 | `SECSY_ROOT_PASSWORD` | `root_user.password` | Required unless the file sets it: the config refuses to load with neither, so a deployment cannot silently come up without a superuser password |
-| `SECSY_DATABASE_DRIVER`, `SECSY_DATABASE_DSN` | `database.driver`, `database.dsn` | The DSN carries PostgreSQL credentials, which is why it belongs here rather than in a mounted file |
+| `SECSY_DATABASE_DRIVER`, `SECSY_DATABASE_DSN` | `database.driver`, `database.dsn` | The DSN carries PostgreSQL credentials |
+| `SECSY_ROOT_PASSWORD_FILE`, `SECSY_USER_PIN_FILE`, `SECSY_YUBIHSM_PASSWORD_FILE`, `SECSY_DATABASE_DSN_FILE`, `VAULT_TOKEN_FILE`, `SECSY_VAULT_SECRET_ID_FILE` | the same settings, read from the named file | **Prefer these.** A secret in an environment variable is inherited by every child process, readable in `/proc`, and printed by `docker inspect`; a `secrets:`-mounted file is not. Each form clears the other, so the credential has one origin — see [credentials from files](../security/credential-files.md) |
 | `SECSY_DATABASE_MAX_OPEN_CONNS`, `…_MAX_IDLE_CONNS` | the connection pool | PostgreSQL only |
 | `SECSY_KEY_PROVIDER` (`…_CA`, `…_TSA`, `…_SIGNING`) | `key_provider.type` and the per-role providers | |
 | `SECSY_PKCS11_MODULE`, `SECSY_TOKEN_LABEL`, `SECSY_TOKEN_SERIAL` | the PKCS#11 module and token selection | Point the image at a mounted vendor module without editing YAML |
@@ -275,7 +276,7 @@ credentials need not be in it. This is the subset that matters in a container;
 | `SECSY_KMS_*`, `VAULT_ADDR`/`VAULT_TOKEN`, `SECSY_VAULT_ROLE_ID`/`…_SECRET_ID` | the [cloud-KMS](../hsm/cloud-kms.md) and [Vault Transit](../hsm/vault-transit.md) backends | Cloud credentials themselves come from the SDK's own chain, never from config |
 | `SECSY_ACME_*`, `SECSY_MONITOR_*` | the [ACME server](../protocols/acme.md) and [expiry monitor](../operations/expiry-monitoring.md) | Enable/disable and retarget without a config edit |
 | `SECSY_SERVER_UNIX_SOCKET`, `SECSY_GRPC_UNIX_SOCKET` | the listener paths | A runtime often knows the mounted socket path long after the config was written ([Unix sockets](unix-socket.md)) |
-| `SECSY_YUBIHSM_PASSWORD`, `SECSY_YUBIHSM_AUTH_KEY_ID` | `yubihsm.password`, `…auth_key_id` | The device credential the native driver authenticates with (audit collection, attestation). A credential, so it belongs here rather than in a mounted file |
+| `SECSY_YUBIHSM_PASSWORD`, `SECSY_YUBIHSM_AUTH_KEY_ID` | `yubihsm.password`, `…auth_key_id` | The device credential the native driver authenticates with (audit collection, attestation). Use `SECSY_YUBIHSM_PASSWORD_FILE` — or `yubihsm.password_file` in the config — to keep it off the process environment |
 | `SECSY_YUBIHSM_CONNECTOR_URL` | `yubihsm.connector_url` | Also what the PKCS#11 module's generated `yubihsm_pkcs11.conf` gets, so the signing path and the audit drain move together |
 | `SECSY_YUBIHSM_AUDIT_LOG_FILE` | `yubihsm.audit_log_file` | Where the device audit log is permanently written. A mount point — `/app/audit/device-log.jsonl` with a volume or host directory on `/app/audit`, which `deploy/yubihsm/.env` names with `SECSY_AUDIT_DIR` ([audit log](../hsm/audit-log.md#in-a-container)) |
 | `SECSY_ALLOW_INSECURE_HTTP` | nothing — it is a guard | Set to `1`, `true` or `yes` to serve the API in **cleartext**. Only for a trusted TLS-terminating proxy on the same pod/host; without it the server refuses to start with no `tls_cert`, and with it it logs a warning on every start |
@@ -293,6 +294,19 @@ pkcs11:
 
 A bare `pin_source: "env:SECSY_USER_PIN"` does not parse, and the server exits
 with `cannot unmarshal !!str into config.PinSourceConfig`.
+
+The one-line alternative *is* a string, and is usually what a container wants —
+a path to a `secrets:`-mounted file:
+
+```yaml
+pkcs11:
+  pin_file: "/run/secrets/hsm_pin"
+```
+
+Every other password in the configuration takes the same treatment
+(`root_user.password_file`, `yubihsm.password_file`, `database.dsn_file`, …), so
+a baked config file can be free of secrets entirely:
+[credentials from files](../security/credential-files.md).
 
 ## Running the CLI tools
 

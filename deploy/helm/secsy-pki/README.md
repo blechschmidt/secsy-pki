@@ -45,6 +45,19 @@ For a fully automated kind + SoftHSM end-to-end check, run
   password are always read from a Kubernetes Secret and injected as
   `SECSY_USER_PIN` / `SECSY_ROOT_PASSWORD`. Everything else is rendered into a
   ConfigMap.
+
+  To keep the credentials out of the process environment as well — where they
+  are inherited by every child and readable in `/proc` — project the same Secret
+  as a volume and point the server at the files instead:
+  `SECSY_USER_PIN_FILE` / `SECSY_ROOT_PASSWORD_FILE`, or the config keys
+  `pkcs11.pin_file` / `root_user.password_file`. Every password in the
+  configuration takes that form; see
+  [credentials from files](../../../docs/security/credential-files.md). The
+  chart does not render that shape by default: `extraVolumes` /
+  `extraVolumeMounts` / `extraEnv` compose it and `values.yaml` carries the
+  recipe as a comment, with `config.security.allowInsecureSecretFilePerms=true`
+  because a projected Secret is a root-owned per-pod `tmpfs` that uid 65532 can
+  only read through the group bits.
 - **HSM module mount is pluggable** via `hsm.module.mode`:
   - `softhsm` — use the SoftHSM module baked into the image; an init container
     provisions a token so the readiness probe passes. Dev/CI only.

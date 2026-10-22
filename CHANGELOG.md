@@ -40,6 +40,54 @@ correct on Debian multiarch, RHEL `lib64` and a from-source `/usr/local` build.
 environment overrides. New: [`docs/hsm/pkcs11-uris.md`](docs/hsm/pkcs11-uris.md)
 and [`examples/pkcs11-uri-addressing/`](examples/pkcs11-uri-addressing).
 
+**Every password in the configuration can be a file name instead.** A
+`config.yaml` is the wrong place for a secret and is treated as such by
+everything around it — rendered into a ConfigMap, baked into an image,
+committed to the repository that describes the environment, pasted into a bug
+report. Secret *delivery*, meanwhile, is already solved on every platform this
+runs on, and on all of them it is solved by presenting a file: a projected
+Kubernetes `Secret`, `/run/secrets/*`, systemd's `LoadCredential=`, a Vault
+Agent template, root-owned `0600` under `/etc`.
+
+So every password-shaped setting now has a sibling key with a `_file` suffix
+whose value is a path — `root_user.password_file`, `yubihsm.password_file`,
+`pkcs11.pin_file` (and per HA token), `database.dsn_file`,
+`auth.oidc.client_secret_file`, `auth.ldap.bind_password_file`,
+`acme.nonce_hmac_key_file`, `acme.eab_hmac_keys_file`,
+`acme.email.{smtp,imap}.password_file`, `scep.grants[].challenge_file`,
+`est.users[].password_file`, `cmp.secrets[].secret_file`,
+`publish.s3`/`backup.s3`'s
+`secret_access_key_file` and `session_token_file`, and the Vault
+`token_file`/`secret_id_file` of both the Transit backend and every `vault` PIN
+source. A configuration using them contains no secrets at all.
+
+The rules are the same for every key: exactly one of the pair (setting both is
+a load error, not a precedence rule); the contents are the credential minus one
+trailing line terminator and nothing else, so a password with meaningful
+whitespace survives; the file must not be readable by group or other, relaxed
+deployment-wide by `security.allow_insecure_secret_file_perms` — which an
+orchestrated deployment needs, because a projected Kubernetes `Secret` is a
+root-owned per-pod `tmpfs` that a non-root container can only read through the
+group bits, and the mode was never what confined it there;
+and resolution happens at load, so a missing or loose file is a startup refusal
+naming the key rather than a server that binds its listener and fails every
+request needing the credential. `pkcs11.pin_file` and
+`auth.ldap.bind_password_file` are shorthand for the `file` entry of the
+existing credential-source machinery, so the PIN stays out of the loaded config
+entirely and keeps its `secsy-ca doctor` probe.
+
+The credential environment variables gained `_FILE` twins for the same reason
+(an environment variable is inherited by every child and printed by
+`docker inspect`): `SECSY_ROOT_PASSWORD_FILE`, `SECSY_USER_PIN_FILE`,
+`SECSY_YUBIHSM_PASSWORD_FILE`, `SECSY_DATABASE_DSN_FILE`, `VAULT_TOKEN_FILE`,
+`SECSY_VAULT_SECRET_ID_FILE`. Either form supersedes the other wholesale, so a
+credential has exactly one origin however many layers have an opinion — except
+for the PIN, where an explicitly configured source still outranks
+`SECSY_USER_PIN` exactly as `pin_source` always has, so a production `pin_file`
+is not silently defeated by the variable `scripts/setup-softhsm.sh` exports. The Helm
+chart gained `extraVolumes`/`extraVolumeMounts` so the pattern composes there
+too. New: [`docs/security/credential-files.md`](docs/security/credential-files.md).
+
 **A YubiHSM 2 Compose stack, and the device audit log where you say it goes.**
 [`deploy/yubihsm/`](deploy/yubihsm/) is a working deployment for a YubiHSM
 attached over USB: a `yubihsm-connector` service that owns the device node, a
@@ -70,6 +118,18 @@ from on rotation; a `module-name=` must resolve to a file; and an attribute
 nobody recognises is an error rather than the doctor warning it used to be. The
 `pkcs11.uris` doctor check additionally resolves each configured key URI
 against a live token.
+
+**`Config.Redacted()` now masks every credential the loaded configuration can
+hold, not just the ones it held when it was written.** A credential delivered
+as a `*_file` path lands in the same field an inline one would, so the redaction
+set is now exactly the file-sourceable set: the ACME nonce and EAB keys, the
+SMTP/IMAP and DKIM material, SCEP challenge passwords, EST user passwords, CMP
+shared secrets, the static S3 publish/backup credentials, and the password
+component of
+`database.dsn` (only the password — the dump still answers "which database is
+this replica talking to?"). File paths, access-key ids, bind DNs and EAB kids
+are identifiers rather than secrets and are deliberately preserved, so a
+redacted dump still says where each credential came from.
 
 ### Fixed
 

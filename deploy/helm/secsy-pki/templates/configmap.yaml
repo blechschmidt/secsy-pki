@@ -26,6 +26,12 @@ data:
       address: {{ printf "%s:%d" $c.server.host (int $c.grpc.port) | quote }}
       mtls: {{ $c.grpc.mtls }}
 
+    {{- if or $c.security.fips $c.security.allowInsecureSecretFilePerms }}
+    security:
+      fips: {{ $c.security.fips }}
+      allow_insecure_secret_file_perms: {{ $c.security.allowInsecureSecretFilePerms }}
+    {{- end }}
+
     database:
       driver: {{ $c.database.driver | quote }}
       dsn: {{ $c.database.dsn | quote }}

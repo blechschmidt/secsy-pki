@@ -209,6 +209,9 @@ spec:
               mountPath: /etc/secsy/tls
               readOnly: true
             {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: config
           configMap:
@@ -236,6 +239,9 @@ spec:
         - name: tls
           secret:
             secretName: {{ $tlsSecret }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

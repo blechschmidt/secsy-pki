@@ -163,6 +163,21 @@ config:
     username: root
     # Password is injected from a Secret (see secrets.rootPassword), never here.
 
+  # Deployment-wide policy switches. Both default to false and are rendered into
+  # the ConfigMap only when set, so the default config is unchanged.
+  security:
+    # The fail-closed FIPS 140-3 *algorithm* policy. The other half — running on
+    # the validated Go Cryptographic Module — is a build flag, so set this only
+    # with a FIPS image. See docs/security/fips.md.
+    fips: false
+    # Relax the invariant that a `*_file` credential must not be readable by
+    # group or other. An orchestrated deployment needs it: a projected Secret is
+    # a root-owned per-pod tmpfs that uid 65532 can only read through the group
+    # bits, so the mode was never the boundary there. Pair it with the
+    # extraVolumes/extraEnv recipe below; see
+    # docs/security/credential-files.md.
+    allowInsecureSecretFilePerms: false
+
   # Key provider: "pkcs11" (HSM) or "software" (on-disk keystore, dev only).
   keyProvider:
     type: pkcs11
@@ -361,6 +376,35 @@ externalDatabase:
 extraEnv: []
 #  - name: SECSY_ALLOW_INSECURE_HTTP
 #    value: "1"
+
+# Extra volumes and mounts for the server container. The reason they exist is
+# credential delivery: the chart injects the PIN and root password as env vars,
+# and an environment variable is inherited by every child process and readable
+# in /proc. Projecting the same Secret as a volume and naming the files instead
+# keeps the credentials out of both the ConfigMap and the environment — see
+# docs/security/credential-files.md.
+#
+#  extraVolumes:
+#    - name: credentials
+#      secret:
+#        secretName: secsy-pki
+#        defaultMode: 0440          # fsGroup lands it 0440 root:65532
+#  extraVolumeMounts:
+#    - name: credentials
+#      mountPath: /etc/secsy/secrets
+#      readOnly: true
+#  extraEnv:
+#    - name: SECSY_USER_PIN_FILE
+#      value: /etc/secsy/secrets/user-pin
+#    - name: SECSY_ROOT_PASSWORD_FILE
+#      value: /etc/secsy/secrets/root-password
+#
+# A projected Secret is a root-owned per-pod tmpfs, so uid 65532 reads it only
+# through the group bits — use defaultMode 0440 with a matching fsGroup alongside
+# the above, set config.security.allowInsecureSecretFilePerms=true, and see
+# docs/security/credential-files.md for why that is sound.
+extraVolumes: []
+extraVolumeMounts: []
 
 # --- Server TLS ---------------------------------------------------------------
 # The server refuses to start in cleartext unless allowInsecureHTTP=true. Choose

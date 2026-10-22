@@ -71,11 +71,14 @@ pkcs11:
   architecture-independent path above, so the same config file is correct on
   `amd64` and `arm64`.
 - `pin` is the **user** PIN used to log into the token for signing. Storing it
-  here (or in `SECSY_USER_PIN`) leaves an HSM credential in plaintext at rest;
-  prefer an external
-  [`pin_source`](#sourcing-the-user-pin-from-a-credential-store-pin_source), which
-  fetches it lazily at login from a file, env var, Vault, or a cloud secrets
-  manager.
+  here (or in `SECSY_USER_PIN`) leaves an HSM credential in plaintext at rest.
+  Write `pin_file: /run/secrets/hsm-pin` instead — the file's contents are the
+  PIN — or, for a credential store rather than a file, the full
+  [`pin_source`](#sourcing-the-user-pin-from-a-credential-store-pin_source) block
+  it is shorthand for. Either way the PIN is fetched lazily at login and never
+  enters a dumped config. Every other password in the configuration takes the
+  same `_file` treatment: see
+  [credentials from files](../security/credential-files.md).
 - `token_label` / `token_serial` / `token_manufacturer` / `token_model` and
   `slot_id` / `slot_description` / `slot_manufacturer` select *which* token to
   use when more than one is present. The first slot matching every **set**
@@ -202,8 +205,30 @@ pin_source:
 ```
 
 The file must not be readable by group or other; a looser mode fails closed with
-a `chmod 600` hint (override only with `allow_insecure_perms: true`). Mount it
-from a Kubernetes `Secret`, a tmpfs, or a systemd credential.
+a `chmod 600` hint. Mount it from a tmpfs, a systemd credential
+(`LoadCredential=` lands `0400` owned by the unit's user), or a Kubernetes
+`Secret` — the last needing `allow_insecure_perms: true`, because a projected
+Secret is a root-owned per-pod tmpfs a non-root container can only read through
+the group bits. See
+[credentials from files](../security/credential-files.md#the-rules).
+
+Because a file is the common case, it has a one-line spelling. These are the
+same configuration:
+
+```yaml
+pkcs11:
+  pin_file: "/etc/secsy/hsm.pin"
+```
+
+`pin_file` expands to exactly the `file` source above, so everything in this
+section — the lazy read, the permission invariant, the startup check, the
+`doctor` probe, and the rule that an explicitly configured source wins over
+`SECSY_USER_PIN` — applies unchanged. Setting both is an error, as is combining
+`pin_file` with an inline `pin`. Each member of a
+[multi-token HA set](#per-token-override-ha) takes its own
+`tokens[].pin_file`. See
+[credentials from files](../security/credential-files.md) for the same
+convention applied to every other password in the configuration.
 
 **This one is checked at startup**, unlike the sources that resolve over a
 network. A file's permissions will be exactly the same at the first signature as
@@ -446,6 +471,7 @@ instead (its `env` type reads any variable without the warning):
 | `SECSY_TOKEN_MODEL` | `pkcs11.token_model` |
 | `SECSY_PKCS11_SLOT_ID` | `pkcs11.slot_id` |
 | `SECSY_USER_PIN` | `pkcs11.pin` |
+| `SECSY_USER_PIN_FILE` | `pkcs11.pin_file` — the PIN read from the named file, with no plaintext anywhere. Unlike `SECSY_USER_PIN` it names a *source*, so it replaces a configured `pin_file`/`pin_source`; `SECSY_USER_PIN` does not, because an explicit source has always outranked it |
 | `SECSY_PKCS11_SESSION_POOL_SIZE` | `pkcs11.session_pool_size` |
 | `SECSY_PKCS11_SELECTION_POLICY` | `pkcs11.selection_policy` |
 | `SECSY_PKCS11_FAILURE_THRESHOLD` | `pkcs11.failure_threshold` |
@@ -455,6 +481,14 @@ instead (its `env` type reads any variable without the warning):
 Explicit config fields win over `pkcs11.uri`, and these variables win over the
 file — so `SECSY_TOKEN_LABEL` still overrides a `token=` carried by
 `SECSY_PKCS11_URI`.
+
+Every credential variable has a `_FILE` twin (`SECSY_USER_PIN_FILE`,
+`SECSY_ROOT_PASSWORD_FILE`, `SECSY_YUBIHSM_PASSWORD_FILE`,
+`SECSY_DATABASE_DSN_FILE`, `VAULT_TOKEN_FILE`, `SECSY_VAULT_SECRET_ID_FILE`),
+because an environment variable is not a good place for a secret either — it is
+inherited by every child process and printed by `docker inspect`. Setting either
+form clears the other, so the credential has exactly one origin. See
+[credentials from files](../security/credential-files.md).
 
 ## SoftHSM for development and CI
 

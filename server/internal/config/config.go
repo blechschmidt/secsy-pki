@@ -433,6 +433,28 @@ type SecurityConfig struct {
 	// requires the FIPS build (`make build-fips`, GOFIPS140). `secsy-ca doctor`
 	// reports both halves. See docs/security/fips.md.
 	FIPS bool `yaml:"fips"`
+	// AllowInsecureSecretFilePerms relaxes the fail-closed permission invariant
+	// applied to every `*_file` credential path (root_user.password_file,
+	// yubihsm.password_file, pkcs11.pin_file, …): by default such a file must not
+	// be readable by group or other, because a credential that any local account
+	// can read is not externalized, merely moved.
+	//
+	// Container runtimes are the reason the escape hatch exists, and on
+	// Kubernetes it is not optional. A projected Secret is a per-pod tmpfs owned
+	// by root, so the only way a non-root container can read a file on it is
+	// through the group or other bits — exactly what the invariant rejects.
+	// defaultMode: 0400 does not help (root-owned and unreadable by the
+	// process); adding fsGroup makes it readable by chgrp'ing the volume and
+	// OR-ing the group bits in, landing at 0440 root:<fsGroup>. Swarm mounts
+	// /run/secrets/* at 0444.
+	//
+	// Setting this there is not a weakening, because the mode was never what
+	// confined the credential: the volume is created for one pod, destroyed with
+	// it, and visible in no other mount namespace. The invariant is for the
+	// deployment shape where the bits ARE the boundary — a CA host with
+	// /etc/secsy/hsm.pin on a shared filesystem — which is why it stays
+	// fail-closed by default. See docs/security/credential-files.md.
+	AllowInsecureSecretFilePerms bool `yaml:"allow_insecure_secret_file_perms"`
 }
 
 // PublishConfig configures static artifact publishing for CDN offload.
@@ -480,6 +502,11 @@ type PublishS3Config struct {
 	AccessKeyID     string `yaml:"access_key_id"`
 	SecretAccessKey string `yaml:"secret_access_key"`
 	SessionToken    string `yaml:"session_token"`
+	// SecretAccessKeyFile / SessionTokenFile name files whose contents are the
+	// corresponding credential, each mutually exclusive with its inline form.
+	// The access-key id is an identifier, not a secret, and has no file form.
+	SecretAccessKeyFile string `yaml:"secret_access_key_file"`
+	SessionTokenFile    string `yaml:"session_token_file"`
 	// ForcePathStyle addresses the bucket in the URL path. Applied
 	// automatically when endpoint is set.
 	ForcePathStyle bool `yaml:"force_path_style"`
@@ -1102,6 +1129,9 @@ type AuthOIDCConfig struct {
 	// ClientSecret authenticates a confidential client at the token endpoint. Omit
 	// for a public (PKCE-only) client.
 	ClientSecret string `yaml:"client_secret"`
+	// ClientSecretFile names a file whose contents are that client secret,
+	// mutually exclusive with client_secret.
+	ClientSecretFile string `yaml:"client_secret_file"`
 	// RedirectURL is this server's callback URL registered at the IdP, e.g.
 	// https://pki.example.com/auth/callback. Required for interactive login.
 	RedirectURL string `yaml:"redirect_url"`
@@ -1162,6 +1192,11 @@ type AuthLDAPConfig struct {
 	// simple-bind, templating the username directly into UserDNTemplate.
 	BindDN       string `yaml:"bind_dn"`
 	BindPassword string `yaml:"bind_password"`
+	// BindPasswordFile names a file holding the service-account password — the
+	// one-line spelling of `bind_password_source: {type: file, file: {path: …}}`,
+	// which is what it expands to. Mutually exclusive with both bind_password and
+	// bind_password_source.
+	BindPasswordFile string `yaml:"bind_password_file"`
 	// BindPasswordSource sources the service-account password from a credential
 	// store (env/file/vault/aws/azure) instead of an inline bind_password, reusing
 	// the pkcs11 pin_source machinery (Task 111). When its type is empty the inline
@@ -1903,6 +1938,11 @@ type ACMEConfig struct {
 	// RequireEAB requires External Account Binding; EABHMACKeys maps kid -> key.
 	RequireEAB  bool              `yaml:"require_eab"`
 	EABHMACKeys map[string]string `yaml:"eab_hmac_keys"`
+	// EABHMACKeysFile names a file holding the kid -> key mapping as YAML (or
+	// JSON, which is YAML), so the external-account keys — one shared secret per
+	// ACME client — live in a mounted secret rather than in this file. Mutually
+	// exclusive with eab_hmac_keys.
+	EABHMACKeysFile string `yaml:"eab_hmac_keys_file"`
 	// AllowIPIdentifiers permits ip-type identifiers (RFC 8738).
 	AllowIPIdentifiers bool `yaml:"allow_ip_identifiers"`
 	// PreAuthorization enables the optional ACME pre-authorization flow (RFC 8555
@@ -1937,6 +1977,9 @@ type ACMEConfig struct {
 	// agrees without configuration. Set the same value on every replica to skip
 	// the startup store read or to rotate the signing key.
 	NonceHMACKey string `yaml:"nonce_hmac_key"`
+	// NonceHMACKeyFile names a file whose contents are that base64 secret.
+	// Mutually exclusive with nonce_hmac_key.
+	NonceHMACKeyFile string `yaml:"nonce_hmac_key_file"`
 
 	// Email configures the RFC 8823 email-reply-00 challenge for "email"-type
 	// identifiers, enabling S/MIME certificate issuance via ACME (Task 108). It is
@@ -2071,6 +2114,9 @@ type ACMEEmailSMTP struct {
 	Port     int    `yaml:"port"`
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
+	// PasswordFile names a file whose contents are the SMTP password, mutually
+	// exclusive with password.
+	PasswordFile string `yaml:"password_file"`
 	// TLSMode is "starttls" (default), "implicit" (SMTPS), or "none" (test only).
 	TLSMode string `yaml:"tls_mode"`
 	// InsecureSkipVerify disables server-certificate verification (test only).
@@ -2083,6 +2129,9 @@ type ACMEEmailIMAP struct {
 	Port     int    `yaml:"port"`
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
+	// PasswordFile names a file whose contents are the IMAP password, mutually
+	// exclusive with password.
+	PasswordFile string `yaml:"password_file"`
 	// Mailbox is the folder polled for replies (default "INBOX").
 	Mailbox string `yaml:"mailbox"`
 	// TLSMode is "implicit" (default, IMAPS), "starttls", or "none" (test only).
@@ -2152,7 +2201,11 @@ type SCEPConfig struct {
 type SCEPGrantConfig struct {
 	Name      string `yaml:"name"`
 	Challenge string `yaml:"challenge"`
-	Profile   string `yaml:"profile"`
+	// ChallengeFile names a file whose contents are this grant's challenge
+	// password, so a fleet's enrollment secrets can be mounted per grant instead
+	// of listed here. Mutually exclusive with challenge.
+	ChallengeFile string `yaml:"challenge_file"`
+	Profile       string `yaml:"profile"`
 }
 
 // RequireChallengeEnabled reports whether a challenge password is required for
@@ -2197,7 +2250,11 @@ type ESTConfig struct {
 // ESTUserConfig is one EST Basic-auth credential.
 type ESTUserConfig struct {
 	Password string `yaml:"password"`
-	Profile  string `yaml:"profile"`
+	// PasswordFile names a file whose contents are this user's password, so a
+	// fleet's enrollment secrets can be mounted per user instead of listed here.
+	// Mutually exclusive with password.
+	PasswordFile string `yaml:"password_file"`
+	Profile      string `yaml:"profile"`
 }
 
 // ESTCSRAttr is one operator-declared CSR-attributes advertisement entry
@@ -2313,6 +2370,9 @@ type CMPSecretConfig struct {
 	Reference string `yaml:"reference"`
 	// Secret is the shared secret value used to key the PasswordBasedMac.
 	Secret string `yaml:"secret"`
+	// SecretFile names a file whose contents are that shared secret, mutually
+	// exclusive with secret.
+	SecretFile string `yaml:"secret_file"`
 	// Profile constrains what this credential may enroll (empty = server default).
 	Profile string `yaml:"profile"`
 }
@@ -3417,9 +3477,23 @@ func (c OCSPPresignConfig) TrackRecentlyQueried() bool {
 	return c.RecentlyQueried == nil || *c.RecentlyQueried
 }
 
+// defaultDatabaseDriver / defaultDatabaseDSN are the embedded-SQLite defaults
+// installed before the config file is parsed. The secret-file resolver needs
+// defaultDatabaseDSN to tell an unconfigured DSN from one that conflicts with
+// database.dsn_file.
+const (
+	defaultDatabaseDriver = "sqlite"
+	defaultDatabaseDSN    = "secsy-pki.db"
+)
+
 type DatabaseConfig struct {
 	Driver string `yaml:"driver"`
 	DSN    string `yaml:"dsn"`
+	// DSNFile names a file whose contents are the DSN. A PostgreSQL DSN embeds
+	// the database password, which is why it is a credential and not merely a
+	// connection string. Mutually exclusive with dsn; SECSY_DATABASE_DSN (or
+	// SECSY_DATABASE_DSN_FILE) overrides both.
+	DSNFile string `yaml:"dsn_file"`
 
 	// Connection-pool tuning for networked backends (PostgreSQL). These are
 	// ignored for the embedded SQLite driver, which is pinned to one connection.
@@ -3440,6 +3514,11 @@ type OIDCConfig struct {
 type RootUserConfig struct {
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
+	// PasswordFile names a file whose contents are the bootstrap operator's
+	// password, so the credential never appears in this file. Mutually exclusive
+	// with password; SECSY_ROOT_PASSWORD (or SECSY_ROOT_PASSWORD_FILE) overrides
+	// both. See docs/security/credential-files.md.
+	PasswordFile string `yaml:"password_file"`
 }
 
 // KeyProviderConfig selects which key backend the server uses to generate and
@@ -3539,11 +3618,19 @@ type VaultProviderConfig struct {
 	// via the VAULT_TOKEN environment variable (a Kubernetes Secret) over a config
 	// file. Ignored for AppRole auth.
 	Token string `yaml:"token"`
+	// TokenFile names a file whose contents are the Vault token — the form a
+	// Kubernetes projected token or a `vault login`-written ~/.vault-token
+	// already has. Mutually exclusive with token.
+	TokenFile string `yaml:"token_file"`
 	// RoleID / SecretID authenticate via the AppRole method (both required when
 	// auth_method is "approle"). The secret_id is a credential; inject it via
 	// SECSY_VAULT_SECRET_ID from a Secret rather than committing it.
 	RoleID   string `yaml:"role_id"`
 	SecretID string `yaml:"secret_id"`
+	// SecretIDFile names a file whose contents are the AppRole secret-id, which
+	// is how a response-wrapped or agent-delivered secret-id arrives. Mutually
+	// exclusive with secret_id.
+	SecretIDFile string `yaml:"secret_id_file"`
 	// AppRolePath is the AppRole auth-method mount path (default "approle").
 	AppRolePath string `yaml:"approle_path"`
 	// CACertFile is an optional PEM bundle to verify Vault's TLS certificate when
@@ -3587,6 +3674,12 @@ type PKCS11Config struct {
 	// is unset the inline pin (or SECSY_USER_PIN) is used, with a deprecation
 	// warning. See docs/hsm/configuration.md.
 	Pin string `yaml:"pin"`
+	// PinFile names a file whose contents are the user PIN — the one-line
+	// spelling of `pin_source: {type: file, file: {path: …}}`, which is what it
+	// expands to. It is mutually exclusive with both pin and pin_source, and the
+	// path is checked at load time so a missing or group-readable PIN file fails
+	// at startup rather than at the first signature.
+	PinFile string `yaml:"pin_file"`
 	// PinSource selects an external credential source for the user PIN
 	// (env/file/vault/aws/azure) so it need not be stored in plaintext here or in
 	// SECSY_USER_PIN. When its type is empty the inline pin above is used.
@@ -3658,6 +3751,10 @@ type PKCS11TokenConfig struct {
 	SlotManufacturer  string `yaml:"slot_manufacturer"`
 	// Pin is this token's inline user PIN; when empty the shared pkcs11.pin is used.
 	Pin string `yaml:"pin"`
+	// PinFile names a file holding this token's PIN, expanding to a `file`
+	// pin_source exactly as pkcs11.pin_file does. In an HA set each member
+	// usually has its own PIN, so each member gets its own file.
+	PinFile string `yaml:"pin_file"`
 	// PinSource overrides the set-level pkcs11.pin_source for this token; when its
 	// type is empty the shared pin_source (then the inline pin) is used.
 	PinSource PinSourceConfig `yaml:"pin_source"`
@@ -3771,10 +3868,19 @@ func redactSecret(s string) string {
 }
 
 // Redacted returns a copy of the config with every credential field (PINs,
-// passwords, Vault tokens/secret-ids) masked, safe to log or dump. The original
-// is not modified. Any code that emits a config representation MUST route it
-// through Redacted first — the PKCS#11 user PIN and other secrets must never
-// appear in logs, diagnostics, or serialized config.
+// passwords, shared secrets, Vault tokens/secret-ids, static cloud keys) masked,
+// safe to log or dump. The original is not modified. Any code that emits a
+// config representation MUST route it through Redacted first — the PKCS#11 user
+// PIN and other secrets must never appear in logs, diagnostics, or serialized
+// config.
+//
+// The set it masks is exactly the set that can be sourced from a `*_file` key
+// (see secretfile.go): by the time a config has been loaded, a credential
+// delivered as a file lives in the same field an inline one would, so a field
+// that is file-sourceable is a field that may hold plaintext here. The file
+// *paths* are deliberately preserved — a path is not a secret, and a dump that
+// still shows where each credential came from is what makes the redacted form
+// useful for diagnosing a deployment.
 func (c *Config) Redacted() *Config {
 	if c == nil {
 		return nil
@@ -3782,10 +3888,90 @@ func (c *Config) Redacted() *Config {
 	cp := *c
 	cp.RootUser.Password = redactSecret(c.RootUser.Password)
 	cp.YubiHSM.Password = redactSecret(c.YubiHSM.Password)
+	cp.Database.DSN = redactDSN(c.Database.DSN)
 	cp.PKCS11 = c.PKCS11.redacted()
 	cp.KeyProvider = c.KeyProvider.redacted()
 	cp.Auth = c.Auth.redacted()
+	cp.ACME = c.ACME.redacted()
+	cp.Publish.S3 = c.Publish.S3.redacted()
+	cp.Backup.S3 = c.Backup.S3.redacted()
+	cp.SCEP = c.SCEP.redacted()
+	cp.EST = c.EST.redacted()
+	cp.CMP = c.CMP.redacted()
 	return &cp
+}
+
+// redacted masks the ACME server's shared secrets: the anti-replay nonce signing
+// key and every External Account Binding HMAC key (the values, not the kids,
+// which identify an account and are not secret).
+func (a ACMEConfig) redacted() ACMEConfig {
+	cp := a
+	cp.NonceHMACKey = redactSecret(a.NonceHMACKey)
+	cp.Email.SMTP.Password = redactSecret(a.Email.SMTP.Password)
+	cp.Email.IMAP.Password = redactSecret(a.Email.IMAP.Password)
+	cp.Email.DKIM.PrivateKeyPEM = redactSecret(a.Email.DKIM.PrivateKeyPEM)
+	if len(a.EABHMACKeys) > 0 {
+		keys := make(map[string]string, len(a.EABHMACKeys))
+		for kid, key := range a.EABHMACKeys {
+			keys[kid] = redactSecret(key)
+		}
+		cp.EABHMACKeys = keys
+	}
+	return cp
+}
+
+// redacted masks the static S3 credentials. The access-key id is an identifier
+// and is preserved so a dump still says which principal was configured.
+func (s PublishS3Config) redacted() PublishS3Config {
+	cp := s
+	cp.SecretAccessKey = redactSecret(s.SecretAccessKey)
+	cp.SessionToken = redactSecret(s.SessionToken)
+	return cp
+}
+
+// redacted masks every SCEP challenge password, keeping each grant's name and
+// profile binding visible.
+func (s SCEPConfig) redacted() SCEPConfig {
+	cp := s
+	if len(s.Grants) > 0 {
+		grants := make([]SCEPGrantConfig, len(s.Grants))
+		for i, g := range s.Grants {
+			g.Challenge = redactSecret(g.Challenge)
+			grants[i] = g
+		}
+		cp.Grants = grants
+	}
+	return cp
+}
+
+// redacted masks every EST Basic-auth password, keeping the usernames (the map
+// keys) and each user's profile binding visible.
+func (e ESTConfig) redacted() ESTConfig {
+	cp := e
+	if len(e.Users) > 0 {
+		users := make(map[string]ESTUserConfig, len(e.Users))
+		for name, u := range e.Users {
+			u.Password = redactSecret(u.Password)
+			users[name] = u
+		}
+		cp.Users = users
+	}
+	return cp
+}
+
+// redacted masks every CMP PBM shared secret, keeping each credential's
+// reference (senderKID) and profile binding visible.
+func (c CMPConfig) redacted() CMPConfig {
+	cp := c
+	if len(c.Secrets) > 0 {
+		secrets := make([]CMPSecretConfig, len(c.Secrets))
+		for i, s := range c.Secrets {
+			s.Secret = redactSecret(s.Secret)
+			secrets[i] = s
+		}
+		cp.Secrets = secrets
+	}
+	return cp
 }
 
 // redacted returns a copy of the operator-authentication config with its secrets
@@ -3893,9 +4079,14 @@ type EmbeddedConnectorConfig struct {
 }
 
 type YubiHSMConfig struct {
-	ConnectorURL         string `yaml:"connector_url"`
-	AuthKeyID            int    `yaml:"auth_key_id"`
-	Password             string `yaml:"password"`
+	ConnectorURL string `yaml:"connector_url"`
+	AuthKeyID    int    `yaml:"auth_key_id"`
+	Password     string `yaml:"password"`
+	// PasswordFile names a file whose contents are the authentication key's
+	// password. It is the file-based form of SECSY_YUBIHSM_PASSWORD and is
+	// mutually exclusive with password above: on a CA host the device password
+	// belongs in the deployment's secret store, not in a config file.
+	PasswordFile         string `yaml:"password_file"`
 	SuppressAuditWarning bool   `yaml:"suppress_audit_warning"`
 	// EmbeddedConnector multiplexes the attached YubiHSM inside this process,
 	// so one process — and one container — can both sign through Yubico's
@@ -4108,8 +4299,8 @@ func Load(path string) (*Config, error) {
 			Port: 8443,
 		},
 		Database: DatabaseConfig{
-			Driver: "sqlite",
-			DSN:    "secsy-pki.db",
+			Driver: defaultDatabaseDriver,
+			DSN:    defaultDatabaseDSN,
 		},
 		RootUser: RootUserConfig{
 			Username: "root",
@@ -4121,10 +4312,20 @@ func Load(path string) (*Config, error) {
 	}
 
 	applyEnvOverrides(cfg)
+
+	// Replace every configured `*_file` credential path with the file's contents
+	// before anything validates or consumes a credential, so a password supplied
+	// as a file is indistinguishable from an inline one from here on. It runs
+	// after the environment overrides: those win over the file, as they win over
+	// every other setting the file carries. See secretfile.go.
+	if err := cfg.resolveSecretFiles(); err != nil {
+		return nil, err
+	}
+
 	cfg.defaultKeyProvider()
 
 	if cfg.RootUser.Password == "" {
-		return nil, fmt.Errorf("root_user.password is required")
+		return nil, fmt.Errorf("root_user.password is required (or root_user.password_file / SECSY_ROOT_PASSWORD)")
 	}
 
 	if err := cfg.validateKeyProvider(); err != nil {
@@ -5492,6 +5693,18 @@ func (c *Config) validateTenants(checkRoles func(string, map[string][]string) er
 // applyEnvOverrides lets environment variables override file settings. The
 // SECSY_* names match those emitted by scripts/setup-softhsm.sh --export-env,
 // so a developer can point the server at a SoftHSM token without editing YAML.
+//
+// Every credential variable here also has a `_FILE` form naming a file whose
+// contents are the value (SECSY_ROOT_PASSWORD_FILE, SECSY_USER_PIN_FILE,
+// SECSY_YUBIHSM_PASSWORD_FILE, SECSY_DATABASE_DSN_FILE, VAULT_TOKEN_FILE,
+// SECSY_VAULT_SECRET_ID_FILE), because an environment variable is not a good
+// place for a secret either: it is inherited by every child process, visible in
+// /proc to anything that can read the process, and printed by `docker inspect`
+// and a crash reporter alike. Each form supersedes the other wholesale — setting
+// one clears the other — so the credential has exactly one origin no matter how
+// many layers of the deployment have an opinion, and the direct variable is
+// applied last and therefore wins if both are set. The PKCS#11 PIN is the one
+// documented exception, for the reason given at its own override below.
 func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SECSY_KEY_PROVIDER"); v != "" {
 		cfg.KeyProvider.Type = v
@@ -5511,7 +5724,24 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SECSY_TOKEN_LABEL"); v != "" {
 		cfg.PKCS11.TokenLabel = v
 	}
-	if v := os.Getenv("SECSY_USER_PIN"); v != "" {
+	// The PIN is the one credential with a lazily-resolved *source* rather than a
+	// value, and that makes its precedence different from every other credential
+	// here — deliberately, and in the safe direction.
+	//
+	// SECSY_USER_PIN_FILE names a source, so it replaces whichever source the
+	// file configured (pin_file or a pin_source block) along with any inline pin.
+	// SECSY_USER_PIN carries a value, and an explicitly configured external
+	// source has always won over it (see keyprovider.PinSource) — so it does NOT
+	// clear pin_file, which is only the one-line spelling of that source. The
+	// alternative would be a trap: `pin_file: /run/secrets/hsm-pin` in production
+	// silently defeated by a SECSY_USER_PIN left in the environment, while the
+	// pin_source block it is shorthand for would have been honoured.
+	if v := os.Getenv("SECSY_USER_PIN_FILE"); v != "" {
+		cfg.PKCS11.PinFile = v
+		cfg.PKCS11.Pin = ""
+		cfg.PKCS11.PinSource = PinSourceConfig{}
+	}
+	if v := os.Getenv("SECSY_USER_PIN"); v != "" && cfg.PKCS11.PinFile == "" {
 		cfg.PKCS11.Pin = v
 	}
 	// Cloud-KMS backend selection. The vault URL and region are non-secret and may
@@ -5556,14 +5786,24 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("VAULT_NAMESPACE"); v != "" {
 		cfg.KeyProvider.KMS.Vault.Namespace = v
 	}
+	if v := os.Getenv("VAULT_TOKEN_FILE"); v != "" {
+		cfg.KeyProvider.KMS.Vault.TokenFile = v
+		cfg.KeyProvider.KMS.Vault.Token = ""
+	}
 	if v := os.Getenv("VAULT_TOKEN"); v != "" {
 		cfg.KeyProvider.KMS.Vault.Token = v
+		cfg.KeyProvider.KMS.Vault.TokenFile = ""
 	}
 	if v := os.Getenv("SECSY_VAULT_ROLE_ID"); v != "" {
 		cfg.KeyProvider.KMS.Vault.RoleID = v
 	}
+	if v := os.Getenv("SECSY_VAULT_SECRET_ID_FILE"); v != "" {
+		cfg.KeyProvider.KMS.Vault.SecretIDFile = v
+		cfg.KeyProvider.KMS.Vault.SecretID = ""
+	}
 	if v := os.Getenv("SECSY_VAULT_SECRET_ID"); v != "" {
 		cfg.KeyProvider.KMS.Vault.SecretID = v
+		cfg.KeyProvider.KMS.Vault.SecretIDFile = ""
 	}
 	if v := os.Getenv("SECSY_KEY_PROVIDER_CA"); v != "" {
 		cfg.KeyProvider.Roles.CA = v
@@ -5577,8 +5817,13 @@ func applyEnvOverrides(cfg *Config) {
 	// The built-in root password is a credential and must not live in a config
 	// file or ConfigMap. Allow it to be injected from the environment (e.g. a
 	// Kubernetes Secret) so deployments can keep it out of version control.
+	if v := os.Getenv("SECSY_ROOT_PASSWORD_FILE"); v != "" {
+		cfg.RootUser.PasswordFile = v
+		cfg.RootUser.Password = ""
+	}
 	if v := os.Getenv("SECSY_ROOT_PASSWORD"); v != "" {
 		cfg.RootUser.Password = v
+		cfg.RootUser.PasswordFile = ""
 	}
 	// Database selection and — importantly — the DSN can be injected from the
 	// environment. For an external PostgreSQL the DSN embeds credentials, so it is
@@ -5588,8 +5833,13 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SECSY_DATABASE_DRIVER"); v != "" {
 		cfg.Database.Driver = v
 	}
+	if v := os.Getenv("SECSY_DATABASE_DSN_FILE"); v != "" {
+		cfg.Database.DSNFile = v
+		cfg.Database.DSN = ""
+	}
 	if v := os.Getenv("SECSY_DATABASE_DSN"); v != "" {
 		cfg.Database.DSN = v
+		cfg.Database.DSNFile = ""
 	}
 	if v := os.Getenv("SECSY_DATABASE_MAX_OPEN_CONNS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -5715,8 +5965,13 @@ func applyYubiHSMEnvOverrides(cfg *Config) {
 			cfg.YubiHSM.AuthKeyID = n
 		}
 	}
+	if v := os.Getenv("SECSY_YUBIHSM_PASSWORD_FILE"); v != "" {
+		cfg.YubiHSM.PasswordFile = v
+		cfg.YubiHSM.Password = ""
+	}
 	if v := os.Getenv("SECSY_YUBIHSM_PASSWORD"); v != "" {
 		cfg.YubiHSM.Password = v
+		cfg.YubiHSM.PasswordFile = ""
 	}
 	if v := os.Getenv("SECSY_YUBIHSM_AUDIT_LOG_FILE"); v != "" {
 		cfg.YubiHSM.AuditLogFile = v

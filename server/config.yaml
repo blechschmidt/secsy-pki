@@ -82,6 +82,9 @@ database:
   # to a single connection. Zero/omitted values select conservative defaults.
   driver: "sqlite"
   dsn: "secsy-pki.db"
+  # A PostgreSQL DSN embeds the database password, so it is a credential: name a
+  # file instead (or SECSY_DATABASE_DSN / SECSY_DATABASE_DSN_FILE).
+  #dsn_file: "/run/secrets/database-dsn"
   # max_open_conns: 10
   # max_idle_conns: 5
   # conn_max_lifetime_seconds: 1800
@@ -210,6 +213,29 @@ auth:
 root_user:
   username: "root"
   password: "change-me-in-production"
+  # Every password in this file has a `_file` twin naming a file whose contents
+  # are the credential, so a config file need carry no secrets at all. Setting
+  # both is an error; the file must not be group/other-readable (relax that
+  # deployment-wide with security.allow_insecure_secret_file_perms when a
+  # container runtime projects secrets 0644). SECSY_ROOT_PASSWORD and
+  # SECSY_ROOT_PASSWORD_FILE override both. See
+  # docs/security/credential-files.md for the full list of keys.
+  #password_file: "/run/secrets/root-password"
+
+# security holds the deployment-wide policy switches.
+#security:
+#  # fips enables the fail-closed FIPS 140-3 algorithm policy. See
+#  # docs/security/fips.md — the validated-module half is a build flag
+#  # (`make build-fips`), reported by `secsy-ca doctor`.
+#  fips: false
+#  # allow_insecure_secret_file_perms relaxes the invariant that a `*_file`
+#  # credential must not be readable by group or other. An orchestrated
+#  # deployment needs it: a projected Kubernetes Secret is a root-owned per-pod
+#  # tmpfs that a non-root container can only read through the group bits, and
+#  # Swarm mounts /run/secrets/* at 0444 — the mode was never the boundary
+#  # there. Leave it off where the bits ARE the boundary (a CA host with
+#  # /etc/secsy/hsm.pin). See docs/security/credential-files.md.
+#  allow_insecure_secret_file_perms: false
 
 # key_provider selects the backend used to generate and sign with CA keys.
 #   type: "pkcs11"  -> keys live on an HSM / PKCS#11 token (see the pkcs11 block)
@@ -259,6 +285,12 @@ pkcs11:
   module_path: "/usr/lib/pkcs11/yubihsm_pkcs11.so"
   pin: "0001password"
   token_label: "YubiHSM"
+
+  # pin_file reads the PIN from a file instead — the one-line spelling of the
+  # `pin_source: {type: file, …}` block documented further down, and the form to
+  # reach for in a container. The PIN is read lazily at HSM login and never
+  # enters a dumped config. Mutually exclusive with `pin` and `pin_source`.
+  #pin_file: "/run/secrets/hsm-pin"
 
   # uri is an RFC 7512 pkcs11: URI that backfills every module/token/slot/PIN
   # field left unset above — the single self-describing string `p11tool
@@ -313,6 +345,7 @@ pkcs11:
   #   - name: "hsm-a"                    # stable name used in metrics/logs
   #     token_label: "secsy-ca-a"
   #     # pin: "..."                     # optional; falls back to pkcs11.pin
+  #     # pin_file: "/run/secrets/hsm-a.pin"   # or its own PIN file
   #   - name: "hsm-b"
   #     token_label: "secsy-ca-b"
   #
@@ -337,6 +370,9 @@ yubihsm:
   connector_url: "yhusb://"
   auth_key_id: 1
   password: "password"
+  # The device password belongs in the deployment's secret store rather than in
+  # a file on a CA host: name the file here, or set SECSY_YUBIHSM_PASSWORD_FILE.
+  #password_file: "/run/secrets/yubihsm-password"
 
   # embedded_connector is that connector, inside this process: it claims the
   # device and serves Yubico's connector protocol on loopback for the module,

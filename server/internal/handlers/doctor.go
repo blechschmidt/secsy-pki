@@ -209,7 +209,7 @@ var doctorHints = map[string]string{
 	"config":      "fix the configuration file named in config_path; `secsy-ca -config <path> doctor` reproduces this offline",
 	"db":          "check database.dsn reachability, then apply pending migrations (the server migrates on start; `secsy-ca db verify` checks integrity)",
 	"keyprovider": "check the key_provider block for this role: backend type, PKCS#11 module/token, or KMS credentials",
-	"pin":         "check pkcs11.pin_source — the external credential store must be reachable and return the user PIN",
+	"pin":         "check pkcs11.pin_file / pkcs11.pin_source — the file or credential store must be readable and return the user PIN",
 	"pkcs11":      "check the pkcs11: URIs (config module/token and each CA's stored key URI) resolve on the token; `secsy-ca inventory` lists what it holds",
 	"hsm":         "check every member of the HA token set individually; a dead backup token is invisible while the primary carries traffic",
 	"keys":        "the key must exist on the configured provider under the label the runtime uses; `secsy-ca inventory` lists the labels it holds",

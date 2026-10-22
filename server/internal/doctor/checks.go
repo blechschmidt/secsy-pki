@@ -196,7 +196,7 @@ func checkPinSources(ctx context.Context, r *Report, cfg *config.Config, opts Op
 		}
 	}
 	if len(external) == 0 {
-		r.skip("pin.source", "PIN read inline (pkcs11.pin / SECSY_USER_PIN); set pkcs11.pin_source to source it from a credential store")
+		r.skip("pin.source", "PIN read inline (pkcs11.pin / SECSY_USER_PIN); set pkcs11.pin_file to read it from a file, or pkcs11.pin_source for a credential store")
 		return
 	}
 	r.run("pin.source", func() (Status, string) {
@@ -364,7 +364,7 @@ func checkPKCS11URIs(ctx context.Context, r *Report, cfg *config.Config, db dbHa
 			}
 			parsed++
 			if p.PinValue != "" {
-				warnings = append(warnings, fmt.Sprintf("%s: embeds a plaintext pin-value (prefer pin_source)", nu.name))
+				warnings = append(warnings, fmt.Sprintf("%s: embeds a plaintext pin-value (prefer pin_file / pin_source)", nu.name))
 			}
 			if len(p.Unknown) > 0 {
 				warnings = append(warnings, fmt.Sprintf("%s: unrecognized attribute(s) %s (typo?)", nu.name, strings.Join(sortedStringKeys(p.Unknown), ", ")))
