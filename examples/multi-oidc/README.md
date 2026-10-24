@@ -184,10 +184,13 @@ The two checks worth running after the first successful login of each kind:
 $ curl -s --cookie "secsy_session=…" https://pki.example.com/api/me | jq '{sub, roles, auth_provider}'
 { "sub": "…", "roles": ["admin"], "auth_provider": "entra" }
 
-# Audit separates logins per provider.
-$ secsy-ca audit list --action auth.login
-… auth.login  method=oidc provider=entra    actor=op@example.com
-… auth.login  method=oidc provider=partner  actor=auditor@partner.example.net
+# The tamper-evident event log separates logins per provider (console Audit
+# page, or the API's server-side action filter).
+$ curl -s --cookie "secsy_session=…" \
+    "https://pki.example.com/api/events?action=auth.login&limit=20" \
+    | jq -r '.entries[] | "\(.actor)\t\(.detail)"'
+op@example.com                  method=oidc provider=entra
+auditor@partner.example.net     method=oidc provider=partner
 ```
 
 And the negative case: an Entra service-principal token that asserts the GitHub
