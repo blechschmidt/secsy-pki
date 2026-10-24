@@ -105,6 +105,7 @@ func setupOperatorAuth(
 				RedirectURL:  pc.RedirectURL,
 				Scopes:       pc.Scopes,
 				Resolve:      resolve,
+				RequirePKCE:  ac.OIDC.RequirePKCEFor(pc),
 			})
 			if err != nil {
 				return nil, fmt.Errorf("oidc login provider %q: %w", pc.Name, err)
@@ -113,8 +114,22 @@ func setupOperatorAuth(
 				return nil, fmt.Errorf("oidc login: %w", err)
 			}
 			oidcLoginEnabled = true
-			log.Printf("Interactive OIDC login provider %q enabled (issuer=%s redirect_url=%s)",
-				pc.Name, pc.IssuerURL, pc.RedirectURL)
+			client := "confidential client"
+			if login.PublicClient() {
+				client = "public client (no secret; PKCE binds the exchange)"
+			}
+			log.Printf("Interactive OIDC login provider %q enabled (issuer=%s redirect_url=%s pkce=%s %s)",
+				pc.Name, pc.IssuerURL, pc.RedirectURL, login.PKCE().Method, client)
+			// Every authorization request carries an S256 challenge regardless, but
+			// an IdP that does not implement PKCE simply ignores it — and then a
+			// stolen authorization code is enough to complete a login. Say so once at
+			// boot so the gap is visible without reading the IdP's metadata by hand.
+			if !login.PKCE().Advertised {
+				log.Printf("WARNING: OIDC login provider %q does not advertise the S256 code-challenge "+
+					"method (code_challenge_methods_supported=%v); the PKCE challenge this server sends "+
+					"may be ignored by the IdP. Set auth.oidc.require_pkce to refuse such a provider.",
+					pc.Name, login.PKCE().Methods)
+			}
 		}
 		if !oidcLoginEnabled {
 			return nil, fmt.Errorf("oidc login: no configured provider could be initialized: %w", errors.Join(failures...))

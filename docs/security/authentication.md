@@ -46,6 +46,92 @@ POST /auth/logout      → terminates the session, clears cookies
 GET  /auth/session     → returns the current principal + CSRF token
 ```
 
+<a id="pkce"></a>
+
+### PKCE (RFC 7636) — always on, S256 only
+
+Every console login runs **Proof Key for Code Exchange**. It is not a setting
+and cannot be turned off: `GET /auth/login` mints a fresh 256-bit verifier,
+sends only its SHA-256 digest to the IdP, and completes the exchange with the
+verifier itself.
+
+```
+GET /auth/login
+  → 302 …/authorize?response_type=code
+        &code_challenge=<BASE64URL(SHA-256(verifier))>
+        &code_challenge_method=S256
+        &state=…&nonce=…
+     Set-Cookie: secsy_session_oidc_tx=<payload>.<HMAC>   HttpOnly, SameSite=Lax, 10 min
+
+GET /auth/callback?code=…&state=…
+  → POST …/token   grant_type=authorization_code
+                   code=…&code_verifier=<verifier>&redirect_uri=…
+                   client_id=… (public client) | Basic <id:secret> (confidential)
+```
+
+| Property | Where it lives | Why |
+|---|---|---|
+| **S256 only** | `code_challenge_method=S256` | `plain` transmits the verifier itself, so anyone who can read the authorization request can redeem a stolen code. It is never sent. |
+| **Fresh 256-bit verifier per attempt** | `oauth2.GenerateVerifier()` — 43 characters of the RFC 7636 §4.1 unreserved alphabet | Two logins never share a verifier, and it cannot be guessed from the challenge. |
+| **Verifier never reaches the browser** | sealed in the HMAC-signed, `HttpOnly` transaction cookie alongside `state` and `nonce` | Script on the page cannot read it; the server keeps no login state, so any replica can finish the flow. |
+| **10-minute transaction** | cookie `MaxAge`, re-checked on the callback | Bounds how long a leaked code could be paired with a live verifier. |
+| **Single-use** | the callback clears the cookie before exchanging | A replayed callback finds no transaction. |
+
+**What it buys you.** An authorization code that leaks — out of a browser
+history, a `Referer` header, a proxy log, a crafted redirect — is worthless
+without the verifier. That is the whole protection a **public client** has in
+place of a client secret, and a second lock for a confidential one.
+
+**Public clients.** Omit `client_secret` and the client is public: the token
+request carries `client_id` in the request body and **no** HTTP Basic header
+(RFC 6749 §2.3.1), with PKCE standing in for client authentication. This is
+explicit rather than auto-detected — an empty-password `Basic base64("<id>:")`
+probe is what most OAuth libraries try first, and IdPs answer it with
+`invalid_client`, logging a failed client authentication on every single login.
+
+**Does your IdP check it?** The challenge is sent regardless, but an IdP that
+does not implement PKCE simply ignores it. At startup the server reads
+`code_challenge_methods_supported` from the IdP's discovery document and logs
+what it found:
+
+```
+Interactive OIDC login provider "entra" enabled (issuer=… redirect_url=… pkce=S256 public client (no secret; PKCE binds the exchange))
+WARNING: OIDC login provider "partner" does not advertise the S256 code-challenge method …
+```
+
+Set `require_pkce` to turn that warning into a refusal to start:
+
+```yaml
+auth:
+  oidc:
+    enabled: true
+    require_pkce: true          # every provider must advertise S256
+    providers:
+      - name: partner
+        issuer_url: "https://idp.partner.example.net"
+        client_id: "console-partner"
+        require_pkce: false     # …except this one, which omits the metadata field
+```
+
+It defaults to `false` because a few otherwise conformant providers implement
+PKCE without publishing the optional metadata field, and a boot failure is the
+wrong way to discover that. The method in force is also published, unauthenticated,
+in `/api/auth/config` → `oidc_providers[].pkce`, and the console's sign-in page
+shows it.
+
+`secsy-ca doctor` makes the same determination before the server starts, with an
+**`auth.oidc.pkce`** check that reads each provider's discovery document:
+
+```console
+$ secsy-ca doctor
+PASS  auth.oidc.pkce    entra: S256 advertised; partner: S256 advertised
+# or
+WARN  auth.oidc.pkce    partner: no S256 in code_challenge_methods_supported ([plain]); the challenge may be ignored
+```
+
+An IdP this host cannot reach is a warning, never a failure — doctor often runs
+from somewhere with different egress than the server.
+
 ### Claim / group → RBAC role mapping
 
 An operator's roles are the **union** of:
@@ -227,7 +313,8 @@ IdP can admit role-less viewers while another denies them at login.
 - The resolved principal carries `auth_provider` (`/api/me`, `/auth/session`,
   and the console's "signed in as" line) — diagnostic only; the roles already
   reflect that provider's mapping.
-- `/api/auth/config` publishes `oidc_providers` (name, label, login URL) and
+- `/api/auth/config` publishes `oidc_providers` (name, label, login URL,
+  [PKCE method](#pkce)) and
   `bearer_providers` (name, issuer, accepted audiences), so a workload can
   discover which issuer and audience to request a token for rather than having
   that pairing passed around out of band. No client secret ever appears there.

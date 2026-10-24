@@ -74,8 +74,11 @@ The form tries, in order, the authentication methods the server has configured:
 a directory (LDAP/AD) bind, then the built-in `root` password. Both establish a
 **server-side session with a CSRF token**, which is what lets the console offer
 WebAuthn step-up on high-risk operations later. With OIDC configured, a *Sign in
-with SSO* button appears below the divider and the password form stays for
-break-glass. With [several identity providers](../security/authentication.md#multiple-oidc-providers)
+with SSO* button appears below the divider — under a line naming the protection
+the redirect will use, "OpenID Connect Authorization Code flow with PKCE (S256)",
+read from the server's own [discovery document](../security/authentication.md#pkce)
+rather than asserted by the page — and the password form stays for break-glass.
+With [several identity providers](../security/authentication.md#multiple-oidc-providers)
 configured, that becomes one button per provider — *Sign in with Microsoft Entra
 ID*, *Sign in with Okta* — so an operator picks their own IdP.
 

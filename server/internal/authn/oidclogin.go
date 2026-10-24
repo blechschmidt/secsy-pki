@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
@@ -45,6 +46,13 @@ type OIDCLogin struct {
 	// can list providers in whatever order reads best and still point the bare
 	// login URL at one of them.
 	isDefault bool
+	// pkce records what the IdP's discovery metadata says about Proof Key for
+	// Code Exchange. The challenge itself is never conditional — every
+	// authorization request this handler builds carries an S256 challenge — but
+	// an operator still wants to know whether the IdP on the other end actually
+	// checks it, and may demand the advertisement (RequirePKCE) before the
+	// deployment is allowed to start.
+	pkce PKCEStatus
 	// txKey signs the short-lived transaction cookie carrying the CSRF state,
 	// nonce, PKCE verifier, and provider name across the redirect. It is random
 	// per process and shared by every provider on the manager, because several
@@ -71,6 +79,57 @@ type OIDCLoginConfig struct {
 	RedirectURL  string
 	Scopes       []string
 	Resolve      PrincipalResolver
+	// RequirePKCE refuses to build the handler unless the IdP's discovery
+	// document advertises the S256 code-challenge method. The flow always sends
+	// the challenge; this decides whether a provider that never says it checks it
+	// is allowed to serve logins at all.
+	RequirePKCE bool
+}
+
+// PKCEMethodS256 is the RFC 7636 code-challenge method used for every
+// interactive login. The `plain` method is never offered: it transmits the
+// verifier itself, so anyone who can read the authorization request can replay
+// a stolen code.
+const PKCEMethodS256 = "S256"
+
+// PKCEStatus describes the Proof Key for Code Exchange protection on one
+// provider's login, and what that provider says about it.
+type PKCEStatus struct {
+	// Method is the challenge method every authorization request carries. It is
+	// always S256; PKCE cannot be turned off.
+	Method string `json:"method"`
+	// Advertised reports that the IdP's metadata lists S256 under
+	// code_challenge_methods_supported (RFC 8414 §2). False means either that the
+	// IdP does not implement PKCE — in which case it ignores the challenge and
+	// the handshake keeps only its state and nonce protections — or merely that
+	// it omits the optional metadata field. A deployment that needs certainty
+	// sets RequirePKCE.
+	Advertised bool `json:"advertised"`
+	// Methods is what the IdP advertises, nil when its metadata is unknown (a
+	// statically configured provider fetches no discovery document).
+	Methods []string `json:"methods,omitempty"`
+}
+
+// discoverPKCE reads the IdP's advertised code-challenge methods out of its
+// discovery document. A provider built from static metadata carries no document;
+// that is "unknown", not "unsupported", so it reports no methods rather than
+// claiming the IdP refuses PKCE.
+func discoverPKCE(p *oidc.Provider) PKCEStatus {
+	st := PKCEStatus{Method: PKCEMethodS256}
+	var meta struct {
+		Methods []string `json:"code_challenge_methods_supported"`
+	}
+	if err := p.Claims(&meta); err != nil {
+		return st
+	}
+	st.Methods = meta.Methods
+	for _, m := range meta.Methods {
+		if strings.EqualFold(m, PKCEMethodS256) {
+			st.Advertised = true
+			break
+		}
+	}
+	return st
 }
 
 // NewOIDCLogin builds the login handler and binds it to the manager (for session
@@ -94,13 +153,32 @@ func NewOIDCLogin(mgr *Manager, cfg OIDCLoginConfig) (*OIDCLogin, error) {
 	if display == "" {
 		display = cfg.Name
 	}
+	endpoint := cfg.Provider.Endpoint()
+	pkce := discoverPKCE(cfg.Provider)
+	if cfg.RequirePKCE && !pkce.Advertised {
+		return nil, fmt.Errorf("authn: %s requires PKCE but its IdP does not advertise the S256 "+
+			"code-challenge method (code_challenge_methods_supported=%v at %s); enable PKCE for this "+
+			"client at the identity provider, or clear require_pkce",
+			describeProvider(cfg.Name), pkce.Methods, endpoint.AuthURL)
+	}
+	if cfg.ClientSecret == "" {
+		// A public client has no secret to present, and PKCE is what authenticates
+		// the exchange in its place (RFC 7636 §1, OAuth 2.1 §2.4). Say so outright
+		// rather than letting x/oauth2 auto-detect: its probe tries HTTP Basic
+		// first, sending `Authorization: Basic base64("<client_id>:")` — an
+		// empty-password credential that IdPs answer with invalid_client, logging a
+		// failed client authentication on every single login before the retry in
+		// request-body form succeeds. In params form the client_id travels in the
+		// body, which is what RFC 6749 §2.3.1 asks of a client with no secret.
+		endpoint.AuthStyle = oauth2.AuthStyleInParams
+	}
 	return &OIDCLogin{
 		mgr:      mgr,
 		verifier: cfg.Verifier,
 		oauth: &oauth2.Config{
 			ClientID:     cfg.ClientID,
 			ClientSecret: cfg.ClientSecret,
-			Endpoint:     cfg.Provider.Endpoint(),
+			Endpoint:     endpoint,
 			RedirectURL:  cfg.RedirectURL,
 			Scopes:       scopes,
 		},
@@ -108,9 +186,19 @@ func NewOIDCLogin(mgr *Manager, cfg OIDCLoginConfig) (*OIDCLogin, error) {
 		name:        cfg.Name,
 		displayName: display,
 		isDefault:   cfg.Default,
+		pkce:        pkce,
 		txKey:       mgr.loginTxKey(),
 		now:         time.Now,
 	}, nil
+}
+
+// describeProvider names a provider in operator-facing text, covering the
+// single-provider deployment where the name is empty.
+func describeProvider(name string) string {
+	if name == "" {
+		return "the console OIDC login"
+	}
+	return fmt.Sprintf("console OIDC login provider %q", name)
 }
 
 // Name returns the provider's configured name ("" for a lone provider).
@@ -121,6 +209,15 @@ func (l *OIDCLogin) DisplayName() string { return l.displayName }
 
 // RedirectURL returns the callback URL registered for this provider at its IdP.
 func (l *OIDCLogin) RedirectURL() string { return l.oauth.RedirectURL }
+
+// PKCE reports the proof-key protection on this provider's login: the method
+// every authorization request carries (always S256) and whether the IdP's
+// discovery metadata says it supports it.
+func (l *OIDCLogin) PKCE() PKCEStatus { return l.pkce }
+
+// PublicClient reports that this provider is registered without a client
+// secret, so PKCE alone binds the code exchange to the browser that began it.
+func (l *OIDCLogin) PublicClient() bool { return l.oauth.ClientSecret == "" }
 
 // oidcTx is the state carried across the redirect in a signed cookie. Keeping it
 // client-side (rather than in server memory) makes the flow stateless and

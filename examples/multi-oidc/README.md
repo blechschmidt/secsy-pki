@@ -106,7 +106,14 @@ Add the `groups` claim to the console app's token configuration (or use app
 roles and set `groups_claim: roles`, as the machine provider does here).
 
 **Partner IdP**: one web-app registration with redirect
-`https://pki.example.com/auth/callback/partner`.
+`https://pki.example.com/auth/callback/partner`. It is registered as a **public
+client** (no secret shared with the partner), which is exactly the case
+[PKCE](../../docs/security/authentication.md#pkce) covers: the token request
+carries `client_id` in the body and the code is bound to the verifier instead of
+to a secret. Every console login here runs Authorization Code + PKCE (S256);
+`require_pkce: true` under `auth.oidc` additionally refuses to start unless the
+IdP advertises S256, and the partner provider relaxes it because that IdP omits
+the metadata field.
 
 ## 2. Callback URLs — share one, or don't
 
@@ -209,6 +216,10 @@ per-provider mapping.
   unclaimable by another issuer asserting the same subject.
 - **Audience-bound verification.** A token minted for a different relying party
   of the same IdP does not authenticate here.
+- **Code interception closed.** Console logins are Authorization Code + PKCE
+  (S256) with the verifier sealed in an `HttpOnly` cookie, so an authorization
+  code that leaks cannot be redeemed by whoever picks it up — the protection
+  that lets the partner's client hold no secret at all.
 - **Break-glass closed last.** `policy.allow_root_basic_auth: true` is left on
   while you verify SSO; turn it off once both IdPs work, since a shared static
   password is then the weakest credential in the deployment.

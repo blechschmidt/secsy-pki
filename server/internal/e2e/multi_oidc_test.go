@@ -362,12 +362,14 @@ func TestMultiOIDCConsoleLoginPerProvider(t *testing.T) {
 			if q.Get("state") == "" || q.Get("nonce") == "" || q.Get("code_challenge") == "" {
 				t.Fatalf("authorize URL missing state/nonce/PKCE: %s", authorizeURL)
 			}
-			tc.idp.nonce = q.Get("nonce")
+			// 2. The hop to this provider's IdP, which records the PKCE challenge
+			// against the code it issues.
+			code, state := tc.idp.authorization(t, authorizeURL.String())
 
-			// 2. Callback on the SHARED path: dispatch comes from the transaction
+			// 3. Callback on the SHARED path: dispatch comes from the transaction
 			// cookie, so no provider hint is present in the URL at all.
-			resp, err = client.Get(env.srv.URL + "/auth/callback?code=stub-code&state=" +
-				url.QueryEscape(q.Get("state")))
+			resp, err = client.Get(env.srv.URL + "/auth/callback?code=" + url.QueryEscape(code) +
+				"&state=" + url.QueryEscape(state))
 			if err != nil {
 				t.Fatalf("GET /auth/callback: %v", err)
 			}
@@ -376,7 +378,7 @@ func TestMultiOIDCConsoleLoginPerProvider(t *testing.T) {
 				t.Fatalf("callback status = %d, want 302 to the console", resp.StatusCode)
 			}
 
-			// 3. The session reports this provider and its mapped role.
+			// 4. The session reports this provider and its mapped role.
 			resp, err = client.Get(env.srv.URL + "/auth/session")
 			if err != nil {
 				t.Fatalf("GET /auth/session: %v", err)
@@ -423,7 +425,6 @@ func TestMultiOIDCConsoleLoginRejectsForeignCallback(t *testing.T) {
 		t.Fatalf("parse authorize url: %v", err)
 	}
 	state := authorizeURL.Query().Get("state")
-	env.corp.nonce = authorizeURL.Query().Get("nonce")
 
 	// Hand the corporate provider's transaction to the forge provider's callback.
 	resp, err = client.Get(env.srv.URL + "/auth/callback/" + forgeProvider +

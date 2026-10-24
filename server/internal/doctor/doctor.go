@@ -268,6 +268,11 @@ func Run(ctx context.Context, opts Options) *Report {
 	// out at login.
 	checkLDAP(ctx, r, cfg, opts)
 
+	// 2e. Interactive OIDC login: does each console IdP actually advertise the
+	// S256 proof-key method the login handshake relies on? The challenge is sent
+	// either way, so this is the only place the gap becomes visible.
+	checkOIDCLogin(ctx, r, cfg, opts)
+
 	// 3. Database: connectivity without migrating, then pending-migration
 	// (missing table) detection.
 	db, schemaOK := checkDatabase(r, cfg)

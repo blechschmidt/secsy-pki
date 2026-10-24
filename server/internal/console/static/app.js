@@ -88,10 +88,12 @@ async function bootAuth() {
   oidcConfig = authConfig;
 
   // Legacy in-browser PKCE fallback: complete an in-progress redirect if the
-  // server does not offer server-side login.
+  // server does not offer server-side login. The state is passed through so the
+  // callback can refuse a code this browser did not ask for.
   const params = new URLSearchParams(location.search);
   if (params.get('code') && sessionStorage.getItem('pkce_verifier')) {
-    try { await completeOIDC(params.get('code')); } catch (e) { showError($('loginError'), 'SSO failed: ' + e.message); }
+    try { await completeOIDC(params.get('code'), params.get('state')); }
+    catch (e) { showError($('loginError'), 'SSO failed: ' + e.message); }
     history.replaceState({}, '', location.pathname);
   }
 
@@ -129,6 +131,7 @@ async function bootAuth() {
     $('ssoBlock').classList.remove('hidden');
     $('ssoBtn').onclick = beginOIDC;
   }
+  showSSOProtection(providers);
 
   // A server-side session may already exist (e.g. after an SSO redirect).
   if (await resumeSession()) return;
@@ -314,11 +317,35 @@ async function webauthnStepUp(operation) {
   if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || 'step-up failed'); }
 }
 
+// showSSOProtection states how the sign-in handshake is protected. The method
+// is read from the server's discovery document (one entry per provider) rather
+// than hard-coded, so the line cannot outlive what the server actually does; the
+// in-browser fallback below runs the same S256 flow from this page.
+function showSSOProtection(providers) {
+  const note = $('ssoNote');
+  if (!note) return;
+  let method = '';
+  for (const p of (providers || [])) {
+    if (p.pkce) { method = p.pkce; break; }
+  }
+  if (!method && (authConfig.oidc_login_enabled || authConfig.oidc_enabled)) method = 'S256';
+  if (!method) { note.classList.add('hidden'); return; }
+  note.textContent = 'OpenID Connect Authorization Code flow with PKCE (' + method +
+    '): the authorization code is bound to this browser and is useless to anyone else.';
+  note.classList.remove('hidden');
+}
+
 // Minimal OIDC Authorization-Code + PKCE flow (public client, legacy fallback).
 async function beginOIDC() {
   oidcDiscovery = await (await fetch(oidcConfig.issuer_url.replace(/\/$/, '') + '/.well-known/openid-configuration')).json();
+  // RFC 7636 §4.1: 43..128 characters from the unreserved alphabet. 64 hex
+  // characters carry 256 bits of entropy and need no escaping.
   const verifier = randStr(64);
+  const state = randStr(32);
+  const nonce = randStr(32);
   sessionStorage.setItem('pkce_verifier', verifier);
+  sessionStorage.setItem('oidc_state', state);
+  sessionStorage.setItem('oidc_nonce', nonce);
   const challenge = await s256(verifier);
   const p = new URLSearchParams({
     response_type: 'code',
@@ -327,17 +354,40 @@ async function beginOIDC() {
     scope: 'openid profile email',
     code_challenge: challenge,
     code_challenge_method: 'S256',
-    state: randStr(16),
+    state: state,
+    nonce: nonce,
   });
   location.href = oidcDiscovery.authorization_endpoint + '?' + p.toString();
 }
 
-async function completeOIDC(code) {
+// jwtClaim reads one claim out of a JWT payload WITHOUT verifying it. That is
+// sound only for binding checks against a value this browser just generated (the
+// nonce): authenticity comes from the server, which verifies the signature,
+// issuer, audience and expiry on every request the token is presented with.
+function jwtClaim(jwt, name) {
+  const parts = String(jwt || '').split('.');
+  if (parts.length !== 3) return undefined;
+  try {
+    return JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))[name];
+  } catch (_) { return undefined; }
+}
+
+async function completeOIDC(code, state) {
   if (!oidcDiscovery) {
     oidcDiscovery = await (await fetch(oidcConfig.issuer_url.replace(/\/$/, '') + '/.well-known/openid-configuration')).json();
   }
+  // Consume the whole transaction up front: whatever happens next, these values
+  // are single-use, so a failed or replayed callback cannot reuse them.
   const verifier = sessionStorage.getItem('pkce_verifier');
+  const expectState = sessionStorage.getItem('oidc_state');
+  const expectNonce = sessionStorage.getItem('oidc_nonce');
   sessionStorage.removeItem('pkce_verifier');
+  sessionStorage.removeItem('oidc_state');
+  sessionStorage.removeItem('oidc_nonce');
+  // The code must answer the request THIS browser made (RFC 6749 §10.12): an
+  // attacker who can land a code on this page must not have it redeemed here.
+  if (!expectState || state !== expectState) throw new Error('state mismatch — the sign-in was not started here');
+  if (!verifier) throw new Error('no PKCE verifier for this sign-in');
   const res = await fetch(oidcDiscovery.token_endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -351,6 +401,11 @@ async function completeOIDC(code) {
   });
   const tok = await res.json();
   if (!tok.id_token) throw new Error(tok.error_description || 'no id_token');
+  // Bind the token to this login attempt, so one obtained elsewhere cannot be
+  // injected into this page's flow.
+  if (expectNonce && jwtClaim(tok.id_token, 'nonce') !== expectNonce) {
+    throw new Error('id token nonce mismatch');
+  }
   store.auth = 'Bearer ' + tok.id_token;
   await afterLogin();
 }

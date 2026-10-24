@@ -31,6 +31,10 @@
         <!-- One button per configured identity provider when several are
              federated; the single ssoBtn above covers the one-provider case. -->
         <div id="ssoProviders"></div>
+        <!-- How the handshake is protected, read from /api/auth/config rather
+             than asserted here, so the page cannot claim a protection the
+             server is not applying. -->
+        <p id="ssoNote" class="muted hidden"></p>
       </div>
     </div>
   </div>

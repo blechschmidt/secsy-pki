@@ -1156,6 +1156,13 @@ type AuthOIDCConfig struct {
 	// no RBAC role (a read-nothing principal). Defaults to false: an operator with
 	// no role is denied at login rather than landing in an empty console.
 	AllowZeroRole bool `yaml:"allow_zero_role"`
+	// RequirePKCE refuses to start unless the IdP's discovery document advertises
+	// the S256 code-challenge method. Every authorization request carries a PKCE
+	// challenge regardless — this decides whether an IdP that never claims to
+	// check one may serve console logins at all. Default false: a few otherwise
+	// conformant providers implement PKCE without publishing the (optional)
+	// metadata field, and a boot failure is the wrong way to find that out.
+	RequirePKCE bool `yaml:"require_pkce"`
 	// Providers declares several console identity providers side by side (Task
 	// 212), each rendered as its own button on the login page and each with its
 	// own client registration, scopes, and claim -> role mapping. Omitted fields
@@ -1205,6 +1212,10 @@ type AuthOIDCProviderConfig struct {
 	// AllowZeroRole overrides auth.oidc.allow_zero_role for this provider when
 	// set, so one IdP may admit role-less viewers while another does not.
 	AllowZeroRole *bool `yaml:"allow_zero_role"`
+	// RequirePKCE overrides auth.oidc.require_pkce for this provider when set, so
+	// a deployment can hold its corporate IdP to the advertisement while
+	// tolerating a partner's that does not publish the metadata field.
+	RequirePKCE *bool `yaml:"require_pkce"`
 	// Default selects the provider used by a bare GET /auth/login (no ?provider=).
 	// At most one provider may set it; otherwise the first declared one is used.
 	Default bool `yaml:"default"`
@@ -1311,6 +1322,16 @@ func (a AuthOIDCConfig) AllowZeroRoleFor(p AuthOIDCProviderConfig) bool {
 		return *p.AllowZeroRole
 	}
 	return a.AllowZeroRole
+}
+
+// RequirePKCEFor reports whether provider p may only serve logins if its IdP
+// advertises the S256 code-challenge method, honoring the provider's override of
+// auth.oidc.require_pkce.
+func (a AuthOIDCConfig) RequirePKCEFor(p AuthOIDCProviderConfig) bool {
+	if p.RequirePKCE != nil {
+		return *p.RequirePKCE
+	}
+	return a.RequirePKCE
 }
 
 // ClaimMappingConfig maps one IdP claim value to RBAC roles.

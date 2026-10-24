@@ -153,10 +153,18 @@ auth:
     # Interactive Authorization-Code login for the console. Inherits issuer_url /
     # client_id from the top-level oidc block when omitted here.
     enabled: false
-    # client_secret authenticates a confidential client; omit for a public (PKCE)
-    # client. redirect_url is this server's callback registered at the IdP.
+    # client_secret authenticates a confidential client; omit for a public client
+    # — then PKCE alone binds the code exchange, and the client_id travels in the
+    # token request body. redirect_url is this server's callback at the IdP.
     client_secret: ""
     redirect_url: "https://pki.example.com/auth/callback"
+    # Every login runs Authorization Code + PKCE with an S256 challenge; that is
+    # not optional. require_pkce additionally refuses to START unless the IdP's
+    # discovery document advertises code_challenge_methods_supported: [S256], so a
+    # provider that would silently ignore the challenge cannot serve logins.
+    # Default false: a few conformant IdPs omit the (optional) metadata field.
+    # See docs/security/authentication.md#pkce.
+    require_pkce: false
     scopes: ["openid", "profile", "email"]
     # groups_claim names the token claim carrying group memberships (default
     # "groups"); its values feed both the rbac group assignments and the mappings.
@@ -189,6 +197,7 @@ auth:
     #     client_id: "console-partner"
     #     redirect_url: "https://pki.example.com/auth/callback/partner"
     #     allow_zero_role: true             # overrides the shared policy
+    #     require_pkce: false               # ditto, per provider
     #     role_mappings:
     #       - { value: "pki-readers", tenant: "partner", roles: ["auditor"] }
   ldap:

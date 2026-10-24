@@ -1246,6 +1246,7 @@ gate.
 | `fips.mode` | (with `security.fips: true`) the process runs on the Go FIPS 140-3 module (see [FIPS mode](../security/fips.md)) | warn: policy enforced on a non-module binary (build with `make build-fips`) |
 | `fips.store_keys` | every stored CA key/certificate signature satisfies the FIPS algorithm policy | fail: pre-FIPS Ed25519/small-RSA CA (its next issuance would be refused) |
 | `fips.secret_oaep` | per configured KEK: the wrap/unwrap negotiation reaches RSA-OAEP-SHA256 (the policy refuses the SoftHSM SHA-1 fallback) | fail: token supports only SHA-1 OAEP; warn: KEK not provisioned |
+| `auth.oidc.pkce` | per console login provider: the IdP's discovery document advertises the `S256` code-challenge method the [PKCE handshake](../security/authentication.md#pkce) relies on | fail: `require_pkce` set and not advertised (the server will refuse to start); warn: not advertised, or the discovery document is unreadable from this host |
 
 An unreachable listener is *not* a finding — doctor normally runs before the
 server starts. `-no-listener` skips the live probe entirely.

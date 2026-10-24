@@ -1200,6 +1200,9 @@ type AuthLoginProvider struct {
 
 	// Name Provider id used in /auth/login?provider=<name>.
 	Name *string `json:"name,omitempty"`
+
+	// Pkce The RFC 7636 code-challenge method the server-side Authorization-Code handshake uses for this provider. Always `S256`; `plain` is never offered.
+	Pkce *string `json:"pkce,omitempty"`
 }
 
 // BackupCARef The restore-verifiable summary of one CA: identifiers, the provider key label, and the public-key fingerprint a restore matches against the key the token still holds.

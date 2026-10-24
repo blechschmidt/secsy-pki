@@ -100,6 +100,12 @@ auth:
     # Deny a login that resolves to no role, rather than landing an operator in
     # an empty console. Overridden per provider below where that is wrong.
     allow_zero_role: false
+    # Every login runs Authorization Code + PKCE (S256) regardless; require_pkce
+    # additionally refuses to start unless the IdP ADVERTISES S256 in its
+    # discovery document, so a provider that would ignore the challenge cannot
+    # serve logins. Overridden per provider below.
+    # See docs/security/authentication.md#pkce.
+    require_pkce: true
     # NOTE: no shared role_mappings here. A shared mapping is evaluated for
     # EVERY provider, so a group name asserted by the partner IdP would match a
     # mapping meant for Entra. With providers of differing trust, declare the
@@ -131,6 +137,11 @@ auth:
         client_id: "console-partner"
         redirect_url: "https://pki.example.com/auth/callback/partner"
         allow_zero_role: true
+        # A public client: no secret to share with a partner's IdP registration,
+        # so PKCE alone binds the code exchange. This IdP does not publish
+        # code_challenge_methods_supported, so the shared require_pkce is relaxed
+        # here — the challenge is still sent, and the startup log says so.
+        require_pkce: false
         role_mappings:
           - { value: "pki-readers", tenant: "partner", roles: ["auditor"] }
 

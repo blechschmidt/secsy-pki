@@ -41,8 +41,9 @@ func TestAuthConfigAdvertisesLoginProviders(t *testing.T) {
 	body := authConfigOf(t, AuthInfo{
 		OIDCLogin: true,
 		LoginProviders: []authn.LoginProviderInfo{
-			{Name: "entra", DisplayName: "Microsoft Entra ID", LoginURL: "/auth/login?provider=entra", Default: true},
-			{Name: "okta", DisplayName: "Okta", LoginURL: "/auth/login?provider=okta"},
+			{Name: "entra", DisplayName: "Microsoft Entra ID", LoginURL: "/auth/login?provider=entra",
+				Default: true, PKCE: authn.PKCEMethodS256},
+			{Name: "okta", DisplayName: "Okta", LoginURL: "/auth/login?provider=okta", PKCE: authn.PKCEMethodS256},
 		},
 	})
 
@@ -56,6 +57,12 @@ func TestAuthConfigAdvertisesLoginProviders(t *testing.T) {
 	}
 	if first["login_url"] != "/auth/login?provider=entra" || first["default"] != true {
 		t.Errorf("oidc_providers[0] = %#v, want the default provider's login URL", first)
+	}
+	// The proof-key method is part of the document: a browser about to be
+	// redirected should be able to read how the handshake is protected, and
+	// "S256" is the only answer this server gives.
+	if first["pkce"] != "S256" {
+		t.Errorf("oidc_providers[0].pkce = %#v, want S256", first["pkce"])
 	}
 	second, _ := providers[1].(map[string]interface{})
 	if second["name"] != "okta" {
@@ -119,7 +126,8 @@ func TestAuthConfigDisclosesOnlyKnownKeys(t *testing.T) {
 		OIDCLogin:     true,
 		PasswordLogin: true,
 		LoginProviders: []authn.LoginProviderInfo{
-			{Name: "entra", DisplayName: "Microsoft Entra ID", LoginURL: "/auth/login?provider=entra", Default: true},
+			{Name: "entra", DisplayName: "Microsoft Entra ID", LoginURL: "/auth/login?provider=entra",
+				Default: true, PKCE: authn.PKCEMethodS256},
 		},
 		BearerProviders: []auth.ProviderInfo{
 			{Name: "github", IssuerURL: "https://token.actions.githubusercontent.com", Audiences: []string{"a"}},
@@ -156,7 +164,7 @@ func TestAuthConfigDisclosesOnlyKnownKeys(t *testing.T) {
 		}
 	}
 	assertKeys("oidc_providers", body["oidc_providers"],
-		map[string]bool{"name": true, "display_name": true, "login_url": true, "default": true})
+		map[string]bool{"name": true, "display_name": true, "login_url": true, "default": true, "pkce": true})
 	assertKeys("bearer_providers", body["bearer_providers"],
 		map[string]bool{"name": true, "issuer_url": true, "audiences": true})
 

@@ -11,9 +11,12 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -248,6 +251,100 @@ func checkLDAP(ctx context.Context, r *Report, cfg *config.Config, opts Options)
 		}
 		return StatusPass, fmt.Sprintf("directory reachable, TLS + service bind ok (%s)", prober.Describe())
 	})
+}
+
+// --- 2e. interactive OIDC login (console SSO) --------------------------------
+
+// checkOIDCLogin diagnoses the console's interactive OIDC login the way an
+// operator would have to by hand: for every configured provider it fetches the
+// IdP's discovery document and reads code_challenge_methods_supported.
+//
+// Every login this server starts carries an S256 PKCE challenge whatever the
+// answer — but an IdP that does not implement PKCE simply ignores it, and then
+// an intercepted authorization code is enough to complete a login. That gap is
+// invisible from the config file alone, which is exactly the kind of thing this
+// command exists to surface. The severity follows the deployment's own stance:
+// with require_pkce set, a provider that does not advertise S256 would refuse to
+// start, so it fails here; without it, the same finding is a warning.
+func checkOIDCLogin(ctx context.Context, r *Report, cfg *config.Config, opts Options) {
+	if !cfg.Auth.OIDC.Enabled {
+		r.skip("auth.oidc.pkce", "interactive oidc login disabled")
+		return
+	}
+	providers := cfg.ConsoleOIDCProviders()
+	if len(providers) == 0 {
+		r.skip("auth.oidc.pkce", "no console oidc provider configured")
+		return
+	}
+	r.run("auth.oidc.pkce", func() (Status, string) {
+		client := &http.Client{Timeout: opts.DialTimeout + 2*time.Second}
+		status := StatusPass
+		var details []string
+		for _, p := range providers {
+			required := cfg.Auth.OIDC.RequirePKCEFor(p)
+			methods, err := discoveryPKCEMethods(ctx, client, p.IssuerURL)
+			switch {
+			case err != nil:
+				// Unreachable from here is not proof of anything: doctor often runs
+				// from a host with different egress than the server.
+				if status == StatusPass {
+					status = StatusWarn
+				}
+				details = append(details, fmt.Sprintf("%s: discovery unreadable (%v)", p.Name, err))
+			case containsFold(methods, "S256"):
+				details = append(details, fmt.Sprintf("%s: S256 advertised", p.Name))
+			case required:
+				status = StatusFail
+				details = append(details, fmt.Sprintf(
+					"%s: require_pkce is set but the IdP advertises %v — the server will refuse to start",
+					p.Name, methods))
+			default:
+				if status == StatusPass {
+					status = StatusWarn
+				}
+				details = append(details, fmt.Sprintf(
+					"%s: no S256 in code_challenge_methods_supported (%v); the challenge may be ignored",
+					p.Name, methods))
+			}
+		}
+		return status, strings.Join(details, "; ")
+	})
+}
+
+// discoveryPKCEMethods fetches an issuer's OpenID discovery document and returns
+// its advertised code-challenge methods (RFC 8414 §2). An absent field yields no
+// methods and no error: the IdP said nothing, which is not the same as refusing.
+func discoveryPKCEMethods(ctx context.Context, client *http.Client, issuer string) ([]string, error) {
+	url := strings.TrimSuffix(strings.TrimSpace(issuer), "/") + "/.well-known/openid-configuration"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s: HTTP %d", url, resp.StatusCode)
+	}
+	var doc struct {
+		Methods []string `json:"code_challenge_methods_supported"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&doc); err != nil {
+		return nil, fmt.Errorf("%s: %w", url, err)
+	}
+	return doc.Methods, nil
+}
+
+// containsFold reports whether values contains want, ignoring case.
+func containsFold(values []string, want string) bool {
+	for _, v := range values {
+		if strings.EqualFold(v, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // describeBackend renders a short human description of a provider backend.

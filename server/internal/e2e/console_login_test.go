@@ -19,12 +19,17 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,16 +45,26 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 )
 
-// stubIDP is an in-process OpenID Connect provider: discovery, JWKS, and a token
-// endpoint that mints a signed id token carrying the group claim under test.
+// stubIDP is an in-process OpenID Connect provider: discovery, JWKS, an
+// authorization endpoint, and a token endpoint that mints a signed id token
+// carrying the group claim under test.
+//
+// It ENFORCES PKCE (RFC 7636): /authorize refuses a request without an S256
+// code_challenge and records it against the code it issues; /token refuses to
+// redeem that code unless the exchange presents a code_verifier hashing to the
+// recorded challenge. Driving the authorization hop rather than inventing a code
+// is what makes the console's proof-key handling testable at all — against an
+// IdP that ignores the challenge, a login that forgot to send the verifier would
+// still succeed.
 type stubIDP struct {
 	srv      *httptest.Server
 	signer   jose.Signer
 	clientID string
-	// nonce is set from the authorization request just before the token exchange,
-	// so the minted id token echoes it (go-oidc binds the nonce).
-	nonce string
-	sub   string
+	// clientSecret is empty by default: the console registers as a PUBLIC client,
+	// the registration PKCE exists for. A test may set it to model a confidential
+	// client, in which case the token endpoint demands it.
+	clientSecret string
+	sub          string
 	// groups is the group claim this IdP asserts. It is a field so a test
 	// federating several providers can give each its own groups (Task 212);
 	// newStubIDP defaults it to the single-provider fixture's value.
@@ -57,6 +72,91 @@ type stubIDP struct {
 	// issuer is the IdP's issuer URL (== srv.URL), kept so a test can mint tokens
 	// directly rather than only through the token endpoint.
 	issuer string
+
+	mu sync.Mutex
+	// codes maps an issued authorization code to the authorization request that
+	// produced it. Entries are deleted on redemption: a code is single-use
+	// (RFC 6749 §4.1.2).
+	codes map[string]authzRequest
+	// exchanges records every token request, so a test can assert the SHAPE of
+	// the exchange (which client authentication was used, whether a verifier was
+	// present) and not only its outcome.
+	exchanges []tokenExchange
+}
+
+// authzRequest is what a client committed to at /authorize.
+type authzRequest struct {
+	challenge   string
+	method      string
+	nonce       string
+	state       string
+	redirectURI string
+}
+
+// tokenExchange records one attempt at /token.
+type tokenExchange struct {
+	clientID  string
+	verifier  string
+	basicAuth bool
+	err       string // "" when the exchange was granted
+}
+
+// exchangeLog returns a copy of the token requests this IdP has seen.
+func (s *stubIDP) exchangeLog() []tokenExchange {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]tokenExchange(nil), s.exchanges...)
+}
+
+// authorization replays the browser hop to /authorize and returns the code and
+// state the IdP handed back. The authorization request is the client's PKCE
+// commitment, so this is also where a missing or non-S256 challenge is refused.
+func (s *stubIDP) authorization(t *testing.T, authorizeURL string) (code, state string) {
+	t.Helper()
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Get(authorizeURL)
+	if err != nil {
+		t.Fatalf("GET %s: %v", authorizeURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("authorize status = %d, want 302; body=%s", resp.StatusCode, body)
+	}
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil {
+		t.Fatalf("parse authorize redirect: %v", err)
+	}
+	q := loc.Query()
+	if q.Get("code") == "" {
+		t.Fatalf("authorize redirect carried no code: %s", loc)
+	}
+	return q.Get("code"), q.Get("state")
+}
+
+// challengeFor returns the PKCE challenge recorded for an issued code.
+func (s *stubIDP) challengeFor(code string) (authzRequest, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ar, ok := s.codes[code]
+	return ar, ok
+}
+
+// s256 is the RFC 7636 code-challenge transform.
+func s256(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// oauthError writes an RFC 6749 §5.2 error response.
+func oauthError(w http.ResponseWriter, status int, code, description string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error": code, "error_description": description,
+	})
 }
 
 // mintIDToken signs an id token for sub and aud carrying the given group claim,
@@ -103,7 +203,11 @@ func newStubIDP(t *testing.T, clientID, sub string) *stubIDP {
 	if err != nil {
 		t.Fatalf("jose signer: %v", err)
 	}
-	idp := &stubIDP{signer: signer, clientID: clientID, sub: sub, groups: []string{"pki-admins"}}
+	idp := &stubIDP{
+		signer: signer, clientID: clientID, sub: sub,
+		groups: []string{"pki-admins"},
+		codes:  map[string]authzRequest{},
+	}
 
 	mux := http.NewServeMux()
 	idp.srv = httptest.NewServer(mux)
@@ -118,6 +222,9 @@ func newStubIDP(t *testing.T, clientID, sub string) *stubIDP {
 			"token_endpoint":                        issuer + "/token",
 			"jwks_uri":                              issuer + "/jwks",
 			"id_token_signing_alg_values_supported": []string{"RS256"},
+			// RFC 8414 §2 / OpenID Discovery: advertise the proof-key methods, which
+			// is what a deployment running with auth.oidc.require_pkce checks at boot.
+			"code_challenge_methods_supported": []string{"S256"},
 		})
 	})
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
@@ -126,14 +233,130 @@ func newStubIDP(t *testing.T, clientID, sub string) *stubIDP {
 		}}}
 		writeTestJSON(w, jwks)
 	})
+	// /authorize records the client's PKCE commitment and issues a code bound to
+	// it. A request without an S256 challenge is refused outright — this IdP does
+	// not serve a flow it could not later verify.
+	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("response_type") != "code" {
+			oauthError(w, http.StatusBadRequest, "unsupported_response_type", q.Get("response_type"))
+			return
+		}
+		if q.Get("client_id") != idp.clientID {
+			oauthError(w, http.StatusBadRequest, "unauthorized_client", q.Get("client_id"))
+			return
+		}
+		if q.Get("code_challenge") == "" {
+			oauthError(w, http.StatusBadRequest, "invalid_request", "no code_challenge (PKCE is required)")
+			return
+		}
+		if m := q.Get("code_challenge_method"); m != "S256" {
+			oauthError(w, http.StatusBadRequest, "invalid_request",
+				"code_challenge_method "+m+" is not accepted; S256 only")
+			return
+		}
+		redirectURI := q.Get("redirect_uri")
+		if redirectURI == "" {
+			oauthError(w, http.StatusBadRequest, "invalid_request", "no redirect_uri")
+			return
+		}
+		code := "code-" + randomHexString(t, 8)
+		idp.mu.Lock()
+		idp.codes[code] = authzRequest{
+			challenge:   q.Get("code_challenge"),
+			method:      q.Get("code_challenge_method"),
+			nonce:       q.Get("nonce"),
+			state:       q.Get("state"),
+			redirectURI: redirectURI,
+		}
+		idp.mu.Unlock()
+		to, err := url.Parse(redirectURI)
+		if err != nil {
+			oauthError(w, http.StatusBadRequest, "invalid_request", "unparseable redirect_uri")
+			return
+		}
+		rq := to.Query()
+		rq.Set("code", code)
+		rq.Set("state", q.Get("state"))
+		to.RawQuery = rq.Encode()
+		http.Redirect(w, r, to.String(), http.StatusFound)
+	})
+
+	// /token redeems a code exactly once, and only for a caller that proves it
+	// began the flow by presenting the verifier behind the recorded challenge
+	// (RFC 7636 §4.6).
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		ex := tokenExchange{
+			clientID: r.PostForm.Get("client_id"),
+			verifier: r.PostForm.Get("code_verifier"),
+		}
+		basicID, basicSecret, hasBasic := r.BasicAuth()
+		ex.basicAuth = hasBasic
+		fail := func(status int, code, description string) {
+			ex.err = code + ": " + description
+			idp.mu.Lock()
+			idp.exchanges = append(idp.exchanges, ex)
+			idp.mu.Unlock()
+			oauthError(w, status, code, description)
+		}
+
+		// Client authentication. A public client (no registered secret) must put
+		// its client_id in the body and must NOT send a Basic header: an
+		// empty-password `Basic base64("<id>:")` is a confidential-client
+		// credential, and real IdPs answer it with invalid_client.
+		if idp.clientSecret == "" {
+			if hasBasic {
+				fail(http.StatusUnauthorized, "invalid_client",
+					"this client is registered as public; do not send an Authorization header")
+				return
+			}
+			if ex.clientID != idp.clientID {
+				fail(http.StatusUnauthorized, "invalid_client", "client_id missing from the request body")
+				return
+			}
+		} else {
+			okBasic := hasBasic && basicID == idp.clientID && basicSecret == idp.clientSecret
+			okBody := ex.clientID == idp.clientID && r.PostForm.Get("client_secret") == idp.clientSecret
+			if !okBasic && !okBody {
+				fail(http.StatusUnauthorized, "invalid_client", "bad client credentials")
+				return
+			}
+		}
+
+		if gt := r.PostForm.Get("grant_type"); gt != "authorization_code" {
+			fail(http.StatusBadRequest, "unsupported_grant_type", gt)
+			return
+		}
+		code := r.PostForm.Get("code")
+		idp.mu.Lock()
+		ar, known := idp.codes[code]
+		delete(idp.codes, code) // single use, redeemed or not
+		idp.mu.Unlock()
+		if !known {
+			fail(http.StatusBadRequest, "invalid_grant", "unknown or already-redeemed authorization code")
+			return
+		}
+		if ex.verifier == "" {
+			fail(http.StatusBadRequest, "invalid_grant", "no code_verifier in the token request")
+			return
+		}
+		if s256(ex.verifier) != ar.challenge {
+			fail(http.StatusBadRequest, "invalid_grant", "code_verifier does not match the code_challenge")
+			return
+		}
+		if ru := r.PostForm.Get("redirect_uri"); ru != ar.redirectURI {
+			fail(http.StatusBadRequest, "invalid_grant", "redirect_uri does not match the authorization request")
+			return
+		}
+
 		claims := map[string]interface{}{
 			"iss":            issuer,
 			"aud":            clientID,
 			"sub":            idp.sub,
 			"exp":            time.Now().Add(time.Hour).Unix(),
 			"iat":            time.Now().Unix(),
-			"nonce":          idp.nonce,
+			"nonce":          ar.nonce,
 			"email":          "admin@example.com",
 			"email_verified": true,
 			"name":           "Alice Admin",
@@ -142,10 +365,13 @@ func newStubIDP(t *testing.T, clientID, sub string) *stubIDP {
 		payload, _ := json.Marshal(claims)
 		jws, err := idp.signer.Sign(payload)
 		if err != nil {
-			http.Error(w, err.Error(), 500)
+			fail(http.StatusInternalServerError, "server_error", err.Error())
 			return
 		}
 		compact, _ := jws.CompactSerialize()
+		idp.mu.Lock()
+		idp.exchanges = append(idp.exchanges, ex)
+		idp.mu.Unlock()
 		writeTestJSON(w, map[string]interface{}{
 			"access_token": "stub-access-token",
 			"token_type":   "Bearer",
@@ -153,6 +379,16 @@ func newStubIDP(t *testing.T, clientID, sub string) *stubIDP {
 		})
 	})
 	return idp
+}
+
+// randomHexString returns n random bytes as hex, for unguessable stub codes.
+func randomHexString(t *testing.T, n int) string {
+	t.Helper()
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatalf("read random: %v", err)
+	}
+	return hex.EncodeToString(b)
 }
 
 // consoleLoginEnv is the wired-up app server for the login flow test.
@@ -163,8 +399,20 @@ type consoleLoginEnv struct {
 
 func setupConsoleLogin(t *testing.T) *consoleLoginEnv {
 	t.Helper()
+	// No client secret: the console is registered as a public client, the
+	// registration PKCE exists for. setupConsoleLoginClient covers the
+	// confidential-client case.
+	return setupConsoleLoginClient(t, "")
+}
+
+// setupConsoleLoginClient is setupConsoleLogin with the client registration
+// under test: an empty secret registers a public client, a non-empty one a
+// confidential client whose token requests must also carry the secret.
+func setupConsoleLoginClient(t *testing.T, clientSecret string) *consoleLoginEnv {
+	t.Helper()
 	const clientID = "secsy-console"
 	idp := newStubIDP(t, clientID, "alice-oidc-subject")
+	idp.clientSecret = clientSecret
 
 	db, err := database.New("sqlite", t.TempDir()+"/login.db")
 	if err != nil {
@@ -219,11 +467,15 @@ func setupConsoleLogin(t *testing.T) *consoleLoginEnv {
 	}
 
 	login, err := authn.NewOIDCLogin(mgr, authn.OIDCLoginConfig{
-		Provider:    oidcProvider,
-		Verifier:    verifier,
-		ClientID:    clientID,
-		RedirectURL: "http://app.example/auth/callback",
-		Resolve:     resolve,
+		Provider:     oidcProvider,
+		Verifier:     verifier,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  "http://app.example/auth/callback",
+		Resolve:      resolve,
+		// The stub advertises code_challenge_methods_supported: [S256], so the
+		// strictest posture a deployment can take is also what the tests run under.
+		RequirePKCE: true,
 	})
 	if err != nil {
 		t.Fatalf("oidc login: %v", err)
@@ -231,7 +483,7 @@ func setupConsoleLogin(t *testing.T) *consoleLoginEnv {
 	mgr.SetLogin(login)
 	mgr.Register(mux)
 	authMw.SetSessions(sessions, authn.DefaultSessionCookie)
-	api.SetAuthInfo(handlers.AuthInfo{OIDCLogin: true})
+	api.SetAuthInfo(handlers.AuthInfo{OIDCLogin: true, LoginProviders: mgr.LoginProviders()})
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -277,15 +529,20 @@ func TestConsoleOIDCLoginFlow(t *testing.T) {
 		t.Fatalf("parse authorize url: %v", err)
 	}
 	q := authorizeURL.Query()
-	state := q.Get("state")
-	if state == "" || q.Get("nonce") == "" || q.Get("code_challenge") == "" {
+	if q.Get("state") == "" || q.Get("nonce") == "" || q.Get("code_challenge") == "" {
 		t.Fatalf("authorize URL missing state/nonce/PKCE: %s", authorizeURL)
 	}
-	// The IdP will echo this nonce into the id token.
-	env.idp.nonce = q.Get("nonce")
 
-	// 2. GET /auth/callback?code=..&state=.. -> 302 to /console/, session set.
-	cbURL := env.srv.URL + "/auth/callback?code=stub-code&state=" + url.QueryEscape(state)
+	// 2. The browser hop to the IdP. It records the PKCE challenge against the
+	// code it issues, so the exchange in step 3 only succeeds if the server
+	// presents the matching verifier.
+	code, state := env.idp.authorization(t, authorizeURL.String())
+	if state != q.Get("state") {
+		t.Fatalf("the IdP echoed state %q, want %q", state, q.Get("state"))
+	}
+
+	// 3. GET /auth/callback?code=..&state=.. -> 302 to /console/, session set.
+	cbURL := env.srv.URL + "/auth/callback?code=" + url.QueryEscape(code) + "&state=" + url.QueryEscape(state)
 	resp, err = client.Get(cbURL)
 	if err != nil {
 		t.Fatalf("GET /auth/callback: %v", err)

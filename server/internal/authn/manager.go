@@ -202,6 +202,12 @@ type LoginProviderInfo struct {
 	LoginURL string `json:"login_url"`
 	// Default marks the provider a bare /auth/login would use.
 	Default bool `json:"default,omitempty"`
+	// PKCE names the RFC 7636 code-challenge method the browser redirect will
+	// carry for this provider — always "S256". It is published so the sign-in
+	// page can state how the handshake is protected, and so an operator (or a
+	// conformance check) can read the deployment's proof-key posture from the
+	// same unauthenticated document that lists the providers.
+	PKCE string `json:"pkce,omitempty"`
 }
 
 // LoginProviders describes the configured interactive login providers in
@@ -218,6 +224,7 @@ func (m *Manager) LoginProviders() []LoginProviderInfo {
 			DisplayName: l.displayName,
 			LoginURL:    "/auth/login",
 			Default:     l == def,
+			PKCE:        l.pkce.Method,
 		}
 		if info.DisplayName == "" {
 			info.DisplayName = "SSO"

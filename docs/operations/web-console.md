@@ -8,7 +8,11 @@ demand a WebAuthn passkey step-up (see [authentication.md](../security/authentic
 the console runs the assertion ceremony on demand and retries.
 
 Sign-in supports a server-side password login (session cookie + CSRF), OIDC
-SSO, or stateless basic auth/bearer tokens for scripting parity.
+SSO, or stateless basic auth/bearer tokens for scripting parity. SSO runs the
+OpenID Connect **Authorization Code flow with PKCE** (S256, never `plain`) —
+one sign-in button per configured identity provider, with the method the page
+states read from `/api/auth/config` rather than hard-coded; see
+[PKCE](../security/authentication.md#pkce).
 
 For fleet-wide health beyond the console's per-CA operational views (Expiry
 Monitor, Compliance, Audit), pair it with the packaged Grafana dashboard and the

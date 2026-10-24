@@ -5141,6 +5141,13 @@ components:
         display_name: { type: string, description: "Label to show on the sign-in button." }
         login_url: { type: string, description: "Where to send the browser to begin this provider's flow." }
         default: { type: boolean, description: "The provider a bare /auth/login uses." }
+        pkce:
+          type: string
+          description: >-
+            The RFC 7636 code-challenge method the server-side Authorization-Code
+            handshake uses for this provider. Always `S256`; `plain` is never
+            offered.
+          example: S256
 
     AuthBearerProvider:
       type: object
