@@ -115,7 +115,7 @@ func TestPKCS11HAFailover(t *testing.T) {
 
 	// The signer's public key must be the replicated CA public key.
 	gotPub, ok := signer.Public().(*ecdsa.PublicKey)
-	if !ok || gotPub.X.Cmp(priv.X) != 0 || gotPub.Y.Cmp(priv.Y) != 0 {
+	if !ok || !gotPub.Equal(&priv.PublicKey) {
 		t.Fatalf("signer public key does not match the imported CA key")
 	}
 

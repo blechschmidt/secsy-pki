@@ -236,8 +236,12 @@ func TestImportedKeySignsAndVerifies(t *testing.T) {
 
 	id := scratchID(4)
 	deleteScratch(ctx, c, id)
-	// The device wants the raw private scalar, padded to the field size.
-	scalar := host.D.FillBytes(make([]byte, 32))
+	// The device wants the raw private scalar, padded to the field size, which
+	// is exactly what PrivateKey.Bytes encodes.
+	scalar, err := host.Bytes()
+	if err != nil {
+		t.Fatalf("encoding the host private scalar: %v", err)
+	}
 	got, err := c.PutAsymmetricKey(ctx, yubihsm.KeySpec{
 		ID:           id,
 		Label:        label("imported"),
@@ -444,7 +448,13 @@ func TestPublicKeyMatchesAttestationCertificate(t *testing.T) {
 	if !ok {
 		t.Fatalf("the attestation certificate carries a %T, want an ECDSA key", cert.PublicKey)
 	}
-	want := append(attested.X.FillBytes(make([]byte, 32)), attested.Y.FillBytes(make([]byte, 32))...)
+	// GET PUBLIC KEY returns the bare X || Y coordinates; PublicKey.Bytes is the
+	// same pair behind the 0x04 uncompressed-point prefix.
+	point, err := attested.Bytes()
+	if err != nil {
+		t.Fatalf("encoding the attested public key: %v", err)
+	}
+	want := point[1:]
 	if !bytes.Equal(raw, want) {
 		t.Fatalf("GET PUBLIC KEY and the attestation certificate disagree about the key:\n  direct %x\n  cert   %x", raw, want)
 	}

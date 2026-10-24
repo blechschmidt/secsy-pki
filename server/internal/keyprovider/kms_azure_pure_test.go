@@ -128,13 +128,17 @@ func rsaJWK(kty azkeys.KeyType, pub *rsa.PublicKey) *azkeys.JSONWebKey {
 }
 
 // ecJWK builds the bundle Key Vault returns for an EC key: the affine
-// coordinates left-padded to the curve width (RFC 7518 §6.2.1.2).
-func ecJWK(kty azkeys.KeyType, crv azkeys.CurveName, pub *ecdsa.PublicKey) *azkeys.JSONWebKey {
+// coordinates left-padded to the curve width (RFC 7518 §6.2.1.2). That padding
+// is exactly what PublicKey.Bytes produces, minus its 0x04 uncompressed-point
+// prefix.
+func ecJWK(t *testing.T, kty azkeys.KeyType, crv azkeys.CurveName, pub *ecdsa.PublicKey) *azkeys.JSONWebKey {
+	t.Helper()
+	point, err := pub.Bytes()
+	if err != nil {
+		t.Fatalf("encoding the EC public key: %v", err)
+	}
 	w := coordWidth(pub.Curve)
-	x, y := make([]byte, w), make([]byte, w)
-	pub.X.FillBytes(x)
-	pub.Y.FillBytes(y)
-	return &azkeys.JSONWebKey{Kty: &kty, Crv: &crv, X: x, Y: y}
+	return &azkeys.JSONWebKey{Kty: &kty, Crv: &crv, X: point[1 : 1+w], Y: point[1+w:]}
 }
 
 func azureKeyTypePtr(k azkeys.KeyType) *azkeys.KeyType { return &k }
@@ -399,7 +403,7 @@ func TestAzurePublicKeyRoundTrip(t *testing.T) {
 				if err != nil {
 					t.Fatalf("GenerateKey: %v", err)
 				}
-				got, err := azurePublicKey(ecJWK(kty, c.name, &key.PublicKey))
+				got, err := azurePublicKey(ecJWK(t, kty, c.name, &key.PublicKey))
 				if err != nil {
 					t.Fatalf("azurePublicKey: %v", err)
 				}
@@ -415,7 +419,7 @@ func TestAzurePublicKeyRoundTrip(t *testing.T) {
 				}
 				// A JWK coordinate is fixed-width by spec, but a peer that trims
 				// leading zeros must still decode to the same point.
-				trimmed := ecJWK(kty, c.name, &key.PublicKey)
+				trimmed := ecJWK(t, kty, c.name, &key.PublicKey)
 				trimmed.X = key.X.Bytes()
 				trimmed.Y = key.Y.Bytes()
 				got2, err := azurePublicKey(trimmed)
@@ -448,7 +452,7 @@ func TestAzurePublicKeyRejectsMalformedBundles(t *testing.T) {
 	noE.E = nil
 	emptyE := rsaJWK(azkeys.KeyTypeRSA, rsaPub)
 	emptyE.E = []byte{}
-	noCurve := ecJWK(azkeys.KeyTypeEC, azkeys.CurveNameP256, &ecKey.PublicKey)
+	noCurve := ecJWK(t, azkeys.KeyTypeEC, azkeys.CurveNameP256, &ecKey.PublicKey)
 	noCurve.Crv = nil
 
 	for _, tc := range []struct {
@@ -490,7 +494,7 @@ func TestAzurePublicKeyCorruptCoordinatesNeverYieldAUsableKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	base := ecJWK(azkeys.KeyTypeEC, azkeys.CurveNameP256, &key.PublicKey)
+	base := ecJWK(t, azkeys.KeyTypeEC, azkeys.CurveNameP256, &key.PublicKey)
 
 	emptyX := *base
 	emptyX.X = nil

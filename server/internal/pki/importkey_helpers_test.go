@@ -136,6 +136,8 @@ func TestPadScalarNeverTruncates(t *testing.T) {
 // makes: for every supported curve the scalar must come out at exactly the field
 // width, including for keys whose D happens to have leading zero bytes (the case
 // that motivated the padding in the first place).
+//
+//nolint:staticcheck // SA1019: reading D is the point — this pins padScalar against the raw scalars importTemplates hands to CKA_VALUE.
 func TestPadScalarOnRealECDSAKeys(t *testing.T) {
 	for _, curve := range []elliptic.Curve{elliptic.P256(), elliptic.P384(), elliptic.P521()} {
 		size := (curve.Params().BitSize + 7) / 8

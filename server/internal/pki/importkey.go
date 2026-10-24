@@ -258,6 +258,7 @@ func importTemplates(ctx *pkcs11.Ctx, priv crypto.PrivateKey, label string, id [
 		// The private scalar is left-padded to the curve's field size: a token
 		// that infers the curve from the value length would otherwise reject a
 		// scalar that happens to have leading zero bytes.
+		//nolint:staticcheck // SA1019: PKCS#11 CKA_VALUE is the raw fixed-width scalar, and padScalar is the encoder for it that importkey_helpers_test.go pins against real keys.
 		scalar := padScalar(k.D, (k.Curve.Params().BitSize+7)/8)
 		point, err := asn1.Marshal(elliptic.Marshal(k.Curve, k.X, k.Y)) //nolint:staticcheck // SA1019: PKCS#11 CKA_EC_POINT is exactly this uncompressed encoding; crypto/ecdh cannot produce it from an ecdsa key.
 		if err != nil {

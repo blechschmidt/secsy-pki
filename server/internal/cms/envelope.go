@@ -56,6 +56,9 @@ func (p *ParsedEnvelopedData) Decrypt(recipient *x509.Certificate, dec crypto.De
 		return nil, fmt.Errorf("cms: unsupported key-encryption algorithm %v (only RSA)", ri.KeyEncryptionAlgorithm.Algorithm)
 	}
 
+	// The unwrap counterpart of the v1.5 key transport above; see the SECURITY
+	// note for the padding-oracle handling that goes with it.
+	//nolint:staticcheck // SA1019: PKCS#1 v1.5 key transport is the wire format SCEP/CMS interop requires.
 	cek, err := dec.Decrypt(rand.Reader, ri.EncryptedKey, &rsa.PKCS1v15DecryptOptions{})
 	if err != nil {
 		return nil, errors.New("cms: content-encryption key unwrap failed")

@@ -337,7 +337,7 @@ func TestWebAuthnRegisterRoundTrip(t *testing.T) {
 		t.Fatalf("parse stored key: %v", err)
 	}
 	ek, ok := pub.(*ecdsa.PublicKey)
-	if !ok || ek.X.Cmp(e.priv.X) != 0 || ek.Y.Cmp(e.priv.Y) != 0 {
+	if !ok || !ek.Equal(&e.priv.PublicKey) {
 		t.Error("stored public key does not match the registered key")
 	}
 }
@@ -370,12 +370,16 @@ func cborInt(i int) []byte {
 func cborBytesEnc(b []byte) []byte { return append(cborHead(2, uint64(len(b))), b...) }
 func cborTextEnc(s string) []byte  { return append(cborHead(3, uint64(len(s))), []byte(s)...) }
 
-// coseEC2Key encodes an EC2 P-256 COSE key for pub.
-func coseEC2Key(pub *ecdsa.PublicKey) []byte {
-	x := make([]byte, 32)
-	y := make([]byte, 32)
-	pub.X.FillBytes(x)
-	pub.Y.FillBytes(y)
+// coseEC2Key encodes an EC2 P-256 COSE key for pub. PublicKey.Bytes is the
+// uncompressed SEC 1 point (0x04 || X || Y, padded to the curve width); COSE
+// -2/-3 carry the two coordinates without the prefix.
+func coseEC2Key(t *testing.T, pub *ecdsa.PublicKey) []byte {
+	t.Helper()
+	point, err := pub.Bytes()
+	if err != nil {
+		t.Fatalf("encoding the EC2 public key: %v", err)
+	}
+	x, y := point[1:33], point[33:]
 	out := cborHead(5, 5) // map with 5 pairs
 	out = append(out, cborInt(1)...)
 	out = append(out, cborInt(2)...) // kty EC2
@@ -400,7 +404,7 @@ func registrationAuthData(t *testing.T, rpID string, credID []byte, pub *ecdsa.P
 	out = append(out, make([]byte, 16)...) // aaguid
 	out = append(out, byte(len(credID)>>8), byte(len(credID)))
 	out = append(out, credID...)
-	out = append(out, coseEC2Key(pub)...)
+	out = append(out, coseEC2Key(t, pub)...)
 	return out
 }
 

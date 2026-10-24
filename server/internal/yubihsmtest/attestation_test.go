@@ -139,13 +139,19 @@ func TestAttestImportedKeyFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generating a key on the host: %v", err)
 	}
+	// The device wants the raw private scalar; PrivateKey.Bytes is exactly that,
+	// padded to the field size.
+	scalar, err := host.Bytes()
+	if err != nil {
+		t.Fatalf("encoding the host private scalar: %v", err)
+	}
 	id := scratchID(13)
 	withClient(t, func(ctx context.Context, c *yubihsm.Client) {
 		deleteScratch(ctx, c, id)
 		if _, err := c.PutAsymmetricKey(ctx, yubihsm.KeySpec{
 			ID: id, Label: label("attest-imported"), Domains: 1,
 			Capabilities: capabilities(t, "sign-ecdsa"), Algorithm: algECP256,
-		}, host.D.FillBytes(make([]byte, 32))); err != nil {
+		}, scalar); err != nil {
 			t.Fatalf("importing the host key: %v", err)
 		}
 	})

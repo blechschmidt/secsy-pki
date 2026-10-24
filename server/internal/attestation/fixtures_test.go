@@ -312,13 +312,20 @@ func coseKey(t *testing.T, pub crypto.PublicKey) []byte {
 	t.Helper()
 	switch k := pub.(type) {
 	case *ecdsa.PublicKey:
-		size := (k.Curve.Params().BitSize + 7) / 8
+		// PublicKey.Bytes is the uncompressed SEC 1 point: 0x04 || X || Y, each
+		// coordinate already padded to the curve width, which is what COSE wants
+		// in -2/-3 (minus the prefix).
+		point, err := k.Bytes()
+		if err != nil {
+			t.Fatalf("encoding the EC2 public key: %v", err)
+		}
+		size := (len(point) - 1) / 2
 		return cborEncode(cborMap(
 			kv(int64(coseKty), int64(coseKtyEC2)),
 			kv(int64(coseAlg), int64(coseAlgES256)),
 			kv(int64(coseECCrv), int64(coseCrvP256)),
-			kv(int64(coseECX), leftPad(k.X.Bytes(), size)),
-			kv(int64(coseECY), leftPad(k.Y.Bytes(), size)),
+			kv(int64(coseECX), point[1:1+size]),
+			kv(int64(coseECY), point[1+size:]),
 		))
 	case *rsa.PublicKey:
 		eBytes := big.NewInt(int64(k.E)).Bytes()
@@ -332,15 +339,6 @@ func coseKey(t *testing.T, pub crypto.PublicKey) []byte {
 		t.Fatalf("unsupported COSE key type %T", pub)
 		return nil
 	}
-}
-
-func leftPad(b []byte, size int) []byte {
-	if len(b) >= size {
-		return b
-	}
-	out := make([]byte, size)
-	copy(out[size-len(b):], b)
-	return out
 }
 
 // ---- minimal CBOR encoder (test-only) --------------------------------------

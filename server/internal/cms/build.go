@@ -306,6 +306,10 @@ func BuildEnvelopedData(plaintext []byte, recipient *x509.Certificate) ([]byte, 
 	ciphertext := make([]byte, len(padded))
 	cipher.NewCBCEncrypter(block, iv).CryptBlocks(ciphertext, padded)
 
+	// RFC 5652 §6.2.1 KeyTransRecipientInfo over rsaEncryption, which RFC 8894
+	// (SCEP) mandates for the pkcsPKIEnvelope every SCEP client builds. OAEP is
+	// not an option a responder gets to choose here.
+	//nolint:staticcheck // SA1019: PKCS#1 v1.5 key transport is the wire format SCEP/CMS interop requires.
 	encKey, err := rsa.EncryptPKCS1v15(rand.Reader, rsaPub, cek)
 	if err != nil {
 		return nil, fmt.Errorf("cms: wrapping content-encryption key: %w", err)

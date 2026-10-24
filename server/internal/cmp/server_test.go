@@ -194,7 +194,7 @@ func testIR(t *testing.T, env *testEnv) {
 	// The issued certificate must bind the requested public key.
 	pub := cert.PublicKey.(*ecdsa.PublicKey)
 	kpub := key.Public().(*ecdsa.PublicKey)
-	if pub.X.Cmp(kpub.X) != 0 || pub.Y.Cmp(kpub.Y) != 0 {
+	if !pub.Equal(kpub) {
 		t.Error("issued certificate does not bind the requested key")
 	}
 	if len(cert.DNSNames) != 1 || cert.DNSNames[0] != "ir-device.example.com" {
@@ -230,7 +230,7 @@ func testKUR(t *testing.T, env *testEnv) {
 	}
 	// The new certificate must bind the new key and keep the subject.
 	pub := res.Certificate.PublicKey.(*ecdsa.PublicKey)
-	if pub.X.Cmp(newKeyPair.X) != 0 {
+	if !pub.Equal(&newKeyPair.PublicKey) {
 		t.Error("kur certificate does not bind the new key")
 	}
 	if res.Certificate.Subject.CommonName != oldCert.Subject.CommonName {

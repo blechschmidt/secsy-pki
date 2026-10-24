@@ -555,6 +555,9 @@ func (p *SessionPool) Decrypt(ctx context.Context, loc KeyLocator, ciphertext []
 	if _, ok := ko.pubKey.(*rsa.PublicKey); !ok {
 		return nil, fmt.Errorf("pkcs11 decrypt: key %s is not RSA (type %T)", loc.Describe(), ko.pubKey)
 	}
+	// The caller asks for v1.5 unwrap only on the CMS/SCEP path, where the wire
+	// format mandates it (see internal/cms); everything else lands on OAEP.
+	//nolint:staticcheck // SA1019: the option type is how a crypto.Decrypter is told to do v1.5 unwrap.
 	if _, ok := opts.(*rsa.PKCS1v15DecryptOptions); ok {
 		return decryptPKCS1v15OnSession(p.ctx, s.handle, ko.priv, ciphertext)
 	}

@@ -75,7 +75,7 @@ func signVerify(t *testing.T, p Provider, ref KeyRef, pub *ecdsa.PublicKey) erro
 	defer signer.Close()
 	// The signer's public key must be the imported key's public half.
 	got, ok := signer.Public().(*ecdsa.PublicKey)
-	if !ok || got.X.Cmp(pub.X) != 0 || got.Y.Cmp(pub.Y) != 0 {
+	if !ok || !got.Equal(pub) {
 		t.Fatalf("signer public key does not match the imported key")
 	}
 	digest := sha256.Sum256([]byte("secsy-pki rfc7512 resolution test"))

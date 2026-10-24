@@ -97,7 +97,7 @@ func TestChaosHSMFailoverUnderLoad(t *testing.T) {
 	defer signer.Close()
 
 	pub, ok := signer.Public().(*ecdsa.PublicKey)
-	if !ok || pub.X.Cmp(priv.X) != 0 || pub.Y.Cmp(priv.Y) != 0 {
+	if !ok || !pub.Equal(&priv.PublicKey) {
 		t.Fatalf("signer public key does not match the imported CA key")
 	}
 

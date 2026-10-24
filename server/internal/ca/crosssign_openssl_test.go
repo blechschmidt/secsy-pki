@@ -114,7 +114,7 @@ func runCrossSignBridge(t *testing.T, mgr *Manager, tag string) {
 	if !ok {
 		t.Fatalf("cross-signed public key is not ECDSA")
 	}
-	if interPub.X.Cmp(crossPub.X) != 0 || interPub.Y.Cmp(crossPub.Y) != 0 {
+	if !interPub.Equal(crossPub) {
 		t.Fatal("cross-signed cert does not carry the intermediate's public key")
 	}
 	if !crossCert.IsCA {

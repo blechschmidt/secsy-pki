@@ -240,14 +240,17 @@ func (rc *rawClient) registerEAB(eab json.RawMessage) (*http.Response, []byte) {
 
 // accountJWK renders the client's account public key as a JWK, hand-built from
 // the raw EC coordinates so the EAB payload does not depend on the server's own
-// serialization.
+// serialization. PublicKey.Bytes is the uncompressed SEC 1 point (0x04 || X ||
+// Y, each coordinate padded to the curve width); a JWK carries the coordinates
+// without that prefix.
 func (rc *rawClient) accountJWK() []byte {
 	rc.t.Helper()
 	pub := rc.key.PublicKey
-	x := make([]byte, 32)
-	y := make([]byte, 32)
-	pub.X.FillBytes(x)
-	pub.Y.FillBytes(y)
+	point, err := pub.Bytes()
+	if err != nil {
+		rc.t.Fatalf("encoding the account public key: %v", err)
+	}
+	x, y := point[1:33], point[33:]
 	jwk := map[string]string{"kty": "EC", "crv": "P-256", "x": b64(x), "y": b64(y)}
 	b, err := json.Marshal(jwk)
 	if err != nil {

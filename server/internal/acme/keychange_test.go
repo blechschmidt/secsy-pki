@@ -32,15 +32,17 @@ import (
 // ---- independent JWS / JWK builders ---------------------------------------
 
 // ecPubJWK renders a P-256 public key as a JWK (RFC 7518 §6.2.1), hand-built from
-// the curve coordinates.
+// the curve coordinates. PublicKey.Bytes gives the uncompressed SEC 1 point
+// (0x04 || X || Y, padded to the curve width); a JWK wants the two coordinates
+// on their own.
 func ecPubJWK(t *testing.T, pub *ecdsa.PublicKey) json.RawMessage {
 	t.Helper()
-	x := make([]byte, 32)
-	y := make([]byte, 32)
-	pub.X.FillBytes(x)
-	pub.Y.FillBytes(y)
+	point, err := pub.Bytes()
+	if err != nil {
+		t.Fatalf("encoding the EC public key: %v", err)
+	}
 	b, err := json.Marshal(map[string]string{
-		"kty": "EC", "crv": "P-256", "x": b64(x), "y": b64(y),
+		"kty": "EC", "crv": "P-256", "x": b64(point[1:33]), "y": b64(point[33:]),
 	})
 	if err != nil {
 		t.Fatalf("marshal EC JWK: %v", err)
@@ -52,14 +54,16 @@ func ecPubJWK(t *testing.T, pub *ecdsa.PublicKey) json.RawMessage {
 // server refuses an inner "jwk" that leaks (or smuggles) private material.
 func ecPrivJWK(t *testing.T, key *ecdsa.PrivateKey) json.RawMessage {
 	t.Helper()
-	x := make([]byte, 32)
-	y := make([]byte, 32)
-	d := make([]byte, 32)
-	key.X.FillBytes(x)
-	key.Y.FillBytes(y)
-	key.D.FillBytes(d)
+	point, err := key.PublicKey.Bytes()
+	if err != nil {
+		t.Fatalf("encoding the EC public key: %v", err)
+	}
+	d, err := key.Bytes()
+	if err != nil {
+		t.Fatalf("encoding the EC private scalar: %v", err)
+	}
 	b, err := json.Marshal(map[string]string{
-		"kty": "EC", "crv": "P-256", "x": b64(x), "y": b64(y), "d": b64(d),
+		"kty": "EC", "crv": "P-256", "x": b64(point[1:33]), "y": b64(point[33:]), "d": b64(d),
 	})
 	if err != nil {
 		t.Fatalf("marshal EC private JWK: %v", err)

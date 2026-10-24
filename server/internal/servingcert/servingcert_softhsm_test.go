@@ -229,7 +229,7 @@ func TestServingCertBootAndRotate(t *testing.T) {
 			// The served leaf's public key is the provider key (matches the signer).
 			if pub, ok := cur.PrivateKey.(*providerSigner).Public().(*ecdsa.PublicKey); ok {
 				got, ok2 := leaf1.PublicKey.(*ecdsa.PublicKey)
-				if !ok2 || got.X.Cmp(pub.X) != 0 || got.Y.Cmp(pub.Y) != 0 {
+				if !ok2 || !got.Equal(pub) {
 					t.Errorf("served leaf public key does not match the provider serving key")
 				}
 			}
@@ -271,12 +271,18 @@ func TestServingCertAutoRotation(t *testing.T) {
 			mgr, _, caID, pool := testCA(t, provider)
 
 			cfg := servingConfig(t, caID)
-			// Short-lived certificate renewed well before expiry: renewAt =
-			// NotAfter - RenewBefore = issue + (Validity - RenewBefore) ≈ issue + 1s,
-			// so the loop re-issues roughly every second while the served cert always
-			// keeps >= RenewBefore of headroom (never expired during serving).
-			cfg.Validity = 4 * time.Second
-			cfg.RenewBefore = 3 * time.Second
+			// renewAt = NotAfter - RenewBefore = issue + (Validity - RenewBefore)
+			// ≈ issue + 1s, so the loop re-issues roughly every second. What sets
+			// the two numbers is the gap between them, not their size: the rotation
+			// cadence is the difference, while Validity alone decides how long a
+			// served certificate stays valid if something stalls between issuing it
+			// and dialling it. Thirty seconds of headroom for a one-second cadence
+			// means a loaded machine that takes several seconds over the HSM
+			// round-trips in New/startTLSServer cannot hand this loop a certificate
+			// that expired before the first dial — which a 4s/3s pair did, as a
+			// "current time is after NotAfter" failure on the second dial.
+			cfg.Validity = 30 * time.Second
+			cfg.RenewBefore = 29 * time.Second
 
 			si, err := New(ctx, mgr, provider, cfg, log.New(io.Discard, "", 0))
 			if err != nil {
