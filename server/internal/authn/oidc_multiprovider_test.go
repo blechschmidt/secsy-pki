@@ -166,7 +166,7 @@ func TestLoginDispatchSelectsProvider(t *testing.T) {
 
 	for _, tc := range []struct {
 		target   string
-		wantIdP  string
+		wantIDP  string
 		wantName string
 	}{
 		{"/auth/login", "https://entra.example.com/authorize", "entra"},
@@ -179,7 +179,7 @@ func TestLoginDispatchSelectsProvider(t *testing.T) {
 			t.Fatalf("GET %s: status = %d, want 302; body=%s", tc.target, rec.Code, rec.Body.String())
 		}
 		loc := rec.Header().Get("Location")
-		if !strings.HasPrefix(loc, tc.wantIdP) {
+		if !strings.HasPrefix(loc, tc.wantIDP) {
 			t.Errorf("GET %s redirected to %q, want the %s endpoint", tc.target, loc, tc.wantName)
 		}
 		if tx := txOf(t, e.mgr, rec); tx.Provider != tc.wantName {
