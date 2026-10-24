@@ -106,6 +106,11 @@ type AuthMiddleware struct {
 	// authenticated OIDC subject (tenant ID -> roles). Combined with roleResolver
 	// these determine which tenants the subject may act on.
 	tenantRoleResolver func(*models.UserInfo) map[string][]string
+	// bearerClaims, if set, applies the claim -> role mapping of the OIDC provider
+	// that verified a Bearer token, unioning its roles (and the caller's IdP group
+	// memberships) onto the principal. It is scoped per provider, which is what
+	// lets several federated issuers carry different authorization (Task 212).
+	bearerClaims func(*models.UserInfo, *auth.Claims)
 
 	// sessions, when set, enables cookie-based console sessions (OIDC/password
 	// interactive login). sessionCookie is the cookie name to read.
@@ -156,6 +161,15 @@ func (am *AuthMiddleware) SetRoleResolver(f func(*models.UserInfo) []string) {
 // (tenant ID -> roles) for OIDC users.
 func (am *AuthMiddleware) SetTenantRoleResolver(f func(*models.UserInfo) map[string][]string) {
 	am.tenantRoleResolver = f
+}
+
+// SetBearerClaimResolver installs the per-provider claim -> role mapping applied
+// to OIDC Bearer callers. It runs after the central subject/email/group
+// assignments, unioning the mapping of the provider that verified the token onto
+// the principal — so a role granted to a workflow identity at one issuer is not
+// granted to the same subject string presented by another.
+func (am *AuthMiddleware) SetBearerClaimResolver(f func(*models.UserInfo, *auth.Claims)) {
+	am.bearerClaims = f
 }
 
 // SetRootEnabled toggles acceptance of the built-in basic-auth root user.
@@ -284,12 +298,16 @@ func (am *AuthMiddleware) Authenticate(next http.Handler) http.Handler {
 				EmailVerified: claims.EmailVerified,
 				Name:          claims.Name,
 				IsRoot:        false,
+				AuthProvider:  claims.Provider,
 			}
 			if am.roleResolver != nil {
 				info.Roles = am.roleResolver(info)
 			}
 			if am.tenantRoleResolver != nil {
 				info.TenantRoles = am.tenantRoleResolver(info)
+			}
+			if am.bearerClaims != nil {
+				am.bearerClaims(info, claims)
 			}
 			am.serveAs(w, r, next, info, nil)
 			return
@@ -428,12 +446,16 @@ func (am *AuthMiddleware) AuthenticateRPC(ctx context.Context, authorization str
 			Email:         claims.Email,
 			EmailVerified: claims.EmailVerified,
 			Name:          claims.Name,
+			AuthProvider:  claims.Provider,
 		}
 		if am.roleResolver != nil {
 			info.Roles = am.roleResolver(info)
 		}
 		if am.tenantRoleResolver != nil {
 			info.TenantRoles = am.tenantRoleResolver(info)
+		}
+		if am.bearerClaims != nil {
+			am.bearerClaims(info, claims)
 		}
 		return info, nil
 	}

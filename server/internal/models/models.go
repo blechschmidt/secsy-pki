@@ -1366,6 +1366,13 @@ type UserInfo struct {
 	// internal groups recorded in the database — to match a grant. Empty for
 	// principals with no directory identity (root, API tokens, mTLS bindings).
 	Groups []string `json:"groups,omitempty"`
+	// AuthProvider names the configured OIDC provider that authenticated this
+	// principal, when it was authenticated by one of several federated issuers
+	// (Task 212). It is diagnostic, not authorization: the roles above already
+	// reflect that provider's own claim -> role mapping. Empty for every other
+	// credential (root, API token, mTLS, LDAP) and for a deployment with a single
+	// unnamed issuer.
+	AuthProvider string `json:"auth_provider,omitempty"`
 }
 
 // TenantsWithRoles returns the set of tenant IDs the subject holds at least one

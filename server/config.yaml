@@ -108,9 +108,35 @@ database:
 #   renew_interval_seconds: 5               # leader lease confirmation cadence
 #   retry_interval_seconds: 5               # follower acquisition retry (failover bound)
 
+# oidc verifies the `Authorization: Bearer <jwt>` credentials of MACHINE callers
+# (CI pipelines, workload-identity federation, API scripting). It is a separate
+# question from auth.oidc below, which drives the browser login that establishes a
+# console session — and in practice a different identity provider: a GitHub
+# Actions job federates through token.actions.githubusercontent.com while the
+# operators who administer the PKI sign in through the corporate IdP.
+#
+# The single issuer_url / client_id form below trusts one issuer; `providers`
+# trusts several at once (Task 212). A presented token is routed to exactly one
+# provider by its `iss` claim, and each provider's role_mappings are evaluated
+# ONLY for tokens it verified — so "this workflow may sign artifacts" cannot be
+# claimed by a token from another issuer carrying the same subject string.
+# See docs/security/authentication.md#multiple-oidc-providers.
 oidc:
   issuer_url: "http://localhost:8080/realms/secsy-pki"
-  client_id: "secsy-pki"
+  client_id: "secsy-pki"      # the accepted audience (aud claim)
+  # providers:
+  #   - name: github          # required, unique; appears in audit detail
+  #     issuer_url: "https://token.actions.githubusercontent.com"
+  #     client_id: "secsy-pki-signing"   # the audience the workflow requests
+  #     # audiences: ["secsy-pki-signing-legacy"]   # additional accepted audiences
+  #     role_mappings:        # evaluated only for tokens from THIS issuer
+  #       - { claim: "sub", value: "repo:example-org/app:environment:release", roles: ["signer"] }
+  #   - name: entra
+  #     issuer_url: "https://login.microsoftonline.com/<tenant-id>/v2.0"
+  #     client_id: "api://secsy-pki"
+  #     groups_claim: "roles"
+  #     role_mappings:
+  #       - { value: "PKI.Issue", roles: ["issuer"] }
 
 # auth configures strong operator authentication for the console/API (Task 50).
 # Each sub-block is inert unless its `enabled` is set; the stateless basic-auth
@@ -142,6 +168,29 @@ auth:
       # - { value: "acme-issuers", tenant: "acme-corp", roles: ["issuer"] }
     # allow_zero_role: false denies login to an operator that resolves to no role.
     allow_zero_role: false
+    # providers declares SEVERAL console identity providers side by side (Task
+    # 212) — each rendered as its own sign-in button, each with its own client
+    # registration, scopes, and claim -> role mapping. Omitted fields inherit the
+    # settings above, so the redirect_url and groups_claim are written once. They
+    # may share one registered redirect_url: the signed login transaction cookie
+    # records which provider began the flow, so the callback dispatches correctly.
+    # providers:
+    #   - name: entra                       # required, unique; /auth/login?provider=entra
+    #     display_name: "Microsoft Entra ID"
+    #     issuer_url: "https://login.microsoftonline.com/<tenant-id>/v2.0"
+    #     client_id: "console-entra"
+    #     client_secret_file: "/etc/secsy/entra-client-secret"
+    #     default: true                     # the provider a bare /auth/login uses
+    #     role_mappings:
+    #       - { value: "PKI-Admins", roles: ["admin"] }
+    #   - name: partner
+    #     display_name: "Partner IdP"
+    #     issuer_url: "https://idp.partner.example.net"
+    #     client_id: "console-partner"
+    #     redirect_url: "https://pki.example.com/auth/callback/partner"
+    #     allow_zero_role: true             # overrides the shared policy
+    #     role_mappings:
+    #       - { value: "pki-readers", tenant: "partner", roles: ["auditor"] }
   ldap:
     # LDAP / Active Directory login (console session + HTTP/RPC Basic for machine
     # callers), mapping directory groups to RBAC roles like oidc.role_mappings.

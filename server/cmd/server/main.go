@@ -197,22 +197,38 @@ func main() {
 		log.Fatalf("Coordination configuration error: %v", err)
 	}
 
-	// Initialize OIDC provider (optional - may fail if no OIDC configured)
-	var oidcProvider *auth.OIDCProvider
-	if cfg.OIDC.IssuerURL != "" {
-		oidcProvider, err = auth.NewOIDCProvider(
-			cfg.OIDC.IssuerURL,
-			cfg.OIDC.ClientID,
-		)
-		if err != nil {
-			log.Printf("WARNING: OIDC provider initialization failed: %v", err)
-			log.Printf("Only root user (basic auth) will be available")
+	// Initialize machine-token (Authorization: Bearer) OIDC verification. A
+	// deployment may federate several issuers at once (Task 212) — a CI forge's
+	// workload identity for automated signing, a cloud IdP for API scripting —
+	// and a presented token is routed to exactly one of them by its `iss` claim.
+	// Discovery failures are per provider and non-fatal: an IdP unreachable at
+	// boot must not keep the server (or the other issuers) down.
+	bearerSpecs := bearerProviderSpecs(cfg)
+	var bearerProviders *auth.MultiProvider
+	if len(bearerSpecs) > 0 {
+		var providerErrs []auth.ProviderError
+		bearerProviders, providerErrs = auth.NewMultiProvider(context.Background(), bearerSpecs)
+		for _, e := range providerErrs {
+			log.Printf("WARNING: OIDC provider initialization failed: %v", e)
+		}
+		for _, p := range bearerProviders.Providers() {
+			log.Printf("OIDC Bearer verification enabled: provider=%q issuer=%s audiences=%v",
+				p.Name, p.IssuerURL, p.Audiences)
+		}
+		if bearerProviders == nil {
+			log.Printf("No OIDC provider could be initialized - only root user (basic auth) will be available")
 		}
 	} else {
 		log.Printf("OIDC not configured - only root user (basic auth) will be available")
 	}
 
-	authMw := middleware.NewAuthMiddleware(oidcProvider, cfg.RootUser.Username, cfg.RootUser.Password)
+	// A nil *MultiProvider must reach the middleware as a nil INTERFACE, or the
+	// Bearer path would see a configured verifier and call through it.
+	var tokenVerifier middleware.TokenVerifier
+	if bearerProviders != nil {
+		tokenVerifier = bearerProviders
+	}
+	authMw := middleware.NewAuthMiddleware(tokenVerifier, cfg.RootUser.Username, cfg.RootUser.Password)
 
 	// RBAC: build the central role assignments and install a resolver so every
 	// authenticated OIDC subject carries its organization-wide roles. Assignments
@@ -272,6 +288,12 @@ func main() {
 		}
 		return out
 	})
+	// Per-provider claim -> role mapping for machine Bearer callers (Task 212):
+	// the mapping of the issuer that verified a token, plus the group identities
+	// that token asserts, are unioned onto the principal the resolvers above built.
+	authMw.SetBearerClaimResolver(bearerClaimResolver(
+		buildBearerClaimMappers(cfg.BearerOIDCProviders()), tenantAssignments, db))
+
 	authMw.SetRootEnabled(cfg.Policy.RootBasicAuthEnabled())
 	if !cfg.Policy.RootBasicAuthEnabled() {
 		log.Printf("Built-in root basic-auth login is DISABLED (policy.allow_root_basic_auth=false)")
@@ -538,7 +560,7 @@ func main() {
 		Password:     cfg.YubiHSM.Password,
 	}
 
-	api := handlers.NewAPI(db, provider, oidcProvider, hsmCfg, cfg.YubiHSM.SuppressAuditWarning, cfg.Secret.KEKLabel)
+	api := handlers.NewAPI(db, provider, bearerProviders.Primary(), hsmCfg, cfg.YubiHSM.SuppressAuditWarning, cfg.Secret.KEKLabel)
 	// Wire the operator live audit-event feed (Task 90/104): the audit-append
 	// chokepoint fans every hash-chained event out to the SSE subscribers so the
 	// console live-tail sees events from HTTP handlers, background jobs, and
@@ -717,7 +739,7 @@ func main() {
 	// with claim/group -> RBAC role mapping, mutual-TLS client-certificate
 	// binding, WebAuthn step-up, and the session/CSRF plumbing. Returns the client
 	// CA pool to install on the TLS listener when mTLS is enabled.
-	mtlsClientCAs, err := setupOperatorAuth(cfg, db, oidcProvider, tenantAssignments, authMw, api, mux)
+	mtlsClientCAs, err := setupOperatorAuth(cfg, db, bearerProviders, tenantAssignments, authMw, api, mux)
 	if err != nil {
 		log.Fatalf("Operator authentication setup failed: %v", err)
 	}

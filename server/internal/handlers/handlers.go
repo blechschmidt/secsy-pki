@@ -17,6 +17,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/attestation"
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
+	"github.com/blechschmidt/secsy-pki/server/internal/authn"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/console"
@@ -231,6 +232,16 @@ type AuthInfo struct {
 	LDAPLogin bool
 	// WebAuthn reports that passkey step-up is configured.
 	WebAuthn bool
+	// LoginProviders describes the configured interactive OIDC providers (Task
+	// 212), so the console renders one sign-in button per identity provider
+	// instead of a single hard-coded "SSO" and sends the operator to the right
+	// one. Empty when interactive login is not configured.
+	LoginProviders []authn.LoginProviderInfo
+	// BearerProviders describes the machine-token (Authorization: Bearer) OIDC
+	// issuers this deployment trusts. It is published so a client (a CI pipeline,
+	// a workload) can discover which issuer and audience to request a token for,
+	// rather than having that pairing passed around out of band.
+	BearerProviders []auth.ProviderInfo
 }
 
 // SetAuthInfo records which operator-authentication mechanisms are enabled.
@@ -910,9 +921,18 @@ func (a *API) AuthConfig(w http.ResponseWriter, r *http.Request) {
 		"ldap_login":         a.authInfo.LDAPLogin,
 		"webauthn_enabled":   a.authInfo.WebAuthn,
 	}
+	// issuer_url / client_id describe the FIRST machine-token provider. They
+	// predate multi-provider support and are kept for existing clients; a
+	// deployment federating several issuers reads bearer_providers instead.
 	if a.oidcProvider != nil {
 		resp["issuer_url"] = a.oidcProvider.IssuerURL()
 		resp["client_id"] = a.oidcProvider.ClientID()
+	}
+	if len(a.authInfo.LoginProviders) > 0 {
+		resp["oidc_providers"] = a.authInfo.LoginProviders
+	}
+	if len(a.authInfo.BearerProviders) > 0 {
+		resp["bearer_providers"] = a.authInfo.BearerProviders
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

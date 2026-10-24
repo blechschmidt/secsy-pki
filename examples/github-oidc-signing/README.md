@@ -167,19 +167,21 @@ expires** — the chain is validated at the token's genTime, not the wall clock.
   is accepted; other repos/branches/environments resolve to zero roles and are
   rejected.
 
-### Note: the machine-Bearer verifier is global
+### Note: the machine-Bearer path is a separate axis from console login
 
 The top-level `oidc` block is the verifier for **all** `Authorization: Bearer`
-machine callers, so pointing it at GitHub dedicates that path to GitHub OIDC. If
-human operators also sign in to the console, configure their **corporate IdP**
-separately under `auth.oidc.issuer_url` — that interactive-login provider is
-independent of this machine-Bearer one (they may be different issuers). See
-[`docs/security/authentication.md`](../../docs/security/authentication.md).
+machine callers. Pointing the *single* form at GitHub dedicates that path to
+GitHub OIDC; to trust several machine issuers at once, declare them under
+`oidc.providers` instead, each with its own audience and claim → role mapping.
+Either way, human console logins are a separate axis: configure their
+**corporate IdP** under `auth.oidc` (or `auth.oidc.providers`). See
+[`examples/multi-oidc/`](../multi-oidc/README.md) and
+[`docs/security/authentication.md#multiple-oidc-providers`](../../docs/security/authentication.md#multiple-oidc-providers).
 
 ## Adapting to other CI systems
 
-Any OIDC-issuing CI works the same way — point `oidc.issuer_url` at its issuer,
-request a token with the matching audience, and map its `sub` in `rbac.subjects`:
+Any OIDC-issuing CI works the same way — point a provider's `issuer_url` at its
+issuer, request a token with the matching audience, and map its `sub` to a role:
 
 | CI | Issuer | Typical `sub` |
 |----|--------|---------------|
@@ -187,6 +189,25 @@ request a token with the matching audience, and map its `sub` in `rbac.subjects`
 | GitLab CI | `https://gitlab.com` (or self-managed URL) | `project_path:GROUP/PROJECT:ref_type:branch:ref:main` |
 | Buildkite | `https://agent.buildkite.com` | `organization:ORG:pipeline:PIPELINE:…` |
 
-Only one machine-Bearer issuer is verified per deployment; run a dedicated
-signing deployment (or use scoped [API tokens](../../docs/security/authentication.md#4-native-scoped-api-tokens-service-accounts))
-if you must federate several at once.
+Several of them can be federated in one deployment — declare one entry per CI
+under `oidc.providers`, each with its own audience and `role_mappings`:
+
+```yaml
+oidc:
+  providers:
+    - name: github
+      issuer_url: "https://token.actions.githubusercontent.com"
+      client_id: "secsy-pki-signing"
+      role_mappings:
+        - { claim: "sub", value: "repo:example-org/app:environment:release", roles: ["signer"] }
+    - name: gitlab
+      issuer_url: "https://gitlab.com"
+      client_id: "secsy-pki-signing"
+      role_mappings:
+        - { claim: "sub", value: "project_path:group/project:ref_type:branch:ref:main", roles: ["signer"] }
+```
+
+A token is routed to exactly one provider by its `iss` claim, and a provider's
+mappings apply only to tokens it verified — so the GitLab pipeline cannot claim
+the GitHub workflow's grant by asserting its subject string. See
+[`examples/multi-oidc/`](../multi-oidc/README.md).

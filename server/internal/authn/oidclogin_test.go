@@ -352,8 +352,14 @@ func TestSplitDot(t *testing.T) {
 }
 
 // TestOIDCSignIsKeyedAndDeterministic asserts the transaction MAC is
-// deterministic for one process and unforgeable across keys — the property that
-// makes the stateless transaction cookie safe.
+// deterministic within one process and unforgeable across keys — the property
+// that makes the stateless transaction cookie safe.
+//
+// The key is per *manager*, not per provider: several login providers may share
+// one registered redirect URI, and the callback has to verify the cookie before
+// it knows which provider wrote it. What keeps providers from completing each
+// other's flows is the provider name sealed inside the signed payload — see
+// TestCallbackRejectsAnotherProvidersTransaction.
 func TestOIDCSignIsKeyedAndDeterministic(t *testing.T) {
 	mgr := NewManager(ManagerOptions{Sessions: NewSessionStore(time.Hour, time.Minute)})
 	a := newTestOIDCLogin(t, mgr)
@@ -370,10 +376,17 @@ func TestOIDCSignIsKeyedAndDeterministic(t *testing.T) {
 	if other := a.sign("payload2"); first == other {
 		t.Error("sign must depend on the payload")
 	}
-	if theirs := b.sign("payload"); first == theirs {
-		t.Error("two logins must use independent signing keys")
+	if theirs := b.sign("payload"); first != theirs {
+		t.Error("providers on one manager must share the transaction key so a shared callback URL can dispatch")
 	}
-	if string(a.txKey) == string(b.txKey) {
-		t.Error("transaction signing keys must be random per instance")
+
+	// Across managers (processes) the key must be independent, so a cookie from
+	// one deployment is not accepted by another.
+	other := newTestOIDCLogin(t, NewManager(ManagerOptions{Sessions: NewSessionStore(time.Hour, time.Minute)}))
+	if string(a.txKey) == string(other.txKey) {
+		t.Error("transaction signing keys must be random per manager")
+	}
+	if theirs := other.sign("payload"); first == theirs {
+		t.Error("a transaction signed under another manager's key must not verify")
 	}
 }

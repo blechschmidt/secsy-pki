@@ -28,6 +28,9 @@
       <div id="ssoBlock" class="hidden">
         <div class="divider">— or —</div>
         <button class="btn ghost" id="ssoBtn" type="button">Sign in with SSO (OIDC)</button>
+        <!-- One button per configured identity provider when several are
+             federated; the single ssoBtn above covers the one-provider case. -->
+        <div id="ssoProviders"></div>
       </div>
     </div>
   </div>

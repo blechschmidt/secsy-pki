@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -48,7 +49,7 @@ var defaultStepUpOperations = []string{
 func setupOperatorAuth(
 	cfg *config.Config,
 	db *database.DB,
-	oidcProvider *auth.OIDCProvider,
+	bearerProviders *auth.MultiProvider,
 	tenantAssignments *rbac.TenantAssignments,
 	authMw *middleware.AuthMiddleware,
 	api *handlers.API,
@@ -73,32 +74,51 @@ func setupOperatorAuth(
 		RequestID:     middleware.RequestID,
 	})
 
-	// --- claim/group -> RBAC role mapping ---
-	mapper := buildClaimMapper(ac.OIDC)
-
-	// --- interactive OIDC login ---
+	// --- interactive OIDC login (one or more providers) ---
+	// Several console identity providers may be configured side by side (Task
+	// 212): each gets its own client registration, scopes, and claim -> role
+	// mapping, and each is offered as its own sign-in button. A provider whose IdP
+	// cannot be discovered at boot is skipped with a warning rather than taking
+	// the others down — but if none comes up, login was configured and is wholly
+	// unavailable, which is fatal.
 	oidcLoginEnabled := false
 	if ac.OIDC.Enabled {
-		provider, verifier, clientID, err := buildLoginProvider(cfg, oidcProvider)
-		if err != nil {
-			return nil, fmt.Errorf("oidc login: %w", err)
+		providers := cfg.ConsoleOIDCProviders()
+		var failures []error
+		for _, pc := range providers {
+			provider, verifier, err := buildLoginProvider(pc, bearerProviders)
+			if err != nil {
+				failures = append(failures, fmt.Errorf("provider %q: %w", pc.Name, err))
+				log.Printf("WARNING: interactive OIDC login provider %q is unavailable: %v", pc.Name, err)
+				continue
+			}
+			mapper := authn.NewClaimMapper(pc.GroupsClaim, buildClaimMappings(pc.RoleMappings))
+			resolve := buildPrincipalResolver(db, tenantAssignments, mapper, ac.OIDC.AllowZeroRoleFor(pc))
+			login, err := authn.NewOIDCLogin(mgr, authn.OIDCLoginConfig{
+				Name:         pc.Name,
+				DisplayName:  pc.DisplayName,
+				Default:      pc.Default,
+				Provider:     provider,
+				Verifier:     verifier,
+				ClientID:     pc.ClientID,
+				ClientSecret: pc.ClientSecret,
+				RedirectURL:  pc.RedirectURL,
+				Scopes:       pc.Scopes,
+				Resolve:      resolve,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("oidc login provider %q: %w", pc.Name, err)
+			}
+			if err := mgr.AddLogin(login); err != nil {
+				return nil, fmt.Errorf("oidc login: %w", err)
+			}
+			oidcLoginEnabled = true
+			log.Printf("Interactive OIDC login provider %q enabled (issuer=%s redirect_url=%s)",
+				pc.Name, pc.IssuerURL, pc.RedirectURL)
 		}
-		resolve := buildPrincipalResolver(db, tenantAssignments, mapper, ac.OIDC.AllowZeroRole)
-		login, err := authn.NewOIDCLogin(mgr, authn.OIDCLoginConfig{
-			Provider:     provider,
-			Verifier:     verifier,
-			ClientID:     clientID,
-			ClientSecret: ac.OIDC.ClientSecret,
-			RedirectURL:  ac.OIDC.RedirectURL,
-			Scopes:       ac.OIDC.Scopes,
-			Resolve:      resolve,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("oidc login: %w", err)
+		if !oidcLoginEnabled {
+			return nil, fmt.Errorf("oidc login: no configured provider could be initialized: %w", errors.Join(failures...))
 		}
-		mgr.SetLogin(login)
-		oidcLoginEnabled = true
-		log.Printf("Interactive OIDC login enabled (redirect_url=%s)", ac.OIDC.RedirectURL)
 	}
 
 	// --- mutual-TLS client-certificate binding ---
@@ -165,7 +185,7 @@ func setupOperatorAuth(
 	// --- LDAP / Active Directory authentication ---
 	ldapLogin := false
 	if ac.LDAP.Enabled {
-		ldapMapper := authn.NewClaimMapper(ac.LDAP.GroupsClaim, buildLDAPRoleMappings(ac.LDAP.RoleMappings))
+		ldapMapper := authn.NewClaimMapper(ac.LDAP.GroupsClaim, buildClaimMappings(ac.LDAP.RoleMappings))
 		resolver := buildLDAPResolver(db, tenantAssignments, ldapMapper, ac.LDAP.AllowZeroRole)
 		ldapAuth, err := buildLDAPAuthenticator(ac.LDAP, resolver)
 		if err != nil {
@@ -181,29 +201,15 @@ func setupOperatorAuth(
 	mgr.Register(mux)
 	authMw.SetSessions(sessions, cookieName)
 	api.SetAuthInfo(handlers.AuthInfo{
-		OIDCLogin:     oidcLoginEnabled,
-		PasswordLogin: passwordLogin,
-		LDAPLogin:     ldapLogin,
-		WebAuthn:      webAuthnEnabled,
+		OIDCLogin:       oidcLoginEnabled,
+		PasswordLogin:   passwordLogin,
+		LDAPLogin:       ldapLogin,
+		WebAuthn:        webAuthnEnabled,
+		LoginProviders:  mgr.LoginProviders(),
+		BearerProviders: bearerProviders.Providers(),
 	})
 
 	return clientCAs, nil
-}
-
-// buildLDAPRoleMappings translates the config LDAP role mappings into
-// authn.ClaimMapping (the same type OIDC uses), so directory-group -> role
-// resolution runs through the shared ClaimMapper.
-func buildLDAPRoleMappings(in []config.ClaimMappingConfig) []authn.ClaimMapping {
-	out := make([]authn.ClaimMapping, 0, len(in))
-	for _, m := range in {
-		out = append(out, authn.ClaimMapping{
-			Claim:  m.Claim,
-			Value:  m.Value,
-			Tenant: m.Tenant,
-			Roles:  toRbacRoles(m.Roles),
-		})
-	}
-	return out
 }
 
 // buildLDAPAuthenticator maps the auth.ldap config block onto the authn
@@ -285,18 +291,77 @@ func splitLDAPURLs(s string) []string {
 	return out
 }
 
-// buildClaimMapper translates the config role mappings into an authn.ClaimMapper.
-func buildClaimMapper(c config.AuthOIDCConfig) *authn.ClaimMapper {
-	mappings := make([]authn.ClaimMapping, 0, len(c.RoleMappings))
-	for _, m := range c.RoleMappings {
-		mappings = append(mappings, authn.ClaimMapping{
+// buildClaimMappings translates config claim -> role mappings into the authn
+// form. One translation serves the OIDC login providers, the machine-Bearer
+// providers, and LDAP, so the three cannot drift in how a mapping is read.
+func buildClaimMappings(in []config.ClaimMappingConfig) []authn.ClaimMapping {
+	out := make([]authn.ClaimMapping, 0, len(in))
+	for _, m := range in {
+		out = append(out, authn.ClaimMapping{
 			Claim:  m.Claim,
 			Value:  m.Value,
 			Tenant: m.Tenant,
 			Roles:  toRbacRoles(m.Roles),
 		})
 	}
-	return authn.NewClaimMapper(c.GroupsClaim, mappings)
+	return out
+}
+
+// buildBearerClaimMappers builds one claim mapper per machine-token (Bearer)
+// provider, keyed by provider name. Every provider gets a mapper even when it
+// declares no role mappings: the mapper is also what extracts the caller's group
+// memberships from that provider's configured groups claim, which the central
+// rbac group assignments and the resource-scoped grants both need.
+func buildBearerClaimMappers(providers []config.OIDCProviderConfig) map[string]*authn.ClaimMapper {
+	out := make(map[string]*authn.ClaimMapper, len(providers))
+	for _, p := range providers {
+		out[p.Name] = authn.NewClaimMapper(p.GroupsClaim, buildClaimMappings(p.RoleMappings))
+	}
+	return out
+}
+
+// bearerClaimResolver returns the hook the auth middleware applies to a principal
+// authenticated by an OIDC Bearer token. It resolves roles through exactly the
+// same code as the interactive-login path (resolveConsolePrincipal), but with the
+// claim mapper of the provider that verified THIS token — which is what keeps a
+// grant made to one federated issuer's workload identity from being claimable by
+// another issuer asserting the same subject string.
+//
+// Unlike the login path it never denies: a machine caller that resolves to no
+// role is authenticated and then refused by the authorization gate, as the Bearer
+// path has always done.
+// groupLookup resolves the internal (database-recorded) group memberships of a
+// subject. *database.DB satisfies it; naming it as an interface keeps the Bearer
+// claim resolver unit-testable without standing up a store.
+type groupLookup interface {
+	GetUserGroups(subject string) ([]string, error)
+}
+
+func bearerClaimResolver(
+	mappers map[string]*authn.ClaimMapper,
+	ta *rbac.TenantAssignments,
+	db groupLookup,
+) func(*models.UserInfo, *auth.Claims) {
+	return func(info *models.UserInfo, claims *auth.Claims) {
+		mapper := mappers[claims.Provider]
+		if mapper == nil || info == nil {
+			return
+		}
+		groups := mapper.Groups(claims.Raw)
+		if db != nil {
+			if internal, err := db.GetUserGroups(info.Subject); err == nil {
+				groups = append(groups, internal...)
+			}
+		}
+		resolved, err := resolveConsolePrincipal(ta, mapper, true,
+			info.Subject, info.Email, info.EmailVerified, info.Name, groups, claims.Raw)
+		if err != nil || resolved == nil {
+			return
+		}
+		info.Roles = resolved.Roles
+		info.TenantRoles = resolved.TenantRoles
+		info.Groups = resolved.Groups
+	}
 }
 
 // buildCertBindings translates the config cert bindings into authn.CertBinding.
@@ -332,31 +397,27 @@ func toRbacRoles(in []string) []rbac.Role {
 	return out
 }
 
-// buildLoginProvider resolves the OIDC provider and verifier used for
-// interactive login. It reuses the already-discovered top-level provider when
-// the issuer matches (avoiding a second discovery round-trip), and otherwise
-// performs discovery against the auth-block issuer. The verifier is bound to the
-// interactive-login client id.
-func buildLoginProvider(cfg *config.Config, existing *auth.OIDCProvider) (*oidc.Provider, *oidc.IDTokenVerifier, string, error) {
-	issuer := cfg.Auth.OIDC.IssuerURL
-	if issuer == "" {
-		issuer = cfg.OIDC.IssuerURL
+// buildLoginProvider resolves the OIDC provider and verifier for one interactive
+// login provider. It reuses an already-discovered machine-Bearer provider when
+// the issuer matches (avoiding a second discovery round-trip for the common case
+// where one IdP serves both), and otherwise performs discovery itself. The
+// verifier is bound to this provider's console client id, which is routinely a
+// different OAuth client from the Bearer audience.
+func buildLoginProvider(pc config.AuthOIDCProviderConfig, existing *auth.MultiProvider) (*oidc.Provider, *oidc.IDTokenVerifier, error) {
+	if pc.IssuerURL == "" {
+		return nil, nil, fmt.Errorf("no issuer_url configured")
 	}
-	clientID := cfg.Auth.OIDC.ClientID
-	if clientID == "" {
-		clientID = cfg.OIDC.ClientID
+	if pc.ClientID == "" {
+		return nil, nil, fmt.Errorf("no client_id configured")
 	}
-	if clientID == "" {
-		return nil, nil, "", fmt.Errorf("no client_id configured (auth.oidc.client_id or oidc.client_id)")
+	if p := existing.Lookup(pc.IssuerURL); p != nil {
+		return p.Provider(), p.VerifierForClient(pc.ClientID), nil
 	}
-	if existing != nil && existing.IssuerURL() == issuer {
-		return existing.Provider(), existing.VerifierForClient(clientID), clientID, nil
-	}
-	provider, err := oidc.NewProvider(context.Background(), issuer)
+	provider, err := oidc.NewProvider(context.Background(), pc.IssuerURL)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("discovering issuer %q: %w", issuer, err)
+		return nil, nil, fmt.Errorf("discovering issuer %q: %w", pc.IssuerURL, err)
 	}
-	return provider, provider.Verifier(&oidc.Config{ClientID: clientID}), clientID, nil
+	return provider, provider.Verifier(&oidc.Config{ClientID: pc.ClientID}), nil
 }
 
 // buildPrincipalResolver returns a PrincipalResolver that maps a verified OIDC
@@ -493,4 +554,21 @@ func loadClientCAs(path string) (*x509.CertPool, error) {
 		return nil, fmt.Errorf("ca_file %q contained no PEM certificates", path)
 	}
 	return pool, nil
+}
+
+// bearerProviderSpecs renders the configured machine-token issuers into the
+// verifier's provider specs. Each provider's accepted audiences are its client_id
+// unioned with its audiences list — the control that keeps a token minted for a
+// different relying party of the same IdP from authenticating here.
+func bearerProviderSpecs(cfg *config.Config) []auth.ProviderSpec {
+	providers := cfg.BearerOIDCProviders()
+	out := make([]auth.ProviderSpec, 0, len(providers))
+	for _, p := range providers {
+		out = append(out, auth.ProviderSpec{
+			Name:      p.Name,
+			IssuerURL: p.IssuerURL,
+			Audiences: p.Audience(),
+		})
+	}
+	return out
 }

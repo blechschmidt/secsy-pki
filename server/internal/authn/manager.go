@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
@@ -36,8 +38,18 @@ type Manager struct {
 	// consoleRedirect is where a successful OIDC login lands the browser.
 	consoleRedirect string
 
-	login    *OIDCLogin // nil when interactive OIDC login is not configured
-	webauthn *WebAuthn  // nil when WebAuthn step-up is not configured
+	// logins holds the interactive OIDC login providers in declaration order —
+	// several are supported so one deployment can offer, say, the corporate IdP
+	// to operators and a second IdP to contractors (Task 212). Empty when
+	// interactive OIDC login is not configured.
+	logins []*OIDCLogin
+	// txKey signs every provider's login transaction cookie. It is shared rather
+	// than per-provider because providers may share a single registered redirect
+	// URI: the callback must read the cookie before it knows which provider wrote
+	// it. Generated once per process.
+	txKey []byte
+
+	webauthn *WebAuthn // nil when WebAuthn step-up is not configured
 
 	// password authenticates a console username/password (the built-in root
 	// user), returning the resolved principal. Nil disables password login (only
@@ -94,11 +106,129 @@ func NewManager(o ManagerOptions) *Manager {
 		audit:           o.Audit,
 		requestID:       reqID,
 		consoleRedirect: redirect,
+		txKey:           []byte(randToken(32)),
 	}
 }
 
-// SetLogin attaches the OIDC interactive-login handler.
-func (m *Manager) SetLogin(l *OIDCLogin) { m.login = l }
+// loginTxKey returns the shared login-transaction signing key, generating it if
+// the manager was built without one (a zero-value Manager in a test).
+func (m *Manager) loginTxKey() []byte {
+	if m == nil {
+		return []byte(randToken(32))
+	}
+	if len(m.txKey) == 0 {
+		m.txKey = []byte(randToken(32))
+	}
+	return m.txKey
+}
+
+// SetLogin installs l as the only interactive OIDC login provider, replacing any
+// already attached. SetLogin(nil) leaves interactive login disabled.
+func (m *Manager) SetLogin(l *OIDCLogin) {
+	if l == nil {
+		m.logins = nil
+		return
+	}
+	m.logins = []*OIDCLogin{l}
+}
+
+// AddLogin appends an interactive OIDC login provider. Names must be unique: they
+// address the provider in /auth/login?provider=<name> and inside the signed login
+// transaction cookie, so two providers sharing one name would make the callback
+// dispatch ambiguous.
+func (m *Manager) AddLogin(l *OIDCLogin) error {
+	if l == nil {
+		return nil
+	}
+	if len(m.logins) > 0 && l.name == "" {
+		return errors.New("authn: an OIDC login provider needs a name when several are configured")
+	}
+	for _, existing := range m.logins {
+		if existing.name == l.name {
+			return fmt.Errorf("authn: duplicate OIDC login provider name %q", l.name)
+		}
+		if existing.name == "" {
+			return errors.New("authn: cannot add a second OIDC login provider alongside an unnamed one")
+		}
+		if existing.isDefault && l.isDefault {
+			return fmt.Errorf("authn: OIDC login providers %q and %q both claim to be the default",
+				existing.name, l.name)
+		}
+	}
+	m.logins = append(m.logins, l)
+	return nil
+}
+
+// LoginProvider returns the login provider with the given name, or nil. An empty
+// name selects the default provider (see DefaultLoginProvider).
+func (m *Manager) LoginProvider(name string) *OIDCLogin {
+	if m == nil {
+		return nil
+	}
+	if name == "" {
+		return m.DefaultLoginProvider()
+	}
+	for _, l := range m.logins {
+		if l.name == name {
+			return l
+		}
+	}
+	return nil
+}
+
+// DefaultLoginProvider returns the provider a bare GET /auth/login uses: the one
+// marked default (auth.oidc.providers[].default), else the first added. Keeping
+// this independent of order lets an operator list providers in the order the
+// login page should show them while still choosing which one the bare URL goes to.
+func (m *Manager) DefaultLoginProvider() *OIDCLogin {
+	if m == nil || len(m.logins) == 0 {
+		return nil
+	}
+	for _, l := range m.logins {
+		if l.isDefault {
+			return l
+		}
+	}
+	return m.logins[0]
+}
+
+// LoginProviderInfo describes one console login provider for the public
+// authentication-discovery document, so the login page can render one sign-in
+// button per IdP instead of a single hard-coded "SSO".
+type LoginProviderInfo struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	// LoginURL is where the browser is sent to begin this provider's flow.
+	LoginURL string `json:"login_url"`
+	// Default marks the provider a bare /auth/login would use.
+	Default bool `json:"default,omitempty"`
+}
+
+// LoginProviders describes the configured interactive login providers in
+// declaration order.
+func (m *Manager) LoginProviders() []LoginProviderInfo {
+	if m == nil {
+		return nil
+	}
+	out := make([]LoginProviderInfo, 0, len(m.logins))
+	def := m.DefaultLoginProvider()
+	for _, l := range m.logins {
+		info := LoginProviderInfo{
+			Name:        l.name,
+			DisplayName: l.displayName,
+			LoginURL:    "/auth/login",
+			Default:     l == def,
+		}
+		if info.DisplayName == "" {
+			info.DisplayName = "SSO"
+		}
+		if l.name != "" {
+			info.LoginURL = "/auth/login?provider=" + url.QueryEscape(l.name)
+		}
+		out = append(out, info)
+	}
+	return out
+}
 
 // SetWebAuthn attaches the WebAuthn step-up handler.
 func (m *Manager) SetWebAuthn(w *WebAuthn) { m.webauthn = w }
@@ -120,7 +250,7 @@ func (m *Manager) SessionCookieName() string { return m.sessionCookie }
 func (m *Manager) csrfCookieName() string { return m.sessionCookie + CSRFCookieSuffix }
 
 // LoginEnabled reports whether interactive OIDC login is configured.
-func (m *Manager) LoginEnabled() bool { return m != nil && m.login != nil }
+func (m *Manager) LoginEnabled() bool { return m != nil && len(m.logins) > 0 }
 
 // WebAuthnEnabled reports whether WebAuthn step-up is configured.
 func (m *Manager) WebAuthnEnabled() bool { return m != nil && m.webauthn != nil }
@@ -129,9 +259,15 @@ func (m *Manager) WebAuthnEnabled() bool { return m != nil && m.webauthn != nil 
 // session (logout, CSRF refresh, WebAuthn) read the session cookie directly; the
 // login/callback endpoints are public.
 func (m *Manager) Register(mux *http.ServeMux) {
-	if m.login != nil {
-		mux.HandleFunc("GET /auth/login", m.login.Begin)
-		mux.HandleFunc("GET /auth/callback", m.login.Callback)
+	if len(m.logins) > 0 {
+		// One pair of routes serves every provider. The provider is selected by
+		// ?provider= (or the path form, for an IdP whose registration demands a
+		// distinct redirect URI) and, on the way back, by the name sealed into the
+		// login transaction cookie.
+		mux.HandleFunc("GET /auth/login", m.OIDCBegin)
+		mux.HandleFunc("GET /auth/callback", m.OIDCCallback)
+		mux.HandleFunc("GET /auth/login/oidc/{provider}", m.OIDCBegin)
+		mux.HandleFunc("GET /auth/callback/{provider}", m.OIDCCallback)
 	}
 	mux.HandleFunc("POST /auth/logout", m.Logout)
 	mux.HandleFunc("GET /auth/session", m.SessionInfo)
@@ -148,6 +284,92 @@ func (m *Manager) Register(mux *http.ServeMux) {
 		mux.HandleFunc("POST /auth/webauthn/stepup/finish", m.webauthn.StepUpFinish)
 		mux.HandleFunc("GET /auth/webauthn/credentials", m.webauthn.ListCredentials)
 	}
+}
+
+// OIDCBegin starts an interactive login. The provider is taken from the
+// {provider} path segment or the ?provider= query parameter; absent both, the
+// default provider is used. An unknown name is rejected rather than silently
+// falling back, so a stale console link cannot send an operator to the wrong IdP.
+func (m *Manager) OIDCBegin(w http.ResponseWriter, r *http.Request) {
+	if len(m.logins) == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "interactive OIDC login is not configured"})
+		return
+	}
+	name := requestedProvider(r)
+	l := m.LoginProvider(name)
+	if l == nil {
+		m.record(r, nil, audit.ActionAuthLoginFailed, "", audit.ResultDenied,
+			"method=oidc reason=unknown_provider provider="+name)
+		writeJSON(w, http.StatusNotFound, map[string]interface{}{
+			"error":     fmt.Sprintf("unknown OIDC login provider %q", name),
+			"code":      "unknown_provider",
+			"providers": m.LoginProviders(),
+		})
+		return
+	}
+	l.Begin(w, r)
+}
+
+// OIDCCallback completes an interactive login. The provider is recovered from the
+// signed login transaction cookie, so several providers may share one registered
+// redirect URI; when the request also carries a {provider} path segment the two
+// must agree.
+func (m *Manager) OIDCCallback(w http.ResponseWriter, r *http.Request) {
+	if len(m.logins) == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "interactive OIDC login is not configured"})
+		return
+	}
+	// An IdP-side error arrives with no usable transaction; let the addressed (or
+	// default) provider report it so the failure is still audited and metered.
+	if r.URL.Query().Get("error") != "" {
+		l := m.LoginProvider(requestedProvider(r))
+		if l == nil {
+			l = m.DefaultLoginProvider()
+		}
+		l.Callback(w, r)
+		return
+	}
+
+	tx, err := m.readLoginTx(r)
+	if err != nil {
+		// No readable transaction: hand it to the default provider, whose Callback
+		// emits the same bad_tx audit event and response it always has.
+		m.DefaultLoginProvider().Callback(w, r)
+		return
+	}
+	l := m.LoginProvider(tx.Provider)
+	if l == nil {
+		clearCookie(w, m.txCookieName(), m.secure)
+		m.record(r, nil, audit.ActionAuthLoginFailed, "", audit.ResultDenied,
+			"method=oidc reason=unknown_provider provider="+tx.Provider)
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("login transaction names unknown provider %q", tx.Provider),
+			"code":  "unknown_provider",
+		})
+		return
+	}
+	// A per-provider callback path must match the transaction's provider: the two
+	// disagreeing means a code issued by one IdP arrived at another's endpoint.
+	if want := r.PathValue("provider"); want != "" && want != tx.Provider {
+		clearCookie(w, m.txCookieName(), m.secure)
+		m.record(r, nil, audit.ActionAuthLoginFailed, "", audit.ResultDenied,
+			"method=oidc reason=provider_mismatch provider="+tx.Provider+" path="+want)
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "login transaction does not belong to this callback endpoint",
+			"code":  "provider_mismatch",
+		})
+		return
+	}
+	l.Callback(w, r)
+}
+
+// requestedProvider reads the provider name a login request addresses, from the
+// path wildcard or the query string.
+func requestedProvider(r *http.Request) string {
+	if p := r.PathValue("provider"); p != "" {
+		return p
+	}
+	return r.URL.Query().Get("provider")
 }
 
 // currentSession loads the live session referenced by the request's session
@@ -289,14 +511,19 @@ func (m *Manager) SessionInfo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "no session"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"user":       sess.User,
 		"csrf_token": sess.CSRFToken,
 		"method":     sess.Method,
 		"step_up":    sess.stepUpValid(time.Now()),
 		"webauthn":   m.WebAuthnEnabled(),
 		"expires_at": sess.Expires.UTC().Format(time.RFC3339),
-	})
+	}
+	// Which IdP authenticated this session, when several are federated.
+	if sess.User != nil && sess.User.AuthProvider != "" {
+		resp["auth_provider"] = sess.User.AuthProvider
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // record appends an authentication audit event. A nil sink or a storage failure

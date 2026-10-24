@@ -43,6 +43,22 @@ type Claims struct {
 	// principal's roles.
 	EmailVerified bool   `json:"email_verified"`
 	Name          string `json:"name"`
+
+	// Issuer and Audience are the verified `iss` / `aud` of the token, taken from
+	// the parsed ID token rather than re-decoded, so they reflect what the
+	// verifier actually accepted.
+	Issuer   string   `json:"-"`
+	Audience []string `json:"-"`
+	// Provider names the configured OIDC provider that verified this token. With
+	// several machine issuers federated (Task 212) it is what makes authorization
+	// per-provider: a claim->role mapping declared for one issuer must not be
+	// matched by a token from another that happens to carry the same subject.
+	// Empty for a single-provider deployment that did not name its issuer.
+	Provider string `json:"-"`
+	// Raw carries every claim the token asserted, so the per-provider
+	// claim -> role mapper can inspect groups, roles, or any other claim the IdP
+	// uses to express entitlement without this struct having to enumerate them.
+	Raw map[string]interface{} `json:"-"`
 }
 
 func (o *OIDCProvider) VerifyToken(ctx context.Context, rawToken string) (*Claims, error) {
@@ -55,6 +71,18 @@ func (o *OIDCProvider) VerifyToken(ctx context.Context, rawToken string) (*Claim
 	if err := idToken.Claims(&claims); err != nil {
 		return nil, fmt.Errorf("parsing claims: %w", err)
 	}
+	// The raw claim set is decoded separately because a typed struct cannot carry
+	// the arbitrary group/role claims an IdP uses to express entitlement, and
+	// encoding/json has no way to capture the remaining keys. Its error is
+	// deliberately not checked: the verifier above already parsed iss/aud/exp out
+	// of this payload, so it is known to be a JSON object and cannot fail to
+	// decode into a map. Only the typed decode above can fail, on a claim whose
+	// JSON type is wrong — which it still rejects.
+	var raw map[string]interface{}
+	_ = idToken.Claims(&raw)
+	claims.Raw = raw
+	claims.Issuer = idToken.Issuer
+	claims.Audience = idToken.Audience
 
 	return &claims, nil
 }

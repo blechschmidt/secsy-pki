@@ -1145,10 +1145,31 @@ type AuditLogPage struct {
 	Total   *int             `json:"total,omitempty"`
 }
 
+// AuthBearerProvider defines model for AuthBearerProvider.
+type AuthBearerProvider struct {
+	// Audiences Audiences this deployment accepts for the provider.
+	Audiences *[]string `json:"audiences,omitempty"`
+
+	// IssuerUrl The IdP issuer matched against a token's iss claim.
+	IssuerUrl *string `json:"issuer_url,omitempty"`
+
+	// Name Provider id, as it appears in audit detail.
+	Name *string `json:"name,omitempty"`
+}
+
 // AuthConfig defines model for AuthConfig.
 type AuthConfig struct {
-	ClientId  *string `json:"client_id,omitempty"`
+	// BearerProviders The OIDC issuers trusted to authenticate machine callers presenting `Authorization: Bearer <jwt>`. Published so a workload can discover which issuer and audience to request a token for. Absent when no machine issuer is configured.
+	BearerProviders *[]AuthBearerProvider `json:"bearer_providers,omitempty"`
+
+	// ClientId Primary accepted audience of the first machine-token provider.
+	ClientId *string `json:"client_id,omitempty"`
+
+	// IssuerUrl Issuer of the FIRST configured machine-token provider. Kept for clients written before multiple providers were supported; read bearer_providers instead.
 	IssuerUrl *string `json:"issuer_url,omitempty"`
+
+	// LdapLogin Session-establishing LDAP/AD login (/auth/login/ldap) is available.
+	LdapLogin *bool `json:"ldap_login,omitempty"`
 
 	// OidcEnabled Bearer-token OIDC verification is configured.
 	OidcEnabled *bool `json:"oidc_enabled,omitempty"`
@@ -1156,11 +1177,29 @@ type AuthConfig struct {
 	// OidcLoginEnabled Server-side interactive OIDC login (/auth/login) is available.
 	OidcLoginEnabled *bool `json:"oidc_login_enabled,omitempty"`
 
+	// OidcProviders The interactive console login providers, in declaration order. A deployment may federate several identity providers (for example a corporate IdP for staff and a second for contractors); the console renders one sign-in entry per provider. Absent when interactive login is not configured.
+	OidcProviders *[]AuthLoginProvider `json:"oidc_providers,omitempty"`
+
 	// PasswordLogin Session-establishing password login (/auth/login/password) is available.
 	PasswordLogin *bool `json:"password_login,omitempty"`
 
 	// WebauthnEnabled WebAuthn/passkey step-up is configured for high-risk operations.
 	WebauthnEnabled *bool `json:"webauthn_enabled,omitempty"`
+}
+
+// AuthLoginProvider defines model for AuthLoginProvider.
+type AuthLoginProvider struct {
+	// Default The provider a bare /auth/login uses.
+	Default *bool `json:"default,omitempty"`
+
+	// DisplayName Label to show on the sign-in button.
+	DisplayName *string `json:"display_name,omitempty"`
+
+	// LoginUrl Where to send the browser to begin this provider's flow.
+	LoginUrl *string `json:"login_url,omitempty"`
+
+	// Name Provider id used in /auth/login?provider=<name>.
+	Name *string `json:"name,omitempty"`
 }
 
 // BackupCARef The restore-verifiable summary of one CA: identifiers, the provider key label, and the public-key fingerprint a restore matches against the key the token still holds.
@@ -4695,6 +4734,8 @@ type UpdateTenantRequest struct {
 
 // UserInfo defines model for UserInfo.
 type UserInfo struct {
+	// AuthProvider The configured OIDC provider that authenticated this principal, when several issuers are federated. Diagnostic only — the roles above already reflect that provider's claim mapping.
+	AuthProvider  *string   `json:"auth_provider,omitempty"`
 	Email         *string   `json:"email,omitempty"`
 	EmailVerified *bool     `json:"email_verified,omitempty"`
 	IsRoot        *bool     `json:"is_root,omitempty"`

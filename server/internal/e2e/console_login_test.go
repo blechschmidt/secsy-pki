@@ -50,6 +50,47 @@ type stubIDP struct {
 	// so the minted id token echoes it (go-oidc binds the nonce).
 	nonce string
 	sub   string
+	// groups is the group claim this IdP asserts. It is a field so a test
+	// federating several providers can give each its own groups (Task 212);
+	// newStubIDP defaults it to the single-provider fixture's value.
+	groups []string
+	// issuer is the IdP's issuer URL (== srv.URL), kept so a test can mint tokens
+	// directly rather than only through the token endpoint.
+	issuer string
+}
+
+// mintIDToken signs an id token for sub and aud carrying the given group claim,
+// as this IdP would. It is the machine-axis counterpart to the /token endpoint: a
+// Bearer caller presents a token it already holds, with no browser handshake.
+// The subject, audience, and groups are all explicit so a test can mint the
+// token an impersonation attempt would need.
+func (s *stubIDP) mintIDToken(t *testing.T, sub, aud string, groups []string) string {
+	t.Helper()
+	claims := map[string]interface{}{
+		"iss":            s.issuer,
+		"aud":            aud,
+		"sub":            sub,
+		"exp":            time.Now().Add(time.Hour).Unix(),
+		"iat":            time.Now().Unix(),
+		"email":          "machine@example.com",
+		"email_verified": true,
+	}
+	if len(groups) > 0 {
+		claims["groups"] = groups
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("marshal claims: %v", err)
+	}
+	jws, err := s.signer.Sign(payload)
+	if err != nil {
+		t.Fatalf("sign id token: %v", err)
+	}
+	compact, err := jws.CompactSerialize()
+	if err != nil {
+		t.Fatalf("serialize id token: %v", err)
+	}
+	return compact
 }
 
 func newStubIDP(t *testing.T, clientID, sub string) *stubIDP {
@@ -62,12 +103,13 @@ func newStubIDP(t *testing.T, clientID, sub string) *stubIDP {
 	if err != nil {
 		t.Fatalf("jose signer: %v", err)
 	}
-	idp := &stubIDP{signer: signer, clientID: clientID, sub: sub}
+	idp := &stubIDP{signer: signer, clientID: clientID, sub: sub, groups: []string{"pki-admins"}}
 
 	mux := http.NewServeMux()
 	idp.srv = httptest.NewServer(mux)
 	t.Cleanup(idp.srv.Close)
 	issuer := idp.srv.URL
+	idp.issuer = issuer
 
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		writeTestJSON(w, map[string]interface{}{
@@ -95,7 +137,7 @@ func newStubIDP(t *testing.T, clientID, sub string) *stubIDP {
 			"email":          "admin@example.com",
 			"email_verified": true,
 			"name":           "Alice Admin",
-			"groups":         []string{"pki-admins"},
+			"groups":         idp.groups,
 		}
 		payload, _ := json.Marshal(claims)
 		jws, err := idp.signer.Sign(payload)

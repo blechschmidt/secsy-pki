@@ -1,0 +1,179 @@
+# =============================================================================
+# Example: two identity providers — GitHub Actions for signing, Entra ID for
+#          the console
+# =============================================================================
+# One deployment, two populations, two identity providers:
+#
+#   * A GitHub Actions job signs release artifacts. It authenticates with a
+#     short-lived GitHub OIDC token (no stored secret) and may do exactly one
+#     thing: sign.
+#   * Human operators administer the PKI through the web console. They sign in
+#     with Microsoft Entra ID (the corporate IdP), and their Entra groups decide
+#     which RBAC roles they hold.
+#   * A partner's auditors read their own tenant's inventory through a third
+#     IdP, with no access to anything else.
+#
+# These are deliberately NOT the same provider. A machine token minted by GitHub
+# must not be able to log in to the console, and an operator's Entra token must
+# not be able to impersonate the signing workflow — which is exactly what the
+# per-provider claim -> role mappings below enforce: a mapping is evaluated only
+# for tokens the provider that declared it verified.
+#
+# See examples/multi-oidc/README.md for the walkthrough, and
+# docs/security/authentication.md#multiple-oidc-providers for the full reference.
+
+server:
+  host: "0.0.0.0"
+  port: 8443
+  tls_cert: "certs/server.crt"
+  tls_key: "certs/server.key"
+
+database:
+  driver: "sqlite"
+  dsn: "secsy-pki.db"
+
+root_user:
+  username: "root"
+  # Break-glass only. In production name a file instead of inlining the value —
+  # `password_file: /etc/secsy/root.pass` — see docs/security/credential-files.md.
+  # Disable the path entirely once SSO works (see policy below).
+  password: "change-me-in-production"
+
+key_provider:
+  type: "pkcs11"
+
+pkcs11:
+  module_path: "/usr/lib/softhsm/libsofthsm2.so"
+  token_label: "secsy-ca"
+  pin: "1234"                     # or pin_file / pin_source in production
+  session_pool_size: 8
+
+# =============================================================================
+# MACHINE callers — `Authorization: Bearer <jwt>`
+# =============================================================================
+# Each provider is routed to by the token's `iss` claim and bound to its own
+# accepted audience. A provider's role_mappings apply ONLY to tokens it verified,
+# so the GitHub workflow's subject grants nothing when asserted by another
+# issuer. A provider with no client_id/audiences is refused at startup: it would
+# honor any token the IdP minted for an unrelated service.
+oidc:
+  providers:
+    # --- 1. GitHub Actions: keyless signing from the release pipeline --------
+    # client_id is the AUDIENCE the workflow requests:
+    #   core.getIDToken('secsy-pki-signing')
+    # The `sub` claim is stable because the job runs in a GitHub *environment*
+    # (repo:<owner>/<repo>:environment:release) rather than being keyed on a ref.
+    - name: github
+      issuer_url: "https://token.actions.githubusercontent.com"
+      client_id: "secsy-pki-signing"
+      role_mappings:
+        # `signer` grants artifact:sign and nothing else — a compromised
+        # pipeline can sign builds; it can never mint certificates.
+        - { claim: "sub", value: "repo:example-org/example-repo:environment:release", roles: ["signer"] }
+
+    # --- 2. Entra ID: service principals scripting the API ------------------
+    # Entra app roles arrive in the `roles` claim, not `groups`.
+    - name: entra
+      issuer_url: "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0"
+      client_id: "api://secsy-pki"
+      groups_claim: "roles"
+      role_mappings:
+        - { value: "PKI.Issue", roles: ["issuer"] }
+        - { value: "PKI.Audit", roles: ["auditor"] }
+
+# =============================================================================
+# CONSOLE operators — interactive Authorization-Code + PKCE login
+# =============================================================================
+# The fields directly under auth.oidc are the shared defaults; each provider
+# inherits what it does not name. Both providers here share one registered
+# redirect_url: the signed login transaction cookie records which provider began
+# the flow, so the callback dispatches to the right verifier.
+auth:
+  session:
+    ttl_minutes: 60
+
+  oidc:
+    enabled: true
+    redirect_url: "https://pki.example.com/auth/callback"
+    scopes: ["openid", "profile", "email", "groups"]
+    groups_claim: "groups"
+    # Deny a login that resolves to no role, rather than landing an operator in
+    # an empty console. Overridden per provider below where that is wrong.
+    allow_zero_role: false
+    # NOTE: no shared role_mappings here. A shared mapping is evaluated for
+    # EVERY provider, so a group name asserted by the partner IdP would match a
+    # mapping meant for Entra. With providers of differing trust, declare the
+    # mapping on the provider.
+    providers:
+      # --- Staff: Microsoft Entra ID --------------------------------------
+      - name: entra
+        display_name: "Microsoft Entra ID"
+        issuer_url: "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0"
+        client_id: "console-entra"
+        # Confidential client. In production keep the secret out of this file
+        # with `client_secret_file: /etc/secsy/entra-client-secret` — every
+        # provider has its own binding.
+        client_secret: "change-me"
+        default: true                  # a bare /auth/login lands here
+        role_mappings:
+          - { value: "PKI-Admins", roles: ["admin"] }
+          - { value: "PKI-Issuers", roles: ["issuer"] }
+          - { value: "PKI-Auditors", roles: ["auditor"] }
+
+      # --- Partner auditors: their own IdP, their own tenant --------------
+      # Scoped to the "partner" tenant: `auditor` there, nothing anywhere else.
+      # allow_zero_role is true because a partner identity that matches no group
+      # should reach a read-nothing console rather than a login error they
+      # cannot act on.
+      - name: partner
+        display_name: "Partner IdP"
+        issuer_url: "https://idp.partner.example.net"
+        client_id: "console-partner"
+        redirect_url: "https://pki.example.com/auth/callback/partner"
+        allow_zero_role: true
+        role_mappings:
+          - { value: "pki-readers", tenant: "partner", roles: ["auditor"] }
+
+  webauthn:
+    # Passkey step-up for the destructive operations, on top of SSO.
+    enabled: true
+    rp_id: "pki.example.com"
+    rp_name: "Secsy PKI"
+    origins: ["https://pki.example.com"]
+    step_up_ttl_minutes: 5
+
+# The partner tenant referenced by the console mapping above.
+tenants:
+  - id: "partner"
+    name: "Partner Organization"
+
+policy:
+  # Once both IdPs work, close the break-glass path: with SSO and step-up in
+  # place, a shared static password is the weakest credential in the deployment.
+  allow_root_basic_auth: true
+
+# --- Artifact code-signing service (what the GitHub provider is for) ---------
+# Provision the key + certificate once, offline:
+#   secsy-ca signing-key -ca "Example Root" -label codesign-release \
+#       -cn "Release Signing" -o "Example Corp" -chain -out /etc/secsy/codesign.pem
+signing:
+  enabled: true
+  signers:
+    - name: release
+      key_label: codesign-release
+      certificate_file: /etc/secsy/codesign.pem
+      ca_label: "Example Root"
+      digest: sha256
+      timestamp: true
+
+tsa:
+  enabled: true
+  key_label: tsa-signer
+  certificate_file: /etc/secsy/tsa.pem
+  ca_label: "Example Root"
+
+rate_limit:
+  enabled: true
+  per_account:
+    rate: 5
+    burst: 10

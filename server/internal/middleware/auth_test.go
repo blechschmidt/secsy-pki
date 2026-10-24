@@ -227,3 +227,62 @@ func TestBasicAuthWrongUsername(t *testing.T) {
 		t.Errorf("status = %d, want 401", w.Code)
 	}
 }
+
+// TestBearerClaimResolverIsApplied asserts the per-provider claim -> role hook
+// (Task 212) runs on the Bearer path, after the central role resolvers, and that
+// the verifying provider's name is carried onto the principal. Without this wiring
+// a federated deployment's provider-scoped role mappings would simply never be
+// consulted.
+func TestBearerClaimResolverIsApplied(t *testing.T) {
+	claims := &auth.Claims{
+		Subject:  "repo:example-org/app:environment:release",
+		Provider: "github",
+		Raw:      map[string]interface{}{"sub": "repo:example-org/app:environment:release"},
+	}
+	mw := NewAuthMiddleware(&mockTokenVerifier{claims: claims}, "root", "secret")
+	// A central resolver runs first and grants nothing...
+	mw.SetRoleResolver(func(*models.UserInfo) []string { return nil })
+	// ...then the provider-scoped hook unions in what that issuer's mapping grants.
+	var sawProvider string
+	mw.SetBearerClaimResolver(func(info *models.UserInfo, c *auth.Claims) {
+		sawProvider = c.Provider
+		info.Roles = append(info.Roles, "signer")
+		info.Groups = []string{"workflow"}
+	})
+
+	var got *models.UserInfo
+	handler := mw.Authenticate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = GetUserInfo(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer some.jwt.token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if sawProvider != "github" {
+		t.Errorf("hook saw provider %q, want github", sawProvider)
+	}
+	if got == nil || len(got.Roles) != 1 || got.Roles[0] != "signer" {
+		t.Errorf("principal = %+v, want the provider-scoped signer role", got)
+	}
+	if got.AuthProvider != "github" {
+		t.Errorf("AuthProvider = %q, want github recorded on the principal", got.AuthProvider)
+	}
+	if len(got.Groups) != 1 || got.Groups[0] != "workflow" {
+		t.Errorf("Groups = %v, want the IdP groups the hook resolved", got.Groups)
+	}
+
+	// The gRPC path must resolve identically — the two credential paths are meant
+	// to accept the same credentials with the same authorization.
+	rpcInfo, err := mw.AuthenticateRPC(context.Background(), "Bearer some.jwt.token", nil)
+	if err != nil {
+		t.Fatalf("AuthenticateRPC: %v", err)
+	}
+	if rpcInfo.AuthProvider != "github" || len(rpcInfo.Roles) != 1 || rpcInfo.Roles[0] != "signer" {
+		t.Errorf("gRPC principal = %+v, want the same provider and roles as HTTP", rpcInfo)
+	}
+}

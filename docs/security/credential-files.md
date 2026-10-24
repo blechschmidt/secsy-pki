@@ -133,6 +133,7 @@ file grew a startup preflight.)
 | Vault AppRole secret-id | `key_provider.kms.vault.secret_id` | `key_provider.kms.vault.secret_id_file` |
 | Vault token / secret-id of a `vault` PIN source | `…pin_source.vault.token` / `.secret_id` | `…pin_source.vault.token_file` / `.secret_id_file` |
 | OIDC confidential-client secret | `auth.oidc.client_secret` | `auth.oidc.client_secret_file` |
+| OIDC confidential-client secret, per console provider | `auth.oidc.providers[].client_secret` | `auth.oidc.providers[].client_secret_file` |
 | LDAP bind-service-account password | `auth.ldap.bind_password` | `auth.ldap.bind_password_file` |
 | ACME anti-replay nonce signing key | `acme.nonce_hmac_key` | `acme.nonce_hmac_key_file` |
 | ACME External Account Binding keys | `acme.eab_hmac_keys` | `acme.eab_hmac_keys_file` |

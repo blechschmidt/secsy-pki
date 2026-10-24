@@ -5105,9 +5105,52 @@ components:
         oidc_enabled: { type: boolean, description: "Bearer-token OIDC verification is configured." }
         oidc_login_enabled: { type: boolean, description: "Server-side interactive OIDC login (/auth/login) is available." }
         password_login: { type: boolean, description: "Session-establishing password login (/auth/login/password) is available." }
+        ldap_login: { type: boolean, description: "Session-establishing LDAP/AD login (/auth/login/ldap) is available." }
         webauthn_enabled: { type: boolean, description: "WebAuthn/passkey step-up is configured for high-risk operations." }
-        issuer_url: { type: string }
-        client_id: { type: string }
+        issuer_url:
+          type: string
+          description: >-
+            Issuer of the FIRST configured machine-token provider. Kept for
+            clients written before multiple providers were supported; read
+            bearer_providers instead.
+        client_id:
+          type: string
+          description: Primary accepted audience of the first machine-token provider.
+        oidc_providers:
+          type: array
+          description: >-
+            The interactive console login providers, in declaration order. A
+            deployment may federate several identity providers (for example a
+            corporate IdP for staff and a second for contractors); the console
+            renders one sign-in entry per provider. Absent when interactive login
+            is not configured.
+          items: { $ref: "#/components/schemas/AuthLoginProvider" }
+        bearer_providers:
+          type: array
+          description: >-
+            The OIDC issuers trusted to authenticate machine callers presenting
+            `Authorization: Bearer <jwt>`. Published so a workload can discover
+            which issuer and audience to request a token for. Absent when no
+            machine issuer is configured.
+          items: { $ref: "#/components/schemas/AuthBearerProvider" }
+
+    AuthLoginProvider:
+      type: object
+      properties:
+        name: { type: string, description: "Provider id used in /auth/login?provider=<name>." }
+        display_name: { type: string, description: "Label to show on the sign-in button." }
+        login_url: { type: string, description: "Where to send the browser to begin this provider's flow." }
+        default: { type: boolean, description: "The provider a bare /auth/login uses." }
+
+    AuthBearerProvider:
+      type: object
+      properties:
+        name: { type: string, description: "Provider id, as it appears in audit detail." }
+        issuer_url: { type: string, description: "The IdP issuer matched against a token's iss claim." }
+        audiences:
+          type: array
+          description: Audiences this deployment accepts for the provider.
+          items: { type: string }
 
     UserInfo:
       type: object
@@ -5120,6 +5163,12 @@ components:
         roles:
           type: array
           items: { type: string }
+        auth_provider:
+          type: string
+          description: >-
+            The configured OIDC provider that authenticated this principal, when
+            several issuers are federated. Diagnostic only — the roles above
+            already reflect that provider's claim mapping.
 
     CASubject:
       type: object

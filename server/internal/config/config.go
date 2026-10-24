@@ -1144,11 +1144,172 @@ type AuthOIDCConfig struct {
 	GroupsClaim string `yaml:"groups_claim"`
 	// RoleMappings map IdP claim values to RBAC roles, optionally scoped to a
 	// tenant. They compose with the top-level rbac subject/email/group assignments.
+	//
+	// With several providers declared below, mappings here apply to EVERY provider
+	// (they are unioned with each provider's own). That is what keeps the
+	// single-provider form working, but it also means a group name asserted by any
+	// federated IdP matches: when the providers differ in how much they are
+	// trusted, declare the mapping on the provider instead of here.
 	RoleMappings []ClaimMappingConfig `yaml:"role_mappings"`
 	// AllowZeroRole permits a successful login even when the operator resolves to
 	// no RBAC role (a read-nothing principal). Defaults to false: an operator with
 	// no role is denied at login rather than landing in an empty console.
 	AllowZeroRole bool `yaml:"allow_zero_role"`
+	// Providers declares several console identity providers side by side (Task
+	// 212), each rendered as its own button on the login page and each with its
+	// own client registration, scopes, and claim -> role mapping. Omitted fields
+	// inherit the single-provider settings above, so a shared redirect_url or
+	// groups_claim is written once. The legacy single-issuer form above remains a
+	// provider in its own right — see Config.ConsoleOIDCProviders.
+	Providers []AuthOIDCProviderConfig `yaml:"providers"`
+}
+
+// AuthOIDCProviderConfig declares one interactive console login provider.
+//
+// Several providers can share one redirect_url: the login transaction cookie
+// records which provider began the flow, so the callback is dispatched to the
+// right verifier without a per-provider callback path. A provider may still name
+// its own redirect_url when its IdP registration demands a distinct URI — the
+// server then also serves /auth/callback/<name>.
+type AuthOIDCProviderConfig struct {
+	// Name identifies the provider in the login URL (/auth/login?provider=<name>),
+	// in audit detail, and in the transaction cookie. Required and unique.
+	Name string `yaml:"name"`
+	// DisplayName is the human label the console shows on its sign-in button
+	// (e.g. "Microsoft Entra ID"). Defaults to Name.
+	DisplayName string `yaml:"display_name"`
+	// IssuerURL / ClientID identify the IdP and the client registration. Both are
+	// required; IssuerURL must be unique across console providers.
+	IssuerURL string `yaml:"issuer_url"`
+	ClientID  string `yaml:"client_id"`
+	// ClientSecret authenticates a confidential client at the token endpoint. Omit
+	// for a public (PKCE-only) client.
+	ClientSecret string `yaml:"client_secret"`
+	// ClientSecretFile names a file whose contents are that client secret,
+	// mutually exclusive with client_secret.
+	ClientSecretFile string `yaml:"client_secret_file"`
+	// RedirectURL is this provider's callback URL as registered at the IdP.
+	// Inherits auth.oidc.redirect_url when empty.
+	RedirectURL string `yaml:"redirect_url"`
+	// Scopes requested at authorization. Inherits auth.oidc.scopes when empty,
+	// which itself defaults to openid, profile, email.
+	Scopes []string `yaml:"scopes"`
+	// GroupsClaim names the claim carrying group memberships. Inherits
+	// auth.oidc.groups_claim when empty (which defaults to "groups").
+	GroupsClaim string `yaml:"groups_claim"`
+	// RoleMappings map this provider's claim values to RBAC roles. They are
+	// unioned with auth.oidc.role_mappings and evaluated only for logins through
+	// this provider.
+	RoleMappings []ClaimMappingConfig `yaml:"role_mappings"`
+	// AllowZeroRole overrides auth.oidc.allow_zero_role for this provider when
+	// set, so one IdP may admit role-less viewers while another does not.
+	AllowZeroRole *bool `yaml:"allow_zero_role"`
+	// Default selects the provider used by a bare GET /auth/login (no ?provider=).
+	// At most one provider may set it; otherwise the first declared one is used.
+	Default bool `yaml:"default"`
+}
+
+// ConsoleOIDCProviders returns the interactive-login providers in declaration
+// order, with every inheritable field already resolved: the single-provider
+// `auth.oidc` settings act as defaults, and those in turn inherit the top-level
+// `oidc` block's issuer/client (the pre-multi-provider behavior, where one IdP
+// served both Bearer verification and console login).
+//
+// The legacy single-issuer form yields one provider named "default"; it is
+// emitted only when that form actually names an issuer or client, so a config
+// that declares providers explicitly does not grow a phantom entry.
+func (c *Config) ConsoleOIDCProviders() []AuthOIDCProviderConfig {
+	a := c.Auth.OIDC
+	out := make([]AuthOIDCProviderConfig, 0, len(a.Providers)+1)
+
+	synthesizedLegacy := false
+	legacyIssuer := strings.TrimSpace(a.IssuerURL)
+	if legacyIssuer == "" {
+		legacyIssuer = strings.TrimSpace(c.OIDC.IssuerURL)
+	}
+	legacyClient := strings.TrimSpace(a.ClientID)
+	if legacyClient == "" {
+		legacyClient = strings.TrimSpace(c.OIDC.ClientID)
+	}
+	if strings.TrimSpace(a.IssuerURL) != "" || strings.TrimSpace(a.ClientID) != "" ||
+		(len(a.Providers) == 0 && legacyIssuer != "") {
+		synthesizedLegacy = true
+		out = append(out, AuthOIDCProviderConfig{
+			Name:             DefaultOIDCProviderName,
+			DisplayName:      "SSO",
+			IssuerURL:        legacyIssuer,
+			ClientID:         legacyClient,
+			ClientSecret:     a.ClientSecret,
+			ClientSecretFile: a.ClientSecretFile,
+			RedirectURL:      strings.TrimSpace(a.RedirectURL),
+			Scopes:           a.Scopes,
+			GroupsClaim:      a.GroupsClaim,
+			RoleMappings:     a.RoleMappings,
+			Default:          true,
+		})
+	}
+
+	for _, p := range a.Providers {
+		p.Name = strings.TrimSpace(p.Name)
+		p.IssuerURL = strings.TrimSpace(p.IssuerURL)
+		p.ClientID = strings.TrimSpace(p.ClientID)
+		p.RedirectURL = strings.TrimSpace(p.RedirectURL)
+		if p.DisplayName == "" {
+			p.DisplayName = p.Name
+		}
+		if p.RedirectURL == "" {
+			p.RedirectURL = strings.TrimSpace(a.RedirectURL)
+		}
+		if len(p.Scopes) == 0 {
+			p.Scopes = a.Scopes
+		}
+		if strings.TrimSpace(p.GroupsClaim) == "" {
+			p.GroupsClaim = a.GroupsClaim
+		}
+		// The shared mappings come first so a provider-specific one cannot be
+		// shadowed by ordering; both are unioned by the mapper regardless.
+		if len(a.RoleMappings) > 0 {
+			merged := make([]ClaimMappingConfig, 0, len(a.RoleMappings)+len(p.RoleMappings))
+			merged = append(merged, a.RoleMappings...)
+			merged = append(merged, p.RoleMappings...)
+			p.RoleMappings = merged
+		}
+		out = append(out, p)
+	}
+
+	// Exactly one provider is the target of a bare /auth/login. An explicit
+	// `default: true` wins over the entry synthesized from the single-provider
+	// form (which can carry no such flag); absent any, the first declared provider
+	// is it.
+	explicit := -1
+	for i := range out {
+		if synthesizedLegacy && i == 0 {
+			continue
+		}
+		if out[i].Default {
+			explicit = i
+			break
+		}
+	}
+	for i := range out {
+		out[i].Default = false
+	}
+	switch {
+	case explicit >= 0:
+		out[explicit].Default = true
+	case len(out) > 0:
+		out[0].Default = true
+	}
+	return out
+}
+
+// AllowZeroRoleFor reports whether a login through provider p may succeed with no
+// resolved RBAC role, honoring the provider's override of auth.oidc.allow_zero_role.
+func (a AuthOIDCConfig) AllowZeroRoleFor(p AuthOIDCProviderConfig) bool {
+	if p.AllowZeroRole != nil {
+		return *p.AllowZeroRole
+	}
+	return a.AllowZeroRole
 }
 
 // ClaimMappingConfig maps one IdP claim value to RBAC roles.
@@ -3505,10 +3666,108 @@ type DatabaseConfig struct {
 	ConnMaxIdleTimeSecs int `yaml:"conn_max_idle_time_seconds"`
 }
 
+// OIDCConfig configures the OIDC verification of machine callers' `Authorization:
+// Bearer <jwt>` credentials — CI pipelines, workload-identity federation, API
+// scripting. It is distinct from auth.oidc, which drives the browser login that
+// establishes a console session, because the two serve different populations and
+// are routinely different identity providers: a GitHub Actions job federates
+// through token.actions.githubusercontent.com while the operators who administer
+// the PKI sign in through the corporate IdP.
+//
+// A deployment may trust several machine issuers at once (Task 212): declare them
+// under Providers. The legacy single issuer_url/client_id pair keeps working and
+// is itself one provider — see Config.BearerOIDCProviders.
 type OIDCConfig struct {
 	IssuerURL   string `yaml:"issuer_url"`
 	ClientID    string `yaml:"client_id"`
 	RedirectURL string `yaml:"redirect_url"`
+	// Providers declares additional machine-token issuers, each with its own
+	// accepted audiences and claim -> role mapping. A presented Bearer JWT is
+	// routed to exactly one of them by its `iss` claim, so one deployment can
+	// federate several workload identity providers (GitHub Actions, GitLab,
+	// Kubernetes service accounts, a cloud IdP) without them being able to
+	// impersonate one another.
+	Providers []OIDCProviderConfig `yaml:"providers"`
+}
+
+// DefaultOIDCProviderName is the name given to the provider synthesized from the
+// legacy single-issuer form of a block (top-level `oidc` or `auth.oidc`), so that
+// shape is indistinguishable downstream from an explicitly declared one.
+const DefaultOIDCProviderName = "default"
+
+// OIDCProviderConfig declares one OIDC issuer trusted to authenticate machine
+// (Bearer) callers.
+//
+// Audience is the control that keeps providers from being interchangeable: a
+// token minted for another relying party of the same IdP must not authenticate
+// here, so a provider with no accepted audience verifies nothing. Authorization
+// is likewise per-provider: RoleMappings are evaluated only for tokens this
+// provider verified, which is how "this GitHub workflow may sign artifacts" is
+// expressed without granting anything to a token from a different issuer that
+// happens to carry the same subject string.
+type OIDCProviderConfig struct {
+	// Name identifies the provider in logs, audit detail, and metrics. Required
+	// and unique; the legacy single-issuer form is named "default".
+	Name string `yaml:"name"`
+	// IssuerURL is the IdP's issuer, matched against the token's `iss` claim and
+	// used for OIDC discovery. Required and unique across providers.
+	IssuerURL string `yaml:"issuer_url"`
+	// ClientID is the primary accepted audience (the `aud` claim a client
+	// requests for this deployment).
+	ClientID string `yaml:"client_id"`
+	// Audiences are further accepted audiences, unioned with ClientID. At least
+	// one audience (here or in client_id) is required: a provider that accepts
+	// any audience would honor a token minted for an unrelated service.
+	Audiences []string `yaml:"audiences"`
+	// GroupsClaim names the claim carrying group memberships (default "groups").
+	// Its values feed the rbac group assignments and the mappings below.
+	GroupsClaim string `yaml:"groups_claim"`
+	// RoleMappings map this provider's claim values to RBAC roles, optionally
+	// scoped to a tenant. They compose with the top-level rbac subject/email/group
+	// assignments and are evaluated ONLY for tokens this provider verified.
+	RoleMappings []ClaimMappingConfig `yaml:"role_mappings"`
+}
+
+// Audience returns the accepted audiences of the provider: client_id unioned
+// with audiences, deduplicated and whitespace-trimmed.
+func (p OIDCProviderConfig) Audience() []string {
+	out := make([]string, 0, len(p.Audiences)+1)
+	seen := make(map[string]bool, len(p.Audiences)+1)
+	for _, a := range append([]string{p.ClientID}, p.Audiences...) {
+		a = strings.TrimSpace(a)
+		if a == "" || seen[a] {
+			continue
+		}
+		seen[a] = true
+		out = append(out, a)
+	}
+	return out
+}
+
+// BearerOIDCProviders returns the machine-token (Authorization: Bearer) OIDC
+// issuers this deployment trusts.
+//
+// The legacy single-issuer form (`oidc.issuer_url` + `oidc.client_id`) is
+// rendered as one provider named "default", so a configuration written before
+// multi-provider support behaves identically and adding a second issuer under
+// `oidc.providers` never silently drops the first. Declaring the same issuer in
+// both places is a validation error rather than a precedence rule.
+func (c *Config) BearerOIDCProviders() []OIDCProviderConfig {
+	out := make([]OIDCProviderConfig, 0, len(c.OIDC.Providers)+1)
+	if strings.TrimSpace(c.OIDC.IssuerURL) != "" {
+		out = append(out, OIDCProviderConfig{
+			Name:      DefaultOIDCProviderName,
+			IssuerURL: strings.TrimSpace(c.OIDC.IssuerURL),
+			ClientID:  strings.TrimSpace(c.OIDC.ClientID),
+		})
+	}
+	for _, p := range c.OIDC.Providers {
+		p.Name = strings.TrimSpace(p.Name)
+		p.IssuerURL = strings.TrimSpace(p.IssuerURL)
+		p.ClientID = strings.TrimSpace(p.ClientID)
+		out = append(out, p)
+	}
+	return out
 }
 
 type RootUserConfig struct {
@@ -3980,6 +4239,14 @@ func (c CMPConfig) redacted() CMPConfig {
 func (a AuthConfig) redacted() AuthConfig {
 	cp := a
 	cp.OIDC.ClientSecret = redactSecret(a.OIDC.ClientSecret)
+	if len(a.OIDC.Providers) > 0 {
+		providers := make([]AuthOIDCProviderConfig, len(a.OIDC.Providers))
+		for i, p := range a.OIDC.Providers {
+			p.ClientSecret = redactSecret(p.ClientSecret)
+			providers[i] = p
+		}
+		cp.OIDC.Providers = providers
+	}
 	cp.LDAP.BindPassword = redactSecret(a.LDAP.BindPassword)
 	cp.LDAP.BindPasswordSource = a.LDAP.BindPasswordSource.redacted()
 	return cp
@@ -4402,6 +4669,10 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.validateOIDCProviders(); err != nil {
+		return nil, err
+	}
+
 	if err := cfg.validateAuth(); err != nil {
 		return nil, err
 	}
@@ -4579,6 +4850,91 @@ func (c *Config) validatePresignPublish() error {
 	return nil
 }
 
+// validateClaimMappings checks one list of claim -> role mappings: every entry
+// must name a claim value and at least one known role, so a mapping that could
+// never grant anything (or that names a misspelled role) is reported at load
+// instead of silently dropped by the mapper.
+func validateClaimMappings(where string, mappings []ClaimMappingConfig, validRole func(string, string) error) error {
+	for i, m := range mappings {
+		if strings.TrimSpace(m.Value) == "" {
+			return fmt.Errorf("%s[%d]: value is required", where, i)
+		}
+		if len(m.Roles) == 0 {
+			return fmt.Errorf("%s[%d]: at least one role is required", where, i)
+		}
+		for _, r := range m.Roles {
+			// validRole's own message is prefixed "auth."; strip that prefix from the
+			// location so the two do not read as "auth.auth.…".
+			if err := validRole(strings.TrimPrefix(where, "auth."), r); err != nil {
+				return fmt.Errorf("%s[%d]: %w", where, i, err)
+			}
+		}
+	}
+	return nil
+}
+
+// countDefaultProviders counts the console providers that claim to be the target
+// of a bare /auth/login.
+func countDefaultProviders(providers []AuthOIDCProviderConfig) int {
+	n := 0
+	for _, p := range providers {
+		if p.Default {
+			n++
+		}
+	}
+	return n
+}
+
+// validateOIDCProviders checks the machine-token (Bearer) issuers declared in the
+// top-level `oidc` block. Each must be identifiable (a unique name), resolvable
+// (an issuer URL, unique across providers so a token's `iss` routes to exactly
+// one verifier), and audience-bound — a provider accepting any audience would
+// honor a token the IdP minted for an unrelated relying party.
+func (c *Config) validateOIDCProviders() error {
+	validRole := func(where, r string) error {
+		switch r {
+		case "admin", "issuer", "signer", "auditor":
+			return nil
+		}
+		return fmt.Errorf("%s: unknown role %q (want admin, issuer, signer, or auditor)", where, r)
+	}
+
+	seenName := make(map[string]string, len(c.OIDC.Providers)+1)
+	seenIssuer := make(map[string]string, len(c.OIDC.Providers)+1)
+	if issuer := strings.TrimSpace(c.OIDC.IssuerURL); issuer != "" {
+		seenName[DefaultOIDCProviderName] = "oidc.issuer_url"
+		seenIssuer[issuer] = "oidc.issuer_url"
+	}
+	for i, p := range c.OIDC.Providers {
+		where := fmt.Sprintf("oidc.providers[%d]", i)
+		name := strings.TrimSpace(p.Name)
+		if name == "" {
+			return fmt.Errorf("%s: name is required (it identifies the issuer in audit detail and metrics)", where)
+		}
+		if prev, dup := seenName[strings.ToLower(name)]; dup {
+			return fmt.Errorf("%s: provider name %q is already used by %s; names must be unique", where, name, prev)
+		}
+		seenName[strings.ToLower(name)] = where
+		issuer := strings.TrimSpace(p.IssuerURL)
+		if issuer == "" {
+			return fmt.Errorf("%s (%q): issuer_url is required", where, name)
+		}
+		if prev, dup := seenIssuer[issuer]; dup {
+			return fmt.Errorf("%s (%q): issuer_url %q is already declared by %s; a token's iss claim must select "+
+				"exactly one provider", where, name, issuer, prev)
+		}
+		seenIssuer[issuer] = where
+		if len(p.Audience()) == 0 {
+			return fmt.Errorf("%s (%q): client_id or audiences is required; a provider with no accepted audience "+
+				"would honor a token minted for a different relying party of the same issuer", where, name)
+		}
+		if err := validateClaimMappings(where+".role_mappings", p.RoleMappings, validRole); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // validateAuth sanity-checks the operator-authentication block when its
 // sub-features are enabled, failing loudly at load so a half-configured login,
 // mTLS, or WebAuthn setup cannot silently disable a protection an operator meant
@@ -4596,29 +4952,66 @@ func (c *Config) validateAuth() error {
 		return fmt.Errorf("auth.%s: unknown role %q (want admin, issuer, signer, or auditor)", where, r)
 	}
 
+	// The console-login role mappings are validated whether or not login is
+	// enabled, so a typo in a role name is reported at load rather than silently
+	// dropped the day SSO is switched on.
+	if err := validateClaimMappings("auth.oidc.role_mappings", a.OIDC.RoleMappings, validRole); err != nil {
+		return err
+	}
+	for i, p := range a.OIDC.Providers {
+		where := fmt.Sprintf("auth.oidc.providers[%d]", i)
+		if strings.TrimSpace(p.Name) == "" {
+			return fmt.Errorf("%s: name is required (it identifies the provider in /auth/login?provider=…)", where)
+		}
+		if err := validateClaimMappings(where+".role_mappings", p.RoleMappings, validRole); err != nil {
+			return err
+		}
+	}
+
 	if a.OIDC.Enabled {
-		issuer := a.OIDC.IssuerURL
-		if issuer == "" {
-			issuer = c.OIDC.IssuerURL
+		providers := c.ConsoleOIDCProviders()
+		if len(providers) == 0 {
+			return fmt.Errorf("auth.oidc.enabled is true but no issuer_url is set (here, in auth.oidc.providers, or in the top-level oidc block)")
 		}
-		if issuer == "" {
-			return fmt.Errorf("auth.oidc.enabled is true but no issuer_url is set (here or in the top-level oidc block)")
+		// The provider synthesized from the single-provider form is reported under
+		// its own config keys, not as `providers[…]`, so an operator who never wrote
+		// a providers list is not pointed at one.
+		legacySynthesized := true
+		for _, dp := range a.OIDC.Providers {
+			if strings.EqualFold(strings.TrimSpace(dp.Name), DefaultOIDCProviderName) {
+				legacySynthesized = false
+			}
 		}
-		if strings.TrimSpace(a.OIDC.RedirectURL) == "" {
-			return fmt.Errorf("auth.oidc.enabled is true but auth.oidc.redirect_url is required for interactive login")
+		seenName := make(map[string]bool, len(providers))
+		seenIssuer := make(map[string]string, len(providers))
+		for _, p := range providers {
+			where := fmt.Sprintf("auth.oidc provider %q", p.Name)
+			if p.Name == DefaultOIDCProviderName && legacySynthesized {
+				where = "auth.oidc"
+			}
+			if seenName[strings.ToLower(p.Name)] {
+				return fmt.Errorf("auth.oidc: provider name %q is declared twice; names must be unique "+
+					"(%q is also the name given to the single-provider auth.oidc form)", p.Name, DefaultOIDCProviderName)
+			}
+			seenName[strings.ToLower(p.Name)] = true
+			if p.IssuerURL == "" {
+				return fmt.Errorf("%s: issuer_url is required", where)
+			}
+			if prev, dup := seenIssuer[p.IssuerURL]; dup {
+				return fmt.Errorf("auth.oidc: issuer_url %q is declared by both provider %q and provider %q; "+
+					"one issuer cannot back two console providers", p.IssuerURL, prev, p.Name)
+			}
+			seenIssuer[p.IssuerURL] = p.Name
+			if p.ClientID == "" {
+				return fmt.Errorf("%s: client_id is required for interactive login", where)
+			}
+			if p.RedirectURL == "" {
+				return fmt.Errorf("%s: redirect_url is required for interactive login "+
+					"(set it here or share auth.oidc.redirect_url)", where)
+			}
 		}
-		for i, m := range a.OIDC.RoleMappings {
-			if strings.TrimSpace(m.Value) == "" {
-				return fmt.Errorf("auth.oidc.role_mappings[%d]: value is required", i)
-			}
-			if len(m.Roles) == 0 {
-				return fmt.Errorf("auth.oidc.role_mappings[%d]: at least one role is required", i)
-			}
-			for _, r := range m.Roles {
-				if err := validRole(fmt.Sprintf("oidc.role_mappings[%d]", i), r); err != nil {
-					return err
-				}
-			}
+		if n := countDefaultProviders(a.OIDC.Providers); n > 1 {
+			return fmt.Errorf("auth.oidc: %d providers set default: true; at most one may be the target of a bare /auth/login", n)
 		}
 	}
 

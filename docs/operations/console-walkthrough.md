@@ -75,7 +75,9 @@ a directory (LDAP/AD) bind, then the built-in `root` password. Both establish a
 **server-side session with a CSRF token**, which is what lets the console offer
 WebAuthn step-up on high-risk operations later. With OIDC configured, a *Sign in
 with SSO* button appears below the divider and the password form stays for
-break-glass.
+break-glass. With [several identity providers](../security/authentication.md#multiple-oidc-providers)
+configured, that becomes one button per provider — *Sign in with Microsoft Entra
+ID*, *Sign in with Okta* — so an operator picks their own IdP.
 
 **The `root` account in the screenshot is the one to plan to stop using.** It is
 a shared password with full authority over every tenant, it exists so a brand-new

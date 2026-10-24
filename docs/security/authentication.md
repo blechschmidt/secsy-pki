@@ -5,20 +5,22 @@ document covers **who** a caller is: how the console and API authenticate
 operators and machine clients, and how a first-class authentication event is
 tied to an RBAC principal (a `UserInfo` carrying platform and per-tenant roles).
 
-Three complementary mechanisms are provided, each configured under a top-level
-`auth:` block and each inert until enabled. The pre-existing stateless paths —
+Several complementary mechanisms are provided, each configured under a top-level
+`auth:` block and each inert until enabled. Both OIDC paths accept
+[multiple identity providers](#multiple-oidc-providers) — the issuer that
+authenticates a CI pipeline is usually not the one your operators log in through. The pre-existing stateless paths —
 HTTP basic-auth for the built-in `root` user and OIDC **Bearer** tokens for API
 callers — keep working unchanged, so nothing here is a breaking change.
 
 | Mechanism | For | Credential | Config |
 |-----------|-----|-----------|--------|
-| **OIDC/OAuth2 login** | Console operators | Interactive SSO → server-side session cookie | `auth.oidc` |
+| **OIDC/OAuth2 login** | Console operators | Interactive SSO → server-side session cookie | `auth.oidc`, `auth.oidc.providers` |
 | **LDAP / Active Directory** | Console + machine callers | Directory username + password (bind) | `auth.ldap` |
 | **Mutual-TLS** | Machine / API callers | Client certificate bound to a principal | `auth.mtls` |
 | **WebAuthn step-up** | Console operators, high-risk ops | Passkey assertion | `auth.webauthn` |
 | **API token** | Machine / service accounts | Native, revocable, role/tenant-scoped secret | always on; `auth.api_tokens` tunes lifetime |
 | Basic-auth (root) | Break-glass / bootstrap | `root_user` password | `policy.allow_root_basic_auth` |
-| Bearer token | API scripting | OIDC access/id token | `oidc` |
+| Bearer token | API scripting, CI pipelines | OIDC access/id token | `oidc`, `oidc.providers` |
 
 The middleware tries credentials in order: **basic-auth (root → LDAP) → API token
 → Bearer (OIDC) → session cookie → mutual-TLS**, then rejects with `401`. A basic
@@ -72,6 +74,173 @@ auth:
 A mapping matches when the named claim (a string or a list of strings) contains
 `value`. Unknown role names are dropped at load, and an `enabled` login block
 with a mapping referencing an unknown role fails validation at startup.
+
+<a id="multiple-oidc-providers"></a>
+
+## 1a. Multiple OIDC providers
+
+A deployment rarely has one identity provider. The pipeline that asks for an
+artifact signature authenticates through its forge's workload-identity issuer
+(GitHub Actions, GitLab, a Kubernetes projected service-account token); the
+humans who administer the PKI sign in through the corporate IdP; a partner's
+automation may arrive through a third. Each mints its own JWTs, under its own
+issuer, with its own audience and its own idea of what a subject string means.
+
+secsy-pki keeps these **separate on two axes**:
+
+| Axis | Config | Credential | Typical IdP |
+|------|--------|-----------|-------------|
+| **Machine** — `Authorization: Bearer <jwt>` | `oidc` / `oidc.providers[]` | a token the caller already holds | GitHub Actions OIDC, GitLab, a cloud IdP |
+| **Console** — interactive browser login | `auth.oidc` / `auth.oidc.providers[]` | the Authorization-Code + PKCE handshake | Entra ID, Okta, Keycloak |
+
+Both axes accept **several providers at once**, and the two are independent: the
+issuer that signs your CI tokens need not be, and usually is not, the one your
+operators log in through.
+
+### Machine callers: `oidc.providers`
+
+```yaml
+oidc:
+  providers:
+    # Automated signing from a CI pipeline. The workflow's OIDC token is
+    # verified here and maps to exactly the signer role.
+    - name: github
+      issuer_url: "https://token.actions.githubusercontent.com"
+      client_id: "secsy-pki-signing"       # the audience the workflow requests
+      role_mappings:
+        - { claim: "sub", value: "repo:example-org/app:environment:release", roles: ["signer"] }
+
+    # API scripting by staff service principals, through the corporate IdP.
+    - name: entra
+      issuer_url: "https://login.microsoftonline.com/<tenant-id>/v2.0"
+      client_id: "api://secsy-pki"
+      # audiences: ["api://secsy-pki-legacy"]   # additional accepted audiences
+      groups_claim: "roles"                     # Entra app roles
+      role_mappings:
+        - { value: "PKI.Issue", roles: ["issuer"] }
+```
+
+A presented token is routed to **exactly one** provider by its `iss` claim, then
+verified there (signature, issuer, expiry, audience). Three properties make
+federating issuers safe rather than additive risk:
+
+- **Routing cannot pick a lenient verifier.** The `iss` used for routing is read
+  from the *unverified* payload, which is sound because the selected provider
+  re-checks the issuer cryptographically. A forged `iss` only lands the token at
+  a provider whose JWKS will not verify it. An issuer no provider serves is
+  rejected outright, never offered to the others in turn.
+- **Every provider is audience-bound.** `client_id` (plus any `audiences`) is the
+  accepted `aud` set. A provider with neither is a **load error**: it would
+  otherwise honor any token the same IdP minted for an unrelated relying party.
+- **Authorization is per provider.** A provider's `role_mappings` are evaluated
+  *only* for tokens it verified. So a mapping granting `signer` to
+  `repo:example-org/app:environment:release` grants nothing to a token from a
+  different issuer asserting that identical subject — which is the failure mode
+  a shared, provider-agnostic subject list would have.
+
+> The top-level `rbac.subjects` / `rbac.groups` assignments remain
+> provider-agnostic and are unioned in for every provider. Use them for
+> identities you trust regardless of issuer; use a provider's `role_mappings`
+> when the grant is specific to one IdP.
+
+Two providers may not share an issuer URL (routing would become
+order-dependent), and provider names must be unique. Both are refused at load.
+
+### Console operators: `auth.oidc.providers`
+
+```yaml
+auth:
+  oidc:
+    enabled: true
+    # Shared defaults — a provider omitting a field inherits it from here.
+    redirect_url: "https://pki.example.com/auth/callback"
+    scopes: ["openid", "profile", "email", "groups"]
+    groups_claim: "groups"
+    allow_zero_role: false
+    providers:
+      - name: entra                           # /auth/login?provider=entra
+        display_name: "Microsoft Entra ID"    # the console's button label
+        issuer_url: "https://login.microsoftonline.com/<tenant-id>/v2.0"
+        client_id: "console-entra"
+        client_secret_file: "/etc/secsy/entra-client-secret"
+        default: true                         # a bare /auth/login uses this one
+        role_mappings:
+          - { value: "PKI-Admins", roles: ["admin"] }
+      - name: partner
+        display_name: "Partner IdP"
+        issuer_url: "https://idp.partner.example.net"
+        client_id: "console-partner"
+        redirect_url: "https://pki.example.com/auth/callback/partner"
+        allow_zero_role: true                 # overrides the shared policy
+        role_mappings:
+          - { value: "pki-readers", tenant: "partner", roles: ["auditor"] }
+```
+
+The console reads `/api/auth/config` and renders **one sign-in button per
+provider**, so an operator chooses their IdP instead of being sent to whichever
+one is the default.
+
+```
+GET /auth/login                     → the default provider (first, or `default: true`)
+GET /auth/login?provider=<name>     → that provider
+GET /auth/login/oidc/<name>         → the same, as a path
+GET /auth/callback                  → dispatched by the provider recorded in the
+                                      signed login transaction cookie
+GET /auth/callback/<name>           → a per-provider callback path, for an IdP
+                                      whose registration demands a distinct URI
+```
+
+**Providers may share one registered `redirect_url`.** The name of the provider
+that began the flow is sealed inside the HMAC-signed, 10-minute transaction
+cookie alongside the state, nonce, and PKCE verifier, so the callback knows which
+verifier, client credentials, and claim mapping to complete with. A transaction
+arriving at a *different* provider's callback is refused
+(`code: provider_mismatch`) rather than completed — otherwise a code issued by
+one IdP would be exchanged with another's client credentials and its claims
+mapped through the wrong role mapping.
+
+### Role mapping across providers
+
+Mappings under `auth.oidc.role_mappings` (the shared block) are evaluated for
+**every** console provider; a provider's own `role_mappings` are unioned on top.
+That is what keeps the single-provider form working — but it also means a group
+name asserted by *any* federated IdP matches a shared mapping. **When providers
+differ in how much you trust them, declare the mapping on the provider**, not in
+the shared block.
+
+`allow_zero_role` is per provider (falling back to the shared setting), so one
+IdP can admit role-less viewers while another denies them at login.
+
+### Audit, diagnosis, and discovery
+
+- Login audit detail carries `provider=<name>`: `auth.login method=oidc
+  provider=entra`, and `auth.login_failed … reason=provider_mismatch`.
+- The resolved principal carries `auth_provider` (`/api/me`, `/auth/session`,
+  and the console's "signed in as" line) — diagnostic only; the roles already
+  reflect that provider's mapping.
+- `/api/auth/config` publishes `oidc_providers` (name, label, login URL) and
+  `bearer_providers` (name, issuer, accepted audiences), so a workload can
+  discover which issuer and audience to request a token for rather than having
+  that pairing passed around out of band. No client secret ever appears there.
+- An IdP that cannot be discovered at startup is logged as a `WARNING` and
+  skipped; the other providers still come up. For machine issuers that leaves
+  Bearer verification working for the rest; for console login, if **no** provider
+  comes up the server refuses to start, since SSO was configured and is wholly
+  unavailable.
+
+### Backward compatibility
+
+The single-provider form is unchanged and remains a provider in its own right,
+named `default`:
+
+- `oidc.issuer_url` + `oidc.client_id` → one machine provider named `default`.
+  Adding `oidc.providers` **does not** drop it; the two are unioned (declaring
+  the same issuer twice is a load error).
+- `auth.oidc.issuer_url` / `client_id` still inherit the top-level `oidc` block
+  when omitted, so one IdP can serve both axes.
+
+See [`examples/multi-oidc/`](../../examples/multi-oidc/README.md) for a complete
+GitHub-Actions-plus-Entra-ID configuration.
 
 ## 1b. LDAP / Active Directory authentication
 
@@ -348,6 +517,10 @@ LDAP logins record `auth.login` / `auth.login_failed` with `method=ldap` (the
 failed-login detail carries a non-sensitive reason: `invalid_credentials`,
 `directory_unavailable`, or `no_access`).
 
+With [several OIDC providers](#multiple-oidc-providers) configured, the OIDC
+login events carry `provider=<name>` so each IdP's logins are separable in the
+log.
+
 Prometheus metrics: `secsy_auth_logins_total{method,result}` (method ∈
 oidc|password|ldap|mtls), `secsy_auth_logouts_total`,
 `secsy_auth_step_ups_total{result}`,
@@ -361,7 +534,12 @@ success|expired|revoked|unknown|error), and `secsy_auth_tokens_active`.
   `auth.session.insecure` is set (local testing only).
 - The OIDC login binds **state** (CSRF on the callback), **nonce** (token
   replay), and **PKCE** (code interception); the transaction is carried in an
-  HMAC-signed, 10-minute cookie.
+  HMAC-signed, 10-minute cookie that also names the provider that began the flow,
+  so one IdP's authorization code cannot be completed at another's callback.
+- With several machine issuers federated, a token is verified by exactly one
+  provider and authorized by **that** provider's claim mapping. A provider with
+  no accepted audience is refused at load rather than trusting every token the
+  issuer mints.
 - mTLS bindings never widen access on their own — the bound roles are still
   subject to the same RBAC checks and, for tenant resources, tenant membership.
 - LDAP binds occur only over TLS (LDAPS or StartTLS, fail-closed); empty

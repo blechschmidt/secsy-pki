@@ -120,6 +120,14 @@ func (c *Config) secretFileRefs() []secretFileRef {
 		strRef("backup.s3.session_token_file", "backup.s3.session_token", c.Backup.S3.SessionTokenFile, &c.Backup.S3.SessionToken),
 	}
 
+	// Each additional console-login provider (Task 212) carries its own
+	// confidential-client secret, so each contributes its own binding.
+	for i := range c.Auth.OIDC.Providers {
+		prefix := fmt.Sprintf("auth.oidc.providers[%d]", i)
+		refs = append(refs, strRef(prefix+".client_secret_file", prefix+".client_secret",
+			c.Auth.OIDC.Providers[i].ClientSecretFile, &c.Auth.OIDC.Providers[i].ClientSecret))
+	}
+
 	// The DSN carries a default ("secsy-pki.db", installed before the file is
 	// parsed), so an inline value that still equals it was never configured and
 	// must not read as a conflict with dsn_file.

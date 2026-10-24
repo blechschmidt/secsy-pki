@@ -97,9 +97,34 @@ async function bootAuth() {
 
   // Offer SSO: prefer the server-side flow (redirect to /auth/login), falling
   // back to the in-browser PKCE flow when only bearer verification is available.
-  if (authConfig.oidc_login_enabled) {
+  // A deployment may federate several identity providers (e.g. the corporate IdP
+  // for staff and a second one for contractors), in which case each gets its own
+  // button — an operator must be able to pick, since /auth/login alone would
+  // always send them to the default provider.
+  const providers = (authConfig.oidc_providers || []);
+  if (authConfig.oidc_login_enabled && providers.length > 1) {
     $('ssoBlock').classList.remove('hidden');
-    $('ssoBtn').onclick = () => { location.href = '/auth/login'; };
+    $('ssoBtn').classList.add('hidden');
+    const box = $('ssoProviders');
+    box.innerHTML = '';
+    for (const p of providers) {
+      const b = document.createElement('button');
+      b.className = 'btn ghost';
+      b.type = 'button';
+      b.style.marginTop = '8px';
+      b.textContent = 'Sign in with ' + (p.display_name || p.name);
+      // The server supplies the login URL (it owns the provider addressing), so
+      // the console never has to construct it.
+      const href = p.login_url || '/auth/login';
+      b.onclick = () => { location.href = href; };
+      box.appendChild(b);
+    }
+  } else if (authConfig.oidc_login_enabled) {
+    $('ssoBlock').classList.remove('hidden');
+    const only = providers[0];
+    if (only && only.display_name) $('ssoBtn').textContent = 'Sign in with ' + only.display_name;
+    const href = (only && only.login_url) || '/auth/login';
+    $('ssoBtn').onclick = () => { location.href = href; };
   } else if (authConfig.oidc_enabled) {
     $('ssoBlock').classList.remove('hidden');
     $('ssoBtn').onclick = beginOIDC;
@@ -169,7 +194,13 @@ async function afterLogin() {
   const roles = (currentUser.roles && currentUser.roles.length)
     ? ` <span class="roles">[${currentUser.roles.join(', ')}]</span>`
     : (currentUser.is_root ? ' <span class="roles">[root]</span>' : '');
-  $('userBox').innerHTML = `Signed in as <b>${escapeHTML(currentUser.name || currentUser.sub || 'user')}</b>${roles}`;
+  // In a federated deployment, say which identity provider authenticated this
+  // session — otherwise two operators with the same display name are
+  // indistinguishable in the console.
+  const via = currentUser.auth_provider
+    ? ` <span class="roles">via ${escapeHTML(currentUser.auth_provider)}</span>`
+    : '';
+  $('userBox').innerHTML = `Signed in as <b>${escapeHTML(currentUser.name || currentUser.sub || 'user')}</b>${roles}${via}`;
   // Offer passkey enrollment when the server has WebAuthn step-up enabled and the
   // caller holds a real session (not a stateless credential).
   const pk = $('passkeyBtn');
