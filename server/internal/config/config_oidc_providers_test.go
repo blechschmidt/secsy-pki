@@ -228,6 +228,28 @@ oidc:
 			wantErr: "already used by oidc.issuer_url",
 		},
 		{
+			name: "name that cannot be a URL path segment",
+			yaml: `
+oidc:
+  providers:
+    - name: "github/actions"
+      issuer_url: "https://idp.example.com"
+      client_id: "c"
+`,
+			wantErr: "must start with a letter or digit",
+		},
+		{
+			name: "name with whitespace",
+			yaml: `
+oidc:
+  providers:
+    - name: "git hub"
+      issuer_url: "https://idp.example.com"
+      client_id: "c"
+`,
+			wantErr: "must start with a letter or digit",
+		},
+		{
 			name: "unknown role in a provider mapping",
 			yaml: `
 oidc:
@@ -490,6 +512,18 @@ auth:
 			wantErr: "declared twice",
 		},
 		{
+			name: "console provider name that cannot be addressed",
+			yaml: `
+auth:
+  oidc:
+    enabled: true
+    redirect_url: "https://pki.example.com/auth/callback"
+    providers:
+      - { name: "entra id", issuer_url: "https://a.example.com", client_id: "c1" }
+`,
+			wantErr: "must start with a letter or digit",
+		},
+		{
 			name: "two defaults",
 			yaml: `
 auth:
@@ -529,6 +563,22 @@ auth:
 				t.Errorf("error = %q, want it to contain %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestProviderNamesAcceptSimpleTokens asserts the charset rule is not
+// over-tight: the names deployments actually write — dots, dashes, underscores,
+// digits — must load.
+func TestProviderNamesAcceptSimpleTokens(t *testing.T) {
+	c := mustLoadYAML(t, baseYAML+`
+oidc:
+  providers:
+    - { name: "github-actions", issuer_url: "https://a.example.com", client_id: "c1" }
+    - { name: "entra.id",       issuer_url: "https://b.example.com", client_id: "c2" }
+    - { name: "idp_2",          issuer_url: "https://c.example.com", client_id: "c3" }
+`)
+	if got := c.BearerOIDCProviders(); len(got) != 3 {
+		t.Fatalf("BearerOIDCProviders() = %+v, want all three", got)
 	}
 }
 

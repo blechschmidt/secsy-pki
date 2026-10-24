@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -4873,6 +4874,23 @@ func validateClaimMappings(where string, mappings []ClaimMappingConfig, validRol
 	return nil
 }
 
+// oidcProviderNamePattern constrains a provider name to a simple token. The name
+// is used as a URL path segment (/auth/login/oidc/<name>), a query value, an
+// audit-detail field, and a log field, so a name carrying a slash or whitespace
+// would work through one addressing form and silently not through another.
+var oidcProviderNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// validateOIDCProviderName checks that name can address a provider everywhere a
+// provider is addressed.
+func validateOIDCProviderName(where, name string) error {
+	if !oidcProviderNamePattern.MatchString(name) {
+		return fmt.Errorf("%s: provider name %q must start with a letter or digit and contain only "+
+			"letters, digits, '.', '_' or '-' (it is used in /auth/login?provider=…, in log lines, "+
+			"and in audit detail)", where, name)
+	}
+	return nil
+}
+
 // countDefaultProviders counts the console providers that claim to be the target
 // of a bare /auth/login.
 func countDefaultProviders(providers []AuthOIDCProviderConfig) int {
@@ -4910,6 +4928,9 @@ func (c *Config) validateOIDCProviders() error {
 		name := strings.TrimSpace(p.Name)
 		if name == "" {
 			return fmt.Errorf("%s: name is required (it identifies the issuer in audit detail and metrics)", where)
+		}
+		if err := validateOIDCProviderName(where, name); err != nil {
+			return err
 		}
 		if prev, dup := seenName[strings.ToLower(name)]; dup {
 			return fmt.Errorf("%s: provider name %q is already used by %s; names must be unique", where, name, prev)
@@ -4960,8 +4981,12 @@ func (c *Config) validateAuth() error {
 	}
 	for i, p := range a.OIDC.Providers {
 		where := fmt.Sprintf("auth.oidc.providers[%d]", i)
-		if strings.TrimSpace(p.Name) == "" {
+		name := strings.TrimSpace(p.Name)
+		if name == "" {
 			return fmt.Errorf("%s: name is required (it identifies the provider in /auth/login?provider=…)", where)
+		}
+		if err := validateOIDCProviderName(where, name); err != nil {
+			return err
 		}
 		if err := validateClaimMappings(where+".role_mappings", p.RoleMappings, validRole); err != nil {
 			return err

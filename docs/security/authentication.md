@@ -211,6 +211,15 @@ the shared block.
 `allow_zero_role` is per provider (falling back to the shared setting), so one
 IdP can admit role-less viewers while another denies them at login.
 
+> **Behaviour note.** A Bearer caller's **group claim** now feeds the
+> `rbac.groups` assignments and [resource grants](resource-grants.md), as it
+> always has for console logins. Previously the Bearer path consulted only the
+> groups recorded in the database, so the same identity resolved to different
+> roles depending on whether it arrived as a token or through the browser. If you
+> use `rbac.groups` for *internal* group ids that happen to collide with an IdP
+> group name, a machine caller asserting that name now matches it — the same way
+> that identity already did when signing in to the console.
+
 ### Audit, diagnosis, and discovery
 
 - Login audit detail carries `provider=<name>`: `auth.login method=oidc
