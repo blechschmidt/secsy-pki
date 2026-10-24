@@ -410,6 +410,18 @@ func setupConsoleLogin(t *testing.T) *consoleLoginEnv {
 // confidential client whose token requests must also carry the secret.
 func setupConsoleLoginClient(t *testing.T, clientSecret string) *consoleLoginEnv {
 	t.Helper()
+	// The default registration maps the IdP "pki-admins" group to platform admin
+	// by exact value.
+	return setupConsoleLoginMapper(t, clientSecret, mustClaimMapper(t, []authn.ClaimMapping{
+		{Value: "pki-admins", Roles: []rbac.Role{rbac.RoleAdmin}},
+	}))
+}
+
+// setupConsoleLoginMapper is setupConsoleLoginClient with the claim -> role
+// mapper under test, so a test can drive a full login through a CEL mapping
+// (Task 214) rather than only through an exact claim value.
+func setupConsoleLoginMapper(t *testing.T, clientSecret string, mapper *authn.ClaimMapper) *consoleLoginEnv {
+	t.Helper()
 	const clientID = "secsy-console"
 	idp := newStubIDP(t, clientID, "alice-oidc-subject")
 	idp.clientSecret = clientSecret
@@ -451,19 +463,37 @@ func setupConsoleLoginClient(t *testing.T, clientSecret string) *consoleLoginEnv
 	}
 	verifier := oidcProvider.Verifier(&oidc.Config{ClientID: clientID})
 
-	// Map the IdP "pki-admins" group to the admin RBAC role.
-	mapper := authn.NewClaimMapper("groups", []authn.ClaimMapping{
-		{Value: "pki-admins", Roles: []rbac.Role{rbac.RoleAdmin}},
-	})
+	// The resolver mirrors cmd/server's buildPrincipalResolver: it hands the
+	// mapper the whole identity, not just the claims, and carries the per-tenant
+	// roles a mapping resolved onto the principal.
 	resolve := func(idToken *oidc.IDToken, claims map[string]interface{}) (*models.UserInfo, error) {
-		platform, _ := mapper.Resolve(claims)
+		email, _ := claims["email"].(string)
+		name, _ := claims["name"].(string)
+		verified, _ := claims["email_verified"].(bool)
+		platform, tenants := mapper.ResolveIdentity(authn.Identity{
+			Subject:       idToken.Subject,
+			Email:         email,
+			EmailVerified: verified,
+			Name:          name,
+			Issuer:        idToken.Issuer,
+			Provider:      "console",
+			Groups:        mapper.Groups(claims),
+			Claims:        claims,
+		})
 		roles := make([]string, len(platform))
 		for i, r := range platform {
 			roles[i] = string(r)
 		}
-		email, _ := claims["email"].(string)
-		name, _ := claims["name"].(string)
-		return &models.UserInfo{Subject: idToken.Subject, Email: email, Name: name, Roles: roles}, nil
+		info := &models.UserInfo{Subject: idToken.Subject, Email: email, Name: name, Roles: roles}
+		for tid, rs := range tenants {
+			if info.TenantRoles == nil {
+				info.TenantRoles = make(map[string][]string, len(tenants))
+			}
+			for _, r := range rs {
+				info.TenantRoles[tid] = append(info.TenantRoles[tid], string(r))
+			}
+		}
+		return info, nil
 	}
 
 	login, err := authn.NewOIDCLogin(mgr, authn.OIDCLoginConfig{

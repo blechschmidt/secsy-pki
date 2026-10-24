@@ -11,12 +11,14 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/celexpr"
 	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 	"github.com/blechschmidt/secsy-pki/server/internal/hsmattest"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
@@ -1334,15 +1336,44 @@ func (a AuthOIDCConfig) RequirePKCEFor(p AuthOIDCProviderConfig) bool {
 	return a.RequirePKCE
 }
 
-// ClaimMappingConfig maps one IdP claim value to RBAC roles.
+// ClaimMappingConfig maps an IdP claim to RBAC roles.
+//
+// A mapping matches EITHER an exact claim value (claim/value) OR a CEL
+// expression (expression, Task 214) — never both. The exact form stays the
+// right answer for a handful of named groups; the expression form is for a
+// directory whose group names encode structure, where enumerating one mapping
+// per team means a config change for every new team:
+//
+//	role_mappings:
+//	  - value: "pki-admins"                                  # exact: platform admin
+//	    roles: ["admin"]
+//	  - expression: 'groups.exists(g, g.startsWith("pki-issuers-"))'
+//	    tenant_expression: |
+//	      groups.filter(g, g.startsWith("pki-issuers-"))
+//	            .map(g, g.replace("pki-issuers-", ""))
+//	    roles: ["issuer"]                                     # issuer in each encoded tenant
+//
+// See internal/celexpr for the variables and functions an expression may use,
+// and docs/security/role-mapping-expressions.md for the operator-facing guide.
 type ClaimMappingConfig struct {
-	// Claim is the token claim to inspect (default: the groups claim).
+	// Claim is the token claim to inspect (default: the groups claim). Applies to
+	// the exact-value form only.
 	Claim string `yaml:"claim"`
 	// Value is the exact claim value that triggers the mapping.
 	Value string `yaml:"value"`
-	// Tenant scopes the granted roles to a tenant id; empty grants platform-wide.
+	// Expression is a CEL boolean expression deciding whether the mapping
+	// applies, used instead of claim/value. It is compiled at load: an expression
+	// that does not parse, references an undeclared variable, or does not yield a
+	// bool is a startup error, not a login-time surprise.
+	Expression string `yaml:"expression"`
+	// Tenant scopes the granted roles to a tenant id; empty (with no
+	// tenant_expression) grants platform-wide.
 	Tenant string `yaml:"tenant"`
-	// Roles are the RBAC roles granted (admin|issuer|signer|auditor).
+	// TenantExpression is a CEL expression yielding the tenant id — or a list of
+	// them — the roles are granted in, used instead of tenant. An empty result
+	// grants nothing rather than granting platform-wide.
+	TenantExpression string `yaml:"tenant_expression"`
+	// Roles are the RBAC roles granted (admin|issuer|signer|auditor|approver).
 	Roles []string `yaml:"roles"`
 }
 
@@ -4873,13 +4904,34 @@ func (c *Config) validatePresignPublish() error {
 }
 
 // validateClaimMappings checks one list of claim -> role mappings: every entry
-// must name a claim value and at least one known role, so a mapping that could
-// never grant anything (or that names a misspelled role) is reported at load
-// instead of silently dropped by the mapper.
+// must say what it matches and name at least one known role, so a mapping that
+// could never grant anything (or that names a misspelled role) is reported at
+// load instead of silently dropped by the mapper.
+//
+// A CEL expression (Task 214) is compiled here too. Compiling at load is the
+// whole point: a role mapping decides who administers the PKI, and an
+// expression with a typo in it would otherwise present as operators who
+// mysteriously resolve to no role — discovered at the moment someone needs to
+// sign in.
 func validateClaimMappings(where string, mappings []ClaimMappingConfig, validRole func(string, string) error) error {
 	for i, m := range mappings {
-		if strings.TrimSpace(m.Value) == "" {
-			return fmt.Errorf("%s[%d]: value is required", where, i)
+		value := strings.TrimSpace(m.Value)
+		expr := strings.TrimSpace(m.Expression)
+		switch {
+		case value == "" && expr == "":
+			return fmt.Errorf("%s[%d]: value or expression is required", where, i)
+		case value != "" && expr != "":
+			return fmt.Errorf("%s[%d]: value and expression are mutually exclusive "+
+				"(an exact claim value, or a CEL expression over the identity — not both)", where, i)
+		case expr != "" && strings.TrimSpace(m.Claim) != "":
+			return fmt.Errorf("%s[%d]: claim applies to the exact-value form and cannot be combined "+
+				"with expression (an expression reads claims.%s itself)", where, i, strings.TrimSpace(m.Claim))
+		}
+		if strings.TrimSpace(m.Tenant) != "" && strings.TrimSpace(m.TenantExpression) != "" {
+			return fmt.Errorf("%s[%d]: tenant and tenant_expression are mutually exclusive", where, i)
+		}
+		if err := celexpr.ValidateRoleMapping(expr, strings.TrimSpace(m.TenantExpression)); err != nil {
+			return fmt.Errorf("%s[%d]: %w", where, i, err)
 		}
 		if len(m.Roles) == 0 {
 			return fmt.Errorf("%s[%d]: at least one role is required", where, i)
@@ -4931,11 +4983,10 @@ func countDefaultProviders(providers []AuthOIDCProviderConfig) int {
 // honor a token the IdP minted for an unrelated relying party.
 func (c *Config) validateOIDCProviders() error {
 	validRole := func(where, r string) error {
-		switch r {
-		case "admin", "issuer", "signer", "auditor":
+		if validRoleNames[strings.TrimSpace(r)] {
 			return nil
 		}
-		return fmt.Errorf("%s: unknown role %q (want admin, issuer, signer, or auditor)", where, r)
+		return fmt.Errorf("%s: unknown role %q (want %s)", where, r, knownRoleNames())
 	}
 
 	seenName := make(map[string]string, len(c.OIDC.Providers)+1)
@@ -4987,17 +5038,20 @@ func (c *Config) validateAuth() error {
 		return fmt.Errorf("auth.api_tokens.max_lifetime_days must not be negative")
 	}
 	validRole := func(where, r string) error {
-		switch r {
-		case "admin", "issuer", "signer", "auditor":
+		if validRoleNames[strings.TrimSpace(r)] {
 			return nil
 		}
-		return fmt.Errorf("auth.%s: unknown role %q (want admin, issuer, signer, or auditor)", where, r)
+		return fmt.Errorf("auth.%s: unknown role %q (want %s)", where, r, knownRoleNames())
 	}
 
 	// The console-login role mappings are validated whether or not login is
 	// enabled, so a typo in a role name is reported at load rather than silently
-	// dropped the day SSO is switched on.
+	// dropped the day SSO is switched on. The directory's mappings are the same
+	// shape and go through the same validator, for the same reason.
 	if err := validateClaimMappings("auth.oidc.role_mappings", a.OIDC.RoleMappings, validRole); err != nil {
+		return err
+	}
+	if err := validateClaimMappings("auth.ldap.role_mappings", a.LDAP.RoleMappings, validRole); err != nil {
 		return err
 	}
 	for i, p := range a.OIDC.Providers {
@@ -5955,6 +6009,19 @@ func validTLSMode(mode string, allowed ...string) bool {
 // to keep config self-contained).
 var validRoleNames = map[string]bool{"admin": true, "issuer": true, "signer": true, "auditor": true, "approver": true}
 
+// knownRoleNames renders the accepted role identifiers for an error message.
+// The claim -> role mapping validators used to carry their own shorter list,
+// which refused `approver` — the one role whose natural home is an IdP group
+// (the four-eyes checkers), and which the mapper itself has always honored.
+func knownRoleNames() string {
+	names := make([]string, 0, len(validRoleNames))
+	for r := range validRoleNames {
+		names = append(names, r)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
 // validApprovalClasses are the operation-class identifiers accepted in the
 // approvals.thresholds config. Kept in sync with the approval package
 // (duplicated here to keep config self-contained and avoid an import cycle).
@@ -6092,6 +6159,20 @@ func (c *Config) AllResourceGrants() ([]rbac.Grant, error) {
 		out = append(out, g...)
 	}
 	return out, nil
+}
+
+// TenantIDs returns the declared tenant ids, in configuration order. It is what
+// bounds the tenant ids a role-mapping expression may derive (Task 214): a
+// pattern that extracts "ACME" where the tenant is "acme" must grant nothing
+// rather than assign roles in a tenant that does not exist yet.
+func (c *Config) TenantIDs() []string {
+	out := make([]string, 0, len(c.Tenants))
+	for _, t := range c.Tenants {
+		if id := strings.TrimSpace(t.ID); id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // validateTenants rejects duplicate/reserved tenant identifiers and unknown

@@ -26,7 +26,7 @@ func describeConfig(rawURL string, startTLS, cleartext bool) LDAPConfig {
 }
 
 func TestLDAPDescribe(t *testing.T) {
-	resolve := mappingResolver(testMapper(), false)
+	resolve := mappingResolver(testMapper(t), false)
 
 	cases := []struct {
 		name string
@@ -102,7 +102,7 @@ func TestLDAPDescribe(t *testing.T) {
 // reviewing the startup log can tell an encrypted deployment from a cleartext one
 // — the transport label must never claim TLS for an unencrypted bind.
 func TestLDAPDescribeDistinguishesEncryptedFromCleartext(t *testing.T) {
-	resolve := mappingResolver(testMapper(), false)
+	resolve := mappingResolver(testMapper(t), false)
 	secure, err := NewLDAPAuthenticator(describeConfig("ldaps://dc1.example.com:636", false, false), resolve)
 	if err != nil {
 		t.Fatalf("NewLDAPAuthenticator: %v", err)

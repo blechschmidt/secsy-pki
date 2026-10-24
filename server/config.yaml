@@ -174,6 +174,36 @@ auth:
       - { claim: "groups", value: "pki-admins", roles: ["admin"] }
       - { claim: "groups", value: "pki-issuers", roles: ["issuer"] }
       # - { value: "acme-issuers", tenant: "acme-corp", roles: ["issuer"] }
+      #
+      # A mapping may instead match a CEL expression over the authenticated
+      # identity — for a directory whose group names ENCODE the structure, where
+      # enumerating one mapping per team means a config change for every new
+      # team. `expression` yields a bool; `tenant_expression` yields the tenant
+      # id, or a list of them, the roles are granted in. Both are compiled at
+      # startup (a bad expression is a load error), cost-bounded at evaluation,
+      # and fail-closed: false, an error, or a tenant that resolves to nothing
+      # all grant nothing — an unextracted tenant is never read as
+      # platform-wide. Variables: subject, email, email_verified, name,
+      # username, issuer, provider, groups, claims. Functions: startsWith /
+      # endsWith / contains / matches, regex.replace / regex.extract /
+      # regex.extractAll, replace / split / trim / lowerAscii, sets.* and
+      # lists.*. Dry-run one offline with
+      #   secsy-ca role-mapping test -expression '…' -group '…'
+      # and list the vocabulary with `secsy-ca role-mapping reference`.
+      # See docs/security/role-mapping-expressions.md.
+      #
+      # - expression: 'groups.exists(g, g.startsWith("pki-issuers-"))'
+      #   tenant_expression: |
+      #     groups.filter(g, g.startsWith("pki-issuers-"))
+      #           .map(g, g.replace("pki-issuers-", ""))
+      #   roles: ["issuer"]
+      # - expression: 'groups.exists(g, g.matches("^CN=PKI-Admins-[a-z0-9-]+,OU=Groups,DC=corp,DC=example,DC=com$"))'
+      #   tenant_expression: |
+      #     groups.filter(g, g.startsWith("CN=PKI-Admins-"))
+      #           .map(g, regex.extract(g, "^CN=PKI-Admins-([a-z0-9-]+),").orValue(""))
+      #   roles: ["admin"]
+      # - expression: 'email_verified && email.endsWith("@corp.example.com")'
+      #   roles: ["auditor"]
     # allow_zero_role: false denies login to an operator that resolves to no role.
     allow_zero_role: false
     # providers declares SEVERAL console identity providers side by side (Task

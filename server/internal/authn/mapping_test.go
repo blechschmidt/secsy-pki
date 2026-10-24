@@ -20,8 +20,20 @@ func sortedRoles(in []rbac.Role) []string {
 	return out
 }
 
+// mustMapper builds a mapper and fails the test when a mapping is rejected —
+// a malformed expression or a contradictory mapping is a construction error now
+// (Task 214), not a silent drop.
+func mustMapper(t *testing.T, groupsClaim string, mappings []ClaimMapping, opts ...ClaimMapperOption) *ClaimMapper {
+	t.Helper()
+	m, err := NewClaimMapper(groupsClaim, mappings, opts...)
+	if err != nil {
+		t.Fatalf("NewClaimMapper: %v", err)
+	}
+	return m
+}
+
 func TestClaimMapperResolvePlatform(t *testing.T) {
-	m := NewClaimMapper("groups", []ClaimMapping{
+	m := mustMapper(t, "groups", []ClaimMapping{
 		{Value: "pki-admins", Roles: []rbac.Role{rbac.RoleAdmin}},
 		{Value: "pki-issuers", Roles: []rbac.Role{rbac.RoleIssuer}},
 		{Claim: "roles", Value: "auditor", Roles: []rbac.Role{rbac.RoleAuditor}},
@@ -77,7 +89,7 @@ func TestClaimMapperResolvePlatform(t *testing.T) {
 }
 
 func TestClaimMapperResolveTenant(t *testing.T) {
-	m := NewClaimMapper("groups", []ClaimMapping{
+	m := mustMapper(t, "groups", []ClaimMapping{
 		{Value: "acme-issuers", Tenant: "acme-corp", Roles: []rbac.Role{rbac.RoleIssuer}},
 		{Value: "acme-admins", Tenant: "acme-corp", Roles: []rbac.Role{rbac.RoleAdmin}},
 		{Value: "globex-auditors", Tenant: "globex", Roles: []rbac.Role{rbac.RoleAuditor}},
@@ -100,7 +112,7 @@ func TestClaimMapperResolveTenant(t *testing.T) {
 }
 
 func TestClaimMapperDropsInvalidAndEmpty(t *testing.T) {
-	m := NewClaimMapper("", []ClaimMapping{
+	m := mustMapper(t, "", []ClaimMapping{
 		{Value: "good", Roles: []rbac.Role{rbac.RoleIssuer, "superuser" /* invalid */}},
 		{Value: "no-roles", Roles: []rbac.Role{"nonsense"}}, // dropped entirely
 		{Value: "", Roles: []rbac.Role{rbac.RoleAdmin}},     // no value, dropped
@@ -121,7 +133,7 @@ func TestClaimMapperDropsInvalidAndEmpty(t *testing.T) {
 }
 
 func TestClaimMapperGroups(t *testing.T) {
-	m := NewClaimMapper("memberOf", nil)
+	m := mustMapper(t, "memberOf", nil)
 	got := m.Groups(map[string]interface{}{"memberOf": []interface{}{"g1", "g2"}})
 	if !reflect.DeepEqual(got, []string{"g1", "g2"}) {
 		t.Errorf("groups = %v, want [g1 g2]", got)

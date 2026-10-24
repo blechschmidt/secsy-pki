@@ -149,11 +149,12 @@ CLI's shape — see [password & secret encryption](../secrets/password-encryptio
 
 ## Deliberately CLI-only
 
-The 12 commands with no console equivalent, and the reason for each. They fall
-into four kinds: **offline store/DR administration** that must work when the
+The 13 commands with no console equivalent, and the reason for each. They fall
+into five kinds: **offline store/DR administration** that must work when the
 server does not, **dual-control ceremonies** at a physical device, **protocol
-clients** that are test tools rather than server features, and **key
-provisioning** whose result only reaches the running process through config.
+clients** that are test tools rather than server features, **key provisioning**
+whose result only reaches the running process through config, and a
+**configuration-file tool** whose reader is editing that file.
 
 | Command | Why it stays on the command line |
 |---|---|
@@ -163,6 +164,7 @@ provisioning** whose result only reaches the running process through config.
 | `secsy-ca ceremony` | An interactive M-of-N operator quorum at a **physical** HSM: each custodian appears in person and enters a share on that terminal. The API's `init-root` / `issue-intermediate` are WebAuthn step-up gated instead. |
 | `secsy-ca cmp` | A CMP protocol **client** for exercising the `/cmp` endpoint; it generates its own key and talks to a running server. Not a server feature. |
 | `secsy-ca grpc` | A gRPC **client** for exercising the `PKIService` endpoint. Not a server feature. |
+| `secsy-ca role-mapping` | A configuration-file tool: it lists the claim/group → role mappings and dry-runs them — or an ad-hoc CEL expression — against a synthetic identity ([role-mapping expressions](../security/role-mapping-expressions.md)). The mappings are not operator-mutable state the console could edit: they are declared in the config file and compiled at startup, so the reader of this output is whoever is editing that file and has it in front of them. Serving it over the API would publish the authentication configuration to gain nothing an operator could act on in a browser. |
 | `secsy-secret init-kek` | Provisions the deployment's key-encryption key. Server-role key provisioning: the label has to reach the running process through config, so it needs a restart to take effect. |
 | `secsy-secret pqc-enable` | Provisions the ML-KEM hybrid material — key provisioning like `init-kek`. The resulting state *is* shown on the Secrets view. |
 | `secsy-secret pqc-reseal` | Re-seals existing envelopes under the hybrid material: the migration half of `pqc-enable`, offline for the same reason. |

@@ -332,10 +332,13 @@ func TestClaimToRoleMappingWiredThroughAuthn(t *testing.T) {
 	}
 
 	// The claim->role config: IdP group "pki-admins" grants the admin role.
-	mapper := authn.NewClaimMapper("groups", []authn.ClaimMapping{
+	mapper, err := authn.NewClaimMapper("groups", []authn.ClaimMapping{
 		{Value: "pki-admins", Roles: []rbac.Role{rbac.RoleAdmin}},
 		{Value: "acme-issuers", Tenant: "acme", Roles: []rbac.Role{rbac.RoleIssuer}},
 	})
+	if err != nil {
+		t.Fatalf("NewClaimMapper: %v", err)
+	}
 
 	// resolve mirrors buildPrincipalResolver's fail-closed rule: no platform or
 	// tenant role, and zero-role logins forbidden, denies the login.

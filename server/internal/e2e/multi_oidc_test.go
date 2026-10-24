@@ -107,10 +107,10 @@ func setupMultiOIDC(t *testing.T) *multiOIDCEnv {
 	// corporate IdP's operators map to `auditor`. Neither group is known to the
 	// other provider, which is the isolation being asserted.
 	mappers := map[string]*authn.ClaimMapper{
-		forgeProvider: authn.NewClaimMapper("groups", []authn.ClaimMapping{
+		forgeProvider: mustClaimMapper(t, []authn.ClaimMapping{
 			{Value: forgeGroup, Roles: []rbac.Role{rbac.RoleSigner}},
 		}),
-		corpProvider: authn.NewClaimMapper("groups", []authn.ClaimMapping{
+		corpProvider: mustClaimMapper(t, []authn.ClaimMapping{
 			{Value: corpGroup, Roles: []rbac.Role{rbac.RoleAuditor}},
 		}),
 	}
@@ -484,4 +484,15 @@ func rolesOf(user map[string]interface{}) []string {
 		}
 	}
 	return out
+}
+
+// mustClaimMapper builds a claim mapper over the "groups" claim, failing the
+// test if a mapping is rejected at construction.
+func mustClaimMapper(t *testing.T, mappings []authn.ClaimMapping) *authn.ClaimMapper {
+	t.Helper()
+	m, err := authn.NewClaimMapper("groups", mappings)
+	if err != nil {
+		t.Fatalf("NewClaimMapper: %v", err)
+	}
+	return m
 }

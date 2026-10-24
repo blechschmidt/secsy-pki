@@ -544,6 +544,7 @@ func parityCommands() []cmdEntry {
 		cliOnly(ca, "ceremony", "interactive M-of-N operator quorum at a physical HSM: each custodian appears in person and enters a share on that terminal. The API's init-root / issue-intermediate are WebAuthn step-up gated instead"),
 		cliOnly(ca, "cmp", "a CMP protocol CLIENT for testing the /cmp endpoint; it generates its own key and talks to a running server. Not a server feature"),
 		cliOnly(ca, "grpc", "a gRPC CLIENT for testing the PKIService endpoint. Not a server feature"),
+		cliOnly(ca, "role-mapping", "a configuration-file tool (Task 214): it lists the claim/group -> role mappings and dry-runs them, or an ad-hoc CEL expression, against a synthetic identity. The mappings are not operator-mutable state the console could edit — they are declared in the config file and compiled at startup — so the reader of this output is whoever is editing that file, who has it in front of them. Serving it over the API would publish the authentication configuration to gain nothing an operator could act on in the browser"),
 
 		// --- secsy-secret: on the Secrets view --------------------------
 		cmdOn(sec, "encrypt", "secrets"),

@@ -1,0 +1,175 @@
+# =============================================================================
+# Example: CEL role mappings — group names that encode the tenant
+# =============================================================================
+# A deployment serving three business units. Identity lives in Active Directory
+# and is federated to the console through the corporate IdP; both assert group
+# names that CARRY the structure:
+#
+#   pki-admins-acme-corp        pki-issuers-acme-corp
+#   pki-admins-globex           pki-issuers-globex
+#   pki-admins-initech          pki-issuers-initech
+#   CN=PKI-Auditors-globex,OU=Groups,DC=corp,DC=example,DC=com
+#
+# Enumerated as exact-value mappings that is 3 roles x 3 tenants = 9 rows,
+# growing by three every time a business unit is onboarded, and silently wrong
+# the day someone creates a group nobody added here. Written as CEL expressions
+# it is one row per ROLE, and onboarding a tenant means declaring the tenant.
+#
+# Every expression below is compiled when the server starts (a typo is a load
+# error, not a login-time surprise), bounded in cost when it runs, and
+# fail-closed: false, an evaluation error, or a tenant id that resolves to
+# nothing all grant nothing — an unextracted tenant is never read as
+# "platform-wide".
+#
+# Dry-run any of it offline, with no IdP and no HSM:
+#
+#   secsy-ca role-mapping list
+#   secsy-ca role-mapping test -group pki-issuers-globex
+#   secsy-ca role-mapping reference
+#
+# See examples/role-mapping-cel/README.md for the walkthrough, and
+# docs/security/role-mapping-expressions.md for the full reference.
+
+server:
+  host: "0.0.0.0"
+  port: 8443
+  tls_cert: "certs/server.crt"
+  tls_key: "certs/server.key"
+
+database:
+  driver: "sqlite"
+  dsn: "secsy-pki.db"
+
+root_user:
+  username: "root"
+  # Break-glass only; close this path once SSO works (see policy below).
+  password: "change-me-in-production"
+
+key_provider:
+  type: "pkcs11"
+
+pkcs11:
+  module_path: "/usr/lib/softhsm/libsofthsm2.so"
+  token_label: "secsy-ca"
+  pin: "1234"                     # or pin_file / pin_source in production
+
+# =============================================================================
+# The tenants the expressions may resolve to
+# =============================================================================
+# This list is also the FENCE around a derived tenant id: an expression that
+# extracts "ACME" or "acme-crop" from a group name grants nothing, because
+# neither names a tenant declared here. Onboarding a business unit is adding a
+# row here — the mappings already cover it.
+tenants:
+  - id: "acme-corp"
+    name: "ACME Corporation"
+  - id: "globex"
+    name: "Globex"
+  - id: "initech"
+    name: "Initech"
+
+auth:
+  session:
+    ttl_minutes: 60
+
+  # ---------------------------------------------------------------------------
+  # CONSOLE operators — corporate IdP, groups named pki-<role>-<tenant>
+  # ---------------------------------------------------------------------------
+  oidc:
+    enabled: true
+    issuer_url: "https://idp.corp.example.com"
+    client_id: "secsy-console"
+    client_secret: "change-me"            # or client_secret_file in production
+    redirect_url: "https://pki.example.com/auth/callback"
+    scopes: ["openid", "profile", "email", "groups"]
+    groups_claim: "groups"
+    allow_zero_role: false
+    role_mappings:
+      # --- One row per role, covering every tenant ---------------------------
+      # `expression` decides whether the mapping applies; `tenant_expression`
+      # says in which tenant(s). It yields a LIST, so an operator who
+      # administers two business units gets the role in both.
+      - expression: 'groups.exists(g, g.matches("^pki-admins-[a-z0-9-]+$"))'
+        tenant_expression: |
+          groups.filter(g, g.matches("^pki-admins-[a-z0-9-]+$"))
+                .map(g, g.replace("pki-admins-", ""))
+        roles: ["admin"]
+
+      - expression: 'groups.exists(g, g.matches("^pki-issuers-[a-z0-9-]+$"))'
+        tenant_expression: |
+          groups.filter(g, g.matches("^pki-issuers-[a-z0-9-]+$"))
+                .map(g, g.replace("pki-issuers-", ""))
+        roles: ["issuer"]
+
+      # --- The platform team: genuinely cross-tenant -------------------------
+      # No tenant_expression, so this grants PLATFORM-wide. Keep such mappings
+      # few and keyed on an exact group name, not a pattern.
+      - { value: "pki-platform-admins", roles: ["admin"] }
+
+      # --- Compliance: read-only everywhere, and only if verified ------------
+      # email_verified matters: at an IdP where a user can set their own
+      # address, `email` alone would let them claim someone else's roles.
+      - expression: 'email_verified && email.endsWith("@audit.corp.example.com")'
+        roles: ["auditor"]
+
+  # ---------------------------------------------------------------------------
+  # DIRECTORY logins — Active Directory group DNs
+  # ---------------------------------------------------------------------------
+  # A DN carries the tenant inside the CN, with the organizational unit as part
+  # of the trust decision: OU=Groups is the directory's managed tree, and a
+  # look-alike group in OU=Contractors must not match. The pattern is anchored
+  # at both ends for exactly that reason, and regex.extract pulls the tenant out
+  # of the capture group.
+  #
+  # Note that the tenant expression repeats the SAME anchored pattern rather
+  # than filtering on a prefix. The two expressions are evaluated
+  # independently: a loose filter here would extract an id out of a group the
+  # match expression rejected, leaving the declared-tenant list as the only
+  # thing standing between a contractor group and a role.
+  ldap:
+    enabled: true
+    url: "ldaps://dc.corp.example.com:636"
+    bind_dn: "CN=secsy-pki,OU=Service Accounts,DC=corp,DC=example,DC=com"
+    bind_password_source:
+      type: file
+      file: { path: /etc/secsy/ldap-bind.pass }
+    user_base_dn: "OU=People,DC=corp,DC=example,DC=com"
+    user_filter: "(sAMAccountName=%s)"
+    group_base_dn: "OU=Groups,DC=corp,DC=example,DC=com"
+    allow_zero_role: false
+    role_mappings:
+      - expression: 'groups.exists(g, g.matches("^CN=PKI-Auditors-[a-z0-9-]+,OU=Groups,DC=corp,DC=example,DC=com$"))'
+        tenant_expression: |
+          groups.filter(g, g.matches("^CN=PKI-Auditors-[a-z0-9-]+,OU=Groups,DC=corp,DC=example,DC=com$"))
+                .map(g, regex.extract(g, "^CN=PKI-Auditors-([a-z0-9-]+),").orValue(""))
+        roles: ["auditor"]
+    tls:
+      ca_file: "/etc/secsy/ad-ca.pem"
+
+  webauthn:
+    # Passkey step-up for the destructive operations, on top of SSO.
+    enabled: true
+    rp_id: "pki.example.com"
+    rp_name: "Secsy PKI"
+    origins: ["https://pki.example.com"]
+    step_up_ttl_minutes: 5
+
+# =============================================================================
+# MACHINE callers — one pattern instead of one row per repository
+# =============================================================================
+# GitHub puts the repository and the environment in `sub`. An anchored pattern
+# covers every repository in the organization while refusing another
+# organization, another environment, and any subject that merely CONTAINS the
+# expected text.
+oidc:
+  providers:
+    - name: github
+      issuer_url: "https://token.actions.githubusercontent.com"
+      client_id: "secsy-pki-signing"       # the audience the workflow requests
+      role_mappings:
+        - expression: 'subject.matches("^repo:example-org/[a-z0-9._-]+:environment:release$")'
+          roles: ["signer"]
+
+policy:
+  # Close the break-glass path once SSO and step-up are working.
+  allow_root_basic_auth: true

@@ -144,6 +144,16 @@ func run(args []string) error {
 		return fmt.Errorf("loading tenant allowed_upn_realms: %w", err)
 	}
 
+	// Claim/group -> RBAC role mapping (Task 214) is pure configuration: listing
+	// the mappings, and dry-running them (or an ad-hoc CEL expression) against a
+	// synthetic identity, reads the config file and nothing else. Dispatch it
+	// before the database and the key provider so an operator can work out why a
+	// directory group resolves to the roles it does without a running server, a
+	// reachable IdP, or an unlocked HSM.
+	if command == "role-mapping" {
+		return cmdRoleMapping(cfg, cmdArgs)
+	}
+
 	// Certificate linting is fully offline (no database or key provider): dispatch
 	// it before opening either, so an operator can lint a certificate anywhere.
 	if command == "lint" {
@@ -563,6 +573,9 @@ Commands:
   grant               Delegate ONE CA or key to a user or group
                       (add/remove/list/effective/roles), e.g. let a group
                       administer a single sub-CA without tenant-wide authority
+  role-mapping        Inspect and dry-run the claim/group → RBAC role mappings
+                      (list/test/reference), including the CEL expression form:
+                      "test" says which roles a given identity resolves to
   blocked-keys        Manage the compromised-key blocklist (add/list/remove);
                       blocked subject keys are rejected fail-closed at issuance
   hsm-audit           YubiHSM device audit log: provision/collect/timestamp/

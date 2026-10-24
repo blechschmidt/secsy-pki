@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
+	"github.com/blechschmidt/secsy-pki/server/internal/authn"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
@@ -53,15 +54,27 @@ func federatedProviders() []config.OIDCProviderConfig {
 
 // resolverFor builds the middleware hook over the given providers with empty
 // central rbac assignments, so only the per-provider mappings can grant anything.
-func resolverFor(providers []config.OIDCProviderConfig, groups groupLookup) func(*models.UserInfo, *auth.Claims) {
+func resolverFor(t *testing.T, providers []config.OIDCProviderConfig, groups groupLookup) func(*models.UserInfo, *auth.Claims) {
+	t.Helper()
 	ta := rbac.NewTenantAssignments(rbac.NewAssignments(nil, nil), nil)
-	return bearerClaimResolver(buildBearerClaimMappers(providers), ta, groups)
+	return bearerClaimResolver(mustBearerMappers(t, providers), ta, groups)
+}
+
+// mustBearerMappers builds the per-provider mappers, failing the test when a
+// mapping is rejected (a malformed CEL expression, Task 214).
+func mustBearerMappers(t *testing.T, providers []config.OIDCProviderConfig) map[string]*authn.ClaimMapper {
+	t.Helper()
+	mappers, err := buildBearerClaimMappers(&config.Config{}, providers)
+	if err != nil {
+		t.Fatalf("buildBearerClaimMappers: %v", err)
+	}
+	return mappers
 }
 
 // TestBearerClaimResolverAppliesVerifyingProvidersMapping asserts each provider's
 // own mapping is applied to tokens it verified.
 func TestBearerClaimResolverAppliesVerifyingProvidersMapping(t *testing.T) {
-	resolve := resolverFor(federatedProviders(), nil)
+	resolve := resolverFor(t, federatedProviders(), nil)
 
 	// The CI workflow identity resolves to exactly `signer`.
 	ci := &models.UserInfo{Subject: "repo:example-org/app:environment:release"}
@@ -106,7 +119,7 @@ func TestBearerClaimResolverAppliesVerifyingProvidersMapping(t *testing.T) {
 // get nothing, and a CI token asserting the corporate admin group must get
 // nothing — the mapping belongs to the issuer, not to the string.
 func TestBearerClaimResolverIsolatesProviders(t *testing.T) {
-	resolve := resolverFor(federatedProviders(), nil)
+	resolve := resolverFor(t, federatedProviders(), nil)
 
 	impersonatingSub := &models.UserInfo{Subject: "repo:example-org/app:environment:release"}
 	resolve(impersonatingSub, &auth.Claims{
@@ -153,7 +166,7 @@ func TestBearerClaimResolverUnionsCentralAssignments(t *testing.T) {
 		},
 	}}
 	resolve := bearerClaimResolver(
-		buildBearerClaimMappers(providers), ta,
+		mustBearerMappers(t, providers), ta,
 		stubGroups{"sub-1": {"internal-group"}},
 	)
 
@@ -188,7 +201,7 @@ func TestBearerClaimResolverEmailMustBeVerified(t *testing.T) {
 	ta := rbac.NewTenantAssignments(
 		rbac.NewAssignments(map[string][]rbac.Role{"admin@example.com": {rbac.RoleAdmin}}, nil), nil)
 	resolve := bearerClaimResolver(
-		buildBearerClaimMappers([]config.OIDCProviderConfig{{Name: "idp"}}), ta, nil)
+		mustBearerMappers(t, []config.OIDCProviderConfig{{Name: "idp"}}), ta, nil)
 
 	info := &models.UserInfo{Subject: "attacker", Email: "admin@example.com", EmailVerified: false}
 	resolve(info, &auth.Claims{Provider: "idp", Subject: info.Subject, Email: info.Email,
@@ -210,7 +223,7 @@ func TestBearerClaimResolverEmailMustBeVerified(t *testing.T) {
 // leaves the principal exactly as the central resolvers built it, rather than
 // defaulting to some other provider's mapping.
 func TestBearerClaimResolverUnknownProviderIsInert(t *testing.T) {
-	resolve := resolverFor(federatedProviders(), nil)
+	resolve := resolverFor(t, federatedProviders(), nil)
 
 	info := &models.UserInfo{Subject: "x", Roles: []string{"auditor"}}
 	resolve(info, &auth.Claims{Provider: "nope", Subject: "x",
@@ -226,7 +239,7 @@ func TestBearerClaimResolverUnknownProviderIsInert(t *testing.T) {
 // role is still authenticated: refusal is the authorization gate's job, as it has
 // always been on the Bearer path. (allow_zero_role is a console-login policy.)
 func TestBearerClaimResolverNeverDenies(t *testing.T) {
-	resolve := resolverFor(federatedProviders(), nil)
+	resolve := resolverFor(t, federatedProviders(), nil)
 
 	info := &models.UserInfo{Subject: "repo:unknown/repo:ref:refs/heads/main"}
 	resolve(info, &auth.Claims{Provider: "github", Subject: info.Subject,
@@ -275,7 +288,7 @@ func TestBearerProviderSpecsFromConfig(t *testing.T) {
 // caller's groups under that provider's configured groups claim, which the
 // central group assignments and resource-scoped grants both need.
 func TestBuildBearerClaimMappersCoversEveryProvider(t *testing.T) {
-	mappers := buildBearerClaimMappers([]config.OIDCProviderConfig{
+	mappers := mustBearerMappers(t, []config.OIDCProviderConfig{
 		{Name: "plain", IssuerURL: "https://a.example.com", ClientID: "c"},
 		{Name: "custom-claim", IssuerURL: "https://b.example.com", ClientID: "c", GroupsClaim: "wids"},
 	})

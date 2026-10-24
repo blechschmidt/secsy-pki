@@ -92,8 +92,11 @@ func setupOperatorAuth(
 				log.Printf("WARNING: interactive OIDC login provider %q is unavailable: %v", pc.Name, err)
 				continue
 			}
-			mapper := authn.NewClaimMapper(pc.GroupsClaim, buildClaimMappings(pc.RoleMappings))
-			resolve := buildPrincipalResolver(db, tenantAssignments, mapper, ac.OIDC.AllowZeroRoleFor(pc))
+			mapper, err := newClaimMapper(cfg, pc.Name, pc.GroupsClaim, pc.RoleMappings)
+			if err != nil {
+				return nil, fmt.Errorf("oidc login provider %q: %w", pc.Name, err)
+			}
+			resolve := buildPrincipalResolver(db, tenantAssignments, mapper, pc.Name, ac.OIDC.AllowZeroRoleFor(pc))
 			login, err := authn.NewOIDCLogin(mgr, authn.OIDCLoginConfig{
 				Name:         pc.Name,
 				DisplayName:  pc.DisplayName,
@@ -200,7 +203,10 @@ func setupOperatorAuth(
 	// --- LDAP / Active Directory authentication ---
 	ldapLogin := false
 	if ac.LDAP.Enabled {
-		ldapMapper := authn.NewClaimMapper(ac.LDAP.GroupsClaim, buildClaimMappings(ac.LDAP.RoleMappings))
+		ldapMapper, err := newClaimMapper(cfg, "ldap", ac.LDAP.GroupsClaim, ac.LDAP.RoleMappings)
+		if err != nil {
+			return nil, fmt.Errorf("ldap: %w", err)
+		}
 		resolver := buildLDAPResolver(db, tenantAssignments, ldapMapper, ac.LDAP.AllowZeroRole)
 		ldapAuth, err := buildLDAPAuthenticator(ac.LDAP, resolver)
 		if err != nil {
@@ -313,13 +319,36 @@ func buildClaimMappings(in []config.ClaimMappingConfig) []authn.ClaimMapping {
 	out := make([]authn.ClaimMapping, 0, len(in))
 	for _, m := range in {
 		out = append(out, authn.ClaimMapping{
-			Claim:  m.Claim,
-			Value:  m.Value,
-			Tenant: m.Tenant,
-			Roles:  toRbacRoles(m.Roles),
+			Claim:            m.Claim,
+			Value:            m.Value,
+			Expression:       m.Expression,
+			Tenant:           m.Tenant,
+			TenantExpression: m.TenantExpression,
+			Roles:            toRbacRoles(m.Roles),
 		})
 	}
 	return out
+}
+
+// newClaimMapper builds one provider's claim mapper: it translates the config
+// mappings, compiles their CEL expressions (Task 214), restricts the tenant ids
+// an expression may derive to the tenants this deployment declares, and routes
+// evaluation failures to the log.
+//
+// The compile step is why this returns an error. A role mapping decides who
+// administers the PKI, so an expression that does not compile is refused at
+// startup: the alternative is a server that comes up and denies the operators
+// it was supposed to admit, which is discovered at the worst possible moment.
+// Evaluation errors at login are the opposite case — they are per-request and
+// one broken mapping must not deny what the others authorize — so those are
+// logged and the mapping grants nothing.
+func newClaimMapper(cfg *config.Config, provider, groupsClaim string, mappings []config.ClaimMappingConfig) (*authn.ClaimMapper, error) {
+	return authn.NewClaimMapper(groupsClaim, buildClaimMappings(mappings),
+		authn.WithKnownTenants(cfg.TenantIDs()),
+		authn.WithExpressionErrorHandler(func(err error) {
+			log.Printf("WARNING: provider %q: %v (the mapping granted nothing)", provider, err)
+		}),
+	)
 }
 
 // buildBearerClaimMappers builds one claim mapper per machine-token (Bearer)
@@ -327,12 +356,16 @@ func buildClaimMappings(in []config.ClaimMappingConfig) []authn.ClaimMapping {
 // declares no role mappings: the mapper is also what extracts the caller's group
 // memberships from that provider's configured groups claim, which the central
 // rbac group assignments and the resource-scoped grants both need.
-func buildBearerClaimMappers(providers []config.OIDCProviderConfig) map[string]*authn.ClaimMapper {
+func buildBearerClaimMappers(cfg *config.Config, providers []config.OIDCProviderConfig) (map[string]*authn.ClaimMapper, error) {
 	out := make(map[string]*authn.ClaimMapper, len(providers))
 	for _, p := range providers {
-		out[p.Name] = authn.NewClaimMapper(p.GroupsClaim, buildClaimMappings(p.RoleMappings))
+		mapper, err := newClaimMapper(cfg, p.Name, p.GroupsClaim, p.RoleMappings)
+		if err != nil {
+			return nil, fmt.Errorf("oidc provider %q: %w", p.Name, err)
+		}
+		out[p.Name] = mapper
 	}
-	return out
+	return out, nil
 }
 
 // bearerClaimResolver returns the hook the auth middleware applies to a principal
@@ -368,8 +401,16 @@ func bearerClaimResolver(
 				groups = append(groups, internal...)
 			}
 		}
-		resolved, err := resolveConsolePrincipal(ta, mapper, true,
-			info.Subject, info.Email, info.EmailVerified, info.Name, groups, claims.Raw)
+		resolved, err := resolveConsolePrincipal(ta, mapper, true, authn.Identity{
+			Subject:       info.Subject,
+			Email:         info.Email,
+			EmailVerified: info.EmailVerified,
+			Name:          info.Name,
+			Issuer:        claims.Issuer,
+			Provider:      claims.Provider,
+			Groups:        groups,
+			Claims:        claims.Raw,
+		})
 		if err != nil || resolved == nil {
 			return
 		}
@@ -444,6 +485,7 @@ func buildPrincipalResolver(
 	db *database.DB,
 	ta *rbac.TenantAssignments,
 	mapper *authn.ClaimMapper,
+	provider string,
 	allowZeroRole bool,
 ) authn.PrincipalResolver {
 	return func(idToken *oidc.IDToken, claims map[string]interface{}) (*models.UserInfo, error) {
@@ -451,34 +493,44 @@ func buildPrincipalResolver(
 		email, _ := claims["email"].(string)
 		emailVerified, _ := claims["email_verified"].(bool)
 		name, _ := claims["name"].(string)
+		username, _ := claims["preferred_username"].(string)
 
 		// Groups combine the IdP group claim with any internal group memberships.
 		groups := mapper.Groups(claims)
 		if internal, err := db.GetUserGroups(subject); err == nil {
 			groups = append(groups, internal...)
 		}
-		return resolveConsolePrincipal(ta, mapper, allowZeroRole,
-			subject, email, emailVerified, name, groups, claims)
+		return resolveConsolePrincipal(ta, mapper, allowZeroRole, authn.Identity{
+			Subject:       subject,
+			Email:         email,
+			EmailVerified: emailVerified,
+			Name:          name,
+			Username:      username,
+			Issuer:        idToken.Issuer,
+			Provider:      provider,
+			Groups:        groups,
+			Claims:        claims,
+		})
 	}
 }
 
 // resolveConsolePrincipal unions the claim/group -> RBAC role mapping (the
 // ClaimMapper) with the rbac subject/email/group assignments, across platform and
 // per-tenant scopes, and enforces the zero-role login policy. It is the shared
-// core of the OIDC and LDAP (Task 159) login paths: both compute a subject, email,
-// display name, the caller's groups, and the claims map fed to the mapper, then
-// delegate here so the two paths cannot drift in how roles are resolved.
+// core of the OIDC and LDAP (Task 159) login paths: both assemble the identity
+// — subject, email, display name, the caller's groups, and the claim set the
+// mapper reads — then delegate here so the two paths cannot drift in how roles
+// are resolved. Passing the identity as one value is what lets a CEL mapping
+// (Task 214) see the same fields whichever path authenticated the caller.
 func resolveConsolePrincipal(
 	ta *rbac.TenantAssignments,
 	mapper *authn.ClaimMapper,
 	allowZeroRole bool,
-	subject, email string,
-	emailVerified bool,
-	name string,
-	groups []string,
-	claims map[string]interface{},
+	id authn.Identity,
 ) (*models.UserInfo, error) {
-	mapPlatform, mapTenant := mapper.Resolve(claims)
+	subject, email, groups := id.Subject, id.Email, id.Groups
+	emailVerified := id.EmailVerified
+	mapPlatform, mapTenant := mapper.ResolveIdentity(id)
 
 	platform := dedupRoles(append(ta.PlatformRolesFor(subject, email, emailVerified, groups), mapPlatform...))
 
@@ -506,7 +558,7 @@ func resolveConsolePrincipal(
 		Subject:       subject,
 		Email:         email,
 		EmailVerified: emailVerified,
-		Name:          name,
+		Name:          id.Name,
 		Roles:         platform,
 		// Carry the resolved group identities onto the principal: resource-scoped
 		// grants (Task 191) may name an existing IdP/directory group directly, and
@@ -544,8 +596,16 @@ func buildLDAPResolver(
 		if name == "" {
 			name = id.Username
 		}
-		return resolveConsolePrincipal(ta, mapper, allowZeroRole,
-			id.Subject, id.Email, id.Email != "", name, groups, claims)
+		return resolveConsolePrincipal(ta, mapper, allowZeroRole, authn.Identity{
+			Subject:       id.Subject,
+			Email:         id.Email,
+			EmailVerified: id.Email != "",
+			Name:          name,
+			Username:      id.Username,
+			Provider:      "ldap",
+			Groups:        groups,
+			Claims:        claims,
+		})
 	}
 }
 

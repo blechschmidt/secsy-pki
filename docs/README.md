@@ -128,6 +128,7 @@ These pages are also published — with search and navigation — at
 |------|--------|
 | [RBAC, audit logging & config](security/rbac-and-audit.md) | Roles, per-CA permissions, the hash-chained event log, centralized config |
 | [Operator authentication (SSO, mTLS, WebAuthn)](security/authentication.md) | OIDC SSO, LDAP/AD, mTLS binding, WebAuthn step-up, scoped API tokens |
+| [Role-mapping expressions (CEL)](security/role-mapping-expressions.md) | Mapping structured IdP group names to roles and tenants with CEL |
 | [Four-eyes / maker-checker approvals](security/approvals.md) | Dual control over CA lifecycle, bulk revocation and issuance |
 | [Multi-tenant isolation](security/multi-tenancy.md) | Serving several isolated organizations from one deployment |
 | [Rate limiting & abuse protection](security/rate-limiting.md) | Tiered rate limits and the bounded HSM concurrency guard |

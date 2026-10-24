@@ -291,8 +291,11 @@ func main() {
 	// Per-provider claim -> role mapping for machine Bearer callers (Task 212):
 	// the mapping of the issuer that verified a token, plus the group identities
 	// that token asserts, are unioned onto the principal the resolvers above built.
-	authMw.SetBearerClaimResolver(bearerClaimResolver(
-		buildBearerClaimMappers(cfg.BearerOIDCProviders()), tenantAssignments, db))
+	bearerMappers, err := buildBearerClaimMappers(cfg, cfg.BearerOIDCProviders())
+	if err != nil {
+		log.Fatalf("Invalid oidc role_mappings: %v", err)
+	}
+	authMw.SetBearerClaimResolver(bearerClaimResolver(bearerMappers, tenantAssignments, db))
 
 	authMw.SetRootEnabled(cfg.Policy.RootBasicAuthEnabled())
 	if !cfg.Policy.RootBasicAuthEnabled() {

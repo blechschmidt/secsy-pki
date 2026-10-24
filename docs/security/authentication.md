@@ -156,12 +156,29 @@ auth:
       - { value: "pki-issuers",  roles: ["issuer"] }
       - { value: "acme-issuers", tenant: "acme-corp", roles: ["issuer"] }
       - { claim: "roles", value: "auditor", roles: ["auditor"] }  # any claim
+      # Or a CEL expression, when the group names encode the structure:
+      - expression: 'groups.exists(g, g.startsWith("pki-issuers-"))'
+        tenant_expression: |
+          groups.filter(g, g.startsWith("pki-issuers-"))
+                .map(g, g.replace("pki-issuers-", ""))
+        roles: ["issuer"]
     allow_zero_role: false     # deny login to an operator with no resolved role
 ```
 
 A mapping matches when the named claim (a string or a list of strings) contains
-`value`. Unknown role names are dropped at load, and an `enabled` login block
-with a mapping referencing an unknown role fails validation at startup.
+`value`, **or** when its CEL `expression` evaluates true. Unknown role names are
+dropped at load, and an `enabled` login block with a mapping referencing an
+unknown role fails validation at startup.
+
+The expression form — `expression` and `tenant_expression`, with
+`startsWith`/`endsWith`/`matches`, `regex.replace`/`regex.extract`, sets and
+lists over the authenticated identity — is what an organization needs when a
+group name *carries* the tenant (`pki-issuers-acme-corp`,
+`CN=PKI-Admins-emea,OU=Groups,…`) instead of enumerating one mapping per team.
+It is compiled at startup, cost-bounded at evaluation, and fail-closed
+throughout; `secsy-ca role-mapping test` dry-runs it offline. See
+**[role-mapping expressions](role-mapping-expressions.md)** for the variables,
+the function library, and the rules that keep a derived tenant from escalating.
 
 <a id="multiple-oidc-providers"></a>
 
@@ -399,6 +416,12 @@ The resolved directory groups are presented to the shared `ClaimMapper` under
 (or, with `group_attribute` naming an attribute such as `cn`, its name) is
 matched against `value`, granting platform-wide or tenant-scoped roles. The
 result is unioned with the top-level `rbac:` subject/email/group assignments.
+
+A directory is where the CEL
+[expression form](role-mapping-expressions.md) earns its keep: group DNs encode
+the organizational unit and frequently the team, so one mapping can cover an
+entire naming convention and extract the tenant out of the CN rather than
+enumerating every group DN by hand.
 
 **Sourcing the bind password.** `bind_password` may be given inline, or sourced
 from a credential store with `bind_password_source` — the same machinery as the

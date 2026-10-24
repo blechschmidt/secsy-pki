@@ -55,8 +55,9 @@ func testDir() *mockDirectory {
 
 // testMapper maps the two mapped groups to roles, reusing the OIDC ClaimMapper
 // (mapping.go): pki-admins → platform admin, pki-issuers → issuer in tenant "acme".
-func testMapper() *ClaimMapper {
-	return NewClaimMapper("groups", []ClaimMapping{
+func testMapper(t *testing.T) *ClaimMapper {
+	t.Helper()
+	return mustMapper(t, "groups", []ClaimMapping{
 		{Value: "cn=pki-admins,ou=groups,dc=example,dc=com", Roles: []rbac.Role{rbac.RoleAdmin}},
 		{Value: "cn=pki-issuers,ou=groups,dc=example,dc=com", Tenant: "acme", Roles: []rbac.Role{rbac.RoleIssuer}},
 	})
@@ -118,7 +119,7 @@ func mustAuth(t *testing.T, cfg LDAPConfig, mapper *ClaimMapper, allowZero bool)
 // that resolves a directory group to an RBAC role.
 func TestLDAPSearchBindSuccessRole(t *testing.T) {
 	m, url := startMockLDAP(t, testDir(), modeLDAPS)
-	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(), false)
+	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(t), false)
 
 	info, err := a.Authenticate(context.Background(), "alice", "alicepass")
 	if err != nil {
@@ -141,7 +142,7 @@ func TestLDAPSearchBindSuccessRole(t *testing.T) {
 // TestLDAPGroupToRoleMapping verifies distinct groups map to distinct roles/tenants.
 func TestLDAPGroupToRoleMapping(t *testing.T) {
 	m, url := startMockLDAP(t, testDir(), modeLDAPS)
-	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(), false)
+	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(t), false)
 
 	// alice → platform admin
 	alice, err := a.Authenticate(context.Background(), "alice", "alicepass")
@@ -173,7 +174,7 @@ func TestLDAPGroupSearchFlow(t *testing.T) {
 	cfg.GroupAttribute = "" // use the entry DN of each matched group
 	cfg.GroupBaseDN = "ou=groups,dc=example,dc=com"
 	cfg.GroupFilter = "(&(objectClass=group)(member=%s))"
-	a := mustAuth(t, cfg, testMapper(), false)
+	a := mustAuth(t, cfg, testMapper(t), false)
 
 	info, err := a.Authenticate(context.Background(), "alice", "alicepass")
 	if err != nil {
@@ -187,7 +188,7 @@ func TestLDAPGroupSearchFlow(t *testing.T) {
 // TestLDAPFailedBind covers a wrong password: no principal, ErrLDAPInvalidCredentials.
 func TestLDAPFailedBind(t *testing.T) {
 	m, url := startMockLDAP(t, testDir(), modeLDAPS)
-	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(), false)
+	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(t), false)
 
 	info, err := a.Authenticate(context.Background(), "alice", "wrongpass")
 	if info != nil {
@@ -202,7 +203,7 @@ func TestLDAPFailedBind(t *testing.T) {
 // generic error as a wrong password (no user enumeration).
 func TestLDAPUnknownUser(t *testing.T) {
 	m, url := startMockLDAP(t, testDir(), modeLDAPS)
-	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(), false)
+	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(t), false)
 
 	if _, err := a.Authenticate(context.Background(), "nobody", "whatever"); !errors.Is(err, ErrLDAPInvalidCredentials) {
 		t.Fatalf("unknown user err = %v, want ErrLDAPInvalidCredentials", err)
@@ -213,7 +214,7 @@ func TestLDAPUnknownUser(t *testing.T) {
 // an empty password must be rejected before any bind is attempted.
 func TestLDAPEmptyPasswordRejected(t *testing.T) {
 	m, url := startMockLDAP(t, testDir(), modeLDAPS)
-	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(), false)
+	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(t), false)
 
 	if _, err := a.Authenticate(context.Background(), "alice", ""); !errors.Is(err, ErrLDAPInvalidCredentials) {
 		t.Fatalf("empty password err = %v, want ErrLDAPInvalidCredentials", err)
@@ -227,7 +228,7 @@ func TestLDAPEmptyPasswordRejected(t *testing.T) {
 // at login (allow_zero_role is false).
 func TestLDAPUnmappedGroupDenied(t *testing.T) {
 	m, url := startMockLDAP(t, testDir(), modeLDAPS)
-	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(), false)
+	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(t), false)
 
 	info, err := a.Authenticate(context.Background(), "carol", "carolpass")
 	if info != nil {
@@ -242,7 +243,7 @@ func TestLDAPUnmappedGroupDenied(t *testing.T) {
 // when allow_zero_role is enabled.
 func TestLDAPUnmappedGroupAllowedWhenZeroRoleOK(t *testing.T) {
 	m, url := startMockLDAP(t, testDir(), modeLDAPS)
-	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(), true)
+	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(t), true)
 
 	info, err := a.Authenticate(context.Background(), "carol", "carolpass")
 	if err != nil {
@@ -258,7 +259,7 @@ func TestLDAPStartTLSSuccess(t *testing.T) {
 	m, url := startMockLDAP(t, testDir(), modeStartTLS)
 	cfg := searchBindConfig(t, m, url)
 	cfg.StartTLS = true
-	a := mustAuth(t, cfg, testMapper(), false)
+	a := mustAuth(t, cfg, testMapper(t), false)
 
 	info, err := a.Authenticate(context.Background(), "alice", "alicepass")
 	if err != nil {
@@ -283,7 +284,7 @@ func TestLDAPStartTLSEnforced(t *testing.T) {
 	// isn't what fails.
 	cfg.TLSCACertPEM = nil
 	cfg.TLSInsecureSkipVerify = true
-	a := mustAuth(t, cfg, testMapper(), false)
+	a := mustAuth(t, cfg, testMapper(t), false)
 
 	info, err := a.Authenticate(context.Background(), "alice", "alicepass")
 	if info != nil {
@@ -308,7 +309,7 @@ func TestLDAPCleartextRefusedByConfig(t *testing.T) {
 		UserBaseDN:   "ou=people,dc=example,dc=com",
 		UserFilter:   "(uid=%s)",
 	}
-	if _, err := NewLDAPAuthenticator(cfg, mappingResolver(testMapper(), false)); err == nil {
+	if _, err := NewLDAPAuthenticator(cfg, mappingResolver(testMapper(t), false)); err == nil {
 		t.Fatal("expected construction to fail for a cleartext ldap:// URL without start_tls")
 	}
 }
@@ -322,7 +323,7 @@ func TestLDAPInsecureCleartextOptIn(t *testing.T) {
 	cfg.TLSCACertPEM = nil // no TLS on this server
 	cfg.TLSServerName = ""
 	cfg.InsecureAllowCleartext = true
-	a := mustAuth(t, cfg, testMapper(), false)
+	a := mustAuth(t, cfg, testMapper(t), false)
 
 	info, err := a.Authenticate(context.Background(), "alice", "alicepass")
 	if err != nil {
@@ -348,7 +349,7 @@ func TestLDAPSimpleBind(t *testing.T) {
 		TLSCACertPEM:   caPEMOf(t, m.tlsConfig),
 		TLSServerName:  "127.0.0.1",
 	}
-	a := mustAuth(t, cfg, testMapper(), false)
+	a := mustAuth(t, cfg, testMapper(t), false)
 
 	info, err := a.Authenticate(context.Background(), "alice", "alicepass")
 	if err != nil {
@@ -368,7 +369,7 @@ func TestLDAPTLSVerificationFailsClosed(t *testing.T) {
 	m, url := startMockLDAP(t, testDir(), modeLDAPS)
 	cfg := searchBindConfig(t, m, url)
 	cfg.TLSCACertPEM = nil // do NOT trust the server's self-signed cert
-	a := mustAuth(t, cfg, testMapper(), false)
+	a := mustAuth(t, cfg, testMapper(t), false)
 
 	info, err := a.Authenticate(context.Background(), "alice", "alicepass")
 	if info != nil || err == nil {
@@ -387,7 +388,7 @@ func TestLDAPTLSVerificationFailsClosed(t *testing.T) {
 // token; a bad password is 401; an unmapped-group user is 403.
 func TestLDAPLoginHandler(t *testing.T) {
 	m, url := startMockLDAP(t, testDir(), modeLDAPS)
-	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(), false)
+	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(t), false)
 	sessions := NewSessionStore(time.Hour, time.Minute)
 	mgr := NewManager(ManagerOptions{Sessions: sessions, Secure: false})
 	mgr.SetLDAPAuthenticator(a)
@@ -442,7 +443,7 @@ func hasCookie(cookies []*http.Cookie, name string) bool {
 // TestLDAPProbe covers the doctor connectivity/service-bind probe.
 func TestLDAPProbe(t *testing.T) {
 	m, url := startMockLDAP(t, testDir(), modeLDAPS)
-	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(), false)
+	a := mustAuth(t, searchBindConfig(t, m, url), testMapper(t), false)
 	if err := a.Probe(context.Background()); err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
@@ -450,7 +451,7 @@ func TestLDAPProbe(t *testing.T) {
 	// A wrong service-account password fails the probe.
 	cfg := searchBindConfig(t, m, url)
 	cfg.BindPassword = staticSecret("nope")
-	bad := mustAuth(t, cfg, testMapper(), false)
+	bad := mustAuth(t, cfg, testMapper(t), false)
 	if err := bad.Probe(context.Background()); err == nil {
 		t.Fatal("Probe should fail with a wrong service-account password")
 	}
