@@ -39,7 +39,7 @@
 # cross-compiled the same way and for the same reason.
 # ---------------------------------------------------------------------------
 
-ARG GO_VERSION=1.25
+ARG GO_VERSION=1.26
 
 # The upstream yubihsm-shell release the `-yubihsm` variant is built from —
 # libyubihsm, its USB and HTTP transports, libykhsmauth, the PKCS#11 module and

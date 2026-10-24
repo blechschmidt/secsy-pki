@@ -10,7 +10,7 @@ PKCS#11 code paths without real hardware.
 |------|-------------------------|---------|
 | `softhsm2-util` | `softhsm2` | Software PKCS#11 HSM + token management |
 | `pkcs11-tool`   | `opensc`   | Generic PKCS#11 CLI (slots, keys, objects) |
-| Go 1.25         | —          | Build & run the server / tests |
+| Go 1.26         | —          | Build & run the server / tests |
 
 Install on Debian/Ubuntu:
 

@@ -243,7 +243,7 @@ terraform/         Provisions HSM keys via a custom terraform-provider-pkcs11 (Y
 .github/workflows/ CI: integration tests against SoftHSM2 + Keycloak (Docker Compose)
 ```
 
-**Dependency stack:** Go 1.25.7; `github.com/miekg/pkcs11` v1.1.2 (HSM access);
+**Dependency stack:** Go 1.26.0; `github.com/miekg/pkcs11` v1.1.2 (HSM access);
 `github.com/coreos/go-oidc/v3` (OIDC); `golang.org/x/crypto` (SSH/crypto);
 `lib/pq` + `mattn/go-sqlite3` (DB); `google/uuid`. No HSM connector library is
 vendored — the runtime relies on a system PKCS#11 module (`yubihsm_pkcs11.so` in

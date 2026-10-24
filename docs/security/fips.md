@@ -119,8 +119,8 @@ provider.
 ```console
 $ make build-fips                      # binaries -> dist/fips/, then self-verifies
 ==> verifying the binaries report FIPS mode at startup
-    secsy-pki-server v1.2.3+fips go1.25.11 fips140=on (GOFIPS140=latest) policy=off
-    secsy-ca v1.2.3+fips go1.25.11 fips140=on (GOFIPS140=latest) policy=off
+    secsy-pki-server v1.2.3+fips go1.26.10 fips140=on (GOFIPS140=latest) policy=off
+    secsy-ca v1.2.3+fips go1.26.10 fips140=on (GOFIPS140=latest) policy=off
     FIPS mode verified
 
 $ make image-fips                      # container image tagged <version>-fips
@@ -144,7 +144,7 @@ Runtime verification, in order of convenience:
 - **`/healthz`** — the liveness payload carries a build block:
 
   ```json
-  {"status":"ok","build":{"version":"v1.2.3+fips","go":"go1.25.11",
+  {"status":"ok","build":{"version":"v1.2.3+fips","go":"go1.26.10",
    "fips140":"on","fips140_module":"latest","fips140_policy":"enforced"}}
   ```
 

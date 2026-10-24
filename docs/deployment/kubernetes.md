@@ -19,7 +19,7 @@ Read [HSM configuration](../hsm/configuration.md), [ACME](../protocols/acme.md) 
 
 The [`Dockerfile`](../../Dockerfile) is multi-stage:
 
-- **builder** (`golang:1.25-bookworm`) compiles the server and the CLIs
+- **builder** (`golang:1.26-bookworm`) compiles the server and the CLIs
   (`secsy-ca`, `secsy-secret`, `secsy-ssh`, `secsy-verify`) with `CGO_ENABLED=1`.
   cgo is required because the SQLite driver (`sqlite` build tag) and the PKCS#11
   binding both link against C. `-ldflags "-s -w"` and `-trimpath` keep the

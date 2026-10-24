@@ -28,7 +28,7 @@ func (m *Ci) Test(ctx context.Context, source *dagger.Directory) (string, error)
 		AsService()
 
 	return dag.Container().
-		From("golang:1.25-bookworm").
+		From("golang:1.26-bookworm").
 		// Install SoftHSM and build dependencies
 		WithExec([]string{"apt-get", "update"}).
 		WithExec([]string{"apt-get", "install", "-y", "softhsm2", "opensc", "libpcsclite-dev", "openssh-client"}).
@@ -119,7 +119,7 @@ YAML`}).
 // Build verifies the project compiles with and without SQLite
 func (m *Ci) Build(ctx context.Context, source *dagger.Directory) (string, error) {
 	return dag.Container().
-		From("golang:1.25-bookworm").
+		From("golang:1.26-bookworm").
 		WithExec([]string{"apt-get", "update"}).
 		WithExec([]string{"apt-get", "install", "-y", "libpcsclite-dev"}).
 		WithMountedDirectory("/src", source).

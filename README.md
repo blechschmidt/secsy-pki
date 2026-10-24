@@ -241,7 +241,7 @@ The Yubico CA certificates can be downloaded from:
 
 ### Prerequisites
 
-- Go 1.25+
+- Go 1.26+
 - A PKCS#11 device (YubiHSM2 recommended) or SoftHSM for development
 - Docker (for KeyCloak and integration tests)
 

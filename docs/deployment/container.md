@@ -59,7 +59,7 @@ YubiHSM 2 vendor stack; see [the `-yubihsm` variant](#the-yubihsm-variant).
 ## What is in it
 
 A two-stage build: the Go tree is compiled with cgo against
-`golang:1.25-bookworm`, and the result is copied into `debian:bookworm-slim`.
+`golang:1.26-bookworm`, and the result is copied into `debian:bookworm-slim`.
 The runtime layer carries `ca-certificates`, `softhsm2` and `opensc`, and
 nothing else. (A third stage adds the YubiHSM vendor packages; that is the
 `-yubihsm` tag, [below](#the-yubihsm-variant).)
@@ -98,7 +98,7 @@ Just to see what a tag is, no config needed:
 
 ```bash
 docker run --rm ghcr.io/blechschmidt/secsy-pki:1.2.3 -version
-# secsy-pki-server 1.2.3 go1.25.13 fips140=off policy=off
+# secsy-pki-server 1.2.3 go1.26.10 fips140=off policy=off
 ```
 
 Anything beyond that needs two things the image cannot invent for you: **a

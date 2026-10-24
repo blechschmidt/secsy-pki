@@ -80,7 +80,7 @@ jobs:
       # sync with the defaults in scripts/setup-softhsm.sh.
       SOFTHSM2_CONF: /tmp/softhsm2.conf
       SOFTHSM_TOKEN_DIR: /tmp/softhsm/tokens
-      # go.mod pins go1.25.7; system Go bootstraps it via GOTOOLCHAIN=auto.
+      # go.mod pins go1.26.0; system Go bootstraps it via GOTOOLCHAIN=auto.
       GOTOOLCHAIN: auto
 
     steps:
