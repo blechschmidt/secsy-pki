@@ -124,9 +124,11 @@ shows it.
 
 ```console
 $ secsy-ca doctor
-PASS  auth.oidc.pkce    entra: S256 advertised; partner: S256 advertised
-# or
-WARN  auth.oidc.pkce    partner: no S256 in code_challenge_methods_supported ([plain]); the challenge may be ignored
+STATUS  CHECK                    DETAIL
+✓ pass  auth.oidc.pkce           entra: S256 advertised; partner: S256 advertised
+# …or, against a provider that does not say so:
+! warn  auth.oidc.pkce           partner: no S256 in code_challenge_methods_supported ([plain]); the challenge may be ignored
+✗ FAIL  auth.oidc.pkce           partner: require_pkce is set but the IdP advertises [plain] — the server will refuse to start
 ```
 
 An IdP this host cannot reach is a warning, never a failure — doctor often runs
