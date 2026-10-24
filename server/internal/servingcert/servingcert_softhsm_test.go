@@ -179,10 +179,20 @@ func startTLSServer(t *testing.T, h *Holder) string {
 	return ln.Addr().String()
 }
 
+// dialTimeout budgets a whole dial — TCP connect plus the TLS handshake, since
+// tls.DialWithDialer applies the dialer's Timeout to both. The handshake makes
+// the server sign with a key that lives in the provider, so on a contended
+// SoftHSM token (a parallel `go test ./...` puts five packages on one token) it
+// is not a sub-second operation. This number is harness slack, not part of any
+// claim the tests make: a dial that takes ten seconds still proves the rotation
+// was hitless, it just also proves the machine was busy. It was 3s, which was
+// enough to fail the very first dial under that load.
+const dialTimeout = 20 * time.Second
+
 // dial completes a TLS handshake, verifying the served chain against pool, and
 // returns the served leaf certificate.
 func dial(addr string, pool *x509.CertPool) (*x509.Certificate, error) {
-	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 3 * time.Second}, "tcp", addr, &tls.Config{
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: dialTimeout}, "tcp", addr, &tls.Config{
 		RootCAs:    pool,
 		ServerName: "localhost",
 		MinVersion: tls.VersionTLS12,
@@ -276,13 +286,13 @@ func TestServingCertAutoRotation(t *testing.T) {
 			// the two numbers is the gap between them, not their size: the rotation
 			// cadence is the difference, while Validity alone decides how long a
 			// served certificate stays valid if something stalls between issuing it
-			// and dialling it. Thirty seconds of headroom for a one-second cadence
-			// means a loaded machine that takes several seconds over the HSM
-			// round-trips in New/startTLSServer cannot hand this loop a certificate
-			// that expired before the first dial — which a 4s/3s pair did, as a
-			// "current time is after NotAfter" failure on the second dial.
-			cfg.Validity = 30 * time.Second
-			cfg.RenewBefore = 29 * time.Second
+			// and dialling it. It has to dominate dialTimeout with room to spare,
+			// because a dial that spends its whole budget must still land inside
+			// the certificate it started against. A 4s/3s pair did not, and failed
+			// as "current time is after NotAfter" with both timestamps equal to the
+			// second.
+			cfg.Validity = 120 * time.Second
+			cfg.RenewBefore = 119 * time.Second
 
 			si, err := New(ctx, mgr, provider, cfg, log.New(io.Discard, "", 0))
 			if err != nil {
@@ -294,10 +304,19 @@ func TestServingCertAutoRotation(t *testing.T) {
 			defer cancel()
 			go si.Run(loopCtx)
 
+			// Dial until the loop has done enough to mean something — minDials
+			// samples AND at least one observed rotation — rather than for a fixed
+			// stretch of wall-clock. Each dial is a full TLS handshake against an
+			// HSM-backed server, so on a loaded machine it can take the better part
+			// of a second or more; a 5s window then fitted four dials and the test
+			// failed on "too few dials" having proven nothing about rotation either
+			// way. The deadline survives only as a backstop, so a loop that is
+			// genuinely stuck fails instead of hanging.
+			const minDials = 10
 			serials := map[string]bool{}
 			dials := 0
-			deadline := time.Now().Add(5 * time.Second)
-			for time.Now().Before(deadline) {
+			deadline := time.Now().Add(90 * time.Second)
+			for (dials < minDials || len(serials) < 2) && time.Now().Before(deadline) {
 				leaf, err := dial(addr, pool)
 				if err != nil {
 					t.Fatalf("dial failed during auto-rotation (dial %d): %v", dials, err)
@@ -308,7 +327,7 @@ func TestServingCertAutoRotation(t *testing.T) {
 			}
 			cancel()
 
-			if dials < 10 {
+			if dials < minDials {
 				t.Fatalf("too few dials (%d) to exercise rotation", dials)
 			}
 			if len(serials) < 2 {
