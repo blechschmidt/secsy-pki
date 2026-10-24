@@ -1367,11 +1367,10 @@ type UserInfo struct {
 	// principals with no directory identity (root, API tokens, mTLS bindings).
 	Groups []string `json:"groups,omitempty"`
 	// AuthProvider names the configured OIDC provider that authenticated this
-	// principal, when it was authenticated by one of several federated issuers
-	// (Task 212). It is diagnostic, not authorization: the roles above already
-	// reflect that provider's own claim -> role mapping. Empty for every other
-	// credential (root, API token, mTLS, LDAP) and for a deployment with a single
-	// unnamed issuer.
+	// principal — its configured name, or "default" for the single-provider
+	// config form (Task 212). It is diagnostic, not authorization: the roles above
+	// already reflect that provider's own claim -> role mapping. Empty for every
+	// non-OIDC credential (root, API token, mTLS, LDAP).
 	AuthProvider string `json:"auth_provider,omitempty"`
 }
 

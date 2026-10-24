@@ -223,7 +223,9 @@ func (m *MultiProvider) VerifyToken(ctx context.Context, rawToken string) (*Clai
 		return nil, fmt.Errorf("provider %q: %w", e.name, err)
 	}
 	if !audienceAccepted(claims.Audience, e.audiences) {
-		return nil, fmt.Errorf("provider %q: token audience %v is not accepted (want one of %v)",
+		// Quoted, like the issuer above: these values come from a token and end up
+		// in a log line.
+		return nil, fmt.Errorf("provider %q: token audience %q is not accepted (want one of %q)",
 			e.name, claims.Audience, e.audiences)
 	}
 	claims.Provider = e.name
