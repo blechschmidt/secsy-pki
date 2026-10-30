@@ -278,11 +278,21 @@ func cmdSecretAudit(cfg *config.Config, args []string) error {
 		return fmt.Errorf("audit chain verification failed at seq %d", res.BrokenAtSeq)
 	}
 
+	// The secret layer's lifecycle surface: escrow/recovery ceremonies, the
+	// KEK rotation lineage, and the stored-secret VALUE lifecycle. The value
+	// actions matter here because a version read or a rollback is how someone
+	// obtains a value the secret no longer holds — recording those events but
+	// omitting them from the one command that shows the log would leave them
+	// undiscoverable. Routine secret.decrypt traffic is deliberately excluded:
+	// it would bury the lifecycle in per-request noise (query it directly with
+	// `secsy-ca audit` when that is what you want).
 	var events []audit.Event
 	for _, action := range []string{
 		audit.ActionSecretEscrow, audit.ActionSecretRecover,
 		audit.ActionSecretKEKRotate, audit.ActionSecretRewrap, audit.ActionSecretKEKRetire,
 		audit.ActionSecretStore, audit.ActionSecretStoreDelete,
+		audit.ActionSecretPut, audit.ActionSecretRollback,
+		audit.ActionSecretVersionRead, audit.ActionSecretExec,
 	} {
 		evs, _, err := db.ListEvents(action, "", "", *limit, 0)
 		if err != nil {
@@ -295,7 +305,7 @@ func cmdSecretAudit(cfg *config.Config, args []string) error {
 		events = events[:*limit]
 	}
 	if len(events) == 0 {
-		fmt.Println("No secret-lifecycle (escrow/recovery/KEK-rotation) events recorded yet.")
+		fmt.Println("No secret-lifecycle (escrow/recovery, KEK rotation, value versioning) events recorded yet.")
 		return nil
 	}
 	fmt.Printf("%-6s %-20s %-16s %-9s %-16s %s\n", "SEQ", "TIMESTAMP", "ACTION", "RESULT", "ACTOR", "DETAIL")

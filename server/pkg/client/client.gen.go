@@ -597,6 +597,21 @@ const (
 	SSHSignResponseCertTypeUser SSHSignResponseCertType = "user"
 )
 
+// Defines values for SecretLifecycleItemSeverity.
+const (
+	SecretLifecycleItemSeverityCritical SecretLifecycleItemSeverity = "critical"
+	SecretLifecycleItemSeverityExpired  SecretLifecycleItemSeverity = "expired"
+	SecretLifecycleItemSeverityOk       SecretLifecycleItemSeverity = "ok"
+	SecretLifecycleItemSeverityWarning  SecretLifecycleItemSeverity = "warning"
+)
+
+// Defines values for SecretLifecycleItemState.
+const (
+	SecretLifecycleItemStateExpired     SecretLifecycleItemState = "expired"
+	SecretLifecycleItemStateExpiring    SecretLifecycleItemState = "expiring"
+	SecretLifecycleItemStateRotationDue SecretLifecycleItemState = "rotation_due"
+)
+
 // Defines values for SecretSignRequestHash.
 const (
 	SecretSignRequestHashSha256 SecretSignRequestHash = "sha256"
@@ -3791,6 +3806,33 @@ type PublishVerifyResponse struct {
 // PublishVerifyResponseBackend defines model for PublishVerifyResponse.Backend.
 type PublishVerifyResponseBackend string
 
+// PutSecretRequest Append a new value version. ttl_days, rotate_every_days and labels are tri-state: omit to keep what is stored, send a value to replace it (ttl_days 0 clears the TTL, an empty labels object clears the labels).
+type PutSecretRequest struct {
+	// Comment Free-form note recorded on the new version.
+	Comment *string `json:"comment,omitempty"`
+
+	// Context Optional base64 encryption context (not stored).
+	Context *string `json:"context,omitempty"`
+
+	// Escrow Escrow this version's data key to the recovery agents.
+	Escrow *bool `json:"escrow,omitempty"`
+
+	// ExpectVersion Compare-and-swap guard: the put applies only while the secret is still at this version. 0 means "latest".
+	ExpectVersion *int `json:"expect_version,omitempty"`
+
+	// Labels Replaces all labels when present; an empty object clears them.
+	Labels *map[string]string `json:"labels,omitempty"`
+
+	// Plaintext base64-encoded plaintext to seal.
+	Plaintext string `json:"plaintext"`
+
+	// RotateEveryDays Rotation-reminder period in days; 0 clears it.
+	RotateEveryDays *int `json:"rotate_every_days,omitempty"`
+
+	// TtlDays Expiry TTL in days; 0 clears it.
+	TtlDays *int `json:"ttl_days,omitempty"`
+}
+
 // RandomRequest defines model for RandomRequest.
 type RandomRequest struct {
 	// Bytes Number of random bytes to generate.
@@ -4090,6 +4132,15 @@ type RevokedCertificatePage struct {
 	Items      *[]RevokedCertificate `json:"items,omitempty"`
 	NextCursor *string               `json:"next_cursor,omitempty"`
 	Total      *int                  `json:"total,omitempty"`
+}
+
+// RollbackSecretRequest defines model for RollbackSecretRequest.
+type RollbackSecretRequest struct {
+	// Comment Free-form note for the appended version; defaults to "rollback to version N".
+	Comment *string `json:"comment,omitempty"`
+
+	// Version The history entry whose value becomes current again.
+	Version int `json:"version"`
 }
 
 // RotateCARequest All fields optional: an empty new_label derives one from the old CA's label, an empty key_type reuses the old key's algorithm, and zero validity_days reuses the old certificate's validity span.
@@ -4403,6 +4454,43 @@ type SecretInfo struct {
 	WrapAlg  *string `json:"wrap_alg,omitempty"`
 }
 
+// SecretLifecycleItem One stored secret due for TTL or rotation attention. Metadata only — never an envelope or plaintext.
+type SecretLifecycleItem struct {
+	CurrentVersion *int `json:"current_version,omitempty"`
+
+	// Detail Human-readable summary of the finding.
+	Detail *string `json:"detail,omitempty"`
+
+	// ExpiresAt Set for TTL findings.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	Id        *string    `json:"id,omitempty"`
+
+	// Labels The secret's operator metadata, for routing the notification.
+	Labels *map[string]string `json:"labels,omitempty"`
+	Name   *string            `json:"name,omitempty"`
+
+	// RotationDueAt Set for rotation findings.
+	RotationDueAt *time.Time                   `json:"rotation_due_at,omitempty"`
+	Severity      *SecretLifecycleItemSeverity `json:"severity,omitempty"`
+
+	// State Why the secret is due.
+	State    *SecretLifecycleItemState `json:"state,omitempty"`
+	TenantId *string                   `json:"tenant_id,omitempty"`
+}
+
+// SecretLifecycleItemSeverity defines model for SecretLifecycleItem.Severity.
+type SecretLifecycleItemSeverity string
+
+// SecretLifecycleItemState Why the secret is due.
+type SecretLifecycleItemState string
+
+// SecretLifecycleReport defines model for SecretLifecycleReport.
+type SecretLifecycleReport struct {
+	// GeneratedAt When the report was computed.
+	GeneratedAt *time.Time             `json:"generated_at,omitempty"`
+	Items       *[]SecretLifecycleItem `json:"items,omitempty"`
+}
+
 // SecretSignRequest Supply exactly one of message or digest.
 type SecretSignRequest struct {
 	// Digest base64 pre-computed digest to sign verbatim (length must match hash).
@@ -4550,6 +4638,115 @@ type StoreIntegrityCheck struct {
 	Detail *string `json:"detail,omitempty"`
 	Name   *string `json:"name,omitempty"`
 	Ok     *bool   `json:"ok,omitempty"`
+}
+
+// StoreSecretRequest defines model for StoreSecretRequest.
+type StoreSecretRequest struct {
+	// Comment Annotates version 1 in the value history.
+	Comment *string `json:"comment,omitempty"`
+
+	// Context Optional base64 encryption context bound to the ciphertext. It is not stored and must be supplied verbatim to decrypt.
+	Context *string `json:"context,omitempty"`
+
+	// Escrow Additionally escrow the data key to the configured M-of-N recovery agents.
+	Escrow *bool `json:"escrow,omitempty"`
+
+	// Labels Operator metadata. Descriptive only — never put a value here.
+	Labels *map[string]string `json:"labels,omitempty"`
+
+	// Name Tenant-unique name for the new secret.
+	Name string `json:"name"`
+
+	// Plaintext base64-encoded plaintext to seal.
+	Plaintext string `json:"plaintext"`
+
+	// RotateEveryDays When > 0
+	RotateEveryDays *int `json:"rotate_every_days,omitempty"`
+
+	// TtlDays When > 0
+	TtlDays *int `json:"ttl_days,omitempty"`
+}
+
+// StoredSecret A named secret's metadata. The plaintext is never stored and never returned; envelope, when present, is the opaque ciphertext whose data key only the HSM-held KEK can unwrap.
+type StoredSecret struct {
+	// ContextBound Decryption requires the caller-supplied encryption context, which is deliberately not stored.
+	ContextBound *bool      `json:"context_bound,omitempty"`
+	CreatedAt    *time.Time `json:"created_at,omitempty"`
+
+	// CurrentVersion The value-history version the envelope corresponds to.
+	CurrentVersion *int `json:"current_version,omitempty"`
+
+	// Envelope The opaque ciphertext envelope; present only on a single-secret read.
+	Envelope *interface{} `json:"envelope,omitempty"`
+
+	// Escrowed The envelope carries an M-of-N recovery block.
+	Escrowed *bool `json:"escrowed,omitempty"`
+
+	// ExpiresAt Optional TTL deadline. Past it the secret reports as expired, but decryption still works — expiry is an operational reminder, not a cryptographic revocation.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	Id        *string    `json:"id,omitempty"`
+
+	// KekFamily The rotation family that seals this secret.
+	KekFamily *string `json:"kek_family,omitempty"`
+
+	// KekLabel The KEK label currently wrapping the data key.
+	KekLabel *string `json:"kek_label,omitempty"`
+
+	// KekVersion The KEK rotation version currently wrapping the data key.
+	KekVersion *int `json:"kek_version,omitempty"`
+
+	// Labels Free-form operator metadata (owner, environment, ticket), echoed into lifecycle notifications for routing. Descriptive only — nothing authorizes off labels, and they must never hold a value.
+	Labels *map[string]string `json:"labels,omitempty"`
+
+	// Name Tenant-unique name.
+	Name *string `json:"name,omitempty"`
+
+	// RotateEveryDays Rotation-reminder period in days; 0 disables the reminder.
+	RotateEveryDays *int    `json:"rotate_every_days,omitempty"`
+	TenantId        *string `json:"tenant_id,omitempty"`
+
+	// UpdatedAt Advances on every envelope rewrite
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+
+	// ValueChangedAt Advances only when the VALUE changes (put or rollback), never on a re-wrap — the reference point for rotation reminders, so a KEK migration cannot mask an overdue rotation.
+	ValueChangedAt *time.Time `json:"value_changed_at,omitempty"`
+}
+
+// StoredSecretList defines model for StoredSecretList.
+type StoredSecretList struct {
+	Secrets *[]StoredSecret `json:"secrets,omitempty"`
+}
+
+// StoredSecretVersion One immutable entry in a stored secret's value history. Version numbers start at 1 and only grow; a rollback appends a new entry rather than rewriting history.
+type StoredSecretVersion struct {
+	Comment      *string    `json:"comment,omitempty"`
+	ContextBound *bool      `json:"context_bound,omitempty"`
+	CreatedAt    *time.Time `json:"created_at,omitempty"`
+
+	// CreatedBy The operator or API principal that wrote the version.
+	CreatedBy *string `json:"created_by,omitempty"`
+
+	// Current Whether this entry is the secret's current value.
+	Current *bool `json:"current,omitempty"`
+
+	// Envelope The version's ciphertext envelope; present only on the point read.
+	Envelope  *interface{} `json:"envelope,omitempty"`
+	Escrowed  *bool        `json:"escrowed,omitempty"`
+	KekFamily *string      `json:"kek_family,omitempty"`
+
+	// KekLabel The KEK label wrapping this entry. KEK rotation re-wraps retained history, so a retained version stays decryptable however many times the KEK has rotated since it was written.
+	KekLabel   *string `json:"kek_label,omitempty"`
+	KekVersion *int    `json:"kek_version,omitempty"`
+	SecretId   *string `json:"secret_id,omitempty"`
+	Version    *int    `json:"version,omitempty"`
+}
+
+// StoredSecretVersionList defines model for StoredSecretVersionList.
+type StoredSecretVersionList struct {
+	CurrentVersion *int                   `json:"current_version,omitempty"`
+	Name           *string                `json:"name,omitempty"`
+	SecretId       *string                `json:"secret_id,omitempty"`
+	Versions       *[]StoredSecretVersion `json:"versions,omitempty"`
 }
 
 // TLSARecord One RFC 6698 DANE TLSA resource record.
@@ -4960,6 +5157,9 @@ type Limit = int
 // Offset defines model for Offset.
 type Offset = int
 
+// StoredSecretID defines model for StoredSecretID.
+type StoredSecretID = string
+
 // TenantHeader defines model for TenantHeader.
 type TenantHeader = string
 
@@ -5303,6 +5503,12 @@ type VerifyHMACParams struct {
 	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
 }
 
+// GetSecretLifecycleReportParams defines parameters for GetSecretLifecycleReport.
+type GetSecretLifecycleReportParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
 // GenerateRandomParams defines parameters for GenerateRandom.
 type GenerateRandomParams struct {
 	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
@@ -5341,6 +5547,57 @@ type SignWithKeyParams struct {
 
 // VerifyWithKeyParams defines parameters for VerifyWithKey.
 type VerifyWithKeyParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// ListStoredSecretsParams defines parameters for ListStoredSecrets.
+type ListStoredSecretsParams struct {
+	// Name Return just the secret with this tenant-unique name, or an empty list when none matches — the lookup that turns a name into an id.
+	Name *string `form:"name,omitempty" json:"name,omitempty"`
+
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// StoreSecretParams defines parameters for StoreSecret.
+type StoreSecretParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// DeleteStoredSecretParams defines parameters for DeleteStoredSecret.
+type DeleteStoredSecretParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// GetStoredSecretParams defines parameters for GetStoredSecret.
+type GetStoredSecretParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// PutStoredSecretParams defines parameters for PutStoredSecret.
+type PutStoredSecretParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// RollbackStoredSecretParams defines parameters for RollbackStoredSecret.
+type RollbackStoredSecretParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// ListStoredSecretVersionsParams defines parameters for ListStoredSecretVersions.
+type ListStoredSecretVersionsParams struct {
+	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
+	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
+}
+
+// GetStoredSecretVersionParams defines parameters for GetStoredSecretVersion.
+type GetStoredSecretVersionParams struct {
 	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
 	XSecsyTenant *TenantHeader `json:"X-Secsy-Tenant,omitempty"`
 }
@@ -5557,6 +5814,15 @@ type SignWithKeyJSONRequestBody = SecretSignRequest
 
 // VerifyWithKeyJSONRequestBody defines body for VerifyWithKey for application/json ContentType.
 type VerifyWithKeyJSONRequestBody = VerifySignatureRequest
+
+// StoreSecretJSONRequestBody defines body for StoreSecret for application/json ContentType.
+type StoreSecretJSONRequestBody = StoreSecretRequest
+
+// PutStoredSecretJSONRequestBody defines body for PutStoredSecret for application/json ContentType.
+type PutStoredSecretJSONRequestBody = PutSecretRequest
+
+// RollbackStoredSecretJSONRequestBody defines body for RollbackStoredSecret for application/json ContentType.
+type RollbackStoredSecretJSONRequestBody = RollbackSecretRequest
 
 // TransformDecodeJSONRequestBody defines body for TransformDecode for application/json ContentType.
 type TransformDecodeJSONRequestBody = TransformRequest
@@ -6193,6 +6459,9 @@ type ClientInterface interface {
 	// GetSecretInfo request
 	GetSecretInfo(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetSecretLifecycleReport request
+	GetSecretLifecycleReport(ctx context.Context, params *GetSecretLifecycleReportParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GenerateRandomWithBody request with any body
 	GenerateRandomWithBody(ctx context.Context, params *GenerateRandomParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -6223,6 +6492,36 @@ type ClientInterface interface {
 	VerifyWithKeyWithBody(ctx context.Context, name string, params *VerifyWithKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	VerifyWithKey(ctx context.Context, name string, params *VerifyWithKeyParams, body VerifyWithKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListStoredSecrets request
+	ListStoredSecrets(ctx context.Context, params *ListStoredSecretsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// StoreSecretWithBody request with any body
+	StoreSecretWithBody(ctx context.Context, params *StoreSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	StoreSecret(ctx context.Context, params *StoreSecretParams, body StoreSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteStoredSecret request
+	DeleteStoredSecret(ctx context.Context, id StoredSecretID, params *DeleteStoredSecretParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetStoredSecret request
+	GetStoredSecret(ctx context.Context, id StoredSecretID, params *GetStoredSecretParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutStoredSecretWithBody request with any body
+	PutStoredSecretWithBody(ctx context.Context, id StoredSecretID, params *PutStoredSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PutStoredSecret(ctx context.Context, id StoredSecretID, params *PutStoredSecretParams, body PutStoredSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RollbackStoredSecretWithBody request with any body
+	RollbackStoredSecretWithBody(ctx context.Context, id StoredSecretID, params *RollbackStoredSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	RollbackStoredSecret(ctx context.Context, id StoredSecretID, params *RollbackStoredSecretParams, body RollbackStoredSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListStoredSecretVersions request
+	ListStoredSecretVersions(ctx context.Context, id StoredSecretID, params *ListStoredSecretVersionsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetStoredSecretVersion request
+	GetStoredSecretVersion(ctx context.Context, id StoredSecretID, version int, params *GetStoredSecretVersionParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// TransformDecodeWithBody request with any body
 	TransformDecodeWithBody(ctx context.Context, params *TransformDecodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -8639,6 +8938,18 @@ func (c *Client) GetSecretInfo(ctx context.Context, reqEditors ...RequestEditorF
 	return c.Client.Do(req)
 }
 
+func (c *Client) GetSecretLifecycleReport(ctx context.Context, params *GetSecretLifecycleReportParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetSecretLifecycleReportRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) GenerateRandomWithBody(ctx context.Context, params *GenerateRandomParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGenerateRandomRequestWithBody(c.Server, params, contentType, body)
 	if err != nil {
@@ -8773,6 +9084,138 @@ func (c *Client) VerifyWithKeyWithBody(ctx context.Context, name string, params 
 
 func (c *Client) VerifyWithKey(ctx context.Context, name string, params *VerifyWithKeyParams, body VerifyWithKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewVerifyWithKeyRequest(c.Server, name, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListStoredSecrets(ctx context.Context, params *ListStoredSecretsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListStoredSecretsRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) StoreSecretWithBody(ctx context.Context, params *StoreSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStoreSecretRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) StoreSecret(ctx context.Context, params *StoreSecretParams, body StoreSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewStoreSecretRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteStoredSecret(ctx context.Context, id StoredSecretID, params *DeleteStoredSecretParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteStoredSecretRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetStoredSecret(ctx context.Context, id StoredSecretID, params *GetStoredSecretParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetStoredSecretRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PutStoredSecretWithBody(ctx context.Context, id StoredSecretID, params *PutStoredSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutStoredSecretRequestWithBody(c.Server, id, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PutStoredSecret(ctx context.Context, id StoredSecretID, params *PutStoredSecretParams, body PutStoredSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutStoredSecretRequest(c.Server, id, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RollbackStoredSecretWithBody(ctx context.Context, id StoredSecretID, params *RollbackStoredSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRollbackStoredSecretRequestWithBody(c.Server, id, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RollbackStoredSecret(ctx context.Context, id StoredSecretID, params *RollbackStoredSecretParams, body RollbackStoredSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRollbackStoredSecretRequest(c.Server, id, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListStoredSecretVersions(ctx context.Context, id StoredSecretID, params *ListStoredSecretVersionsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListStoredSecretVersionsRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetStoredSecretVersion(ctx context.Context, id StoredSecretID, version int, params *GetStoredSecretVersionParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetStoredSecretVersionRequest(c.Server, id, version, params)
 	if err != nil {
 		return nil, err
 	}
@@ -15583,6 +16026,48 @@ func NewGetSecretInfoRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewGetSecretLifecycleReportRequest generates requests for GetSecretLifecycleReport
+func NewGetSecretLifecycleReportRequest(server string, params *GetSecretLifecycleReportParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/lifecycle")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
 // NewGenerateRandomRequest calls the generic GenerateRandom builder with application/json body
 func NewGenerateRandomRequest(server string, params *GenerateRandomParams, body GenerateRandomJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -15944,6 +16429,452 @@ func NewVerifyWithKeyRequestWithBody(server string, name string, params *VerifyW
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewListStoredSecretsRequest generates requests for ListStoredSecrets
+func NewListStoredSecretsRequest(server string, params *ListStoredSecretsParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/store")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Name != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "name", runtime.ParamLocationQuery, *params.Name); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewStoreSecretRequest calls the generic StoreSecret builder with application/json body
+func NewStoreSecretRequest(server string, params *StoreSecretParams, body StoreSecretJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewStoreSecretRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewStoreSecretRequestWithBody generates requests for StoreSecret with any type of body
+func NewStoreSecretRequestWithBody(server string, params *StoreSecretParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/store")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewDeleteStoredSecretRequest generates requests for DeleteStoredSecret
+func NewDeleteStoredSecretRequest(server string, id StoredSecretID, params *DeleteStoredSecretParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/store/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("DELETE", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetStoredSecretRequest generates requests for GetStoredSecret
+func NewGetStoredSecretRequest(server string, id StoredSecretID, params *GetStoredSecretParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/store/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewPutStoredSecretRequest calls the generic PutStoredSecret builder with application/json body
+func NewPutStoredSecretRequest(server string, id StoredSecretID, params *PutStoredSecretParams, body PutStoredSecretJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPutStoredSecretRequestWithBody(server, id, params, "application/json", bodyReader)
+}
+
+// NewPutStoredSecretRequestWithBody generates requests for PutStoredSecret with any type of body
+func NewPutStoredSecretRequestWithBody(server string, id StoredSecretID, params *PutStoredSecretParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/store/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("PUT", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewRollbackStoredSecretRequest calls the generic RollbackStoredSecret builder with application/json body
+func NewRollbackStoredSecretRequest(server string, id StoredSecretID, params *RollbackStoredSecretParams, body RollbackStoredSecretJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRollbackStoredSecretRequestWithBody(server, id, params, "application/json", bodyReader)
+}
+
+// NewRollbackStoredSecretRequestWithBody generates requests for RollbackStoredSecret with any type of body
+func NewRollbackStoredSecretRequestWithBody(server string, id StoredSecretID, params *RollbackStoredSecretParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/store/%s/rollback", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewListStoredSecretVersionsRequest generates requests for ListStoredSecretVersions
+func NewListStoredSecretVersionsRequest(server string, id StoredSecretID, params *ListStoredSecretVersionsParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/store/%s/versions", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		if params.XSecsyTenant != nil {
+			var headerParam0 string
+
+			headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-Secsy-Tenant", runtime.ParamLocationHeader, *params.XSecsyTenant)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-Secsy-Tenant", headerParam0)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetStoredSecretVersionRequest generates requests for GetStoredSecretVersion
+func NewGetStoredSecretVersionRequest(server string, id StoredSecretID, version int, params *GetStoredSecretVersionParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "version", runtime.ParamLocationPath, version)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/secret/store/%s/versions/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
 
 	if params != nil {
 
@@ -17826,6 +18757,9 @@ type ClientWithResponsesInterface interface {
 	// GetSecretInfoWithResponse request
 	GetSecretInfoWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetSecretInfoResponse, error)
 
+	// GetSecretLifecycleReportWithResponse request
+	GetSecretLifecycleReportWithResponse(ctx context.Context, params *GetSecretLifecycleReportParams, reqEditors ...RequestEditorFn) (*GetSecretLifecycleReportResponse, error)
+
 	// GenerateRandomWithBodyWithResponse request with any body
 	GenerateRandomWithBodyWithResponse(ctx context.Context, params *GenerateRandomParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*GenerateRandomResponse, error)
 
@@ -17856,6 +18790,36 @@ type ClientWithResponsesInterface interface {
 	VerifyWithKeyWithBodyWithResponse(ctx context.Context, name string, params *VerifyWithKeyParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*VerifyWithKeyResponse, error)
 
 	VerifyWithKeyWithResponse(ctx context.Context, name string, params *VerifyWithKeyParams, body VerifyWithKeyJSONRequestBody, reqEditors ...RequestEditorFn) (*VerifyWithKeyResponse, error)
+
+	// ListStoredSecretsWithResponse request
+	ListStoredSecretsWithResponse(ctx context.Context, params *ListStoredSecretsParams, reqEditors ...RequestEditorFn) (*ListStoredSecretsResponse, error)
+
+	// StoreSecretWithBodyWithResponse request with any body
+	StoreSecretWithBodyWithResponse(ctx context.Context, params *StoreSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*StoreSecretResponse, error)
+
+	StoreSecretWithResponse(ctx context.Context, params *StoreSecretParams, body StoreSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*StoreSecretResponse, error)
+
+	// DeleteStoredSecretWithResponse request
+	DeleteStoredSecretWithResponse(ctx context.Context, id StoredSecretID, params *DeleteStoredSecretParams, reqEditors ...RequestEditorFn) (*DeleteStoredSecretResponse, error)
+
+	// GetStoredSecretWithResponse request
+	GetStoredSecretWithResponse(ctx context.Context, id StoredSecretID, params *GetStoredSecretParams, reqEditors ...RequestEditorFn) (*GetStoredSecretResponse, error)
+
+	// PutStoredSecretWithBodyWithResponse request with any body
+	PutStoredSecretWithBodyWithResponse(ctx context.Context, id StoredSecretID, params *PutStoredSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutStoredSecretResponse, error)
+
+	PutStoredSecretWithResponse(ctx context.Context, id StoredSecretID, params *PutStoredSecretParams, body PutStoredSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*PutStoredSecretResponse, error)
+
+	// RollbackStoredSecretWithBodyWithResponse request with any body
+	RollbackStoredSecretWithBodyWithResponse(ctx context.Context, id StoredSecretID, params *RollbackStoredSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RollbackStoredSecretResponse, error)
+
+	RollbackStoredSecretWithResponse(ctx context.Context, id StoredSecretID, params *RollbackStoredSecretParams, body RollbackStoredSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*RollbackStoredSecretResponse, error)
+
+	// ListStoredSecretVersionsWithResponse request
+	ListStoredSecretVersionsWithResponse(ctx context.Context, id StoredSecretID, params *ListStoredSecretVersionsParams, reqEditors ...RequestEditorFn) (*ListStoredSecretVersionsResponse, error)
+
+	// GetStoredSecretVersionWithResponse request
+	GetStoredSecretVersionWithResponse(ctx context.Context, id StoredSecretID, version int, params *GetStoredSecretVersionParams, reqEditors ...RequestEditorFn) (*GetStoredSecretVersionResponse, error)
 
 	// TransformDecodeWithBodyWithResponse request with any body
 	TransformDecodeWithBodyWithResponse(ctx context.Context, params *TransformDecodeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*TransformDecodeResponse, error)
@@ -21142,6 +22106,29 @@ func (r GetSecretInfoResponse) StatusCode() int {
 	return 0
 }
 
+type GetSecretLifecycleReportResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *SecretLifecycleReport
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r GetSecretLifecycleReportResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetSecretLifecycleReportResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type GenerateRandomResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -21305,6 +22292,197 @@ func (r VerifyWithKeyResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r VerifyWithKeyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListStoredSecretsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *StoredSecretList
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListStoredSecretsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListStoredSecretsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type StoreSecretResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *StoredSecret
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r StoreSecretResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r StoreSecretResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type DeleteStoredSecretResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteStoredSecretResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteStoredSecretResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetStoredSecretResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *StoredSecret
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetStoredSecretResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetStoredSecretResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PutStoredSecretResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *StoredSecret
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r PutStoredSecretResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PutStoredSecretResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type RollbackStoredSecretResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *StoredSecret
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r RollbackStoredSecretResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RollbackStoredSecretResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListStoredSecretVersionsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *StoredSecretVersionList
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r ListStoredSecretVersionsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListStoredSecretVersionsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetStoredSecretVersionResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *StoredSecretVersion
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r GetStoredSecretVersionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetStoredSecretVersionResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -23775,6 +24953,15 @@ func (c *ClientWithResponses) GetSecretInfoWithResponse(ctx context.Context, req
 	return ParseGetSecretInfoResponse(rsp)
 }
 
+// GetSecretLifecycleReportWithResponse request returning *GetSecretLifecycleReportResponse
+func (c *ClientWithResponses) GetSecretLifecycleReportWithResponse(ctx context.Context, params *GetSecretLifecycleReportParams, reqEditors ...RequestEditorFn) (*GetSecretLifecycleReportResponse, error) {
+	rsp, err := c.GetSecretLifecycleReport(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetSecretLifecycleReportResponse(rsp)
+}
+
 // GenerateRandomWithBodyWithResponse request with arbitrary body returning *GenerateRandomResponse
 func (c *ClientWithResponses) GenerateRandomWithBodyWithResponse(ctx context.Context, params *GenerateRandomParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*GenerateRandomResponse, error) {
 	rsp, err := c.GenerateRandomWithBody(ctx, params, contentType, body, reqEditors...)
@@ -23876,6 +25063,102 @@ func (c *ClientWithResponses) VerifyWithKeyWithResponse(ctx context.Context, nam
 		return nil, err
 	}
 	return ParseVerifyWithKeyResponse(rsp)
+}
+
+// ListStoredSecretsWithResponse request returning *ListStoredSecretsResponse
+func (c *ClientWithResponses) ListStoredSecretsWithResponse(ctx context.Context, params *ListStoredSecretsParams, reqEditors ...RequestEditorFn) (*ListStoredSecretsResponse, error) {
+	rsp, err := c.ListStoredSecrets(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListStoredSecretsResponse(rsp)
+}
+
+// StoreSecretWithBodyWithResponse request with arbitrary body returning *StoreSecretResponse
+func (c *ClientWithResponses) StoreSecretWithBodyWithResponse(ctx context.Context, params *StoreSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*StoreSecretResponse, error) {
+	rsp, err := c.StoreSecretWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseStoreSecretResponse(rsp)
+}
+
+func (c *ClientWithResponses) StoreSecretWithResponse(ctx context.Context, params *StoreSecretParams, body StoreSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*StoreSecretResponse, error) {
+	rsp, err := c.StoreSecret(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseStoreSecretResponse(rsp)
+}
+
+// DeleteStoredSecretWithResponse request returning *DeleteStoredSecretResponse
+func (c *ClientWithResponses) DeleteStoredSecretWithResponse(ctx context.Context, id StoredSecretID, params *DeleteStoredSecretParams, reqEditors ...RequestEditorFn) (*DeleteStoredSecretResponse, error) {
+	rsp, err := c.DeleteStoredSecret(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteStoredSecretResponse(rsp)
+}
+
+// GetStoredSecretWithResponse request returning *GetStoredSecretResponse
+func (c *ClientWithResponses) GetStoredSecretWithResponse(ctx context.Context, id StoredSecretID, params *GetStoredSecretParams, reqEditors ...RequestEditorFn) (*GetStoredSecretResponse, error) {
+	rsp, err := c.GetStoredSecret(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetStoredSecretResponse(rsp)
+}
+
+// PutStoredSecretWithBodyWithResponse request with arbitrary body returning *PutStoredSecretResponse
+func (c *ClientWithResponses) PutStoredSecretWithBodyWithResponse(ctx context.Context, id StoredSecretID, params *PutStoredSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutStoredSecretResponse, error) {
+	rsp, err := c.PutStoredSecretWithBody(ctx, id, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutStoredSecretResponse(rsp)
+}
+
+func (c *ClientWithResponses) PutStoredSecretWithResponse(ctx context.Context, id StoredSecretID, params *PutStoredSecretParams, body PutStoredSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*PutStoredSecretResponse, error) {
+	rsp, err := c.PutStoredSecret(ctx, id, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutStoredSecretResponse(rsp)
+}
+
+// RollbackStoredSecretWithBodyWithResponse request with arbitrary body returning *RollbackStoredSecretResponse
+func (c *ClientWithResponses) RollbackStoredSecretWithBodyWithResponse(ctx context.Context, id StoredSecretID, params *RollbackStoredSecretParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RollbackStoredSecretResponse, error) {
+	rsp, err := c.RollbackStoredSecretWithBody(ctx, id, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRollbackStoredSecretResponse(rsp)
+}
+
+func (c *ClientWithResponses) RollbackStoredSecretWithResponse(ctx context.Context, id StoredSecretID, params *RollbackStoredSecretParams, body RollbackStoredSecretJSONRequestBody, reqEditors ...RequestEditorFn) (*RollbackStoredSecretResponse, error) {
+	rsp, err := c.RollbackStoredSecret(ctx, id, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRollbackStoredSecretResponse(rsp)
+}
+
+// ListStoredSecretVersionsWithResponse request returning *ListStoredSecretVersionsResponse
+func (c *ClientWithResponses) ListStoredSecretVersionsWithResponse(ctx context.Context, id StoredSecretID, params *ListStoredSecretVersionsParams, reqEditors ...RequestEditorFn) (*ListStoredSecretVersionsResponse, error) {
+	rsp, err := c.ListStoredSecretVersions(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListStoredSecretVersionsResponse(rsp)
+}
+
+// GetStoredSecretVersionWithResponse request returning *GetStoredSecretVersionResponse
+func (c *ClientWithResponses) GetStoredSecretVersionWithResponse(ctx context.Context, id StoredSecretID, version int, params *GetStoredSecretVersionParams, reqEditors ...RequestEditorFn) (*GetStoredSecretVersionResponse, error) {
+	rsp, err := c.GetStoredSecretVersion(ctx, id, version, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetStoredSecretVersionResponse(rsp)
 }
 
 // TransformDecodeWithBodyWithResponse request with arbitrary body returning *TransformDecodeResponse
@@ -29090,6 +30373,39 @@ func ParseGetSecretInfoResponse(rsp *http.Response) (*GetSecretInfoResponse, err
 	return response, nil
 }
 
+// ParseGetSecretLifecycleReportResponse parses an HTTP response from a GetSecretLifecycleReportWithResponse call
+func ParseGetSecretLifecycleReportResponse(rsp *http.Response) (*GetSecretLifecycleReportResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetSecretLifecycleReportResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SecretLifecycleReport
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseGenerateRandomResponse parses an HTTP response from a GenerateRandomWithResponse call
 func ParseGenerateRandomResponse(rsp *http.Response) (*GenerateRandomResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -29341,6 +30657,319 @@ func ParseVerifyWithKeyResponse(rsp *http.Response) (*VerifyWithKeyResponse, err
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
 		var dest VerifySignatureResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListStoredSecretsResponse parses an HTTP response from a ListStoredSecretsWithResponse call
+func ParseListStoredSecretsResponse(rsp *http.Response) (*ListStoredSecretsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListStoredSecretsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest StoredSecretList
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseStoreSecretResponse parses an HTTP response from a StoreSecretWithResponse call
+func ParseStoreSecretResponse(rsp *http.Response) (*StoreSecretResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &StoreSecretResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest StoredSecret
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteStoredSecretResponse parses an HTTP response from a DeleteStoredSecretWithResponse call
+func ParseDeleteStoredSecretResponse(rsp *http.Response) (*DeleteStoredSecretResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteStoredSecretResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetStoredSecretResponse parses an HTTP response from a GetStoredSecretWithResponse call
+func ParseGetStoredSecretResponse(rsp *http.Response) (*GetStoredSecretResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetStoredSecretResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest StoredSecret
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePutStoredSecretResponse parses an HTTP response from a PutStoredSecretWithResponse call
+func ParsePutStoredSecretResponse(rsp *http.Response) (*PutStoredSecretResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PutStoredSecretResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest StoredSecret
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRollbackStoredSecretResponse parses an HTTP response from a RollbackStoredSecretWithResponse call
+func ParseRollbackStoredSecretResponse(rsp *http.Response) (*RollbackStoredSecretResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RollbackStoredSecretResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest StoredSecret
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListStoredSecretVersionsResponse parses an HTTP response from a ListStoredSecretVersionsWithResponse call
+func ParseListStoredSecretVersionsResponse(rsp *http.Response) (*ListStoredSecretVersionsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListStoredSecretVersionsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest StoredSecretVersionList
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetStoredSecretVersionResponse parses an HTTP response from a GetStoredSecretVersionWithResponse call
+func ParseGetStoredSecretVersionResponse(rsp *http.Response) (*GetStoredSecretVersionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetStoredSecretVersionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest StoredSecretVersion
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}

@@ -254,6 +254,13 @@ const (
 	ActionSecretPut      = "secret.put"
 	ActionSecretRollback = "secret.rollback"
 	ActionSecretExec     = "secret.exec"
+	// ActionSecretVersionRead records a read of a specific value-history
+	// entry (resource: the secret name; detail: the version). Handing out a
+	// historical envelope is the one way to obtain a value the secret no
+	// longer holds, so it is audited separately from reading the current
+	// value — "who looked at the password we rotated away from" is exactly
+	// the question an incident asks.
+	ActionSecretVersionRead = "secret.version_read"
 	// Stateless crypto service (Task 138). ActionSecretDataKey records a data-key
 	// mint (target: KEK label; the plaintext key and its wrapped envelope are
 	// never in the audit detail). ActionSecretHMAC / ActionSecretHMACVerify record

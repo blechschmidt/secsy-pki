@@ -8,7 +8,9 @@ package database
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -144,17 +146,53 @@ func (db *DB) SetKEKVersionStatus(family string, version int, status string) (bo
 }
 
 const storedSecretColumns = `id, tenant_id, name, envelope, kek_family, kek_label, kek_version,
-	context_bound, escrowed, current_version, expires_at, rotate_every_days,
+	context_bound, escrowed, current_version, expires_at, rotate_every_days, labels,
 	created_at, updated_at, value_changed_at`
 
 // scanStoredSecret reads one stored_secrets row selected with storedSecretColumns.
+// decodeSecretLabels parses the stored labels column. The column is a JSON
+// object, with the empty string standing for "no labels" so rows written
+// before the column existed need no backfill.
+func decodeSecretLabels(raw string) (map[string]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "{}" || raw == "null" {
+		return nil, nil
+	}
+	var out map[string]string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, fmt.Errorf("database: stored-secret labels are not a JSON object: %w", err)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// encodeSecretLabels renders labels for storage, normalizing the empty map to
+// the empty string so "unset" has exactly one representation on disk.
+func encodeSecretLabels(labels map[string]string) (string, error) {
+	if len(labels) == 0 {
+		return "", nil
+	}
+	blob, err := json.Marshal(labels)
+	if err != nil {
+		return "", fmt.Errorf("database: encoding stored-secret labels: %w", err)
+	}
+	return string(blob), nil
+}
+
 func scanStoredSecret(s caScanner) (*models.StoredSecret, error) {
 	var sec models.StoredSecret
 	var expires, valueChanged sql.NullTime
+	var labels string
 	if err := s.Scan(&sec.ID, &sec.TenantID, &sec.Name, &sec.Envelope, &sec.KEKFamily,
 		&sec.KEKLabel, &sec.KEKVersion, &sec.ContextBound, &sec.Escrowed,
-		&sec.CurrentVersion, &expires, &sec.RotateEveryDays,
+		&sec.CurrentVersion, &expires, &sec.RotateEveryDays, &labels,
 		&sec.CreatedAt, &sec.UpdatedAt, &valueChanged); err != nil {
+		return nil, err
+	}
+	var err error
+	if sec.Labels, err = decodeSecretLabels(labels); err != nil {
 		return nil, err
 	}
 	if expires.Valid {
@@ -188,6 +226,10 @@ func (db *DB) CreateStoredSecret(s *models.StoredSecret, createdBy, comment stri
 		s.TenantID = models.DefaultTenantID
 	}
 	s.CurrentVersion = 1
+	labels, err := encodeSecretLabels(s.Labels)
+	if err != nil {
+		return err
+	}
 
 	tx, err := db.conn.Begin()
 	if err != nil {
@@ -196,11 +238,11 @@ func (db *DB) CreateStoredSecret(s *models.StoredSecret, createdBy, comment stri
 	defer tx.Rollback()
 	if _, err := tx.Exec(db.ph(
 		`INSERT INTO stored_secrets (id, tenant_id, name, envelope, kek_family, kek_label, kek_version,
-			context_bound, escrowed, current_version, expires_at, rotate_every_days,
+			context_bound, escrowed, current_version, expires_at, rotate_every_days, labels,
 			created_at, updated_at, value_changed_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		s.ID, s.TenantID, s.Name, s.Envelope, s.KEKFamily, s.KEKLabel, s.KEKVersion,
-		s.ContextBound, s.Escrowed, s.CurrentVersion, nullableTime(s.ExpiresAt), s.RotateEveryDays,
+		s.ContextBound, s.Escrowed, s.CurrentVersion, nullableTime(s.ExpiresAt), s.RotateEveryDays, labels,
 		s.CreatedAt, s.UpdatedAt, s.ValueChangedAt); err != nil {
 		return err
 	}
@@ -251,36 +293,54 @@ type PutSecretVersion struct {
 	ExpiresAt          *time.Time
 	SetRotateEveryDays bool
 	RotateEveryDays    int
+	// SetLabels follows the same tri-state rule: false keeps the stored
+	// labels, true replaces them wholesale (an empty Labels clears them).
+	SetLabels bool
+	Labels    map[string]string
+	// HistoryDepth bounds the retained value history once the new version is
+	// in place: versions older than the newest HistoryDepth are deleted in the
+	// same transaction. Zero retains every version.
+	HistoryDepth int
 }
 
 // PutStoredSecretVersion appends a new value version to a stored secret: the
-// registry row is advanced to the new envelope/version and the version-history
-// row is inserted, atomically. Returns ErrSecretVersionConflict when the row's
-// current_version no longer matches ExpectVersion (a concurrent put won).
-func (db *DB) PutStoredSecretVersion(p *PutSecretVersion) (*models.StoredSecret, error) {
+// registry row is advanced to the new envelope/version, the version-history
+// row is inserted, and history beyond HistoryDepth is pruned — all atomically.
+// It returns the updated secret and the number of history rows pruned.
+// Returns ErrSecretVersionConflict when the row's current_version no longer
+// matches ExpectVersion (a concurrent put won).
+func (db *DB) PutStoredSecretVersion(p *PutSecretVersion) (*models.StoredSecret, int, error) {
 	if p == nil || p.ID == "" || p.Envelope == "" || p.ExpectVersion < 1 {
-		return nil, fmt.Errorf("database: invalid stored-secret put")
+		return nil, 0, fmt.Errorf("database: invalid stored-secret put")
+	}
+	if p.HistoryDepth < 0 {
+		return nil, 0, fmt.Errorf("database: negative stored-secret history depth %d", p.HistoryDepth)
+	}
+	newLabels, err := encodeSecretLabels(p.Labels)
+	if err != nil {
+		return nil, 0, err
 	}
 	now := time.Now().UTC()
 	newVersion := p.ExpectVersion + 1
 
 	tx, err := db.conn.Begin()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer tx.Rollback()
 
-	// Schedule fields: resolve the final values inside the transaction so a
-	// put that does not touch them keeps whatever is stored.
+	// Schedule and metadata fields: resolve the final values inside the
+	// transaction so a put that does not touch them keeps whatever is stored.
 	var curExpires sql.NullTime
 	var curRotate int
+	var curLabels string
 	if err := tx.QueryRow(db.ph(
-		`SELECT expires_at, rotate_every_days FROM stored_secrets WHERE id = ?`), p.ID).
-		Scan(&curExpires, &curRotate); err != nil {
+		`SELECT expires_at, rotate_every_days, labels FROM stored_secrets WHERE id = ?`), p.ID).
+		Scan(&curExpires, &curRotate, &curLabels); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("database: no such stored secret %q", p.ID)
+			return nil, 0, fmt.Errorf("database: no such stored secret %q", p.ID)
 		}
-		return nil, err
+		return nil, 0, err
 	}
 	var expires interface{}
 	if curExpires.Valid {
@@ -293,22 +353,26 @@ func (db *DB) PutStoredSecretVersion(p *PutSecretVersion) (*models.StoredSecret,
 	if p.SetRotateEveryDays {
 		rotate = p.RotateEveryDays
 	}
+	labels := curLabels
+	if p.SetLabels {
+		labels = newLabels
+	}
 
 	res, err := tx.Exec(db.ph(
 		`UPDATE stored_secrets SET envelope = ?, kek_family = ?, kek_label = ?, kek_version = ?,
 			context_bound = ?, escrowed = ?, current_version = ?, expires_at = ?, rotate_every_days = ?,
-			updated_at = ?, value_changed_at = ?
+			labels = ?, updated_at = ?, value_changed_at = ?
 		 WHERE id = ? AND current_version = ?`),
 		p.Envelope, p.KEKFamily, p.KEKLabel, p.KEKVersion,
 		p.ContextBound, p.Escrowed, newVersion, expires, rotate,
-		now, now, p.ID, p.ExpectVersion)
+		labels, now, now, p.ID, p.ExpectVersion)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if n, err := res.RowsAffected(); err != nil {
-		return nil, err
+		return nil, 0, err
 	} else if n == 0 {
-		return nil, ErrSecretVersionConflict
+		return nil, 0, ErrSecretVersionConflict
 	}
 	if _, err := tx.Exec(db.ph(
 		`INSERT INTO stored_secret_versions (secret_id, version, envelope, kek_family, kek_label,
@@ -316,17 +380,37 @@ func (db *DB) PutStoredSecretVersion(p *PutSecretVersion) (*models.StoredSecret,
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		p.ID, newVersion, p.Envelope, p.KEKFamily, p.KEKLabel, p.KEKVersion,
 		p.ContextBound, p.Escrowed, p.CreatedBy, p.Comment, now); err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	// Retention: drop history older than the newest HistoryDepth versions. The
+	// bound is computed from the version just written rather than from a row
+	// count, so a history with gaps (an earlier prune) still prunes correctly,
+	// and the current version is always above the cutoff.
+	pruned := 0
+	if p.HistoryDepth > 0 {
+		cutoff := newVersion - p.HistoryDepth + 1
+		if cutoff > 1 {
+			res, err := tx.Exec(db.ph(
+				`DELETE FROM stored_secret_versions WHERE secret_id = ? AND version < ?`), p.ID, cutoff)
+			if err != nil {
+				return nil, 0, err
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return nil, 0, err
+			}
+			pruned = int(n)
+		}
 	}
 	updated, err := scanStoredSecret(tx.QueryRow(db.ph(
 		`SELECT `+storedSecretColumns+` FROM stored_secrets WHERE id = ?`), p.ID))
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return updated, nil
+	return updated, pruned, nil
 }
 
 // GetStoredSecret resolves a stored secret by ID. Returns (nil, nil) when none
@@ -354,16 +438,21 @@ func (db *DB) GetStoredSecretByName(tenantID, name string) (*models.StoredSecret
 // storedSecretMetaColumns selects everything except the envelope, for list
 // views.
 const storedSecretMetaColumns = `id, tenant_id, name, kek_family, kek_label, kek_version,
-	context_bound, escrowed, current_version, expires_at, rotate_every_days,
+	context_bound, escrowed, current_version, expires_at, rotate_every_days, labels,
 	created_at, updated_at, value_changed_at`
 
 // scanStoredSecretMeta reads one row selected with storedSecretMetaColumns.
 func scanStoredSecretMeta(s caScanner) (*models.StoredSecret, error) {
 	var sec models.StoredSecret
 	var expires, valueChanged sql.NullTime
+	var labels string
 	if err := s.Scan(&sec.ID, &sec.TenantID, &sec.Name, &sec.KEKFamily, &sec.KEKLabel, &sec.KEKVersion,
-		&sec.ContextBound, &sec.Escrowed, &sec.CurrentVersion, &expires, &sec.RotateEveryDays,
+		&sec.ContextBound, &sec.Escrowed, &sec.CurrentVersion, &expires, &sec.RotateEveryDays, &labels,
 		&sec.CreatedAt, &sec.UpdatedAt, &valueChanged); err != nil {
+		return nil, err
+	}
+	var err error
+	if sec.Labels, err = decodeSecretLabels(labels); err != nil {
 		return nil, err
 	}
 	if expires.Valid {

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -91,6 +92,69 @@ func lookupSecret(db *database.DB, tenantID, name, id string) (*models.StoredSec
 	}
 }
 
+// labelFlags collects repeatable -label key=value flags into a map, so
+// `-label owner=payments -label env=prod` arrives as operator metadata.
+type labelFlags map[string]string
+
+func (l *labelFlags) String() string {
+	if l == nil || len(*l) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(*l))
+	for k := range *l {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+(*l)[k])
+	}
+	return strings.Join(parts, ",")
+}
+
+func (l *labelFlags) Set(v string) error {
+	k, val, ok := strings.Cut(v, "=")
+	if !ok {
+		return fmt.Errorf("label %q must be key=value", v)
+	}
+	k = strings.TrimSpace(k)
+	if k == "" {
+		return fmt.Errorf("label %q has an empty key", v)
+	}
+	if *l == nil {
+		*l = labelFlags{}
+	}
+	(*l)[k] = val
+	return nil
+}
+
+// formatSecretLabels renders labels in a stable order, each prefixed with a
+// space so the result drops into a table row or a one-line summary and
+// disappears cleanly when a secret has none.
+func formatSecretLabels(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		fmt.Fprintf(&b, " %s=%s", k, labels[k])
+	}
+	return b.String()
+}
+
+// printLabels reports a secret's operator metadata on stdout.
+func printLabels(s *models.StoredSecret) {
+	if len(s.Labels) == 0 {
+		return
+	}
+	fmt.Printf("  Labels:%s\n", formatSecretLabels(s.Labels))
+}
+
 // cmdPut creates a named secret or appends a new value version to it: the
 // plaintext is sealed under the family's active KEK, the envelope stored, and
 // the previous value kept in the version history.
@@ -106,8 +170,14 @@ func cmdPut(cfg *config.Config, provider keyprovider.Provider, args []string) er
 	comment := fs.String("comment", "", "free-form note recorded on the new version")
 	expectVersion := fs.Int("expect-version", 0, "fail unless the secret is currently at this version (0 = latest)")
 	operator := fs.String("operator", "", "operator identity recorded in the audit event (default: OS user)")
+	var labels labelFlags
+	fs.Var(&labels, "label", "operator metadata as key=value (repeatable); replaces all labels when any is given")
+	clearLabels := fs.Bool("clear-labels", false, "remove every label from the secret")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *clearLabels && len(labels) > 0 {
+		return fmt.Errorf("pass either -label or -clear-labels, not both")
 	}
 	if *name == "" {
 		return fmt.Errorf("-name is required")
@@ -160,7 +230,7 @@ func cmdPut(cfg *config.Config, provider keyprovider.Provider, args []string) er
 		if *expectVersion > 0 {
 			return fmt.Errorf("secret %q does not exist yet (expect-version %d)", *name, *expectVersion)
 		}
-		spec := storeSecretSpec{operator: actor, comment: *comment}
+		spec := storeSecretSpec{operator: actor, comment: *comment, labels: labels}
 		if *ttlDays > 0 {
 			spec.ttlDays = *ttlDays
 		}
@@ -177,6 +247,7 @@ func cmdPut(cfg *config.Config, provider keyprovider.Provider, args []string) er
 		}
 		fmt.Printf("Created secret %q (id %s), version 1, sealed under KEK version %d.\n", stored.Name, stored.ID, stored.KEKVersion)
 		printSchedule(stored)
+		printLabels(stored)
 		return nil
 	}
 
@@ -207,7 +278,12 @@ func cmdPut(cfg *config.Config, provider keyprovider.Provider, args []string) er
 		put.SetRotateEveryDays = true
 		put.RotateEveryDays = *rotateEvery
 	}
-	updated, err := db.PutStoredSecretVersion(put)
+	if len(labels) > 0 || *clearLabels {
+		put.SetLabels = true
+		put.Labels = labels
+	}
+	put.HistoryDepth = cfg.Secret.VersionHistoryDepth
+	updated, pruned, err := db.PutStoredSecretVersion(put)
 	if err != nil {
 		if err == database.ErrSecretVersionConflict {
 			_ = recordEscrowEvent(db, actor, audit.ActionSecretPut, *name, audit.ResultError, "concurrent update")
@@ -218,12 +294,19 @@ func cmdPut(cfg *config.Config, provider keyprovider.Provider, args []string) er
 	}
 	detail := fmt.Sprintf("id=%s version=%d kek_label=%s kek_version=%d escrow=%v",
 		updated.ID, updated.CurrentVersion, updated.KEKLabel, updated.KEKVersion, updated.Escrowed)
+	if pruned > 0 {
+		detail += fmt.Sprintf(" pruned_versions=%d history_depth=%d", pruned, cfg.Secret.VersionHistoryDepth)
+	}
 	if err := recordEscrowEvent(db, actor, audit.ActionSecretPut, *name, audit.ResultSuccess, detail); err != nil {
 		return fmt.Errorf("secret was updated but recording the audit event failed: %w", err)
 	}
 	fmt.Printf("Updated secret %q (id %s) to version %d, sealed under KEK version %d.\n",
 		updated.Name, updated.ID, updated.CurrentVersion, updated.KEKVersion)
 	printSchedule(updated)
+	printLabels(updated)
+	if pruned > 0 {
+		fmt.Printf("  Pruned %d version(s) beyond the retained depth of %d.\n", pruned, cfg.Secret.VersionHistoryDepth)
+	}
 	return nil
 }
 
@@ -247,9 +330,11 @@ func cmdGet(cfg *config.Config, provider keyprovider.Provider, args []string) er
 	version := fs.Int("version", 0, "value-history version to decrypt (0 = current)")
 	context_ := fs.String("context", "", "encryption context that was bound at encryption time")
 	out := fs.String("out", "-", "output plaintext file, or '-' for stdout")
+	operator := fs.String("operator", "", "operator identity recorded in the audit event (default: OS user)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	actor := operatorActor(*operator)
 
 	db, err := openAuditDB(cfg)
 	if err != nil {
@@ -267,15 +352,21 @@ func cmdGet(cfg *config.Config, provider keyprovider.Provider, args []string) er
 
 	envelope := s.Envelope
 	family := s.KEKFamily
+	// readVersion is what the audit event reports: the history entry actually
+	// decrypted, which for the default (-version 0) is the current one.
+	readVersion := s.CurrentVersion
 	if *version > 0 && *version != s.CurrentVersion {
 		v, err := db.GetStoredSecretVersion(s.ID, *version)
 		if err != nil {
 			return err
 		}
 		if v == nil {
+			_ = recordEscrowEvent(db, actor, audit.ActionSecretVersionRead, s.Name, audit.ResultError,
+				fmt.Sprintf("id=%s version=%d not found", s.ID, *version))
 			return fmt.Errorf("secret %q has no version %d", s.Name, *version)
 		}
 		envelope, family = v.Envelope, v.KEKFamily
+		readVersion = v.Version
 	}
 	if s.ExpiresAt != nil && time.Now().After(*s.ExpiresAt) {
 		fmt.Fprintf(os.Stderr, "WARNING: secret %q expired %s; rotate it.\n", s.Name, s.ExpiresAt.UTC().Format(time.RFC3339))
@@ -290,6 +381,21 @@ func cmdGet(cfg *config.Config, provider keyprovider.Provider, args []string) er
 		return err
 	}
 	plaintext, err := ring.DecryptJSON(context.Background(), []byte(envelope), []byte(*context_))
+	// Reading a stored value is audited whichever version it came from: the
+	// historical read is the only way to recover a value the secret no longer
+	// holds, and a failed attempt is as interesting as a successful one.
+	action := audit.ActionSecretDecrypt
+	if readVersion != s.CurrentVersion {
+		action = audit.ActionSecretVersionRead
+	}
+	result, detail := audit.ResultSuccess, fmt.Sprintf("id=%s version=%d current_version=%d", s.ID, readVersion, s.CurrentVersion)
+	if err != nil {
+		result, detail = audit.ResultError, detail+" error="+err.Error()
+	}
+	if auditErr := recordEscrowEvent(db, actor, action, s.Name, result, detail); auditErr != nil && err == nil {
+		zero(plaintext)
+		return fmt.Errorf("secret was decrypted but recording the audit event failed: %w", auditErr)
+	}
 	if err != nil {
 		return err
 	}
@@ -395,7 +501,7 @@ func cmdRollback(cfg *config.Config, args []string) error {
 	if note == "" {
 		note = fmt.Sprintf("rollback to version %d", *version)
 	}
-	updated, err := db.PutStoredSecretVersion(&database.PutSecretVersion{
+	updated, pruned, err := db.PutStoredSecretVersion(&database.PutSecretVersion{
 		ID:            s.ID,
 		Envelope:      v.Envelope,
 		KEKFamily:     v.KEKFamily,
@@ -406,17 +512,24 @@ func cmdRollback(cfg *config.Config, args []string) error {
 		CreatedBy:     actor,
 		Comment:       note,
 		ExpectVersion: s.CurrentVersion,
+		HistoryDepth:  cfg.Secret.VersionHistoryDepth,
 	})
 	if err != nil {
 		_ = recordEscrowEvent(db, actor, audit.ActionSecretRollback, s.Name, audit.ResultError, err.Error())
 		return err
 	}
 	detail := fmt.Sprintf("id=%s from_version=%d new_version=%d", s.ID, *version, updated.CurrentVersion)
+	if pruned > 0 {
+		detail += fmt.Sprintf(" pruned_versions=%d history_depth=%d", pruned, cfg.Secret.VersionHistoryDepth)
+	}
 	if err := recordEscrowEvent(db, actor, audit.ActionSecretRollback, s.Name, audit.ResultSuccess, detail); err != nil {
 		return fmt.Errorf("rollback applied but recording the audit event failed: %w", err)
 	}
 	fmt.Printf("Secret %q rolled back: version %d's value is current again as version %d.\n",
 		s.Name, *version, updated.CurrentVersion)
+	if pruned > 0 {
+		fmt.Printf("  Pruned %d version(s) beyond the retained depth of %d.\n", pruned, cfg.Secret.VersionHistoryDepth)
+	}
 	return nil
 }
 
@@ -450,8 +563,8 @@ func cmdLifecycle(cfg *config.Config, args []string) error {
 	}
 	fmt.Printf("%-10s %-13s %-12s %-24s %-4s %s\n", "SEVERITY", "STATE", "TENANT", "NAME", "VER", "DETAIL")
 	for _, it := range items {
-		fmt.Printf("%-10s %-13s %-12s %-24s %-4d %s\n",
-			it.Severity, it.State, it.TenantID, it.Name, it.CurrentVersion, it.Detail)
+		fmt.Printf("%-10s %-13s %-12s %-24s %-4d %s%s\n",
+			it.Severity, it.State, it.TenantID, it.Name, it.CurrentVersion, it.Detail, formatSecretLabels(it.Labels))
 	}
 	return nil
 }
@@ -465,7 +578,7 @@ func cmdExec(cfg *config.Config, provider keyprovider.Provider, args []string) e
 	fs := flag.NewFlagSet("exec", flag.ContinueOnError)
 	tenant := fs.String("tenant", models.DefaultTenantID, "owning tenant (id or slug)")
 	var secretFlags, envFlags multiFlag
-	fs.Var(&secretFlags, "secret", "secret to inject as an environment variable: NAME[@VERSION][:VAR] (repeatable; VAR defaults to the upper-cased name)")
+	fs.Var(&secretFlags, "secret", "secret to inject as an environment variable: NAME[@VERSION]=VAR or NAME[@VERSION][:VAR] (repeatable; VAR defaults to the upper-cased name)")
 	fs.Var(&envFlags, "env", "explicit VAR=value assignment; value may embed {{secret:NAME[@VERSION]}} placeholders (repeatable)")
 	context_ := fs.String("context", "", "encryption context for context-bound secrets (applies to all)")
 	noInherit := fs.Bool("no-inherit", false, "start from an empty environment instead of inheriting this process's")

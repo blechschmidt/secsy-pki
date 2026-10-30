@@ -240,26 +240,30 @@ type storeSecretRequest struct {
 	RotateEveryDays int `json:"rotate_every_days,omitempty"`
 	// Comment annotates version 1 in the value history.
 	Comment string `json:"comment,omitempty"`
+	// Labels are free-form operator metadata carried on the secret and echoed
+	// into lifecycle notifications. Descriptive only — never put a value here.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // storedSecretResponse is the metadata view of a stored secret (list/create);
 // the envelope itself is included only by GetStoredSecret.
 type storedSecretResponse struct {
-	ID              string          `json:"id"`
-	Name            string          `json:"name"`
-	TenantID        string          `json:"tenant_id"`
-	KEKFamily       string          `json:"kek_family"`
-	KEKLabel        string          `json:"kek_label"`
-	KEKVersion      int             `json:"kek_version"`
-	ContextBound    bool            `json:"context_bound,omitempty"`
-	Escrowed        bool            `json:"escrowed,omitempty"`
-	CurrentVersion  int             `json:"current_version"`
-	ExpiresAt       string          `json:"expires_at,omitempty"`
-	RotateEveryDays int             `json:"rotate_every_days,omitempty"`
-	CreatedAt       string          `json:"created_at"`
-	UpdatedAt       string          `json:"updated_at"`
-	ValueChangedAt  string          `json:"value_changed_at,omitempty"`
-	Envelope        json.RawMessage `json:"envelope,omitempty"`
+	ID              string            `json:"id"`
+	Name            string            `json:"name"`
+	TenantID        string            `json:"tenant_id"`
+	KEKFamily       string            `json:"kek_family"`
+	KEKLabel        string            `json:"kek_label"`
+	KEKVersion      int               `json:"kek_version"`
+	ContextBound    bool              `json:"context_bound,omitempty"`
+	Escrowed        bool              `json:"escrowed,omitempty"`
+	CurrentVersion  int               `json:"current_version"`
+	ExpiresAt       string            `json:"expires_at,omitempty"`
+	RotateEveryDays int               `json:"rotate_every_days,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	CreatedAt       string            `json:"created_at"`
+	UpdatedAt       string            `json:"updated_at"`
+	ValueChangedAt  string            `json:"value_changed_at,omitempty"`
+	Envelope        json.RawMessage   `json:"envelope,omitempty"`
 }
 
 func storedSecretView(s *models.StoredSecret, withEnvelope bool) storedSecretResponse {
@@ -274,6 +278,7 @@ func storedSecretView(s *models.StoredSecret, withEnvelope bool) storedSecretRes
 		Escrowed:        s.Escrowed,
 		CurrentVersion:  s.CurrentVersion,
 		RotateEveryDays: s.RotateEveryDays,
+		Labels:          s.Labels,
 		CreatedAt:       s.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:       s.UpdatedAt.UTC().Format(time.RFC3339),
 	}
@@ -397,6 +402,7 @@ func (a *API) StoreSecret(w http.ResponseWriter, r *http.Request) {
 		ContextBound:    len(context) > 0,
 		Escrowed:        escrowPolicy != nil,
 		RotateEveryDays: req.RotateEveryDays,
+		Labels:          req.Labels,
 	}
 	if req.TTLDays > 0 {
 		exp := time.Now().UTC().AddDate(0, 0, req.TTLDays)

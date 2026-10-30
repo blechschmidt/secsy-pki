@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -24,8 +25,30 @@ import (
 type fakeKEKStore struct {
 	versions map[string][]models.KEKVersion
 	secrets  map[string]*models.StoredSecret
+	// history holds each secret's value-history entries keyed by secret id,
+	// mirroring stored_secret_versions so the re-wrap batch exercises the
+	// historical-envelope path and not just the current one.
+	history map[string][]*models.StoredSecretVersion
 	// failUpdates makes every optimistic envelope update report a conflict.
 	failUpdates bool
+}
+
+// addVersion appends a value-history entry and makes it the secret's current
+// version, the way database.PutStoredSecretVersion does.
+func (f *fakeKEKStore) addVersion(id, envelope, family, label string, kekVersion int) {
+	if f.history == nil {
+		f.history = map[string][]*models.StoredSecretVersion{}
+	}
+	s := f.secrets[id]
+	next := len(f.history[id]) + 1
+	f.history[id] = append(f.history[id], &models.StoredSecretVersion{
+		SecretID: id, Version: next, Envelope: envelope,
+		KEKFamily: family, KEKLabel: label, KEKVersion: kekVersion,
+	})
+	if s != nil {
+		s.Envelope, s.KEKFamily, s.KEKLabel, s.KEKVersion = envelope, family, label, kekVersion
+		s.CurrentVersion = next
+	}
 }
 
 func newFakeKEKStore() *fakeKEKStore {
@@ -134,6 +157,10 @@ func (f *fakeKEKStore) ListStoredSecretIDsForRewrap(family, activeLabel string) 
 	return out, nil
 }
 
+// UpdateStoredSecretEnvelope migrates the registry row and, like the real
+// implementation, mirrors the change onto the current version's history row in
+// the same step — that mirror is what lets the retire guard skip those rows
+// without stranding them.
 func (f *fakeKEKStore) UpdateStoredSecretEnvelope(id, envelope, kekLabel string, kekVersion int, expectKEKLabel string) (bool, error) {
 	if f.failUpdates {
 		return false, nil
@@ -144,21 +171,65 @@ func (f *fakeKEKStore) UpdateStoredSecretEnvelope(id, envelope, kekLabel string,
 	}
 	s.Envelope, s.KEKLabel, s.KEKVersion = envelope, kekLabel, kekVersion
 	s.UpdatedAt = time.Now().UTC()
+	for _, v := range f.history[id] {
+		if v.Version == s.CurrentVersion {
+			v.Envelope, v.KEKLabel, v.KEKVersion = envelope, kekLabel, kekVersion
+		}
+	}
 	return true, nil
 }
 
-// This in-memory stand-in models each secret as a single current envelope with
-// no separate value-history rows, so the version-history re-wrap surface has
-// nothing to enumerate or update.
+// ListStoredSecretVersionRefsForRewrap enumerates HISTORICAL entries off the
+// active label. Current-version rows are excluded exactly as the SQL query
+// excludes them: they migrate with the registry row, and listing them here
+// would re-wrap them twice. Ordered by (secret, version) for determinism.
 func (f *fakeKEKStore) ListStoredSecretVersionRefsForRewrap(family, activeLabel string) ([]models.SecretVersionRef, error) {
-	return nil, nil
+	ids := make([]string, 0, len(f.history))
+	for id := range f.history {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var out []models.SecretVersionRef
+	for _, id := range ids {
+		cur := 0
+		if s := f.secrets[id]; s != nil {
+			cur = s.CurrentVersion
+		}
+		for _, v := range f.history[id] {
+			if v.KEKFamily == family && v.KEKLabel != activeLabel && v.Version != cur {
+				out = append(out, models.SecretVersionRef{SecretID: id, Version: v.Version})
+			}
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeKEKStore) GetStoredSecretVersion(secretID string, version int) (*models.StoredSecretVersion, error) {
+	for _, v := range f.history[secretID] {
+		if v.Version == version {
+			cp := *v
+			return &cp, nil
+		}
+	}
 	return nil, nil
 }
 
+// UpdateStoredSecretVersionEnvelope is optimistic on the KEK label, like the
+// real one, so a stale re-wrap cannot clobber newer ciphertext.
 func (f *fakeKEKStore) UpdateStoredSecretVersionEnvelope(secretID string, version int, envelope, kekLabel string, kekVersion int, expectKEKLabel string) (bool, error) {
+	if f.failUpdates {
+		return false, nil
+	}
+	for _, v := range f.history[secretID] {
+		if v.Version != version {
+			continue
+		}
+		if v.KEKLabel != expectKEKLabel {
+			return false, nil
+		}
+		v.Envelope, v.KEKLabel, v.KEKVersion = envelope, kekLabel, kekVersion
+		return true, nil
+	}
 	return false, nil
 }
 
@@ -732,5 +803,168 @@ func TestRotateKEKAdoptsOrphanKey(t *testing.T) {
 	}
 	if !res.Adopted || res.NewLabel != "fam-kek-v2" {
 		t.Fatalf("expected orphan adoption, got %+v", res)
+	}
+}
+
+// TestRewrapMigratesWholeVersionHistory is the multi-version KEK-rotation case
+// (Task 72): a secret with several value versions, all sealed under KEK v1, is
+// re-wrapped after a rotation and EVERY retained version must still decrypt to
+// its own original plaintext under the new ring.
+//
+// This is the invariant that makes version history survivable. The current
+// envelope migrates with the registry row while historical entries migrate
+// through their own work list, so a regression in either half strands exactly
+// the versions nobody reads until the day they need a rollback — and once the
+// old KEK version is retired, that ciphertext is gone for good.
+func TestRewrapMigratesWholeVersionHistory(t *testing.T) {
+	ctx := context.Background()
+	prov, store, ring, _ := rotationFixture(t)
+	v1svc, err := NewService(ctx, prov, keyprovider.KeyRef{Label: "fam-kek"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Three versions of one secret, each a distinct plaintext, all on KEK v1.
+	plaintexts := map[int]string{1: "first-password", 2: "second-password", 3: "third-password"}
+	store.secrets["s1"] = &models.StoredSecret{
+		ID: "s1", TenantID: "default", Name: "db-password",
+		KEKFamily: "fam-kek", KEKLabel: "fam-kek", KEKVersion: 1,
+	}
+	for v := 1; v <= 3; v++ {
+		blob, err := v1svc.EncryptToJSON([]byte(plaintexts[v]), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store.addVersion("s1", string(blob), "fam-kek", "fam-kek", 1)
+	}
+	if store.secrets["s1"].CurrentVersion != 3 {
+		t.Fatalf("fixture current_version = %d, want 3", store.secrets["s1"].CurrentVersion)
+	}
+
+	// The work list counts the current envelope once (via the registry row)
+	// plus the two historical entries.
+	report, err := RewrapStoredSecrets(ctx, ring, store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.HistoryEnvelopes != 2 {
+		t.Fatalf("history envelopes = %d, want 2", report.HistoryEnvelopes)
+	}
+	if report.Total != 3 || report.Rewrapped != 3 || report.Failed != 0 {
+		t.Fatalf("report = %+v; want total 3, rewrapped 3, failed 0", report)
+	}
+
+	// Every version now sits on the new KEK and still opens to its own value.
+	for v := 1; v <= 3; v++ {
+		got, err := store.GetStoredSecretVersion("s1", v)
+		if err != nil || got == nil {
+			t.Fatalf("version %d missing after re-wrap: %v", v, err)
+		}
+		if got.KEKLabel != "fam-kek-v2" || got.KEKVersion != 2 {
+			t.Fatalf("version %d still on %s v%d; it would be stranded by a retire",
+				v, got.KEKLabel, got.KEKVersion)
+		}
+		plain, err := ring.DecryptJSON(ctx, []byte(got.Envelope), nil)
+		if err != nil {
+			t.Fatalf("decrypt version %d after re-wrap: %v", v, err)
+		}
+		if string(plain) != plaintexts[v] {
+			t.Fatalf("version %d decrypted to %q, want %q", v, plain, plaintexts[v])
+		}
+	}
+	// The registry row tracks the current version's new wrap.
+	cur := store.secrets["s1"]
+	if cur.KEKLabel != "fam-kek-v2" || cur.KEKVersion != 2 {
+		t.Fatalf("registry row not migrated: %+v", cur)
+	}
+
+	// Re-running the batch is a no-op: nothing is left off the active label,
+	// so an interrupted migration can simply be re-run.
+	again, err := RewrapStoredSecrets(ctx, ring, store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Total != 0 || again.Rewrapped != 0 {
+		t.Fatalf("second pass = %+v; want nothing left to do", again)
+	}
+}
+
+// TestRewrapHistoryPreservesEscrow checks that migrating a HISTORICAL envelope
+// keeps its M-of-N recovery block intact: re-wrap replaces only the KEK wrap
+// header, leaving the data key — and therefore every escrow share — unchanged.
+// Without this, rotating a KEK would quietly invalidate the recovery path for
+// exactly the old versions escrow exists to rescue.
+func TestRewrapHistoryPreservesEscrow(t *testing.T) {
+	ctx := context.Background()
+	prov, store, ring, _ := rotationFixture(t)
+	v1svc, err := NewService(ctx, prov, keyprovider.KeyRef{Label: "fam-kek"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Two recovery agents, 2-of-2.
+	specs := make([]AgentSpec, 2)
+	for i := range specs {
+		id := fmt.Sprintf("hist-agent-%d", i+1)
+		if _, err := prov.GenerateKey(ctx, keyprovider.KeySpec{
+			Label: id, KeyType: keyprovider.KeyTypeRSA2048, Usage: keyprovider.KeyUsageDecrypt,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		specs[i] = AgentSpec{ID: id, KeyLabel: id}
+	}
+	policy, err := NewEscrowPolicy(ctx, prov, 2, specs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs, err := NewRecoveryService(prov)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store.secrets["s1"] = &models.StoredSecret{
+		ID: "s1", TenantID: "default", Name: "escrowed",
+		KEKFamily: "fam-kek", KEKLabel: "fam-kek", KEKVersion: 1, Escrowed: true,
+	}
+	const historical = "the-old-password"
+	blob, err := v1svc.EncryptWithEscrowToJSON([]byte(historical), nil, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.addVersion("s1", string(blob), "fam-kek", "fam-kek", 1)
+	// A second version makes the first one historical, so it migrates through
+	// the version work list rather than with the registry row.
+	cur, err := v1svc.EncryptToJSON([]byte("the-new-password"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.addVersion("s1", string(cur), "fam-kek", "fam-kek", 1)
+
+	report, err := RewrapStoredSecrets(ctx, ring, store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.HistoryEnvelopes != 1 || report.Rewrapped != 2 {
+		t.Fatalf("report = %+v; want 1 historical envelope and 2 re-wraps", report)
+	}
+
+	v1, err := store.GetStoredSecretVersion("s1", 1)
+	if err != nil || v1 == nil {
+		t.Fatalf("version 1 missing: %v", err)
+	}
+	if v1.KEKLabel != "fam-kek-v2" {
+		t.Fatalf("version 1 not migrated: %+v", v1)
+	}
+	// The quorum still recovers the historical plaintext WITHOUT the KEK.
+	env, err := Unmarshal([]byte(v1.Envelope))
+	if err != nil {
+		t.Fatalf("parsing the re-wrapped historical envelope: %v", err)
+	}
+	got, err := rs.Recover(ctx, env, []string{"hist-agent-1", "hist-agent-2"}, nil)
+	if err != nil {
+		t.Fatalf("escrow recovery of the re-wrapped historical version: %v", err)
+	}
+	if string(got) != historical {
+		t.Fatalf("escrow recovered %q, want %q", got, historical)
 	}
 }

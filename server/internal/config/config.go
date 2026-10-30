@@ -3159,6 +3159,18 @@ type SecretConfig struct {
 	// A deterministic template yields stable ciphertext for equal plaintext,
 	// enabling equality search and de-duplication on protected fields.
 	Transforms []TransformConfig `yaml:"transforms"`
+	// VersionHistoryDepth bounds a stored secret's retained value history: on
+	// each put, versions older than the newest VersionHistoryDepth are deleted.
+	// Zero (the default) retains history forever.
+	//
+	// Pruning is deliberately opt-in and never implicit. Deleting a history row
+	// destroys the only copy of that ciphertext, so a rollback to it — and any
+	// escrow recovery of it — becomes impossible; an upgrade must not silently
+	// discard recoverable material. The current version is always exempt, so
+	// any depth >= 1 keeps the live value readable. Historical envelopes are
+	// re-wrapped by KEK rotation while they are retained, so a retained version
+	// stays decryptable no matter how many times the KEK has rotated since.
+	VersionHistoryDepth int `yaml:"version_history_depth"`
 }
 
 // TransformConfig is one named format-preserving-encryption / tokenization
@@ -5628,6 +5640,11 @@ func (c *Config) validateEnrollment() error {
 	}
 	if c.Secret.PQCHybrid && c.Secret.KEKLabel == "" {
 		return fmt.Errorf("secret.pqc_hybrid is enabled but secret.kek_label is not set (post-quantum hybrid mode has no KEK family to attach ML-KEM material to)")
+	}
+	// A negative depth would read as "unlimited" like zero does, silently
+	// accepting a value the operator clearly did not mean.
+	if c.Secret.VersionHistoryDepth < 0 {
+		return fmt.Errorf("secret.version_history_depth must not be negative (0 retains every version)")
 	}
 	if err := c.Secret.validateTransforms(); err != nil {
 		return err

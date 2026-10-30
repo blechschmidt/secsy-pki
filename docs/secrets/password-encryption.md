@@ -157,9 +157,10 @@ $ secsy-secret pqc-reseal
 
 ```yaml
 secret:
-  kek_label: "secsy-kek"   # RSA KEK in the configured key_provider
-  pqc_hybrid: false        # true → also protect data keys with ML-KEM-1024 (Task 137)
-  transforms: []           # format-preserving encryption / tokenization templates (see below)
+  kek_label: "secsy-kek"      # RSA KEK in the configured key_provider
+  pqc_hybrid: false           # true → also protect data keys with ML-KEM-1024 (Task 137)
+  version_history_depth: 0    # retained value versions per named secret; 0 = unlimited
+  transforms: []              # format-preserving encryption / tokenization templates (see below)
 ```
 
 `SECSY_SECRET_KEK_LABEL` overrides the KEK label and `SECSY_SECRET_PQC_HYBRID=1`
@@ -185,6 +186,15 @@ $ secsy-secret decrypt -in s.json -context 'tenant=acme'
 
 # Inspect the configured KEK
 $ secsy-secret kek-info
+
+# Named secrets with a value history (see "Named secrets" below)
+$ printf 'pw' | secsy-secret put -name db-password -ttl-days 90 -rotate-every-days 30
+$ secsy-secret list-secrets                      # registry, with labels
+$ secsy-secret versions -name db-password        # value history, newest first
+$ secsy-secret get -name db-password -version 1  # read a retained older value
+$ secsy-secret rollback -name db-password -version 1
+$ secsy-secret lifecycle                         # what is due for TTL/rotation
+$ secsy-secret exec -secret db-password=DB_PASS -- ./myapp
 
 # KEK rotation lifecycle (see "KEK rotation and DEK re-wrap" below)
 $ secsy-secret kek-versions                      # lineage + per-version secret counts
@@ -226,6 +236,15 @@ configured.
 | `POST /api/secret/signing-keys/{name}/verify` | Verify a signature               |
 | `POST /api/secret/transform/encode` | Format-preserving encrypt / tokenize     |
 | `POST /api/secret/transform/decode` | Invert a transform (detokenize)          |
+| `POST /api/secret/store`       | Encrypt and store a named secret (version 1)  |
+| `GET  /api/secret/store`       | List stored secrets (`?name=` resolves one)   |
+| `GET  /api/secret/store/{id}`  | Get a stored secret including its envelope    |
+| `PUT  /api/secret/store/{id}`  | Write a new value version                     |
+| `DELETE /api/secret/store/{id}` | Delete a secret and its whole history        |
+| `GET  /api/secret/store/{id}/versions` | List the retained value history       |
+| `GET  /api/secret/store/{id}/versions/{version}` | Read one historical version |
+| `POST /api/secret/store/{id}/rollback` | Make an older value current again     |
+| `GET  /api/secret/lifecycle`   | Secrets due for TTL or rotation attention     |
 | `GET  /api/secret/kek/status`  | KEK rotation posture (lineage + secrets per version) |
 | `POST /api/secret/kek/rotate`  | Generate the next KEK version and make it active |
 | `POST /api/secret/rewrap`      | Re-wrap stored secrets onto the active version |
@@ -501,6 +520,159 @@ $ secsy-secret transform encode -template account -value ACCT12345 -tweak "$(pri
 
 Both directions count against the tenant's daily secret-op quota. gRPC exposes
 the same operations as `SecretService.TransformEncode` / `TransformDecode`.
+
+## Named secrets: version history, lifecycle reminders, and `exec`
+
+`encrypt` / `decrypt` are stateless — you keep the envelope. The **stored-secret
+registry** instead holds the envelope server-side under a tenant-unique name,
+and gives it a value history, a TTL/rotation schedule, and a way to hand the
+plaintext to a child process without it ever touching disk.
+
+Only the envelope is stored. The registry never holds plaintext, and reading a
+value still unwraps its data key on the HSM.
+
+### Every put appends a version
+
+A secret's value history is append-only: `put` adds the next version, and
+`rollback` re-activates an older value by appending a *copy* of it rather than
+rewriting history. So "what was this password in August, and who changed it"
+stays answerable.
+
+```bash
+# Create (version 1) with metadata and a lifecycle schedule.
+printf 'first-password' | secsy-secret put -name db-password \
+    -ttl-days 90 -rotate-every-days 30 \
+    -label owner=payments -label env=prod -comment "initial"
+
+# Each later put appends a version.
+printf 'second-password' | secsy-secret put -name db-password -comment "quarterly rotation"
+
+# History, newest first (ciphertext is never printed).
+secsy-secret versions -name db-password
+
+# Read the current value, or any retained one.
+secsy-secret get -name db-password
+secsy-secret get -name db-password -version 1
+
+# Make an older value current again (appends a new version).
+secsy-secret rollback -name db-password -version 1
+```
+
+`put -expect-version N` makes the write conditional on the secret still being
+at version N — a compare-and-swap for orchestrators that must not clobber a
+concurrent rotation. A lost race is reported, not silently applied.
+
+### Retention depth
+
+By default history is kept forever. Bound it with:
+
+```yaml
+secret:
+  version_history_depth: 10   # keep the newest 10 versions; 0 = unlimited
+```
+
+Pruning is **opt-in on purpose**. Deleting a history row destroys the only copy
+of that ciphertext, so a rollback to it — and any escrow recovery of it —
+becomes impossible; an upgrade must not silently discard recoverable material.
+The current version is always exempt, so any depth ≥ 1 keeps the live value
+readable. When a put prunes, it says so and records
+`pruned_versions=N history_depth=D` in the audit event.
+
+### History survives KEK rotation
+
+Re-wrap migrates **every retained version**, not just the current one: the
+current envelope moves with its registry row, and historical envelopes move
+through their own work list. That is what keeps `get -version N` and `rollback`
+working after a rotation — and it is why `retire-kek` is refused while any
+historical envelope still depends on the version being withdrawn.
+
+Because re-wrap only replaces the KEK wrap header and leaves the data key
+untouched, escrow shares over an old version stay valid across rotations.
+
+```bash
+secsy-secret rotate-kek            # new active version
+secsy-secret rewrap -all           # migrates current + historical envelopes
+secsy-secret versions -name db-password   # every row now shows the new KEK label
+secsy-secret retire-kek -version 1 # safe once nothing references it
+```
+
+A re-wrap deliberately does **not** advance `value_changed_at`, so migrating a
+KEK never resets a rotation reminder.
+
+### TTL and rotation reminders
+
+`-ttl-days` sets an expiry deadline and `-rotate-every-days` arms a rotation
+reminder measured from the last *value* change. Both are operational reminders:
+an expired secret still decrypts — expiry here is not a cryptographic
+revocation.
+
+The expiry monitor classifies them against the same warning/critical windows it
+uses for certificates and pushes the due ones through the **same notification
+sinks**, as `secret-lifecycle` findings with state `expiring`, `expired` or
+`rotation_due`. Labels ride along so an alert can be routed without a second
+lookup. Repeats are storm-filtered: a still-overdue secret re-notifies on
+escalation, on a new value version, or after the re-notify interval — not on
+every tick.
+
+```bash
+secsy-secret lifecycle    # what is due right now, with labels
+```
+
+Metrics: `secsy_secrets_lifecycle_due{state}` tracks how many secrets sit in
+each state (refreshed every scan, and cleared when the backlog drains), and
+`secsy_secret_lifecycle_notifications_total{state}` counts reminders actually
+dispatched.
+
+### `exec` — inject secrets into a child process
+
+`exec` decrypts and places values directly in a child's environment. Nothing is
+written to disk and no shell expansion sees the value.
+
+```bash
+# NAME=VAR, or NAME:VAR — both bind a secret to a variable.
+secsy-secret exec -secret db-password=DB_PASS -- ./myapp
+
+# Pin a specific version, and compose values into a connection string.
+secsy-secret exec -secret db-password@3:DB_PASS \
+    -env 'DATABASE_URL=postgres://app:{{secret:db-password}}@db/app' -- ./myapp
+
+# Omit the variable name to derive it from the secret name (db-password → DB_PASSWORD).
+secsy-secret exec -secret db-password -- env
+
+# Start from an empty environment instead of inheriting this process's.
+secsy-secret exec -no-inherit -secret db-password=DB_PASS -- ./myapp
+```
+
+The child's exit status is propagated, and signals are forwarded. Variable
+names must be portable (`[A-Za-z_][A-Za-z0-9_]*`); collisions and unresolved
+`{{secret:…}}` placeholders fail closed rather than launching the child with a
+half-built environment.
+
+> Environment variables are visible to anything that can read the child's
+> `/proc/<pid>/environ` — i.e. the same user and root. That is a smaller
+> exposure than a plaintext file, not zero.
+
+### RBAC, tenancy, and audit
+
+Every endpoint is tenant-scoped through the usual `X-Secsy-Tenant` resolution,
+and a secret name is unique per tenant. Writes (`store`, `put`, `rollback`,
+`delete`) need the `secret:encrypt` capability; reads (`get`, `versions`,
+`lifecycle`) need `secret:decrypt`.
+
+| Action | Event |
+| ------ | ----- |
+| create | `secret.store` |
+| new version | `secret.put` (detail: new version, KEK label/version, any pruning) |
+| read a historical version | `secret.version_read` |
+| read the current value | `secret.decrypt` |
+| rollback | `secret.rollback` (detail: source and new version) |
+| delete | `secret.store_delete` |
+| env injection | `secret.exec` (detail: secret **names** and the command) |
+
+`secret.version_read` is recorded separately from `secret.decrypt` — including
+on a denial or a miss — because reading history is the one way to obtain a
+value the secret no longer holds. No audit detail ever contains plaintext.
+Review them with `secsy-secret audit` (and `-verify` to check the hash chain).
 
 ## KEK rotation and DEK re-wrap
 

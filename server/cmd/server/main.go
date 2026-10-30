@@ -602,6 +602,7 @@ func main() {
 	// envelopes with an additional ML-KEM-1024 encapsulation for KEK families
 	// that have ML-KEM material provisioned.
 	api.SetPQCHybrid(cfg.Secret.PQCHybrid)
+	api.SetSecretHistoryDepth(cfg.Secret.VersionHistoryDepth)
 	// Format-preserving encryption / tokenization templates (Task 144): resolve the
 	// configured FF1 transforms once at startup (config validation already proved
 	// they resolve) and install them so the transform endpoints can serve them.

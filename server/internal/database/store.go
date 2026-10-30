@@ -190,7 +190,7 @@ type SecretStore interface {
 	GetStoredSecretByName(tenantID, name string) (*models.StoredSecret, error)
 	ListStoredSecrets(tenantID string) ([]models.StoredSecret, error)
 	ListStoredSecretsWithSchedule() ([]models.StoredSecret, error)
-	PutStoredSecretVersion(p *PutSecretVersion) (*models.StoredSecret, error)
+	PutStoredSecretVersion(p *PutSecretVersion) (*models.StoredSecret, int, error)
 	ListStoredSecretVersions(secretID string) ([]models.StoredSecretVersion, error)
 	GetStoredSecretVersion(secretID string, version int) (*models.StoredSecretVersion, error)
 	ListStoredSecretIDsForRewrap(family, activeLabel string) ([]string, error)

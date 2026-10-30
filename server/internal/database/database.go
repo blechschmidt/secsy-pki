@@ -960,6 +960,7 @@ func (db *DB) migrate() error {
 			current_version INTEGER NOT NULL DEFAULT 1,
 			expires_at TIMESTAMP,
 			rotate_every_days INTEGER NOT NULL DEFAULT 0,
+			labels TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMP NOT NULL,
 			updated_at TIMESTAMP NOT NULL,
 			value_changed_at TIMESTAMP,
@@ -1290,6 +1291,9 @@ func (db *DB) migrate() error {
 		_, _ = db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
 		_, _ = db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS rotate_every_days INTEGER NOT NULL DEFAULT 0")
 		_, _ = db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS value_changed_at TIMESTAMP")
+		// Operator metadata on a stored secret (Task 72): a JSON object, empty
+		// string when unset, so existing rows need no backfill.
+		_, _ = db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN IF NOT EXISTS labels TEXT NOT NULL DEFAULT ''")
 		// Per-profile manual issuance-approval gate (Task 84): cert.issue requests
 		// park their issuance inputs (payload) and, once completed, the issued
 		// serial (result) so the certificate can be delivered after approval.
@@ -1349,6 +1353,8 @@ func (db *DB) migrate() error {
 		_, _ = db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN expires_at TIMESTAMP")
 		_, _ = db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN rotate_every_days INTEGER NOT NULL DEFAULT 0")
 		_, _ = db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN value_changed_at TIMESTAMP")
+		// Operator metadata on a stored secret (Task 72).
+		_, _ = db.conn.Exec("ALTER TABLE stored_secrets ADD COLUMN labels TEXT NOT NULL DEFAULT ''")
 		// Per-profile manual issuance-approval gate (Task 84). SQLite ADD COLUMN is
 		// idempotently retried; errors for already-present columns are ignored.
 		_, _ = db.conn.Exec("ALTER TABLE pending_approvals ADD COLUMN payload TEXT NOT NULL DEFAULT ''")

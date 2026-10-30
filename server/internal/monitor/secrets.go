@@ -12,6 +12,8 @@ package monitor
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,6 +49,11 @@ type SecretItem struct {
 	// rotation findings.
 	RotationDueAt *time.Time `json:"rotation_due_at,omitempty"`
 	Detail        string     `json:"detail"`
+	// Labels carries the secret's operator metadata into the notification so
+	// a sink can route on owner/environment without a second lookup. Labels
+	// are descriptive metadata, never values, so this adds nothing sensitive
+	// to a notification body.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // conditionKey identifies the finding for storm-prevention bookkeeping: one
@@ -93,6 +100,7 @@ func ClassifySecrets(secrets []models.StoredSecret, warningDays, criticalDays in
 				item.TenantID, item.ID, item.Name = s.TenantID, s.ID, s.Name
 				item.CurrentVersion = s.CurrentVersion
 				item.ExpiresAt = &exp
+				item.Labels = s.Labels
 				out = append(out, *item)
 			}
 		}
@@ -114,6 +122,7 @@ func ClassifySecrets(secrets []models.StoredSecret, warningDays, criticalDays in
 					State: SecretStateRotationDue, Severity: sev,
 					CurrentVersion: s.CurrentVersion,
 					RotationDueAt:  &due,
+					Labels:         s.Labels,
 					Detail: fmt.Sprintf("rotation overdue by %s (period %dd, value last changed %s)",
 						roundDuration(now.Sub(due)), s.RotateEveryDays, ref.UTC().Format("2006-01-02")),
 				})
@@ -121,6 +130,25 @@ func ClassifySecrets(secrets []models.StoredSecret, warningDays, criticalDays in
 		}
 	}
 	return out
+}
+
+// formatLabels renders labels for a one-line notification in a stable order,
+// prefixed with a space so it can be dropped in beside other fields and
+// vanish cleanly when a secret has none.
+func formatLabels(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		fmt.Fprintf(&b, " %s=%s", k, labels[k])
+	}
+	return b.String()
 }
 
 // roundDuration renders a duration in whole days/hours for human-facing

@@ -1900,8 +1900,8 @@
             <button class="btn ghost sm" id="storeRefresh">Refresh</button>
           </div>
           <table>
-            <thead><tr><th>Name</th><th>Version</th><th>KEK</th><th>Escrow</th><th>Expires</th><th>Rotate every</th><th>Value changed</th><th></th></tr></thead>
-            <tbody id="storeRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+            <thead><tr><th>Name</th><th>Version</th><th>KEK</th><th>Escrow</th><th>Expires</th><th>Rotate every</th><th>Value changed</th><th>Labels</th><th></th></tr></thead>
+            <tbody id="storeRows"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
           </table>
           <div class="row" style="margin-top:12px;align-items:stretch">
             <div class="panel" style="flex:1;min-width:300px">
@@ -1917,6 +1917,7 @@
                 <div class="field" style="flex:1;min-width:150px"><label for="storeContext">Context / AAD <span class="muted">(optional)</span></label><input id="storeContext" placeholder="needed verbatim to decrypt"></div>
                 <div class="field" style="flex:1;min-width:150px"><label for="storeComment">Comment <span class="muted">(optional)</span></label><input id="storeComment" placeholder="why this changed"></div>
               </div>
+              <div class="field"><label for="storeLabels">Labels <span class="muted">(optional, key=value per line or comma-separated)</span></label><input id="storeLabels" placeholder="owner=payments, env=prod"></div>
               <label class="muted hidden" id="storeEscrowLabel" style="display:flex;gap:6px;align-items:center;margin-bottom:10px"><input type="checkbox" id="storeEscrow"> escrow to recovery agents</label>
               <button class="btn" id="storePutBtn">Save version</button>
             </div>

@@ -58,6 +58,10 @@ type API struct {
 	// have ML-KEM material provisioned. Existing/hybrid envelopes always open
 	// regardless; the gate only governs sealing.
 	secretPQCHybrid bool
+	// secretHistoryDepth is the secret.version_history_depth config bound
+	// (Task 72): how many of a stored secret's newest value versions are
+	// retained when a put appends one. Zero retains every version.
+	secretHistoryDepth int
 	// secretTransforms holds the resolved format-preserving-encryption /
 	// tokenization templates (Task 144) keyed by name, installed from
 	// secret.transforms config. Nil/empty means the transform service is not
@@ -313,6 +317,10 @@ func (a *API) SetPolicy(p Policy) { a.policy = p }
 // opening hybrid envelopes always uses whatever ML-KEM material the KEK family
 // has, independent of this flag.
 func (a *API) SetPQCHybrid(enabled bool) { a.secretPQCHybrid = enabled }
+
+// SetSecretHistoryDepth installs the stored-secret value-history retention
+// bound from secret.version_history_depth. Zero retains every version.
+func (a *API) SetSecretHistoryDepth(depth int) { a.secretHistoryDepth = depth }
 
 // SetTransformTemplates installs the resolved format-preserving-encryption /
 // tokenization templates (Task 144), from secret.transforms config. Passing nil

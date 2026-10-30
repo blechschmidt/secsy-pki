@@ -2998,13 +2998,37 @@ $('fpeDecodeBtn').onclick = () => runTransform('decode');
 // must not be able to shortcut it.
 let storedSecrets = [];
 
+// fmtLabels renders a label map in a stable order for the table cell.
+function fmtLabels(labels) {
+  if (!labels) return '';
+  return Object.keys(labels).sort().map(k => `${k}=${labels[k]}`).join(' ');
+}
+
+// parseLabels reads the form's "key=value" entries, separated by commas or
+// newlines. Returns null when the field is blank so the caller can omit the
+// field entirely and leave the stored labels untouched, rather than clearing
+// them — the API treats a present-but-empty object as "clear".
+function parseLabels(raw) {
+  const text = (raw || '').trim();
+  if (!text) return null;
+  const out = {};
+  for (const part of text.split(/[,\n]/)) {
+    const entry = part.trim();
+    if (!entry) continue;
+    const eq = entry.indexOf('=');
+    if (eq < 1) throw new Error(`label "${entry}" must be key=value`);
+    out[entry.slice(0, eq).trim()] = entry.slice(eq + 1).trim();
+  }
+  return out;
+}
+
 async function loadStoredSecrets() {
   const tbody = $('storeRows');
   if (!tbody) return;
   try {
     const res = await api('GET', '/api/secret/store');
     storedSecrets = res.secrets || [];
-    if (!storedSecrets.length) { tbody.innerHTML = '<tr><td colspan="8" class="muted">No stored secrets yet.</td></tr>'; return; }
+    if (!storedSecrets.length) { tbody.innerHTML = '<tr><td colspan="9" class="muted">No stored secrets yet.</td></tr>'; return; }
     tbody.innerHTML = storedSecrets.map(s => `<tr>
       <td class="mono">${escapeHTML(s.name)}</td>
       <td>v${s.current_version}</td>
@@ -3013,6 +3037,7 @@ async function loadStoredSecrets() {
       <td>${s.expires_at ? fmtTime(s.expires_at) : '—'}</td>
       <td>${s.rotate_every_days > 0 ? s.rotate_every_days + 'd' : '—'}</td>
       <td>${s.value_changed_at ? fmtTime(s.value_changed_at) : fmtTime(s.created_at)}</td>
+      <td class="mono">${escapeHTML(fmtLabels(s.labels)) || '—'}</td>
       <td>
         <button class="btn ghost sm" data-secret-reveal="${escapeHTML(s.id)}" title="Fetch the envelope and decrypt it">Reveal</button>
         <button class="btn ghost sm" data-secret-versions="${escapeHTML(s.id)}">Versions</button>
@@ -3024,7 +3049,7 @@ async function loadStoredSecrets() {
     tbody.querySelectorAll('[data-secret-versions]').forEach(b => b.onclick = () => loadSecretVersions(b.dataset.secretVersions));
     tbody.querySelectorAll('[data-secret-edit]').forEach(b => b.onclick = () => {
       const s = storedSecrets.find(x => x.id === b.dataset.secretEdit);
-      if (s) { $('storeName').value = s.name; $('storeValue').focus(); }
+      if (s) { $('storeName').value = s.name; $('storeLabels').value = fmtLabels(s.labels); $('storeValue').focus(); }
     });
     tbody.querySelectorAll('[data-secret-del]').forEach(b => b.onclick = () => deleteStoredSecret(b.dataset.secretDel));
   } catch (e) {
@@ -3129,6 +3154,10 @@ $('storePutBtn').onclick = async () => {
   if (!isNaN(rot)) body.rotate_every_days = rot;
   const comment = $('storeComment').value.trim();
   if (comment) body.comment = comment;
+  try {
+    const labels = parseLabels($('storeLabels').value);
+    if (labels) body.labels = labels;
+  } catch (e) { showError(err, e.message); return; }
   $('storePutBtn').disabled = true;
   try {
     const existing = storedSecrets.find(s => s.name === name);

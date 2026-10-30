@@ -37,6 +37,9 @@ type putSecretRequest struct {
 	TTLDays         *int   `json:"ttl_days,omitempty"`
 	RotateEveryDays *int   `json:"rotate_every_days,omitempty"`
 	Comment         string `json:"comment,omitempty"`
+	// Labels is tri-state like the schedule fields: absent keeps the stored
+	// labels, present replaces them wholesale (an empty object clears them).
+	Labels *map[string]string `json:"labels,omitempty"`
 	// ExpectVersion optionally makes the put conditional on the secret still
 	// being at this version (compare-and-swap for external orchestrators).
 	// Zero means "latest".
@@ -164,7 +167,12 @@ func (a *API) PutStoredSecret(w http.ResponseWriter, r *http.Request) {
 		put.SetRotateEveryDays = true
 		put.RotateEveryDays = *req.RotateEveryDays
 	}
-	updated, err := a.db.PutStoredSecretVersion(put)
+	if req.Labels != nil {
+		put.SetLabels = true
+		put.Labels = *req.Labels
+	}
+	put.HistoryDepth = a.secretHistoryDepth
+	updated, pruned, err := a.db.PutStoredSecretVersion(put)
 	if err != nil {
 		if err == database.ErrSecretVersionConflict {
 			metrics.SecretStoreOps.Inc("put", metrics.ResultError)
@@ -179,9 +187,14 @@ func (a *API) PutStoredSecret(w http.ResponseWriter, r *http.Request) {
 	}
 	metrics.SecretStoreOps.Inc("put", metrics.ResultSuccess)
 	a.recordEvent(r, audit.ActionSecretEncrypt, family, "", audit.ResultSuccess, "")
-	a.recordEvent(r, audit.ActionSecretPut, family, s.Name, audit.ResultSuccess,
-		fmt.Sprintf("id=%s version=%d kek_label=%s kek_version=%d escrow=%v",
-			s.ID, updated.CurrentVersion, updated.KEKLabel, updated.KEKVersion, updated.Escrowed))
+	detail := fmt.Sprintf("id=%s version=%d kek_label=%s kek_version=%d escrow=%v",
+		s.ID, updated.CurrentVersion, updated.KEKLabel, updated.KEKVersion, updated.Escrowed)
+	if pruned > 0 {
+		// Pruning destroys ciphertext irreversibly, so it is on the record
+		// even though the operator did not ask for it in this request.
+		detail += fmt.Sprintf(" pruned_versions=%d history_depth=%d", pruned, a.secretHistoryDepth)
+	}
+	a.recordEvent(r, audit.ActionSecretPut, family, s.Name, audit.ResultSuccess, detail)
 	writeJSON(w, http.StatusOK, storedSecretView(updated, false))
 }
 
@@ -268,12 +281,13 @@ func (a *API) ListStoredSecretVersions(w http.ResponseWriter, r *http.Request) {
 //
 //	GET /api/secret/store/{id}/versions/{version}
 func (a *API) GetStoredSecretVersion(w http.ResponseWriter, r *http.Request) {
-	tenant, _, err := a.resolveSecretTenant(r)
+	tenant, family, err := a.resolveSecretTenant(r)
 	if err != nil {
 		writeSecretTenantError(w, err)
 		return
 	}
 	if !a.canInTenant(middleware.GetUserInfo(r.Context()), tenant.ID, rbac.ActionDecrypt) {
+		a.recordEvent(r, audit.ActionSecretVersionRead, family, "", audit.ResultDenied, "secret:decrypt capability required")
 		writeError(w, http.StatusForbidden, "secret:decrypt capability required for tenant %q", tenant.ID)
 		return
 	}
@@ -297,9 +311,15 @@ func (a *API) GetStoredSecretVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if v == nil {
+		// Audited too: probing for a version that was pruned away is itself
+		// worth seeing in the log.
+		a.recordEvent(r, audit.ActionSecretVersionRead, family, s.Name, audit.ResultError,
+			fmt.Sprintf("id=%s version=%d not found", s.ID, version))
 		writeError(w, http.StatusNotFound, "stored secret has no version %d", version)
 		return
 	}
+	a.recordEvent(r, audit.ActionSecretVersionRead, family, s.Name, audit.ResultSuccess,
+		fmt.Sprintf("id=%s version=%d current_version=%d kek_label=%s", s.ID, version, s.CurrentVersion, v.KEKLabel))
 	writeJSON(w, http.StatusOK, secretVersionView(v, s.CurrentVersion, true))
 }
 
@@ -371,7 +391,7 @@ func (a *API) RollbackStoredSecret(w http.ResponseWriter, r *http.Request) {
 	if comment == "" {
 		comment = fmt.Sprintf("rollback to version %d", req.Version)
 	}
-	updated, err := a.db.PutStoredSecretVersion(&database.PutSecretVersion{
+	updated, pruned, err := a.db.PutStoredSecretVersion(&database.PutSecretVersion{
 		ID:            s.ID,
 		Envelope:      v.Envelope,
 		KEKFamily:     v.KEKFamily,
@@ -382,6 +402,7 @@ func (a *API) RollbackStoredSecret(w http.ResponseWriter, r *http.Request) {
 		CreatedBy:     requestActor(r),
 		Comment:       comment,
 		ExpectVersion: s.CurrentVersion,
+		HistoryDepth:  a.secretHistoryDepth,
 	})
 	if err != nil {
 		if err == database.ErrSecretVersionConflict {
@@ -396,8 +417,11 @@ func (a *API) RollbackStoredSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metrics.SecretStoreOps.Inc("rollback", metrics.ResultSuccess)
-	a.recordEvent(r, audit.ActionSecretRollback, family, s.Name, audit.ResultSuccess,
-		fmt.Sprintf("id=%s from_version=%d new_version=%d", s.ID, req.Version, updated.CurrentVersion))
+	rollbackDetail := fmt.Sprintf("id=%s from_version=%d new_version=%d", s.ID, req.Version, updated.CurrentVersion)
+	if pruned > 0 {
+		rollbackDetail += fmt.Sprintf(" pruned_versions=%d history_depth=%d", pruned, a.secretHistoryDepth)
+	}
+	a.recordEvent(r, audit.ActionSecretRollback, family, s.Name, audit.ResultSuccess, rollbackDetail)
 	writeJSON(w, http.StatusOK, storedSecretView(updated, false))
 }
 

@@ -1908,8 +1908,14 @@ type StoredSecret struct {
 	// RotateEveryDays is the optional rotation-reminder period: the lifecycle
 	// monitor flags the secret once more than this many days have passed since
 	// its value last changed. Zero disables the reminder.
-	RotateEveryDays int       `json:"rotate_every_days,omitempty" db:"rotate_every_days"`
-	CreatedAt       time.Time `json:"created_at" db:"created_at"`
+	RotateEveryDays int `json:"rotate_every_days,omitempty" db:"rotate_every_days"`
+	// Labels are free-form operator metadata (owner, environment, system,
+	// ticket) carried on the secret and echoed into lifecycle notifications, so
+	// a "rotation due" alert can be routed without a second lookup. Labels are
+	// descriptive only: nothing authorizes off them, so they are safe to show
+	// in a notification body. They are not secret — never put a value here.
+	Labels    map[string]string `json:"labels,omitempty" db:"labels"`
+	CreatedAt time.Time         `json:"created_at" db:"created_at"`
 	// UpdatedAt advances on every envelope rewrite (each put and each re-wrap).
 	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
 	// ValueChangedAt advances only when the secret's VALUE changes (put or

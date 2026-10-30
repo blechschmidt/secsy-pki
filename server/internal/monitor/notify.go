@@ -129,8 +129,8 @@ func (s *LogSink) Notify(_ context.Context, n Notification) error {
 			m.LogName, m.Serial, m.CAID, m.Reason)
 	}
 	for _, w := range n.SecretWarnings {
-		s.logger.Printf("secret-lifecycle: [%s] %s tenant=%s name=%q id=%s version=%d: %s",
-			w.Severity, w.State, w.TenantID, w.Name, w.ID, w.CurrentVersion, w.Detail)
+		s.logger.Printf("secret-lifecycle: [%s] %s tenant=%s name=%q id=%s version=%d:%s %s",
+			w.Severity, w.State, w.TenantID, w.Name, w.ID, w.CurrentVersion, formatLabels(w.Labels), w.Detail)
 	}
 	if len(n.Warnings) == 0 && len(n.Renewed) == 0 {
 		return nil

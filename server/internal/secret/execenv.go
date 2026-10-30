@@ -93,10 +93,21 @@ func ParseSecretRef(ref string) (name string, version int, err error) {
 // ParseSecretEnv parses a CLI -secret argument: "ref" or "ref:VAR".
 func ParseSecretEnv(s string) (SecretEnv, error) {
 	ref, varName := s, ""
-	if i := strings.LastIndex(s, ":"); i >= 0 {
+	// Either separator binds the reference to a variable name: "name=VAR" is
+	// the form the env-var world expects, "name:VAR" the one this flag
+	// shipped with. ":" takes precedence when both appear, so adding "="
+	// cannot change how any argument that already parsed is read — in
+	// particular "db:DB_PASS=EVIL" stays an error rather than quietly
+	// becoming a binding of a secret named "db:DB_PASS".
+	sep := strings.LastIndex(s, ":")
+	if sep < 0 {
+		sep = strings.LastIndex(s, "=")
+	}
+	if i := sep; i >= 0 {
 		ref, varName = s[:i], s[i+1:]
 		if !envVarNameRe.MatchString(varName) {
-			return SecretEnv{}, fmt.Errorf("secret: invalid environment variable name %q in -secret %q", varName, s)
+			return SecretEnv{}, fmt.Errorf("secret: invalid environment variable name %q in -secret %q "+
+				"(want NAME[@VERSION][:VAR] or NAME[@VERSION]=VAR)", varName, s)
 		}
 	}
 	if _, _, err := ParseSecretRef(ref); err != nil {

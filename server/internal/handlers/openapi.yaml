@@ -3923,6 +3923,241 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+
+  # ---------------------------------------------------------------------------
+  # Stored secrets: the named-secret registry and its value lifecycle
+  # (Tasks 63/72). A stored secret holds only the opaque envelope; every put
+  # appends an immutable version, and KEK rotation re-wraps retained history
+  # so an old version stays decryptable.
+  # ---------------------------------------------------------------------------
+  /api/secret/store:
+    post:
+      operationId: storeSecret
+      tags: [Secrets]
+      summary: Encrypt and store a named secret
+      description: >-
+        Seal a plaintext under the tenant's active KEK and persist the envelope
+        under a tenant-unique name, creating version 1 of its value history.
+        Only the envelope is stored — never the plaintext. An optional TTL and
+        rotation period arm the lifecycle reminders surfaced by
+        /api/secret/lifecycle and the monitor's notification sinks. Requires the
+        secret:encrypt capability on the tenant.
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StoreSecretRequest" }
+      responses:
+        "201":
+          description: The stored secret's metadata.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoredSecret" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: A secret with that name already exists in the tenant.
+    get:
+      operationId: listStoredSecrets
+      tags: [Secrets]
+      summary: List the tenant's stored secrets
+      description: >-
+        Return every stored secret in the tenant as metadata only — the
+        envelopes are omitted. Requires the secret:decrypt capability.
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
+        - name: name
+          in: query
+          required: false
+          schema: { type: string }
+          description: >-
+            Return just the secret with this tenant-unique name, or an empty
+            list when none matches — the lookup that turns a name into an id.
+      responses:
+        "200":
+          description: The tenant's stored secrets.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoredSecretList" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/secret/store/{id}:
+    get:
+      operationId: getStoredSecret
+      tags: [Secrets]
+      summary: Get a stored secret including its envelope
+      description: >-
+        Return one stored secret with its current ciphertext envelope.
+        Decrypting the envelope still requires the HSM-held KEK via
+        /api/secret/decrypt. Requires the secret:decrypt capability.
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
+        - $ref: "#/components/parameters/StoredSecretID"
+      responses:
+        "200":
+          description: The stored secret and its envelope.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoredSecret" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      operationId: putStoredSecret
+      tags: [Secrets]
+      summary: Write a new value version
+      description: >-
+        Seal a new plaintext and append it as the next version of an existing
+        stored secret. History is never rewritten. When
+        secret.version_history_depth is configured, versions older than the
+        retained depth are pruned in the same transaction and the audit event
+        records how many were destroyed. Requires the secret:encrypt capability.
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
+        - $ref: "#/components/parameters/StoredSecretID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PutSecretRequest" }
+      responses:
+        "200":
+          description: The secret's metadata at its new version.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoredSecret" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: >-
+            The secret was modified concurrently (expect_version lost the
+            compare-and-swap); re-read and retry.
+    delete:
+      operationId: deleteStoredSecret
+      tags: [Secrets]
+      summary: Delete a stored secret and its whole value history
+      description: >-
+        Remove the secret and every version of its value history. This destroys
+        the only copy of that ciphertext and cannot be undone. Requires the
+        secret:encrypt capability.
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
+        - $ref: "#/components/parameters/StoredSecretID"
+      responses:
+        "204":
+          description: Deleted.
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/secret/store/{id}/versions:
+    get:
+      operationId: listStoredSecretVersions
+      tags: [Secrets]
+      summary: List a stored secret's value history
+      description: >-
+        Return the retained version history, newest first, as metadata only
+        (envelopes omitted). Versions pruned by the retention depth are absent.
+        Requires the secret:decrypt capability.
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
+        - $ref: "#/components/parameters/StoredSecretID"
+      responses:
+        "200":
+          description: The retained value history.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoredSecretVersionList" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/secret/store/{id}/versions/{version}:
+    get:
+      operationId: getStoredSecretVersion
+      tags: [Secrets]
+      summary: Get one value-history entry including its envelope
+      description: >-
+        Return one historical version with its ciphertext envelope; decrypting
+        it still requires the HSM-held KEK via /api/secret/decrypt. Because this
+        is the only way to obtain a value the secret no longer holds, every call
+        — including a denial or a miss — emits a secret.version_read audit
+        event. Requires the secret:decrypt capability.
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
+        - $ref: "#/components/parameters/StoredSecretID"
+        - name: version
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+          description: The value-history version number.
+      responses:
+        "200":
+          description: The version and its envelope.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoredSecretVersion" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: No such secret, or that version is not retained.
+
+  /api/secret/store/{id}/rollback:
+    post:
+      operationId: rollbackStoredSecret
+      tags: [Secrets]
+      summary: Make an older value current again
+      description: >-
+        Re-activate a historical value by appending its envelope as a new
+        version — history is never rewritten. The ciphertext is copied verbatim,
+        so no plaintext is handled and the HSM is not needed; the call is
+        refused when the target envelope sits on a retired KEK version, which
+        would make the current value undecryptable. Requires the secret:encrypt
+        capability.
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
+        - $ref: "#/components/parameters/StoredSecretID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RollbackSecretRequest" }
+      responses:
+        "200":
+          description: The secret's metadata at its new version.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoredSecret" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404":
+          description: No such secret, or that version is not retained.
+        "409":
+          description: >-
+            The target version is wrapped under a retired KEK, or the secret was
+            modified concurrently.
+
+  /api/secret/lifecycle:
+    get:
+      operationId: getSecretLifecycleReport
+      tags: [Secrets]
+      summary: Report stored secrets due for TTL or rotation attention
+      description: >-
+        Classify the tenant's scheduled secrets against the monitor's
+        warning/critical windows and return those due — the same findings the
+        monitor pushes to its notification sinks as "secret rotation due".
+        Expiry is an operational reminder: an expired secret still decrypts.
+        Requires the secret:decrypt capability.
+      parameters:
+        - $ref: "#/components/parameters/TenantHeader"
+      responses:
+        "200":
+          description: The secrets currently due.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecretLifecycleReport" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   # ---------------------------------------------------------------------------
   # HSM
   # ---------------------------------------------------------------------------
@@ -4660,6 +4895,12 @@ components:
       in: path
       required: true
       description: CA / signing-key id.
+      schema: { type: string }
+    StoredSecretID:
+      name: id
+      in: path
+      required: true
+      description: The stored secret's id (as returned by POST /api/secret/store).
       schema: { type: string }
     GrantResource:
       name: resource
@@ -7861,6 +8102,187 @@ components:
           type: string
           enum: [sha256, sha384, sha512]
           description: Message hash; empty selects the algorithm's default (ignored for ed25519).
+
+    # --- Stored secrets and their value lifecycle (Tasks 63/72) -------------
+    StoredSecret:
+      type: object
+      description: >-
+        A named secret's metadata. The plaintext is never stored and never
+        returned; envelope, when present, is the opaque ciphertext whose data
+        key only the HSM-held KEK can unwrap.
+      properties:
+        id: { type: string }
+        name: { type: string, description: Tenant-unique name. }
+        tenant_id: { type: string }
+        kek_family: { type: string, description: The rotation family that seals this secret. }
+        kek_label: { type: string, description: The KEK label currently wrapping the data key. }
+        kek_version: { type: integer, description: The KEK rotation version currently wrapping the data key. }
+        context_bound:
+          type: boolean
+          description: >-
+            Decryption requires the caller-supplied encryption context, which is
+            deliberately not stored.
+        escrowed: { type: boolean, description: The envelope carries an M-of-N recovery block. }
+        current_version: { type: integer, description: The value-history version the envelope corresponds to. }
+        expires_at:
+          type: string
+          format: date-time
+          description: >-
+            Optional TTL deadline. Past it the secret reports as expired, but
+            decryption still works — expiry is an operational reminder, not a
+            cryptographic revocation.
+        rotate_every_days:
+          type: integer
+          description: Rotation-reminder period in days; 0 disables the reminder.
+        labels:
+          type: object
+          additionalProperties: { type: string }
+          description: >-
+            Free-form operator metadata (owner, environment, ticket), echoed
+            into lifecycle notifications for routing. Descriptive only —
+            nothing authorizes off labels, and they must never hold a value.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time, description: Advances on every envelope rewrite, including a KEK re-wrap. }
+        value_changed_at:
+          type: string
+          format: date-time
+          description: >-
+            Advances only when the VALUE changes (put or rollback), never on a
+            re-wrap — the reference point for rotation reminders, so a KEK
+            migration cannot mask an overdue rotation.
+        envelope:
+          description: The opaque ciphertext envelope; present only on a single-secret read.
+
+    StoredSecretList:
+      type: object
+      properties:
+        secrets:
+          type: array
+          items: { $ref: "#/components/schemas/StoredSecret" }
+
+    StoreSecretRequest:
+      type: object
+      required: [name, plaintext]
+      properties:
+        name: { type: string, description: Tenant-unique name for the new secret. }
+        plaintext: { type: string, description: base64-encoded plaintext to seal. }
+        context:
+          type: string
+          description: >-
+            Optional base64 encryption context bound to the ciphertext. It is
+            not stored and must be supplied verbatim to decrypt.
+        escrow:
+          type: boolean
+          description: Additionally escrow the data key to the configured M-of-N recovery agents.
+        ttl_days: { type: integer, description: When > 0, set the secret's expiry to now + ttl_days. }
+        rotate_every_days: { type: integer, description: When > 0, arm the rotation reminder at this period. }
+        comment: { type: string, description: Annotates version 1 in the value history. }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+          description: Operator metadata. Descriptive only — never put a value here.
+
+    PutSecretRequest:
+      type: object
+      required: [plaintext]
+      description: >-
+        Append a new value version. ttl_days, rotate_every_days and labels are
+        tri-state: omit to keep what is stored, send a value to replace it
+        (ttl_days 0 clears the TTL, an empty labels object clears the labels).
+      properties:
+        plaintext: { type: string, description: base64-encoded plaintext to seal. }
+        context: { type: string, description: Optional base64 encryption context (not stored). }
+        escrow: { type: boolean, description: Escrow this version's data key to the recovery agents. }
+        ttl_days: { type: integer, description: Expiry TTL in days; 0 clears it. }
+        rotate_every_days: { type: integer, description: Rotation-reminder period in days; 0 clears it. }
+        comment: { type: string, description: Free-form note recorded on the new version. }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+          description: Replaces all labels when present; an empty object clears them.
+        expect_version:
+          type: integer
+          description: >-
+            Compare-and-swap guard: the put applies only while the secret is
+            still at this version. 0 means "latest".
+
+    StoredSecretVersion:
+      type: object
+      description: >-
+        One immutable entry in a stored secret's value history. Version numbers
+        start at 1 and only grow; a rollback appends a new entry rather than
+        rewriting history.
+      properties:
+        secret_id: { type: string }
+        version: { type: integer }
+        current: { type: boolean, description: Whether this entry is the secret's current value. }
+        kek_family: { type: string }
+        kek_label:
+          type: string
+          description: >-
+            The KEK label wrapping this entry. KEK rotation re-wraps retained
+            history, so a retained version stays decryptable however many
+            times the KEK has rotated since it was written.
+        kek_version: { type: integer }
+        context_bound: { type: boolean }
+        escrowed: { type: boolean }
+        created_by: { type: string, description: The operator or API principal that wrote the version. }
+        comment: { type: string }
+        created_at: { type: string, format: date-time }
+        envelope:
+          description: The version's ciphertext envelope; present only on the point read.
+
+    StoredSecretVersionList:
+      type: object
+      properties:
+        secret_id: { type: string }
+        name: { type: string }
+        current_version: { type: integer }
+        versions:
+          type: array
+          items: { $ref: "#/components/schemas/StoredSecretVersion" }
+
+    RollbackSecretRequest:
+      type: object
+      required: [version]
+      properties:
+        version: { type: integer, minimum: 1, description: The history entry whose value becomes current again. }
+        comment:
+          type: string
+          description: >-
+            Free-form note for the appended version; defaults to
+            "rollback to version N".
+
+    SecretLifecycleItem:
+      type: object
+      description: One stored secret due for TTL or rotation attention. Metadata only — never an envelope or plaintext.
+      properties:
+        tenant_id: { type: string }
+        id: { type: string }
+        name: { type: string }
+        state:
+          type: string
+          enum: [expiring, expired, rotation_due]
+          description: Why the secret is due.
+        severity:
+          type: string
+          enum: [ok, warning, critical, expired]
+        current_version: { type: integer }
+        expires_at: { type: string, format: date-time, description: Set for TTL findings. }
+        rotation_due_at: { type: string, format: date-time, description: Set for rotation findings. }
+        detail: { type: string, description: Human-readable summary of the finding. }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+          description: The secret's operator metadata, for routing the notification.
+
+    SecretLifecycleReport:
+      type: object
+      properties:
+        generated_at: { type: string, format: date-time, description: When the report was computed. }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/SecretLifecycleItem" }
 
     HSMInfo:
       type: object

@@ -230,6 +230,48 @@ func TestParseSecretEnv(t *testing.T) {
 // the FIRST '=' so values that legitimately contain '=' (base64, DSNs) survive
 // intact, and the name half is held to the portable charset so it cannot carry a
 // second assignment.
+// TestParseSecretEnvAcceptsEitherSeparator pins both binding forms: "=" (what
+// the env-var world expects, and what the documented interface uses) and ":"
+// (what the flag originally shipped with). Dropping either silently changes a
+// "name=VAR" argument into a lookup for a secret literally called "name=VAR".
+func TestParseSecretEnvAcceptsEitherSeparator(t *testing.T) {
+	for _, tc := range []struct {
+		in       string
+		wantRef  string
+		wantVar  string
+		wantFail bool
+	}{
+		{in: "db-password=DB_PASS", wantRef: "db-password", wantVar: "DB_PASS"},
+		{in: "db-password:DB_PASS", wantRef: "db-password", wantVar: "DB_PASS"},
+		{in: "db-password@2=DB_PASS", wantRef: "db-password@2", wantVar: "DB_PASS"},
+		{in: "db-password@2:DB_PASS", wantRef: "db-password@2", wantVar: "DB_PASS"},
+		// No separator: the variable name is derived from the secret name.
+		{in: "db-password", wantRef: "db-password", wantVar: ""},
+		// The bound name must still be a portable env-var name.
+		{in: "db-password=not-a-var", wantFail: true},
+		{in: "db-password=", wantFail: true},
+		// ":" wins when both appear, so adding "=" support did not loosen
+		// this long-standing rejection.
+		{in: "db:DB_PASS=EVIL", wantFail: true},
+	} {
+		got, err := ParseSecretEnv(tc.in)
+		if tc.wantFail {
+			if err == nil {
+				t.Errorf("ParseSecretEnv(%q) = %+v, want an error", tc.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseSecretEnv(%q): %v", tc.in, err)
+			continue
+		}
+		if got.Ref != tc.wantRef || got.Var != tc.wantVar {
+			t.Errorf("ParseSecretEnv(%q) = ref %q var %q, want ref %q var %q",
+				tc.in, got.Ref, got.Var, tc.wantRef, tc.wantVar)
+		}
+	}
+}
+
 func TestParseEnvTemplate(t *testing.T) {
 	cases := []struct {
 		name      string

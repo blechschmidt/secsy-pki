@@ -427,10 +427,11 @@ func cmdListSecrets(cfg *config.Config, args []string) error {
 		fmt.Printf("No stored secrets in tenant %q.\n", *tenant)
 		return nil
 	}
-	fmt.Printf("%-36s %-24s %-24s %-4s %-7s %-7s\n", "ID", "NAME", "KEK LABEL", "VER", "CONTEXT", "ESCROW")
-	for _, s := range secrets {
-		fmt.Printf("%-36s %-24s %-24s %-4d %-7v %-7v\n",
-			s.ID, s.Name, s.KEKLabel, s.KEKVersion, s.ContextBound, s.Escrowed)
+	fmt.Printf("%-36s %-24s %-24s %-4s %-7s %-7s %s\n", "ID", "NAME", "KEK LABEL", "VER", "CONTEXT", "ESCROW", "LABELS")
+	for i := range secrets {
+		s := &secrets[i]
+		fmt.Printf("%-36s %-24s %-24s %-4d %-7v %-7v%s\n",
+			s.ID, s.Name, s.KEKLabel, s.KEKVersion, s.ContextBound, s.Escrowed, formatSecretLabels(s.Labels))
 	}
 	return nil
 }
@@ -442,6 +443,7 @@ type storeSecretSpec struct {
 	rotateEveryDays int
 	operator        string
 	comment         string
+	labels          map[string]string
 }
 
 // storeEncryptedSecret persists an envelope produced by cmdEncrypt -store or
@@ -458,6 +460,7 @@ func storeEncryptedSecret(db *database.DB, tenantID, name, family string, ring *
 		ContextBound:    contextBound,
 		Escrowed:        escrowed,
 		RotateEveryDays: spec.rotateEveryDays,
+		Labels:          spec.labels,
 	}
 	if spec.ttlDays > 0 {
 		exp := time.Now().UTC().AddDate(0, 0, spec.ttlDays)
