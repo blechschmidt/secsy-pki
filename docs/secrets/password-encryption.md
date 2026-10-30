@@ -186,6 +186,12 @@ $ secsy-secret decrypt -in s.json -context 'tenant=acme'
 # Inspect the configured KEK
 $ secsy-secret kek-info
 
+# KEK rotation lifecycle (see "KEK rotation and DEK re-wrap" below)
+$ secsy-secret kek-versions                      # lineage + per-version secret counts
+$ secsy-secret rotate-kek                        # generate the next version, make it active
+$ secsy-secret rewrap -all                       # migrate stored secrets onto it
+$ secsy-secret retire-kek -version 1             # withdraw the drained version
+
 # Named HSM-backed signing keys (sign / verify over arbitrary data)
 $ secsy-secret signing-key create -name app-signer -algorithm ecdsa-p256
 $ secsy-secret signing-key list
@@ -220,6 +226,10 @@ configured.
 | `POST /api/secret/signing-keys/{name}/verify` | Verify a signature               |
 | `POST /api/secret/transform/encode` | Format-preserving encrypt / tokenize     |
 | `POST /api/secret/transform/decode` | Invert a transform (detokenize)          |
+| `GET  /api/secret/kek/status`  | KEK rotation posture (lineage + secrets per version) |
+| `POST /api/secret/kek/rotate`  | Generate the next KEK version and make it active |
+| `POST /api/secret/rewrap`      | Re-wrap stored secrets onto the active version |
+| `POST /api/secret/kek/retire`  | Withdraw a superseded KEK version             |
 
 `encrypt` request / response:
 
@@ -491,6 +501,108 @@ $ secsy-secret transform encode -template account -value ACCT12345 -tweak "$(pri
 
 Both directions count against the tenant's daily secret-op quota. gRPC exposes
 the same operations as `SecretService.TransformEncode` / `TransformDecode`.
+
+## KEK rotation and DEK re-wrap
+
+The KEK is the one key in this design that never changes by itself: every stored
+envelope names the key that can unwrap its data key, so replacing that key in
+place would strand all existing ciphertext. Rotation is therefore an explicit,
+three-step migration with an overlap window, mirroring the
+[dual-chain overlap](../ca/rotation.md) used for CA signing keys.
+
+### Versioned KEK families
+
+A **family** is the lineage of HSM keys behind one logical wrapping key. The
+family name is the configured `secret.kek_label` (or a tenant's). Version 1 is
+the key under that bare label; every later version *N* lives under
+`<family>-vN` — **its own `CKA_LABEL`**, because a duplicate label makes PKCS#11
+key lookup ambiguous. Each envelope header records both the label and the
+version that currently wraps its DEK:
+
+```jsonc
+{ "kek_label": "secsy-kek-v2", "kek_version": 2, "wrapped_dek": "…", … }
+```
+
+Each version is `active`, `retiring`, or `retired`:
+
+| Status     | Seals new envelopes | Opens existing envelopes |
+| ---------- | ------------------- | ------------------------ |
+| `active`   | yes                 | yes                      |
+| `retiring` | no                  | **yes** (overlap window) |
+| `retired`  | no                  | no — fail-closed         |
+
+### The three steps
+
+```console
+# 1. Rotate: generate the next version in the HSM and make it active.
+#    Nothing is re-encrypted; the old version becomes "retiring".
+$ secsy-secret rotate-kek -key-type rsa-4096
+
+# 2. Re-wrap: unwrap each DEK under its old KEK and immediately re-wrap it
+#    under the active one. Run it fleet-wide or for individual secrets.
+$ secsy-secret rewrap -all
+$ secsy-secret rewrap -id <secret-id>
+$ secsy-secret rewrap -in envelope.json      # a standalone envelope file
+
+# 3. Retire: withdraw the drained version. Refused while any stored secret
+#    still depends on it, unless you pass -force.
+$ secsy-secret retire-kek -version 1
+
+# At any point: where does the migration stand?
+$ secsy-secret kek-versions
+```
+
+Between steps 1 and 3 the family runs a **dual-KEK decrypt window**: reads work
+for both versions, so rotation needs no downtime and no flag day. Re-wrapping is
+resumable — re-running it retries only what is left, and concurrent writers are
+reported as `conflicts` rather than silently overwritten.
+
+### What re-wrap does and does not touch
+
+Re-wrap rewrites **only** the wrapped data key:
+
+- The **data ciphertext, nonce, and AES-GCM tag are byte-identical** afterwards.
+  The DEK itself is unchanged, so the bulk data is never re-encrypted — a re-wrap
+  costs one HSM unwrap plus one public-key wrap per secret, regardless of
+  plaintext size.
+- Because the DEK is unchanged, existing **M-of-N escrow shares stay valid**: an
+  escrowed secret remains recoverable by its agent quorum across rotation, and
+  escrow is still the break-glass path for ciphertext stranded on a retired
+  version. See [key escrow](#key-escrow-and-recovery-m-of-n-dual-control).
+- The DEK is **never exposed outside the process**: it is unwrapped on the token
+  via `C_Decrypt`, re-wrapped immediately, and zeroized — exactly as on an
+  ordinary decrypt. No plaintext DEK is written to disk, logged, or returned by
+  any endpoint.
+
+Using the [post-quantum hybrid mode](#post-quantum-hybrid-mode-ml-kem-1024-harvest-now-decrypt-later-resistance)?
+Run `secsy-secret pqc-reseal` after a classical rotation and before retiring the
+old version, so the ML-KEM decapsulation key is re-sealed under the new KEK.
+
+### RBAC and audit
+
+Rotation is key management, not day-to-day use: all four operations require the
+**`secret:rotate`** capability (admin-only by default) on the owning tenant, and
+`kek/rotate` + `kek/retire` additionally sit behind the
+[WebAuthn step-up](../security/authentication.md#3-webauthn--passkey-step-up) gate and can be put behind a
+[four-eyes approval](../security/approvals.md) (`secret.kek_rotate`). Every
+attempt — success *and* failure — appends to the hash-chained audit log as
+`secret.kek_rotate`, `secret.rewrap`, or `secret.kek_retire`.
+
+### Monitoring the migration
+
+Four metrics track rotation posture; the expiry monitor refreshes the gauges on
+every scan tick, so they stay current between explicit operations:
+
+| Metric                              | Meaning                                       |
+| ----------------------------------- | --------------------------------------------- |
+| `secsy_secret_on_old_kek{family}`   | Secrets not yet on the active version — the number a re-wrap drains to zero |
+| `secsy_secret_kek_active_version{family}` | The family's current active version     |
+| `secsy_secret_rewrap_pending{family}` | Remaining secrets in a running re-wrap batch |
+| `secsy_secret_rewrap_total{result}`  | Re-wraps by result (`ok`/`conflict`/`error`) |
+
+A family with secrets still on an old version logs a re-wrap reminder each tick;
+secrets found on a **retired** version escalate to `CRITICAL`, since those are
+undecryptable until the version is reinstated or they are recovered from escrow.
 
 ## Key escrow and recovery (M-of-N, dual control)
 
