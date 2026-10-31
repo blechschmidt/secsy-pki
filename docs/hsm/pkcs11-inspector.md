@@ -183,7 +183,7 @@ by class: CKO_PRIVATE_KEY=1 CKO_PUBLIC_KEY=1
   CKA_CLASS                0x00000000  class       8    CKO_PRIVATE_KEY (0x3)
   CKA_TOKEN                0x00000001  bool        1    true
   CKA_PRIVATE              0x00000002  bool        1    true
-  CKA_LABEL                0x00000003  string      8    ca-root
+  CKA_LABEL                0x00000003  string      7    ca-root
   CKA_KEY_TYPE             0x00000100  key-type    8    CKK_EC (0x3)
   CKA_ID                   0x00000102  bytes       2    0x1234
   CKA_ALLOWED_MECHANISMS   0x40000600  mechanisms  48   CKM_ECDSA, CKM_ECDSA_SHA1, CKM_ECDSA_SHA256, …
