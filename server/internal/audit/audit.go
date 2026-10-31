@@ -325,6 +325,13 @@ const (
 	// established. Like the key attestation above, ResultError covers both an
 	// unreachable device and an attestation that failed the policy.
 	ActionHSMDeviceAttestation = "hsm.device_attestation"
+	// ActionHSMInspect records a raw PKCS#11 inspection (Task 218): the token's
+	// object table and every attribute of it were read through
+	// GET /api/pkcs11/objects. Detail carries the object count per token, so an
+	// access review can see who enumerated the device, and a later reader can
+	// tell whether it gained objects between two inspections. ResultDenied is
+	// recorded by the endpoint when the caller lacks hsm:manage.
+	ActionHSMInspect = "hsm.inspect"
 	// Key-ceremony, backup, and disaster-recovery lifecycle operations. A
 	// ceremony records its start, each operator's M-of-N confirmation, and its
 	// completion (or abort) alongside the underlying ca.init_root /

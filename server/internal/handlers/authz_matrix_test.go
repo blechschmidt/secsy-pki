@@ -545,6 +545,14 @@ func authzMatrix() []rc {
 		platCAMg("POST", "/api/ers/renew", "/api/ers/renew", `{}`),
 		hsmMg("GET", "/api/inventory/keys", "/api/inventory/keys", ""),
 
+		// Raw PKCS#11 inspection (Task 218): platform hsm:manage, like every other
+		// device-administration route — the object dump names every object on the
+		// token, including the ones no CA references. The harness's provider has no
+		// PKCS#11 view, so a capable caller gets 501 rather than data, which the
+		// reachability probe accepts; the row's job is that a tenant admin is 403.
+		hsmMg("GET", "/api/pkcs11/module", "/api/pkcs11/module", ""),
+		hsmMg("GET", "/api/pkcs11/objects", "/api/pkcs11/objects", ""),
+
 		// Compromised-key blocklist (Task 120/198): read is canRead, mutation is
 		// platform ca:configure. The path form is the hex digest (path-safe); the
 		// handler canonicalizes it.

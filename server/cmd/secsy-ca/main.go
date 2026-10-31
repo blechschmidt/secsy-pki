@@ -389,6 +389,8 @@ func run(args []string) error {
 		return cmdSVIDBundle(db, mgr, cfg, cmdArgs)
 	case "inventory":
 		return cmdInventory(db, provider, cmdArgs)
+	case "pkcs11":
+		return cmdPKCS11(provider, cmdArgs)
 	case "ceremony":
 		return cmdCeremony(db, mgr, provider, cmdArgs)
 	case "rotate-intermediate":
@@ -537,6 +539,8 @@ Commands:
   cmp                 CMP (RFC 9483) client: enroll (ir) against a /cmp endpoint
   grpc                gRPC client: issue/renew/revoke/status over the PKIService API
   inventory           List keys held by the key provider (HSM/software)
+  pkcs11              Raw PKCS#11 view of the token: module/slot/token info,
+                      mechanisms, and every object with all of its attributes
   ceremony            Run an M-of-N confirmed root/intermediate key ceremony
   rotate-intermediate Rotate an intermediate CA signing key (dual-chain overlap)
   rotation-status     Show an intermediate CA's key-rollover / overlap state

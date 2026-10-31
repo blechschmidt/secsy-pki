@@ -34,6 +34,7 @@ your life.
 - [18. Machine callers](#18-machine-callers)
 - [19. Compliance evidence](#19-compliance-evidence)
 - [20. Day-2 diagnostics](#20-day-2-diagnostics)
+- [21. What is actually on the token](#21-what-is-actually-on-the-token)
 - [Where to go next](#where-to-go-next)
 
 The screenshots are of a throwaway PKI belonging to an invented company,
@@ -637,6 +638,51 @@ and static-artifact publishing; all three are described in the
     finalizes only if nothing else is using the token. If you are running an
     older build, prefer `secsy-ca doctor` from a terminal: it runs in its own
     process and cannot reach the server's sessions.
+
+---
+
+## 21. What is actually on the token
+
+![The PKCS#11 inspector: a Module panel listing the SoftHSM module path, Cryptoki version 2.40, manufacturer SoftHSM, library "Implementation of PKCS11 2.6", flags 0x00000000 and 2 slots; a Token panel for the resolved token reading slot 717474821, CKA label secsy-shots, model SoftHSM v2, serial 5d31f6e62ac3cc05, hardware/firmware 2.6, flags 0x0000042D decoded to CKF_RNG CKF_LOGIN_REQUIRED CKF_USER_PIN_INITIALIZED CKF_RESTORE_KEY_NOT_NEEDED CKF_TOKEN_INITIALIZED, a PIN length of 4..255 and the token clock; and a Slots table listing both slots the module presents — the first badged IN USE with 70 mechanisms, the second an unlabelled token whose flags include CKF_SO_PIN_LOCKED.](../screenshots/22-pkcs11-module.png)
+
+Section 3 asked the key provider what it holds. **PKCS#11** asks the token, in
+Cryptoki's own words: `C_GetInfo`, every slot the module presents, the
+`CK_TOKEN_INFO` of the one this deployment resolved to, the mechanism list, and
+every object on it.
+
+The two views answer different questions, and the difference is the point of
+this page. The key inventory lists *the keys this PKI knows about*. This lists
+*everything there is* — including the second slot above, whose token is
+unlabelled and whose SO PIN is locked, which no inventory would ever have
+mentioned. That is what you need when a token selector matches nothing, when a
+key appears that nobody provisioned, or when the module turns out not to offer
+a mechanism the configuration assumes.
+
+The module half opens no session and performs no login, deliberately: an
+operator reaching for a slot list is very often one whose login does not work.
+
+![The Objects panel of the PKCS#11 inspector: class and label filters, a max-objects field set to 6, a "whole catalogue" checkbox, Load objects and Objects JSON buttons, a summary reading "token secsy-shots (serial 5d31f6e62ac3cc05), slot 717474821 — showing 3 of 6 object(s)" with class counts CKO_PRIVATE_KEY=3 and CKO_PUBLIC_KEY=3, an amber warning that the token holds more objects than were read, and the expanded attribute table of object 0x9 (CKO_PRIVATE_KEY northwind-root): CKA_CLASS, CKA_TOKEN, CKA_PRIVATE, CKA_LABEL, CKA_KEY_TYPE CKK_EC, CKA_SENSITIVE true, CKA_EXTRACTABLE false, CKA_NEVER_EXTRACTABLE true, CKA_EC_PARAMS decoded to "P-384 (secp384r1) [1.3.132.0.34]", two template rows badged NOT-READ, and the CKA_PRIVATE_EXPONENT, CKA_PRIME_1, CKA_PRIME_2, CKA_EXPONENT_1, CKA_EXPONENT_2, CKA_COEFFICIENT and CKA_VALUE rows badged WITHHELD with the reason "not requested: the value is private key material".](../screenshots/23-pkcs11-objects.png)
+
+**Objects** loads on a click rather than with the page, because it costs a
+device round trip per object — and, on a
+[force-audited YubiHSM](../hsm/audit-log.md), entries in the device's own log.
+Each row expands to the full attribute table, with every value decoded by its
+Cryptoki type: a curve OID becomes `P-384 (secp384r1)`, a certificate's
+`CKA_VALUE` becomes its subject and expiry, a modulus its bit length.
+
+Two kinds of row carry no value, and both are deliberate. **`WITHHELD`** marks
+an attribute whose value *is* private key material: the inspector does not ask
+for it. A correctly provisioned token would refuse anyway — and that refusal,
+`CKR_ATTRIBUTE_SENSITIVE`, is reported when it happens — but this page must not
+be the one path in the system that turns a mis-provisioned extractable key into
+a browser response. **`NOT-READ`** marks the `CK_ATTRIBUTE`-array attributes,
+which cannot be read without a caller-built template.
+
+What this page is *not* is proof. `CKA_EXTRACTABLE=false` is the module's
+answer over a session; the device-signed version of the same claim is
+[key attestation](../hsm/key-attestation.md), one tab to the left. Use PKCS#11
+to see what is there, and attestation to prove what it is. The full reference is
+[the raw PKCS#11 inspector](../hsm/pkcs11-inspector.md).
 
 ---
 

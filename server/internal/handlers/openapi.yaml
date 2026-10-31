@@ -4464,6 +4464,109 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
 
   # ---------------------------------------------------------------------------
+  # Raw PKCS#11 inspection (Task 218) — the token as Cryptoki describes it.
+  # Split by cost: the module view needs no session, the object dump costs a
+  # device round trip per object. Both are platform hsm:manage.
+  # ---------------------------------------------------------------------------
+  /api/pkcs11/module:
+    get:
+      operationId: inspectPKCS11Module
+      tags: [HSM]
+      summary: Raw PKCS#11 module, slot and token view
+      description: >
+        Reports C_GetInfo for the loaded module and, for every slot it presents
+        (not only the configured one), CK_SLOT_INFO, CK_TOKEN_INFO and the
+        mechanism list with each mechanism's key-size range and flags. Flags are
+        decoded to their CKF_ names. Opens no session and performs no login — on
+        purpose, since an operator reaching for a slot list is often one whose
+        login does not work (a PIN that no longer resolves, a token selector
+        matching nothing, a device that moved slots). The slot this deployment
+        resolved to is marked selected. Tokens is a list because a
+        high-availability set is several devices behind one provider. Changes
+        nothing. Requires platform hsm:manage.
+      parameters:
+        - name: mechanisms
+          in: query
+          schema: { type: string, enum: ["0", "false"] }
+          description: >
+            Set to 0 to omit the per-slot mechanism lists, which are the bulk of
+            the payload (SoftHSM reports ~180 mechanisms, a YubiHSM ~70) and cost
+            a C_GetMechanismInfo call each.
+      responses:
+        "200":
+          description: The module view, one entry per token behind the provider.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PKCS11Inspection" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501":
+          description: >-
+            The configured key provider has no PKCS#11 view — a software or
+            cloud-KMS backend has no slots, no CKA_* and no object handles.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/pkcs11/objects:
+    get:
+      operationId: inspectPKCS11Objects
+      tags: [HSM]
+      summary: Raw PKCS#11 object and attribute dump
+      description: >
+        Enumerates every object the token's authenticated session can see —
+        C_FindObjects with an empty template, so any class, including objects no
+        CA references — and reads, for each, every attribute the standard defines
+        for its class, decoded by its Cryptoki type (CK_BBOOL, CK_ULONG,
+        CK_MECHANISM_TYPE, a curve OID, a distinguished name, a certificate
+        summary). An attribute the token refuses is reported with the CKR_ name
+        of the refusal rather than as blank, because the refusal is itself
+        evidence: CKR_ATTRIBUTE_SENSITIVE on a CA key is the token asserting the
+        private value cannot be read.
+
+
+        Attributes whose value IS private key material — the RSA CRT factors, a
+        private exponent, the private scalar or secret-key bytes behind CKA_VALUE
+        — are never requested, and are reported with status "withheld". This
+        endpoint is not a key-export path.
+
+
+        Costs a device round trip per object and, on a force-audited YubiHSM,
+        device audit-log entries (the drain runs automatically afterwards).
+        Enumeration is capped; a token holding more objects reports truncated.
+        Changes nothing. Requires platform hsm:manage.
+      parameters:
+        - name: all
+          in: query
+          schema: { type: string, enum: ["1", "true"] }
+          description: >
+            Ask every object for every attribute in the catalogue rather than
+            only those the standard defines for its class, and keep the rows the
+            token reports as unsupported. The honest way to discover what a
+            particular module answers outside the standard; slower.
+        - name: max_objects
+          in: query
+          schema: { type: integer, minimum: 1 }
+          description: Cap on objects enumerated (default 500).
+        - name: max_value_bytes
+          in: query
+          schema: { type: integer, minimum: 1 }
+          description: >
+            Cap on one attribute value's hex rendering (default 2048). The
+            SHA-256 reported alongside is always over the whole value.
+      responses:
+        "200":
+          description: The object dump, one entry per token behind the provider.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PKCS11Inspection" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501":
+          description: The configured key provider has no PKCS#11 view.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ---------------------------------------------------------------------------
   # ACME directory (RFC 8555) — protocol endpoints authenticate via JWS.
   # ---------------------------------------------------------------------------
   /acme/directory:
@@ -5133,6 +5236,207 @@ components:
         problems: { type: array, items: { type: string } }
         warnings: { type: array, items: { type: string } }
         summary: { type: string }
+    PKCS11Inspection:
+      type: object
+      description: >
+        A raw Cryptoki view of the deployment's token(s). tokens is a list
+        because a high-availability set is several devices behind one provider,
+        and the point of the view is to tell them apart: replicas deliberately
+        share key labels, so only the member name and the token serial say which
+        device an object is on.
+      properties:
+        provider:
+          type: string
+          description: The configured key-provider backend name.
+        tokens:
+          type: array
+          items: { $ref: "#/components/schemas/PKCS11TokenView" }
+        all_attributes:
+          type: boolean
+          description: >
+            Whether the whole attribute catalogue was requested of every object.
+            When false, a missing attribute row means the token does not have it
+            (those rows are dropped as noise) rather than that it was withheld.
+    PKCS11TokenView:
+      type: object
+      properties:
+        token:
+          type: string
+          description: >
+            The member token's configured name in a high-availability set; absent
+            for a single-token deployment.
+        healthy:
+          type: boolean
+          description: >
+            Whether the HA layer currently has this token in rotation; absent for
+            a single-token deployment, which has no rotation.
+        module: { $ref: "#/components/schemas/PKCS11Module" }
+        objects: { $ref: "#/components/schemas/PKCS11ObjectSet" }
+        error:
+          type: string
+          description: >
+            A per-token failure. In an HA set one unreachable replica must not
+            blank the view of the others, so it becomes an error here rather than
+            a failed request.
+    PKCS11Flags:
+      type: object
+      description: >
+        A Cryptoki bit field with the CKF_ names set in it. Bits the name table
+        does not know are kept as hex rather than dropped. Note that Cryptoki
+        reuses bit values across namespaces: 0x2 is CKF_REMOVABLE_DEVICE on a
+        slot, CKF_WRITE_PROTECTED on a token and CKF_DECRYPT on a mechanism.
+      properties:
+        value: { type: integer }
+        hex: { type: string }
+        names:
+          type: array
+          items: { type: string }
+    PKCS11Module:
+      type: object
+      description: C_GetInfo plus every slot the module reports.
+      properties:
+        module_path: { type: string }
+        cryptoki_version: { type: string }
+        manufacturer_id: { type: string }
+        library_description: { type: string }
+        library_version: { type: string }
+        flags: { $ref: "#/components/schemas/PKCS11Flags" }
+        slots:
+          type: array
+          items: { $ref: "#/components/schemas/PKCS11Slot" }
+    PKCS11Slot:
+      type: object
+      description: CK_SLOT_INFO for one slot, with the token in it and its mechanisms.
+      properties:
+        slot_id: { type: integer }
+        description: { type: string }
+        manufacturer_id: { type: string }
+        flags: { $ref: "#/components/schemas/PKCS11Flags" }
+        hardware_version: { type: string }
+        firmware_version: { type: string }
+        token_present: { type: boolean }
+        selected:
+          type: boolean
+          description: >
+            Marks the slot this deployment's token selectors resolved to — the
+            one the CA actually signs on. A module may present several.
+        token: { $ref: "#/components/schemas/PKCS11Token" }
+        mechanisms:
+          type: array
+          items: { $ref: "#/components/schemas/PKCS11Mechanism" }
+        error:
+          type: string
+          description: >
+            A per-slot failure (a token that refuses C_GetTokenInfo, say), so one
+            bad slot does not fail the whole view.
+    PKCS11Token:
+      type: object
+      description: >
+        CK_TOKEN_INFO. The counts are strings because Cryptoki overloads them:
+        CK_UNAVAILABLE_INFORMATION and CK_EFFECTIVELY_INFINITE are sentinels, not
+        quantities — and CK_UNAVAILABLE_INFORMATION (~0) as a JSON number loses
+        precision in every JavaScript consumer.
+      properties:
+        label: { type: string }
+        manufacturer_id: { type: string }
+        model: { type: string }
+        serial_number: { type: string }
+        flags: { $ref: "#/components/schemas/PKCS11Flags" }
+        max_session_count: { type: string }
+        session_count: { type: string }
+        max_rw_session_count: { type: string }
+        rw_session_count: { type: string }
+        max_pin_len: { type: string }
+        min_pin_len: { type: string }
+        total_public_memory: { type: string }
+        free_public_memory: { type: string }
+        total_private_memory: { type: string }
+        free_private_memory: { type: string }
+        hardware_version: { type: string }
+        firmware_version: { type: string }
+        utc_time: { type: string }
+    PKCS11Mechanism:
+      type: object
+      description: One CK_MECHANISM_TYPE with its CK_MECHANISM_INFO.
+      properties:
+        type: { type: integer }
+        hex: { type: string }
+        name: { type: string, description: "The CKM_ name, or CKM_VENDOR_DEFINED+0x… for a vendor mechanism." }
+        min_key_size: { type: integer }
+        max_key_size: { type: integer }
+        flags: { $ref: "#/components/schemas/PKCS11Flags" }
+        error: { type: string }
+    PKCS11ObjectSet:
+      type: object
+      description: The result of enumerating one token's objects.
+      properties:
+        slot_id: { type: integer }
+        token_label: { type: string }
+        token_serial: { type: string }
+        objects:
+          type: array
+          items: { $ref: "#/components/schemas/PKCS11Object" }
+        truncated:
+          type: boolean
+          description: >
+            The token holds more objects than were read. An object missing from a
+            truncated list is NOT evidence that it is absent from the token.
+        counts:
+          type: object
+          additionalProperties: { type: integer }
+          description: Object count by CKO_ class name.
+    PKCS11Object:
+      type: object
+      description: >
+        One object on the token: its handle, the identity attributes promoted for
+        display, and every attribute read from it.
+      properties:
+        handle: { type: integer }
+        handle_hex: { type: string }
+        class: { type: integer }
+        class_name: { type: string }
+        label: { type: string, description: "CKA_LABEL, promoted so an object list is readable without expanding each row." }
+        id: { type: string, description: Hex CKA_ID. }
+        key_type: { type: string, description: The CKK_ or CKC_ name. }
+        size: { type: string, description: "C_GetObjectSize, when the module answers it (many decline)." }
+        attributes:
+          type: array
+          items: { $ref: "#/components/schemas/PKCS11Attribute" }
+    PKCS11Attribute:
+      type: object
+      description: One CK_ATTRIBUTE read — or deliberately not read — from one object.
+      properties:
+        type: { type: integer }
+        type_hex: { type: string }
+        name: { type: string, description: "The CKA_ name, or CKA_VENDOR_DEFINED+0x… for a vendor attribute." }
+        kind:
+          type: string
+          description: >
+            The attribute's Cryptoki type, which is what decides how its bytes
+            are read: the same four bytes are a CK_ULONG, a CK_MECHANISM_TYPE or
+            the start of a modulus depending only on which attribute they came
+            from.
+          enum: [bool, ulong, string, bytes, biginteger, date, class, key-type, cert-type, hw-feature, mechanism, mechanisms, der, template]
+        status:
+          type: string
+          description: >
+            present — the token returned a value. unavailable — the token
+            refused; reason carries the CKR_ name. withheld — the inspector did
+            not ask, because the value would be private key material. not-read —
+            the inspector cannot ask portably (a CK_ATTRIBUTE array attribute,
+            whose members are pointers the caller must supply).
+          enum: [present, unavailable, withheld, not-read]
+        length: { type: integer, description: The byte length the token returned for the value. }
+        value: { type: string, description: "The decoded rendering: \"true\", a decimal, a CKM_ name, a curve name, a distinguished name, a certificate summary." }
+        raw: { type: string, description: "Hex of the value's bytes, capped at max_value_bytes." }
+        raw_truncated: { type: boolean }
+        sha256:
+          type: string
+          description: >
+            SHA-256 over the WHOLE value (not the truncated prefix), so a
+            truncated modulus or certificate body can still be compared between
+            two tokens.
+        reason: { type: string, description: "Why a non-present status — a CKR_ name, or the policy." }
     HSMKeyAttestationResponse:
       type: object
       properties:

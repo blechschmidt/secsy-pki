@@ -748,6 +748,14 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("POST /api/lint", protected(http.HandlerFunc(a.LintCertificate)))
 	mux.Handle("GET /api/inventory/keys", protected(http.HandlerFunc(a.ListProviderKeys)))
 
+	// Raw PKCS#11 inspection (Task 218) — the token as Cryptoki describes it,
+	// behind the same platform hsm:manage gate as the rest of the device
+	// administration. The module view is session-free and cheap; the object dump
+	// costs device round trips per object, so the console asks for it separately
+	// rather than on page load.
+	mux.Handle("GET /api/pkcs11/module", protected(http.HandlerFunc(a.InspectPKCS11Module)))
+	mux.Handle("GET /api/pkcs11/objects", protected(http.HandlerFunc(a.InspectPKCS11Objects)))
+
 	// Compromised-key blocklist (Task 120) — the REST counterpart of
 	// `secsy-ca blocked-keys list|add|remove`. Reading is role-gated; adding and
 	// removing are platform ca:configure, since the list is deployment-global

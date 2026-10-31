@@ -425,6 +425,7 @@ function switchView(name) {
   if (name === 'ct') loadCT();
   if (name === 'cas') loadAuthorities();
   if (name === 'hsm') loadHSM();
+  if (name === 'pkcs11') loadPKCS11();
   if (name === 'ssh') loadSSH();
   if (name === 'signing') loadSigning();
   if (name === 'secrets' && secretServiceEnabled) loadSecretsPage();
@@ -2755,8 +2756,10 @@ $('hsmRefresh').onclick = loadHSM;
 
 // downloadAPI streams an authenticated download through the API helper, since a
 // bare <a href> would carry no Authorization header or session CSRF token.
-async function downloadAPI(path, filename, type) {
-  const msg = $('hsmMsg');
+async function downloadAPI(path, filename, type, msgID) {
+  // msgID lets a page other than the HSM one report its own download failures
+  // (the PKCS#11 inspector passes 'p11Msg'); it defaults to the HSM page's box.
+  const msg = $(msgID || 'hsmMsg');
   msg.className = 'notice hidden';
   try {
     const text = await api('GET', path, undefined, true);
@@ -2967,6 +2970,331 @@ $('hsmLogRefresh').onclick = async () => {
     tbody.innerHTML = `<tr><td colspan="7" class="muted">Unavailable (${escapeHTML(e.message)}).</td></tr>`;
   }
 };
+
+// ---- Raw PKCS#11 inspector (Task 218) ------------------------------------
+// The console counterpart of `secsy-ca pkcs11`: the module/slot/token view and
+// the object dump, straight from Cryptoki.
+//
+// Two endpoints, loaded separately on purpose. The module view is session-free
+// and cheap, so it loads with the page — and it is deliberately the half that
+// still works when the login does not (a PIN that no longer resolves, a token
+// selector matching nothing), which is exactly when an operator reaches for a
+// slot list. The object dump costs a device round trip per object, and on a
+// force-audited YubiHSM consumes entries in its 62-entry log, so it waits for a
+// click.
+//
+// p11Tokens holds one entry per token behind the provider: an HA set is several
+// devices sharing one set of key labels, so the view keeps them apart rather
+// than merging them.
+let p11Tokens = [];        // module views, one per token
+let p11ObjectTokens = [];  // object dumps, one per token (loaded on request)
+let p11Selected = 0;       // index into both
+
+async function loadPKCS11() {
+  const body = $('p11Body'), unavailable = $('p11Unavailable');
+  $('p11Msg').className = 'notice hidden';
+  try {
+    const res = await api('GET', '/api/pkcs11/module');
+    p11Tokens = res.tokens || [];
+    unavailable.classList.add('hidden');
+    body.classList.remove('hidden');
+  } catch (e) {
+    // 501 when the backend has no PKCS#11 view (software / cloud KMS), 403
+    // without hsm:manage, 500 when the module itself cannot be loaded.
+    p11Tokens = [];
+    body.classList.add('hidden');
+    unavailable.innerHTML = escapeHTML(e.message) +
+      '<div class="muted" style="margin-top:6px">A software or cloud-KMS deployment has no slots, no CKA_* and no object handles, ' +
+      'so there is nothing to inspect. Reading the token also needs the <code>hsm:manage</code> capability.</div>';
+    unavailable.classList.remove('hidden');
+    return;
+  }
+
+  // The token picker only earns its space in an HA set.
+  const pick = $('p11TokenPick');
+  if (p11Tokens.length > 1) {
+    $('p11Token').innerHTML = p11Tokens.map((t, i) => {
+      const health = t.healthy === false ? ' — UNHEALTHY' : '';
+      return `<option value="${i}">${escapeHTML(t.token || ('token ' + (i + 1)))}${health}</option>`;
+    }).join('');
+    $('p11Token').value = String(Math.min(p11Selected, p11Tokens.length - 1));
+    pick.classList.remove('hidden');
+  } else {
+    pick.classList.add('hidden');
+    p11Selected = 0;
+  }
+  renderPKCS11();
+}
+
+// p11Token returns the selected token's module view, or null.
+function p11Token() { return p11Tokens[p11Selected] || null; }
+
+function renderPKCS11() {
+  const view = p11Token();
+  if (!view) return;
+  if (view.error) {
+    const msg = $('p11Msg');
+    msg.className = 'notice err';
+    msg.textContent = `${view.token || 'token'}: ${view.error}`;
+  }
+  renderP11Module(view.module);
+  renderP11Slots(view.module);
+  renderP11MechanismSlots(view.module);
+  // The object dump belongs to the token it was read from; switching tokens
+  // clears it rather than showing one device's objects under another's name.
+  renderP11Objects();
+}
+
+// kv renders a definition-list-ish block: the same two-column shape the HSM
+// page uses, kept local so the inspector's many fields stay scannable.
+function p11KV(rows) {
+  return '<table style="margin:0">' + rows.map(([k, v]) =>
+    `<tr><td class="muted" style="width:45%;border:none;padding:3px 0">${escapeHTML(k)}</td>` +
+    `<td class="mono" style="border:none;padding:3px 0">${v}</td></tr>`).join('') + '</table>';
+}
+
+// p11Flags renders a Cryptoki bit field: the hex, then the CKF_ names set in it.
+function p11Flags(flags) {
+  if (!flags) return '<span class="muted">—</span>';
+  const names = (flags.names || []);
+  return `${escapeHTML(flags.hex || '')}` +
+    (names.length ? `<div class="muted" style="font-size:11px">${names.map(escapeHTML).join(' ')}</div>` : '');
+}
+
+function renderP11Module(mod) {
+  if (!mod) { $('p11Module').innerHTML = '<span class="muted">No module view.</span>'; return; }
+  $('p11Module').innerHTML = p11KV([
+    ['module path', escapeHTML(mod.module_path || '')],
+    ['Cryptoki version', escapeHTML(mod.cryptoki_version || '')],
+    ['manufacturer', escapeHTML(mod.manufacturer_id || '')],
+    ['library', escapeHTML(`${mod.library_description || ''} ${mod.library_version || ''}`)],
+    ['flags', p11Flags(mod.flags)],
+    ['slots', String((mod.slots || []).length)],
+  ]);
+
+  // The token panel describes the slot this deployment resolved to; when none
+  // matched, that silence is itself the finding.
+  const selected = (mod.slots || []).find(s => s.selected);
+  const el = $('p11TokenInfo');
+  if (!selected || !selected.token) {
+    el.innerHTML = '<span class="notice warn" style="display:block">No slot matches this deployment\'s token selectors' +
+      (selected ? ' — the selected slot holds no token.' : '.') +
+      ' Issuance cannot resolve a key until it does; compare the slot table below with <code>pkcs11.token_label</code> / <code>pkcs11.uri</code>.</span>';
+    return;
+  }
+  const t = selected.token;
+  el.innerHTML = p11KV([
+    ['slot', `${selected.slot_id}`],
+    ['CKA label', escapeHTML(t.label || '')],
+    ['model', escapeHTML(t.model || '')],
+    ['manufacturer', escapeHTML(t.manufacturer_id || '')],
+    ['serial number', `<b>${escapeHTML(t.serial_number || '')}</b>`],
+    ['hardware / firmware', escapeHTML(`${t.hardware_version || '?'} / ${t.firmware_version || '?'}`)],
+    ['flags', p11Flags(t.flags)],
+    ['sessions', escapeHTML(`${t.session_count} of ${t.max_session_count} (rw ${t.rw_session_count} of ${t.max_rw_session_count})`)],
+    ['PIN length', escapeHTML(`${t.min_pin_len}..${t.max_pin_len}`)],
+    ['public memory', escapeHTML(`${t.free_public_memory} free of ${t.total_public_memory}`)],
+    ['private memory', escapeHTML(`${t.free_private_memory} free of ${t.total_private_memory}`)],
+    ['token clock', escapeHTML(t.utc_time || '—')],
+  ]);
+}
+
+function renderP11Slots(mod) {
+  const rows = (mod && mod.slots) || [];
+  $('p11SlotRows').innerHTML = rows.length ? rows.map(s => {
+    const t = s.token;
+    return `<tr${s.selected ? ' style="background:rgba(76,154,255,.08)"' : ''}>
+      <td class="mono">${s.slot_id}${s.selected ? ' <span class="badge ok">in use</span>' : ''}</td>
+      <td>${escapeHTML(s.description || '')}<div class="muted" style="font-size:11px">${escapeHTML(s.manufacturer_id || '')} · hw ${escapeHTML(s.hardware_version || '?')} / fw ${escapeHTML(s.firmware_version || '?')}</div></td>
+      <td class="mono">${p11Flags(s.flags)}</td>
+      <td>${s.token_present ? escapeHTML(t ? (t.label || '(unlabelled)') : '(unreadable)') : '<span class="muted">no token</span>'}</td>
+      <td class="mono">${escapeHTML(t ? t.serial_number : '')}</td>
+      <td class="mono">${t ? p11Flags(t.flags) : '<span class="muted">—</span>'}</td>
+      <td>${(s.mechanisms || []).length || '<span class="muted">—</span>'}</td>
+    </tr>` + (s.error ? `<tr><td colspan="7" class="muted" style="color:var(--crit)">slot ${s.slot_id}: ${escapeHTML(s.error)}</td></tr>` : '');
+  }).join('') : '<tr><td colspan="7" class="muted">The module reports no slots.</td></tr>';
+}
+
+function renderP11MechanismSlots(mod) {
+  const slots = ((mod && mod.slots) || []).filter(s => (s.mechanisms || []).length);
+  const sel = $('p11MechSlot');
+  sel.innerHTML = slots.map(s =>
+    `<option value="${s.slot_id}">slot ${s.slot_id} — ${escapeHTML(s.token ? (s.token.label || s.description) : s.description)}</option>`).join('')
+    || '<option value="">— none —</option>';
+  const selected = slots.find(s => s.selected);
+  if (selected) sel.value = String(selected.slot_id);
+  renderP11Mechanisms();
+}
+
+function renderP11Mechanisms() {
+  const mod = (p11Token() || {}).module;
+  const slot = ((mod && mod.slots) || []).find(s => String(s.slot_id) === $('p11MechSlot').value);
+  const all = (slot && slot.mechanisms) || [];
+  const term = $('p11MechFilter').value.trim().toLowerCase();
+  const shown = term ? all.filter(m => (m.name || '').toLowerCase().includes(term)) : all;
+  $('p11MechCount').textContent = all.length ? `${shown.length} of ${all.length} mechanism(s)` : '';
+  $('p11MechRows').innerHTML = shown.length ? shown.map(m => `
+    <tr>
+      <td class="mono">${escapeHTML(m.name || '')}</td>
+      <td class="mono">${escapeHTML(m.hex || '')}</td>
+      <td>${m.min_key_size || 0}</td>
+      <td>${m.max_key_size || 0}</td>
+      <td class="mono">${m.error ? `<span style="color:var(--crit)">${escapeHTML(m.error)}</span>` : p11Flags(m.flags)}</td>
+    </tr>`).join('') : '<tr><td colspan="5" class="muted">No mechanism matches.</td></tr>';
+}
+
+// --- objects ---------------------------------------------------------------
+
+async function loadPKCS11Objects() {
+  const btn = $('p11LoadObjects'), msg = $('p11Msg');
+  msg.className = 'notice hidden';
+  const params = new URLSearchParams();
+  if ($('p11All').checked) params.set('all', '1');
+  const max = parseInt($('p11Max').value, 10);
+  if (max > 0) params.set('max_objects', String(max));
+  btn.disabled = true;
+  $('p11ObjSummary').textContent = 'Reading the token…';
+  try {
+    const res = await api('GET', '/api/pkcs11/objects?' + params.toString());
+    p11ObjectTokens = res.tokens || [];
+  } catch (e) {
+    p11ObjectTokens = [];
+    msg.className = 'notice err';
+    msg.textContent = 'Reading the objects: ' + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+  renderP11Objects();
+}
+
+function renderP11Objects() {
+  const tbody = $('p11ObjRows'), summary = $('p11ObjSummary');
+  const view = p11ObjectTokens[p11Selected];
+  if (!view) {
+    summary.textContent = 'Not loaded.';
+    tbody.innerHTML = '<tr><td colspan="7" class="muted">Not loaded.</td></tr>';
+    return;
+  }
+  if (view.error) {
+    summary.innerHTML = `<span style="color:var(--crit)">${escapeHTML(view.error)}</span>`;
+    tbody.innerHTML = '<tr><td colspan="7" class="muted">The token could not be read.</td></tr>';
+    return;
+  }
+  const set = view.objects || { objects: [], counts: {} };
+  const objects = set.objects || [];
+  const wantClass = $('p11Class').value;
+  const term = $('p11Search').value.trim().toLowerCase();
+  const rows = objects.filter(o => {
+    if (wantClass && o.class_name !== wantClass) return false;
+    if (!term) return true;
+    return `${o.label || ''} ${o.id || ''}`.toLowerCase().includes(term);
+  });
+
+  const counts = Object.keys(set.counts || {}).sort()
+    .map(k => `${escapeHTML(k)}=${set.counts[k]}`).join(' · ');
+  summary.innerHTML =
+    `token <b>${escapeHTML(set.token_label || '')}</b> (serial ${escapeHTML(set.token_serial || '?')}), slot ${set.slot_id} — ` +
+    `showing ${rows.length} of ${objects.length} object(s)` +
+    (counts ? `<div style="margin-top:4px">${counts}</div>` : '') +
+    (set.truncated ? '<div class="notice warn" style="margin-top:8px">The token holds more objects than were read — raise the object cap. ' +
+      'An object missing from this list is NOT evidence it is absent from the token.</div>' : '');
+
+  tbody.innerHTML = rows.length ? rows.map((o, i) => {
+    const idx = objects.indexOf(o);
+    return `
+    <tr>
+      <td class="mono">${escapeHTML(o.handle_hex || '')}</td>
+      <td class="mono">${escapeHTML(o.class_name || '')}</td>
+      <td>${o.label ? escapeHTML(o.label) : '<span class="muted">(none)</span>'}</td>
+      <td class="mono">${o.id ? escapeHTML(o.id) : '<span class="muted">—</span>'}</td>
+      <td class="mono">${escapeHTML(o.key_type || '')}</td>
+      <td>${(o.attributes || []).length}</td>
+      <td><button class="btn ghost sm" data-p11obj="${idx}">Attributes</button></td>
+    </tr>
+    <tr class="hidden" id="p11ObjDetail${idx}"><td colspan="7" id="p11ObjAttrs${idx}"></td></tr>`;
+  }).join('') : '<tr><td colspan="7" class="muted">No object matches.</td></tr>';
+}
+
+// The attribute table is built on expansion rather than up front: a token with
+// hundreds of objects times tens of attributes each is tens of thousands of
+// rows, and an operator reads one object at a time.
+function toggleP11Object(idx) {
+  const detail = $('p11ObjDetail' + idx);
+  if (!detail) return;
+  const view = p11ObjectTokens[p11Selected] || {};
+  const obj = ((view.objects || {}).objects || [])[idx];
+  if (!obj) return;
+  if (!detail.classList.contains('hidden')) { detail.classList.add('hidden'); return; }
+  const cell = $('p11ObjAttrs' + idx);
+  if (!cell.dataset.filled) {
+    cell.innerHTML = renderP11Attributes(obj);
+    cell.dataset.filled = '1';
+  }
+  detail.classList.remove('hidden');
+}
+
+// renderP11Attributes is the heart of the page: one row per CK_ATTRIBUTE, with
+// the token's answer — or the reason there is none, which for a CA key is the
+// interesting part (CKR_ATTRIBUTE_SENSITIVE is the token asserting the private
+// value cannot be read).
+function renderP11Attributes(obj) {
+  const statusBadge = (a) => {
+    if (a.status === 'present') return '';
+    const cls = a.status === 'withheld' ? 'warn' : 'none';
+    return ` <span class="badge ${cls}" title="${escapeHTML(a.reason || '')}">${escapeHTML(a.status)}</span>`;
+  };
+  // The hex is shown for the kinds whose bytes ARE the value (an ID, a modulus,
+  // a DER structure) and for anything the decoder could not render. Printing
+  // 0x0300000000000000 under "CKO_PRIVATE_KEY (0x3)" would be noise: the
+  // decoding is complete, and the raw form is in the JSON download either way.
+  const rawKinds = ['bytes', 'biginteger', 'der', 'string', 'date'];
+  const value = (a) => {
+    if (a.status !== 'present') return `<span class="muted">${escapeHTML(a.reason || '')}</span>`;
+    const parts = [];
+    if (a.value) parts.push(escapeHTML(a.value));
+    if (a.raw && (!a.value || rawKinds.includes(a.kind))) {
+      parts.push(`<span class="muted" style="word-break:break-all">0x${escapeHTML(a.raw)}${a.raw_truncated ? '…' : ''}</span>`);
+    }
+    if (a.sha256) parts.push(`<span class="muted" style="font-size:11px">sha256 ${escapeHTML(a.sha256)}</span>`);
+    if (!parts.length) parts.push('<span class="muted">(empty)</span>');
+    return parts.join('<br>');
+  };
+  return `<div style="padding:4px 0 10px">
+    <div class="muted" style="margin-bottom:6px">object ${escapeHTML(obj.handle_hex || '')} · ${escapeHTML(obj.class_name || '')}` +
+    (obj.size ? ` · C_GetObjectSize ${escapeHTML(obj.size)} bytes` : '') + `</div>
+    <table>
+      <thead><tr><th style="width:230px">Attribute</th><th style="width:110px">Type</th><th style="width:100px">Cryptoki type</th><th style="width:60px">Len</th><th>Value</th></tr></thead>
+      <tbody>${(obj.attributes || []).map(a => `
+        <tr>
+          <td class="mono">${escapeHTML(a.name || '')}${statusBadge(a)}</td>
+          <td class="mono">${escapeHTML(a.type_hex || '')}</td>
+          <td class="muted">${escapeHTML(a.kind || '')}</td>
+          <td>${a.length || 0}</td>
+          <td>${value(a)}</td>
+        </tr>`).join('')}</tbody>
+    </table></div>`;
+}
+
+$('p11Refresh').onclick = loadPKCS11;
+$('p11Token').onchange = () => { p11Selected = parseInt($('p11Token').value, 10) || 0; renderPKCS11(); };
+$('p11MechSlot').onchange = renderP11Mechanisms;
+$('p11MechFilter').oninput = renderP11Mechanisms;
+$('p11Class').onchange = renderP11Objects;
+$('p11Search').oninput = renderP11Objects;
+$('p11LoadObjects').onclick = loadPKCS11Objects;
+$('p11DownloadModule').onclick = () => downloadAPI('/api/pkcs11/module', 'pkcs11-module.json', 'application/json', 'p11Msg');
+$('p11DownloadObjects').onclick = () => {
+  const params = new URLSearchParams();
+  if ($('p11All').checked) params.set('all', '1');
+  const max = parseInt($('p11Max').value, 10);
+  if (max > 0) params.set('max_objects', String(max));
+  downloadAPI('/api/pkcs11/objects?' + params.toString(), 'pkcs11-objects.json', 'application/json', 'p11Msg');
+};
+// Delegated so the per-object expand buttons survive every re-render.
+$('p11ObjRows').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button[data-p11obj]');
+  if (btn) toggleP11Object(parseInt(btn.dataset.p11obj, 10));
+});
 
 // ---- Format-preserving encryption / tokenization (Task 144) ---------------
 // encode/decode a value through a named FF1 template. Success and failure both

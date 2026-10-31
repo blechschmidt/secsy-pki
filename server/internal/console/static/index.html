@@ -53,6 +53,7 @@
         <button data-view="p12">PKCS#12</button>
         <button data-view="cas">Authorities</button>
         <button data-view="hsm">HSM</button>
+        <button data-view="pkcs11">PKCS#11</button>
         <button data-view="ssh">SSH CA</button>
         <button data-view="signing">Signing</button>
         <button data-view="acme">ACME</button>
@@ -1469,6 +1470,93 @@
             <table>
               <thead><tr><th>#</th><th>Command</th><th>Session key</th><th>Target key</th><th>Result</th><th>Tick</th><th>Chain hash</th></tr></thead>
               <tbody id="hsmLogRows"><tr><td colspan="7" class="muted">Not loaded.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+
+      <!-- Raw PKCS#11 inspector (Task 218): the token as Cryptoki describes it -->
+      <section class="view" id="view-pkcs11">
+        <h2>PKCS#11 inspector</h2>
+        <p class="sub">The token as Cryptoki itself describes it, rather than as this PKI summarises it: <code>C_GetInfo</code>, every slot and token, every mechanism, and every object with all of its attributes — the counterpart of <code>secsy-ca pkcs11</code>. This is the page for the two cases an abstraction cannot show you: something is on the token that this PKI did not put there (a key left by a vendor tool, an object with no label, two objects sharing one), or the module and the token disagree with the documentation. Read-only, <code>hsm:manage</code> gated. Attributes whose value <i>is</i> private key material are never requested — they are listed as <b>withheld</b>.</p>
+        <div id="p11Unavailable" class="notice err hidden"></div>
+        <div id="p11Msg" class="notice hidden" style="margin-bottom:12px"></div>
+
+        <div id="p11Body" class="hidden">
+          <div class="toolbar">
+            <div class="field hidden" id="p11TokenPick" style="margin-bottom:0;min-width:240px">
+              <label for="p11Token">Token <span class="muted">(high-availability set)</span></label>
+              <select id="p11Token"></select>
+            </div>
+            <div class="spacer"></div>
+            <button class="btn ghost sm" id="p11Refresh">Refresh</button>
+            <button class="btn ghost sm" id="p11DownloadModule" title="The module, slot, token and mechanism view as JSON">Module JSON</button>
+          </div>
+
+          <div class="row" style="align-items:stretch">
+            <div class="panel" style="flex:1;min-width:300px">
+              <h2 style="font-size:15px">Module <span class="muted" style="font-weight:400">C_GetInfo</span></h2>
+              <div id="p11Module" class="muted">Loading…</div>
+            </div>
+            <div class="panel" style="flex:1.15;min-width:320px">
+              <h2 style="font-size:15px">Token <span class="muted" style="font-weight:400">CK_TOKEN_INFO</span></h2>
+              <p class="sub">The token in the slot this deployment's selectors resolved to — the device the CA actually signs on.</p>
+              <div id="p11TokenInfo" class="muted">Loading…</div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h2 style="font-size:15px">Slots <span class="muted" style="font-weight:400">C_GetSlotList / C_GetSlotInfo</span></h2>
+            <p class="sub">Every slot the module presents, with or without a token. An empty slot is the answer to “why does my token selector match nothing”, and a second initialised token is the answer to “why is it signing with the wrong key”.</p>
+            <table>
+              <thead><tr><th>Slot</th><th>Description</th><th>Slot flags</th><th>Token label</th><th>Serial</th><th>Token flags</th><th>Mechanisms</th></tr></thead>
+              <tbody id="p11SlotRows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+            </table>
+          </div>
+
+          <div class="panel">
+            <h2 style="font-size:15px">Mechanisms <span class="muted" style="font-weight:400">C_GetMechanismList / C_GetMechanismInfo</span></h2>
+            <p class="sub">What the module says this slot can do, with the key-size range and the operation flags for each mechanism. A mechanism absent here cannot be used however the configuration is written — which is the quickest way to tell a firmware limitation from a misconfiguration.</p>
+            <div class="row">
+              <div class="field" style="min-width:200px"><label for="p11MechSlot">Slot</label><select id="p11MechSlot"></select></div>
+              <div class="field" style="flex:1;min-width:200px"><label for="p11MechFilter">CKM_ name contains</label><input id="p11MechFilter" placeholder="rsa, ecdsa, aes, sha256…" autocomplete="off"></div>
+              <div class="muted" id="p11MechCount" style="margin-bottom:16px"></div>
+            </div>
+            <table>
+              <thead><tr><th>Mechanism</th><th>Type</th><th>Min key</th><th>Max key</th><th>Flags</th></tr></thead>
+              <tbody id="p11MechRows"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+            </table>
+          </div>
+
+          <div class="panel">
+            <h2 style="font-size:15px">Objects <span class="muted" style="font-weight:400">C_FindObjects / C_GetAttributeValue</span></h2>
+            <p class="sub">Every object the token's authenticated session can see — any class, including the ones no CA references — each expandable to the full attribute table. Loading costs a device round trip per object, and on a force-audited YubiHSM consumes device audit-log entries, so it is loaded on request rather than with the page.</p>
+            <div class="row">
+              <div class="field" style="min-width:180px"><label for="p11Class">Class</label>
+                <select id="p11Class">
+                  <option value="">all classes</option>
+                  <option value="CKO_PRIVATE_KEY">CKO_PRIVATE_KEY</option>
+                  <option value="CKO_PUBLIC_KEY">CKO_PUBLIC_KEY</option>
+                  <option value="CKO_SECRET_KEY">CKO_SECRET_KEY</option>
+                  <option value="CKO_CERTIFICATE">CKO_CERTIFICATE</option>
+                  <option value="CKO_DATA">CKO_DATA</option>
+                  <option value="CKO_DOMAIN_PARAMETERS">CKO_DOMAIN_PARAMETERS</option>
+                  <option value="CKO_HW_FEATURE">CKO_HW_FEATURE</option>
+                </select>
+              </div>
+              <div class="field" style="flex:1;min-width:180px"><label for="p11Search">Label or CKA_ID contains</label><input id="p11Search" placeholder="ca-root, 0a0b…" autocomplete="off"></div>
+              <div class="field" style="min-width:130px"><label for="p11Max">Max objects</label><input id="p11Max" type="number" min="1" max="5000" value="200"></div>
+              <label class="muted" style="display:flex;gap:6px;align-items:center;margin-bottom:16px" title="Ask every object for every attribute in the catalogue — including the ones it reports as unsupported. Slower, and the honest way to see what a module really answers.">
+                <input type="checkbox" id="p11All"> whole catalogue
+              </label>
+              <button class="btn" id="p11LoadObjects" style="margin-bottom:16px">Load objects</button>
+              <button class="btn ghost" id="p11DownloadObjects" style="margin-bottom:16px" title="The object dump as JSON, exactly as the API returned it">Objects JSON</button>
+            </div>
+            <div id="p11ObjSummary" class="muted" style="margin-bottom:10px">Not loaded.</div>
+            <table>
+              <thead><tr><th>Handle</th><th>Class</th><th>CKA_LABEL</th><th>CKA_ID</th><th>Key / cert type</th><th>Attributes</th><th></th></tr></thead>
+              <tbody id="p11ObjRows"><tr><td colspan="7" class="muted">Not loaded.</td></tr></tbody>
             </table>
           </div>
         </div>

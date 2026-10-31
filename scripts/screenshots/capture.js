@@ -469,6 +469,48 @@ const SHOTS = [
     clip: `panel:Preflight diagnostics`,
     maxHeight: 950,
   },
+  // The raw PKCS#11 inspector (Task 218). Taken after the Operations shot for
+  // the reason the note above gives — and incidentally it is now the proof of
+  // that note: the doctor sweep has already run in this process, and these two
+  // shots still read the token.
+  {
+    file: '22-pkcs11-module.png',
+    what: 'the PKCS#11 inspector — the module, the resolved token, and every slot',
+    setup: `switchView('pkcs11'); loadPKCS11()`,
+    settle: `(() => {
+      const mod = document.getElementById('p11Module');
+      return mod && mod.querySelectorAll('tr').length >= 5 &&
+             document.querySelectorAll('#p11SlotRows tr').length >= 1;
+    })()`,
+    clip: '#view-pkcs11',
+    // Stop where the mechanism table begins: the module/token pair and the slot
+    // list are one thought, and the mechanism list is its own shot-worth of rows.
+    clipTo: `panel:Mechanisms`,
+    maxHeight: 1100,
+  },
+  {
+    file: '23-pkcs11-objects.png',
+    what: 'the object dump — one object expanded to its full attribute table',
+    setup: `
+      switchView('pkcs11');
+      loadPKCS11()
+        .then(() => { shotSet('p11Max', '6'); shotPick('p11Class', 'CKO_PRIVATE_KEY'); return loadPKCS11Objects(); })
+        .then(() => {
+          // Expand the first private key, which is what the page is for: the
+          // attribute table, including the withheld rows.
+          const b = document.querySelector('#p11ObjRows button[data-p11obj]');
+          if (b) b.click();
+        })
+    `,
+    settle: `(() => {
+      const open = document.querySelector('#p11ObjRows tr[id^="p11ObjDetail"]:not(.hidden)');
+      return !!open && open.querySelectorAll('tbody tr').length >= 10;
+    })()`,
+    clip: `panel:Objects`,
+    // Tall enough to reach the withheld rows at the bottom of the attribute
+    // table, which are the point of the page.
+    maxHeight: 1950,
+  },
 ];
 
 // CAPTURE_ONLY=07-certificates.png,17-audit.png retakes just those. Every image

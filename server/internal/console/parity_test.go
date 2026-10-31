@@ -354,6 +354,12 @@ func parityRoutes() []routeEntry {
 		// Lint, key inventory, blocklist, retention.
 		onView("POST /api/lint", "compliance"),
 		onView("GET /api/inventory/keys", "cas"),
+
+		// Raw PKCS#11 inspection (Task 218): its own view, because what it shows
+		// is the token rather than the PKI — every slot, every mechanism, and
+		// every object with all of its attributes.
+		onView("GET /api/pkcs11/module", "pkcs11"),
+		onView("GET /api/pkcs11/objects", "pkcs11"),
 		onView("GET /api/blocked-keys", "compliance"),
 		onView("POST /api/blocked-keys", "compliance"),
 		onView("DELETE /api/blocked-keys/{fingerprint}", "compliance"),
@@ -529,6 +535,10 @@ func parityCommands() []cmdEntry {
 		// Only `hsm-attest verify` stays offline, deliberately.
 		cmdOn(ca, "hsm-attest", "hsm"),
 		cmdOn(ca, "hsm-audit", "hsm"),
+		// `pkcs11 module|objects|mechanisms` is Cryptoki-shaped rather than
+		// device-shaped (it works on any PKCS#11 token, SoftHSM included), so it
+		// has its own view rather than sitting on the YubiHSM page.
+		cmdOn(ca, "pkcs11", "pkcs11"),
 		cmdOn(ca, "ssh", "ssh"),
 		cmdOn(ca, "sign", "signing"),
 		cmdOn(ca, "verify-signature", "signing"),

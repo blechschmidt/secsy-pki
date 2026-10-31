@@ -383,6 +383,32 @@ const (
 	LivenessBuildFips140PolicyOff      LivenessBuildFips140Policy = "off"
 )
 
+// Defines values for PKCS11AttributeKind.
+const (
+	PKCS11AttributeKindBiginteger PKCS11AttributeKind = "biginteger"
+	PKCS11AttributeKindBool       PKCS11AttributeKind = "bool"
+	PKCS11AttributeKindBytes      PKCS11AttributeKind = "bytes"
+	PKCS11AttributeKindCertType   PKCS11AttributeKind = "cert-type"
+	PKCS11AttributeKindClass      PKCS11AttributeKind = "class"
+	PKCS11AttributeKindDate       PKCS11AttributeKind = "date"
+	PKCS11AttributeKindDer        PKCS11AttributeKind = "der"
+	PKCS11AttributeKindHwFeature  PKCS11AttributeKind = "hw-feature"
+	PKCS11AttributeKindKeyType    PKCS11AttributeKind = "key-type"
+	PKCS11AttributeKindMechanism  PKCS11AttributeKind = "mechanism"
+	PKCS11AttributeKindMechanisms PKCS11AttributeKind = "mechanisms"
+	PKCS11AttributeKindString     PKCS11AttributeKind = "string"
+	PKCS11AttributeKindTemplate   PKCS11AttributeKind = "template"
+	PKCS11AttributeKindUlong      PKCS11AttributeKind = "ulong"
+)
+
+// Defines values for PKCS11AttributeStatus.
+const (
+	NotRead     PKCS11AttributeStatus = "not-read"
+	Present     PKCS11AttributeStatus = "present"
+	Unavailable PKCS11AttributeStatus = "unavailable"
+	Withheld    PKCS11AttributeStatus = "withheld"
+)
+
 // Defines values for PendingApprovalOperationClass.
 const (
 	CaCreate        PendingApprovalOperationClass = "ca.create"
@@ -754,9 +780,9 @@ const (
 
 // Defines values for ExportEventLogParamsFormat.
 const (
-	ExportEventLogParamsFormatCef     ExportEventLogParamsFormat = "cef"
-	ExportEventLogParamsFormatJson    ExportEventLogParamsFormat = "json"
-	ExportEventLogParamsFormatRfc5424 ExportEventLogParamsFormat = "rfc5424"
+	Cef     ExportEventLogParamsFormat = "cef"
+	Json    ExportEventLogParamsFormat = "json"
+	Rfc5424 ExportEventLogParamsFormat = "rfc5424"
 )
 
 // Defines values for ListExpiringCertificatesParamsSeverity.
@@ -764,6 +790,18 @@ const (
 	Critical ListExpiringCertificatesParamsSeverity = "critical"
 	Expired  ListExpiringCertificatesParamsSeverity = "expired"
 	Warning  ListExpiringCertificatesParamsSeverity = "warning"
+)
+
+// Defines values for InspectPKCS11ModuleParamsMechanisms.
+const (
+	False InspectPKCS11ModuleParamsMechanisms = "false"
+	N0    InspectPKCS11ModuleParamsMechanisms = "0"
+)
+
+// Defines values for InspectPKCS11ObjectsParamsAll.
+const (
+	N1   InspectPKCS11ObjectsParamsAll = "1"
+	True InspectPKCS11ObjectsParamsAll = "true"
 )
 
 // ACMEAccount defines model for ACMEAccount.
@@ -3408,6 +3446,186 @@ type NameConstraintsSubtrees struct {
 	Uri *[]string `json:"uri,omitempty"`
 }
 
+// PKCS11Attribute One CK_ATTRIBUTE read — or deliberately not read — from one object.
+type PKCS11Attribute struct {
+	// Kind The attribute's Cryptoki type, which is what decides how its bytes are read: the same four bytes are a CK_ULONG, a CK_MECHANISM_TYPE or the start of a modulus depending only on which attribute they came from.
+	Kind *PKCS11AttributeKind `json:"kind,omitempty"`
+
+	// Length The byte length the token returned for the value.
+	Length *int `json:"length,omitempty"`
+
+	// Name The CKA_ name, or CKA_VENDOR_DEFINED+0x… for a vendor attribute.
+	Name *string `json:"name,omitempty"`
+
+	// Raw Hex of the value's bytes, capped at max_value_bytes.
+	Raw          *string `json:"raw,omitempty"`
+	RawTruncated *bool   `json:"raw_truncated,omitempty"`
+
+	// Reason Why a non-present status — a CKR_ name, or the policy.
+	Reason *string `json:"reason,omitempty"`
+
+	// Sha256 SHA-256 over the WHOLE value (not the truncated prefix), so a truncated modulus or certificate body can still be compared between two tokens.
+	Sha256 *string `json:"sha256,omitempty"`
+
+	// Status present — the token returned a value. unavailable — the token refused; reason carries the CKR_ name. withheld — the inspector did not ask, because the value would be private key material. not-read — the inspector cannot ask portably (a CK_ATTRIBUTE array attribute, whose members are pointers the caller must supply).
+	Status  *PKCS11AttributeStatus `json:"status,omitempty"`
+	Type    *int                   `json:"type,omitempty"`
+	TypeHex *string                `json:"type_hex,omitempty"`
+
+	// Value The decoded rendering: "true", a decimal, a CKM_ name, a curve name, a distinguished name, a certificate summary.
+	Value *string `json:"value,omitempty"`
+}
+
+// PKCS11AttributeKind The attribute's Cryptoki type, which is what decides how its bytes are read: the same four bytes are a CK_ULONG, a CK_MECHANISM_TYPE or the start of a modulus depending only on which attribute they came from.
+type PKCS11AttributeKind string
+
+// PKCS11AttributeStatus present — the token returned a value. unavailable — the token refused; reason carries the CKR_ name. withheld — the inspector did not ask, because the value would be private key material. not-read — the inspector cannot ask portably (a CK_ATTRIBUTE array attribute, whose members are pointers the caller must supply).
+type PKCS11AttributeStatus string
+
+// PKCS11Flags A Cryptoki bit field with the CKF_ names set in it. Bits the name table does not know are kept as hex rather than dropped. Note that Cryptoki reuses bit values across namespaces: 0x2 is CKF_REMOVABLE_DEVICE on a slot, CKF_WRITE_PROTECTED on a token and CKF_DECRYPT on a mechanism.
+type PKCS11Flags struct {
+	Hex   *string   `json:"hex,omitempty"`
+	Names *[]string `json:"names,omitempty"`
+	Value *int      `json:"value,omitempty"`
+}
+
+// PKCS11Inspection A raw Cryptoki view of the deployment's token(s). tokens is a list because a high-availability set is several devices behind one provider, and the point of the view is to tell them apart: replicas deliberately share key labels, so only the member name and the token serial say which device an object is on.
+type PKCS11Inspection struct {
+	// AllAttributes Whether the whole attribute catalogue was requested of every object. When false, a missing attribute row means the token does not have it (those rows are dropped as noise) rather than that it was withheld.
+	AllAttributes *bool `json:"all_attributes,omitempty"`
+
+	// Provider The configured key-provider backend name.
+	Provider *string            `json:"provider,omitempty"`
+	Tokens   *[]PKCS11TokenView `json:"tokens,omitempty"`
+}
+
+// PKCS11Mechanism One CK_MECHANISM_TYPE with its CK_MECHANISM_INFO.
+type PKCS11Mechanism struct {
+	Error *string `json:"error,omitempty"`
+
+	// Flags A Cryptoki bit field with the CKF_ names set in it. Bits the name table does not know are kept as hex rather than dropped. Note that Cryptoki reuses bit values across namespaces: 0x2 is CKF_REMOVABLE_DEVICE on a slot, CKF_WRITE_PROTECTED on a token and CKF_DECRYPT on a mechanism.
+	Flags      *PKCS11Flags `json:"flags,omitempty"`
+	Hex        *string      `json:"hex,omitempty"`
+	MaxKeySize *int         `json:"max_key_size,omitempty"`
+	MinKeySize *int         `json:"min_key_size,omitempty"`
+
+	// Name The CKM_ name, or CKM_VENDOR_DEFINED+0x… for a vendor mechanism.
+	Name *string `json:"name,omitempty"`
+	Type *int    `json:"type,omitempty"`
+}
+
+// PKCS11Module C_GetInfo plus every slot the module reports.
+type PKCS11Module struct {
+	CryptokiVersion *string `json:"cryptoki_version,omitempty"`
+
+	// Flags A Cryptoki bit field with the CKF_ names set in it. Bits the name table does not know are kept as hex rather than dropped. Note that Cryptoki reuses bit values across namespaces: 0x2 is CKF_REMOVABLE_DEVICE on a slot, CKF_WRITE_PROTECTED on a token and CKF_DECRYPT on a mechanism.
+	Flags              *PKCS11Flags  `json:"flags,omitempty"`
+	LibraryDescription *string       `json:"library_description,omitempty"`
+	LibraryVersion     *string       `json:"library_version,omitempty"`
+	ManufacturerId     *string       `json:"manufacturer_id,omitempty"`
+	ModulePath         *string       `json:"module_path,omitempty"`
+	Slots              *[]PKCS11Slot `json:"slots,omitempty"`
+}
+
+// PKCS11Object One object on the token: its handle, the identity attributes promoted for display, and every attribute read from it.
+type PKCS11Object struct {
+	Attributes *[]PKCS11Attribute `json:"attributes,omitempty"`
+	Class      *int               `json:"class,omitempty"`
+	ClassName  *string            `json:"class_name,omitempty"`
+	Handle     *int               `json:"handle,omitempty"`
+	HandleHex  *string            `json:"handle_hex,omitempty"`
+
+	// Id Hex CKA_ID.
+	Id *string `json:"id,omitempty"`
+
+	// KeyType The CKK_ or CKC_ name.
+	KeyType *string `json:"key_type,omitempty"`
+
+	// Label CKA_LABEL, promoted so an object list is readable without expanding each row.
+	Label *string `json:"label,omitempty"`
+
+	// Size C_GetObjectSize, when the module answers it (many decline).
+	Size *string `json:"size,omitempty"`
+}
+
+// PKCS11ObjectSet The result of enumerating one token's objects.
+type PKCS11ObjectSet struct {
+	// Counts Object count by CKO_ class name.
+	Counts      *map[string]int `json:"counts,omitempty"`
+	Objects     *[]PKCS11Object `json:"objects,omitempty"`
+	SlotId      *int            `json:"slot_id,omitempty"`
+	TokenLabel  *string         `json:"token_label,omitempty"`
+	TokenSerial *string         `json:"token_serial,omitempty"`
+
+	// Truncated The token holds more objects than were read. An object missing from a truncated list is NOT evidence that it is absent from the token.
+	Truncated *bool `json:"truncated,omitempty"`
+}
+
+// PKCS11Slot CK_SLOT_INFO for one slot, with the token in it and its mechanisms.
+type PKCS11Slot struct {
+	Description *string `json:"description,omitempty"`
+
+	// Error A per-slot failure (a token that refuses C_GetTokenInfo, say), so one bad slot does not fail the whole view.
+	Error           *string `json:"error,omitempty"`
+	FirmwareVersion *string `json:"firmware_version,omitempty"`
+
+	// Flags A Cryptoki bit field with the CKF_ names set in it. Bits the name table does not know are kept as hex rather than dropped. Note that Cryptoki reuses bit values across namespaces: 0x2 is CKF_REMOVABLE_DEVICE on a slot, CKF_WRITE_PROTECTED on a token and CKF_DECRYPT on a mechanism.
+	Flags           *PKCS11Flags       `json:"flags,omitempty"`
+	HardwareVersion *string            `json:"hardware_version,omitempty"`
+	ManufacturerId  *string            `json:"manufacturer_id,omitempty"`
+	Mechanisms      *[]PKCS11Mechanism `json:"mechanisms,omitempty"`
+
+	// Selected Marks the slot this deployment's token selectors resolved to — the one the CA actually signs on. A module may present several.
+	Selected *bool `json:"selected,omitempty"`
+	SlotId   *int  `json:"slot_id,omitempty"`
+
+	// Token CK_TOKEN_INFO. The counts are strings because Cryptoki overloads them: CK_UNAVAILABLE_INFORMATION and CK_EFFECTIVELY_INFINITE are sentinels, not quantities — and CK_UNAVAILABLE_INFORMATION (~0) as a JSON number loses precision in every JavaScript consumer.
+	Token        *PKCS11Token `json:"token,omitempty"`
+	TokenPresent *bool        `json:"token_present,omitempty"`
+}
+
+// PKCS11Token CK_TOKEN_INFO. The counts are strings because Cryptoki overloads them: CK_UNAVAILABLE_INFORMATION and CK_EFFECTIVELY_INFINITE are sentinels, not quantities — and CK_UNAVAILABLE_INFORMATION (~0) as a JSON number loses precision in every JavaScript consumer.
+type PKCS11Token struct {
+	FirmwareVersion *string `json:"firmware_version,omitempty"`
+
+	// Flags A Cryptoki bit field with the CKF_ names set in it. Bits the name table does not know are kept as hex rather than dropped. Note that Cryptoki reuses bit values across namespaces: 0x2 is CKF_REMOVABLE_DEVICE on a slot, CKF_WRITE_PROTECTED on a token and CKF_DECRYPT on a mechanism.
+	Flags              *PKCS11Flags `json:"flags,omitempty"`
+	FreePrivateMemory  *string      `json:"free_private_memory,omitempty"`
+	FreePublicMemory   *string      `json:"free_public_memory,omitempty"`
+	HardwareVersion    *string      `json:"hardware_version,omitempty"`
+	Label              *string      `json:"label,omitempty"`
+	ManufacturerId     *string      `json:"manufacturer_id,omitempty"`
+	MaxPinLen          *string      `json:"max_pin_len,omitempty"`
+	MaxRwSessionCount  *string      `json:"max_rw_session_count,omitempty"`
+	MaxSessionCount    *string      `json:"max_session_count,omitempty"`
+	MinPinLen          *string      `json:"min_pin_len,omitempty"`
+	Model              *string      `json:"model,omitempty"`
+	RwSessionCount     *string      `json:"rw_session_count,omitempty"`
+	SerialNumber       *string      `json:"serial_number,omitempty"`
+	SessionCount       *string      `json:"session_count,omitempty"`
+	TotalPrivateMemory *string      `json:"total_private_memory,omitempty"`
+	TotalPublicMemory  *string      `json:"total_public_memory,omitempty"`
+	UtcTime            *string      `json:"utc_time,omitempty"`
+}
+
+// PKCS11TokenView defines model for PKCS11TokenView.
+type PKCS11TokenView struct {
+	// Error A per-token failure. In an HA set one unreachable replica must not blank the view of the others, so it becomes an error here rather than a failed request.
+	Error *string `json:"error,omitempty"`
+
+	// Healthy Whether the HA layer currently has this token in rotation; absent for a single-token deployment, which has no rotation.
+	Healthy *bool `json:"healthy,omitempty"`
+
+	// Module C_GetInfo plus every slot the module reports.
+	Module *PKCS11Module `json:"module,omitempty"`
+
+	// Objects The result of enumerating one token's objects.
+	Objects *PKCS11ObjectSet `json:"objects,omitempty"`
+
+	// Token The member token's configured name in a high-availability set; absent for a single-token deployment.
+	Token *string `json:"token,omitempty"`
+}
+
 // PKCS12EscrowInfo Escrow of a PKCS#12 subject key, with the envelope to retain for recovery.
 type PKCS12EscrowInfo struct {
 	Agents *int `json:"agents,omitempty"`
@@ -5503,6 +5721,30 @@ type ListExpiringCertificatesParams struct {
 // ListExpiringCertificatesParamsSeverity defines parameters for ListExpiringCertificates.
 type ListExpiringCertificatesParamsSeverity string
 
+// InspectPKCS11ModuleParams defines parameters for InspectPKCS11Module.
+type InspectPKCS11ModuleParams struct {
+	// Mechanisms Set to 0 to omit the per-slot mechanism lists, which are the bulk of the payload (SoftHSM reports ~180 mechanisms, a YubiHSM ~70) and cost a C_GetMechanismInfo call each.
+	Mechanisms *InspectPKCS11ModuleParamsMechanisms `form:"mechanisms,omitempty" json:"mechanisms,omitempty"`
+}
+
+// InspectPKCS11ModuleParamsMechanisms defines parameters for InspectPKCS11Module.
+type InspectPKCS11ModuleParamsMechanisms string
+
+// InspectPKCS11ObjectsParams defines parameters for InspectPKCS11Objects.
+type InspectPKCS11ObjectsParams struct {
+	// All Ask every object for every attribute in the catalogue rather than only those the standard defines for its class, and keep the rows the token reports as unsupported. The honest way to discover what a particular module answers outside the standard; slower.
+	All *InspectPKCS11ObjectsParamsAll `form:"all,omitempty" json:"all,omitempty"`
+
+	// MaxObjects Cap on objects enumerated (default 500).
+	MaxObjects *int `form:"max_objects,omitempty" json:"max_objects,omitempty"`
+
+	// MaxValueBytes Cap on one attribute value's hex rendering (default 2048). The SHA-256 reported alongside is always over the whole value.
+	MaxValueBytes *int `form:"max_value_bytes,omitempty" json:"max_value_bytes,omitempty"`
+}
+
+// InspectPKCS11ObjectsParamsAll defines parameters for InspectPKCS11Objects.
+type InspectPKCS11ObjectsParamsAll string
+
 // GenerateDataKeyParams defines parameters for GenerateDataKey.
 type GenerateDataKeyParams struct {
 	// XSecsyTenant Selects the tenant (id or slug) whose secret KEK seals/opens the envelope. Omit to use the default tenant and the deployment-wide KEK.
@@ -6431,6 +6673,12 @@ type ClientInterface interface {
 	ParseCSRWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	ParseCSR(ctx context.Context, body ParseCSRJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// InspectPKCS11Module request
+	InspectPKCS11Module(ctx context.Context, params *InspectPKCS11ModuleParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// InspectPKCS11Objects request
+	InspectPKCS11Objects(ctx context.Context, params *InspectPKCS11ObjectsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListProfiles request
 	ListProfiles(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -8690,6 +8938,30 @@ func (c *Client) ParseCSRWithBody(ctx context.Context, contentType string, body 
 
 func (c *Client) ParseCSR(ctx context.Context, body ParseCSRJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewParseCSRRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) InspectPKCS11Module(ctx context.Context, params *InspectPKCS11ModuleParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewInspectPKCS11ModuleRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) InspectPKCS11Objects(ctx context.Context, params *InspectPKCS11ObjectsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewInspectPKCS11ObjectsRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -15504,6 +15776,136 @@ func NewParseCSRRequestWithBody(server string, contentType string, body io.Reade
 	return req, nil
 }
 
+// NewInspectPKCS11ModuleRequest generates requests for InspectPKCS11Module
+func NewInspectPKCS11ModuleRequest(server string, params *InspectPKCS11ModuleParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/pkcs11/module")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Mechanisms != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "mechanisms", runtime.ParamLocationQuery, *params.Mechanisms); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewInspectPKCS11ObjectsRequest generates requests for InspectPKCS11Objects
+func NewInspectPKCS11ObjectsRequest(server string, params *InspectPKCS11ObjectsParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/pkcs11/objects")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.All != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "all", runtime.ParamLocationQuery, *params.All); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.MaxObjects != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "max_objects", runtime.ParamLocationQuery, *params.MaxObjects); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.MaxValueBytes != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "max_value_bytes", runtime.ParamLocationQuery, *params.MaxValueBytes); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewListProfilesRequest generates requests for ListProfiles
 func NewListProfilesRequest(server string) (*http.Request, error) {
 	var err error
@@ -18806,6 +19208,12 @@ type ClientWithResponsesInterface interface {
 
 	ParseCSRWithResponse(ctx context.Context, body ParseCSRJSONRequestBody, reqEditors ...RequestEditorFn) (*ParseCSRResponse, error)
 
+	// InspectPKCS11ModuleWithResponse request
+	InspectPKCS11ModuleWithResponse(ctx context.Context, params *InspectPKCS11ModuleParams, reqEditors ...RequestEditorFn) (*InspectPKCS11ModuleResponse, error)
+
+	// InspectPKCS11ObjectsWithResponse request
+	InspectPKCS11ObjectsWithResponse(ctx context.Context, params *InspectPKCS11ObjectsParams, reqEditors ...RequestEditorFn) (*InspectPKCS11ObjectsResponse, error)
+
 	// ListProfilesWithResponse request
 	ListProfilesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListProfilesResponse, error)
 
@@ -21888,6 +22296,54 @@ func (r ParseCSRResponse) StatusCode() int {
 	return 0
 }
 
+type InspectPKCS11ModuleResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *PKCS11Inspection
+	JSON403      *Forbidden
+	JSON501      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r InspectPKCS11ModuleResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r InspectPKCS11ModuleResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type InspectPKCS11ObjectsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *PKCS11Inspection
+	JSON403      *Forbidden
+	JSON501      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r InspectPKCS11ObjectsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r InspectPKCS11ObjectsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type ListProfilesResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -24892,6 +25348,24 @@ func (c *ClientWithResponses) ParseCSRWithResponse(ctx context.Context, body Par
 		return nil, err
 	}
 	return ParseParseCSRResponse(rsp)
+}
+
+// InspectPKCS11ModuleWithResponse request returning *InspectPKCS11ModuleResponse
+func (c *ClientWithResponses) InspectPKCS11ModuleWithResponse(ctx context.Context, params *InspectPKCS11ModuleParams, reqEditors ...RequestEditorFn) (*InspectPKCS11ModuleResponse, error) {
+	rsp, err := c.InspectPKCS11Module(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseInspectPKCS11ModuleResponse(rsp)
+}
+
+// InspectPKCS11ObjectsWithResponse request returning *InspectPKCS11ObjectsResponse
+func (c *ClientWithResponses) InspectPKCS11ObjectsWithResponse(ctx context.Context, params *InspectPKCS11ObjectsParams, reqEditors ...RequestEditorFn) (*InspectPKCS11ObjectsResponse, error) {
+	rsp, err := c.InspectPKCS11Objects(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseInspectPKCS11ObjectsResponse(rsp)
 }
 
 // ListProfilesWithResponse request returning *ListProfilesResponse
@@ -30003,6 +30477,86 @@ func ParseParseCSRResponse(rsp *http.Response) (*ParseCSRResponse, error) {
 			return nil, err
 		}
 		response.JSON400 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseInspectPKCS11ModuleResponse parses an HTTP response from a InspectPKCS11ModuleWithResponse call
+func ParseInspectPKCS11ModuleResponse(rsp *http.Response) (*InspectPKCS11ModuleResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &InspectPKCS11ModuleResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PKCS11Inspection
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 501:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON501 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseInspectPKCS11ObjectsResponse parses an HTTP response from a InspectPKCS11ObjectsWithResponse call
+func ParseInspectPKCS11ObjectsResponse(rsp *http.Response) (*InspectPKCS11ObjectsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &InspectPKCS11ObjectsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest PKCS11Inspection
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 501:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON501 = &dest
 
 	}
 

@@ -18,13 +18,13 @@ command line.
     parity by hand and it drifted between each audit; the test exists so a fourth
     hand-audit is never needed. See [keeping it honest](#keeping-it-honest).
 
-Current state: **88** top-level CLI commands — **76** offered by a console view,
-**12** deliberately CLI-only. **195** `/api/…` routes — **167** driven by a
+Current state: **89** top-level CLI commands — **77** offered by a console view,
+**12** deliberately CLI-only. **197** `/api/…` routes — **169** driven by a
 console control, **28** with a classified reason none exists.
 
 ## Console views
 
-The console's 24 views, with the `data-view` name the test tables use:
+The console's 25 views, with the `data-view` name the test tables use:
 
 | View | `data-view` | View | `data-view` |
 |---|---|---|---|
@@ -37,6 +37,7 @@ The console's 24 views, with the `data-view` name the test tables use:
 | PKCS#12 | `p12` | Access | `access` |
 | Authorities | `cas` | Webhooks | `webhooks` |
 | HSM | `hsm` | ACME | `acme` |
+| PKCS#11 | `pkcs11` | | |
 | SSH CA | `ssh` | Audit | `audit` |
 | Signing | `signing` | Approvals | `approvals` |
 | Validate | `validate` | Compliance | `compliance` |
@@ -106,6 +107,7 @@ The console's 24 views, with the `data-view` name the test tables use:
 |---|---|---|
 | `secsy-ca hsm-attest` | HSM | **Device authenticity**, **Key attestation** (by CA or by label), **Device-wide attestation audit** for `hsm-attest audit`, **Verify an attestation**. `hsm-attest verify` is also offered offline, by design |
 | `secsy-ca hsm-audit` | HSM | **Audit-log reconciliation**, **Device audit log**, provisioning, the factory reset commissioning needs (`hsm-audit reset`, which the console offers as **Factory reset**) and the bundle / signed-log / combined-log downloads. `hsm-audit verify` and `verify-file` stay offline so a third party can check the claims on a machine with none of the CA's state |
+| `secsy-ca pkcs11` | PKCS#11 | **Module**, **Token**, **Slots**, **Mechanisms** (filterable) and **Objects** — every object with its full attribute table, matching `pkcs11 module`, `pkcs11 mechanisms` and `pkcs11 objects`. Attributes whose value is private key material are withheld on both surfaces |
 | `secsy-ca ssh` | SSH CA | create CAs, set/clear the CA's maximum certificate lifetime (`ssh ca-max-validity`), sign user/host keys, browse/revoke, CA public key and KRL downloads |
 | `secsy-ca sign` | Signing | detached CMS signature with the CAdES baseline-level selector (B / T / LT) |
 | `secsy-ca verify-signature` | Signing | **Verify**, with the require-level and require-timestamp gates |
