@@ -623,6 +623,10 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("GET /api/ssh/profiles", protected(http.HandlerFunc(a.ListSSHProfiles)))
 	mux.Handle("POST /api/ssh/cas/{id}/sign", protected(http.HandlerFunc(a.SignSSHCert)))
 	mux.Handle("POST /api/ssh/cas/{id}/revoke", protectStepUp("ssh.revoke", http.HandlerFunc(a.RevokeSSHCert)))
+	// The CA-level ceiling on SSH certificate lifetime (Task 217). Raising it
+	// widens what the authority may sign, so it is ca:manage and step-up gated
+	// like the other signing-policy changes.
+	mux.Handle("PUT /api/ssh/cas/{id}/max-validity", protectStepUp("ssh.ca_config", http.HandlerFunc(a.SetSSHCAMaxValidity)))
 	mux.Handle("GET /api/ssh/cas/{id}/certificates", protected(http.HandlerFunc(a.ListSSHCertificates)))
 	mux.Handle("GET /api/ssh/cas/{id}/revocations", protected(http.HandlerFunc(a.ListSSHRevocations)))
 	mux.HandleFunc("GET /api/ssh/cas/{id}/public", a.GetSSHCAPublicKey)
@@ -1321,6 +1325,14 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 		if validBefore.Sub(validAfter) > maxDuration {
 			validBefore = validAfter.Add(maxDuration)
 		}
+	}
+
+	// …then the CA's own ceiling on SSH certificate lifetime (Task 217). This
+	// legacy endpoint signs with the same CA key as /api/ssh/cas/{id}/sign, so
+	// the cap has to bind here too — otherwise a permissive restriction set
+	// would be a way around it.
+	if clamped, wasClamped := ca.ClampSSHValidity(validBefore.Sub(validAfter)); wasClamped {
+		validBefore = validAfter.Add(clamped)
 	}
 
 	// Enforce max valid_after offset

@@ -252,6 +252,7 @@ func parityRoutes() []routeEntry {
 		onView("GET /api/ssh/profiles", "ssh"),
 		onView("POST /api/ssh/cas/{id}/sign", "ssh"),
 		onView("POST /api/ssh/cas/{id}/revoke", "ssh"),
+		onView("PUT /api/ssh/cas/{id}/max-validity", "ssh"),
 		onView("GET /api/ssh/cas/{id}/certificates", "ssh"),
 		onView("GET /api/ssh/cas/{id}/revocations", "ssh"),
 		onView("GET /api/ssh/cas/{id}/public", "ssh"),

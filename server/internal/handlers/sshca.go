@@ -33,6 +33,11 @@ type CreateSSHCARequest struct {
 	// KeyType is a key-provider key type (ed25519, ecdsa-p256, rsa-2048, …);
 	// empty defaults to ed25519.
 	KeyType string `json:"key_type,omitempty"`
+	// MaxValiditySeconds is the CA-level ceiling on the lifetime of any OpenSSH
+	// certificate this CA signs. Zero (the default) leaves the CA uncapped, so
+	// only the signing profile's bounds apply. Changeable afterwards through
+	// PUT /api/ssh/cas/{id}/max-validity.
+	MaxValiditySeconds int64 `json:"max_validity_seconds,omitempty"`
 }
 
 // CreateSSHCA provisions a new SSH CA: a signing key generated inside the
@@ -50,6 +55,10 @@ func (a *API) CreateSSHCA(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "label is required")
 		return
 	}
+	if req.MaxValiditySeconds < 0 {
+		writeError(w, http.StatusBadRequest, "max_validity_seconds cannot be negative")
+		return
+	}
 
 	tenantID := req.TenantID
 	if tenantID == "" {
@@ -65,9 +74,10 @@ func (a *API) CreateSSHCA(w http.ResponseWriter, r *http.Request) {
 	authority := sshca.NewAuthority(a.db, a.keyProvider)
 	a.consumeHSMAuditLogs("")
 	ca, err := authority.InitCA(r.Context(), sshca.CASpec{
-		TenantID: tenantID,
-		Label:    req.Label,
-		KeyType:  req.KeyType,
+		TenantID:    tenantID,
+		Label:       req.Label,
+		KeyType:     req.KeyType,
+		MaxValidity: time.Duration(req.MaxValiditySeconds) * time.Second,
 	})
 	a.consumeHSMAuditLogs("")
 	if err != nil {
@@ -76,9 +86,97 @@ func (a *API) CreateSSHCA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.recordEvent(r, audit.ActionSSHCAInit, ca.ID, ca.Label, audit.ResultSuccess,
-		"key_type="+ca.KeyType)
+	detail := "key_type=" + ca.KeyType
+	if ca.MaxSSHValiditySecs > 0 {
+		detail += " max_validity=" + ca.MaxSSHValidity().String()
+	}
+	a.recordEvent(r, audit.ActionSSHCAInit, ca.ID, ca.Label, audit.ResultSuccess, detail)
 	writeJSON(w, http.StatusCreated, ca)
+}
+
+// SetSSHCAMaxValidityRequest sets (or clears) a CA's ceiling on the lifetime of
+// the OpenSSH certificates it signs.
+type SetSSHCAMaxValidityRequest struct {
+	// MaxValiditySeconds is the ceiling in seconds. Zero clears it, leaving only
+	// the signing profile's bounds in force.
+	MaxValiditySeconds int64 `json:"max_validity_seconds"`
+}
+
+// SetSSHCAMaxValidityResponse reports the stored ceiling.
+type SetSSHCAMaxValidityResponse struct {
+	CAID  string `json:"ca_id"`
+	Label string `json:"label"`
+	// MaxValiditySeconds is the ceiling now in force; zero means uncapped.
+	MaxValiditySeconds int64 `json:"max_validity_seconds"`
+	// PreviousMaxValiditySeconds is what it was before this call.
+	PreviousMaxValiditySeconds int64 `json:"previous_max_validity_seconds"`
+}
+
+// SetSSHCAMaxValidity sets the CA-level maximum lifetime for SSH certificates
+// signed by this CA (Task 217). The ceiling binds every SSH signing path through
+// the CA key — the profile-driven endpoint, the legacy restriction-set endpoint,
+// and the CLI — so it is the one control that bounds what this authority can
+// mint regardless of profile. Requires ca:manage in the CA's tenant, or an
+// administrative grant on this CA, exactly like the other per-CA management
+// endpoints (rotate/retire/cross-sign).
+func (a *API) SetSSHCAMaxValidity(w http.ResponseWriter, r *http.Request) {
+	caID := r.PathValue("id")
+	if _, ok := a.authorizeCAManage(w, r, caID, audit.ActionSSHCAConfig); !ok {
+		return
+	}
+
+	var req SetSSHCAMaxValidityRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
+		return
+	}
+	if req.MaxValiditySeconds < 0 {
+		writeError(w, http.StatusBadRequest, "max_validity_seconds cannot be negative")
+		return
+	}
+
+	before, err := a.db.GetCA(caID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "database error: %v", err)
+		return
+	}
+	if before == nil {
+		writeError(w, http.StatusNotFound, "CA not found")
+		return
+	}
+	previous := before.MaxSSHValiditySecs
+
+	authority := sshca.NewAuthority(a.db, a.keyProvider)
+	ca, err := authority.SetMaxValidity(r.Context(), caID, time.Duration(req.MaxValiditySeconds)*time.Second)
+	if err != nil {
+		a.recordEvent(r, audit.ActionSSHCAConfig, caID, before.Label, audit.ResultError, err.Error())
+		writeError(w, http.StatusBadRequest, "failed to set the maximum validity: %v", err)
+		return
+	}
+
+	// Record the direction explicitly: raising (or clearing) a ceiling widens
+	// what the CA may sign, and that is what an auditor is looking for.
+	direction := "unchanged"
+	switch {
+	case ca.MaxSSHValiditySecs == 0 && previous != 0:
+		direction = "cleared"
+	case previous == 0 && ca.MaxSSHValiditySecs != 0:
+		direction = "tightened"
+	case ca.MaxSSHValiditySecs > previous:
+		direction = "raised"
+	case ca.MaxSSHValiditySecs < previous:
+		direction = "tightened"
+	}
+	a.recordEvent(r, audit.ActionSSHCAConfig, ca.ID, ca.Label, audit.ResultSuccess,
+		fmt.Sprintf("max_ssh_validity_secs=%d previous=%d change=%s",
+			ca.MaxSSHValiditySecs, previous, direction))
+
+	writeJSON(w, http.StatusOK, SetSSHCAMaxValidityResponse{
+		CAID:                       ca.ID,
+		Label:                      ca.Label,
+		MaxValiditySeconds:         ca.MaxSSHValiditySecs,
+		PreviousMaxValiditySeconds: previous,
+	})
 }
 
 // ListSSHCAs lists the SSH certificate authorities visible to the caller: CA
@@ -135,7 +233,8 @@ type SignSSHCertRequest struct {
 	// Principals are the user names (user certs) or host names (host certs).
 	Principals []string `json:"principals,omitempty"`
 	// ValiditySeconds is the requested lifetime; zero applies the profile
-	// default, and values beyond the profile maximum are clamped.
+	// default, and values beyond the profile maximum — or beyond the CA's own
+	// ceiling, whichever is lower — are clamped.
 	ValiditySeconds int64 `json:"validity_seconds,omitempty"`
 	// Extensions/CriticalOptions replace the profile defaults when non-empty;
 	// every key must be permitted by the profile.
@@ -158,6 +257,13 @@ type SignSSHCertResponse struct {
 	// CAPublicKey is the CA's authorized_keys line, so a caller can install the
 	// trust anchor (TrustedUserCAKeys / @cert-authority) alongside the cert.
 	CAPublicKey string `json:"ca_public_key"`
+	// CAMaxValiditySeconds is the CA-level ceiling in force at signing time
+	// (zero when the CA sets none), and ClampedByCAMaxValidity reports whether
+	// it shortened this certificate below what the profile would have granted.
+	// Together they let a client explain a certificate that came back shorter
+	// than it asked for.
+	CAMaxValiditySeconds   int64 `json:"ca_max_validity_seconds,omitempty"`
+	ClampedByCAMaxValidity bool  `json:"clamped_by_ca_max_validity,omitempty"`
 }
 
 // SignSSHCert signs an OpenSSH certificate under a CA. Requires the CA's issue
@@ -220,20 +326,25 @@ func (a *API) SignSSHCert(w http.ResponseWriter, r *http.Request) {
 
 	rec := result.Record
 	metrics.SSHCertificates.Inc(rec.CertType, metrics.ResultSuccess)
-	a.recordEvent(r, audit.ActionSSHSign, caID, result.CA.Label, audit.ResultSuccess,
-		fmt.Sprintf("serial=%s type=%s key_id=%s principals=%s profile=%s",
-			rec.Serial, rec.CertType, rec.KeyID, strings.Join(rec.Principals, ","), rec.Profile))
+	detail := fmt.Sprintf("serial=%s type=%s key_id=%s principals=%s profile=%s",
+		rec.Serial, rec.CertType, rec.KeyID, strings.Join(rec.Principals, ","), rec.Profile)
+	if result.ClampedByCA {
+		detail += " clamped_by_ca_max_validity=" + result.CAMaxValidity.String()
+	}
+	a.recordEvent(r, audit.ActionSSHSign, caID, result.CA.Label, audit.ResultSuccess, detail)
 
 	writeJSON(w, http.StatusCreated, SignSSHCertResponse{
-		Certificate: rec.Certificate,
-		Serial:      rec.Serial,
-		CertType:    rec.CertType,
-		KeyID:       rec.KeyID,
-		Principals:  rec.Principals,
-		Profile:     rec.Profile,
-		ValidAfter:  rec.ValidAfter.UTC().Format(time.RFC3339),
-		ValidBefore: rec.ValidBefore.UTC().Format(time.RFC3339),
-		CAPublicKey: result.CA.PublicKey,
+		Certificate:            rec.Certificate,
+		Serial:                 rec.Serial,
+		CertType:               rec.CertType,
+		KeyID:                  rec.KeyID,
+		Principals:             rec.Principals,
+		Profile:                rec.Profile,
+		ValidAfter:             rec.ValidAfter.UTC().Format(time.RFC3339),
+		ValidBefore:            rec.ValidBefore.UTC().Format(time.RFC3339),
+		CAPublicKey:            result.CA.PublicKey,
+		CAMaxValiditySeconds:   int64(result.CAMaxValidity / time.Second),
+		ClampedByCAMaxValidity: result.ClampedByCA,
 	})
 }
 

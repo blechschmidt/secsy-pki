@@ -346,7 +346,9 @@ seed_lifecycle() {
 
 seed_ssh() {
   log "seeding the SSH CA"
-  quiet CA ssh ca-init -label northwind-ssh-ops -key-type ed25519 || return 0
+  # -max-validity is the CA-level ceiling: whatever a profile or a caller asks
+  # for, this authority signs nothing longer-lived than 12h.
+  quiet CA ssh ca-init -label northwind-ssh-ops -key-type ed25519 -max-validity 12h || return 0
   mkdir -p "$WORK/ssh"
   for u in m.okonkwo j.lindqvist; do
     quiet ssh-keygen -q -t ed25519 -N '' -C "$u" -f "$WORK/ssh/$u"

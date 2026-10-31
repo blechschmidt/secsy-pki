@@ -208,6 +208,11 @@ const (
 	ActionSSHCAInit = "ssh.ca_init"
 	ActionSSHSign   = "ssh.sign"
 	ActionSSHRevoke = "ssh.revoke"
+	// ActionSSHCAConfig records a change to an SSH CA's signing policy — today
+	// the CA-level ceiling on certificate lifetime (Task 217). The target is the
+	// CA; the detail carries the old and new ceiling, because RAISING a ceiling
+	// is the privilege-granting direction and an auditor needs to see it.
+	ActionSSHCAConfig = "ssh.ca_config"
 
 	ActionSecretEncrypt = "secret.encrypt"
 	ActionSecretDecrypt = "secret.decrypt"

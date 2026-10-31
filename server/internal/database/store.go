@@ -254,6 +254,9 @@ type CAStore interface {
 	DeleteCA(id string) error
 	SetCAStatus(id, status string) error
 	SetCADefaultRestrictionSet(caID string, rsType string, rsID *string) error
+	// SetCAMaxSSHValidity stores the CA-level ceiling (seconds; 0 = uncapped) on
+	// the lifetime of the OpenSSH certificates this CA signs.
+	SetCAMaxSSHValidity(caID string, secs int64) error
 	MarkCARotated(oldID, newID string, retireAfter *time.Time) error
 	// AllocateSerial atomically returns the next unused serial for a CA; the
 	// increment is transactional so concurrent issuance never reuses a serial.

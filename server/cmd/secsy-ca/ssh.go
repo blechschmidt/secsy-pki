@@ -72,6 +72,8 @@ func cmdSSH(db *database.DB, provider keyprovider.Provider, args []string) error
 	switch sub {
 	case "ca-init":
 		return cmdSSHCAInit(db, authority, subArgs)
+	case "ca-max-validity":
+		return cmdSSHCAMaxValidity(db, authority, subArgs)
 	case "sign-user":
 		return cmdSSHSign(db, authority, sshca.CertTypeUser, subArgs)
 	case "sign-host":
@@ -100,13 +102,14 @@ Usage:
   secsy-ca [-config config.yaml] ssh <subcommand> [flags]
 
 Subcommands:
-  ca-init    Generate an SSH CA signing key in the key provider
-  sign-user  Sign an OpenSSH public key into a user certificate
-  sign-host  Sign an OpenSSH public key into a host certificate
-  revoke     Revoke a certificate by serial, or every certificate by key ID
-  krl        Generate the CA's OpenSSH Key Revocation List (KRL)
-  list       List certificates signed by a CA
-  profiles   List the available SSH signing profiles
+  ca-init           Generate an SSH CA signing key in the key provider
+  ca-max-validity   Show or set the CA's maximum certificate lifetime
+  sign-user         Sign an OpenSSH public key into a user certificate
+  sign-host         Sign an OpenSSH public key into a host certificate
+  revoke            Revoke a certificate by serial, or every certificate by key ID
+  krl               Generate the CA's OpenSSH Key Revocation List (KRL)
+  list              List certificates signed by a CA
+  profiles          List the available SSH signing profiles
 `)
 }
 
@@ -115,6 +118,7 @@ func cmdSSHCAInit(db *database.DB, authority *sshca.Authority, args []string) er
 	label := fs.String("label", "", "CA label; doubles as the provider key label (required)")
 	keyType := fs.String("key-type", sshca.DefaultCAKeyType, "CA key type (ed25519, ecdsa-p256, ecdsa-p384, rsa-2048, rsa-4096)")
 	tenant := fs.String("tenant", "", "owning tenant id (default: the default tenant)")
+	maxValidity := fs.String("max-validity", "", "CA-level ceiling on certificate lifetime (e.g. 24h, 30d); empty = uncapped")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -122,25 +126,118 @@ func cmdSSHCAInit(db *database.DB, authority *sshca.Authority, args []string) er
 		fs.Usage()
 		return fmt.Errorf("-label is required")
 	}
+	maxDur, err := sshca.ParseValidity(*maxValidity)
+	if err != nil {
+		return fmt.Errorf("-max-validity: %w", err)
+	}
 
 	ca, err := authority.InitCA(context.Background(), sshca.CASpec{
-		TenantID: *tenant,
-		Label:    *label,
-		KeyType:  *keyType,
+		TenantID:    *tenant,
+		Label:       *label,
+		KeyType:     *keyType,
+		MaxValidity: maxDur,
 	})
 	if err != nil {
 		return err
 	}
+	initDetail := "key_type=" + ca.KeyType
+	if ca.MaxSSHValiditySecs > 0 {
+		initDetail += " max_validity=" + ca.MaxSSHValidity().String()
+	}
 	appendAudit(db, &audit.Event{
 		Actor: "cli", Action: audit.ActionSSHCAInit, Tenant: ca.TenantID,
 		Target: ca.ID, TargetName: ca.Label, Result: audit.ResultSuccess,
-		Detail: "key_type=" + ca.KeyType,
+		Detail: initDetail,
 	})
 
 	fmt.Fprintf(os.Stderr, "SSH CA %q created (id %s, key type %s)\n", ca.Label, ca.ID, ca.KeyType)
+	if ca.MaxSSHValiditySecs > 0 {
+		fmt.Fprintf(os.Stderr, "Maximum certificate lifetime: %s (requests beyond it are clamped)\n", ca.MaxSSHValidity())
+	}
 	fmt.Fprintf(os.Stderr, "Trust this CA for user certificates (sshd_config):\n  TrustedUserCAKeys /etc/ssh/%s.pub\n", ca.Label)
 	fmt.Fprintf(os.Stderr, "Trust it for host certificates (known_hosts):\n  @cert-authority * %s\n", ca.PublicKey)
 	fmt.Println(ca.PublicKey)
+	return nil
+}
+
+// cmdSSHCAMaxValidity shows or changes a CA's ceiling on the lifetime of the
+// OpenSSH certificates it signs (Task 217). Without -set it reports the current
+// ceiling (and what the profiles would grant without it); with -set it stores a
+// new one. `-set none` (or `0`) clears the ceiling.
+func cmdSSHCAMaxValidity(db *database.DB, authority *sshca.Authority, args []string) error {
+	fs := flag.NewFlagSet("ssh ca-max-validity", flag.ContinueOnError)
+	caRef := fs.String("ca", "", "CA id or label (required)")
+	set := fs.String("set", "", "new ceiling (e.g. 24h, 30d); 'none' or '0' clears it. Omit to show the current value")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *caRef == "" {
+		fs.Usage()
+		return fmt.Errorf("-ca is required")
+	}
+	caID, err := resolveCA(db, *caRef)
+	if err != nil {
+		return err
+	}
+
+	// No -set: report the ceiling in force and what it binds.
+	if strings.TrimSpace(*set) == "" {
+		ca, err := db.GetCA(caID)
+		if err != nil {
+			return err
+		}
+		if ca == nil {
+			return fmt.Errorf("CA %q not found", *caRef)
+		}
+		if ca.MaxSSHValiditySecs == 0 {
+			fmt.Fprintf(os.Stderr, "SSH CA %q has no CA-level maximum; only the signing profiles bound certificate lifetime.\n", ca.Label)
+			fmt.Println("none")
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "SSH CA %q signs no certificate longer than %s; longer requests are clamped.\n",
+			ca.Label, ca.MaxSSHValidity())
+		fmt.Println(ca.MaxSSHValidity())
+		return nil
+	}
+
+	var newMax time.Duration
+	if arg := strings.ToLower(strings.TrimSpace(*set)); arg != "none" && arg != "0" {
+		newMax, err = sshca.ParseValidity(arg)
+		if err != nil {
+			return fmt.Errorf("-set: %w", err)
+		}
+	}
+
+	before, err := db.GetCA(caID)
+	if err != nil {
+		return err
+	}
+	if before == nil {
+		return fmt.Errorf("CA %q not found", *caRef)
+	}
+	previous := before.MaxSSHValiditySecs
+
+	ca, err := authority.SetMaxValidity(context.Background(), caID, newMax)
+	if err != nil {
+		return err
+	}
+	appendAudit(db, &audit.Event{
+		Actor: "cli", Action: audit.ActionSSHCAConfig, Tenant: ca.TenantID,
+		Target: ca.ID, TargetName: ca.Label, Result: audit.ResultSuccess,
+		Detail: fmt.Sprintf("max_ssh_validity_secs=%d previous=%d", ca.MaxSSHValiditySecs, previous),
+	})
+
+	if ca.MaxSSHValiditySecs == 0 {
+		fmt.Fprintf(os.Stderr, "Cleared the maximum certificate lifetime for SSH CA %q; the signing profiles are now the only bound.\n", ca.Label)
+		fmt.Println("none")
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "SSH CA %q now signs no certificate longer than %s", ca.Label, ca.MaxSSHValidity())
+	if previous > 0 {
+		fmt.Fprintf(os.Stderr, " (was %s)", time.Duration(previous)*time.Second)
+	}
+	fmt.Fprintln(os.Stderr, ". Existing certificates keep the lifetime they were signed with.")
+	fmt.Println(ca.MaxSSHValidity())
 	return nil
 }
 
@@ -244,6 +341,10 @@ func cmdSSHSign(db *database.DB, authority *sshca.Authority, certType string, ar
 
 	fmt.Fprintf(os.Stderr, "Signed %s certificate serial %s (key ID %q, profile %s, valid until %s)\n",
 		rec.CertType, rec.Serial, rec.KeyID, rec.Profile, rec.ValidBefore.UTC().Format(time.RFC3339))
+	if result.ClampedByCA {
+		fmt.Fprintf(os.Stderr, "Lifetime clamped to the CA's maximum of %s (secsy-ca ssh ca-max-validity -ca %s).\n",
+			result.CAMaxValidity, *caRef)
+	}
 	return writeOutput(*out, result.AuthorizedKey)
 }
 

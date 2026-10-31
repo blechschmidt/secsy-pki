@@ -198,6 +198,37 @@ type CA struct {
 	SuccessorID   *string    `json:"successor_id,omitempty" db:"successor_id"`     // CA that replaced this one (set on the old CA when rotated out)
 	PredecessorID *string    `json:"predecessor_id,omitempty" db:"predecessor_id"` // CA this one replaced (set on the new CA)
 	RetireAfter   *time.Time `json:"retire_after,omitempty" db:"retire_after"`     // earliest time the superseded key can be safely retired (max NotAfter of outstanding leaves at rotation time)
+
+	// MaxSSHValiditySecs is the CA-level ceiling, in seconds, on the lifetime of
+	// an OpenSSH certificate this CA will sign (Task 217). It is a property of
+	// the authority rather than of a signing profile: it binds every SSH signing
+	// path through this key — the profile-driven /api/ssh/cas/{id}/sign endpoint,
+	// the legacy restriction-set endpoint, and the CLI — so a long-lived profile
+	// or a generous restriction set cannot mint a longer-lived credential than
+	// the operator allows this CA to. Zero (the default) means the CA imposes no
+	// ceiling of its own and only the profile/restriction-set bounds apply.
+	MaxSSHValiditySecs int64 `json:"max_ssh_validity_secs,omitempty" db:"max_ssh_validity_secs"`
+}
+
+// MaxSSHValidity returns the CA's SSH signing ceiling as a duration; zero means
+// the CA imposes none.
+func (c *CA) MaxSSHValidity() time.Duration {
+	if c == nil || c.MaxSSHValiditySecs <= 0 {
+		return 0
+	}
+	return time.Duration(c.MaxSSHValiditySecs) * time.Second
+}
+
+// ClampSSHValidity applies the CA's SSH signing ceiling to a resolved validity,
+// returning the effective lifetime and whether the ceiling shortened it. It is
+// the single place the cap is applied, so every SSH signing path enforces it
+// identically.
+func (c *CA) ClampSSHValidity(d time.Duration) (time.Duration, bool) {
+	ceiling := c.MaxSSHValidity()
+	if ceiling > 0 && d > ceiling {
+		return ceiling, true
+	}
+	return d, false
 }
 
 // CA rollover lifecycle states.

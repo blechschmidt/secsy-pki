@@ -340,6 +340,7 @@ func (db *DB) migrate() error {
 			retire_after TIMESTAMP,
 			csr TEXT,
 			external_chain TEXT,
+			max_ssh_validity_secs INTEGER NOT NULL DEFAULT 0,
 			created_at %s
 		)`, blob, currentTimestamp),
 		// Per-CA monotonic serial counter used to allocate unique certificate
@@ -1256,6 +1257,9 @@ func (db *DB) migrate() error {
 		// Externally-signed subordinate CA support (Task 69).
 		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS csr TEXT")
 		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS external_chain TEXT")
+		// Per-CA SSH signing ceiling (Task 217). Zero means the CA imposes no
+		// ceiling of its own, so existing CAs are unaffected by the upgrade.
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN IF NOT EXISTS max_ssh_validity_secs BIGINT NOT NULL DEFAULT 0")
 		_, _ = db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS ssh_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		_, _ = db.conn.Exec("ALTER TABLE permissions ADD COLUMN IF NOT EXISTS x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		_, _ = db.conn.Exec("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS certificate BYTEA")
@@ -1318,6 +1322,9 @@ func (db *DB) migrate() error {
 		// Externally-signed subordinate CA support (Task 69).
 		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN csr TEXT")
 		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN external_chain TEXT")
+		// Per-CA SSH signing ceiling (Task 217). Zero means the CA imposes no
+		// ceiling of its own, so existing CAs are unaffected by the upgrade.
+		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN max_ssh_validity_secs INTEGER NOT NULL DEFAULT 0")
 		_, _ = db.conn.Exec("ALTER TABLE permissions ADD COLUMN ssh_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		_, _ = db.conn.Exec("ALTER TABLE permissions ADD COLUMN x509_restriction_set_id TEXT REFERENCES restriction_sets(id) ON DELETE SET NULL")
 		_, _ = db.conn.Exec("ALTER TABLE audit_log ADD COLUMN certificate BLOB")
@@ -1483,7 +1490,8 @@ func (db *DB) upsert(table, columns, placeholders, conflictCols, updateSet strin
 const caColumns = `id, tenant_id, parent_id, label, pkcs11_uri, key_type, public_key,
 	default_ssh_restriction_set_id, default_x509_restriction_set_id,
 	certificate, subject, serial, not_before, not_after, max_path_len,
-	status, successor_id, predecessor_id, retire_after, csr, external_chain, created_at`
+	status, successor_id, predecessor_id, retire_after, csr, external_chain,
+	max_ssh_validity_secs, created_at`
 
 // caScanner is the minimal surface shared by *sql.Row and *sql.Rows.
 type caScanner interface {
@@ -1497,14 +1505,18 @@ func scanCA(s caScanner) (*models.CA, error) {
 	var tenantID, cert, subject, serial, status sql.NullString
 	var successorID, predecessorID, csr, externalChain sql.NullString
 	var notBefore, notAfter, retireAfter sql.NullTime
-	var maxPathLen sql.NullInt64
+	var maxPathLen, maxSSHValidity sql.NullInt64
 	if err := s.Scan(
 		&ca.ID, &tenantID, &ca.ParentID, &ca.Label, &ca.PKCS11URI, &ca.KeyType, &pubBlob,
 		&ca.DefaultSSHRestrictionSetID, &ca.DefaultX509RestrictionSetID,
 		&cert, &subject, &serial, &notBefore, &notAfter, &maxPathLen,
-		&status, &successorID, &predecessorID, &retireAfter, &csr, &externalChain, &ca.CreatedAt,
+		&status, &successorID, &predecessorID, &retireAfter, &csr, &externalChain,
+		&maxSSHValidity, &ca.CreatedAt,
 	); err != nil {
 		return nil, err
+	}
+	if maxSSHValidity.Valid && maxSSHValidity.Int64 > 0 {
+		ca.MaxSSHValiditySecs = maxSSHValidity.Int64
 	}
 	if csr.Valid {
 		ca.CSR = csr.String
@@ -1599,19 +1611,25 @@ func (db *DB) CreateCA(ca *models.CA) error {
 	if tenantID == "" {
 		tenantID = models.DefaultTenantID
 	}
+	maxSSHValidity := ca.MaxSSHValiditySecs
+	if maxSSHValidity < 0 {
+		maxSSHValidity = 0
+	}
 
 	if _, err := tx.Exec(db.ph(
 		`INSERT INTO cas (id, tenant_id, parent_id, label, pkcs11_uri, key_type, public_key,
 			default_ssh_restriction_set_id, default_x509_restriction_set_id,
 			certificate, subject, serial, not_before, not_after, max_path_len,
-			status, successor_id, predecessor_id, retire_after, csr, external_chain)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			status, successor_id, predecessor_id, retire_after, csr, external_chain,
+			max_ssh_validity_secs)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		ca.ID, tenantID, ca.ParentID, ca.Label, ca.PKCS11URI, ca.KeyType, pubKeyToBlob(ca.PublicKey),
 		ca.DefaultSSHRestrictionSetID, ca.DefaultX509RestrictionSetID,
 		nullString(ca.Certificate), nullString(ca.Subject), nullString(ca.Serial),
 		notBefore, notAfter, maxPathLen,
 		status, ca.SuccessorID, ca.PredecessorID, retireAfter,
 		nullString(ca.CSR), nullString(ca.ExternalChain),
+		maxSSHValidity,
 	); err != nil {
 		return err
 	}
@@ -1724,6 +1742,18 @@ func (db *DB) GetCATenant(caID string) (string, error) {
 		return models.DefaultTenantID, nil
 	}
 	return tenantID.String, nil
+}
+
+// SetCAMaxSSHValidity stores a CA's ceiling on OpenSSH certificate lifetime, in
+// seconds (Task 217). Zero clears the ceiling, leaving only the profile and
+// restriction-set bounds in force. Callers resolve the CA first, so an unknown
+// id is a no-op here rather than an error (matching SetCAStatus).
+func (db *DB) SetCAMaxSSHValidity(caID string, secs int64) error {
+	if secs < 0 {
+		return fmt.Errorf("max ssh validity cannot be negative")
+	}
+	_, err := db.exec(`UPDATE cas SET max_ssh_validity_secs = ? WHERE id = ?`, secs, caID)
+	return err
 }
 
 func (db *DB) DeleteCA(id string) error {

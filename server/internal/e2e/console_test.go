@@ -1625,6 +1625,78 @@ func TestConsoleFlow(t *testing.T) {
 			t.Errorf("ssh certificates = %d: %s", st, body)
 		}
 
+		// The CA-level maximum certificate lifetime (Task 217), the way the SSH
+		// CA view drives it: set a 1h ceiling, then prove a long request comes
+		// back clamped — and that clearing it restores the profile bounds.
+		status, body = env.req(t, "PUT", "/api/ssh/cas/"+sshCA.ID+"/max-validity",
+			map[string]any{"max_validity_seconds": 3600})
+		if status != http.StatusOK {
+			t.Fatalf("set ssh max-validity = %d: %s", status, body)
+		}
+		var maxValResp struct {
+			MaxValiditySeconds         int64 `json:"max_validity_seconds"`
+			PreviousMaxValiditySeconds int64 `json:"previous_max_validity_seconds"`
+		}
+		if err := json.Unmarshal(body, &maxValResp); err != nil {
+			t.Fatalf("decode max-validity: %v", err)
+		}
+		if maxValResp.MaxValiditySeconds != 3600 || maxValResp.PreviousMaxValiditySeconds != 0 {
+			t.Errorf("max-validity response = %+v, want 3600 (previously 0)", maxValResp)
+		}
+		// The CA list carries it, so the view can show the ceiling in force.
+		if st, body := env.req(t, "GET", "/api/ssh/cas", nil); st != http.StatusOK ||
+			!bytes.Contains(body, []byte(`"max_ssh_validity_secs":3600`)) {
+			t.Errorf("ssh CA list should carry the ceiling: %d %s", st, body)
+		}
+
+		status, body = env.req(t, "POST", "/api/ssh/cas/"+sshCA.ID+"/sign", map[string]any{
+			"public_key":       string(ssh.MarshalAuthorizedKey(sshPub)),
+			"cert_type":        "user",
+			"key_id":           "console-e2e-capped",
+			"principals":       []string{"alice"},
+			"validity_seconds": 30 * 24 * 3600,
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("ssh sign under ceiling = %d: %s", status, body)
+		}
+		var capped struct {
+			Certificate            string `json:"certificate"`
+			ValidAfter             string `json:"valid_after"`
+			ValidBefore            string `json:"valid_before"`
+			CAMaxValiditySeconds   int64  `json:"ca_max_validity_seconds"`
+			ClampedByCAMaxValidity bool   `json:"clamped_by_ca_max_validity"`
+		}
+		if err := json.Unmarshal(body, &capped); err != nil {
+			t.Fatalf("decode capped sign: %v", err)
+		}
+		if !capped.ClampedByCAMaxValidity || capped.CAMaxValiditySeconds != 3600 {
+			t.Errorf("sign response should report the CA clamp: %+v", capped)
+		}
+		va, err := time.Parse(time.RFC3339, capped.ValidAfter)
+		if err != nil {
+			t.Fatalf("parse valid_after: %v", err)
+		}
+		vb, err := time.Parse(time.RFC3339, capped.ValidBefore)
+		if err != nil {
+			t.Fatalf("parse valid_before: %v", err)
+		}
+		if lifetime := vb.Sub(va); lifetime > time.Hour+10*time.Minute {
+			t.Errorf("clamped lifetime = %s, want ~1h", lifetime)
+		}
+		// The signed artifact itself — not just the JSON — carries the clamp.
+		if pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(capped.Certificate)); err != nil {
+			t.Errorf("parse clamped certificate: %v", err)
+		} else if cert, ok := pub.(*ssh.Certificate); !ok {
+			t.Errorf("clamped sign returned %T, want a certificate", pub)
+		} else if lifetime := time.Duration(cert.ValidBefore-cert.ValidAfter) * time.Second; lifetime > time.Hour+10*time.Minute {
+			t.Errorf("clamped certificate lifetime = %s, want ~1h", lifetime)
+		}
+
+		if st, body := env.req(t, "PUT", "/api/ssh/cas/"+sshCA.ID+"/max-validity",
+			map[string]any{"max_validity_seconds": 0}); st != http.StatusOK {
+			t.Fatalf("clear ssh max-validity = %d: %s", st, body)
+		}
+
 		status, body = env.req(t, "POST", "/api/ssh/cas/"+sshCA.ID+"/revoke", map[string]string{
 			"serial": signed.Serial, "reason": "key compromise drill",
 		})

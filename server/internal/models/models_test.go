@@ -66,3 +66,44 @@ func TestACMEAutoRenewalLifetime(t *testing.T) {
 		t.Errorf("zero LifetimeSeconds = %v, want 0", got)
 	}
 }
+
+func TestCAMaxSSHValidityAndClamp(t *testing.T) {
+	// A CA-level ceiling of one hour, and the "no ceiling" sentinel.
+	capped := &CA{MaxSSHValiditySecs: 3600}
+	uncapped := &CA{}
+
+	if got := capped.MaxSSHValidity(); got != time.Hour {
+		t.Errorf("MaxSSHValidity() = %v, want 1h", got)
+	}
+	if got := uncapped.MaxSSHValidity(); got != 0 {
+		t.Errorf("uncapped MaxSSHValidity() = %v, want 0", got)
+	}
+	// A negative stored value is nonsense; read it as "no ceiling" rather than
+	// as a ceiling in the past, which would clamp every certificate to zero.
+	if got := (&CA{MaxSSHValiditySecs: -5}).MaxSSHValidity(); got != 0 {
+		t.Errorf("negative MaxSSHValidity() = %v, want 0", got)
+	}
+	// A nil CA has no ceiling (callers reach this through an optional lookup).
+	if got := (*CA)(nil).MaxSSHValidity(); got != 0 {
+		t.Errorf("nil CA MaxSSHValidity() = %v, want 0", got)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		ca      *CA
+		in      time.Duration
+		want    time.Duration
+		clamped bool
+	}{
+		{"below the ceiling", capped, 30 * time.Minute, 30 * time.Minute, false},
+		{"exactly the ceiling", capped, time.Hour, time.Hour, false},
+		{"above the ceiling", capped, 24 * time.Hour, time.Hour, true},
+		{"uncapped passes everything", uncapped, 365 * 24 * time.Hour, 365 * 24 * time.Hour, false},
+	} {
+		got, clamped := tc.ca.ClampSSHValidity(tc.in)
+		if got != tc.want || clamped != tc.clamped {
+			t.Errorf("%s: ClampSSHValidity(%v) = (%v, %t), want (%v, %t)",
+				tc.name, tc.in, got, clamped, tc.want, tc.clamped)
+		}
+	}
+}

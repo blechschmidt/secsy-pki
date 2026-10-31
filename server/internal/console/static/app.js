@@ -4489,8 +4489,58 @@ let sshCAs = [];
 let sshProfiles = [];
 
 $('sshRefresh').onclick = loadSSH;
-$('sshCA').onchange = () => { updateSSHLinks(); loadSSHCerts(); };
+$('sshCA').onchange = () => { updateSSHLinks(); renderSSHMaxValidity(); loadSSHCerts(); };
 $('sshCertType').onchange = renderSSHProfileOptions;
+
+// fmtLifetime renders a certificate-lifetime ceiling in seconds the way the CLI
+// prints it. fmtDuration() rounds to whole hours, which would show a 30-minute
+// ceiling as "0h" — exactly the value an operator must not misread.
+function fmtLifetime(secs) {
+  if (!secs || secs <= 0) return 'uncapped';
+  const parts = [];
+  const units = [['d', 86400], ['h', 3600], ['m', 60], ['s', 1]];
+  let rest = secs;
+  for (const [suffix, size] of units) {
+    const n = Math.floor(rest / size);
+    if (n > 0) { parts.push(n + suffix); rest -= n * size; }
+  }
+  return parts.join(' ');
+}
+
+// parseLifetime accepts what the CLI's -max-validity accepts — a bare number of
+// seconds, or a value with a s/m/h/d/w suffix — and returns seconds, or null
+// when the text is not a lifetime. Empty input means "no ceiling" (0).
+function parseLifetime(text) {
+  const s = String(text ?? '').trim().toLowerCase();
+  if (s === '' || s === 'none' || s === '0') return 0;
+  const m = s.match(/^(\d+)\s*(s|m|h|d|w)?$/);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n * { s: 1, m: 60, h: 3600, d: 86400, w: 604800 }[m[2] || 's'];
+}
+
+function selectedSSHCA() {
+  const id = $('sshCA').value;
+  return sshCAs.find(c => c.id === id) || null;
+}
+
+// renderSSHMaxValidity reflects the selected CA's ceiling into the policy panel.
+function renderSSHMaxValidity() {
+  const state = $('sshMaxValidityState'), input = $('sshMaxValidity');
+  $('sshMaxValidityError').classList.add('hidden');
+  const ca = selectedSSHCA();
+  if (!ca) {
+    state.textContent = 'Select (or create) an SSH CA to see and change its ceiling.';
+    input.value = '';
+    return;
+  }
+  const secs = ca.max_ssh_validity_secs || 0;
+  input.value = secs > 0 ? fmtLifetime(secs) : '';
+  state.textContent = secs > 0
+    ? `"${ca.label}" signs no certificate longer than ${fmtLifetime(secs)} (${secs}s). Longer requests — from any profile, the API, or the CLI — are clamped to it. Certificates already signed keep their lifetime.`
+    : `"${ca.label}" has no CA-level ceiling: only the signing profile's max validity bounds a certificate's lifetime.`;
+}
 
 async function loadSSH() {
   try {
@@ -4500,8 +4550,10 @@ async function loadSSH() {
     return;
   }
   $('sshCA').innerHTML = sshCAs.length
-    ? sshCAs.map(c => `<option value="${c.id}">${escapeHTML(c.label)}</option>`).join('')
+    ? sshCAs.map(c => `<option value="${c.id}">${escapeHTML(c.label)}${
+        c.max_ssh_validity_secs ? ` — max ${fmtLifetime(c.max_ssh_validity_secs)}` : ''}</option>`).join('')
     : '<option value="">— no SSH CAs —</option>';
+  renderSSHMaxValidity();
   try {
     sshProfiles = await api('GET', '/api/ssh/profiles');
     renderSSHProfileOptions();
@@ -4531,18 +4583,66 @@ $('sshCreateBtn').onclick = async () => {
   err.classList.add('hidden');
   const label = $('sshCALabel').value.trim();
   if (!label) { showError(err, 'A label is required.'); return; }
+  const maxSecs = parseLifetime($('sshCAMaxValidity').value);
+  if (maxSecs === null) {
+    showError(err, 'Maximum certificate lifetime: use a duration like 24h or 30d, a number of seconds, or leave it empty for uncapped.');
+    return;
+  }
   $('sshCreateBtn').disabled = true;
   try {
-    const ca = await api('POST', '/api/ssh/cas', { label, key_type: $('sshCAKeyType').value });
-    notice($('sshMsg'), 'ok', `SSH CA "${ca.label}" created. Install its public key as the trust anchor (TrustedUserCAKeys / @cert-authority).`);
+    const body = { label, key_type: $('sshCAKeyType').value };
+    if (maxSecs > 0) body.max_validity_seconds = maxSecs;
+    const ca = await api('POST', '/api/ssh/cas', body);
+    notice($('sshMsg'), 'ok', `SSH CA "${ca.label}" created${
+      ca.max_ssh_validity_secs ? ` with a ${fmtLifetime(ca.max_ssh_validity_secs)} maximum certificate lifetime` : ''
+    }. Install its public key as the trust anchor (TrustedUserCAKeys / @cert-authority).`);
     $('sshCALabel').value = '';
+    $('sshCAMaxValidity').value = '';
     await loadSSH();
     $('sshCA').value = ca.id;
     updateSSHLinks();
+    renderSSHMaxValidity();
     loadSSHCerts();
   } catch (e) { showError(err, e.message); }
   finally { $('sshCreateBtn').disabled = false; }
 };
+
+// Apply / remove the CA-level ceiling (Task 217).
+async function setSSHMaxValidity(secs) {
+  const err = $('sshMaxValidityError');
+  err.classList.add('hidden');
+  const ca = selectedSSHCA();
+  if (!ca) { showError(err, 'Select (or create) an SSH CA first.'); return; }
+  if (secs === null) {
+    showError(err, 'Use a duration like 24h or 30d, a number of seconds, or clear the field to remove the ceiling.');
+    return;
+  }
+  if (secs > 0 && !confirm(
+    `Make ${fmtLifetime(secs)} the maximum lifetime of every SSH certificate signed by "${ca.label}"?\n\n` +
+    `Longer requests — from any profile, the API, or the CLI — will be clamped to it. ` +
+    `Certificates already signed keep the lifetime they were signed with.`)) return;
+  if (secs === 0 && !confirm(
+    `Remove the maximum certificate lifetime from "${ca.label}"?\n\n` +
+    `Only the signing profile's max validity would then bound how long a certificate can live.`)) return;
+  $('sshMaxValidityBtn').disabled = true;
+  $('sshMaxValidityClearBtn').disabled = true;
+  try {
+    const res = await api('PUT', `/api/ssh/cas/${ca.id}/max-validity`, { max_validity_seconds: secs });
+    notice($('sshMsg'), 'ok', res.max_validity_seconds > 0
+      ? `"${res.label}" now signs no certificate longer than ${fmtLifetime(res.max_validity_seconds)}.`
+      : `Removed the CA-level maximum from "${res.label}"; the signing profiles are now the only bound.`);
+    await loadSSH();
+    $('sshCA').value = ca.id;
+    renderSSHMaxValidity();
+  } catch (e) { showError(err, e.message); }
+  finally {
+    $('sshMaxValidityBtn').disabled = false;
+    $('sshMaxValidityClearBtn').disabled = false;
+  }
+}
+
+$('sshMaxValidityBtn').onclick = () => setSSHMaxValidity(parseLifetime($('sshMaxValidity').value));
+$('sshMaxValidityClearBtn').onclick = () => setSSHMaxValidity(0);
 
 $('sshSignBtn').onclick = async () => {
   const err = $('sshSignError');
@@ -4566,7 +4666,10 @@ $('sshSignBtn').onclick = async () => {
     const res = await api('POST', `/api/ssh/cas/${id}/sign`, body);
     $('sshCertOut').value = res.certificate;
     $('sshCertBox').classList.remove('hidden');
-    notice($('sshMsg'), 'ok', `Signed ${res.cert_type} certificate serial ${res.serial} (key ID ${res.key_id}), valid until ${fmtTime(res.valid_before)}.`);
+    notice($('sshMsg'), res.clamped_by_ca_max_validity ? 'warn' : 'ok',
+      `Signed ${res.cert_type} certificate serial ${res.serial} (key ID ${res.key_id}), valid until ${fmtTime(res.valid_before)}.` +
+      (res.clamped_by_ca_max_validity
+        ? ` Lifetime clamped to this CA's maximum of ${fmtLifetime(res.ca_max_validity_seconds)}.` : ''));
     loadSSHCerts();
   } catch (e) { showError(err, e.message); }
   finally { $('sshSignBtn').disabled = false; }

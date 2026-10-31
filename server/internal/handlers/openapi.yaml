@@ -2203,6 +2203,37 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/ssh/cas/{id}/max-validity:
+    parameters:
+      - $ref: "#/components/parameters/CAId"
+    put:
+      operationId: setSSHCAMaxValidity
+      tags: [SSH CA]
+      summary: Set the CA's maximum SSH certificate lifetime
+      description: >-
+        Sets (or, with zero, clears) the CA-level ceiling on the lifetime of the
+        OpenSSH certificates this CA signs. The ceiling takes effect immediately
+        and binds every SSH signing path through the CA key — the profile-driven
+        sign endpoint, the legacy restriction-set endpoint, and the CLI — so a
+        generous profile or restriction set cannot mint a longer-lived
+        certificate. Certificates already signed keep the lifetime they were
+        signed with. Requires the ca:manage capability in the CA's tenant or an
+        administrative grant on this CA, and is step-up capable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SSHMaxValidityRequest" }
+      responses:
+        "200":
+          description: The ceiling now in force.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SSHMaxValidityResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/ssh/cas/{id}/certificates:
     parameters:
       - $ref: "#/components/parameters/CAId"
@@ -5496,6 +5527,16 @@ components:
           description: >-
             Imported external issuing chain (PEM bundle up to the external
             root) served after the CA's own certificate in its chain.
+        max_ssh_validity_secs:
+          type: integer
+          format: int64
+          description: >-
+            CA-level ceiling, in seconds, on the lifetime of any OpenSSH
+            certificate this CA signs. It binds every SSH signing path through
+            the CA key — the profile-driven endpoint, the legacy
+            restriction-set endpoint, and the CLI — so no profile can mint a
+            longer-lived certificate. Absent or zero means the CA imposes no
+            ceiling of its own.
 
     CreateCARequest:
       type: object
@@ -7478,6 +7519,15 @@ components:
           type: string
           description: "Key-provider key type (default: ed25519)."
           example: ed25519
+        max_validity_seconds:
+          type: integer
+          format: int64
+          description: >-
+            CA-level ceiling on the lifetime of any OpenSSH certificate this CA
+            signs. Zero (the default) leaves the CA uncapped, so only the
+            signing profile's bounds apply. Changeable afterwards through
+            PUT /api/ssh/cas/{id}/max-validity.
+          example: 86400
 
     SSHProfile:
       type: object
@@ -7677,8 +7727,9 @@ components:
           type: integer
           format: int64
           description: >-
-            Requested lifetime; zero applies the profile default, values beyond
-            the profile maximum are clamped.
+            Requested lifetime; zero applies the profile default, and values
+            beyond the profile maximum — or beyond the CA's own ceiling
+            (max_ssh_validity_secs), whichever is lower — are clamped.
         extensions:
           type: object
           additionalProperties: { type: string }
@@ -7706,6 +7757,44 @@ components:
         ca_public_key:
           type: string
           description: The CA's authorized_keys line (the trust anchor).
+        ca_max_validity_seconds:
+          type: integer
+          format: int64
+          description: >-
+            The CA-level ceiling in force at signing time; absent or zero when
+            the CA sets none.
+        clamped_by_ca_max_validity:
+          type: boolean
+          description: >-
+            True when that ceiling shortened this certificate below what the
+            signing profile alone would have granted.
+
+    SSHMaxValidityRequest:
+      type: object
+      required: [max_validity_seconds]
+      properties:
+        max_validity_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >-
+            The new ceiling in seconds. Zero clears it, leaving only the signing
+            profile's bounds in force.
+          example: 86400
+
+    SSHMaxValidityResponse:
+      type: object
+      properties:
+        ca_id: { type: string }
+        label: { type: string }
+        max_validity_seconds:
+          type: integer
+          format: int64
+          description: The ceiling now in force; zero means uncapped.
+        previous_max_validity_seconds:
+          type: integer
+          format: int64
+          description: What the ceiling was before this call.
 
     SSHRevokeRequest:
       type: object

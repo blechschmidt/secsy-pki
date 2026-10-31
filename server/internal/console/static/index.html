@@ -823,6 +823,22 @@
         </div>
         <div id="sshMsg" class="notice hidden" style="margin-bottom:12px"></div>
 
+        <!-- CA-level signing ceiling (Task 217). A property of the authority, not
+             of a profile: it binds every signing path through this CA key. -->
+        <div class="panel" style="margin-bottom:14px">
+          <h2 style="font-size:15px">Maximum certificate lifetime (this CA)</h2>
+          <p class="sub" id="sshMaxValidityState">Select an SSH CA…</p>
+          <div id="sshMaxValidityError" class="notice err hidden"></div>
+          <div class="row">
+            <div class="field" style="width:220px">
+              <label for="sshMaxValidity">Ceiling (24h, 30d, or seconds)</label>
+              <input id="sshMaxValidity" placeholder="empty = uncapped">
+            </div>
+            <button class="btn" id="sshMaxValidityBtn" style="margin-top:16px">Apply ceiling</button>
+            <button class="btn ghost" id="sshMaxValidityClearBtn" style="margin-top:16px">Remove ceiling</button>
+          </div>
+        </div>
+
         <div class="row" style="align-items:stretch">
           <div class="panel" style="flex:1;min-width:300px">
             <h2 style="font-size:15px">Create SSH CA</h2>
@@ -835,6 +851,10 @@
                 <option value="rsa-3072">rsa-3072</option>
                 <option value="rsa-2048">rsa-2048</option>
               </select>
+            </div>
+            <div class="field">
+              <label for="sshCAMaxValidity">Maximum certificate lifetime (24h, 30d, or seconds)</label>
+              <input id="sshCAMaxValidity" placeholder="empty = uncapped">
             </div>
             <button class="btn" id="sshCreateBtn">Create SSH CA</button>
           </div>

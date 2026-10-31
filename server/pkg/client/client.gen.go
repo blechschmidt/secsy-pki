@@ -1624,17 +1624,20 @@ type CA struct {
 	DefaultX509RestrictionSetId *string `json:"default_x509_restriction_set_id,omitempty"`
 
 	// ExternalChain Imported external issuing chain (PEM bundle up to the external root) served after the CA's own certificate in its chain.
-	ExternalChain *string    `json:"external_chain,omitempty"`
-	Id            *string    `json:"id,omitempty"`
-	KeyType       *string    `json:"key_type,omitempty"`
-	Label         *string    `json:"label,omitempty"`
-	MaxPathLen    *int       `json:"max_path_len,omitempty"`
-	NotAfter      *time.Time `json:"not_after,omitempty"`
-	NotBefore     *time.Time `json:"not_before,omitempty"`
-	ParentId      *string    `json:"parent_id,omitempty"`
-	Pkcs11Uri     *string    `json:"pkcs11_uri,omitempty"`
-	PublicKey     *string    `json:"public_key,omitempty"`
-	Serial        *string    `json:"serial,omitempty"`
+	ExternalChain *string `json:"external_chain,omitempty"`
+	Id            *string `json:"id,omitempty"`
+	KeyType       *string `json:"key_type,omitempty"`
+	Label         *string `json:"label,omitempty"`
+	MaxPathLen    *int    `json:"max_path_len,omitempty"`
+
+	// MaxSshValiditySecs CA-level ceiling, in seconds, on the lifetime of any OpenSSH certificate this CA signs. It binds every SSH signing path through the CA key — the profile-driven endpoint, the legacy restriction-set endpoint, and the CLI — so no profile can mint a longer-lived certificate. Absent or zero means the CA imposes no ceiling of its own.
+	MaxSshValiditySecs *int64     `json:"max_ssh_validity_secs,omitempty"`
+	NotAfter           *time.Time `json:"not_after,omitempty"`
+	NotBefore          *time.Time `json:"not_before,omitempty"`
+	ParentId           *string    `json:"parent_id,omitempty"`
+	Pkcs11Uri          *string    `json:"pkcs11_uri,omitempty"`
+	PublicKey          *string    `json:"public_key,omitempty"`
+	Serial             *string    `json:"serial,omitempty"`
 
 	// Status Lifecycle state. "pending" marks an externally-signed CA whose key and CSR exist but whose certificate has not been imported yet.
 	Status  *CAStatus `json:"status,omitempty"`
@@ -1922,6 +1925,9 @@ type CreateSSHCARequest struct {
 
 	// Label CA label; doubles as the provider key label.
 	Label string `json:"label"`
+
+	// MaxValiditySeconds CA-level ceiling on the lifetime of any OpenSSH certificate this CA signs. Zero (the default) leaves the CA uncapped, so only the signing profile's bounds apply. Changeable afterwards through PUT /api/ssh/cas/{id}/max-validity.
+	MaxValiditySeconds *int64 `json:"max_validity_seconds,omitempty"`
 
 	// TenantId Owning tenant (default: the default tenant).
 	TenantId *string `json:"tenant_id,omitempty"`
@@ -4264,6 +4270,24 @@ type SSHFPRecord struct {
 	Zone string `json:"zone"`
 }
 
+// SSHMaxValidityRequest defines model for SSHMaxValidityRequest.
+type SSHMaxValidityRequest struct {
+	// MaxValiditySeconds The new ceiling in seconds. Zero clears it, leaving only the signing profile's bounds in force.
+	MaxValiditySeconds int64 `json:"max_validity_seconds"`
+}
+
+// SSHMaxValidityResponse defines model for SSHMaxValidityResponse.
+type SSHMaxValidityResponse struct {
+	CaId  *string `json:"ca_id,omitempty"`
+	Label *string `json:"label,omitempty"`
+
+	// MaxValiditySeconds The ceiling now in force; zero means uncapped.
+	MaxValiditySeconds *int64 `json:"max_validity_seconds,omitempty"`
+
+	// PreviousMaxValiditySeconds What the ceiling was before this call.
+	PreviousMaxValiditySeconds *int64 `json:"previous_max_validity_seconds,omitempty"`
+}
+
 // SSHProfile defines model for SSHProfile.
 type SSHProfile struct {
 	AllowEmptyPrincipals   *bool     `json:"allow_empty_principals,omitempty"`
@@ -4342,7 +4366,7 @@ type SSHSignRequest struct {
 	// PublicKey authorized_keys line of the key to certify.
 	PublicKey string `json:"public_key"`
 
-	// ValiditySeconds Requested lifetime; zero applies the profile default, values beyond the profile maximum are clamped.
+	// ValiditySeconds Requested lifetime; zero applies the profile default, and values beyond the profile maximum — or beyond the CA's own ceiling (max_ssh_validity_secs), whichever is lower — are clamped.
 	ValiditySeconds *int64 `json:"validity_seconds,omitempty"`
 }
 
@@ -4351,18 +4375,24 @@ type SSHSignRequestCertType string
 
 // SSHSignResponse defines model for SSHSignResponse.
 type SSHSignResponse struct {
+	// CaMaxValiditySeconds The CA-level ceiling in force at signing time; absent or zero when the CA sets none.
+	CaMaxValiditySeconds *int64 `json:"ca_max_validity_seconds,omitempty"`
+
 	// CaPublicKey The CA's authorized_keys line (the trust anchor).
 	CaPublicKey *string                  `json:"ca_public_key,omitempty"`
 	CertType    *SSHSignResponseCertType `json:"cert_type,omitempty"`
 
 	// Certificate authorized_keys line of the signed certificate (-cert.pub content).
-	Certificate *string    `json:"certificate,omitempty"`
-	KeyId       *string    `json:"key_id,omitempty"`
-	Principals  *[]string  `json:"principals,omitempty"`
-	Profile     *string    `json:"profile,omitempty"`
-	Serial      *string    `json:"serial,omitempty"`
-	ValidAfter  *time.Time `json:"valid_after,omitempty"`
-	ValidBefore *time.Time `json:"valid_before,omitempty"`
+	Certificate *string `json:"certificate,omitempty"`
+
+	// ClampedByCaMaxValidity True when that ceiling shortened this certificate below what the signing profile alone would have granted.
+	ClampedByCaMaxValidity *bool      `json:"clamped_by_ca_max_validity,omitempty"`
+	KeyId                  *string    `json:"key_id,omitempty"`
+	Principals             *[]string  `json:"principals,omitempty"`
+	Profile                *string    `json:"profile,omitempty"`
+	Serial                 *string    `json:"serial,omitempty"`
+	ValidAfter             *time.Time `json:"valid_after,omitempty"`
+	ValidBefore            *time.Time `json:"valid_before,omitempty"`
 }
 
 // SSHSignResponseCertType defines model for SSHSignResponse.CertType.
@@ -5848,6 +5878,9 @@ type CreateSSHCAJSONRequestBody = CreateSSHCARequest
 // GenerateSSHFPRecordsJSONRequestBody defines body for GenerateSSHFPRecords for application/json ContentType.
 type GenerateSSHFPRecordsJSONRequestBody = SSHFPGenerateRequest
 
+// SetSSHCAMaxValidityJSONRequestBody defines body for SetSSHCAMaxValidity for application/json ContentType.
+type SetSSHCAMaxValidityJSONRequestBody = SSHMaxValidityRequest
+
 // RevokeSSHCertJSONRequestBody defines body for RevokeSSHCert for application/json ContentType.
 type RevokeSSHCertJSONRequestBody = SSHRevokeRequest
 
@@ -6574,6 +6607,11 @@ type ClientInterface interface {
 
 	// GetSSHKRL request
 	GetSSHKRL(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SetSSHCAMaxValidityWithBody request with any body
+	SetSSHCAMaxValidityWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	SetSSHCAMaxValidity(ctx context.Context, id CAId, body SetSSHCAMaxValidityJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetSSHCAPublicKey request
 	GetSSHCAPublicKey(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -9456,6 +9494,30 @@ func (c *Client) GenerateSSHFPRecords(ctx context.Context, id CAId, body Generat
 
 func (c *Client) GetSSHKRL(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetSSHKRLRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SetSSHCAMaxValidityWithBody(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetSSHCAMaxValidityRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SetSSHCAMaxValidity(ctx context.Context, id CAId, body SetSSHCAMaxValidityJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetSSHCAMaxValidityRequest(c.Server, id, body)
 	if err != nil {
 		return nil, err
 	}
@@ -17388,6 +17450,53 @@ func NewGetSSHKRLRequest(server string, id CAId) (*http.Request, error) {
 	return req, nil
 }
 
+// NewSetSSHCAMaxValidityRequest calls the generic SetSSHCAMaxValidity builder with application/json body
+func NewSetSSHCAMaxValidityRequest(server string, id CAId, body SetSSHCAMaxValidityJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSetSSHCAMaxValidityRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewSetSSHCAMaxValidityRequestWithBody generates requests for SetSSHCAMaxValidity with any type of body
+func NewSetSSHCAMaxValidityRequestWithBody(server string, id CAId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/ssh/cas/%s/max-validity", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("PUT", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewGetSSHCAPublicKeyRequest generates requests for GetSSHCAPublicKey
 func NewGetSSHCAPublicKeyRequest(server string, id CAId) (*http.Request, error) {
 	var err error
@@ -18872,6 +18981,11 @@ type ClientWithResponsesInterface interface {
 
 	// GetSSHKRLWithResponse request
 	GetSSHKRLWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetSSHKRLResponse, error)
+
+	// SetSSHCAMaxValidityWithBodyWithResponse request with any body
+	SetSSHCAMaxValidityWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetSSHCAMaxValidityResponse, error)
+
+	SetSSHCAMaxValidityWithResponse(ctx context.Context, id CAId, body SetSSHCAMaxValidityJSONRequestBody, reqEditors ...RequestEditorFn) (*SetSSHCAMaxValidityResponse, error)
 
 	// GetSSHCAPublicKeyWithResponse request
 	GetSSHCAPublicKeyWithResponse(ctx context.Context, id CAId, reqEditors ...RequestEditorFn) (*GetSSHCAPublicKeyResponse, error)
@@ -22779,6 +22893,31 @@ func (r GetSSHKRLResponse) StatusCode() int {
 	return 0
 }
 
+type SetSSHCAMaxValidityResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *SSHMaxValidityResponse
+	JSON400      *BadRequest
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r SetSSHCAMaxValidityResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SetSSHCAMaxValidityResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type GetSSHCAPublicKeyResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -25331,6 +25470,23 @@ func (c *ClientWithResponses) GetSSHKRLWithResponse(ctx context.Context, id CAId
 		return nil, err
 	}
 	return ParseGetSSHKRLResponse(rsp)
+}
+
+// SetSSHCAMaxValidityWithBodyWithResponse request with arbitrary body returning *SetSSHCAMaxValidityResponse
+func (c *ClientWithResponses) SetSSHCAMaxValidityWithBodyWithResponse(ctx context.Context, id CAId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetSSHCAMaxValidityResponse, error) {
+	rsp, err := c.SetSSHCAMaxValidityWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetSSHCAMaxValidityResponse(rsp)
+}
+
+func (c *ClientWithResponses) SetSSHCAMaxValidityWithResponse(ctx context.Context, id CAId, body SetSSHCAMaxValidityJSONRequestBody, reqEditors ...RequestEditorFn) (*SetSSHCAMaxValidityResponse, error) {
+	rsp, err := c.SetSSHCAMaxValidity(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetSSHCAMaxValidityResponse(rsp)
 }
 
 // GetSSHCAPublicKeyWithResponse request returning *GetSSHCAPublicKeyResponse
@@ -31476,6 +31632,53 @@ func ParseGetSSHKRLResponse(rsp *http.Response) (*GetSSHKRLResponse, error) {
 	}
 
 	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseSetSSHCAMaxValidityResponse parses an HTTP response from a SetSSHCAMaxValidityWithResponse call
+func ParseSetSSHCAMaxValidityResponse(rsp *http.Response) (*SetSSHCAMaxValidityResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SetSSHCAMaxValidityResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SSHMaxValidityResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
 		var dest NotFound
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {

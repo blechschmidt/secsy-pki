@@ -357,11 +357,14 @@ const SHOTS = [
   },
   {
     file: '13-ssh-ca.png',
-    what: 'the SSH CA — signing OpenSSH certificates from the same HSM',
+    what: 'the SSH CA — signing OpenSSH certificates from the same HSM, under a CA-level lifetime ceiling',
     setup: `switchView('ssh'); loadSSH()`,
-    settle: `document.querySelectorAll('#view-ssh tbody tr').length >= 2`,
+    // The ceiling panel reads the selected CA, so wait for it to resolve too —
+    // otherwise the shot can catch it on "Select an SSH CA…".
+    settle: `document.querySelectorAll('#view-ssh tbody tr').length >= 2 &&
+             document.getElementById('sshMaxValidityState').textContent.includes('12h')`,
     clip: '#view-ssh',
-    maxHeight: 1000,
+    maxHeight: 1150,
   },
   {
     file: '14-signing.png',

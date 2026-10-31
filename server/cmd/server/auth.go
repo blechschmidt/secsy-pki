@@ -30,7 +30,7 @@ import (
 var defaultStepUpOperations = []string{
 	"cert.revoke", "cert.revoke_bulk", "ca.init_root", "ca.issue_intermediate",
 	"ca.cross_sign", "ca.rotate", "ca.retire", "ca.manage",
-	"ssh.ca_init", "ssh.revoke", "hsm.factory_reset",
+	"ssh.ca_init", "ssh.revoke", "ssh.ca_config", "hsm.factory_reset",
 	// Adopting foreign key material and provisioning the deployment's own signing
 	// credentials (Task 198) belong here for the same reason as init-root: they
 	// change what this PKI will sign with. Un-blocking a compromised key and

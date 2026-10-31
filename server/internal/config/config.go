@@ -1530,7 +1530,7 @@ type WebAuthnConfig struct {
 	// ca.init_root, ca.issue_intermediate, ca.csr, ca.import_cert, ca.cross_sign,
 	// ca.rotate, ca.retire, ca.import, key.import, key.unblock,
 	// signing.key_provision, tsa.key_provision, inventory.retention,
-	// publish.snapshot, ssh.ca_init, ssh.revoke, secret.kek_rotate,
+	// publish.snapshot, ssh.ca_init, ssh.revoke, ssh.ca_config, secret.kek_rotate,
 	// secret.kek_retire, hsm.factory_reset. Empty applies a safe default set.
 	StepUpOperations []string `yaml:"step_up_operations"`
 }

@@ -56,6 +56,10 @@ type CASpec struct {
 	// KeyType is a keyprovider key type (ed25519, ecdsa-p256, rsa-2048, …);
 	// empty defaults to DefaultCAKeyType.
 	KeyType string
+	// MaxValidity is the CA-level ceiling on the lifetime of any certificate
+	// this CA signs (Task 217). Zero leaves the CA uncapped, so only the
+	// profile bounds apply.
+	MaxValidity time.Duration
 }
 
 // InitCA generates a new CA key pair inside the key provider and persists the
@@ -72,6 +76,10 @@ func (a *Authority) InitCA(ctx context.Context, spec CASpec) (*models.CA, error)
 		keyType = DefaultCAKeyType
 	}
 	normalized, err := keyprovider.NormalizeKeyType(keyType)
+	if err != nil {
+		return nil, err
+	}
+	maxValiditySecs, err := validateMaxValidity(spec.MaxValidity)
 	if err != nil {
 		return nil, err
 	}
@@ -118,6 +126,7 @@ func (a *Authority) InitCA(ctx context.Context, spec CASpec) (*models.CA, error)
 		DefaultSSHRestrictionSetID:  &denySSH,
 		DefaultX509RestrictionSetID: &denyX509,
 		Status:                      models.CAStatusActive,
+		MaxSSHValiditySecs:          maxValiditySecs,
 	}
 	if err := a.db.CreateCA(ca); err != nil {
 		return nil, fmt.Errorf("persisting CA: %w", err)
@@ -143,7 +152,8 @@ type SignRequest struct {
 	// the certificate type.
 	Profile string
 	// Validity is the requested lifetime; zero applies the profile default, and
-	// values beyond the profile maximum are clamped.
+	// values beyond the profile maximum — or beyond the signing CA's own
+	// ceiling, whichever is lower — are clamped.
 	Validity time.Duration
 	// Extensions/CriticalOptions replace the profile defaults when non-empty;
 	// every key must be permitted by the profile.
@@ -164,6 +174,55 @@ type SignResult struct {
 	Record *models.SSHCertificate
 	// CA is the signing CA.
 	CA *models.CA
+	// CAMaxValidity is the CA-level ceiling that was in force (zero when the CA
+	// sets none), and ClampedByCA reports whether it shortened this certificate
+	// below what the profile alone would have granted. Callers surface this so
+	// an operator sees WHY a certificate came back shorter than requested.
+	CAMaxValidity time.Duration
+	ClampedByCA   bool
+}
+
+// validateMaxValidity checks a proposed CA-level ceiling and returns it in
+// whole seconds, the unit the store holds. Zero is the "no ceiling" sentinel.
+// A negative value is a caller error, and so is a positive value below one
+// second: it would truncate to zero, quietly turning a tightening into a
+// loosening.
+func validateMaxValidity(d time.Duration) (int64, error) {
+	if d < 0 {
+		return 0, fmt.Errorf("max validity cannot be negative")
+	}
+	secs := int64(d / time.Second)
+	if d > 0 && secs == 0 {
+		return 0, fmt.Errorf("max validity must be at least one second, got %s", d)
+	}
+	return secs, nil
+}
+
+// SetMaxValidity sets (or, with zero, clears) a CA's ceiling on the lifetime of
+// the OpenSSH certificates it signs, returning the updated CA record. The
+// ceiling takes effect immediately for every subsequent signature through this
+// CA — it is enforced in Sign, below the profile resolution, so no profile and
+// no caller-supplied validity can exceed it.
+func (a *Authority) SetMaxValidity(ctx context.Context, caID string, ceiling time.Duration) (*models.CA, error) {
+	secs, err := validateMaxValidity(ceiling)
+	if err != nil {
+		return nil, err
+	}
+	ca, err := a.db.GetCA(caID)
+	if err != nil {
+		return nil, fmt.Errorf("loading CA: %w", err)
+	}
+	if ca == nil {
+		return nil, fmt.Errorf("CA %q not found", caID)
+	}
+	if strings.TrimSpace(ca.PublicKey) == "" {
+		return nil, fmt.Errorf("CA %q has no OpenSSH public key and signs no SSH certificates", ca.Label)
+	}
+	if err := a.db.SetCAMaxSSHValidity(ca.ID, secs); err != nil {
+		return nil, fmt.Errorf("storing max validity: %w", err)
+	}
+	ca.MaxSSHValiditySecs = secs
+	return ca, nil
 }
 
 // Sign validates a request against its profile, allocates the next serial from
@@ -253,7 +312,12 @@ func (a *Authority) Sign(ctx context.Context, req SignRequest) (_ *SignResult, e
 		return nil, fmt.Errorf("a key ID is required")
 	}
 
+	// Profile bounds first (default when unspecified, profile maximum as a
+	// clamp), then the CA's own ceiling on top — a CA-level cap binds every
+	// profile, so a generous profile cannot outlive what this authority is
+	// permitted to sign.
 	validity := profile.resolveValidity(req.Validity)
+	validity, clampedByCA := ca.ClampSSHValidity(validity)
 	now := a.now()
 	validAfter := now.Add(-clockSkewBackdate)
 	validBefore := now.Add(validity)
@@ -314,6 +378,8 @@ func (a *Authority) Sign(ctx context.Context, req SignRequest) (_ *SignResult, e
 		AuthorizedKey: ssh.MarshalAuthorizedKey(cert),
 		Record:        record,
 		CA:            ca,
+		CAMaxValidity: ca.MaxSSHValidity(),
+		ClampedByCA:   clampedByCA,
 	}, nil
 }
 

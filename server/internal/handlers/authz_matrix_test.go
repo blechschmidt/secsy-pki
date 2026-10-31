@@ -419,6 +419,9 @@ func authzMatrix() []rc {
 		rdG("GET", "/api/ssh/profiles", "/api/ssh/profiles", ""),
 		iss("POST", "/api/ssh/cas/{id}/sign", "/api/ssh/cas/ca-a/sign", `{}`),
 		iss("POST", "/api/ssh/cas/{id}/revoke", "/api/ssh/cas/ca-a/revoke", `{}`),
+		// The CA-level SSH signing ceiling (Task 217) is a signing-policy change,
+		// so it takes ca:manage on the CA — not the issue capability.
+		caMg("PUT", "/api/ssh/cas/{id}/max-validity", "/api/ssh/cas/ca-a/max-validity", `{"max_validity_seconds":3600}`),
 		caRd("GET", "/api/ssh/cas/{id}/certificates", "/api/ssh/cas/ca-a/certificates"),
 		caRd("GET", "/api/ssh/cas/{id}/revocations", "/api/ssh/cas/ca-a/revocations"),
 		pub("GET", "/api/ssh/cas/{id}/public", "/api/ssh/cas/ca-a/public"),

@@ -106,7 +106,7 @@ The console's 24 views, with the `data-view` name the test tables use:
 |---|---|---|
 | `secsy-ca hsm-attest` | HSM | **Device authenticity**, **Key attestation** (by CA or by label), **Device-wide attestation audit** for `hsm-attest audit`, **Verify an attestation**. `hsm-attest verify` is also offered offline, by design |
 | `secsy-ca hsm-audit` | HSM | **Audit-log reconciliation**, **Device audit log**, provisioning, the factory reset commissioning needs (`hsm-audit reset`, which the console offers as **Factory reset**) and the bundle / signed-log / combined-log downloads. `hsm-audit verify` and `verify-file` stay offline so a third party can check the claims on a machine with none of the CA's state |
-| `secsy-ca ssh` | SSH CA | create CAs, sign user/host keys, browse/revoke, CA public key and KRL downloads |
+| `secsy-ca ssh` | SSH CA | create CAs, set/clear the CA's maximum certificate lifetime (`ssh ca-max-validity`), sign user/host keys, browse/revoke, CA public key and KRL downloads |
 | `secsy-ca sign` | Signing | detached CMS signature with the CAdES baseline-level selector (B / T / LT) |
 | `secsy-ca verify-signature` | Signing | **Verify**, with the require-level and require-timestamp gates |
 | `secsy-ca signing-key` | Signing | **Provision a code-signing credential** |

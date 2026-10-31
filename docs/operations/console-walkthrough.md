@@ -375,7 +375,7 @@ and JWT-SVID minters for workload identity.
 
 ## 12. The other CA: SSH
 
-![The SSH certificate authority view: an SSH CA picker set to northwind-ssh-ops with CA public key and Download KRL links, a Create SSH CA form, a "Sign a public key" form with type, profile, validity, key ID, principals and an authorized_keys-line textarea, a "Signed certificates" table listing a host certificate for bastion.northwind.example and two user certificates for j.lindqvist and m.okonkwo, all VALID with Revoke buttons, and an empty "Revocations (KRL entries)" panel.](../screenshots/13-ssh-ca.png)
+![The SSH certificate authority view: an SSH CA picker set to "northwind-ssh-ops — max 12h" with CA public key and Download KRL links; a "Maximum certificate lifetime (this CA)" panel reading "northwind-ssh-ops signs no certificate longer than 12h (43200s). Longer requests — from any profile, the API, or the CLI — are clamped to it. Certificates already signed keep their lifetime.", with a ceiling field holding 12h and Apply ceiling / Remove ceiling buttons; a Create SSH CA form with label, key type and maximum-certificate-lifetime fields; a "Sign a public key" form with type, profile, validity, key ID, principals and an authorized_keys-line textarea; a "Signed certificates" table listing a host certificate for bastion.northwind.example and two user certificates for j.lindqvist and m.okonkwo, all VALID with Revoke buttons; and an empty "Revocations (KRL entries)" panel.](../screenshots/13-ssh-ca.png)
 
 OpenSSH certificates are not X.509 and do not appear anywhere in the pages above
 — but they are signed by a key in the same token, under the same RBAC, into the
@@ -390,6 +390,15 @@ requested and which extensions and critical options are permitted — so an
 profile allows 15 minutes, no PTY, and principals matching `deploy-*` only.
 **Sign a public key** takes an `authorized_keys` line, not a CSR, because that
 is what SSH has.
+
+Above those forms is the one control that is **not** per-profile: the CA's
+**maximum certificate lifetime**. A profile bounds the certificates signed under
+it; this bounds every certificate signed by this key, whichever profile or
+endpoint asked — including the profile's own default, which is why the host
+certificate above expires in 12 hours rather than the 90 days `host-default`
+would otherwise grant. Tighten it here and the next signature is shorter;
+certificates already signed keep what they were signed with, so a tightening is
+a policy change, not a revocation.
 
 Revocation is the **KRL** rather than a CRL: revoke a certificate here and
 download the KRL for your hosts' `RevokedKeys`. The validity windows are the

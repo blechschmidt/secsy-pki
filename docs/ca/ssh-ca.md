@@ -26,7 +26,8 @@ Why SSH certificates instead of raw `authorized_keys`:
 
 ```console
 # 1. Create the CA — the key is generated inside the HSM.
-$ secsy-ca ssh ca-init -label ops-ssh-ca -key-type ed25519 > ops-ssh-ca.pub
+#    -max-validity is optional; it caps every certificate this CA will ever sign.
+$ secsy-ca ssh ca-init -label ops-ssh-ca -key-type ed25519 -max-validity 12h > ops-ssh-ca.pub
 
 # 2. Sign a user's public key into a 12h certificate (user-default profile).
 $ secsy-ca ssh sign-user -ca ops-ssh-ca -pub ~/.ssh/id_ed25519.pub \
@@ -40,9 +41,10 @@ $ secsy-ca ssh sign-host -ca ops-ssh-ca -pub /etc/ssh/ssh_host_ed25519_key.pub \
 $ secsy-ca ssh revoke -ca ops-ssh-ca -serial 3 -reason "laptop stolen"
 $ secsy-ca ssh krl -ca ops-ssh-ca -out /etc/ssh/ops-ssh-ca.krl
 
-# Inventory and profiles.
+# Inventory, profiles, and the CA's signing ceiling.
 $ secsy-ca ssh list -ca ops-ssh-ca
 $ secsy-ca ssh profiles
+$ secsy-ca ssh ca-max-validity -ca ops-ssh-ca
 ```
 
 `ssh-keygen -L -f id_ed25519-cert.pub` shows exactly what was signed;
@@ -129,6 +131,66 @@ Enforcement rules:
 - Host certificates never carry extensions or critical options; requests that
   ask for them are refused.
 
+## The CA's maximum signing duration
+
+A profile's `max_validity` bounds the certificates signed *under that profile*.
+The **CA-level maximum** bounds every certificate signed by **that CA key**, no
+matter which profile, which endpoint, or which client asked:
+
+| | Profile `max_validity` | CA maximum |
+|---|---|---|
+| Scope | one named profile | one authority, all its profiles |
+| Set in | config (`ssh.profiles`), restart/reload to change | the store — change it live from the CLI, the API, or the console |
+| Binds the profile *default* | no (the default is already within it) | **yes** — a 90d profile default under a 12h CA is signed for 12h |
+| Binds the legacy `/api/keys/{id}/sign` endpoint | no (that path uses restriction sets) | **yes** |
+
+Use it when the authority itself has a policy — "the bastion CA never signs
+anything that outlives a shift" — rather than when one certificate shape does.
+Because it binds every path through the key, it is the control that cannot be
+sidestepped by adding a profile or by loosening a restriction set.
+
+```console
+# Set it at creation, or any time afterwards (24h, 30d, 12w, or a Go duration).
+$ secsy-ca ssh ca-init -label bastion-ca -max-validity 12h
+$ secsy-ca ssh ca-max-validity -ca bastion-ca -set 8h
+SSH CA "bastion-ca" now signs no certificate longer than 8h0m0s (was 12h0m0s).
+  Existing certificates keep the lifetime they were signed with.
+
+# Read it back (prints "none" when the CA is uncapped).
+$ secsy-ca ssh ca-max-validity -ca bastion-ca
+8h0m0s
+
+# Remove it; the signing profiles become the only bound again.
+$ secsy-ca ssh ca-max-validity -ca bastion-ca -set none
+```
+
+Clamping, not refusal: a request for more comes back shorter rather than
+failing, so a ceiling can be tightened without breaking the clients that ask for
+the old lifetime. The CLI, the API response (`clamped_by_ca_max_validity`,
+`ca_max_validity_seconds`) and the console all say when a clamp happened, and
+the `ssh.sign` audit event records it.
+
+Over REST:
+
+```console
+$ curl -u root:$PASSWORD -X PUT https://pki.example.com/api/ssh/cas/$CA/max-validity \
+    -H 'Content-Type: application/json' -d '{"max_validity_seconds":28800}'
+{"ca_id":"…","label":"bastion-ca","max_validity_seconds":28800,"previous_max_validity_seconds":43200}
+```
+
+`GET /api/ssh/cas` reports each CA's ceiling as `max_ssh_validity_secs` (absent
+or `0` = uncapped). In the console it is the **Maximum certificate lifetime
+(this CA)** panel on the SSH CA view, and a field on the *Create SSH CA* form.
+
+Two properties worth knowing:
+
+- **Not retroactive.** Tightening the ceiling does not shorten certificates
+  already signed — revoke them (and publish the KRL) if that is what you need.
+- **Privilege-granting in one direction.** Raising or clearing a ceiling widens
+  what the authority may sign, so the change takes `ca:manage` on the CA (not
+  the issue capability), is step-up capable, and is audited as `ssh.ca_config`
+  with the old and new value plus the direction of the change.
+
 ## Serials and revocation
 
 Serials are allocated from the CA's monotonic store counter (shared with the
@@ -157,6 +219,7 @@ serial space), with serial-list and key-ID subsections per OpenSSH's
 | `GET /api/ssh/profiles` | read role | effective signing profiles |
 | `POST /api/ssh/cas/{id}/sign` | issue capability on the CA | sign a user/host certificate |
 | `POST /api/ssh/cas/{id}/revoke` | issue capability (step-up capable) | revoke by serial or key ID |
+| `PUT /api/ssh/cas/{id}/max-validity` | `ca:manage` on the CA (step-up capable) | set/clear the CA's maximum certificate lifetime |
 | `GET /api/ssh/cas/{id}/certificates` | read role + tenant membership | inventory |
 | `GET /api/ssh/cas/{id}/revocations` | read role + tenant membership | revocation records |
 | `GET /api/ssh/cas/{id}/public` | public | CA public key (trust anchor) |
@@ -193,8 +256,10 @@ including `ssh-keygen` interop.
 ## Audit and metrics
 
 Audit actions: `ssh.ca_init`, `ssh.sign` (serial, type, key ID, principals,
-profile in the detail), `ssh.revoke` (target + idempotence). CLI operations
-are recorded with actor `cli`.
+profile in the detail — plus the CA ceiling when one clamped the lifetime),
+`ssh.revoke` (target + idempotence), and `ssh.ca_config` (a change to the CA's
+maximum certificate lifetime: old value, new value, and whether the change
+tightened, raised or cleared it). CLI operations are recorded with actor `cli`.
 
 Metrics: `secsy_ssh_certificates_total{type,result}`,
 `secsy_ssh_revocations_total{result}`, `secsy_ssh_krl_requests_total{result}`,

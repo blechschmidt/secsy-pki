@@ -47,6 +47,20 @@ Trust it for host certificates (known_hosts):
 $ secsy-ca -config /etc/secsy-pki/config.yaml ssh profiles   # confirm your profiles loaded
 ```
 
+Optionally give the authority its own ceiling. `-max-validity` caps **every**
+certificate this CA will ever sign — whichever profile asks, and over any
+endpoint — so a profile added later cannot quietly widen it:
+
+```console
+$ secsy-ca -config /etc/secsy-pki/config.yaml ssh ca-init \
+    -label ops-ssh-ca -key-type ed25519 -max-validity 24h > ops-ssh-ca.pub
+
+# Change or remove it at any time (the store holds it; no restart):
+$ secsy-ca -config /etc/secsy-pki/config.yaml ssh ca-max-validity -ca ops-ssh-ca -set 12h
+$ secsy-ca -config /etc/secsy-pki/config.yaml ssh ca-max-validity -ca ops-ssh-ca
+12h0m0s
+```
+
 > Ed25519 needs an EdDSA-capable token (SoftHSM ≥ 2.4, YubiHSM 2). On a token
 > without it, use `-key-type ecdsa-p256`. RSA CAs sign with `rsa-sha2-512`, never
 > legacy `ssh-rsa`/SHA-1.
@@ -135,7 +149,9 @@ $ ssh-keygen -Q -f ops-ssh-ca.krl ~alice/.ssh/id_ed25519-cert.pub    # "... is r
 | `prod-host` | host | 90d / 366d | `*.prod.example.com` | host certs carry no extensions |
 
 Built-in `user-default` (12h) and `host-default` (90d) remain available if a
-request names no `-profile`. Requests over `max_validity` are clamped;
+request names no `-profile`. Requests over `max_validity` are clamped — and so
+is anything over the **CA's own ceiling** (`ssh ca-max-validity`), which bounds
+every profile in the table above, including their defaults;
 certificates must name at least one principal (a principal-less OpenSSH cert is
 valid for *everyone* — opt out only via `allow_empty_principals` if you truly
 mean it).
