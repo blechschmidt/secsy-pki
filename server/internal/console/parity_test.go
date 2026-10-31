@@ -47,7 +47,7 @@ package console
 //     If nothing in the console should, use the consoleN/A constructor that
 //     states WHY: naPublic (a relying party consumes it, not an operator),
 //     naPlumbing (machine/bootstrap endpoint, no operator control),
-//     naLegacy (only the legacy disk-based SPA in server/web/static/ uses it),
+//     naWithhold (deliberately not a browser control, by policy),
 //     naIndirect (the capability IS on a console view, reached through a
 //     different endpoint). Do NOT reach for a consoleN/A row to silence check
 //     3 — that is exactly the drift this file exists to stop.
@@ -89,7 +89,7 @@ const (
 	naNone      naClass = iota // not exempt: a console view surfaces it
 	naPublicAPI                // public protocol / relying-party endpoint
 	naMachine                  // machine or bootstrap plumbing
-	naLegacySPA                // only the legacy disk-based SPA (server/web/static/) uses it
+	naWithheld                 // deliberately not a browser control
 	naViaOther                 // the capability is on a console view, via a different route
 )
 
@@ -129,12 +129,12 @@ func naPlumbing(route, why string) routeEntry {
 	return routeEntry{route: route, na: naMachine, why: why}
 }
 
-// naLegacy: consoleN/A — served by the LEGACY disk-based SPA in
-// server/web/static/, which predates the embedded console and was never ported.
-// These are the honest debt rows: each one is a capability an operator can only
-// reach from the old UI or the CLI.
-func naLegacy(route, why string) routeEntry {
-	return routeEntry{route: route, na: naLegacySPA, why: why}
+// naWithhold: consoleN/A by policy — the capability is deliberately not offered
+// in a browser, and the console's silence about it is the decision rather than an
+// omission. Reserved for operations whose blast radius is the whole deployment
+// and whose correct home is a terminal at the device.
+func naWithhold(route, why string) routeEntry {
+	return routeEntry{route: route, na: naWithheld, why: why}
 }
 
 // naIndirect: consoleN/A for THIS route, but the capability is on the named
@@ -291,14 +291,18 @@ func parityRoutes() []routeEntry {
 			"the Authorities view renders the hierarchy from the parent_id on each row of GET /api/keys, so it "+
 				"never asks for one CA's children; only pkg/client and the OpenAPI spec reference this route"),
 
-		// Legacy surface, still registered, only reachable from the OLD
-		// disk-based SPA in server/web/static/. Each of these is real debt: the
-		// embedded console has no equivalent control.
-		naLegacy("GET /api/keys/{id}/public-key", "public-key export exists only in the legacy SPA; the console exports public keys per-purpose (SVID bundle, signing-key SPKI)"),
-		naLegacy("POST /api/keys/{id}/sign", "legacy raw-signing endpoint, superseded by /api/sign and /api/secret/signing-keys/{name}/sign"),
-		naLegacy("POST /api/keys/{id}/sign-x509", "legacy raw X.509 signing endpoint, superseded by /api/ca/{id}/issue"),
-		naPlumbing("POST /api/parse-csr", "stateless CSR-decoding helper; the console's Issue view gets the parsed leaf back from certificates:preview instead (the legacy SPA still calls it)"),
-		naLegacy("GET /api/keys/{id}/my-restrictions", "self-service restriction lookup, part of the legacy SPA's restriction-set UI"),
+		// The pre-sshca / pre-profile signing surface. Still registered because
+		// the shipped `secsy-ssh` client speaks it, and the console reaches each
+		// capability through its successor route instead (Task 219).
+		onView("GET /api/keys/{id}/public-key", "cas"),
+		naIndirect("POST /api/keys/{id}/sign", "ssh",
+			"the SSH CA view signs through POST /api/ssh/cas/{id}/sign, which carries profiles and the CA validity cap; "+
+				"this is the pre-sshca endpoint, kept because the shipped secsy-ssh client speaks it"),
+		naIndirect("POST /api/keys/{id}/sign-x509", "issue",
+			"the Issue view issues through POST /api/ca/{id}/issue, which runs the profile, lint, CAA and policy gates; "+
+				"this raw-key endpoint predates all of them"),
+		naPlumbing("POST /api/parse-csr", "stateless CSR-decoding helper; the console's Issue view gets the parsed leaf back from certificates:preview instead"),
+		naPlumbing("GET /api/keys/{id}/my-restrictions", "a requester's own ceiling, fetched by the secsy-ssh client before it builds a signing request so it can prompt for what the CA will demand; an operator reads the same sets whole on the Restrictions view"),
 
 		// Groups (ported into the console by Task 198).
 		onView("GET /api/groups", "access"),
@@ -309,10 +313,11 @@ func parityRoutes() []routeEntry {
 		onView("DELETE /api/groups/{id}/members/{sub}", "access"),
 
 		// Per-CA permission grants: the pre-Task-191 model. The console
-		// administers access through the resource-grant routes below instead.
-		naLegacy("GET /api/keys/{id}/permissions", "pre-Task-191 per-CA permission model; the console's Access view uses /api/grants"),
-		naLegacy("POST /api/keys/{id}/permissions", "pre-Task-191 per-CA permission model; the console's Access view uses /api/grants"),
-		naLegacy("DELETE /api/keys/{id}/permissions", "pre-Task-191 per-CA permission model; the console's Access view uses /api/grants"),
+		// administers access through the resource-grant routes below instead,
+		// which is the intended replacement rather than a port.
+		naIndirect("GET /api/keys/{id}/permissions", "access", "pre-Task-191 per-CA permission model; the Access view reads /api/grants"),
+		naIndirect("POST /api/keys/{id}/permissions", "access", "pre-Task-191 per-CA permission model; the Access view writes /api/grants"),
+		naIndirect("DELETE /api/keys/{id}/permissions", "access", "pre-Task-191 per-CA permission model; the Access view deletes through /api/grants"),
 
 		// Resource-scoped grants (Task 191).
 		onView("GET /api/grants", "access"),
@@ -321,20 +326,26 @@ func parityRoutes() []routeEntry {
 		onView("GET /api/grants/effective", "access"),
 		onView("GET /api/grants/roles", "access"),
 
-		// Restriction sets: an entire feature the embedded console never got.
-		naLegacy("GET /api/restriction-sets", "restriction-set administration exists only in the legacy SPA and the CLI"),
-		naLegacy("POST /api/restriction-sets", "restriction-set administration exists only in the legacy SPA and the CLI"),
-		naLegacy("GET /api/keys/{id}/restriction-sets", "restriction-set administration exists only in the legacy SPA and the CLI"),
-		naLegacy("POST /api/keys/{id}/restriction-sets", "restriction-set administration exists only in the legacy SPA and the CLI"),
-		naLegacy("PUT /api/restriction-sets/{id}", "restriction-set administration exists only in the legacy SPA and the CLI"),
-		naLegacy("DELETE /api/restriction-sets/{id}", "restriction-set administration exists only in the legacy SPA and the CLI"),
-		naLegacy("PUT /api/keys/{id}/default-restriction-set", "restriction-set administration exists only in the legacy SPA and the CLI"),
+		// Restriction sets, ported onto the Restrictions view by Task 219 when
+		// the disk-based SPA that had been their only UI was retired. The SSH
+		// half is the enforced ceiling on POST /api/keys/{id}/sign; the X.509
+		// half is stored and consulted by no issuance path, which the view says
+		// on the page rather than implying a control that does not bind.
+		onView("GET /api/restriction-sets", "restrictions"),
+		onView("POST /api/restriction-sets", "restrictions"),
+		naIndirect("GET /api/keys/{id}/restriction-sets", "restrictions",
+			"the Restrictions view lists every set from GET /api/restriction-sets and labels each one's scope from its "+
+				"ca_id, so it never asks for one CA's sets; only pkg/client and the OpenAPI spec reference this route"),
+		onView("POST /api/keys/{id}/restriction-sets", "restrictions"),
+		onView("PUT /api/restriction-sets/{id}", "restrictions"),
+		onView("DELETE /api/restriction-sets/{id}", "restrictions"),
+		onView("PUT /api/keys/{id}/default-restriction-set", "restrictions"),
 
-		// The two pre-event-log audit tables. The console's Audit view shows the
-		// hash-chained event log (/api/events) instead, which supersedes both but
-		// does not contain their rows.
-		naLegacy("GET /api/audit-log", "pre-event-log audit table, browsable only in the legacy SPA; the console's Audit view reads /api/events"),
-		naLegacy("GET /api/access-log", "HTTP access log, browsable only in the legacy SPA"),
+		// The two pre-event-log audit tables. The chained event log
+		// (/api/events) supersedes both but does not contain their rows, so the
+		// Audit view carries all three (Task 219).
+		onView("GET /api/audit-log", "audit"),
+		onView("GET /api/access-log", "audit"),
 
 		// Tamper-evident event log.
 		onView("GET /api/events", "audit"),
@@ -426,7 +437,7 @@ func parityRoutes() []routeEntry {
 		onView("GET /api/hsm/attestation", "hsm"),
 		onView("GET /api/hsm/audit-log", "hsm"),
 		onView("POST /api/hsm/provision-audit", "hsm"),
-		naLegacy("POST /api/hsm/factory-reset", "irreversible device wipe; offered only by the legacy SPA and deliberately not by the embedded console"),
+		naWithhold("POST /api/hsm/factory-reset", "irreversible device wipe: it destroys every key and the audit log with them. Deliberately not a browser control — `secsy-ca` runs it from a terminal at the device, where the operator holding the authentication key is the one who can see which device they are about to erase"),
 		onView("GET /api/hsm/combined-audit-log", "hsm"),
 		onView("GET /api/hsm/signed-audit-log", "hsm"),
 		onView("GET /api/hsm/audit-bundle", "hsm"),
@@ -623,7 +634,7 @@ func TestConsoleParityCoversRegisteredRoutes(t *testing.T) {
 		if _, ok := declared[r]; !ok {
 			t.Errorf("route %q is registered in handlers.go but has NO console-parity entry.\n"+
 				"    Declare the console view that surfaces it with onView(route, \"<data-view>\"),\n"+
-				"    or say why none does with naPublic/naPlumbing/naLegacy/naIndirect.", r)
+				"    or say why none does with naPublic/naPlumbing/naWithhold/naIndirect.", r)
 		}
 	}
 	for r := range declared {
@@ -691,8 +702,9 @@ func TestConsoleParityViewsExist(t *testing.T) {
 // What it CANNOT catch, honestly:
 //   - A weak tail. "POST /api/keys/{id}/sign" probes "/api/keys/" and "/sign",
 //     both of which occur in app.js for unrelated reasons, so the check would
-//     pass on coincidence. Every such route in this table is a consoleN/A row
-//     whose classification was made by reading the bundle, not by this probe.
+//     pass on coincidence. Every route in this table whose tail is that weak is
+//     a consoleN/A row whose classification was made by reading the bundle, not
+//     by this probe.
 //   - A parameter at the END with nothing after it ("GET /api/webhooks/{id}")
 //     leaves only the prefix, which its siblings satisfy.
 //   - A longer path that merely CONTAINS a probe. This is a substring test, so a

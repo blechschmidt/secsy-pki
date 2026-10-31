@@ -287,7 +287,13 @@ func TestConsoleFlow(t *testing.T) {
 			"Adopt an existing CA", "Import a key into the provider",
 			"Provision a code-signing credential", "Provision the RFC 3161 TSA credential",
 			"Device-wide attestation audit", "Role catalog", "User groups",
-			"Validate a JWT-SVID"} {
+			"Validate a JWT-SVID",
+			// Task 219: the surfaces that moved here when the older disk-based
+			// SPA was removed — restriction-set administration, the two
+			// pre-event-log tables, and CA public-key export.
+			"Issuance restrictions", "Per-CA default sets",
+			"X.509 sets are stored but not enforced",
+			"Signing-operation log", "HTTP access log", "Public key"} {
 			if !strings.Contains(string(body), want) {
 				t.Errorf("console index missing %q", want)
 			}
@@ -1979,6 +1985,408 @@ func TestConsoleFlow(t *testing.T) {
 		}
 		if !pki.HasDelegationUsage(leafOf(t, dcRes.Certificate)) {
 			t.Errorf("server-delegation leaf is not delegated-credential eligible (missing DelegationUsage)")
+		}
+	})
+
+	// --- The surfaces Task 219 brought onto the console when the older
+	// disk-based SPA was removed. Each had been reachable from that SPA and
+	// nowhere else in a browser, so proving the endpoints behind the new
+	// controls is what makes "removed the old UI" a move rather than a loss. ---
+
+	// Restriction sets are the enforced ceiling on SSH and raw X.509 signing, and
+	// were the one piece of this that was a real hole rather than a duplicate.
+	// This walks the whole cycle the Restrictions view drives — list the
+	// built-ins, create globally and per-CA, edit, set and clear a CA's fallback,
+	// delete — and then proves the ceiling BINDS a signing request, which is what
+	// makes the view meaningful rather than decorative.
+	t.Run("RestrictionSets", func(t *testing.T) {
+		// The four built-ins the store seeds must be listed: the view's "Disallow
+		// all signatures" option (and a new CA's default) is one of them.
+		status, body := env.req(t, "GET", "/api/restriction-sets", nil)
+		if status != http.StatusOK {
+			t.Fatalf("restriction-sets = %d: %s", status, body)
+		}
+		var sets []models.RestrictionSet
+		if err := json.Unmarshal(body, &sets); err != nil {
+			t.Fatalf("decode restriction sets: %v", err)
+		}
+		seen := map[string]bool{}
+		for _, rs := range sets {
+			seen[rs.ID] = true
+		}
+		for _, want := range []string{
+			database.BuiltinPermitAllSSH, database.BuiltinDenyAllSSH,
+			database.BuiltinPermitAllX509, database.BuiltinDenyAllX509,
+		} {
+			if !seen[want] {
+				t.Errorf("built-in restriction set %q missing from the list the console renders", want)
+			}
+		}
+
+		// Create a global SSH set — the root-only path — with a 15-minute ceiling.
+		status, body = env.req(t, "POST", "/api/restriction-sets", map[string]any{
+			"name":               "console-e2e-ssh",
+			"type":               "ssh",
+			"max_validity_secs":  900,
+			"allowed_principals": []string{"deploy", "ci"},
+			"allowed_cert_types": []string{"user"},
+			"require_reason":     true,
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("create global set = %d: %s", status, body)
+		}
+		var global models.RestrictionSet
+		if err := json.Unmarshal(body, &global); err != nil {
+			t.Fatalf("decode created set: %v", err)
+		}
+		if global.ID == "" || global.CAID != "" {
+			t.Fatalf("a globally scoped set must carry no ca_id: %+v", global)
+		}
+
+		// Create a CA-scoped X.509 set — the ca:configure path. Scope is what the
+		// view's picker chooses between, so both endpoints have to work.
+		status, body = env.req(t, "POST", "/api/keys/"+env.interID+"/restriction-sets", map[string]any{
+			"name":                   "console-e2e-x509",
+			"type":                   "x509",
+			"allowed_ext_key_usages": []string{"serverAuth"},
+			"deny_ca":                true,
+		})
+		if status != http.StatusCreated {
+			t.Fatalf("create per-CA set = %d: %s", status, body)
+		}
+		var scoped models.RestrictionSet
+		if err := json.Unmarshal(body, &scoped); err != nil {
+			t.Fatalf("decode scoped set: %v", err)
+		}
+		if scoped.CAID != env.interID {
+			t.Errorf("per-CA set ca_id = %q, want %q", scoped.CAID, env.interID)
+		}
+
+		// Both appear in the one list the view renders, with their scope intact —
+		// that ca_id is how it labels global vs. per-CA without a second request.
+		status, body = env.req(t, "GET", "/api/restriction-sets", nil)
+		if status != http.StatusOK {
+			t.Fatalf("restriction-sets after create = %d: %s", status, body)
+		}
+		sets = nil
+		if err := json.Unmarshal(body, &sets); err != nil {
+			t.Fatalf("decode restriction sets: %v", err)
+		}
+		var sawGlobal, sawScoped bool
+		for _, rs := range sets {
+			if rs.ID == global.ID {
+				sawGlobal = rs.CAID == "" && rs.Type == models.RestrictionSetSSH
+			}
+			if rs.ID == scoped.ID {
+				sawScoped = rs.CAID == env.interID && rs.Type == models.RestrictionSetX509
+			}
+		}
+		if !sawGlobal || !sawScoped {
+			t.Errorf("created sets not both listed with their scope (global=%t scoped=%t)", sawGlobal, sawScoped)
+		}
+
+		// Edit in place: the view's Save on an existing set.
+		status, body = env.req(t, "PUT", "/api/restriction-sets/"+global.ID, map[string]any{
+			"name":               "console-e2e-ssh",
+			"type":               "ssh",
+			"max_validity_secs":  900,
+			"allowed_principals": []string{"deploy"},
+			"allowed_cert_types": []string{"user"},
+			"require_reason":     true,
+		})
+		if status != http.StatusOK {
+			t.Fatalf("update set = %d: %s", status, body)
+		}
+
+		// The fallback control: point this CA's SSH default at the set.
+		status, body = env.req(t, "PUT", "/api/keys/"+env.interID+"/default-restriction-set",
+			map[string]any{"restriction_set_id": global.ID, "type": "ssh"})
+		if status != http.StatusOK {
+			t.Fatalf("set default = %d: %s", status, body)
+		}
+
+		// It resolves as the effective set, which is what the requester-facing
+		// lookup (and the secsy-ssh client) reads.
+		status, body = env.req(t, "GET", "/api/keys/"+env.interID+"/my-restrictions", nil)
+		if status != http.StatusOK {
+			t.Fatalf("my-restrictions = %d: %s", status, body)
+		}
+		var mine models.RestrictionSet
+		if err := json.Unmarshal(body, &mine); err != nil {
+			t.Fatalf("decode my-restrictions: %v", err)
+		}
+		if mine.ID != global.ID || mine.MaxValiditySecs == nil || *mine.MaxValiditySecs != 900 {
+			t.Errorf("the CA default must resolve as the effective set: %+v", mine)
+		}
+
+		// Now prove it binds. A fresh user key, signed through the endpoint the
+		// secsy-ssh client speaks.
+		pub, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("generate user key: %v", err)
+		}
+		sshPub, err := ssh.NewPublicKey(pub)
+		if err != nil {
+			t.Fatalf("ssh.NewPublicKey: %v", err)
+		}
+		authorized := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub)))
+
+		// require_reason: refused outright without one.
+		if st, b := env.req(t, "POST", "/api/keys/"+env.interID+"/sign", map[string]any{
+			"public_key": authorized, "principals": []string{"deploy"}, "cert_type": "user",
+		}); st != http.StatusForbidden {
+			t.Errorf("a request with no reason must be refused by the set, got %d: %s", st, b)
+		}
+		// allowed_principals: a principal outside the list is refused.
+		if st, b := env.req(t, "POST", "/api/keys/"+env.interID+"/sign", map[string]any{
+			"public_key": authorized, "principals": []string{"intruder"},
+			"cert_type": "user", "reason": "e2e",
+		}); st != http.StatusForbidden {
+			t.Errorf("a principal outside the set must be refused, got %d: %s", st, b)
+		}
+		// allowed_cert_types: a host certificate is refused by a user-only set.
+		if st, b := env.req(t, "POST", "/api/keys/"+env.interID+"/sign", map[string]any{
+			"public_key": authorized, "principals": []string{"deploy"},
+			"cert_type": "host", "reason": "e2e",
+		}); st != http.StatusForbidden {
+			t.Errorf("a host certificate must be refused by a user-only set, got %d: %s", st, b)
+		}
+		// Inside the set it signs — and the 24h lifetime asked for is CLAMPED to
+		// the 15-minute ceiling rather than refused, which is the behaviour the
+		// view's "Max validity" field actually produces.
+		status, body = env.req(t, "POST", "/api/keys/"+env.interID+"/sign", map[string]any{
+			"public_key": authorized, "principals": []string{"deploy"},
+			"cert_type": "user", "reason": "e2e",
+			"valid_before": time.Now().Add(24 * time.Hour).Format(time.RFC3339),
+		})
+		if status != http.StatusOK {
+			t.Fatalf("a request inside the set must sign, got %d: %s", status, body)
+		}
+		var signed models.SignResponse
+		if err := json.Unmarshal(body, &signed); err != nil {
+			t.Fatalf("decode sign response: %v", err)
+		}
+		certKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(signed.Certificate))
+		if err != nil {
+			t.Fatalf("parse signed certificate: %v", err)
+		}
+		cert, ok := certKey.(*ssh.Certificate)
+		if !ok {
+			t.Fatalf("signed material is not an SSH certificate")
+		}
+		if lifetime := cert.ValidBefore - cert.ValidAfter; lifetime > 900 {
+			t.Errorf("certificate lifetime = %ds, must be clamped to the set's 900s ceiling", lifetime)
+		}
+		// require_reason also rewrites the key id, which is how the set makes the
+		// reason auditable rather than merely mandatory.
+		if !strings.Contains(cert.KeyId, "e2e") {
+			t.Errorf("key id = %q, want the required reason recorded in it", cert.KeyId)
+		}
+
+		// Clearing the default removes the fallback — and with no permission naming
+		// a set either, enforcement is skipped and the request is UNRESTRICTED.
+		// That is the fail-open direction the Restrictions view warns about; pin it
+		// so a change that makes it deny has to update that warning too.
+		status, body = env.req(t, "PUT", "/api/keys/"+env.interID+"/default-restriction-set",
+			map[string]any{"restriction_set_id": nil, "type": "ssh"})
+		if status != http.StatusOK {
+			t.Fatalf("clear default = %d: %s", status, body)
+		}
+		status, body = env.req(t, "GET", "/api/keys/"+env.interID+"/my-restrictions", nil)
+		if status != http.StatusOK {
+			t.Fatalf("my-restrictions after clear = %d: %s", status, body)
+		}
+		if strings.TrimSpace(string(body)) != "null" {
+			t.Errorf("with no default and no permission the effective set must be null (unrestricted), got: %s", body)
+		}
+
+		// The X.509 half of the model is stored and never consulted: no issuance
+		// path resolves a restriction set for an X.509 request. Point the CA's
+		// X.509 default at the built-in DENY-ALL and issue anyway — it signs.
+		//
+		// This is pinned deliberately. The Restrictions view states the
+		// non-enforcement on the page, in the editor and on every X.509 row; if
+		// somebody later makes the X.509 path honour these sets, this assertion
+		// fires and that warning has to come down with the change.
+		status, body = env.req(t, "PUT", "/api/keys/"+env.interID+"/default-restriction-set",
+			map[string]any{"restriction_set_id": database.BuiltinDenyAllX509, "type": "x509"})
+		if status != http.StatusOK {
+			t.Fatalf("set x509 default = %d: %s", status, body)
+		}
+		status, body = env.req(t, "POST", "/api/keys/"+env.interID+"/sign-x509", map[string]any{
+			"csr": string(makeCSR(t, "restriction-sets-do-not-bind-x509.example", nil)),
+		})
+		if status != http.StatusOK {
+			t.Fatalf("x509 restriction sets are not enforced today, so a deny-all default must NOT "+
+				"block issuance; got %d: %s.\n"+
+				"    If this path now honours restriction sets, remove the \"stored but not enforced\" "+
+				"warnings from the Restrictions view and docs/operations/web-console.md.", status, body)
+		}
+		if st, _ := env.req(t, "PUT", "/api/keys/"+env.interID+"/default-restriction-set",
+			map[string]any{"restriction_set_id": nil, "type": "x509"}); st != http.StatusOK {
+			t.Errorf("clear x509 default = %d", st)
+		}
+
+		// Delete both: the view's Delete action.
+		for _, id := range []string{global.ID, scoped.ID} {
+			if st, b := env.req(t, "DELETE", "/api/restriction-sets/"+id, nil); st != http.StatusOK && st != http.StatusNoContent {
+				t.Errorf("delete set %s = %d: %s", id, st, b)
+			}
+		}
+		status, body = env.req(t, "GET", "/api/restriction-sets", nil)
+		if status != http.StatusOK {
+			t.Fatalf("restriction-sets after delete = %d: %s", status, body)
+		}
+		if bytes.Contains(body, []byte("console-e2e-ssh")) || bytes.Contains(body, []byte("console-e2e-x509")) {
+			t.Errorf("deleted sets still listed: %s", body)
+		}
+	})
+
+	// The two pre-event-log tables, now panels on the Audit view. The signature
+	// in RestrictionSets above wrote the signing-operation row; every request in
+	// this file wrote an access-log row.
+	t.Run("PreEventLogTables", func(t *testing.T) {
+		status, body := env.req(t, "GET", "/api/audit-log?limit=50", nil)
+		if status != http.StatusOK {
+			t.Fatalf("audit-log = %d: %s", status, body)
+		}
+		var page struct {
+			Entries []models.AuditLogEntry `json:"entries"`
+			Total   int                    `json:"total"`
+			Limit   int                    `json:"limit"`
+		}
+		if err := json.Unmarshal(body, &page); err != nil {
+			t.Fatalf("decode audit-log: %v", err)
+		}
+		if page.Total == 0 || len(page.Entries) == 0 {
+			t.Fatalf("the SSH signature above must have recorded a signing-operation row: %s", body)
+		}
+		if page.Limit != 50 {
+			t.Errorf("audit-log limit echoed as %d, want 50 — the view pages on it", page.Limit)
+		}
+		// The columns the panel renders, and the restriction set that admitted the
+		// signature: the one thing this table says that the event chain does not.
+		row := page.Entries[0]
+		if row.CAID == "" || row.Serial == "" || len(row.Principals) == 0 {
+			t.Errorf("signing-operation row is missing the columns the view renders: %+v", row)
+		}
+		if row.RestrictionSetID == nil || *row.RestrictionSetID == "" {
+			t.Errorf("the row must name the restriction set that admitted the signature: %+v", row)
+		}
+		// The CA filter the panel's dropdown sets.
+		if st, b := env.req(t, "GET", "/api/audit-log?ca_id=does-not-exist", nil); st != http.StatusOK {
+			t.Errorf("audit-log ca filter = %d: %s", st, b)
+		} else {
+			var filtered struct {
+				Total int `json:"total"`
+			}
+			if err := json.Unmarshal(b, &filtered); err != nil {
+				t.Fatalf("decode filtered audit-log: %v", err)
+			}
+			if filtered.Total != 0 {
+				t.Errorf("ca_id filter must constrain the table, got total=%d", filtered.Total)
+			}
+		}
+		// The Export JSON button: the whole table as a saveable array.
+		status, body = env.req(t, "GET", "/api/audit-log?export=json", nil)
+		if status != http.StatusOK {
+			t.Fatalf("audit-log export = %d: %s", status, body)
+		}
+		var exported []models.AuditLogEntry
+		if err := json.Unmarshal(body, &exported); err != nil {
+			t.Fatalf("the export must be a bare JSON array the browser can save: %v", err)
+		}
+
+		status, body = env.req(t, "GET", "/api/access-log?limit=50", nil)
+		if status != http.StatusOK {
+			t.Fatalf("access-log = %d: %s", status, body)
+		}
+		var acc struct {
+			Entries []models.AccessLogEntry `json:"entries"`
+			Total   int                     `json:"total"`
+		}
+		if err := json.Unmarshal(body, &acc); err != nil {
+			t.Fatalf("decode access-log: %v", err)
+		}
+		if acc.Total == 0 || len(acc.Entries) == 0 {
+			t.Fatalf("every request in this test passed through the access log: %s", body)
+		}
+		if acc.Entries[0].Method == "" || acc.Entries[0].Path == "" || acc.Entries[0].Status == 0 {
+			t.Errorf("access-log row is missing the columns the view renders: %+v", acc.Entries[0])
+		}
+		if st, b := env.req(t, "GET", "/api/access-log?export=json", nil); st != http.StatusOK {
+			t.Errorf("access-log export = %d: %s", st, b)
+		} else {
+			var rows []models.AccessLogEntry
+			if err := json.Unmarshal(b, &rows); err != nil {
+				t.Errorf("access-log export is not a JSON array: %v", err)
+			}
+		}
+	})
+
+	// CA public-key export, now a per-row action on Authorities. Both formats are
+	// offered because they go to different places: SPKI PEM into X.509 tooling,
+	// the OpenSSH line into an sshd TrustedUserCAKeys file. An export that
+	// disagreed with the signing key would be worse than no export, so both are
+	// checked against the key in the CA's own certificate.
+	t.Run("CAPublicKeyExport", func(t *testing.T) {
+		status, body := env.req(t, "GET", "/api/keys/"+env.interID+"/public-key?format=pem", nil)
+		if status != http.StatusOK {
+			t.Fatalf("public-key pem = %d: %s", status, body)
+		}
+		blk, _ := pem.Decode(body)
+		if blk == nil || blk.Type != "PUBLIC KEY" {
+			t.Fatalf("export must be a PKIX PUBLIC KEY block: %.80s", body)
+		}
+		pemPub, err := x509.ParsePKIXPublicKey(blk.Bytes)
+		if err != nil {
+			t.Fatalf("exported SPKI does not parse: %v", err)
+		}
+		fromPEM, err := x509.MarshalPKIXPublicKey(pemPub)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		status, body = env.req(t, "GET", "/api/keys/"+env.interID+"/public-key?format=ssh", nil)
+		if status != http.StatusOK {
+			t.Fatalf("public-key ssh = %d: %s", status, body)
+		}
+		sshPub, _, _, _, err := ssh.ParseAuthorizedKey(body)
+		if err != nil {
+			t.Fatalf("export must be an authorized_keys line: %v (%.80s)", err, body)
+		}
+		fromSSH, err := x509.MarshalPKIXPublicKey(sshPub.(ssh.CryptoPublicKey).CryptoPublicKey())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(fromSSH, fromPEM) {
+			t.Error("the PEM and OpenSSH exports describe different keys")
+		}
+
+		status, body = env.req(t, "GET", "/api/keys/"+env.interID, nil)
+		if status != http.StatusOK {
+			t.Fatalf("get CA = %d: %s", status, body)
+		}
+		var caRec struct {
+			Certificate string `json:"certificate"`
+		}
+		if err := json.Unmarshal(body, &caRec); err != nil {
+			t.Fatalf("decode CA: %v", err)
+		}
+		certBlk, _ := pem.Decode([]byte(caRec.Certificate))
+		if certBlk == nil {
+			t.Fatalf("CA record carries no certificate PEM")
+		}
+		caCert, err := x509.ParseCertificate(certBlk.Bytes)
+		if err != nil {
+			t.Fatalf("parse CA cert: %v", err)
+		}
+		inCert, err := x509.MarshalPKIXPublicKey(caCert.PublicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(inCert, fromPEM) {
+			t.Error("the exported public key is not the key in the CA's certificate")
 		}
 	})
 }

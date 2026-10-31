@@ -183,9 +183,6 @@ COPY --from=builder /out/secsy-ssh        /usr/local/bin/secsy-ssh
 COPY --from=builder /out/secsy-verify     /usr/local/bin/secsy-verify
 COPY --from=builder /out/secsy-agent      /usr/local/bin/secsy-agent
 
-# The server serves the SPA from web/static relative to its working directory.
-COPY server/web/static /app/web/static
-
 # The Debian softhsm2 package ships only a sample config and leaves /etc/softhsm
 # unreadable by non-root users. Provide a world-readable config that points the
 # token store at a path we can mount a writable volume onto, and export it via

@@ -35,7 +35,8 @@ func TestSetupPProfAuthenticatedMountNoConflict(t *testing.T) {
 	authMw := middleware.NewAuthMiddleware(nil, "root", "pw")
 
 	mux := http.NewServeMux()
-	// The "GET /" static catch-all that the dev tree registers (web/static present).
+	// A "GET /" catch-all already on the mux. Nothing in the server mounts one
+	// today, but setupPProf must stay composable with an embedder that does.
 	mux.Handle("GET /", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("SITE"))

@@ -88,10 +88,9 @@ server/
     Persistence:    database, models
     Operations:     monitor, canary, discovery, backup, leader, ratelimit,
                     metrics, tracing, doctor, siem, report, dnsrecords
-    API & UI:       handlers, grpcapi, console
+    API & UI:       handlers, grpcapi, console (the only UI: one go:embed
+                    bundle served at /console/, no build step, no CDN)
     Test harness:   e2e, chaos, interop
-  web/static/       Legacy Bootstrap SPA (Keys/Sign/HSM);  the enterprise console
-                    is internal/console (embedded at /console/)
 terraform/          HSM key provisioning via terraform-provider-pkcs11
 deploy/, Dockerfile Helm chart, container image, Grafana/Prometheus assets
 docs/               Per-feature guides, grouped by topic; each folder has an
@@ -238,7 +237,8 @@ server/
     auth/          OIDC provider / token verification
     middleware/    auth.go (basic + bearer), audit.go (access log)
     models/        Domain types: CA, Permission, RestrictionSet, audit records
-  web/static/      Bootstrap 5 SPA (Keys, Sign, Groups, Permissions, Restrictions, Audit, HSM)
+    console/       Operator console: static/{index.html,app.js,style.css}, embedded
+                   with go:embed and served at /console/. No build step, no CDN
 terraform/         Provisions HSM keys via a custom terraform-provider-pkcs11 (YubiHSM/SoftHSM)
 .github/workflows/ CI: integration tests against SoftHSM2 + Keycloak (Docker Compose)
 ```

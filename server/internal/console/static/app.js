@@ -430,7 +430,7 @@ function switchView(name) {
   if (name === 'signing') loadSigning();
   if (name === 'secrets' && secretServiceEnabled) loadSecretsPage();
   if (name === 'acme') loadACME();
-  if (name === 'audit') loadAudit();
+  if (name === 'audit') { loadAudit(); primeLegacyLogs(); }
   if (name === 'approvals') loadApprovals();
   if (name === 'compliance') loadCompliance();
   if (name === 'bundle') loadBundle();
@@ -439,6 +439,7 @@ function switchView(name) {
   if (name === 'tenants') loadTenants();
   if (name === 'tokens') loadTokens();
   if (name === 'access') loadAccess();
+  if (name === 'restrictions') loadRestrictions();
   if (name === 'webhooks') loadWebhooks();
 }
 document.querySelectorAll('header nav button').forEach(b =>
@@ -4165,6 +4166,280 @@ $('tokenSecretCopy').onclick = async () => {
   setTimeout(() => { $('tokenSecretCopy').textContent = 'Copy'; }, 1500);
 };
 
+// ---- Issuance restriction sets (Task 219) ----------------------------------
+// The restriction sets that gate SSH and raw X.509 signing. These were the one
+// enforced policy feature whose only UI was the disk-based SPA this task
+// retired: GetEffectiveRestrictionSet runs on every signature, so a deployment
+// that could not administer them from the console could not administer them at
+// all short of writing the store by hand.
+//
+// Scope is the subtlety the form exists to make visible. A set belongs either to
+// one CA (POST /api/keys/{id}/restriction-sets, needs ca:configure there) or to
+// the deployment (POST /api/restriction-sets, root only) — and the two are not
+// interchangeable, so the picker names the authority each choice requires rather
+// than failing with a 403 after the fact.
+let restrictionSets = [];
+let rsEditing = null;  // the set being edited, or null while creating
+let rsNewType = 'ssh'; // the type a create is for (an existing set's type is fixed)
+
+async function loadRestrictions() {
+  const tbody = $('rsRows');
+  tbody.innerHTML = '<tr><td colspan="6" class="muted">Loading…</td></tr>';
+  try { await loadCAs(); } catch (_) { /* the sets still render without CA labels */ }
+  try {
+    restrictionSets = await api('GET', '/api/restriction-sets');
+  } catch (e) {
+    // Without the set list the defaults table would offer only "none", and
+    // choosing it would CLEAR a CA's fallback — a destructive edit made out of
+    // a failed read. Say what went wrong instead of rendering the control.
+    restrictionSets = [];
+    tbody.innerHTML = emptyRow(e.message, 6);
+    $('rsDefaultRows').innerHTML = emptyRow(
+      'The per-CA defaults need the set list above, which could not be read.', 3);
+    return;
+  }
+  renderRestrictionSets();
+  renderRestrictionDefaults();
+}
+
+// rsScopeLabel names where a set lives. A CA-scoped set whose CA is not in this
+// operator's visible inventory still shows its id rather than claiming "global".
+function rsScopeLabel(rs) {
+  if (!rs.ca_id) return '<span class="muted">global</span>';
+  const ca = cas.find(c => c.id === rs.ca_id);
+  return escapeHTML(ca ? ca.label : rs.ca_id);
+}
+
+// rsConstraints summarizes a set in one cell: only the fields that actually
+// constrain something, so "no row" reads as "unconstrained" instead of a wall
+// of "any".
+function rsConstraints(rs) {
+  if (rs.deny_all) return '<span class="badge crit">deny all</span>';
+  const bits = [];
+  const list = (label, arr) => { if (arr && arr.length) bits.push(`${label}: <span class="mono">${escapeHTML(arr.join(', '))}</span>`); };
+  if (rs.type === 'x509') {
+    list('key usage', rs.allowed_key_usages);
+    list('ext key usage', rs.allowed_ext_key_usages);
+    list('SAN type', rs.allowed_san_types);
+    list('SAN', rs.allowed_san_patterns);
+    list('subject', rs.allowed_subject_fields);
+    if (rs.max_path_length != null) bits.push(`max path length: ${rs.max_path_length}`);
+    if (rs.deny_ca) bits.push('<span class="badge warning">no CA certs</span>');
+  } else {
+    list('principals', rs.allowed_principals);
+    list('cert type', rs.allowed_cert_types);
+    if (rs.force_key_id_email) bits.push('key id forced to e-mail');
+    if (rs.require_reason) bits.push('reason required');
+    if (rs.deny_extensions) bits.push('<span class="badge warning">no extensions</span>');
+    else list('extensions', rs.allowed_extensions);
+    if (rs.deny_critical_options) bits.push('<span class="badge warning">no critical options</span>');
+    if (rs.max_valid_after_offset) bits.push(`max valid-after offset: ${fmtSecs(rs.max_valid_after_offset)}`);
+  }
+  return bits.length ? bits.join('<br>') : '<span class="muted">unconstrained</span>';
+}
+
+function renderRestrictionSets() {
+  const tbody = $('rsRows');
+  const want = $('rsTypeFilter').value;
+  // A set with no explicit type is an SSH set: that is the server-side default
+  // the enforcement path assumes, so the table must not disagree with it.
+  const shown = restrictionSets.filter(rs => !want || (rs.type || 'ssh') === want);
+  if (!shown.length) {
+    tbody.innerHTML = emptyRow(restrictionSets.length
+      ? 'No sets of this type.'
+      : 'No restriction sets. Without one, a CA admits whatever its default set allows — and denies signing outright if it has none.', 6);
+    return;
+  }
+  tbody.innerHTML = shown.map(rs => {
+    const i = restrictionSets.indexOf(rs);
+    return `<tr>
+      <td>${escapeHTML(rs.name || '')}</td>
+      <td>${escapeHTML(rs.type || 'ssh')}${(rs.type || 'ssh') === 'x509' ? '<br><span class="muted" title="Nothing on the X.509 issuance path consults restriction sets; the binding ceiling is the certificate profile.">not enforced</span>' : ''}</td>
+      <td>${rsScopeLabel(rs)}</td>
+      <td>${rs.max_validity_secs ? fmtSecs(rs.max_validity_secs) : '<span class="muted">unlimited</span>'}</td>
+      <td>${rsConstraints(rs)}</td>
+      <td style="white-space:nowrap">
+        <button class="btn ghost sm" data-rs="edit" data-i="${i}">Edit</button>
+        <button class="btn danger sm" data-rs="del" data-i="${i}">Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+  tbody.querySelectorAll('button[data-rs]').forEach(b => {
+    const rs = restrictionSets[Number(b.dataset.i)];
+    if (b.dataset.rs === 'edit') b.onclick = () => openRestrictionEditor(rs);
+    if (b.dataset.rs === 'del') b.onclick = () => deleteRestrictionSet(rs);
+  });
+}
+
+// The defaults table is the per-CA fallback. Each select is wired straight to
+// PUT .../default-restriction-set so the change is one interaction, and the
+// options are filtered to the matching type — an X.509 set in an SSH slot would
+// be accepted by the store and then never match anything.
+function renderRestrictionDefaults() {
+  const tbody = $('rsDefaultRows');
+  if (!cas.length) { tbody.innerHTML = emptyRow('No CAs yet.', 3); return; }
+  const opts = (type, selected) => ['<option value="">none — no fallback (requests resolving to nothing are UNRESTRICTED)</option>'].concat(
+    restrictionSets.filter(rs => (rs.type || 'ssh') === type).map(rs =>
+      `<option value="${escapeHTML(rs.id)}"${selected === rs.id ? ' selected' : ''}>${escapeHTML(rs.name || rs.id)}${rs.ca_id ? '' : ' (global)'}</option>`)
+  ).join('');
+  tbody.innerHTML = cas.map(c => `<tr>
+    <td>${escapeHTML(c.label)}</td>
+    <td><select style="max-width:360px" data-rsdef="ssh" data-ca="${escapeHTML(c.id)}">${opts('ssh', c.default_ssh_restriction_set_id || '')}</select></td>
+    <td><select style="max-width:360px" data-rsdef="x509" data-ca="${escapeHTML(c.id)}">${opts('x509', c.default_x509_restriction_set_id || '')}</select></td>
+  </tr>`).join('');
+  tbody.querySelectorAll('select[data-rsdef]').forEach(sel => {
+    sel.onchange = () => setDefaultRestrictionSet(sel.dataset.ca, sel.dataset.rsdef, sel.value);
+  });
+}
+
+async function setDefaultRestrictionSet(caID, type, setID) {
+  try {
+    await api('PUT', `/api/keys/${encodeURIComponent(caID)}/default-restriction-set`,
+      { restriction_set_id: setID || null, type });
+    notice($('rsMsg'), setID ? 'ok' : 'warn', setID
+      ? `Default ${type} set for ${caLabel(caID)} is now "${rsName(setID)}".`
+      : `${caLabel(caID)} now has NO default ${type} set: a requester without an explicit set is unrestricted, `
+        + 'because enforcement is skipped when nothing resolves. Choose "Disallow all signatures" to deny instead.');
+    await loadCAs(); // so a reload of this view reflects the new fallback
+  } catch (e) {
+    notice($('rsMsg'), 'err', 'Setting the default failed: ' + e.message);
+    renderRestrictionDefaults(); // snap the select back to the stored value
+  }
+}
+
+function rsName(id) {
+  const rs = restrictionSets.find(r => r.id === id);
+  return rs ? (rs.name || rs.id) : id;
+}
+
+// -- editor --------------------------------------------------------------
+
+function openRestrictionEditor(rs, type) {
+  rsEditing = rs || null;
+  rsNewType = rs ? (rs.type || 'ssh') : (type || 'ssh');
+  const isX509 = rsNewType === 'x509';
+  $('rsEditorTitle').textContent = (rs ? 'Edit ' : 'New ') + (isX509 ? 'X.509' : 'SSH') + ' restriction set';
+  $('rsEditorError').classList.add('hidden');
+  $('rsSSHFields').classList.toggle('hidden', isX509);
+  $('rsX509Fields').classList.toggle('hidden', !isX509);
+
+  // Scope. An existing set's scope is fixed — the update endpoint takes the set
+  // by id and does not move it between CAs — so editing shows it read-only.
+  const scope = $('rsScope');
+  if (rs) {
+    scope.innerHTML = `<option value="${rs.ca_id ? 'ca:' + escapeHTML(rs.ca_id) : ''}">${rs.ca_id ? escapeHTML(caLabel(rs.ca_id)) : 'global (every CA)'}</option>`;
+    scope.disabled = true;
+  } else {
+    scope.innerHTML = ['<option value="">global — every CA (root only)</option>']
+      .concat(cas.map(c => `<option value="ca:${escapeHTML(c.id)}">${escapeHTML(c.label)} — this CA only (needs ca:configure)</option>`))
+      .join('');
+    scope.disabled = false;
+  }
+
+  $('rsName').value = rs ? (rs.name || '') : '';
+  $('rsMaxValidity').value = rs && rs.max_validity_secs ? rs.max_validity_secs : '';
+  $('rsDenyAll').checked = !!(rs && rs.deny_all);
+  // SSH half
+  $('rsPrincipals').value = joinList(rs && rs.allowed_principals);
+  $('rsCertTypes').value = joinList(rs && rs.allowed_cert_types);
+  $('rsExtensions').value = joinList(rs && rs.allowed_extensions);
+  $('rsMaxValidAfter').value = rs && rs.max_valid_after_offset ? rs.max_valid_after_offset : '';
+  $('rsForceKeyIDEmail').checked = !!(rs && rs.force_key_id_email);
+  $('rsRequireReason').checked = !!(rs && rs.require_reason);
+  $('rsDenyExtensions').checked = !!(rs && rs.deny_extensions);
+  $('rsDenyCriticalOptions').checked = !!(rs && rs.deny_critical_options);
+  // X.509 half
+  $('rsKeyUsages').value = joinList(rs && rs.allowed_key_usages);
+  $('rsExtKeyUsages').value = joinList(rs && rs.allowed_ext_key_usages);
+  $('rsSANTypes').value = joinList(rs && rs.allowed_san_types);
+  $('rsSANPatterns').value = joinList(rs && rs.allowed_san_patterns);
+  $('rsSubjectFields').value = joinList(rs && rs.allowed_subject_fields);
+  $('rsMaxPathLength').value = rs && rs.max_path_length != null ? rs.max_path_length : '';
+  $('rsDenyCA').checked = !!(rs && rs.deny_ca);
+
+  $('rsEditor').classList.remove('hidden');
+  $('rsEditor').scrollIntoView({ block: 'nearest' });
+}
+
+function joinList(arr) { return (arr || []).join(', '); }
+
+$('rsNewSSH').onclick = () => openRestrictionEditor(null, 'ssh');
+$('rsNewX509').onclick = () => openRestrictionEditor(null, 'x509');
+$('rsCancel').onclick = () => { $('rsEditor').classList.add('hidden'); rsEditing = null; };
+$('rsTypeFilter').onchange = renderRestrictionSets;
+$('rsRefresh').onclick = loadRestrictions;
+
+// The body carries only the half that belongs to the set's type: sending an
+// empty allowed_key_usages on an SSH set would read, in the store, as a
+// deliberately empty allow-list on a field the SSH path never consults.
+function restrictionBody() {
+  const num = (id) => $(id).value === '' ? null : parseInt($(id).value, 10);
+  const body = {
+    name: $('rsName').value.trim(),
+    type: rsNewType,
+    max_validity_secs: num('rsMaxValidity'),
+    deny_all: $('rsDenyAll').checked,
+  };
+  if (rsNewType === 'x509') {
+    body.allowed_key_usages = csvList($('rsKeyUsages').value);
+    body.allowed_ext_key_usages = csvList($('rsExtKeyUsages').value);
+    body.allowed_san_types = csvList($('rsSANTypes').value);
+    body.allowed_san_patterns = csvList($('rsSANPatterns').value);
+    body.allowed_subject_fields = csvList($('rsSubjectFields').value);
+    body.max_path_length = num('rsMaxPathLength');
+    body.deny_ca = $('rsDenyCA').checked;
+  } else {
+    body.allowed_principals = csvList($('rsPrincipals').value);
+    body.allowed_cert_types = csvList($('rsCertTypes').value);
+    body.allowed_extensions = csvList($('rsExtensions').value);
+    body.max_valid_after_offset = num('rsMaxValidAfter');
+    body.force_key_id_email = $('rsForceKeyIDEmail').checked;
+    body.require_reason = $('rsRequireReason').checked;
+    body.deny_extensions = $('rsDenyExtensions').checked;
+    body.deny_critical_options = $('rsDenyCriticalOptions').checked;
+  }
+  return body;
+}
+
+$('rsSave').onclick = async () => {
+  const err = $('rsEditorError');
+  err.classList.add('hidden');
+  const body = restrictionBody();
+  if (!body.name) { showError(err, 'A name is required.'); return; }
+  const scope = $('rsScope').value; // "" = global, "ca:<id>" = that CA
+  $('rsSave').disabled = true;
+  try {
+    if (rsEditing) {
+      await api('PUT', `/api/restriction-sets/${encodeURIComponent(rsEditing.id)}`, body);
+      notice($('rsMsg'), 'ok', `Updated restriction set "${body.name}" — it applies to the next signing request, not retroactively.`);
+    } else if (scope.startsWith('ca:')) {
+      const caID = scope.slice(3);
+      await api('POST', `/api/keys/${encodeURIComponent(caID)}/restriction-sets`, body);
+      notice($('rsMsg'), 'ok', `Created "${body.name}" on ${caLabel(caID)}. It binds nothing yet — make it that CA's default below, or grant it to a user or group.`);
+    } else {
+      await api('POST', '/api/restriction-sets', body);
+      notice($('rsMsg'), 'ok', `Created global set "${body.name}". It binds nothing yet — make it a CA's default below, or grant it to a user or group.`);
+    }
+    $('rsEditor').classList.add('hidden');
+    rsEditing = null;
+    await loadRestrictions();
+  } catch (e) { showError(err, e.message); }
+  finally { $('rsSave').disabled = false; }
+};
+
+// Deleting a set does not deny what it used to allow: every permission that
+// referenced it falls back to the CA default, which may be wider. Say so.
+async function deleteRestrictionSet(rs) {
+  if (!confirm(`Delete restriction set "${rs.name || rs.id}"?\n\n`
+    + 'Permissions that reference it fall back to the CA default, which may be LESS restrictive — '
+    + 'and if that CA has no default either, the request is not restricted at all.')) return;
+  try {
+    await api('DELETE', `/api/restriction-sets/${encodeURIComponent(rs.id)}`);
+    notice($('rsMsg'), 'ok', `Deleted restriction set "${rs.name || rs.id}".`);
+    await loadRestrictions();
+  } catch (e) { notice($('rsMsg'), 'err', 'Deleting the set failed: ' + e.message); }
+}
+
 // ---- Outbound Webhooks view (Task 116) -------------------------------------
 // Durable subscriptions delivering signed certificate lifecycle events.
 async function loadWebhooks() {
@@ -4349,6 +4624,7 @@ async function loadAuthorities() {
       if (c.certificate) {
         actions.push(`<a class="btn ghost sm" href="/api/ca/${c.id}/chain" target="_blank">Chain</a>`);
       }
+      actions.push(`<button class="btn ghost sm" data-act="pubkey" data-id="${c.id}" title="Export this CA's public key — SPKI PEM, or the OpenSSH line an authorized_keys / TrustedUserCAKeys file wants">Public key</button>`);
       return `<tr${status !== 'active' ? ' style="opacity:.65"' : ''}>
         <td>${escapeHTML(c.label)}</td>
         <td title="${escapeHTML(c.subject || '')}">${escapeHTML(shortName(c.subject))}</td>
@@ -4364,9 +4640,28 @@ async function loadAuthorities() {
       if (b.dataset.act === 'retire') b.onclick = () => openRetireModal(b.dataset.id);
       if (b.dataset.act === 'csr') b.onclick = () => downloadExternalCSR(b.dataset.id);
       if (b.dataset.act === 'import') b.onclick = () => openImportCertModal(b.dataset.id);
+      if (b.dataset.act === 'pubkey') b.onclick = () => exportCAPublicKey(b.dataset.id);
     });
   }
   loadKeyInventory();
+}
+
+// exportCAPublicKey downloads a CA's public key in the format the operator is
+// about to paste it into: SPKI PEM for X.509 tooling, or the single OpenSSH line
+// an sshd TrustedUserCAKeys file takes. The server derives both from the key on
+// the HSM, so neither can drift from what actually signs. Fetched through api()
+// rather than an <a href> so the operator's credentials travel with the request.
+async function exportCAPublicKey(id) {
+  const fmt = confirm(`Export the public key of ${caLabel(id)}.\n\n`
+    + 'OK  — SPKI PEM (-----BEGIN PUBLIC KEY-----), for X.509 tooling\n'
+    + 'Cancel — OpenSSH line, for sshd TrustedUserCAKeys / authorized_keys')
+    ? 'pem' : 'ssh';
+  try {
+    const body = await api('GET', `/api/keys/${encodeURIComponent(id)}/public-key?format=${fmt}`, undefined, true);
+    downloadBlob(body, `${caLabel(id)}.${fmt === 'pem' ? 'pub.pem' : 'pub'}`,
+      fmt === 'pem' ? 'application/x-pem-file' : 'text/plain');
+    notice($('casMsg'), 'ok', `Exported the ${fmt === 'pem' ? 'SPKI PEM' : 'OpenSSH'} public key of ${caLabel(id)}.`);
+  } catch (e) { notice($('casMsg'), 'err', 'Exporting the public key failed: ' + e.message); }
 }
 
 // -- create root / intermediate --
@@ -5504,6 +5799,131 @@ function stopLiveTail() {
   auditLiveStatus('<span class="muted">○</span> stopped');
 }
 
+// ---- Pre-event-log tables: signing operations + HTTP access (Task 219) -----
+// Both tables predate the hash-chained event log and are not folded into it, so
+// retiring the disk-based SPA that was their only UI would have made historical
+// rows unreadable from a browser. They load on demand rather than with the view:
+// an operator opening Audit wants the chain, and these can be large.
+let opLogOffset = 0, accLogOffset = 0;
+
+async function loadOpLog() {
+  const tbody = $('opLogRows'), err = $('opLogError');
+  err.classList.add('hidden');
+  const limit = parseInt($('opLogLimit').value, 10) || 50;
+  const params = new URLSearchParams({ limit: String(limit), offset: String(opLogOffset) });
+  if ($('opLogCA').value) params.set('ca_id', $('opLogCA').value);
+  tbody.innerHTML = emptyRow('Loading…', 8);
+  let res;
+  try {
+    res = await api('GET', '/api/audit-log?' + params.toString());
+  } catch (e) { tbody.innerHTML = emptyRow('Could not read the table.', 8); showError(err, e.message); return; }
+  const rows = res.entries || [];
+  tbody.innerHTML = rows.length ? rows.map(e => `<tr>
+    <td>${fmtTime(e.timestamp)}</td>
+    <td>${escapeHTML(e.user_email || e.user_sub || '')}</td>
+    <td>${escapeHTML(e.ca_label || e.ca_id || '')}</td>
+    <td>${escapeHTML(e.cert_type || '')}</td>
+    <td>${escapeHTML((e.principals || []).join(', '))}</td>
+    <td>${fmtTime(e.valid_before)}</td>
+    <td class="mono">${escapeHTML(shortSerial(e.serial))}</td>
+    <td>${e.restriction_set_id ? escapeHTML(rsName(e.restriction_set_id)) : '<span class="muted">none</span>'}</td>
+  </tr>`).join('') : emptyRow('No signing operations recorded in this table.', 8);
+  $('opLogPage').textContent = pageLabel(opLogOffset, rows.length, res.total);
+  $('opLogPrev').disabled = opLogOffset === 0;
+  $('opLogNext').disabled = opLogOffset + rows.length >= (res.total || 0);
+}
+
+$('opLogRefresh').onclick = () => { opLogOffset = 0; loadOpLog(); };
+$('opLogLimit').onchange = () => { opLogOffset = 0; loadOpLog(); };
+$('opLogCA').onchange = () => { opLogOffset = 0; loadOpLog(); };
+$('opLogPrev').onclick = () => {
+  const limit = parseInt($('opLogLimit').value, 10) || 50;
+  opLogOffset = Math.max(0, opLogOffset - limit);
+  loadOpLog();
+};
+$('opLogNext').onclick = () => {
+  opLogOffset += parseInt($('opLogLimit').value, 10) || 50;
+  loadOpLog();
+};
+// The server answers ?export=json with the whole table as an attachment; it is
+// fetched through api() so the operator's credentials travel with it.
+$('opLogExport').onclick = async () => {
+  const err = $('opLogError');
+  err.classList.add('hidden');
+  try {
+    const body = await api('GET', '/api/audit-log?export=json', undefined, true);
+    downloadBlob(body, 'signing-operation-log.json', 'application/json');
+  } catch (e) { showError(err, 'Export failed: ' + e.message); }
+};
+
+async function loadAccessLog() {
+  const tbody = $('accLogRows'), err = $('accLogError');
+  err.classList.add('hidden');
+  const limit = parseInt($('accLogLimit').value, 10) || 50;
+  tbody.innerHTML = emptyRow('Loading…', 7);
+  let res;
+  try {
+    res = await api('GET', `/api/access-log?limit=${limit}&offset=${accLogOffset}`);
+  } catch (e) { tbody.innerHTML = emptyRow('Could not read the table.', 7); showError(err, e.message); return; }
+  const rows = res.entries || [];
+  tbody.innerHTML = rows.length ? rows.map(e => `<tr>
+    <td>${fmtTime(e.timestamp)}</td>
+    <td>${escapeHTML(e.user_sub || '')}</td>
+    <td>${escapeHTML(e.method || '')}</td>
+    <td class="mono">${escapeHTML(e.path || '')}</td>
+    <td><span class="badge ${e.status >= 500 ? 'crit' : (e.status >= 400 ? 'warning' : 'ok')}">${e.status}</span></td>
+    <td class="mono">${escapeHTML(e.ip || '')}</td>
+    <td class="mono">${escapeHTML(e.request_id || '')}</td>
+  </tr>`).join('') : emptyRow('No access-log rows.', 7);
+  $('accLogPage').textContent = pageLabel(accLogOffset, rows.length, res.total);
+  $('accLogPrev').disabled = accLogOffset === 0;
+  $('accLogNext').disabled = accLogOffset + rows.length >= (res.total || 0);
+}
+
+$('accLogRefresh').onclick = () => { accLogOffset = 0; loadAccessLog(); };
+$('accLogLimit').onchange = () => { accLogOffset = 0; loadAccessLog(); };
+$('accLogPrev').onclick = () => {
+  const limit = parseInt($('accLogLimit').value, 10) || 50;
+  accLogOffset = Math.max(0, accLogOffset - limit);
+  loadAccessLog();
+};
+$('accLogNext').onclick = () => {
+  accLogOffset += parseInt($('accLogLimit').value, 10) || 50;
+  loadAccessLog();
+};
+$('accLogExport').onclick = async () => {
+  const err = $('accLogError');
+  err.classList.add('hidden');
+  try {
+    const body = await api('GET', '/api/access-log?export=json', undefined, true);
+    downloadBlob(body, 'access-log.json', 'application/json');
+  } catch (e) { showError(err, 'Export failed: ' + e.message); }
+};
+
+function pageLabel(offset, shown, total) {
+  if (!shown) return total ? `0 of ${total}` : '';
+  return `${offset + 1}–${offset + shown} of ${total ?? '?'}`;
+}
+
+// Populate the CA filter and pull the first page of both tables when Audit is
+// first opened. The chain above is the headline; these fill in underneath.
+let legacyLogsPrimed = false;
+async function primeLegacyLogs() {
+  if (legacyLogsPrimed) return;
+  legacyLogsPrimed = true;
+  // cas is already loaded (sign-in does it before the first view), and
+  // reloading it here would re-run loadCerts for a view the operator is not on.
+  $('opLogCA').innerHTML = '<option value="">any</option>' +
+    cas.map(c => `<option value="${escapeHTML(c.id)}">${escapeHTML(c.label)}</option>`).join('');
+  // rsName resolves a restriction-set id to its name in the table above; the
+  // list is cheap and read-gated the same way, so fetch it if nothing has yet.
+  if (!restrictionSets.length) {
+    try { restrictionSets = await api('GET', '/api/restriction-sets'); } catch (_) { /* ids will show raw */ }
+  }
+  await loadOpLog();
+  await loadAccessLog();
+}
+
 // ---- Four-eyes / maker-checker approvals ------------------------------------
 async function loadApprovals() {
   const tbody = $('approvalsRows');
@@ -5981,7 +6401,16 @@ function debounce(fn, ms) {
   let timer;
   return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
 }
-function emptyRow(msg) { return `<tr><td colspan="6" class="muted">${escapeHTML(msg)}</td></tr>`; }
+function emptyRow(msg, cols = 6) { return `<tr><td colspan="${cols}" class="muted">${escapeHTML(msg)}</td></tr>`; }
+// fmtSecs renders a validity ceiling the way an operator would have typed it:
+// exact days/hours/minutes where the number divides, seconds otherwise.
+function fmtSecs(secs) {
+  if (secs == null) return '';
+  if (secs >= 86400 && secs % 86400 === 0) return (secs / 86400) + 'd';
+  if (secs >= 3600 && secs % 3600 === 0) return (secs / 3600) + 'h';
+  if (secs >= 60 && secs % 60 === 0) return (secs / 60) + 'm';
+  return secs + 's';
+}
 function escapeHTML(s) {
   return String(s ?? '').replace(/[&<>"']/g, c =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

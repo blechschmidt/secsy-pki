@@ -106,6 +106,56 @@ written, which on a force-audited device is the record the deployment is
 obliged to keep. The image ships `/app/audit`, owned by the runtime user, so a
 named volume mounted there is writable by uid 65532 rather than by root.
 
+### Removed
+
+**The original disk-based web UI is gone; the embedded operator console is the
+only UI.** `server/web/static/` — the Bootstrap SPA with Keys, Sign, Groups,
+Permissions, Restrictions, Audit Log and HSM pages — predated the console and
+had been carrying seven CA-era pages against the console's twenty-five. Two UIs
+meant two answers to "what can an operator do", and the parity matrix had been
+tracking the divergence as debt rather than closing it. The SPA's files, the
+`COPY server/web/static` in the Dockerfile, and the site-root file server are
+all removed: the server no longer probes its working directory for a
+`web/static` to mount at `GET /`, which also means a directory appearing beside
+the binary can no longer decide what the root serves. `GET /` redirects to
+`/console/` unconditionally, as it already did in the container.
+
+Nothing an operator could do in the old UI was lost with it. Everything it
+reached and the console did not is now on the console:
+
+* **Issuance restriction sets** have a view of their own
+  (`/console/` → **Restrictions**). The SSH half is the enforced ceiling on
+  every `POST /api/keys/{id}/sign` — `GetEffectiveRestrictionSet` runs on that
+  signing path — and the retired SPA was its only UI, so this is also the one
+  piece of the move that was a real hole rather than a duplicate. The view
+  creates, edits and deletes both set types, scoped globally (root) or to one CA
+  (`ca:configure`), and sets each CA's SSH and X.509 fallback.
+
+  Writing the view surfaced something the old UI never said: **the X.509 half of
+  a restriction set is stored and never enforced.** No issuance path resolves
+  one — not `POST /api/ca/{id}/issue`, not the raw
+  `POST /api/keys/{id}/sign-x509` — so a CA whose X.509 default is *Disallow all
+  signatures* still issues. Rather than reproduce a control that silently does
+  nothing, the view states it on the page, in the editor and on every X.509 row,
+  and points at the certificate profile, which is what actually binds X.509
+  issuance. The behaviour is unchanged; only the honesty about it is new.
+* **The two pre-event-log tables** — the signing-operation log and the HTTP
+  access log — are panels on the **Audit** view, under the hash-chained event
+  log that supersedes but does not contain them, with the same paging and JSON
+  export the SPA offered.
+* **CA public-key export** is a per-row action on **Authorities**, in SPKI PEM
+  or the single OpenSSH line an `sshd` `TrustedUserCAKeys` file takes.
+
+Three of the SPA's endpoints stay registered and deliberately console-less:
+`POST /api/keys/{id}/sign` and `GET /api/keys/{id}/my-restrictions`, which the
+shipped `secsy-ssh` client speaks, and `POST /api/hsm/factory-reset`, which
+destroys every key on the device and the audit log with them — that one belongs
+at a terminal in front of the device, not behind a browser tab, and
+`parity_test.go` now records it as withheld by policy instead of as an
+accidental gap. The former "legacy SPA only" class is gone from that table:
+nine routes moved onto a console view, bringing it to 179 of 198 routes mapped
+with 19 classified exemptions.
+
 ### Changed
 
 **A `pkcs11:` URI the deployment cannot honour in full is now rejected when the

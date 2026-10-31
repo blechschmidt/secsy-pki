@@ -68,6 +68,7 @@
         <button data-view="tenants">Tenants</button>
         <button data-view="tokens">API Tokens</button>
         <button data-view="access">Access</button>
+        <button data-view="restrictions">Restrictions</button>
         <button data-view="webhooks">Webhooks</button>
       </nav>
       <span class="user" id="userBox"></span>
@@ -1115,6 +1116,62 @@
           <button class="btn ghost sm" id="auditNext">Older →</button>
         </div>
         <p class="sub" style="margin-top:14px">Long-term preservation of this chain — RFC 4998 evidence records over a range of events — lives under <b>Compliance</b>.</p>
+
+        <!-- The two pre-event-log tables, ported from the retired disk-based
+             SPA. The hash-chained event log above supersedes both, but it does
+             not contain their historical rows, so an operator auditing a
+             deployment that predates it still has to be able to read them. -->
+        <div class="panel" style="margin-top:18px">
+          <h2 style="font-size:15px">Signing-operation log <span class="muted" style="font-weight:400;font-size:12px">(pre-event-log table)</span></h2>
+          <p class="sub">One row per certificate signed through <code>POST /api/keys/{id}/sign</code> — the SSH signing path the <code>secsy-ssh</code> client speaks — recorded by that handler itself: who asked, under which CA, for which principals, and which restriction set admitted it. Superseded by the chained event log above, which covers every issuance path; kept because these rows are not in that chain.</p>
+          <div id="opLogError" class="notice err hidden"></div>
+          <div class="toolbar">
+            <div class="field" style="margin:0;min-width:220px">
+              <label for="opLogCA">CA / key</label>
+              <select id="opLogCA"><option value="">any</option></select>
+            </div>
+            <div class="field" style="margin:0">
+              <label for="opLogLimit">Page size</label>
+              <select id="opLogLimit"><option>50</option><option>100</option><option>200</option></select>
+            </div>
+            <div class="spacer"></div>
+            <button class="btn ghost sm" id="opLogExport" style="margin-top:16px">Export JSON</button>
+            <button class="btn ghost sm" id="opLogRefresh" style="margin-top:16px">Refresh</button>
+          </div>
+          <table>
+            <thead><tr><th>Time</th><th>Operator</th><th>CA</th><th>Cert type</th><th>Principals</th><th>Expires</th><th>Serial</th><th>Restriction set</th></tr></thead>
+            <tbody id="opLogRows"><tr><td colspan="8" class="muted">Load to read the table…</td></tr></tbody>
+          </table>
+          <div class="toolbar" style="margin-top:10px">
+            <button class="btn ghost sm" id="opLogPrev">← Newer</button>
+            <span class="muted" id="opLogPage" style="margin-top:6px"></span>
+            <button class="btn ghost sm" id="opLogNext">Older →</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2 style="font-size:15px">HTTP access log</h2>
+          <p class="sub">Every authenticated API request this deployment served — method, path, status, source address — correlated to the chained events and the structured request log by request id. Reading it needs <code>audit:read</code>, the same as the chain above.</p>
+          <div id="accLogError" class="notice err hidden"></div>
+          <div class="toolbar">
+            <div class="field" style="margin:0">
+              <label for="accLogLimit">Page size</label>
+              <select id="accLogLimit"><option>50</option><option>100</option><option>200</option></select>
+            </div>
+            <div class="spacer"></div>
+            <button class="btn ghost sm" id="accLogExport" style="margin-top:16px">Export JSON</button>
+            <button class="btn ghost sm" id="accLogRefresh" style="margin-top:16px">Refresh</button>
+          </div>
+          <table>
+            <thead><tr><th>Time</th><th>Subject</th><th>Method</th><th>Path</th><th>Status</th><th>Source IP</th><th>Request id</th></tr></thead>
+            <tbody id="accLogRows"><tr><td colspan="7" class="muted">Load to read the table…</td></tr></tbody>
+          </table>
+          <div class="toolbar" style="margin-top:10px">
+            <button class="btn ghost sm" id="accLogPrev">← Newer</button>
+            <span class="muted" id="accLogPage" style="margin-top:6px"></span>
+            <button class="btn ghost sm" id="accLogNext">Older →</button>
+          </div>
+        </div>
       </section>
 
       <!-- Four-eyes / maker-checker approvals -->
@@ -2323,6 +2380,102 @@
               <button class="btn sm" id="groupMemberAddBtn" style="margin-top:16px">Add member</button>
             </div>
           </div>
+        </div>
+      </section>
+
+      <!-- Issuance restriction sets (ported from the retired disk-based SPA) -->
+      <section class="view" id="view-restrictions">
+        <h2>Issuance restrictions</h2>
+        <p class="sub">The ceiling on what an <strong>SSH</strong> signing request may ask for. Every signature through <code>POST /api/keys/{id}/sign</code> resolves one effective set — from the requester's own permission, their groups', or the CA's default — and is refused when it exceeds that set. A set is scoped either to one CA or globally; global sets are <strong>root-only</strong> to create, per-CA sets need <code>ca:configure</code> (or an administrative grant) on that CA. When <em>nothing</em> resolves, enforcement is skipped entirely and the request is unrestricted — which is why a new CA is created with the built-in <b>Disallow all signatures</b> as its default rather than with no default.</p>
+        <div class="notice warn">
+          <b>X.509 sets are stored but not enforced.</b> Nothing on the issuance path consults them: neither <code>POST /api/ca/{id}/issue</code> nor the raw <code>POST /api/keys/{id}/sign-x509</code>. A CA whose X.509 default is <i>Disallow all signatures</i> will still issue. The ceiling that <em>does</em> bind X.509 issuance is the <b>certificate profile</b> — key usages, extended key usages, SAN types, validity, CA denial — applied on the <b>Issue</b> view and declared in the server configuration. Treat the X.509 rows below as policy you have written down, not policy the CA is applying.
+        </div>
+        <div id="rsMsg" class="notice hidden" style="margin-bottom:12px"></div>
+
+        <div class="toolbar">
+          <div class="field" style="margin:0">
+            <label for="rsTypeFilter">Type</label>
+            <select id="rsTypeFilter">
+              <option value="">all</option>
+              <option value="ssh">ssh</option>
+              <option value="x509">x509</option>
+            </select>
+          </div>
+          <div class="spacer"></div>
+          <button class="btn sm" id="rsNewSSH" style="margin-top:16px">New SSH set</button>
+          <button class="btn sm" id="rsNewX509" style="margin-top:16px">New X.509 set</button>
+          <button class="btn ghost sm" id="rsRefresh" style="margin-top:16px">Refresh</button>
+        </div>
+        <div class="panel">
+          <table>
+            <thead><tr><th>Name</th><th>Type</th><th>Scope</th><th>Max validity</th><th>Constraints</th><th></th></tr></thead>
+            <tbody id="rsRows"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+          </table>
+        </div>
+
+        <!-- Editor: one form for both set types; the irrelevant half is hidden
+             rather than sent, so an SSH set can never carry X.509 fields. -->
+        <div class="panel hidden" id="rsEditor">
+          <h2 style="font-size:15px" id="rsEditorTitle"></h2>
+          <div id="rsEditorError" class="notice err hidden"></div>
+          <div class="row">
+            <div class="field" style="flex:1;min-width:200px"><label for="rsName">Name</label><input id="rsName" placeholder="ssh-users-standard"></div>
+            <div class="field" style="flex:1;min-width:200px">
+              <label for="rsScope">Scope</label>
+              <select id="rsScope"></select>
+            </div>
+            <div class="field" style="width:200px"><label for="rsMaxValidity">Max validity (seconds)</label><input id="rsMaxValidity" type="number" min="1" placeholder="unlimited"></div>
+          </div>
+          <label class="muted" style="display:flex;gap:6px;align-items:center;margin-bottom:12px" title="A deny-all set refuses every request that resolves to it, whatever else is configured.">
+            <input type="checkbox" id="rsDenyAll"> deny all — refuse every signing request that resolves to this set
+          </label>
+
+          <div id="rsSSHFields">
+            <div class="row">
+              <div class="field" style="flex:1;min-width:220px"><label for="rsPrincipals">Allowed principals (comma-separated, <code>*</code> = any)</label><input id="rsPrincipals" placeholder="*"></div>
+              <div class="field" style="flex:1;min-width:180px"><label for="rsCertTypes">Allowed cert types (user, host)</label><input id="rsCertTypes" placeholder="user"></div>
+              <div class="field" style="width:200px"><label for="rsMaxValidAfter">Max valid-after offset (s)</label><input id="rsMaxValidAfter" type="number" min="0" placeholder="unlimited"></div>
+            </div>
+            <div class="field"><label for="rsExtensions">Allowed extensions (comma-separated; empty = any)</label><input id="rsExtensions" placeholder="permit-pty,permit-user-rc"></div>
+            <label class="muted" style="display:flex;gap:6px;align-items:center;margin-bottom:8px"><input type="checkbox" id="rsForceKeyIDEmail"> force the certificate key ID to the operator's e-mail</label>
+            <label class="muted" style="display:flex;gap:6px;align-items:center;margin-bottom:8px"><input type="checkbox" id="rsRequireReason"> require a reason (recorded in the key ID)</label>
+            <label class="muted" style="display:flex;gap:6px;align-items:center;margin-bottom:8px"><input type="checkbox" id="rsDenyExtensions"> deny all custom extensions</label>
+            <label class="muted" style="display:flex;gap:6px;align-items:center;margin-bottom:12px"><input type="checkbox" id="rsDenyCriticalOptions"> deny critical options (force-command, source-address, …)</label>
+          </div>
+
+          <div id="rsX509Fields" class="hidden">
+            <div class="notice warn">Recorded, but <b>not enforced</b> by any issuance path — see above. The binding X.509 ceiling is the certificate profile.</div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:220px"><label for="rsKeyUsages">Allowed key usages</label><input id="rsKeyUsages" placeholder="digitalSignature,keyEncipherment"></div>
+              <div class="field" style="flex:1;min-width:220px"><label for="rsExtKeyUsages">Allowed extended key usages</label><input id="rsExtKeyUsages" placeholder="serverAuth,clientAuth"></div>
+            </div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:180px"><label for="rsSANTypes">Allowed SAN types (dns, ip, email, uri)</label><input id="rsSANTypes" placeholder="dns,ip"></div>
+              <div class="field" style="flex:1;min-width:220px"><label for="rsSANPatterns">Allowed SAN patterns</label><input id="rsSANPatterns" placeholder="*.example.com,10.0.0.0/8"></div>
+            </div>
+            <div class="row">
+              <div class="field" style="flex:1;min-width:200px"><label for="rsSubjectFields">Allowed subject fields (CN, O, OU, C, ST, L)</label><input id="rsSubjectFields" placeholder="CN,O"></div>
+              <div class="field" style="width:200px"><label for="rsMaxPathLength">Max path length (-1 = no CA certs)</label><input id="rsMaxPathLength" type="number" placeholder="unlimited"></div>
+            </div>
+            <label class="muted" style="display:flex;gap:6px;align-items:center;margin-bottom:12px"><input type="checkbox" id="rsDenyCA"> deny CA certificates (no subordinate may be minted through this set)</label>
+          </div>
+
+          <div class="row" style="justify-content:flex-end;gap:8px">
+            <button class="btn ghost sm" id="rsCancel">Cancel</button>
+            <button class="btn sm" id="rsSave">Save set</button>
+          </div>
+        </div>
+
+        <!-- Per-CA fallback. This is what applies when nothing more specific
+             matches the requester, so it is the line between "signing works"
+             and "signing is denied" for everyone without an explicit set. -->
+        <div class="panel">
+          <h2 style="font-size:15px">Per-CA default sets</h2>
+          <p class="sub">The set a signing request falls back to when neither the requester nor any of their groups carries one. A new CA starts at the built-in <b>Disallow all signatures</b>. <b>none</b> is not a stricter choice than that — it removes the fallback, and a request that resolves to nothing is <b>not restricted at all</b>; pick <b>Disallow all signatures</b> to deny instead. Changing a default needs <code>ca:configure</code> on that CA.</p>
+          <table>
+            <thead><tr><th>CA / key</th><th>Default SSH set</th><th>Default X.509 set</th></tr></thead>
+            <tbody id="rsDefaultRows"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody>
+          </table>
         </div>
       </section>
 

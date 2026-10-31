@@ -1201,19 +1201,16 @@ func main() {
 		mswstep.New(db, provider, msCfg).Register(mux)
 	}
 
-	// Serve the legacy disk-based SPA from web/static when present. The Task 21
-	// operator console is served separately from an embedded (go:embed) bundle
-	// under /console/ by RegisterRoutes, so it ships in the binary regardless.
-	// When the legacy SPA is absent (e.g. the container image), send the site
-	// root straight to the embedded console.
-	webDir := "web/static"
-	if _, err := os.Stat(webDir); err == nil {
-		mux.Handle("GET /", http.FileServer(http.Dir(webDir)))
-	} else {
-		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-			http.Redirect(w, r, "/console/", http.StatusFound)
-		})
-	}
+	// The operator console is the only UI. It is served from an embedded
+	// (go:embed) bundle under /console/ by RegisterRoutes, so it ships in the
+	// binary and needs nothing on disk; the site root just points at it.
+	// Nothing mounts "GET /" any more: the disk-backed SPA this replaced probed
+	// for a web/static directory next to the working directory and, finding one,
+	// mounted a file server at the site root — a directory appearing beside the
+	// binary must not be able to decide what the root serves.
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/console/", http.StatusFound)
+	})
 
 	// Job registration is complete — start the election. On SQLite (static
 	// mode) leadership and every registered job start immediately, preserving

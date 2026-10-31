@@ -26,7 +26,8 @@ The [`Dockerfile`](../../Dockerfile) is multi-stage:
   binaries small and reproducible.
 - **runtime** (`debian:bookworm-slim`) ships `ca-certificates`, plus `softhsm2`
   and `opensc` (for `softhsm2-util`/`pkcs11-tool`). It runs as non-root UID/GID
-  `65532` and serves the SPA from `/app/web/static`.
+  `65532`. The console needs nothing on disk — it is embedded in the server
+  binary and served at `/console/`.
 - **runtime-yubihsm** — the same, plus Yubico's PKCS#11 module and the
   `libyubihsm` transports. Published under every tag with `-yubihsm` appended;
   see [the container image](container.md#the-yubihsm-variant).

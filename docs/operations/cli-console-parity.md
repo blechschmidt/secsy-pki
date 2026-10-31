@@ -200,38 +200,49 @@ echoed, logged or written to an audit detail.
 
 ## REST routes with no console control
 
-The other half of the matrix. Of the 195 `/api/…` routes, 28 have no console
+The other half of the matrix. Of the 198 `/api/…` routes, 19 have no console
 control, in four classified kinds:
 
 | Kind | Count | Routes | Why |
 |---|---|---|---|
 | **Public protocol** | 2 | `POST /api/ca/{id}/ocsp`, `GET /api/ca/{id}/ocsp/{req}` | The RFC 6960 responder. Its callers are TLS clients and stapling daemons speaking DER; an operator checks revocation on the Validate or Certificates view. |
-| **Plumbing** | 7 | `/api/health`, `/api/auth/config`, `/api/me`, `/api/parse-csr`, `/api/docs`, `/api/docs/openapi.yaml`, `/api/docs/openapi.json` | Liveness probes, sign-in bootstrap, the Swagger UI and the OpenAPI document. `/api/auth/config` and `/api/me` *are* called by `app.js`, but before any view exists. |
-| **Legacy SPA only** | 17 | `/api/audit-log`, `/api/access-log`, `/api/restriction-sets` (+`/{id}`), `/api/keys/{id}/restriction-sets`, `/api/keys/{id}/default-restriction-set`, `/api/keys/{id}/my-restrictions`, `/api/keys/{id}/permissions`, `/api/keys/{id}/sign`, `/api/keys/{id}/sign-x509`, `/api/keys/{id}/public-key`, `/api/hsm/factory-reset` | Reachable only from the **older disk-based SPA** in `server/web/static/`, which predates the embedded console. Real debt, listed as such — see [the gaps](#known-gaps) below. |
-| **Reached another way** | 2 | `GET /api/ca/{id}/rotation`, `GET /api/keys/{id}/children` | The capability *is* in the console; it uses a different endpoint. Authorities loads the whole rotation lineage from `GET /api/rotations` and indexes it by CA, and renders the hierarchy from each row's `parent_id`. |
+| **Plumbing** | 8 | `/api/health`, `/api/auth/config`, `/api/me`, `/api/parse-csr`, `/api/keys/{id}/my-restrictions`, `/api/docs`, `/api/docs/openapi.yaml`, `/api/docs/openapi.json` | Liveness probes, sign-in bootstrap, the Swagger UI and the OpenAPI document. `/api/auth/config` and `/api/me` *are* called by `app.js`, but before any view exists. `my-restrictions` is a requester's own ceiling, fetched by the `secsy-ssh` client so it can prompt for what the CA will demand; an operator reads the same sets whole on Restrictions. |
+| **Withheld by policy** | 1 | `POST /api/hsm/factory-reset` | An irreversible device wipe: it destroys every key and the audit log with them. Deliberately **not** a browser control — `secsy-ca` runs it from a terminal at the device, where the operator holding the authentication key is the one who can see which device they are about to erase. |
+| **Reached another way** | 8 | `GET /api/ca/{id}/rotation`, `GET /api/keys/{id}/children`, `GET /api/keys/{id}/restriction-sets`, `/api/keys/{id}/permissions` (×3), `POST /api/keys/{id}/sign`, `POST /api/keys/{id}/sign-x509` | The capability *is* in the console; it uses a different endpoint. Authorities loads the whole rotation lineage from `GET /api/rotations` and renders the hierarchy from each row's `parent_id`; Restrictions lists every set from `GET /api/restriction-sets` and labels each one's scope from its `ca_id`; Access administers the Task 191 resource grants rather than the per-CA permission model they replaced; SSH CA signs through `POST /api/ssh/cas/{id}/sign` and Issue through `POST /api/ca/{id}/issue`, both of which run the profile, lint, CAA and policy gates the raw-key endpoints predate. |
 
-### Known gaps
+### There is one UI
 
-Parity is not yet total, and the matrix is the place that says so:
+There used to be two, and this page used to carry a fifth class — *legacy SPA
+only* — for the 17 routes an operator could reach from the older disk-based
+Bootstrap SPA in `server/web/static/` and nowhere else in a browser. That SPA is
+removed. Its capabilities came with it rather than being dropped:
 
-- **Restriction sets** (7 routes) have no embedded-console UI at all. Managing
-  per-CA issuance restriction sets means the legacy SPA or the CLI.
+- **Issuance restriction sets** (7 routes) are the **Restrictions** view. The SSH
+  half is the enforced ceiling on every `POST /api/keys/{id}/sign`, so this was
+  the one former gap that was a real hole rather than a duplicate: the view
+  creates, edits and deletes both set types, scoped globally (root) or to one CA
+  (`ca:configure`), and sets each CA's SSH and X.509 fallback. The X.509 half is
+  stored and never consulted by any issuance path — the view
+  [says so](web-console.md#x509-sets-are-stored-not-enforced) rather than
+  implying a control that does not bind.
+- **`/api/audit-log` and `/api/access-log`**, the two pre-event-log tables, are
+  panels on the **Audit** view, beneath the hash-chained event log
+  (`/api/events`) that supersedes but does not contain their rows — same paging,
+  same JSON export.
+- **`/api/keys/{id}/public-key`** is a per-row action on **Authorities**, in SPKI
+  PEM or the single OpenSSH line an `sshd` `TrustedUserCAKeys` file takes.
 - **The pre-Task-191 per-CA permission model** (`/api/keys/{id}/permissions`) is
-  legacy-only; the console administers access through the newer resource grants
-  on the Access view, which is the intended replacement rather than a port.
-- **`/api/audit-log` and `/api/access-log`** are the pre-event-log tables. The
-  console's Audit view reads the hash-chained event log (`/api/events`), which
-  supersedes them but does not contain their historical rows.
-- **`/api/keys/{id}/public-key`**, **`/api/keys/{id}/sign`** and
-  **`/api/keys/{id}/sign-x509`** are superseded raw-key endpoints; the console
-  offers the per-purpose equivalents (`/api/sign`, `/api/ca/{id}/issue`,
-  `/api/secret/signing-keys/{name}/sign`).
-- **`/api/hsm/factory-reset`** is an irreversible device wipe. The legacy SPA
-  offers it; the embedded console deliberately does not.
+  *reached another way*: the Access view administers the resource grants that
+  replaced it, which is the intended successor rather than a port.
+- **The raw-key signing endpoints** (`/api/keys/{id}/sign`, `.../sign-x509`) are
+  likewise reached another way, through `POST /api/ssh/cas/{id}/sign` and
+  `POST /api/ca/{id}/issue`. They remain registered because the shipped
+  `secsy-ssh` client speaks the first one.
+- **`/api/hsm/factory-reset`** is the single route withheld on purpose, above.
 
-Every *sub-command* gap is now either offline by design or closed: the two that
-were neither — `secsy-secret signing-key import` and `secsy-ca hsm-attest audit` —
-are described above.
+Every *sub-command* gap is likewise either offline by design or closed: the two
+that were neither — `secsy-secret signing-key import` and
+`secsy-ca hsm-attest audit` — are described above.
 
 ## Keeping it honest
 
