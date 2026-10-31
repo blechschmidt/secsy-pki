@@ -3252,7 +3252,9 @@ function renderP11Attributes(obj) {
     if (a.status !== 'present') return `<span class="muted">${escapeHTML(a.reason || '')}</span>`;
     const parts = [];
     if (a.value) parts.push(escapeHTML(a.value));
-    if (a.raw && (!a.value || rawKinds.includes(a.kind))) {
+    // …and never twice: a short byte value renders AS its hex, so repeating it
+    // underneath would just be the same string in grey.
+    if (a.raw && '0x' + a.raw !== a.value && (!a.value || rawKinds.includes(a.kind))) {
       parts.push(`<span class="muted" style="word-break:break-all">0x${escapeHTML(a.raw)}${a.raw_truncated ? '…' : ''}</span>`);
     }
     if (a.sha256) parts.push(`<span class="muted" style="font-size:11px">sha256 ${escapeHTML(a.sha256)}</span>`);

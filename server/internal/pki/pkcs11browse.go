@@ -643,8 +643,15 @@ func inspectObject(ctx cryptoki, session pkcs11.SessionHandle, h pkcs11.ObjectHa
 			continue
 		}
 		specs[a.typ] = a.spec
+		// An object that would not say what class it is gets the whole
+		// catalogue asked of it (there is nothing to scope by) — but the
+		// withholding fails CLOSED there rather than open: CKA_CLASS is 0 when
+		// unknown, and 0 is also CKO_DATA, on which CKA_VALUE is public. An
+		// object that refuses its own class is exactly the one not to guess
+		// about.
+		withheld := a.spec.secret != 0 && (!classKnown || a.spec.withheldFor(class))
 		switch {
-		case a.spec.withheldFor(class):
+		case withheld:
 			obj.Attributes = append(obj.Attributes, ObjectAttribute{
 				Type: a.typ, TypeHex: fmt.Sprintf("0x%08X", a.typ), Name: attributeName(a.typ),
 				Kind: string(a.spec.kind), Status: AttrStatusWithheld,
@@ -806,10 +813,16 @@ func renderAttribute(typ uint, spec attrSpec, class uint, res attrResult, opts I
 		raw = raw[:limit]
 		a.RawTruncated = true
 	}
-	if spec.kind != kindString && len(raw) > 0 {
-		a.Raw = hex.EncodeToString(raw)
-	} else if spec.kind == kindString && a.RawTruncated {
-		// A truncated string still gets its bytes, since Value was elided.
+	// A character attribute carries no hex when its text is the value — a
+	// CKA_LABEL printed twice, once as text and once as bytes, is noise. It
+	// carries hex exactly when the text could NOT be shown: a truncated value,
+	// or one printableString refused to render (non-UTF-8, control characters),
+	// which is precisely the case where only the bytes answer the question.
+	if spec.kind == kindString {
+		if a.RawTruncated || a.Value != strings.TrimRight(string(res.value), "\x00") {
+			a.Raw = hex.EncodeToString(raw)
+		}
+	} else if len(raw) > 0 {
 		a.Raw = hex.EncodeToString(raw)
 	}
 	if len(res.value) > 32 {

@@ -437,15 +437,59 @@ func TestObjectEnumerationOverAFakeModule(t *testing.T) {
 		}
 	}
 
-	// The unclassed object is still inspected, and only for storage attributes.
+	// An object that will not say what class it is is still inspected — there
+	// is nothing to scope by, so the whole catalogue is asked — but the
+	// withholding fails closed, because CKA_CLASS is 0 when unknown and 0 is
+	// also CKO_DATA, on which CKA_VALUE is public.
 	mystery := set.Objects[2]
 	if mystery.ClassName != "unknown" || mystery.Label != "mystery" {
 		t.Errorf("unclassed object = %+v", mystery)
 	}
 	for _, a := range mystery.Attributes {
-		if a.Name == "CKA_MODULUS" {
-			t.Error("a class-specific attribute was asked of an unclassed object")
+		switch a.Type {
+		case pkcs11.CKA_VALUE, pkcs11.CKA_PRIVATE_EXPONENT, pkcs11.CKA_PRIME_1,
+			pkcs11.CKA_PRIME_2, pkcs11.CKA_EXPONENT_1, pkcs11.CKA_EXPONENT_2, pkcs11.CKA_COEFFICIENT:
+			if a.Status != AttrStatusWithheld {
+				t.Errorf("%s on an unclassed object has status %q — the module was asked for a value that may be key material",
+					a.Name, a.Status)
+			}
 		}
+	}
+}
+
+// The same fail-closed rule, stated on its own: a module that answers every
+// attribute EXCEPT CKA_CLASS must not be handed the key material. The object
+// below looks like CKO_DATA to anything that reads an unset class as zero.
+func TestUnknownClassWithholdsKeyMaterial(t *testing.T) {
+	f := twoSlotModule()
+	f.order = []pkcs11.ObjectHandle{1}
+	f.objects = map[pkcs11.ObjectHandle]map[uint][]byte{1: {
+		pkcs11.CKA_LABEL:            []byte("no-class"),
+		pkcs11.CKA_TOKEN:            {1},
+		pkcs11.CKA_VALUE:            []byte("private key material"),
+		pkcs11.CKA_PRIVATE_EXPONENT: {0xde, 0xad},
+	}}
+
+	set, err := objectsOnSession(f, 1, 1, InspectOptions{})
+	if err != nil {
+		t.Fatalf("objectsOnSession: %v", err)
+	}
+	o := set.Objects[0]
+	if o.ClassName != "unknown" {
+		t.Fatalf("class = %q, want unknown", o.ClassName)
+	}
+	var checked int
+	for _, a := range o.Attributes {
+		if a.Type != pkcs11.CKA_VALUE && a.Type != pkcs11.CKA_PRIVATE_EXPONENT {
+			continue
+		}
+		checked++
+		if a.Status != AttrStatusWithheld || a.Raw != "" || a.Value != "" {
+			t.Errorf("%s = %+v, want a withheld row with no data", a.Name, a)
+		}
+	}
+	if checked != 2 {
+		t.Errorf("examined %d key-material row(s), want 2", checked)
 	}
 }
 

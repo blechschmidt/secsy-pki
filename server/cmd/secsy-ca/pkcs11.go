@@ -151,24 +151,29 @@ func cmdPKCS11Objects(ins keyprovider.PKCS11Inspector, args []string) error {
 	// attributes that have to be read first, and a token with few objects is
 	// the normal case. The JSON form is filtered the same way, so a scripted
 	// consumer sees exactly the rows the table shows.
+	enumerated := make([]int, len(views))
 	for i := range views {
 		if views[i].Objects == nil {
 			continue
 		}
+		enumerated[i] = len(views[i].Objects.Objects)
 		views[i].Objects.Objects = filterObjects(views[i].Objects.Objects, *label, wantClass)
 	}
 	if *asJSON {
 		return emitJSON(views)
 	}
 
-	for _, v := range views {
+	for i, v := range views {
 		printTokenHeader(v)
 		if v.Objects == nil {
 			continue
 		}
 		set := v.Objects
-		fmt.Printf("token %q (serial %s), slot %d — %d object(s)%s\n",
-			set.TokenLabel, set.TokenSerial, set.SlotID, len(set.Objects), truncatedNote(set.Truncated))
+		// "showing N of M": the class counts below describe everything that was
+		// enumerated, so saying only the filtered count would make them look
+		// wrong.
+		fmt.Printf("token %q (serial %s), slot %d — showing %d of %d object(s)%s\n",
+			set.TokenLabel, set.TokenSerial, set.SlotID, len(set.Objects), enumerated[i], truncatedNote(set.Truncated))
 		if len(set.Counts) > 0 {
 			fmt.Printf("by class: %s\n", formatCounts(set.Counts))
 		}

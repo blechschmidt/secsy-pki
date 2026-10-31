@@ -471,3 +471,36 @@ func TestInspectOptionDefaults(t *testing.T) {
 		t.Errorf("explicit caps not honoured: %+v", set)
 	}
 }
+
+// A character attribute carries hex only when the text could not be shown —
+// a label printed twice, as text and as bytes, is noise; a label that is not
+// text is only answerable as bytes.
+func TestStringAttributeHexOnlyWhenTheTextCannotBeShown(t *testing.T) {
+	spec := attrSpec{kind: kindString}
+	plain := renderAttribute(pkcs11.CKA_LABEL, spec, pkcs11.CKO_PRIVATE_KEY,
+		attrResult{value: []byte("ca-root")}, InspectOptions{})
+	if plain.Value != "ca-root" || plain.Raw != "" {
+		t.Errorf("a printable label = %+v, want the text and no hex", plain)
+	}
+
+	binary := renderAttribute(pkcs11.CKA_LABEL, spec, pkcs11.CKO_PRIVATE_KEY,
+		attrResult{value: []byte{0x01, 0x1b, 0x5b}}, InspectOptions{})
+	if binary.Raw != "011b5b" {
+		t.Errorf("a non-printable label = %+v, want its bytes", binary)
+	}
+
+	// A trailing NUL is padding, not content: the text still matches.
+	padded := renderAttribute(pkcs11.CKA_LABEL, spec, pkcs11.CKO_PRIVATE_KEY,
+		attrResult{value: []byte("ca-root\x00")}, InspectOptions{})
+	if padded.Value != "ca-root" || padded.Raw != "" {
+		t.Errorf("a NUL-padded label = %+v", padded)
+	}
+
+	// A short byte value IS its hex, so Value carries it and the caller is not
+	// handed the same string twice.
+	id := renderAttribute(pkcs11.CKA_ID, attrSpec{kind: kindBytes}, pkcs11.CKO_PRIVATE_KEY,
+		attrResult{value: []byte{0x0a, 0x0b}}, InspectOptions{})
+	if id.Value != "0x0a0b" || id.Raw != "0a0b" {
+		t.Errorf("CKA_ID = %+v", id)
+	}
+}
