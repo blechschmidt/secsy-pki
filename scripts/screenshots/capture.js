@@ -367,7 +367,20 @@ const SHOTS = [
     maxHeight: 1150,
   },
   {
-    file: '14-signing.png',
+    file: '14-restrictions.png',
+    what: 'issuance restriction sets — the per-requester ceiling on SSH signing, and the X.509 half that binds nothing',
+    setup: `switchView('restrictions'); loadRestrictions()`,
+    // Three seeded sets and the per-CA defaults table, which needs the CA list
+    // to have resolved: rendering it early shows "none" everywhere, which is
+    // the one value that means the opposite of what the page is about.
+    settle: `document.querySelectorAll('#rsRows tr').length >= 3 &&
+             document.querySelectorAll('#rsDefaultRows select').length >= 1 &&
+             document.getElementById('rsDefaultRows').textContent.includes('ssh-operators')`,
+    clip: '#view-restrictions',
+    maxHeight: 1500,
+  },
+  {
+    file: '15-signing.png',
     what: 'artifact signing — CAdES levels and the countersigning TSA',
     setup: `switchView('signing'); loadSigning()`,
     settle: `(() => { const p = shotPanel('Configured signers');
@@ -377,7 +390,7 @@ const SHOTS = [
     maxHeight: 1100,
   },
   {
-    file: '15-secrets.png',
+    file: '16-secrets.png',
     what: 'the secret layer — envelope encryption under the HSM-held KEK',
     setup: `
       switchView('secrets');
@@ -390,7 +403,7 @@ const SHOTS = [
     maxHeight: 1400,
   },
   {
-    file: '16-stored-secrets.png',
+    file: '17-stored-secrets.png',
     what: 'the stored-secret registry — versions, rollback, rotation reminders',
     setup: `
       switchView('secrets');
@@ -404,7 +417,7 @@ const SHOTS = [
     maxHeight: 1100,
   },
   {
-    file: '17-audit.png',
+    file: '18-audit.png',
     what: 'the audit log — hash-chain verification and the SIEM exports',
     setup: `switchView('audit'); loadAudit(); await new Promise(r => setTimeout(r, 400));
             shotClick('auditVerifyBtn')`,
@@ -414,7 +427,7 @@ const SHOTS = [
     maxHeight: 1250,
   },
   {
-    file: '18-access.png',
+    file: '19-access.png',
     what: 'per-CA delegation — one group administering exactly one sub-CA',
     // Pick the sub-CA the demo actually delegated. On the root — the default
     // selection — the grants table correctly reads "no grants", which is the
@@ -434,7 +447,7 @@ const SHOTS = [
     maxHeight: 1000,
   },
   {
-    file: '19-api-tokens.png',
+    file: '20-api-tokens.png',
     what: 'scoped API tokens — how automation authenticates',
     setup: `switchView('tokens'); loadTokens()`,
     settle: `document.querySelectorAll('#view-tokens tbody tr').length >= 2`,
@@ -442,7 +455,7 @@ const SHOTS = [
     maxHeight: 1000,
   },
   {
-    file: '20-compliance.png',
+    file: '21-compliance.png',
     what: 'the compliance view — lint split, blocked issuance, audit-chain state',
     setup: `switchView('compliance'); loadCompliance()`,
     settle: `document.getElementById('view-compliance').classList.contains('active') &&
@@ -461,7 +474,7 @@ const SHOTS = [
   // anyway: it costs nothing, and it keeps the heaviest page off the critical
   // path of the others.
   {
-    file: '21-operations.png',
+    file: '22-operations.png',
     what: 'the Operations view — diagnostics, DR manifest, restore drill, publishing',
     setup: `switchView('ops'); loadOps()`,
     settle: `(() => { const p = shotPanel('Preflight diagnostics');
@@ -474,7 +487,7 @@ const SHOTS = [
   // that note: the doctor sweep has already run in this process, and these two
   // shots still read the token.
   {
-    file: '22-pkcs11-module.png',
+    file: '23-pkcs11-module.png',
     what: 'the PKCS#11 inspector — the module, the resolved token, and every slot',
     setup: `switchView('pkcs11'); loadPKCS11()`,
     settle: `(() => {
@@ -489,7 +502,7 @@ const SHOTS = [
     maxHeight: 1100,
   },
   {
-    file: '23-pkcs11-objects.png',
+    file: '24-pkcs11-objects.png',
     what: 'the object dump — one object expanded to its full attribute table',
     setup: `
       switchView('pkcs11');

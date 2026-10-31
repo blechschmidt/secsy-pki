@@ -45,6 +45,12 @@ reports non-extractability because PKCS#11 was asked.
 | `demo-pki.sh` | builds and seeds the throwaway PKI (`up` / `down`) |
 | `capture.js` | drives headless Chromium over CDP; one entry per shot |
 
+Seeding is almost all `secsy-ca`/`secsy-secret` against the database, before the
+server starts. **`seed_restrictions` is the exception** and runs *after*
+`serve()`: restriction sets have no CLI, so the only way to create one is the
+REST API, which needs a listener. Anything else that is console-and-API-only
+has to go in the same place.
+
 ## Requirements
 
 Chromium or Chrome, `node`, `softhsm2`, `openssl`, `ssh-keygen` and a Go

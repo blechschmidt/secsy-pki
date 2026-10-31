@@ -463,6 +463,91 @@ seed_audit() {
 }
 
 # ---------------------------------------------------------------------------
+# seed_restrictions — the ceiling an SSH signing request may not exceed.
+#
+# Restriction sets are the one capability with no secsy-ca subcommand: the REST
+# API and the console are the whole surface. So this seeds over HTTP, which is
+# why it is the only seeder that has to run *after* serve() rather than against
+# the database directly like every one above it.
+#
+# What it writes is a policy with a shape worth photographing: a permissive
+# global default for human operators, a far tighter per-CA set for CI, and one
+# X.509 set — because the view's standing warning is that X.509 sets are stored
+# and enforced by nothing, and a warning with no row under it reads as
+# hypothetical.
+# ---------------------------------------------------------------------------
+RS_API() {
+  local method=$1 path=$2
+  shift 2
+  curl -sk -u "root:$ROOT_PASSWORD" -X "$method" \
+    -H 'Content-Type: application/json' "$BASE$path" "$@"
+}
+
+# rs_id pulls the created set's id out of the 201 body. The response is the set
+# itself and "id" is its first field, so the first match is the right one.
+rs_id() { grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4; }
+
+seed_restrictions() {
+  log "seeding the SSH restriction sets"
+
+  # The global set: root-only to create, and the fallback that applies to every
+  # SSH CA. 8h and user certificates only, with a reason recorded in the key id
+  # of every certificate signed under it.
+  local operators
+  operators=$(RS_API POST /api/restriction-sets -d '{
+    "name": "ssh-operators",
+    "type": "ssh",
+    "max_validity_secs": 28800,
+    "allowed_principals": ["*"],
+    "allowed_cert_types": ["user"],
+    "require_reason": true,
+    "deny_critical_options": true
+  }' | rs_id)
+
+  # The SSH CA's key id, which is what a CA-scoped set hangs off. Column 1 of
+  # `CA list` is the id and column 2 the label, as in seed_access.
+  local ssh_ca
+  ssh_ca=$(CA list 2>/dev/null | awk '$2 == "northwind-ssh-ops" { print $1 }')
+
+  if [ -n "$ssh_ca" ]; then
+    # The tight one: 15 minutes, deploy-* principals, nothing else. This is the
+    # set a CI runner's token resolves to.
+    quiet RS_API POST "/api/keys/$ssh_ca/restriction-sets" -d '{
+      "name": "ssh-ci-deploy",
+      "type": "ssh",
+      "max_validity_secs": 900,
+      "allowed_principals": ["deploy-*"],
+      "allowed_cert_types": ["user"],
+      "require_reason": true,
+      "deny_extensions": true,
+      "deny_critical_options": true
+    }' || true
+
+    # Make the global set this CA's fallback, so the per-CA defaults table shows
+    # a resolved ceiling rather than the "none" that means unrestricted.
+    if [ -n "$operators" ]; then
+      quiet RS_API PUT "/api/keys/$ssh_ca/default-restriction-set" \
+        -d "{\"restriction_set_id\":\"$operators\",\"type\":\"ssh\"}" || true
+    fi
+  fi
+
+  # One X.509 set, under the TLS issuer, to put a row beneath the warning.
+  local tls_ca
+  tls_ca=$(CA list 2>/dev/null | awk '$2 == "northwind-issuing-tls" { print $1 }')
+  if [ -n "$tls_ca" ]; then
+    quiet RS_API POST "/api/keys/$tls_ca/restriction-sets" -d '{
+      "name": "x509-leaf-only",
+      "type": "x509",
+      "allowed_key_usages": ["digitalSignature", "keyEncipherment"],
+      "allowed_ext_key_usages": ["serverAuth"],
+      "allowed_san_types": ["dns"],
+      "allowed_san_patterns": ["*.northwind.example"],
+      "deny_ca": true
+    }' || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # serve — start the server and wait until the console answers.
 #
 # setsid, and every descriptor pointed somewhere of its own, because the server
@@ -513,6 +598,8 @@ cmd_up() {
   seed_access
   seed_audit
   serve
+  # After serve: restriction sets have no CLI, so they go in over HTTP.
+  seed_restrictions
   log "ready"
   # Last line of stdout: the base URL, for capture.sh to read.
   echo "$BASE"

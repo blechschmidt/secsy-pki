@@ -26,15 +26,16 @@ your life.
 - [10. Prove a chain](#10-prove-a-chain)
 - [11. What a relying party needs](#11-what-a-relying-party-needs)
 - [12. The other CA: SSH](#12-the-other-ca-ssh)
-- [13. Signing artifacts](#13-signing-artifacts)
-- [14. The other half: secrets](#14-the-other-half-secrets)
-- [15. The stored-secret registry](#15-the-stored-secret-registry)
-- [16. The audit log](#16-the-audit-log)
-- [17. Delegating one CA](#17-delegating-one-ca)
-- [18. Machine callers](#18-machine-callers)
-- [19. Compliance evidence](#19-compliance-evidence)
-- [20. Day-2 diagnostics](#20-day-2-diagnostics)
-- [21. What is actually on the token](#21-what-is-actually-on-the-token)
+- [13. What a signing request may ask for](#13-what-a-signing-request-may-ask-for)
+- [14. Signing artifacts](#14-signing-artifacts)
+- [15. The other half: secrets](#15-the-other-half-secrets)
+- [16. The stored-secret registry](#16-the-stored-secret-registry)
+- [17. The audit log](#17-the-audit-log)
+- [18. Delegating one CA](#18-delegating-one-ca)
+- [19. Machine callers](#19-machine-callers)
+- [20. Compliance evidence](#20-compliance-evidence)
+- [21. Day-2 diagnostics](#21-day-2-diagnostics)
+- [22. What is actually on the token](#22-what-is-actually-on-the-token)
 - [Where to go next](#where-to-go-next)
 
 The screenshots are of a throwaway PKI belonging to an invented company,
@@ -57,13 +58,17 @@ secsy-pki-server -config config.yaml
 # → https://pki.example.internal:8443/console/
 ```
 
+`/` redirects there, and it is the only UI: the separate Bootstrap SPA that used
+to be served from disk is gone, along with the question of which of two pages
+was authoritative.
+
 It holds no privileges of its own. Every button on every page calls the same
 RBAC-gated, audited REST API that `secsy-ca` calls, with your credentials
 attached, so **the console can do exactly what you can do and nothing more** —
 and everything it does lands in the audit log under your name. That is also why
 this walkthrough is useful even if you intend to script everything: the pages
-map one-to-one onto commands, and the
-[parity matrix](cli-console-parity.md) names the mapping.
+map onto commands almost one-to-one — section 13 is the single exception — and
+the [parity matrix](cli-console-parity.md) names the mapping both ways.
 
 ---
 
@@ -95,7 +100,7 @@ options and the trade-offs are in
 
 ## 2. Build the hierarchy
 
-![The Authorities view: a table with Label, Subject, Key, Kind, Status and Not after columns, listing northwind-root as an active root expiring 2046 and three active intermediates — TLS, Device and Workload issuing CAs — each ecdsa-sha2-nistp256 and expiring 2031, with Rotate key and Chain buttons per row.](../screenshots/02-authorities.png)
+![The Certificate authorities view: a table with Label, Subject, Key, Kind, Status and Not after columns, listing northwind-root as an ACTIVE ecdsa-sha2-nistp384 root expiring 2046-10-26 and three ACTIVE ecdsa-sha2-nistp256 intermediates — the TLS, Device and Workload issuing CAs — each expiring 2031-10-30. Every row ends in Chain and Public key buttons; the three intermediates also carry Rotate key, which the root does not.](../screenshots/02-authorities.png)
 
 **Authorities** is the hierarchy, and it is the first page that matters. Each
 row is a CA: its label (which is also its key label on the token), its subject,
@@ -114,6 +119,12 @@ nothing.
 new signing key while the old one keeps serving its already-issued certificates
 through an overlap window, so nothing breaks at the moment of the swap. There is
 no button that destroys a key in one click.
+
+**Public key** is on every row, including the root's, and asks which shape you
+want before it exports: SPKI PEM for X.509 tooling, or the single OpenSSH line
+an `sshd` `TrustedUserCAKeys` file wants. It is the half of the key pair that is
+meant to be published — the private half has never left the token and has no
+export button anywhere in this console.
 
 ![The Create root CA, Issue intermediate CA and External subordinate CA (CSR) forms side by side. The first two are filled in — a label, ecdsa-p384, 7300 days validity and the subject "Northwind Logistics Root CA R2" on the left; a parent CA picker set to northwind-root, label northwind-issuing-tls-g3, ecdsa-p256, 1825 days and path length 0 in the middle. The third explains that it generates an HSM-backed key and a PKCS#10 CSR for an offline or third-party parent to sign.](../screenshots/03-create-ca.png)
 
@@ -222,7 +233,7 @@ the full gate list is in [pre-issuance preview](../issuance/preview.md).
 
 ## 6. The issued estate
 
-![The Certificates view for northwind-issuing-tls: filter controls for search, status and profile, Download CRL and Delta CRL links, a CRL freshness strip reading "CRL #2 · 2 revoked · updated 2026-10-18 10:30Z · next 2026-10-25 10:35Z | delta #3 (base #2) · 0 entries · next 2026-10-18 11:35Z | partitioned into 2 shards: 0 1", and a table of thirteen certificates with serial, common name, profile, not-after and status — mostly VALID, one HELD with a Release button, one REVOKED with no action buttons, and Renew / Suspend / Revoke on the rest.](../screenshots/07-certificates.png)
+![The Certificates view for northwind-issuing-tls: filter controls for search, status and profile, Download CRL and Delta CRL links, a CRL freshness strip reading "CRL #2 · 2 revoked · updated 2026-10-31 03:37Z · next 2026-11-07 03:42Z | delta #3 (base #2) · 0 entries · next 2026-10-31 04:42Z | partitioned into 2 shards: 0 1", and a table of thirteen certificates with serial, common name, profile, not-after and status — mostly VALID, one HELD with a Release button, one REVOKED with no action buttons, and Renew / Suspend / Revoke on the rest.](../screenshots/07-certificates.png)
 
 This is the page you live on. One CA at a time, server-side filtered and paged —
 the table is keyset-paginated with a **Load more** action rather than loading an
@@ -408,9 +419,58 @@ issued — and the KRL is the backstop. [SSH CA reference](../ca/ssh-ca.md).
 
 ---
 
-## 13. Signing artifacts
+## 13. What a signing request may ask for
 
-![The Artifact signing view: a "Configured signers" table with one row — release-signing, subject "Northwind Logistics Release Signing", digest sha256, timestamp default yes, level default T, expiring 2029 — and Sign and Verify panels side by side. Sign offers a signer picker, a CAdES level selector, an artifact file upload or a hex digest, and a Sign artifact button; Verify takes a detached PKCS#7 signature, an artifact or digest, an optional trust anchor, a require-level selector, a "require timestamp" checkbox and a Verify signature button.](../screenshots/14-signing.png)
+![The Issuance restrictions view: an amber banner warning that X.509 sets are stored but not enforced; a Type filter with New SSH set, New X.509 set and Refresh buttons; and a table of seven sets. Four are built-ins scoped global — "Permit all signatures" and "Disallow all signatures" for each of ssh and x509, the x509 pair annotated "not enforced" and the disallow pair badged DENY ALL. Then ssh-operators, global, max validity 8h, constraints "principals: *, cert type: user, reason required" and a NO CRITICAL OPTIONS badge; ssh-ci-deploy, scoped to northwind-ssh-ops, 15m, "principals: deploy-*, cert type: user, reason required" with NO EXTENSIONS and NO CRITICAL OPTIONS badges; and x509-leaf-only, scoped to northwind-issuing-tls, unlimited validity, key usage digitalSignature and keyEncipherment, ext key usage serverAuth, SAN type dns, SAN *.northwind.example and a NO CA CERTS badge. Below, a "Per-CA default sets" panel lists every CA with a Default SSH set and Default X.509 set picker — northwind-ssh-ops set to "ssh-operators (global)", every other row to "Disallow all signatures (global)".](../screenshots/14-restrictions.png)
+
+The page before this one put a ceiling on a whole CA. **Restrictions** puts one
+on a *requester* — and it is the only stop on this walk with no `secsy-ca`
+equivalent. Restriction sets are administered through this view and the API or
+not at all, which inverts the relationship the rest of this document relies on.
+
+Three ceilings now stand between a request and a signature, and they compose by
+taking the smallest: the **profile** bounds what may be asked for, the **CA's
+maximum lifetime** from section 12 bounds every signature made by that key, and
+the **effective restriction set** bounds this requester.
+
+A restriction set enforces in two different ways, and the difference decides
+what a caller sees. Asking for something the set does not permit — a principal
+outside the list, the wrong certificate type, a custom extension or a critical
+option under a deny, or anything at all under *deny all* — is **refused**, 403,
+nothing signed. Asking for **too long a lifetime is not refused but silently
+clamped** to the cap, exactly as the CA ceiling clamps. So a CI job that asks
+`ssh-ci-deploy` for 24 hours does not fail; it gets a 15-minute certificate and
+has to be built to re-request, which is the behaviour you want but not the one
+"refused when it exceeds that set" leads you to expect.
+
+Which set is "effective" is a resolution, and its order is worth knowing because
+only the last step is visible here: the requester's own permission, then their
+groups', then the **CA default** in the table at the bottom. The policy above is
+the usual shape — a permissive global set for humans (`ssh-operators`: 8h, user
+certificates, a reason recorded in every key ID) and a far tighter per-CA one for
+machines (`ssh-ci-deploy`: 15 minutes, principals matching `deploy-*`, no
+extensions, no critical options).
+
+**The dangerous setting is the one that reads as cautious.** When nothing
+resolves, enforcement is skipped entirely and the request is *unrestricted* — so
+setting a CA's default to **none** does not deny signing, it stops checking.
+The deny is the built-in **Disallow all signatures**, which is also what a new CA
+starts with. Reach for that one; `none` is a hole.
+
+The banner at the top is not boilerplate either. **The X.509 half of this page is
+stored and enforced by nothing**: no issuance path consults it — not
+`POST /api/ca/{id}/issue`, not the raw `/api/keys/{id}/sign-x509` — so the
+`x509-leaf-only` row above constrains precisely nothing, and a CA whose X.509
+default is *Disallow all signatures* will still issue. What actually binds X.509
+is the **certificate profile** from section 4. Read an X.509 row as policy you
+have written down, not policy the CA is applying.
+[Restrictions reference](web-console.md#issuance-restrictions).
+
+---
+
+## 14. Signing artifacts
+
+![The Artifact signing view: a "Configured signers" table with one row — release-signing, subject "Northwind Logistics Release Signing", digest sha256, timestamp default yes, level default T, expiring 2029 — and Sign and Verify panels side by side. Sign offers a signer picker, a CAdES level selector, an artifact file upload or a hex digest, and a Sign artifact button; Verify takes a detached PKCS#7 signature, an artifact or digest, an optional trust anchor, a require-level selector, a "require timestamp" checkbox and a Verify signature button.](../screenshots/15-signing.png)
 
 The same HSM that signs certificates signs release artifacts, as detached
 CMS/PKCS#7. The **CAdES level** column is the part to decide once and then stop
@@ -437,9 +497,9 @@ key revoked last month. [Artifact signing](../signing/artifact-signing.md).
 
 ---
 
-## 14. The other half: secrets
+## 15. The other half: secrets
 
-![The Secret envelopes view: a KEK status line reading "KEK northwind-kek (family northwind-kek v1) · pkcs11 · 2048-bit · wrap RSA-OAEP-SHA1 · data AES-256-GCM", Encrypt and Decrypt panels each with a context/AAD field, and a "Crypto service — stateless: nothing you submit is stored" section containing Data key, Keyed HMAC and Random bytes panels.](../screenshots/15-secrets.png)
+![The Secret envelopes view: a KEK status line reading "KEK northwind-kek (family northwind-kek v1) · pkcs11 · 2048-bit · wrap RSA-OAEP-SHA1 · data AES-256-GCM", Encrypt and Decrypt panels each with a context/AAD field, and a "Crypto service — stateless: nothing you submit is stored" section containing Data key, Keyed HMAC and Random bytes panels.](../screenshots/16-secrets.png)
 
 secsy-pki is a certificate authority and a **password/data encryption service**,
 and this is the second half. It is envelope encryption: a fresh AES-256-GCM data
@@ -467,9 +527,9 @@ lifecycle. [Secret encryption reference](../secrets/password-encryption.md).
 
 ---
 
-## 15. The stored-secret registry
+## 16. The stored-secret registry
 
-![The Stored secrets panel: a table with Name, Version, KEK, Escrow, Expires, Rotate every and Value changed columns listing carrier-api/dhl-token at v1 expiring 2026-11-17, smtp/relay-password at v1 rotating every 180 days, and wms/db-password at v2 rotating every 90 days — each with Reveal, Versions, Update and Delete actions — above a "Create / update" form and an empty "Version history" panel.](../screenshots/16-stored-secrets.png)
+![The Stored secrets panel: a table with Name, Version, KEK, Escrow, Expires, Rotate every, Value changed and Labels columns listing carrier-api/dhl-token at v1 expiring 2026-11-30, smtp/relay-password at v1 rotating every 180 days, and wms/db-password at v2 rotating every 90 days — all three wrapped under northwind-kek v1 — each with Reveal, Versions, Update and Delete actions — above a "Create / update" form and an empty "Version history" panel.](../screenshots/17-stored-secrets.png)
 
 Encrypt/decrypt is stateless; this registry is the server holding the envelopes
 for you, and it changes what is possible in two ways.
@@ -492,9 +552,9 @@ rotation deadline, is not better security.
 
 ---
 
-## 16. The audit log
+## 17. The audit log
 
-![The Audit log view: action and actor filters, a page-size selector, and Verify chain, Anchor chain head, Export JSON, CEF and Syslog buttons. A green banner reads "Chain intact — 18 event(s) verified against the genesis hash". Below, a Live tail control and a table of events — crl.publish, auth.login, audit.anchor with a sequence number and head hash, key.block, webhook.create, token.create, secret.put, secret.store and ssh.sign rows — each with time, actor, tenant, target, a SUCCESS result and detail.](../screenshots/17-audit.png)
+![The Audit log view: action and actor filters, a page-size selector, and Verify chain, Anchor chain head, Export JSON, CEF and Syslog buttons. A green banner reads "Chain intact — 20 event(s) verified against the genesis hash", and a "20 event(s) · showing 1–20" line sits under a Live tail control. The table of events lists crl.publish rows for each CA’s base and delta CRL, auth.login, audit.anchor with a sequence number and head hash, key.block, webhook.create, two token.create rows, secret.put and secret.store, three ssh.sign rows and ssh.ca_init — each with time, actor, tenant, target, a SUCCESS result and detail.](../screenshots/18-audit.png)
 
 Every mutating operation in every page above wrote a row here, and the rows are
 **hash-chained**: each entry commits to its predecessor, so removing or editing
@@ -515,11 +575,20 @@ events over SSE as they happen. Getting the log off this machine is the point:
 a tamper-evident log that an attacker can delete is a log you will discover is
 missing. See [audit and SIEM export](../security/audit-siem-export.md).
 
+Below the fold — past the bottom of the screenshot — are two older tables the
+chain **supersedes but does not contain**: the **signing-operation log**, one
+row per certificate signed through `POST /api/keys/{id}/sign` with the
+restriction set that admitted it (section 13), and the **HTTP access log** of
+method, path, status and source IP. Neither is hash-chained, so neither carries
+the guarantee the view above it does. They are there because the event log began
+later than the server did, and an incident that predates it still has to be
+answerable.
+
 ---
 
-## 17. Delegating one CA
+## 18. Delegating one CA
 
-![The Access view: a resource picker set to "northwind-issuing-device — ca/e420be43-…", a grants table showing one row — role ca-admin, entity group:fleet-ops, scope self, source DATABASE, granted 2026-10-18, with a Revoke button — and "Grant access" and "Effective access" panels below. Grant access offers a role picker (ca-manager with its capabilities listed), a user-or-group selector, an identifier field and a scope selector reading "self — this resource only".](../screenshots/18-access.png)
+![The Access view: a resource picker set to "northwind-issuing-device — ca/9743e4c8-c68f-4558-950f-7ec4cb5bda37", a grants table showing one row — role ca-admin, entity group:fleet-ops, scope self, source DATABASE, granted 2026-10-31 03:42Z, with a Revoke button — and "Grant access" and "Effective access" panels below. Grant access offers a role picker (ca-manager with its capabilities listed), a user-or-group selector, an identifier field and a scope selector reading "self — this resource only".](../screenshots/19-access.png)
 
 Tenant-wide roles are too coarse for the common ask: *let the fleet team run the
 device CA, and keep them away from the root.* **Access** is per-resource
@@ -544,9 +613,9 @@ something and cannot. [Per-resource grants](../security/resource-grants.md).
 
 ---
 
-## 18. Machine callers
+## 19. Machine callers
 
-![The API Tokens view: explanatory text noting the opaque secsy_pat_ secret is shown once and stored only as a one-way hash, a table listing siem-exporter (tenant scope, auditor role, active, expiring 2026-11-17) and deploy-robot (tenant scope, issuer role, active, expiring 2027-01-16) with their key prefixes and Revoke buttons, a "Create token" form with name, role checkboxes for issuer/signer/auditor/approver/admin, a scope selector, a tenant field, an expiry field and a description, and an empty "New token secret" panel.](../screenshots/19-api-tokens.png)
+![The API Tokens view: explanatory text noting the opaque secsy_pat_ secret is shown once and stored only as a one-way hash, a table listing siem-exporter (tenant scope, auditor role, active, expiring 2026-11-30) and deploy-robot (tenant scope, issuer role, active, expiring 2027-01-29) with their key prefixes and Revoke buttons, a "Create token" form with name, role checkboxes for issuer/signer/auditor/approver/admin, a scope selector, a tenant field, an expiry field and a description, and an empty "New token secret" panel.](../screenshots/20-api-tokens.png)
 
 Automation should not hold an operator's password, and it should not hold `root`.
 A token is a **service account**: a name, a set of roles, a tenant scope, an
@@ -571,9 +640,9 @@ cannot be chosen by accident. [API tokens](../security/authentication.md).
 
 ---
 
-## 19. Compliance evidence
+## 20. Compliance evidence
 
-![The Compliance & lint summary view: a CA filter set to "all CAs", a green banner reading "Conformant — audit chain verified and no non-conformant certificate was issued", and five stat tiles — 23 issued, 23 lint pass, 0 lint warn, 0 blocked (gate held), audit chain OK. Below, a "Certificate authorities" table listing the root, three issuing CAs and the SSH CA with their subjects, key types, an HSM badge each and their issued counts, an empty "Top lint findings" panel, and a "Profile breakdown" table showing server 9, client 6, server-client 4, and one each of code-signing, server-delegation, server-muststaple and smime-sign.](../screenshots/20-compliance.png)
+![The Compliance & lint summary view: a CA filter set to "all CAs", a green banner reading "Conformant — audit chain verified and no non-conformant certificate was issued", and five stat tiles — 23 issued, 23 lint pass, 0 lint warn, 0 blocked (gate held), audit chain OK. Below, a "Certificate authorities" table listing the root, three issuing CAs and the SSH CA with their subjects, key types, an HSM badge each and their issued counts, an empty "Top lint findings" panel, and a "Profile breakdown" table showing server 9, client 6, server-client 4, and one each of code-signing, server-delegation, server-muststaple and smime-sign.](../screenshots/21-compliance.png)
 
 This page exists to be read by someone who is not you: an auditor, a security
 review, a customer questionnaire. It states a single claim at the top —
@@ -597,9 +666,9 @@ and the RFC 3647 CP/CPS structure is in the
 
 ---
 
-## 20. Day-2 diagnostics
+## 21. Day-2 diagnostics
 
-![The Preflight diagnostics panel: a "deep checks" checkbox and a Run diagnostics button, a green banner reading "Verdict ok (exit code 0) — 22 pass · 0 warn · 0 fail · 18 skip", a line naming the config file, the check time, "shallow probes" and a 60s timeout, and a table of checks with status, name, detail and elapsed — config.parse, config.unknown_keys, keyprovider.ca/tsa/signing, pin.source (SKIP), auth.ldap (SKIP), db.connectivity, db.schema, pkcs11.uris, keys.ca, keys.tsa, keys.signing, keys.secret_kek, keys.ocsp_delegate (SKIP), audit.chain_head, db.integrity (SKIP) and certs.ca_expiry.](../screenshots/21-operations.png)
+![The Preflight diagnostics panel: a "deep checks" checkbox and a Run diagnostics button, a green banner reading "Verdict ok (exit code 0) — 22 pass · 0 warn · 0 fail · 19 skip", a line naming the config file, the check time, "shallow probes" and a 60s timeout, and a table of checks with status, name, detail and elapsed — config.parse, config.unknown_keys, keyprovider.ca/tsa/signing, pin.source (SKIP), auth.ldap (SKIP), auth.oidc.pkce (SKIP), db.connectivity, db.schema, pkcs11.uris, keys.ca, keys.tsa, keys.signing, keys.secret_kek, keys.ocsp_delegate (SKIP), audit.chain_head and db.integrity (SKIP), the list continuing below the crop.](../screenshots/22-operations.png)
 
 **Operations** is the console half of `secsy-ca doctor`: a read-only sweep over
 configuration, storage, the key provider, revocation freshness, publishing and
@@ -641,9 +710,9 @@ and static-artifact publishing; all three are described in the
 
 ---
 
-## 21. What is actually on the token
+## 22. What is actually on the token
 
-![The PKCS#11 inspector: a Module panel listing the SoftHSM module path, Cryptoki version 2.40, manufacturer SoftHSM, library "Implementation of PKCS11 2.6", flags 0x00000000 and 2 slots; a Token panel for the resolved token reading slot 717474821, CKA label secsy-shots, model SoftHSM v2, serial 5d31f6e62ac3cc05, hardware/firmware 2.6, flags 0x0000042D decoded to CKF_RNG CKF_LOGIN_REQUIRED CKF_USER_PIN_INITIALIZED CKF_RESTORE_KEY_NOT_NEEDED CKF_TOKEN_INITIALIZED, a PIN length of 4..255 and the token clock; and a Slots table listing both slots the module presents — the first badged IN USE with 70 mechanisms, the second an unlabelled token whose flags include CKF_SO_PIN_LOCKED.](../screenshots/22-pkcs11-module.png)
+![The PKCS#11 inspector: a Module panel listing the SoftHSM module path, Cryptoki version 2.40, manufacturer SoftHSM, library "Implementation of PKCS11 2.6", flags 0x00000000 and 2 slots; a Token panel for the resolved token reading slot 2057406631, CKA label secsy-shots, model SoftHSM v2, serial 7bdec139faa188a7, hardware/firmware 2.6, flags 0x0000042D decoded to CKF_RNG CKF_LOGIN_REQUIRED CKF_USER_PIN_INITIALIZED CKF_RESTORE_KEY_NOT_NEEDED CKF_TOKEN_INITIALIZED, a PIN length of 4..255 and the token clock; and a Slots table listing both slots the module presents — the first badged IN USE with 70 mechanisms, the second an unlabelled token whose flags include CKF_SO_PIN_LOCKED.](../screenshots/23-pkcs11-module.png)
 
 Section 3 asked the key provider what it holds. **PKCS#11** asks the token, in
 Cryptoki's own words: `C_GetInfo`, every slot the module presents, the
@@ -661,7 +730,7 @@ a mechanism the configuration assumes.
 The module half opens no session and performs no login, deliberately: an
 operator reaching for a slot list is very often one whose login does not work.
 
-![The Objects panel of the PKCS#11 inspector: class and label filters, a max-objects field set to 6, a "whole catalogue" checkbox, Load objects and Objects JSON buttons, a summary reading "token secsy-shots (serial 5d31f6e62ac3cc05), slot 717474821 — showing 3 of 6 object(s)" with class counts CKO_PRIVATE_KEY=3 and CKO_PUBLIC_KEY=3, an amber warning that the token holds more objects than were read, and the expanded attribute table of object 0x9 (CKO_PRIVATE_KEY northwind-root): CKA_CLASS, CKA_TOKEN, CKA_PRIVATE, CKA_LABEL, CKA_KEY_TYPE CKK_EC, CKA_SENSITIVE true, CKA_EXTRACTABLE false, CKA_NEVER_EXTRACTABLE true, CKA_EC_PARAMS decoded to "P-384 (secp384r1) [1.3.132.0.34]", two template rows badged NOT-READ, and the CKA_PRIVATE_EXPONENT, CKA_PRIME_1, CKA_PRIME_2, CKA_EXPONENT_1, CKA_EXPONENT_2, CKA_COEFFICIENT and CKA_VALUE rows badged WITHHELD with the reason "not requested: the value is private key material".](../screenshots/23-pkcs11-objects.png)
+![The Objects panel of the PKCS#11 inspector: class and label filters, a max-objects field set to 6, a "whole catalogue" checkbox, Load objects and Objects JSON buttons, a summary reading "token secsy-shots (serial 7bdec139faa188a7), slot 2057406631 — showing 4 of 6 object(s)" with class counts CKO_PRIVATE_KEY=4 and CKO_PUBLIC_KEY=2, an amber warning that the token holds more objects than were read, and the expanded attribute table of object 0x9 (CKO_PRIVATE_KEY northwind-root): CKA_CLASS, CKA_TOKEN, CKA_PRIVATE, CKA_LABEL, CKA_KEY_TYPE CKK_EC, CKA_SENSITIVE true, CKA_EXTRACTABLE false, CKA_NEVER_EXTRACTABLE true, CKA_EC_PARAMS decoded to "P-384 (secp384r1) [1.3.132.0.34]", two template rows badged NOT-READ, and the CKA_PRIVATE_EXPONENT, CKA_PRIME_1, CKA_PRIME_2, CKA_EXPONENT_1, CKA_EXPONENT_2, CKA_COEFFICIENT and CKA_VALUE rows badged WITHHELD with the reason "not requested: the value is private key material".](../screenshots/24-pkcs11-objects.png)
 
 **Objects** loads on a click rather than with the page, because it costs a
 device round trip per object — and, on a
