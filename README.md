@@ -4,6 +4,10 @@ HSM-backed SSH and X.509 Certificate Authority with OIDC authentication, publicl
 
 **Documentation: <https://blechschmidt.github.io/secsy-pki/>** — every guide below, searchable and cross-linked. Built from this repository by [a CI workflow](docs/development/documentation-site.md); run `make docs-serve` to read it locally.
 
+**See it first: [a walkthrough of the operator console](docs/operations/console-walkthrough.md)** — 22 steps and 24 screenshots, from sign-in to the raw PKCS#11 view of the token.
+
+[![The operator console's Certificate authorities view: a table listing northwind-root as an ACTIVE ecdsa-sha2-nistp384 root alongside three ACTIVE ecdsa-sha2-nistp256 issuing intermediates — TLS, Device and Workload — every row ending in Chain and Public key buttons, the intermediates also carrying Rotate key.](docs/screenshots/02-authorities.png)](docs/operations/console-walkthrough.md)
+
 Secsy PKI manages a public key infrastructure where CA private keys are stored on hardware security modules (HSMs) via PKCS#11. Users authenticate through OpenID Connect and request SSH or X.509 certificates signed by the HSM. Every signing operation is recorded in a cryptographically verifiable audit log backed by the YubiHSM's hardware hash chain.
 
 ## Enterprise Edition
@@ -44,7 +48,7 @@ published — with search and navigation — at
 | [Secret & password encryption](docs/secrets/README.md) | HSM-backed envelope encryption, escrow and recovery, tokenization, the crypto service |
 | [Security & governance](docs/security/README.md) | RBAC, operator authentication, four-eyes approvals, multi-tenancy, rate limiting, FIPS mode, SIEM export |
 | [Deployment & scaling](docs/deployment/README.md) | Container image and Helm chart, SQLite/PostgreSQL, multi-replica HA, self-issued serving TLS |
-| [Day-2 operations](docs/operations/README.md) | The operator runbook, incident response, observability, backups, expiry monitoring, the web console |
+| [Day-2 operations](docs/operations/README.md) | The operator runbook, incident response, observability, backups, expiry monitoring, the [illustrated console walkthrough](docs/operations/console-walkthrough.md) |
 | [Compliance & audit readiness](docs/compliance/README.md) | The RFC 3647 CP/CPS and the CA/B Forum + WebTrust control mapping |
 | [Development & testing](docs/development/README.md) | Benchmarks, coverage, fuzzing, chaos testing, the authorization matrix, supply-chain security |
 

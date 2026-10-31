@@ -19,9 +19,19 @@ and never leaving it.
 
 <p class="secsy-hero-actions" markdown>
 [Deploy it](docs/hsm/configuration.md){ .md-button .md-button--primary }
+[See the console](docs/operations/console-walkthrough.md){ .md-button }
 [Documentation map](docs/README.md){ .md-button }
 [Worked examples](examples/README.md){ .md-button }
 </p>
+
+<figure class="secsy-hero-shot" markdown>
+[![The operator console's Certificate authorities view: a table listing northwind-root as an ACTIVE ecdsa-sha2-nistp384 root alongside three ACTIVE ecdsa-sha2-nistp256 issuing intermediates — TLS, Device and Workload — every row ending in Chain and Public key buttons, the intermediates also carrying Rotate key.](docs/screenshots/02-authorities.png)](docs/operations/console-walkthrough.md)
+<figcaption markdown>
+A root CA and its three issuing intermediates, every private key generated on the
+HSM and still there. [**Walk the whole console**](docs/operations/console-walkthrough.md)
+— 22 steps and 24 screenshots, from sign-in to the raw PKCS#11 view of the token.
+</figcaption>
+</figure>
 
 ---
 
@@ -102,6 +112,7 @@ and never leaving it.
 
 | If you want to… | Go to |
 |-----------------|-------|
+| **See it before you install it** | [Console walkthrough](docs/operations/console-walkthrough.md) — the console end to end, illustrated: hierarchy → keys → issuance → revocation → proof |
 | **Copy a working setup** | [Worked examples](examples/README.md) — an [SSH PKI](examples/ssh-pki/README.md), [keyless signing from GitHub Actions](examples/github-oidc-signing/README.md), [ACME TLS automation](examples/acme-tls/README.md), a [private mTLS CA](examples/mtls-internal/README.md) |
 | **Deploy for the first time** | [HSM configuration](docs/hsm/configuration.md) → [Certificate authority](docs/ca/overview.md) → [RBAC & audit](docs/security/rbac-and-audit.md) |
 | **Move to production** | [Production HSM migration](docs/hsm/production-migration.md) → [Key ceremony & DR](docs/hsm/key-ceremony.md) → [Observability](docs/operations/observability.md) |

@@ -69,3 +69,32 @@
 .md-typeset h2 {
   line-height: 1.3;
 }
+
+/* ------------------------------------------------------------- hero shot */
+
+/* The landing page's console screenshot. It is a link to the walkthrough, so
+ * it carries the same hover affordance as the grid cards above it — a reader
+ * who has not deployed anything yet should be able to see the product before
+ * reading about it. */
+.md-typeset figure.secsy-hero-shot {
+  margin: 2.2em 0 0;
+}
+
+.md-typeset .secsy-hero-shot img {
+  width: 100%;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.4rem;
+  box-shadow: 0 0.15rem 0.6rem rgba(0, 0, 0, 0.12);
+  transition: border-color 125ms, box-shadow 125ms;
+}
+
+.md-typeset .secsy-hero-shot a:hover img {
+  border-color: var(--md-primary-fg-color);
+  box-shadow: 0 0.2rem 0.9rem rgba(0, 0, 0, 0.2);
+}
+
+.md-typeset .secsy-hero-shot figcaption {
+  margin-top: 0.9em;
+  max-width: 46rem;
+  color: var(--md-default-fg-color--light);
+}
