@@ -4,7 +4,7 @@ HSM-backed SSH and X.509 Certificate Authority with OIDC authentication, publicl
 
 **Documentation: <https://blechschmidt.github.io/secsy-pki/>** — every guide below, searchable and cross-linked. Built from this repository by [a CI workflow](docs/development/documentation-site.md); run `make docs-serve` to read it locally.
 
-**See it first: [a walkthrough of the operator console](docs/operations/console-walkthrough.md)** — 22 steps and 24 screenshots, from sign-in to the raw PKCS#11 view of the token.
+**See it first: [a walkthrough of the operator console](docs/operations/console-walkthrough.md)** — 22 steps and 27 screenshots, from sign-in to the raw PKCS#11 view of the token.
 
 [![The operator console's Certificate authorities view: a table listing northwind-root as an ACTIVE ecdsa-sha2-nistp384 root alongside three ACTIVE ecdsa-sha2-nistp256 issuing intermediates — TLS, Device and Workload — every row ending in Chain and Public key buttons, the intermediates also carrying Rotate key.](docs/screenshots/02-authorities.png)](docs/operations/console-walkthrough.md)
 

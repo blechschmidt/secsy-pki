@@ -428,6 +428,54 @@ const SHOTS = [
     maxHeight: 1500,
   },
   {
+    file: '14b-issuance-policy.png',
+    what: 'the CEL issuance-policy rules — the operator-written gate that refuses a request and says why',
+    setup: `switchView('policy'); loadPolicy()`,
+    // Six seeded rules, and the reference panel has to have resolved too: it is
+    // fetched from the server, and the companion shot below photographs it.
+    settle: `document.querySelectorAll('#polRows tr').length >= 6 &&
+             document.getElementById('polRefVars').textContent.includes('request') &&
+             document.getElementById('polRefFooter').textContent.includes('cost units')`,
+    clip: '#view-policy',
+    // The rule table, stopping where the dry-run begins — that half is its own
+    // shot, because the whole view is five thousand pixels tall.
+    clipTo: `panel:Dry-run`,
+    maxHeight: 1500,
+  },
+  {
+    file: '14c-issuance-policy-dryrun.png',
+    what: 'the dry-run, run — the verdict and the reasons a requester would be given',
+    // An empty form shows the mechanism; a run shows what the mechanism is for.
+    // The facts ask for a four-year wildcard outside the permitted domain with a
+    // public IP SAN and no change ticket, which is four rules at once — the whole
+    // argument that a requester learns every reason rather than one per retry.
+    setup: `
+      switchView('policy');
+      await loadPolicy();
+      shotSet('polTestFacts', JSON.stringify({
+        request: {
+          profile: 'server',
+          dns_names: ['*.northwind.example', 'shop.partner.example'],
+          ip_addresses: ['10.4.1.9', '203.0.113.7'],
+          validity_days: 1460,
+          wildcard: true,
+          subject: { common_name: 'shop.partner.example' },
+          key: { algorithm: 'ECDSA', size: 256, curve: 'P-256' },
+        },
+        jwt: { sub: 'ci@northwind.example', entitlements: ['pki.issue'] },
+        url: { method: 'POST', path: '/api/ca/northwind-issuing-tls/issue', present: true },
+        body: { profile: 'server' },
+        principal: { subject: 'ci@northwind.example', roles: ['issuer'], authenticated: true },
+      }, null, 2));
+      shotClick('polTestRun');
+    `,
+    settle: `(() => { const r = document.getElementById('polTestResult');
+             return r && !r.classList.contains('hidden') &&
+                    r.textContent.includes('would be refused'); })()`,
+    clip: `panel:Dry-run`,
+    maxHeight: 1500,
+  },
+  {
     file: '15-signing.png',
     what: 'artifact signing — CAdES levels and the countersigning TSA',
     setup: `switchView('signing'); loadSigning()`,

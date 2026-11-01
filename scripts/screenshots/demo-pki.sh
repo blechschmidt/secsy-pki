@@ -548,6 +548,77 @@ seed_restrictions() {
 }
 
 # ---------------------------------------------------------------------------
+# seed_issuance_policies — the operator-written CEL rules that gate issuance.
+#
+# Seeded over HTTP for the same reason as the restriction sets above: the rules
+# live in the database and the CLI reaches them through it, but the console and
+# the API are the surface the view photographs.
+#
+# The shape is the one an enterprise ends up with: a lifetime ceiling that
+# explains the number it refused, a name-suffix rule that names each offending
+# host, a token-entitlement gate on wildcards, an IP-range rule written with the
+# network library, and one rule parked in monitor mode — because the view's whole
+# argument is "write it disabled or in monitor mode, dry-run it, then enforce",
+# and that argument needs a row in each state under it.
+# ---------------------------------------------------------------------------
+seed_issuance_policies() {
+  log "seeding the CEL issuance-policy rules"
+
+  POL() {
+    curl -sk -u "root:$ROOT_PASSWORD" -X POST \
+      -H 'Content-Type: application/json' "$BASE/api/issuance-policies" -d "$1" >/dev/null || true
+  }
+
+  POL '{
+    "name": "max-lifetime",
+    "description": "the lifetime ceiling, stated in the refusal",
+    "priority": 10,
+    "expression": "request.validity_days <= 90 ? \"\" : \"requested %d days of validity; this profile allows at most 90\".format([request.validity_days])"
+  }'
+
+  POL '{
+    "name": "names-under-northwind",
+    "description": "every DNS name must sit under a domain this PKI may certify",
+    "priority": 20,
+    "expression": "request.dns_names.filter(d, !(d.endsWith(\".northwind.example\") || d == \"northwind.example\")).map(d, \"DNS name \" + d + \" is outside northwind.example, which this CA may not certify\")"
+  }'
+
+  POL '{
+    "name": "wildcard-entitlement",
+    "description": "a wildcard needs the entitlement in the caller token",
+    "priority": 30,
+    "expression": "!request.wildcard || (has(jwt.entitlements) && \"pki.wildcard\" in jwt.entitlements)",
+    "message": "a wildcard certificate requires the pki.wildcard entitlement in your token"
+  }'
+
+  POL '{
+    "name": "corporate-ip-ranges",
+    "description": "IP SANs must be inside the corporate ranges",
+    "priority": 40,
+    "profiles": ["server", "server-client"],
+    "expression": "request.ip_addresses.filter(a, !cidr(\"10.0.0.0/8\").containsIP(a)).map(a, \"IP address \" + a + \" is outside the corporate range 10.0.0.0/8\")"
+  }'
+
+  POL '{
+    "name": "change-ticket-required",
+    "description": "measuring before enforcing: how many requests carry a ticket?",
+    "priority": 50,
+    "mode": "monitor",
+    "expression": "has(body.reason) && string(body.reason).matches(\"^(CHG|INC)-[0-9]{4,}$\")",
+    "message": "the \"reason\" parameter must name a change or incident ticket, e.g. CHG-10482"
+  }'
+
+  POL '{
+    "name": "subordinate-ca-needs-admin",
+    "description": "parked until the team agrees on it",
+    "priority": 60,
+    "enabled": false,
+    "expression": "!request.is_ca || (principal.authenticated && (\"admin\" in principal.roles || principal.is_root))",
+    "message": "minting a subordinate CA requires the admin role"
+  }'
+}
+
+# ---------------------------------------------------------------------------
 # serve — start the server and wait until the console answers.
 #
 # setsid, and every descriptor pointed somewhere of its own, because the server
@@ -600,6 +671,7 @@ cmd_up() {
   serve
   # After serve: restriction sets have no CLI, so they go in over HTTP.
   seed_restrictions
+  seed_issuance_policies
   log "ready"
   # Last line of stdout: the base URL, for capture.sh to read.
   echo "$BASE"

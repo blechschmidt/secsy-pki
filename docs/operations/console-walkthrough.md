@@ -490,10 +490,63 @@ The banner at the top is not boilerplate either. **The X.509 half of this page i
 stored and enforced by nothing**: no issuance path consults it — not
 `POST /api/ca/{id}/issue`, not the raw `/api/keys/{id}/sign-x509` — so the
 `x509-leaf-only` row above constrains precisely nothing, and a CA whose X.509
-default is *Disallow all signatures* will still issue. What actually binds X.509
-is the **certificate profile** from section 4. Read an X.509 row as policy you
-have written down, not policy the CA is applying.
+default is *Disallow all signatures* will still issue. What binds X.509 is the
+**certificate profile** from section 4 — and the page below.
 [Restrictions reference](web-console.md#issuance-restrictions).
+
+### The X.509 ceiling that does bind
+
+![The Issuance policy view: a table of six CEL rules with priority, name, state, effect, mode, scope and expression columns, each row carrying Disable, Edit, Dry-run and Delete buttons. max-lifetime (10, enabled, require, enforce, every issuance) returns a formatted string naming the requested day count; names-under-northwind (20) filters and maps the DNS names outside the domain; wildcard-entitlement (30) tests a jwt.entitlements claim and carries the message "a wildcard certificate requires the pki.wildcard entitlement in your token"; corporate-ip-ranges (40, scoped to profiles server and server-client) uses cidr("10.0.0.0/8").containsIP; change-ticket-required (50) is badged MONITOR and matches body.reason against a ticket pattern; subordinate-ca-needs-admin (60) is badged DISABLED and greyed, with an Enable button in place of Disable. Above the table, a Show filter, New rule and Refresh buttons, and two notes: one describing the five fact sets a rule sees, one stating that a rule is fail-closed and should be written disabled or in monitor mode first.](../screenshots/14b-issuance-policy.png)
+
+A profile fixes a *shape*: these key usages, that validity ceiling, those SAN
+types, the same for everyone. **Issuance policy** is for the limits that are
+conditional — on who is asking, on what their token says, on what else is in the
+request — and that a field in a configuration file cannot express. The rules are
+CEL, they are evaluated before every signature on every path (this console, the
+API, the CLI, ACME/EST/SCEP/CMP), and they live in the database, so a rule
+written here applies to the next request with no restart.
+
+Read the `max-lifetime` row carefully, because it is the point of the feature. It
+does not return `true` or `false`; it returns **the sentence the requester is
+shown**:
+
+```cel
+request.validity_days <= 90 ? "" :
+  "requested %d days of validity; this profile allows at most 90".format([request.validity_days])
+```
+
+An expression may yield a bool (the condition), a string (the reason itself, with
+`""` meaning satisfied), or a list of strings (one reason per offending name).
+That is why a refusal from this engine comes back as *"requested 1460 days of
+validity; this profile allows at most 90"* and not as `403 Forbidden`.
+
+The five rules above show the vocabulary: `request` (the certificate, as the
+to-be-signed template — so the clamped validity and the profile's usages, not the
+request JSON), `jwt` (the **verified** claims of the caller's token), `url` and
+`path` (the request as an object), `body` (its parameters — `change-ticket-required`
+reads a field the certificate does not carry), and `principal` (the caller's
+roles and groups).
+
+![The Dry-run panel, run: a Rules picker set to "every enabled rule", an Issuing CA picker, a Profile picker, a validity field, an empty CSR box and a Facts JSON box showing a request with a wildcard, two DNS names and two IP addresses. Below the Dry-run button, a red "WOULD BE REFUSED" badge, the line "5 rule(s) evaluated, 0 skipped — considered: max-lifetime, names-under-northwind, wildcard-entitlement, corporate-ip-ranges, change-ticket-required", and five reasons: max-lifetime "requested 1460 days of validity; this profile allows at most 90"; names-under-northwind "DNS name shop.partner.example is outside northwind.example, which this CA may not certify"; wildcard-entitlement "a wildcard certificate requires the pki.wildcard entitlement in your token"; corporate-ip-ranges "IP address 203.0.113.7 is outside the corporate range 10.0.0.0/8"; and change-ticket-required, badged MONITOR — WOULD NOT BLOCK, "the reason parameter must name a change or incident ticket, e.g. CHG-10482". A collapsed "Facts the rules saw" disclosure sits below.](../screenshots/14c-issuance-policy-dryrun.png)
+
+**Do not write a rule straight into enforcement.** A rule is fail-closed — one
+that cannot be evaluated refuses the request rather than letting it through — so
+a mistake here refuses every certificate under its scope. The two safe routes are
+both on this page. Save the rule **disabled** (`subordinate-ca-needs-admin`
+above) and dry-run it; or save it in **monitor** mode (`change-ticket-required`),
+which records what it *would* have refused, in the decision and in the
+`cert.policy` audit event, and issues anyway. Measure, then flip it to enforce.
+
+The dry-run is the same evaluator the gate runs, and giving it a CSR under a real
+CA and profile derives the certificate facts through the same code — so a rule
+that passes here behaves the same way when that CSR is actually submitted. Note
+what the run above does for the requester: **five rules, four reasons, one
+response.** Someone who got four things wrong learns four things, instead of
+discovering them one failed request at a time.
+
+Over the API that is an HTTP **422** — not 403, because the credentials were fine
+and the *request* was not — carrying each reason as `{rule, message}`.
+[CEL issuance restrictions](../issuance/cel-restrictions.md).
 
 ---
 

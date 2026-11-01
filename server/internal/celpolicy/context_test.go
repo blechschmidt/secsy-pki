@@ -270,7 +270,12 @@ func TestFactsNilSafety(t *testing.T) {
 	if in.Request.Source != SourceUnknown {
 		t.Errorf("source = %q, want %q", in.Request.Source, SourceUnknown)
 	}
-	if FromContext(nil) != nil || FromContext(context.Background()) != nil {
+	// A nil Context is not something a caller should pass, but FromContext is
+	// reached from deep inside the issuance path and a nil one there must read as
+	// "no facts" rather than panic the signer — so the guard is tested even though
+	// staticcheck rightly objects to the call.
+	var noCtx context.Context //nolint:staticcheck // SA1012: the nil guard is the thing under test
+	if FromContext(noCtx) != nil || FromContext(context.Background()) != nil {
 		t.Error("FromContext invented a holder")
 	}
 	// WithFacts(nil) must not install anything.
