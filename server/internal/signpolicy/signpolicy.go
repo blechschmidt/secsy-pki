@@ -97,22 +97,6 @@ func (g *Gate) CheckSigning(ctx context.Context, req celpolicy.SigningRequest) e
 	return &celpolicy.DenyError{Decision: decision, Subject: celpolicy.DenySubject(req.Operation)}
 }
 
-// Evaluate runs the rules and returns the decision together with the facts they
-// saw, WITHOUT recording metrics or audit events — for the dry-run surfaces.
-// Sharing the evaluation with the gate is what keeps a dry-run honest.
-func (g *Gate) Evaluate(ctx context.Context, req celpolicy.SigningRequest) (celpolicy.Decision, celpolicy.SigningInput, error) {
-	if g == nil {
-		return celpolicy.Decision{Allowed: true}, celpolicy.FromContext(ctx).SigningInput(req), nil
-	}
-	rules, err := g.store.ActiveSigningPolicyRules(tenantOf(req))
-	if err != nil {
-		return celpolicy.Decision{}, celpolicy.SigningInput{},
-			fmt.Errorf("loading signing restriction rules: %w: %w", celpolicy.ErrUnavailable, err)
-	}
-	in := celpolicy.FromContext(ctx).SigningInput(req)
-	return celpolicy.Shared().EvaluateSigning(rules, in), in, nil
-}
-
 // evaluate loads the rules, evaluates them, and records the outcome.
 func (g *Gate) evaluate(ctx context.Context, req celpolicy.SigningRequest) (celpolicy.Decision, celpolicy.SigningInput, error) {
 	rules, err := g.store.ActiveSigningPolicyRules(tenantOf(req))

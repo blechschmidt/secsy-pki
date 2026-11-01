@@ -169,24 +169,6 @@ func TestGateWithoutSinkStillRefuses(t *testing.T) {
 	}
 }
 
-func TestEvaluateDoesNotRecord(t *testing.T) {
-	sink := &stubSink{}
-	gate := NewGate(&stubStore{rules: []celpolicy.Rule{denyRootRule()}}, sink)
-	d, in, err := gate.Evaluate(context.Background(), sshFacts())
-	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
-	}
-	if d.Allowed {
-		t.Error("the dry-run should report the same verdict the gate would reach")
-	}
-	if in.Signing.Operation != celpolicy.OpSignSSHCert {
-		t.Errorf("the echoed facts should carry the operation: %q", in.Signing.Operation)
-	}
-	if len(sink.events) != 0 {
-		t.Error("a dry-run must not write audit events")
-	}
-}
-
 func TestGateIgnoresCertificateRules(t *testing.T) {
 	// The store's kind filter is the first line of defence; the engine's is the
 	// second. A certificate rule that reached the signing gate would not compile
