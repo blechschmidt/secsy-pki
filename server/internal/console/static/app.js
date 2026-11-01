@@ -6798,6 +6798,16 @@ async function loadPolicy() {
   await loadPolicyReference();
 }
 
+// rebuildSelect replaces a picker's options and restores the selection, when the
+// chosen value still exists. A select whose options are built once goes stale
+// the moment a CA is created; one rebuilt without this throws the operator's
+// choice away every refresh.
+function rebuildSelect(sel, html) {
+  const chosen = sel.value;
+  sel.innerHTML = html;
+  if (chosen && [...sel.options].some(o => o.value === chosen)) sel.value = chosen;
+}
+
 // polScope names where a rule applies. A rule with no selectors governs every
 // issuance, which is the common case and must read as such rather than as blank.
 function polScope(r) {
@@ -7020,16 +7030,16 @@ function populatePolicyTestControls() {
   sel.innerHTML = policyRules.map(r =>
     `<option value="${r.id}">${escapeHTML(r.name)}${r.enabled ? '' : ' (disabled)'}</option>`).join('');
   $('polTestRuleField').classList.toggle('hidden', $('polTestWhat').value !== 'one');
-  const caSel = $('polTestCA');
-  if (!caSel.options.length) {
-    caSel.innerHTML = '<option value="">— none (facts from JSON only)</option>' +
-      x509CAs.map(c => `<option value="${c.id}">${escapeHTML(c.label)}</option>`).join('');
-  }
-  const profSel = $('polTestProfile');
-  if (!profSel.options.length) {
-    profSel.innerHTML = '<option value="">default</option>' +
-      (profiles || []).map(p => `<option value="${escapeHTML(p.name)}">${escapeHTML(p.name)}</option>`).join('');
-  }
+  // Rebuilt rather than filled once, so Refresh picks up a CA or profile added
+  // since the view was first opened — keeping the operator's current choice,
+  // which is the whole reason a naive innerHTML rebuild would be worse than
+  // staleness.
+  rebuildSelect($('polTestCA'),
+    '<option value="">— none (facts from JSON only)</option>' +
+    x509CAs.map(c => `<option value="${c.id}">${escapeHTML(c.label)}</option>`).join(''));
+  rebuildSelect($('polTestProfile'),
+    '<option value="">default</option>' +
+    (profiles || []).map(p => `<option value="${escapeHTML(p.name)}">${escapeHTML(p.name)}</option>`).join(''));
   if (!$('polTestFacts').value.trim()) $('polTestFacts').value = defaultPolicyFacts();
 }
 
