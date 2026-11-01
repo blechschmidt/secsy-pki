@@ -462,3 +462,52 @@ func TestWithOperationLabelsTheRequest(t *testing.T) {
 		t.Error("a nil holder reported an operation")
 	}
 }
+
+// TestCaptureIsIdempotent: the REST route table wraps itself so it works
+// without the server's global wrapper, and in production both are installed.
+// Nesting must not read and re-buffer the body twice, and the handler must
+// still see the bytes the client sent.
+func TestCaptureIsIdempotent(t *testing.T) {
+	body := `{"profile":"server","reason":"CHG-1"}`
+	var (
+		outer, inner *Facts
+		read         []byte
+	)
+	// A probe between the two captures sees what the outer one installed; the
+	// handler sees what the inner one left. They must be the SAME holder — which
+	// is also what proves the inner capture did not re-read the body, since a
+	// second capture always builds a holder of its own.
+	probe := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			outer = FromContext(r.Context())
+			next.ServeHTTP(w, r)
+		})
+	}
+	h := Capture(probe(Capture(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inner = FromContext(r.Context())
+		b, _ := io.ReadAll(r.Body)
+		read = b
+	}))))
+	r := httptest.NewRequest(http.MethodPost, "/api/keys/ca-1/issue", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(httptest.NewRecorder(), r)
+
+	if string(read) != body {
+		t.Fatalf("the handler read %q, want %q", read, body)
+	}
+	if outer == nil || inner == nil {
+		t.Fatal("a capture installed no holder")
+	}
+	if outer != inner {
+		t.Error("the inner capture replaced the holder, so it read and re-buffered the body a second time")
+	}
+	if inner.Input(CertRequest{}).Body["reason"] != "CHG-1" {
+		t.Fatalf("the facts did not survive the nesting: %+v", inner.Input(CertRequest{}).Body)
+	}
+	// One holder also means a layer between the two captures — the authentication
+	// middleware — writes where the gate reads.
+	outer.SetJWT(map[string]interface{}{"sub": "x"})
+	if inner.Input(CertRequest{}).JWT["sub"] != "x" {
+		t.Error("a write by an intermediate layer did not reach the handler's holder")
+	}
+}

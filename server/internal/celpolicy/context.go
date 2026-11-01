@@ -231,6 +231,14 @@ const maxCapturedBodyBytes = 256 << 10
 // buffered whole.
 func Capture(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Idempotent: the REST route table wraps itself so it works without the
+		// server's global wrapper (a test mounting the mux directly, say), and in
+		// production both are present. Re-capturing would read and re-buffer the
+		// body a second time for no new facts, so an outer capture wins.
+		if FromContext(r.Context()) != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
 		f := NewFacts()
 		f.SetURL(URLFrom(r))
 		if params, body, ok := captureBody(r); ok {
