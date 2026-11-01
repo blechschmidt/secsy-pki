@@ -640,7 +640,7 @@
               <div class="field" style="flex:1"><label for="rootO">Organization</label><input id="rootO" placeholder="ACME Corp"></div>
               <div class="field" style="width:120px"><label for="rootPathLen">Path length</label><input id="rootPathLen" type="number" min="0" placeholder="none"></div>
             </div>
-            <button class="btn" id="rootCreateBtn">Create root CA</button>
+            <div class="row" style="gap:8px;align-items:center"><button class="btn" id="rootCreateBtn">Create root CA</button><button class="btn ghost" id="rootExtBtn" title="Key usage, EKU constraints, alternative names, AIA/SIA/CRL pointers, policy constraints, the private-key usage period, and any extension by OID.">X.509 extensions…</button><span class="muted" id="rootExtBadge" style="font-size:12px"></span></div>
           </div>
           <div class="panel" style="flex:1;min-width:300px">
             <h2 style="font-size:15px">Issue intermediate CA</h2>
@@ -664,7 +664,7 @@
               <div class="field" style="flex:1"><label for="interO">Organization</label><input id="interO" placeholder="ACME Corp"></div>
               <div class="field" style="width:120px"><label for="interPathLen">Path length</label><input id="interPathLen" type="number" min="0" placeholder="0"></div>
             </div>
-            <button class="btn" id="interCreateBtn">Issue intermediate</button>
+            <div class="row" style="gap:8px;align-items:center"><button class="btn" id="interCreateBtn">Issue intermediate</button><button class="btn ghost" id="interExtBtn" title="Key usage, EKU constraints, alternative names, AIA/SIA/CRL pointers, policy constraints, the private-key usage period, and any extension by OID.">X.509 extensions…</button><span class="muted" id="interExtBadge" style="font-size:12px"></span></div>
           </div>
           <div class="panel" style="flex:1;min-width:300px">
             <h2 style="font-size:15px">External subordinate CA (CSR)</h2>
@@ -685,7 +685,7 @@
             </div>
             <div class="field"><label for="extCN">Common name</label><input id="extCN" placeholder="Corp Issuing CA"></div>
             <div class="field"><label for="extO">Organization</label><input id="extO" placeholder="Corp"></div>
-            <button class="btn" id="extCsrBtn">Generate key + CSR</button>
+            <div class="row" style="gap:8px;align-items:center"><button class="btn" id="extCsrBtn">Generate key + CSR</button><button class="btn ghost" id="extCsrExtBtn" title="Key usage, EKU constraints, alternative names, AIA/SIA/CRL pointers, policy constraints, the private-key usage period, and any extension by OID.">X.509 extensions…</button><span class="muted" id="extCsrExtBadge" style="font-size:12px"></span></div>
           </div>
         </div>
 
@@ -2691,6 +2691,127 @@
       <div class="row" style="justify-content:flex-end;gap:8px;margin-top:8px">
         <button class="btn ghost sm" id="revokeCancel">Cancel</button>
         <button class="btn danger sm" id="revokeConfirm">Revoke</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- Full CA subject + X.509 extension editor (Task 222) -->
+  <div id="caExtModal" class="modal hidden">
+    <div class="card wide">
+      <h2 style="font-size:16px;margin-top:0">Subject and X.509 extensions — <span id="caExtTarget"></span></h2>
+      <p class="sub">A certificate authority's extensions bind every certificate that will ever chain through it, and the only way to change them is a new key and a trust-store rollout — so they are chosen here, once, before the key exists. Everything left blank keeps the default: <code>keyCertSign</code>, <code>cRLSign</code> and <code>digitalSignature</code>, basic constraints from the form's path length, and nothing else. The server compiles and validates this set <b>before</b> generating a key, so a rejected setting costs nothing.</p>
+      <div id="caExtError" class="notice err hidden"></div>
+
+      <details open>
+        <summary>Key usage <span class="muted">— what this CA's key may do</span></summary>
+        <div class="sub">A CA certificate must be able to sign certificates, so <code>keyCertSign</code> cannot be cleared. <code>cRLSign</code> lets it sign CRLs and <code>digitalSignature</code> lets the same key sign OCSP responses directly, which is this deployment's default responder arrangement.</div>
+        <div id="caExtKU" class="row" style="flex-wrap:wrap;gap:12px"></div>
+      </details>
+
+      <details>
+        <summary>Extended key usage <span class="muted">— bound the subtree's purpose</span></summary>
+        <div class="sub">A conforming path validator intersects extended key usages down the chain, so an issuing CA carrying only <code>serverAuth</code> cannot be abused to mint a code-signing certificate even if a profile beneath it allows one. This is the single most effective constraint on a delegated authority. Leave it empty to place no purpose constraint.</div>
+        <div id="caExtEKU" class="row" style="flex-wrap:wrap;gap:12px"></div>
+        <div class="field"><label for="caExtEKUMore">Further usages <span class="muted">(one per line; a name such as <code>msSmartcardLogon</code> or a dotted OID)</span></label><textarea id="caExtEKUMore" placeholder="1.3.6.1.4.1.311.20.2.2" style="min-height:48px"></textarea></div>
+        <label class="muted" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="caExtEKUCritical"> mark extKeyUsage critical</label>
+      </details>
+
+      <details>
+        <summary>Subject <span class="muted">— the rest of the distinguished name</span></summary>
+        <div class="sub">The form behind this dialog carries the common name, organization and the other usual attributes. These are the remaining ones: registry identifiers, a postal address, domain components, and an escape hatch for any attribute at all.</div>
+        <div class="row">
+          <div class="field" style="flex:1;min-width:150px"><label for="caExtSubjSerial">serialNumber <span class="muted">(a registry number)</span></label><input id="caExtSubjSerial" placeholder="HRB 12345"></div>
+          <div class="field" style="flex:1;min-width:150px"><label for="caExtSubjStreet">streetAddress</label><input id="caExtSubjStreet" placeholder="Hafenstraße 1"></div>
+          <div class="field" style="width:130px"><label for="caExtSubjPostal">postalCode</label><input id="caExtSubjPostal" placeholder="20457"></div>
+        </div>
+        <div class="row">
+          <div class="field" style="flex:1;min-width:170px"><label for="caExtSubjEmail">emailAddress <span class="muted">(PKCS#9)</span></label><input id="caExtSubjEmail" placeholder="pki@example.test"></div>
+          <div class="field" style="flex:1;min-width:170px"><label for="caExtSubjDC">domainComponent <span class="muted">(one per line, most significant first)</span></label><textarea id="caExtSubjDC" placeholder="com&#10;example" style="min-height:48px"></textarea></div>
+        </div>
+        <div class="field"><label for="caExtSubjExtra">Further attributes <span class="muted">(one <code>TYPE=VALUE</code> per line; a short name such as <code>organizationIdentifier</code> or <code>businessCategory</code>, or a dotted OID)</span></label><textarea id="caExtSubjExtra" placeholder="organizationIdentifier=VATDE-123456789&#10;businessCategory=Private Organization" style="min-height:48px"></textarea></div>
+      </details>
+
+      <details>
+        <summary>Alternative names <span class="muted">— subjectAltName and issuerAltName</span></summary>
+        <div class="sub">Uncommon on a CA but legitimate: a directory name or URI that identifies the authority in a form its DN cannot express. One value per line in each box.</div>
+        <div class="row">
+          <div class="field" style="flex:1;min-width:150px"><label for="caExtSanDNS">SAN dNSName</label><textarea id="caExtSanDNS" placeholder="ca.example.test" style="min-height:48px"></textarea></div>
+          <div class="field" style="flex:1;min-width:150px"><label for="caExtSanIP">SAN iPAddress</label><textarea id="caExtSanIP" placeholder="192.0.2.10" style="min-height:48px"></textarea></div>
+          <div class="field" style="flex:1;min-width:150px"><label for="caExtSanEmail">SAN rfc822Name</label><textarea id="caExtSanEmail" placeholder="pki@example.test" style="min-height:48px"></textarea></div>
+        </div>
+        <div class="row">
+          <div class="field" style="flex:1;min-width:150px"><label for="caExtSanURI">SAN URI</label><textarea id="caExtSanURI" placeholder="https://ca.example.test/" style="min-height:48px"></textarea></div>
+          <div class="field" style="flex:1;min-width:150px"><label for="caExtSanUPN">SAN UPN <span class="muted">(otherName)</span></label><textarea id="caExtSanUPN" placeholder="svc@CORP.EXAMPLE" style="min-height:48px"></textarea></div>
+          <div class="field" style="flex:1;min-width:150px"><label for="caExtSanDir">SAN directoryName <span class="muted">(DN)</span></label><textarea id="caExtSanDir" placeholder="O=Example Org,C=DE" style="min-height:48px"></textarea></div>
+        </div>
+        <div class="row">
+          <div class="field" style="flex:1;min-width:150px"><label for="caExtSanRID">SAN registeredID <span class="muted">(OIDs)</span></label><textarea id="caExtSanRID" placeholder="1.3.6.1.4.1.99999.9" style="min-height:48px"></textarea></div>
+          <div class="field" style="flex:1;min-width:150px"><label for="caExtSanOther">SAN otherName <span class="muted">(<code>OID:encoding:value</code> per line)</span></label><textarea id="caExtSanOther" placeholder="1.3.6.1.4.1.99999.10:utf8:marker" style="min-height:48px"></textarea></div>
+          <div class="field" style="flex:1;min-width:150px"><label for="caExtIanURI">issuerAltName URI</label><textarea id="caExtIanURI" placeholder="https://root.example.test/" style="min-height:48px"></textarea></div>
+        </div>
+        <label class="muted" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="caExtSanCritical"> mark subjectAltName critical <span class="muted">(RFC 5280 requires this only when the subject DN is empty, which a CA's never is)</span></label>
+      </details>
+
+      <details>
+        <summary>Revocation and discovery pointers <span class="muted">— CRL, OCSP, AIA, SIA</span></summary>
+        <div class="sub">The first four describe <b>this</b> certificate: where its parent publishes revocation information and where the parent's own certificate can be fetched so a relying party can complete the chain. A self-signed root leaves them empty — nothing revokes a trust anchor. The last two describe services this CA itself offers. One URI per line.</div>
+        <div class="row">
+          <div class="field" style="flex:1;min-width:170px"><label for="caExtCRLDP">cRLDistributionPoints</label><textarea id="caExtCRLDP" placeholder="http://crl.example.test/root.crl" style="min-height:48px"></textarea></div>
+          <div class="field" style="flex:1;min-width:170px"><label for="caExtFreshest">freshestCRL <span class="muted">(delta)</span></label><textarea id="caExtFreshest" placeholder="http://crl.example.test/delta.crl" style="min-height:48px"></textarea></div>
+        </div>
+        <div class="row">
+          <div class="field" style="flex:1;min-width:170px"><label for="caExtOCSP">AIA id-ad-ocsp</label><textarea id="caExtOCSP" placeholder="http://ocsp.example.test/" style="min-height:48px"></textarea></div>
+          <div class="field" style="flex:1;min-width:170px"><label for="caExtAIACA">AIA id-ad-caIssuers</label><textarea id="caExtAIACA" placeholder="http://pki.example.test/root.cer" style="min-height:48px"></textarea></div>
+        </div>
+        <div class="row">
+          <div class="field" style="flex:1;min-width:170px"><label for="caExtSIARepo">SIA id-ad-caRepository</label><textarea id="caExtSIARepo" placeholder="http://pki.example.test/certs/" style="min-height:48px"></textarea></div>
+          <div class="field" style="flex:1;min-width:170px"><label for="caExtSIATSA">SIA id-ad-timeStamping</label><textarea id="caExtSIATSA" placeholder="http://tsa.example.test/" style="min-height:48px"></textarea></div>
+        </div>
+      </details>
+
+      <details>
+        <summary>Policy, path and key-period constraints</summary>
+        <div class="sub">Name constraints and the certificate-policy family (<code>certificatePolicies</code>, <code>policyMappings</code>, <code>policyConstraints</code>) have their own editor on the <b>Restrictions</b> view. These are the remainder.</div>
+        <div class="row">
+          <div class="field" style="flex:1;min-width:170px"><label for="caExtInhibitAny">inhibitAnyPolicy <span class="muted">(skipCerts; blank = unset)</span></label><input id="caExtInhibitAny" type="number" min="0" placeholder="none"></div>
+          <div class="field" style="flex:1;min-width:170px"><label for="caExtPKUPDuration">privateKeyUsagePeriod length <span class="muted">(e.g. <code>180d</code>, <code>1y</code>)</span></label><input id="caExtPKUPDuration" placeholder="none"></div>
+          <div class="field" style="flex:1;min-width:170px"><label for="caExtPKUPFraction">…or as a fraction of validity <span class="muted">(0–1)</span></label><input id="caExtPKUPFraction" type="number" step="0.05" min="0" max="1" placeholder="none"></div>
+        </div>
+        <div class="sub">The usage period narrows the window in which this key may <i>produce</i> signatures to less than the certificate's own validity, so the key can be retired while everything it signed stays verifiable. It is always clamped to the certificate's validity.</div>
+      </details>
+
+      <details>
+        <summary>Subject directory attributes, legacy and flags</summary>
+        <div class="row">
+          <div class="field" style="flex:1;min-width:200px"><label for="caExtDirAttrs">subjectDirectoryAttributes <span class="muted">(<code>OID:encoding:value</code> per line)</span></label><textarea id="caExtDirAttrs" placeholder="1.3.6.1.5.5.7.9.4:printable:DE" style="min-height:48px"></textarea></div>
+          <div class="field" style="flex:1;min-width:200px"><label for="caExtSKI">subjectKeyIdentifier <span class="muted">(hex; blank = derived from the public key)</span></label><input id="caExtSKI" placeholder="derived"></div>
+        </div>
+        <div class="row">
+          <div class="field" style="flex:1;min-width:200px"><label for="caExtNSComment">Netscape comment <span class="muted">(legacy)</span></label><input id="caExtNSComment" placeholder="none"></div>
+          <div class="field" style="flex:1;min-width:200px"><label for="caExtNSCertType">Netscape certificate type <span class="muted">(legacy; comma-separated: sslCA, smimeCA, objCA, sslServer, sslClient, smime, objsign)</span></label><input id="caExtNSCertType" placeholder="none"></div>
+        </div>
+        <label class="muted" style="display:flex;gap:6px;align-items:center" title="RFC 7633: declares that certificates below this CA are expected to be served with a stapled OCSP response."><input type="checkbox" id="caExtMustStaple"> assert <code>status_request</code> (OCSP must-staple) for the subtree</label>
+        <label class="muted" style="display:flex;gap:6px;align-items:center" title="RFC 6960 §4.2.2.2.1: tells clients not to check this certificate's own revocation status. For a delegated OCSP responder, not an issuing CA."><input type="checkbox" id="caExtOCSPNoCheck"> stamp <code>id-pkix-ocsp-nocheck</code></label>
+      </details>
+
+      <details>
+        <summary>Custom extensions <span class="muted">— any OID at all</span></summary>
+        <div class="sub">One per line, <code>OID[:critical]:encoding:value</code> — the same syntax as <code>secsy-ca</code>'s <code>-ext</code> flag. Encodings: <code>utf8</code>, <code>ia5</code>, <code>printable</code>, <code>oid</code>, <code>int</code>, <code>bool</code>, <code>null</code>, <code>octet-string</code>, <code>bit-string</code>, <code>der-hex</code>, <code>der-base64</code>. The <code>der-*</code> forms carry the bytes verbatim, which is how an extension whose syntax nothing here models gets stamped; the server rejects anything that is not one complete DER element, so a malformed value cannot produce an unparseable certificate.</div>
+        <div class="field"><label for="caExtCustom">Extensions</label><textarea id="caExtCustom" placeholder="1.3.6.1.4.1.99999.100:utf8:enterprise marker&#10;1.3.6.1.4.1.99999.101:critical:der-hex:0500" style="min-height:64px"></textarea></div>
+      </details>
+
+      <details>
+        <summary>Request preview <span class="muted">— exactly what will be sent</span></summary>
+        <pre id="caExtPreview" class="mono" style="max-height:220px;overflow:auto;white-space:pre-wrap"></pre>
+      </details>
+
+      <div class="row" style="justify-content:space-between;gap:8px;margin-top:12px">
+        <button class="btn ghost sm" id="caExtClear">Clear everything</button>
+        <div class="row" style="gap:8px">
+          <button class="btn ghost sm" id="caExtCancel">Cancel</button>
+          <button class="btn sm" id="caExtApply">Apply</button>
+        </div>
       </div>
     </div>
   </div>

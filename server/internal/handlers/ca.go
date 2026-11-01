@@ -93,16 +93,32 @@ func (a *API) InitRootCA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	subject, err := ca.PKIXNameStrict(req.Subject)
+	if err != nil {
+		a.recordEvent(r, audit.ActionCAInitRoot, "", req.Label, audit.ResultError, err.Error())
+		writeError(w, http.StatusBadRequest, "invalid subject: %v", err)
+		return
+	}
+	algorithm, err := ca.NormalizeCertAlgorithm(req.Algorithm)
+	if err != nil {
+		a.recordEvent(r, audit.ActionCAInitRoot, "", req.Label, audit.ResultError, err.Error())
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+
 	a.consumeHSMAuditLogs("")
 	result, err := mgr.InitRoot(r.Context(), ca.RootSpec{
 		TenantID:        tenantID,
 		Label:           req.Label,
 		KeyType:         req.KeyType,
-		Subject:         ca.PKIXName(req.Subject),
+		Subject:         subject,
 		Validity:        time.Duration(validityDays) * 24 * time.Hour,
 		MaxPathLen:      req.MaxPathLen,
+		Algorithm:       algorithm,
+		AltKeyType:      req.AltKeyType,
 		NameConstraints: nc,
 		Policies:        pol,
+		Extensions:      req.Extensions,
 	})
 	a.consumeHSMAuditLogs("")
 	if err != nil {
@@ -158,16 +174,32 @@ func (a *API) IssueIntermediateCA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	subject, err := ca.PKIXNameStrict(req.Subject)
+	if err != nil {
+		a.recordEvent(r, audit.ActionCAIssueIntermediate, parentID, req.Label, audit.ResultError, err.Error())
+		writeError(w, http.StatusBadRequest, "invalid subject: %v", err)
+		return
+	}
+	algorithm, err := ca.NormalizeCertAlgorithm(req.Algorithm)
+	if err != nil {
+		a.recordEvent(r, audit.ActionCAIssueIntermediate, parentID, req.Label, audit.ResultError, err.Error())
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+
 	a.consumeHSMAuditLogs("")
 	result, err := mgr.IssueIntermediate(r.Context(), ca.IntermediateSpec{
 		ParentID:        parentID,
 		Label:           req.Label,
 		KeyType:         req.KeyType,
-		Subject:         ca.PKIXName(req.Subject),
+		Subject:         subject,
 		Validity:        time.Duration(validityDays) * 24 * time.Hour,
 		MaxPathLen:      req.MaxPathLen,
+		Algorithm:       algorithm,
+		AltKeyType:      req.AltKeyType,
 		NameConstraints: nc,
 		Policies:        pol,
+		Extensions:      req.Extensions,
 	})
 	a.consumeHSMAuditLogs("")
 	if err != nil {

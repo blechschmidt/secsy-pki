@@ -110,10 +110,33 @@ var dnAttributeOIDs = map[string]asn1.ObjectIdentifier{
 	"DC": {0, 9, 2342, 19200300, 100, 1, 25},
 }
 
-// ParseDN parses a comma-separated RFC 4514-style distinguished name into a
-// pkix.Name, supporting the common short attribute types. It is intentionally
-// minimal — enough for name-constraint directoryName subtrees.
+// ParseDN parses a comma-separated distinguished name into a pkix.Name,
+// supporting the common short attribute types. It is intentionally minimal —
+// enough for name-constraint directoryName subtrees.
+//
+// Note that pkix.Name groups attributes by kind, so the relative order of
+// differing attribute types is lost. ParseDNSequence preserves it, and is what
+// a caller that must reproduce the operator's DN byte-for-byte should use.
 func ParseDN(s string) (pkix.Name, error) {
+	rdns, err := ParseDNSequence(s)
+	if err != nil {
+		return pkix.Name{}, err
+	}
+	var name pkix.Name
+	name.FillFromRDNSequence(&rdns)
+	return name, nil
+}
+
+// ParseDNSequence parses a comma-separated distinguished name into an
+// RDNSequence, one single-valued RDN per component, in the order written.
+//
+// Components are read left to right as they appear in the encoding — the
+// `openssl -subj /O=Acme/C=US` convention rather than strict RFC 4514, which
+// writes the sequence reversed. That is the order this package has always
+// documented and accepted ("O=Acme,C=US"), and preserving it matters: a
+// directoryName is compared as an ordered sequence of RDNs, so re-ordering the
+// components produces a different name.
+func ParseDNSequence(s string) (pkix.RDNSequence, error) {
 	var rdns pkix.RDNSequence
 	for _, part := range splitDN(s) {
 		part = strings.TrimSpace(part)
@@ -122,22 +145,20 @@ func ParseDN(s string) (pkix.Name, error) {
 		}
 		eq := strings.Index(part, "=")
 		if eq < 0 {
-			return pkix.Name{}, fmt.Errorf("invalid DN component %q (want TYPE=VALUE)", part)
+			return nil, fmt.Errorf("invalid DN component %q (want TYPE=VALUE)", part)
 		}
 		typ := strings.ToUpper(strings.TrimSpace(part[:eq]))
 		value := strings.TrimSpace(part[eq+1:])
 		oid, ok := dnAttributeOIDs[typ]
 		if !ok {
-			return pkix.Name{}, fmt.Errorf("unsupported DN attribute %q in %q", typ, s)
+			return nil, fmt.Errorf("unsupported DN attribute %q in %q", typ, s)
 		}
 		rdns = append(rdns, []pkix.AttributeTypeAndValue{{Type: oid, Value: value}})
 	}
 	if len(rdns) == 0 {
-		return pkix.Name{}, fmt.Errorf("empty distinguished name %q", s)
+		return nil, fmt.Errorf("empty distinguished name %q", s)
 	}
-	var name pkix.Name
-	name.FillFromRDNSequence(&rdns)
-	return name, nil
+	return rdns, nil
 }
 
 // splitDN splits a DN on unescaped commas.

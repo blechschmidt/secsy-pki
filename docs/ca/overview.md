@@ -46,6 +46,13 @@ secsy-ca -config config.yaml init-root \
 | `-validity-days` | `3650` | Certificate lifetime |
 | `-path-len` | `-1` | Max path length. `-1` = unconstrained; `0` = may only sign leaf certs |
 
+Those are the flags you cannot do without. The rest of the X.509 v3 extension
+set — key usage, an `extKeyUsage` constraint on everything beneath this CA, the
+CRL/OCSP/AIA/SIA pointers, `inhibitAnyPolicy`, the private-key usage period, the
+extended subject DN and arbitrary extensions by OID — is chosen here too, and
+only here: see [the CA certificate extension set](extensions.md). They apply
+identically to `issue-intermediate` and `ca csr`.
+
 > **Key labels are permanent and must be unique.** See
 > [HSM configuration](../hsm/configuration.md#key-labels-must-be-unique).
 
@@ -76,7 +83,11 @@ secsy-ca -config config.yaml list
 
 The equivalent API calls (admin / `ca:manage`) are
 `POST /api/ca/init-root` and `POST /api/ca/{id}/issue-intermediate`, taking a
-[`CASubject`](../../server/internal/models/models.go) JSON body.
+[`CASubject`](../../server/internal/models/models.go) JSON body and the optional
+`extensions` object documented in
+[the CA certificate extension set](extensions.md). The console's three CA forms
+on the Authorities view call the same endpoints, with the same extension editor
+behind their **X.509 extensions…** button.
 
 ## 3. Certificate profiles
 

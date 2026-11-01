@@ -139,3 +139,9 @@ td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
   background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
   padding: 24px; width: 380px; max-width: 90vw;
 }
+
+/* The CA subject/extension editor needs room and may outgrow the viewport. */
+.modal .card.wide { width: 860px; max-height: 88vh; overflow-y: auto; }
+.modal .card.wide details { border-top: 1px solid var(--border); padding: 10px 0; }
+.modal .card.wide details > summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+.modal .card.wide details > .sub { margin: 8px 0 10px; }

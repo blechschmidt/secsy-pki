@@ -55,14 +55,30 @@ func (a *API) CreateExternalCACSR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	subject, err := ca.PKIXNameStrict(req.Subject)
+	if err != nil {
+		a.recordEvent(r, audit.ActionCACSR, "", req.Label, audit.ResultError, err.Error())
+		writeError(w, http.StatusBadRequest, "invalid subject: %v", err)
+		return
+	}
+	nc, pol, err := buildCAConstraints(req.NameConstraints, req.Policies)
+	if err != nil {
+		a.recordEvent(r, audit.ActionCACSR, "", req.Label, audit.ResultError, err.Error())
+		writeError(w, http.StatusBadRequest, "invalid CA constraints/policies: %v", err)
+		return
+	}
+
 	mgr := ca.NewManager(a.db, a.keyProvider)
 	a.consumeHSMAuditLogs("")
 	result, err := mgr.GenerateExternalCACSR(r.Context(), ca.ExternalCACSRSpec{
-		TenantID:   tenantID,
-		Label:      req.Label,
-		KeyType:    req.KeyType,
-		Subject:    ca.PKIXName(req.Subject),
-		MaxPathLen: req.MaxPathLen,
+		TenantID:        tenantID,
+		Label:           req.Label,
+		KeyType:         req.KeyType,
+		Subject:         subject,
+		MaxPathLen:      req.MaxPathLen,
+		NameConstraints: nc,
+		Policies:        pol,
+		Extensions:      req.Extensions,
 	})
 	a.consumeHSMAuditLogs("")
 	if err != nil {

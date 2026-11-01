@@ -27,6 +27,16 @@ type CACSRRequest struct {
 	// issue end-entity certificates. The external parent may override this in
 	// the certificate it actually issues.
 	MaxPathLen *int
+	// KeyUsage overrides the requested key-usage bitmask. Zero requests the
+	// default CA set (keyCertSign|cRLSign|digitalSignature).
+	KeyUsage x509.KeyUsage
+	// ExtraExtensions are additional requested extensions, appended to the
+	// basicConstraints/keyUsage pair inside the CSR's extensionRequest attribute.
+	// The CA layer fills this with the operator's configured extension set (see
+	// internal/caext) so an external parent signing the request verbatim
+	// reproduces the CA that was asked for. The parent is free to ignore any of
+	// it — the certificate it returns is authoritative.
+	ExtraExtensions []pkix.Extension
 }
 
 var (
@@ -60,17 +70,25 @@ func CreateCACSR(signer crypto.Signer, req CACSRRequest) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	kuExt, err := marshalKeyUsage(x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature)
+	keyUsage := req.KeyUsage
+	if keyUsage == 0 {
+		keyUsage = x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature
+	}
+	kuExt, err := marshalKeyUsage(keyUsage)
 	if err != nil {
 		return nil, err
 	}
+
+	requested := make([]pkix.Extension, 0, 2+len(req.ExtraExtensions))
+	requested = append(requested, bcExt, kuExt)
+	requested = append(requested, req.ExtraExtensions...)
 
 	template := &x509.CertificateRequest{
 		Subject: req.Subject,
 		// crypto/x509 places ExtraExtensions inside the CSR's extensionRequest
 		// attribute (1.2.840.113549.1.9.14), which is where RFC 2986 puts
 		// requested certificate extensions.
-		ExtraExtensions: []pkix.Extension{bcExt, kuExt},
+		ExtraExtensions: requested,
 	}
 	if len(req.RawSubject) > 0 {
 		template.RawSubject = req.RawSubject

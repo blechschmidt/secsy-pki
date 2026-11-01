@@ -241,6 +241,54 @@ const SHOTS = [
     expandToRow: true,
   },
   {
+    file: '03b-ca-extensions.png',
+    what: 'the X.509 extension editor — the choices a CA only gets once',
+    // Filled from the intermediate form's dialog, because constraining an
+    // issuing CA is what this editor is for: a root is left unconstrained and
+    // an intermediate is where extKeyUsage, the parent's revocation pointers
+    // and the key-usage period earn their keep.
+    setup: `
+      switchView('cas');
+      shotClick('interExtBtn');
+      await new Promise(r => setTimeout(r, 200));
+      // Key usage: a CA that signs certificates and CRLs, nothing else.
+      document.querySelectorAll('.caExtKUBox').forEach(b => {
+        if (!b.disabled) b.checked = b.value === 'crlSign';
+      });
+      document.querySelectorAll('.caExtEKUBox').forEach(b => {
+        b.checked = b.value === 'serverAuth';
+      });
+      shotSet('caExtEKUCritical', true);
+      shotSet('caExtCRLDP', 'http://crl.northwind.example/northwind-root.crl');
+      shotSet('caExtOCSP', 'http://ocsp.northwind.example/');
+      shotSet('caExtAIACA', 'http://pki.northwind.example/northwind-root.cer');
+      shotSet('caExtSIARepo', 'http://pki.northwind.example/certs/');
+      shotSet('caExtPKUPFraction', '0.5');
+      shotSet('caExtMustStaple', true);
+      shotSet('caExtCustom', '1.3.6.1.4.1.99999.100:utf8:cost-centre 4711');
+      // Open the sections the shot is about by their heading, not by index:
+      // adding a section should not silently re-aim the camera. The preview is
+      // the payoff, so it is always open; key usage is collapsed because its
+      // checkbox row is already legible from the row of names.
+      const section = (text, open) => {
+        for (const d of document.querySelectorAll('#caExtModal details')) {
+          const sum = d.querySelector('summary');
+          if (sum && sum.textContent.toLowerCase().includes(text)) { d.open = open; return true; }
+        }
+        return false;
+      };
+      section('key usage — what', false);
+      section('extended key usage', true);
+      section('request preview', true);
+      document.getElementById('caExtModal').dispatchEvent(new Event('input', {bubbles: true}));
+      await new Promise(r => setTimeout(r, 250));
+    `,
+    settle: `!document.getElementById('caExtModal').classList.contains('hidden') &&
+             document.getElementById('caExtPreview').textContent.includes('must_staple')`,
+    clip: '#caExtModal .card',
+    maxHeight: 1300,
+  },
+  {
     file: '04-hsm-key-inventory.png',
     what: 'the HSM key inventory — the non-extractability verdict',
     setup: `switchView('cas'); if (typeof loadKeyInventory === 'function') loadKeyInventory()`,

@@ -44,10 +44,28 @@ type CACertRequest struct {
 	// means this CA may only issue end-entity certificates.
 	MaxPathLen *int
 
-	// ExtraExtensions are appended verbatim after the built-in CA extensions. The
-	// CA layer uses this to carry Name Constraints (2.5.29.30), Certificate
-	// Policies (2.5.29.32), Policy Mappings (2.5.29.33), and Policy Constraints
-	// (2.5.29.36) that crypto/x509 cannot emit natively.
+	// KeyUsage overrides the key-usage bitmask. Zero means the default CA set:
+	// certSign and crlSign (a CA signs subordinate certificates and CRLs) plus
+	// digitalSignature so the same key may also sign OCSP responses.
+	KeyUsage x509.KeyUsage
+
+	// CRLDistributionPoints, OCSPServer and IssuingCertificateURL are the
+	// revocation and chain-building pointers for THIS certificate — where the
+	// parent publishes its CRL and OCSP responder, and where the parent's own
+	// certificate can be fetched. crypto/x509 encodes them as
+	// cRLDistributionPoints (2.5.29.31) and authorityInfoAccess
+	// (1.3.6.1.5.5.7.1.1), both non-critical as RFC 5280 requires. A self-signed
+	// root leaves them empty: nothing revokes a trust anchor.
+	CRLDistributionPoints []string
+	OCSPServer            []string
+	IssuingCertificateURL []string
+
+	// ExtraExtensions are appended verbatim after the built-in CA extensions and
+	// take precedence over anything crypto/x509 would have generated for the same
+	// OID. The CA layer uses this to carry Name Constraints (2.5.29.30), the
+	// certificate-policy family (2.5.29.32/.33/.36), and the wider
+	// operator-configured extension set compiled by internal/caext — everything
+	// crypto/x509 cannot emit natively.
 	ExtraExtensions []pkix.Extension
 }
 
@@ -75,16 +93,25 @@ func CreateCACertificate(signer crypto.Signer, parent *x509.Certificate, req CAC
 		return nil, fmt.Errorf("CA certificate not_after (%s) must be after not_before (%s)", req.NotAfter, req.NotBefore)
 	}
 
+	// A CA key signs subordinate certificates and CRLs. DigitalSignature is
+	// included so the same key can also sign OCSP responses. An explicit
+	// req.KeyUsage replaces the set; the CA layer guarantees it contains certSign.
+	keyUsage := req.KeyUsage
+	if keyUsage == 0 {
+		keyUsage = x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature
+	}
+
 	template := &x509.Certificate{
-		SerialNumber: req.Serial,
-		Subject:      req.Subject,
-		NotBefore:    req.NotBefore,
-		NotAfter:     req.NotAfter,
-		// A CA key signs subordinate certificates and CRLs. DigitalSignature is
-		// included so the same key can also sign OCSP responses.
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
+		SerialNumber:          req.Serial,
+		Subject:               req.Subject,
+		NotBefore:             req.NotBefore,
+		NotAfter:              req.NotAfter,
+		KeyUsage:              keyUsage,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
+		CRLDistributionPoints: req.CRLDistributionPoints,
+		OCSPServer:            req.OCSPServer,
+		IssuingCertificateURL: req.IssuingCertificateURL,
 		ExtraExtensions:       req.ExtraExtensions,
 	}
 

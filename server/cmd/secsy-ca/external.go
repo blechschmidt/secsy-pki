@@ -84,14 +84,16 @@ func cmdCACSR(db *database.DB, mgr *ca.Manager, args []string) error {
 	pathLen := fs.Int("path-len", -1, "path length requested in the CSR (-1 = unconstrained, 0 = leaf-only); the external parent decides what it issues")
 	out := fs.String("out", "", "write the CSR PEM here (default: stdout)")
 	jsonOut := fs.Bool("json", false, "emit the pending CA record and CSR as JSON on stdout")
-	subj := addSubjectFlags(fs)
+	subj := addFullSubjectFlags(fs)
+	cons := addConstraintFlags(fs)
+	exts := addCAExtensionFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	// Re-emit mode: -ca given, nothing is generated.
 	if *caRef != "" {
-		if *label != "" || *subj.cn != "" {
+		if *label != "" || subj.cn() != "" {
 			return fmt.Errorf("-ca re-emits an existing CSR; it cannot be combined with -label/-cn")
 		}
 		caID, err := resolveCA(db, *caRef)
@@ -105,7 +107,7 @@ func cmdCACSR(db *database.DB, mgr *ca.Manager, args []string) error {
 		return emitCSR(csrPEM, *out)
 	}
 
-	if *label == "" || *subj.cn == "" {
+	if *label == "" || subj.cn() == "" {
 		fs.Usage()
 		return fmt.Errorf("-label and -cn are required (or -ca to re-emit an existing CSR)")
 	}
@@ -113,13 +115,32 @@ func cmdCACSR(db *database.DB, mgr *ca.Manager, args []string) error {
 	if err != nil {
 		return err
 	}
+	nc, pol, err := cons.build()
+	if err != nil {
+		return err
+	}
+	extCfg, err := exts.extensions()
+	if err != nil {
+		return err
+	}
+	casubj, err := subj.subject()
+	if err != nil {
+		return err
+	}
+	subject, err := ca.PKIXNameStrict(casubj)
+	if err != nil {
+		return err
+	}
 
 	result, err := mgr.GenerateExternalCACSR(context.Background(), ca.ExternalCACSRSpec{
-		TenantID:   tenantID,
-		Label:      *label,
-		KeyType:    *keyType,
-		Subject:    ca.PKIXName(subj.subject()),
-		MaxPathLen: pathLenValue(*pathLen),
+		TenantID:        tenantID,
+		Label:           *label,
+		KeyType:         *keyType,
+		Subject:         subject,
+		MaxPathLen:      pathLenValue(*pathLen),
+		NameConstraints: nc,
+		Policies:        pol,
+		Extensions:      extCfg,
 	})
 	if err != nil {
 		appendAudit(db, &audit.Event{

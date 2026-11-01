@@ -5,12 +5,15 @@
 The CA layer owns root and intermediate certificate authorities and the end-
 entity lifecycle built on them — issue, renew, revoke, suspend and release —
 together with the CRL and OCSP responders that publish the result. Start with
-the overview; the rest of the section covers the less-common CA topologies and
+the overview, then the extension set — a CA's extensions bind every certificate
+that will ever chain through it, and creating the authority is the only chance
+to choose them. The rest of the section covers the less-common CA topologies and
 lifecycle operations.
 
 | Guide | Covers |
 |-------|--------|
 | [**CA setup & certificate lifecycle**](overview.md) | Initializing root & intermediate CAs, profiles, issuing / renewing / revoking certificates, reversible suspend/hold + release, the paged/filtered/searchable issued-cert list endpoints, and serving CRL & OCSP |
+| [**The CA certificate extension set**](extensions.md) | The whole common X.509 v3 extension vocabulary accepted when an authority is created — key usage and `extKeyUsage` subtree constraints, `subjectAltName`/`issuerAltName` (every `GeneralName` type), the CRL/AIA/SIA pointers, `freshestCRL`, `inhibitAnyPolicy`, the private-key usage period, `subjectDirectoryAttributes`, must-staple, `ocsp-nocheck`, the legacy Netscape pair, an explicit subject key identifier, the extended subject DN, and arbitrary extensions by OID in eleven value encodings; configured identically from REST, `secsy-ca` flags or `-ca-ext-file`, and the console dialog, and validated before the key exists |
 | [**Intermediate key rotation**](rotation.md) | Safe, HSM-backed rollover of intermediate CA signing keys: cross-signing under the root, the dual-chain overlap window, combined-chain publication (AIA/bundle), controlled retirement, monitor-triggered auto-rotation, `secsy-ca rotate-intermediate`/`rotation-status`/`retire-intermediate`/`publish-chain`, and the rotation drill |
 | [**Cross-signing & bridge CAs**](cross-signing.md) | Certifying one subordinate key under multiple issuers for bridge-CA and root-transition trust: `local-ca`/`certificate`/`csr` subjects, tenant-scoped cross-sign records, alternate-chain selection by Subject Key Identifier, `secsy-ca cross-sign`/`list-cross-signs`, the `/api/ca/{id}/cross-signs` + `/chains` endpoints, and dual-chain `openssl verify` interop |
 | [**Externally-signed subordinate CA**](external-ca.md) | The offline/third-party-root topology: `secsy-ca ca csr` (HSM key + PKCS#10 CSR with CA attributes), the out-of-band signing ceremony, `ca import-cert` fail-closed validation (key match against the HSM, cA=TRUE, keyUsage, validity, chain verification) with operator warnings, chain serving through to the external trust anchor, same-key renewal via `-replace`, and the openssl-as-external-root e2e |

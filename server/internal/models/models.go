@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/caext"
 	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/nameconstraints"
 	"github.com/blechschmidt/secsy-pki/server/internal/rbac"
@@ -252,7 +253,9 @@ const (
 )
 
 // CASubject describes the distinguished-name fields for a CA certificate in API
-// and CLI requests.
+// and CLI requests. The named fields cover the attributes nearly every CA DN
+// uses; ExtraNames reaches the rest — including a second value for an attribute
+// already named above, since RDNs may repeat.
 type CASubject struct {
 	CommonName         string `json:"cn"`
 	Organization       string `json:"o,omitempty"`
@@ -260,6 +263,33 @@ type CASubject struct {
 	Country            string `json:"c,omitempty"`
 	Province           string `json:"st,omitempty"`
 	Locality           string `json:"l,omitempty"`
+	// SerialNumber is the X.520 serialNumber attribute (2.5.4.5) — a registry or
+	// company number, not the certificate's serial.
+	SerialNumber string `json:"serial_number,omitempty"`
+	// Street and PostalCode are the X.520 streetAddress (2.5.4.9) and postalCode
+	// (2.5.4.17) attributes, which EV and qualified-certificate profiles expect.
+	Street     string `json:"street,omitempty"`
+	PostalCode string `json:"postal_code,omitempty"`
+	// DomainComponents are domainComponent attributes (0.9.2342.19200300.100.1.25),
+	// most-significant first ("com", "example"), as Active Directory DNs use.
+	DomainComponents []string `json:"dc,omitempty"`
+	// EmailAddress is the PKCS#9 emailAddress attribute (1.2.840.113549.1.9.1),
+	// emitted as an IA5String. subjectAltName is the modern place for an address;
+	// this exists for DNs that must match an existing one byte-for-byte.
+	EmailAddress string `json:"email,omitempty"`
+	// ExtraNames are any further DN attributes, in order, appended after the
+	// named ones. Type accepts a short name (CN, O, OU, C, ST, L, STREET,
+	// postalCode, serialNumber, DC, E, title, givenName, surname, pseudonym,
+	// businessCategory, organizationIdentifier, jurisdictionC/ST/L, UID) or a
+	// dotted OID.
+	ExtraNames []CASubjectAttribute `json:"extra_names,omitempty"`
+}
+
+// CASubjectAttribute is one additional distinguished-name attribute: an
+// attribute type (short name or dotted OID) and its value.
+type CASubjectAttribute struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
 }
 
 // CAInitRootRequest initializes a self-signed root CA. The private key is
@@ -280,6 +310,17 @@ type CAInitRootRequest struct {
 	// Policies, when set, emits the certificate-policy family of extensions on the
 	// root certificate.
 	Policies *certpolicy.PolicyConfig `json:"policies,omitempty"`
+	// Extensions is the rest of the X.509 v3 extension set for the root: key
+	// usage, EKU constraints, alternative names, AIA/SIA/CRL pointers,
+	// inhibitAnyPolicy, the private-key usage period, the legacy Netscape
+	// extensions, and arbitrary extensions by OID. Omitted means the defaults.
+	Extensions *caext.Config `json:"extensions,omitempty"`
+	// Algorithm selects the signature scheme: "classical" (the default), "pqc"
+	// (pure ML-DSA) or "hybrid" (classical primary with an ML-DSA alternative).
+	Algorithm string `json:"algorithm,omitempty"`
+	// AltKeyType is the ML-DSA parameter set for a hybrid CA's alternative key
+	// (default ml-dsa-65). Ignored unless Algorithm is "hybrid".
+	AltKeyType string `json:"alt_key_type,omitempty"`
 }
 
 // CAIssueIntermediateRequest issues an intermediate CA certificate signed by an
@@ -297,6 +338,15 @@ type CAIssueIntermediateRequest struct {
 	// Policies emits certificatePolicies / policyMappings / policyConstraints on
 	// the intermediate certificate.
 	Policies *certpolicy.PolicyConfig `json:"policies,omitempty"`
+	// Extensions is the intermediate's wider X.509 v3 extension set, as in
+	// CAInitRootRequest. Constraining an issuing CA here — extKeyUsage of
+	// serverAuth only, the parent's CRL/OCSP pointers, a narrow private-key
+	// usage period — is the common enterprise pattern.
+	Extensions *caext.Config `json:"extensions,omitempty"`
+	// Algorithm and AltKeyType select the signature scheme, as in
+	// CAInitRootRequest. A pqc/hybrid intermediate requires a matching parent.
+	Algorithm  string `json:"algorithm,omitempty"`
+	AltKeyType string `json:"alt_key_type,omitempty"`
 }
 
 // CAExternalCSRRequest generates an HSM-backed subordinate-CA key and emits a
@@ -314,6 +364,12 @@ type CAExternalCSRRequest struct {
 	// basicConstraints attribute (nil = unconstrained). The external parent may
 	// override it; the issued certificate's value is authoritative after import.
 	MaxPathLen *int `json:"max_path_len,omitempty"`
+	// NameConstraints, Policies and Extensions are requested in the CSR's
+	// extensionRequest attribute so the external parent can reproduce the CA
+	// that was asked for. The parent decides what it actually issues.
+	NameConstraints *nameconstraints.Config  `json:"name_constraints,omitempty"`
+	Policies        *certpolicy.PolicyConfig `json:"policies,omitempty"`
+	Extensions      *caext.Config            `json:"extensions,omitempty"`
 }
 
 // CAExternalCSRResponse returns the pending CA record and its PKCS#10 CSR.

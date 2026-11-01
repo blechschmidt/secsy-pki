@@ -654,12 +654,13 @@ func cmdInitRoot(db *database.DB, mgr *ca.Manager, args []string) error {
 	pathLen := fs.Int("path-len", -1, "max path length (-1 = unconstrained, 0 = may only issue leaf certs)")
 	algorithm := fs.String("algorithm", "classical", "signature scheme: classical | pqc (ML-DSA) | hybrid (classical + ML-DSA); pqc/hybrid require the software key provider")
 	altKeyType := fs.String("alt-key-type", "ml-dsa-65", "ML-DSA parameter set for a hybrid CA's alternative key")
-	subj := addSubjectFlags(fs)
+	subj := addFullSubjectFlags(fs)
 	cons := addConstraintFlags(fs)
+	exts := addCAExtensionFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *label == "" || *subj.cn == "" {
+	if *label == "" || subj.cn() == "" {
 		fs.Usage()
 		return fmt.Errorf("-label and -cn are required")
 	}
@@ -673,18 +674,31 @@ func cmdInitRoot(db *database.DB, mgr *ca.Manager, args []string) error {
 	if err != nil {
 		return err
 	}
+	extCfg, err := exts.extensions()
+	if err != nil {
+		return err
+	}
+	casubj, err := subj.subject()
+	if err != nil {
+		return err
+	}
+	subject, err := ca.PKIXNameStrict(casubj)
+	if err != nil {
+		return err
+	}
 
 	result, err := mgr.InitRoot(context.Background(), ca.RootSpec{
 		TenantID:        tenantID,
 		Label:           *label,
 		KeyType:         *keyType,
-		Subject:         ca.PKIXName(subj.subject()),
+		Subject:         subject,
 		Validity:        time.Duration(*validityDays) * 24 * time.Hour,
 		MaxPathLen:      pathLenValue(*pathLen),
 		Algorithm:       ca.CertAlgorithm(normalizeAlgorithm(*algorithm)),
 		AltKeyType:      *altKeyType,
 		NameConstraints: nc,
 		Policies:        pol,
+		Extensions:      extCfg,
 	})
 	if err != nil {
 		return err
@@ -702,12 +716,13 @@ func cmdIssueIntermediate(db *database.DB, mgr *ca.Manager, args []string) error
 	pathLen := fs.Int("path-len", -1, "max path length (-1 = unconstrained, 0 = may only issue leaf certs)")
 	algorithm := fs.String("algorithm", "classical", "signature scheme: classical | pqc (ML-DSA) | hybrid; must match the parent CA")
 	altKeyType := fs.String("alt-key-type", "ml-dsa-65", "ML-DSA parameter set for a hybrid intermediate's alternative key")
-	subj := addSubjectFlags(fs)
+	subj := addFullSubjectFlags(fs)
 	cons := addConstraintFlags(fs)
+	exts := addCAExtensionFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *parent == "" || *label == "" || *subj.cn == "" {
+	if *parent == "" || *label == "" || subj.cn() == "" {
 		fs.Usage()
 		return fmt.Errorf("-parent, -label and -cn are required")
 	}
@@ -721,18 +736,31 @@ func cmdIssueIntermediate(db *database.DB, mgr *ca.Manager, args []string) error
 	if err != nil {
 		return err
 	}
+	extCfg, err := exts.extensions()
+	if err != nil {
+		return err
+	}
+	casubj, err := subj.subject()
+	if err != nil {
+		return err
+	}
+	subject, err := ca.PKIXNameStrict(casubj)
+	if err != nil {
+		return err
+	}
 
 	result, err := mgr.IssueIntermediate(context.Background(), ca.IntermediateSpec{
 		ParentID:        parentID,
 		Label:           *label,
 		KeyType:         *keyType,
-		Subject:         ca.PKIXName(subj.subject()),
+		Subject:         subject,
 		Validity:        time.Duration(*validityDays) * 24 * time.Hour,
 		MaxPathLen:      pathLenValue(*pathLen),
 		Algorithm:       ca.CertAlgorithm(normalizeAlgorithm(*algorithm)),
 		AltKeyType:      *altKeyType,
 		NameConstraints: nc,
 		Policies:        pol,
+		Extensions:      extCfg,
 	})
 	if err != nil {
 		return err

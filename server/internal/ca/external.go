@@ -11,9 +11,12 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/caext"
+	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
+	"github.com/blechschmidt/secsy-pki/server/internal/nameconstraints"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/pqc"
 )
@@ -51,6 +54,14 @@ type ExternalCACSRSpec struct {
 	// MaxPathLen is the path-length constraint requested in the CSR. The
 	// external parent may override it; the issued certificate is authoritative.
 	MaxPathLen *int
+	// NameConstraints, Policies and Extensions are the X.509 v3 extension set
+	// requested in the CSR's extensionRequest attribute, so the external parent
+	// can reproduce the CA that was asked for. The parent decides what the
+	// certificate it returns actually carries — these are a request, not a
+	// guarantee, and ImportExternalCACertificate validates what came back.
+	NameConstraints nameconstraints.Constraints
+	Policies        certpolicy.Policies
+	Extensions      *caext.Config
 }
 
 // ExternalCACSRResult is the outcome of preparing an externally-signed CA.
@@ -98,10 +109,13 @@ func (m *Manager) GenerateExternalCACSR(ctx context.Context, spec ExternalCACSRS
 	}
 	defer signer.Close()
 
-	der, err := pki.CreateCACSR(signer, pki.CACSRRequest{
-		Subject:    spec.Subject,
-		MaxPathLen: spec.MaxPathLen,
-	})
+	csrReq, err := caCSRExtensions(spec.NameConstraints, spec.Policies, spec.Extensions)
+	if err != nil {
+		return nil, err
+	}
+	csrReq.Subject = spec.Subject
+	csrReq.MaxPathLen = spec.MaxPathLen
+	der, err := pki.CreateCACSR(signer, csrReq)
 	if err != nil {
 		return nil, err
 	}

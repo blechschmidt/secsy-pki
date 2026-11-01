@@ -139,6 +139,46 @@ const (
 	CAStatusSuperseded CAStatus = "superseded"
 )
 
+// Defines values for CACustomExtensionEncoding.
+const (
+	CACustomExtensionEncodingBitString   CACustomExtensionEncoding = "bit-string"
+	CACustomExtensionEncodingBool        CACustomExtensionEncoding = "bool"
+	CACustomExtensionEncodingDerBase64   CACustomExtensionEncoding = "der-base64"
+	CACustomExtensionEncodingDerHex      CACustomExtensionEncoding = "der-hex"
+	CACustomExtensionEncodingIa5         CACustomExtensionEncoding = "ia5"
+	CACustomExtensionEncodingInt         CACustomExtensionEncoding = "int"
+	CACustomExtensionEncodingNull        CACustomExtensionEncoding = "null"
+	CACustomExtensionEncodingOctetString CACustomExtensionEncoding = "octet-string"
+	CACustomExtensionEncodingOid         CACustomExtensionEncoding = "oid"
+	CACustomExtensionEncodingPrintable   CACustomExtensionEncoding = "printable"
+	CACustomExtensionEncodingUtf8        CACustomExtensionEncoding = "utf8"
+)
+
+// Defines values for CAExtensionsNetscapeCertType.
+const (
+	ObjCA     CAExtensionsNetscapeCertType = "objCA"
+	Objsign   CAExtensionsNetscapeCertType = "objsign"
+	Smime     CAExtensionsNetscapeCertType = "smime"
+	SmimeCA   CAExtensionsNetscapeCertType = "smimeCA"
+	SslCA     CAExtensionsNetscapeCertType = "sslCA"
+	SslClient CAExtensionsNetscapeCertType = "sslClient"
+	SslServer CAExtensionsNetscapeCertType = "sslServer"
+)
+
+// Defines values for CAInitRootRequestAlgorithm.
+const (
+	CAInitRootRequestAlgorithmClassical CAInitRootRequestAlgorithm = "classical"
+	CAInitRootRequestAlgorithmHybrid    CAInitRootRequestAlgorithm = "hybrid"
+	CAInitRootRequestAlgorithmPqc       CAInitRootRequestAlgorithm = "pqc"
+)
+
+// Defines values for CAIssueIntermediateRequestAlgorithm.
+const (
+	CAIssueIntermediateRequestAlgorithmClassical CAIssueIntermediateRequestAlgorithm = "classical"
+	CAIssueIntermediateRequestAlgorithmHybrid    CAIssueIntermediateRequestAlgorithm = "hybrid"
+	CAIssueIntermediateRequestAlgorithmPqc       CAIssueIntermediateRequestAlgorithm = "pqc"
+)
+
 // Defines values for CTResponseStatus.
 const (
 	CTResponseStatusFailedOpen CTResponseStatus = "failed_open"
@@ -780,9 +820,9 @@ const (
 
 // Defines values for ExportEventLogParamsFormat.
 const (
-	Cef     ExportEventLogParamsFormat = "cef"
-	Json    ExportEventLogParamsFormat = "json"
-	Rfc5424 ExportEventLogParamsFormat = "rfc5424"
+	ExportEventLogParamsFormatCef     ExportEventLogParamsFormat = "cef"
+	ExportEventLogParamsFormatJson    ExportEventLogParamsFormat = "json"
+	ExportEventLogParamsFormatRfc5424 ExportEventLogParamsFormat = "rfc5424"
 )
 
 // Defines values for ListExpiringCertificatesParamsSeverity.
@@ -1706,15 +1746,116 @@ type CACrossSignRequest struct {
 	ValidityDays *int `json:"validity_days,omitempty"`
 }
 
+// CACustomExtension An arbitrary certificate extension by OID. The der-hex / der-base64 encodings carry the supplied bytes verbatim as the extension value, which is how an extension whose syntax the API does not model is stamped; the server rejects anything that is not exactly one complete DER element.
+type CACustomExtension struct {
+	Critical *bool `json:"critical,omitempty"`
+
+	// Encoding How value becomes DER (default utf8).
+	Encoding *CACustomExtensionEncoding `json:"encoding,omitempty"`
+	Oid      string                     `json:"oid"`
+	Value    *string                    `json:"value,omitempty"`
+}
+
+// CACustomExtensionEncoding How value becomes DER (default utf8).
+type CACustomExtensionEncoding string
+
+// CADirectoryAttribute One id-ce-subjectDirectoryAttributes entry: an attribute type OID and one or more values sharing an encoding.
+type CADirectoryAttribute struct {
+	// Encoding As in CACustomExtension (default utf8).
+	Encoding *string  `json:"encoding,omitempty"`
+	Oid      string   `json:"oid"`
+	Values   []string `json:"values"`
+}
+
+// CAExtensions The X.509 v3 extension set a CA certificate carries, beyond Name Constraints and the certificate-policy family (which have their own request fields). Omitting the object asks for the defaults: the usual CA key usages, basic constraints from max_path_len, and nothing else.
+//
+// Creating an authority is the one issuance decision that cannot be revised: a CA's extensions bind every certificate that will ever chain through it. The whole set is therefore accepted up front, validated before a key is generated, and never editable afterwards.
+type CAExtensions struct {
+	// CaIssuers authorityInfoAccess id-ad-caIssuers URIs (where the parent's certificate can be fetched).
+	CaIssuers *[]string `json:"ca_issuers,omitempty"`
+
+	// CaRepositories subjectInfoAccess id-ad-caRepository URIs (where this CA publishes what it issues).
+	CaRepositories *[]string `json:"ca_repositories,omitempty"`
+
+	// CrlDistributionPoints cRLDistributionPoints (2.5.29.31) URIs for THIS certificate — where the parent publishes its CRL. A self-signed root has none.
+	CrlDistributionPoints *[]string `json:"crl_distribution_points,omitempty"`
+
+	// Custom Any extension this schema does not model, by OID.
+	Custom *[]CACustomExtension `json:"custom,omitempty"`
+
+	// ExtKeyUsageCritical Mark extKeyUsage critical.
+	ExtKeyUsageCritical *bool `json:"ext_key_usage_critical,omitempty"`
+
+	// ExtKeyUsages extKeyUsage (2.5.29.37) constraining what certificates below this CA may be used for — a path validator intersects EKUs down the chain, so an intermediate carrying only serverAuth cannot mint a code-signing certificate. A known name (serverAuth, clientAuth, codeSigning, emailProtection, timeStamping, ocspSigning, msSmartcardLogon, pkinitClientAuth, documentSigning, any, …) or a dotted OID.
+	ExtKeyUsages *[]string `json:"ext_key_usages,omitempty"`
+
+	// FreshestCrl freshestCRL (2.5.29.46) delta-CRL URIs.
+	FreshestCrl *[]string `json:"freshest_crl,omitempty"`
+
+	// InhibitAnyPolicy id-ce-inhibitAnyPolicy (2.5.29.54) skipCerts: how many further certificates in the path still accept the anyPolicy OID. Always emitted critical, as RFC 5280 requires.
+	InhibitAnyPolicy *int `json:"inhibit_any_policy,omitempty"`
+
+	// IssuerAltName An RFC 5280 GeneralNames set, used for subjectAltName (2.5.29.17) and issuerAltName (2.5.29.18) on a CA certificate.
+	IssuerAltName *CAGeneralNames `json:"issuer_alt_name,omitempty"`
+
+	// KeyUsages Replaces the default set (certSign, crlSign, digitalSignature). Accepts either spelling of each RFC 5280 bit (certSign/keyCertSign, crlSign/cRLSign, contentCommitment/nonRepudiation, …). certSign is mandatory: a CA certificate without it cannot sign the subordinate certificates that are the point of having it.
+	KeyUsages *[]string `json:"key_usages,omitempty"`
+
+	// MustStaple Assert RFC 7633 status_request (OCSP must-staple) for the subtree.
+	MustStaple *bool `json:"must_staple,omitempty"`
+
+	// NetscapeCertType Legacy Netscape certificate type (2.16.840.1.113730.1.1); keyUsage/extKeyUsage supersede it.
+	NetscapeCertType *[]CAExtensionsNetscapeCertType `json:"netscape_cert_type,omitempty"`
+
+	// NetscapeComment Legacy Netscape comment extension (2.16.840.1.113730.1.13).
+	NetscapeComment *string `json:"netscape_comment,omitempty"`
+
+	// OcspNoCheck Stamp id-pkix-ocsp-nocheck (RFC 6960) — for a delegated OCSP responder certificate.
+	OcspNoCheck *bool `json:"ocsp_no_check,omitempty"`
+
+	// OcspServers authorityInfoAccess id-ad-ocsp URIs.
+	OcspServers *[]string `json:"ocsp_servers,omitempty"`
+
+	// PrivateKeyUsagePeriod Narrows the window in which the CA key may PRODUCE signatures (id-ce-privateKeyUsagePeriod, 2.5.29.16) to less than the certificate's validity, so the key can be retired while the certificates it signed stay verifiable. Set exactly one form; the result is clamped to the certificate's own validity.
+	PrivateKeyUsagePeriod *CAPrivateKeyUsagePeriod `json:"private_key_usage_period,omitempty"`
+
+	// SubjectAltName An RFC 5280 GeneralNames set, used for subjectAltName (2.5.29.17) and issuerAltName (2.5.29.18) on a CA certificate.
+	SubjectAltName *CAGeneralNames `json:"subject_alt_name,omitempty"`
+
+	// SubjectDirectoryAttributes id-ce-subjectDirectoryAttributes (2.5.29.9).
+	SubjectDirectoryAttributes *[]CADirectoryAttribute `json:"subject_directory_attributes,omitempty"`
+
+	// SubjectKeyId Explicit subjectKeyIdentifier as hex (colons and spaces ignored). Empty derives it from the public key, which is what a conforming CA does.
+	SubjectKeyId *string `json:"subject_key_id,omitempty"`
+
+	// TimestampServers subjectInfoAccess id-ad-timeStamping URIs.
+	TimestampServers *[]string `json:"timestamp_servers,omitempty"`
+
+	// TlsFeatures Raw RFC 7633 feature numbers; must_staple is shorthand for 5.
+	TlsFeatures *[]int `json:"tls_features,omitempty"`
+}
+
+// CAExtensionsNetscapeCertType defines model for CAExtensions.NetscapeCertType.
+type CAExtensionsNetscapeCertType string
+
 // CAExternalCSRRequest defines model for CAExternalCSRRequest.
 type CAExternalCSRRequest struct {
+	// Extensions Requested in the CSR's extensionRequest attribute so the external parent can reproduce the CA that was asked for. The parent decides what it actually issues. private_key_usage_period is omitted from the request because only the issuer knows the validity window it would be relative to.
+	Extensions *CAExtensions `json:"extensions,omitempty"`
+
 	// KeyType Classical key types only (e.g. ecdsa-p384, rsa-3072); the external parent signs with classical tooling.
 	KeyType string `json:"key_type"`
 	Label   string `json:"label"`
 
 	// MaxPathLen Path-length constraint requested in the CSR's basicConstraints attribute; the external parent may override it.
-	MaxPathLen *int      `json:"max_path_len,omitempty"`
-	Subject    CASubject `json:"subject"`
+	MaxPathLen *int `json:"max_path_len,omitempty"`
+
+	// NameConstraints RFC 5280 Name Constraints (2.5.29.30) applied to a CA certificate, bounding the identities certificates below it may assert. Enforced as a fail-closed pre-issuance gate and by conforming path validators.
+	NameConstraints *NameConstraintsConfig `json:"name_constraints,omitempty"`
+
+	// Policies RFC 5280 certificate-policy family (2.5.29.32/.33/.36) for a CA certificate.
+	Policies *CertPolicyConfig `json:"policies,omitempty"`
+	Subject  CASubject         `json:"subject"`
 
 	// TenantId Owning tenant (default: the built-in default tenant).
 	TenantId *string `json:"tenant_id,omitempty"`
@@ -1726,6 +1867,36 @@ type CAExternalCSRResponse struct {
 
 	// CsrPem PKCS#10 CSR (PEM) to submit to the external parent.
 	CsrPem *string `json:"csr_pem,omitempty"`
+}
+
+// CAGeneralNames An RFC 5280 GeneralNames set, used for subjectAltName (2.5.29.17) and issuerAltName (2.5.29.18) on a CA certificate.
+type CAGeneralNames struct {
+	// Critical Mark the extension critical. RFC 5280 requires this only when the subject DN is empty, which a CA's never is.
+	Critical *bool `json:"critical,omitempty"`
+
+	// DirNames directoryName entries as DNs ("O=Acme,C=US").
+	DirNames *[]string `json:"dir_names,omitempty"`
+
+	// Dns dNSName entries.
+	Dns *[]string `json:"dns,omitempty"`
+
+	// Email rfc822Name entries.
+	Email *[]string `json:"email,omitempty"`
+
+	// Ip iPAddress entries.
+	Ip *[]string `json:"ip,omitempty"`
+
+	// OtherNames otherName entries for any type-id.
+	OtherNames *[]CAOtherName `json:"other_names,omitempty"`
+
+	// RegisteredIds registeredID entries as dotted OIDs.
+	RegisteredIds *[]string `json:"registered_ids,omitempty"`
+
+	// Upn Microsoft/Kerberos User Principal Names, as id-ms-UPN otherNames.
+	Upn *[]string `json:"upn,omitempty"`
+
+	// Uri uniformResourceIdentifier entries.
+	Uri *[]string `json:"uri,omitempty"`
 }
 
 // CAImportCertRequest defines model for CAImportCertRequest.
@@ -1753,6 +1924,17 @@ type CAImportCertResponse struct {
 
 // CAInitRootRequest defines model for CAInitRootRequest.
 type CAInitRootRequest struct {
+	// Algorithm Signature scheme (default classical). pqc is pure ML-DSA; hybrid is a classical primary signature plus a parallel ML-DSA one. Both require the software key provider.
+	Algorithm *CAInitRootRequestAlgorithm `json:"algorithm,omitempty"`
+
+	// AltKeyType ML-DSA parameter set for a hybrid CA's alternative key (default ml-dsa-65).
+	AltKeyType *string `json:"alt_key_type,omitempty"`
+
+	// Extensions The X.509 v3 extension set a CA certificate carries, beyond Name Constraints and the certificate-policy family (which have their own request fields). Omitting the object asks for the defaults: the usual CA key usages, basic constraints from max_path_len, and nothing else.
+	//
+	// Creating an authority is the one issuance decision that cannot be revised: a CA's extensions bind every certificate that will ever chain through it. The whole set is therefore accepted up front, validated before a key is generated, and never editable afterwards.
+	Extensions *CAExtensions `json:"extensions,omitempty"`
+
 	// KeyType e.g. ecdsa-p256, rsa-3072, ed25519
 	KeyType    string `json:"key_type"`
 	Label      string `json:"label"`
@@ -1770,11 +1952,24 @@ type CAInitRootRequest struct {
 	ValidityDays *int    `json:"validity_days,omitempty"`
 }
 
+// CAInitRootRequestAlgorithm Signature scheme (default classical). pqc is pure ML-DSA; hybrid is a classical primary signature plus a parallel ML-DSA one. Both require the software key provider.
+type CAInitRootRequestAlgorithm string
+
 // CAIssueIntermediateRequest defines model for CAIssueIntermediateRequest.
 type CAIssueIntermediateRequest struct {
-	KeyType    string `json:"key_type"`
-	Label      string `json:"label"`
-	MaxPathLen *int   `json:"max_path_len,omitempty"`
+	// Algorithm Signature scheme (default classical); must match the parent CA.
+	Algorithm *CAIssueIntermediateRequestAlgorithm `json:"algorithm,omitempty"`
+
+	// AltKeyType ML-DSA parameter set for a hybrid intermediate's alternative key (default ml-dsa-65).
+	AltKeyType *string `json:"alt_key_type,omitempty"`
+
+	// Extensions The X.509 v3 extension set a CA certificate carries, beyond Name Constraints and the certificate-policy family (which have their own request fields). Omitting the object asks for the defaults: the usual CA key usages, basic constraints from max_path_len, and nothing else.
+	//
+	// Creating an authority is the one issuance decision that cannot be revised: a CA's extensions bind every certificate that will ever chain through it. The whole set is therefore accepted up front, validated before a key is generated, and never editable afterwards.
+	Extensions *CAExtensions `json:"extensions,omitempty"`
+	KeyType    string        `json:"key_type"`
+	Label      string        `json:"label"`
+	MaxPathLen *int          `json:"max_path_len,omitempty"`
 
 	// NameConstraints RFC 5280 Name Constraints (2.5.29.30) applied to a CA certificate, bounding the identities certificates below it may assert. Enforced as a fail-closed pre-issuance gate and by conforming path validators.
 	NameConstraints *NameConstraintsConfig `json:"name_constraints,omitempty"`
@@ -1786,16 +1981,65 @@ type CAIssueIntermediateRequest struct {
 	ValidityDays *int              `json:"validity_days,omitempty"`
 }
 
+// CAIssueIntermediateRequestAlgorithm Signature scheme (default classical); must match the parent CA.
+type CAIssueIntermediateRequestAlgorithm string
+
+// CAOtherName One GeneralName otherName: a type-id OID and a value in one of the CAExtensions value encodings (default utf8).
+type CAOtherName struct {
+	Encoding *string `json:"encoding,omitempty"`
+	Oid      string  `json:"oid"`
+	Value    string  `json:"value"`
+}
+
+// CAPrivateKeyUsagePeriod Narrows the window in which the CA key may PRODUCE signatures (id-ce-privateKeyUsagePeriod, 2.5.29.16) to less than the certificate's validity, so the key can be retired while the certificates it signed stay verifiable. Set exactly one form; the result is clamped to the certificate's own validity.
+type CAPrivateKeyUsagePeriod struct {
+	// Duration Length from the certificate notBefore ("365d", "52w", "8760h", "1y").
+	Duration *string `json:"duration,omitempty"`
+
+	// Fraction Length as a fraction (0,1] of the certificate's lifetime.
+	Fraction *float32 `json:"fraction,omitempty"`
+
+	// NotAfter Explicit RFC 3339 instant.
+	NotAfter *time.Time `json:"not_after,omitempty"`
+
+	// NotBefore Explicit RFC 3339 instant.
+	NotBefore *time.Time `json:"not_before,omitempty"`
+}
+
 // CASubject defines model for CASubject.
 type CASubject struct {
 	C *string `json:"c,omitempty"`
 
 	// Cn Common name (required)
-	Cn string  `json:"cn"`
-	L  *string `json:"l,omitempty"`
-	O  *string `json:"o,omitempty"`
-	Ou *string `json:"ou,omitempty"`
-	St *string `json:"st,omitempty"`
+	Cn string `json:"cn"`
+
+	// Dc domainComponent attributes, most significant first ("com", "example").
+	Dc *[]string `json:"dc,omitempty"`
+
+	// Email PKCS#9 emailAddress (1.2.840.113549.1.9.1), emitted as an IA5String.
+	Email *string `json:"email,omitempty"`
+
+	// ExtraNames Any further DN attributes, appended in order after the named ones. Also the way to repeat an attribute that already has a field above.
+	ExtraNames *[]CASubjectAttribute `json:"extra_names,omitempty"`
+	L          *string               `json:"l,omitempty"`
+	O          *string               `json:"o,omitempty"`
+	Ou         *string               `json:"ou,omitempty"`
+
+	// PostalCode X.520 postalCode (2.5.4.17).
+	PostalCode *string `json:"postal_code,omitempty"`
+
+	// SerialNumber X.520 serialNumber (2.5.4.5) — a registry or company number, not the certificate serial.
+	SerialNumber *string `json:"serial_number,omitempty"`
+	St           *string `json:"st,omitempty"`
+
+	// Street X.520 streetAddress (2.5.4.9).
+	Street *string `json:"street,omitempty"`
+}
+
+// CASubjectAttribute One additional distinguished-name attribute: a type (a short name such as CN, O, OU, organizationIdentifier, businessCategory, jurisdictionC, UID, or a dotted OID) and its value.
+type CASubjectAttribute struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
 }
 
 // CTLogOutcome Per-log result of a precertificate submission.

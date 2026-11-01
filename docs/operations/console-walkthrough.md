@@ -150,6 +150,35 @@ there is no code path that would do anything with it. (Adopting a CA that
 already exists elsewhere is a deliberate, separate operation —
 [importing an existing CA](../ca/import.md).)
 
+### The extensions you only get to choose once
+
+![The X.509 extension dialog over the Authorities view, titled "Subject and X.509 extensions — new intermediate CA", with collapsible sections for key usage, extended key usage, subject, alternative names, revocation and discovery pointers, policy/path/key-period constraints, directory attributes and legacy flags, custom extensions, and a request preview. The extended-key-usage section is open: serverAuth is checked among nine named usages, a further-usages box holds the dotted OID 1.3.6.1.4.1.311.20.2.2, and "mark extKeyUsage critical" is ticked. At the foot, the request preview shows the JSON that will be sent, beginning with key_usages certSign and crlSign.](../screenshots/03b-ca-extensions.png)
+
+Each of the three forms carries an **X.509 extensions…** button, and this is
+where most of the thinking goes. A leaf is short-lived and reissued constantly;
+a CA's extensions bind **every certificate that will ever chain through it**, and
+the only way to change them is a new key and a trust-store rollout. So the whole
+common extension vocabulary is accepted here, once, before the key exists:
+
+| Section | What it decides |
+| --- | --- |
+| **Key usage** | what this key may do. `keyCertSign` cannot be cleared — a CA that cannot sign certificates is a misconfiguration, and the server refuses it |
+| **Extended key usage** | the strongest constraint available on a delegated authority. A validator intersects EKUs down the chain, so an issuer carrying only `serverAuth` cannot mint a code-signing certificate *even if a profile here allows one* |
+| **Subject** | the rest of the DN — registry identifiers, a postal address, domain components, and any attribute at all by name or OID |
+| **Alternative names** | `subjectAltName` / `issuerAltName`, every `GeneralName` type including UPNs and `otherName` |
+| **Revocation and discovery pointers** | where the *parent* publishes this certificate's CRL and OCSP, where the parent's own certificate can be fetched, and what this CA itself offers (its repository, its TSA) |
+| **Policy, path and key-period** | `inhibitAnyPolicy`, and the private-key usage period that retires the key before the certificate expires |
+| **Legacy and flags** | must-staple, `ocsp-nocheck`, the two Netscape extensions, an explicit subject key identifier |
+| **Custom extensions** | any OID at all, in eleven value encodings — including raw DER for a syntax nothing here models |
+
+The dialog's last section is a **request preview**: the exact JSON body the form
+will send. Read it before you press Create — and note that the server compiles
+and validates the same set *before* generating a key, so a rejected setting
+costs nothing but the error message. Name constraints and certificate policies
+are not in this dialog; they have their own editor on the Restrictions view
+(section 18). The full reference is
+[the CA certificate extension set](../ca/extensions.md).
+
 ---
 
 ## 3. Prove where the keys are

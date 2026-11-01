@@ -15,10 +15,12 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/caext"
 	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
@@ -72,6 +74,12 @@ type RootSpec struct {
 	// Policies, when non-empty, emits the certificate-policy family of extensions
 	// (certificatePolicies / policyMappings / policyConstraints) on the CA cert.
 	Policies certpolicy.Policies
+	// Extensions is the rest of the CA certificate's X.509 v3 extension set:
+	// key usage, EKU chaining constraints, subject/issuer alternative names, the
+	// AIA/SIA/CRL pointers, inhibitAnyPolicy, the private-key usage period and
+	// anything else an operator configures — including arbitrary extensions by
+	// OID. The zero value asks for the defaults.
+	Extensions *caext.Config
 }
 
 // IntermediateSpec describes an intermediate CA to issue under an existing CA.
@@ -92,11 +100,38 @@ type IntermediateSpec struct {
 	// to a subordinate CA).
 	NameConstraints nameconstraints.Constraints
 	Policies        certpolicy.Policies
+	// Extensions is the intermediate's wider X.509 v3 extension set, as in
+	// RootSpec. Constraining an issuing CA here — an extKeyUsage of serverAuth
+	// only, a narrow private-key usage period, its parent's CRL and OCSP
+	// pointers — is where most of this configuration earns its keep.
+	Extensions *caext.Config
 }
 
-// PKIXName converts an API/CLI subject into a pkix.Name.
+// PKIXName converts an API/CLI subject into a pkix.Name, mapping every field
+// that cannot fail to validate. CASubject.ExtraNames needs its attribute types
+// resolved and so may be rejected; PKIXNameStrict is the variant that handles it
+// and returns an error. Callers that accept an operator-supplied subject should
+// prefer PKIXNameStrict — this function exists for the many internal call sites
+// that build a subject from a literal.
 func PKIXName(s models.CASubject) pkix.Name {
-	name := pkix.Name{CommonName: s.CommonName}
+	name, _ := pkixName(s, false)
+	return name
+}
+
+// PKIXNameStrict converts an API/CLI subject into a pkix.Name including
+// CASubject.ExtraNames, rejecting an attribute type it cannot resolve rather
+// than silently dropping it — a dropped DN attribute would produce a CA whose
+// subject is not the one the operator asked for, which is not something to
+// discover after the key exists.
+func PKIXNameStrict(s models.CASubject) (pkix.Name, error) {
+	return pkixName(s, true)
+}
+
+func pkixName(s models.CASubject, strict bool) (pkix.Name, error) {
+	name := pkix.Name{
+		CommonName:   s.CommonName,
+		SerialNumber: s.SerialNumber,
+	}
 	if s.Organization != "" {
 		name.Organization = []string{s.Organization}
 	}
@@ -112,7 +147,50 @@ func PKIXName(s models.CASubject) pkix.Name {
 	if s.Locality != "" {
 		name.Locality = []string{s.Locality}
 	}
-	return name
+	if s.Street != "" {
+		name.StreetAddress = []string{s.Street}
+	}
+	if s.PostalCode != "" {
+		name.PostalCode = []string{s.PostalCode}
+	}
+	// pkix.Name has no field for domainComponent or emailAddress, so they go
+	// through ExtraNames — which pkix emits after the modelled attributes, in
+	// the order given. Both are defined as IA5String.
+	for _, dc := range s.DomainComponents {
+		if dc = strings.TrimSpace(dc); dc != "" {
+			name.ExtraNames = append(name.ExtraNames, pkix.AttributeTypeAndValue{
+				Type: oidDomainComponent, Value: ia5Value(dc),
+			})
+		}
+	}
+	if email := strings.TrimSpace(s.EmailAddress); email != "" {
+		name.ExtraNames = append(name.ExtraNames, pkix.AttributeTypeAndValue{
+			Type: oidEmailAddress, Value: ia5Value(email),
+		})
+	}
+	for _, attr := range s.ExtraNames {
+		oid, err := parseSubjectAttributeType(attr.Type)
+		if err != nil {
+			if strict {
+				return pkix.Name{}, err
+			}
+			continue
+		}
+		if strings.TrimSpace(attr.Value) == "" {
+			if strict {
+				return pkix.Name{}, fmt.Errorf("distinguished-name attribute %q has no value", attr.Type)
+			}
+			continue
+		}
+		var value any = attr.Value
+		// The two IA5String-defined attributes keep that encoding when supplied
+		// through the generic path too.
+		if oid.Equal(oidEmailAddress) || oid.Equal(oidDomainComponent) {
+			value = ia5Value(attr.Value)
+		}
+		name.ExtraNames = append(name.ExtraNames, pkix.AttributeTypeAndValue{Type: oid, Value: value})
+	}
+	return name, nil
 }
 
 // InitRoot generates a key inside the provider and creates a self-signed root
@@ -122,19 +200,16 @@ func (m *Manager) InitRoot(ctx context.Context, spec RootSpec) (*models.CA, erro
 		return nil, err
 	}
 
-	extraExts, err := caPolicyExtensions(spec.NameConstraints, spec.Policies)
-	if err != nil {
-		return nil, err
-	}
-
 	now := time.Now()
 	req := pki.CACertRequest{
-		Subject:         spec.Subject,
-		Serial:          big.NewInt(1), // a root's self-signed certificate is serial 1
-		NotBefore:       now.Add(-clockSkew),
-		NotAfter:        now.Add(spec.Validity),
-		MaxPathLen:      spec.MaxPathLen,
-		ExtraExtensions: extraExts,
+		Subject:    spec.Subject,
+		Serial:     big.NewInt(1), // a root's self-signed certificate is serial 1
+		NotBefore:  now.Add(-clockSkew),
+		NotAfter:   now.Add(spec.Validity),
+		MaxPathLen: spec.MaxPathLen,
+	}
+	if err := applyCAExtensions(&req, spec.NameConstraints, spec.Policies, spec.Extensions); err != nil {
+		return nil, err
 	}
 	keyInfo, der, err := m.buildAndSignCACert(ctx, spec.Algorithm, spec.Label, spec.KeyType, spec.AltKeyType, req, nil, nil)
 	if err != nil {
@@ -189,17 +264,15 @@ func (m *Manager) IssueIntermediate(ctx context.Context, spec IntermediateSpec) 
 	if notAfter.After(parentCert.NotAfter) {
 		notAfter = parentCert.NotAfter
 	}
-	extraExts, err := caPolicyExtensions(spec.NameConstraints, spec.Policies)
-	if err != nil {
-		return nil, err
-	}
 	req := pki.CACertRequest{
-		Subject:         spec.Subject,
-		Serial:          big.NewInt(serial),
-		NotBefore:       now.Add(-clockSkew),
-		NotAfter:        notAfter,
-		MaxPathLen:      spec.MaxPathLen,
-		ExtraExtensions: extraExts,
+		Subject:    spec.Subject,
+		Serial:     big.NewInt(serial),
+		NotBefore:  now.Add(-clockSkew),
+		NotAfter:   notAfter,
+		MaxPathLen: spec.MaxPathLen,
+	}
+	if err := applyCAExtensions(&req, spec.NameConstraints, spec.Policies, spec.Extensions); err != nil {
+		return nil, err
 	}
 	keyInfo, der, err := m.buildAndSignCACert(ctx, spec.Algorithm, spec.Label, spec.KeyType, spec.AltKeyType, req, parent, parentCert)
 	if err != nil {

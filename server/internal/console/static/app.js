@@ -4664,6 +4664,325 @@ async function exportCAPublicKey(id) {
   } catch (e) { notice($('casMsg'), 'err', 'Exporting the public key failed: ' + e.message); }
 }
 
+// -- the full CA subject + X.509 extension editor (Task 222) -----------------
+//
+// Three forms create authorities (root, intermediate, external CSR) and each may
+// carry the complete X.509 v3 extension set. Rather than triple the size of
+// every form, each one keeps its compact shape and opens this shared modal; the
+// configuration is held per form in caExtState until the form is submitted.
+//
+// The modal collects strings and does almost no validation of its own: the
+// server compiles the same caext.Config before generating a key, so its error
+// message is the authoritative one and there is no second, divergent set of
+// rules to keep in sync here. What this code does guarantee is that a field
+// left blank is *absent* from the request rather than present-and-empty, so an
+// untouched dialog cannot change the certificate that would otherwise be issued.
+
+const caExtState = { root: null, inter: null, extcsr: null };
+const caExtTargetLabels = {
+  root: 'new root CA',
+  inter: 'new intermediate CA',
+  extcsr: 'external subordinate CA (CSR)',
+};
+let caExtTarget = null;
+
+// The key-usage bits a CA certificate may assert. certSign is mandatory — a CA
+// that cannot sign certificates is a misconfiguration, and the server refuses
+// it — so its checkbox is checked and disabled rather than silently ignored.
+const CA_KEY_USAGES = [
+  ['certSign', true], ['crlSign', false], ['digitalSignature', false],
+  ['contentCommitment', false], ['keyEncipherment', false], ['dataEncipherment', false],
+  ['keyAgreement', false], ['encipherOnly', false], ['decipherOnly', false],
+];
+// The extended key usages worth a checkbox. Everything else in the catalogue —
+// and any OID at all — goes in the "further usages" box beneath them.
+const CA_EXT_KEY_USAGES = [
+  'serverAuth', 'clientAuth', 'codeSigning', 'emailProtection',
+  'timeStamping', 'ocspSigning', 'documentSigning', 'any',
+];
+const CA_KEY_USAGE_DEFAULTS = ['certSign', 'crlSign', 'digitalSignature'];
+
+function caExtBuildCheckboxes() {
+  const ku = $('caExtKU');
+  if (ku && !ku.children.length) {
+    ku.innerHTML = CA_KEY_USAGES.map(([name, required]) =>
+      `<label class="muted" style="display:flex;gap:5px;align-items:center">`
+      + `<input type="checkbox" class="caExtKUBox" value="${name}"${required ? ' checked disabled' : ''}>`
+      + `<code>${name}</code>${required ? ' <span class="muted">(required)</span>' : ''}</label>`).join('');
+  }
+  const eku = $('caExtEKU');
+  if (eku && !eku.children.length) {
+    eku.innerHTML = CA_EXT_KEY_USAGES.map(name =>
+      `<label class="muted" style="display:flex;gap:5px;align-items:center">`
+      + `<input type="checkbox" class="caExtEKUBox" value="${name}"><code>${name}</code></label>`).join('');
+  }
+}
+
+// caExtLines splits a textarea into trimmed, non-empty lines, which is how every
+// multi-valued field in this dialog is entered.
+function caExtLines(id) {
+  const v = $(id).value || '';
+  return v.split('\n').map(x => x.trim()).filter(Boolean);
+}
+function caExtSetLines(id, values) { $(id).value = (values || []).join('\n'); }
+function caExtTextOf(id) { return ($(id).value || '').trim(); }
+
+// caExtCollect reads the dialog into { subject, extensions }, with each half
+// null when nothing was configured. Parse errors in the line-oriented fields are
+// returned rather than thrown so the dialog can point at them.
+function caExtCollect() {
+  const errs = [];
+
+  // --- subject ---
+  const subject = {};
+  const serial = caExtTextOf('caExtSubjSerial'); if (serial) subject.serial_number = serial;
+  const street = caExtTextOf('caExtSubjStreet'); if (street) subject.street = street;
+  const postal = caExtTextOf('caExtSubjPostal'); if (postal) subject.postal_code = postal;
+  const email = caExtTextOf('caExtSubjEmail'); if (email) subject.email = email;
+  const dc = caExtLines('caExtSubjDC'); if (dc.length) subject.dc = dc;
+  const extraNames = [];
+  for (const line of caExtLines('caExtSubjExtra')) {
+    const eq = line.indexOf('=');
+    if (eq <= 0 || !line.slice(eq + 1).trim()) {
+      errs.push(`subject attribute "${line}": want TYPE=VALUE`);
+      continue;
+    }
+    extraNames.push({ type: line.slice(0, eq).trim(), value: line.slice(eq + 1).trim() });
+  }
+  if (extraNames.length) subject.extra_names = extraNames;
+
+  // --- extensions ---
+  const ext = {};
+  const kus = Array.from(document.querySelectorAll('.caExtKUBox'))
+    .filter(b => b.checked).map(b => b.value);
+  // Only send a key-usage set when it differs from the default, so an untouched
+  // dialog leaves the server's default in place rather than restating it.
+  const sameAsDefault = kus.length === CA_KEY_USAGE_DEFAULTS.length
+    && CA_KEY_USAGE_DEFAULTS.every(u => kus.includes(u));
+  if (kus.length && !sameAsDefault) ext.key_usages = kus;
+
+  const ekus = Array.from(document.querySelectorAll('.caExtEKUBox'))
+    .filter(b => b.checked).map(b => b.value).concat(caExtLines('caExtEKUMore'));
+  if (ekus.length) ext.ext_key_usages = ekus;
+  if ($('caExtEKUCritical').checked) ext.ext_key_usage_critical = true;
+
+  const san = {};
+  const sanDNS = caExtLines('caExtSanDNS'); if (sanDNS.length) san.dns = sanDNS;
+  const sanIP = caExtLines('caExtSanIP'); if (sanIP.length) san.ip = sanIP;
+  const sanEmail = caExtLines('caExtSanEmail'); if (sanEmail.length) san.email = sanEmail;
+  const sanURI = caExtLines('caExtSanURI'); if (sanURI.length) san.uri = sanURI;
+  const sanUPN = caExtLines('caExtSanUPN'); if (sanUPN.length) san.upn = sanUPN;
+  const sanDir = caExtLines('caExtSanDir'); if (sanDir.length) san.dir_names = sanDir;
+  const sanRID = caExtLines('caExtSanRID'); if (sanRID.length) san.registered_ids = sanRID;
+  const others = [];
+  for (const line of caExtLines('caExtSanOther')) {
+    const parts = line.split(':');
+    if (parts.length < 3) { errs.push(`otherName "${line}": want OID:encoding:value`); continue; }
+    others.push({ oid: parts[0].trim(), encoding: parts[1].trim(), value: parts.slice(2).join(':') });
+  }
+  if (others.length) san.other_names = others;
+  if (Object.keys(san).length) {
+    if ($('caExtSanCritical').checked) san.critical = true;
+    ext.subject_alt_name = san;
+  }
+  const ianURI = caExtLines('caExtIanURI');
+  if (ianURI.length) ext.issuer_alt_name = { uri: ianURI };
+
+  const crldp = caExtLines('caExtCRLDP'); if (crldp.length) ext.crl_distribution_points = crldp;
+  const fresh = caExtLines('caExtFreshest'); if (fresh.length) ext.freshest_crl = fresh;
+  const ocsp = caExtLines('caExtOCSP'); if (ocsp.length) ext.ocsp_servers = ocsp;
+  const aiaCA = caExtLines('caExtAIACA'); if (aiaCA.length) ext.ca_issuers = aiaCA;
+  const repo = caExtLines('caExtSIARepo'); if (repo.length) ext.ca_repositories = repo;
+  const tsa = caExtLines('caExtSIATSA'); if (tsa.length) ext.timestamp_servers = tsa;
+
+  if (caExtTextOf('caExtInhibitAny') !== '') {
+    const n = parseInt($('caExtInhibitAny').value, 10);
+    if (Number.isNaN(n) || n < 0) errs.push('inhibitAnyPolicy must be a non-negative integer');
+    else ext.inhibit_any_policy = n;
+  }
+  const pkupDur = caExtTextOf('caExtPKUPDuration');
+  const pkupFrac = caExtTextOf('caExtPKUPFraction');
+  if (pkupDur && pkupFrac) {
+    errs.push('set either a privateKeyUsagePeriod length or a fraction, not both');
+  } else if (pkupDur) {
+    ext.private_key_usage_period = { duration: pkupDur };
+  } else if (pkupFrac) {
+    ext.private_key_usage_period = { fraction: parseFloat(pkupFrac) };
+  }
+
+  const dirAttrs = [];
+  for (const line of caExtLines('caExtDirAttrs')) {
+    const parts = line.split(':');
+    if (parts.length < 3) { errs.push(`directory attribute "${line}": want OID:encoding:value`); continue; }
+    dirAttrs.push({ oid: parts[0].trim(), encoding: parts[1].trim(), values: [parts.slice(2).join(':')] });
+  }
+  if (dirAttrs.length) ext.subject_directory_attributes = dirAttrs;
+
+  const ski = caExtTextOf('caExtSKI'); if (ski) ext.subject_key_id = ski;
+  const nsc = caExtTextOf('caExtNSComment'); if (nsc) ext.netscape_comment = nsc;
+  const nst = caExtTextOf('caExtNSCertType').split(',').map(x => x.trim()).filter(Boolean);
+  if (nst.length) ext.netscape_cert_type = nst;
+  if ($('caExtMustStaple').checked) ext.must_staple = true;
+  if ($('caExtOCSPNoCheck').checked) ext.ocsp_no_check = true;
+
+  const custom = [];
+  for (const line of caExtLines('caExtCustom')) {
+    const parts = line.split(':');
+    if (parts.length < 3) { errs.push(`custom extension "${line}": want OID[:critical]:encoding:value`); continue; }
+    const entry = { oid: parts[0].trim() };
+    if (parts[1].trim().toLowerCase() === 'critical') {
+      if (parts.length < 4) { errs.push(`custom extension "${line}": want OID:critical:encoding:value`); continue; }
+      entry.critical = true;
+      entry.encoding = parts[2].trim();
+      entry.value = parts.slice(3).join(':');
+    } else {
+      entry.encoding = parts[1].trim();
+      entry.value = parts.slice(2).join(':');
+    }
+    custom.push(entry);
+  }
+  if (custom.length) ext.custom = custom;
+
+  return {
+    subject: Object.keys(subject).length ? subject : null,
+    extensions: Object.keys(ext).length ? ext : null,
+    errors: errs,
+  };
+}
+
+// caExtFill restores a saved configuration into the dialog (or clears it).
+function caExtFill(state) {
+  caExtBuildCheckboxes();
+  const subject = (state && state.subject) || {};
+  const ext = (state && state.extensions) || {};
+
+  $('caExtSubjSerial').value = subject.serial_number || '';
+  $('caExtSubjStreet').value = subject.street || '';
+  $('caExtSubjPostal').value = subject.postal_code || '';
+  $('caExtSubjEmail').value = subject.email || '';
+  caExtSetLines('caExtSubjDC', subject.dc);
+  caExtSetLines('caExtSubjExtra', (subject.extra_names || []).map(a => `${a.type}=${a.value}`));
+
+  const kus = ext.key_usages && ext.key_usages.length ? ext.key_usages : CA_KEY_USAGE_DEFAULTS;
+  document.querySelectorAll('.caExtKUBox').forEach(b => { b.checked = b.disabled || kus.includes(b.value); });
+  const ekus = ext.ext_key_usages || [];
+  const boxed = new Set(CA_EXT_KEY_USAGES);
+  document.querySelectorAll('.caExtEKUBox').forEach(b => { b.checked = ekus.includes(b.value); });
+  caExtSetLines('caExtEKUMore', ekus.filter(u => !boxed.has(u)));
+  $('caExtEKUCritical').checked = !!ext.ext_key_usage_critical;
+
+  const san = ext.subject_alt_name || {};
+  caExtSetLines('caExtSanDNS', san.dns);
+  caExtSetLines('caExtSanIP', san.ip);
+  caExtSetLines('caExtSanEmail', san.email);
+  caExtSetLines('caExtSanURI', san.uri);
+  caExtSetLines('caExtSanUPN', san.upn);
+  caExtSetLines('caExtSanDir', san.dir_names);
+  caExtSetLines('caExtSanRID', san.registered_ids);
+  caExtSetLines('caExtSanOther', (san.other_names || []).map(o => `${o.oid}:${o.encoding || 'utf8'}:${o.value}`));
+  $('caExtSanCritical').checked = !!san.critical;
+  caExtSetLines('caExtIanURI', (ext.issuer_alt_name || {}).uri);
+
+  caExtSetLines('caExtCRLDP', ext.crl_distribution_points);
+  caExtSetLines('caExtFreshest', ext.freshest_crl);
+  caExtSetLines('caExtOCSP', ext.ocsp_servers);
+  caExtSetLines('caExtAIACA', ext.ca_issuers);
+  caExtSetLines('caExtSIARepo', ext.ca_repositories);
+  caExtSetLines('caExtSIATSA', ext.timestamp_servers);
+
+  $('caExtInhibitAny').value = ext.inhibit_any_policy === undefined ? '' : ext.inhibit_any_policy;
+  const pkup = ext.private_key_usage_period || {};
+  $('caExtPKUPDuration').value = pkup.duration || '';
+  $('caExtPKUPFraction').value = pkup.fraction || '';
+
+  caExtSetLines('caExtDirAttrs', (ext.subject_directory_attributes || [])
+    .map(a => `${a.oid}:${a.encoding || 'utf8'}:${(a.values || [])[0] || ''}`));
+  $('caExtSKI').value = ext.subject_key_id || '';
+  $('caExtNSComment').value = ext.netscape_comment || '';
+  $('caExtNSCertType').value = (ext.netscape_cert_type || []).join(', ');
+  $('caExtMustStaple').checked = !!ext.must_staple;
+  $('caExtOCSPNoCheck').checked = !!ext.ocsp_no_check;
+  caExtSetLines('caExtCustom', (ext.custom || []).map(c =>
+    `${c.oid}:${c.critical ? 'critical:' : ''}${c.encoding || 'utf8'}:${c.value || ''}`));
+
+  caExtRefreshPreview();
+}
+
+// caExtRefreshPreview shows the exact JSON fragment the form will send, so an
+// operator can read back what the dialog understood before any key exists.
+function caExtRefreshPreview() {
+  const pre = $('caExtPreview');
+  if (!pre) return;
+  const got = caExtCollect();
+  const body = {};
+  if (got.subject) body.subject = Object.assign({ cn: '…' }, got.subject);
+  if (got.extensions) body.extensions = got.extensions;
+  pre.textContent = Object.keys(body).length
+    ? JSON.stringify(body, null, 2)
+    : 'Nothing configured — the request will carry the defaults.';
+  const err = $('caExtError');
+  if (got.errors.length) { showError(err, got.errors.join('; ')); } else { err.classList.add('hidden'); }
+}
+
+// caExtSummary is the one-line badge next to each form's button.
+function caExtSummary(state) {
+  if (!state || (!state.subject && !state.extensions)) return '';
+  const n = (state.extensions ? Object.keys(state.extensions).length : 0)
+    + (state.subject ? Object.keys(state.subject).length : 0);
+  return `${n} setting${n === 1 ? '' : 's'} configured`;
+}
+
+function caExtUpdateBadges() {
+  const badges = { root: 'rootExtBadge', inter: 'interExtBadge', extcsr: 'extCsrExtBadge' };
+  for (const [target, id] of Object.entries(badges)) {
+    const el = $(id);
+    if (el) el.textContent = caExtSummary(caExtState[target]);
+  }
+}
+
+function openCAExtModal(target) {
+  caExtTarget = target;
+  $('caExtTarget').textContent = caExtTargetLabels[target] || target;
+  $('caExtError').classList.add('hidden');
+  caExtFill(caExtState[target]);
+  $('caExtModal').classList.remove('hidden');
+}
+
+// caExtApplyTo merges a form's saved configuration into its request body. The
+// subject half is merged over the fields the compact form already filled in, so
+// the common name and organization typed there survive.
+function caExtApplyTo(body, target) {
+  const state = caExtState[target];
+  if (!state) return body;
+  if (state.subject) body.subject = Object.assign({}, body.subject, state.subject);
+  if (state.extensions) body.extensions = state.extensions;
+  return body;
+}
+
+if ($('caExtModal')) {
+  caExtBuildCheckboxes();
+  for (const [btn, target] of [['rootExtBtn', 'root'], ['interExtBtn', 'inter'], ['extCsrExtBtn', 'extcsr']]) {
+    const el = $(btn);
+    if (el) el.onclick = () => openCAExtModal(target);
+  }
+  $('caExtCancel').onclick = () => $('caExtModal').classList.add('hidden');
+  $('caExtClear').onclick = () => { caExtFill(null); };
+  $('caExtApply').onclick = () => {
+    const got = caExtCollect();
+    if (got.errors.length) { showError($('caExtError'), got.errors.join('; ')); return; }
+    caExtState[caExtTarget] = (got.subject || got.extensions)
+      ? { subject: got.subject, extensions: got.extensions } : null;
+    caExtUpdateBadges();
+    $('caExtModal').classList.add('hidden');
+    notice($('casMsg'), 'ok', caExtState[caExtTarget]
+      ? `Extension set stored for the ${caExtTargetLabels[caExtTarget]}; it is applied when you create it.`
+      : `Extension set cleared for the ${caExtTargetLabels[caExtTarget]}.`);
+  };
+  // The preview is the dialog's feedback loop, so it follows every keystroke.
+  $('caExtModal').addEventListener('input', caExtRefreshPreview);
+  $('caExtModal').addEventListener('change', caExtRefreshPreview);
+}
+
 // -- create root / intermediate --
 $('rootCreateBtn').onclick = async () => {
   const err = $('rootCreateError');
@@ -4675,6 +4994,7 @@ $('rootCreateBtn').onclick = async () => {
     validity_days: parseInt($('rootDays').value, 10) || 0,
   };
   if ($('rootPathLen').value !== '') body.max_path_len = parseInt($('rootPathLen').value, 10);
+  caExtApplyTo(body, 'root');
   if (!body.label || !body.subject.cn) { showError(err, 'A label and a common name are required.'); return; }
   $('rootCreateBtn').disabled = true;
   try {
@@ -4683,7 +5003,8 @@ $('rootCreateBtn').onclick = async () => {
     // be reported before any field of the (absent) CA is read.
     const held = heldForApproval(ca);
     if (held) { notice($('casMsg'), 'warn', held); loadApprovals(); return; }
-    notice($('casMsg'), 'ok', `Root CA "${ca.label}" created — key generated inside the HSM.`);
+    notice($('casMsg'), 'ok', `Root CA "${ca.label}" created — key generated inside the HSM.`
+      + (caExtState.root ? ' The extension set stays configured for the next root; clear it in the dialog if the next one differs.' : ''));
     $('rootLabel').value = $('rootCN').value = $('rootO').value = '';
     await loadAuthorities();
   } catch (e) { showError(err, e.message); }
@@ -4701,6 +5022,7 @@ $('interCreateBtn').onclick = async () => {
     validity_days: parseInt($('interDays').value, 10) || 0,
   };
   if ($('interPathLen').value !== '') body.max_path_len = parseInt($('interPathLen').value, 10);
+  caExtApplyTo(body, 'inter');
   if (!parent) { showError(err, 'Select a parent CA.'); return; }
   if (!body.label || !body.subject.cn) { showError(err, 'A label and a common name are required.'); return; }
   $('interCreateBtn').disabled = true;
@@ -4708,7 +5030,8 @@ $('interCreateBtn').onclick = async () => {
     const ca = await api('POST', `/api/ca/${parent}/issue-intermediate`, body);
     const held = heldForApproval(ca);
     if (held) { notice($('casMsg'), 'warn', held); loadApprovals(); return; }
-    notice($('casMsg'), 'ok', `Intermediate CA "${ca.label}" issued under ${caLabel(parent)}.`);
+    notice($('casMsg'), 'ok', `Intermediate CA "${ca.label}" issued under ${caLabel(parent)}.`
+      + (caExtState.inter ? ' The extension set stays configured for the next intermediate; clear it in the dialog if the next one differs.' : ''));
     $('interLabel').value = $('interCN').value = $('interO').value = '';
     await loadAuthorities();
   } catch (e) { showError(err, e.message); }
@@ -4725,6 +5048,7 @@ $('extCsrBtn').onclick = async () => {
     subject: { cn: $('extCN').value.trim(), o: $('extO').value.trim() },
   };
   if ($('extPathLen').value !== '') body.max_path_len = parseInt($('extPathLen').value, 10);
+  caExtApplyTo(body, 'extcsr');
   if (!body.label || !body.subject.cn) { showError(err, 'A label and a common name are required.'); return; }
   $('extCsrBtn').disabled = true;
   try {
