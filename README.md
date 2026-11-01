@@ -1,8 +1,21 @@
 # Secsy PKI
 
-HSM-backed SSH and X.509 Certificate Authority with OIDC authentication, publicly auditable signing logs, and a web UI.
+[![Enterprise CI (SoftHSM) build status](https://img.shields.io/github/actions/workflow/status/blechschmidt/secsy-pki/enterprise-ci.yaml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/blechschmidt/secsy-pki/actions/workflows/enterprise-ci.yaml)
+[![Documentation site build status](https://img.shields.io/github/actions/workflow/status/blechschmidt/secsy-pki/docs.yaml?branch=main&label=docs&logo=materialformkdocs&logoColor=white)](https://github.com/blechschmidt/secsy-pki/actions/workflows/docs.yaml)
+[![Go version from server/go.mod](https://img.shields.io/github/go-mod/go-version/blechschmidt/secsy-pki?filename=server%2Fgo.mod&label=go&logo=go&logoColor=white)](server/go.mod)
+[![License: MIT](https://img.shields.io/github/license/blechschmidt/secsy-pki?label=license&color=blue)](LICENSE)
 
-**Documentation: <https://blechschmidt.github.io/secsy-pki/>** — every guide below, searchable and cross-linked. Built from this repository by [a CI workflow](docs/development/documentation-site.md); run `make docs-serve` to read it locally.
+**HSM-backed SSH and X.509 Certificate Authority with OIDC authentication, publicly auditable signing logs, and a web UI.**
+
+📖 **[Documentation](https://blechschmidt.github.io/secsy-pki/)** ·
+[Quick start](#quick-start) ·
+[Console walkthrough](docs/operations/console-walkthrough.md) ·
+[Examples](examples/README.md) ·
+[Architecture](ARCHITECTURE.md)
+
+Every page of [`docs/`](docs/README.md) is published there — searchable and
+cross-linked — by [the documentation-site workflow](docs/development/documentation-site.md);
+`make docs-serve` renders the same tree locally.
 
 **See it first: [a walkthrough of the operator console](docs/operations/console-walkthrough.md)** — 22 steps and 27 screenshots, from sign-in to the raw PKCS#11 view of the token.
 
