@@ -21,6 +21,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/attestation"
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/cms"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/fips"
@@ -250,6 +251,7 @@ func (s *Server) handlePKIOperation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: msg.CSR.Raw})
+	ctx = celpolicy.WithSource(ctx, celpolicy.SourceSCEP)
 	result, err := s.caMgr.IssueCertificate(ctx, ca.IssueSpec{
 		CAID:        s.cfg.CAID,
 		CSRPEM:      csrPEM,

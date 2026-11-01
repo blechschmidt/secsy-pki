@@ -1232,6 +1232,33 @@ func (db *DB) migrate() error {
 			added_by TEXT NOT NULL DEFAULT '',
 			added_at TIMESTAMP NOT NULL
 		)`,
+		// CEL issuance-restriction rules (Task 223). One row per operator-written
+		// rule, read by the fail-closed pre-issuance policy gate on every issuance
+		// surface. tenant_id is a soft scope rather than a foreign key: the empty
+		// string means "every tenant", which is the common case and which a NOT NULL
+		// REFERENCES column could not express. The scope selectors are JSON arrays of
+		// glob patterns, matched in the engine so SQL and Go cannot disagree.
+		`CREATE TABLE IF NOT EXISTS cel_policy_rules (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT '',
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			expression TEXT NOT NULL,
+			message TEXT NOT NULL DEFAULT '',
+			effect TEXT NOT NULL DEFAULT 'require',
+			mode TEXT NOT NULL DEFAULT 'enforce',
+			profiles TEXT NOT NULL DEFAULT '[]',
+			cas TEXT NOT NULL DEFAULT '[]',
+			priority INTEGER NOT NULL DEFAULT 0,
+			enabled ` + boolType + `,
+			fail_open ` + boolType + `,
+			created_by TEXT NOT NULL DEFAULT '',
+			updated_by TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_cel_policy_rules_name ON cel_policy_rules(name)`,
+		`CREATE INDEX IF NOT EXISTS idx_cel_policy_rules_enabled ON cel_policy_rules(enabled, priority)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.exec(stmt); err != nil {

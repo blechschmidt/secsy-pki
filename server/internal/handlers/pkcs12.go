@@ -110,6 +110,9 @@ func (a *API) ExportCertificatePKCS12(w http.ResponseWriter, r *http.Request) {
 		if writeTenantLimitError(w, err) {
 			return
 		}
+		if writePolicyDenyError(w, err) { // a restriction rule refused it → 422 + reasons
+			return
+		}
 		writeError(w, http.StatusBadRequest, "failed to export PKCS#12: %v", err)
 		return
 	}

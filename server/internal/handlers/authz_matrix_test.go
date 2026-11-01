@@ -496,6 +496,28 @@ func authzMatrix() []rc {
 		cfgCA("DELETE", "/api/restriction-sets/{id}", "/api/restriction-sets/rs-a", ""),
 		cfgCA("PUT", "/api/keys/{id}/default-restriction-set", "/api/keys/ca-a/default-restriction-set", `{"type":"ssh"}`),
 
+		// CEL issuance-restriction rules (Task 223). Editing is ca:configure — the
+		// same authority that governs profiles and restriction sets, which these
+		// extend. Reading is open to any role on purpose: an issuer who was refused
+		// needs to be able to look up the rule the refusal named, and the dry-run and
+		// the vocabulary reference are read-only evaluations of operator-written text
+		// against facts the caller supplies. The {id} routes answer 404 for a rule
+		// that does not exist, which the reachability probe accepts.
+		rdG("GET", "/api/issuance-policies", "/api/issuance-policies", ""),
+		cfgCA("POST", "/api/issuance-policies", "/api/issuance-policies",
+			`{"name":"authz-rule","expression":"request.validity_days <= 90"}`),
+		rdG("GET", "/api/issuance-policies/reference", "/api/issuance-policies/reference", ""),
+		rdG("POST", "/api/issuance-policies/validate", "/api/issuance-policies/validate",
+			`{"expression":"request.validity_days <= 90"}`),
+		rdG("POST", "/api/issuance-policies/test", "/api/issuance-policies/test",
+			`{"expression":"request.validity_days <= 90","input":{"request":{"profile":"server"}}}`),
+		rdG("GET", "/api/issuance-policies/{id}", "/api/issuance-policies/authz-rule", ""),
+		cfgCA("PUT", "/api/issuance-policies/{id}", "/api/issuance-policies/authz-rule",
+			`{"name":"authz-rule","expression":"request.validity_days <= 30"}`),
+		cfgCA("PUT", "/api/issuance-policies/{id}/enabled", "/api/issuance-policies/authz-rule",
+			`{"enabled":false}`),
+		cfgCA("DELETE", "/api/issuance-policies/{id}", "/api/issuance-policies/authz-rule", ""),
+
 		// Audit / access logs (platform audit:read).
 		platRd("GET", "/api/audit-log", "/api/audit-log"),
 		platRd("GET", "/api/access-log", "/api/access-log"),

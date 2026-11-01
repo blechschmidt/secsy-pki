@@ -96,6 +96,12 @@ func (a *API) IssueCertificate(w http.ResponseWriter, r *http.Request) {
 		if writeTenantLimitError(w, err) { // suspension → 403, quota → 429 + Retry-After
 			return
 		}
+		// A CEL restriction rule refused the request: answer 422 with every reason
+		// the rules gave, in the operator's own wording, so the requester learns
+		// what to change rather than that they are "forbidden" (Task 223).
+		if writePolicyDenyError(w, err) {
+			return
+		}
 		writeError(w, http.StatusBadRequest, "failed to issue certificate: %v", err)
 		return
 	}
@@ -147,6 +153,9 @@ func (a *API) RenewCertificate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		a.recordEvent(r, audit.ActionCertRenew, caID, req.Serial, audit.ResultError, err.Error())
 		if writeTenantLimitError(w, err) { // suspension → 403, quota → 429 + Retry-After
+			return
+		}
+		if writePolicyDenyError(w, err) { // a restriction rule refused it → 422 + reasons
 			return
 		}
 		writeError(w, http.StatusBadRequest, "failed to renew certificate: %v", err)

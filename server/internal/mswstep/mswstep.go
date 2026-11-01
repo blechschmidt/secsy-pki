@@ -39,6 +39,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/authn"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -306,6 +307,7 @@ func (s *Server) resolveTemplate(selector string) resolvedTemplate {
 // profile's UPN gate validates it (and rejects it under a non-UPN profile).
 func (s *Server) issue(ctx context.Context, csr *x509.CertificateRequest, profile, actor string) (*ca.IssueResult, error) {
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csr.Raw})
+	ctx = celpolicy.WithSource(ctx, celpolicy.SourceWSTEP)
 	return s.caMgr.IssueCertificate(ctx, ca.IssueSpec{
 		CAID:        s.cfg.CAID,
 		CSRPEM:      csrPEM,

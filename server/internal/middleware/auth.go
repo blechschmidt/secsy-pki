@@ -13,6 +13,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/authn"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
@@ -309,6 +310,7 @@ func (am *AuthMiddleware) Authenticate(next http.Handler) http.Handler {
 			if am.bearerClaims != nil {
 				am.bearerClaims(info, claims)
 			}
+			recordPolicyClaims(r.Context(), claims)
 			am.serveAs(w, r, next, info, nil)
 			return
 		}
@@ -359,7 +361,39 @@ func (am *AuthMiddleware) serveAs(w http.ResponseWriter, r *http.Request, next h
 	if sess != nil {
 		ctx = context.WithValue(ctx, sessionKey, sess)
 	}
+	// Hand the resolved principal to the CEL issuance-restriction engine
+	// (Task 223), so a rule can reason about who is asking — their roles, their
+	// tenants, their directory groups — and not only about what they asked for.
+	// A request that did not pass through celpolicy.Capture has no holder and
+	// this is a no-op.
+	recordPolicyPrincipal(ctx, info)
 	next.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// recordPolicyPrincipal copies an authenticated principal into the request's
+// policy fact holder. Only facts the authentication layer *verified* are
+// recorded: an unverified identity reaching a rule would turn every
+// principal-based restriction into a decoration the requester controls.
+func recordPolicyPrincipal(ctx context.Context, info *models.UserInfo) {
+	f := celpolicy.FromContext(ctx)
+	if f == nil || info == nil {
+		return
+	}
+	f.SetPrincipal(celpolicy.PrincipalFrom(
+		info.Subject, info.Email, info.Name,
+		info.EmailVerified, info.IsRoot,
+		info.Roles, info.Groups, info.TenantRoles, info.AuthProvider))
+}
+
+// recordPolicyClaims copies a verified token's claim set into the request's
+// policy fact holder, so `jwt.<claim>` is readable by a restriction rule. It is
+// called only after the verifier accepted the token.
+func recordPolicyClaims(ctx context.Context, claims *auth.Claims) {
+	f := celpolicy.FromContext(ctx)
+	if f == nil || claims == nil {
+		return
+	}
+	f.SetJWT(celpolicy.ClaimSet(claims.Subject, claims.Email, claims.Issuer, claims.Audience, claims.Raw))
 }
 
 // StepUpGate wraps a high-risk handler so a console (session) caller must have
@@ -457,6 +491,8 @@ func (am *AuthMiddleware) AuthenticateRPC(ctx context.Context, authorization str
 		if am.bearerClaims != nil {
 			am.bearerClaims(info, claims)
 		}
+		recordPolicyClaims(ctx, claims)
+		recordPolicyPrincipal(ctx, info)
 		return info, nil
 	}
 

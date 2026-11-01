@@ -152,6 +152,11 @@ var migrationTables = []string{
 	// Operator-managed compromised-key blocklist (Task 120). Deployment-global; no
 	// foreign keys, so it can be copied at any point.
 	"blocked_keys",
+	// CEL issuance-restriction rules (Task 223). Scoped to a tenant by a soft
+	// string column rather than a foreign key, so it can be copied at any point —
+	// but it must be copied, or the migrated store would issue certificates the
+	// source store refused.
+	"cel_policy_rules",
 }
 
 // tableCopyOrder pins the read order for tables whose rows have intra-table

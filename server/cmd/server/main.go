@@ -31,6 +31,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
 	"github.com/blechschmidt/secsy-pki/server/internal/caa"
 	"github.com/blechschmidt/secsy-pki/server/internal/canary"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/certlint"
 	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/cmp"
@@ -1231,6 +1232,16 @@ func main() {
 	// Cap every request body to guard against memory-exhaustion DoS from an
 	// (authenticated) client. Individual handlers may impose tighter limits.
 	handler := limitRequestBody(mux, maxRequestBodyBytes)
+
+	// Request-fact capture for the CEL issuance-restriction engine (Task 223).
+	// The REST surface already captures inside handlers.RegisterRoutes; wrapping
+	// the whole mux extends the same facts — the request URL and, where the body
+	// is JSON or a form, its parameters — to the enrollment protocols (ACME, EST,
+	// SCEP, CMP, MS-WSTEP), so a rule can act on the path a device enrolled
+	// through. It sits inside the body cap so the capped reader is what gets
+	// buffered, and the holder it installs is idempotent: the inner REST capture
+	// simply replaces it with its own.
+	handler = celpolicy.Capture(handler)
 
 	// Rate limiting, per-account/IP/global/per-tenant quotas, and a bounded
 	// in-flight concurrency guard protecting the HSM on the public endpoints

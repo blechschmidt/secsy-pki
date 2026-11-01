@@ -384,6 +384,36 @@ const (
 	ImportSigningKeyRequestAlgorithmRsaPss4096      ImportSigningKeyRequestAlgorithm = "rsa-pss-4096"
 )
 
+// Defines values for IssuancePolicyRuleEffect.
+const (
+	IssuancePolicyRuleEffectDeny    IssuancePolicyRuleEffect = "deny"
+	IssuancePolicyRuleEffectRequire IssuancePolicyRuleEffect = "require"
+)
+
+// Defines values for IssuancePolicyRuleMode.
+const (
+	IssuancePolicyRuleModeEnforce IssuancePolicyRuleMode = "enforce"
+	IssuancePolicyRuleModeMonitor IssuancePolicyRuleMode = "monitor"
+)
+
+// Defines values for IssuancePolicyTestRequestEffect.
+const (
+	IssuancePolicyTestRequestEffectDeny    IssuancePolicyTestRequestEffect = "deny"
+	IssuancePolicyTestRequestEffectRequire IssuancePolicyTestRequestEffect = "require"
+)
+
+// Defines values for IssuancePolicyTestRequestMode.
+const (
+	IssuancePolicyTestRequestModeEnforce IssuancePolicyTestRequestMode = "enforce"
+	IssuancePolicyTestRequestModeMonitor IssuancePolicyTestRequestMode = "monitor"
+)
+
+// Defines values for IssuancePolicyViolationMode.
+const (
+	IssuancePolicyViolationModeEnforce IssuancePolicyViolationMode = "enforce"
+	IssuancePolicyViolationModeMonitor IssuancePolicyViolationMode = "monitor"
+)
+
 // Defines values for IssuedCertificateCtStatus.
 const (
 	IssuedCertificateCtStatusFailedOpen IssuedCertificateCtStatus = "failed_open"
@@ -737,10 +767,10 @@ const (
 
 // Defines values for ValidationCheckStatus.
 const (
-	ValidationCheckStatusFail    ValidationCheckStatus = "fail"
-	ValidationCheckStatusPass    ValidationCheckStatus = "pass"
-	ValidationCheckStatusSkipped ValidationCheckStatus = "skipped"
-	ValidationCheckStatusWarn    ValidationCheckStatus = "warn"
+	Fail    ValidationCheckStatus = "fail"
+	Pass    ValidationCheckStatus = "pass"
+	Skipped ValidationCheckStatus = "skipped"
+	Warn    ValidationCheckStatus = "warn"
 )
 
 // Defines values for ValidationRevocationState.
@@ -3405,6 +3435,173 @@ type ImportSigningKeyRequest struct {
 // ImportSigningKeyRequestAlgorithm The fixed signing algorithm. Optional for an EC or Ed25519 key, which determines its own; REQUIRED for an RSA key, since the same key works with PSS and with PKCS#1 v1.5 and the choice must match what existing verifiers already do.
 type ImportSigningKeyRequestAlgorithm string
 
+// IssuancePolicyDecision The outcome of evaluating a rule set against one request.
+type IssuancePolicyDecision struct {
+	// Allowed False when at least one enforcing rule refused.
+	Allowed *bool `json:"allowed,omitempty"`
+
+	// Evaluated How many rules applied to this request.
+	Evaluated *int `json:"evaluated,omitempty"`
+
+	// Skipped How many rules were disabled or out of scope.
+	Skipped    *int                       `json:"skipped,omitempty"`
+	Violations *[]IssuancePolicyViolation `json:"violations,omitempty"`
+}
+
+// IssuancePolicyFacts The fact set a rule is evaluated against. `request` holds the certificate facts; `jwt` and `body` are free-form maps; `url` and `principal` describe the HTTP request and its caller. Every field is optional — an omitted one reads as its zero value, which is the correct view for a request that carried no token, no URL or no body.
+type IssuancePolicyFacts struct {
+	Body      *map[string]interface{} `json:"body,omitempty"`
+	Jwt       *map[string]interface{} `json:"jwt,omitempty"`
+	Now       *time.Time              `json:"now,omitempty"`
+	Principal *map[string]interface{} `json:"principal,omitempty"`
+	Request   *map[string]interface{} `json:"request,omitempty"`
+	Url       *map[string]interface{} `json:"url,omitempty"`
+}
+
+// IssuancePolicyReference The expression vocabulary, derived from the live environment.
+type IssuancePolicyReference struct {
+	// CostLimit The CEL interpreter cost ceiling on a single evaluation.
+	CostLimit *int64    `json:"cost_limit,omitempty"`
+	Effects   *[]string `json:"effects,omitempty"`
+	Examples  *[]struct {
+		Description *string `json:"description,omitempty"`
+		Effect      *string `json:"effect,omitempty"`
+		Expression  *string `json:"expression,omitempty"`
+		Message     *string `json:"message,omitempty"`
+		Title       *string `json:"title,omitempty"`
+	} `json:"examples,omitempty"`
+	Functions *[]struct {
+		Functions *[]string `json:"functions,omitempty"`
+		Name      *string   `json:"name,omitempty"`
+	} `json:"functions,omitempty"`
+	Modes *[]string `json:"modes,omitempty"`
+
+	// Results What a rule's expression may evaluate to.
+	Results   *[]string                 `json:"results,omitempty"`
+	Variables *[]IssuancePolicyVariable `json:"variables,omitempty"`
+}
+
+// IssuancePolicyRule One operator-written CEL restriction on certificate generation. The expression may evaluate to a bool (the condition that must hold, or — with effect "deny" — must not), a string (the reason itself; the empty string means satisfied), or a list of strings (one reason per offending name). A rule that cannot be evaluated refuses the request unless fail_open is set.
+type IssuancePolicyRule struct {
+	// Cas Issuing CA ids or labels the rule applies to, matched case-insensitively with shell-style globs. Empty means every CA.
+	Cas         *[]string `json:"cas,omitempty"`
+	CreatedAt   *string   `json:"created_at,omitempty"`
+	CreatedBy   *string   `json:"created_by,omitempty"`
+	Description *string   `json:"description,omitempty"`
+
+	// Effect require — the condition must hold; deny — it must not. Applies to a boolean result only.
+	Effect  *IssuancePolicyRuleEffect `json:"effect,omitempty"`
+	Enabled *bool                     `json:"enabled,omitempty"`
+
+	// Expression The CEL expression. See GET /api/issuance-policies/reference.
+	Expression string `json:"expression"`
+
+	// FailOpen Permit the issuance when this rule's own evaluation fails (a runtime error, an unusable result, the cost ceiling). The default is fail-closed.
+	FailOpen *bool   `json:"fail_open,omitempty"`
+	Id       *string `json:"id,omitempty"`
+
+	// Message The reason reported when a boolean rule refuses. Ignored for a rule whose expression produces its own text.
+	Message *string `json:"message,omitempty"`
+
+	// Mode enforce — refuse the issuance; monitor — record the finding (in the decision, the audit event and the metrics) and issue anyway, so a new rule can be measured against real traffic before it starts refusing certificates.
+	Mode *IssuancePolicyRuleMode `json:"mode,omitempty"`
+
+	// Name Unique, whitespace-free. It appears in the refusal the requester reads and in the audit record, and it resolves this rule through GET /api/issuance-policies/{id}.
+	Name string `json:"name"`
+
+	// Priority Evaluation order, ascending. It does not change the verdict — every applicable rule is evaluated so the requester learns every reason at once — but it fixes the order the reasons are reported in.
+	Priority *int `json:"priority,omitempty"`
+
+	// Profiles Issuance profiles the rule applies to, matched case-insensitively with shell-style globs. Empty means every profile.
+	Profiles *[]string `json:"profiles,omitempty"`
+
+	// TenantId Restrict the rule to one tenant's CAs. Empty applies it to every tenant.
+	TenantId  *string `json:"tenant_id,omitempty"`
+	UpdatedAt *string `json:"updated_at,omitempty"`
+	UpdatedBy *string `json:"updated_by,omitempty"`
+}
+
+// IssuancePolicyRuleEffect require — the condition must hold; deny — it must not. Applies to a boolean result only.
+type IssuancePolicyRuleEffect string
+
+// IssuancePolicyRuleMode enforce — refuse the issuance; monitor — record the finding (in the decision, the audit event and the metrics) and issue anyway, so a new rule can be measured against real traffic before it starts refusing certificates.
+type IssuancePolicyRuleMode string
+
+// IssuancePolicyTestRequest Supply exactly one of `expression` (an ad-hoc rule), `rule` (one stored rule, evaluated even while disabled), or neither (the active rule set; add all_rules to include the disabled ones).
+type IssuancePolicyTestRequest struct {
+	AllRules *bool   `json:"all_rules,omitempty"`
+	CaId     *string `json:"ca_id,omitempty"`
+
+	// Csr A PEM PKCS#10 CSR to derive the certificate facts from. Requires ca_id. The facts are resolved through the same template the issuance path builds, so a rule tried this way behaves the same way when that CSR is submitted.
+	Csr        *string                          `json:"csr,omitempty"`
+	Effect     *IssuancePolicyTestRequestEffect `json:"effect,omitempty"`
+	Expression *string                          `json:"expression,omitempty"`
+	FailOpen   *bool                            `json:"fail_open,omitempty"`
+
+	// Input The fact set a rule is evaluated against. `request` holds the certificate facts; `jwt` and `body` are free-form maps; `url` and `principal` describe the HTTP request and its caller. Every field is optional — an omitted one reads as its zero value, which is the correct view for a request that carried no token, no URL or no body.
+	Input   *IssuancePolicyFacts           `json:"input,omitempty"`
+	Message *string                        `json:"message,omitempty"`
+	Mode    *IssuancePolicyTestRequestMode `json:"mode,omitempty"`
+	Profile *string                        `json:"profile,omitempty"`
+
+	// Rule A stored rule's id or name.
+	Rule         *string `json:"rule,omitempty"`
+	ValidityDays *int    `json:"validity_days,omitempty"`
+}
+
+// IssuancePolicyTestRequestEffect defines model for IssuancePolicyTestRequest.Effect.
+type IssuancePolicyTestRequestEffect string
+
+// IssuancePolicyTestRequestMode defines model for IssuancePolicyTestRequest.Mode.
+type IssuancePolicyTestRequestMode string
+
+// IssuancePolicyTestResponse defines model for IssuancePolicyTestResponse.
+type IssuancePolicyTestResponse struct {
+	// Decision The outcome of evaluating a rule set against one request.
+	Decision *IssuancePolicyDecision `json:"decision,omitempty"`
+
+	// Input The facts the rules actually saw, echoed back so a surprising verdict is diagnosable — the usual cause is a fact the author assumed was present.
+	Input *IssuancePolicyFacts `json:"input,omitempty"`
+
+	// Rules The names of the rules that were considered.
+	Rules *[]string `json:"rules,omitempty"`
+}
+
+// IssuancePolicyValidation defines model for IssuancePolicyValidation.
+type IssuancePolicyValidation struct {
+	// Error The compiler's message, with the offending column, when valid is false.
+	Error *string `json:"error,omitempty"`
+
+	// ResultType The result shape the compiler deduced — bool, string, list(string), or "dyn (resolved at evaluation)".
+	ResultType *string `json:"result_type,omitempty"`
+	Valid      *bool   `json:"valid,omitempty"`
+}
+
+// IssuancePolicyVariable defines model for IssuancePolicyVariable.
+type IssuancePolicyVariable struct {
+	Doc *string `json:"doc,omitempty"`
+
+	// Fields The object's fields, for a variable declared as a typed object.
+	Fields *[]struct {
+		Name *string `json:"name,omitempty"`
+		Type *string `json:"type,omitempty"`
+	} `json:"fields,omitempty"`
+	Name *string `json:"name,omitempty"`
+	Type *string `json:"type,omitempty"`
+}
+
+// IssuancePolicyViolation One reason a request was refused (or, in monitor mode, would have been).
+type IssuancePolicyViolation struct {
+	// Error Set when the rule refused because it could not be evaluated rather than because the request failed it.
+	Error   *string                      `json:"error,omitempty"`
+	Message *string                      `json:"message,omitempty"`
+	Mode    *IssuancePolicyViolationMode `json:"mode,omitempty"`
+	Rule    *string                      `json:"rule,omitempty"`
+}
+
+// IssuancePolicyViolationMode defines model for IssuancePolicyViolation.Mode.
+type IssuancePolicyViolationMode string
+
 // IssueCertRequest defines model for IssueCertRequest.
 type IssueCertRequest struct {
 	// Csr PEM PKCS#10 CSR
@@ -5940,6 +6137,16 @@ type GetEffectiveResourceAccessParams struct {
 	Subject *string `form:"subject,omitempty" json:"subject,omitempty"`
 }
 
+// ValidateIssuancePolicyJSONBody defines parameters for ValidateIssuancePolicy.
+type ValidateIssuancePolicyJSONBody struct {
+	Expression string `json:"expression"`
+}
+
+// SetIssuancePolicyEnabledJSONBody defines parameters for SetIssuancePolicyEnabled.
+type SetIssuancePolicyEnabledJSONBody struct {
+	Enabled bool `json:"enabled"`
+}
+
 // GetMyRestrictionsParams defines parameters for GetMyRestrictions.
 type GetMyRestrictionsParams struct {
 	Format *string `form:"format,omitempty" json:"format,omitempty"`
@@ -6255,6 +6462,21 @@ type VerifyHSMDeviceAttestationJSONRequestBody = HSMDeviceAttestationVerifyReque
 
 // RunInventoryRetentionJSONRequestBody defines body for RunInventoryRetention for application/json ContentType.
 type RunInventoryRetentionJSONRequestBody = RetentionRunRequest
+
+// CreateIssuancePolicyJSONRequestBody defines body for CreateIssuancePolicy for application/json ContentType.
+type CreateIssuancePolicyJSONRequestBody = IssuancePolicyRule
+
+// TestIssuancePolicyJSONRequestBody defines body for TestIssuancePolicy for application/json ContentType.
+type TestIssuancePolicyJSONRequestBody = IssuancePolicyTestRequest
+
+// ValidateIssuancePolicyJSONRequestBody defines body for ValidateIssuancePolicy for application/json ContentType.
+type ValidateIssuancePolicyJSONRequestBody ValidateIssuancePolicyJSONBody
+
+// UpdateIssuancePolicyJSONRequestBody defines body for UpdateIssuancePolicy for application/json ContentType.
+type UpdateIssuancePolicyJSONRequestBody = IssuancePolicyRule
+
+// SetIssuancePolicyEnabledJSONRequestBody defines body for SetIssuancePolicyEnabled for application/json ContentType.
+type SetIssuancePolicyEnabledJSONRequestBody SetIssuancePolicyEnabledJSONBody
 
 // CreateCAJSONRequestBody defines body for CreateCA for application/json ContentType.
 type CreateCAJSONRequestBody = CreateCARequest
@@ -6832,6 +7054,43 @@ type ClientInterface interface {
 	RunInventoryRetentionWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	RunInventoryRetention(ctx context.Context, body RunInventoryRetentionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListIssuancePolicies request
+	ListIssuancePolicies(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateIssuancePolicyWithBody request with any body
+	CreateIssuancePolicyWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreateIssuancePolicy(ctx context.Context, body CreateIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetIssuancePolicyReference request
+	GetIssuancePolicyReference(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// TestIssuancePolicyWithBody request with any body
+	TestIssuancePolicyWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	TestIssuancePolicy(ctx context.Context, body TestIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ValidateIssuancePolicyWithBody request with any body
+	ValidateIssuancePolicyWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ValidateIssuancePolicy(ctx context.Context, body ValidateIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteIssuancePolicy request
+	DeleteIssuancePolicy(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetIssuancePolicy request
+	GetIssuancePolicy(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// UpdateIssuancePolicyWithBody request with any body
+	UpdateIssuancePolicyWithBody(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	UpdateIssuancePolicy(ctx context.Context, id string, body UpdateIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SetIssuancePolicyEnabledWithBody request with any body
+	SetIssuancePolicyEnabledWithBody(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	SetIssuancePolicyEnabled(ctx context.Context, id string, body SetIssuancePolicyEnabledJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListCAs request
 	ListCAs(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -8798,6 +9057,174 @@ func (c *Client) RunInventoryRetentionWithBody(ctx context.Context, contentType 
 
 func (c *Client) RunInventoryRetention(ctx context.Context, body RunInventoryRetentionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewRunInventoryRetentionRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListIssuancePolicies(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListIssuancePoliciesRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateIssuancePolicyWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateIssuancePolicyRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateIssuancePolicy(ctx context.Context, body CreateIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateIssuancePolicyRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetIssuancePolicyReference(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetIssuancePolicyReferenceRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) TestIssuancePolicyWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewTestIssuancePolicyRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) TestIssuancePolicy(ctx context.Context, body TestIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewTestIssuancePolicyRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ValidateIssuancePolicyWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewValidateIssuancePolicyRequestWithBody(c.Server, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ValidateIssuancePolicy(ctx context.Context, body ValidateIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewValidateIssuancePolicyRequest(c.Server, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteIssuancePolicy(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteIssuancePolicyRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetIssuancePolicy(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetIssuancePolicyRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdateIssuancePolicyWithBody(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateIssuancePolicyRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) UpdateIssuancePolicy(ctx context.Context, id string, body UpdateIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewUpdateIssuancePolicyRequest(c.Server, id, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SetIssuancePolicyEnabledWithBody(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetIssuancePolicyEnabledRequestWithBody(c.Server, id, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SetIssuancePolicyEnabled(ctx context.Context, id string, body SetIssuancePolicyEnabledJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSetIssuancePolicyEnabledRequest(c.Server, id, body)
 	if err != nil {
 		return nil, err
 	}
@@ -15105,6 +15532,342 @@ func NewRunInventoryRetentionRequestWithBody(server string, contentType string, 
 	return req, nil
 }
 
+// NewListIssuancePoliciesRequest generates requests for ListIssuancePolicies
+func NewListIssuancePoliciesRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/issuance-policies")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewCreateIssuancePolicyRequest calls the generic CreateIssuancePolicy builder with application/json body
+func NewCreateIssuancePolicyRequest(server string, body CreateIssuancePolicyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateIssuancePolicyRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewCreateIssuancePolicyRequestWithBody generates requests for CreateIssuancePolicy with any type of body
+func NewCreateIssuancePolicyRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/issuance-policies")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGetIssuancePolicyReferenceRequest generates requests for GetIssuancePolicyReference
+func NewGetIssuancePolicyReferenceRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/issuance-policies/reference")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewTestIssuancePolicyRequest calls the generic TestIssuancePolicy builder with application/json body
+func NewTestIssuancePolicyRequest(server string, body TestIssuancePolicyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewTestIssuancePolicyRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewTestIssuancePolicyRequestWithBody generates requests for TestIssuancePolicy with any type of body
+func NewTestIssuancePolicyRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/issuance-policies/test")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewValidateIssuancePolicyRequest calls the generic ValidateIssuancePolicy builder with application/json body
+func NewValidateIssuancePolicyRequest(server string, body ValidateIssuancePolicyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewValidateIssuancePolicyRequestWithBody(server, "application/json", bodyReader)
+}
+
+// NewValidateIssuancePolicyRequestWithBody generates requests for ValidateIssuancePolicy with any type of body
+func NewValidateIssuancePolicyRequestWithBody(server string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/issuance-policies/validate")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewDeleteIssuancePolicyRequest generates requests for DeleteIssuancePolicy
+func NewDeleteIssuancePolicyRequest(server string, id string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/issuance-policies/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("DELETE", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetIssuancePolicyRequest generates requests for GetIssuancePolicy
+func NewGetIssuancePolicyRequest(server string, id string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/issuance-policies/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewUpdateIssuancePolicyRequest calls the generic UpdateIssuancePolicy builder with application/json body
+func NewUpdateIssuancePolicyRequest(server string, id string, body UpdateIssuancePolicyJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewUpdateIssuancePolicyRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewUpdateIssuancePolicyRequestWithBody generates requests for UpdateIssuancePolicy with any type of body
+func NewUpdateIssuancePolicyRequestWithBody(server string, id string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/issuance-policies/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("PUT", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewSetIssuancePolicyEnabledRequest calls the generic SetIssuancePolicyEnabled builder with application/json body
+func NewSetIssuancePolicyEnabledRequest(server string, id string, body SetIssuancePolicyEnabledJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSetIssuancePolicyEnabledRequestWithBody(server, id, "application/json", bodyReader)
+}
+
+// NewSetIssuancePolicyEnabledRequestWithBody generates requests for SetIssuancePolicyEnabled with any type of body
+func NewSetIssuancePolicyEnabledRequestWithBody(server string, id string, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/issuance-policies/%s/enabled", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("PUT", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
 // NewListCAsRequest generates requests for ListCAs
 func NewListCAsRequest(server string) (*http.Request, error) {
 	var err error
@@ -19367,6 +20130,43 @@ type ClientWithResponsesInterface interface {
 
 	RunInventoryRetentionWithResponse(ctx context.Context, body RunInventoryRetentionJSONRequestBody, reqEditors ...RequestEditorFn) (*RunInventoryRetentionResponse, error)
 
+	// ListIssuancePoliciesWithResponse request
+	ListIssuancePoliciesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListIssuancePoliciesResponse, error)
+
+	// CreateIssuancePolicyWithBodyWithResponse request with any body
+	CreateIssuancePolicyWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateIssuancePolicyResponse, error)
+
+	CreateIssuancePolicyWithResponse(ctx context.Context, body CreateIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateIssuancePolicyResponse, error)
+
+	// GetIssuancePolicyReferenceWithResponse request
+	GetIssuancePolicyReferenceWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetIssuancePolicyReferenceResponse, error)
+
+	// TestIssuancePolicyWithBodyWithResponse request with any body
+	TestIssuancePolicyWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*TestIssuancePolicyResponse, error)
+
+	TestIssuancePolicyWithResponse(ctx context.Context, body TestIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*TestIssuancePolicyResponse, error)
+
+	// ValidateIssuancePolicyWithBodyWithResponse request with any body
+	ValidateIssuancePolicyWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ValidateIssuancePolicyResponse, error)
+
+	ValidateIssuancePolicyWithResponse(ctx context.Context, body ValidateIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*ValidateIssuancePolicyResponse, error)
+
+	// DeleteIssuancePolicyWithResponse request
+	DeleteIssuancePolicyWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*DeleteIssuancePolicyResponse, error)
+
+	// GetIssuancePolicyWithResponse request
+	GetIssuancePolicyWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*GetIssuancePolicyResponse, error)
+
+	// UpdateIssuancePolicyWithBodyWithResponse request with any body
+	UpdateIssuancePolicyWithBodyWithResponse(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateIssuancePolicyResponse, error)
+
+	UpdateIssuancePolicyWithResponse(ctx context.Context, id string, body UpdateIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateIssuancePolicyResponse, error)
+
+	// SetIssuancePolicyEnabledWithBodyWithResponse request with any body
+	SetIssuancePolicyEnabledWithBodyWithResponse(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetIssuancePolicyEnabledResponse, error)
+
+	SetIssuancePolicyEnabledWithResponse(ctx context.Context, id string, body SetIssuancePolicyEnabledJSONRequestBody, reqEditors ...RequestEditorFn) (*SetIssuancePolicyEnabledResponse, error)
+
 	// ListCAsWithResponse request
 	ListCAsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListCAsResponse, error)
 
@@ -22050,6 +22850,223 @@ func (r RunInventoryRetentionResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r RunInventoryRetentionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListIssuancePoliciesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *[]IssuancePolicyRule
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ListIssuancePoliciesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListIssuancePoliciesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type CreateIssuancePolicyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *IssuancePolicyRule
+	JSON400      *Error
+	JSON403      *Forbidden
+	JSON409      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateIssuancePolicyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateIssuancePolicyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetIssuancePolicyReferenceResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *IssuancePolicyReference
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r GetIssuancePolicyReferenceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetIssuancePolicyReferenceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type TestIssuancePolicyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *IssuancePolicyTestResponse
+	JSON400      *Error
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r TestIssuancePolicyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r TestIssuancePolicyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ValidateIssuancePolicyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *IssuancePolicyValidation
+	JSON400      *Error
+	JSON403      *Forbidden
+}
+
+// Status returns HTTPResponse.Status
+func (r ValidateIssuancePolicyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ValidateIssuancePolicyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type DeleteIssuancePolicyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *StatusResponse
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteIssuancePolicyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteIssuancePolicyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetIssuancePolicyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *IssuancePolicyRule
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r GetIssuancePolicyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetIssuancePolicyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type UpdateIssuancePolicyResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *IssuancePolicyRule
+	JSON400      *Error
+	JSON403      *Forbidden
+	JSON404      *NotFound
+	JSON409      *Error
+}
+
+// Status returns HTTPResponse.Status
+func (r UpdateIssuancePolicyResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r UpdateIssuancePolicyResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type SetIssuancePolicyEnabledResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *IssuancePolicyRule
+	JSON403      *Forbidden
+	JSON404      *NotFound
+}
+
+// Status returns HTTPResponse.Status
+func (r SetIssuancePolicyEnabledResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SetIssuancePolicyEnabledResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -25315,6 +26332,127 @@ func (c *ClientWithResponses) RunInventoryRetentionWithResponse(ctx context.Cont
 		return nil, err
 	}
 	return ParseRunInventoryRetentionResponse(rsp)
+}
+
+// ListIssuancePoliciesWithResponse request returning *ListIssuancePoliciesResponse
+func (c *ClientWithResponses) ListIssuancePoliciesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListIssuancePoliciesResponse, error) {
+	rsp, err := c.ListIssuancePolicies(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListIssuancePoliciesResponse(rsp)
+}
+
+// CreateIssuancePolicyWithBodyWithResponse request with arbitrary body returning *CreateIssuancePolicyResponse
+func (c *ClientWithResponses) CreateIssuancePolicyWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateIssuancePolicyResponse, error) {
+	rsp, err := c.CreateIssuancePolicyWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateIssuancePolicyResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreateIssuancePolicyWithResponse(ctx context.Context, body CreateIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateIssuancePolicyResponse, error) {
+	rsp, err := c.CreateIssuancePolicy(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateIssuancePolicyResponse(rsp)
+}
+
+// GetIssuancePolicyReferenceWithResponse request returning *GetIssuancePolicyReferenceResponse
+func (c *ClientWithResponses) GetIssuancePolicyReferenceWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetIssuancePolicyReferenceResponse, error) {
+	rsp, err := c.GetIssuancePolicyReference(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetIssuancePolicyReferenceResponse(rsp)
+}
+
+// TestIssuancePolicyWithBodyWithResponse request with arbitrary body returning *TestIssuancePolicyResponse
+func (c *ClientWithResponses) TestIssuancePolicyWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*TestIssuancePolicyResponse, error) {
+	rsp, err := c.TestIssuancePolicyWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseTestIssuancePolicyResponse(rsp)
+}
+
+func (c *ClientWithResponses) TestIssuancePolicyWithResponse(ctx context.Context, body TestIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*TestIssuancePolicyResponse, error) {
+	rsp, err := c.TestIssuancePolicy(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseTestIssuancePolicyResponse(rsp)
+}
+
+// ValidateIssuancePolicyWithBodyWithResponse request with arbitrary body returning *ValidateIssuancePolicyResponse
+func (c *ClientWithResponses) ValidateIssuancePolicyWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ValidateIssuancePolicyResponse, error) {
+	rsp, err := c.ValidateIssuancePolicyWithBody(ctx, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseValidateIssuancePolicyResponse(rsp)
+}
+
+func (c *ClientWithResponses) ValidateIssuancePolicyWithResponse(ctx context.Context, body ValidateIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*ValidateIssuancePolicyResponse, error) {
+	rsp, err := c.ValidateIssuancePolicy(ctx, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseValidateIssuancePolicyResponse(rsp)
+}
+
+// DeleteIssuancePolicyWithResponse request returning *DeleteIssuancePolicyResponse
+func (c *ClientWithResponses) DeleteIssuancePolicyWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*DeleteIssuancePolicyResponse, error) {
+	rsp, err := c.DeleteIssuancePolicy(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteIssuancePolicyResponse(rsp)
+}
+
+// GetIssuancePolicyWithResponse request returning *GetIssuancePolicyResponse
+func (c *ClientWithResponses) GetIssuancePolicyWithResponse(ctx context.Context, id string, reqEditors ...RequestEditorFn) (*GetIssuancePolicyResponse, error) {
+	rsp, err := c.GetIssuancePolicy(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetIssuancePolicyResponse(rsp)
+}
+
+// UpdateIssuancePolicyWithBodyWithResponse request with arbitrary body returning *UpdateIssuancePolicyResponse
+func (c *ClientWithResponses) UpdateIssuancePolicyWithBodyWithResponse(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*UpdateIssuancePolicyResponse, error) {
+	rsp, err := c.UpdateIssuancePolicyWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateIssuancePolicyResponse(rsp)
+}
+
+func (c *ClientWithResponses) UpdateIssuancePolicyWithResponse(ctx context.Context, id string, body UpdateIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*UpdateIssuancePolicyResponse, error) {
+	rsp, err := c.UpdateIssuancePolicy(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseUpdateIssuancePolicyResponse(rsp)
+}
+
+// SetIssuancePolicyEnabledWithBodyWithResponse request with arbitrary body returning *SetIssuancePolicyEnabledResponse
+func (c *ClientWithResponses) SetIssuancePolicyEnabledWithBodyWithResponse(ctx context.Context, id string, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SetIssuancePolicyEnabledResponse, error) {
+	rsp, err := c.SetIssuancePolicyEnabledWithBody(ctx, id, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetIssuancePolicyEnabledResponse(rsp)
+}
+
+func (c *ClientWithResponses) SetIssuancePolicyEnabledWithResponse(ctx context.Context, id string, body SetIssuancePolicyEnabledJSONRequestBody, reqEditors ...RequestEditorFn) (*SetIssuancePolicyEnabledResponse, error) {
+	rsp, err := c.SetIssuancePolicyEnabled(ctx, id, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSetIssuancePolicyEnabledResponse(rsp)
 }
 
 // ListCAsWithResponse request returning *ListCAsResponse
@@ -30024,6 +31162,373 @@ func ParseRunInventoryRetentionResponse(rsp *http.Response) (*RunInventoryRetent
 			return nil, err
 		}
 		response.JSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListIssuancePoliciesResponse parses an HTTP response from a ListIssuancePoliciesWithResponse call
+func ParseListIssuancePoliciesResponse(rsp *http.Response) (*ListIssuancePoliciesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListIssuancePoliciesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest []IssuancePolicyRule
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateIssuancePolicyResponse parses an HTTP response from a CreateIssuancePolicyWithResponse call
+func ParseCreateIssuancePolicyResponse(rsp *http.Response) (*CreateIssuancePolicyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateIssuancePolicyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest IssuancePolicyRule
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetIssuancePolicyReferenceResponse parses an HTTP response from a GetIssuancePolicyReferenceWithResponse call
+func ParseGetIssuancePolicyReferenceResponse(rsp *http.Response) (*GetIssuancePolicyReferenceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetIssuancePolicyReferenceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest IssuancePolicyReference
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseTestIssuancePolicyResponse parses an HTTP response from a TestIssuancePolicyWithResponse call
+func ParseTestIssuancePolicyResponse(rsp *http.Response) (*TestIssuancePolicyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &TestIssuancePolicyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest IssuancePolicyTestResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseValidateIssuancePolicyResponse parses an HTTP response from a ValidateIssuancePolicyWithResponse call
+func ParseValidateIssuancePolicyResponse(rsp *http.Response) (*ValidateIssuancePolicyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ValidateIssuancePolicyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest IssuancePolicyValidation
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteIssuancePolicyResponse parses an HTTP response from a DeleteIssuancePolicyWithResponse call
+func ParseDeleteIssuancePolicyResponse(rsp *http.Response) (*DeleteIssuancePolicyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteIssuancePolicyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest StatusResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetIssuancePolicyResponse parses an HTTP response from a GetIssuancePolicyWithResponse call
+func ParseGetIssuancePolicyResponse(rsp *http.Response) (*GetIssuancePolicyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetIssuancePolicyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest IssuancePolicyRule
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseUpdateIssuancePolicyResponse parses an HTTP response from a UpdateIssuancePolicyWithResponse call
+func ParseUpdateIssuancePolicyResponse(rsp *http.Response) (*UpdateIssuancePolicyResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &UpdateIssuancePolicyResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest IssuancePolicyRule
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Error
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseSetIssuancePolicyEnabledResponse parses an HTTP response from a SetIssuancePolicyEnabledWithResponse call
+func ParseSetIssuancePolicyEnabledResponse(rsp *http.Response) (*SetIssuancePolicyEnabledResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SetIssuancePolicyEnabledResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest IssuancePolicyRule
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest Forbidden
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
 
 	}
 

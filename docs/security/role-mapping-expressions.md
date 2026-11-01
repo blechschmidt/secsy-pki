@@ -126,18 +126,23 @@ $ secsy-ca role-mapping reference
 
 ## 3. The functions
 
-The CEL standard library, plus four upstream extension libraries. Nothing else:
+The CEL standard library, plus nine upstream extension libraries. Nothing else:
 
 | Family | Functions |
 |---|---|
 | Operators | `== != < <= > >= && \|\| ! in`, ternary `a ? b : c` |
 | Macros | `has(claims.x)`, `l.all(x, p)`, `l.exists(x, p)`, `l.exists_one(x, p)`, `l.map(x, f)`, `l.filter(x, p)` |
+| Comprehensions (two-variable) | `l.all(i, x, p)`, `l.exists(i, x, p)`, `l.existsOne(i, x, p)`, `l.transformList(i, x, f)`, `l.transformMap(i, x, f)` — the element index a mapping otherwise cannot see |
+| Bindings | `cel.bind(name, init, expr)` — name a subexpression so it is evaluated once |
 | Strings (standard) | `size(s)`, `s.contains(sub)`, `s.startsWith(p)`, `s.endsWith(p)`, `s.matches(re2)` |
 | Strings (ext) | `s.charAt(i)`, `s.indexOf(sub)`, `s.lastIndexOf(sub)`, `s.lowerAscii()`, `s.upperAscii()`, `s.replace(old, new)`, `s.split(sep)`, `s.substring(i, j)`, `s.trim()`, `s.reverse()`, `l.join(sep)`, `strings.quote(s)`, `s.format([…])` |
 | Regex | `regex.replace(s, re, repl)`, `regex.extract(s, re) → optional<string>`, `regex.extractAll(s, re)` |
 | Optionals | `opt.orValue(default)`, `opt.hasValue()`, `opt.value()` |
 | Sets | `sets.contains(a, b)`, `sets.equivalent(a, b)`, `sets.intersects(a, b)` |
 | Lists | `l.distinct()`, `l.flatten()`, `l.reverse()`, `l.slice(i, j)`, `l.sort()`, `l.sortBy(x, k)`, `lists.range(n)` |
+| Math | `math.greatest(…)`, `math.least(…)`, `math.abs(x)`, `math.sign(x)`, `math.ceil(x)`, `math.floor(x)`, `math.round(x)`, `math.trunc(x)`, `math.isInf/isNaN/isFinite(x)`, the bit operations |
+| Network | `isIP(s)`, `ip(s)`, `ip.isCanonical(s)`, `<ip>.family()/isLoopback()/isGlobalUnicast()/isLinkLocal*()/isUnspecified()`, `isCIDR(s)`, `cidr(s)`, `<cidr>.containsIP(x)/containsCIDR(x)/ip()/masked()/isMask()/prefixLength()` |
+| Encoding | `base64.encode(bytes)`, `base64.decode(s)` |
 
 Regular expressions are **RE2** (Go's `regexp`): linear-time matching, no
 backtracking, so a pattern cannot be made to run away. `regex.replace` takes
@@ -316,6 +321,15 @@ who resolves to no role at all is denied at login unless
 | Load-time validation of every `role_mappings` list | `server/internal/config/config.go` (`validateClaimMappings`) |
 | Startup wiring, per-provider mappers, error logging | `server/cmd/server/auth.go` (`newClaimMapper`) |
 | The dry-run CLI | `server/cmd/secsy-ca/rolemapping.go` |
+
+The same expression layer — the same compiler, the same function library, the
+same cost ceiling — also backs
+[CEL issuance restrictions](../issuance/cel-restrictions.md), which apply it to
+certificate generation rather than to authentication: rules over the certificate
+request, the caller's verified token, the request URL and its body parameters,
+evaluated before every signature. A function added to the library is therefore
+available to both, which is why the table above says "nothing else" rather than
+listing a per-feature subset.
 
 ---
 

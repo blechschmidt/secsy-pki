@@ -257,6 +257,19 @@ func (m *Manager) buildLeaf(ctx context.Context, signer crypto.Signer, issuerCA 
 		return nil, nil, err
 	}
 
+	// Fail-closed pre-issuance CEL restriction gate (Task 223): the operator's own
+	// rules — over the request's names, validity and key, the caller's verified
+	// token, the request URL and its body parameters — refuse the issuance here,
+	// before any HSM signature, with the rule's own wording as the error so the
+	// requester learns which restriction they hit. It runs last of the gates so a
+	// rule sees the template exactly as it will be signed (SANs normalized by the
+	// S/MIME and UPN gates, Must-Staple and the policy OIDs already stamped).
+	if err := traceGate(ctx, "ca.gate.cel_policy", func() error {
+		return m.checkCELPolicy(ctx, base, profile, issuerCA, issuerCert, requestedBy)
+	}); err != nil {
+		return nil, nil, err
+	}
+
 	cfg := profile.CT
 	if cfg == nil || !cfg.Enabled || ctSubmitter == nil {
 		der, err := m.signLeaf(ctx, signer, issuerCert, base, "final")

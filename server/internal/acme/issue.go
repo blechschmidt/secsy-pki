@@ -20,6 +20,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/smime"
@@ -162,7 +163,11 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
-	result, err := s.caMgr.IssueCertificate(r.Context(), ca.IssueSpec{
+	// Name the issuance surface for the CEL restriction engine (Task 223) so a
+	// rule can tell an ACME order from an operator's console request — the facts
+	// an operator token carries are absent here by construction.
+	ctx := celpolicy.WithSource(r.Context(), celpolicy.SourceACME)
+	result, err := s.caMgr.IssueCertificate(ctx, ca.IssueSpec{
 		CAID:              s.cfg.CAID,
 		CSRPEM:            csrPEM,
 		Profile:           profileID,

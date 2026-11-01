@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/certlint"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
@@ -389,6 +390,12 @@ func run(args []string) error {
 		return cmdSVIDBundle(db, mgr, cfg, cmdArgs)
 	case "inventory":
 		return cmdInventory(db, provider, cmdArgs)
+	case "issuance-policy":
+		// The CEL restriction engine's rules (Task 223). They live in the database,
+		// so this needs the store; the dry-run additionally resolves a CA and a
+		// profile to derive the facts the gate would see, which is what makes a
+		// rule testable before it starts refusing certificates.
+		return cmdIssuancePolicy(db, mgr, cmdArgs)
 	case "pkcs11":
 		return cmdPKCS11(provider, cmdArgs)
 	case "ceremony":
@@ -910,7 +917,12 @@ func cmdIssue(db *database.DB, mgr *ca.Manager, args []string) error {
 		return nil
 	}
 
-	result, err := mgr.IssueCertificate(context.Background(), ca.IssueSpec{
+	// Name the issuance surface for the CEL restriction engine (Task 223): a CLI
+	// issuance carries no token, no URL and no body, so a rule that reasons about
+	// those must see "cli" and decide deliberately rather than infer it from
+	// absent facts.
+	issueCtx := celpolicy.WithSource(context.Background(), celpolicy.SourceCLI)
+	result, err := mgr.IssueCertificate(issueCtx, ca.IssueSpec{
 		CAID:                  caID,
 		CSRPEM:                csrPEM,
 		Profile:               *profile,

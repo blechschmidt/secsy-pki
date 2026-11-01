@@ -127,8 +127,17 @@ var identPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // NewEnv builds an environment declaring exactly vars, with the standard
 // function library available to every expression.
 func NewEnv(vars ...Var) (*Env, error) {
-	opts := make([]cel.EnvOption, 0, len(vars)+8)
+	return newEnv(nil, vars)
+}
+
+// newEnv is the shared constructor: the function library, any extra options the
+// caller needs (a native type provider, see NewObjectEnv), and the declared
+// variables. It is one function so a declaration mistake is reported the same
+// way whichever entry point was used.
+func newEnv(extra []cel.EnvOption, vars []Var) (*Env, error) {
+	opts := make([]cel.EnvOption, 0, len(vars)+len(extra)+16)
 	opts = append(opts, Functions()...)
+	opts = append(opts, extra...)
 	seen := make(map[string]bool, len(vars))
 	for _, v := range vars {
 		if !identPattern.MatchString(v.name) {
@@ -162,7 +171,7 @@ func (e *Env) Vars() []Var {
 //
 // It is the CEL standard library (comparison and boolean operators, the
 // has/all/exists/exists_one/map/filter macros, size(), and the standard string
-// functions contains / startsWith / endsWith / matches) plus four of the
+// functions contains / startsWith / endsWith / matches) plus nine of the
 // upstream extension libraries:
 //
 //   - strings: charAt, indexOf, lastIndexOf, lowerAscii, upperAscii, replace,
@@ -172,6 +181,21 @@ func (e *Env) Vars() []Var {
 //     group name into the tenant id it encodes.
 //   - sets: sets.contains, sets.equivalent, sets.intersects.
 //   - lists: distinct, flatten, reverse, slice, sort, sortBy, lists.range.
+//   - comprehensions: the two-variable comprehension macros all / exists /
+//     existsOne / transformList / transformMap / transformMapEntry, which give
+//     an expression the element index it otherwise cannot see.
+//   - math: math.greatest, math.least, math.abs, math.ceil, math.floor,
+//     math.round, math.trunc, math.sign, math.isInf/isNaN/isFinite, and the
+//     bit operations — the arithmetic a numeric ceiling is written with.
+//   - encoders: base64.encode, base64.decode — reaching the bytes behind a
+//     claim or a request parameter that carries them encoded.
+//   - network: ip(s), cidr(s), isIP(s), isCIDR(s), ip.isCanonical(s),
+//     <cidr>.containsIP / containsCIDR / masked / prefixLength, and the IP
+//     predicates (family, isLoopback, isGlobalUnicast, isLinkLocal*,
+//     isUnspecified). An address restriction belongs in this vocabulary, not in
+//     a hand-written string comparison that gets 10.0.0.0/8 subtly wrong.
+//   - bindings: cel.bind(name, init, expr), which names a subexpression so a
+//     long rule evaluates it once and reads once.
 //
 // Optional types are enabled because regex.extract yields an optional<string>
 // (no match is a none, not an error), which gives the expression an explicit
@@ -180,7 +204,9 @@ func (e *Env) Vars() []Var {
 // Everything outside that list is deliberately absent. In particular there is
 // no way for an expression to read a file, open a socket, read the clock, or
 // reach any state other than the variables it was handed: an expression is a
-// function of its inputs, which is what makes it reviewable in a config file.
+// function of its inputs, which is what makes it reviewable in a config file —
+// and, for the issuance restriction engine (see internal/celpolicy), what makes
+// an operator-written rule safe to evaluate on the signing path.
 func Functions() []cel.EnvOption {
 	return []cel.EnvOption{
 		cel.OptionalTypes(),
@@ -188,6 +214,11 @@ func Functions() []cel.EnvOption {
 		ext.Regex(),
 		ext.Sets(),
 		ext.Lists(),
+		ext.TwoVarComprehensions(),
+		ext.Math(),
+		ext.Encoders(),
+		ext.Network(),
+		ext.Bindings(),
 	}
 }
 
@@ -246,6 +277,10 @@ func (e *Env) CompileStrings(expr string) (*StringsProgram, error) {
 	}
 	return &StringsProgram{prog: prog, source: strings.TrimSpace(expr)}, nil
 }
+
+// trimExpr normalizes an expression for storage in a program and in the error
+// messages it produces.
+func trimExpr(expr string) string { return strings.TrimSpace(expr) }
 
 // compile parses, type-checks, and plans expr, requiring the deduced result
 // type to be one of want (dyn always passes: a lookup into a map(string, dyn)

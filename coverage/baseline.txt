@@ -29,6 +29,7 @@ internal/caa	97.5
 internal/caext	88.3
 internal/canary	77.4
 internal/celexpr	92.4
+internal/celpolicy	91.0
 internal/certlint	84.3
 internal/certpolicy	76.8
 internal/certvalidate	79.3

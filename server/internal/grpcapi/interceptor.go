@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
@@ -73,6 +74,15 @@ func (s *Server) authInterceptor(ctx context.Context, req any, info *grpc.UnaryS
 	authorization := firstMeta(md, "authorization")
 	peerCerts := peerCertificates(ctx)
 
+	// Install the CEL restriction engine's fact holder (Task 223) before
+	// authenticating, so AuthenticateRPC can record the verified token and
+	// principal into it the way the HTTP middleware does. A gRPC call has no URL
+	// and no JSON body, so those facts stay empty and `request.source` reads
+	// "grpc" — which is exactly how a rule tells an RPC caller from a console one.
+	facts := celpolicy.NewFacts()
+	facts.SetSource(celpolicy.SourceGRPC)
+	ctx = celpolicy.WithFacts(ctx, facts)
+
 	user, err := s.authMw.AuthenticateRPC(ctx, authorization, peerCerts)
 	if err != nil {
 		metrics.RecordAuthLogin("grpc", false)
@@ -86,6 +96,12 @@ func (s *Server) authInterceptor(ctx context.Context, req any, info *grpc.UnaryS
 		}
 	}
 	metrics.RecordAuthLogin("grpc", true)
+	// A non-Bearer credential (root basic-auth, a bound client certificate, an API
+	// token) is resolved by AuthenticateRPC without passing through the Bearer
+	// branch that records the principal, so record it here for every path.
+	facts.SetPrincipal(celpolicy.PrincipalFrom(
+		user.Subject, user.Email, user.Name, user.EmailVerified, user.IsRoot,
+		user.Roles, user.Groups, user.TenantRoles, user.AuthProvider))
 
 	ctx = context.WithValue(ctx, middleware.UserInfoKey, user)
 	return handler(ctx, req)

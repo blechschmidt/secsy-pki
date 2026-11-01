@@ -75,6 +75,14 @@ tags:
     description: Groups, memberships, and per-CA permission grants.
   - name: Restrictions
     description: SSH/X.509 signing restriction sets.
+  - name: IssuancePolicy
+    description: >
+      Operator-written CEL rules evaluated before every certificate signature
+      (Task 223). A rule sees the certificate request, the verified claims of the
+      caller's token, the request URL and its body parameters, and the caller's
+      identity; a rule that refuses a request supplies the reason the requester
+      is shown. Editing requires ca:configure; reading and dry-running require
+      any role.
   - name: Audit
     description: Access log, sign-audit log, and the tamper-evident event log.
   - name: Approvals
@@ -2888,6 +2896,228 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/RestrictionSet" }
         "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/issuance-policies:
+    get:
+      operationId: listIssuancePolicies
+      tags: [IssuancePolicy]
+      summary: List the CEL issuance-restriction rules
+      description: >
+        Every rule, in evaluation order (priority ascending, then name),
+        including the disabled ones.
+      responses:
+        "200":
+          description: The rules.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/IssuancePolicyRule" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      operationId: createIssuancePolicy
+      tags: [IssuancePolicy]
+      summary: Create a CEL issuance-restriction rule
+      description: >
+        The expression is compiled before the rule is stored, so a rule that
+        cannot be evaluated never reaches the issuance path. A rule with no
+        explicit `enabled` flag is created switched on.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IssuancePolicyRule" }
+      responses:
+        "201":
+          description: The created rule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssuancePolicyRule" }
+        "400":
+          description: The rule is malformed or its expression does not compile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: A rule with that name already exists.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/issuance-policies/reference:
+    get:
+      operationId: getIssuancePolicyReference
+      tags: [IssuancePolicy]
+      summary: The expression vocabulary
+      description: >
+        The variables an expression may reference (with the fields of each typed
+        object), the function library, the accepted result shapes, the evaluation
+        cost ceiling, and worked examples. Derived from the live environment, so
+        it cannot drift from the compiler a rule is loaded by.
+      responses:
+        "200":
+          description: The vocabulary.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssuancePolicyReference" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/issuance-policies/validate:
+    post:
+      operationId: validateIssuancePolicy
+      tags: [IssuancePolicy]
+      summary: Compile-check an expression without storing it
+      description: >
+        Answers 200 either way: `valid` reports whether the expression compiles,
+        and `error` carries the compiler's message with the offending column. An
+        editor renders that rather than treating it as a transport failure.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expression]
+              properties:
+                expression: { type: string }
+      responses:
+        "200":
+          description: The compile verdict.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssuancePolicyValidation" }
+        "400":
+          description: No expression was supplied.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/issuance-policies/test:
+    post:
+      operationId: testIssuancePolicy
+      tags: [IssuancePolicy]
+      summary: Dry-run rules against a sample request
+      description: >
+        Evaluates an ad-hoc expression, one stored rule (even while disabled), or
+        the active rule set against a fact set — optionally seeded from a real CSR
+        under a real CA and profile, in which case the certificate facts are
+        derived by the same code the issuance gate uses. Nothing is signed and
+        nothing is stored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IssuancePolicyTestRequest" }
+      responses:
+        "200":
+          description: The decision, the rules considered, and the facts they saw.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssuancePolicyTestResponse" }
+        "400":
+          description: The request is malformed, or names a rule that does not exist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/issuance-policies/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: >
+          The rule's id, or its name — the name is what a refusal message carries,
+          so an operator holding only that can still resolve the rule.
+        schema: { type: string }
+    get:
+      operationId: getIssuancePolicy
+      tags: [IssuancePolicy]
+      summary: Read one CEL issuance-restriction rule
+      responses:
+        "200":
+          description: The rule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssuancePolicyRule" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      operationId: updateIssuancePolicy
+      tags: [IssuancePolicy]
+      summary: Replace a CEL issuance-restriction rule
+      description: >
+        A full replacement: a field the body omits is cleared. created_by and
+        created_at are preserved.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IssuancePolicyRule" }
+      responses:
+        "200":
+          description: The updated rule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssuancePolicyRule" }
+        "400":
+          description: The rule is malformed or its expression does not compile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: The new name belongs to another rule.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      operationId: deleteIssuancePolicy
+      tags: [IssuancePolicy]
+      summary: Delete a CEL issuance-restriction rule
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusResponse" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/issuance-policies/{id}/enabled:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The rule's id or name.
+        schema: { type: string }
+    put:
+      operationId: setIssuancePolicyEnabled
+      tags: [IssuancePolicy]
+      summary: Switch a rule on or off
+      description: >
+        A dedicated operation so a console toggle cannot rewrite an expression it
+        did not mean to touch.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: The rule, with its new state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IssuancePolicyRule" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /api/keys/{id}/default-restriction-set:
     parameters:
@@ -7490,6 +7720,250 @@ components:
       properties:
         restriction_set_id: { type: string }
         type: { type: string, enum: [ssh, x509] }
+
+    IssuancePolicyRule:
+      type: object
+      description: >
+        One operator-written CEL restriction on certificate generation. The
+        expression may evaluate to a bool (the condition that must hold, or —
+        with effect "deny" — must not), a string (the reason itself; the empty
+        string means satisfied), or a list of strings (one reason per offending
+        name). A rule that cannot be evaluated refuses the request unless
+        fail_open is set.
+      required: [name, expression]
+      properties:
+        id: { type: string, readOnly: true }
+        name:
+          type: string
+          description: >
+            Unique, whitespace-free. It appears in the refusal the requester
+            reads and in the audit record, and it resolves this rule through
+            GET /api/issuance-policies/{id}.
+        description: { type: string }
+        expression:
+          type: string
+          description: The CEL expression. See GET /api/issuance-policies/reference.
+        message:
+          type: string
+          description: >
+            The reason reported when a boolean rule refuses. Ignored for a rule
+            whose expression produces its own text.
+        effect:
+          type: string
+          enum: [require, deny]
+          default: require
+          description: >
+            require — the condition must hold; deny — it must not. Applies to a
+            boolean result only.
+        mode:
+          type: string
+          enum: [enforce, monitor]
+          default: enforce
+          description: >
+            enforce — refuse the issuance; monitor — record the finding (in the
+            decision, the audit event and the metrics) and issue anyway, so a new
+            rule can be measured against real traffic before it starts refusing
+            certificates.
+        tenant_id:
+          type: string
+          description: Restrict the rule to one tenant's CAs. Empty applies it to every tenant.
+        profiles:
+          type: array
+          description: >
+            Issuance profiles the rule applies to, matched case-insensitively
+            with shell-style globs. Empty means every profile.
+          items: { type: string }
+        cas:
+          type: array
+          description: >
+            Issuing CA ids or labels the rule applies to, matched
+            case-insensitively with shell-style globs. Empty means every CA.
+          items: { type: string }
+        priority:
+          type: integer
+          description: >
+            Evaluation order, ascending. It does not change the verdict — every
+            applicable rule is evaluated so the requester learns every reason at
+            once — but it fixes the order the reasons are reported in.
+        enabled: { type: boolean }
+        fail_open:
+          type: boolean
+          description: >
+            Permit the issuance when this rule's own evaluation fails (a runtime
+            error, an unusable result, the cost ceiling). The default is
+            fail-closed.
+        created_by: { type: string, readOnly: true }
+        updated_by: { type: string, readOnly: true }
+        created_at: { type: string, readOnly: true }
+        updated_at: { type: string, readOnly: true }
+
+    IssuancePolicyViolation:
+      type: object
+      description: One reason a request was refused (or, in monitor mode, would have been).
+      properties:
+        rule: { type: string }
+        message: { type: string }
+        mode: { type: string, enum: [enforce, monitor] }
+        error:
+          type: string
+          description: >
+            Set when the rule refused because it could not be evaluated rather
+            than because the request failed it.
+
+    IssuancePolicyDecision:
+      type: object
+      description: The outcome of evaluating a rule set against one request.
+      properties:
+        allowed:
+          type: boolean
+          description: False when at least one enforcing rule refused.
+        violations:
+          type: array
+          items: { $ref: "#/components/schemas/IssuancePolicyViolation" }
+        evaluated: { type: integer, description: How many rules applied to this request. }
+        skipped: { type: integer, description: How many rules were disabled or out of scope. }
+
+    PolicyDeniedResponse:
+      type: object
+      description: >
+        The body of a 422 Unprocessable Content returned when the CEL restriction
+        engine refuses a certificate request. The status is deliberately not 403:
+        the caller's credentials were accepted and their permission to issue was
+        never in question — the content of the request is what policy refused.
+      properties:
+        error:
+          type: string
+          description: Every blocking reason as one sentence, for a human or a CLI.
+        code: { type: string, enum: [policy_denied] }
+        violations:
+          type: array
+          items: { $ref: "#/components/schemas/IssuancePolicyViolation" }
+
+    IssuancePolicyValidation:
+      type: object
+      properties:
+        valid: { type: boolean }
+        result_type:
+          type: string
+          description: >
+            The result shape the compiler deduced — bool, string, list(string),
+            or "dyn (resolved at evaluation)".
+        error:
+          type: string
+          description: The compiler's message, with the offending column, when valid is false.
+
+    IssuancePolicyFacts:
+      type: object
+      description: >
+        The fact set a rule is evaluated against. `request` holds the certificate
+        facts; `jwt` and `body` are free-form maps; `url` and `principal` describe
+        the HTTP request and its caller. Every field is optional — an omitted one
+        reads as its zero value, which is the correct view for a request that
+        carried no token, no URL or no body.
+      properties:
+        request: { type: object, additionalProperties: true }
+        jwt: { type: object, additionalProperties: true }
+        url: { type: object, additionalProperties: true }
+        body: { type: object, additionalProperties: true }
+        principal: { type: object, additionalProperties: true }
+        now: { type: string, format: date-time }
+
+    IssuancePolicyTestRequest:
+      type: object
+      description: >
+        Supply exactly one of `expression` (an ad-hoc rule), `rule` (one stored
+        rule, evaluated even while disabled), or neither (the active rule set;
+        add all_rules to include the disabled ones).
+      properties:
+        expression: { type: string }
+        effect: { type: string, enum: [require, deny] }
+        message: { type: string }
+        mode: { type: string, enum: [enforce, monitor] }
+        fail_open: { type: boolean }
+        rule: { type: string, description: A stored rule's id or name. }
+        all_rules: { type: boolean }
+        csr:
+          type: string
+          description: >
+            A PEM PKCS#10 CSR to derive the certificate facts from. Requires
+            ca_id. The facts are resolved through the same template the issuance
+            path builds, so a rule tried this way behaves the same way when that
+            CSR is submitted.
+        ca_id: { type: string }
+        profile: { type: string }
+        validity_days: { type: integer }
+        input: { $ref: "#/components/schemas/IssuancePolicyFacts" }
+
+    IssuancePolicyTestResponse:
+      type: object
+      properties:
+        decision: { $ref: "#/components/schemas/IssuancePolicyDecision" }
+        rules:
+          type: array
+          description: The names of the rules that were considered.
+          items: { type: string }
+        input:
+          allOf:
+            - $ref: "#/components/schemas/IssuancePolicyFacts"
+          description: >
+            The facts the rules actually saw, echoed back so a surprising verdict
+            is diagnosable — the usual cause is a fact the author assumed was present.
+
+    IssuancePolicyVariable:
+      type: object
+      properties:
+        name: { type: string }
+        type: { type: string }
+        doc: { type: string }
+        fields:
+          type: array
+          description: The object's fields, for a variable declared as a typed object.
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              type: { type: string }
+
+    IssuancePolicyReference:
+      type: object
+      description: The expression vocabulary, derived from the live environment.
+      properties:
+        variables:
+          type: array
+          items: { $ref: "#/components/schemas/IssuancePolicyVariable" }
+        functions:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              functions:
+                type: array
+                items: { type: string }
+        results:
+          type: array
+          description: What a rule's expression may evaluate to.
+          items: { type: string }
+        effects:
+          type: array
+          items: { type: string }
+        modes:
+          type: array
+          items: { type: string }
+        cost_limit:
+          type: integer
+          format: int64
+          description: The CEL interpreter cost ceiling on a single evaluation.
+        examples:
+          type: array
+          items:
+            type: object
+            properties:
+              title: { type: string }
+              description: { type: string }
+              expression: { type: string }
+              effect: { type: string }
+              message: { type: string }
 
     RestrictionSet:
       type: object

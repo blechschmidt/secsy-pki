@@ -114,6 +114,23 @@ const (
 	// reported findings without blocking. The detail carries the profile, the
 	// key-fingerprint, and the finding codes.
 	ActionCertKeyCheck = "cert.keycheck"
+	// ActionCertPolicy records the outcome of the CEL issuance-restriction gate
+	// (Task 223): an operator-written rule refused the request, or — in monitor
+	// mode — would have. Detail carries the profile and every reason the rules
+	// produced, which is the same text the requester was given, so the audit trail
+	// answers "why was this refused" without re-running the rules. ResultError is
+	// a blocked issuance (including a rule that could not be evaluated and failed
+	// closed); ResultSuccess records a monitor-mode finding that let the
+	// certificate through.
+	ActionCertPolicy = "cert.policy"
+	// ActionPolicyRuleCreate / Update / Delete record administration of those
+	// rules. A restriction engine is only as trustworthy as the record of who
+	// changed it, so each edit stores the rule's name and — for a change to the
+	// text — the expression itself, in the same hash-chained log as the issuance
+	// it governs.
+	ActionPolicyRuleCreate = "policy.rule.create"
+	ActionPolicyRuleUpdate = "policy.rule.update"
+	ActionPolicyRuleDelete = "policy.rule.delete"
 	// ActionKeyBlock / ActionKeyUnblock record operator management of the
 	// compromised-key blocklist (Task 120): adding a public key the CA must never
 	// certify again, or removing one. The target is the key fingerprint; the detail

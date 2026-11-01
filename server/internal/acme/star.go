@@ -11,6 +11,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
@@ -409,6 +410,7 @@ func (s *Server) renewStarOrder(ctx context.Context, order *models.ACMEOrder, no
 	authzs, _ := s.db.ListACMEAuthorizationsByOrder(order.ID)
 
 	caID := s.cfg.CAID
+	ctx = celpolicy.WithSource(ctx, celpolicy.SourceACME)
 	result, err := s.caMgr.IssueCertificate(ctx, ca.IssueSpec{
 		CAID:              caID,
 		CSRPEM:            csrPEM,

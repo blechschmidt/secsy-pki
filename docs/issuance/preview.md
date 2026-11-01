@@ -41,8 +41,10 @@ requests), `name_constraints` ([Name Constraints](name-constraints.md)),
 `certificate_policy`, `smime` ([S/MIME](../certificates/smime.md)), `keycheck`
 ([weak-key & compromised-key gate](key-checks.md)), `upn`
 ([smartcard-logon / PKINIT](../certificates/smartcard-logon.md)), `qcstatements`
-([eIDAS qualified certificates](../certificates/qualified-certificates.md)), `validity`, plus
-two verdicts refined by the serving layer:
+([eIDAS qualified certificates](../certificates/qualified-certificates.md)),
+`cel_policy` ([CEL issuance restrictions](cel-restrictions.md) — `fail` carries
+one finding per reason, `warn` means monitor-mode findings only, `skipped` means
+no rule applies), `validity`, plus two verdicts refined by the serving layer:
 
 - **`approval`** — reports whether a real operator/API issuance would be *parked*
   for four-eyes approval (the `WouldPark` signal), resolved against the live
@@ -128,6 +130,9 @@ curl -sS -u operator:… -X POST \
 
 - [Weak-key & compromised-key gate](key-checks.md) — the keycheck gate the
   preview reports.
+- [CEL issuance restrictions](cel-restrictions.md) — the operator-written gate the
+  preview reports, and its own dry-run (`secsy-ca issuance-policy test`), which
+  evaluates rules against a fact set rather than through the whole gate stack.
 - [Certificate authority](../ca/overview.md) — the real issuance path.
 - [Four-eyes / maker-checker approvals](../security/approvals.md) — the `park` decision.
 - [Operator web console](../operations/web-console.md) — the Issue page's preview button.

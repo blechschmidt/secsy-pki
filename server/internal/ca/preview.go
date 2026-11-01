@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/caa"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/certlint"
 	"github.com/blechschmidt/secsy-pki/server/internal/keycheck"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -75,6 +76,10 @@ const (
 	GateKeyCheck        = "keycheck"
 	GateValidity        = "validity"
 	GateApproval        = "approval"
+	// GateCELPolicy is the operator-written CEL restriction gate (Task 223). It
+	// is previewed through the same evaluator the issuance path enforces, so a
+	// dry-run that says "accept" is not promising something a rule will refuse.
+	GateCELPolicy = "cel_policy"
 	// GateAttestation is populated by the serving layer (handlers), which owns the
 	// enrollment attestation verifier; ca does not import it. Defined here so both
 	// layers agree on the name.
@@ -485,6 +490,26 @@ func (m *Manager) PreviewIssuance(ctx context.Context, spec PreviewSpec) (_ *Pre
 		result.Gates = append(result.Gates, GateVerdict{Name: GateKeyCheck, Status: GateWarn, Reason: "warn: " + kcev.res.Summary(), Findings: keyCheckFindingStrings(kcev.res)})
 	}
 
+	// 7b. CEL issuance restrictions (Task 223): the operator's own rules, run
+	// through the same evaluator the gate enforces. A monitor-mode finding is a
+	// warning here — it would not block — and a rule that cannot be evaluated is a
+	// failure, matching the fail-closed reading on the issuance path.
+	switch pd, perr := m.EvaluateCELPolicy(ctx, base, profile, issuerCA, issuerCert, spec.RequestedBy, celpolicy.OpPreview); {
+	case perr != nil:
+		result.Gates = append(result.Gates, failGate(GateCELPolicy, perr.Error()))
+	case pd.Evaluated == 0:
+		result.Gates = append(result.Gates, skippedGate(GateCELPolicy, "no enabled restriction rule applies to this profile and CA"))
+	case !pd.Allowed:
+		result.Gates = append(result.Gates, GateVerdict{Name: GateCELPolicy, Status: GateFail,
+			Reason: pd.Summary(), Findings: celPolicyFindingStrings(pd)})
+	case len(pd.Violations) > 0:
+		result.Gates = append(result.Gates, GateVerdict{Name: GateCELPolicy, Status: GateWarn,
+			Reason: "monitor-mode findings only; issuance would proceed", Findings: celPolicyFindingStrings(pd)})
+	default:
+		result.Gates = append(result.Gates, passGate(GateCELPolicy,
+			fmt.Sprintf("%d restriction rule(s) evaluated, none violated", pd.Evaluated)))
+	}
+
 	// 8. Validity caps (profile maximum and CA expiry).
 	result.Gates = append(result.Gates, validityGate(requested, effective, profile, cappedByCA, issuerCert))
 
@@ -646,6 +671,25 @@ func ncViolationStrings(res nameconstraints.Result) []string {
 	out := make([]string, 0, len(res.Violations))
 	for _, v := range res.Violations {
 		out = append(out, v.String())
+	}
+	return out
+}
+
+// celPolicyFindingStrings renders a policy decision's violations as one finding
+// per reason, each naming the rule and — for a monitor-mode rule — the fact that
+// it would not have blocked. These are the lines an operator reads in a dry-run,
+// so they carry the same wording the requester would have been given.
+func celPolicyFindingStrings(d celpolicy.Decision) []string {
+	out := make([]string, 0, len(d.Violations))
+	for _, v := range d.Violations {
+		line := v.Rule + ": " + v.Message
+		if v.Mode == celpolicy.ModeMonitor {
+			line += " [monitor: would not block]"
+		}
+		if v.Error != "" {
+			line += " (" + v.Error + ")"
+		}
+		out = append(out, line)
 	}
 	return out
 }

@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/fips"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	sslpkcs12 "software.sslmate.com/src/go-pkcs12"
@@ -184,6 +185,7 @@ func GenerateAndBundle(ctx context.Context, mgr *ca.Manager, req BundleRequest) 
 	}
 	csrPEM := pki.EncodeCSRPEM(csrDER)
 
+	ctx = celpolicy.WithSource(ctx, celpolicy.SourcePKCS12)
 	result, err := mgr.IssueCertificate(ctx, ca.IssueSpec{
 		CAID:        req.CAID,
 		CSRPEM:      csrPEM,

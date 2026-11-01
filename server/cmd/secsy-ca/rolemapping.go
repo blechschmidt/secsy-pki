@@ -553,6 +553,14 @@ var roleMappingFunctionHelp = []string{
 	`sets: sets.contains(a, b), sets.equivalent(a, b), sets.intersects(a, b)`,
 	`lists: list.distinct(), list.flatten(), list.reverse(), list.slice(i, j), list.sort(), list.sortBy(x, k),`,
 	`       lists.range(n)`,
+	`comprehensions: list.all(i, x, p), list.exists(i, x, p), list.existsOne(i, x, p),`,
+	`                list.transformList(i, x, f), list.transformMap(i, x, f)`,
+	`bindings: cel.bind(name, init, expr)`,
+	`math: math.greatest(…), math.least(…), math.abs(x), math.sign(x), math.ceil(x), math.floor(x),`,
+	`      math.round(x), math.trunc(x), math.isInf(x), math.isNaN(x), math.isFinite(x), the bit operations`,
+	`network: isIP(s), ip(s), ip.isCanonical(s), <ip>.family(), <ip>.isLoopback(), <ip>.isGlobalUnicast(),`,
+	`         isCIDR(s), cidr(s), <cidr>.containsIP(x), <cidr>.containsCIDR(x), <cidr>.masked(), <cidr>.prefixLength()`,
+	`encoding: base64.encode(bytes), base64.decode(s)`,
 }
 
 // parseClaimsArg reads the -claims value: inline JSON, or @FILE.

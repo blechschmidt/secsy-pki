@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/spiffe"
 )
@@ -60,6 +61,10 @@ type SVIDSpec struct {
 // enforces CA:false and the leaf key-usage rules — and the recorded copy for
 // renewal/revocation).
 func (m *Manager) IssueSVID(ctx context.Context, spec SVIDSpec) (*IssueResult, error) {
+	// A workload SVID is its own surface for the CEL restriction engine
+	// (Task 223): a rule that bounds operator-requested names should not have to
+	// also reason about spiffe:// URIs unless it says so.
+	ctx = celpolicy.WithSource(ctx, celpolicy.SourceSPIFFE)
 	id := strings.TrimSpace(spec.SPIFFEID)
 	if id == "" {
 		return nil, fmt.Errorf("SVID requires a spiffe:// identity")

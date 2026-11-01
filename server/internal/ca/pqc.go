@@ -280,6 +280,13 @@ func (m *Manager) issuePQCLeaf(ctx context.Context, spec IssueSpec, issuerCA *mo
 	if err := m.lintLeaf(base, profile, issuerCA, issuerCert, spec.RequestedBy); err != nil {
 		return nil, err
 	}
+	// Same fail-closed CEL restriction gate as the classical buildLeaf path
+	// (Task 223). A post-quantum profile must not be a way around a rule: the
+	// facts a rule reasons about — names, validity, subject, the caller's token —
+	// are the same whichever signature scheme certifies them.
+	if err := m.checkCELPolicy(ctx, base, profile, issuerCA, issuerCert, spec.RequestedBy); err != nil {
+		return nil, err
+	}
 
 	signer, err := m.provider.Signer(ctx, keyRefForCA(issuerCA))
 	if err != nil {
@@ -356,6 +363,13 @@ func (m *Manager) issueHybridLeaf(ctx context.Context, spec IssueSpec, issuerCA 
 		return nil, err
 	}
 	if err := m.lintLeaf(base, profile, issuerCA, issuerCert, spec.RequestedBy); err != nil {
+		return nil, err
+	}
+	// Same fail-closed CEL restriction gate as the classical buildLeaf path
+	// (Task 223). A post-quantum profile must not be a way around a rule: the
+	// facts a rule reasons about — names, validity, subject, the caller's token —
+	// are the same whichever signature scheme certifies them.
+	if err := m.checkCELPolicy(ctx, base, profile, issuerCA, issuerCert, spec.RequestedBy); err != nil {
 		return nil, err
 	}
 

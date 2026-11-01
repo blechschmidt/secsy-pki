@@ -440,6 +440,7 @@ function switchView(name) {
   if (name === 'tokens') loadTokens();
   if (name === 'access') loadAccess();
   if (name === 'restrictions') loadRestrictions();
+  if (name === 'policy') loadPolicy();
   if (name === 'webhooks') loadWebhooks();
 }
 document.querySelectorAll('header nav button').forEach(b =>
@@ -6768,3 +6769,377 @@ async function s256(v) {
 }
 
 bootAuth();
+
+// ---- Issuance policy (CEL restriction rules, Task 223) -------------------
+// The editing half of the restriction engine. Three things make this view
+// usable rather than dangerous: the expression is compile-checked against the
+// live server before it can be saved, every rule can be dry-run against a real
+// CSR before it is switched on, and the vocabulary panel is rendered from the
+// server's own environment rather than from a documentation page that could
+// drift from it.
+let policyRules = [];
+let policyRef = null;
+let polEditing = null; // the rule being edited, or null while creating
+
+async function loadPolicy() {
+  const tbody = $('polRows');
+  tbody.innerHTML = '<tr><td colspan="8" class="muted">Loading…</td></tr>';
+  try { await loadCAs(); } catch (_) { /* the rules still render without CA labels */ }
+  try {
+    policyRules = await api('GET', '/api/issuance-policies');
+    $('polDenied').classList.add('hidden');
+  } catch (e) {
+    policyRules = [];
+    tbody.innerHTML = emptyRow(e.message, 8);
+    return;
+  }
+  renderPolicyRules();
+  populatePolicyTestControls();
+  await loadPolicyReference();
+}
+
+// polScope names where a rule applies. A rule with no selectors governs every
+// issuance, which is the common case and must read as such rather than as blank.
+function polScope(r) {
+  const bits = [];
+  if (r.tenant_id) bits.push(`tenant: <span class="mono">${escapeHTML(r.tenant_id)}</span>`);
+  if (r.profiles && r.profiles.length) bits.push(`profiles: <span class="mono">${escapeHTML(r.profiles.join(', '))}</span>`);
+  if (r.cas && r.cas.length) bits.push(`CAs: <span class="mono">${escapeHTML(r.cas.join(', '))}</span>`);
+  return bits.length ? bits.join('<br>') : '<span class="muted">every issuance</span>';
+}
+
+function renderPolicyRules() {
+  const tbody = $('polRows');
+  const want = $('polStateFilter').value;
+  const shown = policyRules.filter(r =>
+    !want || (want === 'enabled' ? r.enabled : !r.enabled));
+  if (!shown.length) {
+    tbody.innerHTML = emptyRow(policyRules.length
+      ? 'No rules in this state.'
+      : 'No issuance-policy rules. Certificate generation is constrained only by the profiles, the issuing CA’s name constraints, and CAA.', 8);
+    return;
+  }
+  tbody.innerHTML = shown.map(r => {
+    const state = r.enabled
+      ? '<span class="badge ok">enabled</span>'
+      : '<span class="badge revoked">disabled</span>';
+    const failOpen = r.fail_open ? '<br><span class="badge warning">fail open</span>' : '';
+    const mode = (r.mode || 'enforce') === 'monitor'
+      ? '<span class="badge warning">monitor</span>'
+      : 'enforce';
+    const effect = (r.effect || 'require') === 'deny'
+      ? '<span class="badge crit">deny</span>'
+      : 'require';
+    const toggle = r.enabled
+      ? `<button class="btn ghost sm" data-pol="disable" data-id="${r.id}">Disable</button>`
+      : `<button class="btn ghost sm" data-pol="enable" data-id="${r.id}">Enable</button>`;
+    return `<tr${r.enabled ? '' : ' style="opacity:.6"'}>
+      <td>${r.priority || 0}</td>
+      <td><b>${escapeHTML(r.name)}</b>${r.description ? `<br><span class="muted">${escapeHTML(r.description)}</span>` : ''}</td>
+      <td>${state}${failOpen}</td>
+      <td>${effect}</td>
+      <td>${mode}</td>
+      <td>${polScope(r)}</td>
+      <td><code style="white-space:pre-wrap;word-break:break-word">${escapeHTML(polOneLine(r.expression))}</code>${
+        r.message ? `<br><span class="muted">message: ${escapeHTML(r.message)}</span>` : ''}</td>
+      <td style="white-space:nowrap">
+        ${toggle}
+        <button class="btn ghost sm" data-pol="edit" data-id="${r.id}">Edit</button>
+        <button class="btn ghost sm" data-pol="test" data-id="${r.id}">Dry-run</button>
+        <button class="btn ghost sm" data-pol="delete" data-id="${r.id}">Delete</button>
+      </td>
+    </tr>`;
+  }).join('');
+  tbody.querySelectorAll('button[data-pol]').forEach(b => {
+    b.onclick = () => policyRowAction(b.dataset.pol, b.dataset.id);
+  });
+}
+
+// polOneLine collapses an expression for the table, truncating a long one so the
+// scope and state columns stay readable.
+function polOneLine(expr) {
+  const flat = (expr || '').split(/\s+/).filter(Boolean).join(' ');
+  return flat.length > 160 ? flat.slice(0, 157) + '…' : flat;
+}
+
+async function policyRowAction(act, id) {
+  const rule = policyRules.find(r => r.id === id);
+  if (!rule) return;
+  if (act === 'edit') { openPolicyEditor(rule); return; }
+  if (act === 'test') {
+    $('polTestWhat').value = 'one';
+    populatePolicyTestControls();
+    $('polTestRule').value = rule.id;
+    $('polTestRun').scrollIntoView({ block: 'nearest' });
+    return;
+  }
+  if (act === 'delete') {
+    if (!confirm(`Delete the issuance-policy rule "${rule.name}"? Requests it was refusing will start being accepted.`)) return;
+    try {
+      await api('DELETE', '/api/issuance-policies/' + encodeURIComponent(rule.id));
+      policyNotice('ok', `Deleted "${rule.name}".`);
+    } catch (e) { policyNotice('err', e.message); }
+    await loadPolicy();
+    return;
+  }
+  // enable / disable
+  try {
+    await api('PUT', '/api/issuance-policies/' + encodeURIComponent(rule.id) + '/enabled',
+      { enabled: act === 'enable' });
+    policyNotice('ok', `"${rule.name}" is now ${act}d.`);
+  } catch (e) { policyNotice('err', e.message); }
+  await loadPolicy();
+}
+
+function policyNotice(kind, msg) {
+  const el = $('polMsg');
+  el.className = 'notice ' + (kind === 'ok' ? 'ok' : 'err');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+function openPolicyEditor(rule) {
+  polEditing = rule;
+  $('polEditorTitle').textContent = rule ? `Edit rule "${rule.name}"` : 'New issuance-policy rule';
+  $('polEditorError').classList.add('hidden');
+  $('polCheckResult').textContent = '';
+  $('polName').value = rule ? rule.name : '';
+  $('polDescription').value = rule ? (rule.description || '') : '';
+  $('polExpression').value = rule ? rule.expression : '';
+  $('polMessage').value = rule ? (rule.message || '') : '';
+  $('polEffect').value = rule ? (rule.effect || 'require') : 'require';
+  $('polMode').value = rule ? (rule.mode || 'enforce') : 'enforce';
+  $('polPriority').value = rule ? (rule.priority || 0) : 0;
+  $('polProfiles').value = rule ? (rule.profiles || []).join(', ') : '';
+  $('polCAs').value = rule ? (rule.cas || []).join(', ') : '';
+  $('polTenant').value = rule ? (rule.tenant_id || '') : '';
+  // A new rule defaults to DISABLED: the view's own advice is to dry-run first,
+  // and a form that contradicts that advice would be the wrong default.
+  $('polEnabled').checked = rule ? !!rule.enabled : false;
+  $('polFailOpen').checked = rule ? !!rule.fail_open : false;
+  $('polEditor').classList.remove('hidden');
+  $('polEditor').scrollIntoView({ block: 'nearest' });
+}
+
+function policyBody() {
+  const list = (id) => $(id).value.split(',').map(s => s.trim()).filter(Boolean);
+  return {
+    name: $('polName').value.trim(),
+    description: $('polDescription').value.trim(),
+    expression: $('polExpression').value.trim(),
+    message: $('polMessage').value.trim(),
+    effect: $('polEffect').value,
+    mode: $('polMode').value,
+    tenant_id: $('polTenant').value.trim(),
+    profiles: list('polProfiles'),
+    cas: list('polCAs'),
+    priority: parseInt($('polPriority').value, 10) || 0,
+    enabled: $('polEnabled').checked,
+    fail_open: $('polFailOpen').checked,
+  };
+}
+
+$('polNew').onclick = () => openPolicyEditor(null);
+$('polRefresh').onclick = loadPolicy;
+$('polStateFilter').onchange = renderPolicyRules;
+$('polCancel').onclick = () => { $('polEditor').classList.add('hidden'); polEditing = null; };
+
+$('polSave').onclick = async () => {
+  const body = policyBody();
+  if (!body.name) { showError($('polEditorError'), 'A name is required: it is what the refusal shows the requester.'); return; }
+  if (!body.expression) { showError($('polEditorError'), 'An expression is required.'); return; }
+  try {
+    if (polEditing) {
+      await api('PUT', '/api/issuance-policies/' + encodeURIComponent(polEditing.id), body);
+      policyNotice('ok', `Saved "${body.name}".`);
+    } else {
+      await api('POST', '/api/issuance-policies', body);
+      policyNotice('ok', body.enabled
+        ? `Created "${body.name}" — it applies to issuance now.`
+        : `Created "${body.name}", disabled. Dry-run it below, then enable it.`);
+    }
+    $('polEditor').classList.add('hidden');
+    polEditing = null;
+    await loadPolicy();
+  } catch (e) {
+    showError($('polEditorError'), e.message);
+  }
+};
+
+// Compile-check against the live server, which is the same compiler the gate
+// uses — so "valid" here means the rule will actually load.
+$('polCheck').onclick = async () => {
+  const expr = $('polExpression').value.trim();
+  const out = $('polCheckResult');
+  if (!expr) { out.textContent = 'Nothing to check.'; return; }
+  out.textContent = 'checking…';
+  try {
+    const res = await api('POST', '/api/issuance-policies/validate', { expression: expr });
+    if (res.valid) {
+      out.innerHTML = `<span class="badge ok">compiles</span> result type: <code>${escapeHTML(res.result_type || '')}</code>`;
+    } else {
+      out.innerHTML = `<span class="badge crit">does not compile</span> <code style="white-space:pre-wrap">${escapeHTML(res.error || '')}</code>`;
+    }
+  } catch (e) {
+    out.innerHTML = `<span class="badge crit">check failed</span> ${escapeHTML(e.message)}`;
+  }
+};
+
+$('polExamples').onchange = () => {
+  const idx = $('polExamples').value;
+  if (idx === '' || !policyRef) return;
+  const ex = policyRef.examples[parseInt(idx, 10)];
+  if (!ex) return;
+  $('polExpression').value = ex.expression;
+  if (ex.message) $('polMessage').value = ex.message;
+  if (ex.effect) $('polEffect').value = ex.effect;
+  if (!$('polDescription').value) $('polDescription').value = ex.description || '';
+  if (!$('polName').value) {
+    $('polName').value = (ex.title || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+  }
+  $('polExamples').value = '';
+  $('polCheckResult').textContent = '';
+};
+
+// ---- dry-run ----
+
+// defaultPolicyFacts is the shape an operator edits: every fact set a rule can
+// read, pre-populated so the JSON is a worked example rather than a blank box.
+function defaultPolicyFacts() {
+  return JSON.stringify({
+    request: { profile: 'server', dns_names: ['www.example.com'], validity_days: 90 },
+    jwt: { sub: 'ops@example.com', groups: ['pki-issuers'], entitlements: ['pki.issue'] },
+    url: { method: 'POST', path: '/api/ca/<ca-id>/issue', present: true },
+    body: { profile: 'server', reason: 'CHG-10482' },
+    principal: { subject: 'ops@example.com', roles: ['issuer'], authenticated: true },
+  }, null, 2);
+}
+
+function populatePolicyTestControls() {
+  const sel = $('polTestRule');
+  sel.innerHTML = policyRules.map(r =>
+    `<option value="${r.id}">${escapeHTML(r.name)}${r.enabled ? '' : ' (disabled)'}</option>`).join('');
+  $('polTestRuleField').classList.toggle('hidden', $('polTestWhat').value !== 'one');
+  const caSel = $('polTestCA');
+  if (!caSel.options.length) {
+    caSel.innerHTML = '<option value="">— none (facts from JSON only)</option>' +
+      x509CAs.map(c => `<option value="${c.id}">${escapeHTML(c.label)}</option>`).join('');
+  }
+  const profSel = $('polTestProfile');
+  if (!profSel.options.length) {
+    profSel.innerHTML = '<option value="">default</option>' +
+      (profiles || []).map(p => `<option value="${escapeHTML(p.name)}">${escapeHTML(p.name)}</option>`).join('');
+  }
+  if (!$('polTestFacts').value.trim()) $('polTestFacts').value = defaultPolicyFacts();
+}
+
+$('polTestWhat').onchange = populatePolicyTestControls;
+$('polTestReset').onclick = () => { $('polTestFacts').value = defaultPolicyFacts(); };
+
+$('polTestRun').onclick = async () => {
+  $('polTestError').classList.add('hidden');
+  const body = {};
+  const what = $('polTestWhat').value;
+  if (what === 'all') body.all_rules = true;
+  if (what === 'one') body.rule = $('polTestRule').value;
+  if (what === 'editor') {
+    body.expression = $('polExpression').value.trim();
+    body.effect = $('polEffect').value;
+    body.message = $('polMessage').value.trim();
+    body.mode = $('polMode').value;
+    body.fail_open = $('polFailOpen').checked;
+    if (!body.expression) { showError($('polTestError'), 'The editor holds no expression.'); return; }
+  }
+  const facts = $('polTestFacts').value.trim();
+  if (facts) {
+    try { body.input = JSON.parse(facts); }
+    catch (e) { showError($('polTestError'), 'The facts are not valid JSON: ' + e.message); return; }
+  }
+  const csr = $('polTestCSR').value.trim();
+  if (csr) {
+    body.csr = csr;
+    body.ca_id = $('polTestCA').value;
+    body.profile = $('polTestProfile').value;
+    const days = parseInt($('polTestDays').value, 10);
+    if (days > 0) body.validity_days = days;
+    if (!body.ca_id) { showError($('polTestError'), 'Pick the issuing CA the CSR would go to: the facts include the authority and the profile’s resolved usages.'); return; }
+  }
+  const out = $('polTestResult');
+  out.classList.remove('hidden');
+  out.innerHTML = '<span class="muted">Evaluating…</span>';
+  try {
+    const res = await api('POST', '/api/issuance-policies/test', body);
+    out.innerHTML = renderPolicyDecision(res);
+  } catch (e) {
+    out.classList.add('hidden');
+    showError($('polTestError'), e.message);
+  }
+};
+
+function renderPolicyDecision(res) {
+  const d = res.decision || {};
+  const verdict = d.allowed
+    ? '<span class="badge ok">would issue</span>'
+    : '<span class="badge crit">would be refused</span>';
+  const reasons = (d.violations || []).map(v => {
+    const tag = v.mode === 'monitor' ? ' <span class="badge warning">monitor — would not block</span>' : '';
+    const err = v.error ? `<br><span class="muted">rule error: ${escapeHTML(v.error)}</span>` : '';
+    return `<li><b>${escapeHTML(v.rule)}</b>${tag}: ${escapeHTML(v.message)}${err}</li>`;
+  }).join('');
+  const req = (res.input && res.input.request) || {};
+  const facts = [
+    ['source / operation', `${req.source || '-'} / ${req.operation || '-'}`],
+    ['profile', req.profile || '-'],
+    ['issuing CA', (req.ca && (req.ca.label || req.ca.id)) || '-'],
+    ['subject CN', (req.subject && req.subject.common_name) || '-'],
+    ['DNS names', (req.dns_names || []).join(', ') || '-'],
+    ['IP addresses', (req.ip_addresses || []).join(', ') || '-'],
+    ['validity', `${req.validity_days || 0} days`],
+    ['key', req.key ? `${req.key.algorithm || '-'} ${req.key.size || ''} ${req.key.curve || ''}`.trim() : '-'],
+    ['wildcard', String(!!req.wildcard)],
+    ['jwt claims', Object.keys((res.input && res.input.jwt) || {}).sort().join(', ') || '-'],
+    ['body parameters', Object.keys((res.input && res.input.body) || {}).sort().join(', ') || '-'],
+  ].map(([k, v]) => `<tr><td class="muted">${escapeHTML(k)}</td><td><code>${escapeHTML(v)}</code></td></tr>`).join('');
+  return `<div class="row" style="align-items:center;gap:10px">${verdict}
+      <span class="muted">${d.evaluated || 0} rule(s) evaluated, ${d.skipped || 0} skipped — considered: ${escapeHTML((res.rules || []).join(', ') || 'none')}</span></div>
+    ${reasons ? `<ul style="margin:8px 0">${reasons}</ul>` : '<p class="muted">No violations.</p>'}
+    <details style="margin-top:6px"><summary class="muted">Facts the rules saw</summary>
+      <table style="margin-top:6px">${facts}</table></details>`;
+}
+
+// ---- vocabulary reference ----
+
+async function loadPolicyReference() {
+  if (policyRef) { renderPolicyReference(); return; }
+  try {
+    policyRef = await api('GET', '/api/issuance-policies/reference');
+  } catch (e) {
+    $('polRefVars').innerHTML = `<span class="muted">${escapeHTML(e.message)}</span>`;
+    return;
+  }
+  renderPolicyReference();
+}
+
+function renderPolicyReference() {
+  const vars = policyRef.variables.map(v => {
+    const fields = (v.fields || []).map(f =>
+      `<div style="margin-left:14px"><code>${escapeHTML(v.name)}.${escapeHTML(f.name)}</code> <span class="muted">${escapeHTML(f.type)}</span></div>`).join('');
+    return `<div style="margin-bottom:8px"><code><b>${escapeHTML(v.name)}</b></code> <span class="muted">${escapeHTML(v.type)}</span>
+      <div class="muted" style="margin-left:14px">${escapeHTML(v.doc)}</div>${
+      fields ? `<details><summary class="muted" style="margin-left:14px">fields</summary>${fields}</details>` : ''}</div>`;
+  }).join('');
+  $('polRefVars').innerHTML = vars;
+
+  $('polRefFns').innerHTML = policyRef.functions.map(g =>
+    `<details><summary><b>${escapeHTML(g.name)}</b></summary>${
+      g.functions.map(f => `<div><code style="white-space:pre-wrap">${escapeHTML(f)}</code></div>`).join('')
+    }</details>`).join('');
+
+  $('polRefFooter').innerHTML =
+    `A rule's expression may evaluate to:<ul style="margin:4px 0">${
+      policyRef.results.map(r => `<li>${escapeHTML(r)}</li>`).join('')
+    }</ul>Every evaluation is bounded at <code>${policyRef.cost_limit}</code> CEL cost units; exceeding that refuses the request.`;
+
+  $('polExamples').innerHTML = '<option value="">—</option>' +
+    policyRef.examples.map((ex, i) => `<option value="${i}">${escapeHTML(ex.title)}</option>`).join('');
+}

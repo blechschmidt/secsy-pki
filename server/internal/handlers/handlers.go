@@ -19,6 +19,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/auth"
 	"github.com/blechschmidt/secsy-pki/server/internal/authn"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/console"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
@@ -452,10 +453,18 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.HandleFunc("GET /api/health", a.Health)
 	mux.HandleFunc("GET /api/auth/config", a.AuthConfig)
 
-	// Protected routes: auth + access audit logging
+	// Protected routes: auth + access audit logging + the CEL restriction
+	// engine's request-fact capture (Task 223).
+	//
+	// celpolicy.Capture is outermost so the URL and the JSON body are recorded
+	// before authentication runs — the authentication layer then adds the verified
+	// token and principal to the same holder, and the issuance gate deep inside
+	// ca.Manager reads all of it off the request context. Capturing here rather
+	// than in one handler is what lets a rule reason about the request URL and its
+	// body parameters on every REST surface at once.
 	auditMw := middleware.AuditLog(a.db)
 	protect := func(h http.Handler) http.Handler {
-		return authMw.Authenticate(auditMw(h))
+		return celpolicy.Capture(authMw.Authenticate(auditMw(h)))
 	}
 	protected := protect
 	// protectStepUp additionally gates a high-risk operation behind WebAuthn
@@ -463,7 +472,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	// operation was declared via SetStepUpOperations, so this is safe to apply
 	// unconditionally to sensitive routes.
 	protectStepUp := func(op string, h http.Handler) http.Handler {
-		return authMw.Authenticate(auditMw(authMw.StepUpGate(op)(h)))
+		return celpolicy.Capture(authMw.Authenticate(auditMw(authMw.StepUpGate(op)(h))))
 	}
 
 	mux.Handle("GET /api/keys", protected(http.HandlerFunc(a.ListCAs)))
@@ -712,6 +721,24 @@ func (a *API) RegisterRoutes(mux *http.ServeMux, authMw *middleware.AuthMiddlewa
 	mux.Handle("PUT /api/restriction-sets/{id}", protected(http.HandlerFunc(a.UpdateRestrictionSet)))
 	mux.Handle("DELETE /api/restriction-sets/{id}", protected(http.HandlerFunc(a.DeleteRestrictionSet)))
 	mux.Handle("PUT /api/keys/{id}/default-restriction-set", protected(http.HandlerFunc(a.SetDefaultRestrictionSet)))
+
+	// CEL issuance-restriction rules (Task 223). The operator-written policy that
+	// gates certificate generation: list/create/edit/enable/delete, compile-check
+	// an expression before saving it, dry-run the rule set against a sample request
+	// or a real CSR, and read the expression vocabulary the console renders.
+	// Editing is gated on ca:configure (as profiles and restriction sets are);
+	// reading is open to any role so an issuer who was refused can look up the rule
+	// named in the refusal. The literal sub-paths are registered before the {id}
+	// wildcard; Go's router prefers the more specific pattern either way.
+	mux.Handle("GET /api/issuance-policies", protected(http.HandlerFunc(a.ListIssuancePolicies)))
+	mux.Handle("POST /api/issuance-policies", protected(http.HandlerFunc(a.CreateIssuancePolicy)))
+	mux.Handle("GET /api/issuance-policies/reference", protected(http.HandlerFunc(a.IssuancePolicyReference)))
+	mux.Handle("POST /api/issuance-policies/validate", protected(http.HandlerFunc(a.ValidateIssuancePolicy)))
+	mux.Handle("POST /api/issuance-policies/test", protected(http.HandlerFunc(a.TestIssuancePolicy)))
+	mux.Handle("GET /api/issuance-policies/{id}", protected(http.HandlerFunc(a.GetIssuancePolicy)))
+	mux.Handle("PUT /api/issuance-policies/{id}", protected(http.HandlerFunc(a.UpdateIssuancePolicy)))
+	mux.Handle("PUT /api/issuance-policies/{id}/enabled", protected(http.HandlerFunc(a.SetIssuancePolicyEnabled)))
+	mux.Handle("DELETE /api/issuance-policies/{id}", protected(http.HandlerFunc(a.DeleteIssuancePolicy)))
 
 	mux.Handle("GET /api/audit-log", protected(http.HandlerFunc(a.ListAuditLog)))
 	mux.Handle("GET /api/access-log", protected(http.HandlerFunc(a.ListAccessLog)))

@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/tracing"
@@ -499,6 +500,10 @@ func (b *BulkIssuer) Execute(ctx context.Context, spec BulkIssueSpec) (_ *BulkIs
 // issueOne issues a single non-gated item through the full Manager.IssueCertificate
 // gate stack and records a per-item cert.issue audit event.
 func (b *BulkIssuer) issueOne(ctx context.Context, spec BulkIssueSpec, opID, tenantID string, item BulkIssueItem, idx int) BulkIssueItemResult {
+	// A batch item is not a console request: name the surface for the CEL
+	// restriction engine (Task 223) so a rule written for interactive issuance
+	// does not silently also govern — or silently fail to govern — a bulk run.
+	ctx = celpolicy.WithSource(ctx, celpolicy.SourceBulk)
 	res, err := b.mgr.IssueCertificate(ctx, IssueSpec{
 		CAID:        spec.CAID,
 		CSRPEM:      item.CSRPEM,

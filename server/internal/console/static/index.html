@@ -69,6 +69,7 @@
         <button data-view="tokens">API Tokens</button>
         <button data-view="access">Access</button>
         <button data-view="restrictions">Restrictions</button>
+        <button data-view="policy">Issuance Policy</button>
         <button data-view="webhooks">Webhooks</button>
       </nav>
       <span class="user" id="userBox"></span>
@@ -2388,7 +2389,7 @@
         <h2>Issuance restrictions</h2>
         <p class="sub">The ceiling on what an <strong>SSH</strong> signing request may ask for. Every signature through <code>POST /api/keys/{id}/sign</code> resolves one effective set — from the requester's own permission, their groups', or the CA's default — and is refused when it exceeds that set. A set is scoped either to one CA or globally; global sets are <strong>root-only</strong> to create, per-CA sets need <code>ca:configure</code> (or an administrative grant) on that CA. When <em>nothing</em> resolves, enforcement is skipped entirely and the request is unrestricted — which is why a new CA is created with the built-in <b>Disallow all signatures</b> as its default rather than with no default.</p>
         <div class="notice warn">
-          <b>X.509 sets are stored but not enforced.</b> Nothing on the issuance path consults them: neither <code>POST /api/ca/{id}/issue</code> nor the raw <code>POST /api/keys/{id}/sign-x509</code>. A CA whose X.509 default is <i>Disallow all signatures</i> will still issue. The ceiling that <em>does</em> bind X.509 issuance is the <b>certificate profile</b> — key usages, extended key usages, SAN types, validity, CA denial — applied on the <b>Issue</b> view and declared in the server configuration. Treat the X.509 rows below as policy you have written down, not policy the CA is applying.
+          <b>X.509 sets are stored but not enforced.</b> Nothing on the issuance path consults them: neither <code>POST /api/ca/{id}/issue</code> nor the raw <code>POST /api/keys/{id}/sign-x509</code>. A CA whose X.509 default is <i>Disallow all signatures</i> will still issue. Two things <em>do</em> bind X.509 issuance: the <b>certificate profile</b> — key usages, extended key usages, validity, CA denial — declared in the server configuration, and the <b>Issuance Policy</b> view, whose CEL rules are evaluated before every signature and can restrict names, lifetimes, keys, the caller's token and the request itself. Treat the X.509 rows below as policy you have written down, not policy the CA is applying.
         </div>
         <div id="rsMsg" class="notice hidden" style="margin-bottom:12px"></div>
 
@@ -2476,6 +2477,166 @@
             <thead><tr><th>CA / key</th><th>Default SSH set</th><th>Default X.509 set</th></tr></thead>
             <tbody id="rsDefaultRows"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody>
           </table>
+        </div>
+      </section>
+
+      <!-- CEL issuance-restriction rules (Task 223) -->
+      <section class="view" id="view-policy">
+        <h2>Issuance policy</h2>
+        <p class="sub">Operator-written <a href="https://cel.dev" target="_blank" rel="noreferrer">CEL</a> rules evaluated before <em>every</em> certificate signature — on this console, the API, the CLI, and the ACME / EST / SCEP / CMP enrollment protocols alike, because the gate sits in the signing path rather than in one handler. A rule sees the request (its names, lifetime, subject and key), the verified claims of the caller's token, the request URL and its body parameters, and the caller's identity. A rule that refuses a request supplies <b>the reason the requester is shown</b>, so "it exceeds the maximum lifetime" travels back instead of "forbidden". Editing needs <code>ca:configure</code>; everyone with a role can read the rules and dry-run them.</p>
+        <div class="notice">
+          A rule is <b>fail-closed</b>: one that cannot be evaluated refuses the request rather than letting it through. Write a rule <b>disabled</b>, dry-run it below against a real CSR, and only then switch it on — or put it in <b>monitor</b> mode, which records what it would have refused and issues anyway.
+        </div>
+        <div id="polDenied" class="notice err hidden">Editing issuance policy requires <code>ca:configure</code> (admin role). The rules and the dry-run are still readable.</div>
+        <div id="polMsg" class="notice hidden" style="margin-bottom:12px"></div>
+
+        <div class="toolbar">
+          <div class="field" style="margin:0">
+            <label for="polStateFilter">Show</label>
+            <select id="polStateFilter">
+              <option value="">all rules</option>
+              <option value="enabled">enabled only</option>
+              <option value="disabled">disabled only</option>
+            </select>
+          </div>
+          <div class="spacer"></div>
+          <button class="btn sm" id="polNew" style="margin-top:16px">New rule</button>
+          <button class="btn ghost sm" id="polRefresh" style="margin-top:16px">Refresh</button>
+        </div>
+        <div class="panel">
+          <table>
+            <thead><tr><th>#</th><th>Name</th><th>State</th><th>Effect</th><th>Mode</th><th>Scope</th><th>Expression</th><th></th></tr></thead>
+            <tbody id="polRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+          </table>
+        </div>
+
+        <!-- Editor -->
+        <div class="panel hidden" id="polEditor">
+          <h2 style="font-size:15px" id="polEditorTitle"></h2>
+          <div id="polEditorError" class="notice err hidden"></div>
+          <div class="row">
+            <div class="field" style="flex:1;min-width:200px">
+              <label for="polName">Name <span class="muted">— appears in the refusal the requester reads</span></label>
+              <input id="polName" placeholder="max-lifetime">
+            </div>
+            <div class="field" style="width:140px">
+              <label for="polPriority">Priority</label>
+              <input id="polPriority" type="number" value="0" title="Ascending. It does not change the verdict — every applicable rule runs — but it fixes the order the reasons are reported in.">
+            </div>
+            <div class="field" style="width:160px">
+              <label for="polEffect">Effect</label>
+              <select id="polEffect">
+                <option value="require">require — must hold</option>
+                <option value="deny">deny — must not hold</option>
+              </select>
+            </div>
+            <div class="field" style="width:170px">
+              <label for="polMode">Mode</label>
+              <select id="polMode">
+                <option value="enforce">enforce — refuse</option>
+                <option value="monitor">monitor — record only</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label for="polDescription">Description</label>
+            <input id="polDescription" placeholder="what this rule is for">
+          </div>
+          <div class="field">
+            <label for="polExpression">Expression
+              <span class="muted">— a bool (the condition), a string (the reason itself; <code>""</code> = satisfied), or a list of strings (one reason per offending name)</span>
+            </label>
+            <textarea id="polExpression" rows="6" spellcheck="false" style="font-family:var(--mono,monospace);width:100%" placeholder='request.validity_days &lt;= 90 ? "" : "requested %d days of validity; this profile allows at most 90".format([request.validity_days])'></textarea>
+          </div>
+          <div class="row" style="align-items:center;gap:8px">
+            <button class="btn ghost sm" id="polCheck">Check expression</button>
+            <span id="polCheckResult" class="muted"></span>
+            <div class="spacer"></div>
+            <div class="field" style="margin:0;min-width:260px">
+              <label for="polExamples">Insert an example</label>
+              <select id="polExamples"><option value="">—</option></select>
+            </div>
+          </div>
+          <div class="field">
+            <label for="polMessage">Message <span class="muted">— the reason reported when a <em>boolean</em> rule refuses; ignored when the expression produces its own text</span></label>
+            <input id="polMessage" placeholder="this profile allows at most 90 days of validity">
+          </div>
+          <div class="row">
+            <div class="field" style="flex:1;min-width:200px"><label for="polProfiles">Profiles (comma-separated, globs allowed; empty = all)</label><input id="polProfiles" placeholder="server,server-client"></div>
+            <div class="field" style="flex:1;min-width:200px"><label for="polCAs">CAs (ids or labels, globs allowed; empty = all)</label><input id="polCAs" placeholder="issuing,staging-*"></div>
+            <div class="field" style="width:180px"><label for="polTenant">Tenant (empty = all)</label><input id="polTenant" placeholder=""></div>
+          </div>
+          <label class="muted" style="display:flex;gap:6px;align-items:center;margin-bottom:8px"><input type="checkbox" id="polEnabled" checked> enabled — apply this rule to issuance now</label>
+          <label class="muted" style="display:flex;gap:6px;align-items:center;margin-bottom:12px" title="By default a rule whose own evaluation fails refuses the request. Tick this only for a rule you accept as best-effort."><input type="checkbox" id="polFailOpen"> fail open — permit issuance when <em>this rule</em> cannot be evaluated</label>
+          <div class="row" style="justify-content:flex-end;gap:8px">
+            <button class="btn ghost sm" id="polCancel">Cancel</button>
+            <button class="btn sm" id="polSave">Save rule</button>
+          </div>
+        </div>
+
+        <!-- Dry-run -->
+        <div class="panel">
+          <h2 style="font-size:15px">Dry-run</h2>
+          <p class="sub">Evaluate rules against a request without signing anything. Supply a CSR under a real CA and profile and the certificate facts are derived by the same code the gate uses — so a rule that passes here behaves the same way when that CSR is actually submitted. The token claims, request URL, body parameters and caller identity have no CSR to come from, so set them as JSON.</p>
+          <div id="polTestError" class="notice err hidden"></div>
+          <div class="row">
+            <div class="field" style="width:220px">
+              <label for="polTestWhat">Rules</label>
+              <select id="polTestWhat">
+                <option value="active">every enabled rule</option>
+                <option value="all">every rule, enabled or not</option>
+                <option value="one">one stored rule</option>
+                <option value="editor">the expression in the editor</option>
+              </select>
+            </div>
+            <div class="field" style="flex:1;min-width:200px" id="polTestRuleField">
+              <label for="polTestRule">Rule</label>
+              <select id="polTestRule"></select>
+            </div>
+            <div class="field" style="width:220px">
+              <label for="polTestCA">Issuing CA</label>
+              <select id="polTestCA"></select>
+            </div>
+            <div class="field" style="width:180px">
+              <label for="polTestProfile">Profile</label>
+              <select id="polTestProfile"></select>
+            </div>
+            <div class="field" style="width:150px">
+              <label for="polTestDays">Validity (days)</label>
+              <input id="polTestDays" type="number" min="0" placeholder="profile default">
+            </div>
+          </div>
+          <div class="field">
+            <label for="polTestCSR">CSR (PEM) <span class="muted">— optional; without one the facts come entirely from the JSON below</span></label>
+            <textarea id="polTestCSR" rows="4" spellcheck="false" style="font-family:var(--mono,monospace);width:100%" placeholder="-----BEGIN CERTIFICATE REQUEST-----"></textarea>
+          </div>
+          <div class="field">
+            <label for="polTestFacts">Facts (JSON) <span class="muted">— <code>jwt</code>, <code>url</code>, <code>body</code> and <code>principal</code> are kept; <code>request</code> is replaced when a CSR is supplied</span></label>
+            <textarea id="polTestFacts" rows="7" spellcheck="false" style="font-family:var(--mono,monospace);width:100%"></textarea>
+          </div>
+          <div class="row" style="justify-content:flex-end;gap:8px">
+            <button class="btn ghost sm" id="polTestReset">Reset facts</button>
+            <button class="btn sm" id="polTestRun">Dry-run</button>
+          </div>
+          <div id="polTestResult" class="hidden" style="margin-top:12px"></div>
+        </div>
+
+        <!-- Vocabulary reference, rendered from the server so it cannot drift
+             from the environment a rule is compiled in. -->
+        <div class="panel">
+          <h2 style="font-size:15px">Expression reference</h2>
+          <p class="sub">Read from the running server, so what is listed here is exactly what an expression may use. A field name that is not listed is a load error, not a silent non-match.</p>
+          <div class="row" style="align-items:flex-start;gap:16px">
+            <div style="flex:1;min-width:300px">
+              <h3 style="font-size:13px;margin:0 0 6px">Variables</h3>
+              <div id="polRefVars" class="muted">Loading…</div>
+            </div>
+            <div style="flex:1;min-width:300px">
+              <h3 style="font-size:13px;margin:0 0 6px">Functions</h3>
+              <div id="polRefFns" class="muted">Loading…</div>
+            </div>
+          </div>
+          <div id="polRefFooter" class="muted" style="margin-top:10px"></div>
         </div>
       </section>
 

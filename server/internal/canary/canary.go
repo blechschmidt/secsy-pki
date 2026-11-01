@@ -53,6 +53,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -303,7 +304,7 @@ func (p *Prober) probe(ctx context.Context, target *models.CA, res *Result) {
 		if err != nil {
 			return fmt.Errorf("building probe CSR: %w", err)
 		}
-		r, err := p.pki.IssueCertificate(ctx, ca.IssueSpec{
+		r, err := p.pki.IssueCertificate(celpolicy.WithSource(ctx, celpolicy.SourceCanary), ca.IssueSpec{
 			CAID:        target.ID,
 			CSRPEM:      csrPEM,
 			Profile:     p.cfg.Profile,

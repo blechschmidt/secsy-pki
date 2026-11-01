@@ -20,6 +20,7 @@ import (
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
@@ -449,6 +450,7 @@ func (s *Server) writeIssuanceError(w http.ResponseWriter, r *http.Request, msg 
 
 // issue signs a parsed CertTemplate through the shared HSM-backed ca.Manager.
 func (s *Server) issue(ctx context.Context, req certRequest, profile, actor string) (*ca.IssueResult, error) {
+	ctx = celpolicy.WithSource(ctx, celpolicy.SourceCMP)
 	return s.caMgr.IssueCertificateFromTemplate(ctx, ca.TemplateIssueSpec{
 		CAID:           s.cfg.CAID,
 		Subject:        req.subject,

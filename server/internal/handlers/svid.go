@@ -109,6 +109,9 @@ func (a *API) IssueSVID(w http.ResponseWriter, r *http.Request) {
 		if writeTenantLimitError(w, err) { // suspension → 403, quota → 429 + Retry-After
 			return
 		}
+		if writePolicyDenyError(w, err) { // a restriction rule refused it → 422 + reasons
+			return
+		}
 		writeError(w, http.StatusBadRequest, "failed to issue SVID: %v", err)
 		return
 	}

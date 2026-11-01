@@ -51,6 +51,7 @@ with fast/slow burn-rate paging.
 | **Tenants** | Tenant lifecycle (create/suspend/reactivate), per-tenant quotas, and usage reports (platform-admin only) | `/api/tenants[...]` |
 | **API Tokens** | Native scoped [API tokens / service accounts](../security/authentication.md#4-native-scoped-api-tokens-service-accounts): create a `secsy_pat_` token (name, roles, tenant/platform scope, expiry) with the secret shown **once**, list tokens with status, and revoke | `/api/tokens`, `/api/tokens/{id}` |
 | **Restrictions** | [Issuance restriction sets](#issuance-restrictions): the enforced ceiling on every SSH signature, and — [stated as such](#x509-sets-are-stored-not-enforced) — a record of intent on the X.509 side, which no issuance path consults. Create, edit and delete SSH and X.509 sets — validity cap, allowed principals/cert types, forced e-mail key IDs and required reason, extension and critical-option denial; allowed key usages/EKUs, SAN types and patterns, subject fields, path length and CA denial — scoped **globally** (root only) or to **one CA** (`ca:configure`), plus each CA's SSH and X.509 **fallback set** | `/api/restriction-sets`, `/api/restriction-sets/{id}`, `/api/keys/{id}/restriction-sets`, `/api/keys/{id}/default-restriction-set` |
+| **Issuance Policy** | The [CEL issuance restrictions](../issuance/cel-restrictions.md) that **do** bind X.509 issuance: operator-written rules evaluated before every signature, on every issuance path. The rule table with its enable/disable toggles and scope column; an editor with a **compile check** against the live server, insertable worked examples, and the effect (require/deny) and mode (enforce/monitor) selectors; a **dry-run** that evaluates an ad-hoc expression, one stored rule or the whole active set against a real CSR under a real CA and profile — plus a JSON fact set for the token claims, request URL, body parameters and caller identity no CSR carries — and echoes back the facts the rules saw; and an **expression reference** rendered from the server's own environment, so what it lists is exactly what a rule may use. Editing needs `ca:configure`; reading and dry-running need any role | `/api/issuance-policies`, `/{id}`, `/{id}/enabled`, `/validate`, `/test`, `/reference` |
 
 ## Issuance restrictions
 
@@ -94,11 +95,17 @@ default is *Disallow all signatures* still issues. The view says so on the page,
 in the editor, and on every X.509 row, because a policy control that silently
 does nothing is worse than an absent one.
 
-What *does* bind X.509 issuance is the **certificate profile** — key usages,
-extended key usages, SAN types, validity ceiling, CA denial — declared in the
-server configuration, applied on the [Issue](#pages) view, and visible there as
-the profile policy summary and the [pre-issuance dry run](../issuance/preview.md).
-Write X.509 limits as a profile. The X.509 rows here are a record of intent.
+Two things *do* bind X.509 issuance. The first is the **certificate profile** —
+key usages, extended key usages, SAN types, validity ceiling, CA denial —
+declared in the server configuration, applied on the [Issue](#pages) view, and
+visible there as the profile policy summary and the
+[pre-issuance dry run](../issuance/preview.md). The second is the
+**[Issuance Policy](#pages)** view, whose
+[CEL rules](../issuance/cel-restrictions.md) are evaluated before every
+signature and can restrict names, lifetimes, keys, the caller's verified token
+and the request itself — and, unlike a restriction set, say *why* a request was
+refused in words the requester receives. Write a fixed shape as a profile and a
+conditional one as a CEL rule. The X.509 rows here are a record of intent.
 
 ## CLI ↔ console parity
 

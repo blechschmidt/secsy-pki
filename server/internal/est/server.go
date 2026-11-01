@@ -37,6 +37,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/attestation"
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/cms"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
@@ -358,7 +359,11 @@ func writeIssuanceError(w http.ResponseWriter, err error) {
 // profile), so this only surfaces what crypto/x509 otherwise discards.
 func (s *Server) issue(r *http.Request, csr *x509.CertificateRequest, profile, actor string) (*x509.Certificate, error) {
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csr.Raw})
-	result, err := s.caMgr.IssueCertificate(r.Context(), ca.IssueSpec{
+	// Name the issuance surface for the CEL restriction engine (Task 223): an EST
+	// enrollment is a device, not an operator, and a rule that requires an operator
+	// entitlement must deny it rather than see an empty token and pass.
+	ctx := celpolicy.WithSource(r.Context(), celpolicy.SourceEST)
+	result, err := s.caMgr.IssueCertificate(ctx, ca.IssueSpec{
 		CAID:        s.cfg.CAID,
 		CSRPEM:      csrPEM,
 		Profile:     profile,
