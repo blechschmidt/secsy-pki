@@ -4,12 +4,20 @@ package sshca
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
+	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
 
 // recordingGate captures the facts an SSH certificate was checked against.
@@ -232,5 +240,96 @@ func TestSSHSigningGateIsWiredByDefault(t *testing.T) {
 	}
 	if !found {
 		t.Error("the refusal must be recorded as a sign.policy audit event")
+	}
+}
+
+// TestSSHFactHelpers covers the key-shape helpers directly: the CA key
+// algorithm is read from the stored key type with the CA's own public key as a
+// fallback, and the signature digest is fixed by the CA key algorithm rather
+// than chosen by the caller — both facts a rule may restrict on.
+func TestSSHFactHelpers(t *testing.T) {
+	for _, tc := range []struct {
+		keyType, want string
+	}{
+		{"rsa-2048", "RSA"},
+		{"RSA-4096", "RSA"},
+		{"ecdsa-p256", "ECDSA"},
+		{"ed25519", "Ed25519"},
+		{"", ""},
+	} {
+		if got := caKeyAlgorithm(&models.CA{KeyType: tc.keyType}); got != tc.want {
+			t.Errorf("caKeyAlgorithm(%q) = %q, want %q", tc.keyType, got, tc.want)
+		}
+	}
+	// With no key type recorded, the CA's authorized_keys line answers.
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sshPub, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorized := string(ssh.MarshalAuthorizedKey(sshPub))
+	if got := caKeyAlgorithm(&models.CA{PublicKey: authorized}); got != "Ed25519" {
+		t.Errorf("caKeyAlgorithm(from public key) = %q", got)
+	}
+
+	// The digest the CA's signature uses, per key algorithm. Ed25519 hashes
+	// internally, so there is no externally selected message hash to report.
+	if got := sshSignatureDigest(sshPub); got != "" {
+		t.Errorf("Ed25519 digest = %q, want empty", got)
+	}
+	if got := sshSignatureDigest(nil); got != "SHA-256" {
+		t.Errorf("nil key digest = %q", got)
+	}
+	for _, tc := range []struct {
+		curve elliptic.Curve
+		want  string
+		bits  int
+	}{
+		{elliptic.P256(), "SHA-256", 256},
+		{elliptic.P384(), "SHA-384", 384},
+		{elliptic.P521(), "SHA-512", 521},
+	} {
+		key, err := ecdsa.GenerateKey(tc.curve, rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ecPub, err := ssh.NewPublicKey(key.Public())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := sshSignatureDigest(ecPub); got != tc.want {
+			t.Errorf("%s digest = %q, want %q", tc.curve.Params().Name, got, tc.want)
+		}
+		if got := keyBits(ecPub); got != tc.bits {
+			t.Errorf("%s bits = %d, want %d", tc.curve.Params().Name, got, tc.bits)
+		}
+		if got := sshKeyFacts(ecPub); got.HardwareBacked || got.Fingerprint == "" {
+			t.Errorf("ECDSA key facts = %+v", got)
+		}
+	}
+
+	// An RSA key reports its modulus size; a nil key reports nothing at all.
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaPub, err := ssh.NewPublicKey(rsaKey.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := keyBits(rsaPub); got != 2048 {
+		t.Errorf("RSA bits = %d", got)
+	}
+	if got := sshSignatureDigest(rsaPub); got != "SHA-256" {
+		t.Errorf("RSA digest = %q", got)
+	}
+	if got := sshKeyFacts(nil); got.Type != "" || got.Bits != 0 {
+		t.Errorf("nil key facts = %+v", got)
+	}
+	if got := certTypeName(99); got != "unknown" {
+		t.Errorf("certTypeName(99) = %q", got)
 	}
 }

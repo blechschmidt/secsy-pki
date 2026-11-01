@@ -132,15 +132,19 @@ func SigningEnv() (*celexpr.Env, error) {
 	return signEnv.env, signEnv.err
 }
 
-// EnvFor returns the environment a rule of the given kind compiles in.
+// EnvFor returns the environment a rule of the given kind compiles in. An empty
+// kind is the certificate environment — that is what a rule stored before the
+// kinds existed means — but an unrecognized one is an error rather than the
+// same default: compiling "sign" in the certificate environment would reject
+// the very expression its author wrote, and blame their syntax for it.
 func EnvFor(kind Kind) (*celexpr.Env, error) {
-	switch kind.OrDefault() {
+	switch kind {
 	case KindSigning:
 		return SigningEnv()
-	case KindCertificate:
+	case "", KindCertificate:
 		return Env()
 	}
-	return nil, fmt.Errorf("unknown policy rule kind %q", kind)
+	return nil, fmt.Errorf("unknown policy rule kind %q (want %q or %q)", kind, KindCertificate, KindSigning)
 }
 
 // Compile compiles one certificate-rule expression. The accepted result types

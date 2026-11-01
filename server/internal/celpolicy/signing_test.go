@@ -1,8 +1,17 @@
 package celpolicy
 
 import (
+	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/json"
+	"errors"
+	"math/big"
 	"strings"
 	"testing"
 	"time"
@@ -595,6 +604,143 @@ func TestSigningSelectorsBindEveryCAKeyOperation(t *testing.T) {
 		d := NewEngine().EvaluateSigning([]Rule{rule}, svid)
 		if applied := !d.Allowed; applied != tc.applies {
 			t.Errorf("%s: applied=%v, want %v", tc.name, applied, tc.applies)
+		}
+	}
+}
+
+func TestCheckHonoursAnOptionalGate(t *testing.T) {
+	// Check is the one-liner every signing service calls, so "a nil gate
+	// permits" is written once rather than at each site — and the services rely
+	// on it, so it is worth pinning.
+	req := SigningRequest{Operation: OpSignArtifact}
+	if err := Check(context.Background(), nil, req); err != nil {
+		t.Errorf("a nil gate must permit: %v", err)
+	}
+	refuse := &stubChecker{err: errors.New("no")}
+	if err := Check(context.Background(), refuse, req); err == nil {
+		t.Error("a gate's refusal must propagate")
+	}
+	if len(refuse.seen) != 1 || refuse.seen[0].Operation != OpSignArtifact {
+		t.Errorf("the facts must reach the gate: %+v", refuse.seen)
+	}
+}
+
+type stubChecker struct {
+	seen []SigningRequest
+	err  error
+}
+
+func (s *stubChecker) CheckSigning(_ context.Context, req SigningRequest) error {
+	s.seen = append(s.seen, req)
+	return s.err
+}
+
+func TestSigningFactHelpers(t *testing.T) {
+	// SortedKeys: the permission maps reach a rule as sorted name lists, so the
+	// order a rule's message reports them in is stable.
+	got := SortedKeys(map[string]string{"permit-pty": "", "force-command": "/x", "agent": ""})
+	if strings.Join(got, ",") != "agent,force-command,permit-pty" {
+		t.Errorf("SortedKeys = %v", got)
+	}
+	if got := SortedKeys(nil); got == nil || len(got) != 0 {
+		t.Errorf("SortedKeys(nil) = %v, want an empty list", got)
+	}
+
+	// KeyFactsFromPublic spells a key the way the certificate vocabulary does.
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := KeyFactsFromPublic(ecKey.Public())
+	if k.Algorithm != "ECDSA" || k.Curve != "P-256" || k.Size != 256 {
+		t.Errorf("ECDSA key facts = %+v", k)
+	}
+	if !strings.HasPrefix(k.Fingerprint, "SHA256:") {
+		t.Errorf("fingerprint = %q", k.Fingerprint)
+	}
+	if got := KeyFactsFromPublic(nil); got.Algorithm != "unknown" {
+		t.Errorf("a nil key = %+v", got)
+	}
+
+	// SignerCertFactsFrom reads an artifact signer's certificate.
+	if got := SignerCertFactsFrom(nil); got.ExtKeyUsages == nil {
+		t.Error("a nil certificate must still yield an empty EKU list, not nil")
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:       big.NewInt(42),
+		Subject:            pkix.Name{CommonName: "Release Signing"},
+		Issuer:             pkix.Name{CommonName: "Issuing CA"},
+		NotBefore:          time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		NotAfter:           time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC),
+		ExtKeyUsage:        []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning},
+		UnknownExtKeyUsage: []asn1.ObjectIdentifier{{1, 3, 6, 1, 4, 1, 311, 10, 3, 13}},
+	}
+	facts := SignerCertFactsFrom(tmpl)
+	if facts.Serial != "42" || !strings.Contains(facts.Subject, "Release Signing") {
+		t.Errorf("certificate facts = %+v", facts)
+	}
+	if len(facts.ExtKeyUsages) != 2 || facts.ExtKeyUsages[0] != "codeSigning" {
+		t.Errorf("EKUs = %v (the unnamed OID must come through as a dotted string)", facts.ExtKeyUsages)
+	}
+	if facts.NotAfter.Year() != 2027 {
+		t.Errorf("not_after = %s", facts.NotAfter)
+	}
+}
+
+func TestCompileEntryPointsUseTheRightEnvironment(t *testing.T) {
+	// The two named entry points are what the editors call; each must compile in
+	// its own environment and reject the other's vocabulary.
+	if _, err := Compile(`request.wildcard`); err != nil {
+		t.Errorf("Compile (certificate): %v", err)
+	}
+	if _, err := Compile(`signing.key.name == "x"`); err == nil {
+		t.Error("Compile must not accept the signing vocabulary")
+	}
+	if _, err := CompileSigning(`signing.key.name == "x"`); err != nil {
+		t.Errorf("CompileSigning: %v", err)
+	}
+	if _, err := CompileSigning(`request.wildcard`); err == nil {
+		t.Error("CompileSigning must not accept the certificate vocabulary")
+	}
+	if _, err := EnvFor("bogus"); err == nil {
+		t.Error("an unknown kind has no environment")
+	}
+}
+
+func TestWithSourceLabelsANonHTTPPath(t *testing.T) {
+	// A CLI invocation has no HTTP request, so the surface has to be recorded
+	// explicitly — a rule that says "an automated enrollment may not ask for
+	// this" is only a control if the automated enrollment is actually labelled.
+	ctx := WithSource(context.Background(), SourceCLI)
+	if got := FromContext(ctx).Source(); got != SourceCLI {
+		t.Errorf("source = %q", got)
+	}
+	if in := FromContext(ctx).SigningInput(SigningRequest{}); in.Signing.Source != SourceCLI {
+		t.Errorf("the signing facts should carry it: %q", in.Signing.Source)
+	}
+	// An empty source leaves the context alone rather than installing an empty
+	// holder that would shadow a real one.
+	if FromContext(WithSource(context.Background(), "")) != nil {
+		t.Error("WithSource(\"\") must not install a holder")
+	}
+	// A second call updates the holder already present.
+	ctx = WithSource(ctx, SourceGRPC)
+	if got := FromContext(ctx).Source(); got != SourceGRPC {
+		t.Errorf("source after update = %q", got)
+	}
+}
+
+func TestDenySubjectNamesEveryOperation(t *testing.T) {
+	want := map[string]string{
+		OpSignSSHCert:  "SSH certificate request",
+		OpSignArtifact: "artifact signature request",
+		OpSignData:     "signature request",
+		OpSignJWTSVID:  "JWT-SVID request",
+		"":             "signing request",
+	}
+	for op, subject := range want {
+		if got := DenySubject(op); got != subject {
+			t.Errorf("DenySubject(%q) = %q, want %q", op, got, subject)
 		}
 	}
 }

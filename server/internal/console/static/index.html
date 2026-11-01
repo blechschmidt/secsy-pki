@@ -2504,7 +2504,7 @@
             <select id="polKindFilter">
               <option value="">both kinds</option>
               <option value="certificate">certificate — issuance</option>
-              <option value="signing">signing — SSH / artifact / data</option>
+              <option value="signing">signing — SSH, artifacts, data, SVIDs</option>
             </select>
           </div>
           <div class="spacer"></div>
@@ -2523,11 +2523,11 @@
           <h2 style="font-size:15px" id="polEditorTitle"></h2>
           <div id="polEditorError" class="notice err hidden"></div>
           <div class="row">
-            <div class="field" style="width:230px">
+            <div class="field" style="width:330px">
               <label for="polKind">Kind <span class="muted">— fixed once saved</span></label>
               <select id="polKind" title="A certificate rule reasons about `request` and gates issuance; a signing rule reasons about `signing` and gates SSH certificates, artifact signatures, raw signatures and JWT-SVIDs. The vocabulary below follows this choice.">
                 <option value="certificate">certificate — issuance</option>
-                <option value="signing">signing — SSH / artifact / data</option>
+                <option value="signing">signing — SSH, artifacts, data, SVIDs</option>
               </select>
             </div>
             <div class="field" style="flex:1;min-width:200px">
@@ -2599,11 +2599,11 @@
           <p class="sub">Evaluate rules against a request without signing anything. For a <b>certificate</b> rule, supply a CSR under a real CA and profile and the facts are derived by the same code the gate uses — so a rule that passes here behaves the same way when that CSR is actually submitted. A <b>signing</b> rule has no CSR to derive anything from, so its facts come entirely from the JSON below. The token claims, request URL, body parameters and caller identity are JSON in both cases.</p>
           <div id="polTestError" class="notice err hidden"></div>
           <div class="row">
-            <div class="field" style="width:230px">
+            <div class="field" style="width:330px">
               <label for="polTestKind">Kind</label>
               <select id="polTestKind">
                 <option value="certificate">certificate — issuance</option>
-                <option value="signing">signing — SSH / artifact / data</option>
+                <option value="signing">signing — SSH, artifacts, data, SVIDs</option>
               </select>
             </div>
             <div class="field" style="width:220px">
