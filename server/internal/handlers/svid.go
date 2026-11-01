@@ -226,6 +226,13 @@ func (a *API) IssueJWTSVID(w http.ResponseWriter, r *http.Request) {
 	a.consumeHSMAuditLogs("")
 	metrics.RecordCertificate("svid_jwt_issue", err)
 	if err != nil {
+		// A CEL signing-restriction refusal (Task 224) is 422 with the reasons as
+		// data: a JWT-SVID is minted with a CA key but is not a certificate, so it
+		// is the signing rules that govern it.
+		if writeSignPolicyDenied(w, err) {
+			a.recordEvent(r, audit.ActionSVIDIssueJWT, caID, id.String(), audit.ResultDenied, err.Error())
+			return
+		}
 		a.recordEvent(r, audit.ActionSVIDIssueJWT, caID, id.String(), audit.ResultError, err.Error())
 		if writeTenantLimitError(w, err) { // suspended tenant → 403
 			return

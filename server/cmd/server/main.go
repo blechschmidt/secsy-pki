@@ -63,6 +63,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/servingcert"
 	"github.com/blechschmidt/secsy-pki/server/internal/siem"
 	"github.com/blechschmidt/secsy-pki/server/internal/signing"
+	"github.com/blechschmidt/secsy-pki/server/internal/signpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/spiffe"
 	"github.com/blechschmidt/secsy-pki/server/internal/sshca"
 	"github.com/blechschmidt/secsy-pki/server/internal/timesource"
@@ -2378,6 +2379,10 @@ func buildSigningService(db *database.DB, cfg *config.Config, provider, caProvid
 	// CA-role provider — revocation material is signed by the CA key, not the
 	// signing key.
 	svc.SetRevocationSource(ca.NewManager(db, caProvider))
+	// Wire the CEL signing-restriction gate (Task 224) over the same store the
+	// issuance gate reads, so an operator's signing rules bind on /api/sign and
+	// on `secsy-ca sign` alike.
+	svc.SetPolicyGate(signpolicy.NewGate(db, db))
 	return svc, nil
 }
 

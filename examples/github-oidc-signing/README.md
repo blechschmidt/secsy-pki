@@ -167,6 +167,30 @@ expires** — the chain is validated at the token's genTime, not the wall clock.
   is accepted; other repos/branches/environments resolve to zero roles and are
   rejected.
 
+### Tightening it further: a signing-policy rule
+
+RBAC answers *who may sign*. A
+[CEL signing rule](../../docs/signing/signing-restrictions.md) answers *what
+they may sign with it* — and, because a rule reads the **verified claims** of
+the very token the pipeline presented, it can bind the key to the repository
+without depending on the `sub` claim's shape at all:
+
+```console
+secsy-ca issuance-policy add -kind signing -name release-key-is-pipeline-only     -keys release-signing -operations artifact     -expr 'string(jwt.iss) == "https://token.actions.githubusercontent.com" &&
+           has(jwt.repository) && string(jwt.repository) == "OWNER/REPO"'     -message 'the release-signing key is reserved for the OWNER/REPO release workflow'
+
+# And a release signature that would stop verifying when its certificate
+# expires is not an archive:
+secsy-ca issuance-policy add -kind signing -name artifacts-need-a-timestamp     -operations artifact -expr 'signing.artifact.timestamped'     -message 'an artifact signature must be timestamped (level t or lt)'
+```
+
+Both are evaluated inside the signing service, so they bind on `POST /api/sign`
+and on `secsy-ca sign` alike. A refusal comes back as HTTP **422** carrying the
+message above, which is what the pipeline's log should show instead of
+"forbidden". Write a rule `-disabled` first and dry-run it
+(`secsy-ca issuance-policy test -kind signing -rule <name> -facts facts.json`):
+a rule is fail-closed, so a wrong one refuses every signature in its scope.
+
 ### Note: the machine-Bearer path is a separate axis from console login
 
 The top-level `oidc` block is the verifier for **all** `Authorization: Bearer`

@@ -65,9 +65,17 @@ func issuancePolicyUsage() {
 	// containing "%d", which a formatting call would read as a directive.
 	_, _ = os.Stderr.WriteString(`Usage: secsy-ca issuance-policy <subcommand> [flags]
 
-Operator-written CEL rules that gate certificate generation. Each rule is
+Operator-written CEL rules that gate what this PKI's keys sign. Each rule is
 evaluated before any HSM signature; a rule that refuses a request supplies the
 reason the requester is given.
+
+A rule has a kind, which decides what it restricts and which facts it sees:
+
+  -kind certificate   (default) certificate generation: the rule reasons about
+                      "request" and runs on every issuance surface
+  -kind signing       the other signatures - an OpenSSH certificate, a CMS
+                      artifact signature, a raw signature with a named key: the
+                      rule reasons about "signing"
 
   list        List every rule in evaluation order (add -json for the raw rows)
   show        Show one rule, by id or by name
@@ -94,6 +102,20 @@ Trying it before switching it on:
   secsy-ca issuance-policy add -name draft -expr '...' -disabled
   secsy-ca issuance-policy test -rule draft -ca issuing -csr req.pem -validity-days 400
 
+Restricting what a key signs (kind=signing):
+
+  secsy-ca issuance-policy add -kind signing -name no-root-principals -effect deny \
+      -expr 'signing.ssh.principals.exists(p, p.lowerAscii() == "root")' \
+      -message 'an SSH certificate may not name root'
+
+  secsy-ca issuance-policy add -kind signing -name release-key-is-ci-only \
+      -keys release-signing -operations artifact \
+      -expr 'has(jwt.repository) && string(jwt.repository) == "example/product"' \
+      -message 'the release-signing key is reserved for the product release workflow'
+
+  secsy-ca issuance-policy test -kind signing -all -facts signing-facts.json
+  secsy-ca issuance-policy reference -kind signing
+
 An expression may evaluate to a bool (the condition that must hold, or — with
 -effect deny — must not), a string (the reason itself; "" means satisfied), or a
 list of strings (one reason per offending name).
@@ -105,12 +127,26 @@ func cmdPolicyList(db *database.DB, args []string) error {
 	fs := flag.NewFlagSet("issuance-policy list", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit JSON")
 	enabledOnly := fs.Bool("enabled", false, "list only the rules that are switched on")
+	kindFlag := fs.String("kind", "", "list only one kind: certificate or signing (default: both)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	rules, err := db.ListCELPolicyRules()
 	if err != nil {
 		return fmt.Errorf("listing issuance policies: %w", err)
+	}
+	if want := strings.TrimSpace(*kindFlag); want != "" {
+		kind, err := parsePolicyKindFlag(want)
+		if err != nil {
+			return err
+		}
+		kept := make([]celpolicy.Rule, 0, len(rules))
+		for _, r := range rules {
+			if r.KindOrDefault() == kind {
+				kept = append(kept, r)
+			}
+		}
+		rules = kept
 	}
 	if *enabledOnly {
 		kept := make([]celpolicy.Rule, 0, len(rules))
@@ -132,7 +168,7 @@ func cmdPolicyList(db *database.DB, args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 2, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "PRIORITY\tNAME\tSTATE\tEFFECT\tMODE\tSCOPE\tEXPRESSION")
+	fmt.Fprintln(tw, "PRIORITY\tKIND\tNAME\tSTATE\tEFFECT\tMODE\tSCOPE\tEXPRESSION")
 	for _, r := range rules {
 		state := "enabled"
 		if !r.Enabled {
@@ -141,8 +177,8 @@ func cmdPolicyList(db *database.DB, args []string) error {
 		if r.FailOpen {
 			state += ",fail-open"
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			r.Priority, r.Name, state, r.EffectOrDefault(), r.ModeOrDefault(),
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			r.Priority, r.KindOrDefault(), r.Name, state, r.EffectOrDefault(), r.ModeOrDefault(),
 			policyScope(r), policyExprCell(r.Expression))
 	}
 	return tw.Flush()
@@ -159,6 +195,12 @@ func policyScope(r celpolicy.Rule) string {
 	}
 	if len(r.CAs) > 0 {
 		parts = append(parts, "cas="+strings.Join(r.CAs, ","))
+	}
+	if len(r.Keys) > 0 {
+		parts = append(parts, "keys="+strings.Join(r.Keys, ","))
+	}
+	if len(r.Operations) > 0 {
+		parts = append(parts, "operations="+strings.Join(r.Operations, ","))
 	}
 	if len(parts) == 0 {
 		return "all"
@@ -196,6 +238,7 @@ func cmdPolicyShow(db *database.DB, args []string) error {
 	tw := tabwriter.NewWriter(os.Stdout, 2, 0, 2, ' ', 0)
 	fmt.Fprintf(tw, "Name:\t%s\n", rule.Name)
 	fmt.Fprintf(tw, "ID:\t%s\n", rule.ID)
+	fmt.Fprintf(tw, "Kind:\t%s\n", rule.KindOrDefault())
 	if rule.Description != "" {
 		fmt.Fprintf(tw, "Description:\t%s\n", rule.Description)
 	}
@@ -219,6 +262,7 @@ func cmdPolicyShow(db *database.DB, args []string) error {
 
 // policyFlags are the fields add/update share.
 type policyFlags struct {
+	kind        *string
 	name        *string
 	description *string
 	expr        *string
@@ -229,6 +273,8 @@ type policyFlags struct {
 	tenant      *string
 	profiles    *string
 	cas         *string
+	keys        *string
+	operations  *string
 	priority    *int
 	disabled    *bool
 	failOpen    *bool
@@ -236,6 +282,7 @@ type policyFlags struct {
 
 func registerPolicyFlags(fs *flag.FlagSet) policyFlags {
 	return policyFlags{
+		kind:        fs.String("kind", "", "what the rule restricts: certificate (default) or signing"),
 		name:        fs.String("name", "", "rule name; it appears in the refusal the requester reads (required)"),
 		description: fs.String("description", "", "what the rule is for"),
 		expr:        fs.String("expr", "", "the CEL expression (or use -expr-file)"),
@@ -246,6 +293,8 @@ func registerPolicyFlags(fs *flag.FlagSet) policyFlags {
 		tenant:      fs.String("tenant", "", "restrict the rule to one tenant's CAs"),
 		profiles:    fs.String("profiles", "", "comma-separated profile names or globs the rule applies to (default: all)"),
 		cas:         fs.String("cas", "", "comma-separated CA ids/labels or globs the rule applies to (default: all)"),
+		keys:        fs.String("keys", "", "signing rules only: comma-separated key/signer names or globs the rule applies to (default: all)"),
+		operations:  fs.String("operations", "", "signing rules only: comma-separated operations the rule applies to — ssh-certificate, artifact, data (default: all)"),
 		priority:    fs.Int("priority", 0, "evaluation order, ascending; it fixes the order the reasons are reported in"),
 		disabled:    fs.Bool("disabled", false, "store the rule switched off, so it can be dry-run first"),
 		failOpen:    fs.Bool("fail-open", false, "permit issuance when this rule's own evaluation fails (default: fail closed)"),
@@ -280,6 +329,20 @@ func (p policyFlags) apply(fs *flag.FlagSet, rule *celpolicy.Rule) error {
 	given := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
 
+	if given["kind"] {
+		kind, err := parsePolicyKindFlag(*p.kind)
+		if err != nil {
+			return err
+		}
+		// A stored rule's kind is fixed: reinterpreting an expression against the
+		// other vocabulary would usually stop it compiling, i.e. turn it into a
+		// rule that fails closed and refuses everything in its scope.
+		if rule.Kind != "" && rule.Kind != kind {
+			return fmt.Errorf("the kind of %q cannot be changed from %s to %s; delete it and create a %s rule",
+				rule.Name, rule.Kind, kind, kind)
+		}
+		rule.Kind = kind
+	}
 	if given["name"] {
 		rule.Name = strings.TrimSpace(*p.name)
 	}
@@ -306,6 +369,12 @@ func (p policyFlags) apply(fs *flag.FlagSet, rule *celpolicy.Rule) error {
 	}
 	if given["cas"] {
 		rule.CAs = splitSelector(*p.cas)
+	}
+	if given["keys"] {
+		rule.Keys = splitSelector(*p.keys)
+	}
+	if given["operations"] {
+		rule.Operations = splitSelector(*p.operations)
 	}
 	if given["priority"] {
 		rule.Priority = *p.priority
@@ -345,6 +414,7 @@ func cmdPolicyAdd(db *database.DB, args []string) error {
 	if err := flags.apply(fs, &rule); err != nil {
 		return err
 	}
+	rule.Kind = rule.Kind.OrDefault()
 	if rule.Name == "" {
 		fs.Usage()
 		return fmt.Errorf("-name is required")
@@ -371,7 +441,11 @@ func cmdPolicyAdd(db *database.DB, args []string) error {
 	}
 	state := "enabled"
 	if !rule.Enabled {
-		state = "disabled — dry-run it with `secsy-ca issuance-policy test -rule " + rule.Name + "`, then enable it"
+		hint := "secsy-ca issuance-policy test -rule " + rule.Name
+		if rule.KindOrDefault() == celpolicy.KindSigning {
+			hint += " -kind signing"
+		}
+		state = "disabled — dry-run it with `" + hint + "`, then enable it"
 	}
 	fmt.Printf("Stored issuance policy %q (%s), %s.\n", rule.Name, rule.ID, state)
 	return nil
@@ -477,15 +551,23 @@ func cmdPolicyTest(db *database.DB, mgr *ca.Manager, args []string) error {
 	profile := fs.String("profile", "", "issuance profile (empty = the default profile)")
 	csrPath := fs.String("csr", "", "PEM CSR to derive the request facts from ('-' for stdin)")
 	validityDays := fs.Int("validity-days", 0, "requested validity in days (0 = the profile default)")
-	factsPath := fs.String("facts", "", "JSON fact set to use or overlay: {\"request\":{…},\"jwt\":{…},\"url\":{…},\"body\":{…},\"principal\":{…}}")
+	factsPath := fs.String("facts", "", "JSON fact set to use or overlay: {\"request\":{…},\"jwt\":{…},\"url\":{…},\"body\":{…},\"principal\":{…}} — for -kind signing, {\"signing\":{…},…}")
+	kindFlag := fs.String("kind", "", "which rules to dry-run: certificate (default) or signing")
 	asJSON := fs.Bool("json", false, "emit the decision and the facts as JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
-	rules, err := policyTestRuleSet(db, *expr, *exprFile, *effect, *message, *ruleRef, *allRules)
+	kind, err := parsePolicyKindFlag(*kindFlag)
 	if err != nil {
 		return err
+	}
+
+	rules, err := policyTestRuleSet(db, kind, *expr, *exprFile, *effect, *message, *ruleRef, *allRules)
+	if err != nil {
+		return err
+	}
+	if kind == celpolicy.KindSigning {
+		return signingPolicyTest(rules, *csrPath, *factsPath, *asJSON)
 	}
 	in, err := policyTestInput(db, mgr, *caRef, *profile, *csrPath, *validityDays, *factsPath)
 	if err != nil {
@@ -508,8 +590,8 @@ func cmdPolicyTest(db *database.DB, mgr *ca.Manager, args []string) error {
 	return nil
 }
 
-// policyTestRuleSet resolves which rules a dry-run evaluates.
-func policyTestRuleSet(db *database.DB, expr, exprFile, effect, message, ruleRef string, all bool) ([]celpolicy.Rule, error) {
+// policyTestRuleSet resolves which rules of the given kind a dry-run evaluates.
+func policyTestRuleSet(db *database.DB, kind celpolicy.Kind, expr, exprFile, effect, message, ruleRef string, all bool) ([]celpolicy.Rule, error) {
 	inline := strings.TrimSpace(expr)
 	if path := strings.TrimSpace(exprFile); path != "" {
 		if inline != "" {
@@ -524,6 +606,7 @@ func policyTestRuleSet(db *database.DB, expr, exprFile, effect, message, ruleRef
 	switch {
 	case inline != "":
 		rule := celpolicy.Rule{
+			Kind: kind.OrDefault(),
 			Name: "ad-hoc", Expression: inline, Enabled: true,
 			Effect: celpolicy.Effect(effect), Mode: celpolicy.Mode(""), Message: message,
 		}
@@ -536,6 +619,10 @@ func policyTestRuleSet(db *database.DB, expr, exprFile, effect, message, ruleRef
 		if err != nil {
 			return nil, err
 		}
+		if rule.KindOrDefault() != kind.OrDefault() {
+			return nil, fmt.Errorf("%q is a %s rule; dry-run it with -kind %s",
+				rule.Name, rule.KindOrDefault(), rule.KindOrDefault())
+		}
 		// Trying a rule before switching it on is the point of the subcommand.
 		rule.Enabled = true
 		return []celpolicy.Rule{*rule}, nil
@@ -546,6 +633,11 @@ func policyTestRuleSet(db *database.DB, expr, exprFile, effect, message, ruleRef
 		}
 		kept := make([]celpolicy.Rule, 0, len(rules))
 		for _, r := range rules {
+			// Only this kind: a certificate rule evaluated against signing facts
+			// would not compile and would report every rule as broken.
+			if r.KindOrDefault() != kind.OrDefault() {
+				continue
+			}
 			if all {
 				r.Enabled = true
 			}
@@ -554,7 +646,7 @@ func policyTestRuleSet(db *database.DB, expr, exprFile, effect, message, ruleRef
 			}
 		}
 		if len(kept) == 0 {
-			return nil, fmt.Errorf("there are no rules to dry-run; give -expr, -rule, or -all")
+			return nil, fmt.Errorf("there are no %s rules to dry-run; give -expr, -rule, or -all", kind.OrDefault())
 		}
 		return kept, nil
 	}
@@ -611,6 +703,105 @@ func policyTestInput(db *database.DB, mgr *ca.Manager, caRef, profile, csrPath s
 	return in, nil
 }
 
+// signingPolicyTest dry-runs signing rules against a JSON fact set. There is
+// nothing to seed the facts from — a signing request has no CSR whose
+// resolution could be replayed — so they come from -facts, which is also what
+// makes the subcommand scriptable: a pipeline can assert that its own request
+// shape is still permitted.
+func signingPolicyTest(rules []celpolicy.Rule, csrPath, factsPath string, asJSON bool) error {
+	if strings.TrimSpace(csrPath) != "" {
+		return fmt.Errorf("-csr describes a certificate request; a signing dry-run takes its facts from -facts")
+	}
+	var in celpolicy.SigningInput
+	if path := strings.TrimSpace(factsPath); path != "" {
+		data, err := readInput(path)
+		if err != nil {
+			return fmt.Errorf("reading the fact set: %w", err)
+		}
+		if err := json.Unmarshal(data, &in); err != nil {
+			return fmt.Errorf("parsing the fact set: %w", err)
+		}
+	}
+	if in.Signing.Source == "" {
+		in.Signing.Source = celpolicy.SourcePreview
+	}
+	decision := celpolicy.Shared().EvaluateSigning(rules, in)
+	if asJSON {
+		return emitJSON(struct {
+			Decision celpolicy.Decision     `json:"decision"`
+			Rules    []string               `json:"rules"`
+			Input    celpolicy.SigningInput `json:"input"`
+		}{Decision: decision, Rules: ruleNames(rules), Input: in})
+	}
+	printSigningDecision(decision, rules, in)
+	if !decision.Allowed {
+		return fmt.Errorf("the signature would be refused")
+	}
+	return nil
+}
+
+// printSigningDecision renders a signing dry-run verdict for a terminal.
+func printSigningDecision(d celpolicy.Decision, rules []celpolicy.Rule, in celpolicy.SigningInput) {
+	verdict := "WOULD SIGN"
+	if !d.Allowed {
+		verdict = "WOULD BE REFUSED"
+	}
+	fmt.Printf("%s — %d rule(s) evaluated, %d skipped (out of scope or disabled)\n",
+		verdict, d.Evaluated, d.Skipped)
+	fmt.Printf("Rules considered: %s\n", strings.Join(ruleNames(rules), ", "))
+	printPolicyViolations(d)
+	fmt.Println("\nFacts the rules saw:")
+	sig := in.Signing
+	tw := tabwriter.NewWriter(os.Stdout, 2, 0, 2, ' ', 0)
+	fmt.Fprintf(tw, "  operation / source\t%s / %s\n", orDash(sig.Operation), orDash(sig.Source))
+	fmt.Fprintf(tw, "  key\t%s (%s, provider %s)\n", orDash(sig.Key.Name), orDash(sig.Key.Algorithm), orDash(sig.Key.Provider))
+	fmt.Fprintf(tw, "  tenant\t%s\n", orDash(sig.Tenant))
+	fmt.Fprintf(tw, "  requested by\t%s\n", orDash(sig.RequestedBy))
+	fmt.Fprintf(tw, "  payload\t%d byte(s), %s%s\n", sig.Payload.Size, orDash(sig.Payload.DigestAlgorithm),
+		map[bool]string{true: ", caller-supplied digest", false: ""}[sig.Payload.Prehashed])
+	if sig.SSH.Present {
+		fmt.Fprintf(tw, "  ssh\t%s cert for %s (key id %s)\n", orDash(sig.SSH.CertType),
+			orDash(strings.Join(sig.SSH.Principals, ", ")), orDash(sig.SSH.KeyID))
+		fmt.Fprintf(tw, "  ssh validity\t%s\n", sig.SSH.Validity)
+		fmt.Fprintf(tw, "  ssh options\t%s\n", orDash(strings.Join(sig.SSH.CriticalOptions, ", ")))
+	}
+	if sig.Artifact.Present {
+		fmt.Fprintf(tw, "  artifact\t%s (signer %s, level %s, timestamped %v)\n",
+			orDash(sig.Artifact.Name), orDash(sig.Artifact.Signer), orDash(sig.Artifact.Level), sig.Artifact.Timestamped)
+	}
+	if sig.Data.Present {
+		fmt.Fprintf(tw, "  data\t%s with %s (%s)\n", orDash(sig.Data.Key), orDash(sig.Data.Algorithm), orDash(sig.Data.Hash))
+	}
+	if sig.JWTSVID.Present {
+		fmt.Fprintf(tw, "  jwt-svid\t%s for %s\n", orDash(sig.JWTSVID.SPIFFEID), orDash(strings.Join(sig.JWTSVID.Audience, ", ")))
+		fmt.Fprintf(tw, "  jwt-svid ttl\t%s (%s)\n", sig.JWTSVID.TTL, orDash(sig.JWTSVID.Algorithm))
+	}
+	fmt.Fprintf(tw, "  jwt claims\t%s\n", orDash(strings.Join(policyFactKeys(in.JWT), ", ")))
+	fmt.Fprintf(tw, "  body parameters\t%s\n", orDash(strings.Join(policyFactKeys(in.Body), ", ")))
+	fmt.Fprintf(tw, "  url\t%s %s\n", orDash(in.URL.Method), orDash(in.URL.Path))
+	fmt.Fprintf(tw, "  principal\t%s (roles: %s)\n", orDash(in.Principal.Subject), orDash(strings.Join(in.Principal.Roles, ", ")))
+	_ = tw.Flush()
+}
+
+// printPolicyViolations lists a decision's reasons, shared by both dry-runs.
+func printPolicyViolations(d celpolicy.Decision) {
+	if len(d.Violations) == 0 {
+		fmt.Println("No violations.")
+		return
+	}
+	fmt.Println("\nReasons:")
+	for _, v := range d.Violations {
+		tag := ""
+		if v.Mode == celpolicy.ModeMonitor {
+			tag = " [monitor: would not block]"
+		}
+		fmt.Printf("  - %s%s: %s\n", v.Rule, tag, v.Message)
+		if v.Error != "" {
+			fmt.Printf("      rule error: %s\n", v.Error)
+		}
+	}
+}
+
 // printPolicyDecision renders a dry-run verdict for a terminal.
 func printPolicyDecision(d celpolicy.Decision, rules []celpolicy.Rule, in celpolicy.Input) {
 	verdict := "WOULD ISSUE"
@@ -620,21 +811,7 @@ func printPolicyDecision(d celpolicy.Decision, rules []celpolicy.Rule, in celpol
 	fmt.Printf("%s — %d rule(s) evaluated, %d skipped (out of scope or disabled)\n",
 		verdict, d.Evaluated, d.Skipped)
 	fmt.Printf("Rules considered: %s\n", strings.Join(ruleNames(rules), ", "))
-	if len(d.Violations) == 0 {
-		fmt.Println("No violations.")
-	} else {
-		fmt.Println("\nReasons:")
-		for _, v := range d.Violations {
-			tag := ""
-			if v.Mode == celpolicy.ModeMonitor {
-				tag = " [monitor: would not block]"
-			}
-			fmt.Printf("  - %s%s: %s\n", v.Rule, tag, v.Message)
-			if v.Error != "" {
-				fmt.Printf("      rule error: %s\n", v.Error)
-			}
-		}
-	}
+	printPolicyViolations(d)
 	fmt.Println("\nFacts the rules saw:")
 	tw := tabwriter.NewWriter(os.Stdout, 2, 0, 2, ' ', 0)
 	fmt.Fprintf(tw, "  source / operation\t%s / %s\n", in.Request.Source, in.Request.Operation)
@@ -680,17 +857,27 @@ func cmdPolicyReference(args []string) error {
 	fs := flag.NewFlagSet("issuance-policy reference", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "emit JSON")
 	withExamples := fs.Bool("examples", true, "include the worked examples")
+	kindFlag := fs.String("kind", "", "which vocabulary to print: certificate (default) or signing")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	ref, err := celpolicy.BuildReference()
+	kind, err := parsePolicyKindFlag(*kindFlag)
+	if err != nil {
+		return err
+	}
+	ref, err := celpolicy.BuildReferenceFor(kind)
 	if err != nil {
 		return err
 	}
 	if *asJSON {
 		return emitJSON(ref)
 	}
-	fmt.Println("Variables an expression may reference:")
+	fmt.Printf("Vocabulary for a %s rule.\n", ref.Kind)
+	if len(ref.Operations) > 0 {
+		fmt.Printf("Signing operations a rule may select on (-operations) and compare signing.operation against: %s\n",
+			strings.Join(ref.Operations, ", "))
+	}
+	fmt.Println("\nVariables an expression may reference:")
 	tw := tabwriter.NewWriter(os.Stdout, 2, 0, 2, ' ', 0)
 	for _, v := range ref.Variables {
 		fmt.Fprintf(tw, "  %s\t%s\t%s\n", v.Name, v.Type, v.Doc)
@@ -727,6 +914,22 @@ func cmdPolicyReference(args []string) error {
 		}
 	}
 	return nil
+}
+
+// parsePolicyKindFlag resolves a -kind value, defaulting to the certificate
+// rules. An unknown value is an error rather than a silent default: an operator
+// who typed -kind sign would otherwise store a certificate rule whose
+// expression they wrote about signing.
+func parsePolicyKindFlag(s string) (celpolicy.Kind, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "":
+		return celpolicy.KindCertificate, nil
+	case string(celpolicy.KindCertificate), "cert":
+		return celpolicy.KindCertificate, nil
+	case string(celpolicy.KindSigning), "sign":
+		return celpolicy.KindSigning, nil
+	}
+	return "", fmt.Errorf("-kind %q must be %q or %q", s, celpolicy.KindCertificate, celpolicy.KindSigning)
 }
 
 // lookupPolicyRule resolves a rule by id, falling back to its name — the handle

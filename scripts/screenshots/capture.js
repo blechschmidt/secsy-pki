@@ -429,10 +429,17 @@ const SHOTS = [
   },
   {
     file: '14b-issuance-policy.png',
-    what: 'the CEL issuance-policy rules — the operator-written gate that refuses a request and says why',
-    setup: `switchView('policy'); loadPolicy()`,
-    // Six seeded rules, and the reference panel has to have resolved too: it is
-    // fetched from the server, and the companion shot below photographs it.
+    what: 'the certificate half of the signing policy — the operator-written gate that refuses a request and says why',
+    // The table holds both kinds; this shot is about the certificate rules, so
+    // it filters to them. The signing half is its own shot below.
+    setup: `
+      switchView('policy');
+      await loadPolicy();
+      shotPick('polKindFilter', 'certificate');
+    `,
+    // Six seeded certificate rules, and the reference panel has to have resolved
+    // too: it is fetched from the server, and the companion shot below
+    // photographs it.
     settle: `document.querySelectorAll('#polRows tr').length >= 6 &&
              document.getElementById('polRefVars').textContent.includes('request') &&
              document.getElementById('polRefFooter').textContent.includes('cost units')`,
@@ -452,6 +459,7 @@ const SHOTS = [
     setup: `
       switchView('policy');
       await loadPolicy();
+      shotPick('polTestKind', 'certificate');
       shotSet('polTestFacts', JSON.stringify({
         request: {
           profile: 'server',
@@ -472,6 +480,74 @@ const SHOTS = [
     settle: `(() => { const r = document.getElementById('polTestResult');
              return r && !r.classList.contains('hidden') &&
                     r.textContent.includes('would be refused'); })()`,
+    clip: `panel:Dry-run`,
+    maxHeight: 1500,
+  },
+  {
+    file: '14d-signing-policy.png',
+    what: 'the signing half of the same engine — rules over OpenSSH certificates, artifact signatures and raw signatures',
+    // Same table, same editor, same vocabulary panel: only the kind differs. The
+    // editor is opened on a signing rule so the Keys/Operations scope and the
+    // signing vocabulary are both in frame.
+    setup: `
+      switchView('policy');
+      await loadPolicy();
+      shotPick('polKindFilter', 'signing');
+      const rule = policyRules.find(r => r.name === 'release-key-is-pipeline-only');
+      if (rule) openPolicyEditor(rule);
+      await new Promise(r => setTimeout(r, 400));
+    `,
+    settle: `document.querySelectorAll('#polRows tr').length >= 6 &&
+             document.getElementById('polSigningScope') &&
+             !document.getElementById('polSigningScope').classList.contains('hidden') &&
+             document.getElementById('polRefVars').textContent.includes('signing') &&
+             document.getElementById('polRefKind').textContent.includes('signing')`,
+    clip: '#view-policy',
+    clipTo: `panel:Dry-run`,
+    maxHeight: 1700,
+  },
+  {
+    file: '14e-signing-policy-dryrun.png',
+    what: 'the signing dry-run, run — an OpenSSH certificate refused, with the reasons the requester would be given',
+    // A 24-hour certificate for root on a software key: three rules at once —
+    // the privileged principal, the lifetime ceiling, and (in monitor mode) the
+    // FIDO requirement that is still parked.
+    setup: `
+      switchView('policy');
+      await loadPolicy();
+      shotPick('polTestKind', 'signing');
+      shotPick('polTestWhat', 'all');
+      shotSet('polTestFacts', JSON.stringify({
+        signing: {
+          operation: 'ssh-certificate',
+          source: 'rest',
+          requested_by: 'ci@northwind.example',
+          key: { name: 'northwind-ssh-ca', algorithm: 'Ed25519', provider: 'pkcs11' },
+          payload: { present: true },
+          ssh: {
+            present: true,
+            cert_type: 'user',
+            key_id: 'ci@northwind.example',
+            principals: ['root', 'deploy'],
+            extensions: ['permit-pty'],
+            critical_options: [],
+            critical_option_values: {},
+            validity: '24h',
+            public_key: { type: 'ssh-ed25519', bits: 256, hardware_backed: false },
+            ca: { label: 'northwind-ssh-ca' },
+          },
+        },
+        jwt: { sub: 'ci@northwind.example', groups: ['ssh-operators'] },
+        url: { method: 'POST', path: '/api/ssh/cas/northwind-ssh-ca/sign', present: true },
+        body: {},
+        principal: { subject: 'ci@northwind.example', roles: ['issuer'], authenticated: true },
+      }, null, 2));
+      shotClick('polTestRun');
+    `,
+    settle: `(() => { const r = document.getElementById('polTestResult');
+             return r && !r.classList.contains('hidden') &&
+                    r.textContent.includes('would be refused') &&
+                    r.textContent.includes('shared privileged account'); })()`,
     clip: `panel:Dry-run`,
     maxHeight: 1500,
   },

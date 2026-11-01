@@ -1395,6 +1395,29 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 	// Consume pending HSM logs to free space before signing
 	a.consumeHSMAuditLogs("")
 
+	// Assemble the certificate first, so the CEL signing-restriction gate (Task
+	// 224) sees exactly what would be signed — the resolved key ID, principals,
+	// validity window and the certificate-type extension defaults. This endpoint
+	// signs with the same CA key as /api/ssh/cas/{id}/sign, so the same rules
+	// have to bind here; otherwise it would be a way around every one of them.
+	cert, err := pki.BuildSSHCertificate(
+		[]byte(req.PublicKey), certType, keyID, req.Principals,
+		validAfter, validBefore, req.Extensions, req.CriticalOptions)
+	if err != nil {
+		gateDone(err)
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	if err := a.checkLegacySSHSignPolicy(r, ca, cert, req.Reason); err != nil {
+		gateDone(err)
+		a.recordEvent(r, audit.ActionCertSignSSH, caID, ca.Label, audit.ResultDenied, err.Error())
+		if writeSignPolicyDenied(w, err) {
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "%v", err)
+		return
+	}
+
 	signer, err := a.keyProvider.Signer(r.Context(), keyRefForCA(ca))
 	if err != nil {
 		gateDone(err)
@@ -1403,17 +1426,7 @@ func (a *API) SignCertificate(w http.ResponseWriter, r *http.Request) {
 	}
 	defer signer.Close()
 
-	certBytes, err := pki.SignSSHCertificate(
-		signer,
-		[]byte(req.PublicKey),
-		certType,
-		keyID,
-		req.Principals,
-		validAfter,
-		validBefore,
-		req.Extensions,
-		req.CriticalOptions,
-	)
+	certBytes, err := pki.SignBuiltSSHCertificate(signer, cert)
 	gateDone(err)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to sign certificate: %v", err)
@@ -1512,6 +1525,21 @@ func (a *API) SignX509Certificate(w http.ResponseWriter, r *http.Request) {
 	validBefore, err := pki.ParseTime(req.ValidBefore, time.Now().Add(365*24*time.Hour))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid valid_before: %v", err)
+		return
+	}
+
+	// The CEL restriction gate (Task 224). This endpoint hands the CA key a CSR
+	// directly rather than going through the issuance path, so none of
+	// buildLeaf's gates run — including the operator's own certificate rules.
+	// They are evaluated here instead, against the facts the CSR carries, so a
+	// rule an operator wrote about certificates this PKI signs is true of the
+	// certificates this endpoint signs too.
+	if err := a.checkRawX509SignPolicy(r, ca, []byte(req.CSR), validBefore); err != nil {
+		a.recordEvent(r, audit.ActionCertSignX509, caID, ca.Label, audit.ResultDenied, err.Error())
+		if writeSignPolicyDenied(w, err) {
+			return
+		}
+		writeError(w, http.StatusBadRequest, "%v", err)
 		return
 	}
 

@@ -156,6 +156,31 @@ certificates must name at least one principal (a principal-less OpenSSH cert is
 valid for *everyone* — opt out only via `allow_empty_principals` if you truly
 mean it).
 
+## Limits a profile cannot express
+
+A profile fixes a *shape* — these principals, that ceiling, those extensions.
+What it cannot say is "never these principals, on any profile", "force-command
+is not negotiable", or "a user certificate only for a FIDO-resident key". Those
+are [CEL signing rules](../../docs/signing/signing-restrictions.md), evaluated
+inside the SSH authority — so they bind on `POST /api/ssh/cas/{id}/sign`,
+`secsy-ca ssh sign-user` and the legacy `/api/keys/{id}/sign` alike:
+
+```console
+# No certificate for a shared privileged account, on any profile, by anyone.
+secsy-ca issuance-policy add -kind signing -name no-privileged-principals     -operations ssh-certificate     -expr 'signing.ssh.principals.filter(p, p.lowerAscii() in ["root", "admin"])
+             .map(p, "principal " + p + " is a shared privileged account; use a named account and sudo")'
+
+# A user certificate only for a hardware-resident key (ssh-keygen -t ed25519-sk).
+secsy-ca issuance-policy add -kind signing -name ssh-keys-must-be-fido-resident     -operations ssh-certificate -disabled     -expr 'signing.ssh.cert_type == "host" || signing.ssh.public_key.hardware_backed'     -message 'a user SSH certificate is only signed for a FIDO-resident key (ssh-keygen -t ed25519-sk)'
+```
+
+The facts a rule sees come from the **resolved** certificate — profile defaults
+applied, the CA's ceiling applied — so a rule about a lifetime cannot be fooled
+by asking for more than the CA will grant. Write a rule `-disabled` (as the
+second one above is) and dry-run it with
+`secsy-ca issuance-policy test -kind signing`: a rule is fail-closed, so a wrong
+one refuses every certificate in its scope.
+
 ## Automating issuance
 
 - **Interactive users:** the [`secsy-ssh`](../../README.md#secsy-ssh-ssh-client-wrapper)

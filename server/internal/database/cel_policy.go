@@ -28,10 +28,17 @@ import (
 // identically across SQLite and PostgreSQL.
 
 const celPolicyColumns = `id, tenant_id, name, description, expression, message, effect, mode,
-	profiles, cas, priority, enabled, fail_open, created_by, updated_by, created_at, updated_at`
+	profiles, cas, priority, enabled, fail_open, created_by, updated_by, created_at, updated_at,
+	kind, sign_keys, operations`
 
 // celPolicyPlaceholders matches celPolicyColumns.
-const celPolicyPlaceholders = `?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`
+const celPolicyPlaceholders = `?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`
+
+// certificateKindPredicate matches the rows a certificate rule is read from:
+// the explicit kind, plus the rows written before the column existed, whose
+// absent kind means what it always meant (Task 224 added signing rules; every
+// row that predates it restricts certificate generation).
+const certificateKindPredicate = `(kind IS NULL OR kind = '' OR kind = 'certificate')`
 
 // CreateCELPolicyRule inserts a rule. The caller is expected to have validated
 // the rule (celpolicy.Rule.Validate) — the store will not persist an expression
@@ -45,13 +52,14 @@ func (db *DB) CreateCELPolicyRule(r *celpolicy.Rule) error {
 	now := time.Now().UTC()
 	r.CreatedAt = now.Format(time.RFC3339Nano)
 	r.UpdatedAt = r.CreatedAt
-	profiles, cas := encodeSelectors(r)
+	sel := encodeSelectors(r)
 	_, err := db.exec(
 		`INSERT INTO cel_policy_rules (`+celPolicyColumns+`) VALUES (`+celPolicyPlaceholders+`)`,
 		r.ID, r.TenantID, r.Name, r.Description, r.Expression, r.Message,
 		string(r.EffectOrDefault()), string(r.ModeOrDefault()),
-		profiles, cas, r.Priority, r.Enabled, r.FailOpen,
+		sel.profiles, sel.cas, r.Priority, r.Enabled, r.FailOpen,
 		r.CreatedBy, r.UpdatedBy, now, now,
+		string(r.KindOrDefault()), sel.keys, sel.operations,
 	)
 	return err
 }
@@ -64,14 +72,16 @@ func (db *DB) UpdateCELPolicyRule(r *celpolicy.Rule) (bool, error) {
 		return false, fmt.Errorf("invalid policy rule: %w", err)
 	}
 	now := time.Now().UTC()
-	profiles, cas := encodeSelectors(r)
+	sel := encodeSelectors(r)
 	res, err := db.exec(
 		`UPDATE cel_policy_rules SET tenant_id = ?, name = ?, description = ?, expression = ?,
 			message = ?, effect = ?, mode = ?, profiles = ?, cas = ?, priority = ?, enabled = ?,
-			fail_open = ?, updated_by = ?, updated_at = ? WHERE id = ?`,
+			fail_open = ?, updated_by = ?, updated_at = ?, kind = ?, sign_keys = ?, operations = ?
+			WHERE id = ?`,
 		r.TenantID, r.Name, r.Description, r.Expression, r.Message,
 		string(r.EffectOrDefault()), string(r.ModeOrDefault()),
-		profiles, cas, r.Priority, r.Enabled, r.FailOpen, r.UpdatedBy, now, r.ID,
+		sel.profiles, sel.cas, r.Priority, r.Enabled, r.FailOpen, r.UpdatedBy, now,
+		string(r.KindOrDefault()), sel.keys, sel.operations, r.ID,
 	)
 	if err != nil {
 		return false, err
@@ -162,9 +172,25 @@ func (db *DB) ListCELPolicyRules() ([]celpolicy.Rule, error) {
 // mean two implementations of one matching rule, and the one that disagreed
 // would be the one that let a certificate through.
 func (db *DB) ActiveCELPolicyRules(tenantID string) ([]celpolicy.Rule, error) {
+	return db.activePolicyRules(tenantID, certificateKindPredicate)
+}
+
+// ActiveSigningPolicyRules returns the enabled signing rules (Task 224) that
+// could apply to an operation in the given tenant: the tenant's own rules plus
+// the deployment-wide ones. The kind is filtered here rather than in the engine
+// so a deployment with a hundred certificate rules and one signing rule does
+// not load the hundred on every signature.
+func (db *DB) ActiveSigningPolicyRules(tenantID string) ([]celpolicy.Rule, error) {
+	return db.activePolicyRules(tenantID, `kind = 'signing'`)
+}
+
+// activePolicyRules is the shared read: enabled rows of one kind, scoped to a
+// tenant or deployment-wide.
+func (db *DB) activePolicyRules(tenantID, kindPredicate string) ([]celpolicy.Rule, error) {
 	rows, err := db.query(
 		`SELECT `+celPolicyColumns+` FROM cel_policy_rules
-		 WHERE enabled = `+db.trueLiteral()+` AND (tenant_id = '' OR tenant_id IS NULL OR tenant_id = ?)`,
+		 WHERE enabled = `+db.trueLiteral()+` AND `+kindPredicate+`
+		   AND (tenant_id = '' OR tenant_id IS NULL OR tenant_id = ?)`,
 		tenantID)
 	if err != nil {
 		return nil, err
@@ -198,13 +224,25 @@ func (db *DB) DeleteCELPolicyRule(id string) (bool, error) {
 	return n > 0, nil
 }
 
-// CountCELPolicyRules returns the total and enabled rule counts, for the doctor
-// check and the console's summary line.
+// CountCELPolicyRules returns the total and enabled rule counts across both
+// kinds, for the doctor check and the console's summary line.
 func (db *DB) CountCELPolicyRules() (total, enabled int, err error) {
 	if err = db.queryRow(`SELECT COUNT(*) FROM cel_policy_rules`).Scan(&total); err != nil {
 		return 0, 0, err
 	}
 	err = db.queryRow(`SELECT COUNT(*) FROM cel_policy_rules WHERE enabled = ` + db.trueLiteral()).Scan(&enabled)
+	return total, enabled, err
+}
+
+// CountSigningPolicyRules returns the total and enabled signing-rule counts, so
+// the doctor check can report the two kinds separately — a deployment that
+// wrote signing rules and never enabled one should be told so.
+func (db *DB) CountSigningPolicyRules() (total, enabled int, err error) {
+	if err = db.queryRow(`SELECT COUNT(*) FROM cel_policy_rules WHERE kind = 'signing'`).Scan(&total); err != nil {
+		return 0, 0, err
+	}
+	err = db.queryRow(`SELECT COUNT(*) FROM cel_policy_rules WHERE kind = 'signing' AND enabled = ` +
+		db.trueLiteral()).Scan(&enabled)
 	return total, enabled, err
 }
 
@@ -230,11 +268,24 @@ func (db *DB) trueLiteral() string {
 	return "1"
 }
 
+// encodedSelectors is the JSON-encoded scope of one rule.
+type encodedSelectors struct {
+	profiles, cas, keys, operations string
+}
+
 // encodeSelectors renders the scope selectors as JSON arrays.
-func encodeSelectors(r *celpolicy.Rule) (profiles, cas string) {
-	p, _ := json.Marshal(orEmptySelector(r.Profiles))
-	c, _ := json.Marshal(orEmptySelector(r.CAs))
-	return string(p), string(c)
+func encodeSelectors(r *celpolicy.Rule) encodedSelectors {
+	return encodedSelectors{
+		profiles:   encodeSelector(r.Profiles),
+		cas:        encodeSelector(r.CAs),
+		keys:       encodeSelector(r.Keys),
+		operations: encodeSelector(r.Operations),
+	}
+}
+
+func encodeSelector(s []string) string {
+	b, _ := json.Marshal(orEmptySelector(s))
+	return string(b)
 }
 
 func orEmptySelector(s []string) []string {
@@ -249,12 +300,14 @@ func scanCELPolicyRule(s scanner) (*celpolicy.Rule, error) {
 		r                                  celpolicy.Rule
 		tenant, desc, msg, effect, mode    sql.NullString
 		profiles, cas, createdBy, updateBy sql.NullString
+		kind, keys, operations             sql.NullString
 		enabled, failOpen                  bool
 		createdAt, updatedAt               time.Time
 	)
 	if err := s.Scan(&r.ID, &tenant, &r.Name, &desc, &r.Expression, &msg, &effect, &mode,
 		&profiles, &cas, &r.Priority, &enabled, &failOpen,
-		&createdBy, &updateBy, &createdAt, &updatedAt); err != nil {
+		&createdBy, &updateBy, &createdAt, &updatedAt,
+		&kind, &keys, &operations); err != nil {
 		return nil, err
 	}
 	r.TenantID = tenant.String
@@ -262,8 +315,14 @@ func scanCELPolicyRule(s scanner) (*celpolicy.Rule, error) {
 	r.Message = msg.String
 	r.Effect = celpolicy.Effect(effect.String)
 	r.Mode = celpolicy.Mode(mode.String)
+	// An absent kind is a certificate rule: that is what every row written
+	// before the column existed is, and reading it as anything else would turn
+	// a working issuance restriction into a signing rule nothing consults.
+	r.Kind = celpolicy.Kind(kind.String).OrDefault()
 	r.Profiles = decodeSelector(profiles.String)
 	r.CAs = decodeSelector(cas.String)
+	r.Keys = decodeSelector(keys.String)
+	r.Operations = decodeSelector(operations.String)
 	r.Enabled = enabled
 	r.FailOpen = failOpen
 	r.CreatedBy = createdBy.String

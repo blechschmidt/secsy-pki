@@ -366,3 +366,234 @@ func contains(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// --- signing rules (Task 224) ---------------------------------------------
+//
+// One table holds both kinds, so the discriminator is load-bearing twice over:
+// a signing rule read as a certificate rule would be evaluated against the
+// wrong vocabulary (fail-closed: it would refuse every certificate under its
+// scope), and a certificate rule read as a signing rule would refuse every
+// signature. These tests pin the round-trip and both reads.
+
+func mkSigningRule(id, name, expr string) *celpolicy.Rule {
+	return &celpolicy.Rule{
+		ID: id, Kind: celpolicy.KindSigning, Name: name, Expression: expr, Enabled: true,
+	}
+}
+
+func TestSigningPolicyRoundTrip(t *testing.T) {
+	db := policyDB(t)
+	want := &celpolicy.Rule{
+		ID:          "s-1",
+		Kind:        celpolicy.KindSigning,
+		TenantID:    "acme",
+		Name:        "no-root-principals",
+		Description: "an SSH certificate may not name root",
+		Expression:  `signing.ssh.principals.exists(p, p == "root")`,
+		Message:     "use a named account and sudo",
+		Effect:      celpolicy.EffectDeny,
+		Mode:        celpolicy.ModeEnforce,
+		Profiles:    []string{"ssh-user-*"},
+		CAs:         []string{"ssh-user-ca"},
+		Keys:        []string{"ssh-user-ca", "ssh-*"},
+		Operations:  []string{"ssh-certificate"},
+		Priority:    10,
+		Enabled:     true,
+		FailOpen:    true,
+		CreatedBy:   "ops@example.com",
+		UpdatedBy:   "ops@example.com",
+	}
+	if err := db.CreateCELPolicyRule(want); err != nil {
+		t.Fatalf("CreateCELPolicyRule: %v", err)
+	}
+	got, err := db.GetCELPolicyRule("s-1")
+	if err != nil || got == nil {
+		t.Fatalf("GetCELPolicyRule: %v (got %v)", err, got)
+	}
+	if got.Kind != celpolicy.KindSigning {
+		t.Errorf("kind = %q, want signing", got.Kind)
+	}
+	if strings.Join(got.Keys, ",") != "ssh-user-ca,ssh-*" {
+		t.Errorf("keys = %v", got.Keys)
+	}
+	if strings.Join(got.Operations, ",") != "ssh-certificate" {
+		t.Errorf("operations = %v", got.Operations)
+	}
+	if got.Effect != celpolicy.EffectDeny || !got.FailOpen || got.Priority != 10 {
+		t.Errorf("round-trip lost a field: %+v", got)
+	}
+	if got.Expression != want.Expression || got.Message != want.Message {
+		t.Errorf("expression/message = %q / %q", got.Expression, got.Message)
+	}
+}
+
+func TestActiveRulesAreSplitByKind(t *testing.T) {
+	db := policyDB(t)
+	if err := db.CreateCELPolicyRule(mkRule("c-1", "cert-rule", `request.dns_names.size() <= 2`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateCELPolicyRule(mkSigningRule("s-1", "sign-rule", `signing.key.name != "x"`)); err != nil {
+		t.Fatal(err)
+	}
+	// A disabled signing rule must not reach the gate.
+	off := mkSigningRule("s-2", "sign-off", `false`)
+	off.Enabled = false
+	if err := db.CreateCELPolicyRule(off); err != nil {
+		t.Fatal(err)
+	}
+
+	certRules, err := db.ActiveCELPolicyRules("acme")
+	if err != nil {
+		t.Fatalf("ActiveCELPolicyRules: %v", err)
+	}
+	if got := names(certRules); len(got) != 1 || got[0] != "cert-rule" {
+		t.Errorf("the issuance gate sees %v, want [cert-rule]", got)
+	}
+
+	signRules, err := db.ActiveSigningPolicyRules("acme")
+	if err != nil {
+		t.Fatalf("ActiveSigningPolicyRules: %v", err)
+	}
+	if got := names(signRules); len(got) != 1 || got[0] != "sign-rule" {
+		t.Errorf("the signing gate sees %v, want [sign-rule]", got)
+	}
+
+	// Both kinds are listed together: one table is what an operator administers.
+	all, err := db.ListCELPolicyRules()
+	if err != nil {
+		t.Fatalf("ListCELPolicyRules: %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("the admin listing has %d rules, want 3", len(all))
+	}
+}
+
+func TestSigningPolicyTenantScope(t *testing.T) {
+	db := policyDB(t)
+	mine := mkSigningRule("s-1", "acme-only", `signing.key.name != "x"`)
+	mine.TenantID = "acme"
+	theirs := mkSigningRule("s-2", "other-only", `signing.key.name != "y"`)
+	theirs.TenantID = "other"
+	global := mkSigningRule("s-3", "everyone", `signing.key.name != "z"`)
+	for _, r := range []*celpolicy.Rule{mine, theirs, global} {
+		if err := db.CreateCELPolicyRule(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := db.ActiveSigningPolicyRules("acme")
+	if err != nil {
+		t.Fatalf("ActiveSigningPolicyRules: %v", err)
+	}
+	if n := names(got); len(n) != 2 || !contains(n, "acme-only") || !contains(n, "everyone") {
+		t.Errorf("acme sees %v, want its own rule plus the deployment-wide one", n)
+	}
+}
+
+func TestSigningPolicyCounts(t *testing.T) {
+	db := policyDB(t)
+	if err := db.CreateCELPolicyRule(mkRule("c-1", "cert-rule", `true`)); err != nil {
+		t.Fatal(err)
+	}
+	on := mkSigningRule("s-1", "sign-on", `true`)
+	off := mkSigningRule("s-2", "sign-off", `true`)
+	off.Enabled = false
+	for _, r := range []*celpolicy.Rule{on, off} {
+		if err := db.CreateCELPolicyRule(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	total, enabled, err := db.CountSigningPolicyRules()
+	if err != nil {
+		t.Fatalf("CountSigningPolicyRules: %v", err)
+	}
+	if total != 2 || enabled != 1 {
+		t.Errorf("signing counts = %d/%d, want 2/1", total, enabled)
+	}
+	allTotal, allEnabled, err := db.CountCELPolicyRules()
+	if err != nil {
+		t.Fatalf("CountCELPolicyRules: %v", err)
+	}
+	if allTotal != 3 || allEnabled != 2 {
+		t.Errorf("total counts = %d/%d, want 3/2", allTotal, allEnabled)
+	}
+}
+
+func TestSigningPolicyUpdateKeepsKindAndSelectors(t *testing.T) {
+	db := policyDB(t)
+	rule := mkSigningRule("s-1", "sign-rule", `signing.key.name != "x"`)
+	rule.Keys = []string{"release-signing"}
+	rule.Operations = []string{"artifact"}
+	if err := db.CreateCELPolicyRule(rule); err != nil {
+		t.Fatal(err)
+	}
+	rule.Expression = `signing.artifact.timestamped`
+	rule.Operations = []string{"artifact", "data"}
+	if ok, err := db.UpdateCELPolicyRule(rule); err != nil || !ok {
+		t.Fatalf("UpdateCELPolicyRule: %v (ok=%v)", err, ok)
+	}
+	got, err := db.GetCELPolicyRule("s-1")
+	if err != nil || got == nil {
+		t.Fatalf("GetCELPolicyRule: %v", err)
+	}
+	if got.Kind != celpolicy.KindSigning {
+		t.Errorf("kind = %q after update", got.Kind)
+	}
+	if strings.Join(got.Operations, ",") != "artifact,data" {
+		t.Errorf("operations = %v", got.Operations)
+	}
+	if got.Expression != `signing.artifact.timestamped` {
+		t.Errorf("expression = %q", got.Expression)
+	}
+	// Still only visible to the signing gate.
+	signRules, err := db.ActiveSigningPolicyRules("")
+	if err != nil || len(signRules) != 1 {
+		t.Fatalf("ActiveSigningPolicyRules: %v (%d rules)", err, len(signRules))
+	}
+}
+
+func TestSigningPolicyStoreRejectsUncompilableRules(t *testing.T) {
+	db := policyDB(t)
+	// A certificate field in a signing rule: the store compiles the expression in
+	// the rule's own environment, so this never reaches a gate.
+	if err := db.CreateCELPolicyRule(mkSigningRule("s-1", "wrong-vocabulary", `request.dns_names.size() == 0`)); err == nil {
+		t.Error("a signing rule referencing request.* must be rejected by the store")
+	}
+	// And the converse.
+	if err := db.CreateCELPolicyRule(mkRule("c-1", "wrong-vocabulary-2", `signing.key.name == "x"`)); err == nil {
+		t.Error("a certificate rule referencing signing.* must be rejected by the store")
+	}
+}
+
+// TestLegacyRowsReadAsCertificateRules proves the upgrade path: a row written
+// before the kind column existed (simulated by clearing it) must still be a
+// certificate rule, not a signing rule nothing consults.
+func TestLegacyRowsReadAsCertificateRules(t *testing.T) {
+	db := policyDB(t)
+	if err := db.CreateCELPolicyRule(mkRule("c-1", "legacy", `request.dns_names.size() <= 2`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.exec(`UPDATE cel_policy_rules SET kind = '' WHERE id = ?`, "c-1"); err != nil {
+		t.Fatalf("clearing the kind: %v", err)
+	}
+	got, err := db.GetCELPolicyRule("c-1")
+	if err != nil || got == nil {
+		t.Fatalf("GetCELPolicyRule: %v", err)
+	}
+	if got.Kind != celpolicy.KindCertificate {
+		t.Errorf("a row with no kind read as %q, want certificate", got.Kind)
+	}
+	active, err := db.ActiveCELPolicyRules("")
+	if err != nil {
+		t.Fatalf("ActiveCELPolicyRules: %v", err)
+	}
+	if len(active) != 1 {
+		t.Errorf("the issuance gate sees %d rules, want the legacy one", len(active))
+	}
+	signing, err := db.ActiveSigningPolicyRules("")
+	if err != nil {
+		t.Fatalf("ActiveSigningPolicyRules: %v", err)
+	}
+	if len(signing) != 0 {
+		t.Errorf("the signing gate must not see a legacy certificate rule (saw %d)", len(signing))
+	}
+}

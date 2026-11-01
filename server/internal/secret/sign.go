@@ -369,18 +369,25 @@ type SignResult struct {
 // provider. hashName selects the message hash (empty = the algorithm default);
 // when preHashed, data is already the digest. The private key is used only inside
 // the backend — this call resolves a short-lived provider Signer and closes it.
-func Sign(ctx context.Context, provider keyprovider.Provider, row *models.SigningKey, data []byte, hashName string, preHashed bool) (*SignResult, error) {
+func Sign(ctx context.Context, provider keyprovider.Provider, row *models.SigningKey, data []byte, hashName string, preHashed bool, opts ...SignOption) (*SignResult, error) {
 	alg := SigningAlgorithm(row.Algorithm)
 	aspec, ok := alg.spec()
 	if !ok {
 		return nil, fmt.Errorf("stored key has unsupported algorithm %q", row.Algorithm)
 	}
+	o := resolveSignOptions(opts)
 
 	// Ed25519 signs the message verbatim (no external hash, no pre-hashed digest);
 	// crypto.Hash(0) is the crypto.Signer signal for "sign the message directly".
 	if aspec.scheme == schemeEd25519 {
 		msg, err := ed25519Data(data, hashName, preHashed)
 		if err != nil {
+			return nil, err
+		}
+		// The fail-closed CEL signing gate (Task 224), before the key is opened:
+		// a refused request never reaches the HSM. Ed25519 has no external
+		// message hash, so the facts report no digest.
+		if err := o.checkPolicy(ctx, provider, row, alg, crypto.Hash(0), nil, len(msg), false); err != nil {
 			return nil, err
 		}
 		signer, err := provider.Signer(ctx, keyprovider.KeyRefFor(row.KeyRef))
@@ -401,6 +408,11 @@ func Sign(ctx context.Context, provider keyprovider.Provider, row *models.Signin
 	}
 	digest, err := digestFor(data, hash, preHashed)
 	if err != nil {
+		return nil, err
+	}
+	// The fail-closed CEL signing gate (Task 224), on the resolved digest the
+	// signature will cover and before the key is opened.
+	if err := o.checkPolicy(ctx, provider, row, alg, hash, digest, len(data), preHashed); err != nil {
 		return nil, err
 	}
 	signer, err := provider.Signer(ctx, keyprovider.KeyRefFor(row.KeyRef))

@@ -198,6 +198,19 @@ curl -sk -u root:secret \
       }'
 ```
 
+A JWT-SVID is a **bearer token with no revocation**: whoever holds it is the
+workload until it expires. Its audience and its lifetime are therefore the whole
+of its blast radius, and both are restrictable by a
+[CEL signing rule](../signing/signing-restrictions.md) — evaluated inside the
+issuance path with the *clamped* TTL and the *normalized* audience, so a rule
+cannot be sidestepped by asking for more than the server will mint:
+
+```bash
+secsy-ca issuance-policy add -kind signing -name svid-audience-allowlist     -operations jwt-svid     -expr 'signing.jwt_svid.audience.all(a, a.startsWith("spiffe://" + signing.jwt_svid.trust_domain + "/"))'     -message 'a JWT-SVID may only be minted for an audience inside its own trust domain'
+```
+
+A refusal comes back as HTTP 422 carrying that message.
+
 The response carries the compact token and the JWKS trust bundle (with the JWT
 verification keys), so a relying party has everything to validate it:
 

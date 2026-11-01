@@ -38,6 +38,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/cms"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
@@ -95,8 +96,11 @@ type Service struct {
 	provider   keyprovider.Provider
 	authority  *tsa.Authority   // nil = timestamping unavailable (no CAdES-T/LT)
 	revocation RevocationSource // nil = LTV material unavailable (no CAdES-LT)
-	signers    map[string]*SignerConfig
-	names      []string // sorted, for stable listings
+	// policy is the CEL signing-restriction gate (Task 224); nil = no rule store
+	// is wired, which permits (see SetPolicyGate).
+	policy  celpolicy.SigningChecker
+	signers map[string]*SignerConfig
+	names   []string // sorted, for stable listings
 }
 
 // NewService validates the configured signers and builds the service. A
@@ -212,6 +216,18 @@ func (s *Service) SetRevocationSource(src RevocationSource) { s.revocation = src
 // CAdES-LT, in addition to a TSA).
 func (s *Service) LTVAvailable() bool { return s.revocation != nil }
 
+// SetPolicyGate wires the CEL signing-restriction gate (Task 224), which
+// refuses a signature an operator-written rule forbids. Like
+// SetRevocationSource it is set after construction so this package need not
+// depend on the rule store; wire it once during startup. A nil gate — a service
+// built without a store — permits every request.
+func (s *Service) SetPolicyGate(gate celpolicy.SigningChecker) { s.policy = gate }
+
+// PolicyGateWired reports whether a restriction gate is installed. It exists so
+// the wiring can be asserted — "signing rules exist but nothing consults them"
+// is the one misconfiguration this feature can have, and it is silent.
+func (s *Service) PolicyGateWired() bool { return s.policy != nil }
+
 // SignRequest describes one artifact-signing operation. Exactly one of Content
 // or Digest must be provided.
 type SignRequest struct {
@@ -229,6 +245,18 @@ type SignRequest struct {
 	// Timestamp overrides the signer's TimestampByDefault when non-nil. Ignored
 	// when Level is set (the level determines timestamping).
 	Timestamp *bool
+	// Name is the artifact's name, where the caller supplies one (the CLI's file
+	// name). It is not part of the signature — a detached CMS signature binds a
+	// digest, not a file name — and exists so a restriction rule can read it as
+	// signing.artifact.name. Treat it as caller-asserted metadata.
+	Name string
+	// Purpose is the free-text reason the caller gave, reaching the restriction
+	// rules as signing.purpose.
+	Purpose string
+	// RequestedBy is the identity the signature is attributed to, for the
+	// restriction rules and the audit detail. The transports fill it in from the
+	// authenticated caller.
+	RequestedBy string
 }
 
 // SignResult is the outcome of a successful signing operation.
@@ -301,6 +329,13 @@ func (s *Service) Sign(ctx context.Context, req SignRequest) (*SignResult, error
 	}
 	if level.needsLTV() && s.revocation == nil {
 		return nil, fmt.Errorf("signing: %s requested but no revocation source is wired for long-term-validation material: %w", level, ErrUnavailable)
+	}
+
+	// The fail-closed CEL signing gate (Task 224). It runs on the resolved
+	// request — the effective CAdES level, the artifact digest the signature will
+	// cover — and before the key is opened, so a refusal never touches the HSM.
+	if err := celpolicy.Check(ctx, s.policy, s.policyFacts(req, sc, level, artifactDigest)); err != nil {
+		return nil, err
 	}
 
 	// KeyLabel may be a bare label or a full RFC 7512 pkcs11: URI (addressing by

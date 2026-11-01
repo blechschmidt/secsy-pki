@@ -11,8 +11,14 @@ package handlers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 )
@@ -223,5 +229,59 @@ func TestSignUnknownKeyAndBadInput(t *testing.T) {
 	// Unsupported hash -> bad_request.
 	if _, err := api.SignOp(ctx, "", tenant, "rsa", []byte("x"), nil, "md5"); SecretErrorKind(err) != "bad_request" {
 		t.Errorf("bad hash: kind = %q, want bad_request", SecretErrorKind(err))
+	}
+}
+
+// TestSignOpIsGatedBySigningPolicy proves the CEL signing-restriction gate (Task
+// 224) binds on the shared *Op method that backs both REST and gRPC: a rule is
+// not a per-transport control, and the refusal is classified as its own kind so
+// each transport can answer with the reasons rather than with "forbidden".
+func TestSignOpIsGatedBySigningPolicy(t *testing.T) {
+	api := newCryptoAPI(t)
+	ctx := rootSignCtx()
+	tenant := defaultTenant(t, api)
+	if _, err := api.CreateSigningKeyOp(ctx, "", tenant, "release-signing", "ecdsa-p256"); err != nil {
+		t.Fatalf("CreateSigningKeyOp: %v", err)
+	}
+	rule := &celpolicy.Rule{
+		ID: "s-1", Kind: celpolicy.KindSigning, Name: "no-prehashed-release", Enabled: true,
+		Expression: `signing.key.name != "release-signing" || !signing.payload.prehashed`,
+		Message:    "the release-signing key signs content, not a caller-supplied digest",
+	}
+	if err := api.db.CreateCELPolicyRule(rule); err != nil {
+		t.Fatalf("CreateCELPolicyRule: %v", err)
+	}
+
+	// Signing a message is permitted…
+	if _, err := api.SignOp(ctx, "", tenant, "release-signing", []byte("payload"), nil, ""); err != nil {
+		t.Fatalf("a permitted signature must be produced: %v", err)
+	}
+	// …and signing a caller-supplied digest is refused, with the reason.
+	digest := sha256.Sum256([]byte("payload"))
+	_, err := api.SignOp(ctx, "", tenant, "release-signing", nil, digest[:], "sha256")
+	if err == nil {
+		t.Fatal("a refused signature must not be produced")
+	}
+	if got := SecretErrorKind(err); got != "policy_denied" {
+		t.Errorf("error kind = %q, want policy_denied", got)
+	}
+	if !strings.Contains(err.Error(), "not a caller-supplied digest") {
+		t.Errorf("the operator's wording must reach the caller: %v", err)
+	}
+	// REST renders it as 422 with the violations as data.
+	rec := httptest.NewRecorder()
+	api.writeSecretCryptoError(rec, err)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("REST status = %d, want 422: %s", rec.Code, rec.Body.String())
+	}
+	var denied models.PolicyDeniedResponse
+	if jsonErr := json.Unmarshal(rec.Body.Bytes(), &denied); jsonErr != nil {
+		t.Fatalf("decoding the refusal: %v (%s)", jsonErr, rec.Body.String())
+	}
+	if denied.Code != "policy_denied" || len(denied.Violations) != 1 {
+		t.Errorf("refusal body = %+v", denied)
+	}
+	if denied.Violations[0].Rule != "no-prehashed-release" {
+		t.Errorf("violation rule = %q", denied.Violations[0].Rule)
 	}
 }

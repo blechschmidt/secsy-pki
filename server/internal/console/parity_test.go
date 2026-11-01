@@ -341,10 +341,12 @@ func parityRoutes() []routeEntry {
 		onView("DELETE /api/restriction-sets/{id}", "restrictions"),
 		onView("PUT /api/keys/{id}/default-restriction-set", "restrictions"),
 
-		// CEL issuance-restriction rules (Task 223). The Issuance Policy view is
-		// the whole editing surface: the rule table with its enable/disable
-		// toggles, the editor with its compile check and worked examples, the
-		// dry-run, and the vocabulary reference it renders from the server.
+		// CEL restriction rules (Tasks 223 + 224). The Signing Policy view is the
+		// whole editing surface for both kinds — certificate rules and signing
+		// rules live in one table: the rule table with its kind column and
+		// enable/disable toggles, the editor with its kind selector, compile check
+		// and worked examples, the dry-run, and the per-kind vocabulary reference
+		// it renders from the server.
 		onView("GET /api/issuance-policies", "policy"),
 		onView("POST /api/issuance-policies", "policy"),
 		onView("GET /api/issuance-policies/{id}", "policy"),

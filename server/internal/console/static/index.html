@@ -69,7 +69,7 @@
         <button data-view="tokens">API Tokens</button>
         <button data-view="access">Access</button>
         <button data-view="restrictions">Restrictions</button>
-        <button data-view="policy">Issuance Policy</button>
+        <button data-view="policy">Signing Policy</button>
         <button data-view="webhooks">Webhooks</button>
       </nav>
       <span class="user" id="userBox"></span>
@@ -2389,7 +2389,7 @@
         <h2>Issuance restrictions</h2>
         <p class="sub">The ceiling on what an <strong>SSH</strong> signing request may ask for. Every signature through <code>POST /api/keys/{id}/sign</code> resolves one effective set — from the requester's own permission, their groups', or the CA's default — and is refused when it exceeds that set. A set is scoped either to one CA or globally; global sets are <strong>root-only</strong> to create, per-CA sets need <code>ca:configure</code> (or an administrative grant) on that CA. When <em>nothing</em> resolves, enforcement is skipped entirely and the request is unrestricted — which is why a new CA is created with the built-in <b>Disallow all signatures</b> as its default rather than with no default.</p>
         <div class="notice warn">
-          <b>X.509 sets are stored but not enforced.</b> Nothing on the issuance path consults them: neither <code>POST /api/ca/{id}/issue</code> nor the raw <code>POST /api/keys/{id}/sign-x509</code>. A CA whose X.509 default is <i>Disallow all signatures</i> will still issue. Two things <em>do</em> bind X.509 issuance: the <b>certificate profile</b> — key usages, extended key usages, validity, CA denial — declared in the server configuration, and the <b>Issuance Policy</b> view, whose CEL rules are evaluated before every signature and can restrict names, lifetimes, keys, the caller's token and the request itself. Treat the X.509 rows below as policy you have written down, not policy the CA is applying.
+          <b>X.509 sets are stored but not enforced.</b> Nothing on the issuance path consults them: neither <code>POST /api/ca/{id}/issue</code> nor the raw <code>POST /api/keys/{id}/sign-x509</code>. A CA whose X.509 default is <i>Disallow all signatures</i> will still issue. Two things <em>do</em> bind X.509 issuance: the <b>certificate profile</b> — key usages, extended key usages, validity, CA denial — declared in the server configuration, and the <b>Signing Policy</b> view, whose CEL rules are evaluated before every signature and can restrict names, lifetimes, keys, the caller's token and the request itself. Treat the X.509 rows below as policy you have written down, not policy the CA is applying.
         </div>
         <div id="rsMsg" class="notice hidden" style="margin-bottom:12px"></div>
 
@@ -2482,8 +2482,8 @@
 
       <!-- CEL issuance-restriction rules (Task 223) -->
       <section class="view" id="view-policy">
-        <h2>Issuance policy</h2>
-        <p class="sub">Operator-written <a href="https://cel.dev" target="_blank" rel="noreferrer">CEL</a> rules evaluated before <em>every</em> certificate signature — on this console, the API, the CLI, and the ACME / EST / SCEP / CMP enrollment protocols alike, because the gate sits in the signing path rather than in one handler. A rule sees the request (its names, lifetime, subject and key), the verified claims of the caller's token, the request URL and its body parameters, and the caller's identity. A rule that refuses a request supplies <b>the reason the requester is shown</b>, so "it exceeds the maximum lifetime" travels back instead of "forbidden". Editing needs <code>ca:configure</code>; everyone with a role can read the rules and dry-run them.</p>
+        <h2>Signing policy</h2>
+        <p class="sub">Operator-written <a href="https://cel.dev" target="_blank" rel="noreferrer">CEL</a> rules evaluated before <em>every</em> signature this PKI's keys produce — on this console, the API, the CLI, and the ACME / EST / SCEP / CMP enrollment protocols alike, because each gate sits in the signing path rather than in one handler. A rule has a <b>kind</b>: a <b>certificate</b> rule restricts certificate generation and reads <code>request</code>; a <b>signing</b> rule restricts the other signatures — an OpenSSH certificate, a CMS artifact signature, a raw signature with a named key — and reads <code>signing</code>. Both also see the verified claims of the caller's token, the request URL and its body parameters, and the caller's identity. A rule that refuses a request supplies <b>the reason the requester is shown</b>, so "it exceeds the maximum lifetime" travels back instead of "forbidden". Editing needs <code>ca:configure</code>; everyone with a role can read the rules and dry-run them.</p>
         <div class="notice">
           A rule is <b>fail-closed</b>: one that cannot be evaluated refuses the request rather than letting it through. Write a rule <b>disabled</b>, dry-run it below against a real CSR, and only then switch it on — or put it in <b>monitor</b> mode, which records what it would have refused and issues anyway.
         </div>
@@ -2499,14 +2499,22 @@
               <option value="disabled">disabled only</option>
             </select>
           </div>
+          <div class="field" style="margin:0">
+            <label for="polKindFilter">Kind</label>
+            <select id="polKindFilter">
+              <option value="">both kinds</option>
+              <option value="certificate">certificate — issuance</option>
+              <option value="signing">signing — SSH / artifact / data</option>
+            </select>
+          </div>
           <div class="spacer"></div>
           <button class="btn sm" id="polNew" style="margin-top:16px">New rule</button>
           <button class="btn ghost sm" id="polRefresh" style="margin-top:16px">Refresh</button>
         </div>
         <div class="panel">
           <table>
-            <thead><tr><th>#</th><th>Name</th><th>State</th><th>Effect</th><th>Mode</th><th>Scope</th><th>Expression</th><th></th></tr></thead>
-            <tbody id="polRows"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
+            <thead><tr><th>#</th><th>Kind</th><th>Name</th><th>State</th><th>Effect</th><th>Mode</th><th>Scope</th><th>Expression</th><th></th></tr></thead>
+            <tbody id="polRows"><tr><td colspan="9" class="muted">Loading…</td></tr></tbody>
           </table>
         </div>
 
@@ -2515,6 +2523,13 @@
           <h2 style="font-size:15px" id="polEditorTitle"></h2>
           <div id="polEditorError" class="notice err hidden"></div>
           <div class="row">
+            <div class="field" style="width:230px">
+              <label for="polKind">Kind <span class="muted">— fixed once saved</span></label>
+              <select id="polKind" title="A certificate rule reasons about `request` and gates issuance; a signing rule reasons about `signing` and gates SSH certificates, artifact signatures and raw signatures. The vocabulary below follows this choice.">
+                <option value="certificate">certificate — issuance</option>
+                <option value="signing">signing — SSH / artifact / data</option>
+              </select>
+            </div>
             <div class="field" style="flex:1;min-width:200px">
               <label for="polName">Name <span class="muted">— appears in the refusal the requester reads</span></label>
               <input id="polName" placeholder="max-lifetime">
@@ -2566,6 +2581,10 @@
             <div class="field" style="flex:1;min-width:200px"><label for="polCAs">CAs (ids or labels, globs allowed; empty = all)</label><input id="polCAs" placeholder="issuing,staging-*"></div>
             <div class="field" style="width:180px"><label for="polTenant">Tenant (empty = all)</label><input id="polTenant" placeholder=""></div>
           </div>
+          <div class="row hidden" id="polSigningScope">
+            <div class="field" style="flex:1;min-width:200px"><label for="polKeys">Keys (signer / key / SSH CA names, globs allowed; empty = all)</label><input id="polKeys" placeholder="release-signing,ssh-*"></div>
+            <div class="field" style="flex:1;min-width:200px"><label for="polOperations">Operations (empty = all)</label><input id="polOperations" placeholder="ssh-certificate,artifact,data"></div>
+          </div>
           <label class="muted" style="display:flex;gap:6px;align-items:center;margin-bottom:8px"><input type="checkbox" id="polEnabled" checked> enabled — apply this rule to issuance now</label>
           <label class="muted" style="display:flex;gap:6px;align-items:center;margin-bottom:12px" title="By default a rule whose own evaluation fails refuses the request. Tick this only for a rule you accept as best-effort."><input type="checkbox" id="polFailOpen"> fail open — permit issuance when <em>this rule</em> cannot be evaluated</label>
           <div class="row" style="justify-content:flex-end;gap:8px">
@@ -2577,9 +2596,16 @@
         <!-- Dry-run -->
         <div class="panel">
           <h2 style="font-size:15px">Dry-run</h2>
-          <p class="sub">Evaluate rules against a request without signing anything. Supply a CSR under a real CA and profile and the certificate facts are derived by the same code the gate uses — so a rule that passes here behaves the same way when that CSR is actually submitted. The token claims, request URL, body parameters and caller identity have no CSR to come from, so set them as JSON.</p>
+          <p class="sub">Evaluate rules against a request without signing anything. For a <b>certificate</b> rule, supply a CSR under a real CA and profile and the facts are derived by the same code the gate uses — so a rule that passes here behaves the same way when that CSR is actually submitted. A <b>signing</b> rule has no CSR to derive anything from, so its facts come entirely from the JSON below. The token claims, request URL, body parameters and caller identity are JSON in both cases.</p>
           <div id="polTestError" class="notice err hidden"></div>
           <div class="row">
+            <div class="field" style="width:230px">
+              <label for="polTestKind">Kind</label>
+              <select id="polTestKind">
+                <option value="certificate">certificate — issuance</option>
+                <option value="signing">signing — SSH / artifact / data</option>
+              </select>
+            </div>
             <div class="field" style="width:220px">
               <label for="polTestWhat">Rules</label>
               <select id="polTestWhat">
@@ -2593,20 +2619,20 @@
               <label for="polTestRule">Rule</label>
               <select id="polTestRule"></select>
             </div>
-            <div class="field" style="width:220px">
+            <div class="field certOnly" style="width:220px">
               <label for="polTestCA">Issuing CA</label>
               <select id="polTestCA"></select>
             </div>
-            <div class="field" style="width:180px">
+            <div class="field certOnly" style="width:180px">
               <label for="polTestProfile">Profile</label>
               <select id="polTestProfile"></select>
             </div>
-            <div class="field" style="width:150px">
+            <div class="field certOnly" style="width:150px">
               <label for="polTestDays">Validity (days)</label>
               <input id="polTestDays" type="number" min="0" placeholder="profile default">
             </div>
           </div>
-          <div class="field">
+          <div class="field certOnly">
             <label for="polTestCSR">CSR (PEM) <span class="muted">— optional; without one the facts come entirely from the JSON below</span></label>
             <textarea id="polTestCSR" rows="4" spellcheck="false" style="font-family:var(--mono,monospace);width:100%" placeholder="-----BEGIN CERTIFICATE REQUEST-----"></textarea>
           </div>
@@ -2624,8 +2650,8 @@
         <!-- Vocabulary reference, rendered from the server so it cannot drift
              from the environment a rule is compiled in. -->
         <div class="panel">
-          <h2 style="font-size:15px">Expression reference</h2>
-          <p class="sub">Read from the running server, so what is listed here is exactly what an expression may use. A field name that is not listed is a load error, not a silent non-match.</p>
+          <h2 style="font-size:15px">Expression reference <span class="muted" id="polRefKind"></span></h2>
+          <p class="sub">Read from the running server, so what is listed here is exactly what an expression may use — for the kind selected in the editor above. A field name that is not listed is a load error, not a silent non-match.</p>
           <div class="row" style="align-items:flex-start;gap:16px">
             <div style="flex:1;min-width:300px">
               <h3 style="font-size:13px;margin:0 0 6px">Variables</h3>

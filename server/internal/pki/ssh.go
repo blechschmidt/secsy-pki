@@ -11,6 +11,22 @@ import (
 )
 
 func SignSSHCertificate(signer crypto.Signer, pubKeyData []byte, certType uint32, keyID string, principals []string, validAfter, validBefore time.Time, extensions, criticalOptions map[string]string) ([]byte, error) {
+	cert, err := BuildSSHCertificate(pubKeyData, certType, keyID, principals, validAfter, validBefore, extensions, criticalOptions)
+	if err != nil {
+		return nil, err
+	}
+	return SignBuiltSSHCertificate(signer, cert)
+}
+
+// BuildSSHCertificate assembles the to-be-signed OpenSSH certificate: the
+// parsed public key, a random 64-bit serial, and the certificate-type defaults
+// a user certificate gets when the caller names no extensions.
+//
+// It is split out of SignSSHCertificate so a caller can see the certificate
+// *before* it is signed — which is what the CEL signing-restriction gate (Task
+// 224) needs: a rule must be evaluated against the certificate that would be
+// produced, defaults and all, not against the request that asked for it.
+func BuildSSHCertificate(pubKeyData []byte, certType uint32, keyID string, principals []string, validAfter, validBefore time.Time, extensions, criticalOptions map[string]string) (*ssh.Certificate, error) {
 	pubKey, _, _, _, err := ssh.ParseAuthorizedKey(pubKeyData)
 	if err != nil {
 		return nil, fmt.Errorf("parsing public key: %w", err)
@@ -47,7 +63,12 @@ func SignSSHCertificate(signer crypto.Signer, pubKeyData []byte, certType uint32
 	if criticalOptions != nil {
 		cert.CriticalOptions = criticalOptions
 	}
+	return cert, nil
+}
 
+// SignBuiltSSHCertificate signs a certificate assembled by BuildSSHCertificate
+// and returns its authorized_keys encoding.
+func SignBuiltSSHCertificate(signer crypto.Signer, cert *ssh.Certificate) ([]byte, error) {
 	caSigner, err := ssh.NewSignerFromSigner(signer)
 	if err != nil {
 		return nil, fmt.Errorf("creating SSH signer: %w", err)

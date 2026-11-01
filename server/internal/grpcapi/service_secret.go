@@ -45,6 +45,12 @@ func mapSecretOpErr(err error) error {
 	switch handlers.SecretErrorKind(err) {
 	case "forbidden":
 		return status.Error(codes.PermissionDenied, err.Error())
+	case "policy_denied":
+		// FailedPrecondition, not InvalidArgument: the request was well-formed
+		// and the caller was entitled to make it — an operator-written rule
+		// refused its content. Retrying it unchanged will fail identically,
+		// which is what this code tells a client.
+		return status.Error(codes.FailedPrecondition, err.Error())
 	case "bad_request":
 		return status.Error(codes.InvalidArgument, err.Error())
 	case "conflict":

@@ -22,13 +22,16 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/secret"
+	"github.com/blechschmidt/secsy-pki/server/internal/signpolicy"
 )
 
 // cmdSigningKey dispatches the signing-key management sub-verbs (create/list/
@@ -211,6 +214,7 @@ func cmdSign(cfg *config.Config, provider keyprovider.Provider, args []string) e
 	preHashed := fs.Bool("prehashed", false, "the input is already a digest of -hash, sign it verbatim")
 	out := fs.String("out", "-", "output signature file (raw bytes), or '-' for stdout (base64)")
 	operator := fs.String("operator", "", "operator identity recorded in the audit event (default: OS user)")
+	reason := fs.String("reason", "", "why this signature is being made; reaches the signing restriction rules as signing.purpose")
 	jsonOut := fs.Bool("json", false, "emit a machine-readable JSON object")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -239,7 +243,16 @@ func cmdSign(cfg *config.Config, provider keyprovider.Provider, args []string) e
 		return fmt.Errorf("no signing key named %q for tenant %q", *key, *tenant)
 	}
 
-	res, err := secret.Sign(context.Background(), provider, row, data, *hash, *preHashed)
+	// The CEL signing-restriction gate (Task 224) binds on this path too: the
+	// store this CLI opened is the one the server reads its rules from, so a
+	// rule that refuses a signature over the API refuses it from a terminal.
+	res, err := secret.Sign(context.Background(), provider, row, data, *hash, *preHashed,
+		secret.WithPolicy(secret.SignPolicy{
+			Gate:        signpolicy.NewGate(db, db),
+			RequestedBy: operatorActor(*operator),
+			Purpose:     strings.TrimSpace(*reason),
+			Source:      celpolicy.SourceCLI,
+		}))
 	if err != nil {
 		return err
 	}

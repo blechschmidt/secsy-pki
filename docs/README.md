@@ -107,6 +107,7 @@ These pages are also published — with search and navigation — at
 
 | Page | Covers |
 |------|--------|
+| [CEL signing restrictions](signing/signing-restrictions.md) | Operator-written rules gating SSH certificates, artifact signatures and raw signatures |
 | [Artifact / code signing](signing/artifact-signing.md) | HSM-backed CMS/PKCS#7 code and artifact signing, CAdES B/T/LT |
 | [Time-stamping authority (RFC 3161)](signing/timestamping.md) | Provisioning the TSA key, the /tsa endpoint, `openssl ts` interop |
 | [Trusted external time source (NTS / Roughtime)](signing/trusted-time.md) | Cross-checking the host clock before signing, and refusing on drift |

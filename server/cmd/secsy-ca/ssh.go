@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
@@ -276,6 +277,7 @@ func cmdSSHSign(db *database.DB, authority *sshca.Authority, certType string, ar
 	profile := fs.String("profile", "", "signing profile (default: "+sshca.DefaultProfileName(certType)+")")
 	validity := fs.String("validity", "", "requested validity (e.g. 12h, 30d; default: profile default)")
 	out := fs.String("out", "", "write the certificate here (default: stdout)")
+	signReason := fs.String("reason", "", "why this certificate is being signed; reaches the signing restriction rules as signing.purpose")
 	extensions := kvFlag{}
 	criticalOptions := kvFlag{}
 	if certType == sshca.CertTypeUser {
@@ -316,7 +318,11 @@ func cmdSSHSign(db *database.DB, authority *sshca.Authority, certType string, ar
 		principalList = strings.Split(s, ",")
 	}
 
-	result, err := authority.Sign(context.Background(), sshca.SignRequest{
+	// Label the surface (signing.source == "cli") so a restriction rule can tell
+	// a terminal invocation from an API call, and attribute the certificate to
+	// the operator running it.
+	ctx := celpolicy.WithSource(context.Background(), celpolicy.SourceCLI)
+	result, err := authority.Sign(ctx, sshca.SignRequest{
 		CAID:            caID,
 		CertType:        certType,
 		PublicKey:       string(pubData),
@@ -326,7 +332,8 @@ func cmdSSHSign(db *database.DB, authority *sshca.Authority, certType string, ar
 		Validity:        dur,
 		Extensions:      extensions,
 		CriticalOptions: criticalOptions,
-		RequestedBy:     "cli",
+		RequestedBy:     cliActor(),
+		Purpose:         strings.TrimSpace(*signReason),
 	})
 	if err != nil {
 		return err

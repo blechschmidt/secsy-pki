@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/spiffe"
@@ -205,12 +206,14 @@ func cmdSVIDJWT(db *database.DB, mgr *ca.Manager, args []string) error {
 	if err != nil {
 		return err
 	}
-	result, err := mgr.IssueJWTSVID(context.Background(), ca.JWTSVIDSpec{
+	// Label the surface so a signing rule can tell a terminal invocation from an
+	// API call (signing.source == "cli").
+	result, err := mgr.IssueJWTSVID(celpolicy.WithSource(context.Background(), celpolicy.SourceCLI), ca.JWTSVIDSpec{
 		CAID:        caID,
 		SPIFFEID:    sid.String(),
 		Audience:    []string(audiences),
 		TTL:         *ttl,
-		RequestedBy: "secsy-ca-cli",
+		RequestedBy: cliActor(),
 	})
 	if err != nil {
 		return err

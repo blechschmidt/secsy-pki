@@ -53,30 +53,52 @@ type Example struct {
 // Reference is the whole vocabulary: variables (with the fields of each object),
 // the function library, the result shapes, the cost ceiling, and worked examples.
 type Reference struct {
+	// Kind names which vocabulary this is, so a console that caches two of them
+	// cannot render one under the other's heading.
+	Kind      Kind            `json:"kind"`
 	Variables []VarDoc        `json:"variables"`
 	Functions []FunctionGroup `json:"functions"`
 	Results   []string        `json:"results"`
 	Effects   []string        `json:"effects"`
 	Modes     []string        `json:"modes"`
-	CostLimit uint64          `json:"cost_limit"`
-	Examples  []Example       `json:"examples"`
+	Kinds     []string        `json:"kinds"`
+	// Operations lists the signing operations a rule of KindSigning may select
+	// on and compare `signing.operation` against. Empty for a certificate rule.
+	Operations []string  `json:"operations,omitempty"`
+	CostLimit  uint64    `json:"cost_limit"`
+	Examples   []Example `json:"examples"`
 }
 
-// BuildReference assembles the vocabulary reference from the live environment.
-func BuildReference() (Reference, error) {
-	env, err := Env()
+// BuildReference assembles the certificate vocabulary from the live environment.
+func BuildReference() (Reference, error) { return BuildReferenceFor(KindCertificate) }
+
+// BuildReferenceFor assembles one kind's vocabulary reference from the live
+// environment it is compiled in, so the reference an operator reads while
+// writing a rule cannot drift from what the rule will be checked against.
+func BuildReferenceFor(kind Kind) (Reference, error) {
+	kind = kind.OrDefault()
+	env, err := EnvFor(kind)
 	if err != nil {
 		return Reference{}, err
 	}
+	kinds := make([]string, 0, 2)
+	for _, k := range Kinds() {
+		kinds = append(kinds, string(k))
+	}
 	ref := Reference{
+		Kind:      kind,
 		Functions: FunctionGroups(),
 		Results:   resultShapes,
 		Effects:   []string{string(EffectRequire), string(EffectDeny)},
 		Modes:     []string{string(ModeEnforce), string(ModeMonitor)},
+		Kinds:     kinds,
 		CostLimit: celexpr.DefaultCostLimit,
-		Examples:  Examples(),
+		Examples:  ExamplesFor(kind),
 	}
-	objects := objectFields()
+	if kind == KindSigning {
+		ref.Operations = SigningOperations()
+	}
+	objects := objectFields(kind)
 	for _, v := range env.Vars() {
 		doc := VarDoc{Name: v.Name(), Type: celTypeSpelling(v.Type()), Doc: v.Doc()}
 		doc.Fields = objects[v.Type()]
@@ -103,9 +125,13 @@ func celTypeSpelling(t string) string {
 // types, keyed by the CEL type name a variable declares. Reading the fields off
 // the Go structs — rather than listing them again here — is what keeps the
 // reference honest when a fact is added to the engine.
-func objectFields() map[string][]FieldDoc {
+func objectFields(kind Kind) map[string][]FieldDoc {
+	protos := prototypes()
+	if kind.OrDefault() == KindSigning {
+		protos = signingPrototypes()
+	}
 	out := make(map[string][]FieldDoc)
-	for _, proto := range prototypes() {
+	for _, proto := range protos {
 		t := reflect.TypeOf(proto)
 		if t == nil || t.Kind() != reflect.Struct {
 			continue
@@ -242,6 +268,14 @@ func FunctionGroups() []FunctionGroup {
 	}
 }
 
+// ExamplesFor returns the worked rules of one kind.
+func ExamplesFor(kind Kind) []Example {
+	if kind.OrDefault() == KindSigning {
+		return SigningExamples()
+	}
+	return Examples()
+}
+
 // Examples are worked rules covering the restrictions an enterprise asks for
 // first. Each one is evaluated by the test suite, so an example an operator
 // copies out of the console compiles.
@@ -318,6 +352,108 @@ func Examples() []Example {
 			Description: "A request parameter the API accepts but the certificate does not carry: the engine still sees it.",
 			Expression:  `has(body.reason) && string(body.reason).matches("^(CHG|INC)-[0-9]{4,}$")`,
 			Message:     `the "reason" parameter must name a change or incident ticket, e.g. CHG-10482`,
+		},
+	}
+}
+
+// SigningExamples are worked signing rules (Task 224), covering what an
+// enterprise restricts first on the three signing surfaces. Each one is
+// evaluated by the test suite against the signing environment, so an example an
+// operator copies out of the console compiles.
+func SigningExamples() []Example {
+	return []Example{
+		{
+			Title:       "SSH certificates may not name a privileged account",
+			Description: "A deny-effect blocklist over the principals an OpenSSH certificate would be valid for.",
+			Expression:  `signing.ssh.present && signing.ssh.principals.exists(p, p.lowerAscii() in ["root", "admin", "ec2-user"])`,
+			Effect:      EffectDeny,
+			Message:     "an SSH certificate may not name root, admin or ec2-user; use a named account and sudo",
+		},
+		{
+			Title:       "Cap an SSH certificate's lifetime",
+			Description: "A ceiling that tells the requester the number they exceeded, in hours.",
+			Expression: `signing.operation != "ssh-certificate" || signing.ssh.validity <= duration("12h") ? "" : ` +
+				`"requested %s of SSH certificate validity; this CA signs at most 12h".format([string(signing.ssh.validity)])`,
+		},
+		{
+			Title:       "Only a pipeline token may use the release key",
+			Description: "The key selector narrows the rule; the token's verified claims decide. A human with the console cannot sign a release.",
+			Expression: `signing.key.name != "release-signing" || ` +
+				`(has(jwt.iss) && string(jwt.iss).startsWith("https://token.actions.githubusercontent.com") && ` +
+				`has(jwt.repository) && string(jwt.repository) == "example/product")`,
+			Message: "the release-signing key is reserved for the example/product release workflow",
+		},
+		{
+			Title:       "An artifact signature must carry a trusted timestamp",
+			Description: "CAdES-B is refused for artifacts: without a countersignature the signature stops verifying when the certificate expires.",
+			Expression:  `signing.operation != "artifact" || signing.artifact.timestamped`,
+			Message:     "an artifact signature must be timestamped (level t or lt) so it outlives the signing certificate",
+		},
+		{
+			Title:       "Refuse to sign a digest nobody looked at",
+			Description: "A pre-hashed request means the service never saw what it is attesting to. Some keys should only ever sign content.",
+			Expression:  `signing.key.name != "sbom-signing" || !signing.payload.prehashed`,
+			Message:     "the sbom-signing key signs content, not a caller-supplied digest",
+		},
+		{
+			Title:       "Host certificates only for hosts in our domain",
+			Description: "One reason per offending principal, so a requester with three wrong names learns all three.",
+			Expression: `signing.ssh.cert_type != "host" ? [] : ` +
+				`signing.ssh.principals.filter(p, !p.endsWith(".example.com"))` +
+				`.map(p, "host principal " + p + " is outside example.com, which this SSH CA may not certify")`,
+		},
+		{
+			Title:       "force-command may not be overridden",
+			Description: "Reads the resolved critical options, which is where an OpenSSH certificate's real authority lives.",
+			Expression: `"force-command" in signing.ssh.critical_option_values && ` +
+				`signing.ssh.critical_option_values["force-command"] != "/usr/local/bin/session-wrapper"`,
+			Effect:  EffectDeny,
+			Message: "force-command is fixed to /usr/local/bin/session-wrapper on this CA",
+		},
+		{
+			Title:       "Raw signatures need a hardware-backed key",
+			Description: "The key's provider is a fact: a signature a compliance regime calls qualified cannot come from the software keystore.",
+			Expression:  `signing.operation != "data" || signing.key.provider in ["pkcs11", "pkcs11-ha", "awskms", "azurekeyvault", "gcpkms", "vaulttransit"]`,
+			Message:     "this deployment signs only with provider-resident keys; the software keystore is for tests",
+		},
+		{
+			Title:       "SHA-1 is not a signature hash",
+			Description: "Holds on every surface at once: the payload digest algorithm is reported the same way for all three operations.",
+			Expression:  `signing.payload.digest_algorithm.startsWith("SHA-1") || signing.data.hash.startsWith("SHA-1")`,
+			Effect:      EffectDeny,
+			Message:     "SHA-1 is not an acceptable signature hash; use SHA-256 or stronger",
+		},
+		{
+			Title:       "Signing outside business hours needs a change ticket",
+			Description: "Uses the clock the server read (never one the expression reads) plus a body parameter the signature itself does not carry.",
+			Expression: `now.getHours() >= 8 && now.getHours() < 18 && now.getDayOfWeek() >= 1 && now.getDayOfWeek() <= 5 ? "" : ` +
+				`(has(body.reason) && string(body.reason).matches("^(CHG|INC)-[0-9]{4,}$") ? "" : ` +
+				`"signing outside 08:00-18:00 Mon-Fri requires a \"reason\" naming a change or incident ticket")`,
+		},
+		{
+			Title:       "An SSH key must be hardware-resident",
+			Description: "An OpenSSH \"sk-\" key type is the one thing a public key proves about where its private half lives.",
+			Expression:  `signing.operation != "ssh-certificate" || signing.ssh.public_key.hardware_backed || signing.ssh.cert_type == "host"`,
+			Message:     "a user SSH certificate is only signed for a FIDO-resident key (ssh-keygen -t ed25519-sk)",
+		},
+		{
+			Title:       "A JWT-SVID only for audiences inside the trust domain",
+			Description: "A SPIFFE bearer token is only as bounded as its audience; this keeps one from being minted for an external service.",
+			Expression: `signing.operation != "jwt-svid" || ` +
+				`signing.jwt_svid.audience.all(a, a.startsWith("spiffe://" + signing.jwt_svid.trust_domain + "/"))`,
+			Message: "a JWT-SVID may only be minted for an audience inside its own trust domain",
+		},
+		{
+			Title:       "Short-lived means short-lived",
+			Description: "A JWT-SVID is a bearer token with no revocation; its lifetime is the only bound on a leak.",
+			Expression: `signing.operation != "jwt-svid" || signing.jwt_svid.ttl <= duration("15m") ? "" : ` +
+				`"requested %d seconds of JWT-SVID lifetime; this deployment mints at most 900".format([signing.jwt_svid.ttl_seconds])`,
+		},
+		{
+			Title:       "Only the console and the CLI may sign artifacts",
+			Description: "Reads signing.source, which names the surface the request arrived on.",
+			Expression:  `signing.operation != "artifact" || signing.source in ["rest", "cli"]`,
+			Message:     "artifact signing is not exposed on this surface",
 		},
 	}
 }

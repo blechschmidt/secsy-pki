@@ -37,6 +37,10 @@ import (
 // policyRuleRequest is the JSON body of a create/update. It mirrors
 // celpolicy.Rule minus the server-owned fields.
 type policyRuleRequest struct {
+	// Kind is "certificate" (the default, Task 223) or "signing" (Task 224). It
+	// decides which vocabulary the expression is compiled against and which gate
+	// enforces the rule.
+	Kind        celpolicy.Kind   `json:"kind"`
 	Name        string           `json:"name"`
 	Description string           `json:"description"`
 	Expression  string           `json:"expression"`
@@ -46,9 +50,13 @@ type policyRuleRequest struct {
 	TenantID    string           `json:"tenant_id"`
 	Profiles    []string         `json:"profiles"`
 	CAs         []string         `json:"cas"`
-	Priority    int              `json:"priority"`
-	Enabled     *bool            `json:"enabled"`
-	FailOpen    bool             `json:"fail_open"`
+	// Keys and Operations narrow a signing rule to certain keys / signing
+	// operations; they are rejected on a certificate rule.
+	Keys       []string `json:"keys"`
+	Operations []string `json:"operations"`
+	Priority   int      `json:"priority"`
+	Enabled    *bool    `json:"enabled"`
+	FailOpen   bool     `json:"fail_open"`
 }
 
 // rule converts the body into a rule, defaulting Enabled to true: an operator
@@ -60,6 +68,10 @@ func (b policyRuleRequest) rule() celpolicy.Rule {
 		enabled = *b.Enabled
 	}
 	return celpolicy.Rule{
+		// The kind is carried through raw, not defaulted: Rule.Validate rejects an
+		// unknown one, and coercing "sign" to "certificate" here would store a
+		// rule whose expression was written for the other vocabulary.
+		Kind:        b.Kind,
 		Name:        strings.TrimSpace(b.Name),
 		Description: strings.TrimSpace(b.Description),
 		Expression:  strings.TrimSpace(b.Expression),
@@ -69,6 +81,8 @@ func (b policyRuleRequest) rule() celpolicy.Rule {
 		TenantID:    strings.TrimSpace(b.TenantID),
 		Profiles:    trimAll(b.Profiles),
 		CAs:         trimAll(b.CAs),
+		Keys:        trimAll(b.Keys),
+		Operations:  trimAll(b.Operations),
 		Priority:    b.Priority,
 		Enabled:     enabled,
 		FailOpen:    b.FailOpen,
@@ -98,6 +112,22 @@ func (a *API) ListIssuancePolicies(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list issuance policies: %v", err)
 		return
+	}
+	// ?kind=certificate|signing narrows the list; without it both kinds are
+	// returned, because one table of rules is what an operator administers.
+	if want := strings.TrimSpace(r.URL.Query().Get("kind")); want != "" {
+		kind, err := parsePolicyKind(want)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+		filtered := make([]celpolicy.Rule, 0, len(rules))
+		for _, rule := range rules {
+			if rule.KindOrDefault() == kind {
+				filtered = append(filtered, rule)
+			}
+		}
+		rules = filtered
 	}
 	if rules == nil {
 		rules = []celpolicy.Rule{}
@@ -205,6 +235,26 @@ func (a *API) UpdateIssuancePolicy(w http.ResponseWriter, r *http.Request) {
 	rule.CreatedBy = existing.CreatedBy
 	rule.CreatedAt = existing.CreatedAt
 	rule.UpdatedBy = user.Subject
+	// A rule's kind is fixed at creation: changing it would reinterpret an
+	// expression against a vocabulary it was never written for, and the usual
+	// result is a rule that no longer compiles — i.e. one that fails closed and
+	// refuses everything it applies to. An omitted kind keeps the stored one.
+	if body.Kind == "" {
+		rule.Kind = existing.KindOrDefault()
+	} else {
+		kind, err := parsePolicyKind(string(body.Kind))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "%v", err)
+			return
+		}
+		if kind != existing.KindOrDefault() {
+			writeError(w, http.StatusBadRequest,
+				"a rule's kind cannot be changed (%q is %s); delete it and create a %s rule instead",
+				existing.Name, existing.KindOrDefault(), kind)
+			return
+		}
+		rule.Kind = kind
+	}
 	if rule.Name == "" {
 		rule.Name = existing.Name
 	}
@@ -319,7 +369,8 @@ func (a *API) ValidateIssuancePolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Expression string `json:"expression"`
+		Expression string         `json:"expression"`
+		Kind       celpolicy.Kind `json:"kind"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
@@ -329,14 +380,20 @@ func (a *API) ValidateIssuancePolicy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "expression is required")
 		return
 	}
-	prog, err := celpolicy.Compile(body.Expression)
+	ruleKind, err := parsePolicyKind(string(body.Kind))
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"valid": false, "error": err.Error()})
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	prog, err := celpolicy.CompileFor(ruleKind, body.Expression)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"valid": false, "error": err.Error(), "kind": ruleKind})
 		return
 	}
 	kind, static := prog.Kind()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"valid":       true,
+		"kind":        ruleKind,
 		"result_type": policyResultTypeName(kind, static),
 	})
 }
@@ -364,6 +421,10 @@ func policyResultTypeName(kind celexpr.ResultKind, static bool) string {
 // and profile — the most faithful test, because the facts are then derived by the
 // same code the issuance path uses.
 type policyTestRequest struct {
+	// Kind selects which rules and which vocabulary the dry-run uses:
+	// "certificate" (the default) evaluates against `input`, "signing" against
+	// `signing_input`.
+	Kind       celpolicy.Kind   `json:"kind,omitempty"`
 	Expression string           `json:"expression,omitempty"`
 	Effect     celpolicy.Effect `json:"effect,omitempty"`
 	Message    string           `json:"message,omitempty"`
@@ -380,15 +441,23 @@ type policyTestRequest struct {
 	ValidityDays int    `json:"validity_days,omitempty"`
 
 	Input celpolicy.Input `json:"input"`
+	// SigningInput is the fact set for a signing dry-run. It is a separate field
+	// rather than a differently-shaped `input` so the two vocabularies cannot be
+	// confused — in a request, in the API documentation, or in a console that
+	// remembers the last facts an operator typed.
+	SigningInput celpolicy.SigningInput `json:"signing_input"`
 }
 
 // policyTestResponse is the dry-run result: the decision, plus the facts the
 // rules actually saw. Echoing the facts is what makes a surprising verdict
 // diagnosable — the usual cause is a fact the operator assumed would be present.
 type policyTestResponse struct {
+	Kind     celpolicy.Kind     `json:"kind,omitempty"`
 	Decision celpolicy.Decision `json:"decision"`
 	Rules    []string           `json:"rules"`
 	Input    celpolicy.Input    `json:"input"`
+	// SigningInput echoes the signing facts, for a kind=signing dry-run.
+	SigningInput *celpolicy.SigningInput `json:"signing_input,omitempty"`
 }
 
 // TestIssuancePolicy dry-runs rules against a sample request without issuing
@@ -403,10 +472,20 @@ func (a *API) TestIssuancePolicy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: %v", err)
 		return
 	}
+	kind, err := parsePolicyKind(string(body.Kind))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	body.Kind = kind
 
 	rules, err := a.policyTestRules(body)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	if kind == celpolicy.KindSigning {
+		a.testSigningPolicy(w, body, rules)
 		return
 	}
 
@@ -438,18 +517,83 @@ func (a *API) TestIssuancePolicy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	decision := celpolicy.Shared().Evaluate(rules, in)
+	writeJSON(w, http.StatusOK, policyTestResponse{
+		Kind:     celpolicy.KindCertificate,
+		Decision: decision,
+		Rules:    ruleNames(rules),
+		Input:    in,
+	})
+}
+
+// testSigningPolicy dry-runs signing rules against the supplied facts. There is
+// nothing to seed them from — a signing request has no CSR whose resolution the
+// server could replay — so the facts come from the request, with the surface
+// defaulted to the preview so a rule that reads signing.source sees something
+// honest.
+func (a *API) testSigningPolicy(w http.ResponseWriter, body policyTestRequest, rules []celpolicy.Rule) {
+	in := body.SigningInput
+	if in.Signing.Source == "" {
+		in.Signing.Source = celpolicy.SourcePreview
+	}
+	if in.Signing.Operation == "" {
+		// Default to the operation the facts describe, so an operator who filled
+		// in signing.ssh does not have to also say "ssh-certificate".
+		in.Signing.Operation = inferSigningOperation(in.Signing)
+	}
+	decision := celpolicy.Shared().EvaluateSigning(rules, in)
+	writeJSON(w, http.StatusOK, policyTestResponse{
+		Kind:         celpolicy.KindSigning,
+		Decision:     decision,
+		Rules:        ruleNames(rules),
+		SigningInput: &in,
+	})
+}
+
+// inferSigningOperation reads the operation off whichever per-operation fact
+// group the operator filled in.
+func inferSigningOperation(req celpolicy.SigningRequest) string {
+	switch {
+	case req.SSH.Present || req.SSH.CertType != "" || len(req.SSH.Principals) > 0:
+		return celpolicy.OpSignSSHCert
+	case req.Artifact.Present || req.Artifact.Signer != "" || req.Artifact.Level != "":
+		return celpolicy.OpSignArtifact
+	case req.JWTSVID.Present || req.JWTSVID.SPIFFEID != "" || len(req.JWTSVID.Audience) > 0:
+		return celpolicy.OpSignJWTSVID
+	}
+	return celpolicy.OpSignData
+}
+
+func ruleNames(rules []celpolicy.Rule) []string {
 	names := make([]string, 0, len(rules))
 	for _, rule := range rules {
 		names = append(names, rule.Name)
 	}
-	writeJSON(w, http.StatusOK, policyTestResponse{Decision: decision, Rules: names, Input: in})
+	return names
+}
+
+// parsePolicyKind resolves a kind parameter, defaulting to the certificate
+// rules. An unknown value is an error rather than a silent default: a console
+// or script that asked for "sign" (not "signing") would otherwise be told about
+// the wrong rule set and believe it.
+func parsePolicyKind(s string) (celpolicy.Kind, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "":
+		return celpolicy.KindCertificate, nil
+	case string(celpolicy.KindCertificate):
+		return celpolicy.KindCertificate, nil
+	case string(celpolicy.KindSigning):
+		return celpolicy.KindSigning, nil
+	}
+	return "", fmt.Errorf("kind %q must be %q or %q", s, celpolicy.KindCertificate, celpolicy.KindSigning)
 }
 
 // policyTestRules resolves which rules a dry-run evaluates.
 func (a *API) policyTestRules(body policyTestRequest) ([]celpolicy.Rule, error) {
+	kind := body.Kind.OrDefault()
 	switch {
 	case strings.TrimSpace(body.Expression) != "":
 		rule := celpolicy.Rule{
+			Kind:       kind,
 			Name:       "ad-hoc",
 			Expression: strings.TrimSpace(body.Expression),
 			Message:    body.Message,
@@ -470,6 +614,10 @@ func (a *API) policyTestRules(body policyTestRequest) ([]celpolicy.Rule, error) 
 		if stored == nil {
 			return nil, fmt.Errorf("no issuance policy %q", body.Rule)
 		}
+		if stored.KindOrDefault() != kind {
+			return nil, fmt.Errorf("policy %q is a %s rule; dry-run it with kind=%s",
+				stored.Name, stored.KindOrDefault(), stored.KindOrDefault())
+		}
 		// A dry-run of a named rule evaluates it even when it is switched off:
 		// trying a rule before enabling it is the point.
 		stored.Enabled = true
@@ -479,19 +627,22 @@ func (a *API) policyTestRules(body policyTestRequest) ([]celpolicy.Rule, error) 
 		if err != nil {
 			return nil, fmt.Errorf("listing issuance policies: %w", err)
 		}
-		if !body.AllRules {
-			active := make([]celpolicy.Rule, 0, len(rules))
-			for _, rule := range rules {
-				if rule.Enabled {
-					active = append(active, rule)
-				}
+		// Only the rules of the kind under test: evaluating a certificate rule
+		// against signing facts would fail to compile and report every rule as
+		// broken, which is noise, not a finding.
+		selected := make([]celpolicy.Rule, 0, len(rules))
+		for _, rule := range rules {
+			if rule.KindOrDefault() != kind {
+				continue
 			}
-			return active, nil
+			if body.AllRules {
+				rule.Enabled = true
+			}
+			if rule.Enabled {
+				selected = append(selected, rule)
+			}
 		}
-		for i := range rules {
-			rules[i].Enabled = true
-		}
-		return rules, nil
+		return selected, nil
 	}
 }
 
@@ -534,7 +685,12 @@ func (a *API) IssuancePolicyReference(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "read access requires a role (admin, issuer, or auditor)")
 		return
 	}
-	ref, err := celpolicy.BuildReference()
+	kind, err := parsePolicyKind(r.URL.Query().Get("kind"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	ref, err := celpolicy.BuildReferenceFor(kind)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to build the policy reference: %v", err)
 		return
@@ -545,6 +701,7 @@ func (a *API) IssuancePolicyReference(w http.ResponseWriter, r *http.Request) {
 // policyRuleDetail renders a rule for an audit event.
 func policyRuleDetail(rule celpolicy.Rule) string {
 	parts := []string{
+		"kind=" + string(rule.KindOrDefault()),
 		"effect=" + string(rule.EffectOrDefault()),
 		"mode=" + string(rule.ModeOrDefault()),
 		fmt.Sprintf("enabled=%v", rule.Enabled),
@@ -555,6 +712,12 @@ func policyRuleDetail(rule celpolicy.Rule) string {
 	}
 	if len(rule.CAs) > 0 {
 		parts = append(parts, "cas="+strings.Join(rule.CAs, ","))
+	}
+	if len(rule.Keys) > 0 {
+		parts = append(parts, "keys="+strings.Join(rule.Keys, ","))
+	}
+	if len(rule.Operations) > 0 {
+		parts = append(parts, "operations="+strings.Join(rule.Operations, ","))
 	}
 	if rule.TenantID != "" {
 		parts = append(parts, "tenant="+rule.TenantID)

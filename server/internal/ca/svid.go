@@ -219,6 +219,15 @@ func (m *Manager) IssueJWTSVID(ctx context.Context, spec JWTSVIDSpec) (*JWTSVIDR
 	nbf := now.Add(-clockSkew)
 	exp := now.Add(ttl)
 
+	// The fail-closed CEL signing gate (Task 224). A JWT-SVID is a credential
+	// minted with a CA key but it is not a certificate — there is no leaf
+	// template, so the pre-issuance gate never sees it. It is governed by the
+	// *signing* rules instead, against the resolved token: the clamped TTL, the
+	// normalized audience, the key that will sign it.
+	if err := m.checkJWTSVIDPolicy(ctx, spec, issuerCA, sid.String(), auds, alg, kid, nbf, exp, ttl); err != nil {
+		return nil, err
+	}
+
 	token, err := spiffe.SignJWTSVID(signer, spiffe.JWTSVIDParams{
 		SPIFFEID:  sid.String(),
 		Audience:  auds,

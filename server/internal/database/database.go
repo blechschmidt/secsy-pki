@@ -1249,6 +1249,13 @@ func (db *DB) migrate() error {
 			mode TEXT NOT NULL DEFAULT 'enforce',
 			profiles TEXT NOT NULL DEFAULT '[]',
 			cas TEXT NOT NULL DEFAULT '[]',
+			-- kind is the vocabulary the expression is written against (Task 224):
+			-- 'certificate' for the pre-issuance gate, 'signing' for the SSH /
+			-- artifact / raw-signature gate. The default is what every row written
+			-- before the column existed means.
+			kind TEXT NOT NULL DEFAULT 'certificate',
+			sign_keys TEXT NOT NULL DEFAULT '[]',
+			operations TEXT NOT NULL DEFAULT '[]',
 			priority INTEGER NOT NULL DEFAULT 0,
 			enabled ` + boolType + `,
 			fail_open ` + boolType + `,
@@ -1259,6 +1266,7 @@ func (db *DB) migrate() error {
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_cel_policy_rules_name ON cel_policy_rules(name)`,
 		`CREATE INDEX IF NOT EXISTS idx_cel_policy_rules_enabled ON cel_policy_rules(enabled, priority)`,
+		`CREATE INDEX IF NOT EXISTS idx_cel_policy_rules_kind ON cel_policy_rules(kind, enabled, priority)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.exec(stmt); err != nil {
@@ -1332,6 +1340,13 @@ func (db *DB) migrate() error {
 		// unaffected by the upgrade.
 		_, _ = db.conn.Exec("ALTER TABLE pending_approvals ADD COLUMN IF NOT EXISTS payload TEXT NOT NULL DEFAULT ''")
 		_, _ = db.conn.Exec("ALTER TABLE pending_approvals ADD COLUMN IF NOT EXISTS result TEXT NOT NULL DEFAULT ''")
+		// Signing-restriction rules (Task 224): the kind discriminator and the two
+		// selectors only a signing rule uses. Every existing row is a certificate
+		// rule, which is exactly what the default says, so the upgrade changes no
+		// rule's meaning.
+		_, _ = db.conn.Exec("ALTER TABLE cel_policy_rules ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'certificate'")
+		_, _ = db.conn.Exec("ALTER TABLE cel_policy_rules ADD COLUMN IF NOT EXISTS sign_keys TEXT NOT NULL DEFAULT '[]'")
+		_, _ = db.conn.Exec("ALTER TABLE cel_policy_rules ADD COLUMN IF NOT EXISTS operations TEXT NOT NULL DEFAULT '[]'")
 	} else {
 		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN default_ssh_restriction_set_id TEXT")
 		_, _ = db.conn.Exec("ALTER TABLE cas ADD COLUMN default_x509_restriction_set_id TEXT")
@@ -1393,6 +1408,10 @@ func (db *DB) migrate() error {
 		// idempotently retried; errors for already-present columns are ignored.
 		_, _ = db.conn.Exec("ALTER TABLE pending_approvals ADD COLUMN payload TEXT NOT NULL DEFAULT ''")
 		_, _ = db.conn.Exec("ALTER TABLE pending_approvals ADD COLUMN result TEXT NOT NULL DEFAULT ''")
+		// Signing-restriction rules (Task 224); see the PostgreSQL branch above.
+		_, _ = db.conn.Exec("ALTER TABLE cel_policy_rules ADD COLUMN kind TEXT NOT NULL DEFAULT 'certificate'")
+		_, _ = db.conn.Exec("ALTER TABLE cel_policy_rules ADD COLUMN sign_keys TEXT NOT NULL DEFAULT '[]'")
+		_, _ = db.conn.Exec("ALTER TABLE cel_policy_rules ADD COLUMN operations TEXT NOT NULL DEFAULT '[]'")
 	}
 
 	// Backfill for stored secrets that predate value versioning (Task 73):

@@ -128,6 +128,15 @@ const (
 	// changed it, so each edit stores the rule's name and — for a change to the
 	// text — the expression itself, in the same hash-chained log as the issuance
 	// it governs.
+	// ActionSignPolicy records the outcome of the CEL signing-restriction gate
+	// (Task 224) — the same engine in front of the signatures that are not
+	// certificate generation: an OpenSSH certificate, a CMS/CAdES artifact
+	// signature, a raw signature with a named key. Detail carries the operation,
+	// the key and every reason the rules produced, which is the same text the
+	// caller was given. ResultError is a refused signature (including a rule that
+	// could not be evaluated and failed closed); ResultSuccess records a
+	// monitor-mode finding that let the signature through.
+	ActionSignPolicy       = "sign.policy"
 	ActionPolicyRuleCreate = "policy.rule.create"
 	ActionPolicyRuleUpdate = "policy.rule.update"
 	ActionPolicyRuleDelete = "policy.rule.delete"

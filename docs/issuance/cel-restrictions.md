@@ -26,11 +26,12 @@ new field, a new release and a new deploy for every policy anyone invents.
 
 | | |
 |---|---|
+| **Rule kind** | `certificate` (the default). The other kind, `signing`, gates everything else this PKI signs — see [CEL signing restrictions](../signing/signing-restrictions.md) |
 | **Where it runs** | `ca.Manager.buildLeaf`, last of the pre-issuance gates, before any HSM signature |
-| **Which paths** | every one: REST, gRPC, CLI, ACME, EST, SCEP, CMP, MS-WSTEP, BRSKI, bulk, PKCS#12, SPIFFE SVID, the canary |
+| **Which paths** | every one: REST, gRPC, CLI, ACME, EST, SCEP, CMP, MS-WSTEP, BRSKI, bulk, PKCS#12, SPIFFE SVID, the canary — and the low-level `POST /api/keys/{id}/sign-x509`, which bypasses every *other* gate |
 | **Where rules live** | the `cel_policy_rules` table — editable at runtime, no restart, no config reload |
 | **Who may edit** | `ca:configure` (admin). Reading and dry-running: any role |
-| **Console** | the **Issuance Policy** view: table, editor with a compile check, dry-run, vocabulary reference |
+| **Console** | the **Signing Policy** view: table, editor with a compile check, dry-run, vocabulary reference |
 | **CLI** | `secsy-ca issuance-policy list\|show\|add\|update\|enable\|disable\|delete\|test\|reference` |
 | **REST** | `/api/issuance-policies` (+ `/{id}`, `/{id}/enabled`, `/validate`, `/test`, `/reference`) |
 | **Refusal** | HTTP **422** with `{error, code: "policy_denied", violations: [{rule, message}]}` |
@@ -60,7 +61,14 @@ Three consequences worth knowing:
   refuses the request.
 
 The same engine and the same function library back the
-[role-mapping expressions](../security/role-mapping-expressions.md).
+[role-mapping expressions](../security/role-mapping-expressions.md) and the
+[signing restrictions](../signing/signing-restrictions.md) — the second kind of
+rule in the same table, which gates the signatures that are not certificates
+(OpenSSH certificates, artifact signatures, raw signatures with a named key).
+A rule declares its kind, and the kind decides which facts it sees, which gate
+consults it and which environment it is compiled in; a certificate rule that
+mentions `signing.key.name` does not compile, which is the error an author wants
+rather than a rule that silently never fires.
 
 ## What a rule sees
 
@@ -91,7 +99,7 @@ profile — a rule sees the values the certificate will actually carry.
 
 | Field | Type | Notes |
 |---|---|---|
-| `source` | string | the surface: `rest`, `grpc`, `acme`, `est`, `scep`, `cmp`, `wstep`, `bulk`, `pkcs12`, `spiffe`, `canary`, `cli`, `preview`, `unknown` |
+| `source` | string | the surface: `rest`, `grpc`, `acme`, `est`, `scep`, `cmp`, `wstep`, `bulk`, `pkcs12`, `spiffe`, `canary`, `cli`, `preview`, `rawsign`, `unknown` |
 | `operation` | string | `issue`, `renew`, `preview` |
 | `profile` | string | the issuance profile's name |
 | `ca` | object | `id`, `label`, `tenant`, `subject` (RFC 2253), `not_after` |
@@ -111,6 +119,12 @@ profile — a rule sees the values the certificate will actually carry.
 | `serial` | string | the allocated serial, decimal |
 | `requested_by` | string | the identity the issuance is attributed to |
 
+!!! tip "Durations in a hand-written fact set"
+    The dry-run's fact set accepts a duration the way you say it —
+    `"validity": "90m"` — or as a whole number of nanoseconds; both decode, and
+    the echoed facts use the readable form. A malformed duration is an error
+    rather than a silent zero.
+
 !!! note "`validity_days` truncates"
     A template's `notBefore` is backdated by a few minutes of clock skew, so a
     90-day request spans 90 days *and change*. `validity_days` truncates to whole
@@ -118,6 +132,15 @@ profile — a rule sees the values the certificate will actually carry.
     `validity_days` use — so `request.validity_days <= 90` does not refuse the
     very request the profile was configured to allow. Compare
     `request.validity` (a duration) when you need the exact window.
+
+!!! note "The low-level raw-signing endpoint"
+    `POST /api/keys/{id}/sign-x509` hands a CSR straight to the CA key and
+    bypasses `buildLeaf` — so none of the other pre-issuance gates run on it.
+    These rules do: the facts are derived from the CSR, `request.source` is
+    `rawsign`, and `request.profile` is empty (there is no profile), so a
+    profile-scoped rule does not apply while every unscoped and CA-scoped one
+    does. A rule can single the endpoint out with
+    `request.source == "rawsign"`.
 
 ### `jwt`
 
@@ -440,4 +463,5 @@ would issue certificates the source store refused.
 ---
 
 ↩ Back to [issuance policy & pre-issuance gates](README.md) ·
+[CEL signing restrictions](../signing/signing-restrictions.md) ·
 [documentation map](../README.md)

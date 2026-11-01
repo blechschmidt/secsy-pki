@@ -494,17 +494,24 @@ default is *Disallow all signatures* will still issue. What binds X.509 is the
 **certificate profile** from section 4 — and the page below.
 [Restrictions reference](web-console.md#issuance-restrictions).
 
-### The X.509 ceiling that does bind
+### The ceiling that does bind
 
-![The Issuance policy view: a table of six CEL rules with priority, name, state, effect, mode, scope and expression columns, each row carrying Disable, Edit, Dry-run and Delete buttons. max-lifetime (10, enabled, require, enforce, every issuance) returns a formatted string naming the requested day count; names-under-northwind (20) filters and maps the DNS names outside the domain; wildcard-entitlement (30) tests a jwt.entitlements claim and carries the message "a wildcard certificate requires the pki.wildcard entitlement in your token"; corporate-ip-ranges (40, scoped to profiles server and server-client) uses cidr("10.0.0.0/8").containsIP; change-ticket-required (50) is badged MONITOR and matches body.reason against a ticket pattern; subordinate-ca-needs-admin (60) is badged DISABLED and greyed, with an Enable button in place of Disable. Above the table, a Show filter, New rule and Refresh buttons, and two notes: one describing the five fact sets a rule sees, one stating that a rule is fail-closed and should be written disabled or in monitor mode first.](../screenshots/14b-issuance-policy.png)
+![The Signing Policy view with the Kind filter set to certificate: a table of six CEL rules with priority, kind, name, state, effect, mode, scope and expression columns, each row carrying Disable, Edit, Dry-run and Delete buttons. max-lifetime (10, enabled, require, enforce, every issuance) returns a formatted string naming the requested day count; names-under-northwind (20) filters and maps the DNS names outside the domain; wildcard-entitlement (30) tests a jwt.entitlements claim and carries the message "a wildcard certificate requires the pki.wildcard entitlement in your token"; corporate-ip-ranges (40, scoped to profiles server and server-client) uses cidr("10.0.0.0/8").containsIP; change-ticket-required (50) is badged MONITOR and matches body.reason against a ticket pattern; subordinate-ca-needs-admin (60) is badged DISABLED and greyed, with an Enable button in place of Disable. Above the table, a Show filter, a Kind filter set to "certificate — issuance", New rule and Refresh buttons, and two notes: one describing the two rule kinds and the fact sets each sees, one stating that a rule is fail-closed and should be written disabled or in monitor mode first.](../screenshots/14b-issuance-policy.png)
 
 A profile fixes a *shape*: these key usages, that validity ceiling, those SAN
-types, the same for everyone. **Issuance policy** is for the limits that are
+types, the same for everyone. **Signing policy** is for the limits that are
 conditional — on who is asking, on what their token says, on what else is in the
 request — and that a field in a configuration file cannot express. The rules are
 CEL, they are evaluated before every signature on every path (this console, the
 API, the CLI, ACME/EST/SCEP/CMP), and they live in the database, so a rule
 written here applies to the next request with no restart.
+
+The **Kind** column is the first thing to read. One table holds two kinds of
+rule: a *certificate* rule gates certificate generation and reasons about
+`request`; a *signing* rule gates everything else these keys sign — an OpenSSH
+certificate, a release artifact, a raw signature — and reasons about `signing`.
+The filter above the table is set to *certificate* for the shot above; the
+signing half is two screenshots further down.
 
 Read the `max-lifetime` row carefully, because it is the point of the feature. It
 does not return `true` or `false`; it returns **the sentence the requester is
@@ -547,6 +554,62 @@ discovering them one failed request at a time.
 Over the API that is an HTTP **422** — not 403, because the credentials were fine
 and the *request* was not — carrying each reason as `{rule, message}`.
 [CEL issuance restrictions](../issuance/cel-restrictions.md).
+
+### The same engine, in front of the signatures that are not certificates
+
+![The Signing Policy view with the Kind filter set to signing: a table of six signing rules — no-privileged-principals (10, enabled, require, enforce, operations ssh-certificate) filtering and mapping the privileged principals; ssh-validity-ceiling (20) comparing signing.ssh.validity against duration("12h"); release-key-is-pipeline-only (30, scoped to keys northwind-release and operations artifact) testing jwt.repository; artifacts-need-a-timestamp (40, operations artifact) requiring signing.artifact.timestamped; no-caller-supplied-digests (50) badged MONITOR, testing !signing.payload.prehashed; and ssh-keys-must-be-fido-resident (60) badged DISABLED and greyed. Below the table the editor is open on release-key-is-pipeline-only with Kind fixed to signing, and a Keys / Operations scope row that the certificate kind does not have. The expression reference at the bottom is headed "signing rules" and lists the signing variable with its ssh, artifact, data, key and payload objects.](../screenshots/14d-signing-policy.png)
+
+Nothing above is a second feature. It is the same table, the same editor, the
+same compile check, the same fail-closed reading and the same function library —
+pointed at the other signatures this HSM makes. Only the vocabulary differs, and
+the **Kind** selector in the editor switches it: the reference panel, the
+insertable examples and the compile check all follow it, and the **Keys** and
+**Operations** scope row appears, because a signing rule narrows by *key* and
+*operation* where a certificate rule narrows by profile and CA.
+
+The two vocabularies are separate environments on purpose. A signing rule that
+mentions `request.dns_names` does not compile; a certificate rule that mentions
+`signing.key.name` does not compile either. A merged one would accept both and
+then evaluate the wrong vocabulary against an empty object — a rule that reads
+as working and in fact never fires. That is also why a rule's kind is fixed once
+saved.
+
+What the six rules are doing is worth a pass, because each is a thing no
+configuration field could say:
+
+- **`no-privileged-principals`** — no OpenSSH certificate for `root` or `admin`,
+  on any CA, by anyone. The SSH profile can restrict principals by pattern; it
+  cannot say "never these, everywhere".
+- **`ssh-validity-ceiling`** — a lifetime ceiling that reports the duration it
+  refused. The facts come from the *resolved* certificate, after the profile's
+  defaults and the CA's own ceiling, so a request for 24h that the CA clamps to
+  8h satisfies a 12h rule — a rule evaluated against the request would have
+  refused it.
+- **`release-key-is-pipeline-only`** — the release key belongs to one
+  repository's workflow token. A human with this console cannot use it at all.
+- **`artifacts-need-a-timestamp`** — a CAdES-B signature stops verifying the day
+  its certificate expires, which is not what "signed release" is supposed to
+  mean.
+- **`no-caller-supplied-digests`** — in monitor mode, measuring how much traffic
+  asks this PKI to attest to bytes it never saw.
+- **`ssh-keys-must-be-fido-resident`** — parked, because not every operator has a
+  security key yet. An OpenSSH `sk-` key type is the one thing a public key
+  proves about where its private half lives.
+
+![The signing Dry-run, run: the Kind picker set to signing, the Rules picker set to "every rule, enabled or not", the CSR and CA fields hidden, and a Facts JSON box holding an ssh-certificate operation for principals root and deploy with a 24h validity on a software Ed25519 key. Below the Dry-run button, a red "WOULD BE REFUSED" badge, the line "6 rule(s) evaluated, 0 skipped", and the reasons: no-privileged-principals "principal root is a shared privileged account; use a named account and sudo"; ssh-validity-ceiling "requested 24h0m0s of SSH certificate validity; this CA signs at most 12h"; ssh-keys-must-be-fido-resident "a user SSH certificate is only signed for a FIDO-resident key (ssh-keygen -t ed25519-sk)"; and no-caller-supplied-digests badged MONITOR — WOULD NOT BLOCK. A collapsed "Facts the rules saw" disclosure sits below.](../screenshots/14e-signing-policy-dryrun.png)
+
+The dry-run has its own kind selector, and switching it replaces the fact set
+with that vocabulary's worked example — certificate facts in a signing dry-run
+would evaluate every rule against an empty signing request and report that
+nothing is refused, which is the one wrong answer this panel must not give. The
+CSR, CA and profile inputs disappear for a signing rule: there is no CSR whose
+resolution the server could replay, so the facts are the fact set.
+
+A refusal here is the same HTTP **422** with the same `{rule, message}` list, on
+`POST /api/ssh/cas/{id}/sign`, `POST /api/sign` and
+`POST /api/secret/signing-keys/{name}/sign` alike — and on the CLI, because each
+gate sits inside the service that owns the key rather than in a handler.
+[CEL signing restrictions](../signing/signing-restrictions.md).
 
 ---
 

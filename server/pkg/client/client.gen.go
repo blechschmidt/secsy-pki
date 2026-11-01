@@ -231,9 +231,9 @@ const (
 
 // Defines values for CrossSignSource.
 const (
-	Certificate CrossSignSource = "certificate"
-	Csr         CrossSignSource = "csr"
-	LocalCa     CrossSignSource = "local-ca"
+	CrossSignSourceCertificate CrossSignSource = "certificate"
+	CrossSignSourceCsr         CrossSignSource = "csr"
+	CrossSignSourceLocalCa     CrossSignSource = "local-ca"
 )
 
 // Defines values for CrossSignStatus.
@@ -384,10 +384,22 @@ const (
 	ImportSigningKeyRequestAlgorithmRsaPss4096      ImportSigningKeyRequestAlgorithm = "rsa-pss-4096"
 )
 
+// Defines values for IssuancePolicyReferenceKind.
+const (
+	IssuancePolicyReferenceKindCertificate IssuancePolicyReferenceKind = "certificate"
+	IssuancePolicyReferenceKindSigning     IssuancePolicyReferenceKind = "signing"
+)
+
 // Defines values for IssuancePolicyRuleEffect.
 const (
 	IssuancePolicyRuleEffectDeny    IssuancePolicyRuleEffect = "deny"
 	IssuancePolicyRuleEffectRequire IssuancePolicyRuleEffect = "require"
+)
+
+// Defines values for IssuancePolicyRuleKind.
+const (
+	IssuancePolicyRuleKindCertificate IssuancePolicyRuleKind = "certificate"
+	IssuancePolicyRuleKindSigning     IssuancePolicyRuleKind = "signing"
 )
 
 // Defines values for IssuancePolicyRuleMode.
@@ -402,10 +414,22 @@ const (
 	IssuancePolicyTestRequestEffectRequire IssuancePolicyTestRequestEffect = "require"
 )
 
+// Defines values for IssuancePolicyTestRequestKind.
+const (
+	IssuancePolicyTestRequestKindCertificate IssuancePolicyTestRequestKind = "certificate"
+	IssuancePolicyTestRequestKindSigning     IssuancePolicyTestRequestKind = "signing"
+)
+
 // Defines values for IssuancePolicyTestRequestMode.
 const (
 	IssuancePolicyTestRequestModeEnforce IssuancePolicyTestRequestMode = "enforce"
 	IssuancePolicyTestRequestModeMonitor IssuancePolicyTestRequestMode = "monitor"
+)
+
+// Defines values for IssuancePolicyTestResponseKind.
+const (
+	IssuancePolicyTestResponseKindCertificate IssuancePolicyTestResponseKind = "certificate"
+	IssuancePolicyTestResponseKindSigning     IssuancePolicyTestResponseKind = "signing"
 )
 
 // Defines values for IssuancePolicyViolationMode.
@@ -519,6 +543,11 @@ const (
 	PermissionGrantEntityTypeUser  PermissionGrantEntityType = "user"
 )
 
+// Defines values for PolicyDeniedResponseCode.
+const (
+	PolicyDeniedResponseCodePolicyDenied PolicyDeniedResponseCode = "policy_denied"
+)
+
 // Defines values for PreviewCertResultDecision.
 const (
 	PreviewCertResultDecisionAccept PreviewCertResultDecision = "accept"
@@ -536,8 +565,8 @@ const (
 
 // Defines values for ProvisionedKeyRefRole.
 const (
-	Signing ProvisionedKeyRefRole = "signing"
-	Tsa     ProvisionedKeyRefRole = "tsa"
+	ProvisionedKeyRefRoleSigning ProvisionedKeyRefRole = "signing"
+	ProvisionedKeyRefRoleTsa     ProvisionedKeyRefRole = "tsa"
 )
 
 // Defines values for PublishManifestArtifactKind.
@@ -855,6 +884,24 @@ const (
 	ExportEventLogParamsFormatRfc5424 ExportEventLogParamsFormat = "rfc5424"
 )
 
+// Defines values for ListIssuancePoliciesParamsKind.
+const (
+	ListIssuancePoliciesParamsKindCertificate ListIssuancePoliciesParamsKind = "certificate"
+	ListIssuancePoliciesParamsKindSigning     ListIssuancePoliciesParamsKind = "signing"
+)
+
+// Defines values for GetIssuancePolicyReferenceParamsKind.
+const (
+	GetIssuancePolicyReferenceParamsKindCertificate GetIssuancePolicyReferenceParamsKind = "certificate"
+	GetIssuancePolicyReferenceParamsKindSigning     GetIssuancePolicyReferenceParamsKind = "signing"
+)
+
+// Defines values for ValidateIssuancePolicyJSONBodyKind.
+const (
+	Certificate ValidateIssuancePolicyJSONBodyKind = "certificate"
+	Signing     ValidateIssuancePolicyJSONBodyKind = "signing"
+)
+
 // Defines values for ListExpiringCertificatesParamsSeverity.
 const (
 	Critical ListExpiringCertificatesParamsSeverity = "critical"
@@ -1081,6 +1128,12 @@ type ArtifactSignRequest struct {
 
 	// Level CAdES (ETSI EN 319 122) baseline level: b embeds the signing-certificate-v2 and signing-time signed attributes; t adds an RFC 3161 signature-timestamp; lt additionally embeds long-term- validation revocation material (CRLs / OCSP responses) so the signature stays verifiable after the signer certificate expires. Omitted applies the signer's default; takes precedence over timestamp.
 	Level *ArtifactSignRequestLevel `json:"level,omitempty"`
+
+	// Name The artifact's name, for the audit record and the signing restriction rules (`signing.artifact.name`). Caller-asserted metadata: a detached CMS signature binds the digest, not the name.
+	Name *string `json:"name,omitempty"`
+
+	// Reason Why this artifact is being signed. It reaches a signing restriction rule as `signing.purpose`, which is how a policy can require a change ticket for a release signature.
+	Reason *string `json:"reason,omitempty"`
 
 	// Signer Name of the configured signing identity.
 	Signer string `json:"signer"`
@@ -3454,8 +3507,10 @@ type IssuancePolicyFacts struct {
 	Jwt       *map[string]interface{} `json:"jwt,omitempty"`
 	Now       *time.Time              `json:"now,omitempty"`
 	Principal *map[string]interface{} `json:"principal,omitempty"`
-	Request   *map[string]interface{} `json:"request,omitempty"`
-	Url       *map[string]interface{} `json:"url,omitempty"`
+
+	// Request The certificate facts. `validity` accepts a duration string ("90m") or a whole number of nanoseconds; the echo uses the string form.
+	Request *map[string]interface{} `json:"request,omitempty"`
+	Url     *map[string]interface{} `json:"url,omitempty"`
 }
 
 // IssuancePolicyReference The expression vocabulary, derived from the live environment.
@@ -3474,16 +3529,26 @@ type IssuancePolicyReference struct {
 		Functions *[]string `json:"functions,omitempty"`
 		Name      *string   `json:"name,omitempty"`
 	} `json:"functions,omitempty"`
+	Kind *IssuancePolicyReferenceKind `json:"kind,omitempty"`
+
+	// Kinds Every rule kind this server supports.
+	Kinds *[]string `json:"kinds,omitempty"`
 	Modes *[]string `json:"modes,omitempty"`
+
+	// Operations The signing operations a rule may select on and compare `signing.operation` against. Present for kind=signing only.
+	Operations *[]string `json:"operations,omitempty"`
 
 	// Results What a rule's expression may evaluate to.
 	Results   *[]string                 `json:"results,omitempty"`
 	Variables *[]IssuancePolicyVariable `json:"variables,omitempty"`
 }
 
-// IssuancePolicyRule One operator-written CEL restriction on certificate generation. The expression may evaluate to a bool (the condition that must hold, or — with effect "deny" — must not), a string (the reason itself; the empty string means satisfied), or a list of strings (one reason per offending name). A rule that cannot be evaluated refuses the request unless fail_open is set.
+// IssuancePolicyReferenceKind defines model for IssuancePolicyReference.Kind.
+type IssuancePolicyReferenceKind string
+
+// IssuancePolicyRule One operator-written CEL restriction on what this PKI's keys sign. The expression may evaluate to a bool (the condition that must hold, or — with effect "deny" — must not), a string (the reason itself; the empty string means satisfied), or a list of strings (one reason per offending name). A rule that cannot be evaluated refuses the request unless fail_open is set.
 type IssuancePolicyRule struct {
-	// Cas Issuing CA ids or labels the rule applies to, matched case-insensitively with shell-style globs. Empty means every CA.
+	// Cas Issuing CA ids or labels the rule applies to, matched case-insensitively with shell-style globs. Empty means every CA. A signing rule reads it too, where the operation has the notion (an OpenSSH certificate has a signing CA).
 	Cas         *[]string `json:"cas,omitempty"`
 	CreatedAt   *string   `json:"created_at,omitempty"`
 	CreatedBy   *string   `json:"created_by,omitempty"`
@@ -3500,6 +3565,12 @@ type IssuancePolicyRule struct {
 	FailOpen *bool   `json:"fail_open,omitempty"`
 	Id       *string `json:"id,omitempty"`
 
+	// Keys Signing rules only. The keys the rule applies to, matched against every name a key is known by — the name the caller used (an artifact signer, a named signing key), the provider label, and the signing CA's id/label for an OpenSSH certificate. Case-insensitive, globs allowed; empty means every key. Rejected on a certificate rule.
+	Keys *[]string `json:"keys,omitempty"`
+
+	// Kind What the rule restricts, and therefore which vocabulary its expression is compiled against and which gate enforces it. certificate — certificate generation; the expression reasons about `request` and the rule runs on every issuance surface. signing — the other signatures this PKI's keys produce (an OpenSSH certificate, a CMS/CAdES artifact signature, a raw signature with a named key, a SPIFFE JWT-SVID); the expression reasons about `signing`. A rule's kind is fixed at creation: an update may omit it or repeat it, but changing it is refused, because the expression was written for one vocabulary and would usually not compile against the other.
+	Kind *IssuancePolicyRuleKind `json:"kind,omitempty"`
+
 	// Message The reason reported when a boolean rule refuses. Ignored for a rule whose expression produces its own text.
 	Message *string `json:"message,omitempty"`
 
@@ -3508,6 +3579,9 @@ type IssuancePolicyRule struct {
 
 	// Name Unique, whitespace-free. It appears in the refusal the requester reads and in the audit record, and it resolves this rule through GET /api/issuance-policies/{id}.
 	Name string `json:"name"`
+
+	// Operations Signing rules only. The operations the rule applies to: ssh-certificate, artifact, data or jwt-svid (globs allowed). Empty means every operation. An operation that does not exist is rejected, because a rule scoped to one would look switched on and apply to nothing.
+	Operations *[]string `json:"operations,omitempty"`
 
 	// Priority Evaluation order, ascending. It does not change the verdict — every applicable rule is evaluated so the requester learns every reason at once — but it fixes the order the reasons are reported in.
 	Priority *int `json:"priority,omitempty"`
@@ -3524,6 +3598,9 @@ type IssuancePolicyRule struct {
 // IssuancePolicyRuleEffect require — the condition must hold; deny — it must not. Applies to a boolean result only.
 type IssuancePolicyRuleEffect string
 
+// IssuancePolicyRuleKind What the rule restricts, and therefore which vocabulary its expression is compiled against and which gate enforces it. certificate — certificate generation; the expression reasons about `request` and the rule runs on every issuance surface. signing — the other signatures this PKI's keys produce (an OpenSSH certificate, a CMS/CAdES artifact signature, a raw signature with a named key, a SPIFFE JWT-SVID); the expression reasons about `signing`. A rule's kind is fixed at creation: an update may omit it or repeat it, but changing it is refused, because the expression was written for one vocabulary and would usually not compile against the other.
+type IssuancePolicyRuleKind string
+
 // IssuancePolicyRuleMode enforce — refuse the issuance; monitor — record the finding (in the decision, the audit event and the metrics) and issue anyway, so a new rule can be measured against real traffic before it starts refusing certificates.
 type IssuancePolicyRuleMode string
 
@@ -3539,18 +3616,27 @@ type IssuancePolicyTestRequest struct {
 	FailOpen   *bool                            `json:"fail_open,omitempty"`
 
 	// Input The fact set a rule is evaluated against. `request` holds the certificate facts; `jwt` and `body` are free-form maps; `url` and `principal` describe the HTTP request and its caller. Every field is optional — an omitted one reads as its zero value, which is the correct view for a request that carried no token, no URL or no body.
-	Input   *IssuancePolicyFacts           `json:"input,omitempty"`
+	Input *IssuancePolicyFacts `json:"input,omitempty"`
+
+	// Kind Which rules and which vocabulary to use. A signing dry-run takes its facts from signing_input and ignores csr/ca_id/profile, which describe a certificate request.
+	Kind    *IssuancePolicyTestRequestKind `json:"kind,omitempty"`
 	Message *string                        `json:"message,omitempty"`
 	Mode    *IssuancePolicyTestRequestMode `json:"mode,omitempty"`
 	Profile *string                        `json:"profile,omitempty"`
 
 	// Rule A stored rule's id or name.
-	Rule         *string `json:"rule,omitempty"`
-	ValidityDays *int    `json:"validity_days,omitempty"`
+	Rule *string `json:"rule,omitempty"`
+
+	// SigningInput The fact set a signing rule is evaluated against. `signing` holds the operation's facts — what is being signed, with which key, and the per-operation group (ssh, artifact or data); `jwt` and `body` are free-form maps; `url` and `principal` describe the HTTP request and its caller. See GET /api/issuance-policies/reference?kind=signing for every field of `signing`.
+	SigningInput *SigningPolicyFacts `json:"signing_input,omitempty"`
+	ValidityDays *int                `json:"validity_days,omitempty"`
 }
 
 // IssuancePolicyTestRequestEffect defines model for IssuancePolicyTestRequest.Effect.
 type IssuancePolicyTestRequestEffect string
+
+// IssuancePolicyTestRequestKind Which rules and which vocabulary to use. A signing dry-run takes its facts from signing_input and ignores csr/ca_id/profile, which describe a certificate request.
+type IssuancePolicyTestRequestKind string
 
 // IssuancePolicyTestRequestMode defines model for IssuancePolicyTestRequest.Mode.
 type IssuancePolicyTestRequestMode string
@@ -3561,11 +3647,18 @@ type IssuancePolicyTestResponse struct {
 	Decision *IssuancePolicyDecision `json:"decision,omitempty"`
 
 	// Input The facts the rules actually saw, echoed back so a surprising verdict is diagnosable — the usual cause is a fact the author assumed was present.
-	Input *IssuancePolicyFacts `json:"input,omitempty"`
+	Input *IssuancePolicyFacts            `json:"input,omitempty"`
+	Kind  *IssuancePolicyTestResponseKind `json:"kind,omitempty"`
 
 	// Rules The names of the rules that were considered.
 	Rules *[]string `json:"rules,omitempty"`
+
+	// SigningInput The same echo, for a kind=signing dry-run.
+	SigningInput *SigningPolicyFacts `json:"signing_input,omitempty"`
 }
+
+// IssuancePolicyTestResponseKind defines model for IssuancePolicyTestResponse.Kind.
+type IssuancePolicyTestResponseKind string
 
 // IssuancePolicyValidation defines model for IssuancePolicyValidation.
 type IssuancePolicyValidation struct {
@@ -4179,6 +4272,18 @@ type PermissionGrant struct {
 
 // PermissionGrantEntityType defines model for PermissionGrant.EntityType.
 type PermissionGrantEntityType string
+
+// PolicyDeniedResponse The body of a 422 Unprocessable Content returned when the CEL restriction engine refuses a request — a certificate request, or (Task 224) a request to sign an OpenSSH certificate, an artifact or caller data. The status is deliberately not 403: the caller's credentials were accepted and their permission was never in question — the content of the request is what policy refused.
+type PolicyDeniedResponse struct {
+	Code *PolicyDeniedResponseCode `json:"code,omitempty"`
+
+	// Error Every blocking reason as one sentence, for a human or a CLI.
+	Error      *string                    `json:"error,omitempty"`
+	Violations *[]IssuancePolicyViolation `json:"violations,omitempty"`
+}
+
+// PolicyDeniedResponseCode defines model for PolicyDeniedResponse.Code.
+type PolicyDeniedResponseCode string
 
 // PreviewCertRequest A would-be issuance to validate through the pre-issuance gate stack without signing (Task 113). Supply either csr or the explicit-identity fields (common_name + SANs).
 type PreviewCertRequest struct {
@@ -5311,6 +5416,18 @@ type SigningKey struct {
 	PublicKeyPem *string `json:"public_key_pem,omitempty"`
 }
 
+// SigningPolicyFacts The fact set a signing rule is evaluated against. `signing` holds the operation's facts — what is being signed, with which key, and the per-operation group (ssh, artifact or data); `jwt` and `body` are free-form maps; `url` and `principal` describe the HTTP request and its caller. See GET /api/issuance-policies/reference?kind=signing for every field of `signing`.
+type SigningPolicyFacts struct {
+	Body      *map[string]interface{} `json:"body,omitempty"`
+	Jwt       *map[string]interface{} `json:"jwt,omitempty"`
+	Now       *time.Time              `json:"now,omitempty"`
+	Principal *map[string]interface{} `json:"principal,omitempty"`
+
+	// Signing The signing facts. Duration-valued fields (signing.ssh.validity, signing.jwt_svid.ttl) accept a duration string ("8h", "15m") or a whole number of nanoseconds; the echo uses the string form.
+	Signing *map[string]interface{} `json:"signing,omitempty"`
+	Url     *map[string]interface{} `json:"url,omitempty"`
+}
+
 // StatusMessage defines model for StatusMessage.
 type StatusMessage struct {
 	Output *string `json:"output,omitempty"`
@@ -5861,6 +5978,9 @@ type Forbidden = Error
 // NotFound defines model for NotFound.
 type NotFound = Error
 
+// PolicyDenied The body of a 422 Unprocessable Content returned when the CEL restriction engine refuses a request — a certificate request, or (Task 224) a request to sign an OpenSSH certificate, an artifact or caller data. The status is deliberately not 403: the caller's credentials were accepted and their permission was never in question — the content of the request is what policy refused.
+type PolicyDenied = PolicyDeniedResponse
+
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
 
@@ -6137,10 +6257,34 @@ type GetEffectiveResourceAccessParams struct {
 	Subject *string `form:"subject,omitempty" json:"subject,omitempty"`
 }
 
+// ListIssuancePoliciesParams defines parameters for ListIssuancePolicies.
+type ListIssuancePoliciesParams struct {
+	// Kind Return only the rules of this kind. Omitted returns both.
+	Kind *ListIssuancePoliciesParamsKind `form:"kind,omitempty" json:"kind,omitempty"`
+}
+
+// ListIssuancePoliciesParamsKind defines parameters for ListIssuancePolicies.
+type ListIssuancePoliciesParamsKind string
+
+// GetIssuancePolicyReferenceParams defines parameters for GetIssuancePolicyReference.
+type GetIssuancePolicyReferenceParams struct {
+	// Kind Which vocabulary to describe: certificate (the default, reasoning about `request`) or signing (reasoning about `signing`).
+	Kind *GetIssuancePolicyReferenceParamsKind `form:"kind,omitempty" json:"kind,omitempty"`
+}
+
+// GetIssuancePolicyReferenceParamsKind defines parameters for GetIssuancePolicyReference.
+type GetIssuancePolicyReferenceParamsKind string
+
 // ValidateIssuancePolicyJSONBody defines parameters for ValidateIssuancePolicy.
 type ValidateIssuancePolicyJSONBody struct {
 	Expression string `json:"expression"`
+
+	// Kind Which environment to compile in. The two vocabularies are separate, so an expression written for one does not compile against the other — which is the error an editor should show while the rule is being written.
+	Kind *ValidateIssuancePolicyJSONBodyKind `json:"kind,omitempty"`
 }
+
+// ValidateIssuancePolicyJSONBodyKind defines parameters for ValidateIssuancePolicy.
+type ValidateIssuancePolicyJSONBodyKind string
 
 // SetIssuancePolicyEnabledJSONBody defines parameters for SetIssuancePolicyEnabled.
 type SetIssuancePolicyEnabledJSONBody struct {
@@ -7056,7 +7200,7 @@ type ClientInterface interface {
 	RunInventoryRetention(ctx context.Context, body RunInventoryRetentionJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListIssuancePolicies request
-	ListIssuancePolicies(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	ListIssuancePolicies(ctx context.Context, params *ListIssuancePoliciesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// CreateIssuancePolicyWithBody request with any body
 	CreateIssuancePolicyWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -7064,7 +7208,7 @@ type ClientInterface interface {
 	CreateIssuancePolicy(ctx context.Context, body CreateIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetIssuancePolicyReference request
-	GetIssuancePolicyReference(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetIssuancePolicyReference(ctx context.Context, params *GetIssuancePolicyReferenceParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// TestIssuancePolicyWithBody request with any body
 	TestIssuancePolicyWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -9067,8 +9211,8 @@ func (c *Client) RunInventoryRetention(ctx context.Context, body RunInventoryRet
 	return c.Client.Do(req)
 }
 
-func (c *Client) ListIssuancePolicies(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListIssuancePoliciesRequest(c.Server)
+func (c *Client) ListIssuancePolicies(ctx context.Context, params *ListIssuancePoliciesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListIssuancePoliciesRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -9103,8 +9247,8 @@ func (c *Client) CreateIssuancePolicy(ctx context.Context, body CreateIssuancePo
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetIssuancePolicyReference(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetIssuancePolicyReferenceRequest(c.Server)
+func (c *Client) GetIssuancePolicyReference(ctx context.Context, params *GetIssuancePolicyReferenceParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetIssuancePolicyReferenceRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -15533,7 +15677,7 @@ func NewRunInventoryRetentionRequestWithBody(server string, contentType string, 
 }
 
 // NewListIssuancePoliciesRequest generates requests for ListIssuancePolicies
-func NewListIssuancePoliciesRequest(server string) (*http.Request, error) {
+func NewListIssuancePoliciesRequest(server string, params *ListIssuancePoliciesParams) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -15549,6 +15693,28 @@ func NewListIssuancePoliciesRequest(server string) (*http.Request, error) {
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Kind != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "kind", runtime.ParamLocationQuery, *params.Kind); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
 	}
 
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
@@ -15600,7 +15766,7 @@ func NewCreateIssuancePolicyRequestWithBody(server string, contentType string, b
 }
 
 // NewGetIssuancePolicyReferenceRequest generates requests for GetIssuancePolicyReference
-func NewGetIssuancePolicyReferenceRequest(server string) (*http.Request, error) {
+func NewGetIssuancePolicyReferenceRequest(server string, params *GetIssuancePolicyReferenceParams) (*http.Request, error) {
 	var err error
 
 	serverURL, err := url.Parse(server)
@@ -15616,6 +15782,28 @@ func NewGetIssuancePolicyReferenceRequest(server string) (*http.Request, error) 
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Kind != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "kind", runtime.ParamLocationQuery, *params.Kind); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
 	}
 
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
@@ -20131,7 +20319,7 @@ type ClientWithResponsesInterface interface {
 	RunInventoryRetentionWithResponse(ctx context.Context, body RunInventoryRetentionJSONRequestBody, reqEditors ...RequestEditorFn) (*RunInventoryRetentionResponse, error)
 
 	// ListIssuancePoliciesWithResponse request
-	ListIssuancePoliciesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListIssuancePoliciesResponse, error)
+	ListIssuancePoliciesWithResponse(ctx context.Context, params *ListIssuancePoliciesParams, reqEditors ...RequestEditorFn) (*ListIssuancePoliciesResponse, error)
 
 	// CreateIssuancePolicyWithBodyWithResponse request with any body
 	CreateIssuancePolicyWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateIssuancePolicyResponse, error)
@@ -20139,7 +20327,7 @@ type ClientWithResponsesInterface interface {
 	CreateIssuancePolicyWithResponse(ctx context.Context, body CreateIssuancePolicyJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateIssuancePolicyResponse, error)
 
 	// GetIssuancePolicyReferenceWithResponse request
-	GetIssuancePolicyReferenceWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetIssuancePolicyReferenceResponse, error)
+	GetIssuancePolicyReferenceWithResponse(ctx context.Context, params *GetIssuancePolicyReferenceParams, reqEditors ...RequestEditorFn) (*GetIssuancePolicyReferenceResponse, error)
 
 	// TestIssuancePolicyWithBodyWithResponse request with any body
 	TestIssuancePolicyWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*TestIssuancePolicyResponse, error)
@@ -21436,6 +21624,7 @@ type IssueCertificateResponse struct {
 	JSON202      *PendingIssuanceResponse
 	JSON400      *BadRequest
 	JSON403      *Forbidden
+	JSON422      *PolicyDenied
 }
 
 // Status returns HTTPResponse.Status
@@ -21790,6 +21979,7 @@ type IssueJWTSVIDResponse struct {
 	JSON201      *JWTSVIDResponse
 	JSON400      *BadRequest
 	JSON403      *Forbidden
+	JSON422      *PolicyDenied
 }
 
 // Status returns HTTPResponse.Status
@@ -23400,6 +23590,7 @@ type SignSSHCertificateResponse struct {
 	JSON200      *SignResponse
 	JSON400      *BadRequest
 	JSON403      *Forbidden
+	JSON422      *PolicyDenied
 }
 
 // Status returns HTTPResponse.Status
@@ -23424,6 +23615,7 @@ type SignX509CertificateResponse struct {
 	JSON200      *X509SignResponse
 	JSON400      *BadRequest
 	JSON403      *Forbidden
+	JSON422      *PolicyDenied
 }
 
 // Status returns HTTPResponse.Status
@@ -24087,6 +24279,7 @@ type SignWithKeyResponse struct {
 	JSON200      *SecretSignResponse
 	JSON400      *BadRequest
 	JSON403      *Forbidden
+	JSON422      *PolicyDenied
 }
 
 // Status returns HTTPResponse.Status
@@ -24711,6 +24904,7 @@ type SignSSHCertResponse struct {
 	JSON201      *SSHSignResponse
 	JSON400      *BadRequest
 	JSON403      *Forbidden
+	JSON422      *PolicyDenied
 }
 
 // Status returns HTTPResponse.Status
@@ -26335,8 +26529,8 @@ func (c *ClientWithResponses) RunInventoryRetentionWithResponse(ctx context.Cont
 }
 
 // ListIssuancePoliciesWithResponse request returning *ListIssuancePoliciesResponse
-func (c *ClientWithResponses) ListIssuancePoliciesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListIssuancePoliciesResponse, error) {
-	rsp, err := c.ListIssuancePolicies(ctx, reqEditors...)
+func (c *ClientWithResponses) ListIssuancePoliciesWithResponse(ctx context.Context, params *ListIssuancePoliciesParams, reqEditors ...RequestEditorFn) (*ListIssuancePoliciesResponse, error) {
+	rsp, err := c.ListIssuancePolicies(ctx, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -26361,8 +26555,8 @@ func (c *ClientWithResponses) CreateIssuancePolicyWithResponse(ctx context.Conte
 }
 
 // GetIssuancePolicyReferenceWithResponse request returning *GetIssuancePolicyReferenceResponse
-func (c *ClientWithResponses) GetIssuancePolicyReferenceWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetIssuancePolicyReferenceResponse, error) {
-	rsp, err := c.GetIssuancePolicyReference(ctx, reqEditors...)
+func (c *ClientWithResponses) GetIssuancePolicyReferenceWithResponse(ctx context.Context, params *GetIssuancePolicyReferenceParams, reqEditors ...RequestEditorFn) (*GetIssuancePolicyReferenceResponse, error) {
+	rsp, err := c.GetIssuancePolicyReference(ctx, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -28952,6 +29146,13 @@ func ParseIssueCertificateResponse(rsp *http.Response) (*IssueCertificateRespons
 		}
 		response.JSON403 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest PolicyDenied
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
+
 	}
 
 	return response, nil
@@ -29491,6 +29692,13 @@ func ParseIssueJWTSVIDResponse(rsp *http.Response) (*IssueJWTSVIDResponse, error
 			return nil, err
 		}
 		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest PolicyDenied
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
 
 	}
 
@@ -32022,6 +32230,13 @@ func ParseSignSSHCertificateResponse(rsp *http.Response) (*SignSSHCertificateRes
 		}
 		response.JSON403 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest PolicyDenied
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
+
 	}
 
 	return response, nil
@@ -32061,6 +32276,13 @@ func ParseSignX509CertificateResponse(rsp *http.Response) (*SignX509CertificateR
 			return nil, err
 		}
 		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest PolicyDenied
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
 
 	}
 
@@ -33094,6 +33316,13 @@ func ParseSignWithKeyResponse(rsp *http.Response) (*SignWithKeyResponse, error) 
 			return nil, err
 		}
 		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest PolicyDenied
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
 
 	}
 
@@ -34134,6 +34363,13 @@ func ParseSignSSHCertResponse(rsp *http.Response) (*SignSSHCertResponse, error) 
 			return nil, err
 		}
 		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest PolicyDenied
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON422 = &dest
 
 	}
 

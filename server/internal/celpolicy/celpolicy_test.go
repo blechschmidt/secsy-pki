@@ -955,27 +955,27 @@ func TestReferenceDescribesTheLiveEnvironment(t *testing.T) {
 // needed when the console rewrites a rule.
 func TestProgramCacheReusesCompilations(t *testing.T) {
 	e := NewEngine()
-	p1, err := e.cache.get(`request.validity_days <= 90`)
+	p1, err := e.cache.get(KindCertificate, `request.validity_days <= 90`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p2, err := e.cache.get(` request.validity_days <= 90 `)
+	p2, err := e.cache.get(KindCertificate, ` request.validity_days <= 90 `)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if p1 != p2 {
 		t.Error("the same expression (modulo surrounding whitespace) compiled twice")
 	}
-	p3, _ := e.cache.get(`request.validity_days <= 30`)
+	p3, _ := e.cache.get(KindCertificate, `request.validity_days <= 30`)
 	if p3 == p1 {
 		t.Error("two different expressions shared a program")
 	}
 	// A broken expression caches its failure rather than re-parsing per issuance,
 	// and still denies.
-	if _, err := e.cache.get(`request.nope`); err == nil {
+	if _, err := e.cache.get(KindCertificate, `request.nope`); err == nil {
 		t.Error("a broken expression compiled")
 	}
-	if _, err := e.cache.get(`request.nope`); err == nil {
+	if _, err := e.cache.get(KindCertificate, `request.nope`); err == nil {
 		t.Error("the cached failure turned into a success")
 	}
 }
@@ -985,7 +985,7 @@ func TestProgramCacheReusesCompilations(t *testing.T) {
 func TestCacheBoundIsEnforced(t *testing.T) {
 	e := NewEngine()
 	for i := 0; i < maxCachedPrograms+10; i++ {
-		if _, err := e.cache.get(fmt.Sprintf(`request.validity_days <= %d`, i)); err != nil {
+		if _, err := e.cache.get(KindCertificate, fmt.Sprintf(`request.validity_days <= %d`, i)); err != nil {
 			t.Fatalf("compile %d: %v", i, err)
 		}
 	}

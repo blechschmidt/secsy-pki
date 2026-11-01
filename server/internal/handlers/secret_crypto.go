@@ -32,6 +32,7 @@ import (
 	"net/http"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/audit"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/metrics"
 	"github.com/blechschmidt/secsy-pki/server/internal/middleware"
@@ -76,14 +77,26 @@ func (e *secretConflictError) Error() string { return e.msg }
 // SecretErrorKind classifies a stateless-crypto-service error returned by the
 // shared core methods so a non-HTTP transport (the gRPC SecretService) can map
 // it to the right status code without importing the unexported error types. It
-// returns one of "forbidden", "bad_request", "quota", or "internal".
+// returns one of "forbidden", "bad_request", "policy_denied", "conflict",
+// "quota", or "internal".
 func SecretErrorKind(err error) string {
 	var fe *secretForbiddenError
 	var ce *secretClientError
 	var conflict *secretConflictError
 	var suspended *models.TenantSuspendedError
 	var quota *models.QuotaExceededError
+	var deny *celpolicy.DenyError
 	switch {
+	// A CEL signing-restriction refusal (Task 224) is neither a missing
+	// capability nor a malformed request: the caller was allowed to sign and
+	// asked for something an operator-written rule forbids. It gets its own kind
+	// so the transports can say so — and so the reasons travel as data.
+	case errors.As(err, &deny):
+		return "policy_denied"
+	case errors.Is(err, celpolicy.ErrUnavailable):
+		// The rules could not be read, so nothing could be checked. Fail-closed
+		// refuses the signature, and the caller did nothing wrong — 500, not 4xx.
+		return "internal"
 	case errors.As(err, &fe), errors.As(err, &suspended):
 		return "forbidden"
 	case errors.As(err, &ce):
@@ -101,6 +114,11 @@ func SecretErrorKind(err error) string {
 // shared classification so REST and gRPC never diverge.
 func (a *API) writeSecretCryptoError(w http.ResponseWriter, err error) {
 	switch SecretErrorKind(err) {
+	case "policy_denied":
+		if writePolicyDenyError(w, err) { // 422 + per-rule violations
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, "%s", err.Error())
 	case "forbidden":
 		writeError(w, http.StatusForbidden, "%s", err.Error())
 	case "bad_request":

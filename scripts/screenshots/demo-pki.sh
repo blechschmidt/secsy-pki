@@ -616,6 +616,70 @@ seed_issuance_policies() {
     "expression": "!request.is_ca || (principal.authenticated && (\"admin\" in principal.roles || principal.is_root))",
     "message": "minting a subordinate CA requires the admin role"
   }'
+
+  # The signing half of the same engine (Task 224): rules over the signatures
+  # that are not certificates. One per operation, because the page's argument is
+  # that one table and one vocabulary cover an OpenSSH certificate, a release
+  # artifact and a raw signature alike.
+  POL '{
+    "kind": "signing",
+    "name": "no-privileged-principals",
+    "description": "no SSH certificate for a shared privileged account",
+    "priority": 10,
+    "operations": ["ssh-certificate"],
+    "expression": "signing.ssh.principals.filter(p, p.lowerAscii() in [\"root\", \"admin\"]).map(p, \"principal \" + p + \" is a shared privileged account; use a named account and sudo\")"
+  }'
+
+  POL '{
+    "kind": "signing",
+    "name": "ssh-validity-ceiling",
+    "description": "the SSH lifetime ceiling, stated in the refusal",
+    "priority": 20,
+    "operations": ["ssh-certificate"],
+    "expression": "signing.ssh.validity <= duration(\"12h\") ? \"\" : \"requested %s of SSH certificate validity; this CA signs at most 12h\".format([string(signing.ssh.validity)])"
+  }'
+
+  POL '{
+    "kind": "signing",
+    "name": "release-key-is-pipeline-only",
+    "description": "the release key belongs to the pipeline, not to a person",
+    "priority": 30,
+    "keys": ["northwind-release"],
+    "operations": ["artifact"],
+    "expression": "has(jwt.repository) && string(jwt.repository) == \"northwind/product\"",
+    "message": "the release-signing key is reserved for the northwind/product release workflow"
+  }'
+
+  POL '{
+    "kind": "signing",
+    "name": "artifacts-need-a-timestamp",
+    "description": "a signature that stops verifying when its certificate expires is not an archive",
+    "priority": 40,
+    "operations": ["artifact"],
+    "expression": "signing.artifact.timestamped",
+    "message": "an artifact signature must be timestamped (level t or lt) so it outlives the signing certificate"
+  }'
+
+  POL '{
+    "kind": "signing",
+    "name": "no-caller-supplied-digests",
+    "description": "measuring first: how much traffic signs a digest nobody looked at?",
+    "priority": 50,
+    "mode": "monitor",
+    "expression": "!signing.payload.prehashed",
+    "message": "this key signs content, not a caller-supplied digest"
+  }'
+
+  POL '{
+    "kind": "signing",
+    "name": "ssh-keys-must-be-fido-resident",
+    "description": "parked until every operator has a security key",
+    "priority": 60,
+    "enabled": false,
+    "operations": ["ssh-certificate"],
+    "expression": "signing.ssh.cert_type == \"host\" || signing.ssh.public_key.hardware_backed",
+    "message": "a user SSH certificate is only signed for a FIDO-resident key (ssh-keygen -t ed25519-sk)"
+  }'
 }
 
 # ---------------------------------------------------------------------------

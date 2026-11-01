@@ -135,6 +135,18 @@ func hasMustStapleExtension(base pki.LeafCertRequest) bool {
 // audit event whenever a rule produced a finding — blocking or not. A monitor-mode
 // finding that never reaches a requester is only useful if it is written down.
 func (m *Manager) recordCELPolicyOutcome(in celpolicy.Input, d celpolicy.Decision, profile Profile, issuerCA *models.CA, requestedBy string) {
+	RecordPolicyMetrics(d)
+	if len(d.Violations) == 0 {
+		return
+	}
+	m.recordCELPolicyEvent(in, d, profile, issuerCA, requestedBy)
+}
+
+// RecordPolicyMetrics publishes the gate's three series for one decision. It is
+// exported because the legacy raw-signing endpoint (handlers) runs the same
+// certificate rules outside the manager, and a gate whose evaluations are
+// invisible on one path would make the dashboard lie.
+func RecordPolicyMetrics(d celpolicy.Decision) {
 	switch {
 	case !d.Allowed:
 		metrics.CertificatePolicyChecks.Inc("deny")
@@ -149,10 +161,6 @@ func (m *Manager) recordCELPolicyOutcome(in celpolicy.Input, d celpolicy.Decisio
 			metrics.CertificatePolicyRuleErrors.Inc(v.Rule)
 		}
 	}
-	if len(d.Violations) == 0 {
-		return
-	}
-	m.recordCELPolicyEvent(in, d, profile, issuerCA, requestedBy)
 }
 
 // recordCELPolicyEvent appends a tamper-evident audit event for a policy finding.
@@ -180,20 +188,21 @@ func (m *Manager) recordCELPolicyEvent(in celpolicy.Input, d celpolicy.Decision,
 		Target:     target,
 		TargetName: targetName,
 		Result:     result,
-		Detail:     celPolicyDetail(in, d, profile),
+		Detail:     PolicyDetail(in, d, profile.Name),
 	}
 	if err := m.db.AppendEvent(e); err != nil {
 		log.Printf("WARNING: failed to append cert.policy audit event: %v", err)
 	}
 }
 
-// celPolicyDetail renders the audit detail: the surface, the profile, and every
+// PolicyDetail renders the audit detail: the surface, the profile, and every
 // finding with its rule name and mode — the same text the requester received, so
-// the log answers "why was this refused" on its own.
-func celPolicyDetail(in celpolicy.Input, d celpolicy.Decision, profile Profile) string {
+// the log answers "why was this refused" on its own. Exported for the legacy
+// raw-signing endpoint, which records the same event from outside the manager.
+func PolicyDetail(in celpolicy.Input, d celpolicy.Decision, profile string) string {
 	parts := []string{
 		"source=" + in.Request.Source,
-		"profile=" + profile.Name,
+		"profile=" + profile,
 		fmt.Sprintf("rules_evaluated=%d", d.Evaluated),
 	}
 	for _, v := range d.Violations {
@@ -275,4 +284,94 @@ func (m *Manager) policyTemplateForPreview(spec PreviewSpec, profile Profile, is
 		MaxPathLen:         profile.MaxPathLen,
 	}
 	return applyMustStaple(base, profile.resolveMustStaple(spec.MustStaple)), nil
+}
+
+// The CEL signing-restriction gate for SPIFFE JWT-SVIDs (Task 224).
+//
+// A JWT-SVID is minted with a CA's issuer key, but it is not a certificate:
+// there is no to-be-signed template, nothing is recorded in the inventory, and
+// the pre-issuance gate above never sees it. What it *is* is a bearer token that
+// says "this workload is spiffe://…" to whoever accepts it — so the questions an
+// enterprise wants to ask are about the identity, the audience and the lifetime:
+// which workloads may mint a token for which services, and for how long.
+//
+// Those are signing-rule questions, so the signing vocabulary answers them
+// (`signing.jwt_svid`), and the gate lives next to the certificate gate because
+// this is the package that owns the issuer key.
+
+// checkJWTSVIDPolicy evaluates the signing rules against a resolved JWT-SVID.
+// It returns a *celpolicy.DenyError when an enforcing rule refused, whose
+// message carries the operator's own wording back to the requester.
+func (m *Manager) checkJWTSVIDPolicy(ctx context.Context, spec JWTSVIDSpec, issuerCA *models.CA,
+	spiffeID string, audience []string, alg, keyID string, notBefore, expiry time.Time, ttl time.Duration) error {
+	if m.signPolicy == nil {
+		return nil
+	}
+	return m.signPolicy.CheckSigning(ctx, m.jwtSVIDFacts(spec, issuerCA, spiffeID, audience, alg, keyID, notBefore, expiry, ttl))
+}
+
+// jwtSVIDFacts assembles the signing facts of one JWT-SVID.
+func (m *Manager) jwtSVIDFacts(spec JWTSVIDSpec, issuerCA *models.CA, spiffeID string,
+	audience []string, alg, keyID string, notBefore, expiry time.Time, ttl time.Duration) celpolicy.SigningRequest {
+	req := celpolicy.SigningRequest{
+		Operation:   celpolicy.OpSignJWTSVID,
+		RequestedBy: spec.RequestedBy,
+		JWTSVID: celpolicy.JWTSVIDInfo{
+			Present:    true,
+			SPIFFEID:   spiffeID,
+			Audience:   append([]string{}, audience...),
+			Algorithm:  alg,
+			KeyID:      keyID,
+			NotBefore:  notBefore.UTC(),
+			Expiry:     expiry.UTC(),
+			TTL:        ttl,
+			TTLSeconds: int(ttl / time.Second),
+		},
+		// The payload is the JWS signing input, which the service always holds in
+		// full and never receives as a digest.
+		Payload: celpolicy.PayloadInfo{Present: true},
+	}
+	if domain, path, ok := splitSPIFFEID(spiffeID); ok {
+		req.JWTSVID.TrustDomain = domain
+		req.JWTSVID.Path = path
+	}
+	if issuerCA != nil {
+		req.Tenant = issuerCA.TenantID
+		req.Key = celpolicy.SigningKeyInfo{
+			Name:     issuerCA.Label,
+			Label:    keyRefForCA(issuerCA).Label,
+			Ref:      issuerCA.PKCS11URI,
+			Type:     issuerCA.KeyType,
+			Provider: m.provider.Name(),
+			Tenant:   issuerCA.TenantID,
+		}
+		if req.Key.Label == "" {
+			req.Key.Label = issuerCA.Label
+		}
+		req.JWTSVID.CA = celpolicy.CAInfo{
+			ID:      issuerCA.ID,
+			Label:   issuerCA.Label,
+			Tenant:  issuerCA.TenantID,
+			Subject: issuerCA.Subject,
+		}
+		if issuerCA.NotAfter != nil {
+			req.JWTSVID.CA.NotAfter = issuerCA.NotAfter.UTC()
+		}
+	}
+	return req
+}
+
+// splitSPIFFEID splits a spiffe:// URI into its trust domain and path, so a rule
+// can restrict a namespace without parsing a URI. It reports false for anything
+// that is not a spiffe:// URI (the caller validated it, so that is a belt).
+func splitSPIFFEID(id string) (domain, path string, ok bool) {
+	const scheme = "spiffe://"
+	if !strings.HasPrefix(id, scheme) {
+		return "", "", false
+	}
+	rest := id[len(scheme):]
+	if i := strings.Index(rest, "/"); i >= 0 {
+		return rest[:i], rest[i:], true
+	}
+	return rest, "", true
 }

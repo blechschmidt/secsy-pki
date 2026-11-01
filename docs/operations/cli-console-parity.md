@@ -41,7 +41,7 @@ The console's 26 views, with the `data-view` name the test tables use:
 | SSH CA | `ssh` | Audit | `audit` |
 | Signing | `signing` | Approvals | `approvals` |
 | Validate | `validate` | Compliance | `compliance` |
-| Restrictions | `restrictions` | Issuance Policy | `policy` |
+| Restrictions | `restrictions` | Signing Policy | `policy` |
 
 ## `secsy-ca`
 
@@ -97,7 +97,7 @@ The console's 26 views, with the `data-view` name the test tables use:
 | `secsy-ca ers` | Compliance | **Evidence records (RFC 4998)** — list, generate, renew, export, verify |
 | `secsy-ca lint` | Compliance | **Lint a certificate** (paste any certificate) |
 | `secsy-ca blocked-keys` | Compliance | **Compromised-key blocklist** — add, list, remove |
-| `secsy-ca issuance-policy` | Issuance Policy | the CEL restriction rules — list, add, edit, enable/disable, delete, and the dry-run (`issuance-policy test`) and vocabulary reference (`issuance-policy reference`) |
+| `secsy-ca issuance-policy` | Signing Policy | the CEL restriction rules of **both kinds** — `-kind certificate` (issuance) and `-kind signing` (SSH certificates, artifact signatures, raw signatures): list, add, edit, enable/disable, delete, plus the dry-run (`issuance-policy test -kind …`) and the per-kind vocabulary reference (`issuance-policy reference -kind …`) |
 | `secsy-ca validate-cert` | Validate | chain/path validation with live CRL+OCSP revocation |
 | `secsy-ca ct` | CT Inclusion | the SCT inclusion-proof table and the on-demand sweep |
 | `secsy-ca discover` | Discovery | external TLS endpoint scanning and the stored inventory |

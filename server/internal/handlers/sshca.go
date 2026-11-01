@@ -315,6 +315,15 @@ func (a *API) SignSSHCert(w http.ResponseWriter, r *http.Request) {
 	})
 	a.consumeHSMAuditLogs("")
 	if err != nil {
+		// A CEL signing-restriction refusal (Task 224) is 422 with the reasons as
+		// data — the caller held the capability and the request was well-formed;
+		// an operator-written rule refused its content, and that rule's own
+		// wording is what they need to read.
+		if writeSignPolicyDenied(w, err) {
+			metrics.SSHCertificates.Inc(certType, metrics.ResultDenied)
+			a.recordEvent(r, audit.ActionSSHSign, caID, "", audit.ResultDenied, err.Error())
+			return
+		}
 		metrics.SSHCertificates.Inc(certType, metrics.ResultError)
 		a.recordEvent(r, audit.ActionSSHSign, caID, "", audit.ResultError, err.Error())
 		if writeTenantLimitError(w, err) { // suspension → 403, quota → 429 + Retry-After

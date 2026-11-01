@@ -5,10 +5,14 @@
 The same key provider that backs the CA also backs a code/artifact signing
 service, an RFC 3161 time-stamping authority, the trusted time source that
 guards it, and the long-term preservation machinery that keeps old signatures
-verifiable after their algorithms age out.
+verifiable after their algorithms age out. The first page below is the
+operator-written policy in front of all of it — the same restriction engine that
+gates certificate generation, pointed at the signatures that are not
+certificates.
 
 | Guide | Covers |
 |-------|--------|
+| [**CEL signing restrictions**](signing-restrictions.md) | The operator-written gate in front of every signature that is not a certificate (Task 224): fail-closed CEL rules over the **OpenSSH certificate** that would be minted (principals, key ID, resolved extensions and critical options, lifetime, the certified key's type and whether it is FIDO-resident), the **artifact signature** (signer, resolved CAdES level, whether it is timestamped, the signing certificate, the digest it will cover), and the **raw signature** (key, algorithm, hash, whether the caller supplied the digest) — plus the verified claims of the caller's token, the request URL and body, and the caller's identity. Same engine, store and editors as the issuance rules, selected by `kind: signing`; `sign.policy` audit, `secsy_signing_policy_*` metrics, HTTP 422 with the rule's own wording |
 | [**Artifact / code signing**](artifact-signing.md) | HSM-backed CMS/PKCS#7 detached signatures over release artifacts: provisioning code-signing keys under the lint-gated `code-signing` profile (`secsy-ca signing-key`), `/api/sign` + `/api/sign/verify` (signer role, tenant-scoped, rate-limited, `artifact.sign` audit), `secsy-ca sign`/`verify-signature` with file & digest input, embedded RFC 3161 countersignatures with timestamp-time chain validation, key-ceremony notes for signing keys, and `openssl cms`/`openssl ts` interop |
 | [**Time-stamping authority (RFC 3161)**](timestamping.md) | HSM-backed trusted time-stamp tokens: provisioning the TSA key/cert (`secsy-ca tsa-key`), the `/tsa` endpoint, policy/accuracy/ordering config, nonce & hash validation, audit + metrics, and `openssl ts -verify` interop |
 | [**Trusted external time source (NTS / Roughtime)**](trusted-time.md) | Fail-closed drift detection guarding the TSA and audit anchoring against a compromised/drifted host clock: the `time.source` block (`system` default, authenticated NTP/NTS per RFC 8915, or Roughtime), cross-checking the host clock before signing and refusing (`timeNotAvailable` / no anchor) when the offset exceeds `max_drift`, the reachability policy (`fail_closed`/`fail_open`) + `min_sources` quorum + cached `refresh_interval`, `secsy_time_drift_seconds`/`secsy_time_check_failures_total` metrics, the `SecsyPKITrustedTimeCheckFailing` alert, the `time.trusted` doctor check, and the `time.check` audit event |

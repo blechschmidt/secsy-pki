@@ -100,6 +100,12 @@ const (
 	SourceCanary  = "canary"
 	SourceCLI     = "cli"
 	SourcePreview = "preview"
+	// SourceRawSign is the legacy raw signing endpoint (/api/keys/{id}/sign-x509),
+	// which hands a CA key a CSR directly rather than going through the issuance
+	// path. It is named so a rule can treat it differently — it has no issuance
+	// profile, so the profile-derived facts are empty — rather than having to
+	// infer "this did not come from an issuance surface" from an absence.
+	SourceRawSign = "rawsign"
 )
 
 // Operation names what is being asked of the CA.

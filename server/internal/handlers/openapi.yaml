@@ -935,6 +935,7 @@ paths:
               schema: { $ref: "#/components/schemas/PendingIssuanceResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/PolicyDenied" }
 
   /api/ca/{id}/pkcs12:
     parameters:
@@ -1304,6 +1305,7 @@ paths:
               schema: { $ref: "#/components/schemas/SignResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/PolicyDenied" }
 
   /api/keys/{id}/sign-x509:
     parameters:
@@ -1325,6 +1327,7 @@ paths:
               schema: { $ref: "#/components/schemas/X509SignResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/PolicyDenied" }
 
   /api/parse-csr:
     post:
@@ -1800,6 +1803,7 @@ paths:
               schema: { $ref: "#/components/schemas/JWTSVIDResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/PolicyDenied" }
 
   /api/ca/{id}/svid/jwt/verify:
     parameters:
@@ -2184,6 +2188,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/SSHSignResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "422": { $ref: "#/components/responses/PolicyDenied" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/ssh/cas/{id}/revoke:
@@ -2901,10 +2906,19 @@ paths:
     get:
       operationId: listIssuancePolicies
       tags: [IssuancePolicy]
-      summary: List the CEL issuance-restriction rules
+      summary: List the CEL restriction rules
       description: >
-        Every rule, in evaluation order (priority ascending, then name),
-        including the disabled ones.
+        Every rule of both kinds, in evaluation order (priority ascending, then
+        name), including the disabled ones. One table holds the certificate
+        rules (which gate issuance) and the signing rules (which gate OpenSSH
+        certificates, artifact signatures and raw signatures); `kind` narrows
+        the listing to one of them.
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          description: Return only the rules of this kind. Omitted returns both.
+          schema: { type: string, enum: [certificate, signing] }
       responses:
         "200":
           description: The rules.
@@ -2953,8 +2967,17 @@ paths:
       description: >
         The variables an expression may reference (with the fields of each typed
         object), the function library, the accepted result shapes, the evaluation
-        cost ceiling, and worked examples. Derived from the live environment, so
-        it cannot drift from the compiler a rule is loaded by.
+        cost ceiling, and worked examples — for one rule kind. Derived from the
+        live environment, so it cannot drift from the compiler a rule is loaded
+        by.
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          description: >
+            Which vocabulary to describe: certificate (the default, reasoning
+            about `request`) or signing (reasoning about `signing`).
+          schema: { type: string, enum: [certificate, signing] }
       responses:
         "200":
           description: The vocabulary.
@@ -2981,6 +3004,15 @@ paths:
               required: [expression]
               properties:
                 expression: { type: string }
+                kind:
+                  type: string
+                  enum: [certificate, signing]
+                  default: certificate
+                  description: >
+                    Which environment to compile in. The two vocabularies are
+                    separate, so an expression written for one does not compile
+                    against the other — which is the error an editor should show
+                    while the rule is being written.
       responses:
         "200":
           description: The compile verdict.
@@ -3005,6 +3037,13 @@ paths:
         under a real CA and profile, in which case the certificate facts are
         derived by the same code the issuance gate uses. Nothing is signed and
         nothing is stored.
+
+
+        `kind` selects which rules and which vocabulary are used: certificate
+        rules are evaluated against `input`, signing rules against
+        `signing_input`. Only rules of that kind are considered — evaluating a
+        certificate rule against signing facts would fail to compile and report
+        every rule as broken.
       requestBody:
         required: true
         content:
@@ -4122,6 +4161,7 @@ paths:
               schema: { $ref: "#/components/schemas/SecretSignResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/PolicyDenied" }
         "429":
           description: Tenant secret-op quota exceeded (Retry-After set).
 
@@ -5360,6 +5400,15 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    PolicyDenied:
+      description: >
+        An operator-written CEL restriction rule refused the request. The body
+        carries every blocking reason both as one sentence (`error`) and per rule
+        (`violations`), so a client can render the rule's own wording rather than
+        "forbidden". Retrying the same request will fail identically.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/PolicyDeniedResponse" }
     Unauthorized:
       description: Authentication is required or failed.
       content:
@@ -7724,7 +7773,7 @@ components:
     IssuancePolicyRule:
       type: object
       description: >
-        One operator-written CEL restriction on certificate generation. The
+        One operator-written CEL restriction on what this PKI's keys sign. The
         expression may evaluate to a bool (the condition that must hold, or —
         with effect "deny" — must not), a string (the reason itself; the empty
         string means satisfied), or a list of strings (one reason per offending
@@ -7733,6 +7782,22 @@ components:
       required: [name, expression]
       properties:
         id: { type: string, readOnly: true }
+        kind:
+          type: string
+          enum: [certificate, signing]
+          default: certificate
+          description: >
+            What the rule restricts, and therefore which vocabulary its
+            expression is compiled against and which gate enforces it.
+            certificate — certificate generation; the expression reasons about
+            `request` and the rule runs on every issuance surface.
+            signing — the other signatures this PKI's keys produce (an OpenSSH
+            certificate, a CMS/CAdES artifact signature, a raw signature with a
+            named key, a SPIFFE JWT-SVID); the expression reasons about
+            `signing`.
+            A rule's kind is fixed at creation: an update may omit it or repeat
+            it, but changing it is refused, because the expression was written
+            for one vocabulary and would usually not compile against the other.
         name:
           type: string
           description: >
@@ -7777,7 +7842,27 @@ components:
           type: array
           description: >
             Issuing CA ids or labels the rule applies to, matched
-            case-insensitively with shell-style globs. Empty means every CA.
+            case-insensitively with shell-style globs. Empty means every CA. A
+            signing rule reads it too, where the operation has the notion (an
+            OpenSSH certificate has a signing CA).
+          items: { type: string }
+        keys:
+          type: array
+          description: >
+            Signing rules only. The keys the rule applies to, matched against
+            every name a key is known by — the name the caller used (an artifact
+            signer, a named signing key), the provider label, and the signing
+            CA's id/label for an OpenSSH certificate. Case-insensitive, globs
+            allowed; empty means every key. Rejected on a certificate rule.
+          items: { type: string }
+        operations:
+          type: array
+          description: >
+            Signing rules only. The operations the rule applies to:
+            ssh-certificate, artifact, data or jwt-svid (globs allowed). Empty
+            means every operation. An operation that does not exist is rejected,
+            because a rule scoped to one would look switched on and apply to
+            nothing.
           items: { type: string }
         priority:
           type: integer
@@ -7827,9 +7912,11 @@ components:
       type: object
       description: >
         The body of a 422 Unprocessable Content returned when the CEL restriction
-        engine refuses a certificate request. The status is deliberately not 403:
-        the caller's credentials were accepted and their permission to issue was
-        never in question — the content of the request is what policy refused.
+        engine refuses a request — a certificate request, or (Task 224) a request
+        to sign an OpenSSH certificate, an artifact or caller data. The status is
+        deliberately not 403: the caller's credentials were accepted and their
+        permission was never in question — the content of the request is what
+        policy refused.
       properties:
         error:
           type: string
@@ -7861,7 +7948,35 @@ components:
         reads as its zero value, which is the correct view for a request that
         carried no token, no URL or no body.
       properties:
-        request: { type: object, additionalProperties: true }
+        request:
+          type: object
+          additionalProperties: true
+          description: >
+            The certificate facts. `validity` accepts a duration string ("90m")
+            or a whole number of nanoseconds; the echo uses the string form.
+        jwt: { type: object, additionalProperties: true }
+        url: { type: object, additionalProperties: true }
+        body: { type: object, additionalProperties: true }
+        principal: { type: object, additionalProperties: true }
+        now: { type: string, format: date-time }
+
+    SigningPolicyFacts:
+      type: object
+      description: >
+        The fact set a signing rule is evaluated against. `signing` holds the
+        operation's facts — what is being signed, with which key, and the
+        per-operation group (ssh, artifact or data); `jwt` and `body` are
+        free-form maps; `url` and `principal` describe the HTTP request and its
+        caller. See GET /api/issuance-policies/reference?kind=signing for every
+        field of `signing`.
+      properties:
+        signing:
+          type: object
+          additionalProperties: true
+          description: >
+            The signing facts. Duration-valued fields (signing.ssh.validity,
+            signing.jwt_svid.ttl) accept a duration string ("8h", "15m") or a
+            whole number of nanoseconds; the echo uses the string form.
         jwt: { type: object, additionalProperties: true }
         url: { type: object, additionalProperties: true }
         body: { type: object, additionalProperties: true }
@@ -7875,6 +7990,14 @@ components:
         rule, evaluated even while disabled), or neither (the active rule set;
         add all_rules to include the disabled ones).
       properties:
+        kind:
+          type: string
+          enum: [certificate, signing]
+          default: certificate
+          description: >
+            Which rules and which vocabulary to use. A signing dry-run takes its
+            facts from signing_input and ignores csr/ca_id/profile, which
+            describe a certificate request.
         expression: { type: string }
         effect: { type: string, enum: [require, deny] }
         message: { type: string }
@@ -7893,10 +8016,12 @@ components:
         profile: { type: string }
         validity_days: { type: integer }
         input: { $ref: "#/components/schemas/IssuancePolicyFacts" }
+        signing_input: { $ref: "#/components/schemas/SigningPolicyFacts" }
 
     IssuancePolicyTestResponse:
       type: object
       properties:
+        kind: { type: string, enum: [certificate, signing] }
         decision: { $ref: "#/components/schemas/IssuancePolicyDecision" }
         rules:
           type: array
@@ -7908,6 +8033,10 @@ components:
           description: >
             The facts the rules actually saw, echoed back so a surprising verdict
             is diagnosable — the usual cause is a fact the author assumed was present.
+        signing_input:
+          allOf:
+            - $ref: "#/components/schemas/SigningPolicyFacts"
+          description: The same echo, for a kind=signing dry-run.
 
     IssuancePolicyVariable:
       type: object
@@ -7949,6 +8078,17 @@ components:
           items: { type: string }
         modes:
           type: array
+          items: { type: string }
+        kind: { type: string, enum: [certificate, signing] }
+        kinds:
+          type: array
+          description: Every rule kind this server supports.
+          items: { type: string }
+        operations:
+          type: array
+          description: >
+            The signing operations a rule may select on and compare
+            `signing.operation` against. Present for kind=signing only.
           items: { type: string }
         cost_limit:
           type: integer
@@ -8553,6 +8693,18 @@ components:
             Overrides the signer's timestamp-by-default setting: true embeds an
             RFC 3161 countersignature (CAdES-T), false suppresses it. Omitted
             applies the signer's default. Ignored when level is set.
+        name:
+          type: string
+          description: >-
+            The artifact's name, for the audit record and the signing
+            restriction rules (`signing.artifact.name`). Caller-asserted
+            metadata: a detached CMS signature binds the digest, not the name.
+        reason:
+          type: string
+          description: >-
+            Why this artifact is being signed. It reaches a signing restriction
+            rule as `signing.purpose`, which is how a policy can require a
+            change ticket for a release signature.
 
     ArtifactSignResponse:
       type: object

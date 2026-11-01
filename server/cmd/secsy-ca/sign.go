@@ -11,16 +11,19 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/config"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/signing"
+	"github.com/blechschmidt/secsy-pki/server/internal/signpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/tsa"
 )
 
@@ -150,6 +153,7 @@ func cmdSign(db *database.DB, cfg *config.Config, mgr *ca.Manager, signingProvid
 	format := fs.String("format", "der", "signature output format: der or pem")
 	level := fs.String("level", "", "CAdES baseline level: b (signed attrs), t (+timestamp), lt (+long-term-validation material). Empty uses the signer default")
 	timestamp := fs.String("timestamp", "auto", "embed an RFC 3161 countersignature: auto (signer default), yes, or no. Ignored when -level is set")
+	reason := fs.String("reason", "", "why this artifact is being signed; reaches the signing restriction rules as signing.purpose")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -199,7 +203,12 @@ func cmdSign(db *database.DB, cfg *config.Config, mgr *ca.Manager, signingProvid
 			effectiveLevel = signing.LevelB
 		}
 	}
-	req := signing.SignRequest{Signer: sc.Name, Level: effectiveLevel}
+	req := signing.SignRequest{
+		Signer:      sc.Name,
+		Level:       effectiveLevel,
+		Purpose:     strings.TrimSpace(*reason),
+		RequestedBy: cliActor(),
+	}
 
 	var authority *tsa.Authority
 	if effectiveLevel == signing.LevelT || effectiveLevel == signing.LevelLT {
@@ -218,6 +227,10 @@ func cmdSign(db *database.DB, cfg *config.Config, mgr *ca.Manager, signingProvid
 	if effectiveLevel == signing.LevelLT {
 		svc.SetRevocationSource(mgr)
 	}
+	// The CEL signing-restriction gate (Task 224) binds here too: a rule that
+	// refuses a signature over the API must refuse the same signature from a
+	// terminal, or it is advice rather than a control.
+	svc.SetPolicyGate(signpolicy.NewGate(db, db))
 
 	outPath := *out
 	if *in != "" {
@@ -226,6 +239,7 @@ func cmdSign(db *database.DB, cfg *config.Config, mgr *ca.Manager, signingProvid
 			return fmt.Errorf("reading artifact: %w", err)
 		}
 		req.Content = content
+		req.Name = filepath.Base(*in)
 		if outPath == "" {
 			outPath = *in + ".p7s"
 		}
@@ -240,7 +254,9 @@ func cmdSign(db *database.DB, cfg *config.Config, mgr *ca.Manager, signingProvid
 		}
 	}
 
-	res, err := svc.Sign(context.Background(), req)
+	// Label the surface so a rule can tell a terminal invocation from an API
+	// call (signing.source == "cli").
+	res, err := svc.Sign(celpolicy.WithSource(context.Background(), celpolicy.SourceCLI), req)
 	if err != nil {
 		return err
 	}

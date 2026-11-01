@@ -35,3 +35,36 @@ var (
 		"CEL policy rules that failed to compile or evaluate, partitioned by rule name.",
 		"rule")
 )
+
+// CEL signing-restriction gate metrics (Task 224).
+//
+// Mirrors the three certificate series above, so one dashboard panel per
+// question works for both halves of the engine. The operation label is what the
+// certificate series does not need: a deployment signs certificates, SSH
+// certificates, artifacts and raw data with different keys and different
+// policies, and "which of them is being refused" is the first question a
+// rollout asks.
+var (
+	// SigningPolicyChecks counts every run of the signing gate: "operation" is
+	// ssh-certificate|artifact|data and "result" pass|deny|monitor|error.
+	SigningPolicyChecks = NewCounter(Default,
+		"secsy_signing_policy_checks_total",
+		"Pre-signing CEL policy evaluations, partitioned by operation and outcome (pass|deny|monitor|error).",
+		"operation", "result")
+
+	// SigningPolicyViolations counts individual violations by the rule that
+	// produced them and its mode.
+	SigningPolicyViolations = NewCounter(Default,
+		"secsy_signing_policy_violations_total",
+		"Pre-signing CEL policy violations, partitioned by rule name and mode.",
+		"rule", "mode")
+
+	// SigningPolicyRuleErrors counts signing rules that could not be compiled or
+	// evaluated, by rule name — the series to alert on, since a non-zero rate
+	// means a rule is refusing (or, if fail-open, silently not enforcing) for a
+	// reason unrelated to the requests.
+	SigningPolicyRuleErrors = NewCounter(Default,
+		"secsy_signing_policy_rule_errors_total",
+		"Signing CEL policy rules that failed to compile or evaluate, partitioned by rule name.",
+		"rule")
+)

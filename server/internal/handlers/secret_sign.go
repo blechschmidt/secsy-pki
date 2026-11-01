@@ -238,7 +238,12 @@ func (a *API) SignOp(ctx context.Context, ip string, tenant *models.Tenant, keyN
 	}
 
 	a.consumeHSMAuditLogs("")
-	res, err := secret.Sign(ctx, a.keyProvider, row, data, hash, preHashed)
+	// The CEL signing-restriction gate (Task 224) runs inside secret.Sign, so
+	// REST, gRPC and the CLI are governed by one evaluation of one rule set.
+	res, err := secret.Sign(ctx, a.keyProvider, row, data, hash, preHashed, secret.WithPolicy(secret.SignPolicy{
+		Gate:        a.signingPolicyGate(),
+		RequestedBy: middleware.GetUserInfo(ctx).Subject,
+	}))
 	a.consumeHSMAuditLogs("")
 	quotaDone(err)
 	if err != nil {

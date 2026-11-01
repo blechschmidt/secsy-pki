@@ -44,6 +44,14 @@ type SignArtifactRequest struct {
 	// Timestamp overrides the signer's configured default when present. Ignored
 	// when level is set.
 	Timestamp *bool `json:"timestamp,omitempty"`
+	// Name is the artifact's name, for the audit record and the signing
+	// restriction rules (signing.artifact.name). It is caller-asserted metadata:
+	// a detached CMS signature binds the digest, not the name.
+	Name string `json:"name,omitempty"`
+	// Reason is the free-text purpose the caller gives, reaching a restriction
+	// rule as signing.purpose — which is how a policy can require a change
+	// ticket for a release signature.
+	Reason string `json:"reason,omitempty"`
 }
 
 // SignArtifactResponse carries the detached signature and what it covers.
@@ -119,7 +127,14 @@ func (a *API) SignArtifact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "%v", err)
 		return
 	}
-	svcReq := signing.SignRequest{Signer: req.Signer, Level: level, Timestamp: req.Timestamp}
+	svcReq := signing.SignRequest{
+		Signer:      req.Signer,
+		Level:       level,
+		Timestamp:   req.Timestamp,
+		Name:        strings.TrimSpace(req.Name),
+		Purpose:     strings.TrimSpace(req.Reason),
+		RequestedBy: userSubject(user),
+	}
 	switch {
 	case req.Artifact != "" && req.Digest != "":
 		writeError(w, http.StatusBadRequest, "provide artifact or digest, not both")
@@ -147,6 +162,15 @@ func (a *API) SignArtifact(w http.ResponseWriter, r *http.Request) {
 	res, err := a.signingService.Sign(r.Context(), svcReq)
 	a.consumeHSMAuditLogs("")
 	if err != nil {
+		// A CEL signing-restriction refusal (Task 224) is 422 with the reasons as
+		// data, exactly as a refused certificate request is: the caller held the
+		// capability and the request was well-formed — a rule refused its content,
+		// and the rule's own wording is what they need to read.
+		if writeSignPolicyDenied(w, err) {
+			metrics.ArtifactSignatures.Inc(sc.Name, metrics.ResultDenied)
+			a.recordEvent(r, audit.ActionArtifactSign, sc.Name, "", audit.ResultDenied, err.Error())
+			return
+		}
 		metrics.ArtifactSignatures.Inc(sc.Name, metrics.ResultError)
 		a.recordEvent(r, audit.ActionArtifactSign, sc.Name, "", audit.ResultError, err.Error())
 		if errors.Is(err, signing.ErrUnavailable) {

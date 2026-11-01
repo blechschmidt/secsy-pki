@@ -14,9 +14,11 @@ import (
 
 	// Aliased because Sign's local variable for the CA record is named "ca".
 	capkg "github.com/blechschmidt/secsy-pki/server/internal/ca"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
+	"github.com/blechschmidt/secsy-pki/server/internal/signpolicy"
 )
 
 // DefaultCAKeyType is the key type used when an SSH CA is initialized without
@@ -37,6 +39,11 @@ const clockSkewBackdate = 5 * time.Minute
 type Authority struct {
 	db       *database.DB
 	provider keyprovider.Provider
+	// policy is the CEL signing-restriction gate (Task 224). It is built from
+	// the same store the authority reads its CAs from, so every caller of
+	// NewAuthority gets it without wiring: a gate a surface could forget to
+	// install would be a gate that surface silently bypasses.
+	policy celpolicy.SigningChecker
 	// now is the time source, overridable in tests.
 	now func() time.Time
 }
@@ -44,8 +51,17 @@ type Authority struct {
 // NewAuthority builds an SSH certificate authority over the shared store and
 // key provider.
 func NewAuthority(db *database.DB, provider keyprovider.Provider) *Authority {
-	return &Authority{db: db, provider: provider, now: time.Now}
+	a := &Authority{db: db, provider: provider, now: time.Now}
+	if db != nil {
+		a.policy = signpolicy.NewGate(db, db)
+	}
+	return a
 }
+
+// SetPolicyGate replaces the signing-restriction gate. It exists for a test
+// that wants to drive the gate directly; production wiring happens in
+// NewAuthority. A nil gate disables the check.
+func (a *Authority) SetPolicyGate(gate celpolicy.SigningChecker) { a.policy = gate }
 
 // CASpec describes a new SSH certificate authority.
 type CASpec struct {
@@ -161,6 +177,11 @@ type SignRequest struct {
 	CriticalOptions map[string]string
 	// RequestedBy is the requesting subject, recorded in the inventory.
 	RequestedBy string
+	// Purpose is the free-text reason the caller gave, where the surface
+	// collects one. It is not carried by the certificate; it reaches the
+	// restriction rules as signing.purpose so a policy can insist on a change
+	// ticket for a privileged certificate.
+	Purpose string
 }
 
 // SignResult is a signed OpenSSH certificate plus its inventory record.
@@ -339,6 +360,14 @@ func (a *Authority) Sign(ctx context.Context, req SignRequest) (_ *SignResult, e
 			CriticalOptions: criticalOptions,
 			Extensions:      extensions,
 		},
+	}
+
+	// The fail-closed CEL signing gate (Task 224). It runs last, on the fully
+	// resolved certificate — profile defaults applied, CA ceiling applied,
+	// serial allocated — and before any HSM signature, so a refused request
+	// costs a serial and nothing else.
+	if err := a.checkPolicy(ctx, cert, ca, profile, req.RequestedBy, req.Purpose); err != nil {
+		return nil, err
 	}
 
 	signer, err := a.provider.Signer(ctx, keyRefForCA(ca))

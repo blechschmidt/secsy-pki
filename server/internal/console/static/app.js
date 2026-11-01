@@ -6770,27 +6770,39 @@ async function s256(v) {
 
 bootAuth();
 
-// ---- Issuance policy (CEL restriction rules, Task 223) -------------------
+// ---- Signing policy (CEL restriction rules, Tasks 223 + 224) -------------
 // The editing half of the restriction engine. Three things make this view
 // usable rather than dangerous: the expression is compile-checked against the
 // live server before it can be saved, every rule can be dry-run against a real
-// CSR before it is switched on, and the vocabulary panel is rendered from the
-// server's own environment rather than from a documentation page that could
-// drift from it.
+// CSR (or, for a signing rule, a fact set) before it is switched on, and the
+// vocabulary panel is rendered from the server's own environment rather than
+// from a documentation page that could drift from it.
+//
+// One table holds both kinds of rule — `certificate` rules gate issuance and
+// read `request`; `signing` rules gate OpenSSH certificates, artifact
+// signatures and raw signatures, and read `signing`. The kind travels with
+// every call that compiles or evaluates an expression, because the two
+// vocabularies are separate environments on the server: an expression written
+// for one does not compile against the other, which is exactly the error an
+// operator wants at the moment they write it.
 let policyRules = [];
-let policyRef = null;
+let policyRefs = { certificate: null, signing: null };
 let polEditing = null; // the rule being edited, or null while creating
+
+// polKind is the kind the editor, the compile check and the reference panel are
+// currently working in.
+function polKind() { return $('polKind').value || 'certificate'; }
 
 async function loadPolicy() {
   const tbody = $('polRows');
-  tbody.innerHTML = '<tr><td colspan="8" class="muted">Loading…</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="9" class="muted">Loading…</td></tr>';
   try { await loadCAs(); } catch (_) { /* the rules still render without CA labels */ }
   try {
     policyRules = await api('GET', '/api/issuance-policies');
     $('polDenied').classList.add('hidden');
   } catch (e) {
     policyRules = [];
-    tbody.innerHTML = emptyRow(e.message, 8);
+    tbody.innerHTML = emptyRow(e.message, 9);
     return;
   }
   renderPolicyRules();
@@ -6815,18 +6827,25 @@ function polScope(r) {
   if (r.tenant_id) bits.push(`tenant: <span class="mono">${escapeHTML(r.tenant_id)}</span>`);
   if (r.profiles && r.profiles.length) bits.push(`profiles: <span class="mono">${escapeHTML(r.profiles.join(', '))}</span>`);
   if (r.cas && r.cas.length) bits.push(`CAs: <span class="mono">${escapeHTML(r.cas.join(', '))}</span>`);
-  return bits.length ? bits.join('<br>') : '<span class="muted">every issuance</span>';
+  if (r.keys && r.keys.length) bits.push(`keys: <span class="mono">${escapeHTML(r.keys.join(', '))}</span>`);
+  if (r.operations && r.operations.length) bits.push(`operations: <span class="mono">${escapeHTML(r.operations.join(', '))}</span>`);
+  if (bits.length) return bits.join('<br>');
+  return (r.kind === 'signing')
+    ? '<span class="muted">every signature</span>'
+    : '<span class="muted">every issuance</span>';
 }
 
 function renderPolicyRules() {
   const tbody = $('polRows');
   const want = $('polStateFilter').value;
+  const wantKind = $('polKindFilter').value;
   const shown = policyRules.filter(r =>
-    !want || (want === 'enabled' ? r.enabled : !r.enabled));
+    (!want || (want === 'enabled' ? r.enabled : !r.enabled)) &&
+    (!wantKind || (r.kind || 'certificate') === wantKind));
   if (!shown.length) {
     tbody.innerHTML = emptyRow(policyRules.length
       ? 'No rules in this state.'
-      : 'No issuance-policy rules. Certificate generation is constrained only by the profiles, the issuing CA’s name constraints, and CAA.', 8);
+      : 'No policy rules. Certificate generation is constrained only by the profiles, the issuing CA’s name constraints, and CAA; SSH certificates, artifact signatures and raw signatures only by their profiles and the callers’ capabilities.', 9);
     return;
   }
   tbody.innerHTML = shown.map(r => {
@@ -6843,8 +6862,12 @@ function renderPolicyRules() {
     const toggle = r.enabled
       ? `<button class="btn ghost sm" data-pol="disable" data-id="${r.id}">Disable</button>`
       : `<button class="btn ghost sm" data-pol="enable" data-id="${r.id}">Enable</button>`;
+    const kind = (r.kind || 'certificate') === 'signing'
+      ? '<span class="badge" title="Gates OpenSSH certificates, artifact signatures and raw signatures; reads the signing vocabulary.">signing</span>'
+      : '<span class="badge" title="Gates certificate generation on every issuance surface; reads the request vocabulary.">certificate</span>';
     return `<tr${r.enabled ? '' : ' style="opacity:.6"'}>
       <td>${r.priority || 0}</td>
+      <td>${kind}</td>
       <td><b>${escapeHTML(r.name)}</b>${r.description ? `<br><span class="muted">${escapeHTML(r.description)}</span>` : ''}</td>
       <td>${state}${failOpen}</td>
       <td>${effect}</td>
@@ -6877,6 +6900,10 @@ async function policyRowAction(act, id) {
   if (!rule) return;
   if (act === 'edit') { openPolicyEditor(rule); return; }
   if (act === 'test') {
+    // The dry-run has to run in the rule's own kind: the server refuses to
+    // evaluate a certificate rule against signing facts (and vice versa), which
+    // is the right answer and a confusing one to hit by accident.
+    $('polTestKind').value = rule.kind || 'certificate';
     $('polTestWhat').value = 'one';
     populatePolicyTestControls();
     $('polTestRule').value = rule.id;
@@ -6884,7 +6911,7 @@ async function policyRowAction(act, id) {
     return;
   }
   if (act === 'delete') {
-    if (!confirm(`Delete the issuance-policy rule "${rule.name}"? Requests it was refusing will start being accepted.`)) return;
+    if (!confirm(`Delete the ${rule.kind || 'certificate'} policy rule "${rule.name}"? Requests it was refusing will start being accepted.`)) return;
     try {
       await api('DELETE', '/api/issuance-policies/' + encodeURIComponent(rule.id));
       policyNotice('ok', `Deleted "${rule.name}".`);
@@ -6910,9 +6937,17 @@ function policyNotice(kind, msg) {
 
 function openPolicyEditor(rule) {
   polEditing = rule;
-  $('polEditorTitle').textContent = rule ? `Edit rule "${rule.name}"` : 'New issuance-policy rule';
+  $('polEditorTitle').textContent = rule ? `Edit rule "${rule.name}"` : 'New policy rule';
   $('polEditorError').classList.add('hidden');
   $('polCheckResult').textContent = '';
+  // The kind decides which vocabulary everything below is written against, so
+  // it is set first — and locked on an existing rule, because reinterpreting an
+  // expression against the other environment would usually stop it compiling.
+  $('polKind').value = rule ? (rule.kind || 'certificate') : ($('polKindFilter').value || 'certificate');
+  $('polKind').disabled = !!rule;
+  $('polKeys').value = rule ? (rule.keys || []).join(', ') : '';
+  $('polOperations').value = rule ? (rule.operations || []).join(', ') : '';
+  onPolicyKindChange();
   $('polName').value = rule ? rule.name : '';
   $('polDescription').value = rule ? (rule.description || '') : '';
   $('polExpression').value = rule ? rule.expression : '';
@@ -6933,7 +6968,8 @@ function openPolicyEditor(rule) {
 
 function policyBody() {
   const list = (id) => $(id).value.split(',').map(s => s.trim()).filter(Boolean);
-  return {
+  const body = {
+    kind: polKind(),
     name: $('polName').value.trim(),
     description: $('polDescription').value.trim(),
     expression: $('polExpression').value.trim(),
@@ -6947,11 +6983,34 @@ function policyBody() {
     enabled: $('polEnabled').checked,
     fail_open: $('polFailOpen').checked,
   };
+  // The key and operation selectors belong to a signing rule; the server
+  // rejects them on a certificate rule rather than ignoring them, so they are
+  // only sent for the kind that has them.
+  if (body.kind === 'signing') {
+    body.keys = list('polKeys');
+    body.operations = list('polOperations');
+  }
+  return body;
+}
+
+// onPolicyKindChange re-dresses the editor for the selected kind: the signing
+// selectors appear, the profile/CA hints change, and the reference panel plus
+// the insertable examples are reloaded for the right vocabulary.
+function onPolicyKindChange() {
+  const signing = polKind() === 'signing';
+  $('polSigningScope').classList.toggle('hidden', !signing);
+  $('polExpression').placeholder = signing
+    ? 'signing.ssh.validity <= duration("12h") ? "" : "requested more than 12h of SSH certificate validity"'
+    : 'request.validity_days <= 90 ? "" : "requested %d days of validity; this profile allows at most 90".format([request.validity_days])';
+  $('polCheckResult').textContent = '';
+  loadPolicyReference();
 }
 
 $('polNew').onclick = () => openPolicyEditor(null);
 $('polRefresh').onclick = loadPolicy;
 $('polStateFilter').onchange = renderPolicyRules;
+$('polKindFilter').onchange = renderPolicyRules;
+$('polKind').onchange = onPolicyKindChange;
 $('polCancel').onclick = () => { $('polEditor').classList.add('hidden'); polEditing = null; };
 
 $('polSave').onclick = async () => {
@@ -6965,7 +7024,7 @@ $('polSave').onclick = async () => {
     } else {
       await api('POST', '/api/issuance-policies', body);
       policyNotice('ok', body.enabled
-        ? `Created "${body.name}" — it applies to issuance now.`
+        ? `Created "${body.name}" — it applies to every ${body.kind === 'signing' ? 'signature' : 'issuance'} in its scope now.`
         : `Created "${body.name}", disabled. Dry-run it below, then enable it.`);
     }
     $('polEditor').classList.add('hidden');
@@ -6984,7 +7043,7 @@ $('polCheck').onclick = async () => {
   if (!expr) { out.textContent = 'Nothing to check.'; return; }
   out.textContent = 'checking…';
   try {
-    const res = await api('POST', '/api/issuance-policies/validate', { expression: expr });
+    const res = await api('POST', '/api/issuance-policies/validate', { expression: expr, kind: polKind() });
     if (res.valid) {
       out.innerHTML = `<span class="badge ok">compiles</span> result type: <code>${escapeHTML(res.result_type || '')}</code>`;
     } else {
@@ -6997,8 +7056,9 @@ $('polCheck').onclick = async () => {
 
 $('polExamples').onchange = () => {
   const idx = $('polExamples').value;
-  if (idx === '' || !policyRef) return;
-  const ex = policyRef.examples[parseInt(idx, 10)];
+  const ref = policyRefs[polKind()];
+  if (idx === '' || !ref) return;
+  const ex = ref.examples[parseInt(idx, 10)];
   if (!ex) return;
   $('polExpression').value = ex.expression;
   if (ex.message) $('polMessage').value = ex.message;
@@ -7025,11 +7085,55 @@ function defaultPolicyFacts() {
   }, null, 2);
 }
 
+// defaultSigningFacts is the signing vocabulary's worked fact set: an OpenSSH
+// certificate, because it is the richest of the three operations and the one
+// whose facts an operator is least likely to guess. The artifact and data
+// groups are shown empty so the shape of each is visible.
+function defaultSigningFacts() {
+  return JSON.stringify({
+    signing: {
+      operation: 'ssh-certificate',
+      source: 'rest',
+      requested_by: 'ops@example.com',
+      purpose: 'CHG-10482',
+      key: { name: 'ssh-user-ca', algorithm: 'Ed25519', provider: 'pkcs11' },
+      payload: { present: true },
+      ssh: {
+        present: true,
+        cert_type: 'user',
+        key_id: 'ops@example.com',
+        principals: ['deploy'],
+        extensions: ['permit-pty'],
+        critical_options: [],
+        critical_option_values: {},
+        validity: '8h',
+        public_key: { type: 'ssh-ed25519', bits: 256, hardware_backed: false },
+        ca: { label: 'ssh-user-ca' },
+      },
+    },
+    jwt: { sub: 'ops@example.com', groups: ['ssh-operators'] },
+    url: { method: 'POST', path: '/api/ssh/cas/<ca-id>/sign', present: true },
+    body: { reason: 'CHG-10482' },
+    principal: { subject: 'ops@example.com', roles: ['issuer'], authenticated: true },
+  }, null, 2);
+}
+
+// polTestKindValue is the kind the dry-run runs in.
+function polTestKindValue() { return $('polTestKind').value || 'certificate'; }
+
 function populatePolicyTestControls() {
+  const kind = polTestKindValue();
   const sel = $('polTestRule');
-  sel.innerHTML = policyRules.map(r =>
-    `<option value="${r.id}">${escapeHTML(r.name)}${r.enabled ? '' : ' (disabled)'}</option>`).join('');
+  // Only rules of the kind under test: the server refuses to evaluate the
+  // others, so offering them would be offering an error.
+  sel.innerHTML = policyRules.filter(r => (r.kind || 'certificate') === kind).map(r =>
+    `<option value="${r.id}">${escapeHTML(r.name)}${r.enabled ? '' : ' (disabled)'}</option>`).join('')
+    || '<option value="">— no ' + kind + ' rules stored</option>';
   $('polTestRuleField').classList.toggle('hidden', $('polTestWhat').value !== 'one');
+  // The CSR, CA, profile and validity inputs describe a certificate request;
+  // a signing dry-run has nothing to derive from them.
+  document.querySelectorAll('#view-policy .certOnly').forEach(el =>
+    el.classList.toggle('hidden', kind === 'signing'));
   // Rebuilt rather than filled once, so Refresh picks up a CA or profile added
   // since the view was first opened — keeping the operator's current choice,
   // which is the whole reason a naive innerHTML rebuild would be worse than
@@ -7040,15 +7144,28 @@ function populatePolicyTestControls() {
   rebuildSelect($('polTestProfile'),
     '<option value="">default</option>' +
     (profiles || []).map(p => `<option value="${escapeHTML(p.name)}">${escapeHTML(p.name)}</option>`).join(''));
-  if (!$('polTestFacts').value.trim()) $('polTestFacts').value = defaultPolicyFacts();
+  if (!$('polTestFacts').value.trim()) {
+    $('polTestFacts').value = kind === 'signing' ? defaultSigningFacts() : defaultPolicyFacts();
+  }
 }
 
 $('polTestWhat').onchange = populatePolicyTestControls;
-$('polTestReset').onclick = () => { $('polTestFacts').value = defaultPolicyFacts(); };
+// Switching the kind replaces the facts with that vocabulary's worked example:
+// keeping certificate facts in a signing dry-run would evaluate every rule
+// against an empty signing request, which reads as "nothing is refused".
+$('polTestKind').onchange = () => {
+  $('polTestFacts').value = polTestKindValue() === 'signing' ? defaultSigningFacts() : defaultPolicyFacts();
+  $('polTestResult').classList.add('hidden');
+  populatePolicyTestControls();
+};
+$('polTestReset').onclick = () => {
+  $('polTestFacts').value = polTestKindValue() === 'signing' ? defaultSigningFacts() : defaultPolicyFacts();
+};
 
 $('polTestRun').onclick = async () => {
   $('polTestError').classList.add('hidden');
-  const body = {};
+  const kind = polTestKindValue();
+  const body = { kind };
   const what = $('polTestWhat').value;
   if (what === 'all') body.all_rules = true;
   if (what === 'one') body.rule = $('polTestRule').value;
@@ -7062,10 +7179,14 @@ $('polTestRun').onclick = async () => {
   }
   const facts = $('polTestFacts').value.trim();
   if (facts) {
-    try { body.input = JSON.parse(facts); }
+    let parsed;
+    try { parsed = JSON.parse(facts); }
     catch (e) { showError($('polTestError'), 'The facts are not valid JSON: ' + e.message); return; }
+    // The two vocabularies travel in their own fields, so a request can never
+    // be read against the wrong one.
+    if (kind === 'signing') body.signing_input = parsed; else body.input = parsed;
   }
-  const csr = $('polTestCSR').value.trim();
+  const csr = kind === 'signing' ? '' : $('polTestCSR').value.trim();
   if (csr) {
     body.csr = csr;
     body.ca_id = $('polTestCA').value;
@@ -7088,14 +7209,16 @@ $('polTestRun').onclick = async () => {
 
 function renderPolicyDecision(res) {
   const d = res.decision || {};
+  const signing = (res.kind || 'certificate') === 'signing';
   const verdict = d.allowed
-    ? '<span class="badge ok">would issue</span>'
+    ? `<span class="badge ok">would ${signing ? 'sign' : 'issue'}</span>`
     : '<span class="badge crit">would be refused</span>';
   const reasons = (d.violations || []).map(v => {
     const tag = v.mode === 'monitor' ? ' <span class="badge warning">monitor — would not block</span>' : '';
     const err = v.error ? `<br><span class="muted">rule error: ${escapeHTML(v.error)}</span>` : '';
     return `<li><b>${escapeHTML(v.rule)}</b>${tag}: ${escapeHTML(v.message)}${err}</li>`;
   }).join('');
+  if (signing) return renderSigningDecisionBody(res, verdict, d);
   const req = (res.input && res.input.request) || {};
   const facts = [
     ['source / operation', `${req.source || '-'} / ${req.operation || '-'}`],
@@ -7117,20 +7240,70 @@ function renderPolicyDecision(res) {
       <table style="margin-top:6px">${facts}</table></details>`;
 }
 
+// renderSigningDecisionBody renders a signing dry-run's verdict: the same
+// reasons, over the facts that operation actually has.
+function renderSigningDecisionBody(res, verdict, d) {
+  const reasons = (d.violations || []).map(v => {
+    const tag = v.mode === 'monitor' ? ' <span class="badge warning">monitor — would not block</span>' : '';
+    const err = v.error ? `<br><span class="muted">rule error: ${escapeHTML(v.error)}</span>` : '';
+    return `<li><b>${escapeHTML(v.rule)}</b>${tag}: ${escapeHTML(v.message)}${err}</li>`;
+  }).join('');
+  const sig = (res.signing_input && res.signing_input.signing) || {};
+  const ssh = sig.ssh || {}, art = sig.artifact || {}, data = sig.data || {}, pay = sig.payload || {};
+  const svid = sig.jwt_svid || {};
+  const rows = [
+    ['operation / source', `${sig.operation || '-'} / ${sig.source || '-'}`],
+    ['key', `${(sig.key && sig.key.name) || '-'} (${(sig.key && sig.key.algorithm) || '-'}, provider ${(sig.key && sig.key.provider) || '-'})`],
+    ['tenant', sig.tenant || '-'],
+    ['requested by', sig.requested_by || '-'],
+    ['payload', `${pay.size || 0} byte(s) ${pay.digest_algorithm || ''}${pay.prehashed ? ' (caller-supplied digest)' : ''}`.trim()],
+  ];
+  if (ssh.present) {
+    rows.push(['ssh', `${ssh.cert_type || '-'} cert for ${(ssh.principals || []).join(', ') || '-'} (key id ${ssh.key_id || '-'})`]);
+    rows.push(['ssh validity', `${ssh.validity || '-'}`]);
+    rows.push(['ssh options', (ssh.critical_options || []).join(', ') || '-']);
+    rows.push(['ssh key', `${(ssh.public_key && ssh.public_key.type) || '-'}${ssh.public_key && ssh.public_key.hardware_backed ? ' (hardware-backed)' : ''}`]);
+  }
+  if (art.present) {
+    rows.push(['artifact', `${art.name || '-'} (signer ${art.signer || '-'}, level ${art.level || '-'}, timestamped ${!!art.timestamped})`]);
+  }
+  if (data.present) {
+    rows.push(['data', `${data.key || '-'} with ${data.algorithm || '-'} (${data.hash || 'no external hash'})`]);
+  }
+  if (svid.present) {
+    rows.push(['jwt-svid', `${svid.spiffe_id || '-'} for ${(svid.audience || []).join(', ') || '-'}`]);
+    rows.push(['jwt-svid ttl', `${svid.ttl_seconds || 0}s (${svid.algorithm || '-'})`]);
+  }
+  rows.push(['jwt claims', Object.keys((res.signing_input && res.signing_input.jwt) || {}).sort().join(', ') || '-']);
+  rows.push(['body parameters', Object.keys((res.signing_input && res.signing_input.body) || {}).sort().join(', ') || '-']);
+  const facts = rows.map(([k, v]) =>
+    `<tr><td class="muted">${escapeHTML(k)}</td><td><code>${escapeHTML(String(v))}</code></td></tr>`).join('');
+  return `<div class="row" style="align-items:center;gap:10px">${verdict}
+      <span class="muted">${d.evaluated || 0} rule(s) evaluated, ${d.skipped || 0} skipped — considered: ${escapeHTML((res.rules || []).join(', ') || 'none')}</span></div>
+    ${reasons ? `<ul style="margin:8px 0">${reasons}</ul>` : '<p class="muted">No violations.</p>'}
+    <details style="margin-top:6px"><summary class="muted">Facts the rules saw</summary>
+      <table style="margin-top:6px">${facts}</table></details>`;
+}
+
 // ---- vocabulary reference ----
 
 async function loadPolicyReference() {
-  if (policyRef) { renderPolicyReference(); return; }
-  try {
-    policyRef = await api('GET', '/api/issuance-policies/reference');
-  } catch (e) {
-    $('polRefVars').innerHTML = `<span class="muted">${escapeHTML(e.message)}</span>`;
-    return;
+  const kind = polKind();
+  if (!policyRefs[kind]) {
+    try {
+      policyRefs[kind] = await api('GET', '/api/issuance-policies/reference?kind=' + encodeURIComponent(kind));
+    } catch (e) {
+      $('polRefVars').innerHTML = `<span class="muted">${escapeHTML(e.message)}</span>`;
+      return;
+    }
   }
   renderPolicyReference();
 }
 
 function renderPolicyReference() {
+  const policyRef = policyRefs[polKind()];
+  if (!policyRef) return;
+  $('polRefKind').textContent = `— ${policyRef.kind || polKind()} rules`;
   const vars = policyRef.variables.map(v => {
     const fields = (v.fields || []).map(f =>
       `<div style="margin-left:14px"><code>${escapeHTML(v.name)}.${escapeHTML(f.name)}</code> <span class="muted">${escapeHTML(f.type)}</span></div>`).join('');
@@ -7145,10 +7318,15 @@ function renderPolicyReference() {
       g.functions.map(f => `<div><code style="white-space:pre-wrap">${escapeHTML(f)}</code></div>`).join('')
     }</details>`).join('');
 
+  const ops = (policyRef.operations || []).length
+    ? `<p><code>signing.operation</code> is one of: ${
+        policyRef.operations.map(o => `<code>${escapeHTML(o)}</code>`).join(', ')
+      } — the same values the <b>Operations</b> selector accepts.</p>`
+    : '';
   $('polRefFooter').innerHTML =
     `A rule's expression may evaluate to:<ul style="margin:4px 0">${
       policyRef.results.map(r => `<li>${escapeHTML(r)}</li>`).join('')
-    }</ul>Every evaluation is bounded at <code>${policyRef.cost_limit}</code> CEL cost units; exceeding that refuses the request.`;
+    }</ul>${ops}Every evaluation is bounded at <code>${policyRef.cost_limit}</code> CEL cost units; exceeding that refuses the request.`;
 
   $('polExamples').innerHTML = '<option value="">—</option>' +
     policyRef.examples.map((ex, i) => `<option value="${i}">${escapeHTML(ex.title)}</option>`).join('');

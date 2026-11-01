@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/caext"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/certpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/database"
 	"github.com/blechschmidt/secsy-pki/server/internal/keyprovider"
@@ -28,6 +29,7 @@ import (
 	"github.com/blechschmidt/secsy-pki/server/internal/nameconstraints"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
 	"github.com/blechschmidt/secsy-pki/server/internal/pqc"
+	"github.com/blechschmidt/secsy-pki/server/internal/signpolicy"
 )
 
 // clockSkew backdates NotBefore slightly so freshly issued certificates are
@@ -38,12 +40,27 @@ const clockSkew = 5 * time.Minute
 type Manager struct {
 	db       *database.DB
 	provider keyprovider.Provider
+	// signPolicy is the CEL *signing*-restriction gate (Task 224). The manager's
+	// certificate gate reads the rule table directly (checkCELPolicy); this one
+	// governs the single credential the manager mints with a CA key that is not a
+	// certificate: a SPIFFE JWT-SVID. It is built from the same store, so every
+	// caller of NewManager gets it without wiring.
+	signPolicy celpolicy.SigningChecker
 }
 
 // NewManager constructs a CA manager.
 func NewManager(db *database.DB, provider keyprovider.Provider) *Manager {
-	return &Manager{db: db, provider: provider}
+	m := &Manager{db: db, provider: provider}
+	if db != nil {
+		m.signPolicy = signpolicy.NewGate(db, db)
+	}
+	return m
 }
+
+// SetSigningPolicyGate replaces the signing-restriction gate. It exists for a
+// test that wants to drive the gate directly; production wiring happens in
+// NewManager. A nil gate disables the check.
+func (m *Manager) SetSigningPolicyGate(gate celpolicy.SigningChecker) { m.signPolicy = gate }
 
 // ProviderName returns the human-readable name of the underlying key provider
 // (e.g. "pkcs11" or "software"), for transcripts and diagnostics.
