@@ -419,3 +419,46 @@ func TestCaptureRoundTripsThroughAHandlerThatDecodes(t *testing.T) {
 		t.Error("the same body was not exposed to the engine")
 	}
 }
+
+// TestWithOperationLabelsTheRequest covers the operation half of the context
+// plumbing: a renewal has to be distinguishable from a first issuance, or a rule
+// scoped to one silently governs neither.
+func TestWithOperationLabelsTheRequest(t *testing.T) {
+	// No holder in the context: one is installed.
+	ctx := WithOperation(context.Background(), OpRenew)
+	f := FromContext(ctx)
+	if f == nil || f.Operation() != OpRenew {
+		t.Fatalf("WithOperation installed no holder: %v", f)
+	}
+	if got := f.Input(CertRequest{}).Request.Operation; got != OpRenew {
+		t.Errorf("operation = %q, want %q", got, OpRenew)
+	}
+
+	// An existing holder is updated in place rather than replaced, so the URL and
+	// token the capture layer recorded survive.
+	existing := NewFacts()
+	existing.SetURL(RequestURL{Present: true, Path: "/api/x"})
+	ctx = WithFacts(context.Background(), existing)
+	if WithOperation(ctx, OpRenew) != ctx {
+		t.Error("WithOperation replaced an existing holder")
+	}
+	in := existing.Input(CertRequest{})
+	if in.Request.Operation != OpRenew || !in.URL.Present {
+		t.Errorf("the holder lost facts: %+v", in)
+	}
+
+	// An explicit, non-default operation from the caller wins.
+	if got := existing.Input(CertRequest{Operation: OpPreview}).Request.Operation; got != OpPreview {
+		t.Errorf("operation = %q, want the caller's %q", got, OpPreview)
+	}
+
+	// An empty operation is a no-op, and a nil holder is safe.
+	if WithOperation(ctx, "") != ctx {
+		t.Error("WithOperation(\"\") changed the context")
+	}
+	var nilFacts *Facts
+	nilFacts.SetOperation(OpRenew)
+	if nilFacts.Operation() != "" {
+		t.Error("a nil holder reported an operation")
+	}
+}

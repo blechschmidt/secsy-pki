@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/blechschmidt/secsy-pki/server/internal/caa"
+	"github.com/blechschmidt/secsy-pki/server/internal/celpolicy"
 	"github.com/blechschmidt/secsy-pki/server/internal/keycheck"
 	"github.com/blechschmidt/secsy-pki/server/internal/models"
 	"github.com/blechschmidt/secsy-pki/server/internal/pki"
@@ -468,6 +469,11 @@ type RenewSpec struct {
 // key, unless a fresh CSR is supplied). The original certificate is left intact;
 // callers may revoke it separately.
 func (m *Manager) RenewCertificate(ctx context.Context, spec RenewSpec) (_ *IssueResult, err error) {
+	// A renewal re-signs, so it passes the same pre-issuance gates as a first
+	// issuance — including the CEL restriction gate (Task 223), which must be able
+	// to tell the two apart. Without this label a renewal would read as an issue
+	// and a rule written against `request.operation == "renew"` would never fire.
+	ctx = celpolicy.WithOperation(ctx, celpolicy.OpRenew)
 	issuerCA, issuerCert, err := m.loadIssuer(spec.CAID)
 	if err != nil {
 		return nil, err

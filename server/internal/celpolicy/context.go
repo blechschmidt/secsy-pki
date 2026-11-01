@@ -43,6 +43,7 @@ type Facts struct {
 	jwt       map[string]interface{}
 	principal Principal
 	source    string
+	operation string
 }
 
 // NewFacts returns an empty fact holder.
@@ -123,6 +124,31 @@ func (f *Facts) SetSource(source string) {
 	f.mu.Unlock()
 }
 
+// SetOperation records what is being asked of the CA, when a caller knows it
+// more precisely than the gate could infer. A renewal re-signs a certificate
+// and so passes through the same gate as a first issuance; without this it
+// would be indistinguishable from one, and a rule written
+// `request.operation == "renew"` would silently never fire — a policy hole that
+// reads as a working rule.
+func (f *Facts) SetOperation(op string) {
+	if f == nil || op == "" {
+		return
+	}
+	f.mu.Lock()
+	f.operation = op
+	f.mu.Unlock()
+}
+
+// Operation returns the recorded operation, or "" when none was recorded.
+func (f *Facts) Operation() string {
+	if f == nil {
+		return ""
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.operation
+}
+
 // Source returns the recorded issuance surface, or "" when none was recorded.
 func (f *Facts) Source() string {
 	if f == nil {
@@ -159,6 +185,9 @@ func (f *Facts) Input(req CertRequest) Input {
 		} else if f.url.Present {
 			in.Request.Source = SourceREST
 		}
+	}
+	if f.operation != "" && (in.Request.Operation == "" || in.Request.Operation == OpIssue) {
+		in.Request.Operation = f.operation
 	}
 	if in.Request.RequestedBy == "" {
 		in.Request.RequestedBy = f.principal.Subject
@@ -357,5 +386,22 @@ func WithSource(ctx context.Context, source string) context.Context {
 	}
 	f := NewFacts()
 	f.SetSource(source)
+	return WithFacts(ctx, f)
+}
+
+// WithOperation records what is being asked of the CA — one of the Op*
+// constants — installing a fact holder when the context has none, and returns
+// the context a caller must pass on. See SetOperation for why a renewal has to
+// say so.
+func WithOperation(ctx context.Context, op string) context.Context {
+	if op == "" {
+		return ctx
+	}
+	if f := FromContext(ctx); f != nil {
+		f.SetOperation(op)
+		return ctx
+	}
+	f := NewFacts()
+	f.SetOperation(op)
 	return WithFacts(ctx, f)
 }

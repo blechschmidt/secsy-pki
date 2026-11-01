@@ -531,6 +531,41 @@ func TestGateAppliesToRenewal(t *testing.T) {
 	}
 }
 
+// TestRenewalIsLabelledAsOne: a renewal passes the same gate as a first
+// issuance, so a rule has to be able to tell them apart. If request.operation
+// read "issue" here, a rule written `request.operation == "renew"` would never
+// fire and would look like a working policy.
+func TestRenewalIsLabelledAsOne(t *testing.T) {
+	ctx := context.Background()
+	mgr, root := policyManager(t, "policy-renew-label")
+	res, err := mgr.IssueCertificate(ctx, IssueSpec{
+		CAID:   root.ID,
+		CSRPEM: makeCSRFor("www.example.com", []string{"www.example.com"}, nil),
+	})
+	if err != nil {
+		t.Fatalf("initial issuance: %v", err)
+	}
+	addRule(t, mgr, celpolicy.Rule{
+		Name:       "renewals-are-closed",
+		Effect:     celpolicy.EffectDeny,
+		Expression: `request.operation == "renew"`,
+		Message:    "this CA does not renew; request a new certificate",
+	})
+	// The rule fires on a renewal...
+	if _, err := mgr.RenewCertificate(ctx, RenewSpec{CAID: root.ID, Serial: res.Serial.String()}); err == nil {
+		t.Fatal("a renewal was not labelled as one")
+	} else if !strings.Contains(err.Error(), "does not renew") {
+		t.Errorf("refusal = %v", err)
+	}
+	// ...and not on a first issuance through the same gate.
+	if _, err := mgr.IssueCertificate(ctx, IssueSpec{
+		CAID:   root.ID,
+		CSRPEM: makeCSRFor("other.example.com", []string{"other.example.com"}, nil),
+	}); err != nil {
+		t.Fatalf("a renewal-scoped rule blocked a first issuance: %v", err)
+	}
+}
+
 // TestGateAppliesToSVIDIssuance covers one of the non-REST surfaces, proving the
 // gate is in buildLeaf rather than in a handler.
 func TestGateAppliesToSVIDIssuance(t *testing.T) {
