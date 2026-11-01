@@ -561,3 +561,40 @@ func TestFactSetAcceptsDurationStrings(t *testing.T) {
 		t.Errorf("the shadow decode dropped a field: %+v", in.Signing.SSH)
 	}
 }
+
+func TestSigningSelectorsBindEveryCAKeyOperation(t *testing.T) {
+	// A CA selector should bind everything that CA's key signs. An OpenSSH
+	// certificate and a JWT-SVID are both minted with the issuer key, so a rule
+	// scoped to the CA has to see both — otherwise "restrict what this authority
+	// signs" would quietly mean "restrict its SSH certificates".
+	svid := SigningInput{Signing: SigningRequest{
+		Operation: OpSignJWTSVID,
+		Key:       SigningKeyInfo{Name: "issuing-ca"},
+		JWTSVID: JWTSVIDInfo{
+			Present: true, SPIFFEID: "spiffe://example.org/ns/prod/sa/web",
+			Audience: []string{"spiffe://example.org/ns/prod/sa/db"},
+			CA:       CAInfo{ID: "ca-7", Label: "issuing-ca"},
+		},
+	}}
+	for _, tc := range []struct {
+		name    string
+		rule    Rule
+		applies bool
+	}{
+		{"ca by label", Rule{CAs: []string{"issuing-ca"}}, true},
+		{"ca by id", Rule{CAs: []string{"ca-7"}}, true},
+		{"ca by glob", Rule{CAs: []string{"issuing-*"}}, true},
+		{"other ca", Rule{CAs: []string{"ssh-user-ca"}}, false},
+		{"key by name", Rule{Keys: []string{"issuing-ca"}}, true},
+		{"operation", Rule{Operations: []string{OpSignJWTSVID}}, true},
+		{"other operation", Rule{Operations: []string{OpSignSSHCert}}, false},
+		{"ssh profile selector does not match a token", Rule{Profiles: []string{"ssh-user-default"}}, false},
+	} {
+		rule := tc.rule
+		rule.Kind, rule.Name, rule.Expression, rule.Enabled = KindSigning, "deny-all", `false`, true
+		d := NewEngine().EvaluateSigning([]Rule{rule}, svid)
+		if applied := !d.Allowed; applied != tc.applies {
+			t.Errorf("%s: applied=%v, want %v", tc.name, applied, tc.applies)
+		}
+	}
+}

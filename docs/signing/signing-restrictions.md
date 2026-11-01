@@ -254,10 +254,10 @@ A rule with no selectors applies to every signature. Narrowing it:
 
 | Selector | Matches |
 |---|---|
-| `operations` | `signing.operation` — `ssh-certificate`, `artifact`, `data` (globs allowed). An operation that does not exist is rejected when the rule is written, because a rule scoped to one would look switched on and apply to nothing |
-| `keys` | the key, by **any** name it is known by: the name the caller used, the provider label, and the signing CA's id/label for an SSH certificate — so `keys: release-signing` works without knowing which of those the surface records |
+| `operations` | `signing.operation` — `ssh-certificate`, `artifact`, `data`, `jwt-svid` (globs allowed). An operation that does not exist is rejected when the rule is written, because a rule scoped to one would look switched on and apply to nothing |
+| `keys` | the key, by **any** name it is known by: the name the caller used, the provider label, and the signing CA's label/id for an SSH certificate or a JWT-SVID — so `keys: release-signing` works without knowing which of those the surface records |
 | `profiles` | the SSH signing profile, for an `ssh-certificate` operation |
-| `cas` | the signing CA's id or label, for an `ssh-certificate` operation |
+| `cas` | the signing CA's id or label, for the operations minted with a CA key (`ssh-certificate`, `jwt-svid`) |
 | `tenant_id` | the key's tenant. A rule with none applies to every tenant |
 
 All are case-insensitive and accept shell-style globs, so `ssh-*` selects a

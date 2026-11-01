@@ -273,17 +273,30 @@ func (r Rule) AppliesToSigning(req SigningRequest) bool {
 	if len(r.Operations) > 0 && !matchesAny(r.Operations, req.Operation) {
 		return false
 	}
-	if len(r.Keys) > 0 && !matchesAny(r.Keys, req.Key.Name) && !matchesAny(r.Keys, req.Key.Label) &&
-		!matchesAny(r.Keys, req.SSH.CA.Label) && !matchesAny(r.Keys, req.SSH.CA.ID) {
+	if len(r.Keys) > 0 && !matchesAnyOf(r.Keys,
+		req.Key.Name, req.Key.Label, req.SSH.CA.Label, req.SSH.CA.ID, req.JWTSVID.CA.Label, req.JWTSVID.CA.ID) {
 		return false
 	}
 	if len(r.Profiles) > 0 && !matchesAny(r.Profiles, req.SSH.Profile) {
 		return false
 	}
-	if len(r.CAs) > 0 && !matchesAny(r.CAs, req.SSH.CA.ID) && !matchesAny(r.CAs, req.SSH.CA.Label) {
+	// A CA selector binds everything that CA's key signs: an OpenSSH certificate
+	// and a JWT-SVID are both minted with it.
+	if len(r.CAs) > 0 && !matchesAnyOf(r.CAs,
+		req.SSH.CA.ID, req.SSH.CA.Label, req.JWTSVID.CA.ID, req.JWTSVID.CA.Label) {
 		return false
 	}
 	return true
+}
+
+// matchesAnyOf reports whether any of the values matches one of the patterns.
+func matchesAnyOf(patterns []string, values ...string) bool {
+	for _, v := range values {
+		if matchesAny(patterns, v) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchesAny reports whether value matches one of the patterns, case-insensitively,
