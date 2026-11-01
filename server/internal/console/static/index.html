@@ -2483,7 +2483,7 @@
       <!-- CEL issuance-restriction rules (Task 223) -->
       <section class="view" id="view-policy">
         <h2>Signing policy</h2>
-        <p class="sub">Operator-written <a href="https://cel.dev" target="_blank" rel="noreferrer">CEL</a> rules evaluated before <em>every</em> signature this PKI's keys produce — on this console, the API, the CLI, and the ACME / EST / SCEP / CMP enrollment protocols alike, because each gate sits in the signing path rather than in one handler. A rule has a <b>kind</b>: a <b>certificate</b> rule restricts certificate generation and reads <code>request</code>; a <b>signing</b> rule restricts the other signatures — an OpenSSH certificate, a CMS artifact signature, a raw signature with a named key — and reads <code>signing</code>. Both also see the verified claims of the caller's token, the request URL and its body parameters, and the caller's identity. A rule that refuses a request supplies <b>the reason the requester is shown</b>, so "it exceeds the maximum lifetime" travels back instead of "forbidden". Editing needs <code>ca:configure</code>; everyone with a role can read the rules and dry-run them.</p>
+        <p class="sub">Operator-written <a href="https://cel.dev" target="_blank" rel="noreferrer">CEL</a> rules evaluated before <em>every</em> signature this PKI's keys produce — on this console, the API, the CLI, and the ACME / EST / SCEP / CMP enrollment protocols alike, because each gate sits in the signing path rather than in one handler. A rule has a <b>kind</b>: a <b>certificate</b> rule restricts certificate generation and reads <code>request</code>; a <b>signing</b> rule restricts the other signatures — an OpenSSH certificate, a CMS artifact signature, a raw signature with a named key, a SPIFFE JWT-SVID — and reads <code>signing</code>. Both also see the verified claims of the caller's token, the request URL and its body parameters, and the caller's identity. A rule that refuses a request supplies <b>the reason the requester is shown</b>, so "it exceeds the maximum lifetime" travels back instead of "forbidden". Editing needs <code>ca:configure</code>; everyone with a role can read the rules and dry-run them.</p>
         <div class="notice">
           A rule is <b>fail-closed</b>: one that cannot be evaluated refuses the request rather than letting it through. Write a rule <b>disabled</b>, dry-run it below against a real CSR, and only then switch it on — or put it in <b>monitor</b> mode, which records what it would have refused and issues anyway.
         </div>
@@ -2525,7 +2525,7 @@
           <div class="row">
             <div class="field" style="width:230px">
               <label for="polKind">Kind <span class="muted">— fixed once saved</span></label>
-              <select id="polKind" title="A certificate rule reasons about `request` and gates issuance; a signing rule reasons about `signing` and gates SSH certificates, artifact signatures and raw signatures. The vocabulary below follows this choice.">
+              <select id="polKind" title="A certificate rule reasons about `request` and gates issuance; a signing rule reasons about `signing` and gates SSH certificates, artifact signatures, raw signatures and JWT-SVIDs. The vocabulary below follows this choice.">
                 <option value="certificate">certificate — issuance</option>
                 <option value="signing">signing — SSH / artifact / data</option>
               </select>
@@ -2637,7 +2637,7 @@
             <textarea id="polTestCSR" rows="4" spellcheck="false" style="font-family:var(--mono,monospace);width:100%" placeholder="-----BEGIN CERTIFICATE REQUEST-----"></textarea>
           </div>
           <div class="field">
-            <label for="polTestFacts">Facts (JSON) <span class="muted">— <code>jwt</code>, <code>url</code>, <code>body</code> and <code>principal</code> are kept; <code>request</code> is replaced when a CSR is supplied</span></label>
+            <label for="polTestFacts">Facts (JSON) <span class="muted">— the vocabulary of the kind above (<code>request</code> or <code>signing</code>) plus <code>jwt</code>, <code>url</code>, <code>body</code> and <code>principal</code>, which are kept as written; <code>request</code> is replaced when a CSR is supplied. Durations may be written as <code>"8h"</code></span></label>
             <textarea id="polTestFacts" rows="7" spellcheck="false" style="font-family:var(--mono,monospace);width:100%"></textarea>
           </div>
           <div class="row" style="justify-content:flex-end;gap:8px">

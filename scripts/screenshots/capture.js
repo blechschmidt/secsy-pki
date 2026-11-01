@@ -503,8 +503,10 @@ const SHOTS = [
              document.getElementById('polRefVars').textContent.includes('signing') &&
              document.getElementById('polRefKind').textContent.includes('signing')`,
     clip: '#view-policy',
+    // Down to where the dry-run begins: the table, and the editor below it with
+    // the Keys / Operations scope row that only a signing rule has.
     clipTo: `panel:Dry-run`,
-    maxHeight: 1700,
+    maxHeight: 2700,
   },
   {
     file: '14e-signing-policy-dryrun.png',
